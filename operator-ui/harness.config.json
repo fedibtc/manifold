@@ -1,0 +1,67 @@
+{
+  "$comment": "INTERACTIVE layer config (Claude Code hooks + shell gates). Read by .claude/hooks/{pre-write-check,pre-commit-gate,post-write-lint,stop-gate,stop-review}.sh, scripts/{gate,review}.sh, scripts/ratchet.mjs and eslint/boundaries.config.mjs. Sibling configs: agent-harness.json = headless pipeline (agent-harness CLI); agent-toolkit.json = lint + write-guard policy and the single source for protectedDirs. Do not delete this file — four active hooks fail closed without it.",
+  "$reconciled": "Adapted for the operator-ui pnpm workspace (biome + vitest, apps/*/src layout). Biome remains the linter/formatter; boundaries/compiler/fallow are enforced by operator-ui's own eslint.config.mjs + harness-gate.sh, so those checks here are advisory ('report') to avoid double-blocking. The harness eslint fragment (eslint/base.config.mjs) is installed as reference only (its id-denylist bans `data` and caps useState, which the react-query code would trip). relatedTests is 'off' — vitest is per-package (pnpm -r test), not resolvable from the workspace root. duplication is 'report' — fallow audit scopes against origin/master and would block on inherited in-flight-branch dead-code; operator-ui's fallow stage owns that gate. Only protectedDirs and gitleaks block. Post-install fix applied to .claude/hooks/*.sh: HOOK_DIR/../scripts -> ../../scripts (install.sh puts hooks under .claude/hooks but scripts at project root).",
+  "formatter": "auto",
+  "testCommand": "npx --no-install vitest related --run",
+  "e2eCommand": "npx --no-install playwright test && E2E_APP=fman npx --no-install playwright test",
+  "checks": {
+    "eslint": "off",
+    "filename": "report",
+    "protectedDirs": "block",
+    "testsAccompanyCode": "report",
+    "relatedTests": "off",
+    "duplication": "report",
+    "jsxShapes": "report",
+    "knip": "report",
+    "gitleaks": "block",
+    "semgrep": "report",
+    "ratchet": "report",
+    "dispatchPropGrep": "report",
+    "boundaries": "report",
+    "compiler": "report",
+    "e2e": "block"
+  },
+  "boundaries": {
+    "$comment": "Disabled: operator-ui enforces feature boundaries via its own eslint.config.mjs (lint:boundaries) + check-structure.mjs. This block only feeds the unused eslint/boundaries.config.mjs reference fragment.",
+    "enabled": false,
+    "severity": "warn",
+    "shared": ["packages/*", "apps/*/src/shared"],
+    "features": "apps/*/src/features/*",
+    "app": "apps/*/src/app"
+  },
+  "ratchet": {
+    "baselineFile": ".quality-baseline.json",
+    "track": ["lintWarnings", "typeCoverage"]
+  },
+  "tddGuard": {
+    "enabled": false,
+    "model": "haiku"
+  },
+  "models": {
+    "reviewer": "sonnet",
+    "visualQa": "inherit"
+  },
+  "reviewers": [
+    {
+      "name": "claude-reviewer",
+      "type": "subagent",
+      "agent": "code-reviewer",
+      "blocking": false
+    },
+    {
+      "name": "codex",
+      "type": "cli",
+      "command": "codex exec --sandbox read-only \"Review the diff between {base} and HEAD strictly against docs/clean-code.md. Report clear violations only, with file:line. Separate sections: Standards, Spec (skip Spec if no issue/PRD is referenced).\"",
+      "blocking": false,
+      "enabled": true
+    },
+    {
+      "name": "third-party-pr",
+      "type": "external",
+      "provider": "coderabbit",
+      "blocking": false,
+      "enabled": false,
+      "$comment": "CodeRabbit/Greptile install via their GitHub App; this entry documents the slot."
+    }
+  ]
+}

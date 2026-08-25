@@ -1,0 +1,20 @@
+{
+  "version": 3,
+  "created_at": 1721476800,
+  "state_groups": [
+    "provider_identity",
+    "attestations",
+    "wallet_client_state",
+    "database",
+    "operation_history",
+    "operator_config",
+    "external_dependencies"
+  ],
+  "recovery_point": {
+    "quiesced_at": 1721476790,
+    "stores": [
+      "sqlite",
+      "data_directory"
+    ]
+  }
+}

@@ -1,0 +1,23 @@
+.root {
+  @apply uStack4;
+}
+
+.head {
+  @apply uPageHead;
+}
+
+.heading {
+  @apply uPageHeading;
+}
+
+.intro {
+  @apply uIntro;
+}
+
+.message {
+  @apply uBorderedPanel uMonoValue whitespace-pre-wrap;
+}
+
+.actions {
+  @apply uFormActions;
+}

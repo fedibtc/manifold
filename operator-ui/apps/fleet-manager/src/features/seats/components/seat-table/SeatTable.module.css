@@ -1,0 +1,15 @@
+.seatLink {
+  @apply font-mono text-sm font-medium text-info hover:opacity-80;
+}
+
+.mono {
+  @apply uMono;
+}
+
+.idRow {
+  @apply uCopyRow;
+}
+
+.tableWrap {
+  @apply overflow-hidden rounded-card border border-muted;
+}

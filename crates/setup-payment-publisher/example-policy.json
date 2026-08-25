@@ -1,0 +1,6 @@
+{
+  "version": 1,
+  "fman_version": "REPLACE_WITH_FMAN_SEMVER",
+  "federations": ["REPLACE_WITH_PUBLIC_FEDIMINT_INVITE"],
+  "telemetry_registration_url": "REPLACE_WITH_HTTPS_TELEMETRY_REGISTRATION_URL"
+}

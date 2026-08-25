@@ -1,0 +1,119 @@
+{
+  "backup_scan": {
+    "completed_at_ms": 1753600050000,
+    "pending_seats": 1
+  },
+  "seats": [
+    {
+      "backup": null,
+      "completion_callback": {
+        "state": "not_configured"
+      },
+      "created_at_ms": 1753500000000,
+      "decommissioned": false,
+      "fi_id": "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",
+      "payment_claim": {
+        "state": "not_paid"
+      },
+      "plan": {
+        "InfiniteBestEffort": {
+          "price_msats": 50000000
+        }
+      },
+      "seat_id": "0707070707070707070707070707070707070707070707070707070707070707"
+    },
+    {
+      "backup": {
+        "archive_confirmed": false,
+        "published_at_ms": 1753600010000
+      },
+      "completion_callback": {
+        "attempts": 2,
+        "last_reason": "network",
+        "next_attempt_at_ms": 1753600060000,
+        "state": "pending"
+      },
+      "created_at_ms": 1753500000000,
+      "decommissioned": false,
+      "fi_id": "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",
+      "payment_claim": {
+        "state": "pending"
+      },
+      "plan": {
+        "InfiniteBestEffort": {
+          "price_msats": 50000000
+        }
+      },
+      "seat_id": "0707070707070707070707070707070707070707070707070707070707070707"
+    },
+    {
+      "backup": {
+        "archive_confirmed": true,
+        "published_at_ms": 1753600020000
+      },
+      "completion_callback": {
+        "at_ms": 1753600030000,
+        "attempts": 1,
+        "state": "delivered"
+      },
+      "created_at_ms": 1753500000000,
+      "decommissioned": false,
+      "fi_id": "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",
+      "payment_claim": {
+        "at_ms": 1753600000000,
+        "state": "success"
+      },
+      "plan": {
+        "InfiniteBestEffort": {
+          "price_msats": 50000000
+        }
+      },
+      "seat_id": "0707070707070707070707070707070707070707070707070707070707070707"
+    },
+    {
+      "backup": null,
+      "completion_callback": {
+        "attempts": 3,
+        "reason": "gateway_origin_missing",
+        "state": "operator_blocked"
+      },
+      "created_at_ms": 1753500000000,
+      "decommissioned": false,
+      "fi_id": "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",
+      "payment_claim": {
+        "at_ms": 1753599000000,
+        "state": "already_spent"
+      },
+      "plan": {
+        "InfiniteBestEffort": {
+          "price_msats": 50000000
+        }
+      },
+      "seat_id": "0707070707070707070707070707070707070707070707070707070707070707"
+    },
+    {
+      "backup": {
+        "archive_confirmed": true,
+        "published_at_ms": 1753600040000
+      },
+      "completion_callback": {
+        "at_ms": 1753500000000,
+        "attempts": 5,
+        "reason": "decommissioned",
+        "state": "terminal"
+      },
+      "created_at_ms": 1753500000000,
+      "decommissioned": true,
+      "fi_id": "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",
+      "payment_claim": {
+        "state": "not_paid"
+      },
+      "plan": {
+        "InfiniteBestEffort": {
+          "price_msats": 50000000
+        }
+      },
+      "seat_id": "0808080808080808080808080808080808080808080808080808080808080808"
+    }
+  ]
+}

@@ -1,0 +1,11 @@
+.head {
+  @apply flex items-start justify-between gap-4;
+}
+
+.heading {
+  @apply uPageHeading;
+}
+
+.sub {
+  @apply uIntro;
+}

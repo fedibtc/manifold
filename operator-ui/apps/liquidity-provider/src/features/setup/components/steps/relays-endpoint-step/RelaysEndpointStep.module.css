@@ -1,0 +1,19 @@
+.layout {
+  @apply uStack6;
+}
+
+.relayList {
+  @apply uStack3;
+}
+
+.relayRow {
+  @apply uInputRow;
+}
+
+.relayInput {
+  @apply uInputRowField;
+}
+
+.remove {
+  @apply uRemoveBtn;
+}

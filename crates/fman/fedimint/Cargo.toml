@@ -1,0 +1,54 @@
+[package]
+name = "fman-fedimint"
+version = "0.1.0"
+autotests = false
+edition = "2024"
+
+[dependencies]
+anyhow = "1"
+async-trait = "0.1"
+bitcoin = { version = "0.32.6", features = ["serde"] }
+bitcoin_hashes = "0.14"
+fedi-decentralized-domain = { path = "../../domain" }
+fedi-decentralized-service-fleet-manager = { path = "../../service-fleet-manager" }
+fedimint-aead = "0.11.1"
+fedimint-api-client = { workspace = true }
+fedimint-client = { workspace = true }
+fedimint-client-module = { workspace = true }
+fedimint-connectors = { workspace = true }
+fedimint-core = { workspace = true }
+fedimint-derive-secret = { workspace = true }
+fedimint-ln-client = { workspace = true }
+fedimint-ln-common = { workspace = true }
+fedimint-lnv2-client = { workspace = true }
+fedimint-lnv2-common = { workspace = true }
+fedimint-meta-client = { workspace = true }
+fedimint-meta-common = { workspace = true }
+fedimint-mint-client = { workspace = true }
+fedimint-mint-common = { workspace = true }
+fedimint-mintv2-client = { workspace = true }
+fedimint-mintv2-common = { workspace = true }
+fedimint-rocksdb = { workspace = true }
+fedimint-tbs = { workspace = true }
+fman-core = { path = "../core" }
+futures = "0.3"
+libc = "0.2"
+lightning-invoice = "0.33"
+lnurl-rs = { version = "0.9", default-features = false, features = [
+  "async-https-rustls",
+] }
+locked-payments = { path = "../../locked-payments" }
+rand = "0.8"
+serde = { workspace = true }
+serde_json = "1"
+sqlx = { version = "0.8.6", features = ["runtime-tokio", "sqlite"] }
+stability-pool-client = { workspace = true }
+stability-pool-common = { workspace = true }
+tempfile = "3"
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tracing = "0.1"
+zeroize = "1"
+
+[dev-dependencies]
+tracing-subscriber = "0.3"

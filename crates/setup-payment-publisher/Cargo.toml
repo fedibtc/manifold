@@ -1,0 +1,28 @@
+[package]
+name = "setup-payment-publisher"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[[bin]]
+name = "setup-payment-publisher"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1"
+clap.workspace = true
+fedi-decentralized-domain = { path = "../domain" }
+fedi-decentralized-manifold-environment = { path = "../manifold-environment" }
+fedi-decentralized-nostr = { path = "../nostr" }
+fedi-decentralized-nostr-clients = { path = "../nostr-clients" }
+fedimint-core.workspace = true
+nostr-sdk = "0.44"
+rustls = { version = "0.23", default-features = false, features = ["ring"] }
+serde_json.workspace = true
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+zeroize = "1"
+
+[dev-dependencies]
+tempfile = "3"

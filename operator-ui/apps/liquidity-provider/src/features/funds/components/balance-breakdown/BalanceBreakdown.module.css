@@ -1,0 +1,23 @@
+.kv {
+  @apply uStack3;
+}
+
+.kvRow {
+  @apply flex items-baseline justify-between gap-4 text-sm;
+}
+
+.kvKey {
+  @apply font-normal text-ink/60;
+}
+
+.kvValue {
+  @apply text-right font-medium tabular-nums;
+}
+
+.kvValue[data-strong] {
+  @apply font-semibold text-ink;
+}
+
+.note {
+  @apply mt-3 text-xs font-normal text-ink/60;
+}

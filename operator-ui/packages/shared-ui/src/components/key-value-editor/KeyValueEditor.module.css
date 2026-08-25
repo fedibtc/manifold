@@ -1,0 +1,15 @@
+.wrapper {
+  @apply flex flex-col gap-3;
+}
+
+.row {
+  @apply flex items-center gap-2;
+}
+
+.input {
+  @apply uFieldControl;
+}
+
+.remove {
+  @apply flex h-10 w-10 flex-none items-center justify-center rounded-full border-[1.5px] border-strong text-gray-500 hover:bg-gray-50;
+}

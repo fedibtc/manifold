@@ -1,0 +1,7 @@
+.mono {
+  @apply uMono;
+}
+
+.idRow {
+  @apply uCopyRow;
+}

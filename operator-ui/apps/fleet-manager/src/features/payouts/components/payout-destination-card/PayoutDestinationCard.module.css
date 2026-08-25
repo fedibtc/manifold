@@ -1,0 +1,19 @@
+.root {
+  @apply uStack4;
+}
+
+.current {
+  @apply uInkSm;
+}
+
+.value {
+  @apply uMonoValue;
+}
+
+.form {
+  @apply uStack4;
+}
+
+.actions {
+  @apply uActionsRow;
+}

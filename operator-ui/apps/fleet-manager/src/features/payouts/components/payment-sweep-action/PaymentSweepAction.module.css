@@ -1,0 +1,23 @@
+.root {
+  @apply uActionStack;
+}
+
+.note {
+  @apply uFieldHint;
+}
+
+.outcome {
+  @apply uActionOutcome;
+}
+
+.operation {
+  @apply uCopyRow;
+}
+
+.operationId {
+  @apply uMono;
+}
+
+.error {
+  @apply uFieldError;
+}

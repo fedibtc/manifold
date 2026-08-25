@@ -1,0 +1,12 @@
+[package]
+name = "defe-api"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+readme = "README.md"
+
+[dependencies]
+ciborium.workspace = true
+serde.workspace = true
+thiserror.workspace = true

@@ -1,0 +1,9 @@
+{
+  "plans": [
+    {
+      "InfiniteBestEffort": {
+        "price_msats": 50000000
+      }
+    }
+  ]
+}

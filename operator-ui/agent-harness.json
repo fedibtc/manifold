@@ -1,0 +1,39 @@
+{
+  "$comment": "HEADLESS layer config, read by the agent-harness CLI (agent-harness run / route). Gates shell out to scripts/harness-gate.sh, which reads no config. Protected paths are NOT declared here — src/config/load.ts reads them from agent-toolkit.json. Sibling configs: harness.config.json = interactive Claude Code hooks + shell gates; agent-toolkit.json = lint + write-guard policy.",
+  "baseBranch": "master",
+  "labels": {
+    "trigger": "agent-ready",
+    "forbidden": ["security", "auth", "payments", "database-migration", "infrastructure"]
+  },
+  "budgets": {
+    "maxAttempts": 2,
+    "maxTurns": 180,
+    "maxBudgetUsd": 140,
+    "maxChangedFiles": 60,
+    "maxAddedLines": 3500
+  },
+  "gates": [
+    "bash operator-ui/scripts/harness-gate.sh install",
+    "bash operator-ui/scripts/harness-gate.sh typecheck",
+    "bash operator-ui/scripts/harness-gate.sh lint",
+    "bash operator-ui/scripts/harness-gate.sh boundaries",
+    "bash operator-ui/scripts/harness-gate.sh style",
+    "bash operator-ui/scripts/harness-gate.sh structure",
+    "bash operator-ui/scripts/harness-gate.sh fallow",
+    "bash operator-ui/scripts/harness-gate.sh test"
+  ],
+  "qa": {
+    "enabled": true,
+    "gates": [{ "kind": "playwright", "command": "bash operator-ui/scripts/harness-gate.sh test" }]
+  },
+  "reviewers": {
+    "always": ["standards", "spec"],
+    "securityGlobs": ["**/api/**", "**/setup/**"],
+    "perfGlobs": [],
+    "providers": { "standards": "codex" }
+  },
+  "models": {
+    "architect": "env:ARCHITECT_MODEL",
+    "engineer": "env:ENGINEER_MODEL"
+  }
+}

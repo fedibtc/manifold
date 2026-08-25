@@ -1,0 +1,24 @@
+[default]
+extend-ignore-re = [
+  # base64-like blobs, e.g. test key material embedded in source
+  "[A-Za-z0-9+/_=-]{64,}",
+  # git commit hashes in backticks, e.g. `b0ba42d1` in docs citing a change
+  "`[0-9a-f]{7,40}`",
+  # bech32 nostr identifiers, e.g. the production issuer npubs; 63 characters,
+  # one short of the base64-like blob rule above
+  "npub1[02-9ac-hj-np-z]{58}",
+]
+
+[default.extend-words]
+# Accepted variant spelling, already used across the operator UI.
+unparseable = "unparseable"
+# POSIX open-flag name, not a misspelling of "wrongly". `rustix::fs::OFlags::WRONLY`
+# mirrors `O_WRONLY`, so the spelling is fixed by the C API rather than chosen here.
+WRONLY = "WRONLY"
+
+[files]
+extend-exclude = [
+  "docs/fleet-manager/archive",
+  "docs/fleet-manager/archive/**",
+  "operator-ui/apps/*/public/mockServiceWorker.js", # MSW vendored service-worker; never hand-edited
+]

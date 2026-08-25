@@ -1,0 +1,143 @@
+# Local FLIP regtest stack for testing the liquidity-provider UI against a
+# real daemon. Extracted from the PR #70 (chore/initial-flip) live-liquidity
+# integration harness:
+#   crates/liquidity-manager-daemon/tests/common/live_liquidity/
+#
+# Base stack (bitcoind + gatewayd + nostr relay):
+#   docker compose up -d
+#
+# With the FLIP daemon container too (requires the nix-built image loaded,
+# `just flip-docker-load` on the PR branch — linux only in practice):
+#   docker compose --profile daemon up -d
+#
+# See README.md next to this file for the full walkthrough.
+
+services:
+  bitcoind:
+    image: bitcoin/bitcoin:31.0
+    command:
+      - bitcoind
+      - -regtest
+      - -server
+      - -txindex=1
+      - -rpcuser=bitcoin
+      - -rpcpassword=bitcoin
+      - -rpcallowip=0.0.0.0/0
+      - -rpcbind=0.0.0.0:18443
+      - -fallbackfee=0.0002
+    ports:
+      - '127.0.0.1:18443:18443'
+    healthcheck:
+      test:
+        - CMD
+        - bitcoin-cli
+        - -regtest
+        - -rpcuser=bitcoin
+        - -rpcpassword=bitcoin
+        - getblockchaininfo
+      interval: 2s
+      timeout: 5s
+      retries: 30
+
+  # One-shot: create wallet and mine 101 blocks so coinbase is spendable.
+  bitcoind-init:
+    image: bitcoin/bitcoin:31.0
+    depends_on:
+      bitcoind:
+        condition: service_healthy
+    restart: 'no'
+    entrypoint:
+      - bash
+      - -c
+      - |
+        set -e
+        cli="bitcoin-cli -regtest -rpcconnect=bitcoind -rpcuser=bitcoin -rpcpassword=bitcoin"
+        $$cli createwallet testwallet 2>/dev/null || $$cli loadwallet testwallet || true
+        addr=$$($$cli -rpcwallet=testwallet getnewaddress)
+        $$cli generatetoaddress 101 "$$addr"
+        echo "mined 101 regtest blocks to $$addr"
+
+  gatewayd:
+    image: fedimint/gatewayd:v0.11.1
+    depends_on:
+      bitcoind:
+        condition: service_healthy
+    environment:
+      RUST_LOG: info
+      FM_IN_DEVIMINT: '1'
+      FM_GATEWAY_LIGHTNING_MODULE_MODE: LNv1
+      # bcrypt hash of "testpassword" (same as the integration harness)
+      FM_GATEWAY_BCRYPT_PASSWORD_HASH: $$2b$$12$$Etlumnzi/VJ0Ky0Dqoe55eCbvDXItj94thfhvu2o423ox7os.6XfC
+      FM_GATEWAY_SKIP_SETUP: 'true'
+      FM_BITCOIND_URL: http://bitcoind:18443
+      FM_BITCOIND_USERNAME: bitcoin
+      FM_BITCOIND_PASSWORD: bitcoin
+      FM_DEFAULT_ROUTING_FEES: '2000,5000'
+      FM_DEFAULT_TRANSACTION_FEES: '2000,5000'
+      FM_PORT_LDK: '9736'
+      FM_LDK_ALIAS: flip-local-ldk
+      FM_GATEWAY_MNEMONIC: abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about
+    # GATEWAY_API_ADDR is what gatewayd advertises and what the FLIP daemon
+    # must use as the gateway admin_url:
+    #   daemon on host (default): http://127.0.0.1:8175
+    #   daemon in compose (`--profile daemon`): set GATEWAY_API_ADDR=http://gatewayd:8175
+    command:
+      - bash
+      - -c
+      - >
+        exec gatewayd
+        --data-dir /gateway_data
+        --listen 0.0.0.0:8175
+        --api-addr ${GATEWAY_API_ADDR:-http://127.0.0.1:8175}
+        --network regtest
+        --num-route-hints 0
+        ldk
+        --ldk-lightning-port 9736
+        --ldk-alias flip-local-ldk
+    ports:
+      - '127.0.0.1:8175:8175'
+    volumes:
+      - gateway-data:/gateway_data
+    healthcheck:
+      test:
+        - CMD
+        - gateway-cli
+        - -a
+        - http://127.0.0.1:8175
+        - --rpcpassword=testpassword
+        - info
+      interval: 5s
+      timeout: 10s
+      retries: 60
+
+  nostr-relay:
+    image: scsibug/nostr-rs-relay:0.10.0
+    ports:
+      - '127.0.0.1:8081:8080'
+
+  # Optional: the FLIP daemon itself, if you have the nix-built image loaded
+  # (`just flip-docker-load` on the PR branch). On macOS run the daemon on the
+  # host with cargo instead — see README.md.
+  flip-daemon:
+    # Tagged with the workspace version by the nix build; override
+    # FLIP_IMAGE_TAG after a version bump.
+    image: flip-liquidity-manager:${FLIP_IMAGE_TAG:-0.1.0}
+    profiles:
+      - daemon
+    depends_on:
+      gatewayd:
+        condition: service_healthy
+      nostr-relay:
+        condition: service_started
+    environment:
+      FLIP_BOOTSTRAP_ADMIN_TOKEN: ${FLIP_BOOTSTRAP_ADMIN_TOKEN:-flip-local-admin-token}
+      FLIP_MANIFOLD_ENVIRONMENT: development
+    ports:
+      - '127.0.0.1:8173:8173'
+      - '127.0.0.1:8174:8174/udp'
+    volumes:
+      - flip-data:/var/lib/flip
+
+volumes:
+  gateway-data:
+  flip-data:

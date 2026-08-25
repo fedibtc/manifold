@@ -1,0 +1,15 @@
+.root {
+  @apply uStack3;
+}
+
+.title {
+  @apply uSectionHeading;
+}
+
+.nav {
+  @apply uWrapRow3;
+}
+
+.action {
+  @apply uButtonSecondary;
+}

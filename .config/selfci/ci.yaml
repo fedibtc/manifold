@@ -1,0 +1,9 @@
+# Before changing routine SelfCI work, read
+# specs/GATE-selfci-local-development-cost.md.
+job:
+  clone-mode: shallow
+  command: ./.config/selfci/ci.sh
+
+mq:
+  base-branch: master
+  merge-style: rebase

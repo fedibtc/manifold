@@ -1,0 +1,25 @@
+# Local FMan stack for testing the fleet-manager UI against a real daemon.
+#
+# Unlike FLIP, FMan's payment wallet joins external Fedimint federations by
+# invite code — it has no bitcoind/gatewayd/relay dependencies of its own to
+# run locally, so there is nothing to containerize until the daemon itself
+# ships a Docker image. This file is a placeholder for that one service; see
+# README.md for the current host-cargo path (up.sh) and the PR fedibtc/manifold#111
+# blocker on the HTTP admin API this stack targets.
+#
+# With a nix-built image loaded (not available yet — no `just fman-docker-load`
+# target exists on any branch as of this writing):
+#   docker compose --profile daemon up -d
+
+services:
+  fman-daemon:
+    image: fman-fleet-manager:latest
+    profiles:
+      - daemon
+    ports:
+      - '127.0.0.1:8180:8180'
+    volumes:
+      - fman-data:/var/lib/fleet-manager
+
+volumes:
+  fman-data:

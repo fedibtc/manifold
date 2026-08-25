@@ -1,0 +1,27 @@
+.tab {
+  @apply flex flex-col divide-y divide-muted;
+}
+
+.section {
+  @apply flex flex-col gap-2 px-3 py-3;
+}
+
+/* Scenario rows carry their own horizontal padding, so this section supplies
+   none and its heading pays for its own inset. */
+.scenarios {
+  @apply flex flex-col gap-2 py-3;
+}
+
+.heading {
+  @apply text-xs font-semibold uppercase tracking-wide text-gray-500;
+}
+
+.scenariosHeading {
+  composes: heading;
+
+  @apply px-3;
+}
+
+.controls {
+  @apply flex flex-col gap-2;
+}

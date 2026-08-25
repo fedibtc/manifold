@@ -1,0 +1,70 @@
+# Frozen source-registration inventory for cloud FMan telemetry.
+#
+# Regenerate this file from the exact Fedimint input when the pin or bundled
+# module set changes. `flake.nix` scans every Rust source in the entire pinned
+# Fedimint input and the exact Cargo-selected stability-pool server input for
+# `opts!`/`histogram_opts!` registrations, including each registration's
+# producer identity, and compares them with these rows. The separate Markdown
+# privacy inventory explains labels and review rationale; this compact file owns
+# the checkable source boundary.
+# `package` rows are the normal and target-specific dependency closure rooted at
+# stability-pool-server. Build and dev dependencies are intentionally excluded:
+# they do not link into the FMan runtime image. Any unaccounted same-source
+# Cargo.lock edge fails the check rather than silently evading this boundary.
+release_tag	0.11.1-fedi15
+producer	fedimint	fedibtc/fedimint	v0.11.1-fedi15	4c70c0e54f2f6a25df518c5082ac5a81d7a46d70
+producer	stability_pool	fedixyz/fedi	2f35ea4e3b2516d35b8ed315455718cd3b336758	2f35ea4e3b2516d35b8ed315455718cd3b336758
+package	stability_pool	stability-pool-common	crates/modules/stability-pool/common
+package	stability_pool	stability-pool-server	crates/modules/stability-pool/server
+metric_version	0.11.1
+revision	4c70c0e54f2f6a25df518c5082ac5a81d7a46d70
+metric	admit	app_start_ts	fedimint
+metric	admit	backup_counts	fedimint
+metric	admit	backup_write_size_bytes	fedimint
+metric	deny	bitcoind_rpc_request_duration_seconds	fedimint
+metric	deny	bitcoind_rpc_requests_total	fedimint
+metric	deny	client_api_request_duration_seconds	fedimint
+metric	deny	client_api_requests_total	fedimint
+metric	deny	connector_connection_attempts_total	fedimint
+metric	deny	connector_connection_duration_seconds	fedimint
+metric	admit	consensus_item_processing_duration_seconds	fedimint
+metric	admit	consensus_item_processing_module_audit_duration_seconds	fedimint
+metric	admit	consensus_items_processed_total	fedimint
+metric	admit	consensus_ordering_latency_seconds	fedimint
+metric	admit	consensus_peer_contribution_session_idx	fedimint
+metric	admit	consensus_session_count	fedimint
+metric	admit	consensus_tx_processed_inputs	fedimint
+metric	admit	consensus_tx_processed_outputs	fedimint
+metric	deny	gateway_htlc_handling_duration_seconds	fedimint
+metric	deny	gateway_htlc_lnv1_attempt_duration_seconds	fedimint
+metric	deny	gateway_htlc_lnv2_attempt_duration_seconds	fedimint
+metric	admit	iroh_api_connection_duration_seconds	fedimint
+metric	admit	iroh_api_connections_active	fedimint
+metric	deny	iroh_api_request_duration_seconds	fedimint
+metric	deny	jsonrpc_api_request_duration_seconds	fedimint
+metric	deny	jsonrpc_api_request_response_code_total	fedimint
+metric	admit	ln_canceled_outgoing_contract_total	fedimint
+metric	admit	ln_funded_contract_sats	fedimint
+metric	admit	ln_incoming_offer_total	fedimint
+metric	deny	ln_rpc_request_duration_seconds	fedimint
+metric	deny	ln_rpc_requests_total	fedimint
+metric	admit	mint_inout_fees_sats	fedimint
+metric	admit	mint_inout_sats	fedimint
+metric	admit	mint_issued_ecash_fees_sats	fedimint
+metric	admit	mint_issued_ecash_sats	fedimint
+metric	admit	mint_redeemed_ecash_fees_sats	fedimint
+metric	admit	mint_redeemed_ecash_sats	fedimint
+metric	admit	peer_connect_total	fedimint
+metric	admit	peer_disconnect_total	fedimint
+metric	admit	peer_messages_total	fedimint
+metric	admit	server_bitcoin_rpc_request_duration_seconds	fedimint
+metric	admit	server_bitcoin_rpc_requests_total	fedimint
+metric	admit	stored_backups_count	fedimint
+metric	admit	total_backup_size	fedimint
+metric	admit	wallet_block_count	fedimint
+metric	admit	wallet_inout_fees_sats	fedimint
+metric	admit	wallet_inout_sats	fedimint
+metric	admit	wallet_pegin_fees_sats	fedimint
+metric	admit	wallet_pegin_sats	fedimint
+metric	admit	wallet_pegout_fees_sats	fedimint
+metric	admit	wallet_pegout_sats	fedimint

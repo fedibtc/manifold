@@ -1,0 +1,35 @@
+.root {
+  @apply uStack4;
+}
+
+.head {
+  @apply uPageHead;
+}
+
+.heading {
+  @apply uPageHeading;
+}
+
+.intro {
+  @apply uIntro;
+}
+
+.doors {
+  @apply grid gap-4 md:grid-cols-2;
+}
+
+.door {
+  @apply uBorderedPanel;
+}
+
+.doorTitle {
+  @apply text-base font-semibold text-ink;
+}
+
+.doorBody {
+  @apply uMutedSm flex-1;
+}
+
+.error {
+  @apply uFieldError;
+}

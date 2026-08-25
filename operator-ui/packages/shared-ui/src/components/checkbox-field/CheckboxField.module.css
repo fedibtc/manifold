@@ -1,0 +1,21 @@
+.wrapper {
+  @apply uStack1;
+}
+
+.row {
+  @apply flex items-center gap-2;
+}
+
+.box {
+  @apply h-4 w-4 rounded border-strong text-ink focus:outline focus:outline-2 focus:outline-ink;
+}
+
+.label {
+  @apply uLabel;
+}
+
+/* The label sits beside the box, so the hint stays below and indents past it —
+   the label/hint/control order does not apply to a checkbox. */
+.hint {
+  @apply pl-6 text-xs font-normal text-gray-500;
+}

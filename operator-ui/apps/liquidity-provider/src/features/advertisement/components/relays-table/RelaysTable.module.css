@@ -1,0 +1,15 @@
+.root {
+  @apply uStack3;
+}
+
+.mono {
+  @apply uMono;
+}
+
+.idRow {
+  @apply uCopyRow;
+}
+
+.note {
+  @apply uMutedXsFaint;
+}

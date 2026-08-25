@@ -1,0 +1,22 @@
+{
+  "$layer": "Lint + write-guard policy. Read by agent-toolkit's standards-hooks plugin (pre-write-check.sh), by operator-ui/eslint.config.mjs (boundaries), and by agent-harness src/config/load.ts (protectedDirs). This file is the SINGLE SOURCE for protectedDirs — do not copy the list into harness.config.json or agent-harness.json.",
+  "boundaries": {
+    "shared": ["packages/*", "apps/*/src/shared"],
+    "feature": ["apps/*/src/features/*"],
+    "composition": ["apps/*/src/pages/*"],
+    "app": ["apps/*/src/app", "apps/*/src/mocks"]
+  },
+  "ownership": {
+    "sharedMinDomains": 2,
+    "ignore": ["**/__tests__/**", "**/*.test.*", "**/*.spec.*"],
+    "allowShared": [
+      "**/shared/api/adminCall.ts",
+      "**/shared/api/errors.ts",
+      "**/shared/api/queryClient.ts",
+      "**/shared/api/tokenStore.ts",
+      "**/shared/api/restoreMode.ts",
+      "**/shared/api/restartStrategy.ts"
+    ]
+  },
+  "protectedDirs": ["packages/biome-plugins", "tasks", ".github"]
+}

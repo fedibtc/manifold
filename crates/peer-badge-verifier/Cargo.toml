@@ -1,0 +1,24 @@
+[package]
+name = "fedi-decentralized-peer-badge-verifier"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[features]
+test-support = []
+
+[dependencies]
+async-trait.workspace = true
+fedi-credential-sdk-protocol.workspace = true
+fedi-decentralized-domain = { path = "../domain" }
+fedi-decentralized-manifold-environment = { path = "../manifold-environment" }
+fedi-decentralized-nostr = { path = "../nostr" }
+fedi-decentralized-nostr-clients = { path = "../nostr-clients" }
+fedimint-core.workspace = true
+nostr-sdk = "0.44"
+serde_json.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt"] }

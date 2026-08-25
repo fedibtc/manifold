@@ -1,0 +1,15 @@
+.root {
+  @apply flex flex-col gap-3;
+}
+
+.title {
+  @apply text-base font-semibold text-ink;
+}
+
+.body[data-frame="card"] {
+  @apply rounded-card border border-muted bg-surface p-4;
+}
+
+.body[data-frame="table"] {
+  @apply overflow-hidden rounded-card border border-muted;
+}

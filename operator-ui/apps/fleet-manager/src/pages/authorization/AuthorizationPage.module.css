@@ -1,0 +1,23 @@
+.root {
+  @apply uStack6;
+}
+
+.heading {
+  @apply uPageHeading;
+}
+
+.intro {
+  @apply uIntro;
+}
+
+.holdersHint {
+  @apply uMutedText mb-3;
+}
+
+.holdersList {
+  @apply uStack1;
+}
+
+.holder {
+  @apply uLongIdText;
+}

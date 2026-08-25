@@ -1,0 +1,51 @@
+.root {
+  @apply flex items-start gap-3 rounded-card px-4 py-3 text-sm;
+}
+
+.root[data-variant="info"] {
+  @apply bg-infoSoft text-ink;
+}
+
+.root[data-variant="warn"] {
+  @apply bg-warnSoft text-warning;
+}
+
+.root[data-variant="error"] {
+  @apply bg-errorSoft text-error;
+}
+
+.root[data-variant="success"] {
+  @apply bg-successSoft text-success;
+}
+
+.icon {
+  @apply mt-px flex h-5 w-5 flex-none items-center justify-center rounded-full text-xs font-bold text-surface;
+}
+
+.root[data-variant="info"] .icon {
+  @apply bg-info;
+}
+
+.root[data-variant="warn"] .icon {
+  @apply bg-warning;
+}
+
+.root[data-variant="error"] .icon {
+  @apply bg-error;
+}
+
+.root[data-variant="success"] .icon {
+  @apply bg-success;
+}
+
+.body {
+  @apply flex flex-col gap-0.5 text-sm font-normal;
+}
+
+.title {
+  @apply text-sm font-semibold;
+}
+
+.action {
+  @apply ml-auto flex-none text-xs font-normal text-ink/50;
+}

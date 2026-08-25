@@ -1,0 +1,25 @@
+engine biome(1.0)
+language js(typescript, jsx)
+
+// A fleet-manager screen may not read a query's raw `isError`.
+//
+// React-query keeps `data` through a failed refresh, so "we hold an answer" and
+// "the last attempt failed" are independent facts. A screen that branches on
+// `isError` alone collapses them and states something false: it either deletes
+// figures it still holds, or claims an empty fleet it was never told about. Six
+// screens each invented their own answer to this before the disposition
+// primitive existed.
+//
+// `useQueryDisposition` reads both facts and returns exactly four cases;
+// `QuerySurface` renders them. A screen asks for a disposition and wraps its
+// claims in the surface — it never reads the flag itself.
+//
+// Scope: `apps/fleet-manager/src/pages/**` (see the `includes` in biome.json).
+// That is where a screen makes a claim about the fleet, and it is the app the
+// primitive lives in — a rule may only require what exists. Feature components
+// stay out on purpose: a *mutation's* `isError` is an action that failed, not a
+// read the screen must dispose of, and banning it there would be a false alarm
+// on every Save button in the app.
+`$read.isError` as $flag where {
+  register_diagnostic(span=$flag, message="A screen may not branch on a query's raw `isError`. Use `useQueryDisposition` for the screen's reads and render the claims through `QuerySurface`, so a failed refresh marks the data stale instead of deleting it. See operator-ui/packages/biome-plugins/README.md.", severity="error")
+}

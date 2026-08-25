@@ -1,0 +1,19 @@
+.root {
+  @apply uStack3;
+}
+
+.title {
+  @apply uSectionHeading;
+}
+
+.table {
+  @apply uTableWrap;
+}
+
+.event {
+  @apply capitalize text-ink;
+}
+
+.empty {
+  @apply uMutedSm;
+}

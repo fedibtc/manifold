@@ -1,0 +1,28 @@
+.root {
+  @apply inline-flex h-[26px] max-w-full items-center gap-1 truncate rounded-full px-3 text-xs font-medium;
+}
+
+.root::before {
+  content: "";
+  @apply h-1.5 w-1.5 shrink-0 rounded-full bg-current;
+}
+
+.root[data-tone="ok"] {
+  @apply bg-successSoft text-success;
+}
+
+.root[data-tone="warn"] {
+  @apply bg-warnSoft text-warning;
+}
+
+.root[data-tone="bad"] {
+  @apply bg-errorSoft text-error;
+}
+
+.root[data-tone="info"] {
+  @apply bg-infoSoft text-info;
+}
+
+.root[data-tone="neutral"] {
+  @apply bg-gray-50 text-gray-500;
+}

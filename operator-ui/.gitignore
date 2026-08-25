@@ -1,0 +1,39 @@
+node_modules/
+.pnpm-store/
+dist/
+.turbo/
+*.tsbuildinfo
+coverage/
+playwright-report/
+test-results/
+.DS_Store
+
+# agent-harness run artifacts
+.agent-worktrees/
+.agent-runs/
+
+# stray npm lockfile (this is a pnpm workspace)
+package-lock.json
+.fallow/
+
+# flip:live local stack runtime state (daemon pid + logs)
+dev/flip-stack/.state/
+
+# fman:live local stack runtime state (daemon pid + logs + generated password)
+dev/fman-stack/.state/
+
+# agent task files (local only)
+tasks/
+
+# agent-harness workflow tooling (kept local; not committed per review)
+WORKFLOWS.md
+agent-profile.yaml
+contracts/
+workflows/
+runs/
+apps/*/.claude/
+apps/*/docs/
+apps/*/scripts/
+
+# dev launcher logs
+dev/.logs/

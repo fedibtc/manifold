@@ -1,0 +1,63 @@
+{
+  "advertisement": {
+    "payload": {
+      "version": 1,
+      "provider_pubkey": "02aa00000000000000000000000000000000000000000000000000000000000000",
+      "issued_at": 1784505600,
+      "expires_at": 1784509200,
+      "supported_sources": [
+        "gateway",
+        "stability_pool"
+      ],
+      "holder_authorizations": [],
+      "policy": {
+        "accepted_attester_policies": [
+          {
+            "attester_pubkey": "02aa00000000000000000000000000000000000000000000000000000000000000",
+            "verification_requirement": "all_trusted"
+          }
+        ],
+        "supported_networks": [
+          "signet"
+        ]
+      },
+      "display": {
+        "name": "Mock FLIP",
+        "website": "https://flip.example",
+        "contact": "ops@flip.example"
+      },
+      "api_endpoints": [
+        "https://flip.example/api"
+      ],
+      "api_versions": [
+        1
+      ],
+      "relay_hints": [
+        "wss://relay.signet.example"
+      ]
+    },
+    "proof": {
+      "signature": [
+        1,
+        2,
+        3,
+        4
+      ]
+    }
+  },
+  "publication_status": "published",
+  "last_published_at": 1784505600,
+  "expires_at": 1784509200,
+  "withdrawn_at": null,
+  "relay_states": [
+    {
+      "relay_url": "wss://relay.signet.example",
+      "status": "published",
+      "last_error": null,
+      "last_seen_at": 1784505600
+    }
+  ],
+  "ready": true,
+  "readiness": null,
+  "unverified_holder_authorization_count": 0
+}

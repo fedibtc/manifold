@@ -1,0 +1,55 @@
+.root {
+  @apply flex flex-col gap-4 rounded-card border border-muted p-4;
+}
+
+.loading {
+  @apply uMutedSm;
+}
+
+.top {
+  @apply flex flex-wrap items-start gap-6;
+}
+
+.qr {
+  @apply rounded-card bg-surface p-3;
+}
+
+.details {
+  @apply flex min-w-[240px] flex-1 flex-col gap-3;
+}
+
+.address {
+  @apply break-all font-mono text-sm text-ink;
+}
+
+.actions {
+  @apply uWrapRow2;
+}
+
+.network {
+  @apply uMutedXs;
+}
+
+.networkName {
+  @apply font-semibold capitalize text-ink;
+}
+
+.watch {
+  @apply uStack2;
+}
+
+.watchHeading {
+  @apply uInkLabel;
+}
+
+.watchRow {
+  @apply flex items-center justify-between gap-3 rounded-card bg-gray-50 px-3 py-2 text-sm;
+}
+
+.watchId {
+  @apply uLongIdText;
+}
+
+.watchAmount {
+  @apply ml-auto tabular-nums text-ink;
+}

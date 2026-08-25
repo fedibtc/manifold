@@ -1,0 +1,14 @@
+/* focus:outline-none — the panel is focused programmatically to announce
+   itself, not because it is a tab stop; a ring around the whole card would read
+   as an interactive element it is not. */
+.panel {
+  @apply uConfirmDanger focus:outline-none;
+}
+
+.label {
+  @apply uFieldError;
+}
+
+.actions {
+  @apply uRow2;
+}

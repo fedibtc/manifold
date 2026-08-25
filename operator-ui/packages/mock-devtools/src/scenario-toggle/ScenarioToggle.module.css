@@ -1,0 +1,42 @@
+.row {
+  @apply flex flex-col gap-1 px-5 py-4;
+}
+
+.control {
+  @apply flex w-full items-center justify-between gap-3 text-left;
+}
+
+.track {
+  @apply relative inline-flex h-4 w-7 shrink-0 rounded-full bg-gray-200;
+
+  transition: background-color 120ms ease-out;
+}
+
+.control[aria-checked="true"] .track {
+  @apply bg-ink;
+}
+
+.thumb {
+  @apply absolute left-0 top-0 h-4 w-4 rounded-full border border-muted bg-surface;
+
+  transition: transform 120ms ease-out;
+}
+
+.control[aria-checked="true"] .thumb {
+  transform: translateX(0.75rem);
+}
+
+.name {
+  @apply text-sm font-medium text-ink;
+}
+
+.desc {
+  @apply text-xs font-normal leading-snug text-gray-500;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .track,
+  .thumb {
+    transition: none;
+  }
+}

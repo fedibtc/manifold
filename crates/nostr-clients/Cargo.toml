@@ -1,0 +1,19 @@
+[package]
+name = "fedi-decentralized-nostr-clients"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+fedi-decentralized-nostr = { path = "../nostr" }
+fedimint-core.workspace = true
+futures-util = "0.3"
+nostr-sdk = "0.44"
+thiserror.workspace = true
+tokio-stream = { version = "0.1", features = ["sync"] }
+tracing = "0.1"
+
+[dev-dependencies]
+serde_json = "1"
+tokio = { workspace = true, features = ["macros", "rt"] }

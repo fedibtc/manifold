@@ -1,0 +1,59 @@
+.layout {
+  @apply uStack8;
+}
+
+.section {
+  @apply uStack4;
+}
+
+.sectionTitle {
+  @apply uSectionHeading;
+}
+
+.summaryList {
+  @apply uDefList;
+}
+
+.summaryRow {
+  @apply uDefRow;
+}
+
+.summaryLabel {
+  @apply uDefLabel;
+}
+
+.summaryValue {
+  @apply uDefValue;
+}
+
+.note {
+  @apply uCaptionXs;
+}
+
+.checkList {
+  @apply uStack2;
+}
+
+.checkRow {
+  @apply flex items-start gap-2 text-sm;
+}
+
+.passMark {
+  @apply font-semibold text-success;
+}
+
+.failMark {
+  @apply font-semibold text-error;
+}
+
+.checkDetail {
+  @apply uCaptionXs;
+}
+
+.actions {
+  @apply uStack3;
+}
+
+.liveList {
+  @apply flex flex-col gap-2 text-sm text-ink;
+}

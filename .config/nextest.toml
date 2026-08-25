@@ -1,0 +1,15 @@
+[profile.default]
+slow-timeout = { period = "40s", terminate-after = 1 }
+
+# The paid formation owns an explicit ten-minute protocol deadline.
+[[profile.default.overrides]]
+filter = 'binary(fleet_manager_0_1_formation)'
+slow-timeout = { period = "660s", terminate-after = 1 }
+
+# Integration tests that start a real daemon own longer deadlines while running
+# alongside the rest of the suite: each opens its own SQLite and runs the WAL
+# pragmas before doing any work of its own. defe manages exclusive external
+# resources for the tests that need them.
+[[profile.default.overrides]]
+filter = 'package(tests-e2e) | binary(daemon_e2e) | binary(defe_e2e) | binary(integration_live_liquidity) | binary(integration_nostr_relay) | binary(integration_flip_operator_e2e) | binary(integration_daemon_smoke) | binary(integration_holder_authorization)'
+slow-timeout = { period = "180s", terminate-after = 1 }

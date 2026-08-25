@@ -1,0 +1,23 @@
+.root {
+  @apply uStack4;
+}
+
+.qrBox {
+  @apply flex w-fit flex-col items-center gap-3 rounded-card border border-muted bg-surface p-4;
+}
+
+.keyRow {
+  @apply uCopyRow;
+}
+
+.key {
+  @apply uLongIdText;
+}
+
+.loading {
+  @apply uMutedSm;
+}
+
+.hint {
+  @apply uMutedText;
+}

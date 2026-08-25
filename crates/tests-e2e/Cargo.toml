@@ -1,0 +1,59 @@
+[package]
+name = "tests-e2e"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+readme = "README.md"
+
+[dependencies]
+defe-api = { path = "../defe-api" }
+defe-client = { path = "../defe-client" }
+defe-portalloc = { path = "../defe-portalloc" }
+fedi-decentralized-nostr = { path = "../nostr" }
+fedi-decentralized-nostr-clients = { path = "../nostr-clients" }
+
+[dev-dependencies]
+anyhow = "1"
+axum = "0.8.4"
+base64 = "0.22"
+fedi-credential-sdk-protocol.workspace = true
+fedi-decentralized-cloud-fman-telemetry = { path = "../cloud-fman-telemetry", features = [
+  "test-support",
+] }
+fedi-decentralized-domain = { path = "../domain" }
+fedi-decentralized-manifold-environment = { path = "../manifold-environment" }
+fedi-decentralized-peer-badge-verifier = { path = "../peer-badge-verifier", features = [
+  "test-support",
+] }
+fedi-decentralized-service-fleet-manager = { path = "../service-fleet-manager" }
+fedi-iroh-rpc = { path = "../fedi-iroh-rpc" }
+fedimint-core.workspace = true
+fedimint-mintv2-client.workspace = true
+fi-client = { path = "../fi-client" }
+fman-core = { path = "../fman/core" }
+fman-fedimint = { path = "../fman/fedimint" }
+futures-util = { version = "0.3", features = ["sink"] }
+hex = "0.4"
+iroh-base-035 = { package = "iroh-base", version = "=0.35.0" }
+libc = "0.2"
+lnurl-rs = { version = "0.9", default-features = false }
+nostr-sdk = "0.44"
+secp256k1 = "0.30"
+serde_json = "1"
+serde_json_canonicalizer = "0.3"
+sha2 = "0.10"
+sqlx = { version = "0.8.6", features = ["runtime-tokio", "sqlite"] }
+stability-pool-common.workspace = true
+tempfile = "3"
+tokio = { version = "1", features = [
+  "io-util",
+  "macros",
+  "net",
+  "process",
+  "rt-multi-thread",
+  "time",
+] }
+tokio-tungstenite = "0.26"
+tower = { version = "0.5", features = ["util"] }

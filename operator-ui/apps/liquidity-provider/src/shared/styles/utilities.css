@@ -1,0 +1,96 @@
+/* Shared CSS utilities — apps/liquidity-provider.
+ * Loaded into Tailwind by tailwind.config.cjs (via load-utilities.cjs), NOT
+ * imported as CSS — so `@apply uSubText` resolves in every module (dev + build).
+ * The `@layer utilities` wrapper is organizational; the loader reads it.
+ */
+
+@layer utilities {
+  /* Layout — stacks. uStack1…uStack6 live in the shared dictionary. */
+  .uStack8 {
+    @apply flex flex-col gap-8;
+  }
+
+  /* Layout — rows */
+  .uRow2 {
+    @apply flex gap-2;
+  }
+  .uWrapRow2 {
+    @apply flex flex-wrap gap-2;
+  }
+  .uWrapRow3 {
+    @apply flex flex-wrap gap-3;
+  }
+  .uListSm {
+    @apply flex flex-col gap-1 text-sm;
+  }
+  .uInputRow {
+    @apply flex items-end gap-2;
+  }
+  .uInputRowField {
+    @apply flex-1;
+  }
+
+  /* Typography */
+  .uMutedXs {
+    @apply text-xs text-ink/60;
+  }
+  .uMutedXsFaint {
+    @apply text-xs text-ink/50;
+  }
+  .uInkLabel {
+    @apply text-sm font-medium text-ink;
+  }
+  .uSectionHeading {
+    @apply text-base font-semibold text-ink;
+  }
+  .uNoteXs {
+    @apply text-xs font-normal text-ink/50;
+  }
+  .uCaptionXs {
+    @apply text-xs text-gray-500;
+  }
+  .uMono {
+    @apply font-mono;
+  }
+  .uTextError {
+    @apply text-error;
+  }
+  /* The in-place line a list area shows instead of its rows — loading, load
+     failure, or "none yet". Sits inside the area's own padding, hence p-0. */
+  .uStateText {
+    @apply p-0 text-sm text-ink/60;
+  }
+
+  /* Structural */
+  /* The restore console's standalone card — same frame as uModalCard, stacked. */
+  .uRestoreCard {
+    @apply uModalCard flex flex-col gap-4;
+  }
+  .uTableWrap {
+    @apply overflow-hidden rounded-card border border-muted;
+  }
+  /* A bordered label/value list, and its rows. The setup review summary and the
+     manual-review evidence are the same shape: facts the operator reads before
+     deciding, one per line, label left and value right. */
+  .uDefList {
+    @apply flex flex-col divide-y divide-strong rounded-card border-[1.5px] border-strong;
+  }
+  .uDefRow {
+    @apply flex items-start justify-between gap-4 px-4 py-3;
+  }
+  .uDefLabel {
+    @apply text-sm font-medium text-gray-500;
+  }
+  .uDefValue {
+    @apply text-right text-sm text-ink;
+  }
+  .uConfirmDanger {
+    @apply flex flex-col gap-2 rounded-card bg-errorSoft p-3;
+  }
+  .uEmptyStateSm {
+    @apply p-4 text-sm text-ink/60;
+  }
+  .uRemoveBtn {
+    @apply flex h-12 w-12 flex-none items-center justify-center rounded-full border-[1.5px] border-strong text-gray-500 hover:bg-gray-50;
+  }
+}

@@ -1,0 +1,11 @@
+.intro {
+  @apply uMutedSm;
+}
+
+.path {
+  @apply uLongIdText;
+}
+
+.manifestList {
+  @apply uListSm;
+}

@@ -1,0 +1,27 @@
+.page {
+  @apply uCenteredPage;
+}
+
+.card {
+  @apply uRestoreCard;
+}
+
+.title {
+  @apply uPageHeading;
+}
+
+.intro {
+  @apply uMutedText;
+}
+
+.section {
+  @apply uStack2;
+}
+
+.sectionHeading {
+  @apply uLabel;
+}
+
+.list {
+  @apply uListSm;
+}

@@ -1,0 +1,23 @@
+.shell {
+  @apply uAppShell;
+}
+
+.sidebar {
+  @apply uAppSidebar;
+}
+
+.brand {
+  @apply uAppBrand;
+}
+
+.brandSubtitle {
+  @apply uAppBrandSubtitle;
+}
+
+.footer {
+  @apply uAppFooter;
+}
+
+.main {
+  @apply uAppMain;
+}

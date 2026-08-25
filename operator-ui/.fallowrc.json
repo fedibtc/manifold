@@ -1,0 +1,67 @@
+{
+  "$schema": "./node_modules/fallow/schema.json",
+  // Apps enter via src/app/App.tsx (Vite); mock servers via src/index.ts;
+  // packages via src/index.ts. The default globs omit .ts, which made fallow
+  // miss the mock-server entry and misreport its imports as unused deps.
+  "entry": [
+    "src/index.{ts,tsx,js,jsx,mjs}",
+    "src/main.{ts,tsx,js,jsx,mjs}",
+    "src/app/index.{ts,tsx}"
+  ],
+  "workspaces": {
+    // Explicit list: packages/biome-plugins is GritQL fixtures + a shell
+    // harness, not a JS package, so exclude it from `packages/*`.
+    "packages": [
+      "packages/mock-fixtures",
+      "packages/shared-ui",
+      "packages/types",
+      "apps/*",
+      "apps/*/mock-server"
+    ]
+  },
+  "ignorePatterns": [
+    // GritQL rule fixtures, exercised by biome-plugins/test-fixtures.sh — not
+    // reachable from a JS entry point, so fallow would flag them as unused.
+    "packages/biome-plugins/**",
+    "**/__fixtures__/**",
+    // Root CLI/harness tooling (the `style` gate + Claude Stop hook run
+    // check-styles.mjs via node; harness-gate.sh is shell). Invoked by path,
+    // never imported, so fallow would flag it as an unused file.
+    "scripts/**",
+    // Vendored quality-harness ESLint fragment (docs/coding-standards/harness).
+    // Reference config spread into a project's eslint.config, not imported by
+    // operator-ui (whose real configs are the root eslint.config*.mjs), so
+    // fallow would flag its exports as unused. Same shape as scripts/**.
+    "eslint/**",
+    // Per-app pilot/workflow CLIs (workflowctl.mjs, validate-interactive-run.mjs,
+    // complete-pilot-run.mjs) — invoked by path from .claude/hooks and CI, never
+    // imported. docs/assets/* is linked from getting-started.html via <link
+    // rel="stylesheet">, not a JS import. Same false-positive shape as scripts/**.
+    "apps/*/scripts/**",
+    "apps/*/docs/assets/**",
+    // Each app's shared utility dictionary is handed to Tailwind by
+    // apps/*/tailwind.config.cjs via shared-ui's utilitiesPlugin, not @import'ed
+    // as CSS — that indirection is what makes `@apply uX` resolve inside an
+    // isolated CSS module. No JS entry point reaches the file, so fallow reports
+    // it as unused. Same false-positive shape as scripts/**.
+    "apps/*/src/shared/styles/utilities.css"
+  ],
+  "ignoreDependencies": [
+    // Loaded by name via eslint.config.mjs (`import/resolver: { typescript }`),
+    // never imported, so fallow can't see the usage.
+    "eslint-import-resolver-typescript",
+    // All three are imported in apps/*/mock-server/src/index.ts, but fallow
+    // attributes those imports to the parent apps/* workspace (nested-glob
+    // overlap) and misreports the mock-server's own deps as unused. Project-
+    // level dependency rules ignore per-file overrides, so ignore by name here.
+    "express",
+    "@operator-ui/types",
+    "@operator-ui/mock-fixtures"
+  ],
+  "duplicates": {
+    "minOccurrences": 3
+  },
+  "rules": {
+    "unused-dependencies": "warn"
+  }
+}

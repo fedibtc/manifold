@@ -1,0 +1,43 @@
+.root {
+  @apply uStack6;
+}
+
+.heading {
+  @apply uPageHeading;
+}
+
+.intro {
+  @apply uMutedText;
+}
+
+.kv {
+  @apply uBorderedPanel;
+}
+
+.kvRow {
+  @apply uKvRow;
+}
+
+.kvLabel {
+  @apply w-48 shrink-0 text-sm font-medium text-ink/60;
+}
+
+.kvValue {
+  @apply uMonoValue;
+}
+
+.idRow {
+  @apply uCopyRow;
+}
+
+.nameValue {
+  @apply font-medium;
+}
+
+.reloadNote {
+  @apply uMutedText;
+}
+
+.phraseLink {
+  @apply uPrimaryButtonFit;
+}

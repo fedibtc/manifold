@@ -1,0 +1,3 @@
+# Unified-diff context represents an unchanged blank line as one space. Do not
+# mistake that required patch syntax for trailing source whitespace.
+patches/*.patch -whitespace

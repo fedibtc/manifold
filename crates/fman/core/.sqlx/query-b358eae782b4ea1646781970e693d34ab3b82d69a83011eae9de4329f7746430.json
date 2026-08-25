@@ -1,0 +1,20 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT mnemonic FROM identity WHERE id = ?",
+  "describe": {
+    "columns": [
+      {
+        "name": "mnemonic",
+        "ordinal": 0,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "b358eae782b4ea1646781970e693d34ab3b82d69a83011eae9de4329f7746430"
+}

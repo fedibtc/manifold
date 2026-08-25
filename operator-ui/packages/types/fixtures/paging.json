@@ -1,0 +1,25 @@
+{
+  "operations": {
+    "items": [
+      {
+        "operation_id": "wop-0003",
+        "operation_type": "deposit",
+        "amount": 1000000,
+        "status": "confirmed",
+        "federation_id": null,
+        "created_at": 1721476800,
+        "updated_at": 1721477100
+      },
+      {
+        "operation_id": "wop-0002",
+        "operation_type": "gateway_funding",
+        "amount": 500000,
+        "status": "completed",
+        "federation_id": "fed-gw-01",
+        "created_at": 1721390400,
+        "updated_at": 1721390700
+      }
+    ],
+    "next_page": "wop-0001"
+  }
+}

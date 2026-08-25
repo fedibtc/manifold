@@ -1,0 +1,31 @@
+{
+  "overall_status": "healthy",
+  "mode": "normal",
+  "components": [
+    {
+      "component": "daemon",
+      "status": "healthy",
+      "detail": null,
+      "observed_at": 1721476800
+    },
+    {
+      "component": "wallet",
+      "status": "healthy",
+      "detail": null,
+      "observed_at": 1721476800
+    },
+    {
+      "component": "gateway",
+      "status": "healthy",
+      "detail": null,
+      "observed_at": 1721476800
+    },
+    {
+      "component": "chain_observer",
+      "status": "healthy",
+      "detail": null,
+      "observed_at": 1721476800
+    }
+  ],
+  "observed_at": 1721476800
+}

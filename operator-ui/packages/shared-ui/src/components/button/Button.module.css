@@ -1,0 +1,35 @@
+.root {
+  @apply inline-flex items-center justify-center gap-2 rounded-full font-medium;
+}
+
+.root[data-size="medium"] {
+  @apply h-12 px-6 text-base;
+}
+
+.root[data-size="small"] {
+  @apply h-10 px-4 text-sm;
+}
+
+.root[data-variant="primary"] {
+  @apply bg-ink text-surface hover:bg-gray-500;
+}
+
+.root[data-variant="secondary"] {
+  @apply border-[1.5px] border-strong bg-surface text-ink hover:bg-gray-50;
+}
+
+.root[data-variant="danger"] {
+  @apply bg-error text-surface;
+}
+
+.root[data-variant="inactive"] {
+  @apply cursor-not-allowed bg-gray-150 text-gray-400;
+}
+
+.root[data-full-width="true"] {
+  @apply w-full;
+}
+
+.spinner {
+  @apply h-4 w-4 animate-spin rounded-full border-2 border-current border-t-transparent;
+}

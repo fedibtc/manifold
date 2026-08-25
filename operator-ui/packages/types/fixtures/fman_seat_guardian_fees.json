@@ -1,0 +1,16 @@
+[
+  {
+    "error": "guardian-fee collection is unavailable"
+  },
+  {
+    "policy_error": "seat has no federation yet",
+    "remittance_account": "{\"acc_type\":\"BtcDepositor\",\"pub_keys\":[\"034f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa\"],\"threshold\":1}"
+  },
+  {
+    "our_weight": 1,
+    "remittance_account": "{\"acc_type\":\"BtcDepositor\",\"pub_keys\":[\"034f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa\"],\"threshold\":1}",
+    "send_ppm": 1000,
+    "share_matches_policy": true,
+    "total_weight": 4
+  }
+]

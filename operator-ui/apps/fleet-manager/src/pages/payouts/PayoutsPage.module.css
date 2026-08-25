@@ -1,0 +1,15 @@
+.root {
+  @apply uStack6;
+}
+
+.head {
+  @apply uPageHead;
+}
+
+.heading {
+  @apply uPageHeading;
+}
+
+.intro {
+  @apply uIntro;
+}

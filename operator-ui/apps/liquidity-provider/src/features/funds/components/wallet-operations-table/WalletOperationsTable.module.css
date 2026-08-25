@@ -1,0 +1,7 @@
+.empty {
+  @apply uEmptyStateSm;
+}
+
+.idRow {
+  @apply uCopyRow;
+}

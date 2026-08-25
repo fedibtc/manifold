@@ -1,0 +1,16 @@
+[package]
+name = "fman-ui-e2e-runner"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[[bin]]
+name = "fman-ui-e2e-runner"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1"
+defe-client = { path = "../defe-client" }
+tokio = { version = "1", features = ["macros", "process", "rt-multi-thread"] }

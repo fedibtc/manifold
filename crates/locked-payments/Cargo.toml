@@ -1,0 +1,26 @@
+[package]
+name = "locked-payments"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1"
+bitcoin_hashes = "0.14"
+bls12_381 = "0.8"
+fedi-decentralized-service-fleet-manager = { path = "../service-fleet-manager" }
+fedimint-client = { workspace = true }
+fedimint-client-module = { workspace = true }
+fedimint-core = { workspace = true }
+fedimint-derive-secret = { workspace = true }
+fedimint-mint-client = { workspace = true }
+fedimint-mint-common = { workspace = true }
+fedimint-mintv2-client = { workspace = true }
+fedimint-mintv2-common = { workspace = true }
+fedimint-tbs = { workspace = true }
+hkdf = "0.12"
+serde = { workspace = true }
+sha2 = "0.10"
+thiserror = { workspace = true }
+
+[dev-dependencies]
+rand = "0.8"

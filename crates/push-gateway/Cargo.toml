@@ -1,0 +1,66 @@
+[package]
+name = "fedi-decentralized-push-gateway"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+aes-gcm = "0.10.3"
+axum = "0.8.4"
+base64 = "0.22.1"
+clap = { workspace = true }
+fedi-decentralized-domain = { path = "../domain" }
+fedi-decentralized-manifold-environment = { path = "../manifold-environment" }
+fedi-decentralized-peer-badge-verifier = { path = "../peer-badge-verifier" }
+fedi-decentralized-push-gateway-provider = { path = "../push-gateway-provider" }
+fedi-decentralized-push-gateway-provider-fcm = { path = "../push-gateway-provider-fcm" }
+fedi-decentralized-push-gateway-storage = { path = "../push-gateway-storage" }
+fedi-decentralized-push-gateway-types = { path = "../push-gateway-types" }
+fedi-decentralized-service-fleet-manager = { path = "../service-fleet-manager" }
+fedi-iroh-rpc = { path = "../fedi-iroh-rpc" }
+hex = "0.4.3"
+nostr = "0.44.3"
+rand = "0.8"
+reqwest = { version = "0.13.4", default-features = false, features = [
+  "form",
+  "json",
+  "rustls",
+] }
+rustls = { version = "0.23", default-features = false, features = ["ring"] }
+serde = { version = "1.0.219", features = ["derive"] }
+serde_json = "1.0.140"
+sha2 = "0.10.9"
+sqlx = { version = "0.8.6", features = [
+  "any",
+  "migrate",
+  "postgres",
+  "runtime-tokio",
+  "sqlite",
+] }
+tokio = { version = "1.45.1", features = [
+  "macros",
+  "net",
+  "rt-multi-thread",
+  "signal",
+  "sync",
+  "time",
+] }
+tracing = "0.1"
+
+[dev-dependencies]
+bitcoin = { version = "0.32.6", features = ["serde"] }
+defe-api = { path = "../defe-api" }
+defe-client = { path = "../defe-client" }
+fedi-decentralized-push-gateway-storage = { path = "../push-gateway-storage", features = [
+  "test-support",
+] }
+reqwest = { version = "0.13.4", default-features = false, features = [
+  "blocking",
+  "form",
+  "json",
+  "rustls",
+] }
+tempfile = "3.20.0"
+tokio = { version = "1.45.1", features = ["test-util"] }
+tower = { version = "0.5.2", features = ["util"] }

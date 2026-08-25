@@ -1,0 +1,11 @@
+.root {
+  @apply flex items-baseline justify-between gap-4;
+}
+
+.price {
+  @apply text-base font-medium text-ink;
+}
+
+.editLink {
+  @apply shrink-0 text-sm font-medium text-info hover:opacity-80;
+}

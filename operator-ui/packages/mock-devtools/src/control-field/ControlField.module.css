@@ -1,0 +1,23 @@
+.field {
+  @apply flex flex-col gap-1;
+}
+
+.label {
+  @apply text-xs font-medium text-gray-500;
+}
+
+.select {
+  @apply w-full rounded-card border border-muted bg-surface px-2 py-1 text-sm text-ink;
+}
+
+.entry {
+  @apply flex items-center gap-2;
+}
+
+.input {
+  @apply w-full rounded-card border border-muted bg-surface px-2 py-1 text-sm text-ink;
+}
+
+.apply {
+  @apply shrink-0 rounded-card bg-ink px-2 py-1 text-xs font-medium text-surface;
+}

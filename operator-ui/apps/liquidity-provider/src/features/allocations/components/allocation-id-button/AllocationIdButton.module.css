@@ -1,0 +1,7 @@
+.root {
+  @apply cursor-pointer border-none bg-transparent p-0 font-mono text-sm text-info hover:underline;
+}
+
+.root[data-selected="true"] {
+  @apply font-semibold underline;
+}

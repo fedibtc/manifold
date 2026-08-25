@@ -1,0 +1,15 @@
+.root {
+  @apply uStack4;
+}
+
+.heading {
+  @apply uPageHeading;
+}
+
+.phraseBox {
+  @apply uPhraseBox;
+}
+
+.error {
+  @apply uFieldError;
+}

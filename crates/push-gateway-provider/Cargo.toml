@@ -1,0 +1,9 @@
+[package]
+name = "fedi-decentralized-push-gateway-provider"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+fedi-decentralized-push-gateway-types = { path = "../push-gateway-types" }

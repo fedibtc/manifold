@@ -1,0 +1,17 @@
+[package]
+name = "fedi-decentralized-manifold-environment"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+bitcoin = "0.32.6"
+nostr = "0.44"
+stability-pool-common = { workspace = true }
+url = "2"
+
+[dev-dependencies]
+fedi-credential-sdk-protocol = { workspace = true }
+fedi-credential-sdk-schemas = { workspace = true }
+serde_json = { workspace = true }

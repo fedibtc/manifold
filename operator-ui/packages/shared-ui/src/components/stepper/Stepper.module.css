@@ -1,0 +1,39 @@
+/* Underline tab strip, per the wireframe: steps share the width evenly and are
+   marked by a 2px bottom rule rather than a pill. */
+.root {
+  @apply flex flex-wrap gap-1.5 list-none p-0 m-0;
+}
+
+.root > li {
+  @apply min-w-[5rem] flex-1;
+}
+
+.step {
+  @apply block border-b-2 border-muted px-1.5 py-2 text-center text-xs font-medium;
+}
+
+.step[data-state="current"] {
+  @apply border-ink font-bold text-ink;
+}
+
+.step[data-state="completed"] {
+  @apply border-success text-success;
+}
+
+.step[data-state="upcoming"] {
+  @apply border-muted text-gray-500;
+}
+
+/* Standard visually-hidden clip technique: keeps the status word available to
+   assistive tech without affecting sighted layout. */
+.visuallyHidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}

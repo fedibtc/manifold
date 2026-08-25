@@ -1,0 +1,20 @@
+[package]
+name = "fman-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "fman-cli"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+fedi-decentralized-service-fleet-manager = { path = "../../service-fleet-manager" }
+fman-core = { path = "../core" }
+serde_json = "1"
+tokio = { workspace = true, features = ["fs", "macros", "rt-multi-thread"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }

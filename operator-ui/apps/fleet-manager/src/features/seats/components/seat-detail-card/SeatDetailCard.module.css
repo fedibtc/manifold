@@ -1,0 +1,23 @@
+.kv {
+  @apply uBorderedPanel;
+}
+
+.kvRow {
+  @apply uKvRow;
+}
+
+.kvLabel {
+  @apply w-32 shrink-0 text-sm font-medium text-ink/60;
+}
+
+.kvValue {
+  @apply uInkSm;
+}
+
+.kvValueMono {
+  @apply uMonoValue;
+}
+
+.idRow {
+  @apply uCopyRow;
+}

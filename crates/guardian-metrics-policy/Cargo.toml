@@ -1,0 +1,10 @@
+[package]
+name = "fedi-decentralized-guardian-metrics-policy"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+sha2 = "0.10.9"
+thiserror.workspace = true

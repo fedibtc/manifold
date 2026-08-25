@@ -1,0 +1,11 @@
+.detail {
+  @apply mt-8;
+}
+
+.state {
+  @apply uStateText;
+}
+
+.state[data-tone="error"] {
+  @apply uTextError;
+}

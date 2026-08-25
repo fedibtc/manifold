@@ -1,0 +1,11 @@
+.layout {
+  @apply uStack6;
+}
+
+.identity {
+  @apply uStack2;
+}
+
+.identityNote {
+  @apply uCaptionXs;
+}

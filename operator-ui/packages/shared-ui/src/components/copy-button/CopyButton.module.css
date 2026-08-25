@@ -1,0 +1,11 @@
+.root {
+  @apply inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full border-none bg-transparent p-0 text-ink/50 hover:text-ink;
+}
+
+.icon {
+  @apply h-4 w-4;
+}
+
+.root[data-copied="true"] {
+  @apply text-success;
+}

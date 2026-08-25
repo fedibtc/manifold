@@ -1,0 +1,11 @@
+[
+  "unparsable_request",
+  "not_onboarded",
+  "already_onboarded",
+  "invalid_mnemonic",
+  "restore_not_acknowledged",
+  "unreadable_backup_document",
+  "seat_directory_exists",
+  "missing_guardian_archive",
+  "other"
+]

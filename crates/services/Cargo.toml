@@ -1,0 +1,11 @@
+[package]
+name = "fedi-decentralized-services"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+fedi-decentralized-domain = { path = "../domain" }
+fedi-iroh-rpc = { path = "../fedi-iroh-rpc" }
+serde = { workspace = true }

@@ -1,0 +1,20 @@
+{
+  "fman_name": "understood-markhor",
+  "fman_version": {
+    "current": "0.1.0",
+    "latest": "0.2.0",
+    "update_required": true
+  },
+  "nostr": {
+    "authorizations": 1,
+    "checked_at": 1760000000,
+    "holders": [
+      "c6047f9441ed7d6d3045406e95c07cd85c778e4b8cef3ca7abac09b95c709ee5"
+    ],
+    "state": "authorization_observed"
+  },
+  "runtime": "ready",
+  "service_nostr_pubkey": "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",
+  "service_pubkey": "02a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f9",
+  "stage": "complete"
+}

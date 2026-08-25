@@ -1,0 +1,15 @@
+.heading {
+  @apply uPageHeading;
+}
+
+.subtitle {
+  @apply uIntro mb-4;
+}
+
+.state {
+  @apply uStateText;
+}
+
+.state[data-tone="error"] {
+  @apply uTextError;
+}

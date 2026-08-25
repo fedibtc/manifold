@@ -1,0 +1,35 @@
+.root {
+  @apply uStack4;
+}
+
+.head {
+  @apply uPageHead;
+}
+
+.heading {
+  @apply uPageHeading;
+}
+
+.intro {
+  @apply uIntro;
+}
+
+.form {
+  @apply uStack1;
+}
+
+.label {
+  @apply uLabel;
+}
+
+.input {
+  @apply uInputXs;
+}
+
+.error {
+  @apply uFieldError;
+}
+
+.actions {
+  @apply uFormActions;
+}

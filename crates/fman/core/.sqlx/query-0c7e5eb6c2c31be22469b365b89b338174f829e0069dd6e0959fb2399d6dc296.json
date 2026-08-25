@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO nostr_setup_payment_federations (id, event_json) VALUES (1, ?) ON CONFLICT (id) DO UPDATE SET event_json = excluded.event_json",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": []
+  },
+  "hash": "0c7e5eb6c2c31be22469b365b89b338174f829e0069dd6e0959fb2399d6dc296"
+}

@@ -1,0 +1,14 @@
+{
+  "created_at_ms": 1753600001000,
+  "destination": "operator@example.com",
+  "operation": {
+    "amount_msat": 250000,
+    "committed_at_ms": 1753600002000,
+    "operation_id": "0f7c1b9a3e5d4c2b8a6f0e1d2c3b4a5960718293a4b5c6d7e8f90a1b2c3d4e5f"
+  },
+  "request_id": "fixture-payout-request",
+  "scope": {
+    "federation_id": "fed1fixturepayment",
+    "kind": "payment_federation"
+  }
+}

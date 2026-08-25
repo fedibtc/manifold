@@ -1,0 +1,69 @@
+{
+  "$schema": "https://biomejs.dev/schemas/2.5.2/schema.json",
+  "vcs": {
+    "enabled": true,
+    "clientKind": "git",
+    "useIgnoreFile": true,
+    "defaultBranch": "master"
+  },
+  "files": {
+    "ignoreUnknown": false,
+    "includes": [
+      "**",
+      "!**/biome-plugins/__fixtures__",
+      "!eslint",
+      "!scripts/ratchet.mjs",
+      "!scripts/jsx-shape-dupes.mjs",
+      "!apps/*/public/mockServiceWorker.js",
+      "!packages/types/fixtures",
+      "!packages/types/src/generated"
+    ]
+  },
+  "formatter": {
+    "enabled": true,
+    "indentStyle": "space",
+    "indentWidth": 2,
+    "lineWidth": 100
+  },
+  "linter": {
+    "enabled": true,
+    "rules": {
+      "preset": "recommended",
+      "suspicious": {
+        "noUnknownAtRules": "off"
+      }
+    }
+  },
+  "javascript": {
+    "formatter": {
+      "quoteStyle": "single",
+      "trailingCommas": "none"
+    }
+  },
+  "css": {
+    "parser": {
+      "tailwindDirectives": true
+    }
+  },
+  "plugins": [
+    {
+      "path": "./packages/biome-plugins/jsx-sibling-blank-line.grit",
+      "includes": ["**/*.jsx", "**/*.tsx"]
+    },
+    {
+      "path": "./packages/biome-plugins/screen-query-disposition.grit",
+      "includes": ["**/apps/fleet-manager/src/pages/**/*.tsx", "!**/__tests__/**"]
+    }
+  ],
+  "overrides": [
+    {
+      "includes": ["**/.fallowrc.json"],
+      "json": {
+        "parser": {
+          "allowComments": true,
+          "allowTrailingCommas": true
+        }
+      }
+    }
+  ]
+}

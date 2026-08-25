@@ -1,0 +1,31 @@
+/* focus:outline-none — focused programmatically to announce itself, not a tab
+   stop; see WithdrawConfirm. */
+.panel {
+  @apply focus:outline-none;
+}
+
+.state {
+  @apply uStateText;
+}
+
+.evidence {
+  @apply uDefList;
+}
+
+.evidenceRow {
+  @apply uDefRow;
+}
+
+.evidenceLabel {
+  @apply uDefLabel;
+}
+
+/* break-all on top of uDefValue: an address or a txid is one long unbroken
+   token and would otherwise push the row wider than the card. */
+.evidenceValue {
+  @apply uDefValue break-all;
+}
+
+.actions {
+  @apply uRow2;
+}

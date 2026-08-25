@@ -1,0 +1,127 @@
+[package]
+name = "fedi-decentralized-liquidity-manager-daemon"
+# Unit tests live under `tests/` but are included by their owning source modules.
+autotests = false
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+# `autotests = false` above means integration tests are opt-in, one target at a
+# time. Their binary names are referenced by `flake.nix`, `.config/nextest.toml`
+# and `justfile.custom.just`, so each keeps the name it already had.
+[[test]]
+name = "integration_daemon_smoke"
+path = "tests/integration_daemon_smoke.rs"
+
+[[test]]
+name = "integration_docker_image"
+path = "tests/integration_docker_image.rs"
+
+[[test]]
+name = "integration_flip_operator_e2e"
+path = "tests/integration_flip_operator_e2e.rs"
+
+[[test]]
+name = "integration_holder_authorization"
+path = "tests/integration_holder_authorization.rs"
+
+[[test]]
+name = "integration_live_liquidity"
+path = "tests/integration_live_liquidity.rs"
+
+[[test]]
+name = "integration_nostr_relay"
+path = "tests/integration_nostr_relay.rs"
+
+[features]
+embedded-operator-ui = ["dep:operator-ui-static", "dep:rust-embed"]
+
+[[bin]]
+name = "liquidity-manager-daemon"
+path = "src/main.rs"
+
+[dependencies]
+aes-gcm = "0.10.3"
+anyhow = "1"
+async-trait = "0.1"
+axum = "0.8.4"
+bitcoin = { version = "0.32.6", features = ["serde"] }
+clap = { workspace = true }
+constant_time_eq = "0.4.2"
+fedi-decentralized-federation-preview = { path = "../federation-preview" }
+fedi-decentralized-manifold-environment = { path = "../manifold-environment" }
+fedi-decentralized-nostr = { path = "../nostr" }
+fedi-decentralized-peer-badge-verifier = { path = "../peer-badge-verifier" }
+fedi-decentralized-service-liquidity-manager = { path = "../service-liquidity-manager" }
+fedi-iroh-rpc = { path = "../fedi-iroh-rpc" }
+fedimint-bip39 = { workspace = true }
+fedimint-bitcoind = { workspace = true }
+fedimint-client = { workspace = true }
+fedimint-connectors = { workspace = true }
+fedimint-core = { workspace = true }
+fedimint-db-locked = { workspace = true }
+fedimint-gateway-client = { workspace = true }
+fedimint-gateway-common = { workspace = true }
+fedimint-ln-client = { workspace = true }
+fedimint-ln-common = { workspace = true }
+fedimint-meta-client = { workspace = true }
+fedimint-mint-client = { workspace = true }
+fedimint-rocksdb = { workspace = true }
+fedimint-wallet-client = { workspace = true }
+flate2 = "1"
+futures-util = "0.3"
+hex = "0.4.3"
+hkdf = "0.12"
+iroh-base-035 = { package = "iroh-base", version = "=0.35.0" }
+nostr-sdk = "0.44"
+operator-ui-static = { path = "../operator-ui-static", optional = true }
+reqwest = { version = "0.12", default-features = false, features = [
+  "json",
+  "rustls-tls",
+] }
+rust-embed = { version = "8.12", optional = true, features = [
+  "deterministic-timestamps",
+  "interpolate-folder-path",
+  "mime-guess",
+] }
+rustls = { version = "0.23", default-features = false, features = ["ring"] }
+serde = { workspace = true }
+serde_json = { version = "1", features = ["arbitrary_precision"] }
+sha2 = "0.10"
+# Not used directly. netwatch 0.5.0 (via iroh) needs socket2's `all` feature to
+# compile on darwin but does not enable it; declaring it here unifies the feature
+# so the daemon builds on macOS. Harmless elsewhere — socket2 is already in the
+# graph via netwatch.
+socket2 = { version = "0.5", features = ["all"] }
+sqlx = { version = "0.8.6", features = ["migrate", "runtime-tokio", "sqlite"] }
+stability-pool-client = { workspace = true }
+strum = { workspace = true }
+tar = "0.4"
+thiserror = "2"
+tokio = { version = "1.45.1", features = [
+  "fs",
+  "macros",
+  "net",
+  "rt-multi-thread",
+  "signal",
+  "sync",
+  "time",
+] }
+tokio-util = { version = "0.7.14", features = ["rt"] }
+tracing = { version = "0.1", features = ["log"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+url = "2.5.7"
+
+[dev-dependencies]
+defe-client = { path = "../defe-client" }
+defe-portalloc = { path = "../defe-portalloc" }
+fedi-credential-sdk-protocol.workspace = true
+# Lets the live suite probe a target-federation client's database lock with the
+# same engine the daemon opens it with. Already a normal dependency; RocksDB
+# takes fcntl record locks, which a plain `File::try_lock` (flock) cannot see.
+fedimint-rocksdb = { workspace = true }
+serde_json_canonicalizer = "0.3"
+sha2 = "0.10"
+tokio-tungstenite = "0.26"
+tower = { version = "0.5.3", features = ["util"] }

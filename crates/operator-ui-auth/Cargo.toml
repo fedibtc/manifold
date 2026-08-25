@@ -1,0 +1,22 @@
+[package]
+description = "Browser-session authentication helpers adapted from Fedimint."
+edition = { workspace = true }
+license = { workspace = true }
+name = "operator-ui-auth"
+readme = "README.md"
+repository = { workspace = true }
+version = { workspace = true }
+
+[lib]
+name = "operator_ui_auth"
+path = "src/lib.rs"
+
+[dependencies]
+axum = { version = "0.8.9", features = ["macros"] }
+axum-extra = { version = "0.12.5", features = ["cookie"] }
+fedimint-core = { workspace = true }
+serde = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt"] }
+tower = { version = "0.5", features = ["util"] }

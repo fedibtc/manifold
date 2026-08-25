@@ -1,0 +1,19 @@
+[package]
+name = "fedi-decentralized-push-gateway-provider-fcm"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+fedi-decentralized-push-gateway-provider = { path = "../push-gateway-provider" }
+fedi-decentralized-push-gateway-types = { path = "../push-gateway-types" }
+jsonwebtoken = "9.3.1"
+reqwest = { version = "0.13.4", default-features = false, features = [
+  "form",
+  "json",
+  "rustls",
+] }
+serde = { workspace = true, features = ["derive"] }
+serde_json = "1.0.140"
+tokio = { version = "1.45.1", features = ["sync"] }

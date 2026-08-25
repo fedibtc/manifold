@@ -1,0 +1,66 @@
+[package]
+name = "fedi-decentralized-cloud-fman-telemetry"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[features]
+defe-test-support = ["fedi-decentralized-peer-badge-verifier/test-support"]
+test-support = ["fedi-decentralized-peer-badge-verifier/test-support"]
+
+[dependencies]
+aes-gcm = "0.10.3"
+async-trait.workspace = true
+axum = "0.8.4"
+base64 = "0.22.1"
+clap.workspace = true
+fedi-decentralized-domain = { path = "../domain" }
+fedi-decentralized-guardian-metrics-policy = { path = "../guardian-metrics-policy" }
+fedi-decentralized-manifold-environment = { path = "../manifold-environment" }
+fedi-decentralized-peer-badge-verifier = { path = "../peer-badge-verifier" }
+fedi-decentralized-service-fleet-manager = { path = "../service-fleet-manager" }
+fedi-iroh-rpc = { path = "../fedi-iroh-rpc" }
+fs2 = "0.4"
+hex = "0.4.3"
+hyper = { version = "1", features = ["http1", "server"] }
+hyper-util = { version = "0.1", features = ["server", "service", "tokio"] }
+ipnet = "2"
+libc = "0.2"
+nostr = "0.44.3"
+rand = "0.8"
+rustls = { version = "0.23", default-features = false, features = ["ring"] }
+serde.workspace = true
+serde_json.workspace = true
+sha2 = "0.10.9"
+sqlx = { version = "0.8.6", features = ["migrate", "runtime-tokio", "sqlite"] }
+thiserror.workspace = true
+tokio = { version = "1.45.1", features = [
+  "macros",
+  "net",
+  "rt-multi-thread",
+  "signal",
+] }
+tower-http = { version = "0.6", features = ["timeout"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+url = "2"
+zstd = "0.13"
+
+[dev-dependencies]
+blind-rsa-signatures = "0.17"
+defe-api = { path = "../defe-api" }
+defe-client = { path = "../defe-client" }
+defe-portalloc = { path = "../defe-portalloc" }
+fedi-credential-sdk-protocol.workspace = true
+fedi-decentralized-nostr = { path = "../nostr" }
+libc = "0.2"
+nostr-sdk = "0.44"
+prometheus-parse = "0.2"
+tempfile = "3.20.0"
+tokio = { version = "1.45.1", features = ["io-util", "process", "time"] }
+tower = { version = "0.5", features = ["util"] }
+
+[[test]]
+name = "daemon_e2e"
+required-features = ["defe-test-support"]

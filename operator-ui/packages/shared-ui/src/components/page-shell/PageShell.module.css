@@ -1,0 +1,15 @@
+.root {
+  @apply min-h-screen bg-surface text-ink;
+}
+
+.header {
+  @apply border-b border-muted px-6 py-4;
+}
+
+.title {
+  @apply text-xl font-medium;
+}
+
+.main {
+  @apply p-6;
+}

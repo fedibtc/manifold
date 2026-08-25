@@ -1,0 +1,86 @@
+[package]
+name = "fman-core"
+# Unit tests live under `tests/` but are included by their owning source modules.
+autotests = false
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+# `autotests = false` above means integration tests are opt-in, one target at a
+# time. These are the crate's only true integration tests: each reads a
+# committed generated file from disk and never touches a fleet.
+[[test]]
+name = "contract_fixtures"
+path = "tests/contract_fixtures.rs"
+
+[[test]]
+name = "admin_request_ts"
+path = "tests/admin_request_ts.rs"
+
+[dependencies]
+anyhow = "1"
+async-trait = { workspace = true }
+axum = "0.8.9"
+axum-extra = { version = "0.12.5", features = ["cookie"] }
+bip39 = { version = "2", features = ["rand"] }
+bitcoin = { version = "0.32.6", features = ["serde"] }
+constant_time_eq = "0.4.2"
+
+ciborium = { workspace = true }
+fedi-decentralized-domain = { path = "../../domain" }
+fedi-decentralized-manifold-environment = { path = "../../manifold-environment" }
+fedi-decentralized-nostr = { path = "../../nostr" }
+fedi-decentralized-service-fleet-manager = { path = "../../service-fleet-manager" }
+fedi-iroh-rpc = { path = "../../fedi-iroh-rpc" }
+fedimint-aead = "0.11.1"
+fedimint-api-client = { workspace = true }
+fedimint-connectors = { workspace = true }
+fedimint-core = { workspace = true }
+fedimint-derive-secret = { workspace = true }
+fedimint-lnv2-common = { workspace = true }
+fedimint-meta-client = { workspace = true }
+fedimint-meta-common = { workspace = true }
+fedimint-server = { workspace = true }
+fman-meta-fields = { path = "../meta-fields" }
+hex = "0.4"
+hkdf = "0.12"
+iroh = { workspace = true }
+iroh-base-035 = { package = "iroh-base", version = "0.35" }
+libc = "0.2"
+nostr-sdk = "0.44"
+operator-ui-auth = { path = "../../operator-ui-auth" }
+rand = "0.8"
+secp256k1 = "0.30"
+serde = { workspace = true }
+serde_json = "1"
+serde_json_canonicalizer = "0.3"
+sha2 = "0.10"
+sqlx = { version = "0.8.6", features = ["migrate", "runtime-tokio", "sqlite"] }
+stability-pool-client = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = [
+  "fs",
+  "io-util",
+  "macros",
+  "process",
+  "rt-multi-thread",
+  "signal",
+  "sync",
+  "time",
+] }
+tracing = "0.1"
+ts-rs = "12.0.1"
+url = "2"
+
+[build-dependencies]
+fedimint-build = { workspace = true }
+
+[dev-dependencies]
+blind-rsa-signatures = "0.17"
+jsonrpsee-server = "0.24"
+reqwest = { version = "0.12", default-features = false }
+tempfile = "3"
+tokio = { workspace = true, features = ["macros", "rt", "time"] }
+tower = { version = "0.5", features = ["util"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }

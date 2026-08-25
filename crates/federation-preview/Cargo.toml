@@ -1,0 +1,21 @@
+[package]
+name = "fedi-decentralized-federation-preview"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+anyhow = "1"
+bitcoin = { version = "0.32.6", features = ["serde"] }
+fedi-decentralized-domain = { path = "../domain" }
+fedimint-api-client = { workspace = true }
+fedimint-connectors = { workspace = true }
+fedimint-core = { workspace = true }
+fedimint-lnv2-common = { workspace = true }
+fedimint-meta-client = { workspace = true }
+fedimint-wallet-client = { workspace = true }
+fedimint-walletv2-common = { workspace = true }
+serde = { workspace = true }
+serde_json = { version = "1", features = ["arbitrary_precision"] }
+thiserror = "2"

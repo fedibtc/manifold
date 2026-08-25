@@ -1,0 +1,54 @@
+/* Shared CSS utilities — apps/fleet-manager.
+ * Loaded into Tailwind by tailwind.config.cjs (via load-utilities.cjs), NOT
+ * imported as CSS — so `@apply uMono` resolves in every module (dev + build).
+ * The `@layer utilities` wrapper is organizational; the loader reads it.
+ */
+
+@layer utilities {
+  /* Wireframe rule: actions are separated from the last field by a divider,
+     16px clear on each side of it. */
+  .uFormActions {
+    @apply mt-3 flex flex-wrap gap-3 border-t border-muted pt-4;
+  }
+  .uSubmitButton {
+    @apply rounded-card bg-ink px-4 py-2 text-sm font-medium text-surface disabled:cursor-not-allowed disabled:opacity-50;
+  }
+  .uMono {
+    @apply font-mono text-xs text-ink/70;
+  }
+  .uActionsRow {
+    @apply flex gap-3;
+  }
+  .uMonoHeading {
+    @apply uPageHeading font-mono;
+  }
+  .uPrimaryButtonFit {
+    @apply w-fit rounded-card bg-ink px-4 py-2 text-sm font-medium text-surface;
+  }
+  .uKvRow {
+    @apply flex items-baseline gap-3;
+  }
+  .uMonoValue {
+    @apply break-all font-mono text-xs text-ink;
+  }
+  .uDangerButton {
+    @apply rounded-card bg-error px-4 py-2 text-sm font-medium text-surface disabled:cursor-not-allowed disabled:opacity-50;
+  }
+  .uInputXs {
+    @apply uFieldControl max-w-xs;
+  }
+  /* The twelve recovery words, shown identically during setup and from Backup. */
+  .uPhraseBox {
+    @apply break-words rounded-card border border-muted p-4 font-mono text-sm text-ink;
+  }
+  /* A money-out action and what it did. Both sweep surfaces carry the same
+     pair — the control stacked over its outcome sentence — because a sweep and
+     a two-step collection report the same way even though they differ in how
+     many buttons precede the sentence. */
+  .uActionStack {
+    @apply uStack2 items-start;
+  }
+  .uActionOutcome {
+    @apply uStack1 text-sm text-ink;
+  }
+}

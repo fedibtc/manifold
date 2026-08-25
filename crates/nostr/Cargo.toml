@@ -1,0 +1,19 @@
+[package]
+name = "fedi-decentralized-nostr"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+fedi-credential-sdk-protocol.workspace = true
+fedi-decentralized-domain = { path = "../domain" }
+fedi-decentralized-service-fleet-manager = { path = "../service-fleet-manager" }
+nostr = "0.44"
+serde.workspace = true
+serde_json.workspace = true
+serde_json_canonicalizer = "0.3"
+sha2 = "0.10"
+
+[dev-dependencies]
+blind-rsa-signatures = "0.17"

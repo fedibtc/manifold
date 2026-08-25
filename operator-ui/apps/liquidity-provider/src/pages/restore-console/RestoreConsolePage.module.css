@@ -1,0 +1,55 @@
+.page {
+  @apply uCenteredPage;
+}
+
+.card {
+  @apply uRestoreCard;
+}
+
+.title {
+  @apply uPageHeading;
+}
+
+.intro {
+  @apply uMutedText;
+}
+
+.fieldLabel {
+  @apply uLabel;
+}
+
+.form {
+  @apply uStack2;
+}
+
+.input {
+  @apply uFieldControl;
+}
+
+.hint {
+  @apply uFieldHint;
+}
+
+.textarea {
+  @apply min-h-24 w-full rounded-card border border-muted px-3 py-2 font-mono text-xs;
+}
+
+.section {
+  @apply uStack2;
+}
+
+.list {
+  @apply uListSm;
+}
+
+.confirm {
+  @apply uConfirmDanger;
+}
+
+.confirmLabel {
+  @apply uFieldError;
+}
+
+.confirmActions {
+  @apply uRow2;
+}

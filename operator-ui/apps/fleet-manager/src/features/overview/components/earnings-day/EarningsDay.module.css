@@ -1,0 +1,19 @@
+.root {
+  @apply uStack2;
+}
+
+.head {
+  @apply flex items-baseline justify-between border-b border-muted pb-1;
+}
+
+.label {
+  @apply text-sm font-semibold text-ink;
+}
+
+.total {
+  @apply font-mono text-sm text-ink;
+}
+
+.events {
+  @apply uStack2;
+}

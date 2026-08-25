@@ -1,0 +1,99 @@
+diff --git a/modules/fedimint-ln-client/src/pay.rs b/modules/fedimint-ln-client/src/pay.rs
+index ec56bfd6..c5b9d70c 100644
+--- a/modules/fedimint-ln-client/src/pay.rs
++++ b/modules/fedimint-ln-client/src/pay.rs
+@@ -85,7 +85,7 @@ pub(super) mod lightningpay {
+     }
+ }
+ 
+-#[derive(Debug, Clone, Eq, PartialEq, Hash, Decodable, Encodable)]
++#[derive(Clone, Eq, PartialEq, Hash, Decodable, Encodable)]
+ pub struct LightningPayCommon {
+     pub operation_id: OperationId,
+     pub federation_id: FederationId,
+@@ -95,12 +95,45 @@ pub struct LightningPayCommon {
+     pub invoice: lightning_invoice::Bolt11Invoice,
+ }
+ 
+-#[derive(Debug, Clone, Eq, PartialEq, Hash, Decodable, Encodable)]
++#[derive(Clone, Eq, PartialEq, Hash, Decodable, Encodable)]
+ pub struct LightningPayStateMachine {
+     pub common: LightningPayCommon,
+     pub state: LightningPayStates,
+ }
+ 
++/// Redact payment authorization, invoice, contract, gateway, and outcome data
++/// from generic state-machine trace diagnostics.
++impl std::fmt::Debug for LightningPayCommon {
++    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
++        f.debug_struct("LightningPayCommon")
++            .field("operation_id", &self.operation_id)
++            .field("federation_id", &self.federation_id)
++            .field("gateway_fee", &self.gateway_fee)
++            .finish_non_exhaustive()
++    }
++}
++
++impl std::fmt::Debug for LightningPayStateMachine {
++    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
++        let state = match self.state {
++            LightningPayStates::CreatedOutgoingLnContract(_) => "created_outgoing_ln_contract",
++            LightningPayStates::FundingRejected => "funding_rejected",
++            LightningPayStates::Funded(_) => "funded",
++            LightningPayStates::Success(_) => "success",
++            #[allow(deprecated)]
++            LightningPayStates::Refundable(_) => "refundable",
++            LightningPayStates::Refund(_) => "refund",
++            #[allow(deprecated)]
++            LightningPayStates::Refunded(_) => "refunded",
++            LightningPayStates::Failure(_) => "failure",
++        };
++        f.debug_struct("LightningPayStateMachine")
++            .field("common", &self.common)
++            .field("state", &state)
++            .finish()
++    }
++}
++
+ impl State for LightningPayStateMachine {
+     type ModuleContext = LightningClientContext;
+ 
+@@ -348,20 +381,15 @@ impl LightningPayFunded {
+                 Ok(preimage) => return Ok(preimage),
+                 Err(err) => {
+                     match err.clone() {
+-                        GatewayPayError::GatewayInternalError {
+-                            error_code,
+-                            error_message,
+-                        } => {
++                        GatewayPayError::GatewayInternalError { error_code, .. } => {
+                             // Retry faster if we could not contact the gateway
+                             if let Some(error_code) = error_code
+                                 && error_code == StatusCode::NOT_FOUND.as_u16()
+                             {
+                                 warn!(
+-                                    %error_message,
+-                                    ?payload,
+-                                    ?gateway,
+-                                    ?RETRY_DELAY,
+-                                    "Could not contact gateway"
++                                    error_code,
++                                    retry_delay_secs = RETRY_DELAY.as_secs(),
++                                    "Could not contact Lightning gateway; retrying"
+                                 );
+                                 sleep(RETRY_DELAY).await;
+                                 continue;
+@@ -373,11 +401,8 @@ impl LightningPayFunded {
+                     }
+ 
+                     warn!(
+-                        err = %err.fmt_compact(),
+-                        ?payload,
+-                        ?gateway,
+-                        ?GATEWAY_INTERNAL_ERROR_RETRY_INTERVAL,
+-                        "Gateway Internal Error. Could not complete payment. Trying again..."
++                        retry_interval_secs = GATEWAY_INTERNAL_ERROR_RETRY_INTERVAL.as_secs(),
++                        "Lightning gateway payment failed; retrying"
+                     );
+                     sleep(GATEWAY_INTERNAL_ERROR_RETRY_INTERVAL).await;
+                 }

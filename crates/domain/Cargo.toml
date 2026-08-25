@@ -1,0 +1,25 @@
+[package]
+name = "fedi-decentralized-domain"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+fedi-credential-sdk-protocol.workspace = true
+fedi-credential-sdk-schemas.workspace = true
+fedimint-core.workspace = true
+hex = "0.4"
+nostr = "0.44"
+semver = "1"
+serde = { workspace = true }
+serde_json = "1"
+serde_json_canonicalizer = "0.3"
+sha2 = "0.10"
+stability-pool-common = { workspace = true }
+strum = { workspace = true }
+thiserror = { workspace = true }
+url = "2.5.7"
+
+[dev-dependencies]
+bitcoin = { version = "0.32.6", features = ["serde"] }

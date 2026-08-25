@@ -1,0 +1,19 @@
+.root {
+  @apply uAlertRow items-center justify-between;
+}
+
+.body {
+  @apply uAlertRowBody;
+}
+
+.title {
+  @apply uAlertRowTitle;
+}
+
+.detail {
+  @apply uAlertRowDetail;
+}
+
+.amount {
+  @apply shrink-0 font-mono text-sm text-ink;
+}

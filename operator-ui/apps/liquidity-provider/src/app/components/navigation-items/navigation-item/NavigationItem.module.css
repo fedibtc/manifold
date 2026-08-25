@@ -1,0 +1,11 @@
+.disabled {
+  @apply uNavItemDisabled;
+}
+
+.active {
+  @apply uNavItemActive;
+}
+
+.idle {
+  @apply uNavItemIdle;
+}

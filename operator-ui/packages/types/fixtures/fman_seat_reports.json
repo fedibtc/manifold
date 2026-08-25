@@ -1,0 +1,28 @@
+[
+  {
+    "at_ms": 1753500000000,
+    "state": "decommissioned"
+  },
+  {
+    "health": "healthy",
+    "phase": "created",
+    "state": "active"
+  },
+  {
+    "health": "failed",
+    "phase": "dkg_in_progress",
+    "state": "active"
+  },
+  {
+    "health": "healthy",
+    "invite_code": "fed11fixtureinvitecode",
+    "phase": "running",
+    "state": "active"
+  },
+  {
+    "health": "unavailable",
+    "invite_code": "fed11fixturelostinvite",
+    "phase": "data_loss",
+    "state": "active"
+  }
+]

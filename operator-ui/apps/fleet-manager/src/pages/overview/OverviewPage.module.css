@@ -1,0 +1,15 @@
+.root {
+  @apply uStack6;
+}
+
+.heading {
+  @apply uPageHeading;
+}
+
+.tileGrid {
+  @apply grid gap-3 md:grid-cols-4;
+}
+
+.caveats {
+  @apply uMutedSm;
+}

@@ -1,0 +1,92 @@
+.root {
+  @apply uStack4;
+}
+
+.note {
+  @apply uMutedXs;
+}
+
+.steps {
+  @apply uStack3;
+}
+
+.step {
+  @apply uRowCenter3;
+}
+
+.marker {
+  @apply h-2 w-2 shrink-0 rounded-full bg-gray-400;
+}
+
+.marker[data-status="confirmed"],
+.marker[data-status="completed"] {
+  @apply bg-success;
+}
+
+.marker[data-status="failed"],
+.marker[data-status="in_doubt"],
+.marker[data-status="manual_review_required"] {
+  @apply bg-error;
+}
+
+.body {
+  @apply flex flex-1 flex-col;
+}
+
+.title {
+  @apply uInkLabel;
+}
+
+.status {
+  @apply uMutedXs;
+}
+
+.status[data-status="failed"],
+.status[data-status="in_doubt"],
+.status[data-status="manual_review_required"] {
+  @apply uTextError;
+}
+
+.amount {
+  @apply text-sm tabular-nums text-ink;
+}
+
+.empty {
+  @apply uMutedSm;
+}
+
+.failures {
+  @apply uStack2;
+}
+
+.failure {
+  @apply flex flex-col gap-0.5 rounded-card bg-errorSoft p-2;
+}
+
+.failureCode {
+  @apply uFieldError;
+}
+
+.failureMessage {
+  @apply text-xs text-ink;
+}
+
+.retryAction {
+  @apply shrink-0;
+}
+
+.cancelSection {
+  @apply uStack2;
+}
+
+.cancelConfirm {
+  @apply uConfirmDanger;
+}
+
+.cancelConfirmLabel {
+  @apply uFieldError;
+}
+
+.cancelConfirmActions {
+  @apply uRow2;
+}

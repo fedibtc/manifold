@@ -1,0 +1,39 @@
+.root {
+  @apply uStack4;
+}
+
+.install {
+  @apply flex flex-wrap items-center gap-3;
+}
+
+.fileInput {
+  @apply uInkSm;
+}
+
+.muted {
+  @apply uMutedSm;
+}
+
+.list {
+  @apply uStack3;
+}
+
+.row {
+  @apply flex flex-wrap items-center justify-between gap-3 rounded-card bg-gray-50 p-3;
+}
+
+.meta {
+  @apply flex flex-wrap items-center gap-2;
+}
+
+.kind {
+  @apply uInkLabel;
+}
+
+.subject {
+  @apply uAlertRowDetail;
+}
+
+.date {
+  @apply uMutedXs;
+}

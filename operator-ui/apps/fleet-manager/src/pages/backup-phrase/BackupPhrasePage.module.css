@@ -1,0 +1,35 @@
+.root {
+  @apply uStack6;
+}
+
+.heading {
+  @apply uPageHeading;
+}
+
+.intro {
+  @apply uMutedText;
+}
+
+.actions {
+  @apply uActionsRow;
+}
+
+.cancel {
+  @apply uButtonSecondary;
+}
+
+.reveal {
+  @apply uDangerButton;
+}
+
+.phraseBox {
+  @apply uPhraseBox;
+}
+
+.backupNote {
+  @apply uMutedText;
+}
+
+.done {
+  @apply uPrimaryButtonFit;
+}

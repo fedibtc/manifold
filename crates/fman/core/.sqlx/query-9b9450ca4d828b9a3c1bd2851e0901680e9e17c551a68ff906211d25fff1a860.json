@@ -1,0 +1,20 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT event_json FROM nostr_setup_payment_federations WHERE id = 1",
+  "describe": {
+    "columns": [
+      {
+        "name": "event_json",
+        "ordinal": 0,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "9b9450ca4d828b9a3c1bd2851e0901680e9e17c551a68ff906211d25fff1a860"
+}

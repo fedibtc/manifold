@@ -1,0 +1,44 @@
+name: SelfCI
+
+on:
+  pull_request: {}
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: selfci check
+    # Fork PRs must never reach the self-hosted runner: this job runs
+    # repo-controlled code (flake.nix, selfci config) on shared infrastructure.
+    # Outside contributions get CI when a maintainer pushes the branch here.
+    # Note: a skipped job SATISFIES a required-status branch protection rule,
+    # so this gate alone does not block merging a fork PR — the repo's
+    # "require approval for all outside collaborators" Actions setting is the
+    # backstop that keeps unreviewed fork code out entirely.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [self-hosted, linux]
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - name: Verify Nix installation
+        run: nix --version
+      - name: Archive Nix inputs
+        run: nix flake archive --no-update-lock-file --json > "$RUNNER_TEMP/selfci-flake-archive.json"
+      - name: Root archived Nix inputs
+        run: .github/scripts/root-flake-archive "$RUNNER_TEMP/selfci-flake-archive.json" "$RUNNER_TEMP/selfci-nix-roots"
+      - uses: cachix/cachix-action@ad2ddac53f961de1989924296a1f236fcfbaa4fc # v15
+        with:
+          name: fedibtc
+          skipPush: true
+        continue-on-error: true
+      - name: Run selfci
+        run: nix develop --command selfci check
+      - name: Remove archived Nix input roots
+        if: always()
+        run: rm -rf "$RUNNER_TEMP/selfci-nix-roots" "$RUNNER_TEMP/selfci-flake-archive.json"

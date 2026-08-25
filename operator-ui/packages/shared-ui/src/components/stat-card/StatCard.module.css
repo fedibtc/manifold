@@ -1,0 +1,15 @@
+.root {
+  @apply flex flex-col gap-1 rounded-card bg-gray-50 p-4;
+}
+
+.label {
+  @apply text-xs font-normal text-gray-500;
+}
+
+.value {
+  @apply text-base font-semibold text-ink;
+}
+
+.hint {
+  @apply text-xs text-ink/50;
+}

@@ -1,0 +1,29 @@
+engine biome(1.0)
+language js(typescript, jsx)
+
+// Enforce exactly one blank line between adjacent sibling JSX elements.
+//
+// Match the JsxText whitespace node that sits between two sibling elements
+// (element / self-closing / fragment on both sides). When that whitespace is
+// a single newline plus indentation, rewrite it to two newlines plus the same
+// indentation, producing one blank line. Existing blank lines already contain
+// two newlines and are left untouched, so the fix is idempotent.
+//
+// Because the match is anchored on a JsxText node with an element on BOTH
+// sides, it never fires between a child and its parent's closing tag, and it
+// never touches text content, strings, template literals, or JS expressions.
+JsxText() as $gap where {
+  $gap <: r"(\r?\n)([ \t]*)"($newline, $indent),
+  $gap <: after or {
+    JsxElement(),
+    JsxSelfClosingElement(),
+    JsxFragment()
+  },
+  $gap <: before or {
+    JsxElement(),
+    JsxSelfClosingElement(),
+    JsxFragment()
+  },
+  register_diagnostic(span=$gap, message="Add a blank line between sibling JSX elements.", severity="error", fix_kind="safe"),
+  $gap => raw`$newline$newline$indent`
+}

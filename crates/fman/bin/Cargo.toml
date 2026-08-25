@@ -1,0 +1,67 @@
+[package]
+name = "fman"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[features]
+embedded-operator-ui = ["dep:operator-ui-static", "dep:rust-embed"]
+
+# The shipped binary keeps its deployed name: package images, the StartOS and
+# Umbrel entrypoints, and the E2E harnesses all invoke `fleet-manager serve`.
+[[bin]]
+name = "fleet-manager"
+path = "src/main.rs"
+
+# The composition root: it owns daemon argument parsing and wires the
+# capability adapters into `fman-core`. Nothing else may
+# depend on it, so a new capability is a new dependency here and nowhere in core.
+[dependencies]
+anyhow = "1"
+async-trait = { workspace = true }
+axum = "0.8.9"
+clap = { version = "4", features = ["derive"] }
+
+fedi-decentralized-domain = { path = "../../domain" }
+fedi-decentralized-manifold-environment = { path = "../../manifold-environment" }
+fedi-decentralized-push-gateway-types = { path = "../../push-gateway-types" }
+fedi-decentralized-service-fleet-manager = { path = "../../service-fleet-manager" }
+fedi-iroh-rpc = { path = "../../fedi-iroh-rpc" }
+fedimint-core = { workspace = true }
+fedimint-server-core = { workspace = true }
+fedimintd = { workspace = true, features = ["jemalloc"] }
+fman-core = { path = "../core" }
+fman-fedimint = { path = "../fedimint" }
+fman-nostr = { path = "../nostr" }
+fman-telemetry = { path = "../telemetry" }
+hex = "0.4"
+iroh = { workspace = true }
+nostr-sdk = "0.44"
+operator-ui-static = { path = "../../operator-ui-static", optional = true }
+reqwest = { version = "0.12", default-features = false, features = [
+  "json",
+  "rustls-tls-native-roots",
+  "rustls-tls-webpki-roots",
+] }
+rust-embed = { version = "8.12", optional = true, features = [
+  "deterministic-timestamps",
+  "interpolate-folder-path",
+  "mime-guess",
+] }
+safe-tracing = { path = "../../safe-tracing" }
+serde_json = "1"
+stability-pool-server = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "signal"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[target.'cfg(not(any(target_env = "msvc", target_os = "ios", target_os = "android")))'.dependencies]
+tikv-jemallocator = { version = "0.6", features = ["profiling"] }
+
+[build-dependencies]
+fedimint-build = { workspace = true }
+
+[dev-dependencies]
+bitcoin = "0.32.6"
+tower = { version = "0.5", features = ["util"] }

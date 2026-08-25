@@ -1,0 +1,51 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+loader="$script_dir/load-single-docker-image"
+fixture_dir=$(mktemp -d)
+trap 'rm -rf "$fixture_dir"' EXIT
+mkdir -p "$fixture_dir/bin"
+
+cat >"$fixture_dir/bin/docker" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+[[ $1 == load && $2 == --input && -n ${3:-} ]]
+case ${DOCKER_LOAD_SCENARIO:?} in
+  existing-tag)
+    echo "The image fleet-manager:0.1.0 already exists, renaming the old one with ID sha256:deadbeef to empty string"
+    echo "Loaded image: fleet-manager:0.1.0"
+    ;;
+  no-tag)
+    echo "Loaded image ID: sha256:deadbeef"
+    ;;
+  multiple-tags)
+    echo "Loaded image: fleet-manager:0.1.0"
+    echo "Loaded image: fleet-manager:old"
+    ;;
+  fail-after-tag)
+    echo "Loaded image: fleet-manager:0.1.0"
+    exit 42
+    ;;
+  *)
+    echo "unknown fixture scenario: $DOCKER_LOAD_SCENARIO" >&2
+    exit 2
+    ;;
+esac
+EOF
+chmod +x "$fixture_dir/bin/docker"
+
+run_loader() {
+  DOCKER_LOAD_SCENARIO=$1 PATH="$fixture_dir/bin:$PATH" "$loader" fixture.tar
+}
+
+tag=$(run_loader existing-tag)
+[[ $tag == fleet-manager:0.1.0 ]]
+
+for scenario in no-tag multiple-tags fail-after-tag; do
+  if run_loader "$scenario" >/dev/null 2>&1; then
+    echo "loader unexpectedly accepted fixture scenario $scenario" >&2
+    exit 1
+  fi
+done

@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+archive=${1:?image archive path is required}
+
+if ! output=$(docker load --input "$archive"); then
+  printf '%s\n' "$output" >&2
+  echo "docker load failed for $archive" >&2
+  exit 1
+fi
+
+tags=()
+while IFS= read -r line; do
+  case "$line" in
+    "Loaded image: "*) tags+=("${line#Loaded image: }") ;;
+  esac
+done <<<"$output"
+
+if [[ ${#tags[@]} -ne 1 || -z ${tags[0]} ]]; then
+  echo "docker load reported ${#tags[@]} tagged images for $archive; expected exactly one" >&2
+  exit 1
+fi
+
+printf '%s\n' "${tags[0]}"

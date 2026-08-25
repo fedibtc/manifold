@@ -1,0 +1,7 @@
+.root {
+  @apply uStack6;
+}
+
+.loading {
+  @apply uMutedSm;
+}

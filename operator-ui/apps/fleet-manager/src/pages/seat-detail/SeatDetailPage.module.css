@@ -1,0 +1,15 @@
+.root {
+  @apply uStack6;
+}
+
+.pageHead {
+  @apply uRowCenter3;
+}
+
+.heading {
+  @apply uMonoHeading;
+}
+
+.backLink {
+  @apply w-fit text-sm font-medium text-info hover:opacity-80;
+}

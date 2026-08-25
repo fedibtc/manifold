@@ -1,0 +1,27 @@
+.page {
+  @apply uStack6;
+}
+
+.head {
+  @apply uPageHead;
+}
+
+.heading {
+  @apply uPageHeading;
+}
+
+.sub {
+  @apply uIntro;
+}
+
+.loading {
+  @apply uMutedSm;
+}
+
+.actions {
+  @apply uStack4;
+}
+
+.checkList {
+  @apply uListSm;
+}

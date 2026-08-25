@@ -1,0 +1,43 @@
+.root {
+  @apply uStack4;
+}
+
+.head {
+  @apply uPageHead;
+}
+
+.heading {
+  @apply uPageHeading;
+}
+
+.intro {
+  @apply uIntro;
+}
+
+.counts {
+  @apply uBorderedPanel;
+}
+
+.countRow {
+  @apply uKvRow;
+}
+
+.countValue {
+  @apply text-2xl font-semibold text-ink;
+}
+
+.countLabel {
+  @apply text-sm text-ink/60;
+}
+
+.callout {
+  @apply uStack2;
+}
+
+.reasons {
+  @apply list-disc space-y-1 pl-5 text-sm text-ink/70;
+}
+
+.actions {
+  @apply uFormActions;
+}

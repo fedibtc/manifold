@@ -1,0 +1,19 @@
+.root {
+  @apply uStack4;
+}
+
+.buttons {
+  @apply uRow2;
+}
+
+.panel {
+  @apply uBorderedPanel;
+}
+
+.panelLabel {
+  @apply uMutedSm;
+}
+
+.submitHint {
+  @apply uFieldHint;
+}

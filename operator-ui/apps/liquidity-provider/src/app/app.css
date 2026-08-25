@@ -1,0 +1,15 @@
+/* Fedi DS font. NOTE: CDN import leaks the operator's IP to Google on every
+   load — a privacy regression for self-hosted (Umbrel/Start9) nodes. Follow-up:
+   bundle Poppins woff2 locally. */
+@import url("https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600;700&display=swap");
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+body {
+  font-family: Poppins, ui-sans-serif, system-ui, sans-serif;
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 20px;
+}

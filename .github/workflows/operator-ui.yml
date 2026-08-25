@@ -1,0 +1,60 @@
+name: operator-ui
+
+permissions:
+  contents: read
+  # dorny/paths-filter asks the API for the PR's changed files rather than
+  # diffing locally, so it needs read access to the pull request itself.
+  # Without this the filter job fails with "Resource not accessible by
+  # integration" and every downstream check silently skips.
+  pull-requests: read
+
+on:
+  pull_request:
+  push:
+    branches: [master]
+jobs:
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      ui: ${{ steps.filter.outputs.ui }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: dorny/paths-filter@de90cc6fb38fc0963ad72b210f1f284cd68cea36 # v3.0.2
+        id: filter
+        with:
+          filters: |
+            ui:
+              - 'operator-ui/**'
+              # Keep edits to this workflow covered without treating its mocked
+              # checks as validation of the Rust services.
+              - '.github/workflows/operator-ui.yml'
+  checks:
+    needs: changes
+    if: needs.changes.outputs.ui == 'true'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: operator-ui
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      # pnpm must exist BEFORE setup-node resolves `cache: pnpm` — a plain
+      # `corepack enable` step is not reliable here because setup-node
+      # switches the Node installation afterwards and may lose the shim.
+      - uses: pnpm/action-setup@fe02b34f77f8bc703788d5817da081398fad5dd2 # v4.0.0
+        with:
+          version: 11.9.0 # match the workspace's local pnpm
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v4.1.0
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: operator-ui/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm run typecheck
+      - run: pnpm run lint
+      - run: pnpm run lint:compiler
+      - run: pnpm run lint:boundaries
+      - run: pnpm run lint:css-dupes
+      - run: pnpm run lint:structure
+      - run: pnpm run test
+      - run: pnpm run build
+      - run: pnpm run test:e2e:ci

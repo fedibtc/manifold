@@ -1,0 +1,28 @@
+/.direnv
+/.flip/
+/.flip-docker-data/
+/result
+/result-*
+/target
+/tmp/
+/staging-data/
+/.isolate
+/.nix-deps/
+/.envrc.local
+/.defe.sock
+.pnpm-store/
+
+# Per-user Claude Code config (permissions are per user, not per repo)
+.claude/settings.json
+.claude/settings.local.json
+.claude/launch.json
+
+# agent-harness generated workflow docs / CI (kept local)
+/docs/fleet-manager/
+/.github/workflows/agent-task.yml
+
+# Superpowers SDD working artifacts — execution ledgers, task briefs/reports and
+# review diffs. Agent scratch, not project history. One file predated the
+# tool's own .gitignore and rode along tracked for months; ignoring the root
+# stops that recurring, since an ignore rule never untracks what is already in.
+/.superpowers/

@@ -1,0 +1,38 @@
+/* Fixed to the viewport rather than min-height, because this renders inside the
+   app shell's grid: a flow-positioned page would sit beside the sidebar instead
+   of over it. uCenteredPage still supplies the opaque surface and the centring. */
+.root {
+  @apply uCenteredPage fixed inset-0 z-50;
+}
+
+.card {
+  @apply uModalCard uStack4;
+}
+
+.heading {
+  @apply uPageHeading;
+}
+
+.intro {
+  @apply uIntro;
+}
+
+.versions {
+  @apply uStack2;
+}
+
+.versionRow {
+  @apply uKvRow;
+}
+
+.versionLabel {
+  @apply uLabel;
+}
+
+.versionValue {
+  @apply uMonoValue;
+}
+
+.note {
+  @apply uMutedSm;
+}

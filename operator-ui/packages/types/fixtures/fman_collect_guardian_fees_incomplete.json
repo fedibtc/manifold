@@ -1,0 +1,9 @@
+{
+  "awaiting_cycle_msat": null,
+  "claimed_msat": 1750000,
+  "incomplete": {
+    "error": "guardian-fee unlock could not be submitted; collection stopped",
+    "operation_submitted": false,
+    "phase": "unlock"
+  }
+}

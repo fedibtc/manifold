@@ -1,0 +1,67 @@
+.panel {
+  @apply fixed inset-y-0 right-0 z-50 flex items-stretch text-left;
+}
+
+/* Vertical pull-tab on the screen edge. It sits before the drawer in the DOM,
+   so flex puts it on the drawer's left and it reads as the handle pulling it
+   open. writing-mode has no Tailwind v3 utility, hence the raw declaration. */
+.launcher {
+  @apply self-center rounded-l-card bg-ink px-2 py-4 text-sm font-medium text-surface shadow-lg;
+
+  writing-mode: vertical-rl;
+}
+
+.body {
+  @apply flex w-96 flex-col border-l border-muted bg-surface shadow-lg;
+
+  animation: mock-drawer-in 200ms ease-out;
+}
+
+.tabs {
+  @apply flex shrink-0 border-b border-muted;
+}
+
+.tab {
+  @apply flex-1 truncate px-2 py-2 text-xs font-medium text-gray-500;
+}
+
+.tab[aria-selected="true"] {
+  @apply border-b-2 border-ink text-ink;
+}
+
+/* Shown instead of the tab bar when no route claims the visible surface. */
+.fallback {
+  @apply shrink-0 border-b border-muted px-3 py-2 text-xs text-gray-500;
+}
+
+/* The only scrolling region: the header, tab bar and footer stay pinned. */
+.content {
+  @apply flex-1 overflow-y-auto;
+}
+
+.footer {
+  @apply shrink-0 border-t border-muted;
+}
+
+/* Horizontal padding matches the scenario rows and the copy action, so the
+   drawer keeps one left edge top to bottom. border-t separates this from the
+   copy action above it; the footer itself owns shrink-0. */
+.reset {
+  @apply w-full border-t border-muted px-5 py-3 text-left text-sm font-medium text-ink;
+}
+
+@keyframes mock-drawer-in {
+  from {
+    transform: translateX(100%);
+  }
+
+  to {
+    transform: translateX(0);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .body {
+    animation: none;
+  }
+}

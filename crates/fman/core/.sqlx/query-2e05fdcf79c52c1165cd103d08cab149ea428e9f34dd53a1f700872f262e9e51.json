@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO identity (id, mnemonic, created_at_ms) VALUES (?, ?, ?)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": []
+  },
+  "hash": "2e05fdcf79c52c1165cd103d08cab149ea428e9f34dd53a1f700872f262e9e51"
+}

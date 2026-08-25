@@ -1,0 +1,31 @@
+.layout {
+  @apply uStack8;
+}
+
+.section {
+  @apply uStack4;
+}
+
+.sectionTitle {
+  @apply uSectionHeading;
+}
+
+.sources {
+  @apply uStack2;
+}
+
+.attesterList {
+  @apply uStack3;
+}
+
+.attesterRow {
+  @apply uInputRow;
+}
+
+.attesterInput {
+  @apply uInputRowField;
+}
+
+.remove {
+  @apply uRemoveBtn;
+}

@@ -1,0 +1,23 @@
+.root {
+  @apply uStack4;
+}
+
+.heading {
+  @apply uPageHeading;
+}
+
+.form {
+  @apply uStack1;
+}
+
+.label {
+  @apply uLabel;
+}
+
+.textarea {
+  @apply w-full rounded-card border border-muted px-3 py-2 font-mono text-sm;
+}
+
+.actions {
+  @apply uFormActions;
+}

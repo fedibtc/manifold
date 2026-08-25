@@ -1,0 +1,7 @@
+.root {
+  @apply flex min-h-screen justify-center bg-surface p-6 text-ink;
+}
+
+.panel {
+  @apply flex w-full max-w-2xl flex-col gap-6 pt-10;
+}

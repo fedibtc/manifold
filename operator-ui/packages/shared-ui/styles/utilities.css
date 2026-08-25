@@ -1,0 +1,159 @@
+/* Shared CSS utilities — cross-app (fleet-manager + liquidity-provider).
+ * Loaded into Tailwind by the shared preset (tailwind-preset.cjs via
+ * load-utilities.cjs), NOT imported as CSS — that registers each class as a
+ * component so `@apply uPageHeading` resolves in every module (dev + build).
+ * The `@layer utilities` wrapper is organizational; the loader reads the rules
+ * inside it. Promote a class here only once it's identical across both apps —
+ * see the sharing ladder in operator-ui/CLAUDE.md.
+ */
+
+@layer utilities {
+  .uCenteredPage {
+    @apply flex min-h-screen items-center justify-center bg-surface p-6 text-ink;
+  }
+  .uModalCard {
+    @apply w-full max-w-md rounded-card border border-muted p-6;
+  }
+  .uPageHeading {
+    @apply text-xl font-semibold leading-7 tracking-tight;
+  }
+  /* Title + subtitle pair. A plain block so the page stack's gap stops between
+     them and the subtitle's own 4px margin takes over. */
+  .uPageHead {
+    @apply flex flex-col;
+  }
+  .uIntro {
+    @apply mt-1 text-sm font-normal text-gray-500;
+  }
+  /* Field furniture. Order in the wireframe is label → hint → control → error,
+     at 4px / 8px / 8px; the 4px comes from the field stack, the rest from the
+     margins here. */
+  .uLabel {
+    @apply text-sm font-semibold text-ink;
+  }
+  .uFieldHint {
+    @apply mb-1 text-xs font-normal leading-relaxed text-gray-500;
+  }
+  .uFieldError {
+    @apply mt-1 text-xs font-normal text-error;
+  }
+  .uFieldControl {
+    @apply h-12 w-full rounded border border-strong bg-surface px-4 text-base font-normal placeholder:text-gray-500 focus:outline focus:outline-2 focus:outline-ink disabled:cursor-not-allowed disabled:bg-gray-50;
+  }
+  .uStack1 {
+    @apply flex flex-col gap-1;
+  }
+  .uStack2 {
+    @apply flex flex-col gap-2;
+  }
+  .uStack3 {
+    @apply flex flex-col gap-3;
+  }
+  .uStack4 {
+    @apply flex flex-col gap-4;
+  }
+  .uStack6 {
+    @apply flex flex-col gap-6;
+  }
+  .uMutedSm {
+    @apply text-sm text-ink/60;
+  }
+  .uMutedText {
+    @apply text-sm text-ink/70;
+  }
+  .uInkSm {
+    @apply text-sm text-ink;
+  }
+  /* A long opaque identifier — pubkey, path, watch id. Monospaced, small, and
+     allowed to break mid-token so it never forces a card wider than its column. */
+  .uLongIdText {
+    @apply break-all font-mono text-xs text-ink/70;
+  }
+  /* The form under an auth-prompt card's intro copy. */
+  .uAuthForm {
+    @apply mt-4;
+  }
+  .uRowCenter3 {
+    @apply flex items-center gap-3;
+  }
+  .uButtonSecondary {
+    @apply rounded-card border border-muted px-4 py-2 text-sm font-medium text-ink hover:bg-muted;
+  }
+  .uBorderedPanel {
+    @apply flex flex-col gap-2 rounded-card border border-muted p-4;
+  }
+  .uAlertRow {
+    @apply flex items-start gap-3;
+  }
+  .uAlertRowBody {
+    @apply flex flex-1 flex-col gap-1;
+  }
+  .uAlertRowTitle {
+    @apply text-sm font-semibold text-ink;
+  }
+  .uAlertRowDetail {
+    @apply font-mono text-xs text-ink/60;
+  }
+  .uAlertRowAction {
+    @apply shrink-0 text-sm font-medium text-info hover:opacity-80;
+  }
+  .uAppShell {
+    @apply min-h-screen bg-surface text-ink md:grid md:grid-cols-shell;
+  }
+  /* The active nav rail is a 3px left border, so the sidebar carries no
+     horizontal padding — its children do, and the rail sits flush to the edge. */
+  .uAppSidebar {
+    @apply flex flex-col border-b border-muted py-6 md:border-b-0 md:border-r;
+  }
+  .uAppBrand {
+    @apply mb-3 border-b border-muted px-4 pb-6 text-base font-semibold tracking-tight;
+  }
+  .uAppBrandSubtitle {
+    @apply mt-0.5 text-xs font-normal text-gray-500;
+  }
+  .uAppFooter {
+    @apply mt-auto border-t border-muted px-4 pt-4 text-xs font-normal text-gray-400;
+  }
+  .uAppMain {
+    @apply w-full max-w-content px-7 pb-10 pt-6;
+  }
+  /* Idle keeps a transparent rail of the same width so activating an item does
+     not shift its label. */
+  .uNavItemActive {
+    @apply block border-l-[3px] border-ink bg-gray-50 px-4 py-2 text-sm font-semibold text-ink;
+  }
+  .uNavItemIdle {
+    @apply block border-l-[3px] border-transparent px-4 py-2 text-sm font-medium text-gray-500 hover:bg-gray-50 hover:text-ink;
+  }
+  .uNavItemDisabled {
+    @apply block cursor-not-allowed border-l-[3px] border-transparent px-4 py-2 text-sm font-medium text-ink/40;
+  }
+  .uBootLoading {
+    @apply flex min-h-screen items-center justify-center bg-surface text-sm text-ink/60;
+  }
+  .uErrorGlyph {
+    @apply mb-4 flex h-10 w-10 items-center justify-center rounded-card bg-status-failed text-base font-semibold text-surface;
+  }
+  .uErrorDetail {
+    @apply my-4 rounded-card border border-muted p-3 font-mono text-xs text-ink/70;
+  }
+  .uRetryButton {
+    @apply w-full rounded-card bg-ink px-4 py-2 text-sm font-medium text-surface;
+  }
+  .uHelpText {
+    @apply mt-4 text-sm text-ink/60;
+  }
+  .uAuthGlyph {
+    @apply mb-4 flex h-10 w-10 items-center justify-center rounded-card bg-muted text-base text-ink;
+  }
+  .uAuthInput {
+    @apply uFieldControl mt-1;
+  }
+  .uAuthSubmitButton {
+    @apply mt-4 w-full rounded-card bg-ink px-4 py-2 text-sm font-medium text-surface;
+  }
+  /* A truncated value paired with its CopyButton. */
+  .uCopyRow {
+    @apply inline-flex items-center gap-1;
+  }
+}

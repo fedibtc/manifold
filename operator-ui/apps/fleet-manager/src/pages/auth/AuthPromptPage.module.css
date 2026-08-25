@@ -1,0 +1,39 @@
+.page {
+  @apply uCenteredPage;
+}
+
+.card {
+  @apply uModalCard;
+}
+
+.glyph {
+  @apply uAuthGlyph;
+}
+
+.title {
+  @apply uPageHeading;
+}
+
+.introText {
+  @apply uIntro;
+}
+
+.form {
+  @apply uAuthForm;
+}
+
+.fieldLabel {
+  @apply uLabel;
+}
+
+.input {
+  @apply uAuthInput;
+}
+
+.error {
+  @apply mt-2 block text-xs font-semibold text-error;
+}
+
+.submit {
+  @apply uAuthSubmitButton;
+}

@@ -1,0 +1,27 @@
+.page {
+  @apply uCenteredPage;
+}
+
+.card {
+  @apply uModalCard;
+}
+
+.title {
+  @apply uPageHeading;
+}
+
+.bodyIntro {
+  @apply uIntro;
+}
+
+.detail {
+  @apply uErrorDetail;
+}
+
+.retry {
+  @apply uRetryButton;
+}
+
+.help {
+  @apply uHelpText;
+}

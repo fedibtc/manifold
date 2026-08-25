@@ -1,0 +1,20 @@
+.kv {
+  @apply grid gap-x-6 gap-y-2 text-sm;
+  grid-template-columns: max-content 1fr;
+}
+
+.key {
+  @apply text-ink/50;
+}
+
+.value {
+  @apply text-ink;
+}
+
+.mono {
+  @apply uMono;
+}
+
+.note {
+  @apply mt-4 text-xs text-ink/50;
+}

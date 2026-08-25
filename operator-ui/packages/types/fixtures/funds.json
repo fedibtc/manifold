@@ -1,0 +1,35 @@
+{
+  "balance": {
+    "spendable": 4200000,
+    "pending_incoming": 150000,
+    "pending_outgoing": 50000,
+    "in_flight_allocations": 800000,
+    "fee_reserve": 150000,
+    "available_balance": 3250000
+  },
+  "replenishment": "ok",
+  "gateway": {
+    "gateway_id": "gw-signet-01",
+    "gateway_name": "Mock Signet Gateway",
+    "status": "available",
+    "available_amount": 3000000,
+    "observed_at": 1721476800
+  },
+  "stability_pool": {
+    "status": "available",
+    "available_amount": 250000,
+    "observed_at": 1721476800
+  },
+  "effective_liquidity": [
+    {
+      "source_type": "gateway",
+      "gateway_id": "gw-signet-01",
+      "amount": 3000000
+    },
+    {
+      "source_type": "stability_pool",
+      "gateway_id": null,
+      "amount": 250000
+    }
+  ]
+}

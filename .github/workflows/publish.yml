@@ -1,0 +1,408 @@
+name: Publish images
+
+# Image publishing is deliberately separate from SelfCI so registry credentials
+# and writes remain unavailable to pull requests. SelfCI builds UI-embedded
+# CI-profile packaging checks without registry access; this workflow alone
+# builds the release-profile aggregate and performs the privileged registry
+# side effects.
+on:
+  push:
+    branches:
+      - master
+  workflow_dispatch:
+    inputs:
+      architectures:
+        # A single-arch run moves the moving/extra tags to a single-platform
+        # list. Umbrel devices are mostly arm64: an amd64-only publish makes
+        # those tags unpullable for them until the next full run. Prefer
+        # immutable <sha> tags on devices.
+        description: 'Architectures to build and publish'
+        type: choice
+        default: both
+        options:
+          - both
+          - amd64
+          - arm64
+      extra_tag:
+        description: 'Optional extra tag to publish alongside <sha> (e.g. staging)'
+        type: string
+        required: false
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  # Required to push the images to this org's GHCR packages (`GITHUB_TOKEN` is
+  # the registry credential; no new secret). The packages are created private
+  # on first push; flipping them public is a deliberate one-time visibility
+  # change in the org package settings, after which consumers (staging
+  # Kubernetes, Umbrel devices) pull anonymously.
+  packages: write
+
+env:
+  GHCR_REGISTRY: ghcr.io
+  GHCR_REPO_FLEET_MANAGER: ghcr.io/fedibtc/manifold-fman
+  GHCR_REPO_LIQUIDITY_MANAGER: ghcr.io/fedibtc/manifold-flip
+  GHCR_REPO_CLOUD_FMAN_TELEMETRY: ghcr.io/fedibtc/manifold-cloud-fman-telemetry
+  GHCR_REPO_PUSH_GATEWAY: ghcr.io/fedibtc/manifold-push-gateway
+
+jobs:
+  # Resolves what this run publishes, so the build matrix and the manifest job
+  # cannot disagree about which architectures exist. A `push` always does both;
+  # a manual run may pick one, which matters because the arm64 leg is hours
+  # long and a quick amd64-only publish is often what is actually wanted.
+  setup:
+    name: Resolve publish plan
+    runs-on: [self-hosted, linux]
+    timeout-minutes: 5
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+      arches: ${{ steps.plan.outputs.arches }}
+      moving_tag: ${{ steps.plan.outputs.moving_tag }}
+      extra_tag: ${{ steps.plan.outputs.extra_tag }}
+    steps:
+      - name: Resolve architectures and tags
+        id: plan
+        env:
+          # Empty on `push`, which is what selects the `both` default below.
+          REQUESTED: ${{ inputs.architectures }}
+          EXTRA_TAG: ${{ inputs.extra_tag }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+
+          amd64='{"arch":"amd64","runs-on":["self-hosted","linux"],"nix-system":"x86_64-linux","install-nix":false,"timeout":90}'
+          # `linux-arm64-8core` is the same aarch64 runner fedibtc/fedi builds
+          # its arm64 containers on. It does not ship Nix, and until the pushed
+          # closures accumulate in the `fedibtc` Cachix cache this leg compiles
+          # the native tree -- rocksdb, jemalloc, aws-lc -- from source. Hence
+          # the much larger budget.
+          arm64='{"arch":"arm64","runs-on":["linux-arm64-8core"],"nix-system":"aarch64-linux","install-nix":true,"timeout":240}'
+
+          case "${REQUESTED:-both}" in
+            amd64) matrix="[$amd64]"; arches="amd64" ;;
+            arm64) matrix="[$arm64]"; arches="arm64" ;;
+            both)  matrix="[$amd64,$arm64]"; arches="amd64 arm64" ;;
+            *) echo "unrecognized architectures input: $REQUESTED" >&2; exit 1 ;;
+          esac
+
+          # Docker tags cannot contain `/`, and branch names routinely do.
+          moving_tag="$(printf '%s' "$REF_NAME" | tr '/' '-')"
+
+          {
+            echo "matrix=$matrix"
+            echo "arches=$arches"
+            echo "moving_tag=$moving_tag"
+            echo "extra_tag=${EXTRA_TAG:-}"
+          } >> "$GITHUB_OUTPUT"
+
+          echo "publishing $arches; moving tag '$moving_tag'; extra tag '${EXTRA_TAG:-<none>}'"
+
+  build:
+    name: Build and push (${{ matrix.arch }})
+    needs: setup
+    runs-on: ${{ matrix.runs-on }}
+    timeout-minutes: ${{ matrix.timeout }}
+    strategy:
+      # One architecture failing should not hide whether the other one builds.
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.setup.outputs.matrix) }}
+
+    steps:
+      # With `packages: write` in this workflow, the job's GITHUB_TOKEN is a
+      # registry write credential. Do not let checkout persist it into
+      # .git/config for the (long) build on this shared runner: nothing after
+      # checkout needs git authentication.
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+
+      # The aarch64 runner does not ship Nix; the x86_64 one does, and SelfCI
+      # already depends on that.
+      - uses: cachix/install-nix-action@08dcb3a5e62fa31e2da3d490afc4176ef55ecd72 # v30
+        if: matrix.install-nix
+        with:
+          extra_nix_config: |
+            connect-timeout = 15
+            stalled-download-timeout = 15
+
+      - name: Verify Nix installation
+        run: nix --version
+
+      # Archive the inputs and root their paths so a concurrent GC cannot
+      # collect them mid-build.
+      - name: Archive Nix inputs
+        run: nix flake archive --no-update-lock-file --json > "$RUNNER_TEMP/publish-flake-archive.json"
+
+      - name: Root archived Nix inputs
+        run: .github/scripts/root-flake-archive "$RUNNER_TEMP/publish-flake-archive.json" "$RUNNER_TEMP/publish-nix-roots"
+
+      # Consumes the public cache here; the explicit push step below publishes
+      # the built image closures back. `skipPush: true` keeps the action's
+      # implicit whole-profile upload off this shared runner: only the paths
+      # named by the push step leave the machine.
+      - uses: cachix/cachix-action@ad2ddac53f961de1989924296a1f236fcfbaa4fc # v15
+        with:
+          name: fedibtc
+          skipPush: true
+        continue-on-error: true
+
+      # One system-qualified aggregate owns every release image so the FMan,
+      # FLIP, cloud collector and push gateway package selections cannot drift
+      # between separate workflow steps. SelfCI checks the same image
+      # constructors and embedded UI with CI-profile daemons, avoiding a second
+      # release Cargo graph on every pull request.
+      - name: Build release images
+        run: |
+          nix build --accept-flake-config -L \
+            ".#packages.${{ matrix.nix-system }}.release-container-images" \
+            -o result-release-images
+
+      # This workflow only runs on master pushes and manual dispatch, never on
+      # pull requests, so pushing from here cannot be reached by untrusted
+      # code. Pushes exactly the built release closure -- no daemon or
+      # watch-store mode that could pick up other jobs' paths on this shared
+      # runner. A cache outage should not fail a publish.
+      - name: Push release image closure to Cachix
+        continue-on-error: true
+        env:
+          CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "$CACHIX_AUTH_TOKEN" ]; then
+            echo "CACHIX_AUTH_TOKEN not available; skipping cache push"
+            exit 0
+          fi
+          # cachix comes from the cachix-action step, which is itself
+          # continue-on-error; skip cleanly rather than dying on a missing
+          # binary when that step failed.
+          if ! command -v cachix > /dev/null; then
+            echo "cachix not on PATH (cachix-action step failed?); skipping cache push"
+            exit 0
+          fi
+          cachix push fedibtc "$(readlink -f result-release-images)"
+
+      # `docker load` prints "Loaded image: <name>:<tag>"; capture that rather
+      # than reconstructing the name, so a flake-side rename cannot silently
+      # push a stale or wrong image.
+      - name: Load images into the local Docker store
+        run: |
+          set -euo pipefail
+          fman_tag=$(.github/scripts/load-single-docker-image result-release-images/fleet-manager-image)
+          flip_tag=$(.github/scripts/load-single-docker-image result-release-images/liquidity-manager-image)
+          cloud_fman_telemetry_tag=$(.github/scripts/load-single-docker-image result-release-images/cloud-fman-telemetry-image)
+          push_gateway_tag=$(.github/scripts/load-single-docker-image result-release-images/push-gateway-image)
+          {
+            echo "fleet_manager_nix_tag=$fman_tag"
+            echo "liquidity_manager_nix_tag=$flip_tag"
+            echo "cloud_fman_telemetry_nix_tag=$cloud_fman_telemetry_tag"
+            echo "push_gateway_nix_tag=$push_gateway_tag"
+          } >> "$GITHUB_ENV"
+
+      - name: Log in to GHCR
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          printf '%s' "$GHCR_TOKEN" \
+            | docker login "$GHCR_REGISTRY" -u "$GITHUB_ACTOR" --password-stdin
+
+      # The packages were recreated from post-scrub source and flipped public
+      # at the repo cutover. Assert they stay public: an accidental flip back
+      # to private would silently lock out the anonymous consumers (staging
+      # Kubernetes, Umbrel devices), so refuse to publish instead. A 404 is an
+      # error too — all four packages exist after the recreation, so a missing
+      # one means the check is aimed at the wrong place.
+      - name: Require public GHCR packages
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          check_public() {
+            local pkg="$1" response code body visibility
+            response=$(curl -sS -w '\n%{http_code}' \
+              -H "Authorization: Bearer $GHCR_TOKEN" \
+              -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/orgs/fedibtc/packages/container/$pkg")
+            code=${response##*$'\n'}
+            body=${response%$'\n'*}
+            case "$code" in
+              200)
+                # The response embeds the linked repository, which carries its
+                # own `visibility` field; with the repo public, a whole-body
+                # text match would pass on the repo's visibility even when the
+                # package is private. Read the top-level field instead. The
+                # nix fallback covers a runner without jq -- nix is guaranteed
+                # here because this workflow builds with it.
+                visibility=$(printf '%s' "$body" \
+                  | { command -v jq > /dev/null && jq -r '.visibility' \
+                      || nix run nixpkgs#jq -- -r '.visibility'; })
+                if [ "$visibility" = "public" ]; then
+                  echo "$pkg: public"
+                else
+                  echo "ERROR: GHCR package $pkg has visibility '$visibility'; refusing to publish" >&2
+                  exit 1
+                fi
+                ;;
+              *)
+                echo "ERROR: GHCR visibility check for $pkg failed with HTTP $code" >&2
+                exit 1
+                ;;
+            esac
+          }
+          check_public manifold-fman
+          check_public manifold-flip
+          check_public manifold-cloud-fman-telemetry
+          check_public manifold-push-gateway
+
+      # Per-architecture tags only. The multi-arch manifest lists that consumers
+      # actually pull are assembled in the `manifest` job once every
+      # architecture has pushed, so a canonical tag is never momentarily
+      # single-platform.
+      - name: Push architecture-specific tags
+        env:
+          ARCH: ${{ matrix.arch }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          push_one() {
+            local nix_tag="$1" dest_repo="$2"
+            local dest="$dest_repo:$SHA-$ARCH"
+            docker tag "$nix_tag" "$dest"
+            docker push "$dest"
+          }
+          push_one "$fleet_manager_nix_tag" "$GHCR_REPO_FLEET_MANAGER"
+          push_one "$liquidity_manager_nix_tag" "$GHCR_REPO_LIQUIDITY_MANAGER"
+          push_one "$cloud_fman_telemetry_nix_tag" "$GHCR_REPO_CLOUD_FMAN_TELEMETRY"
+          push_one "$push_gateway_nix_tag" "$GHCR_REPO_PUSH_GATEWAY"
+
+      # The runners are long-lived, so nothing here may outlive the job:
+      # `docker login` credentials persist in the runner's Docker config, and
+      # `nix build -o` leaves indirect GC roots pinning the image closures.
+      - name: Clean up credentials and build roots
+        if: always()
+        run: |
+          docker logout "$GHCR_REGISTRY" || true
+          rm -f result-release-images
+          rm -rf "$RUNNER_TEMP/publish-nix-roots" "$RUNNER_TEMP/publish-flake-archive.json"
+
+  manifest:
+    name: Publish multi-arch manifests
+    needs: [setup, build]
+    runs-on: [self-hosted, linux]
+    timeout-minutes: 15
+    steps:
+      # `docker buildx imagetools` assembles and inspects the lists. `docker
+      # manifest` would also work but is gated behind the experimental CLI flag
+      # and keeps local scratch state in ~/.docker/manifests that has to be
+      # cleared between runs on a persistent runner. `imagetools` is stateless
+      # and reads from the registry, so neither hazard applies.
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+
+      - name: Log in to GHCR
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          printf '%s' "$GHCR_TOKEN" \
+            | docker login "$GHCR_REGISTRY" -u "$GITHUB_ACTOR" --password-stdin
+
+      # `<sha>` is the immutable identity to deploy and roll back to. Only a full
+      # two-architecture run may create it, and reruns verify rather than replace
+      # it. The moving tag (`master` for the usual case) is the pointer for
+      # staging; moving and optional tags may intentionally become single-platform
+      # after a single-architecture dispatch.
+      #
+      # This job is the sole writer of the canonical, unsuffixed tags, and
+      # `needs: build` requires every matrix leg to have succeeded. So an
+      # architecture that failed to build cannot end up silently missing from a
+      # published list: the run goes red and the canonical tag is simply not
+      # written, leaving the previous one in place.
+      - name: Create and push manifest lists
+        env:
+          SHA: ${{ github.sha }}
+          ARCHES: ${{ needs.setup.outputs.arches }}
+          MOVING_TAG: ${{ needs.setup.outputs.moving_tag }}
+          EXTRA_TAG: ${{ needs.setup.outputs.extra_tag }}
+        run: |
+          set -euo pipefail
+
+          # Expected platform set, sorted, to compare the registry against.
+          expected=$(for arch in $ARCHES; do echo "linux/$arch"; done | sort | tr '\n' ' ')
+
+          # Moving and extra tags are allowed to change, including to a
+          # single-platform list. They must never alias the write-once SHA tag and
+          # bypass its full-plan and existence checks.
+          if [ "$MOVING_TAG" = "$SHA" ] || \
+             { [ -n "$EXTRA_TAG" ] && [ "$EXTRA_TAG" = "$SHA" ]; }; then
+            echo "ERROR: moving and extra tags must not equal the immutable SHA tag" >&2
+            exit 1
+          fi
+
+          publish_manifest() {
+            local repo="$1" tag="$2" immutable="${3:-false}"
+            local list="$repo:$tag"
+            local sources=()
+            for arch in $ARCHES; do
+              sources+=("$repo:$SHA-$arch")
+            done
+
+            if [ "$immutable" = true ]; then
+              # SHA lists are write-once. A successful partial publish must not
+              # make its retries fail, so accept an existing list and verify it
+              # below. Distinguish absence from registry/auth/network failures:
+              # treating every failed inspection as absence could overwrite the
+              # supposedly immutable identity during a transient error.
+              local inspect_output
+              if inspect_output=$(docker buildx imagetools inspect "$list" 2>&1); then
+                echo "Immutable manifest $list already exists; leaving it unchanged"
+              else
+                case "$inspect_output" in
+                  *"not found"* | *"manifest unknown"*)
+                    docker buildx imagetools create --tag "$list" "${sources[@]}"
+                    ;;
+                  *)
+                    echo "ERROR: cannot establish whether immutable manifest $list exists" >&2
+                    printf '%s\n' "$inspect_output" >&2
+                    exit 1
+                    ;;
+                esac
+              fi
+            else
+              docker buildx imagetools create --tag "$list" "${sources[@]}"
+            fi
+
+            # Verify what the registry actually serves, not a local copy.
+            # `awk 'NF'` drops the blank fields the template's trailing spaces
+            # produce; the runner's PATH has gawk but not grep.
+            local served
+            served=$(docker buildx imagetools inspect --format \
+              '{{range .Manifest.Manifests}}{{.Platform.OS}}/{{.Platform.Architecture}} {{end}}' \
+              "$list" | tr ' ' '\n' | awk 'NF' | sort | tr '\n' ' ')
+            if [ "$served" != "$expected" ]; then
+              echo "ERROR: $list must serve exactly '$expected', got '$served'" >&2
+              exit 1
+            fi
+            echo "OK: $list serves $served"
+          }
+
+          for repo in \
+            "$GHCR_REPO_FLEET_MANAGER" \
+            "$GHCR_REPO_LIQUIDITY_MANAGER" \
+            "$GHCR_REPO_CLOUD_FMAN_TELEMETRY" \
+            "$GHCR_REPO_PUSH_GATEWAY"; do
+            publish_manifest "$repo" "$MOVING_TAG"
+            if [ -n "$EXTRA_TAG" ]; then
+              publish_manifest "$repo" "$EXTRA_TAG"
+            fi
+            if [ "$ARCHES" = "amd64 arm64" ]; then
+              publish_manifest "$repo" "$SHA" true
+            fi
+          done
+
+      - name: Clean up credentials
+        if: always()
+        run: |
+          docker logout "$GHCR_REGISTRY" || true

@@ -1,0 +1,64 @@
+id: fleet-manager
+title: Fleet Manager
+version: 0.1.0
+release-notes: |
+  Initial 0.1 package skeleton. Bundles the flake-pinned fedimintd and
+  starts fleet-manager on Bitcoin mainnet using platform Bitcoin Core RPC.
+license: MIT
+wrapper-repo: "https://github.com/fedibtc/manifold"
+upstream-repo: "https://github.com/fedibtc/manifold"
+support-site: "https://github.com/fedibtc/manifold/issues"
+marketing-site: "https://fedimint.org/"
+# The image is built with Nix (no Dockerfile) and bundles the flake-pinned
+# fedimintd. Load it and tag it as the manifest's `main` image:
+build:
+  - "nix build .#fleet-manager-oci-image"
+  - "docker load -i result"
+  - "docker tag fleet-manager:0.1.0 main"
+description:
+  short: Fleet Manager 0.1 guardian host
+  long: |
+    Fleet Manager accepts Federation Initiator requests over Iroh, reserves local
+    guardian seats, and supervises bundled fedimintd children. The 0.1 package
+    profile is mainnet-only and depends on a platform Bitcoin Core service.
+assets: {}
+main:
+  type: docker
+  image: main
+  # The Nix image exposes the entrypoint wrapper at a stable, store-hash-
+  # independent path (in addition to its own store-path Entrypoint) and points
+  # FLEET_MANAGER_FEDIMINTD_PATH at the bundled fedimintd. Pin the stable path
+  # here so it survives fedimintd/wrapper rebuilds.
+  entrypoint: "/usr/local/bin/fleet-manager-entrypoint"
+  args: []
+  mounts:
+    main: /data
+  environment:
+    FLEET_MANAGER_DATA_DIR: /data
+    FLEET_MANAGER_MANIFOLD_ENVIRONMENT: production
+    # Required package input supplied by deployment configuration. Do not
+    # replace with a placeholder origin in a release artifact.
+    FLEET_MANAGER_PUSH_GATEWAY_ORIGIN: "${FLEET_MANAGER_PUSH_GATEWAY_ORIGIN}"
+    # StartOS Bitcoin Core dependency assumptions; final packaging should map
+    # these from the selected bitcoind service config/dependency properties.
+    FLEET_MANAGER_BITCOIND_URL: "http://bitcoind.embassy:8332"
+    FLEET_MANAGER_BITCOIND_USERNAME: "${BITCOIND_RPC_USER}"
+    FLEET_MANAGER_BITCOIND_PASSWORD: "${BITCOIND_RPC_PASSWORD}"
+# Final packaging must also publish the seat iroh UDP port grid (see "Seat
+# iroh reachability" in ../README.md) or seats silently peer via relays only.
+hardware-requirements:
+  arch:
+    - x86_64
+    - aarch64
+volumes:
+  main:
+    type: data
+dependencies:
+  bitcoind:
+    version: ">=24.0.0 <31.0.0"
+    requirement:
+      type: required
+    description: "Provides Bitcoin Core mainnet RPC for fedimintd children."
+backup:
+  create: null
+  restore: null

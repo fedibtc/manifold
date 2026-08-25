@@ -1,0 +1,29 @@
+[package]
+name = "fman-telemetry"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+base64 = "0.22"
+bounded-rolling-file = { path = "../../bounded-rolling-file" }
+fedi-decentralized-domain = { path = "../../domain" }
+fedi-decentralized-guardian-metrics-policy = { path = "../../guardian-metrics-policy" }
+fedi-decentralized-service-fleet-manager = { path = "../../service-fleet-manager" }
+fman-core = { path = "../core" }
+fman-nostr = { path = "../nostr" }
+hex = "0.4"
+nostr-sdk = "0.44"
+rand = "0.8"
+reqwest = { version = "0.12", default-features = false, features = [
+  "rustls-tls-native-roots",
+  "rustls-tls-webpki-roots",
+] }
+serde_json = "1"
+sha2 = "0.10"
+tokio = { workspace = true, features = ["rt", "sync", "time"] }
+tracing = "0.1"
+
+[dev-dependencies]
+tempfile = "3"

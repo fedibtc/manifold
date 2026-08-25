@@ -1,0 +1,27 @@
+.root {
+  @apply uStack4;
+}
+
+.head {
+  @apply uPageHead;
+}
+
+.heading {
+  @apply uPageHeading;
+}
+
+.intro {
+  @apply uIntro;
+}
+
+.statusLine {
+  @apply uRowCenter3 text-sm text-ink;
+}
+
+.spinner {
+  @apply inline-block h-4 w-4 shrink-0 animate-spin rounded-full border-2 border-muted border-t-ink motion-reduce:animate-none;
+}
+
+.actions {
+  @apply uFormActions;
+}

@@ -1,0 +1,27 @@
+.root {
+  @apply uStack3 items-start;
+}
+
+.step {
+  @apply uActionStack;
+}
+
+.note {
+  @apply uFieldHint;
+}
+
+.outcome {
+  @apply uActionOutcome;
+}
+
+.operation {
+  @apply uCopyRow;
+}
+
+.operationId {
+  @apply uMono;
+}
+
+.error {
+  @apply uFieldError;
+}

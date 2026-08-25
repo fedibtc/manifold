@@ -1,0 +1,23 @@
+.root {
+  @apply uStack6;
+}
+
+.muted {
+  @apply text-sm text-ink/50;
+}
+
+.actions {
+  @apply uWrapRow2;
+}
+
+.relayActions {
+  @apply flex justify-end;
+}
+
+.note {
+  @apply uNoteXs;
+}
+
+.blockingReasons {
+  @apply uListSm;
+}

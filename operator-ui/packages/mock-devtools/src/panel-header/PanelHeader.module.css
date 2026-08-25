@@ -1,0 +1,31 @@
+.header {
+  @apply shrink-0 border-b border-muted px-3 py-2;
+}
+
+.titleRow {
+  @apply flex items-center justify-between gap-2;
+}
+
+.title {
+  @apply truncate text-sm font-semibold text-ink;
+}
+
+.close {
+  @apply shrink-0 px-1 text-sm text-gray-500 hover:text-ink;
+}
+
+.scenario {
+  @apply mt-1 text-xs text-gray-500;
+}
+
+.scenarioName {
+  @apply font-medium text-ink;
+}
+
+.errors {
+  @apply mt-1 flex items-center justify-between gap-2 text-xs text-gray-500;
+}
+
+.clearErrors {
+  @apply shrink-0 font-medium text-ink underline;
+}

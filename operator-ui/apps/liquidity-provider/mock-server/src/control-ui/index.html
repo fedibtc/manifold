@@ -1,0 +1,505 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>FLIP mock control</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        --bg: #14161a;
+        --panel: #1d2026;
+        --panel-2: #262a32;
+        --border: #333844;
+        --text: #e6e8ec;
+        --muted: #9aa1ac;
+        --accent: #5b8cff;
+        --accent-text: #ffffff;
+        --ok: #4ec9a5;
+        --err: #ff6b6b;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--text);
+        font: 14px/1.45 ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+      }
+      header {
+        padding: 16px 20px;
+        border-bottom: 1px solid var(--border);
+        background: var(--panel);
+      }
+      header h1 {
+        margin: 0 0 4px;
+        font-size: 16px;
+        letter-spacing: 0.02em;
+      }
+      .baseurl {
+        color: var(--muted);
+        font-size: 12px;
+      }
+      #status {
+        margin-top: 8px;
+        padding: 6px 10px;
+        border-radius: 6px;
+        background: var(--panel-2);
+        color: var(--muted);
+        min-height: 18px;
+        word-break: break-word;
+      }
+      #status.ok {
+        color: var(--ok);
+      }
+      #status.err {
+        color: var(--err);
+      }
+      main {
+        display: grid;
+        grid-template-columns: minmax(320px, 1fr) minmax(360px, 1.2fr);
+        gap: 16px;
+        padding: 20px;
+        align-items: start;
+      }
+      section {
+        background: var(--panel);
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        padding: 14px 16px;
+        margin-bottom: 16px;
+      }
+      section h2 {
+        margin: 0 0 4px;
+        font-size: 12px;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        color: var(--muted);
+      }
+      section > .section-desc {
+        color: var(--muted);
+        font-size: 11px;
+        margin: 0 0 12px;
+      }
+      /* Settings-row: label + description on the left, control on the right. */
+      .setting-row {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        padding: 10px 0;
+        border-bottom: 1px solid var(--border);
+      }
+      .setting-row:last-child {
+        border-bottom: none;
+        padding-bottom: 0;
+      }
+      .setting-row:first-child {
+        padding-top: 0;
+      }
+      .setting-row__text {
+        display: flex;
+        flex-direction: column;
+        gap: 3px;
+        min-width: 0;
+      }
+      .setting-row__title {
+        font-weight: 600;
+      }
+      .setting-row__desc {
+        color: var(--muted);
+        font-size: 11px;
+        line-height: 1.5;
+      }
+      .setting-row__affects {
+        display: inline-block;
+        margin-top: 2px;
+        color: var(--accent);
+        font-size: 10px;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+      }
+      .setting-row__control {
+        flex-shrink: 0;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+      .row {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        flex-wrap: wrap;
+        margin-bottom: 10px;
+      }
+      .row:last-child {
+        margin-bottom: 0;
+      }
+      label {
+        color: var(--muted);
+        min-width: 74px;
+      }
+      button {
+        font: inherit;
+        cursor: pointer;
+        padding: 7px 12px;
+        border-radius: 6px;
+        border: 1px solid var(--border);
+        background: var(--panel-2);
+        color: var(--text);
+      }
+      button:hover {
+        border-color: var(--accent);
+      }
+      button.accent {
+        background: var(--accent);
+        border-color: var(--accent);
+        color: var(--accent-text);
+      }
+      button.danger:hover {
+        border-color: var(--err);
+        color: var(--err);
+      }
+      input,
+      select {
+        font: inherit;
+        padding: 6px 8px;
+        border-radius: 6px;
+        border: 1px solid var(--border);
+        background: var(--panel-2);
+        color: var(--text);
+      }
+      input[type="number"] {
+        width: 96px;
+      }
+      textarea {
+        width: 100%;
+        min-height: 420px;
+        font: 12px/1.5 ui-monospace, Menlo, monospace;
+        padding: 10px;
+        border-radius: 8px;
+        border: 1px solid var(--border);
+        background: #0f1115;
+        color: var(--text);
+        resize: vertical;
+      }
+      .full {
+        grid-column: 1 / -1;
+      }
+      .hint {
+        color: var(--muted);
+        font-size: 11px;
+        margin-top: 8px;
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>FLIP mock control</h1>
+      <div class="baseurl">base: <span id="base"></span></div>
+      <div id="status">idle</div>
+    </header>
+
+    <main>
+      <div>
+        <section>
+          <h2>Scenarios</h2>
+          <p class="section-desc">Swap the whole mock world for a named snapshot. Reload the app tab after applying.</p>
+          <div id="scenarios"></div>
+        </section>
+
+        <section>
+          <h2>Quick patches</h2>
+          <p class="section-desc">Tweak one field of the current state without a full scenario swap.</p>
+          <div class="setting-row">
+            <div class="setting-row__text">
+              <span class="setting-row__title">phase</span>
+              <span class="setting-row__desc">Daemon rollout phase (9 / 10 / 11). Gates whichever methods are listed in <code>DEFERRED_PHASE</code> (empty today — no method is currently phase-gated).</span>
+              <span class="setting-row__affects">Affects: app-wide (route availability)</span>
+            </div>
+            <div class="setting-row__control">
+              <select id="phase">
+                <option value="9">9</option>
+                <option value="10">10</option>
+                <option value="11">11</option>
+              </select>
+              <button type="button" data-apply="phase">Apply</button>
+            </div>
+          </div>
+          <div class="setting-row">
+            <div class="setting-row__text">
+              <span class="setting-row__title">bootMode</span>
+              <span class="setting-row__desc">normal boots straight through; restore replays the boot-gate's restore-in-progress path.</span>
+              <span class="setting-row__affects">Affects: boot gate (first load of every screen)</span>
+            </div>
+            <div class="setting-row__control">
+              <select id="bootMode">
+                <option value="normal">normal</option>
+                <option value="restore">restore</option>
+              </select>
+              <button type="button" data-apply="bootMode">Apply</button>
+            </div>
+          </div>
+          <div class="setting-row">
+            <div class="setting-row__text">
+              <span class="setting-row__title">latencyMs</span>
+              <span class="setting-row__desc">Artificial delay added before every admin response. Use it to check loading/skeleton states.</span>
+              <span class="setting-row__affects">Affects: app-wide (loading states)</span>
+            </div>
+            <div class="setting-row__control">
+              <input id="latencyMs" type="number" min="0" step="50" value="0" />
+              <button type="button" data-apply="latencyMs">Apply</button>
+            </div>
+          </div>
+        </section>
+
+        <section>
+          <h2>Error injection</h2>
+          <p class="section-desc">Force one admin method to fail with a service-error code, so you can test the screen(s) that call it. Persists until cleared or reset.</p>
+          <div class="setting-row">
+            <div class="setting-row__text">
+              <span class="setting-row__title">method</span>
+              <span class="setting-row__desc">The admin RPC method name to fail, e.g. <code>get_funds</code> (Funds), <code>create_deposit_address</code> (Funds → Top up), <code>list_liquidity_requests</code> (Requests), <code>list_allocations</code> (Allocations). Pick from the list or type any of the 15 routed methods.</span>
+              <span class="setting-row__affects">Affects: whichever screen calls this method</span>
+            </div>
+            <div class="setting-row__control">
+              <input id="method" list="methods" placeholder="get_setup_state" />
+              <datalist id="methods">
+                <option value="get_setup_state"></option>
+                <option value="validate_setup"></option>
+                <option value="apply_setup_config"></option>
+                <option value="get_advertisement_state"></option>
+                <option value="republish_advertisement"></option>
+                <option value="withdraw_advertisement"></option>
+                <option value="get_funds"></option>
+                <option value="get_health"></option>
+                <option value="list_wallet_operations"></option>
+                <option value="create_deposit_address"></option>
+                <option value="request_withdrawal"></option>
+                <option value="list_liquidity_requests"></option>
+                <option value="get_liquidity_request"></option>
+                <option value="list_allocations"></option>
+                <option value="get_allocation"></option>
+                <option value="attestation_install"></option>
+              </datalist>
+            </div>
+          </div>
+          <div class="setting-row">
+            <div class="setting-row__text">
+              <span class="setting-row__title">code</span>
+              <span class="setting-row__desc">The service-error code the method should return. <code>(clear)</code> removes the forced error for this method.</span>
+              <span class="setting-row__affects">Affects: response for the method above only</span>
+            </div>
+            <div class="setting-row__control">
+              <select id="code">
+                <option value="invalid_argument">invalid_argument</option>
+                <option value="permission_denied">permission_denied</option>
+                <option value="not_found">not_found</option>
+                <option value="unavailable">unavailable</option>
+                <option value="failed_precondition">failed_precondition</option>
+                <option value="internal">internal</option>
+                <option value="unknown">unknown</option>
+                <option value="503">503</option>
+                <option value="__clear">(clear)</option>
+              </select>
+              <button type="button" id="apply-error">Apply</button>
+            </div>
+          </div>
+        </section>
+
+        <section>
+          <h2>Lifecycle</h2>
+          <div class="setting-row">
+            <div class="setting-row__text">
+              <span class="setting-row__title">Tick</span>
+              <span class="setting-row__desc">Runs the mock's deterministic republish step (advertisement flips to published if it's ready).</span>
+              <span class="setting-row__affects">Affects: Advertisement</span>
+            </div>
+            <div class="setting-row__control">
+              <button type="button" id="tick">Tick</button>
+            </div>
+          </div>
+          <div class="setting-row">
+            <div class="setting-row__text">
+              <span class="setting-row__title">Reset</span>
+              <span class="setting-row__desc">Restores the default <code>setup-fresh</code> scenario and clears all forced errors.</span>
+              <span class="setting-row__affects">Affects: every screen</span>
+            </div>
+            <div class="setting-row__control">
+              <button type="button" id="reset" class="danger">Reset</button>
+            </div>
+          </div>
+        </section>
+      </div>
+
+      <section>
+        <h2>Raw MockState</h2>
+        <textarea id="state" spellcheck="false"></textarea>
+        <div class="row" style="margin-top: 10px">
+          <button type="button" id="apply-state" class="accent">Apply state</button>
+          <button type="button" id="refresh">Refresh</button>
+        </div>
+        <div class="hint">
+          No GET-state endpoint exists in Phase 2; Refresh issues a no-op
+          <code>POST /__control/patch {}</code> which returns the current state
+          unchanged.
+        </div>
+      </section>
+    </main>
+
+    <script>
+      // Scenario metadata is hardcoded to match mock-server/src/scenarios.ts
+      // (Phase 2 exposes no list endpoint). Keep in sync with `builders` there,
+      // and with the "8 scenarios" table in docs/qa/liquidity-provider/index.html.
+      const SCENARIOS = [
+        {
+          name: "setup-fresh",
+          desc: "Brand-new, nothing configured.",
+          affects: "Setup gate + wizard",
+        },
+        {
+          name: "setup-pending",
+          desc: "Config saved but validation failed.",
+          affects: "Setup soft-fail state",
+        },
+        {
+          name: "all-clear",
+          desc: "Ready & healthy, everything green.",
+          affects: "Overview, Funds, all happy paths",
+        },
+        {
+          name: "funds-critical",
+          desc: "Balance at zero, critical alert.",
+          affects: "Funds attention system + replenishment banner",
+        },
+        {
+          name: "ad-stale",
+          desc: "Advertisement gone stale, one relay down.",
+          affects: "Advertisement + republish",
+        },
+        {
+          name: "ad-withdrawn",
+          desc: "Advertisement withdrawn.",
+          affects: "Advertisement withdrawn state",
+        },
+        {
+          name: "requests-queue",
+          desc: "A queue of requests in every status.",
+          affects: "Requests list + detail",
+        },
+        {
+          name: "allocations-mixed",
+          desc: "Allocations in mixed states.",
+          affects: "Allocations + timeline",
+        },
+      ];
+
+      const $ = (id) => document.getElementById(id);
+      const stateEl = $("state");
+      const statusEl = $("status");
+
+      $("base").textContent = location.origin;
+
+      const setStatus = (msg, kind) => {
+        statusEl.textContent = msg;
+        statusEl.className = kind ?? "";
+      };
+
+      const showState = (obj) => {
+        stateEl.value = JSON.stringify(obj, null, 2);
+      };
+
+      // POST to a /__control/* endpoint; on success render the returned state.
+      const control = async (path, body, label) => {
+        try {
+          const res = await fetch(`/__control/${path}`, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify(body ?? {}),
+          });
+          const text = await res.text();
+          if (!res.ok) {
+            setStatus(`${label}: ${res.status} ${text}`, "err");
+            return;
+          }
+          showState(JSON.parse(text));
+          setStatus(`${label}: ok`, "ok");
+        } catch (err) {
+          setStatus(`${label}: ${err.message}`, "err");
+        }
+      };
+
+      const scenariosContainer = $("scenarios");
+      for (const { name, desc, affects } of SCENARIOS) {
+        const row = document.createElement("div");
+        row.className = "setting-row";
+
+        const text = document.createElement("div");
+        text.className = "setting-row__text";
+        text.innerHTML = `
+          <span class="setting-row__title">${name}</span>
+          <span class="setting-row__desc">${desc}</span>
+          <span class="setting-row__affects">Affects: ${affects}</span>
+        `;
+
+        const controlEl = document.createElement("div");
+        controlEl.className = "setting-row__control";
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.textContent = "Load";
+        btn.addEventListener("click", () =>
+          control("scenario", { name }, `scenario ${name}`),
+        );
+        controlEl.appendChild(btn);
+
+        row.appendChild(text);
+        row.appendChild(controlEl);
+        scenariosContainer.appendChild(row);
+      }
+
+      for (const btn of document.querySelectorAll("[data-apply]")) {
+        btn.addEventListener("click", () => {
+          const key = btn.dataset.apply;
+          let value;
+          if (key === "phase") value = Number($("phase").value);
+          else if (key === "bootMode") value = $("bootMode").value;
+          else if (key === "latencyMs") value = Number($("latencyMs").value);
+          control("patch", { [key]: value }, `patch ${key}`);
+        });
+      }
+
+      $("apply-error").addEventListener("click", () => {
+        const method = $("method").value.trim();
+        if (!method) {
+          setStatus("error injection: method is required", "err");
+          return;
+        }
+        const raw = $("code").value;
+        const code = raw === "__clear" ? null : raw;
+        control("errors", { method, code }, `errors ${method}`);
+      });
+
+      $("tick").addEventListener("click", () => control("tick", {}, "tick"));
+      $("reset").addEventListener("click", () => control("reset", {}, "reset"));
+
+      $("apply-state").addEventListener("click", () => {
+        let parsed;
+        try {
+          parsed = JSON.parse(stateEl.value);
+        } catch (err) {
+          setStatus(`state parse error: ${err.message}`, "err");
+          return;
+        }
+        control("state", parsed, "apply state");
+      });
+
+      $("refresh").addEventListener("click", () =>
+        control("patch", {}, "refresh"),
+      );
+
+      // Load initial state via the no-op patch refresh.
+      control("patch", {}, "refresh");
+    </script>
+  </body>
+</html>

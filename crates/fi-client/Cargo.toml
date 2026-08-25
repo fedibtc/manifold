@@ -1,0 +1,36 @@
+[package]
+name = "fi-client"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+fedi-decentralized-domain = { path = "../domain" }
+fedi-decentralized-manifold-environment = { path = "../manifold-environment" }
+fedi-decentralized-nostr = { path = "../nostr" }
+fedi-decentralized-nostr-clients = { path = "../nostr-clients" }
+fedi-decentralized-peer-badge-verifier = { path = "../peer-badge-verifier" }
+fedi-decentralized-service-fleet-manager = { path = "../service-fleet-manager" }
+fedi-decentralized-service-liquidity-manager = { path = "../service-liquidity-manager" }
+fedi-iroh-rpc = { path = "../fedi-iroh-rpc" }
+fedimint-core.workspace = true
+futures = "0.3"
+hex = "0.4"
+iroh-base-035 = { package = "iroh-base", version = "=0.35.0" }
+nostr-sdk = "0.44"
+rand = "0.8"
+secp256k1 = "0.30"
+serde.workspace = true
+serde_json.workspace = true
+stability-pool-common = { workspace = true }
+thiserror.workspace = true
+tokio = { workspace = true, features = ["sync", "time"] }
+tracing = "0.1"
+
+[dev-dependencies]
+bitcoin = { version = "0.32.6", features = ["serde"] }
+blind-rsa-signatures = "0.17"
+fedi-credential-sdk-protocol.workspace = true
+fedi-decentralized-manifold-environment = { path = "../manifold-environment" }
+tokio = { workspace = true, features = ["macros", "rt", "test-util"] }

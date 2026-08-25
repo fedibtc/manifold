@@ -1,0 +1,86 @@
+{
+  "AwaitPayout": {
+    "AwaitPayout": {
+      "request_id": "fixture-payment-payout"
+    }
+  },
+  "CollectGuardianFees": {
+    "CollectGuardianFees": {
+      "seat_id": "0707070707070707070707070707070707070707070707070707070707070707"
+    }
+  },
+  "ConfigureInitialOffer": {
+    "ConfigureInitialOffer": {
+      "max_seats": 4,
+      "price_msats": 50000000
+    }
+  },
+  "DecommissionSeat": {
+    "DecommissionSeat": {
+      "seat_id": "0707070707070707070707070707070707070707070707070707070707070707"
+    }
+  },
+  "GuardianFees": {
+    "GuardianFees": {
+      "limit": 20,
+      "seat_id": "0707070707070707070707070707070707070707070707070707070707070707"
+    }
+  },
+  "ListPaymentFederations": "ListPaymentFederations",
+  "ListSeats": "ListSeats",
+  "OnboardAsNew": {
+    "OnboardAsNew": {
+      "if_needed": true
+    }
+  },
+  "OnboardFromBackup": {
+    "OnboardFromBackup": {
+      "acknowledge_original_host_is_gone": true,
+      "mnemonic": "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about"
+    }
+  },
+  "Onboarding": "Onboarding",
+  "PayoutDestination": "PayoutDestination",
+  "PayoutStatus": {
+    "PayoutStatus": {
+      "request_id": "fixture-payment-payout"
+    }
+  },
+  "ReenrollTelemetry": "ReenrollTelemetry",
+  "RefreshHolderAuthorizations": "RefreshHolderAuthorizations",
+  "SeatStatus": {
+    "SeatStatus": {
+      "seat_id": "0707070707070707070707070707070707070707070707070707070707070707"
+    }
+  },
+  "SetCapacity": {
+    "SetCapacity": {
+      "max_seats": 4
+    }
+  },
+  "SetPayoutDestination": {
+    "SetPayoutDestination": {
+      "destination": "operator@example.com"
+    }
+  },
+  "SetPrice": {
+    "SetPrice": {
+      "price_msats": 50000000
+    }
+  },
+  "ShowCapacity": "ShowCapacity",
+  "ShowMnemonic": "ShowMnemonic",
+  "ShowPlans": "ShowPlans",
+  "SweepGuardianFees": {
+    "SweepGuardianFees": {
+      "request_id": "fixture-guardian-payout",
+      "seat_id": "0707070707070707070707070707070707070707070707070707070707070707"
+    }
+  },
+  "SweepPaymentFees": {
+    "SweepPaymentFees": {
+      "federation_id": "fed1fixturepaymentfederation",
+      "request_id": "fixture-payment-payout"
+    }
+  }
+}

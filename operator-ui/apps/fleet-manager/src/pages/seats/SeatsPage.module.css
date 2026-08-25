@@ -1,0 +1,15 @@
+.root {
+  @apply uStack6;
+}
+
+.heading {
+  @apply uPageHeading;
+}
+
+.summary {
+  @apply uMutedSm;
+}
+
+.empty {
+  @apply uMutedSm;
+}

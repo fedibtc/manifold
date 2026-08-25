@@ -1,0 +1,5 @@
+/* Rules sit between rows rather than around them, so the first scenario has no
+   line above it and the section heading keeps its own separator. */
+.list {
+  @apply flex flex-col divide-y divide-muted;
+}

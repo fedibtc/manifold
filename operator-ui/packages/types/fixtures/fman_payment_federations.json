@@ -1,0 +1,60 @@
+{
+  "federations": [
+    {
+      "accepted": true,
+      "federation_id": "fed1fixtureacceptedfederation",
+      "receivable": true,
+      "wallet": {
+        "active_operation_count": 1,
+        "available_ecash_msat": 350,
+        "drain_state": "pending_wallet_work",
+        "economically_sweepable_recipient_msat": 0,
+        "encumbered_outgoing_msat": null,
+        "outgoing": [
+          {
+            "contract_amount_msat": 3980000,
+            "encumbered_msat": null,
+            "has_active_state_machines": true,
+            "operation_id": "17d55b3cb3e9cd25035f6b8cf296284d4445ba9ea8568ccf5ab198d4df27a5ce",
+            "rail": "lnv1",
+            "recipient_amount_msat": 3960152,
+            "state": "pending"
+          }
+        ],
+        "query_errors": []
+      }
+    },
+    {
+      "accepted": true,
+      "federation_id": "fed1fixtureunreadablefederation",
+      "receivable": false,
+      "wallet": {
+        "active_operation_count": 0,
+        "available_ecash_msat": null,
+        "drain_state": "unknown",
+        "economically_sweepable_recipient_msat": null,
+        "encumbered_outgoing_msat": null,
+        "outgoing": null,
+        "query_errors": [
+          "available_ecash",
+          "economically_sweepable",
+          "outgoing_operations"
+        ]
+      }
+    },
+    {
+      "accepted": false,
+      "federation_id": "fed1fixtureleftoverfederation",
+      "receivable": false,
+      "wallet": {
+        "active_operation_count": 0,
+        "available_ecash_msat": 0,
+        "drain_state": "drained",
+        "economically_sweepable_recipient_msat": 0,
+        "encumbered_outgoing_msat": 0,
+        "outgoing": [],
+        "query_errors": []
+      }
+    }
+  ]
+}

@@ -1,0 +1,15 @@
+.list {
+  @apply flex flex-col gap-1;
+}
+
+.row {
+  @apply flex items-center justify-between gap-2;
+}
+
+.verb {
+  @apply truncate text-xs text-ink;
+}
+
+.select {
+  @apply w-32 shrink-0 rounded-card border border-muted bg-surface px-1 py-0.5 text-xs text-ink;
+}

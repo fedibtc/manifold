@@ -1,0 +1,279 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>devmon — decentralized-federations</title>
+<style>
+  :root {
+    --bg: #0f1115; --panel: #171a21; --line: #262b36; --text: #e6e9ef;
+    --dim: #8b93a7; --accent: #6ea8fe; --ok: #3fb950; --warn: #d29922;
+    --ad: #6ea8fe; --auth: #a371f7; --other: #8b93a7;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font-size: 13px; }
+  header {
+    display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
+    padding: 12px 16px; border-bottom: 1px solid var(--line); background: var(--panel);
+    position: sticky; top: 0; z-index: 10;
+  }
+  h1 { font-size: 14px; margin: 0; font-weight: 600; letter-spacing: .04em; }
+  .stat { color: var(--dim); }
+  .stat b { color: var(--text); font-weight: 600; }
+  #relayInput {
+    background: var(--bg); color: var(--text); border: 1px solid var(--line);
+    border-radius: 4px; padding: 3px 8px; font: inherit; font-size: 12px; width: 190px;
+  }
+  #relaySet {
+    background: var(--panel); color: var(--text); border: 1px solid var(--accent);
+    border-radius: 4px; padding: 3px 10px; cursor: pointer; font: inherit; font-size: 12px;
+  }
+  .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; }
+  .dot.up { background: var(--ok); box-shadow: 0 0 6px var(--ok); }
+  .dot.down { background: #f85149; }
+  main { display: grid; grid-template-columns: minmax(320px, 420px) 1fr; gap: 0; }
+  @media (max-width: 900px) { main { grid-template-columns: 1fr; } }
+  section { padding: 14px 16px; min-width: 0; }
+  section + section { border-left: 1px solid var(--line); }
+  @media (max-width: 900px) { section + section { border-left: 0; border-top: 1px solid var(--line); } }
+  h2 {
+    font-size: 11px; text-transform: uppercase; letter-spacing: .1em;
+    color: var(--dim); margin: 0 0 10px;
+  }
+  .card {
+    background: var(--panel); border: 1px solid var(--line); border-radius: 6px;
+    padding: 10px 12px; margin-bottom: 8px;
+  }
+  .card .key { color: var(--accent); font-weight: 600; }
+  .row { display: flex; justify-content: space-between; gap: 10px; color: var(--dim); }
+  .row span:last-child { color: var(--text); }
+  .empty { color: var(--dim); font-style: italic; padding: 10px 0; line-height: 1.6; }
+  .filters { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 10px; }
+  .filters button {
+    background: var(--panel); color: var(--dim); border: 1px solid var(--line);
+    border-radius: 999px; padding: 3px 10px; cursor: pointer; font: inherit; font-size: 11px;
+  }
+  .filters button.on { color: var(--text); border-color: var(--accent); }
+  .ev {
+    border: 1px solid var(--line); border-left: 3px solid var(--other);
+    background: var(--panel); border-radius: 4px; margin-bottom: 5px;
+  }
+  .ev.k37701 { border-left-color: var(--ad); }
+  .ev.k37705 { border-left-color: var(--auth); }
+  .ev summary {
+    cursor: pointer; padding: 7px 10px; display: flex; gap: 10px;
+    align-items: baseline; flex-wrap: wrap; list-style: none;
+  }
+  .ev summary::-webkit-details-marker { display: none; }
+  .kind { font-weight: 600; }
+  .k37701 .kind { color: var(--ad); }
+  .k37705 .kind { color: var(--auth); }
+  .meta { color: var(--dim); font-size: 11px; }
+  pre {
+    margin: 0; padding: 10px; background: #0b0d11; border-top: 1px solid var(--line);
+    overflow-x: auto; font-size: 11px; line-height: 1.5; color: #c9d1d9;
+  }
+  .flash { animation: flash .7s ease-out; }
+  @keyframes flash { from { background: #1f2a3d; } to { background: var(--panel); } }
+</style>
+</head>
+<body>
+<header>
+  <h1>devmon</h1>
+  <span class="stat"><span id="conn" class="dot down"></span><span id="connText">connecting</span></span>
+  <span class="stat">relay
+    <input id="relayInput" placeholder="ws://host:port" spellcheck="false" autocomplete="off">
+    <button id="relaySet">watch</button>
+  </span>
+  <span class="stat">events <b id="total">0</b></span>
+  <span class="stat">FMans <b id="fmanCount">0</b></span>
+</header>
+
+<main>
+  <section>
+    <h2>FMan roster <span style="text-transform:none;letter-spacing:0">(from kind 37701 ads)</span></h2>
+    <div id="roster"></div>
+  </section>
+
+  <section>
+    <h2>Nostr event feed</h2>
+    <div class="filters" id="filters"></div>
+    <div id="feed"></div>
+  </section>
+</main>
+
+<script>
+const feed = document.getElementById('feed');
+const roster = document.getElementById('roster');
+const filtersEl = document.getElementById('filters');
+const seenKinds = new Map();
+let active = null;            // null = show all kinds
+let count = 0;
+
+// DOM builders. Everything the dashboard renders comes off a public relay, where anyone may
+// publish anything, so untrusted strings only ever reach the page via textContent.
+const span = (text, cls) => {
+  const el = document.createElement('span');
+  if (cls) el.className = cls;
+  el.textContent = text;
+  return el;
+};
+const row = () => {
+  const el = document.createElement('div');
+  el.className = 'row';
+  return el;
+};
+const dot = (state) => {
+  const el = document.createElement('span');
+  el.className = 'dot ' + state;
+  return el;
+};
+
+const short = (hex) => hex ? hex.slice(0, 8) + '…' + hex.slice(-4) : '—';
+const ago = (ts) => {
+  const s = Math.max(0, Math.floor(Date.now() / 1000) - ts);
+  return s < 60 ? s + 's ago' : Math.floor(s / 60) + 'm ago';
+};
+
+function renderFilters() {
+  filtersEl.innerHTML = '';
+  const mk = (label, kind) => {
+    const b = document.createElement('button');
+    b.textContent = label;
+    if (active === kind) b.className = 'on';
+    b.onclick = () => { active = kind; renderFilters(); applyFilter(); };
+    filtersEl.appendChild(b);
+  };
+  mk('all', null);
+  [...seenKinds.entries()].sort((a, b) => a[0] - b[0])
+    .forEach(([kind, name]) => mk(kind + ' ' + name.replace(' (provisional)', '*'), kind));
+}
+
+function applyFilter() {
+  for (const el of feed.children) {
+    const kind = Number(el.dataset.kind);
+    el.style.display = (active === null || kind === active) ? '' : 'none';
+  }
+}
+
+function addEvent(ev) {
+  count++;
+  document.getElementById('total').textContent = count;
+
+  if (!seenKinds.has(ev.kind)) { seenKinds.set(ev.kind, ev.kind_name); renderFilters(); }
+
+  const el = document.createElement('details');
+  el.className = 'ev k' + Number(ev.kind) + ' flash';
+  el.dataset.kind = Number(ev.kind);
+
+  const summary = document.createElement('summary');
+  summary.append(
+    span(String(ev.kind), 'kind'),
+    span(ev.kind_name),
+    span('by ' + short(ev.author), 'meta'),
+    span(ago(ev.created_at), 'meta'),
+  );
+
+  const body = document.createElement('pre');
+  body.textContent = JSON.stringify({ tags: ev.tags, content: ev.content }, null, 2);
+
+  el.append(summary, body);
+  feed.prepend(el);
+  if (active !== null && ev.kind !== active) el.style.display = 'none';
+  while (feed.children.length > 300) feed.lastChild.remove();
+}
+
+const relayInput = document.getElementById('relayInput');
+
+async function refreshRoster() {
+  try {
+    const s = await (await fetch('/api/state')).json();
+    // Don't clobber the field while the user is typing a new relay into it.
+    if (document.activeElement !== relayInput) relayInput.value = s.relay || '';
+    document.getElementById('fmanCount').textContent = (s.fmans || []).length;
+
+    if (!s.relay) {
+      roster.innerHTML = '<div class="empty">No relay set. Enter a relay URL above and hit watch.</div>';
+      return;
+    }
+    if (!s.fmans || !s.fmans.length) {
+      roster.innerHTML = `<div class="empty">
+        No FMan advertisements seen yet on this relay.<br>
+        This is expected until a <code>fleet-manager</code> publishes through its selected Manifold environment profile.
+      </div>`;
+      return;
+    }
+    roster.innerHTML = '';
+    for (const f of s.fmans.sort((a, b) => a.pubkey.localeCompare(b.pubkey))) {
+      const expired = f.expires_at && f.expires_at < s.now;
+      const card = document.createElement('div');
+      card.className = 'card';
+
+      // Every value below is relay-derived and therefore untrusted: anyone may publish a
+      // kind-37701 event with arbitrary content. Build with textContent, never innerHTML.
+      const head = row();
+      head.append(span(short(f.pubkey), 'key'));
+      const status = span(expired ? 'stale' : 'live');
+      status.prepend(dot(expired ? 'down' : 'up'));
+      head.append(status);
+      card.append(head);
+
+      for (const [label, value] of [
+        ['plans', f.plans.join(', ') || '—'],
+        ['holder auths', f.holder_authorizations],
+        ['last ad', ago(f.last_seen)],
+        ['ad expiry', expired ? 'EXPIRED' : 'valid'],
+      ]) {
+        const line = row();
+        line.append(span(label), span(String(value)));
+        card.append(line);
+      }
+
+      for (const endpoint of f.endpoints) {
+        const line = row();
+        line.append(span('endpoint'), span(endpoint.slice(0, 34) + '…'));
+        card.append(line);
+      }
+      roster.appendChild(card);
+    }
+  } catch (err) {
+    roster.innerHTML = '<div class="empty">dashboard backend unavailable</div>';
+  }
+}
+
+async function setRelay() {
+  const url = relayInput.value.trim();
+  await fetch('/api/relay', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ url }),
+  });
+  // The backend forgot the old relay's events; clear the page to match.
+  feed.innerHTML = '';
+  seenKinds.clear();
+  count = 0;
+  active = null;
+  renderFilters();
+  document.getElementById('total').textContent = 0;
+  refreshRoster();
+}
+document.getElementById('relaySet').onclick = setRelay;
+relayInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') setRelay(); });
+
+const es = new EventSource('/events');
+es.onopen = () => {
+  document.getElementById('conn').className = 'dot up';
+  document.getElementById('connText').textContent = 'live';
+};
+es.onerror = () => {
+  document.getElementById('conn').className = 'dot down';
+  document.getElementById('connText').textContent = 'disconnected';
+};
+es.onmessage = (m) => { addEvent(JSON.parse(m.data)); refreshRoster(); };
+
+refreshRoster();
+setInterval(refreshRoster, 3000);
+</script>
+</body>
+</html>

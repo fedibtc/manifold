@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+archive_json=${1:?archive JSON path is required}
+roots_dir=${2:?GC roots directory is required}
+
+if [[ -e "$roots_dir" ]]; then
+  echo "refusing to replace existing GC roots directory: $roots_dir" >&2
+  exit 1
+fi
+mkdir -p "$roots_dir"
+
+paths=$(
+  ARCHIVE_JSON="$archive_json" nix eval --impure --raw --expr '
+    let
+      archive = builtins.fromJSON (builtins.readFile (builtins.getEnv "ARCHIVE_JSON"));
+      collectPaths =
+        node:
+        [ node.path ]
+        ++ builtins.concatLists (map collectPaths (builtins.attrValues node.inputs));
+    in
+    builtins.concatStringsSep "\n" (collectPaths archive)
+  '
+)
+
+index=0
+while IFS= read -r path; do
+  nix-store --add-root "$roots_dir/$index" -r "$path" >/dev/null
+  ((index += 1))
+done <<<"$paths"

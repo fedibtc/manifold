@@ -1,0 +1,9 @@
+{
+  "awaiting_cycle_msat": 500000,
+  "claimed_msat": 0,
+  "incomplete": {
+    "error": "guardian-fee idle-balance claim was submitted but did not complete; refresh status before retrying",
+    "operation_submitted": true,
+    "phase": "idle_claim"
+  }
+}

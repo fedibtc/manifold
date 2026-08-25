@@ -1,0 +1,19 @@
+.wrapper {
+  @apply uStack6;
+}
+
+.header {
+  @apply uPageHead;
+}
+
+.title {
+  @apply uPageHeading;
+}
+
+.subtitle {
+  @apply uIntro;
+}
+
+.actions {
+  @apply flex items-center justify-between gap-3;
+}

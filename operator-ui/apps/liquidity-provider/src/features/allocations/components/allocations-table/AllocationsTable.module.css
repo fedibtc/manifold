@@ -1,0 +1,15 @@
+.state {
+  @apply uStateText;
+}
+
+.idRow {
+  @apply uCopyRow;
+}
+
+.amount {
+  @apply text-sm tabular-nums;
+}
+
+.allocationsTable {
+  @apply uTableWrap;
+}

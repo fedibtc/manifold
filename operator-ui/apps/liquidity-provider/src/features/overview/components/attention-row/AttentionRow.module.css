@@ -1,0 +1,19 @@
+.root {
+  @apply uAlertRow;
+}
+
+.body {
+  @apply uAlertRowBody;
+}
+
+.title {
+  @apply uAlertRowTitle;
+}
+
+.detail {
+  @apply uMutedXs;
+}
+
+.action {
+  @apply uAlertRowAction;
+}

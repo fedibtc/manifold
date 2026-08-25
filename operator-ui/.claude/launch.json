@@ -1,0 +1,17 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "fman-ui",
+      "runtimeExecutable": "pnpm",
+      "runtimeArgs": ["--filter", "fman", "dev"],
+      "port": 5174
+    },
+    {
+      "name": "flip-ui",
+      "runtimeExecutable": "pnpm",
+      "runtimeArgs": ["--filter", "flip", "dev"],
+      "port": 5173
+    }
+  ]
+}
