@@ -1,9 +1,9 @@
 //! Canonical public configuration for one Manifold deployment environment.
 //!
 //! This synchronous leaf crate assigns no consumer-specific meaning to its
-//! relay routing. Production carries individually held PeerBadge issuer keys
-//! and intentionally has no setup-payment publisher identity until a
-//! deployment-owned publisher key exists. See
+//! relay routing. Production carries individually held PeerBadge issuer keys,
+//! the deployment-owned setup-payment publisher identity, and the account
+//! receiving Fedi's share of the federation guardian fee. See
 //! `specs/SPEC-manifold-environment.md` and [`SECURITY.md`](../SECURITY.md).
 
 #[cfg(test)]
@@ -30,9 +30,12 @@ const TRUSTED_PEER_BADGE_TRUST_LEVEL: u64 = 9;
 ///
 /// Bump this after profiles are released whenever a public deployment mapping
 /// changes so independently released components can expose and compare what
-/// they use. The Fedi guardian-fee recipient was added before the first
-/// Manifold launch and deliberately does not consume a revision.
-pub const MANIFOLD_ENVIRONMENT_PROFILE_REVISION: u32 = 7;
+/// they use. Adding the Fedi fee-account *field* consumed no revision, because
+/// no released profile existed to observe the boundary. Populating the
+/// production publisher and fee-account mappings did consume one, 7 -> 8: it
+/// moves production from failing closed to collecting fees to a specific key,
+/// so a build carrying it must be distinguishable from one that does not.
+pub const MANIFOLD_ENVIRONMENT_PROFILE_REVISION: u32 = 8;
 
 ////////////////////////////////////////////////////////////////////////////////
 // !!! SECURITY BLOCKER: THESE ARE DELIBERATELY UNSAFE TEST-ONLY ROOT KEYS !!!
@@ -54,9 +57,8 @@ pub const MANIFOLD_ENVIRONMENT_PROFILE_REVISION: u32 = 7;
 //
 // Production deliberately has NO placeholder identity of any role. Do not add
 // a generated or known-secret production key: only keys whose secrets are held
-// individually by their owners may appear in the production lists below, and
-// setup-payment list fetching must remain unavailable until the real
-// deployment-owned production publisher identity exists. Production likewise
+// individually by their owners, or are deployment-owned with custody recorded
+// out of band, may appear in the production constants below. Production likewise
 // has NO committed issuance secret: `test_issuer_secret_keys` returns `None`
 // so repository-built tooling cannot publish a production issuer authority.
 // Do not remove or weaken this warning while test placeholders remain.
@@ -92,6 +94,51 @@ const DEVELOPMENT_PLACEHOLDER_FEDI_GUARDIAN_FEE_PUBLIC_KEY: &str =
     "022f8bde4d1a07209355b4a7250a5c5128e88b84bddc619ab7cba8d569b240efe4";
 const STAGING_PLACEHOLDER_FEDI_GUARDIAN_FEE_PUBLIC_KEY: &str =
     "03fff97bd5755eeea420453a14355235d382f6472f8568a18b2f057a1460297556";
+
+/// Deployment-owned setup-payment publisher identity, x-only hex, NO prefix.
+///
+/// Not a placeholder. Derived under NIP-06 `m/44'/1237'/0'/0/0` from a secret
+/// independent of the fee key below and held outside the deployment.
+/// Authorization and custody are recorded out of band, per `SECURITY.md`.
+///
+/// Possession, BIP-340 over
+/// `sha256("manifold/v1/possession/setup-payment-publisher")`
+/// = `228cd5fb8768324479e3866920f40e178f37a1687e50e8d628623e569685f163`:
+/// `84a89997513b0fd3ea60e7433d0178498d10966ef646ec38e0fe43acd3aad3b3`
+/// `5808dc98637df99c9d5c89bb557b0e10044537a982ea976ebe1166a9716347da`
+const PRODUCTION_SETUP_PAYMENT_PUBLISHER: &str =
+    "725cc60e9b9405acf48f27f8ec6e846dd499b7b5d1e0fff6c922da7dfa120f65";
+
+/// Public key of the account receiving Fedi's share of the ongoing
+/// per-transaction **federation guardian fee**, compressed hex, WITH the
+/// `02`/`03` prefix. 66 characters, not 64.
+///
+/// Fedi is one weighted recipient of that fee, not a guardian earning one. The
+/// MVP split gives the FI four shares, every guardian one, and this account one
+/// ([REQ-guardian-fee-remittance](../../../specs/REQ-guardian-fee-remittance.md)).
+/// Whether the share applies to every federation or only to Fedi-verified seat
+/// quorums is a deferred product decision, so this describes the fee stream the
+/// account is paid from rather than asserting what the share compensates.
+///
+/// **The parity byte is load-bearing.** `Account` commits to all 33 bytes and
+/// the `AccountId` is the hash of that, so `02||X` and `03||X` are two
+/// different accounts spendable by the same secret. Signature verification
+/// drops parity and will not catch a normalised value, which would silently
+/// strand every fee paid to it. These are exactly the bytes the key was
+/// published as; never normalise to even-Y.
+///
+/// Derived under NIP-06 `m/44'/1237'/0'/0/0` from a secret independent of the
+/// publisher key above. Derives to `AccountId`
+/// `spd1luendqfafewqd2q8fkg9v6tvceurggtj06rxshw3rukt0c3x0ecsehzz39`, pinned by
+/// test against an independently recorded value.
+///
+/// Possession, BIP-340 over
+/// `sha256("manifold/v1/possession/fedi-guardian-fee-account")`
+/// = `6871df32d2b4a0def4c2ffdf1ad9fb9f822e697f3ee95800d9c09cda6be94dea`:
+/// `509f2ade29b72192d6dead5d4ad508a7ecc2c88e2e2d37ce3b5a6785abbbd1e8`
+/// `d7937c368c223f3d3acff552a0bf7fd1b2349a9476db3dcde0a8b2d99d16fa84`
+const PRODUCTION_FEDI_GUARDIAN_FEE_PUBLIC_KEY: &str =
+    "0255c6b0de21aa9d5da41cdbb53be23e73dc5b3697f10b13f806c5ee7d18bd604d";
 
 /// Production PeerBadge issuer identities, in trust-roster order.
 ///
@@ -190,8 +237,8 @@ impl ManifoldEnvironment {
                 ),
                 Self::Production => (
                     PRODUCTION_ISSUERS,
-                    None,
-                    None,
+                    Some(PRODUCTION_SETUP_PAYMENT_PUBLISHER),
+                    Some(PRODUCTION_FEDI_GUARDIAN_FEE_PUBLIC_KEY),
                     PRODUCTION_NOSTR_RELAYS,
                     Network::Bitcoin,
                     None,

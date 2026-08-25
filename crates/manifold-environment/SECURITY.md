@@ -41,8 +41,14 @@ publicly known test secrets; the publisher placeholders use different test
 secrets from the issuer placeholders so the two roles cannot silently
 collapse into one key. Production has no placeholder identity in any role: its
 PeerBadge issuer identities are personal keys, each secret held individually by
-its owner rather than by the deployment, and its profile deliberately returns
-no setup-payment publisher and no Fedi guardian-fee account. Adding a
+its owner rather than by the deployment. Its setup-payment publisher and the
+account receiving Fedi's share of the federation guardian fee are
+deployment-owned keys derived from two independent secrets held outside this
+repository. Each publishes a BIP-340 possession signature over a fixed
+documented digest beside its constant in `src/lib.rs`, so any reader can check
+that a published key corresponds to a held secret without that secret reaching
+a networked machine. Custody and provisioning records stay out of this
+repository, exactly as they do for issuer roots. Adding a
 production issuer is a trust-root change requiring renewed security review; a
 generated or known-secret key must never be listed.
 
@@ -79,9 +85,13 @@ not an approximation of deployment-owned production credentials. It issues
 the selected profile's minimum level so local and staging workflows exercise
 the same relying-party gate as deployed consumers.
 
-The initial Fedi fee-account field is covered by the prelaunch exception and
-does not bump revision 2 because no released profile exists. Any post-launch
-change follows the normal revision and coordinated rollout rule.
+Adding the Fedi fee-account *field* was covered by the prelaunch exception and
+consumed no revision, because no released profile existed to observe the
+boundary. That exception is spent. Populating the production publisher and
+fee-account mappings consumed revision `8` under the normal rule: it moves
+production from failing closed to collecting fees to a specific key, so a build
+carrying those keys must be distinguishable from one that does not. Any later
+change follows the same revision and coordinated-rollout rule.
 
 The setup-payment publisher key authenticates the kind-37707 federation list
 that decides which federations paid setup uses, so whoever holds its secret

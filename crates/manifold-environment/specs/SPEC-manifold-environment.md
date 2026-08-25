@@ -32,7 +32,11 @@ Each value resolves to a `ManifoldEnvironmentProfile` containing:
   document derived from it (`pinned_issuer_authorities()`; empty for
   production).
 
-The profile exposes `profile_revision()`, currently `7`. Every change to an
+The profile exposes `profile_revision()`, currently `8`. Revision `8`
+populates the production setup-payment publisher and Fedi fee-account mappings,
+which moves production from failing closed to collecting fees to a specific key;
+a build carrying those keys must be distinguishable from one that does not.
+Every change to an
 environment's relay, issuer-identity, committed issuer secret, PeerBadge
 minimum trust level, setup-payment-publisher, Fedi fee-account,
 Bitcoin-network, or default-Esplora mapping must increment the shared

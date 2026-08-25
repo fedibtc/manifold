@@ -135,8 +135,104 @@ fn production_profile_uses_fedi_app_production_relays() {
             "wss://relay.damus.io/",
         ]
     );
-    assert!(production.setup_payment_publisher().is_none());
-    assert!(production.fedi_guardian_fee_account().is_none());
+    assert!(production.setup_payment_publisher().is_some());
+    assert!(production.fedi_guardian_fee_account().is_some());
+}
+
+/// Expected `AccountId` for the production fee account, recorded independently
+/// of the public key it is checked against.
+///
+/// Never regenerate this from `PRODUCTION_FEDI_GUARDIAN_FEE_PUBLIC_KEY`.
+/// Recomputing would prove only that the committed hex parses, not that it is
+/// the intended hex. One wrong character in the public key changes the
+/// `AccountId` completely and silently strands every fee paid to it, which is
+/// exactly what this pins.
+const EXPECTED_PRODUCTION_FEE_ACCOUNT_ID: &str =
+    "spd1luendqfafewqd2q8fkg9v6tvceurggtj06rxshw3rukt0c3x0ecsehzz39";
+
+#[test]
+fn production_fee_account_derives_to_its_recorded_account_id() {
+    let production = ManifoldEnvironment::Production
+        .profile_with_env(|_| None)
+        .unwrap();
+    let account = production.fedi_guardian_fee_account().unwrap();
+
+    assert_eq!(
+        account.id().to_string(),
+        EXPECTED_PRODUCTION_FEE_ACCOUNT_ID,
+        "committed fee public key does not derive to its recorded AccountId -- \
+         do not ship this until the discrepancy is explained",
+    );
+    assert_eq!(account.acc_type(), AccountType::BtcDepositor);
+    assert!(account.as_single().is_some());
+}
+
+#[test]
+fn production_fee_key_keeps_its_parity_prefix() {
+    // 66 hex characters, not 64: `02||X` and `03||X` are different accounts
+    // spendable by the same secret, so a normalised value silently strands
+    // every fee paid to it.
+    assert_eq!(PRODUCTION_FEDI_GUARDIAN_FEE_PUBLIC_KEY.len(), 66);
+    assert!(PRODUCTION_FEDI_GUARDIAN_FEE_PUBLIC_KEY.starts_with("02"));
+    assert_eq!(PRODUCTION_SETUP_PAYMENT_PUBLISHER.len(), 64);
+
+    let production = ManifoldEnvironment::Production
+        .profile_with_env(|_| None)
+        .unwrap();
+    assert_eq!(
+        production
+            .fedi_guardian_fee_account()
+            .unwrap()
+            .as_single()
+            .unwrap()
+            .to_string(),
+        PRODUCTION_FEDI_GUARDIAN_FEE_PUBLIC_KEY,
+    );
+    assert_eq!(
+        production.setup_payment_publisher().unwrap().to_hex(),
+        PRODUCTION_SETUP_PAYMENT_PUBLISHER,
+    );
+}
+
+#[test]
+fn production_identities_are_distinct_from_each_other_and_every_placeholder() {
+    let production = ManifoldEnvironment::Production
+        .profile_with_env(|_| None)
+        .unwrap();
+    let fee_x_only = production
+        .fedi_guardian_fee_account()
+        .unwrap()
+        .as_single()
+        .unwrap()
+        .x_only_public_key()
+        .0
+        .to_string();
+    let publisher = production.setup_payment_publisher().unwrap().to_hex();
+
+    // Both roles derive over the same NIP-06 path, so equal keys would mean a
+    // single root secret was reused for both. They must be independent.
+    assert_ne!(fee_x_only, publisher);
+
+    for placeholder in [
+        DEVELOPMENT_PLACEHOLDER_ISSUER,
+        STAGING_PLACEHOLDER_ISSUER,
+        DEVELOPMENT_PLACEHOLDER_SETUP_PAYMENT_PUBLISHER,
+        STAGING_PLACEHOLDER_SETUP_PAYMENT_PUBLISHER,
+        DEVELOPMENT_PLACEHOLDER_FEDI_GUARDIAN_FEE_PUBLIC_KEY,
+        STAGING_PLACEHOLDER_FEDI_GUARDIAN_FEE_PUBLIC_KEY,
+    ] {
+        let placeholder_x_only = placeholder
+            .strip_prefix("02")
+            .unwrap_or(placeholder.strip_prefix("03").unwrap_or(placeholder));
+        assert_ne!(
+            fee_x_only, placeholder_x_only,
+            "production fee key must never equal a known-secret placeholder",
+        );
+        assert_ne!(
+            publisher, placeholder_x_only,
+            "production publisher must never equal a known-secret placeholder",
+        );
+    }
 }
 
 #[test]
@@ -283,7 +379,7 @@ fn environment_aliases_round_trip_to_canonical_names() {
                 .profile_with_env(|_| None)
                 .unwrap()
                 .profile_revision(),
-            7
+            8
         );
     }
     assert!("nightly".parse::<ManifoldEnvironment>().is_err());

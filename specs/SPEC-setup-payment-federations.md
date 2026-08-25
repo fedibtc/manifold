@@ -10,11 +10,12 @@ the admitted event through a daemon-owned store that also derives the accepted
 membership, and the daemon's quote acceptance, paid availability, and wallet
 join reconciliation all read that membership
 ([SPEC-locked-payment](../crates/fman/specs/SPEC-locked-payment.md)).
-There is no operator-curated acceptance list or admin acceptance verb. Fedi
-does not yet publish kind 37707, and the production environment profile
-deliberately carries no publisher identity, so production paid setup remains
-impossible until the deployment-owned key exists; development and staging use
-their profile placeholder publishers.
+There is no operator-curated acceptance list or admin acceptance verb. The
+production environment profile now carries the deployment-owned publisher
+identity, but Fedi does not yet publish kind 37707: the identity says whose
+signature to trust and nothing more. Production paid setup therefore remains
+impossible until the first publication is made with the tooling below.
+Development and staging use their profile placeholder publishers.
 
 FMan's intended removed-member retention has a known restart deviation: its
 durable client prefix and balance remain, but the restarted daemon does not
