@@ -1,5 +1,6 @@
 //! Keeps a formed local federation and its supporting services alive for manual use.
 
+use std::fmt::Write as _;
 use std::fs;
 use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
@@ -20,6 +21,8 @@ mod flip_setup;
 
 const GUARDIAN_COUNT: usize = 7;
 const FI_ACCOUNT: &[u8] = br#"{"acc_type":"BtcDepositor","pub_keys":["031b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f"],"threshold":1}"#;
+const FMAN_OPERATOR_UI_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../operator-ui");
+const FMAN_OPERATOR_UI_URL: &str = "http://127.0.0.1:5174";
 
 #[derive(Debug)]
 struct Args {
@@ -51,7 +54,9 @@ struct FederationManifest<'a> {
 
 #[derive(Serialize)]
 struct FmanManifest<'a> {
-    admin_url: &'a str,
+    api_base_url: &'a str,
+    auth_url: String,
+    admin_url: String,
     data_dir: &'a Path,
     safe_journal_dir: PathBuf,
 }
@@ -191,7 +196,9 @@ async fn run(args: Args) -> Result<()> {
         fmans: fmans
             .iter()
             .map(|(_, fman)| FmanManifest {
-                admin_url: &fman.admin_url,
+                api_base_url: &fman.admin_url,
+                auth_url: fman_api_url(&fman.admin_url, "auth"),
+                admin_url: fman_api_url(&fman.admin_url, "admin"),
                 data_dir: &fman.data_dir,
                 safe_journal_dir: fman.data_dir.join("safe-events"),
             })
@@ -385,36 +392,106 @@ fn print_ready(
     flip_url: &str,
     public_endpoint_id: &str,
 ) {
-    println!("defe staging is ready");
-    println!("Manifest:      {}", manifest.display());
-    println!("Secrets (0600): {}", secrets.display());
-    println!("Logs:          {}", logs.display());
-    println!("FLIP admin:    {flip_url}");
-    println!("FLIP public endpoint ID: {public_endpoint_id}");
-    println!("Gateway admin: {}", gateway.api_url);
-    println!(
+    print!(
+        "{}",
+        ready_output(
+            manifest,
+            secrets,
+            logs,
+            fman_cli,
+            fmans,
+            gateway,
+            flip_url,
+            public_endpoint_id,
+        )
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+fn ready_output(
+    manifest: &Path,
+    secrets: &Path,
+    logs: &Path,
+    fman_cli: &Path,
+    fmans: &[(defe_client::ResourceLease, FmanInfo)],
+    gateway: &GatewaydInfo,
+    flip_url: &str,
+    public_endpoint_id: &str,
+) -> String {
+    let mut output = String::new();
+    writeln!(output, "defe staging is ready").expect("write to string");
+    writeln!(output, "Manifest:      {}", manifest.display()).expect("write to string");
+    writeln!(output, "Secrets (0600): {}", secrets.display()).expect("write to string");
+    writeln!(output, "Logs:          {}", logs.display()).expect("write to string");
+    writeln!(output, "FLIP admin:    {flip_url}").expect("write to string");
+    writeln!(output, "FLIP public endpoint ID: {public_endpoint_id}").expect("write to string");
+    writeln!(output, "Gateway admin: {}", gateway.api_url).expect("write to string");
+    writeln!(
+        output,
         "Machine readiness: jq -e '.ready == true' {}",
         shell_escape(manifest.as_os_str())
-    );
+    )
+    .expect("write to string");
+    writeln!(
+        output,
+        "FMan UI dependencies: pnpm --dir {} install --frozen-lockfile",
+        shell_escape(std::ffi::OsStr::new(FMAN_OPERATOR_UI_DIR))
+    )
+    .expect("write to string");
     for (index, (_, fman)) in fmans.iter().enumerate() {
-        println!("FMan {} admin: {}", index + 1, fman.admin_url);
-        println!(
+        let number = index + 1;
+        writeln!(
+            output,
+            "FMan {number} operator UI (start one at a time): {FMAN_OPERATOR_UI_URL}"
+        )
+        .expect("write to string");
+        writeln!(
+            output,
+            "        VITE_MOCKS=off FMAN_ADMIN_PROXY_TARGET={} pnpm --dir {} --filter fman exec vite --host 127.0.0.1",
+            shell_escape(std::ffi::OsStr::new(&fman.admin_url)),
+            shell_escape(std::ffi::OsStr::new(FMAN_OPERATOR_UI_DIR))
+        )
+        .expect("write to string");
+        writeln!(
+            output,
+            "FMan {number} auth API (POST): {}",
+            fman_api_url(&fman.admin_url, "auth")
+        )
+        .expect("write to string");
+        writeln!(
+            output,
+            "FMan {number} admin API (POST): {}",
+            fman_api_url(&fman.admin_url, "admin")
+        )
+        .expect("write to string");
+        writeln!(
+            output,
             "FMan {}: {} --data-dir {} seats list",
-            index + 1,
+            number,
             shell_escape(fman_cli.as_os_str()),
             shell_escape(fman.data_dir.as_os_str())
-        );
-        println!(
+        )
+        .expect("write to string");
+        writeln!(
+            output,
             "        {} --data-dir {} plans show",
             shell_escape(fman_cli.as_os_str()),
             shell_escape(fman.data_dir.as_os_str())
-        );
-        println!(
+        )
+        .expect("write to string");
+        writeln!(
+            output,
             "        safe journal: {}",
             fman.data_dir.join("safe-events").display()
-        );
+        )
+        .expect("write to string");
     }
-    println!("Press Ctrl-C to tear the environment down.");
+    writeln!(output, "Press Ctrl-C to tear the environment down.").expect("write to string");
+    output
+}
+
+fn fman_api_url(base_url: &str, endpoint: &str) -> String {
+    format!("{}/api/{endpoint}", base_url.trim_end_matches('/'))
 }
 
 fn shell_escape(value: &std::ffi::OsStr) -> String {
@@ -470,10 +547,13 @@ fn parse_args(args: Vec<std::ffi::OsString>) -> Result<Args> {
 #[cfg(test)]
 mod tests {
     use std::path::Path;
+    use std::path::PathBuf;
 
     use super::{
-        FederationManifest, FlipManifest, GatewayManifest, Manifest, shell_escape, stopped_manifest,
+        FederationManifest, FlipManifest, GatewayManifest, Manifest, fman_api_url, ready_output,
+        shell_escape, stopped_manifest,
     };
+    use defe_client::{GatewaydInfo, ResourceDescriptor, ResourceHandleId, ResourceLease};
 
     #[test]
     fn shell_escape_handles_spaces_and_single_quotes() {
@@ -511,5 +591,56 @@ mod tests {
         assert_eq!(stopped["state"], "stopped");
         assert_eq!(stopped["gateway"]["state"], "stopped");
         assert_eq!(stopped["flip"]["state"], "stopped");
+    }
+
+    #[test]
+    fn ready_output_gives_each_fman_an_attachable_ui_and_exact_api_routes() {
+        let fman = defe_client::FmanInfo {
+            locator: "locator".to_owned(),
+            data_dir: PathBuf::from("/tmp/fman"),
+            iroh_connect_overrides: String::new(),
+            admin_url: "http://127.0.0.1:10612".to_owned(),
+            admin_password: "fman-secret".to_owned(),
+        };
+        let lease = ResourceLease {
+            handle_id: ResourceHandleId(1),
+            descriptor: ResourceDescriptor::Fman(fman.clone()),
+        };
+        let output = ready_output(
+            Path::new("/tmp/staging/env.json"),
+            Path::new("/tmp/staging/secrets.json"),
+            Path::new("/tmp/staging/logs"),
+            Path::new("/tmp/fman-cli"),
+            &[(lease, fman)],
+            &GatewaydInfo {
+                api_url: "http://gateway".to_owned(),
+                password: "gateway-secret".to_owned(),
+            },
+            "http://flip",
+            "endpoint",
+        );
+
+        assert!(output.contains("FMan 1 operator UI (start one at a time): http://127.0.0.1:5174"));
+        assert!(output.contains(
+            "VITE_MOCKS=off FMAN_ADMIN_PROXY_TARGET='http://127.0.0.1:10612' pnpm --dir "
+        ));
+        assert!(output.contains("--filter fman exec vite --host 127.0.0.1"));
+        assert!(output.contains("FMan 1 auth API (POST): http://127.0.0.1:10612/api/auth"));
+        assert!(output.contains("FMan 1 admin API (POST): http://127.0.0.1:10612/api/admin"));
+        assert!(!output.contains("FMan 1 admin: http://127.0.0.1:10612"));
+        assert!(!output.contains("fman-secret"));
+        assert!(!output.contains("gateway-secret"));
+    }
+
+    #[test]
+    fn fman_api_urls_name_exact_post_endpoints() {
+        assert_eq!(
+            fman_api_url("http://127.0.0.1:10612/", "auth"),
+            "http://127.0.0.1:10612/api/auth"
+        );
+        assert_eq!(
+            fman_api_url("http://127.0.0.1:10612", "admin"),
+            "http://127.0.0.1:10612/api/admin"
+        );
     }
 }

@@ -140,8 +140,18 @@ those phases succeed.
 
 The manifest contains endpoints and paths, not credentials. Credentials live
 in a sibling mode-0600 `secrets.json` inside a mode-0700 staging directory.
-The command also prints exact `fman-cli` examples, Defe's process-log
-directory, and each FMan safe-journal directory. For example:
+Each FMan manifest entry exposes its HTTP API proxy base as `api_base_url` and
+the exact POST endpoints as `auth_url` and `admin_url`; the base URL itself
+does not serve a browser page.
+
+The debug `fleet-manager` binary used by `just defe-staging` serves the HTTP
+API but does not embed the browser dashboard. The ready output prints an exact
+per-FMan Vite attach command and its loopback browser URL. Run the printed
+`pnpm install` command once, then run one attach command at a time (the
+dashboard uses fixed port 5174), open `http://127.0.0.1:5174`, and enter the
+matching FMan password from `secrets.json`. The command also prints exact
+`fman-cli` examples, Defe's process-log directory, and each FMan safe-journal
+directory. For example:
 
 ```bash
 jq -e '.ready == true' /path/printed/by/defe/env.json
