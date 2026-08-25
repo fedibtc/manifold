@@ -149,7 +149,9 @@ API but does not embed the browser dashboard. The ready output prints an exact
 per-FMan Vite attach command and its loopback browser URL. Run the printed
 `pnpm install` command once, then run one attach command at a time (the
 dashboard uses fixed port 5174), open `http://127.0.0.1:5174`, and enter the
-matching FMan password from `secrets.json`. The command also prints exact
+printed matching FMan password. `secrets.json` keeps all credentials available
+for machine use, but ready output only prints FMan operator-UI passwords; it
+does not print gateway or FLIP credentials. The command also prints exact
 `fman-cli` examples, Defe's process-log directory, and each FMan safe-journal
 directory. For example:
 

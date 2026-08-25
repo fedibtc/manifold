@@ -454,6 +454,12 @@ fn ready_output(
         .expect("write to string");
         writeln!(
             output,
+            "        FMan {number} operator UI password: {}",
+            fman.admin_password
+        )
+        .expect("write to string");
+        writeln!(
+            output,
             "FMan {number} auth API (POST): {}",
             fman_api_url(&fman.admin_url, "auth")
         )
@@ -625,10 +631,10 @@ mod tests {
             "VITE_MOCKS=off FMAN_ADMIN_PROXY_TARGET='http://127.0.0.1:10612' pnpm --dir "
         ));
         assert!(output.contains("--filter fman exec vite --host 127.0.0.1"));
+        assert!(output.contains("FMan 1 operator UI password: fman-secret"));
         assert!(output.contains("FMan 1 auth API (POST): http://127.0.0.1:10612/api/auth"));
         assert!(output.contains("FMan 1 admin API (POST): http://127.0.0.1:10612/api/admin"));
         assert!(!output.contains("FMan 1 admin: http://127.0.0.1:10612"));
-        assert!(!output.contains("fman-secret"));
         assert!(!output.contains("gateway-secret"));
     }
 

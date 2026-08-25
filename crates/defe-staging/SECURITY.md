@@ -8,8 +8,10 @@ not a multi-tenant service and must use only dummy credentials and test funds.
   relay. Do not treat those endpoints or their fabricated development trust
   material as production identities.
 - The staging root is mode 0700. `secrets.json` is mode 0600 and contains FMan
-  passwords, the gateway password, and the FLIP bootstrap token. `env.json`
-  contains no credentials.
+  passwords, the gateway password, and the FLIP bootstrap token. Ready output
+  also prints each FMan password beside its operator-UI attach command; this is
+  intentional for the disposable, single-user workflow. `env.json` contains no
+  credentials, and ready output does not print gateway or FLIP credentials.
 - Startup phases use bounded process and HTTP waits. A startup failure closes
   the composer connection, which releases every Defe lease; Defe retains the
   private temp root by default for diagnostics.
