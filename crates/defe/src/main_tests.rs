@@ -72,6 +72,48 @@ fn parse_exec_keeps_existing_global_options() {
 }
 
 #[test]
+fn parse_staging_keeps_server_options_and_forwards_only_staging_arguments() {
+    let command = parse_command(vec![
+        "--binary-path".into(),
+        "/tmp/defe-bin".into(),
+        "--keep-temp".into(),
+        "staging".into(),
+        "--complete-liquidity".into(),
+    ])
+    .expect("parse staging command");
+
+    let DefeCommand::Exec(exec) = command else {
+        panic!("expected staging to use the one-shot exec lifecycle");
+    };
+    assert_eq!(
+        exec.options.binary_paths,
+        vec![PathBuf::from("/tmp/defe-bin")]
+    );
+    assert!(exec.policy.keep_temp);
+    assert!(exec.command.is_empty());
+    assert_eq!(
+        exec.staging_args,
+        Some(vec![OsString::from("--complete-liquidity")])
+    );
+}
+
+#[tokio::test]
+async fn graceful_exec_shutdown_preserves_a_successful_child_status() {
+    let mut child = Command::new("sh")
+        .args(["-c", "sleep 0.1; exit 0"])
+        .spawn()
+        .expect("spawn signal-aware test composer");
+    let (shutdown_tx, shutdown_rx) = watch::channel(false);
+
+    shutdown_tx.send(true).expect("request parent shutdown");
+    let status = wait_for_exec_child(&mut child, shutdown_rx, true)
+        .await
+        .expect("wait for graceful composer exit");
+
+    assert!(status.success(), "graceful child status: {status:?}");
+}
+
+#[test]
 fn parse_serve_requires_listenfd_and_keeps_server_options() {
     let command = parse_command(vec![
         "--tmp-dir".into(),
@@ -582,6 +624,7 @@ fn flip_request_preserves_requested_sharing() {
     let request = defe_api::FlipRequest {
         sharing: SharingMode::Shared,
         iroh_connect_overrides: None,
+        holder_authorization_relay_url: None,
     };
 
     let spec = resource_spec_from_request(ResourceRequest::Flip(request.clone()));

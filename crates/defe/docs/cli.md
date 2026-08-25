@@ -129,3 +129,31 @@ defe exec defe-cli ping
 ```
 
 A print-and-exit resource command may exist later, but it must clearly document that resources are released as soon as the command exits.
+
+## Disposable staging
+
+`defe staging` owns a private, foreground environment for humans, UIs, and
+external E2E tests. It forms a seven-guardian federation, connects a gateway,
+configures FLIP and publishes its advertisement, then writes and prints the
+path to `env.json`. The manifest's `ready` field becomes true only after all of
+those phases succeed.
+
+The manifest contains endpoints and paths, not credentials. Credentials live
+in a sibling mode-0600 `secrets.json` inside a mode-0700 staging directory.
+The command also prints exact `fman-cli` examples, Defe's process-log
+directory, and each FMan safe-journal directory. For example:
+
+```bash
+jq -e '.ready == true' /path/printed/by/defe/env.json
+```
+
+Press Ctrl-C to close the owning Defe connection and tear every resource down.
+Startup failures keep Defe's private temporary root by default, matching
+`defe exec`; use `--no-keep-temp-on-failure` to opt out.
+
+`--complete-liquidity` is reserved for driving the FI-funded liquidity
+allocation through consensus registration. It currently fails explicitly
+rather than making basic staging wait on that optional flow.
+
+Use `just defe-staging` in a checkout. Direct invocation requires all resource
+and composer binaries in `--binary-path`.

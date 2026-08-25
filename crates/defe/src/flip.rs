@@ -86,6 +86,7 @@ impl FlipDriver {
             provider_secret_hex: provider_secret.display_secret().to_string(),
             provider_pubkey_hex: provider_pubkey.to_string(),
             iroh_connect_overrides: request.iroh_connect_overrides.clone(),
+            holder_authorization_relay_url: request.holder_authorization_relay_url.clone(),
         };
         stable.insert(allocation.slot_id, created.clone());
         Ok(created)
@@ -136,6 +137,9 @@ impl FlipDriver {
         if let Some(overrides) = &stable.iroh_connect_overrides {
             config = config.env("FM_IROH_CONNECT_OVERRIDES", overrides);
         }
+        if let Some(relay_url) = &stable.holder_authorization_relay_url {
+            config = config.env("MANIFOLD_DEV_NOSTR_RELAYS", relay_url);
+        }
         let process = Arc::new(ResourceProcess::spawn(config).map_err(|error| {
             ApiError::new(
                 ApiErrorKind::ResourceStartFailed,
@@ -183,6 +187,7 @@ struct StableFlipAllocation {
     provider_secret_hex: String,
     provider_pubkey_hex: String,
     iroh_connect_overrides: Option<String>,
+    holder_authorization_relay_url: Option<String>,
 }
 
 struct FlipResource {

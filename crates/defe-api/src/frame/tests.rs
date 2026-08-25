@@ -351,6 +351,7 @@ fn flip_request_and_response_round_trip() {
     let request = Request::Allocate(ResourceRequest::Flip(crate::FlipRequest {
         sharing: crate::SharingMode::Exclusive,
         iroh_connect_overrides: Some("routes".to_owned()),
+        holder_authorization_relay_url: Some("ws://127.0.0.1:7777".to_owned()),
     }));
     let decoded: Request = decode_frame(&encode_frame(&request).expect("encode FLIP request"))
         .expect("decode FLIP request");
