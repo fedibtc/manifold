@@ -15,7 +15,7 @@ fn identity() -> MetricsIdentity<'static> {
         fman_id: "11",
         fman_name: "calm-tern",
         guardian_seat_id: "22",
-        federation_id: "0000000000000000000000000000000000000000000000000000000000000000",
+        asserted_federation_id: "0000000000000000000000000000000000000000000000000000000000000000",
     }
 }
 
@@ -44,7 +44,7 @@ fn duration_histogram(family: &str, labels: &str) -> String {
 }
 
 #[test]
-fn exact_inventory_adds_only_verified_identity() {
+fn exact_inventory_adds_only_bounded_identity_labels() {
     let body = br#"
 # TYPE fm_consensus_session_count gauge
 fm_app_start_ts{version="0.11.1",version_hash="abc123"} 1
@@ -72,8 +72,14 @@ fm_peer_messages_total{self_id="0",peer_id="1",direction="incoming"} 4
             .all(|line| line.contains("guardian_seat_id=\"22\""))
     );
     assert!(admitted.samples.iter().all(|line| line.contains(
-        "federation_id=\"0000000000000000000000000000000000000000000000000000000000000000\""
+        "asserted_federation_id=\"0000000000000000000000000000000000000000000000000000000000000000\""
     )));
+    assert!(
+        admitted
+            .samples
+            .iter()
+            .all(|line| { !line.contains("{federation_id=") && !line.contains(",federation_id=") })
+    );
 }
 
 #[test]
@@ -125,7 +131,8 @@ fn unknown_and_invalid_families_do_not_suppress_an_unrelated_valid_family() {
         "fm_mint_inout_sats_bucket{direction=\"incoming\",le=\"1001\"} 1",
         "fm_consensus_session_count{fman_id=\"attacker\"} 1",
         "fm_consensus_session_count{federation_id=\"0000000000000000000000000000000000000000000000000000000000000000\"} 1",
-        "fm_consensus_session_count{federation_id=\"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff\"} 1",
+        "fm_consensus_session_count{asserted_federation_id=\"0000000000000000000000000000000000000000000000000000000000000000\"} 1",
+        "fm_consensus_session_count{asserted_federation_id=\"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff\"} 1",
         "fm_consensus_session_count{broken 1",
     ] {
         let body = format!(
@@ -420,7 +427,7 @@ fn maximal_hostile_body_observes_an_elapsed_parse_deadline() {
                     fman_id: "11",
                     fman_name: "calm-tern",
                     guardian_seat_id: "aa",
-                    federation_id: "0000000000000000000000000000000000000000000000000000000000000000",
+                    asserted_federation_id: "0000000000000000000000000000000000000000000000000000000000000000",
                 },
                 Some(std::time::Instant::now()),
             )
@@ -450,8 +457,8 @@ fn persisted_samples_must_match_current_policy_identity_and_canonical_form() {
             .iter()
             .map(|sample| {
                 sample.replace(
-                    "federation_id=\"0000000000000000000000000000000000000000000000000000000000000000\"",
-                    "federation_id=\"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff\"",
+                    "asserted_federation_id=\"0000000000000000000000000000000000000000000000000000000000000000\"",
+                    "asserted_federation_id=\"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff\"",
                 )
             })
             .collect(),

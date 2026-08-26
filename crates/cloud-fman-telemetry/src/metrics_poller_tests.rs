@@ -18,20 +18,20 @@ const VALID_INVITE: &str = "fed11qgqpu8rhwden5te0vejkg6tdd9h8gepwd4cxcumxv4jzuen
 
 #[test]
 fn federation_attribution_requires_a_parseable_invite() {
-    assert!(federation_id_from_invite(None).is_none());
+    assert!(asserted_federation_id_from_invite(None).is_none());
     assert!(
-        federation_id_from_invite(Some(&fedi_decentralized_service_fleet_manager::InviteCode(
-            "not-an-invite".to_owned()
-        )))
+        asserted_federation_id_from_invite(Some(
+            &fedi_decentralized_service_fleet_manager::InviteCode("not-an-invite".to_owned())
+        ))
         .is_none()
     );
-    let federation_id = federation_id_from_invite(Some(
+    let asserted_federation_id = asserted_federation_id_from_invite(Some(
         &fedi_decentralized_service_fleet_manager::InviteCode(VALID_INVITE.to_owned()),
     ))
     .unwrap();
-    assert_eq!(federation_id.len(), 64);
+    assert_eq!(asserted_federation_id.len(), 64);
     assert!(
-        federation_id
+        asserted_federation_id
             .bytes()
             .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
     );
@@ -196,7 +196,7 @@ async fn authenticated_production_client_discovers_and_scrapes_a_seat() {
         .federation_id()
         .to_string();
     assert_eq!(
-        commit.snapshots[0].federation_id, expected_federation,
+        commit.snapshots[0].asserted_federation_id, expected_federation,
         "the invite-derived binding stays with the exact scraped seat"
     );
     assert!(

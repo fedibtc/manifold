@@ -132,7 +132,7 @@ described as unique humans.
 `peer_id` and `self_id` are producer-owned operational dimensions. The collector
 bounds each to an at-most-five-byte value parseable as `u16`, but does not attest
 that it belongs to the seat's current federation configuration. Consumers must
-use `fman_id`, `guardian_seat_id`, and the asserted `federation_id` for
+use `fman_id`, `guardian_seat_id`, and `asserted_federation_id` for
 operational source identity and must not interpret
 these producer labels as configuration or federation membership proofs.
 
@@ -171,13 +171,18 @@ Every admitted guardian series receives exactly these collector labels:
   display only; collisions must never merge series; and
 - `guardian_seat_id`: the canonical seat id returned by that authenticated
   FMan, stable within its FMan identity; and
-- `federation_id`: the lowercase 64-hex id derived from the formed invite that
-  the authenticated FMan asserted for that exact seat.
+- `asserted_federation_id`: the lowercase 64-hex id derived from the formed invite
+  that the authenticated FMan asserted for that exact seat; the collector
+  canonicalizes this self-report but does not prove guardian membership or child
+  configuration.
 
 The federation id has one value per asserted federation and is intentionally
 groupable across seats. It is authenticated FMan-asserted attribution, not an
-independent guardian-membership or child-config proof, and is insufficient for
-authorization, billing, or dispute resolution.
+independent guardian-membership or child-config proof. An authenticated FMan can
+attach fabricated, structurally valid allowlisted measurements to any parseable
+invite. Queries that aggregate only by `asserted_federation_id` are therefore
+poisonable. Keep `fman_id` in attribution, and never use the asserted label for
+authorization, billing, disputes, membership proof, or punitive automation.
 These labels are operational identifiers in the private backend. The collector
 must not add capabilities, endpoints, invites, journal identifiers, source
 incarnations or cursors, caller-provided names, raw unverified identifiers, or
@@ -202,6 +207,13 @@ line, sample, family, output, or deadline exhaustion reject the complete
 response because a safe bounded projection cannot be established.
 Durable state across all active targets is capped at 32 MiB and
 100,000 samples, and the private listener admits one aggregate scrape at a time.
+This is a shared global cap, not a per-FMan quota: rotating successful seats
+across partial polls can retain enough old snapshots to block growing commits
+from healthy targets. That accumulation path predates federation labels. Invalid
+current invites can also retain the last successful snapshot and attribution,
+and changing a valid assertion creates downstream historical series churn.
+Prometheus and remote-write retention and cardinality limits remain downstream
+policy.
 Changing the inventory revision, configured source version/hash, or canonical
 method-label gate atomically clears incompatible latest snapshots and durable
 attempt deadlines. Quarantine and expiry suppress and delete snapshots; renewal

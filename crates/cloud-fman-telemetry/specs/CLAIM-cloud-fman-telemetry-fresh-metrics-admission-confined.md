@@ -23,6 +23,10 @@ Markdown inventory, that a `peer_id` belongs to configured peers, that persisted
 snapshots are revalidated before exposition, when the response was observed, or
 how admitted samples are subsequently stored or rendered.
 
+## Status
+
+Unverified.
+
 ## Assumptions
 
 - The process and its dependencies execute the reviewed production Rust without

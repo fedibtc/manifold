@@ -23,9 +23,10 @@ identity or cursor state.
 
 The authenticated FMan identity is the canonical Nostr public key established by
 registration. A seat id and formed invite returned over that FMan's
-capability-authenticated Iroh connection bind the scrape selector to an
-operational federation id. This is the authenticated FMan's assertion; it does
-not independently prove guardian membership or the child's configuration.
+capability-authenticated Iroh connection associate the scrape selector with an
+operational federation id. This association is accepted as the authenticated
+FMan's self-report. The collector canonicalizes it but does not independently
+prove guardian membership or the child's configuration.
 
 The collector collects only:
 
@@ -57,29 +58,33 @@ every admitted guardian series:
   used only for display and never for series identity or merging;
 - `guardian_seat_id`: the canonical seat id returned by the authenticated FMan;
   and
-- `federation_id`: the canonical lowercase 64-hex id derived from the invite
+- `asserted_federation_id`: the canonical lowercase 64-hex id derived from the invite
   asserted for that exact seat by the authenticated FMan.
 
 The key is already a public FMan identity, the possibly colliding name is its
 bounded human-readable fingerprint, and the seat id is bounded collector input
 from an authenticated FMan. `fman_id` and `guardian_seat_id` are stable across
 ordinary restart and capability rotation and operationally identify the source.
-The collector stores the federation id with the successful seat snapshot and
+The collector stores the asserted federation id with the successful seat snapshot and
 rejects producer-owned collisions, missing or malformed current invites, and
 persisted metadata/sample mismatches. A later successful poll replaces the
 snapshot and its federation attribution together. The seat-scoped observation-time and stale
 metrics carry all four labels; FMan-global freshness and collector-global
-metrics do not carry `federation_id`.
+metrics do not carry `asserted_federation_id`.
 
 The collector must not substitute opaque-only target ids, caller-provided
 display names, full invite data, capabilities, endpoints, journal data, or
-other unbounded values. This attribution is suitable for operational grouping,
-not authorization, billing, disputes, or independent membership attestation.
+other unbounded values. This attribution is suitable for operational grouping.
+Consumers must not use it for authorization, billing, disputes, membership
+proof, or punitive automation. An authenticated FMan can fabricate structurally
+valid allowlisted measurements and assert any parseable invite. Aggregation that
+drops `fman_id` can therefore poison a federation-wide result, while `fman_id`
+continues to identify the FMan that supplied each series.
 
 `peer_id` and `self_id` remain bounded producer-owned metric dimensions. They
 are neither collector-owned source identity nor collector-verified federation
 configuration. Consumers must use the authenticated `fman_id` plus asserted
-`guardian_seat_id` and `federation_id` for operational source identity and must
+`guardian_seat_id` and `asserted_federation_id` for operational source identity and must
 not treat any of these labels as independent membership attestation.
 
 Metrics are deliberate observations at a configured cadence of either 15 or 30
@@ -137,6 +142,20 @@ sides of the transition. Renewal after expiry starts without the previous
 snapshot. The collector bounds all persisted metric state to 32 MiB and 100,000
 samples and admits one aggregate scrape at a time. It retains latest snapshots
 only; Prometheus retains metrics history.
+
+These global bounds do not provide per-target isolation. A target can rotate
+successful seats across partial polls so retained snapshots approach the shared
+cap and block other targets' growing commits. This partial-poll accumulation
+predates federation attribution; an invalid current invite adds another way to
+skip a listed seat while retaining its previous successful snapshot and asserted
+attribution. The stale metadata eventually describes its age, but the retained
+attribution is not the FMan's current assertion.
+
+A changed valid assertion replaces the stable seat's current snapshot and
+creates a different Prometheus labelset. Historical series churn from changing
+`asserted_federation_id` is enabled by this label; seat-id churn already existed.
+Prometheus and remote-write retention and cardinality limits remain downstream
+operational policy rather than collector guarantees.
 
 ## Journal continuity and archive commit
 

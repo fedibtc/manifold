@@ -134,13 +134,13 @@ and wakes the worker to register the replacement. This is the explicit
 operator recovery path when existing collector access should be revoked or a
 receiver has lost its target. Downstream collectors first request the
 authenticated seat list and then decide which returned seats or invites to
-consume. The cloud collector derives a canonical federation id from each formed
-invite and binds it to the scrape of that exact seat for operational
-attribution. Authentication proves which FMan made this assertion; it does not
-independently attest that the seat is a guardian of that federation or that the
-child uses its configuration. Consumers that need authorization, billing,
-dispute evidence, or membership proof must independently verify the
-invite-derived federation/config binding.
+consume. The cloud collector canonicalizes the federation id in each formed
+invite as `asserted_federation_id` and associates it with the scrape of that
+exact seat for operational attribution. Authentication proves which FMan made
+this assertion; it does not independently attest that the seat is a guardian of
+that federation or that the child uses its configuration. Consumers must not use
+the self-report as authorization, billing, dispute, membership-proof, or
+punitive-automation evidence.
 
 The generation is durable only with the complete data root. Mnemonic-only
 restore starts from generation zero and can therefore re-derive a bearer used

@@ -6,7 +6,7 @@ use std::collections::BTreeSet;
 pub(crate) struct SeatObservation {
     pub(crate) guardian_seat_id: String,
     /// Canonical federation id derived from the discovered seat invite.
-    pub(crate) federation_id: String,
+    pub(crate) asserted_federation_id: String,
     pub(crate) observed_at_ms: i64,
     pub(crate) samples: Vec<String>,
 }

@@ -20,6 +20,21 @@ period in
 [the claim](../CLAIM-cloud-fman-telemetry-target-failures-contained.md) are
 trusted.
 
+## Explicitly unclaimed availability limitation
+
+The per-poll 8 MiB target bound applies only to snapshots successful in that
+poll. A listed seat that fails remains in the retained set, and
+`Store::commit_metrics` upserts successful seats without removing that failed
+seat's earlier row. One target can therefore rotate successful subsets over
+multiple partial polls until its retained rows approach the shared
+32 MiB/100,000-sample cap. A later healthy-target commit that grows global state
+then returns `StoreError::Saturated`. Selective scrape failure already enabled
+this execution before federation attribution; invalid current invites add a new
+selective-failure mechanism. The precise claim promises each due target a
+bounded collection opportunity, not successful persistence after that
+opportunity. It remains unverified and must not be read as per-target
+availability isolation.
+
 ## Argument
 
 1. **[test] Fair bounded attempts.**

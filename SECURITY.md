@@ -25,9 +25,9 @@ an access-controlled telemetry network and deny ingress from the Internet and
 untrusted workloads. A non-loopback bind requires an explicit runtime assertion
 that deployment policy provides this isolation; the process cannot verify that
 NetworkPolicy or an equivalent control exists or is enforced.
-Its `/metrics` output contains vetted operational data and stable FMan,
-guardian-seat, and invite-derived federation identifiers; it never belongs on
-the public registration route.
+Its `/metrics` output contains vetted operational data, stable authenticated
+FMan identifiers, and bounded guardian-seat and invite-derived federation
+assertions from that FMan; it never belongs on the public registration route.
 
 ## Image publishing credentials
 
@@ -315,12 +315,18 @@ the archive/cursor commit transaction. Key delivery and backup placement remain
 separate configurable security decisions.
 
 The collector may attach only the private inventory's bounded, authenticated
-`fman_id`, display-only `fman_name`, `guardian_seat_id`, and `federation_id`
-labels to collected guardian series. The collector derives `federation_id` from
-the invite asserted for that exact seat by the authenticated FMan. This is
-operational attribution, not independent guardian-membership or child-config
-attestation, and is insufficient for authorization, billing, or disputes.
-`fman_id`, not the collision-prone name, preserves FMan identity.
+`fman_id`, display-only `fman_name`, `guardian_seat_id`, and
+`asserted_federation_id` labels to collected guardian series. The authenticated
+FMan supplies the seat and invite association. The collector parses the invite
+and canonicalizes its federation id, but does not independently prove that the
+seat belongs to that federation or that the child uses that configuration.
+An authenticated malicious FMan can therefore fabricate structurally valid
+allowlisted measurements and assert any parseable federation invite.
+Federation-only aggregation can be poisoned; the collector-owned `fman_id`
+still attributes every resulting series to the FMan that supplied it.
+Consumers must not use the asserted label as authorization, billing, dispute,
+membership-proof, or punitive-automation evidence. `fman_id`, not the
+collision-prone name, preserves FMan identity.
 Capabilities, Holder envelopes, endpoints, full invite codes or data, journal selectors,
 incarnations, cursors, raw unverified identifiers, and caller-controlled or
 unbounded values remain forbidden in labels, logs, traces, and errors.
@@ -346,6 +352,17 @@ old backing. Per-seat admitted text is capped at 2 MiB so JSON serialization sta
 within the 4 MiB durable row bound. A policy fingerprint covers the inventory
 revision, exact configured release/hash, and method-source gate. A fingerprint
 change atomically discards snapshots and poll deadlines; Prometheus owns history.
+The global cap is not a per-target availability boundary. By rotating which
+seats succeed in partial polls, one FMan can accumulate retained snapshots and
+monopolize shared capacity, preventing healthy snapshots that would exceed the
+cap. This accumulation path predates federation labels; invalid current invites
+add another way to produce partial polls. A listed seat whose current invite is
+invalid retains its last successful snapshot and old asserted attribution until
+normal lifecycle deletion, with freshness metadata eventually marking it stale.
+Changing a valid invite assertion for a stable seat replaces current collector
+state but creates a new downstream Prometheus/remote-write series. That churn is
+enabled by `asserted_federation_id`; Prometheus retention and tenant/cardinality
+limits remain downstream policy.
 Shutdown and worker-failure paths stop new metrics work but join any cadence
 reservation or snapshot commit already in its durability segment. As with
 safe-journal commits, storage-device completion retains the operating system

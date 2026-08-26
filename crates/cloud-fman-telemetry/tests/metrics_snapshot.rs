@@ -32,7 +32,7 @@ fn snapshot(fman: &str, seat: &str, observed_at_ms: i64) -> MetricsSnapshot {
         fman_id: fman.to_owned(),
         fman_name: "same-display-name".to_owned(),
         guardian_seat_id: seat.to_owned(),
-        federation_id: "0000000000000000000000000000000000000000000000000000000000000000"
+        asserted_federation_id: "0000000000000000000000000000000000000000000000000000000000000000"
             .to_owned(),
         observed_at_ms,
         samples: vec![format!(
@@ -95,8 +95,10 @@ fn staleness_is_metadata_and_does_not_retime_source_samples() {
     )
     .unwrap();
     assert!(output.contains(
-        "cloud_fman_telemetry_snapshot_stale{federation_id=\"0000000000000000000000000000000000000000000000000000000000000000\",fman_id=\"11\""
+        "cloud_fman_telemetry_snapshot_stale{asserted_federation_id=\"0000000000000000000000000000000000000000000000000000000000000000\",fman_id=\"11\""
     ));
+    assert!(!output.contains("{federation_id="));
+    assert!(!output.contains(",federation_id="));
     assert!(output.contains("guardian_seat_id=\"aa\"} 1 62000\n"));
     assert!(output.contains("} 7 1000\n"));
 }
@@ -113,7 +115,7 @@ fn observation_at_exact_freshness_boundary_is_not_stale() {
     )
     .unwrap();
     assert!(output.contains(
-        "cloud_fman_telemetry_snapshot_stale{federation_id=\"0000000000000000000000000000000000000000000000000000000000000000\",fman_id=\"11\",fman_name=\"same-display-name\",guardian_seat_id=\"aa\"} 0 61000\n"
+        "cloud_fman_telemetry_snapshot_stale{asserted_federation_id=\"0000000000000000000000000000000000000000000000000000000000000000\",fman_id=\"11\",fman_name=\"same-display-name\",guardian_seat_id=\"aa\"} 0 61000\n"
     ));
 }
 

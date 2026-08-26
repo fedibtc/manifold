@@ -48,7 +48,7 @@ behavior is derived from the scoped code.
 4. **[code] Input identity keys cannot override inserted identity.**
    `ParsedSample` rejects malformed or duplicate input labels, and policy shape
    validation excludes `fman_id`, `fman_name`, `guardian_seat_id`, and
-   `federation_id` from the input. `admit_until` then inserts exactly those four keys from the supplied
+   `asserted_federation_id` from the input. `admit_until` then inserts exactly those four keys from the supplied
    `MetricsIdentity`; this function does not establish that those values are
    canonical.
 5. **[code] Global failures are bounded and projection-local failures stay local.**
@@ -68,8 +68,8 @@ behavior is derived from the scoped code.
    `malformed_and_hostile_cardinality_are_bounded` cover unknown shape and
    generated-suffix lookalikes, extra labels, identity override, malformed and
    duplicate input, incomplete histograms, and the exact hostile sample bound.
-   `exact_inventory_adds_only_verified_identity` pins supplied identity
-   insertion, including canonical rendering of `federation_id`; same-value and
+   `exact_inventory_adds_only_bounded_identity_labels` pins supplied identity
+   insertion, including canonical rendering of `asserted_federation_id`; same-value and
    different-value producer collisions exercise the same family-local rejection.
 
 ## Residuals

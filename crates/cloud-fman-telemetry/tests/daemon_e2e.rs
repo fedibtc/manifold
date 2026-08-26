@@ -229,16 +229,20 @@ async fn real_daemon_registers_pulls_persists_and_restarts() {
 
     let metrics = wait_for_metrics(private_port).await;
     assert!(metrics.contains("fm_consensus_session_count"));
-    let federation_id = fedimint_core::invite_code::InviteCode::from_str(VALID_INVITE)
+    let asserted_federation_id = fedimint_core::invite_code::InviteCode::from_str(VALID_INVITE)
         .unwrap()
         .federation_id()
         .to_string();
-    assert!(metrics.contains(&format!("federation_id=\"{federation_id}\"")));
+    assert!(metrics.contains(&format!(
+        "asserted_federation_id=\"{asserted_federation_id}\""
+    )));
+    assert!(!metrics.contains("{federation_id="));
+    assert!(!metrics.contains(",federation_id="));
     let target_fresh = metrics
         .lines()
         .find(|line| line.starts_with("cloud_fman_telemetry_target_fresh{"))
         .unwrap();
-    assert!(!target_fresh.contains("federation_id"));
+    assert!(!target_fresh.contains("asserted_federation_id"));
     let parsed = prometheus_parse::Scrape::parse(
         metrics
             .lines()

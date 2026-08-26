@@ -896,16 +896,16 @@ impl Store {
             }
             sqlx::query(
                 "INSERT INTO metric_snapshots(
-                    target_id,guardian_seat_id,federation_id,observed_at_ms,samples_json,sample_count
+                    target_id,guardian_seat_id,asserted_federation_id,observed_at_ms,samples_json,sample_count
                  ) VALUES (?,?,?,?,?,?)
                  ON CONFLICT(target_id,guardian_seat_id) DO UPDATE SET
-                     federation_id=excluded.federation_id,
+                     asserted_federation_id=excluded.asserted_federation_id,
                      observed_at_ms=excluded.observed_at_ms,
                      samples_json=excluded.samples_json,sample_count=excluded.sample_count",
             )
             .bind(target.target_id())
             .bind(snapshot.guardian_seat_id)
-            .bind(snapshot.federation_id)
+            .bind(snapshot.asserted_federation_id)
             .bind(snapshot.observed_at_ms)
             .bind(samples)
             .bind(sample_count)
@@ -975,7 +975,7 @@ impl Store {
                  WHERE status='active' AND lease_until > ?
                  ORDER BY fman_pubkey,target_id LIMIT ?
              ), candidates AS (
-                  SELECT t.target_id,t.fman_pubkey,t.fman_name,s.guardian_seat_id,s.federation_id,
+                  SELECT t.target_id,t.fman_pubkey,t.fman_name,s.guardian_seat_id,s.asserted_federation_id,
                          typeof(s.samples_json) AS samples_type,
                          length(CAST(s.samples_json AS BLOB)) AS stored_bytes
                    FROM metric_snapshots s JOIN active_targets t ON t.target_id=s.target_id
@@ -990,7 +990,7 @@ impl Store {
                         ) AS cumulative_bytes
                  FROM candidates
              ), accepted AS (
-                  SELECT target_id,fman_pubkey,fman_name,guardian_seat_id,federation_id
+                  SELECT target_id,fman_pubkey,fman_name,guardian_seat_id,asserted_federation_id
                  FROM evaluated
                  WHERE samples_type='blob' AND stored_bytes <= ? AND cumulative_bytes <= ?
              ), summary AS (
@@ -999,7 +999,7 @@ impl Store {
              )
             SELECT summary.rejected_resources,accepted.target_id IS NULL AS no_accepted,
                      accepted.fman_pubkey,accepted.fman_name,accepted.guardian_seat_id,
-                     accepted.federation_id,
+                     accepted.asserted_federation_id,
                     s.observed_at_ms,s.samples_json
              FROM summary LEFT JOIN accepted ON true
              LEFT JOIN metric_snapshots s
@@ -1047,7 +1047,7 @@ impl Store {
                     row.try_get::<Option<String>, _>("fman_pubkey")?,
                     row.try_get::<Option<String>, _>("fman_name")?,
                     row.try_get::<Option<String>, _>("guardian_seat_id")?,
-                    row.try_get::<Option<String>, _>("federation_id")?,
+                    row.try_get::<Option<String>, _>("asserted_federation_id")?,
                     row.try_get::<Option<i64>, _>("observed_at_ms")?,
                     row.try_get::<Option<Vec<u8>>, _>("samples_json")?,
                 ))
@@ -1056,7 +1056,7 @@ impl Store {
                 Some(fman_id),
                 Some(fman_name),
                 Some(guardian_seat_id),
-                Some(federation_id),
+                Some(asserted_federation_id),
                 Some(observed_at_ms),
                 Some(samples_json),
             )) = loaded
@@ -1068,7 +1068,7 @@ impl Store {
                 rejected = rejected.saturating_add(1);
                 continue;
             }
-            if !canonical_federation_id(&federation_id) {
+            if !canonical_asserted_federation_id(&asserted_federation_id) {
                 rejected = rejected.saturating_add(1);
                 continue;
             }
@@ -1086,7 +1086,7 @@ impl Store {
                         fman_id: &fman_id,
                         fman_name: &fman_name,
                         guardian_seat_id: &guardian_seat_id,
-                        federation_id: &federation_id,
+                        asserted_federation_id: &asserted_federation_id,
                     },
                 )
                 .is_err()
@@ -1128,7 +1128,7 @@ impl Store {
                 fman_id,
                 fman_name,
                 guardian_seat_id,
-                federation_id,
+                asserted_federation_id,
                 observed_at_ms,
                 samples,
             });
@@ -1157,7 +1157,6 @@ impl Store {
 
     /// Load and revalidate bounded snapshots before a private scrape can expose them.
     #[cfg(test)]
-
     pub(crate) async fn metric_snapshots(
         &self,
         policy: &MetricsPolicy<'_>,
@@ -1177,7 +1176,7 @@ impl Store {
                  WHERE status='active' AND lease_until > ?
                  ORDER BY fman_pubkey,target_id LIMIT ?
              ), candidates AS (
-                  SELECT t.target_id,t.fman_pubkey,t.fman_name,s.guardian_seat_id,s.federation_id,
+                  SELECT t.target_id,t.fman_pubkey,t.fman_name,s.guardian_seat_id,s.asserted_federation_id,
                          typeof(s.samples_json) AS samples_type,
                          length(CAST(s.samples_json AS BLOB)) AS stored_bytes
                    FROM metric_snapshots s JOIN active_targets t ON t.target_id=s.target_id
@@ -1192,7 +1191,7 @@ impl Store {
                         ) AS cumulative_bytes
                  FROM candidates
              ), accepted AS (
-                  SELECT target_id,fman_pubkey,fman_name,guardian_seat_id,federation_id
+                  SELECT target_id,fman_pubkey,fman_name,guardian_seat_id,asserted_federation_id
                  FROM evaluated
                  WHERE samples_type='blob' AND stored_bytes <= ? AND cumulative_bytes <= ?
              ), summary AS (
@@ -1201,7 +1200,7 @@ impl Store {
              )
             SELECT summary.rejected_resources,accepted.target_id IS NULL AS no_accepted,
                      accepted.fman_pubkey,accepted.fman_name,accepted.guardian_seat_id,
-                     accepted.federation_id,
+                     accepted.asserted_federation_id,
                     s.observed_at_ms,s.samples_json
              FROM summary LEFT JOIN accepted ON true
              LEFT JOIN metric_snapshots s
@@ -1236,7 +1235,7 @@ impl Store {
                     row.try_get::<Option<String>, _>("fman_pubkey")?,
                     row.try_get::<Option<String>, _>("fman_name")?,
                     row.try_get::<Option<String>, _>("guardian_seat_id")?,
-                    row.try_get::<Option<String>, _>("federation_id")?,
+                    row.try_get::<Option<String>, _>("asserted_federation_id")?,
                     row.try_get::<Option<i64>, _>("observed_at_ms")?,
                     row.try_get::<Option<Vec<u8>>, _>("samples_json")?,
                 ))
@@ -1245,7 +1244,7 @@ impl Store {
                 Some(fman_id),
                 Some(fman_name),
                 Some(guardian_seat_id),
-                Some(federation_id),
+                Some(asserted_federation_id),
                 Some(observed_at_ms),
                 Some(samples_json),
             )) = loaded
@@ -1257,7 +1256,7 @@ impl Store {
                 rejected = rejected.saturating_add(1);
                 continue;
             }
-            if !canonical_federation_id(&federation_id) {
+            if !canonical_asserted_federation_id(&asserted_federation_id) {
                 rejected = rejected.saturating_add(1);
                 continue;
             }
@@ -1275,7 +1274,7 @@ impl Store {
                         fman_id: &fman_id,
                         fman_name: &fman_name,
                         guardian_seat_id: &guardian_seat_id,
-                        federation_id: &federation_id,
+                        asserted_federation_id: &asserted_federation_id,
                     },
                 )
                 .is_err()
@@ -1317,7 +1316,7 @@ impl Store {
                 fman_id,
                 fman_name,
                 guardian_seat_id,
-                federation_id,
+                asserted_federation_id,
                 observed_at_ms,
                 samples,
             });
@@ -1848,7 +1847,7 @@ fn key_sentinel_aad(trust_profile: &str, key_id: &str) -> String {
     format!("cloud-fman-telemetry/key-sentinel/v1:{trust_profile}:{key_id}")
 }
 
-fn canonical_federation_id(value: &str) -> bool {
+fn canonical_asserted_federation_id(value: &str) -> bool {
     value.len() == 64
         && value
             .bytes()
@@ -1934,7 +1933,7 @@ mod tests {
                     fman_id: "11",
                     fman_name: "calm-tern",
                     guardian_seat_id: seat,
-                    federation_id: "0000000000000000000000000000000000000000000000000000000000000000",
+                    asserted_federation_id: "0000000000000000000000000000000000000000000000000000000000000000",
                 },
                 None,
             )
@@ -1957,7 +1956,7 @@ mod tests {
                     fman_id: "11",
                     fman_name: "calm-tern",
                     guardian_seat_id: seat,
-                    federation_id: "0000000000000000000000000000000000000000000000000000000000000000",
+                    asserted_federation_id: "0000000000000000000000000000000000000000000000000000000000000000",
                 },
                 None,
             )
@@ -1973,7 +1972,7 @@ mod tests {
                 .unwrap();
         sqlx::query(
             "INSERT INTO metric_snapshots(
-                 target_id,guardian_seat_id,federation_id,observed_at_ms,samples_json,sample_count
+                 target_id,guardian_seat_id,asserted_federation_id,observed_at_ms,samples_json,sample_count
              ) VALUES (?,?,?,?,?,?)",
         )
         .bind(target_id)
@@ -2346,7 +2345,7 @@ mod tests {
                         listed_seats: Some(["aa".to_owned()].into()),
                         snapshots: vec![SeatObservation {
                             guardian_seat_id: "aa".into(),
-                            federation_id:
+                            asserted_federation_id:
                                 "0000000000000000000000000000000000000000000000000000000000000000"
                                     .to_owned(),
                             observed_at_ms: 100_000,
@@ -2433,7 +2432,7 @@ mod tests {
                     listed_seats: Some(["aa".to_owned(), "bb".to_owned()].into()),
                     snapshots: vec![SeatObservation {
                         guardian_seat_id: "bb".into(),
-                        federation_id:
+                        asserted_federation_id:
                             "0000000000000000000000000000000000000000000000000000000000000000"
                                 .to_owned(),
                         observed_at_ms: 101_000,
@@ -2532,18 +2531,18 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        let commit = |federation_id: &str, observed_at_ms| MetricsCommit {
+        let commit = |asserted_federation_id: &str, observed_at_ms| MetricsCommit {
             listed_seats: Some(["aa".to_owned()].into()),
             snapshots: vec![SeatObservation {
                 guardian_seat_id: "aa".to_owned(),
-                federation_id: federation_id.to_owned(),
+                asserted_federation_id: asserted_federation_id.to_owned(),
                 observed_at_ms,
                 samples: stored_samples("aa", 1)
                     .into_iter()
                     .map(|sample| {
                         sample.replace(
                             "0000000000000000000000000000000000000000000000000000000000000000",
-                            federation_id,
+                            asserted_federation_id,
                         )
                     })
                     .collect(),
@@ -2563,6 +2562,32 @@ mod tests {
                 .await
                 .unwrap(),
             CommitOutcome::Committed
+        );
+        // A listed seat whose current invite cannot be admitted has no successful
+        // replacement snapshot, so the previous assertion remains the latest
+        // successful observation.
+        assert_eq!(
+            store
+                .commit_metrics(
+                    &work,
+                    MetricsCommit {
+                        listed_seats: Some(["aa".to_owned()].into()),
+                        snapshots: vec![],
+                        complete: false,
+                    },
+                    100,
+                )
+                .await
+                .unwrap(),
+            CommitOutcome::Committed
+        );
+        let retained = store
+            .metric_snapshots(&metrics_policy(), 100, 100_000)
+            .await
+            .unwrap();
+        assert_eq!(
+            retained.snapshots[0].asserted_federation_id,
+            "0000000000000000000000000000000000000000000000000000000000000000"
         );
         assert_eq!(
             store
@@ -2584,7 +2609,7 @@ mod tests {
             .unwrap();
         assert_eq!(loaded.snapshots.len(), 1);
         assert_eq!(
-            loaded.snapshots[0].federation_id,
+            loaded.snapshots[0].asserted_federation_id,
             "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
         );
         assert_eq!(loaded.snapshots[0].observed_at_ms, 101_000);
@@ -2637,7 +2662,7 @@ mod tests {
                 .unwrap();
         sqlx::query(
             "INSERT INTO metric_snapshots(
-                 target_id,guardian_seat_id,federation_id,observed_at_ms,samples_json,sample_count
+                 target_id,guardian_seat_id,asserted_federation_id,observed_at_ms,samples_json,sample_count
              ) VALUES (?,?,?,?,?,?)",
         )
         .bind(target_id)
@@ -2657,7 +2682,7 @@ mod tests {
             .await
             .unwrap();
         sqlx::query(
-            "UPDATE metric_snapshots SET federation_id='NOT-CANONICAL'
+            "UPDATE metric_snapshots SET asserted_federation_id='NOT-CANONICAL'
              WHERE guardian_seat_id='hh'",
         )
         .execute(&mut *connection)
@@ -2665,7 +2690,7 @@ mod tests {
         .unwrap();
         sqlx::query(
             "UPDATE metric_snapshots
-             SET federation_id=?
+             SET asserted_federation_id=?
              WHERE guardian_seat_id='ii'",
         )
         .bind("ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff")
@@ -2786,7 +2811,7 @@ mod tests {
                         listed_seats: Some(["aa".to_owned()].into()),
                         snapshots: vec![SeatObservation {
                             guardian_seat_id: "aa".into(),
-                            federation_id:
+                            asserted_federation_id:
                                 "0000000000000000000000000000000000000000000000000000000000000000"
                                     .to_owned(),
                             observed_at_ms: 100_000,
