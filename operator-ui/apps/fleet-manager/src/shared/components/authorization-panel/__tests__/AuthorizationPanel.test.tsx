@@ -1,6 +1,6 @@
 import type { OnboardingResponse } from '@operator-ui/types';
-import { render, screen } from '@testing-library/react';
-import { describe, expect, it, vi } from 'vitest';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { MOCK_HOLDER_PUBKEY, MOCK_SERVICE_NOSTR_PUBKEY } from '@/mocks/world/keys';
 import { AdminApiError, NetworkError } from '@/shared/api/errors';
 
@@ -66,6 +66,42 @@ describe('AuthorizationPanel', () => {
     render(<AuthorizationPanel data={waiting} isLoading={false} error={null} />);
 
     expect(screen.getByRole('button', { name: /copy the service nostr public key/i })).toBeTruthy();
+  });
+
+  // The reported defect: the icon beside the key put
+  // `{"subject_pubkey":"…"}` on the clipboard. Asserting on the rendered props
+  // would not have caught it, so these assert what the clipboard receives.
+  describe('what each control puts on the clipboard', () => {
+    const originalClipboard = navigator.clipboard;
+
+    afterEach(() => {
+      Object.assign(navigator, { clipboard: originalClipboard });
+      vi.restoreAllMocks();
+    });
+
+    const clickAndReadClipboard = async (name: RegExp) => {
+      const writeText = vi.fn().mockResolvedValue(undefined);
+      Object.assign(navigator, { clipboard: { writeText } });
+      render(<AuthorizationPanel data={waiting} isLoading={false} error={null} />);
+
+      fireEvent.click(screen.getByRole('button', { name }));
+
+      await waitFor(() => expect(writeText).toHaveBeenCalled());
+      return writeText.mock.calls[0][0];
+    };
+
+    it('should put the bare key on the clipboard, not a JSON envelope', async () => {
+      const copied = await clickAndReadClipboard(/copy the service nostr public key/i);
+
+      expect(copied).toBe(MOCK_SERVICE_NOSTR_PUBKEY);
+      expect(copied).not.toContain('subject_pubkey');
+    });
+
+    it('should put the parsable request on the clipboard from the request control', async () => {
+      const copied = await clickAndReadClipboard(/copy the authorization request/i);
+
+      expect(copied).toBe(`{"subject_pubkey":"${MOCK_SERVICE_NOSTR_PUBKEY}"}`);
+    });
   });
 
   it('should not claim a holder app can scan and finish the flow', () => {
