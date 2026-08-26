@@ -31,7 +31,7 @@ use defe_api::{
     Response, SharingMode,
 };
 
-const USAGE: &str = "Usage: defe [opts...] <command>\n\nCommands:\n  exec <cmd...>\n  env [--complete-liquidity] [-- COMMAND...]\n  serve --listenfd [--log-requests]\n\nOptions:\n  --tmp-dir <path>\n  --keep-temp\n  --no-keep-temp-on-failure\n  --log-dir <path>\n  --log-requests\n  --binary-path <dir>\n  --nostr-rs-relay-bin <path>\n  --push-gateway-bin <path>\n  --bitcoind-bin <path>\n  --fleet-manager-bin <path>\n  --fman-cli-bin <path>\n  --fi-cli-bin <path>\n  --liquidity-manager-daemon-bin <path>\n  --gatewayd-bin <path>\n  --gateway-cli-bin <path>\n  --defe-env-bin <path>";
+const USAGE: &str = "Usage: defe [opts...] <command>\n\nCommands:\n  exec <cmd...>\n  env [--fedimint-load-test-tool-bin <path>] [--complete-liquidity] [-- COMMAND...]\n  serve --listenfd [--log-requests]\n\nOptions:\n  --tmp-dir <path>\n  --keep-temp\n  --no-keep-temp-on-failure\n  --log-dir <path>\n  --log-requests\n  --binary-path <dir>\n  --nostr-rs-relay-bin <path>\n  --push-gateway-bin <path>\n  --bitcoind-bin <path>\n  --fleet-manager-bin <path>\n  --fman-cli-bin <path>\n  --fi-cli-bin <path>\n  --liquidity-manager-daemon-bin <path>\n  --gatewayd-bin <path>\n  --gateway-cli-bin <path>\n  --defe-env-bin <path>";
 const SOCKET_FILE_NAME: &str = "s";
 const DEV_SERVER_TEMP_DIR_NAME: &str = "defe-dev-server";
 const DEFAULT_TEMP_DIR_ATTEMPTS: u16 = 256;
@@ -71,11 +71,18 @@ async fn run(args: Vec<OsString>) -> Result<i32, String> {
 }
 
 async fn run_exec(exec: ExecArgs) -> Result<ExitStatus, String> {
-    if exec.command.is_empty() && exec.env_args.is_none() {
+    if exec.command.is_empty() && exec.environment.is_none() {
         return Err(format!("defe exec requires a command\n{USAGE}"));
     }
 
-    let environment = exec.env_args.is_some();
+    let environment = exec.environment.is_some();
+    let load_test_tool_bin = resolve_binary(
+        exec.environment
+            .as_ref()
+            .and_then(|environment| environment.load_test_tool_bin.clone()),
+        &exec.options.binary_paths,
+        "fedimint-load-test-tool",
+    );
     let log_requests = exec.options.log_requests;
     let mut generated_temp_root = None;
     let config = match prepare_server_config(exec.options, || {
@@ -92,7 +99,7 @@ async fn run_exec(exec: ExecArgs) -> Result<ExitStatus, String> {
         }
     };
     let mut command_args = exec.command;
-    if let Some(env_args) = exec.env_args {
+    if let Some(environment) = exec.environment {
         command_args = vec![
             config.defe_env_bin.clone(),
             "--root".into(),
@@ -107,14 +114,17 @@ async fn run_exec(exec: ExecArgs) -> Result<ExitStatus, String> {
             config.gateway_cli_bin.clone(),
             "--bitcoin-cli".into(),
             config.bitcoin_cli_bin.clone(),
+            "--load-test-tool".into(),
+            load_test_tool_bin.clone(),
         ];
-        command_args.extend(env_args);
+        command_args.extend(environment.args);
         for (label, binary) in [
             ("defe-env", &config.defe_env_bin),
             ("fman-cli", &config.fman_cli_bin),
             ("fi-cli", &config.fi_cli_bin),
             ("gateway-cli", &config.gateway_cli_bin),
             ("bitcoin-cli", &config.bitcoin_cli_bin),
+            ("fedimint-load-test-tool", &load_test_tool_bin),
         ] {
             validate_environment_binary(label, binary)?;
         }
@@ -961,15 +971,16 @@ fn parse_command(args: Vec<OsString>) -> Result<DefeCommand, String> {
                 options,
                 policy,
                 command: args[index + 1..].to_vec(),
-                env_args: None,
+                environment: None,
             }));
         }
         if arg == "env" {
+            let environment = parse_env_args(&args[index + 1..])?;
             return Ok(DefeCommand::Exec(ExecArgs {
                 options,
                 policy,
                 command: Vec::new(),
-                env_args: Some(args[index + 1..].to_vec()),
+                environment: Some(environment),
             }));
         }
         if arg == "serve" {
@@ -1052,6 +1063,23 @@ fn parse_command(args: Vec<OsString>) -> Result<DefeCommand, String> {
     }
 
     Err(format!("missing defe command\n{USAGE}"))
+}
+
+fn parse_env_args(args: &[OsString]) -> Result<EnvironmentArgs, String> {
+    let mut load_test_tool = None;
+    let mut index = 0;
+    while args
+        .get(index)
+        .is_some_and(|argument| argument == "--fedimint-load-test-tool-bin")
+    {
+        index += 1;
+        load_test_tool = Some(take_path_arg(args, index, "--fedimint-load-test-tool-bin")?);
+        index += 1;
+    }
+    Ok(EnvironmentArgs {
+        args: args[index..].to_vec(),
+        load_test_tool_bin: load_test_tool,
+    })
 }
 
 fn parse_serve(mut options: ServerOptions, args: &[OsString]) -> Result<DefeCommand, String> {
@@ -1186,7 +1214,13 @@ struct ExecArgs {
     options: ServerOptions,
     policy: TempPolicy,
     command: Vec<OsString>,
-    env_args: Option<Vec<OsString>>,
+    environment: Option<EnvironmentArgs>,
+}
+
+#[derive(Debug)]
+struct EnvironmentArgs {
+    args: Vec<OsString>,
+    load_test_tool_bin: Option<PathBuf>,
 }
 
 #[derive(Debug)]

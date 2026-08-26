@@ -23,6 +23,13 @@ not a multi-tenant service and must use only dummy credentials and test funds.
 - Synthetic preparation directly creates a remittance in the disposable
   federation. It is intentionally not evidence of production payer accrual,
   weighted split calculation, accumulation, or scheduling.
+- `traffic` passes the private generated invite and Iroh routes only to the
+  selected trusted Fedimint load tool. Its wrapper serializes one child at a
+  time, caps users at 1,000 and duration at one hour, and permits at most 30
+  seconds of timeout grace. It kills a timed-out child and treats timeouts or
+  nonzero exits as failures. Mint and Lightning modes remain explicit
+  unsupported failures. Traffic neither causes nor proves production Fedi
+  payer-fee accrual.
 - Startup phases use bounded process and HTTP waits. A startup failure closes
   the composer connection, which releases every Defe lease; Defe retains the
   private temp root by default for diagnostics.

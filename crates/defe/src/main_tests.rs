@@ -34,6 +34,8 @@ fn parse_exec_keeps_existing_global_options() {
         "/bin/push-gateway".into(),
         "--fman-cli-bin".into(),
         "/bin/fman-cli".into(),
+        "--fi-cli-bin".into(),
+        "/bin/fi-cli".into(),
         "--liquidity-manager-daemon-bin".into(),
         "/bin/liquidity-manager-daemon".into(),
         "--keep-temp".into(),
@@ -69,6 +71,7 @@ fn parse_exec_keeps_existing_global_options() {
         exec.options.fman_cli_bin,
         Some(PathBuf::from("/bin/fman-cli"))
     );
+    assert_eq!(exec.options.fi_cli_bin, Some(PathBuf::from("/bin/fi-cli")));
     assert!(exec.policy.keep_temp);
     assert_eq!(exec.command, vec![OsString::from("true")]);
 }
@@ -80,6 +83,8 @@ fn parse_env_keeps_server_options_and_forwards_only_environment_arguments() {
         "/tmp/defe-bin".into(),
         "--keep-temp".into(),
         "env".into(),
+        "--fedimint-load-test-tool-bin".into(),
+        "/bin/fedimint-load-test-tool".into(),
         "--complete-liquidity".into(),
         "--".into(),
         "sh".into(),
@@ -95,13 +100,18 @@ fn parse_env_keeps_server_options_and_forwards_only_environment_arguments() {
     );
     assert!(exec.policy.keep_temp);
     assert!(exec.command.is_empty());
+    let environment = exec.environment.expect("environment arguments");
     assert_eq!(
-        exec.env_args,
-        Some(vec![
+        environment.load_test_tool_bin,
+        Some(PathBuf::from("/bin/fedimint-load-test-tool"))
+    );
+    assert_eq!(
+        environment.args,
+        vec![
             OsString::from("--complete-liquidity"),
             OsString::from("--"),
             OsString::from("sh"),
-        ])
+        ]
     );
 }
 

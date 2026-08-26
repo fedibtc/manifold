@@ -27,6 +27,14 @@ scheduling. The environment serializes its owned `fi-cli` calls, including that
 wallet, because the CLI is a single-developer test tool rather than a concurrent
 consumer ([GATE-fi-cli-test-tool-scope](../../fi-cli/specs/GATE-fi-cli-test-tool-scope.md)).
 
+The generated `traffic` tool wraps the flake-pinned Fedimint load tester.
+Connection traffic repeatedly downloads client configuration through real client
+API connections. The private generated wrapper supplies the environment's invite
+and Iroh routes to the selected trusted tool, serializes calls, and bounds their
+load and lifetime. Modes whose required upstream capability or environment
+dependency is unavailable fail explicitly rather than simulating success. None
+of these ordinary operations models or causes production Fedi payer-fee accrual.
+
 The server supervises resource processes and owns their resource directories,
 ports, logs, and stable slot state. It provides local Nostr relays, push
 gateways, Bitcoin Core regtest nodes, Fleet Managers, FLIP daemons, and Fedimint

@@ -22,6 +22,7 @@ use tokio::process::Command;
 
 mod flip_setup;
 mod synthetic_remit;
+mod traffic;
 
 const GUARDIAN_COUNT: usize = 7;
 const FI_ACCOUNT: &[u8] = br#"{"acc_type":"BtcDepositor","pub_keys":["031b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f"],"threshold":1}"#;
@@ -37,6 +38,7 @@ struct Args {
     fman_cli: PathBuf,
     gateway_cli: PathBuf,
     bitcoin_cli: PathBuf,
+    load_test_tool: PathBuf,
     complete_liquidity: bool,
     command: Vec<OsString>,
     pgid_fd: i32,
@@ -114,6 +116,9 @@ async fn main() {
     let status = match raw_args.first().and_then(|argument| argument.to_str()) {
         Some("--internal-with-lock") => run_with_lock(&raw_args[1..]).await,
         Some("--internal-synthetic-remit") => synthetic_remit::run(&raw_args[1..])
+            .await
+            .map(|()| ExitStatus::from_raw(0)),
+        Some("--internal-traffic") => traffic::run(&raw_args[1..])
             .await
             .map(|()| ExitStatus::from_raw(0)),
         _ => {
@@ -671,6 +676,18 @@ fn write_tools(
         shell_escape(invite.as_os_str()),
     ));
     write_wrapper(&bin_dir.join("fees"), &fees)?;
+    write_wrapper(
+        &bin_dir.join("traffic"),
+        &format!(
+            "#!/bin/sh\nexec {} --internal-with-lock --lock {} -- {} --internal-traffic --load-test-tool {} --invite-file {} --routes-file {} \"$@\"\n",
+            shell_escape(defe_env.as_os_str()),
+            shell_escape(args.root.join("traffic.lock").as_os_str()),
+            shell_escape(defe_env.as_os_str()),
+            shell_escape(args.load_test_tool.as_os_str()),
+            shell_escape(invite.as_os_str()),
+            shell_escape(args.root.join("iroh-connect-overrides").as_os_str()),
+        ),
+    )?;
     Ok(())
 }
 
@@ -1107,6 +1124,7 @@ fn parse_args(args: Vec<std::ffi::OsString>) -> Result<Args> {
     let mut fi_cli = None;
     let mut gateway_cli = None;
     let mut bitcoin_cli = None;
+    let mut load_test_tool = None;
     let mut fman_cli = None;
     let mut complete_liquidity = false;
     let mut command = Vec::new();
@@ -1119,6 +1137,7 @@ fn parse_args(args: Vec<std::ffi::OsString>) -> Result<Args> {
             Some("--fman-cli") => fman_cli = args.next().map(PathBuf::from),
             Some("--gateway-cli") => gateway_cli = args.next().map(PathBuf::from),
             Some("--bitcoin-cli") => bitcoin_cli = args.next().map(PathBuf::from),
+            Some("--load-test-tool") => load_test_tool = args.next().map(PathBuf::from),
             Some("--complete-liquidity") => complete_liquidity = true,
             Some("--") => {
                 command.extend(args);
@@ -1138,6 +1157,7 @@ fn parse_args(args: Vec<std::ffi::OsString>) -> Result<Args> {
         fman_cli: fman_cli.context("internal --fman-cli argument is missing")?,
         gateway_cli: gateway_cli.context("internal --gateway-cli argument is missing")?,
         bitcoin_cli: bitcoin_cli.context("internal --bitcoin-cli argument is missing")?,
+        load_test_tool: load_test_tool.context("internal --load-test-tool argument is missing")?,
         complete_liquidity,
         command,
         pgid_fd: std::env::var(PGID_FD_ENV)
@@ -1300,6 +1320,7 @@ mod tests {
             fman_cli: recorder.clone(),
             gateway_cli: recorder.clone(),
             bitcoin_cli: recorder.clone(),
+            load_test_tool: recorder.clone(),
             complete_liquidity: false,
             command: vec![],
             pgid_fd: -1,
@@ -1388,6 +1409,13 @@ mod tests {
                 .unwrap()
                 .contains("--internal-with-lock --lock")
         );
+        let traffic = std::fs::read_to_string(bin.join("traffic")).unwrap();
+        assert!(traffic.contains("--internal-with-lock --lock"));
+        assert!(traffic.contains("traffic.lock"));
+        assert!(traffic.contains("--internal-traffic"));
+        assert!(traffic.contains("--load-test-tool"));
+        assert!(traffic.contains("--invite-file"));
+        assert!(traffic.contains("--routes-file"));
         let fees = std::fs::read_to_string(bin.join("fees")).unwrap();
         assert!(fees.contains("synthetic-remit --guardian N --amount-msats AMOUNT"));
         assert!(fees.contains("--internal-synthetic-remit"));
@@ -1483,6 +1511,7 @@ mod tests {
             fman_cli: "/bin/false".into(),
             gateway_cli: "/bin/false".into(),
             bitcoin_cli: "/bin/false".into(),
+            load_test_tool: "/bin/false".into(),
             complete_liquidity: false,
             command: vec![OsString::from("sh"), OsString::from("-i")],
             pgid_fd: pgid_pipe[1],
