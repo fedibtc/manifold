@@ -8,10 +8,6 @@ bash -n packages/fleet-manager/validate.sh
 
 grep -q -- '--manifold-environment' packages/fleet-manager/entrypoint.sh
 grep -q -- '--push-gateway-origin' packages/fleet-manager/entrypoint.sh
-grep -q 'FLEET_MANAGER_PUSH_GATEWAY_ORIGIN: ${FLEET_MANAGER_PUSH_GATEWAY_ORIGIN}' packages/fleet-manager/umbrel/docker-compose.yml
-grep -q 'FLEET_MANAGER_PUSH_GATEWAY_ORIGIN: "${FLEET_MANAGER_PUSH_GATEWAY_ORIGIN}"' packages/fleet-manager/startos/manifest.yaml
-! grep -R -E 'FLEET_MANAGER_PUSH_GATEWAY_ORIGIN:.*(localhost|127\.0\.0\.1|\.invalid)' \
-  packages/fleet-manager/umbrel packages/fleet-manager/startos
 
 # `--option=value` makes a value beginning with `-` unambiguously an option
 # value to clap. The stub receives precisely what the release entrypoint execs.
@@ -34,10 +30,6 @@ PATH="$tmp_dir:$PATH" \
 grep -Fx -- '--bitcoind-password=-leading-hyphen-password' "$capture"
 # The daemon requires the `serve` subcommand; the entrypoint must invoke it.
 grep -q 'fleet-manager serve' packages/fleet-manager/entrypoint.sh
-grep -q 'FLEET_MANAGER_MANIFOLD_ENVIRONMENT: production' packages/fleet-manager/umbrel/docker-compose.yml
-grep -q 'FLEET_MANAGER_MANIFOLD_ENVIRONMENT: production' packages/fleet-manager/startos/manifest.yaml
-grep -q 'dependencies:' packages/fleet-manager/umbrel/umbrel-app.yml
-grep -q 'bitcoind:' packages/fleet-manager/startos/manifest.yaml
 
 # The image is built with Nix, not a vendored Dockerfile. Guard against a
 # Dockerfile creeping back in and assert

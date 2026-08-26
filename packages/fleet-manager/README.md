@@ -1,4 +1,4 @@
-# Fleet Manager 0.1 package skeletons
+# Fleet Manager 0.1 packaging
 
 This directory contains the smallest useful packaging artifact for the
 Fleet Manager daemon described by
@@ -7,13 +7,19 @@ Fleet Manager daemon described by
 - a Nix-built OCI image (`nix build .#fleet-manager-oci-image`) carrying the
   single `fleet-manager` binary, which is also the `fedimintd` its seats run;
 - an entrypoint that wires Bitcoin mainnet and Bitcoin Core RPC settings into
-  the daemon's 0.1 CLI args;
-- Umbrel and StartOS skeleton manifests documenting the platform bitcoind
-  dependency assumptions.
+  the daemon's 0.1 CLI args.
+
+Real, shipping packages live outside this repo and pin the published GHCR
+images: [manifold-umbrel-store](https://github.com/fedibtc/manifold-umbrel-store)
+(Umbrel, staging) and
+[manifold-fman-startos](https://github.com/fedibtc/manifold-fman-startos)
+(StartOS 0.4, staging). This directory keeps only what the image itself
+carries — the entrypoint and its contract below — plus the operator
+deployment checklist.
 
 The [secure-deployment checklist](./secure-deployment.md) is the authoritative
-operator contract for FMan's external production envelope. These skeletons do
-not certify an Umbrel, StartOS, VPS, or any other live deployment.
+operator contract for FMan's external production envelope. Nothing here
+certifies an Umbrel, StartOS, VPS, or any other live deployment.
 
 Required SelfCI packages the real operator UI with a CI-profile Fleet Manager
 daemon and checks the OCI runtime contract. Publishing uses the same image
@@ -95,17 +101,6 @@ creates, not 8 concurrent seats. A seat allocated beyond the published range
 still works but falls back to relays; extend the mapping (a package update)
 to restore direct paths for later ordinals.
 
-## Current blockers
-
-Full Umbrel and StartOS package build toolchains are not vendored in this repo.
-The manifests here are therefore skeletons, not verified marketplace packages.
-Before release, validate them with the current Umbrel app tooling and StartOS
-`start-sdk`, and replace any placeholder dependency variable names with the
-platform-provided Bitcoin Core RPC properties for the selected bitcoind service.
-The package configuration surface must also provide a non-empty production
-`FLEET_MANAGER_PUSH_GATEWAY_ORIGIN` rather than shipping the literal manifest
-substitution token.
-
 ## Focused validation
 
 From the repository root:
@@ -122,7 +117,5 @@ nix build .#fleet-manager-oci-image && docker load -i result
 nix run .#fleet-manager-container-load
 ```
 
-If StartOS tooling is available, copy or adapt `startos/manifest.yaml` into a
-StartOS package workspace and run `start-sdk verify s9pk` after packaging. If
-Umbrel tooling is available, run its app lint/validation against
-`umbrel/umbrel-app.yml` and `umbrel/docker-compose.yml`.
+Package manifests are validated in their own repos
+(manifold-umbrel-store, manifold-fman-startos), not here.
