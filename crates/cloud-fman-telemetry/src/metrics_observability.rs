@@ -24,6 +24,8 @@ pub(crate) enum AdmissionOutcome {
     InvalidAdmittedDiscarded,
     /// The complete response failed the admission policy.
     Rejected,
+    /// The seat lacked a valid current federation invite.
+    InvalidFederationInvite,
 }
 
 impl AdmissionOutcome {
@@ -34,6 +36,7 @@ impl AdmissionOutcome {
             Self::UnknownDiscarded => 2,
             Self::InvalidAdmittedDiscarded => 3,
             Self::Rejected => 4,
+            Self::InvalidFederationInvite => 5,
         }
     }
 
@@ -44,6 +47,7 @@ impl AdmissionOutcome {
             Self::UnknownDiscarded => "unknown_discarded",
             Self::InvalidAdmittedDiscarded => "invalid_admitted_discarded",
             Self::Rejected => "rejected",
+            Self::InvalidFederationInvite => "invalid_federation_invite",
         }
     }
 }
@@ -56,7 +60,7 @@ pub(crate) struct MetricsObservability {
 
 #[derive(Default)]
 struct MetricsObservabilityInner {
-    counts: [AtomicU64; 5],
+    counts: [AtomicU64; 6],
     last_rejection_diagnostic: Mutex<Option<Instant>>,
 }
 
@@ -69,6 +73,7 @@ impl MetricsObservability {
             AdmissionOutcome::UnknownDiscarded
                 | AdmissionOutcome::InvalidAdmittedDiscarded
                 | AdmissionOutcome::Rejected
+                | AdmissionOutcome::InvalidFederationInvite
         ) && self.allow_rejection_diagnostic()
         {
             // The message and field are fixed. They contain no response, family,
@@ -91,6 +96,7 @@ impl MetricsObservability {
             AdmissionOutcome::UnknownDiscarded,
             AdmissionOutcome::InvalidAdmittedDiscarded,
             AdmissionOutcome::Rejected,
+            AdmissionOutcome::InvalidFederationInvite,
         ] {
             writeln!(
                 output,

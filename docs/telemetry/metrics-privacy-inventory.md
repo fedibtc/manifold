@@ -121,7 +121,7 @@ is exposed.
 
 ## MVP disposition
 
-The admitted labels contain no wallet/client public keys, invite codes,
+The admitted labels contain no wallet/client public keys, full invite codes,
 transaction ids, account ids, IP addresses, hostnames, or free-form errors. Peer
 ids, release hashes, activity counts, timing, and value histograms are still
 federation operational data and must remain behind the Fedi operator boundary.
@@ -132,7 +132,8 @@ described as unique humans.
 `peer_id` and `self_id` are producer-owned operational dimensions. The collector
 bounds each to an at-most-five-byte value parseable as `u16`, but does not attest
 that it belongs to the seat's current federation configuration. Consumers must
-use `fman_id` and `guardian_seat_id` for source identity and must not interpret
+use `fman_id`, `guardian_seat_id`, and the asserted `federation_id` for
+operational source identity and must not interpret
 these producer labels as configuration or federation membership proofs.
 
 The JSON-RPC families are admitted only when the pinned source maps every
@@ -169,9 +170,14 @@ Every admitted guardian series receives exactly these collector labels:
 - `fman_name`: the deterministic bounded `FmanName` derived from `fman_id`, for
   display only; collisions must never merge series; and
 - `guardian_seat_id`: the canonical seat id returned by that authenticated
-  FMan, stable within its FMan identity but not an independently verified
-  federation binding.
+  FMan, stable within its FMan identity; and
+- `federation_id`: the lowercase 64-hex id derived from the formed invite that
+  the authenticated FMan asserted for that exact seat.
 
+The federation id has one value per asserted federation and is intentionally
+groupable across seats. It is authenticated FMan-asserted attribution, not an
+independent guardian-membership or child-config proof, and is insufficient for
+authorization, billing, or dispute resolution.
 These labels are operational identifiers in the private backend. The collector
 must not add capabilities, endpoints, invites, journal identifiers, source
 incarnations or cursors, caller-provided names, raw unverified identifiers, or

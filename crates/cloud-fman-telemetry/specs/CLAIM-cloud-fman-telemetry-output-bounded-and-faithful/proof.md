@@ -42,12 +42,13 @@ the payload fields inside each safe event.
    families, including raw-method families, are discarded without entering the
    result while unknown and locally invalid families cannot suppress unrelated
    valid families. The tests verify
-   insertion of canonical FMan and asserted seat identity for current allowed
+   insertion of canonical FMan, asserted seat, and invite-derived federation
+   identity for current allowed
    families.
 2. **[test] Collector metrics inventory.** Snapshot parser tests accept exposition
    containing the five named `cloud_fman_telemetry_*` families. The renderer
    constructs only those generated families in addition to already-filtered
-   forwarded samples. Admission diagnostics use only five fixed event labels;
+   forwarded samples. Admission diagnostics use only six fixed event labels;
    the rate-limited warning has one fixed reason and no source-derived field.
    Complete call-site enumeration remains `enum`.
 3. **[test] Journal default deny.** Journal-type tests accept bounded complete
@@ -62,7 +63,7 @@ the payload fields inside each safe event.
    They do not cover a forward wall-clock step and correction spanning
    collection, durable scheduling, target health, and later exposition.
 5. **[test] Persisted metrics revalidation.** Metrics-policy and store tests
-   require the exact stored FMan/seat identity labels, remove only those labels,
+   require the exact FMan/seat/federation identity labels, remove only those labels,
    then re-admit under the current release, family, label, series, histogram, and
    resource policy before accepting byte-identical canonical output. Same-policy
    restart tests omit hostile identity, label, duplicate-series, cardinality, and
@@ -136,8 +137,9 @@ credential exit-channel cases end to end.
 
 ## Residuals
 
-FMan seat identity is the authenticated FMan's assertion, not independent
-federation attestation. Stable canonical FMan and seat identities deliberately
+FMan seat and invite-derived federation identity are the authenticated FMan's
+assertion, not independent federation attestation. Stable canonical FMan, seat,
+and federation identities deliberately
 appear to an authorized private scraper. Prometheus retention, query access,
 remote write, and Grafana disclosure belong to the production deployment.
 Authorized outbound Iroh requests and encrypted credential persistence carry

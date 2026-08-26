@@ -3,6 +3,7 @@
 use std::{
     io::Cursor,
     path::{Path, PathBuf},
+    str::FromStr as _,
     time::Duration,
 };
 
@@ -38,6 +39,8 @@ use tokio::{
     process::{Child, Command},
 };
 
+const VALID_INVITE: &str = "fed11qgqpu8rhwden5te0vejkg6tdd9h8gepwd4cxcumxv4jzuen0duhsqqfqh6nl7sgk72caxfx8khtfnn8y436q3nhyrkev3qp8ugdhdllnh86qmp42pm";
+
 const CAPABILITY: [u8; 32] = [7; 32];
 const JSONL: &[u8] = b"{\"fields\":{\"message\":\"safe fixture\",\"safe_to_share\":true}}\n";
 
@@ -56,7 +59,9 @@ impl GuardianTelemetryApi for TelemetryFixture {
         Ok(ListGuardianTelemetrySeatsResponse {
             seats: vec![GuardianTelemetrySeat {
                 seat_id: self.seat.clone(),
-                invite_code: None,
+                invite_code: Some(fedi_decentralized_service_fleet_manager::InviteCode(
+                    VALID_INVITE.to_owned(),
+                )),
             }],
         })
     }
@@ -224,6 +229,16 @@ async fn real_daemon_registers_pulls_persists_and_restarts() {
 
     let metrics = wait_for_metrics(private_port).await;
     assert!(metrics.contains("fm_consensus_session_count"));
+    let federation_id = fedimint_core::invite_code::InviteCode::from_str(VALID_INVITE)
+        .unwrap()
+        .federation_id()
+        .to_string();
+    assert!(metrics.contains(&format!("federation_id=\"{federation_id}\"")));
+    let target_fresh = metrics
+        .lines()
+        .find(|line| line.starts_with("cloud_fman_telemetry_target_fresh{"))
+        .unwrap();
+    assert!(!target_fresh.contains("federation_id"));
     let parsed = prometheus_parse::Scrape::parse(
         metrics
             .lines()

@@ -25,9 +25,9 @@ an access-controlled telemetry network and deny ingress from the Internet and
 untrusted workloads. A non-loopback bind requires an explicit runtime assertion
 that deployment policy provides this isolation; the process cannot verify that
 NetworkPolicy or an equivalent control exists or is enforced.
-Its `/metrics` output contains vetted operational data and
-stable FMan and guardian-seat identities; it never belongs on the public
-registration route.
+Its `/metrics` output contains vetted operational data and stable FMan,
+guardian-seat, and invite-derived federation identifiers; it never belongs on
+the public registration route.
 
 ## Image publishing credentials
 
@@ -315,9 +315,13 @@ the archive/cursor commit transaction. Key delivery and backup placement remain
 separate configurable security decisions.
 
 The collector may attach only the private inventory's bounded, authenticated
-`fman_id`, display-only `fman_name`, and `guardian_seat_id` labels to collected
-guardian series. `fman_id`, not the collision-prone name, preserves identity.
-Capabilities, Holder envelopes, endpoints, invites, journal selectors,
+`fman_id`, display-only `fman_name`, `guardian_seat_id`, and `federation_id`
+labels to collected guardian series. The collector derives `federation_id` from
+the invite asserted for that exact seat by the authenticated FMan. This is
+operational attribution, not independent guardian-membership or child-config
+attestation, and is insufficient for authorization, billing, or disputes.
+`fman_id`, not the collision-prone name, preserves FMan identity.
+Capabilities, Holder envelopes, endpoints, full invite codes or data, journal selectors,
 incarnations, cursors, raw unverified identifiers, and caller-controlled or
 unbounded values remain forbidden in labels, logs, traces, and errors.
 The collector's stderr formatter accepts only its exact crate-target namespace

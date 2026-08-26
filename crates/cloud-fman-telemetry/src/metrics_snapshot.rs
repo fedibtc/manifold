@@ -15,6 +15,8 @@ pub(crate) struct MetricsSnapshot {
     pub fman_name: String,
     /// Canonical seat id returned by the authenticated FMan.
     pub guardian_seat_id: String,
+    /// Canonical federation id derived from the invite asserted for that seat.
+    pub federation_id: String,
     /// Successful collection time in Unix milliseconds.
     pub observed_at_ms: i64,
     /// Policy-admitted sample lines without source timestamps.
@@ -126,7 +128,8 @@ pub(crate) fn render_metrics(
 
 fn identity_labels(snapshot: &MetricsSnapshot) -> String {
     format!(
-        "fman_id=\"{}\",fman_name=\"{}\",guardian_seat_id=\"{}\"",
+        "federation_id=\"{}\",fman_id=\"{}\",fman_name=\"{}\",guardian_seat_id=\"{}\"",
+        escape(&snapshot.federation_id),
         escape(&snapshot.fman_id),
         escape(&snapshot.fman_name),
         escape(&snapshot.guardian_seat_id)

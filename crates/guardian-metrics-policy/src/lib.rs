@@ -3,7 +3,7 @@
 use sha2::{Digest as _, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 
-pub const INVENTORY_REVISION: &str = "stage0-method-gate-v3";
+pub const INVENTORY_REVISION: &str = "stage0-federation-identity-v4";
 /// Reviewed Fedimint release version compiled into both enforcement boundaries.
 pub const SOURCE_VERSION: &str = "0.11.1";
 /// Reviewed Fedimint source revision compiled into both enforcement boundaries.
@@ -30,6 +30,8 @@ pub struct MetricsIdentity<'a> {
     pub fman_name: &'a str,
     /// Seat selected through the authenticated FMan connection.
     pub guardian_seat_id: &'a str,
+    /// Canonical federation id derived from the invite asserted for that seat.
+    pub federation_id: &'a str,
 }
 
 /// Release-specific switches for families whose producer safety is not universal.
@@ -200,6 +202,7 @@ impl MetricsPolicy<'_> {
                     ("fman_id", identity.fman_id),
                     ("fman_name", identity.fman_name),
                     ("guardian_seat_id", identity.guardian_seat_id),
+                    ("federation_id", identity.federation_id),
                 ] {
                     if labels.insert(name.to_owned(), value.to_owned()).is_some() {
                         identity_collision = true;
@@ -285,6 +288,7 @@ impl MetricsPolicy<'_> {
                 ("fman_id", identity.fman_id),
                 ("fman_name", identity.fman_name),
                 ("guardian_seat_id", identity.guardian_seat_id),
+                ("federation_id", identity.federation_id),
             ] {
                 if labels.remove(name).as_deref() != Some(expected) {
                     return Err(MetricsPolicyError);
