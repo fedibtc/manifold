@@ -3,7 +3,7 @@
 //! This synchronous leaf crate assigns no consumer-specific meaning to its
 //! relay routing. Production carries individually held PeerBadge issuer keys,
 //! the deployment-owned setup-payment publisher identity, and the account
-//! receiving Fedi's share of the federation guardian fee. See
+//! receiving Fedi's share of the Guardian Verification Fee. See
 //! `specs/SPEC-manifold-environment.md` and [`SECURITY.md`](../SECURITY.md).
 
 #[cfg(test)]
@@ -43,7 +43,7 @@ pub const MANIFOLD_ENVIRONMENT_PROFILE_REVISION: u32 = 8;
 // The real development and staging issuer and setup-payment publisher
 // identities do not exist yet. These public keys are derived from the
 // publicly known test secret keys 1 and 2 (issuers), 3 and 4 (publishers), and
-// 5 and 6 (Fedi guardian-fee recipients).
+// 5 and 6 (Guardian Verification Fee recipients).
 // Anyone can impersonate them. They MUST be replaced before either
 // environment treats PeerBadge results or the setup-payment federation list
 // as a security decision.
@@ -109,16 +109,23 @@ const STAGING_PLACEHOLDER_FEDI_GUARDIAN_FEE_PUBLIC_KEY: &str =
 const PRODUCTION_SETUP_PAYMENT_PUBLISHER: &str =
     "725cc60e9b9405acf48f27f8ec6e846dd499b7b5d1e0fff6c922da7dfa120f65";
 
-/// Public key of the account receiving Fedi's share of the ongoing
-/// per-transaction **federation guardian fee**, compressed hex, WITH the
-/// `02`/`03` prefix. 66 characters, not 64.
+/// Public key of the account receiving Fedi's share of the **Guardian
+/// Verification Fee**, compressed hex, WITH the `02`/`03` prefix. 66
+/// characters, not 64.
+///
+/// The Guardian Verification Fee is the ongoing per-transaction fee a
+/// federation charges, which pays the people running it. Identifiers and
+/// consensus metadata keys throughout this repository call the same fee the
+/// guardian fee, including the `fedi_guardian_fee_account` accessor below and
+/// the possession preimage further down. Those are the wire contract or are
+/// bound to an existing signature and cannot be renamed, so read the two names
+/// as one thing.
 ///
 /// Fedi is one weighted recipient of that fee, not a guardian earning one. The
 /// MVP split gives the FI four shares, every guardian one, and this account one
 /// ([REQ-guardian-fee-remittance](../../../specs/REQ-guardian-fee-remittance.md)).
 /// Whether the share applies to every federation or only to Fedi-verified seat
-/// quorums is a deferred product decision, so this describes the fee stream the
-/// account is paid from rather than asserting what the share compensates.
+/// quorums remains a deferred product decision.
 ///
 /// **The parity byte is load-bearing.** `Account` commits to all 33 bytes and
 /// the `AccountId` is the hash of that, so `02||X` and `03||X` are two

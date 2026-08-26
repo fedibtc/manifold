@@ -36,13 +36,13 @@ routing through the profile-owned `MANIFOLD_DEV_NOSTR_RELAYS` override;
 Staging and Production refuse it.
 
 The development and staging PeerBadge issuer identities, setup-payment
-publisher identities, and Fedi guardian-fee accounts are deliberately unsafe placeholders derived from
+publisher identities, and Guardian Verification Fee accounts are deliberately unsafe placeholders derived from
 publicly known test secrets; the publisher placeholders use different test
 secrets from the issuer placeholders so the two roles cannot silently
 collapse into one key. Production has no placeholder identity in any role: its
 PeerBadge issuer identities are personal keys, each secret held individually by
 its owner rather than by the deployment. Its setup-payment publisher and the
-account receiving Fedi's share of the federation guardian fee are
+account receiving Fedi's share of the Guardian Verification Fee are
 deployment-owned keys derived from two independent secrets held outside this
 repository. Each publishes a BIP-340 possession signature over a fixed
 documented digest beside its constant in `src/lib.rs`, so any reader can check

@@ -20,6 +20,7 @@ Main components/services:
 Other:
 
 - **DKG** - Distributed Key Generation; Fedimint/federation setup ceremony.
+- **Guardian Verification Fee** - the ongoing per-transaction fee a federation charges, which pays the people running it. Split by weight: the FI takes four shares, every guardian one, and one Fedi-held account one ([`REQ-guardian-fee-remittance`](./specs/REQ-guardian-fee-remittance.md)). This is the preferred name in prose. Code identifiers and consensus metadata keys call the same fee the *guardian fee* - `fedi:guardian_fee_send_ppm` and `fedi:guardian_fee_remittance_account` are the wire contract, pinned in federation consensus metadata and read by the payer shipping in the Fedi app, so they cannot be renamed. Read the two names as one thing. Avoid "Fedi guardian fee": Fedi is one weighted recipient of the fee, not a guardian earning one.
 
 ## Pre-production persisted formats
 
