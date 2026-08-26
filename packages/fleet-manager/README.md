@@ -8,8 +8,14 @@ Fleet Manager daemon described by
   single `fleet-manager` binary, which is also the `fedimintd` its seats run;
 - an entrypoint that wires Bitcoin mainnet and Bitcoin Core RPC settings into
   the daemon's 0.1 CLI args;
-- Umbrel and StartOS skeleton manifests documenting the platform bitcoind
-  dependency assumptions.
+- an Umbrel skeleton manifest documenting the platform bitcoind dependency
+  assumptions.
+
+Real, shipping packages live outside this repo and pin the published GHCR
+images: [manifold-umbrel-store](https://github.com/fedibtc/manifold-umbrel-store)
+(Umbrel, staging) and
+[manifold-fman-startos](https://github.com/fedibtc/manifold-fman-startos)
+(StartOS 0.4, staging).
 
 The [secure-deployment checklist](./secure-deployment.md) is the authoritative
 operator contract for FMan's external production envelope. These skeletons do
@@ -97,12 +103,12 @@ to restore direct paths for later ordinals.
 
 ## Current blockers
 
-Full Umbrel and StartOS package build toolchains are not vendored in this repo.
-The manifests here are therefore skeletons, not verified marketplace packages.
-Before release, validate them with the current Umbrel app tooling and StartOS
-`start-sdk`, and replace any placeholder dependency variable names with the
-platform-provided Bitcoin Core RPC properties for the selected bitcoind service.
-The package configuration surface must also provide a non-empty production
+The Umbrel package build toolchain is not vendored in this repo. The manifest
+here is therefore a skeleton, not a verified marketplace package. Before
+release, validate it with the current Umbrel app tooling, and replace any
+placeholder dependency variable names with the platform-provided Bitcoin Core
+RPC properties for the selected bitcoind service. The package configuration
+surface must also provide a non-empty production
 `FLEET_MANAGER_PUSH_GATEWAY_ORIGIN` rather than shipping the literal manifest
 substitution token.
 
@@ -122,7 +128,5 @@ nix build .#fleet-manager-oci-image && docker load -i result
 nix run .#fleet-manager-container-load
 ```
 
-If StartOS tooling is available, copy or adapt `startos/manifest.yaml` into a
-StartOS package workspace and run `start-sdk verify s9pk` after packaging. If
-Umbrel tooling is available, run its app lint/validation against
+If Umbrel tooling is available, run its app lint/validation against
 `umbrel/umbrel-app.yml` and `umbrel/docker-compose.yml`.
