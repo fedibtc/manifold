@@ -82,6 +82,25 @@ test-e2e-ui-fman *ARGS:
   bin_dir="${CARGO_TARGET_DIR:-target}/debug"
   cargo run -p defe -- --binary-path "$bin_dir" exec "$bin_dir/fman-ui-e2e-runner" {{ARGS}}
 
+# Build and run the foreground disposable Defe staging environment.
+defe-staging *ARGS:
+  #!/usr/bin/env bash
+  set -euo pipefail
+  if [ ! -f Cargo.toml ]; then
+    cd {{invocation_directory()}}
+  fi
+  ulimit -n 4096 || true
+  cargo build \
+    -p defe \
+    -p defe-staging \
+    -p devmon \
+    -p fman \
+    -p fi-cli \
+    -p fman-cli \
+    -p fedi-decentralized-liquidity-manager-daemon
+  bin_dir="${CARGO_TARGET_DIR:-target}/debug"
+  "$bin_dir/defe" --binary-path "$bin_dir" staging {{ARGS}}
+
 # Start a persistent `defe` development server and restart it when built binaries change.
 defe-serve:
   #!/usr/bin/env bash

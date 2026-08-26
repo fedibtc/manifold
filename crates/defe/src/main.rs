@@ -29,7 +29,7 @@ use defe_api::{
     Response, SharingMode,
 };
 
-const USAGE: &str = "Usage: defe [opts...] <command>\n\nCommands:\n  exec <cmd...>\n  serve --listenfd [--log-requests]\n\nOptions:\n  --tmp-dir <path>\n  --keep-temp\n  --no-keep-temp-on-failure\n  --log-dir <path>\n  --log-requests\n  --binary-path <dir>\n  --nostr-rs-relay-bin <path>\n  --push-gateway-bin <path>\n  --bitcoind-bin <path>\n  --fleet-manager-bin <path>\n  --fman-cli-bin <path>\n  --liquidity-manager-daemon-bin <path>\n  --gatewayd-bin <path>\n  --gateway-cli-bin <path>";
+const USAGE: &str = "Usage: defe [opts...] <command>\n\nCommands:\n  exec <cmd...>\n  staging [--complete-liquidity]\n  serve --listenfd [--log-requests]\n\nOptions:\n  --tmp-dir <path>\n  --keep-temp\n  --no-keep-temp-on-failure\n  --log-dir <path>\n  --log-requests\n  --binary-path <dir>\n  --nostr-rs-relay-bin <path>\n  --push-gateway-bin <path>\n  --bitcoind-bin <path>\n  --fleet-manager-bin <path>\n  --fman-cli-bin <path>\n  --fi-cli-bin <path>\n  --liquidity-manager-daemon-bin <path>\n  --gatewayd-bin <path>\n  --gateway-cli-bin <path>\n  --defe-staging-bin <path>";
 const SOCKET_FILE_NAME: &str = "s";
 const DEV_SERVER_TEMP_DIR_NAME: &str = "defe-dev-server";
 const DEFAULT_TEMP_DIR_ATTEMPTS: u16 = 256;
@@ -68,10 +68,11 @@ async fn run(args: Vec<OsString>) -> Result<i32, String> {
 }
 
 async fn run_exec(exec: ExecArgs) -> Result<ExitStatus, String> {
-    if exec.command.is_empty() {
+    if exec.command.is_empty() && exec.staging_args.is_none() {
         return Err(format!("defe exec requires a command\n{USAGE}"));
     }
 
+    let staging = exec.staging_args.is_some();
     let log_requests = exec.options.log_requests;
     let mut generated_temp_root = None;
     let config = match prepare_server_config(exec.options, || {
@@ -87,6 +88,23 @@ async fn run_exec(exec: ExecArgs) -> Result<ExitStatus, String> {
             return Err(err);
         }
     };
+    let mut command_args = exec.command;
+    if let Some(staging_args) = exec.staging_args {
+        command_args = vec![
+            config.defe_staging_bin.clone(),
+            "--root".into(),
+            config.temp_root.join("staging").into_os_string(),
+            "--logs-dir".into(),
+            config.log_dir.clone().into_os_string(),
+            "--fi-cli".into(),
+            config.fi_cli_bin.clone(),
+            "--fman-cli".into(),
+            config.fman_cli_bin.clone(),
+            "--gateway-cli".into(),
+            config.gateway_cli_bin.clone(),
+        ];
+        command_args.extend(staging_args);
+    }
     let resource_manager = create_resource_manager(&config);
     let request_logger = RequestLogger::new(log_requests);
 
@@ -110,11 +128,11 @@ async fn run_exec(exec: ExecArgs) -> Result<ExitStatus, String> {
 
     install_shutdown_handler(shutdown_tx.clone())?;
 
-    let mut command = Command::new(&exec.command[0]);
-    command.args(&exec.command[1..]);
+    let mut command = Command::new(&command_args[0]);
+    command.args(&command_args[1..]);
     command.env(DEV_DEFE_SOCKET_PATH, &socket_path);
     let status = match command.spawn() {
-        Ok(mut child) => wait_for_exec_child(&mut child, shutdown_rx.clone()).await,
+        Ok(mut child) => wait_for_exec_child(&mut child, shutdown_rx.clone(), staging).await,
         Err(err) => {
             let _ = shutdown_tx.send(true);
             let _ = accept_task.await;
@@ -124,14 +142,14 @@ async fn run_exec(exec: ExecArgs) -> Result<ExitStatus, String> {
             }
             return Err(format!(
                 "failed to run {}: {err}",
-                exec.command[0].to_string_lossy()
+                command_args[0].to_string_lossy()
             ));
         }
     }
     .map_err(|err| {
         format!(
             "failed to wait for {}: {err}",
-            exec.command[0].to_string_lossy()
+            command_args[0].to_string_lossy()
         )
     })?;
 
@@ -284,6 +302,7 @@ where
         "fleet-manager",
     );
     let fman_cli_bin = resolve_binary(options.fman_cli_bin, &options.binary_paths, "fman-cli");
+    let fi_cli_bin = resolve_binary(options.fi_cli_bin, &options.binary_paths, "fi-cli");
     let liquidity_manager_daemon_bin = resolve_binary(
         options.liquidity_manager_daemon_bin,
         &options.binary_paths,
@@ -295,6 +314,11 @@ where
         &options.binary_paths,
         "gateway-cli",
     );
+    let defe_staging_bin = resolve_binary(
+        options.defe_staging_bin,
+        &options.binary_paths,
+        "defe-staging",
+    );
 
     Ok(ServerConfig {
         temp_root,
@@ -304,9 +328,11 @@ where
         bitcoind_bin,
         fleet_manager_bin,
         fman_cli_bin,
+        fi_cli_bin,
         liquidity_manager_daemon_bin,
         gatewayd_bin,
         gateway_cli_bin,
+        defe_staging_bin,
     })
 }
 
@@ -615,10 +641,10 @@ async fn write_response(stream: &mut UnixStream, response: &Response) -> Result<
 async fn wait_for_exec_child(
     child: &mut Child,
     mut shutdown: watch::Receiver<bool>,
+    graceful_shutdown: bool,
 ) -> std::io::Result<ExitStatus> {
     if *shutdown.borrow() {
-        let _ = child.kill().await;
-        return child.wait().await;
+        return finish_exec_child(child, graceful_shutdown).await;
     }
 
     tokio::select! {
@@ -627,9 +653,26 @@ async fn wait_for_exec_child(
             if changed.is_ok() && !*shutdown.borrow() {
                 return child.wait().await;
             }
-            let _ = child.kill().await;
-            child.wait().await
+            finish_exec_child(child, graceful_shutdown).await
         }
+    }
+}
+
+async fn finish_exec_child(
+    child: &mut Child,
+    graceful_shutdown: bool,
+) -> std::io::Result<ExitStatus> {
+    if graceful_shutdown {
+        match tokio::time::timeout(Duration::from_secs(15), child.wait()).await {
+            Ok(status) => status,
+            Err(_) => {
+                let _ = child.kill().await;
+                child.wait().await
+            }
+        }
+    } else {
+        let _ = child.kill().await;
+        child.wait().await
     }
 }
 
@@ -760,6 +803,15 @@ fn parse_command(args: Vec<OsString>) -> Result<DefeCommand, String> {
                 options,
                 policy,
                 command: args[index + 1..].to_vec(),
+                staging_args: None,
+            }));
+        }
+        if arg == "staging" {
+            return Ok(DefeCommand::Exec(ExecArgs {
+                options,
+                policy,
+                command: Vec::new(),
+                staging_args: Some(args[index + 1..].to_vec()),
             }));
         }
         if arg == "serve" {
@@ -809,6 +861,10 @@ fn parse_command(args: Vec<OsString>) -> Result<DefeCommand, String> {
             index += 1;
             options.fman_cli_bin = Some(take_path_arg(&args, index, "--fman-cli-bin")?);
             index += 1;
+        } else if arg == "--fi-cli-bin" {
+            index += 1;
+            options.fi_cli_bin = Some(take_path_arg(&args, index, "--fi-cli-bin")?);
+            index += 1;
         } else if arg == "--liquidity-manager-daemon-bin" {
             index += 1;
             options.liquidity_manager_daemon_bin = Some(take_path_arg(
@@ -824,6 +880,10 @@ fn parse_command(args: Vec<OsString>) -> Result<DefeCommand, String> {
         } else if arg == "--gateway-cli-bin" {
             index += 1;
             options.gateway_cli_bin = Some(take_path_arg(&args, index, "--gateway-cli-bin")?);
+            index += 1;
+        } else if arg == "--defe-staging-bin" {
+            index += 1;
+            options.defe_staging_bin = Some(take_path_arg(&args, index, "--defe-staging-bin")?);
             index += 1;
         } else {
             return Err(format!(
@@ -908,6 +968,11 @@ fn parse_server_option(
         options.fman_cli_bin = Some(take_path_arg(args, *index, "--fman-cli-bin")?);
         *index += 1;
         Ok(true)
+    } else if arg == "--fi-cli-bin" {
+        *index += 1;
+        options.fi_cli_bin = Some(take_path_arg(args, *index, "--fi-cli-bin")?);
+        *index += 1;
+        Ok(true)
     } else if arg == "--liquidity-manager-daemon-bin" {
         *index += 1;
         options.liquidity_manager_daemon_bin = Some(take_path_arg(
@@ -925,6 +990,11 @@ fn parse_server_option(
     } else if arg == "--gateway-cli-bin" {
         *index += 1;
         options.gateway_cli_bin = Some(take_path_arg(args, *index, "--gateway-cli-bin")?);
+        *index += 1;
+        Ok(true)
+    } else if arg == "--defe-staging-bin" {
+        *index += 1;
+        options.defe_staging_bin = Some(take_path_arg(args, *index, "--defe-staging-bin")?);
         *index += 1;
         Ok(true)
     } else {
@@ -958,6 +1028,7 @@ struct ExecArgs {
     options: ServerOptions,
     policy: TempPolicy,
     command: Vec<OsString>,
+    staging_args: Option<Vec<OsString>>,
 }
 
 #[derive(Debug)]
@@ -977,9 +1048,11 @@ struct ServerOptions {
     bitcoind_bin: Option<PathBuf>,
     fleet_manager_bin: Option<PathBuf>,
     fman_cli_bin: Option<PathBuf>,
+    fi_cli_bin: Option<PathBuf>,
     liquidity_manager_daemon_bin: Option<PathBuf>,
     gatewayd_bin: Option<PathBuf>,
     gateway_cli_bin: Option<PathBuf>,
+    defe_staging_bin: Option<PathBuf>,
 }
 
 #[derive(Debug)]
@@ -991,9 +1064,11 @@ struct ServerConfig {
     bitcoind_bin: OsString,
     fleet_manager_bin: OsString,
     fman_cli_bin: OsString,
+    fi_cli_bin: OsString,
     liquidity_manager_daemon_bin: OsString,
     gatewayd_bin: OsString,
     gateway_cli_bin: OsString,
+    defe_staging_bin: OsString,
 }
 
 #[derive(Debug)]

@@ -1,0 +1,33 @@
+[package]
+name = "defe-staging"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+anyhow = "1"
+defe-client = { path = "../defe-client" }
+defe-portalloc = { path = "../defe-portalloc" }
+fedi-credential-sdk-protocol.workspace = true
+fedi-decentralized-manifold-environment = { path = "../manifold-environment" }
+fedi-decentralized-nostr = { path = "../nostr" }
+fedi-decentralized-service-liquidity-manager = { path = "../service-liquidity-manager" }
+iroh-base-035 = { package = "iroh-base", version = "=0.35.0" }
+nostr-sdk = "0.44"
+reqwest = { version = "0.12", default-features = false, features = [
+  "json",
+  "rustls-tls",
+] }
+serde = { workspace = true, features = ["derive"] }
+serde_json = "1"
+serde_json_canonicalizer = "0.3"
+sha2 = "0.10"
+tokio = { workspace = true, features = [
+  "macros",
+  "process",
+  "rt-multi-thread",
+  "signal",
+  "time",
+] }

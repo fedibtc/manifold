@@ -71,6 +71,8 @@ pub struct FlipRequest {
     pub sharing: SharingMode,
     /// Optional direct Iroh route map for a locally formed federation.
     pub iroh_connect_overrides: Option<String>,
+    /// Optional relay used for development Holder-authorization reconciliation.
+    pub holder_authorization_relay_url: Option<String>,
 }
 
 /// Inputs required to start one local Fedimint gateway daemon.

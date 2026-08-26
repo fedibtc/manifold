@@ -21,6 +21,10 @@ Implementation should use these crates:
 - `crates/defe-client`
   - Client library.
   - Binary named `defe-cli`.
+- `crates/defe-staging`
+  - Foreground composer invoked by `defe staging`.
+  - Holds leases while it forms a federation, connects gatewayd, configures
+    FLIP, and publishes readiness for external clients.
 
 Package names may use hyphens. Rust crate names may use underscores as required by Cargo.
 

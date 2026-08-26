@@ -7,11 +7,15 @@ harness, as FLIP does not own gatewayd in production.
 `defe-api` exposes:
 
 ```rust
-ResourceRequest::Flip(FlipRequest { iroh_connect_overrides })
+ResourceRequest::Flip(FlipRequest {
+    iroh_connect_overrides,
+    holder_authorization_relay_url,
+})
 ResourceDescriptor::Flip(FlipInfo { .. })
 ```
 
-The request may supply a direct Iroh route map for a locally formed federation.
+The request may supply a direct Iroh route map for a locally formed federation
+and a local relay to pin Holder-authorization reconciliation to.
 Defe chooses the data directory, admin and public ports, bootstrap token,
 provider identity, trust-fixture directory, and log path. The descriptor
 returns the admin URL/token, stable data and fixture directories, and provider

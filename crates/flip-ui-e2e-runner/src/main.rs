@@ -33,6 +33,7 @@ async fn main() -> Result<()> {
         .request_flip(FlipRequest {
             sharing: SharingMode::Exclusive,
             iroh_connect_overrides: None,
+            holder_authorization_relay_url: None,
         })
         .await
         .context("request an exclusive FLIP daemon from defe")?;

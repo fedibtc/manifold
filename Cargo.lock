@@ -1897,6 +1897,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "defe-staging"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "defe-client",
+ "defe-portalloc",
+ "fedi-credential-sdk-protocol",
+ "fedi-decentralized-manifold-environment",
+ "fedi-decentralized-nostr",
+ "fedi-decentralized-service-liquidity-manager",
+ "iroh-base 0.35.0",
+ "nostr-sdk",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "serde_json_canonicalizer",
+ "sha2 0.10.9",
+ "tokio",
+]
+
+[[package]]
 name = "der"
 version = "0.7.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
