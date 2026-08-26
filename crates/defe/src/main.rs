@@ -42,7 +42,7 @@ fn main() {
         .expect("build defe async runtime");
 
     match runtime.block_on(run(args)) {
-        Ok(code) => std::process::exit(code),
+        Ok(status) => exit_with_status(status),
         Err(message) => {
             eprintln!("{message}");
             std::process::exit(1);
@@ -50,20 +50,20 @@ fn main() {
     }
 }
 
-async fn run(args: Vec<OsString>) -> Result<i32, String> {
+async fn run(args: Vec<OsString>) -> Result<ExitStatus, String> {
     if args.is_empty()
         || args
             .first()
             .is_some_and(|arg| arg == "--help" || arg == "-h")
     {
         println!("{USAGE}");
-        return Ok(0);
+        return Ok(ExitStatus::from_raw(0));
     }
 
     let command = parse_command(args)?;
     match command {
-        DefeCommand::Exec(exec) => run_exec(exec).await.map(exit_code_from_status),
-        DefeCommand::Serve(serve) => run_serve(serve).await.map(|()| 0),
+        DefeCommand::Exec(exec) => run_exec(exec).await,
+        DefeCommand::Serve(serve) => run_serve(serve).await.map(|()| ExitStatus::from_raw(0)),
     }
 }
 
@@ -1112,12 +1112,19 @@ fn take_path_arg(args: &[OsString], index: usize, option: &str) -> Result<PathBu
 }
 
 #[cfg(unix)]
-fn exit_code_from_status(status: ExitStatus) -> i32 {
-    if let Some(code) = status.code() {
-        return code;
+fn exit_with_status(status: ExitStatus) -> ! {
+    if let Some(signal) = status.signal() {
+        unsafe {
+            let mut signals = std::mem::zeroed::<libc::sigset_t>();
+            libc::sigemptyset(&raw mut signals);
+            libc::sigaddset(&raw mut signals, signal);
+            libc::pthread_sigmask(libc::SIG_UNBLOCK, &raw const signals, std::ptr::null_mut());
+            libc::signal(signal, libc::SIG_DFL);
+            libc::raise(signal);
+            libc::_exit(128 + signal);
+        }
     }
-
-    128 + status.signal().unwrap_or(1)
+    std::process::exit(status.code().unwrap_or(1))
 }
 
 #[derive(Debug)]

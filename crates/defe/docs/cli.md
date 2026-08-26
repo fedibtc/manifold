@@ -150,8 +150,12 @@ inside that job's terminal process group. Terminating the outer `defe` process
 also reaches the composer during setup. On command exit or external termination,
 the composer stops, terminates, and reaps every setup or command descendant,
 including foreground jobs and background or disowned jobs in separate process
-groups, before it marks the environment stopped and releases leases. This strict
-descendant boundary currently requires Linux.
+groups, before it marks the environment stopped and releases leases. A nested
+PID namespace supplies the kernel-owned containment boundary, while terminal
+sessions and job-control process groups remain unchanged. This strict descendant
+boundary requires Linux pidfds and enabled unprivileged user namespaces.
+Normal exit codes and native terminating signals cross both the composer and
+outer `defe` boundaries unchanged.
 
 The child receives `DEFE_ENV=1`, `DEFE_ENV_SCHEMA_VERSION=1`, paths for the root,
 manifest, secrets, logs, invite, FI state, and Iroh routes, plus the stable local

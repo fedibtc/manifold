@@ -3,7 +3,8 @@
 use std::ffi::{OsStr, OsString};
 use std::fmt::Write as _;
 use std::fs;
-use std::os::fd::AsRawFd as _;
+use std::future::Future;
+use std::os::fd::{AsFd as _, AsRawFd as _};
 use std::os::unix::fs::PermissionsExt as _;
 use std::os::unix::process::{CommandExt as _, ExitStatusExt as _};
 use std::path::{Path, PathBuf};
@@ -19,7 +20,19 @@ use defe_client::{
 use iroh_base_035::{NodeAddr, NodeId, SecretKey, ticket::NodeTicket};
 use serde::Serialize;
 use sha2::{Digest as _, Sha256};
+use tokio::io::AsyncReadExt as _;
 use tokio::process::Command;
+
+#[derive(Debug)]
+struct SetupCommandTimeout;
+
+impl std::fmt::Display for SetupCommandTimeout {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("setup command timed out after environment teardown")
+    }
+}
+
+impl std::error::Error for SetupCommandTimeout {}
 
 #[cfg(target_os = "linux")]
 mod descendant_supervisor;
@@ -30,7 +43,7 @@ mod flip_setup;
 mod synthetic_remit;
 mod traffic;
 
-use descendant_supervisor::DescendantSupervisor;
+use descendant_supervisor::{DescendantSupervisor, run_lease_guard, run_namespace_spawn};
 
 const GUARDIAN_COUNT: usize = 7;
 const FI_ACCOUNT: &[u8] = br#"{"acc_type":"BtcDepositor","pub_keys":["031b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f"],"threshold":1}"#;
@@ -110,8 +123,7 @@ struct FlipManifest<'a> {
     public_endpoint_id: &'a str,
 }
 
-#[tokio::main]
-async fn main() {
+fn main() {
     let raw_args = std::env::args_os().skip(1).collect::<Vec<_>>();
     if raw_args
         .first()
@@ -119,8 +131,179 @@ async fn main() {
     {
         run_internal_child_gate(&raw_args);
     }
-    let status = match raw_args.first().and_then(|argument| argument.to_str()) {
+    if raw_args
+        .first()
+        .is_some_and(|arg| arg == "--internal-fork-adversary")
+    {
+        run_internal_fork_adversary(&raw_args);
+    }
+    if raw_args
+        .first()
+        .is_some_and(|arg| arg == "--internal-timeout-probe")
+    {
+        run_internal_timeout_probe(&raw_args);
+    }
+    if raw_args
+        .first()
+        .is_some_and(|arg| arg == "--internal-unblock-term-probe")
+    {
+        unsafe {
+            let mut signals = std::mem::zeroed::<libc::sigset_t>();
+            libc::sigemptyset(&raw mut signals);
+            libc::sigaddset(&raw mut signals, libc::SIGTERM);
+            libc::pthread_sigmask(libc::SIG_UNBLOCK, &raw const signals, std::ptr::null_mut());
+            libc::raise(libc::SIGTERM);
+            libc::_exit(127);
+        }
+    }
+    if raw_args
+        .first()
+        .is_some_and(|arg| arg == "--internal-namespace-spawn")
+    {
+        run_namespace_spawn(&raw_args);
+    }
+    if raw_args
+        .first()
+        .is_some_and(|arg| arg == "--internal-lease-guard")
+    {
+        run_lease_guard(&raw_args);
+    }
+    if raw_args
+        .first()
+        .is_some_and(|arg| arg == "--internal-write-fd")
+    {
+        let fd = raw_args
+            .get(1)
+            .and_then(|arg| arg.to_str())
+            .and_then(|arg| arg.parse::<i32>().ok())
+            .unwrap_or_else(|| std::process::exit(127));
+        unsafe {
+            libc::_exit(i32::from(
+                libc::write(fd, b"sentinel\n".as_ptr().cast(), 9) != 9,
+            ))
+        };
+    }
+    if raw_args
+        .first()
+        .is_some_and(|arg| arg == "--internal-fd-occupation-test")
+    {
+        run_internal_fd_occupation_test(&raw_args);
+    }
+    let supervisor = match raw_args.first().and_then(|argument| argument.to_str()) {
+        Some("--internal-with-lock" | "--internal-synthetic-remit" | "--internal-traffic") => None,
+        _ => match DescendantSupervisor::establish() {
+            Ok(supervisor) => Some(Arc::new(supervisor)),
+            Err(error) => {
+                eprintln!("defe env: {error:#}");
+                std::process::exit(1);
+            }
+        },
+    };
+    let runtime = match tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+    {
+        Ok(runtime) => runtime,
+        Err(error) => {
+            eprintln!("defe env: create async runtime: {error}");
+            std::process::exit(1);
+        }
+    };
+    let status = runtime.block_on(async_main(raw_args, supervisor));
+    match status {
+        Ok(status) => exit_with_status(status),
+        Err(error) => {
+            eprintln!("defe env: {error:#}");
+            std::process::exit(1);
+        }
+    }
+}
+
+fn run_internal_fd_occupation_test(args: &[OsString]) -> ! {
+    let sentinel = args
+        .get(1)
+        .and_then(|arg| arg.to_str())
+        .and_then(|arg| arg.parse::<i32>().ok())
+        .unwrap_or_else(|| std::process::exit(127));
+    let closed_stdio = args
+        .get(2)
+        .and_then(|arg| arg.to_str())
+        .and_then(|arg| arg.parse::<u8>().ok())
+        .unwrap_or_else(|| std::process::exit(127));
+    let null = std::fs::File::open("/dev/null").unwrap_or_else(|_| std::process::exit(127));
+    for fd in 3..=102 {
+        if unsafe { libc::dup2(null.as_raw_fd(), fd) } < 0 {
+            std::process::exit(127);
+        }
+    }
+    if unsafe { libc::dup2(sentinel, 100) } < 0 {
+        std::process::exit(127);
+    }
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap_or_else(|_| std::process::exit(127));
+    for fd in 0..=2 {
+        if closed_stdio & (1 << fd) != 0 {
+            unsafe { libc::close(fd) };
+        }
+    }
+    let supervisor = DescendantSupervisor::establish().unwrap_or_else(|_| std::process::exit(127));
+    let status = runtime
+        .block_on(async {
+            let mut setup = Command::new("sh");
+            setup.args(["-c", "printf captured-setup-output"]);
+            let captured = run_command(
+                &supervisor,
+                &mut setup,
+                "closed-stdio capture probe",
+                Duration::from_secs(1),
+            )
+            .await?;
+            ensure!(
+                captured == "captured-setup-output",
+                "explicit setup stdout capture was overridden"
+            );
+            let mut original = Command::new(std::env::current_exe().unwrap());
+            original.env("DEFE_ENV_TEST_PRESERVE_CLOSED_STDIO", "1");
+            let mut command = supervisor.wrap(&original, false)?;
+            command.command.arg("--internal-write-fd").arg("100");
+            let mut child = supervisor.spawn(command)?;
+            Ok::<_, anyhow::Error>(child.child.wait().await?)
+        })
+        .unwrap_or_else(|_| std::process::exit(127));
+    supervisor
+        .terminate_and_reap()
+        .unwrap_or_else(|_| std::process::exit(127));
+    std::process::exit(exit_code(status));
+}
+
+async fn async_main(
+    raw_args: Vec<OsString>,
+    supervisor: Option<Arc<DescendantSupervisor>>,
+) -> Result<ExitStatus> {
+    match raw_args.first().and_then(|argument| argument.to_str()) {
         Some("--internal-with-lock") => run_with_lock(&raw_args[1..]).await,
+        Some("--internal-supervisor-test") => {
+            let supervisor = supervisor.context("missing test descendant supervisor")?;
+            run_internal_supervisor_test(&supervisor, &raw_args[1..]).await
+        }
+        Some("--internal-pty-test") => {
+            let supervisor = supervisor.context("missing PTY test descendant supervisor")?;
+            run_internal_pty_test(&supervisor, &raw_args[1..]).await
+        }
+        Some("--internal-abrupt-owner-test") => {
+            let supervisor = supervisor.context("missing abrupt-owner test supervisor")?;
+            run_internal_abrupt_owner_test(&supervisor, &raw_args[1..]).await
+        }
+        Some("--internal-signal-status-test") => {
+            let supervisor = supervisor.context("missing signal-status test supervisor")?;
+            run_internal_signal_status_test(&supervisor).await
+        }
+        Some("--internal-timeout-test") => {
+            let supervisor = supervisor.context("missing timeout test supervisor")?;
+            run_internal_timeout_test(&supervisor, &raw_args[1..]).await
+        }
         Some("--internal-synthetic-remit") => synthetic_remit::run(&raw_args[1..])
             .await
             .map(|()| ExitStatus::from_raw(0)),
@@ -137,18 +320,241 @@ async fn main() {
                 Ok(args)
             });
             match result {
-                Ok(args) => run(args).await,
+                Ok(args) => {
+                    let supervisor =
+                        supervisor.context("missing environment descendant supervisor")?;
+                    run(args, supervisor).await
+                }
                 Err(error) => Err(error),
             }
         }
+    }
+}
+
+fn run_internal_fork_adversary(args: &[OsString]) -> ! {
+    let Some(marker) = args.get(1) else {
+        std::process::exit(127);
     };
-    match status {
-        Ok(status) => std::process::exit(exit_code(status)),
-        Err(error) => {
-            eprintln!("defe env: {error:#}");
-            std::process::exit(1);
+    if fs::write(marker, b"ready\n").is_err() {
+        std::process::exit(127);
+    }
+    loop {
+        let child = unsafe { libc::fork() };
+        if child == 0 {
+            let grandchild = unsafe { libc::fork() };
+            if grandchild == 0 {
+                loop {
+                    unsafe { libc::pause() };
+                }
+            }
+            unsafe { libc::_exit(i32::from(grandchild < 0)) };
+        }
+        if child < 0 {
+            std::thread::sleep(Duration::from_millis(1));
+            continue;
+        }
+        let mut status = 0;
+        while unsafe { libc::waitpid(child, &mut status, 0) } < 0
+            && std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted
+        {}
+        std::thread::sleep(Duration::from_millis(1));
+    }
+}
+
+fn run_internal_timeout_probe(args: &[OsString]) -> ! {
+    let Some(marker) = args.get(1) else {
+        std::process::exit(127);
+    };
+    let status = fs::read_to_string("/proc/self/status").unwrap_or_default();
+    let host_pid = status
+        .lines()
+        .find_map(|line| line.strip_prefix("NSpid:"))
+        .and_then(|pids| pids.split_whitespace().next())
+        .unwrap_or("0");
+    if fs::write(marker, format!("{host_pid}\n")).is_err() {
+        std::process::exit(127);
+    }
+    if unsafe { libc::fork() } == 0 {
+        loop {
+            unsafe { libc::pause() };
         }
     }
+    loop {
+        unsafe { libc::pause() };
+    }
+}
+
+async fn run_internal_supervisor_test(
+    supervisor: &DescendantSupervisor,
+    args: &[OsString],
+) -> Result<ExitStatus> {
+    let [marker] = args else {
+        bail!("internal supervisor test requires a marker path");
+    };
+    let command = Command::new(std::env::current_exe()?);
+    let mut command = supervisor.wrap(&command, false)?;
+    command.command.arg("--internal-fork-adversary").arg(marker);
+    let child = supervisor.spawn(command)?;
+    let child_pid = child.command_pid;
+    drop(child.child);
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    while !Path::new(marker).exists() {
+        ensure!(
+            tokio::time::Instant::now() < deadline,
+            "fork adversary did not become ready"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    let mut failed = Command::new("true");
+    failed.env("DEFE_ENV_TEST_BROKER_FAILURE", "1");
+    let failed = supervisor.wrap(&failed, false)?;
+    ensure!(
+        supervisor.spawn(failed).is_err(),
+        "injected broker failure unexpectedly admitted a command"
+    );
+    supervisor.inject_helper_open_failure();
+    let helper_open_failure = Command::new("sleep");
+    let mut helper_open_failure = supervisor.wrap(&helper_open_failure, false)?;
+    helper_open_failure.command.arg("600");
+    ensure!(
+        supervisor.spawn(helper_open_failure).is_err(),
+        "injected helper identity failure lost ownership"
+    );
+    let process_group = Command::new("sleep");
+    let mut process_group = process_group;
+    process_group.env("DEFE_ENV_TEST_CHILD_FIRST_PGRP", "1");
+    let mut process_group = supervisor.wrap(&process_group, true)?;
+    process_group.command.arg("600");
+    let process_group = supervisor.spawn(process_group)?;
+    ensure!(
+        unsafe { libc::getpgid(process_group.command_pid) } == process_group.command_pid,
+        "broker published the command before its process group existed"
+    );
+    drop(process_group.child);
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    supervisor.inject_test_failures(1, 1);
+    supervisor.terminate_and_reap()?;
+    ensure!(
+        unsafe { libc::kill(child_pid, 0) } == -1
+            && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH),
+        "fork adversary survived namespace teardown"
+    );
+    let late = Command::new("true");
+    let late = supervisor.wrap(&late, false)?;
+    ensure!(
+        supervisor.spawn(late).is_err(),
+        "teardown reopened subprocess admission"
+    );
+    Ok(ExitStatus::from_raw(0))
+}
+
+async fn run_internal_timeout_test(
+    supervisor: &DescendantSupervisor,
+    args: &[OsString],
+) -> Result<ExitStatus> {
+    let [marker] = args else {
+        bail!("internal timeout test requires a marker path");
+    };
+    let mut timeout_probe = Command::new(std::env::current_exe()?);
+    timeout_probe.arg("--internal-timeout-probe").arg(marker);
+    let error = run_command(
+        supervisor,
+        &mut timeout_probe,
+        "gateway-cli connect-fed",
+        Duration::from_millis(100),
+    )
+    .await
+    .expect_err("timeout probe unexpectedly completed");
+    ensure!(
+        error.downcast_ref::<SetupCommandTimeout>().is_some(),
+        "timeout returned the wrong error: {error:#}"
+    );
+    let timed_out_pid = fs::read_to_string(marker)?.trim().parse::<i32>()?;
+    ensure!(
+        unsafe { libc::kill(timed_out_pid, 0) } == -1
+            && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH),
+        "timed-out gateway command overlapped its retry"
+    );
+    let retry = Command::new("true");
+    let retry = supervisor.wrap(&retry, false)?;
+    ensure!(
+        supervisor.spawn(retry).is_err(),
+        "gateway retry admitted work after timeout teardown"
+    );
+    Ok(ExitStatus::from_raw(0))
+}
+
+async fn run_internal_pty_test(
+    supervisor: &DescendantSupervisor,
+    args: &[OsString],
+) -> Result<ExitStatus> {
+    let [root] = args else {
+        bail!("internal PTY test requires a root path");
+    };
+    let root = PathBuf::from(root);
+    fs::create_dir_all(&root)?;
+    let args = Args {
+        root: root.clone(),
+        logs_dir: root.join("logs"),
+        fi_cli: "/bin/false".into(),
+        fman_cli: "/bin/false".into(),
+        gateway_cli: "/bin/false".into(),
+        bitcoin_cli: "/bin/false".into(),
+        load_test_tool: "/bin/false".into(),
+        complete_liquidity: false,
+        command: vec![OsString::from("sh"), OsString::from("-i")],
+    };
+    run_child(
+        &args.command,
+        &args,
+        &root.join("env.json"),
+        &root.join("secrets.json"),
+        &root.join("invite"),
+        &root.join("fi"),
+        &root.join("routes"),
+        &root.join("bin"),
+        "ws://relay",
+        "http://gateway",
+        "http://flip",
+        "flip-id",
+        supervisor,
+    )
+    .await
+}
+
+async fn run_internal_abrupt_owner_test(
+    supervisor: &DescendantSupervisor,
+    args: &[OsString],
+) -> Result<ExitStatus> {
+    let [socket, marker] = args else {
+        bail!("internal abrupt-owner test requires socket and marker paths");
+    };
+    let connection = std::os::unix::net::UnixStream::connect(socket)?;
+    supervisor.guard_connection(connection.as_fd().try_clone_to_owned()?)?;
+    ensure!(
+        supervisor
+            .guard_connection(connection.as_fd().try_clone_to_owned()?)
+            .is_err(),
+        "duplicate lease lifetime guard was admitted"
+    );
+    let command = Command::new("sleep");
+    let mut command = supervisor.wrap(&command, false)?;
+    command.command.arg("600");
+    let child = supervisor.spawn(command)?;
+    fs::write(marker, format!("{}\n", child.command_pid))?;
+    std::mem::forget(connection);
+    std::mem::forget(child.child);
+    std::future::pending().await
+}
+
+async fn run_internal_signal_status_test(supervisor: &DescendantSupervisor) -> Result<ExitStatus> {
+    let original = Command::new(std::env::current_exe()?);
+    let mut command = supervisor.wrap(&original, false)?;
+    command.command.arg("--internal-unblock-term-probe");
+    let mut child = supervisor.spawn(command)?;
+    let status = child.child.wait().await?;
+    supervisor.terminate_and_reap()?;
+    Ok(status)
 }
 
 async fn run_with_lock(raw_args: &[OsString]) -> Result<ExitStatus> {
@@ -190,6 +596,25 @@ fn exit_code(status: ExitStatus) -> i32 {
         .unwrap_or_else(|| 128 + status.signal().unwrap_or(1))
 }
 
+fn exit_with_status(status: ExitStatus) -> ! {
+    if let Some(signal) = status.signal() {
+        raise_default_signal(signal);
+    }
+    std::process::exit(status.code().unwrap_or(1))
+}
+
+fn raise_default_signal(signal: i32) -> ! {
+    unsafe {
+        let mut signals = std::mem::zeroed::<libc::sigset_t>();
+        libc::sigemptyset(&raw mut signals);
+        libc::sigaddset(&raw mut signals, signal);
+        libc::pthread_sigmask(libc::SIG_UNBLOCK, &raw const signals, std::ptr::null_mut());
+        libc::signal(signal, libc::SIG_DFL);
+        libc::raise(signal);
+        libc::_exit(128 + signal);
+    }
+}
+
 fn run_internal_child_gate(args: &[OsString]) -> ! {
     let fd = |index: usize| {
         args.get(index)
@@ -210,7 +635,7 @@ fn run_internal_child_gate(args: &[OsString]) -> ! {
     std::process::exit(127);
 }
 
-async fn run(args: Args) -> Result<ExitStatus> {
+async fn run(args: Args, incoming_supervisor: Arc<DescendantSupervisor>) -> Result<ExitStatus> {
     fs::create_dir_all(&args.root)
         .with_context(|| format!("create environment root {}", args.root.display()))?;
     set_private(&args.root)?;
@@ -218,15 +643,16 @@ async fn run(args: Args) -> Result<ExitStatus> {
     // supervisor first on every error and async-cancellation path.
     let mut defe;
     let mut held_leases = Vec::new();
-    let supervisor = Arc::new(DescendantSupervisor::establish()?);
+    // This local must drop before the lease-owning client declared above.
+    let supervisor = incoming_supervisor;
     let mut interrupt = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())?;
     let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
     let signal_supervisor = Arc::downgrade(&supervisor);
     let signal_manifest = args.root.join("env.json");
     tokio::spawn(async move {
-        let exit_code = tokio::select! {
-            _ = interrupt.recv() => 128 + libc::SIGINT,
-            _ = terminate.recv() => 128 + libc::SIGTERM,
+        let signal = tokio::select! {
+            _ = interrupt.recv() => libc::SIGINT,
+            _ = terminate.recv() => libc::SIGTERM,
         };
         let Some(supervisor) = signal_supervisor.upgrade() else {
             return;
@@ -238,11 +664,15 @@ async fn run(args: Args) -> Result<ExitStatus> {
         invalidate_ready_manifest(&signal_manifest);
         // Process exit closes the defe connection and releases leases only after
         // every environment descendant has been terminated and reaped.
-        std::process::exit(exit_code);
+        raise_default_signal(signal);
     });
     defe = AsyncDefeClient::connect_from_env()
         .await
         .context("connect to the defe server")?;
+    supervisor.guard_connection(
+        defe.duplicate_lifetime_guard()
+            .context("duplicate Defe connection for lifetime guard")?,
+    )?;
 
     status("allocating regtest Bitcoin and Nostr relay");
     let bitcoin_lease = defe.request_bitcoind(SharingMode::Exclusive).await?;
@@ -527,6 +957,9 @@ async fn connect_gateway(
         .await
         {
             Ok(_) => return Ok(()),
+            Err(error) if error.downcast_ref::<SetupCommandTimeout>().is_some() => {
+                return Err(error);
+            }
             Err(_) if tokio::time::Instant::now() < deadline => {
                 tokio::time::sleep(Duration::from_secs(1)).await;
             }
@@ -823,8 +1256,10 @@ async fn run_child(
     let original_foreground = has_tty
         .then(|| unsafe { libc::tcgetpgrp(libc::STDIN_FILENO) })
         .filter(|group| *group > 0);
-    child.as_std_mut().process_group(0);
-    let mut child = match supervisor.spawn(&mut child) {
+    let mut child = match supervisor
+        .wrap(&child, true)
+        .and_then(|command| supervisor.spawn(command))
+    {
         Ok(child) => child,
         Err(error) => {
             unsafe {
@@ -837,7 +1272,7 @@ async fn run_child(
         }
     };
     unsafe { libc::close(gate[0]) };
-    let child_pid = i32::try_from(child.id().context("environment child has no pid")?)?;
+    let child_pid = child.command_pid;
     // The composer becomes a background process after this transfer. Ignore
     // SIGTTOU until it has reclaimed the terminal; the child was already spawned
     // with the default disposition.
@@ -856,7 +1291,7 @@ async fn run_child(
     let gate_released = unsafe { libc::write(gate[1], b"\n".as_ptr().cast(), 1) } == 1;
     unsafe { libc::close(gate[1]) };
     let status: Result<ExitStatus> = if gate_released {
-        child.wait().await.map_err(Into::into)
+        child.child.wait().await.map_err(Into::into)
     } else {
         Err(anyhow::anyhow!("release environment child launch gate"))
     };
@@ -891,23 +1326,77 @@ async fn run_command(
     name: &str,
     timeout: Duration,
 ) -> Result<String> {
+    let mut command = supervisor
+        .wrap(command, false)
+        .with_context(|| format!("prepare {name}"))?;
     command
+        .command
         .kill_on_drop(true)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    let child = supervisor
+    let mut child = supervisor
         .spawn(command)
         .with_context(|| format!("start {name}"))?;
-    let output = tokio::time::timeout(timeout, child.wait_with_output())
-        .await
-        .with_context(|| format!("{name} timed out"))??;
+    let mut stdout = child
+        .child
+        .stdout
+        .take()
+        .context("capture command stdout")?;
+    let mut stderr = child
+        .child
+        .stderr
+        .take()
+        .context("capture command stderr")?;
+    let collect = async move {
+        let mut stdout_bytes = Vec::new();
+        let mut stderr_bytes = Vec::new();
+        let (_, _, status) = tokio::try_join!(
+            stdout.read_to_end(&mut stdout_bytes),
+            stderr.read_to_end(&mut stderr_bytes),
+            child.child.wait(),
+        )?;
+        Ok::<_, std::io::Error>((status, stdout_bytes, stderr_bytes))
+    };
+    let (status, stdout, stderr) = match await_or_cleanup(timeout, collect, || {
+        supervisor
+            .terminate_and_reap()
+            .with_context(|| format!("tear down environment after timed-out {name}"))
+    })
+    .await?
+    {
+        Some(output) => output,
+        None => {
+            return Err(SetupCommandTimeout.into());
+        }
+    };
     ensure!(
-        output.status.success(),
+        status.success(),
         "{name} failed:\n{}",
-        String::from_utf8_lossy(&output.stderr)
+        String::from_utf8_lossy(&stderr)
     );
-    String::from_utf8(output.stdout).context("command output is not UTF-8")
+    String::from_utf8(stdout).context("command output is not UTF-8")
+}
+
+/// Drops an owned timed-out operation before cleanup can reap resources it owns.
+async fn await_or_cleanup<F, T, C>(timeout: Duration, operation: F, cleanup: C) -> Result<Option<T>>
+where
+    F: Future<Output = std::io::Result<T>>,
+    C: FnOnce() -> Result<()>,
+{
+    let mut operation = Box::pin(operation);
+    let outcome = tokio::time::timeout(timeout, operation.as_mut()).await;
+    // In run_command this retires the kill-on-drop Tokio proxy while its
+    // registered helper PID still denotes that process. Cleanup may then reap
+    // the helper without leaving a handle that could later signal a reused PID.
+    drop(operation);
+    match outcome {
+        Ok(output) => Ok(Some(output?)),
+        Err(_) => {
+            cleanup()?;
+            Ok(None)
+        }
+    }
 }
 
 fn local_iroh_overrides(first_port_base: u16) -> String {
@@ -1161,24 +1650,51 @@ fn parse_args(args: Vec<std::ffi::OsString>) -> Result<Args> {
 
 #[cfg(test)]
 mod tests {
-    use std::ffi::OsString;
-    use std::io::{Read as _, Write as _};
-    use std::os::fd::FromRawFd as _;
     use std::os::unix::fs::PermissionsExt as _;
-    use std::os::unix::process::CommandExt as _;
     use std::os::unix::process::ExitStatusExt as _;
     use std::path::Path;
     use std::path::PathBuf;
-    use std::process::Stdio;
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
     use std::time::Duration;
 
     use super::{
-        Args, BitcoinManifest, DescendantSupervisor, FederationManifest, FlipManifest,
-        GatewayManifest, Manifest, exit_code, fman_api_url, ready_output, run_child, shell_escape,
-        stopped_manifest, write_tools,
+        Args, BitcoinManifest, FederationManifest, FlipManifest, GatewayManifest, Manifest,
+        await_or_cleanup, exit_code, fman_api_url, ready_output, shell_escape, stopped_manifest,
+        write_tools,
     };
     use defe_client::{BitcoindInfo, GatewaydInfo};
+
+    struct DropFlag(Arc<AtomicBool>);
+
+    impl Drop for DropFlag {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::SeqCst);
+        }
+    }
+
+    #[tokio::test]
+    async fn timed_out_operation_drops_its_owner_before_cleanup() {
+        let dropped = Arc::new(AtomicBool::new(false));
+        let operation = {
+            let drop_flag = DropFlag(Arc::clone(&dropped));
+            async move {
+                let _drop_flag = drop_flag;
+                std::future::pending::<std::io::Result<()>>().await
+            }
+        };
+        let observed = Arc::clone(&dropped);
+        let output = await_or_cleanup(Duration::ZERO, operation, move || {
+            assert!(
+                observed.load(Ordering::SeqCst),
+                "cleanup ran before the timed-out operation released its process handle"
+            );
+            Ok(())
+        })
+        .await
+        .expect("time out operation and run cleanup");
+        assert!(output.is_none());
+    }
 
     #[test]
     fn shell_escape_handles_spaces_and_single_quotes() {
@@ -1400,201 +1916,5 @@ mod tests {
         assert!(fees.contains("synthetic-remit --guardian N --amount-msats AMOUNT"));
         assert!(fees.contains("--internal-synthetic-remit"));
         std::fs::remove_dir_all(root).unwrap();
-    }
-
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn pty_foreground_interrupt_returns_to_shell_and_preserves_shell_status() {
-        let mut master = 0;
-        let mut slave = 0;
-        assert_eq!(
-            unsafe {
-                libc::openpty(
-                    &mut master,
-                    &mut slave,
-                    std::ptr::null_mut(),
-                    std::ptr::null(),
-                    std::ptr::null(),
-                )
-            },
-            0
-        );
-        assert_ne!(
-            unsafe { libc::fcntl(master, libc::F_SETFD, libc::FD_CLOEXEC) },
-            -1
-        );
-        let mut master = unsafe { std::fs::File::from_raw_fd(master) };
-        let slave = unsafe { std::fs::File::from_raw_fd(slave) };
-        let mut command = std::process::Command::new(std::env::current_exe().unwrap());
-        command
-            .args([
-                "--ignored",
-                "--exact",
-                "tests::pty_launcher_helper",
-                "--nocapture",
-            ])
-            .env("DEFE_ENV_PTY_HELPER", "1")
-            .stdin(Stdio::from(slave.try_clone().unwrap()))
-            .stdout(Stdio::from(slave.try_clone().unwrap()))
-            .stderr(Stdio::from(slave));
-        unsafe {
-            command.pre_exec(|| {
-                if libc::setsid() == -1 || libc::ioctl(0, libc::TIOCSCTTY, 0) == -1 {
-                    return Err(std::io::Error::last_os_error());
-                }
-                Ok(())
-            });
-        }
-        let mut helper = command.spawn().unwrap();
-        drop(command);
-        std::thread::sleep(Duration::from_millis(300));
-        master.write_all(b"sleep 30\n").unwrap();
-        std::thread::sleep(Duration::from_millis(300));
-        master.write_all(b"\x03").unwrap();
-        std::thread::sleep(Duration::from_millis(300));
-        master
-            .write_all(b"echo DEFE_SHELL_SURVIVED\nexit 7\n")
-            .unwrap();
-        let status = helper.wait().unwrap();
-        let mut output = String::new();
-        match master.read_to_string(&mut output) {
-            Ok(_) => {}
-            Err(error) if error.raw_os_error() == Some(libc::EIO) => {}
-            Err(error) => panic!("read PTY output: {error}"),
-        }
-        assert_eq!(status.code(), Some(7), "helper output:\n{output}");
-        assert!(
-            output.contains("DEFE_SHELL_SURVIVED"),
-            "helper output:\n{output}"
-        );
-    }
-
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn descendant_supervisor_reaps_active_and_disowned_job_control_groups() {
-        let status = std::process::Command::new(std::env::current_exe().unwrap())
-            .args([
-                "--ignored",
-                "--exact",
-                "tests::descendant_supervisor_helper",
-                "--nocapture",
-            ])
-            .env("DEFE_ENV_DESCENDANT_HELPER", "1")
-            .status()
-            .unwrap();
-        assert!(status.success());
-    }
-
-    #[cfg(target_os = "linux")]
-    #[ignore = "spawned by descendant_supervisor_reaps_active_and_disowned_job_control_groups"]
-    #[test]
-    fn descendant_supervisor_helper() {
-        if std::env::var_os("DEFE_ENV_DESCENDANT_HELPER").is_none() {
-            return;
-        }
-        let supervisor = Arc::new(DescendantSupervisor::establish().unwrap());
-
-        let mut active = std::process::Command::new("sh")
-            .args(["-c", "exec setsid sleep 600"])
-            .spawn()
-            .unwrap();
-        let active_pid = i32::try_from(active.id()).unwrap();
-
-        let root = tempfile::tempdir().unwrap();
-        let pid_file = root.path().join("disowned.pid");
-        let status = std::process::Command::new("sh")
-            .arg("-c")
-            .arg("setsid sleep 600 & echo $! >\"$1\"")
-            .arg("sh")
-            .arg(&pid_file)
-            .status()
-            .unwrap();
-        assert!(status.success());
-        let disowned_pid = std::fs::read_to_string(pid_file)
-            .unwrap()
-            .trim()
-            .parse::<i32>()
-            .unwrap();
-
-        let barrier = Arc::new(std::sync::Barrier::new(2));
-        let cleanups = (0..2)
-            .map(|_| {
-                let supervisor = Arc::clone(&supervisor);
-                let barrier = Arc::clone(&barrier);
-                std::thread::spawn(move || {
-                    barrier.wait();
-                    supervisor.terminate_and_reap().unwrap();
-                    for pid in [active_pid, disowned_pid] {
-                        assert_eq!(
-                            unsafe { libc::kill(pid, 0) },
-                            -1,
-                            "cleanup returned while process {pid} remained"
-                        );
-                    }
-                })
-            })
-            .collect::<Vec<_>>();
-        for cleanup in cleanups {
-            cleanup.join().unwrap();
-        }
-        let mut late_child = tokio::process::Command::new("true");
-        assert!(
-            supervisor.spawn(&mut late_child).is_err(),
-            "teardown reopened subprocess admission"
-        );
-        let _ = active.wait();
-        for (kind, pid) in [("active", active_pid), ("disowned", disowned_pid)] {
-            assert_eq!(
-                unsafe { libc::kill(pid, 0) },
-                -1,
-                "{kind} process {pid} survived: {}",
-                std::fs::read_to_string(format!("/proc/{pid}/status")).unwrap_or_default()
-            );
-            assert_eq!(
-                std::io::Error::last_os_error().raw_os_error(),
-                Some(libc::ESRCH)
-            );
-        }
-    }
-
-    #[cfg(target_os = "linux")]
-    #[ignore = "spawned by pty_foreground_interrupt_returns_to_shell_and_preserves_shell_status"]
-    #[tokio::test]
-    async fn pty_launcher_helper() {
-        if std::env::var_os("DEFE_ENV_PTY_HELPER").is_none() {
-            return;
-        }
-        let root = std::env::temp_dir().join(format!("defe-env-pty-{}", std::process::id()));
-        std::fs::create_dir_all(&root).unwrap();
-        let args = Args {
-            root: root.clone(),
-            logs_dir: root.join("logs"),
-            fi_cli: "/bin/false".into(),
-            fman_cli: "/bin/false".into(),
-            gateway_cli: "/bin/false".into(),
-            bitcoin_cli: "/bin/false".into(),
-            load_test_tool: "/bin/false".into(),
-            complete_liquidity: false,
-            command: vec![OsString::from("sh"), OsString::from("-i")],
-        };
-        let supervisor = DescendantSupervisor::establish().unwrap();
-        let status = run_child(
-            &args.command,
-            &args,
-            &root.join("env.json"),
-            &root.join("secrets.json"),
-            &root.join("invite"),
-            &root.join("fi"),
-            &root.join("routes"),
-            &root.join("bin"),
-            "ws://relay",
-            "http://gateway",
-            "http://flip",
-            "flip-id",
-            &supervisor,
-        )
-        .await
-        .unwrap();
-        std::process::exit(exit_code(status));
     }
 }

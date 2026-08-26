@@ -30,20 +30,44 @@ not a multi-tenant service and must use only dummy credentials and test funds.
   nonzero exits as failures. Mint and Lightning modes remain explicit
   unsupported failures. Traffic neither causes nor proves production Fedi
   payer-fee accrual.
-- Startup phases use bounded process and HTTP waits. Linux child-subreaper and
-  pidfd supervision is established before the first setup subprocess. A startup
-  failure first terminates and reaps the complete setup descendant tree, then
-  closes the composer connection and releases every Defe lease. Defe retains
-  the private temp root by default for diagnostics.
+- Startup phases use bounded process and HTTP waits. Before starting its async
+  runtime or the first setup subprocess, the Linux composer starts a
+  single-threaded broker bootstrap which creates an unprivileged user namespace
+  and a nested PID namespace. The multithreaded composer remains outside both;
+  trusted status-proxy helpers enter the broker user namespace and launch every
+  setup or command subprocess in the PID namespace. A startup failure first destroys and reaps
+  that complete namespace, then closes the composer connection and releases
+  every Defe lease. Defe retains the private temp root by default for diagnostics.
+- A setup-command timeout destroys and reaps the environment PID namespace
+  before returning the timeout. Retry loops treat that timeout as terminal, so a
+  stale setup command or its descendants cannot overlap a later attempt.
 - The child command gets its own foreground process group, so Ctrl-C in an
   interactive foreground job does not tear down the environment. Child exit or
   external termination stops admission and terminates and reaps every
   environment descendant across foreground, background, and disowned
-  job-control groups. Only then does teardown mark a retained manifest stopped
-  and non-ready and release connection-owned resources. This Linux process-tree
-  boundary prevents accidental leaks; it is not a sandbox against a malicious
-  same-user command with authority to interfere with its composer. If the
-  kernel cannot yet stop or reap a descendant, the composer retains its leases
-  and retries rather than publishing stopped state or exiting.
+  job-control groups. Killing PID-namespace init makes the kernel kill every
+  namespace member and reject new forks; a readable identity-stable init pidfd
+  followed by reaping init proves completion without a `/proc` census. Only then
+  does teardown mark a retained manifest stopped and non-ready and release
+  connection-owned resources. This boundary prevents accidental leaks; it is
+  not a sandbox against a malicious same-user command with authority to
+  interfere with its composer. If pidfd inspection, signaling, or reaping fails,
+  the composer retains its leases and retries rather than publishing stopped
+  state or exiting.
+- This boundary requires Linux pidfds and enabled unprivileged user namespaces.
+  `defe env` fails before acquiring leases when either facility is unavailable.
+  The single UID/GID mapping preserves the invoking user's file ownership but
+  does not map supplementary groups into the environment user namespace.
+- The broker passes argv as native Unix strings, applies the command's explicit
+  environment overrides and working directory, and leaves stdio attached to its
+  proxy. Namespace and launch-report descriptors are closed before executing
+  environment code. The proxy reports the command's outer PID for terminal
+  foreground transfer and exits with the same status or signal.
+- Before the first allocation, a separate lifetime guard receives a duplicate
+  of the composer's connected Defe socket. It never reads or writes the
+  sequential protocol stream. It retains that descriptor across composer
+  SIGKILL or abort and closes it only after the namespace-init pidfd proves
+  kernel teardown complete, preventing abrupt composer death from releasing
+  leases ahead of surviving commands.
 - `--keep-temp` retains logs, state, credentials, and the stopped manifest after
   teardown. Protect or delete that directory as test-sensitive material.

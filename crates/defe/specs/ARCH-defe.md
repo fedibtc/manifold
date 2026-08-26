@@ -14,10 +14,12 @@ Both modes keep the server and its resources local to the developer or CI job.
 the leases needed to form a federation, connect a gateway, and advertise FLIP.
 After readiness it launches an explicit command or `$SHELL` with generated
 cross-shell tools and stable `DEFE_ENV_*` discovery paths. That child's lifetime
-is the environment lifetime. The Linux composer owns the child's complete
-descendant process tree across interactive job-control groups and daemonization;
-it stops admission, terminates, and reaps that tree before releasing leases.
-The child's exit status crosses both composer and server boundaries unchanged.
+is the environment lifetime. The multithreaded Linux composer remains outside
+the broker's user and PID namespaces; status proxies place every setup and
+command subprocess inside the PID namespace across interactive job-control
+groups and daemonization. Destroying and reaping namespace init is
+the kernel-owned completion boundary before lease release. The child's exit
+status crosses both composer and server boundaries unchanged.
 
 The generated `fees` tool exposes FMan's real fee show and collection commands.
 Its `synthetic-remit` preparation action creates a metadata-bearing stability-pool

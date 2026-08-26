@@ -48,11 +48,16 @@ Execution order:
 8. Terminate every child process still owned by resources.
 9. Exit with the child command's status.
 
-The command process lifetime is the final boundary. Before releasing leases, the
-Linux environment composer uses child-subreaper adoption, a fixed-point `/proc`
-descendant census, and identity-stable pidfds to stop, terminate, and reap setup
-and command descendants across process groups. Leaked or daemonized clients must
-not keep resources alive after command exit.
+The command process lifetime is the final boundary. Before starting setup, the
+Linux environment composer starts a single-threaded spawn broker which creates
+an unprivileged user namespace and a nested PID namespace. The multithreaded
+composer remains outside; short-lived status proxies launch every setup and
+command process inside and preserve command status and terminal job control.
+The bootstrap launches namespace init; a connection lifetime guard
+retains lease custody across abrupt composer death. Before releasing leases, the composer kills
+namespace init through an identity-stable pidfd and reaps it. Linux destroys
+every other namespace member as part of init's exit, so leaked, continuously
+forking, double-forked, or daemonized clients cannot outlive the lease boundary.
 
 
 ## Temp layout
