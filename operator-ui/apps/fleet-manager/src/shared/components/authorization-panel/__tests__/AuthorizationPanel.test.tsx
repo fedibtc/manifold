@@ -53,6 +53,21 @@ describe('AuthorizationPanel', () => {
     expect(screen.getByRole('button', { name: /copy the authorization request/i })).toBeTruthy();
   });
 
+  // The request is JSON and the key is not. An unlabelled icon beside the key
+  // handed over the request, so the operator who wanted the key got the wrong
+  // value and read the control as broken.
+  it('should name the request copy control on screen, not just to a reader', () => {
+    render(<AuthorizationPanel data={waiting} isLoading={false} error={null} />);
+
+    expect(screen.getByText('Copy the authorization request')).toBeTruthy();
+  });
+
+  it('should offer a copy control for the key it shows beside it', () => {
+    render(<AuthorizationPanel data={waiting} isLoading={false} error={null} />);
+
+    expect(screen.getByRole('button', { name: /copy the service nostr public key/i })).toBeTruthy();
+  });
+
   it('should not claim a holder app can scan and finish the flow', () => {
     render(<AuthorizationPanel data={waiting} isLoading={false} error={null} />);
 

@@ -1,5 +1,19 @@
 .root {
-  @apply inline-flex items-center justify-center gap-2 rounded-full font-medium;
+  @apply relative inline-flex items-center justify-center gap-2 rounded-full font-medium;
+}
+
+.root[data-loading="true"] {
+  @apply cursor-wait;
+}
+
+.label {
+  @apply inline-flex items-center gap-2;
+}
+
+/* Hidden rather than removed, so the button keeps the width it had before the
+   request started and the spinner cannot push it wider. */
+.root[data-loading="true"] .label {
+  @apply invisible;
 }
 
 .root[data-size="medium"] {
@@ -30,6 +44,7 @@
   @apply w-full;
 }
 
+/* Centred over the hidden label, so it adds no width of its own. */
 .spinner {
-  @apply h-4 w-4 animate-spin rounded-full border-2 border-current border-t-transparent;
+  @apply absolute left-1/2 top-1/2 h-4 w-4 -translate-x-1/2 -translate-y-1/2 animate-spin rounded-full border-2 border-current border-t-transparent;
 }

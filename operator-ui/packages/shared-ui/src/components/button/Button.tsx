@@ -29,21 +29,26 @@ export const Button = ({
   onClick,
   children
 }: ButtonProps) => {
-  const isInactive = disabled || loading;
+  // A busy button is not an unavailable one. Repainting it in the inactive
+  // variant and widening it for the spinner made a short request read as a
+  // flicker, so loading keeps the button's own size and colours and only marks
+  // itself busy; the spinner sits over the label instead of beside it.
   return (
     <button
       ref={ref}
       type={type}
       className={styles.root}
-      data-variant={isInactive ? 'inactive' : variant}
+      data-variant={disabled ? 'inactive' : variant}
       data-size={size}
       data-full-width={fullWidth}
-      disabled={isInactive}
+      data-loading={loading}
+      disabled={disabled || loading}
+      aria-busy={loading}
       aria-describedby={describedBy}
       onClick={onClick}
     >
       {loading && <span className={styles.spinner} aria-hidden="true" />}
-      {children}
+      <span className={styles.label}>{children}</span>
     </button>
   );
 };
