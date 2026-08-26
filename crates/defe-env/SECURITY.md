@@ -21,12 +21,12 @@ not a multi-tenant service and must use only dummy credentials and test funds.
   relay. Do not treat those endpoints or their fabricated development trust
   material as production identities.
 - The environment root is mode 0700. `secrets.json` is mode 0600 and contains FMan
-  passwords, the gateway password, and the FLIP bootstrap token. Ready output
-  also prints each FMan password beside its operator-UI attach command; this is
-  intentional for the disposable, single-user workflow. Generated mode-0700
-  wrappers also contain the exact dummy credentials needed to select their
-  service. `env.json` contains no credentials, and ready output does not print
-  gateway or FLIP credentials.
+  passwords, the gateway password, and the FLIP bootstrap token. The generated
+  `defe-connectivity` command prints each FMan password beside its operator-UI
+  attach command; this is intentional for the disposable, single-user workflow.
+  Generated mode-0700 wrappers also contain the exact dummy credentials needed
+  to select their service. `env.json` contains no credentials, and neither ready
+  output nor `defe-connectivity` prints gateway or FLIP credentials.
 - `fees synthetic-remit` stores its dedicated payment-wallet root secret and
   sealed remittance metadata under that private root. It passes only their file
   paths to `fi-cli`, never their contents, and prints no operation or wallet

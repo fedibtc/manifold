@@ -160,11 +160,16 @@ outer `defe` boundaries unchanged.
 The child receives `DEFE_ENV=1`, `DEFE_ENV_SCHEMA_VERSION=1`, paths for the root,
 manifest, secrets, logs, invite, FI state, and Iroh routes, plus the stable local
 Nostr, gateway, and FLIP endpoint variables. `$DEFE_ENV_BIN_DIR` is prepended to
-`PATH`. Its private cross-shell tools include `defe-env-info`, `fman-1` through
-`fman-7`, `fi-cli`, `gateway`, `bitcoin-cli`, `fman-ui`, `fees`, and `traffic`. (`fi` is a
-POSIX shell keyword and therefore cannot be a cross-shell executable name.) Every service
-wrapper selects the exact binary, state, endpoint, and dummy credential chosen by
-the composer and forwards its remaining arguments unchanged.
+`PATH`. Its private cross-shell tools include `defe-env-info`, `defe-list-commands`,
+`defe-connectivity`, `fman-1` through `fman-7`, `fi-cli`, `gateway`, `bitcoin-cli`,
+`fman-ui`, `fees`, and `traffic`. (`fi` is a POSIX shell keyword and therefore cannot
+be a cross-shell executable name.) Ready output remains concise and directs users to
+`defe-list-commands`, which describes each generated command. Run
+`defe-connectivity` when attaching to services: it prints the readiness query, paths,
+service URLs, FMan UI instructions and passwords, FMan API URLs and CLI examples, and
+safe-journal locations. Every service wrapper selects the exact binary, state,
+endpoint, and dummy credential chosen by the composer and forwards its remaining
+arguments unchanged.
 
 The default shell starts in the private `$DEFE_ENV_ROOT/work` directory after
 Defe verifies that the directory and its ancestors contain no `.envrc` or

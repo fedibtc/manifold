@@ -841,15 +841,15 @@ async fn run(args: Args, incoming_supervisor: Arc<DescendantSupervisor>) -> Resu
         &seat_ids,
         &gateway,
         &bitcoin,
+        &relay.url,
+        &flip.admin_url,
+        &public_endpoint_id,
     )?;
     write_json_atomic(&manifest_file, &manifest)?;
     print_ready(
         &manifest_file,
         &secrets_file,
         &args.logs_dir,
-        &args.fman_cli,
-        &pnpm,
-        &fmans,
         &gateway,
         &flip.admin_url,
         &public_endpoint_id,
@@ -1020,6 +1020,9 @@ fn write_tools(
     seat_ids: &[String],
     gateway: &GatewaydInfo,
     bitcoin: &defe_client::BitcoindInfo,
+    relay_url: &str,
+    flip_url: &str,
+    public_endpoint_id: &str,
 ) -> Result<()> {
     fs::create_dir_all(bin_dir)?;
     set_private(bin_dir)?;
@@ -1033,6 +1036,34 @@ fn write_tools(
             shell_escape(invite.as_os_str()),
             shell_escape(args.logs_dir.as_os_str()),
             shell_escape(manifest.as_os_str())
+        ),
+    )?;
+    write_wrapper(
+        &bin_dir.join("defe-list-commands"),
+        &format!(
+            "#!/bin/sh\nprintf '%s\\n' {}\n",
+            shell_escape(OsStr::new(command_list_output()))
+        ),
+    )?;
+    write_wrapper(
+        &bin_dir.join("defe-connectivity"),
+        &format!(
+            "#!/bin/sh\nprintf '%s\\n' {}\n",
+            shell_escape(OsStr::new(&connectivity_output(
+                manifest,
+                secrets,
+                &args.logs_dir,
+                &args.fman_cli,
+                pnpm,
+                fmans,
+                gateway,
+                bitcoin,
+                relay_url,
+                flip_url,
+                public_endpoint_id,
+                invite,
+                fi_state_dir,
+            )))
         ),
     )?;
     for (index, fman) in fmans.iter().enumerate() {
@@ -1462,9 +1493,6 @@ fn print_ready(
     manifest: &Path,
     secrets: &Path,
     logs: &Path,
-    fman_cli: &Path,
-    pnpm: &Path,
-    fmans: &[FmanInfo],
     gateway: &GatewaydInfo,
     flip_url: &str,
     public_endpoint_id: &str,
@@ -1475,9 +1503,6 @@ fn print_ready(
             manifest,
             secrets,
             logs,
-            fman_cli,
-            pnpm,
-            fmans,
             gateway,
             flip_url,
             public_endpoint_id,
@@ -1490,9 +1515,6 @@ fn ready_output(
     manifest: &Path,
     secrets: &Path,
     logs: &Path,
-    fman_cli: &Path,
-    pnpm: &Path,
-    fmans: &[FmanInfo],
     gateway: &GatewaydInfo,
     flip_url: &str,
     public_endpoint_id: &str,
@@ -1507,15 +1529,55 @@ fn ready_output(
     writeln!(output, "Gateway admin: {}", gateway.api_url).expect("write to string");
     writeln!(
         output,
-        "Machine readiness: jq -e '.ready == true' {}",
-        shell_escape(manifest.as_os_str())
+        "Run defe-list-commands to see available environment commands."
     )
     .expect("write to string");
     writeln!(
         output,
+        "Exit the environment shell or command to tear the environment down."
+    )
+    .expect("write to string");
+    output
+}
+
+#[allow(clippy::too_many_arguments)]
+fn connectivity_output(
+    manifest: &Path,
+    secrets: &Path,
+    logs: &Path,
+    fman_cli: &Path,
+    pnpm: &Path,
+    fmans: &[FmanInfo],
+    gateway: &GatewaydInfo,
+    bitcoin: &defe_client::BitcoindInfo,
+    relay_url: &str,
+    flip_url: &str,
+    public_endpoint_id: &str,
+    invite: &Path,
+    fi_state_dir: &Path,
+) -> String {
+    let mut output = String::from("Defe environment connectivity\n");
+    writeln!(
+        output,
+        "Machine readiness: jq -e '.ready == true' {}",
+        shell_escape(manifest.as_os_str())
+    )
+    .expect("write to string");
+    writeln!(output, "Manifest:      {}", manifest.display()).expect("write to string");
+    writeln!(output, "Secrets (0600): {}", secrets.display()).expect("write to string");
+    writeln!(output, "Logs:          {}", logs.display()).expect("write to string");
+    writeln!(output, "Federation invite: {}", invite.display()).expect("write to string");
+    writeln!(output, "FI state:      {}", fi_state_dir.display()).expect("write to string");
+    writeln!(output, "Nostr relay:   {relay_url}").expect("write to string");
+    writeln!(output, "Bitcoin RPC:   {}", bitcoin.rpc_url).expect("write to string");
+    writeln!(output, "Gateway admin: {}", gateway.api_url).expect("write to string");
+    writeln!(output, "FLIP admin:    {flip_url}").expect("write to string");
+    writeln!(output, "FLIP public endpoint ID: {public_endpoint_id}").expect("write to string");
+    writeln!(
+        output,
         "FMan UI dependencies: {} --dir {} install --frozen-lockfile",
         shell_escape(pnpm.as_os_str()),
-        shell_escape(std::ffi::OsStr::new(FMAN_OPERATOR_UI_DIR))
+        shell_escape(OsStr::new(FMAN_OPERATOR_UI_DIR))
     )
     .expect("write to string");
     for (index, fman) in fmans.iter().enumerate() {
@@ -1573,12 +1635,23 @@ fn ready_output(
         )
         .expect("write to string");
     }
-    writeln!(
-        output,
-        "Exit the environment shell or command to tear the environment down."
-    )
-    .expect("write to string");
     output
+}
+
+fn command_list_output() -> &'static str {
+    "\
+Available Defe environment commands:
+  defe-env-info                 Print the environment manifest and its protected paths.
+  defe-connectivity             Print component URLs, local paths, credentials, and attach commands.
+  defe-list-commands            Print this command list.
+  fman-1 … fman-7 [ARGS...]     Run fman-cli for one numbered FMan.
+  fi-cli [ARGS...]              Run fi-cli with this federation's state directory.
+  gateway [ARGS...]             Run gateway-cli connected to this environment's gateway.
+  bitcoin-cli [ARGS...]         Run bitcoin-cli connected to this environment's regtest node.
+  fman-ui FMAN                  Launch one numbered FMan operator UI.
+  fees show|collect|synthetic-remit
+                                Inspect/collect guardian fees or prepare a synthetic remittance.
+  traffic [ARGS...]             Generate bounded federation connection traffic."
 }
 
 fn fman_api_url(base_url: &str, endpoint: &str) -> String {
@@ -1675,8 +1748,8 @@ mod tests {
 
     use super::{
         Args, BitcoinManifest, FederationManifest, FlipManifest, GatewayManifest, Manifest,
-        await_or_cleanup, exit_code, fman_api_url, ready_output, shell_escape, stopped_manifest,
-        write_tools,
+        await_or_cleanup, command_list_output, connectivity_output, exit_code, fman_api_url,
+        ready_output, shell_escape, stopped_manifest, write_tools,
     };
     use defe_client::{BitcoindInfo, GatewaydInfo};
 
@@ -1765,7 +1838,7 @@ mod tests {
     }
 
     #[test]
-    fn ready_output_gives_each_fman_an_attachable_ui_and_exact_api_routes() {
+    fn connectivity_output_gives_each_fman_an_attachable_ui_and_exact_api_routes() {
         let fman = defe_client::FmanInfo {
             locator: "locator".to_owned(),
             data_dir: PathBuf::from("/tmp/fman"),
@@ -1773,7 +1846,7 @@ mod tests {
             admin_url: "http://127.0.0.1:10612".to_owned(),
             admin_password: "fman-secret".to_owned(),
         };
-        let output = ready_output(
+        let output = connectivity_output(
             Path::new("/tmp/env/env.json"),
             Path::new("/tmp/env/secrets.json"),
             Path::new("/tmp/env/logs"),
@@ -1784,8 +1857,20 @@ mod tests {
                 api_url: "http://gateway".to_owned(),
                 password: "gateway-secret".to_owned(),
             },
+            &BitcoindInfo {
+                rpc_url: "http://bitcoin".to_owned(),
+                rpc_host: "127.0.0.1".to_owned(),
+                rpc_port: 18443,
+                p2p_port: 18444,
+                rpc_username: "bitcoin-user".to_owned(),
+                rpc_password: "bitcoin-password".to_owned(),
+                data_dir: PathBuf::from("/tmp/bitcoin"),
+            },
+            "ws://relay",
             "http://flip",
             "endpoint",
+            Path::new("/tmp/env/invite"),
+            Path::new("/tmp/env/fi-state"),
         );
 
         assert!(output.contains("FMan 1 operator UI (start one at a time): http://127.0.0.1:5174"));
@@ -1798,6 +1883,48 @@ mod tests {
         assert!(output.contains("FMan 1 admin API (POST): http://127.0.0.1:10612/api/admin"));
         assert!(!output.contains("FMan 1 admin: http://127.0.0.1:10612"));
         assert!(!output.contains("gateway-secret"));
+    }
+
+    #[test]
+    fn ready_output_stays_concise_and_points_to_command_discovery() {
+        let output = ready_output(
+            Path::new("/tmp/env/env.json"),
+            Path::new("/tmp/env/secrets.json"),
+            Path::new("/tmp/env/logs"),
+            &GatewaydInfo {
+                api_url: "http://gateway".to_owned(),
+                password: "gateway-secret".to_owned(),
+            },
+            "http://flip",
+            "endpoint",
+        );
+
+        assert!(output.contains("Run defe-list-commands to see available environment commands."));
+        assert!(!output.contains("FMan 1 operator UI"));
+        assert!(!output.contains("Machine readiness:"));
+        assert!(!output.contains("gateway-secret"));
+        assert!(output.lines().count() <= 10);
+    }
+
+    #[test]
+    fn command_list_covers_public_generated_commands() {
+        let output = command_list_output();
+
+        for command in [
+            "defe-env-info",
+            "defe-connectivity",
+            "defe-list-commands",
+            "fman-1 … fman-7",
+            "fi-cli",
+            "gateway",
+            "bitcoin-cli",
+            "fman-ui",
+            "fees",
+            "traffic",
+        ] {
+            assert!(output.contains(command), "missing {command}");
+        }
+        assert!(output.contains("component URLs, local paths, credentials, and attach commands"));
     }
 
     #[test]
@@ -1886,8 +2013,29 @@ mod tests {
             &["seat-one".into()],
             &gateway,
             &bitcoin,
+            "ws://relay",
+            "http://flip",
+            "endpoint",
         )
         .unwrap();
+
+        let list = std::process::Command::new(bin.join("defe-list-commands"))
+            .output()
+            .unwrap();
+        assert!(list.status.success());
+        assert!(
+            String::from_utf8(list.stdout)
+                .unwrap()
+                .contains("defe-connectivity")
+        );
+        let connectivity = std::process::Command::new(bin.join("defe-connectivity"))
+            .output()
+            .unwrap();
+        assert!(connectivity.status.success());
+        let connectivity = String::from_utf8(connectivity.stdout).unwrap();
+        assert!(connectivity.contains("FMan 1 operator UI password: fman-secret"));
+        assert!(connectivity.contains("Bitcoin RPC:   http://bitcoin"));
+        assert!(connectivity.contains("Federation invite:"));
 
         let run = |tool: &str, arguments: &[&str]| {
             std::process::Command::new(bin.join(tool))
