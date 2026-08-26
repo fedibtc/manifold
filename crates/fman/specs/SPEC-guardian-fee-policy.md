@@ -6,8 +6,8 @@ The contract spans formation transcripts, FI maintenance RPCs, guardian metadata
 
 The two guardian-fee metadata keys jointly decide how much the federation
 charges and who gets paid. The recipient policy is fixed in Manifold code; the
-FI controls only the rate within the payer's supported range and Fedi's
-published minimum.
+FI controls only the rate within the payer's supported range and published
+minimum.
 
 ## Formation owns the recipient mapping
 
@@ -33,18 +33,21 @@ The same typed proposal installs, as one guarded whole-object target:
 - `fedi:guardian_fee_remittance_account`; and
 - `fedi:guardian_fee_send_ppm`.
 
-The fixed split is `FI=4`, every guardian `=1`, and the environment-pinned Fedi
-account `=1`, for total weight `guardian_count + 5`. Entries are keyed and
-canonically ordered by destination account. Accounts are single-signature
-`BtcDepositor` accounts and must be unique across FI, Fedi, and every guardian.
+The fixed split gives FI weight four, every guardian weight one, and the
+Guardian Verification Fee weight one, for total weight `guardian_count + 5`.
+Entries are keyed and canonically ordered by destination account. Accounts are
+single-signature `BtcDepositor` accounts and must be unique across FI, the
+Guardian Verification Fee account, and every guardian.
 The FI account comes from the consumer's formed-federation account provider,
-guardian accounts from signed seat acceptances and attestations, and the Fedi
-account from the Manifold environment profile. The canonical directory remains
-the authoritative source of each guardian account. The initial rate is the greater of the
-5,000-ppm Manifold default and the admitted Fedi-published minimum.
+guardian accounts from signed seat acceptances and attestations, and the
+Guardian Verification Fee account from the Manifold environment profile. The
+canonical directory remains the authoritative source of each guardian account.
+The initial rate is the greater of the 5,000-ppm Manifold default and the
+admitted published minimum.
 
-`ProposeFormationMeta` carries the paired attestation/proof entries, FI and Fedi accounts, rate,
-FI and seat identities, timestamp, and exact `MetaConsensusBase`. Each FMan
+`ProposeFormationMeta` carries the paired attestation/proof entries, FI and
+Guardian Verification Fee accounts, rate, FI and seat identities, timestamp,
+and exact `MetaConsensusBase`. Each FMan
 derives the complete recipient list itself. It refuses a rate below its current
 published floor before child access, refuses a federation that already has a
 consensus directory with the distinct `FormationMetaAlreadyPublished` result,
@@ -62,7 +65,7 @@ seat endpoint keys, avoiding a second identity/account transcript in
 
 After formation, `propose_guardian_fees` is a rate-change operation. It submits
 only `fedi:guardian_fee_send_ppm` through `SetMetaField`. The generic validator
-enforces the raw/value bounds and Fedi floor before child access. The
+enforces the raw/value bounds and published floor before child access. The
 formation-owned directory and recipient-list keys are absent from the generic
 registry and are rejected if requested directly.
 
@@ -74,7 +77,7 @@ rate proposal and remains valid carry-forward behavior.
 Every generic whole-object write that carries an existing fee policy revalidates
 it before voting. It parses the stored canonical directory, verifies its FMan
 attestations against the live federation config and requires the carried
-account-keyed recipient list to equal the fixed FI/guardian/Fedi split. The
+account-keyed recipient list to equal the fixed recipient split. The
 stored directory cannot re-prove endpoint ownership: its API endpoint
 proofs were admission-time evidence and are intentionally not consensus data.
 

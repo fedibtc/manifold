@@ -815,8 +815,9 @@ struct FmanState {
     meta_submissions: Mutex<HashMap<usize, (String, String)>>,
     /// Seat index -> the exact guardian-fee policy that seat accepted.
     fee_submissions: Mutex<HashMap<usize, (u64, String)>>,
-    /// Per-seat configured Fedi account overrides for divergence tests.
-    formation_fedi_accounts: Mutex<HashMap<usize, Account>>,
+    /// Per-seat Guardian Verification Fee account overrides for divergence
+    /// tests.
+    formation_guardian_verification_fee_accounts: Mutex<HashMap<usize, Account>>,
     /// Every LNv2 gateway URL accepted by a fake guardian.
     gateway_registrations: Mutex<Vec<(usize, String)>>,
     /// Every signed merge base observed by a fake, in submission-wave order.
@@ -1562,19 +1563,21 @@ impl FleetManagerService for TestFman {
                 return Err(FleetManagerError::MetaConsensusChanged);
             }
         }
-        let fedi_account = self
+        let guardian_verification_fee_account = self
             .state
-            .formation_fedi_accounts
+            .formation_guardian_verification_fee_accounts
             .lock()
             .expect("test lock")
             .get(&self.index)
             .cloned()
             .unwrap_or_else(|| guardian_fee_account(31));
-        let fedi_fee_account =
-            fedi_decentralized_service_fleet_manager::GuardianFeeAccount::try_from(fedi_account)
-                .unwrap();
-        if request.fedi_fee_account != fedi_fee_account {
-            return Err(FleetManagerError::FediFeeAccountMismatch);
+        let guardian_verification_fee_account =
+            fedi_decentralized_service_fleet_manager::GuardianFeeAccount::try_from(
+                guardian_verification_fee_account,
+            )
+            .unwrap();
+        if request.guardian_verification_fee_account != guardian_verification_fee_account {
+            return Err(FleetManagerError::GuardianVerificationFeeAccountMismatch);
         }
         let bindings = fedi_decentralized_domain::FmanSeatBindings::new(
             request
@@ -1604,8 +1607,8 @@ impl FleetManagerService for TestFman {
             FI_GUARDIAN_FEE_WEIGHT,
         ));
         recipients.push(GuardianFeeRecipient::new(
-            fedi_fee_account.clone(),
-            FEDI_GUARDIAN_FEE_WEIGHT,
+            guardian_verification_fee_account.clone(),
+            GUARDIAN_VERIFICATION_FEE_WEIGHT,
         ));
         recipients.sort_by_key(|recipient| recipient.account.as_account().id());
         let recipients = canonical_guardian_fee_recipient_list(&recipients)
@@ -3300,7 +3303,7 @@ async fn open_client_with_store_and_registry(
             run_guard: tokio::sync::Mutex::new(()),
             peer_badge_verifier: test_peer_badge_verifier(),
             setup_payment_publisher: Some(setup_payment_keys().public_key()),
-            fedi_guardian_fee_account: Some(guardian_fee_account(31)),
+            guardian_verification_fee_account: Some(guardian_fee_account(31)),
         }),
     }
 }
@@ -6048,22 +6051,22 @@ async fn formed_fi_proposes_and_confirms_the_fixed_4_1_1_policy() {
         .expect("FI role account is present");
     assert_eq!(fi["weight"], 4);
     assert_eq!(fi["account"], serde_json::to_value(&fi_account).unwrap());
-    let fedi_account = guardian_fee_account(31);
-    let fedi = entries
+    let guardian_verification_fee_account = guardian_fee_account(31);
+    let guardian_verification_fee = entries
         .iter()
-        .find(|entry| entry["account_id"] == fedi_account.id().to_string())
-        .expect("deployment Fedi account is present");
-    assert_eq!(fedi["weight"], 1);
+        .find(|entry| entry["account_id"] == guardian_verification_fee_account.id().to_string())
+        .expect("Guardian Verification Fee account is present");
+    assert_eq!(guardian_verification_fee["weight"], 1);
 }
 
 #[tokio::test]
-async fn formation_names_the_fman_with_a_divergent_fedi_account() {
+async fn formation_names_the_fman_with_a_divergent_guardian_verification_fee_account() {
     let (payments, _) = TestPayments::new();
     let fman_state = Arc::new(FmanState::default());
     let divergent_index = 2;
     let divergent_account = guardian_fee_account(29);
     fman_state
-        .formation_fedi_accounts
+        .formation_guardian_verification_fee_accounts
         .lock()
         .expect("test lock")
         .insert(divergent_index, divergent_account.clone());
@@ -6082,7 +6085,7 @@ async fn formation_names_the_fman_with_a_divergent_fedi_account() {
     assert!(matches!(
         &error,
         FiError::FleetManager { index: 2, message }
-            if message == "Fedi fee account does not match this Fleet Manager's configuration"
+            if message == "Guardian Verification Fee account does not match this Fleet Manager's configuration"
     ));
     assert!(
         !fman_state
@@ -6150,7 +6153,7 @@ async fn fi_and_guardian_accounts_must_be_distinct() {
 }
 
 #[tokio::test]
-async fn fedi_and_fi_accounts_must_be_distinct() {
+async fn guardian_verification_fee_and_fi_accounts_must_be_distinct() {
     let (payments, _) = TestPayments::new();
     let fman_state = Arc::new(FmanState::default());
     let shared_account = guardian_fee_account(31);
@@ -6198,9 +6201,9 @@ async fn a_guardian_fee_below_the_admitted_minimum_never_reaches_a_guardian_vote
         .expect("test lock")
         .clone();
 
-    // Fedi raises the floor above the 1,500-ppm default. It rides the same
-    // durable setup-payment publication the payer set already comes from, so
-    // the FI reads it without a fetch and without a new stored field.
+    // The publisher raises the floor above the 1,500-ppm default. It rides the
+    // same durable setup-payment publication the payer set already comes from,
+    // so the FI reads it without a fetch and without a new stored field.
     client
         .inner
         .store
@@ -6438,7 +6441,7 @@ async fn guardian_fee_policy_rebases_after_a_stale_wave_and_preserves_other_fiel
 }
 
 #[tokio::test]
-async fn generic_open_fails_closed_for_the_deployment_fedi_fee_account() {
+async fn generic_open_fails_closed_for_the_deployment_guardian_verification_fee_account() {
     let (payments, _) = TestPayments::new();
     let fman_state = Arc::new(FmanState::default());
     let client = FiClient::open(

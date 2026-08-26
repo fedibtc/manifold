@@ -424,7 +424,7 @@ enum SeatCommand {
         fi_fee_account: Account,
         send_ppm: u64,
         min_send_ppm: u64,
-        fedi_account: Account,
+        guardian_verification_fee_account: Account,
         reply: oneshot::Sender<Result<(), SeatVerbError>>,
     },
     SubmitMetaField {
@@ -432,7 +432,7 @@ enum SeatCommand {
         key: MetaFieldKey,
         value: MetaFieldValue,
         min_send_ppm: u64,
-        fedi_account: Option<Account>,
+        guardian_verification_fee_account: Option<Account>,
         reply: oneshot::Sender<Result<(), SeatVerbError>>,
     },
     RegisterGateway {
@@ -758,7 +758,7 @@ impl Seat {
         fi_fee_account: Account,
         send_ppm: u64,
         min_send_ppm: u64,
-        fedi_account: Account,
+        guardian_verification_fee_account: Account,
     ) -> Result<(), SeatVerbError> {
         self.verb_request(|reply| SeatCommand::ProposeFormationMeta {
             expected_base,
@@ -766,7 +766,7 @@ impl Seat {
             fi_fee_account,
             send_ppm,
             min_send_ppm,
-            fedi_account,
+            guardian_verification_fee_account,
             reply,
         })
         .await
@@ -779,14 +779,14 @@ impl Seat {
         key: MetaFieldKey,
         value: MetaFieldValue,
         min_send_ppm: u64,
-        fedi_account: Option<Account>,
+        guardian_verification_fee_account: Option<Account>,
     ) -> Result<(), SeatVerbError> {
         self.verb_request(|reply| SeatCommand::SubmitMetaField {
             expected_base,
             key,
             value,
             min_send_ppm,
-            fedi_account,
+            guardian_verification_fee_account,
             reply,
         })
         .await
@@ -1101,7 +1101,7 @@ impl SeatLoop {
                     fi_fee_account,
                     send_ppm,
                     min_send_ppm,
-                    fedi_account,
+                    guardian_verification_fee_account,
                     reply,
                 } => {
                     let result = self
@@ -1111,7 +1111,7 @@ impl SeatLoop {
                             &fi_fee_account,
                             send_ppm,
                             min_send_ppm,
-                            &fedi_account,
+                            &guardian_verification_fee_account,
                         )
                         .await;
                     let _ = reply.send(result);
@@ -1121,7 +1121,7 @@ impl SeatLoop {
                     key,
                     value,
                     min_send_ppm,
-                    fedi_account,
+                    guardian_verification_fee_account,
                     reply,
                 } => {
                     let result = self
@@ -1130,7 +1130,7 @@ impl SeatLoop {
                             &key,
                             &value,
                             min_send_ppm,
-                            fedi_account.as_ref(),
+                            guardian_verification_fee_account.as_ref(),
                         )
                         .await;
                     let _ = reply.send(result);
@@ -1779,7 +1779,7 @@ impl SeatLoop {
         fi_fee_account: &Account,
         send_ppm: u64,
         min_send_ppm: u64,
-        fedi_account: &Account,
+        guardian_verification_fee_account: &Account,
     ) -> Result<(), SeatVerbError> {
         crate::guardian_fee::prevalidate_guardian_fee_rate(send_ppm, min_send_ppm)
             .map_err(|_| SeatVerbError::MetaValueInvalid)?;
@@ -1843,7 +1843,7 @@ impl SeatLoop {
             send_ppm,
             &guardian_accounts,
             fi_fee_account,
-            fedi_account,
+            guardian_verification_fee_account,
         )
         .map_err(|_| SeatVerbError::MetaValueInvalid)?;
 
@@ -1930,7 +1930,7 @@ impl SeatLoop {
         key: &MetaFieldKey,
         value: &MetaFieldValue,
         min_send_ppm: u64,
-        fedi_account: Option<&Account>,
+        guardian_verification_fee_account: Option<&Account>,
     ) -> Result<(), SeatVerbError> {
         validate_meta_field(key, value).map_err(|err| self.meta_field_error(key.0.len(), err))?;
         if key.0 == crate::guardian_fee::SEND_PPM_META_KEY {
@@ -1949,7 +1949,7 @@ impl SeatLoop {
             &config,
             expected_base,
             BTreeMap::from([(key.0.clone(), serde_json::Value::String(value.0.clone()))]),
-            fedi_account,
+            guardian_verification_fee_account,
             "set_meta_field",
         )
         .await
@@ -1971,14 +1971,14 @@ impl SeatLoop {
         config: &ClientConfig,
         expected_base: MetaConsensusBase,
         updates: BTreeMap<String, serde_json::Value>,
-        fedi_account: Option<&Account>,
+        guardian_verification_fee_account: Option<&Account>,
         operation: &'static str,
     ) -> Result<(), SeatVerbError> {
         self.submit_meta_mutation(
             client,
             config,
             expected_base,
-            fedi_account,
+            guardian_verification_fee_account,
             operation,
             |fields| {
                 fields.extend(updates);
@@ -1993,7 +1993,7 @@ impl SeatLoop {
         client: &FedimintApi,
         config: &ClientConfig,
         expected_base: MetaConsensusBase,
-        fedi_account: Option<&Account>,
+        guardian_verification_fee_account: Option<&Account>,
         operation: &'static str,
         mutate: impl FnOnce(&mut BTreeMap<String, serde_json::Value>) -> Result<(), SeatVerbError>,
     ) -> Result<(), SeatVerbError> {
@@ -2031,7 +2031,11 @@ impl SeatLoop {
             None => BTreeMap::new(),
         };
         mutate(&mut fields)?;
-        self.validate_carried_guardian_fee_policy(&fields, config, fedi_account)?;
+        self.validate_carried_guardian_fee_policy(
+            &fields,
+            config,
+            guardian_verification_fee_account,
+        )?;
 
         // Canonicalize rather than merely serialize: guardians reach threshold
         // only on byte-identical submissions, so encoding cannot depend on the
@@ -2053,7 +2057,7 @@ impl SeatLoop {
         &self,
         fields: &BTreeMap<String, serde_json::Value>,
         config: &ClientConfig,
-        fedi_account: Option<&Account>,
+        guardian_verification_fee_account: Option<&Account>,
     ) -> Result<(), SeatVerbError> {
         let send_ppm = fields.get(crate::guardian_fee::SEND_PPM_META_KEY);
         let recipients = fields.get(crate::guardian_fee::REMITTANCE_ACCOUNT_META_KEY);
@@ -2069,7 +2073,8 @@ impl SeatLoop {
             .and_then(|value| value.parse::<u64>().ok())
             .ok_or(SeatVerbError::MetaValueInvalid)?;
         let recipients = recipients.as_str().ok_or(SeatVerbError::MetaValueInvalid)?;
-        let fedi_account = fedi_account.ok_or(SeatVerbError::MetaValueInvalid)?;
+        let guardian_verification_fee_account =
+            guardian_verification_fee_account.ok_or(SeatVerbError::MetaValueInvalid)?;
         let federation = derive_federation_seats(config)?;
         let directory_value = fields
             .get(FMAN_SEAT_BINDINGS_META_FIELD_KEY)
@@ -2083,7 +2088,7 @@ impl SeatLoop {
             send_ppm,
             recipients,
             &guardians,
-            fedi_account,
+            guardian_verification_fee_account,
         )
         .map_err(|_| SeatVerbError::MetaValueInvalid)
     }

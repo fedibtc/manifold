@@ -49,10 +49,9 @@ fn a_list_without_us_is_no_share() {
     assert_eq!(our_share_of(&value, account(0x11).id()), None);
 }
 
-/// The original deployed form is one bare account and no weights, which means
-/// that account holds everything.
+/// One bare account with no weights holds the whole share.
 #[test]
-fn the_predecessor_single_account_form_still_reads() {
+fn the_single_account_form_reads_as_one_whole_share() {
     let ours = account(0x11);
     let value = serde_json::to_string(&ours).expect("serialize account");
 
@@ -215,7 +214,8 @@ fn share_policy_accepts_unset_and_requires_our_exact_guardian_weight() {
 /// only through the seat that calls it.
 #[test]
 fn a_proposal_must_pay_the_complete_authenticated_split() {
-    let (ours, peer, fi, fedi) = (account(0x11), account(0x22), account(0x30), account(0x31));
+    let (ours, peer, fi, guardian_verification_fee_account) =
+        (account(0x11), account(0x22), account(0x30), account(0x31));
     let proposal = |entries: &[(&Account, u64)]| {
         let mut recipients = entries
             .iter()
@@ -231,17 +231,20 @@ fn a_proposal_must_pay_the_complete_authenticated_split() {
         (&ours, GUARDIAN_RECIPIENT_WEIGHT),
         (&peer, GUARDIAN_RECIPIENT_WEIGHT),
         (&fi, FI_RECIPIENT_WEIGHT),
-        (&fedi, FEDI_RECIPIENT_WEIGHT),
+        (
+            &guardian_verification_fee_account,
+            GUARDIAN_VERIFICATION_FEE_WEIGHT,
+        ),
     ]);
     let guardians = vec![ours.clone(), peer.clone()];
-    assert!(canonical_proposal(1, &fixed, &guardians, &fedi).is_ok());
+    assert!(canonical_proposal(1, &fixed, &guardians, &guardian_verification_fee_account).is_ok());
 
     assert!(matches!(
         canonical_proposal(
             1,
             &fixed,
             &[ours.clone(), peer.clone(), account(0x23)],
-            &fedi
+            &guardian_verification_fee_account
         ),
         Err(FeePolicyError::InvalidSplit {
             expected: 5,
@@ -251,9 +254,14 @@ fn a_proposal_must_pay_the_complete_authenticated_split() {
     assert!(matches!(
         canonical_proposal(
             1,
-            &proposal(&[(&ours, 1), (&peer, 1), (&fi, 5), (&fedi, 1)]),
+            &proposal(&[
+                (&ours, 1),
+                (&peer, 1),
+                (&fi, 5),
+                (&guardian_verification_fee_account, 1)
+            ]),
             &guardians,
-            &fedi,
+            &guardian_verification_fee_account,
         ),
         Err(FeePolicyError::InvalidSplit { .. })
     ));
@@ -261,51 +269,85 @@ fn a_proposal_must_pay_the_complete_authenticated_split() {
     assert!(matches!(
         canonical_proposal(
             1,
-            &proposal(&[(&peer, 1), (&account(0x23), 1), (&fi, 4), (&fedi, 1)]),
+            &proposal(&[
+                (&peer, 1),
+                (&account(0x23), 1),
+                (&fi, 4),
+                (&guardian_verification_fee_account, 1)
+            ]),
             &guardians,
-            &fedi,
+            &guardian_verification_fee_account,
         ),
         Err(FeePolicyError::InvalidSplit { .. })
     ));
 
-    // FI and FMan identities are disjoint by construction, so the formerly
-    // accepted "combined" weight-five FI-guardian entry models an impossible
-    // principal and is refused like any other wrong weight.
+    // FI and FMan identities are disjoint by construction, so a combined
+    // weight-five FI-guardian entry is refused like any other wrong weight.
     let fi_guardian = proposal(&[
         (&ours, FI_RECIPIENT_WEIGHT + GUARDIAN_RECIPIENT_WEIGHT),
         (&peer, GUARDIAN_RECIPIENT_WEIGHT),
-        (&fedi, FEDI_RECIPIENT_WEIGHT),
+        (
+            &guardian_verification_fee_account,
+            GUARDIAN_VERIFICATION_FEE_WEIGHT,
+        ),
     ]);
     assert!(matches!(
-        canonical_proposal(1, &fi_guardian, &guardians, &fedi),
+        canonical_proposal(
+            1,
+            &fi_guardian,
+            &guardians,
+            &guardian_verification_fee_account
+        ),
         Err(FeePolicyError::InvalidSplit { .. })
     ));
 
     let mut duplicate = fixed.clone();
     duplicate[1] = duplicate[0].clone();
     assert!(matches!(
-        canonical_proposal(1, &duplicate, &guardians, &fedi),
+        canonical_proposal(
+            1,
+            &duplicate,
+            &guardians,
+            &guardian_verification_fee_account
+        ),
         Err(FeePolicyError::InvalidRecipients)
     ));
 
     assert!(matches!(
-        canonical_proposal(MAX_SEND_PPM + 1, &fixed, &guardians, &fedi),
+        canonical_proposal(
+            MAX_SEND_PPM + 1,
+            &fixed,
+            &guardians,
+            &guardian_verification_fee_account
+        ),
         Err(FeePolicyError::SendPpmTooHigh)
     ));
-    assert!(canonical_proposal(MAX_SEND_PPM, &fixed, &guardians, &fedi).is_ok());
+    assert!(
+        canonical_proposal(
+            MAX_SEND_PPM,
+            &fixed,
+            &guardians,
+            &guardian_verification_fee_account
+        )
+        .is_ok()
+    );
 }
 
 /// The published floor gates a *new* proposal and only a new proposal. These
 /// pin both halves, because the second half is what keeps an existing
-/// federation maintainable after Fedi raises the minimum.
+/// federation maintainable after the published minimum rises.
 #[test]
 fn the_published_minimum_gates_new_proposals_only() {
-    let (ours, peer, fi, fedi) = (account(0x11), account(0x22), account(0x30), account(0x31));
+    let (ours, peer, fi, guardian_verification_fee_account) =
+        (account(0x11), account(0x22), account(0x30), account(0x31));
     let mut recipients = [
         (&ours, GUARDIAN_RECIPIENT_WEIGHT),
         (&peer, GUARDIAN_RECIPIENT_WEIGHT),
         (&fi, FI_RECIPIENT_WEIGHT),
-        (&fedi, FEDI_RECIPIENT_WEIGHT),
+        (
+            &guardian_verification_fee_account,
+            GUARDIAN_VERIFICATION_FEE_WEIGHT,
+        ),
     ]
     .iter()
     .map(|(account, weight)| {
@@ -321,8 +363,7 @@ fn the_published_minimum_gates_new_proposals_only() {
     assert!(prevalidate_guardian_fee_proposal(minimum + 1, Some(minimum), &recipients).is_ok());
     assert!(prevalidate_guardian_fee_proposal(MAX_SEND_PPM, Some(minimum), &recipients).is_ok());
 
-    // Below it — including the zero a CLI-based initiator could otherwise
-    // reach, since the floor used to live only in the Fedi app — is refused.
+    // Below it — including zero — a proposal is refused.
     for send_ppm in [0, 1, minimum - 1] {
         assert!(matches!(
             prevalidate_guardian_fee_proposal(send_ppm, Some(minimum), &recipients),
@@ -341,10 +382,20 @@ fn the_published_minimum_gates_new_proposals_only() {
     // unrelated meta write on such a federation could not be voted for at all.
     for send_ppm in [0, 1, minimum - 1] {
         assert!(prevalidate_guardian_fee_proposal(send_ppm, None, &recipients).is_ok());
-        let value = canonical_proposal(send_ppm, &recipients, &guardians, &fedi)
-            .expect("a sub-minimum rate is still a canonical fee policy");
-        validate_canonical_proposal_value(send_ppm, &value, &guardians, &fedi)
-            .expect("revalidating a carried sub-minimum policy must not apply the floor");
+        let value = canonical_proposal(
+            send_ppm,
+            &recipients,
+            &guardians,
+            &guardian_verification_fee_account,
+        )
+        .expect("a sub-minimum rate is still a canonical fee policy");
+        validate_canonical_proposal_value(
+            send_ppm,
+            &value,
+            &guardians,
+            &guardian_verification_fee_account,
+        )
+        .expect("revalidating a carried sub-minimum policy must not apply the floor");
         assert!(
             fee_policy_from_meta(
                 &std::collections::BTreeMap::from([

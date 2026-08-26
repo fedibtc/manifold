@@ -74,15 +74,15 @@ pub enum FleetManagerError {
     #[error("meta value invalid")]
     MetaValueInvalid,
 
-    /// This FMan has no deployment-pinned Fedi fee account with which to
-    /// validate and derive formation recipients.
-    #[error("Fedi fee account unavailable")]
-    FediFeeAccountUnavailable,
+    /// This FMan has no deployment-pinned Guardian Verification Fee account
+    /// with which to validate and derive formation recipients.
+    #[error("Guardian Verification Fee account unavailable")]
+    GuardianVerificationFeeAccountUnavailable,
 
-    /// The request's stated Fedi fee account differs from this FMan's
-    /// deployment-pinned configuration.
-    #[error("Fedi fee account does not match this Fleet Manager's configuration")]
-    FediFeeAccountMismatch,
+    /// The request's Guardian Verification Fee account differs from this
+    /// FMan's deployment-pinned configuration.
+    #[error("Guardian Verification Fee account does not match this Fleet Manager's configuration")]
+    GuardianVerificationFeeAccountMismatch,
 
     /// A metadata mutation request was based on an older consensus meta object.
     #[error("meta consensus changed, reread and retry")]

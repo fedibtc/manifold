@@ -605,7 +605,7 @@ pub(crate) struct FormationMetaTarget {
     /// Exact structural request payload replayed until readback succeeds.
     pub(crate) binding_entries: Vec<FormationSeatBinding>,
     pub(crate) fi_fee_account: GuardianFeeAccount,
-    pub(crate) fedi_fee_account: GuardianFeeAccount,
+    pub(crate) guardian_verification_fee_account: GuardianFeeAccount,
     pub(crate) send_ppm: u64,
     pub(crate) recipients: String,
     pub(crate) confirmed: bool,

@@ -165,14 +165,15 @@ key, clear operation, uploaded icon bytes, or alternative ToS URL.
 formation installs at weight four; `resume` and `authorize-payments` accept the
 same option so an interrupted formation can finish the atomic metadata
 proposal. This explicit account remains development/test tooling: supplying
-another structurally valid account redirects the FI share. The Fedi account
-comes from the selected Manifold profile and guardian accounts from signed seat
-acceptances.
+another structurally valid account redirects the FI share. The Guardian
+Verification Fee account comes from the selected Manifold profile, and
+guardian accounts come from signed seat acceptances.
 
 `maintenance configure-guardian-fees [--send-ppm PPM]` changes only the rate of
 the recipient policy already installed by formation. It accepts no FI,
-guardian, or Fedi account input. Omitting the rate uses 5,000 ppm; fi-client also
-enforces the admitted Fedi minimum with a 1,500-ppm fallback.
+guardian, or Guardian Verification Fee account input. Omitting the rate uses
+5,000 ppm; fi-client also enforces the admitted published minimum with a
+1,500-ppm fallback.
 
 Every maintenance command reopens the existing active formation, reconciles it
 through `fi-client::resume`, and invokes the typed library operation through the

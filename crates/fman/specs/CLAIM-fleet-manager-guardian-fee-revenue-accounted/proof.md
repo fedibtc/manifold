@@ -80,11 +80,12 @@ Any one witness falsifies this conjunctive claim.
    parser enforces the full A3 entry, canonical sort, account/id equality,
    uniqueness, positive/non-overflowing weights, count, version, and unknown-field
    rules. `canonical_proposal` requires exactly one distinct FI at weight four,
-   every distinct guardian at weight one, and one distinct Fedi at weight one.
-   FI/guardian, FI/Fedi, guardian/Fedi, duplicate, and purported combined
-   FI-and-guardian weight-five entries fail closed. The FMan checks shape and the
-   FI role supplied the account; ownership of the FI account itself is not
-   established by an immediate assumption or this code.
+   every distinct guardian at weight one, and the Guardian Verification Fee at
+   weight one. FI/guardian, FI/Guardian Verification Fee, guardian/Guardian
+   Verification Fee, duplicate, and purported combined FI-and-guardian
+   weight-five entries fail closed. The FMan checks shape and the FI role
+   supplied the account; ownership of the FI account itself is not established
+   by an immediate assumption or this code.
 
 3. **The two submit semantics (`enum`, `code`, `test`).** Production has one
    `.meta_submit` call below an occurrence-bound target pin, but two semantic
@@ -93,7 +94,8 @@ Any one witness falsifies this conjunctive claim.
    maintenance reads the whole object and runs
    `validate_carried_guardian_fee_policy` before entering the target. Partial fee
    keys, invalid parser shapes, noncanonical/incorrect role splits against an
-   honest directory, stale bases, and absent production Fedi accounts fail closed.
+   honest directory, stale bases, and absent production Guardian Verification
+   Fee accounts fail closed.
    The hostile-directory witness identifies the missing generic recheck.
 
 4. **Current reporting separates parser validity and policy match (`code`,
@@ -151,7 +153,7 @@ Any one witness falsifies this conjunctive claim.
   this daemon's later copy-forward of it is expressly inside and is not a residual.
 - A previously adopted zero rate is payer-valid and can be carried forward; a
   new FI proposal must satisfy the current published floor. Production also
-  requires the configured Fedi account before voting.
+  requires the configured Guardian Verification Fee account before voting.
 - Availability, cadence, minimum accumulation, transaction/gateway fees,
   consolidation, dust/rounding, and eventual settlement remain outside exact
   conservation and liveness.

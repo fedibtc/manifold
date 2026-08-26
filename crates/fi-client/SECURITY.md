@@ -369,8 +369,9 @@ resolve the already joined client for that id and return its own SPv2
 input are not valid account sources. Provider failure becomes typed unavailable
 fee-arrangement capability before any guardian vote. The returned public
 descriptor is still untrusted data: `fi-client` validates its account shape,
-destination-account uniqueness across FI, Fedi, and every guardian, the
-canonical complete recipient vector, and exact threshold readback. The library
+destination-account uniqueness across the FI account, the Guardian Verification
+Fee account, and every guardian account, the canonical complete recipient
+vector, and exact threshold readback. The library
 cannot prove that a consumer implemented local derivation honestly, so consumers
 remain within the trusted integration boundary and must sanitize provider errors.
 
@@ -530,12 +531,13 @@ not durable. An already-adopted value needs no live
 FMan; a new value needs threshold liveness within the caller's deadline, not
 unanimity. Terminal policy/lifecycle refusals and bounded convergence failures
 remain distinct typed maintenance outcomes.
-Guardian-fee arrangement accepts no consumer-supplied guardian
-or Fedi list: guardian accounts come from signed acceptances, the Fedi account
-comes from the deployment profile, and only the FI role account and bounded
-rate cross the consumer boundary. Before directory publication, every
-post-DKG FMan attestation must repeat the account from its persisted signed
-acceptance. Recovery exactly replays the persisted ordered attestation/proof
+Guardian-fee arrangement accepts no consumer-supplied guardian or Guardian
+Verification Fee accounts: guardian accounts come from signed acceptances, the
+Guardian Verification Fee account comes from the deployment profile, and only
+the FI role account and bounded rate cross the consumer boundary. Before
+directory publication, every post-DKG FMan attestation must repeat the account
+from its persisted signed acceptance. Recovery exactly replays the persisted
+ordered attestation/proof
 entries; the separately persisted canonical-directory prediction is used only
 for consensus comparison. Fee voting later requires every account in that fully verified consensus directory, so a
 minority substitution cannot be hidden behind threshold votes. Cancellation

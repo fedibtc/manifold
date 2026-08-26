@@ -1,9 +1,8 @@
 //! Canonical public configuration for one Manifold deployment environment.
 //!
 //! This synchronous leaf crate assigns no consumer-specific meaning to its
-//! relay routing. Production carries individually held PeerBadge issuer keys
-//! and intentionally has no setup-payment publisher identity until a
-//! deployment-owned publisher key exists. See
+//! relay routing. Production carries individually held PeerBadge issuer keys,
+//! a setup-payment publisher, and a Guardian Verification Fee account. See
 //! `specs/SPEC-manifold-environment.md` and [`SECURITY.md`](../SECURITY.md).
 
 #[cfg(test)]
@@ -30,9 +29,8 @@ const TRUSTED_PEER_BADGE_TRUST_LEVEL: u64 = 9;
 ///
 /// Bump this after profiles are released whenever a public deployment mapping
 /// changes so independently released components can expose and compare what
-/// they use. The Fedi guardian-fee recipient was added before the first
-/// Manifold launch and deliberately does not consume a revision.
-pub const MANIFOLD_ENVIRONMENT_PROFILE_REVISION: u32 = 7;
+/// they use.
+pub const MANIFOLD_ENVIRONMENT_PROFILE_REVISION: u32 = 8;
 
 ////////////////////////////////////////////////////////////////////////////////
 // !!! SECURITY BLOCKER: THESE ARE DELIBERATELY UNSAFE TEST-ONLY ROOT KEYS !!!
@@ -40,7 +38,7 @@ pub const MANIFOLD_ENVIRONMENT_PROFILE_REVISION: u32 = 7;
 // The real development and staging issuer and setup-payment publisher
 // identities do not exist yet. These public keys are derived from the
 // publicly known test secret keys 1 and 2 (issuers), 3 and 4 (publishers), and
-// 5 and 6 (Fedi guardian-fee recipients).
+// 5 and 6 (Guardian Verification Fee accounts).
 // Anyone can impersonate them. They MUST be replaced before either
 // environment treats PeerBadge results or the setup-payment federation list
 // as a security decision.
@@ -53,12 +51,9 @@ pub const MANIFOLD_ENVIRONMENT_PROFILE_REVISION: u32 = 7;
 // crates/peer-badge-verifier/specs/SPEC-peer-badge-verifier.md).
 //
 // Production deliberately has NO placeholder identity of any role. Do not add
-// a generated or known-secret production key: only keys whose secrets are held
-// individually by their owners may appear in the production lists below, and
-// setup-payment list fetching must remain unavailable until the real
-// deployment-owned production publisher identity exists. Production likewise
-// has NO committed issuance secret: `test_issuer_secret_keys` returns `None`
-// so repository-built tooling cannot publish a production issuer authority.
+// a generated or known-secret production key. Production likewise has NO
+// committed issuance secret: `test_issuer_secret_keys` returns `None` so
+// repository-built tooling cannot publish a production issuer authority.
 // Do not remove or weaken this warning while test placeholders remain.
 ////////////////////////////////////////////////////////////////////////////////
 const DEVELOPMENT_PLACEHOLDER_ISSUER: &str =
@@ -88,10 +83,18 @@ const DEVELOPMENT_PLACEHOLDER_SETUP_PAYMENT_PUBLISHER: &str =
     "f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f9";
 const STAGING_PLACEHOLDER_SETUP_PAYMENT_PUBLISHER: &str =
     "e493dbf1c10d80f3581e4904930b1404cc6c13900ee0758474fa94abe8c4cd13";
-const DEVELOPMENT_PLACEHOLDER_FEDI_GUARDIAN_FEE_PUBLIC_KEY: &str =
+const DEVELOPMENT_PLACEHOLDER_GUARDIAN_VERIFICATION_FEE_KEY: &str =
     "022f8bde4d1a07209355b4a7250a5c5128e88b84bddc619ab7cba8d569b240efe4";
-const STAGING_PLACEHOLDER_FEDI_GUARDIAN_FEE_PUBLIC_KEY: &str =
+const STAGING_PLACEHOLDER_GUARDIAN_VERIFICATION_FEE_KEY: &str =
     "03fff97bd5755eeea420453a14355235d382f6472f8568a18b2f057a1460297556";
+
+/// Deployment-owned setup-payment publisher identity, in x-only hex.
+const PRODUCTION_SETUP_PAYMENT_PUBLISHER: &str =
+    "725cc60e9b9405acf48f27f8ec6e846dd499b7b5d1e0fff6c922da7dfa120f65";
+
+/// Deployment-owned Guardian Verification Fee account key, in compressed hex.
+const PRODUCTION_GUARDIAN_VERIFICATION_FEE_KEY: &str =
+    "0255c6b0de21aa9d5da41cdbb53be23e73dc5b3697f10b13f806c5ee7d18bd604d";
 
 /// Production PeerBadge issuer identities, in trust-roster order.
 ///
@@ -170,33 +173,39 @@ impl ManifoldEnvironment {
                 }
             }
         }
-        let (issuers, publisher, fedi_guardian_fee_key, relays, bitcoin_network, esplora_url) =
-            match self {
-                Self::Development => (
-                    &[DEVELOPMENT_PLACEHOLDER_ISSUER][..],
-                    Some(DEVELOPMENT_PLACEHOLDER_SETUP_PAYMENT_PUBLISHER),
-                    Some(DEVELOPMENT_PLACEHOLDER_FEDI_GUARDIAN_FEE_PUBLIC_KEY),
-                    STAGING_NOSTR_RELAYS,
-                    Network::Regtest,
-                    None,
-                ),
-                Self::Staging => (
-                    &[STAGING_PLACEHOLDER_ISSUER][..],
-                    Some(STAGING_PLACEHOLDER_SETUP_PAYMENT_PUBLISHER),
-                    Some(STAGING_PLACEHOLDER_FEDI_GUARDIAN_FEE_PUBLIC_KEY),
-                    STAGING_NOSTR_RELAYS,
-                    Network::Signet,
-                    Some(STAGING_ESPLORA_URL),
-                ),
-                Self::Production => (
-                    PRODUCTION_ISSUERS,
-                    None,
-                    None,
-                    PRODUCTION_NOSTR_RELAYS,
-                    Network::Bitcoin,
-                    None,
-                ),
-            };
+        let (
+            issuers,
+            publisher,
+            guardian_verification_fee_key,
+            relays,
+            bitcoin_network,
+            esplora_url,
+        ) = match self {
+            Self::Development => (
+                &[DEVELOPMENT_PLACEHOLDER_ISSUER][..],
+                Some(DEVELOPMENT_PLACEHOLDER_SETUP_PAYMENT_PUBLISHER),
+                Some(DEVELOPMENT_PLACEHOLDER_GUARDIAN_VERIFICATION_FEE_KEY),
+                STAGING_NOSTR_RELAYS,
+                Network::Regtest,
+                None,
+            ),
+            Self::Staging => (
+                &[STAGING_PLACEHOLDER_ISSUER][..],
+                Some(STAGING_PLACEHOLDER_SETUP_PAYMENT_PUBLISHER),
+                Some(STAGING_PLACEHOLDER_GUARDIAN_VERIFICATION_FEE_KEY),
+                STAGING_NOSTR_RELAYS,
+                Network::Signet,
+                Some(STAGING_ESPLORA_URL),
+            ),
+            Self::Production => (
+                PRODUCTION_ISSUERS,
+                Some(PRODUCTION_SETUP_PAYMENT_PUBLISHER),
+                Some(PRODUCTION_GUARDIAN_VERIFICATION_FEE_KEY),
+                PRODUCTION_NOSTR_RELAYS,
+                Network::Bitcoin,
+                None,
+            ),
+        };
         let peer_badge_issuer_identities = issuers
             .iter()
             .map(|issuer| PublicKey::parse(issuer).expect("built-in issuer identity is valid"))
@@ -216,9 +225,10 @@ impl ManifoldEnvironment {
             Some(value) => CanonicalNostrRelays::parse_override(&value)?,
             None => CanonicalNostrRelays::from_static(relays),
         };
-        let fedi_guardian_fee_account = fedi_guardian_fee_key.map(|key| {
+        let guardian_verification_fee_account = guardian_verification_fee_key.map(|key| {
             Account::single(
-                key.parse().expect("built-in Fedi fee public key is valid"),
+                key.parse()
+                    .expect("built-in Guardian Verification Fee key is valid"),
                 AccountType::BtcDepositor,
             )
         });
@@ -228,7 +238,7 @@ impl ManifoldEnvironment {
             peer_badge_issuer_identities,
             minimum_peer_badge_trust_level: TRUSTED_PEER_BADGE_TRUST_LEVEL,
             setup_payment_publisher,
-            fedi_guardian_fee_account,
+            guardian_verification_fee_account,
             bitcoin_network,
             default_esplora_url: esplora_url
                 .map(|url| Url::parse(url).expect("built-in default Esplora URL is valid")),
@@ -319,7 +329,7 @@ pub struct ManifoldEnvironmentProfile {
     peer_badge_issuer_identities: Vec<PublicKey>,
     minimum_peer_badge_trust_level: u64,
     setup_payment_publisher: Option<PublicKey>,
-    fedi_guardian_fee_account: Option<Account>,
+    guardian_verification_fee_account: Option<Account>,
     bitcoin_network: Network,
     default_esplora_url: Option<Url>,
 }
@@ -406,25 +416,19 @@ impl ManifoldEnvironmentProfile {
     ///
     /// This is the deployment default; the single-publisher rule and the
     /// flag-over-default resolution precedence are stated canonically in
-    /// `specs/SPEC-manifold-environment.md`. Production intentionally
-    /// returns `None` until its real publisher identity exists, so
-    /// production consumers must fail closed rather than substitute a
-    /// default.
+    /// `specs/SPEC-manifold-environment.md`.
     #[must_use]
     pub fn setup_payment_publisher(&self) -> Option<&PublicKey> {
         self.setup_payment_publisher.as_ref()
     }
 
-    /// Return the deployment-owned recipient of Fedi's one guardian-fee share.
+    /// Return the deployment-owned Guardian Verification Fee account.
     ///
-    /// This is a full single-signature `BtcDepositor` account because Fedi
-    /// validates the complete descriptor before remitting. Production returns
-    /// `None` until the real deployment account is supplied; every fee-policy
-    /// path must fail closed rather than accept caller-provided replacement
-    /// material.
+    /// Consensus metadata carries the complete single-signature `BtcDepositor`
+    /// account descriptor.
     #[must_use]
-    pub fn fedi_guardian_fee_account(&self) -> Option<&Account> {
-        self.fedi_guardian_fee_account.as_ref()
+    pub fn guardian_verification_fee_account(&self) -> Option<&Account> {
+        self.guardian_verification_fee_account.as_ref()
     }
 
     /// Return the Bitcoin network on which this environment forms federations.

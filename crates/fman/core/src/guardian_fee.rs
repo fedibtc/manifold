@@ -38,9 +38,8 @@ use std::ops::Range;
 
 use bitcoin::secp256k1;
 use fedi_decentralized_service_fleet_manager::{
-    FEDI_GUARDIAN_FEE_WEIGHT, FI_GUARDIAN_FEE_WEIGHT, GUARDIAN_GUARDIAN_FEE_WEIGHT,
-    GuardianFeeAccount, GuardianFeeRecipient, MAX_GUARDIAN_FEE_RECIPIENTS, SeatId,
-    canonical_guardian_fee_recipient_list,
+    FI_GUARDIAN_FEE_WEIGHT, GUARDIAN_GUARDIAN_FEE_WEIGHT, GuardianFeeAccount, GuardianFeeRecipient,
+    MAX_GUARDIAN_FEE_RECIPIENTS, SeatId, canonical_guardian_fee_recipient_list,
 };
 use fedimint_core::Amount;
 use fedimint_core::config::FederationId;
@@ -130,19 +129,17 @@ impl FederationFeeStatus {
 pub const SEND_PPM_META_KEY: &str = "fedi:guardian_fee_send_ppm";
 pub const REMITTANCE_ACCOUNT_META_KEY: &str = "fedi:guardian_fee_remittance_account";
 
-/// Largest rate a payer will accept, in parts per million: the pinned Fedi
-/// payer's own 210,000-ppm ceiling
+/// Largest payer-compatible rate, in parts per million: 210,000 ppm
 /// ([REQ-guardian-fee-remittance](../../../../specs/REQ-guardian-fee-remittance.md)).
-/// There is deliberately no separate Manifold cap — reader, proposer, and
-/// payer all enforce this one bound.
+/// Reader, proposer, and payer all enforce this bound.
 pub use fedi_decentralized_domain::SETUP_PAYMENT_MAX_MIN_FEE_PPM as MAX_SEND_PPM;
 
 /// The FI receives four shares of the ongoing guardian transaction fee.
 pub const FI_RECIPIENT_WEIGHT: u64 = FI_GUARDIAN_FEE_WEIGHT;
 /// Every accepted guardian receives one share.
 pub const GUARDIAN_RECIPIENT_WEIGHT: u64 = GUARDIAN_GUARDIAN_FEE_WEIGHT;
-/// The deployment-pinned Fedi account receives one share.
-pub const FEDI_RECIPIENT_WEIGHT: u64 = FEDI_GUARDIAN_FEE_WEIGHT;
+/// The Guardian Verification Fee account receives one share.
+pub use fedi_decentralized_service_fleet_manager::GUARDIAN_VERIFICATION_FEE_WEIGHT;
 
 /// Largest recipient list a payer will honour, mirroring the payer's own cap.
 /// A longer list is refused there, so treating it as unreadable here keeps the
@@ -219,8 +216,8 @@ pub enum FeePolicyError {
 /// Validate the guardian-fee values using the payer's acceptance rules.
 ///
 /// Absence of both keys is valid because it disables new guardian fees. A
-/// present recipient value accepts the predecessor single-account shape as
-/// well as the current versioned list.
+/// present recipient value accepts either a versioned list or one complete
+/// account.
 pub fn validate_fee_policy(
     send_ppm: Option<u64>,
     recipients: Option<&str>,
@@ -277,23 +274,26 @@ pub fn fee_policy_from_meta(meta: &BTreeMap<String, String>, ours: AccountId) ->
 ///
 /// `guardians` is the complete FMan-signed account set from the verified
 /// consensus seat directory. The complete list additionally contains exactly
-/// one residual FI entry at weight four and one Fedi entry at weight one. FI
-/// and FMan identities are disjoint by construction — the FI identity derives
-/// from the Fedi app while every FMan runs its own — so there is no combined
-/// FI-guardian entry: a weight-five entry, or an FI account colliding with a
-/// guardian account, is refused.
+/// one residual FI entry at weight four and the Guardian Verification Fee at
+/// weight one. FI and FMan identities are disjoint by construction, so there
+/// is no combined FI-guardian entry: a weight-five entry, or an FI account
+/// colliding with a guardian account, is refused.
 pub fn canonical_proposal(
     send_ppm: u64,
     recipients: &[GuardianFeeRecipient],
     guardians: &[Account],
-    fedi: &Account,
+    guardian_verification_fee_account: &Account,
 ) -> Result<String, FeePolicyError> {
     // `None`: this function is also the carry-forward and revalidation path for
     // a fee policy the federation already adopted, so it must not apply the
     // published minimum. See `prevalidate_guardian_fee_proposal`.
     prevalidate_guardian_fee_proposal(send_ppm, None, recipients)?;
     let expected_normal = guardians.len().saturating_add(2);
-    if guardians.is_empty() || guardians.iter().any(|guardian| guardian == fedi) {
+    if guardians.is_empty()
+        || guardians
+            .iter()
+            .any(|guardian| guardian == guardian_verification_fee_account)
+    {
         return Err(FeePolicyError::InvalidSplit {
             expected: expected_normal,
             got: recipients.len(),
@@ -301,13 +301,13 @@ pub fn canonical_proposal(
     }
 
     let parsed = validated_recipient_entries(recipients)?;
-    let fedi_entries = parsed
+    let guardian_verification_fee_entries = parsed
         .iter()
-        .filter(|recipient| recipient.account == *fedi)
+        .filter(|recipient| recipient.account == *guardian_verification_fee_account)
         .collect::<Vec<_>>();
     if !matches!(
-        fedi_entries.as_slice(),
-        [recipient] if recipient.weight == FEDI_RECIPIENT_WEIGHT
+        guardian_verification_fee_entries.as_slice(),
+        [recipient] if recipient.weight == GUARDIAN_VERIFICATION_FEE_WEIGHT
     ) {
         return Err(FeePolicyError::InvalidSplit {
             expected: expected_normal,
@@ -318,7 +318,7 @@ pub fn canonical_proposal(
     let fi_only = parsed
         .iter()
         .filter(|recipient| {
-            recipient.account != *fedi
+            recipient.account != *guardian_verification_fee_account
                 && !guardians.contains(&recipient.account)
                 && recipient.weight == FI_RECIPIENT_WEIGHT
         })
@@ -354,7 +354,7 @@ pub(crate) fn canonical_formation_proposal(
     send_ppm: u64,
     guardians: &[Account],
     fi: &Account,
-    fedi: &Account,
+    guardian_verification_fee_account: &Account,
 ) -> Result<String, FeePolicyError> {
     let mut recipients = guardians
         .iter()
@@ -369,12 +369,17 @@ pub(crate) fn canonical_formation_proposal(
         FI_RECIPIENT_WEIGHT,
     ));
     recipients.push(GuardianFeeRecipient::new(
-        GuardianFeeAccount::try_from(fedi.clone())
+        GuardianFeeAccount::try_from(guardian_verification_fee_account.clone())
             .map_err(|_| FeePolicyError::InvalidRecipients)?,
-        FEDI_RECIPIENT_WEIGHT,
+        GUARDIAN_VERIFICATION_FEE_WEIGHT,
     ));
     recipients.sort_by_key(|recipient| recipient.account.as_account().id());
-    canonical_proposal(send_ppm, &recipients, guardians, fedi)
+    canonical_proposal(
+        send_ppm,
+        &recipients,
+        guardians,
+        guardian_verification_fee_account,
+    )
 }
 
 /// Revalidate a fee policy already carried by the whole consensus metadata
@@ -387,7 +392,7 @@ pub fn validate_canonical_proposal_value(
     send_ppm: u64,
     value: &str,
     guardians: &[Account],
-    fedi: &Account,
+    guardian_verification_fee_account: &Account,
 ) -> Result<(), FeePolicyError> {
     let parsed = parse_recipients(value).ok_or(FeePolicyError::InvalidRecipients)?;
     let recipients = parsed
@@ -401,7 +406,12 @@ pub fn validate_canonical_proposal_value(
             })
         })
         .collect::<Result<Vec<_>, FeePolicyError>>()?;
-    let canonical = canonical_proposal(send_ppm, &recipients, guardians, fedi)?;
+    let canonical = canonical_proposal(
+        send_ppm,
+        &recipients,
+        guardians,
+        guardian_verification_fee_account,
+    )?;
     if canonical != value {
         return Err(FeePolicyError::InvalidRecipients);
     }
@@ -414,7 +424,7 @@ pub fn validate_canonical_proposal_value(
 /// The consensus-directory-derived recipient set and complete split are
 /// checked later by [`canonical_proposal`], once the live config is available.
 ///
-/// `min_send_ppm` is the Fedi-published floor, and is `Some` only on the
+/// `min_send_ppm` is the published floor, and is `Some` only on the
 /// **new-proposal** path. It is deliberately not a property of a fee value in
 /// general: [`canonical_proposal`] runs through here again when a guardian
 /// merely carries an already-adopted fee policy forward as part of an
@@ -479,7 +489,7 @@ fn parse_recipients(value: &str) -> Option<Vec<RecipientEntry>> {
         return Some(list.recipients);
     }
 
-    // The predecessor form: one account, whole share, no weights.
+    // A single account represents the whole share without an explicit weight.
     let single = serde_json::from_str::<Account>(value).ok()?;
     Some(vec![RecipientEntry {
         account: single.clone(),
@@ -503,7 +513,7 @@ fn validated_recipient_entries(
     Ok(entries)
 }
 
-/// Exact shared wire constraints from the Fedi payer in #11816.
+/// Validate the version-1 weighted recipient wire.
 fn validate_parsed_entries(entries: &[RecipientEntry]) -> Option<()> {
     if entries.is_empty() || entries.len() > MAX_RECIPIENTS {
         return None;

@@ -91,15 +91,15 @@ fn development_and_staging_have_distinct_placeholder_setup_payment_publishers() 
 }
 
 #[test]
-fn development_and_staging_pin_distinct_full_fedi_fee_accounts() {
+fn development_and_staging_pin_distinct_guardian_verification_fee_accounts() {
     let development = ManifoldEnvironment::Development
         .profile_with_env(|_| None)
         .unwrap();
     let staging = ManifoldEnvironment::Staging
         .profile_with_env(|_| None)
         .unwrap();
-    let development_account = development.fedi_guardian_fee_account().unwrap();
-    let staging_account = staging.fedi_guardian_fee_account().unwrap();
+    let development_account = development.guardian_verification_fee_account().unwrap();
+    let staging_account = staging.guardian_verification_fee_account().unwrap();
 
     assert_ne!(development_account, staging_account);
     for account in [development_account, staging_account] {
@@ -108,11 +108,11 @@ fn development_and_staging_pin_distinct_full_fedi_fee_accounts() {
     }
     assert_eq!(
         development_account.as_single().unwrap().to_string(),
-        DEVELOPMENT_PLACEHOLDER_FEDI_GUARDIAN_FEE_PUBLIC_KEY,
+        DEVELOPMENT_PLACEHOLDER_GUARDIAN_VERIFICATION_FEE_KEY,
     );
     assert_eq!(
         staging_account.as_single().unwrap().to_string(),
-        STAGING_PLACEHOLDER_FEDI_GUARDIAN_FEE_PUBLIC_KEY,
+        STAGING_PLACEHOLDER_GUARDIAN_VERIFICATION_FEE_KEY,
     );
 }
 
@@ -135,8 +135,26 @@ fn production_profile_uses_fedi_app_production_relays() {
             "wss://relay.damus.io/",
         ]
     );
-    assert!(production.setup_payment_publisher().is_none());
-    assert!(production.fedi_guardian_fee_account().is_none());
+    assert_eq!(
+        production.setup_payment_publisher().unwrap().to_hex(),
+        PRODUCTION_SETUP_PAYMENT_PUBLISHER,
+    );
+    let guardian_verification_fee_account = production.guardian_verification_fee_account().unwrap();
+    assert_eq!(
+        guardian_verification_fee_account.acc_type(),
+        AccountType::BtcDepositor
+    );
+    assert_eq!(
+        guardian_verification_fee_account
+            .as_single()
+            .unwrap()
+            .to_string(),
+        PRODUCTION_GUARDIAN_VERIFICATION_FEE_KEY,
+    );
+    assert_eq!(
+        guardian_verification_fee_account.id().to_string(),
+        "spd1luendqfafewqd2q8fkg9v6tvceurggtj06rxshw3rukt0c3x0ecsehzz39",
+    );
 }
 
 #[test]
@@ -160,8 +178,7 @@ fn production_pins_its_issuer_identities() {
         ]
     );
 
-    // Individually held production keys must never collide with the
-    // known-secret development or staging placeholders.
+    // Production identities must never collide with known-secret placeholders.
     let mut placeholders = [
         DEVELOPMENT_PLACEHOLDER_ISSUER,
         STAGING_PLACEHOLDER_ISSUER,
@@ -172,8 +189,8 @@ fn production_pins_its_issuer_identities() {
     .to_vec();
     placeholders.extend(
         [
-            DEVELOPMENT_PLACEHOLDER_FEDI_GUARDIAN_FEE_PUBLIC_KEY,
-            STAGING_PLACEHOLDER_FEDI_GUARDIAN_FEE_PUBLIC_KEY,
+            DEVELOPMENT_PLACEHOLDER_GUARDIAN_VERIFICATION_FEE_KEY,
+            STAGING_PLACEHOLDER_GUARDIAN_VERIFICATION_FEE_KEY,
         ]
         .map(|placeholder| {
             let compressed = placeholder
@@ -182,10 +199,21 @@ fn production_pins_its_issuer_identities() {
             PublicKey::from_slice(&compressed.x_only_public_key().0.serialize()).unwrap()
         }),
     );
-    for issuer in production.peer_badge_issuer_identities() {
+    let mut production_identities = production.peer_badge_issuer_identities().to_vec();
+    production_identities.push(*production.setup_payment_publisher().unwrap());
+    let guardian_verification_fee_key = production
+        .guardian_verification_fee_account()
+        .unwrap()
+        .as_single()
+        .unwrap()
+        .x_only_public_key()
+        .0;
+    production_identities
+        .push(PublicKey::from_slice(&guardian_verification_fee_key.serialize()).unwrap());
+    for identity in production_identities {
         assert!(
-            !placeholders.contains(issuer),
-            "production issuer must not be a known-secret placeholder"
+            !placeholders.contains(&identity),
+            "production identity must not be a known-secret placeholder"
         );
     }
 }
@@ -283,7 +311,7 @@ fn environment_aliases_round_trip_to_canonical_names() {
                 .profile_with_env(|_| None)
                 .unwrap()
                 .profile_revision(),
-            7
+            8
         );
     }
     assert!("nightly".parse::<ManifoldEnvironment>().is_err());

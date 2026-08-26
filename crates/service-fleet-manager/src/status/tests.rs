@@ -53,7 +53,7 @@ fn manifold_4_1_1(guardian_count: u8) -> Vec<GuardianFeeRecipient> {
         .map(|byte| GuardianFeeRecipient::new(account(byte), GUARDIAN_GUARDIAN_FEE_WEIGHT))
         .chain([
             GuardianFeeRecipient::new(account(30), FI_GUARDIAN_FEE_WEIGHT),
-            GuardianFeeRecipient::new(account(31), FEDI_GUARDIAN_FEE_WEIGHT),
+            GuardianFeeRecipient::new(account(31), GUARDIAN_VERIFICATION_FEE_WEIGHT),
         ])
         .collect::<Vec<_>>();
     recipients.sort_by_key(|recipient| recipient.account.as_account().id());
@@ -61,7 +61,7 @@ fn manifold_4_1_1(guardian_count: u8) -> Vec<GuardianFeeRecipient> {
 }
 
 #[test]
-fn canonical_4_1_1_vectors_pin_the_fedi_wire() {
+fn canonical_weighted_recipient_vectors_are_stable() {
     let expected = [
         (
             7,
@@ -87,7 +87,9 @@ fn canonical_4_1_1_vectors_pin_the_fedi_wire() {
             let value = canonical_guardian_fee_recipient_list(&recipients).unwrap();
             assert_eq!(
                 recipients.iter().map(|entry| entry.weight).sum::<u64>(),
-                u64::from(*guardian_count) + FI_GUARDIAN_FEE_WEIGHT + FEDI_GUARDIAN_FEE_WEIGHT,
+                u64::from(*guardian_count)
+                    + FI_GUARDIAN_FEE_WEIGHT
+                    + GUARDIAN_VERIFICATION_FEE_WEIGHT,
             );
             (
                 *guardian_count,
@@ -127,7 +129,7 @@ fn formation_meta_request_rejects_too_many_bindings_during_deserialization() {
         expected_base: MetaConsensusBase::Absent,
         seat_bindings: vec![formation_binding(); FMAN_SEAT_BINDINGS_MAX_COUNT],
         fi_fee_account: account(2),
-        fedi_fee_account: account(3),
+        guardian_verification_fee_account: account(3),
         send_ppm: 5_000,
     };
     let mut value = serde_json::to_value(request).unwrap();

@@ -7,8 +7,8 @@ A hostile federation threshold can install a canonical seat directory that maps
 all final-config peer ids and guardian identities to attacker-chosen FMan keys and
 unique guardian-fee accounts, with each attestation self-signed by its claimed
 FMan key. It can install a matching payer-valid recipient list containing those
-guardians at weight one, a distinct FI at weight four, Fedi at weight one, and an
-in-range rate.
+guardians at weight one, a distinct FI at weight four, the Guardian Verification
+Fee at weight one, and an in-range rate.
 
 Formation admission would reject that object because it verifies endpoint-key
 proofs and requires the local peer to name this daemon's FMan identity. Those

@@ -122,16 +122,17 @@ attestations or re-resolving accounts and policy.
 
 Before a proposal wave FI reads exact raw consensus metadata, derives the
 occurrence-bound `MetaConsensusBase`, and signs one `ProposeFormationMeta`
-request per seat containing the same paired attestation/proof entries, FI and
-deployment-pinned Fedi fee accounts, and initial rate. Each FMan independently
-constructs the bounded canonical directory, verifies the complete proposal,
-and derives the fixed recipient list, then submits directory,
-recipients, and rate as one whole-object target. Before voting, it requires the
-stated Fedi account to equal its own configuration and distinctly refuses a
-missing configuration or mismatch. The FI states the deployment-pinned value;
-it does not select it. Every submitted target is consequently a pure function
-of identical signed request inputs. `MetaConsensusChanged` causes
-a fresh read, rebase, signature, and byte-identical semantic replay.
+request per seat containing the same paired attestation/proof entries, the FI
+account, the deployment-pinned Guardian Verification Fee account, and the
+initial rate. Each FMan independently constructs the bounded canonical
+directory, verifies the complete proposal, and derives the fixed recipient
+list, then submits the directory, recipients, and rate as one whole-object
+target. Before voting, it requires the stated Guardian Verification Fee account
+to equal its own configuration and distinctly refuses a missing configuration
+or mismatch. The FI states the deployment-pinned value; it does not select it.
+Every submitted target is consequently a pure function of identical signed
+request inputs. `MetaConsensusChanged` causes a fresh read, rebase, signature,
+and byte-identical semantic replay.
 
 After every wave the FI previews the federation until consensus-metadata
 readback exactly equals the expected value. A threshold may adopt the target

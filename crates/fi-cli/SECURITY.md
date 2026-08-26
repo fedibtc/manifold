@@ -293,9 +293,9 @@ operator belong here. fi-cli installs it in an explicitly test-only
 `FiFeeAccountProvider`; `fi-client` selects the persisted formed federation id
 and invokes that capability, while the fee operation itself accepts only the
 rate. Production consumers must resolve the exact joined client instead of
-using such an override. fi-cli never derives or accepts the guardian or Fedi
-recipient accounts and never parses the committed recipient-list wire shape. A
-successful result is printed only after
+using such an override. fi-cli never derives or accepts guardian accounts or the
+Guardian Verification Fee account and never parses the committed recipient-list
+wire shape. A successful result is printed only after
 fi-client's fresh threshold-consensus readback verifies the exact requested
 metadata value or complete library-derived fee mapping. JSON may contain the
 public consensus key/value, fee rate, and FI account id, but no FI identity

@@ -11,7 +11,8 @@ Development-only tools may explicitly default their own CLI boundary to
 development. Development and staging currently share relay endpoints, so
 environment identity must never be inferred from a relay URL.
 Any relay, issuer-identity, PeerBadge minimum-trust-level,
-setup-payment-publisher, Fedi fee-account, Bitcoin-network, or default-Esplora
+setup-payment-publisher, Guardian Verification Fee account, Bitcoin-network,
+or default-Esplora
 mapping change must bump the public profile revision and be rolled out across
 FI, FMan, FLIP, and push-gateway telemetry as one coordinated deployment; mixed revisions can
 otherwise make components disagree while displaying the same environment
@@ -36,13 +37,14 @@ routing through the profile-owned `MANIFOLD_DEV_NOSTR_RELAYS` override;
 Staging and Production refuse it.
 
 The development and staging PeerBadge issuer identities, setup-payment
-publisher identities, and Fedi guardian-fee accounts are deliberately unsafe placeholders derived from
+publisher identities, and Guardian Verification Fee accounts are deliberately
+unsafe placeholders derived from
 publicly known test secrets; the publisher placeholders use different test
 secrets from the issuer placeholders so the two roles cannot silently
 collapse into one key. Production has no placeholder identity in any role: its
 PeerBadge issuer identities are personal keys, each secret held individually by
-its owner rather than by the deployment, and its profile deliberately returns
-no setup-payment publisher and no Fedi guardian-fee account. Adding a
+its owner rather than by the deployment. Its setup-payment publisher and
+Guardian Verification Fee account are deployment-owned public keys. Adding a
 production issuer is a trust-root change requiring renewed security review; a
 generated or known-secret key must never be listed.
 
@@ -60,10 +62,8 @@ Loss, suspected compromise, or custodian offboarding triggers an emergency
 profile revision removing that root and a tracked rollout to every FI, FLIP,
 and push-gateway telemetry consumer. Older deployed binaries continue to trust the removed root until
 updated, so credential revocation alone does not contain a root compromise.
-Setup-payment consumers must fail closed until the deployment-owned publisher
-identity is configured. Fee-policy producers and validators likewise fail
-closed until the production Fedi account is configured; generating a fallback
-would redirect Fedi's share.
+Consumers must fail closed if either deployment-owned key is absent; they must
+not generate a fallback.
 
 The `manifold-test-issuer` devmon binary deliberately operationalizes the
 public development and staging issuer secrets for local workflows. It signs
@@ -78,10 +78,6 @@ authority; fedibtc/manifold#401.) Material from this command is test trust,
 not an approximation of deployment-owned production credentials. It issues
 the selected profile's minimum level so local and staging workflows exercise
 the same relying-party gate as deployed consumers.
-
-The initial Fedi fee-account field is covered by the prelaunch exception and
-does not bump revision 2 because no released profile exists. Any post-launch
-change follows the normal revision and coordinated rollout rule.
 
 The setup-payment publisher key authenticates the kind-37707 federation list
 that decides which federations paid setup uses, so whoever holds its secret

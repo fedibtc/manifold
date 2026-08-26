@@ -22,7 +22,7 @@ MVP's generic keys are:
 | `fedi:federation_icon_url` | Wallet icon | At most 65,536 bytes; trimmed nonempty HTTP(S), at most 2,048 bytes, public host, and no controls. The original URL string is submitted. |
 | `fedi:welcome_message` | Wallet description | At most 65,536 bytes; trimmed nonempty value at most 500 bytes with control, bidirectional-control, and zero-width characters refused. |
 | `fedi:tos_url` | Terms document | Exactly `https://public.qgcut.org/OG_Federation_ToS.pdf`. |
-| `fedi:guardian_fee_send_ppm` | Post-formation fee rate | Canonical decimal in the payer range and at or above the currently published Fedi floor. |
+| `fedi:guardian_fee_send_ppm` | Post-formation fee rate | Canonical decimal in the payer range and at or above the currently published floor. |
 
 Empty values do not clear fields and unknown keys fail closed. The formation
 trust directory and guardian-fee recipient list are formation-owned fixed
@@ -72,7 +72,8 @@ the same cap before its proposal wave.
 A generic write carrying fee fields must carry both the rate and recipient
 list. Before voting, FMan verifies the stored canonical seat directory against
 the live final config, derives all guardian accounts, and checks the fixed
-FI=4, guardian=1, Fedi=1 recipient split plus the rate bounds. The stored
+recipient split—FI at weight four, every guardian at weight one, and the
+Guardian Verification Fee at weight one—plus the rate bounds. The stored
 directory does not contain endpoint proofs; those are admission-time inputs to
 `ProposeFormationMeta`, not permanent self-verifying evidence. This prevents an
 unrelated name or icon update from silently copying a malformed fee policy as
@@ -82,7 +83,7 @@ this guardian's vote.
 
 - Signatures cover timestamp, FI and seat ids, exact base, key, and value.
   Formation signatures instead cover the paired attestation/proof entries, FI
-  and Fedi fee accounts, and initial rate.
+  and Guardian Verification Fee accounts, and initial rate.
 - Formation returns `FormationMetaAlreadyPublished` when a consensus directory
   already exists, distinct from stale base or target conflict.
 - Generic keys over 128 bytes, unknown keys, and oversized values are rejected

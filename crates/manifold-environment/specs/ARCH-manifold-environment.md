@@ -30,8 +30,8 @@ FMan consumes that identity directly. Development resolves its relay and
 publisher overrides inside the profile; staging and production provide no
 runtime or CLI override. Development and staging use distinct unsafe
 known-secret placeholders for issuer, publisher, and fee-account data.
-Production contains no placeholder: publisher and fee-account accessors remain
-absent until deployment-owned values are supplied, so consumers fail closed.
+Production pins its deployment-owned publisher and Guardian Verification Fee
+account.
 The single-publisher contract and resolution precedence are defined by
 [SPEC-manifold-environment](./SPEC-manifold-environment.md).
 

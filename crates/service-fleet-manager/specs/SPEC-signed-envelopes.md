@@ -59,8 +59,10 @@ deployment separately confines its destination.
 
 `ProposeFormationMetaRequest` carries `ts`, `fi_id`, `seat_id`,
 `expected_base`, structural `seat_bindings` entries that each pair one signed
-FMan attestation with its endpoint proof, the FI's and deployment-pinned Fedi's complete
-single-signature `BtcDepositor` accounts, and `send_ppm`. The signature therefore prevents rebasing,
+FMan attestation with its endpoint proof, the FI's account, the
+deployment-pinned Guardian Verification Fee account, and `send_ppm`. The two
+accounts are complete single-signature `BtcDepositor` accounts. The signature
+therefore prevents rebasing,
 substituting a directory or proof, redirecting the FI share, or changing the
 rate without a fresh FI signature.
 
@@ -76,12 +78,14 @@ Each paired endpoint proof names the attestation's canonical peer id and contain
 under the domain `fedi-fman-seat-endpoint-proof/v1\0` over the corresponding
 attestation statement digest. FMan derives the verification key from that
 peer's final configured API endpoint. Recipients are not wire input: every
-FMan derives the canonical FI=4, guardian=1, Fedi=1 list from the verified
-directory and two request accounts. Recipient identity is the destination
-account, ordered by account id; all destinations must be distinct. Before submitting any vote, FMan
-requires the request's Fedi account to equal its own environment configuration;
-the FI states the expected deployment value but cannot choose a replacement.
-An absent local Fedi account and a mismatch are distinct typed refusals. Given
+FMan derives the canonical list from the verified directory and two request
+accounts: FI has weight four, each guardian has weight one, and the Guardian
+Verification Fee has weight one. Recipient identity is the destination account,
+ordered by account id; all destinations must be distinct. Before submitting any
+vote, FMan requires the request's Guardian Verification Fee account to equal its
+own environment configuration; the FI states the expected deployment value but
+cannot choose a replacement. An absent local Guardian Verification Fee account
+and a mismatch are distinct typed refusals. Given
 the same signed request, final config, and base metadata object, every guardian
 that votes therefore derives byte-identical canonical metadata and recipients.
 `ProposeFormationMetaResponse` is empty.

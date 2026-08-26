@@ -520,7 +520,7 @@ async fn wrong_owner_precedes_policy_and_unsupported_results() {
             rpc.fleet.guardian_fee_account_descriptor(&seat_id),
         )
         .unwrap(),
-        fedi_fee_account: GuardianFeeAccount::try_from(
+        guardian_verification_fee_account: GuardianFeeAccount::try_from(
             rpc.fleet.guardian_fee_account_descriptor(&seat_id),
         )
         .unwrap(),
@@ -541,7 +541,7 @@ async fn wrong_owner_precedes_policy_and_unsupported_results() {
         expected_base: MetaConsensusBase::Absent,
         seat_bindings: vec![],
         fi_fee_account: GuardianFeeAccount::try_from(owner_account.clone()).unwrap(),
-        fedi_fee_account: GuardianFeeAccount::try_from(owner_account).unwrap(),
+        guardian_verification_fee_account: GuardianFeeAccount::try_from(owner_account).unwrap(),
         send_ppm: 5_000,
     };
     assert_eq!(
@@ -550,8 +550,8 @@ async fn wrong_owner_precedes_policy_and_unsupported_results() {
         )
         .await
         .unwrap_err(),
-        FleetManagerError::FediFeeAccountUnavailable,
-        "an unconfigured production Fedi account fails closed before child access",
+        FleetManagerError::GuardianVerificationFeeAccountUnavailable,
+        "an unconfigured Guardian Verification Fee account fails closed before child access",
     );
 
     let configured_account = Account::single(
@@ -562,7 +562,7 @@ async fn wrong_owner_precedes_policy_and_unsupported_results() {
         stability_pool_client::common::AccountType::BtcDepositor,
     );
     let mut configured_rpc = rpc.clone();
-    configured_rpc.fedi_guardian_fee_account = Some(configured_account);
+    configured_rpc.guardian_verification_fee_account = Some(configured_account);
     assert_eq!(
         configured_rpc
             .propose_formation_meta(
@@ -570,7 +570,7 @@ async fn wrong_owner_precedes_policy_and_unsupported_results() {
             )
             .await
             .unwrap_err(),
-        FleetManagerError::FediFeeAccountMismatch,
+        FleetManagerError::GuardianVerificationFeeAccountMismatch,
         "a mismatched stated account fails before the seat child or vote path",
     );
 

@@ -32,9 +32,9 @@ family, canonical `FedimintdVersion`, and an optional aggregate spending
 cap `max_total_msats` (must be greater than zero; persisted with the
 resolved intent so it survives resume). The formation intent carries no guardian-fee rate: formation installs the
 fixed recipient mapping and an initial rate, while post-formation
-`propose_guardian_fees` changes only that rate under the
-pinned payer's own 210,000-ppm ceiling and at or above the minimum Fedi
-publishes on the admitted setup-payment event (1,500 ppm when no event has
+`propose_guardian_fees` changes only that rate under the payer-compatible
+210,000-ppm ceiling and at or above the published minimum
+carried by the admitted setup-payment event (1,500 ppm when no event has
 been admitted, never zero). That floor is the same one every FMan enforces
 ([`SPEC-setup-payment-federations`](../../../specs/SPEC-setup-payment-federations.md));
 refusing it here means a rate the whole fleet would vote down names its own
@@ -341,8 +341,8 @@ network access.
 
 Formation installs guardian-fee arrangement on the same state engine. Opening
 with a `ManifoldEnvironmentProfile` supplies the setup-payment publisher and
-deployment-pinned Fedi recipient; every constructor also accepts a
-`FiFeeAccountProvider`. After DKG, the engine parses the federation id from the
+deployment-pinned Guardian Verification Fee account; every constructor also
+accepts a `FiFeeAccountProvider`. After DKG, the engine parses the federation id from the
 persisted invite, resolves the FI's single-signature SPv2 `BtcDepositor`
 account, loads guardian accounts from signed seat acceptances, and collects
 FMan attestations paired with their seat-endpoint proofs. It derives
@@ -350,7 +350,8 @@ account-keyed recipients from those attestations, refusing any shared
 destination account. Before the first remote proposal it
 persists the complete formation target: canonical-directory readback prediction,
 paired attestation/proof request entries, FI account,
-fixed FI-four/guardian-one/Fedi-one recipients, and initial rate. It then
+fixed recipients with FI at weight four, every guardian at weight one, and the
+Guardian Verification Fee at weight one, plus the initial rate. It then
 proposes that target as one base-bound metadata update. Every FMan
 constructs the same bounded canonical directory, verifies every paired proof
 against final configured endpoint keys, and derives
