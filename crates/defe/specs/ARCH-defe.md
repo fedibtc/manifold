@@ -17,6 +17,16 @@ cross-shell tools and stable `DEFE_ENV_*` discovery paths. That child's lifetime
 is the environment lifetime; its exit status crosses both composer and server
 boundaries unchanged.
 
+The generated `fees` tool exposes FMan's real fee show and collection commands.
+Its `synthetic-remit` preparation action creates a metadata-bearing stability-pool
+deposit through a dedicated ordinary `fi-cli` payment wallet, then waits for the
+selected FMan to observe it. It exists to exercise the local remittance and
+collection plumbing: it directly selects a recipient and amount and therefore
+does not model production Fedi payer accrual, share splitting, accumulation, or
+scheduling. The environment serializes its owned `fi-cli` calls, including that
+wallet, because the CLI is a single-developer test tool rather than a concurrent
+consumer ([GATE-fi-cli-test-tool-scope](../../fi-cli/specs/GATE-fi-cli-test-tool-scope.md)).
+
 The server supervises resource processes and owns their resource directories,
 ports, logs, and stable slot state. It provides local Nostr relays, push
 gateways, Bitcoin Core regtest nodes, Fleet Managers, FLIP daemons, and Fedimint

@@ -154,6 +154,17 @@ guardian-fee admin path with the formed seat IDs. Collection prints a fresh
 post-collect status. These commands do not synthesize remittances or imply that
 traffic accrued production payer fees.
 
+`fees synthetic-remit --guardian N --amount-msats AMOUNT` prepares one
+collectable remittance through the real wallet-v2 and stability-pool path. It
+reuses a dedicated disposable `fi-cli payment-wallet`, funds it when needed,
+seals a mint/send breakdown to the FMan's actual remittance account, and waits
+for `fees show` to observe the result. It then prints the exact `fees show` and
+`fees collect` next steps. This is deliberately synthetic: production payer
+accrual was bypassed, so it does not validate Fedi app accrual, 4:1:1 splitting,
+threshold accumulation, or scheduling. Every successful invocation adds a new
+remittance; after an uncertain failed invocation, inspect `fees show` before
+retrying.
+
 The mode-0600 JSON manifest changes atomically from `ready` to `stopped` before
 leases are released. Credentials remain in the mode-0600 `secrets.json` and in
 mode-0700 generated wrappers beneath the mode-0700 environment root. Successful

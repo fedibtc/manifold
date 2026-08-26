@@ -71,7 +71,7 @@ impl FedimintApi {
     pub async fn probe(&self) -> Result<(), FedimintApiError> {
         match tokio::time::timeout(REQUEST_TIMEOUT, self.api.clone().status()).await {
             Ok(Ok(_)) => Ok(()),
-            Ok(Err(error)) => return Err(map_federation_error(error)),
+            Ok(Err(error)) => Err(map_federation_error(error)),
             Err(_) => Err(FedimintApiError::Unreachable(
                 "status request timed out".to_owned(),
             )),

@@ -3,6 +3,7 @@
 use std::ffi::{OsStr, OsString};
 use std::fmt::Write as _;
 use std::fs;
+use std::os::fd::AsRawFd as _;
 use std::os::unix::fs::PermissionsExt as _;
 use std::os::unix::process::{CommandExt as _, ExitStatusExt as _};
 use std::path::{Path, PathBuf};
@@ -20,6 +21,7 @@ use sha2::{Digest as _, Sha256};
 use tokio::process::Command;
 
 mod flip_setup;
+mod synthetic_remit;
 
 const GUARDIAN_COUNT: usize = 7;
 const FI_ACCOUNT: &[u8] = br#"{"acc_type":"BtcDepositor","pub_keys":["031b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f"],"threshold":1}"#;
@@ -109,17 +111,25 @@ async fn main() {
     {
         run_internal_child_gate(&raw_args);
     }
-    let result = parse_args(raw_args).and_then(|args| {
-            if args.complete_liquidity {
-                bail!(
-                    "--complete-liquidity is not implemented yet; basic environment remains available without it"
-                );
+    let status = match raw_args.first().and_then(|argument| argument.to_str()) {
+        Some("--internal-with-lock") => run_with_lock(&raw_args[1..]).await,
+        Some("--internal-synthetic-remit") => synthetic_remit::run(&raw_args[1..])
+            .await
+            .map(|()| ExitStatus::from_raw(0)),
+        _ => {
+            let result = parse_args(raw_args).and_then(|args| {
+                if args.complete_liquidity {
+                    bail!(
+                        "--complete-liquidity is not implemented yet; basic environment remains available without it"
+                    );
+                }
+                Ok(args)
+            });
+            match result {
+                Ok(args) => run(args).await,
+                Err(error) => Err(error),
             }
-            Ok(args)
-        });
-    let status = match result {
-        Ok(args) => run(args).await,
-        Err(error) => Err(error),
+        }
     };
     match status {
         Ok(status) => std::process::exit(exit_code(status)),
@@ -128,6 +138,39 @@ async fn main() {
             std::process::exit(1);
         }
     }
+}
+
+async fn run_with_lock(raw_args: &[OsString]) -> Result<ExitStatus> {
+    let (lock_path, command) = match raw_args {
+        [lock, path, separator, command @ ..]
+            if lock == "--lock" && separator == "--" && !command.is_empty() =>
+        {
+            (PathBuf::from(path), command)
+        }
+        _ => bail!("internal lock invocation requires --lock PATH -- COMMAND..."),
+    };
+    let lock_file = fs::OpenOptions::new()
+        .create(true)
+        .read(true)
+        .write(true)
+        .truncate(false)
+        .open(&lock_path)
+        .with_context(|| format!("open environment lock {}", lock_path.display()))?;
+    if unsafe { libc::flock(lock_file.as_raw_fd(), libc::LOCK_EX) } != 0 {
+        bail!(
+            "lock environment command at {}: {}",
+            lock_path.display(),
+            std::io::Error::last_os_error()
+        );
+    }
+    let mut child = Command::new(&command[0]);
+    child.args(&command[1..]).kill_on_drop(true);
+    let status = child
+        .status()
+        .await
+        .with_context(|| format!("run locked command {}", command[0].to_string_lossy()))?;
+    drop(lock_file);
+    Ok(status)
 }
 
 fn exit_code(status: ExitStatus) -> i32 {
@@ -304,9 +347,11 @@ async fn run(args: Args) -> Result<ExitStatus> {
     write_private(&routes_file, routes.as_bytes())?;
     let manifest_file = args.root.join("env.json");
     let bin_dir = args.root.join("bin");
+    let defe_env = std::env::current_exe().context("locate the running defe-env binary")?;
     write_tools(
         &bin_dir,
         &args,
+        &defe_env,
         &manifest_file,
         &secrets_file,
         &invite_file,
@@ -470,6 +515,7 @@ async fn read_seat_ids(
 fn write_tools(
     bin_dir: &Path,
     args: &Args,
+    defe_env: &Path,
     manifest: &Path,
     secrets: &Path,
     invite: &Path,
@@ -504,12 +550,22 @@ fn write_tools(
             ),
         )?;
     }
+    let locked_fi_cli = bin_dir.join("fi-cli-locked");
+    write_wrapper(
+        &locked_fi_cli,
+        &format!(
+            "#!/bin/sh\nFMAN_E2E_LOCAL_IROH=1 FM_IROH_CONNECT_OVERRIDES={} exec {} --internal-with-lock --lock {} -- {} \"$@\"\n",
+            shell_escape(OsStr::new(routes)),
+            shell_escape(defe_env.as_os_str()),
+            shell_escape(args.root.join("fi-cli.lock").as_os_str()),
+            shell_escape(args.fi_cli.as_os_str()),
+        ),
+    )?;
     write_wrapper(
         &bin_dir.join("fi-cli"),
         &format!(
-            "#!/bin/sh\nFMAN_E2E_LOCAL_IROH=1 FM_IROH_CONNECT_OVERRIDES={} exec {} --state-dir {} \"$@\"\n",
-            shell_escape(OsStr::new(routes)),
-            shell_escape(args.fi_cli.as_os_str()),
+            "#!/bin/sh\nexec {} --state-dir {} \"$@\"\n",
+            shell_escape(locked_fi_cli.as_os_str()),
             shell_escape(fi_state_dir.as_os_str())
         ),
     )?;
@@ -554,11 +610,7 @@ fn write_tools(
     write_wrapper(&bin_dir.join("fman-ui"), &ui)?;
 
     let mut fees = String::from(
-        "#!/bin/sh\nusage() { echo 'usage: fees show --guardian N [ARGS...] | fees collect (--guardian N | --all)' >&2; exit 2; }\n\
-         verb=${1-}; shift || usage\n\
-         guardian=\nall=0\n\
-         while [ \"$#\" -gt 0 ]; do case \"$1\" in --guardian) [ \"$#\" -ge 2 ] || usage; guardian=$2; shift 2 ;; --all) all=1; shift ;; *) break ;; esac; done\n\
-         [ \"$all\" -eq 1 ] && [ -n \"$guardian\" ] && usage\n\
+        "#!/bin/sh\nusage() { echo 'usage: fees show --guardian N [ARGS...] | fees collect (--guardian N | --all) | fees synthetic-remit --guardian N --amount-msats AMOUNT' >&2; exit 2; }\n\
          run_one() { n=$1; shift; case \"$n\" in\n",
     );
     for (index, seat_id) in seat_ids.iter().enumerate() {
@@ -579,10 +631,45 @@ fn write_tools(
            return \"$collect_status\"\n\
          fi\n\
          \"$tool\" guardian-fees show \"$seat\" \"$@\"\n}\n\
-         case \"$verb\" in show) [ \"$all\" -eq 0 ] && [ -n \"$guardian\" ] || usage; run_one \"$guardian\" \"$@\" ;;\n\
-         collect) if [ \"$all\" -eq 1 ]; then for n in 1 2 3 4 5 6 7; do run_one \"$n\" \"$@\" || exit; done; elif [ -n \"$guardian\" ]; then run_one \"$guardian\" \"$@\"; else usage; fi ;;\n\
-         *) usage ;; esac\n",
+         verb=${1-}; shift || usage\n\
+         case \"$verb\" in\n\
+           show|collect)\n\
+             guardian=\nall=0\n\
+             while [ \"$#\" -gt 0 ]; do case \"$1\" in --guardian) [ \"$#\" -ge 2 ] || usage; guardian=$2; shift 2 ;; --all) all=1; shift ;; *) break ;; esac; done\n\
+             [ \"$all\" -eq 1 ] && [ -n \"$guardian\" ] && usage\n\
+             if [ \"$verb\" = show ]; then [ \"$all\" -eq 0 ] && [ -n \"$guardian\" ] || usage; run_one \"$guardian\" \"$@\"\n\
+             elif [ \"$all\" -eq 1 ]; then for n in 1 2 3 4 5 6 7; do run_one \"$n\" \"$@\" || exit; done\n\
+             elif [ -n \"$guardian\" ]; then run_one \"$guardian\" \"$@\"\n\
+             else usage; fi ;;\n\
+           synthetic-remit)\n\
+             guardian=\namount=\n\
+             while [ \"$#\" -gt 0 ]; do case \"$1\" in --guardian) [ \"$#\" -ge 2 ] || usage; guardian=$2; shift 2 ;; --amount-msats) [ \"$#\" -ge 2 ] || usage; amount=$2; shift 2 ;; *) usage ;; esac; done\n\
+             [ -n \"$guardian\" ] && [ -n \"$amount\" ] || usage\n\
+             case \"$guardian\" in\n",
     );
+    for (index, seat_id) in seat_ids.iter().enumerate() {
+        writeln!(
+            fees,
+            "               {}) tool={}; data_dir={}; seat={} ;;",
+            index + 1,
+            shell_escape(args.fman_cli.as_os_str()),
+            shell_escape(fmans[index].1.data_dir.as_os_str()),
+            shell_escape(OsStr::new(seat_id))
+        )?;
+    }
+    fees.push_str(&format!(
+        "               *) usage ;; esac\n\
+             exec {} --internal-with-lock --lock {} -- {} --internal-synthetic-remit --root {} --fman-cli \"$tool\" --fman-data-dir \"$data_dir\" --fi-cli {} --bitcoin-cli {} --invite-file {} --guardian \"$guardian\" --seat-id \"$seat\" --amount-msats \"$amount\" ;;\n\
+           *) usage ;;\n\
+         esac\n",
+        shell_escape(defe_env.as_os_str()),
+        shell_escape(args.root.join("synthetic-remit.lock").as_os_str()),
+        shell_escape(defe_env.as_os_str()),
+        shell_escape(args.root.as_os_str()),
+        shell_escape(locked_fi_cli.as_os_str()),
+        shell_escape(bin_dir.join("bitcoin-cli").as_os_str()),
+        shell_escape(invite.as_os_str()),
+    ));
     write_wrapper(&bin_dir.join("fees"), &fees)?;
     Ok(())
 }
@@ -1198,6 +1285,13 @@ mod tests {
         )
         .unwrap();
         std::fs::set_permissions(&recorder, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let locker = root.join("locker");
+        std::fs::write(
+            &locker,
+            "#!/bin/sh\nwhile [ \"$1\" != -- ]; do shift; done\nshift\nexec \"$@\"\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&locker, std::fs::Permissions::from_mode(0o700)).unwrap();
         let record = root.join("record");
         let args = Args {
             root: root.clone(),
@@ -1241,6 +1335,7 @@ mod tests {
         write_tools(
             &bin,
             &args,
+            &locker,
             &root.join("env.json"),
             &root.join("secrets.json"),
             &root.join("invite"),
@@ -1288,6 +1383,14 @@ mod tests {
         assert!(recorded.contains("args[--data-dir]["));
         assert!(recorded.contains("][guardian-fees][collect][seat-one]"));
         assert!(recorded.contains("][guardian-fees][show][seat-one]"));
+        assert!(
+            std::fs::read_to_string(bin.join("fi-cli-locked"))
+                .unwrap()
+                .contains("--internal-with-lock --lock")
+        );
+        let fees = std::fs::read_to_string(bin.join("fees")).unwrap();
+        assert!(fees.contains("synthetic-remit --guardian N --amount-msats AMOUNT"));
+        assert!(fees.contains("--internal-synthetic-remit"));
         std::fs::remove_dir_all(root).unwrap();
     }
 

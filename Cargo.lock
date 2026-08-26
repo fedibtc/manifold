@@ -1897,6 +1897,8 @@ dependencies = [
  "fedi-decentralized-manifold-environment",
  "fedi-decentralized-nostr",
  "fedi-decentralized-service-liquidity-manager",
+ "fman-core",
+ "hex",
  "iroh-base 0.35.0",
  "libc",
  "nostr-sdk",
@@ -1905,6 +1907,8 @@ dependencies = [
  "serde_json",
  "serde_json_canonicalizer",
  "sha2 0.10.9",
+ "stability-pool-common",
+ "tempfile",
  "tokio",
 ]
 

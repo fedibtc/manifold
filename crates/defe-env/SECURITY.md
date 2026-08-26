@@ -14,6 +14,15 @@ not a multi-tenant service and must use only dummy credentials and test funds.
   wrappers also contain the exact dummy credentials needed to select their
   service. `env.json` contains no credentials, and ready output does not print
   gateway or FLIP credentials.
+- `fees synthetic-remit` stores its dedicated payment-wallet root secret and
+  sealed remittance metadata under that private root. It passes only their file
+  paths to `fi-cli`, never their contents, and prints no operation or wallet
+  secrets. Its wrapper serializes the complete preparation action and every
+  generated `fi-cli` invocation, so one owner accesses a wallet database at a
+  time.
+- Synthetic preparation directly creates a remittance in the disposable
+  federation. It is intentionally not evidence of production payer accrual,
+  weighted split calculation, accumulation, or scheduling.
 - Startup phases use bounded process and HTTP waits. A startup failure closes
   the composer connection, which releases every Defe lease; Defe retains the
   private temp root by default for diagnostics.
