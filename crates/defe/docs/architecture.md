@@ -48,7 +48,11 @@ Execution order:
 8. Terminate every child process still owned by resources.
 9. Exit with the child command's status.
 
-The command process lifetime is the final boundary. Leaked or daemonized clients must not keep resources alive after command exit.
+The command process lifetime is the final boundary. Before releasing leases, the
+Linux environment composer uses child-subreaper adoption, a fixed-point `/proc`
+descendant census, and identity-stable pidfds to stop, terminate, and reap setup
+and command descendants across process groups. Leaked or daemonized clients must
+not keep resources alive after command exit.
 
 
 ## Temp layout

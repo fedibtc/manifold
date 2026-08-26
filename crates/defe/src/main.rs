@@ -11,8 +11,6 @@ use defe::resource_manager::{
 use std::env;
 use std::ffi::OsString;
 use std::fs;
-use std::io::Read as _;
-use std::os::fd::FromRawFd as _;
 use std::os::unix::fs::{DirBuilderExt as _, FileTypeExt as _, PermissionsExt as _};
 use std::os::unix::net::{UnixListener as StdUnixListener, UnixStream as StdUnixStream};
 use std::os::unix::process::{CommandExt as _, ExitStatusExt};
@@ -35,7 +33,6 @@ const USAGE: &str = "Usage: defe [opts...] <command>\n\nCommands:\n  exec <cmd..
 const SOCKET_FILE_NAME: &str = "s";
 const DEV_SERVER_TEMP_DIR_NAME: &str = "defe-dev-server";
 const DEFAULT_TEMP_DIR_ATTEMPTS: u16 = 256;
-const PGID_FD_ENV: &str = "DEV_DEFE_ENV_PGID_FD";
 
 fn main() {
     let args = env::args_os().skip(1).collect::<Vec<_>>();
@@ -156,46 +153,19 @@ async fn run_exec(exec: ExecArgs) -> Result<ExitStatus, String> {
     command.args(&command_args[1..]);
     command.env(DEV_DEFE_SOCKET_PATH, &socket_path);
     let environment_manifest = environment.then(|| config.temp_root.join("env/env.json"));
-    let mut pgid_pipe = None;
     if environment {
-        let mut pipe = [0_i32; 2];
-        if unsafe { libc::pipe(pipe.as_mut_ptr()) } != 0 {
-            return Err(format!(
-                "failed to create environment PGID channel: {}",
-                std::io::Error::last_os_error()
-            ));
-        }
-        command.env(PGID_FD_ENV, pipe[1].to_string());
-        unsafe {
-            command.as_std_mut().pre_exec(move || {
-                libc::close(pipe[0]);
-                Ok(())
-            });
-        }
-        pgid_pipe = Some(pipe);
+        command.as_std_mut().process_group(0);
     }
     let status = match command.spawn() {
         Ok(mut child) => {
-            let mut pgid_reader = pgid_pipe.map(|pipe| {
-                unsafe { libc::close(pipe[1]) };
-                unsafe { libc::fcntl(pipe[0], libc::F_SETFL, libc::O_NONBLOCK) };
-                unsafe { fs::File::from_raw_fd(pipe[0]) }
-            });
             wait_for_exec_child(
                 &mut child,
                 shutdown_rx.clone(),
                 environment_manifest.as_deref(),
-                pgid_reader.as_mut(),
             )
             .await
         }
         Err(err) => {
-            if let Some(pipe) = pgid_pipe {
-                unsafe {
-                    libc::close(pipe[0]);
-                    libc::close(pipe[1]);
-                }
-            }
             let _ = shutdown_tx.send(true);
             let _ = accept_task.await;
             resource_manager.shutdown();
@@ -753,10 +723,9 @@ async fn wait_for_exec_child(
     child: &mut Child,
     mut shutdown: watch::Receiver<bool>,
     environment_manifest: Option<&Path>,
-    pgid_reader: Option<&mut fs::File>,
 ) -> std::io::Result<ExitStatus> {
     if *shutdown.borrow() {
-        return finish_exec_child(child, environment_manifest, pgid_reader).await;
+        return finish_exec_child(child, environment_manifest).await;
     }
 
     tokio::select! {
@@ -765,7 +734,7 @@ async fn wait_for_exec_child(
             if changed.is_ok() && !*shutdown.borrow() {
                 return child.wait().await;
             }
-            finish_exec_child(child, environment_manifest, pgid_reader).await
+            finish_exec_child(child, environment_manifest).await
         }
     }
 }
@@ -773,74 +742,22 @@ async fn wait_for_exec_child(
 async fn finish_exec_child(
     child: &mut Child,
     environment_manifest: Option<&Path>,
-    pgid_reader: Option<&mut fs::File>,
 ) -> std::io::Result<ExitStatus> {
-    if let Some(environment_manifest) = environment_manifest {
+    if environment_manifest.is_some() {
         if let Some(pid) = child.id() {
-            // The environment composer catches termination, reaps its foreground
-            // process group, and atomically marks the manifest stopped.
+            // The environment composer catches termination, reaps its complete
+            // descendant tree, and atomically marks the manifest stopped.
             unsafe {
                 libc::kill(i32::try_from(pid).unwrap_or(i32::MAX), libc::SIGTERM);
             }
         }
-        match tokio::time::timeout(Duration::from_secs(15), child.wait()).await {
-            Ok(status) => status,
-            Err(_) => {
-                invalidate_environment_manifest(environment_manifest);
-                if let Some(pgid_reader) = pgid_reader {
-                    terminate_recorded_environment_group(pgid_reader).await;
-                }
-                let _ = child.kill().await;
-                child.wait().await
-            }
-        }
+        // The composer owns teardown across all descendant process groups.
+        // Never kill it out from under that boundary and release server-owned
+        // resources while descendants may remain.
+        child.wait().await
     } else {
         let _ = child.kill().await;
         child.wait().await
-    }
-}
-
-async fn terminate_recorded_environment_group(reader: &mut fs::File) {
-    let mut contents = String::new();
-    if reader.read_to_string(&mut contents).is_err() {
-        return;
-    }
-    let Ok(process_group) = contents.parse::<i32>() else {
-        return;
-    };
-    if process_group <= 1 {
-        return;
-    }
-    unsafe { libc::kill(-process_group, libc::SIGTERM) };
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(1);
-    while tokio::time::Instant::now() < deadline {
-        if unsafe { libc::kill(-process_group, 0) } != 0 {
-            return;
-        }
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
-    unsafe { libc::kill(-process_group, libc::SIGKILL) };
-}
-
-fn invalidate_environment_manifest(path: &Path) {
-    let result = (|| -> Result<(), String> {
-        let bytes = fs::read(path).map_err(|error| error.to_string())?;
-        let mut manifest: serde_json::Value =
-            serde_json::from_slice(&bytes).map_err(|error| error.to_string())?;
-        manifest["ready"] = false.into();
-        manifest["state"] = "stopped".into();
-        manifest["gateway"]["state"] = "stopped".into();
-        manifest["flip"]["state"] = "stopped".into();
-        let temporary = path.with_extension("json.tmp");
-        fs::write(&temporary, serde_json::to_vec_pretty(&manifest).unwrap())
-            .map_err(|error| error.to_string())?;
-        fs::set_permissions(&temporary, fs::Permissions::from_mode(0o600))
-            .map_err(|error| error.to_string())?;
-        fs::rename(temporary, path).map_err(|error| error.to_string())
-    })();
-    if let Err(error) = result {
-        let _ = fs::remove_file(path);
-        eprintln!("defe: removed environment manifest after invalidation failed: {error}");
     }
 }
 

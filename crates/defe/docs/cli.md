@@ -147,7 +147,11 @@ With no command it starts `$SHELL`. The composer owns every connection-scoped
 lease until that child exits; child exit is the teardown boundary and its status
 is preserved. A signal sent to a foreground job in the interactive shell remains
 inside that job's terminal process group. Terminating the outer `defe` process
-terminates and reaps the composer and its foreground process group.
+also reaches the composer during setup. On command exit or external termination,
+the composer stops, terminates, and reaps every setup or command descendant,
+including foreground jobs and background or disowned jobs in separate process
+groups, before it marks the environment stopped and releases leases. This strict
+descendant boundary currently requires Linux.
 
 The child receives `DEFE_ENV=1`, `DEFE_ENV_SCHEMA_VERSION=1`, paths for the root,
 manifest, secrets, logs, invite, FI state, and Iroh routes, plus the stable local

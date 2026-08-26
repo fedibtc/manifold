@@ -8,6 +8,7 @@ use std::os::unix::fs::PermissionsExt as _;
 use std::os::unix::process::{CommandExt as _, ExitStatusExt as _};
 use std::path::{Path, PathBuf};
 use std::process::{ExitStatus, Stdio};
+use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context as _, Result, bail, ensure};
@@ -20,15 +21,21 @@ use serde::Serialize;
 use sha2::{Digest as _, Sha256};
 use tokio::process::Command;
 
+#[cfg(target_os = "linux")]
+mod descendant_supervisor;
+#[cfg(not(target_os = "linux"))]
+#[path = "descendant_supervisor_unsupported.rs"]
+mod descendant_supervisor;
 mod flip_setup;
 mod synthetic_remit;
 mod traffic;
+
+use descendant_supervisor::DescendantSupervisor;
 
 const GUARDIAN_COUNT: usize = 7;
 const FI_ACCOUNT: &[u8] = br#"{"acc_type":"BtcDepositor","pub_keys":["031b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f"],"threshold":1}"#;
 const FMAN_OPERATOR_UI_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../operator-ui");
 const FMAN_OPERATOR_UI_URL: &str = "http://127.0.0.1:5174";
-const PGID_FD_ENV: &str = "DEV_DEFE_ENV_PGID_FD";
 
 #[derive(Debug)]
 struct Args {
@@ -41,7 +48,6 @@ struct Args {
     load_test_tool: PathBuf,
     complete_liquidity: bool,
     command: Vec<OsString>,
-    pgid_fd: i32,
 }
 
 #[derive(Serialize)]
@@ -208,7 +214,33 @@ async fn run(args: Args) -> Result<ExitStatus> {
     fs::create_dir_all(&args.root)
         .with_context(|| format!("create environment root {}", args.root.display()))?;
     set_private(&args.root)?;
-    let mut defe = AsyncDefeClient::connect_from_env()
+    // These owners are declared before the supervisor so Rust drops the
+    // supervisor first on every error and async-cancellation path.
+    let mut defe;
+    let mut held_leases = Vec::new();
+    let supervisor = Arc::new(DescendantSupervisor::establish()?);
+    let mut interrupt = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())?;
+    let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+    let signal_supervisor = Arc::downgrade(&supervisor);
+    let signal_manifest = args.root.join("env.json");
+    tokio::spawn(async move {
+        let exit_code = tokio::select! {
+            _ = interrupt.recv() => 128 + libc::SIGINT,
+            _ = terminate.recv() => 128 + libc::SIGTERM,
+        };
+        let Some(supervisor) = signal_supervisor.upgrade() else {
+            return;
+        };
+        if let Err(error) = supervisor.terminate_and_reap() {
+            eprintln!("defe env: terminate descendants: {error:#}");
+            return;
+        }
+        invalidate_ready_manifest(&signal_manifest);
+        // Process exit closes the defe connection and releases leases only after
+        // every environment descendant has been terminated and reaped.
+        std::process::exit(exit_code);
+    });
+    defe = AsyncDefeClient::connect_from_env()
         .await
         .context("connect to the defe server")?;
 
@@ -217,10 +249,12 @@ async fn run(args: Args) -> Result<ExitStatus> {
     let ResourceDescriptor::Bitcoind(bitcoin) = bitcoin_lease.descriptor.clone() else {
         bail!("defe returned the wrong descriptor for bitcoind");
     };
+    held_leases.push(bitcoin_lease);
     let relay_lease = defe.request_nostr_relay(SharingMode::Exclusive).await?;
     let ResourceDescriptor::NostrRelay(relay) = relay_lease.descriptor.clone() else {
         bail!("defe returned the wrong descriptor for the Nostr relay");
     };
+    held_leases.push(relay_lease);
 
     let first_port_base = defe_portalloc::port_alloc(607).context("reserve FMan port grid")?;
     ensure!(
@@ -243,10 +277,12 @@ async fn run(args: Args) -> Result<ExitStatus> {
         let ResourceDescriptor::Fman(fman) = lease.descriptor.clone() else {
             bail!("defe returned the wrong descriptor for FMan");
         };
-        fmans.push((lease, fman));
+        held_leases.push(lease);
+        fmans.push(fman);
     }
-    for (_, fman) in &fmans {
+    for fman in &fmans {
         run_command(
+            &supervisor,
             Command::new(&args.fman_cli)
                 .arg("--data-dir")
                 .arg(&fman.data_dir)
@@ -262,11 +298,11 @@ async fn run(args: Args) -> Result<ExitStatus> {
 
     status("forming seven-guardian federation");
     let fi_state_dir = args.root.join("fi-state");
-    let invite = form_federation(&args.fi_cli, &fi_state_dir, &fmans, &routes).await?;
+    let invite = form_federation(&supervisor, &args.fi_cli, &fi_state_dir, &fmans, &routes).await?;
     let invite_file = args.root.join("federation-invite");
     write_private(&invite_file, invite.as_bytes())?;
     let fi_account_file = fi_state_dir.join("fi-spv2-account.json");
-    let seat_ids = read_seat_ids(&args.fman_cli, &fmans).await?;
+    let seat_ids = read_seat_ids(&supervisor, &args.fman_cli, &fmans).await?;
 
     status("starting and connecting gateway");
     let gateway_lease = defe
@@ -279,7 +315,8 @@ async fn run(args: Args) -> Result<ExitStatus> {
     let ResourceDescriptor::Gatewayd(gateway) = gateway_lease.descriptor.clone() else {
         bail!("defe returned the wrong descriptor for gatewayd");
     };
-    connect_gateway(&args.gateway_cli, &gateway, &invite).await?;
+    held_leases.push(gateway_lease);
+    connect_gateway(&supervisor, &args.gateway_cli, &gateway, &invite).await?;
 
     status("starting FLIP");
     let flip_lease = defe
@@ -292,6 +329,7 @@ async fn run(args: Args) -> Result<ExitStatus> {
     let ResourceDescriptor::Flip(flip) = flip_lease.descriptor.clone() else {
         bail!("defe returned the wrong descriptor for FLIP");
     };
+    held_leases.push(flip_lease);
     status("configuring FLIP and publishing its advertisement");
     let public_endpoint_id =
         flip_setup::configure_and_publish(&flip, &gateway, &bitcoin, &relay.url).await?;
@@ -300,7 +338,7 @@ async fn run(args: Args) -> Result<ExitStatus> {
     write_private(
         &secrets_file,
         serde_json::to_vec_pretty(&serde_json::json!({
-            "fmans": fmans.iter().map(|(_, fman)| &fman.admin_password).collect::<Vec<_>>(),
+            "fmans": fmans.iter().map(|fman| &fman.admin_password).collect::<Vec<_>>(),
             "gateway_password": gateway.password,
             "flip_admin_token": flip.admin_token,
         }))?
@@ -319,7 +357,7 @@ async fn run(args: Args) -> Result<ExitStatus> {
             .iter()
             .zip(&seat_ids)
             .enumerate()
-            .map(|(index, ((_, fman), seat_id))| FmanManifest {
+            .map(|(index, (fman, seat_id))| FmanManifest {
                 number: index + 1,
                 seat_id,
                 locator: &fman.locator,
@@ -367,8 +405,6 @@ async fn run(args: Args) -> Result<ExitStatus> {
         &gateway,
         &bitcoin,
     )?;
-    let mut interrupt = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())?;
-    let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
     write_json_atomic(&manifest_file, &manifest)?;
     print_ready(
         &manifest_file,
@@ -394,10 +430,13 @@ async fn run(args: Args) -> Result<ExitStatus> {
         &gateway.api_url,
         &flip.admin_url,
         &public_endpoint_id,
-        &mut interrupt,
-        &mut terminate,
+        &supervisor,
     )
     .await;
+    // `run_child` can fail before it spawns the command. Drain here as well as
+    // inside its normal path so every error observes the lifetime boundary
+    // before publishing stopped state.
+    supervisor.terminate_and_reap()?;
     let stopped_manifest = stopped_manifest(&manifest)?;
     if let Err(error) = write_json_atomic(&manifest_file, &stopped_manifest) {
         // Never leave a retained ready manifest after the lease boundary.
@@ -406,24 +445,19 @@ async fn run(args: Args) -> Result<ExitStatus> {
     }
     eprintln!("defe env: command exited; releasing all leased resources");
     let status = child_result?;
-    drop((
-        flip_lease,
-        gateway_lease,
-        fmans,
-        relay_lease,
-        bitcoin_lease,
-        defe,
-    ));
+    drop((held_leases, defe));
     Ok(status)
 }
 
 async fn form_federation(
+    supervisor: &DescendantSupervisor,
     fi_cli: &Path,
     state_dir: &Path,
-    fmans: &[(defe_client::ResourceLease, FmanInfo)],
+    fmans: &[FmanInfo],
     routes: &str,
 ) -> Result<String> {
     run_command(
+        supervisor,
         Command::new(fi_cli)
             .arg("--state-dir")
             .arg(state_dir)
@@ -448,10 +482,16 @@ async fn form_federation(
         .arg("120")
         .env("FMAN_E2E_LOCAL_IROH", "1")
         .env("FM_IROH_CONNECT_OVERRIDES", routes);
-    for (_, fman) in fmans {
+    for fman in fmans {
         command.arg("--locator").arg(&fman.locator);
     }
-    let output = run_command(&mut command, "fi-cli create", Duration::from_secs(150)).await?;
+    let output = run_command(
+        supervisor,
+        &mut command,
+        "fi-cli create",
+        Duration::from_secs(150),
+    )
+    .await?;
     let json: serde_json::Value = serde_json::from_str(output.trim())?;
     ensure!(
         json["formation"]["phase"] == "formed",
@@ -463,7 +503,12 @@ async fn form_federation(
         .context("formed FI response has no invite code")
 }
 
-async fn connect_gateway(cli: &Path, gateway: &GatewaydInfo, invite: &str) -> Result<()> {
+async fn connect_gateway(
+    supervisor: &DescendantSupervisor,
+    cli: &Path,
+    gateway: &GatewaydInfo,
+    invite: &str,
+) -> Result<()> {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
     loop {
         let mut command = Command::new(cli);
@@ -474,6 +519,7 @@ async fn connect_gateway(cli: &Path, gateway: &GatewaydInfo, invite: &str) -> Re
             .arg("connect-fed")
             .arg(invite);
         match run_command(
+            supervisor,
             &mut command,
             "gateway-cli connect-fed",
             Duration::from_secs(15),
@@ -490,12 +536,14 @@ async fn connect_gateway(cli: &Path, gateway: &GatewaydInfo, invite: &str) -> Re
 }
 
 async fn read_seat_ids(
+    supervisor: &DescendantSupervisor,
     fman_cli: &Path,
-    fmans: &[(defe_client::ResourceLease, FmanInfo)],
+    fmans: &[FmanInfo],
 ) -> Result<Vec<String>> {
     let mut seat_ids = Vec::with_capacity(fmans.len());
-    for (_, fman) in fmans {
+    for fman in fmans {
         let output = run_command(
+            supervisor,
             Command::new(fman_cli)
                 .arg("--data-dir")
                 .arg(&fman.data_dir)
@@ -526,7 +574,7 @@ fn write_tools(
     invite: &Path,
     fi_state_dir: &Path,
     routes: &str,
-    fmans: &[(defe_client::ResourceLease, FmanInfo)],
+    fmans: &[FmanInfo],
     seat_ids: &[String],
     gateway: &GatewaydInfo,
     bitcoin: &defe_client::BitcoindInfo,
@@ -545,7 +593,7 @@ fn write_tools(
             shell_escape(manifest.as_os_str())
         ),
     )?;
-    for (index, (_, fman)) in fmans.iter().enumerate() {
+    for (index, fman) in fmans.iter().enumerate() {
         write_wrapper(
             &bin_dir.join(format!("fman-{}", index + 1)),
             &format!(
@@ -596,7 +644,7 @@ fn write_tools(
     )?;
 
     let mut ui = String::from("#!/bin/sh\ncase \"${1-}\" in\n");
-    for (index, (_, fman)) in fmans.iter().enumerate() {
+    for (index, fman) in fmans.iter().enumerate() {
         writeln!(
             ui,
             "  {}) target={}; password={} ;;",
@@ -658,7 +706,7 @@ fn write_tools(
             "               {}) tool={}; data_dir={}; seat={} ;;",
             index + 1,
             shell_escape(args.fman_cli.as_os_str()),
-            shell_escape(fmans[index].1.data_dir.as_os_str()),
+            shell_escape(fmans[index].data_dir.as_os_str()),
             shell_escape(OsStr::new(seat_id))
         )?;
     }
@@ -711,8 +759,7 @@ async fn run_child(
     gateway_url: &str,
     flip_url: &str,
     flip_endpoint_id: &str,
-    interrupt: &mut tokio::signal::unix::Signal,
-    terminate: &mut tokio::signal::unix::Signal,
+    supervisor: &DescendantSupervisor,
 ) -> Result<ExitStatus> {
     let command = if requested.is_empty() {
         vec![std::env::var_os("SHELL").unwrap_or_else(|| OsString::from("/bin/sh"))]
@@ -751,7 +798,6 @@ async fn run_child(
         child
     };
     child
-        .env_remove(PGID_FD_ENV)
         .env("DEFE_ENV", "1")
         .env("DEFE_ENV_SCHEMA_VERSION", "1")
         .env("DEFE_ENV_ROOT", &args.root)
@@ -777,15 +823,8 @@ async fn run_child(
     let original_foreground = has_tty
         .then(|| unsafe { libc::tcgetpgrp(libc::STDIN_FILENO) })
         .filter(|group| *group > 0);
-    if unsafe { libc::fcntl(args.pgid_fd, libc::F_SETFD, libc::FD_CLOEXEC) } == -1 {
-        return Err(std::io::Error::last_os_error()).context("protect parent PGID channel");
-    }
-    #[cfg(target_os = "linux")]
-    if unsafe { libc::prctl(libc::PR_SET_CHILD_SUBREAPER, 1, 0, 0, 0) } != 0 {
-        return Err(std::io::Error::last_os_error()).context("become environment child subreaper");
-    }
     child.as_std_mut().process_group(0);
-    let mut child = match child.spawn() {
+    let mut child = match supervisor.spawn(&mut child) {
         Ok(child) => child,
         Err(error) => {
             unsafe {
@@ -799,17 +838,12 @@ async fn run_child(
     };
     unsafe { libc::close(gate[0]) };
     let child_pid = i32::try_from(child.id().context("environment child has no pid")?)?;
-    if let Err(error) = publish_child_pgid(child_pid, args.pgid_fd) {
-        unsafe { libc::close(gate[1]) };
-        let _ = terminate_child_group(&mut child, child_pid).await;
-        return Err(error);
-    }
     // The composer becomes a background process after this transfer. Ignore
     // SIGTTOU until it has reclaimed the terminal; the child was already spawned
     // with the default disposition.
     let previous_sigttou = has_tty.then(|| unsafe { libc::signal(libc::SIGTTOU, libc::SIG_IGN) });
     if has_tty && unsafe { libc::tcsetpgrp(libc::STDIN_FILENO, child_pid) } != 0 {
-        let _ = terminate_child_group(&mut child, child_pid).await;
+        let _ = supervisor.terminate_and_reap();
         if let Some(handler) = previous_sigttou {
             unsafe { libc::signal(libc::SIGTTOU, handler) };
         }
@@ -822,16 +856,11 @@ async fn run_child(
     let gate_released = unsafe { libc::write(gate[1], b"\n".as_ptr().cast(), 1) } == 1;
     unsafe { libc::close(gate[1]) };
     let status: Result<ExitStatus> = if gate_released {
-        tokio::select! {
-            status = child.wait() => status.map_err(Into::into),
-            _ = interrupt.recv() => terminate_child_group(&mut child, child_pid).await,
-            _ = terminate.recv() => terminate_child_group(&mut child, child_pid).await,
-        }
+        child.wait().await.map_err(Into::into)
     } else {
-        let _ = terminate_child_group(&mut child, child_pid).await;
         Err(anyhow::anyhow!("release environment child launch gate"))
     };
-    let drain_result = drain_child_group(child_pid).await;
+    let drain_result = supervisor.terminate_and_reap();
     let restore_result = restore_terminal(original_foreground);
     if let Some(handler) = previous_sigttou {
         unsafe { libc::signal(libc::SIGTTOU, handler) };
@@ -839,17 +868,6 @@ async fn run_child(
     restore_result?;
     drain_result?;
     status
-}
-
-fn publish_child_pgid(child_pid: i32, fd: i32) -> Result<()> {
-    let bytes = child_pid.to_string();
-    let written = unsafe { libc::write(fd, bytes.as_ptr().cast(), bytes.len()) };
-    unsafe { libc::close(fd) };
-    ensure!(
-        written == isize::try_from(bytes.len())?,
-        "publish environment child process group"
-    );
-    Ok(())
 }
 
 fn restore_terminal(original_foreground: Option<i32>) -> Result<()> {
@@ -867,60 +885,21 @@ fn restore_terminal(original_foreground: Option<i32>) -> Result<()> {
     }
 }
 
-async fn terminate_child_group(
-    child: &mut tokio::process::Child,
-    process_group: i32,
-) -> Result<ExitStatus> {
-    // The child leads the isolated environment-command process group.
-    unsafe { libc::kill(-process_group, libc::SIGTERM) };
-    match tokio::time::timeout(Duration::from_secs(5), child.wait()).await {
-        Ok(status) => Ok(status?),
-        Err(_) => {
-            // Do not allow a stuck descendant to outlive the resource leases.
-            unsafe { libc::kill(-process_group, libc::SIGKILL) };
-            Ok(child.wait().await?)
-        }
-    }
-}
-
-async fn drain_child_group(process_group: i32) -> Result<()> {
-    reap_group(process_group);
-    if unsafe { libc::kill(-process_group, 0) } != 0 {
-        return Ok(());
-    }
-    unsafe { libc::kill(-process_group, libc::SIGTERM) };
-    let graceful_deadline = tokio::time::Instant::now() + Duration::from_millis(500);
-    while tokio::time::Instant::now() < graceful_deadline {
-        reap_group(process_group);
-        if unsafe { libc::kill(-process_group, 0) } != 0 {
-            return Ok(());
-        }
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
-    unsafe { libc::kill(-process_group, libc::SIGKILL) };
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
-    while tokio::time::Instant::now() < deadline {
-        reap_group(process_group);
-        if unsafe { libc::kill(-process_group, 0) } != 0 {
-            return Ok(());
-        }
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
-    bail!("environment process group {process_group} survived SIGKILL")
-}
-
-fn reap_group(process_group: i32) {
-    let mut status = 0;
-    while unsafe { libc::waitpid(-process_group, &mut status, libc::WNOHANG) } > 0 {}
-}
-
-async fn run_command(command: &mut Command, name: &str, timeout: Duration) -> Result<String> {
+async fn run_command(
+    supervisor: &DescendantSupervisor,
+    command: &mut Command,
+    name: &str,
+    timeout: Duration,
+) -> Result<String> {
     command
         .kill_on_drop(true)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    let output = tokio::time::timeout(timeout, command.output())
+    let child = supervisor
+        .spawn(command)
+        .with_context(|| format!("start {name}"))?;
+    let output = tokio::time::timeout(timeout, child.wait_with_output())
         .await
         .with_context(|| format!("{name} timed out"))??;
     ensure!(
@@ -985,7 +964,7 @@ fn print_ready(
     secrets: &Path,
     logs: &Path,
     fman_cli: &Path,
-    fmans: &[(defe_client::ResourceLease, FmanInfo)],
+    fmans: &[FmanInfo],
     gateway: &GatewaydInfo,
     flip_url: &str,
     public_endpoint_id: &str,
@@ -1011,7 +990,7 @@ fn ready_output(
     secrets: &Path,
     logs: &Path,
     fman_cli: &Path,
-    fmans: &[(defe_client::ResourceLease, FmanInfo)],
+    fmans: &[FmanInfo],
     gateway: &GatewaydInfo,
     flip_url: &str,
     public_endpoint_id: &str,
@@ -1036,7 +1015,7 @@ fn ready_output(
         shell_escape(std::ffi::OsStr::new(FMAN_OPERATOR_UI_DIR))
     )
     .expect("write to string");
-    for (index, (_, fman)) in fmans.iter().enumerate() {
+    for (index, fman) in fmans.iter().enumerate() {
         let number = index + 1;
         writeln!(
             output,
@@ -1118,6 +1097,23 @@ fn stopped_manifest(manifest: &Manifest<'_>) -> Result<serde_json::Value> {
     Ok(stopped)
 }
 
+fn invalidate_ready_manifest(path: &Path) {
+    let Ok(contents) = fs::read(path) else {
+        return;
+    };
+    let Ok(mut manifest) = serde_json::from_slice::<serde_json::Value>(&contents) else {
+        let _ = fs::remove_file(path);
+        return;
+    };
+    manifest["ready"] = false.into();
+    manifest["state"] = "stopped".into();
+    manifest["gateway"]["state"] = "stopped".into();
+    manifest["flip"]["state"] = "stopped".into();
+    if write_json_atomic(path, &manifest).is_err() {
+        let _ = fs::remove_file(path);
+    }
+}
+
 fn parse_args(args: Vec<std::ffi::OsString>) -> Result<Args> {
     let mut root = None;
     let mut logs_dir = None;
@@ -1160,10 +1156,6 @@ fn parse_args(args: Vec<std::ffi::OsString>) -> Result<Args> {
         load_test_tool: load_test_tool.context("internal --load-test-tool argument is missing")?,
         complete_liquidity,
         command,
-        pgid_fd: std::env::var(PGID_FD_ENV)
-            .context("internal parent PGID channel is missing")?
-            .parse()
-            .context("internal parent PGID channel is invalid")?,
     })
 }
 
@@ -1178,16 +1170,15 @@ mod tests {
     use std::path::Path;
     use std::path::PathBuf;
     use std::process::Stdio;
+    use std::sync::Arc;
     use std::time::Duration;
 
     use super::{
-        Args, BitcoinManifest, FederationManifest, FlipManifest, GatewayManifest, Manifest,
-        exit_code, fman_api_url, ready_output, run_child, shell_escape, stopped_manifest,
-        write_tools,
+        Args, BitcoinManifest, DescendantSupervisor, FederationManifest, FlipManifest,
+        GatewayManifest, Manifest, exit_code, fman_api_url, ready_output, run_child, shell_escape,
+        stopped_manifest, write_tools,
     };
-    use defe_client::{
-        BitcoindInfo, GatewaydInfo, ResourceDescriptor, ResourceHandleId, ResourceLease,
-    };
+    use defe_client::{BitcoindInfo, GatewaydInfo};
 
     #[test]
     fn shell_escape_handles_spaces_and_single_quotes() {
@@ -1251,16 +1242,12 @@ mod tests {
             admin_url: "http://127.0.0.1:10612".to_owned(),
             admin_password: "fman-secret".to_owned(),
         };
-        let lease = ResourceLease {
-            handle_id: ResourceHandleId(1),
-            descriptor: ResourceDescriptor::Fman(fman.clone()),
-        };
         let output = ready_output(
             Path::new("/tmp/env/env.json"),
             Path::new("/tmp/env/secrets.json"),
             Path::new("/tmp/env/logs"),
             Path::new("/tmp/fman-cli"),
-            &[(lease, fman)],
+            &[fman],
             &GatewaydInfo {
                 api_url: "http://gateway".to_owned(),
                 password: "gateway-secret".to_owned(),
@@ -1323,7 +1310,6 @@ mod tests {
             load_test_tool: recorder.clone(),
             complete_liquidity: false,
             command: vec![],
-            pgid_fd: -1,
         };
         let fman = defe_client::FmanInfo {
             locator: "locator".into(),
@@ -1332,13 +1318,7 @@ mod tests {
             admin_url: "http://fman".into(),
             admin_password: "fman-secret".into(),
         };
-        let fmans = vec![(
-            ResourceLease {
-                handle_id: ResourceHandleId(1),
-                descriptor: ResourceDescriptor::Fman(fman.clone()),
-            },
-            fman,
-        )];
+        let fmans = vec![fman];
         let gateway = GatewaydInfo {
             api_url: "http://gateway".into(),
             password: "gateway-secret".into(),
@@ -1490,6 +1470,94 @@ mod tests {
     }
 
     #[cfg(target_os = "linux")]
+    #[test]
+    fn descendant_supervisor_reaps_active_and_disowned_job_control_groups() {
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--ignored",
+                "--exact",
+                "tests::descendant_supervisor_helper",
+                "--nocapture",
+            ])
+            .env("DEFE_ENV_DESCENDANT_HELPER", "1")
+            .status()
+            .unwrap();
+        assert!(status.success());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[ignore = "spawned by descendant_supervisor_reaps_active_and_disowned_job_control_groups"]
+    #[test]
+    fn descendant_supervisor_helper() {
+        if std::env::var_os("DEFE_ENV_DESCENDANT_HELPER").is_none() {
+            return;
+        }
+        let supervisor = Arc::new(DescendantSupervisor::establish().unwrap());
+
+        let mut active = std::process::Command::new("sh")
+            .args(["-c", "exec setsid sleep 600"])
+            .spawn()
+            .unwrap();
+        let active_pid = i32::try_from(active.id()).unwrap();
+
+        let root = tempfile::tempdir().unwrap();
+        let pid_file = root.path().join("disowned.pid");
+        let status = std::process::Command::new("sh")
+            .arg("-c")
+            .arg("setsid sleep 600 & echo $! >\"$1\"")
+            .arg("sh")
+            .arg(&pid_file)
+            .status()
+            .unwrap();
+        assert!(status.success());
+        let disowned_pid = std::fs::read_to_string(pid_file)
+            .unwrap()
+            .trim()
+            .parse::<i32>()
+            .unwrap();
+
+        let barrier = Arc::new(std::sync::Barrier::new(2));
+        let cleanups = (0..2)
+            .map(|_| {
+                let supervisor = Arc::clone(&supervisor);
+                let barrier = Arc::clone(&barrier);
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    supervisor.terminate_and_reap().unwrap();
+                    for pid in [active_pid, disowned_pid] {
+                        assert_eq!(
+                            unsafe { libc::kill(pid, 0) },
+                            -1,
+                            "cleanup returned while process {pid} remained"
+                        );
+                    }
+                })
+            })
+            .collect::<Vec<_>>();
+        for cleanup in cleanups {
+            cleanup.join().unwrap();
+        }
+        let mut late_child = tokio::process::Command::new("true");
+        assert!(
+            supervisor.spawn(&mut late_child).is_err(),
+            "teardown reopened subprocess admission"
+        );
+        let _ = active.wait();
+        for (kind, pid) in [("active", active_pid), ("disowned", disowned_pid)] {
+            assert_eq!(
+                unsafe { libc::kill(pid, 0) },
+                -1,
+                "{kind} process {pid} survived: {}",
+                std::fs::read_to_string(format!("/proc/{pid}/status")).unwrap_or_default()
+            );
+            assert_eq!(
+                std::io::Error::last_os_error().raw_os_error(),
+                Some(libc::ESRCH)
+            );
+        }
+    }
+
+    #[cfg(target_os = "linux")]
     #[ignore = "spawned by pty_foreground_interrupt_returns_to_shell_and_preserves_shell_status"]
     #[tokio::test]
     async fn pty_launcher_helper() {
@@ -1498,12 +1566,6 @@ mod tests {
         }
         let root = std::env::temp_dir().join(format!("defe-env-pty-{}", std::process::id()));
         std::fs::create_dir_all(&root).unwrap();
-        let mut pgid_pipe = [0_i32; 2];
-        assert_eq!(unsafe { libc::pipe(pgid_pipe.as_mut_ptr()) }, 0);
-        assert_ne!(
-            unsafe { libc::fcntl(pgid_pipe[0], libc::F_SETFD, libc::FD_CLOEXEC) },
-            -1
-        );
         let args = Args {
             root: root.clone(),
             logs_dir: root.join("logs"),
@@ -1514,12 +1576,8 @@ mod tests {
             load_test_tool: "/bin/false".into(),
             complete_liquidity: false,
             command: vec![OsString::from("sh"), OsString::from("-i")],
-            pgid_fd: pgid_pipe[1],
         };
-        let mut interrupt =
-            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt()).unwrap();
-        let mut terminate =
-            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()).unwrap();
+        let supervisor = DescendantSupervisor::establish().unwrap();
         let status = run_child(
             &args.command,
             &args,
@@ -1533,45 +1591,10 @@ mod tests {
             "http://gateway",
             "http://flip",
             "flip-id",
-            &mut interrupt,
-            &mut terminate,
+            &supervisor,
         )
         .await
         .unwrap();
-        let mut pgid_reader = unsafe { std::fs::File::from_raw_fd(pgid_pipe[0]) };
-        let mut published_pgid = String::new();
-        pgid_reader.read_to_string(&mut published_pgid).unwrap();
-        assert!(!published_pgid.is_empty());
         std::process::exit(exit_code(status));
-    }
-
-    #[tokio::test]
-    async fn external_termination_reaps_the_environment_process_group() {
-        #[cfg(target_os = "linux")]
-        assert_eq!(
-            unsafe { libc::prctl(libc::PR_SET_CHILD_SUBREAPER, 1, 0, 0, 0) },
-            0
-        );
-        let mut child = tokio::process::Command::new("sh");
-        child
-            .args([
-                "-c",
-                "trap 'exit 0' TERM; (trap '' TERM; while :; do sleep 1; done) & wait",
-            ])
-            .as_std_mut()
-            .process_group(0);
-        let mut child = child.spawn().unwrap();
-        let group = i32::try_from(child.id().unwrap()).unwrap();
-        tokio::time::sleep(Duration::from_millis(50)).await;
-        let status = super::terminate_child_group(&mut child, group)
-            .await
-            .unwrap();
-        super::drain_child_group(group).await.unwrap();
-        assert!(status.success());
-        assert_eq!(unsafe { libc::kill(-group, 0) }, -1);
-        assert_eq!(
-            std::io::Error::last_os_error().raw_os_error(),
-            Some(libc::ESRCH)
-        );
     }
 }

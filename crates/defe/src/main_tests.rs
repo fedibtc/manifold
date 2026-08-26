@@ -1,7 +1,5 @@
 use std::ffi::OsString;
 use std::fs;
-use std::os::fd::FromRawFd as _;
-use std::os::unix::process::{CommandExt as _, ExitStatusExt as _};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -116,59 +114,27 @@ fn parse_env_keeps_server_options_and_forwards_only_environment_arguments() {
 }
 
 #[tokio::test]
-async fn graceful_exec_shutdown_preserves_a_successful_child_status() {
+async fn environment_shutdown_waits_for_composer_cleanup_and_preserves_status() {
+    let root = std::env::temp_dir().join(format!("defe-composer-cleanup-{}", std::process::id()));
+    fs::create_dir_all(&root).unwrap();
+    let cleaned = root.join("cleaned");
     let mut child = Command::new("sh")
-        .args(["-c", "trap 'exit 0' TERM; while :; do sleep 1; done"])
+        .arg("-c")
+        .arg("trap 'printf cleaned >\"$CLEANED\"; exit 0' TERM; while :; do sleep 1; done")
+        .env("CLEANED", &cleaned)
         .spawn()
         .expect("spawn signal-aware test composer");
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
 
     tokio::time::sleep(Duration::from_millis(50)).await;
     shutdown_tx.send(true).expect("request parent shutdown");
-    let status = wait_for_exec_child(&mut child, shutdown_rx, Some(Path::new("/unused")), None)
+    let status = wait_for_exec_child(&mut child, shutdown_rx, Some(Path::new("/unused")))
         .await
         .expect("wait for graceful composer exit");
 
     assert!(status.success(), "graceful child status: {status:?}");
-}
-
-#[tokio::test]
-async fn forced_environment_fallback_kills_the_recorded_child_group() {
-    let root = std::env::temp_dir().join(format!("defe-parent-kill-{}", std::process::id()));
-    fs::create_dir_all(&root).unwrap();
-    let mut pipe = [0_i32; 2];
-    assert_eq!(unsafe { libc::pipe(pipe.as_mut_ptr()) }, 0);
-    assert_ne!(
-        unsafe { libc::fcntl(pipe[1], libc::F_SETFD, libc::FD_CLOEXEC) },
-        -1
-    );
-    let mut child = Command::new("sh");
-    child
-        .args([
-            "-c",
-            "trap '' TERM; (trap '' TERM; while :; do sleep 1; done) & wait",
-        ])
-        .as_std_mut()
-        .process_group(0);
-    let mut child = child.spawn().unwrap();
-    let process_group = child.id().unwrap();
-    let bytes = process_group.to_string();
-    assert_eq!(
-        unsafe { libc::write(pipe[1], bytes.as_ptr().cast(), bytes.len()) },
-        isize::try_from(bytes.len()).unwrap()
-    );
-    unsafe { libc::close(pipe[1]) };
-    assert_ne!(
-        unsafe { libc::fcntl(pipe[0], libc::F_SETFL, libc::O_NONBLOCK) },
-        -1
-    );
-    let mut pgid_reader = unsafe { fs::File::from_raw_fd(pipe[0]) };
-    tokio::time::sleep(Duration::from_millis(50)).await;
-
-    terminate_recorded_environment_group(&mut pgid_reader).await;
-    let status = child.wait().await.unwrap();
-    assert_eq!(status.signal(), Some(libc::SIGKILL));
-    let _ = fs::remove_dir_all(root);
+    assert_eq!(fs::read_to_string(&cleaned).unwrap(), "cleaned");
+    fs::remove_dir_all(root).unwrap();
 }
 
 #[test]

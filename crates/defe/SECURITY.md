@@ -8,6 +8,12 @@
   `--defe-env-bin` composer, which executes with access to the private Defe
   socket and resource descriptors.
 - Resource descriptors and exported `DEV_DEFE_*` variables are test infrastructure outputs and may reveal local temp paths and ports.
+- `defe env` provides its strict descendant lifetime boundary on Linux. It uses
+  child-subreaper adoption, `/proc` ancestry, and pidfds; pidfds prevent PID reuse
+  from redirecting teardown signals. This is process supervision for cooperative
+  same-user development and CI, not a sandbox: descendants retain the user's
+  authority and can deliberately escape ancestry through privileged kernel
+  facilities or interfere with the composer.
 - All `defe` servers sharing an IPv4 loopback namespace must share one
   `DEV_DEFE_PORTALLOC_DATA_DIR` or be externally serialized. Independent
   ledgers are safe only with isolated network namespaces; otherwise servers can
