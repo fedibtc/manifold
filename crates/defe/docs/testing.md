@@ -20,6 +20,9 @@ Default `cargo test --workspace --exclude tests-e2e` or `just test` coverage sho
 - `defe exec` and `defe-cli ping` smoke tests if they do not need external binaries.
 - Push-gateway resource tests should either use fakes/unit coverage or run under `defe exec` / `just defe-serve` with `--binary-path` pointing at a directory containing a built `fedi-decentralized-push-gateway` binary.
 - Bitcoind resource tests should cover API/CLI/resource-manager wiring without requiring a real `bitcoind` binary by default. Real bitcoind lifecycle checks, if added, must be ignored or gated by an explicit opt-in environment variable.
+- `defe env` launcher tests use a fake `direnv` through the production
+  composition seam. Routine coverage requires neither a particular interactive
+  shell nor a real `direnv` installation.
 
 
 ## Opt-in ignored real relay tests

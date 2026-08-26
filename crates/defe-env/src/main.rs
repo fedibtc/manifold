@@ -39,6 +39,7 @@ mod descendant_supervisor;
 #[cfg(not(target_os = "linux"))]
 #[path = "descendant_supervisor_unsupported.rs"]
 mod descendant_supervisor;
+mod environment_launcher;
 mod flip_setup;
 mod synthetic_remit;
 mod traffic;
@@ -125,6 +126,7 @@ struct FlipManifest<'a> {
 
 fn main() {
     let raw_args = std::env::args_os().skip(1).collect::<Vec<_>>();
+    environment_launcher::dispatch(&raw_args);
     if raw_args
         .first()
         .is_some_and(|arg| arg == "--internal-child-gate")
@@ -504,8 +506,9 @@ async fn run_internal_pty_test(
         complete_liquidity: false,
         command: vec![OsString::from("sh"), OsString::from("-i")],
     };
+    let launch_plan = environment_launcher::prepare(&args.command, &args.root)?;
     run_child(
-        &args.command,
+        launch_plan,
         &args,
         &root.join("env.json"),
         &root.join("secrets.json"),
@@ -639,6 +642,9 @@ async fn run(args: Args, incoming_supervisor: Arc<DescendantSupervisor>) -> Resu
     fs::create_dir_all(&args.root)
         .with_context(|| format!("create environment root {}", args.root.display()))?;
     set_private(&args.root)?;
+    let launch_plan = environment_launcher::prepare(&args.command, &args.root)?;
+    let pnpm = environment_launcher::resolve_required_executable("pnpm")
+        .context("defe env requires executable pnpm for the generated fman-ui tool")?;
     // These owners are declared before the supervisor so Rust drops the
     // supervisor first on every error and async-cancellation path.
     let mut defe;
@@ -825,6 +831,7 @@ async fn run(args: Args, incoming_supervisor: Arc<DescendantSupervisor>) -> Resu
         &bin_dir,
         &args,
         &defe_env,
+        &pnpm,
         &manifest_file,
         &secrets_file,
         &invite_file,
@@ -841,6 +848,7 @@ async fn run(args: Args, incoming_supervisor: Arc<DescendantSupervisor>) -> Resu
         &secrets_file,
         &args.logs_dir,
         &args.fman_cli,
+        &pnpm,
         &fmans,
         &gateway,
         &flip.admin_url,
@@ -848,7 +856,7 @@ async fn run(args: Args, incoming_supervisor: Arc<DescendantSupervisor>) -> Resu
     );
 
     let child_result = run_child(
-        &args.command,
+        launch_plan,
         &args,
         &manifest_file,
         &secrets_file,
@@ -1002,6 +1010,7 @@ fn write_tools(
     bin_dir: &Path,
     args: &Args,
     defe_env: &Path,
+    pnpm: &Path,
     manifest: &Path,
     secrets: &Path,
     invite: &Path,
@@ -1089,8 +1098,10 @@ fn write_tools(
     ui.push_str(
         "  *) echo 'usage: fman-ui GUARDIAN' >&2; exit 2 ;;\nesac\n\
          echo \"FMan UI: http://127.0.0.1:5174  password: $password\" >&2\n\
-         VITE_MOCKS=off FMAN_ADMIN_PROXY_TARGET=\"$target\" exec pnpm --dir ",
+         VITE_MOCKS=off FMAN_ADMIN_PROXY_TARGET=\"$target\" exec ",
     );
+    ui.push_str(&shell_escape(pnpm.as_os_str()));
+    ui.push_str(" --dir ");
     ui.push_str(&shell_escape(OsStr::new(FMAN_OPERATOR_UI_DIR)));
     ui.push_str(" --filter fman exec vite --host 127.0.0.1\n");
     write_wrapper(&bin_dir.join("fman-ui"), &ui)?;
@@ -1180,7 +1191,7 @@ fn write_wrapper(path: &Path, contents: &str) -> Result<()> {
 
 #[allow(clippy::too_many_arguments)]
 async fn run_child(
-    requested: &[OsString],
+    launch_plan: environment_launcher::LaunchPlan,
     args: &Args,
     manifest: &Path,
     secrets: &Path,
@@ -1194,17 +1205,37 @@ async fn run_child(
     flip_endpoint_id: &str,
     supervisor: &DescendantSupervisor,
 ) -> Result<ExitStatus> {
-    let command = if requested.is_empty() {
-        vec![std::env::var_os("SHELL").unwrap_or_else(|| OsString::from("/bin/sh"))]
-    } else {
-        requested.to_vec()
-    };
+    let command = launch_plan.build(
+        bin_dir,
+        &[
+            ("DEFE_ENV", OsString::from("1")),
+            ("DEFE_ENV_SCHEMA_VERSION", OsString::from("1")),
+            ("DEFE_ENV_ROOT", args.root.clone().into_os_string()),
+            ("DEFE_ENV_MANIFEST", manifest.as_os_str().to_owned()),
+            ("DEFE_ENV_SECRETS", secrets.as_os_str().to_owned()),
+            ("DEFE_ENV_LOG_DIR", args.logs_dir.clone().into_os_string()),
+            ("DEFE_ENV_BIN_DIR", bin_dir.as_os_str().to_owned()),
+            ("DEFE_ENV_INVITE_FILE", invite.as_os_str().to_owned()),
+            ("DEFE_ENV_FI_STATE_DIR", fi_state_dir.as_os_str().to_owned()),
+            (
+                "DEFE_ENV_IROH_CONNECT_OVERRIDES_FILE",
+                routes_file.as_os_str().to_owned(),
+            ),
+            ("DEFE_ENV_NOSTR_RELAY_URL", OsString::from(relay_url)),
+            ("DEFE_ENV_GATEWAY_API_URL", OsString::from(gateway_url)),
+            ("DEFE_ENV_FLIP_ADMIN_URL", OsString::from(flip_url)),
+            (
+                "DEFE_ENV_FLIP_PUBLIC_ENDPOINT_ID",
+                OsString::from(flip_endpoint_id),
+            ),
+        ],
+    );
     let mut gate = [0_i32; 2];
     if unsafe { libc::pipe(gate.as_mut_ptr()) } != 0 {
         return Err(std::io::Error::last_os_error()).context("create child launch gate");
     }
     #[cfg(not(test))]
-    let mut child = {
+    let child = {
         let mut child = Command::new(std::env::current_exe()?);
         child
             .arg("--internal-child-gate")
@@ -1215,7 +1246,7 @@ async fn run_child(
         child
     };
     #[cfg(test)]
-    let mut child = {
+    let child = {
         let mut child = Command::new("sh");
         let read_fd = gate[0].to_string();
         let write_fd = gate[1].to_string();
@@ -1230,27 +1261,6 @@ async fn run_child(
             .args(&command);
         child
     };
-    child
-        .env("DEFE_ENV", "1")
-        .env("DEFE_ENV_SCHEMA_VERSION", "1")
-        .env("DEFE_ENV_ROOT", &args.root)
-        .env("DEFE_ENV_MANIFEST", manifest)
-        .env("DEFE_ENV_SECRETS", secrets)
-        .env("DEFE_ENV_LOG_DIR", &args.logs_dir)
-        .env("DEFE_ENV_BIN_DIR", bin_dir)
-        .env("DEFE_ENV_INVITE_FILE", invite)
-        .env("DEFE_ENV_FI_STATE_DIR", fi_state_dir)
-        .env("DEFE_ENV_IROH_CONNECT_OVERRIDES_FILE", routes_file)
-        .env("DEFE_ENV_NOSTR_RELAY_URL", relay_url)
-        .env("DEFE_ENV_GATEWAY_API_URL", gateway_url)
-        .env("DEFE_ENV_FLIP_ADMIN_URL", flip_url)
-        .env("DEFE_ENV_FLIP_PUBLIC_ENDPOINT_ID", flip_endpoint_id);
-    let mut paths = vec![bin_dir.to_path_buf()];
-    paths.extend(std::env::split_paths(
-        &std::env::var_os("PATH").unwrap_or_default(),
-    ));
-    child.env("PATH", std::env::join_paths(paths)?);
-
     // Inspect and transfer only this process's controlling terminal.
     let has_tty = unsafe { libc::isatty(libc::STDIN_FILENO) } == 1;
     let original_foreground = has_tty
@@ -1453,6 +1463,7 @@ fn print_ready(
     secrets: &Path,
     logs: &Path,
     fman_cli: &Path,
+    pnpm: &Path,
     fmans: &[FmanInfo],
     gateway: &GatewaydInfo,
     flip_url: &str,
@@ -1465,6 +1476,7 @@ fn print_ready(
             secrets,
             logs,
             fman_cli,
+            pnpm,
             fmans,
             gateway,
             flip_url,
@@ -1479,6 +1491,7 @@ fn ready_output(
     secrets: &Path,
     logs: &Path,
     fman_cli: &Path,
+    pnpm: &Path,
     fmans: &[FmanInfo],
     gateway: &GatewaydInfo,
     flip_url: &str,
@@ -1500,7 +1513,8 @@ fn ready_output(
     .expect("write to string");
     writeln!(
         output,
-        "FMan UI dependencies: pnpm --dir {} install --frozen-lockfile",
+        "FMan UI dependencies: {} --dir {} install --frozen-lockfile",
+        shell_escape(pnpm.as_os_str()),
         shell_escape(std::ffi::OsStr::new(FMAN_OPERATOR_UI_DIR))
     )
     .expect("write to string");
@@ -1513,8 +1527,9 @@ fn ready_output(
         .expect("write to string");
         writeln!(
             output,
-            "        VITE_MOCKS=off FMAN_ADMIN_PROXY_TARGET={} pnpm --dir {} --filter fman exec vite --host 127.0.0.1",
-            shell_escape(std::ffi::OsStr::new(&fman.admin_url)),
+        "        VITE_MOCKS=off FMAN_ADMIN_PROXY_TARGET={} {} --dir {} --filter fman exec vite --host 127.0.0.1",
+        shell_escape(std::ffi::OsStr::new(&fman.admin_url)),
+        shell_escape(pnpm.as_os_str()),
             shell_escape(std::ffi::OsStr::new(FMAN_OPERATOR_UI_DIR))
         )
         .expect("write to string");
@@ -1763,6 +1778,7 @@ mod tests {
             Path::new("/tmp/env/secrets.json"),
             Path::new("/tmp/env/logs"),
             Path::new("/tmp/fman-cli"),
+            Path::new("/tmp/exact-pnpm"),
             &[fman],
             &GatewaydInfo {
                 api_url: "http://gateway".to_owned(),
@@ -1774,7 +1790,7 @@ mod tests {
 
         assert!(output.contains("FMan 1 operator UI (start one at a time): http://127.0.0.1:5174"));
         assert!(output.contains(
-            "VITE_MOCKS=off FMAN_ADMIN_PROXY_TARGET='http://127.0.0.1:10612' pnpm --dir "
+            "VITE_MOCKS=off FMAN_ADMIN_PROXY_TARGET='http://127.0.0.1:10612' '/tmp/exact-pnpm' --dir "
         ));
         assert!(output.contains("--filter fman exec vite --host 127.0.0.1"));
         assert!(output.contains("FMan 1 operator UI password: fman-secret"));
@@ -1849,10 +1865,18 @@ mod tests {
             data_dir: root.join("bitcoin data"),
         };
         let bin = root.join("bin");
+        let pnpm = root.join("exact-pnpm");
+        std::fs::write(
+            &pnpm,
+            "#!/bin/sh\nprintf 'pnpm' >>\"$RECORD\"\nfor arg in \"$@\"; do printf '[%s]' \"$arg\" >>\"$RECORD\"; done\nprintf '\\n' >>\"$RECORD\"\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&pnpm, std::fs::Permissions::from_mode(0o700)).unwrap();
         write_tools(
             &bin,
             &args,
             &locker,
+            &pnpm,
             &root.join("env.json"),
             &root.join("secrets.json"),
             &root.join("invite"),
@@ -1869,6 +1893,7 @@ mod tests {
             std::process::Command::new(bin.join(tool))
                 .args(arguments)
                 .env("RECORD", &record)
+                .env("PATH", "/bin")
                 .status()
                 .unwrap()
         };
@@ -1876,6 +1901,7 @@ mod tests {
         assert!(run("fi-cli", &["status", "two words"]).success());
         assert!(run("gateway", &["info", "two words"]).success());
         assert!(run("bitcoin-cli", &["getblockchaininfo", "two words"]).success());
+        assert!(run("fman-ui", &["1"]).success());
         let collect = run("fees", &["collect", "--guardian", "1"]);
         assert_eq!(collect.code(), Some(23));
         let before_mixed = std::fs::read(&record).unwrap();
@@ -1900,6 +1926,8 @@ mod tests {
         assert!(recorded.contains("args[--data-dir]["));
         assert!(recorded.contains("][guardian-fees][collect][seat-one]"));
         assert!(recorded.contains("][guardian-fees][show][seat-one]"));
+        assert!(recorded.contains("pnpm[--dir]"));
+        assert!(recorded.contains("[--filter][fman][exec][vite][--host][127.0.0.1]"));
         assert!(
             std::fs::read_to_string(bin.join("fi-cli-locked"))
                 .unwrap()

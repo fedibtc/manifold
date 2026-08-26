@@ -13,8 +13,11 @@ Both modes keep the server and its resources local to the developer or CI job.
 `defe env` uses the same one-shot server boundary while its composer holds
 the leases needed to form a federation, connect a gateway, and advertise FLIP.
 After readiness it launches an explicit command or `$SHELL` with generated
-cross-shell tools and stable `DEFE_ENV_*` discovery paths. That child's lifetime
-is the environment lifetime. The multithreaded Linux composer remains outside
+cross-shell tools and stable `DEFE_ENV_*` discovery paths. The child environment
+removes an inherited active development-toolchain overlay before applying the
+Defe runtime overlay; the default shell also starts in a private cwd whose
+ancestors contain no shell-environment files. That child's lifetime is the
+environment lifetime. The multithreaded Linux composer remains outside
 the broker's user and PID namespaces; status proxies place every setup and
 command subprocess inside the PID namespace across interactive job-control
 groups and daemonization. Destroying and reaping namespace init is

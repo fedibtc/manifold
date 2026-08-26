@@ -166,6 +166,23 @@ POSIX shell keyword and therefore cannot be a cross-shell executable name.) Ever
 wrapper selects the exact binary, state, endpoint, and dummy credential chosen by
 the composer and forwards its remaining arguments unchanged.
 
+The default shell starts in the private `$DEFE_ENV_ROOT/work` directory after
+Defe verifies that the directory and its ancestors contain no `.envrc` or
+`.env`. When
+the caller has an active direnv environment, Defe restores the pre-direnv user
+environment before adding its runtime variables and generated-tool path. It
+then clears transient direnv tracking, so prompt hooks cannot later restore a
+stale build `PATH`. An explicit `COMMAND` keeps the caller's current directory
+for relative arguments but receives the same environment neutralization.
+Defe rejects a default relative or non-executable `$SHELL`, an active direnv
+environment without an executable `direnv`, and active neutralization when `/`
+contains `.envrc` or `.env`; each case would make the runtime boundary
+ambiguous or execute an unexpected root environment. It also resolves an
+executable `pnpm` from the caller's pre-neutralization `PATH` for the generated
+`fman-ui` tool. A missing `pnpm` fails before service setup even when that tool
+would not be invoked, so every advertised runtime command remains usable after
+the development-toolchain overlay is removed.
+
 `fees show --guardian N` and `fees collect --guardian N|--all` invoke FMan's real
 guardian-fee admin path with the formed seat IDs. Collection prints a fresh
 post-collect status. These commands do not synthesize remittances or imply that

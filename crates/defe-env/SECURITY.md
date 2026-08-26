@@ -4,6 +4,19 @@
 not a multi-tenant service and must use only dummy credentials and test funds.
 
 - Trust the selected Defe socket and every selected resource/composer binary.
+- When `DIRENV_DIFF` is active, Defe also trusts the executable `direnv` selected
+  from the caller's `PATH`. Before resource setup it resolves that binary and
+  rejects `/.envrc` or `/.env`; at launch, `direnv exec /` restores the
+  pre-development baseline before Defe applies its runtime overlay. The final
+  launcher removes `DIRENV_DIFF`, `DIRENV_DIR`, `DIRENV_FILE`,
+  `DIRENV_WATCHES`, and `DIRENV_IN_ENVRC`, then prepends generated tools.
+- Before setup, Defe requires and trusts the exact `pnpm` selected from the
+  caller's development `PATH`. Generated and advertised FMan UI commands pin
+  that absolute path, so the restored neutral `PATH` cannot redirect them.
+- The default shell starts in a canonical private work directory only after Defe
+  verifies that no cwd ancestor contains `.envrc` or `.env`. Explicit commands
+  retain the invocation cwd and relative-path behavior; their code remains free
+  to activate an environment intentionally.
 - The environment deliberately connects loopback Admin APIs and a local Nostr
   relay. Do not treat those endpoints or their fabricated development trust
   material as production identities.
