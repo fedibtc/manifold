@@ -11,9 +11,11 @@ use defe::resource_manager::{
 use std::env;
 use std::ffi::OsString;
 use std::fs;
+use std::io::Read as _;
+use std::os::fd::FromRawFd as _;
 use std::os::unix::fs::{DirBuilderExt as _, FileTypeExt as _, PermissionsExt as _};
 use std::os::unix::net::{UnixListener as StdUnixListener, UnixStream as StdUnixStream};
-use std::os::unix::process::ExitStatusExt;
+use std::os::unix::process::{CommandExt as _, ExitStatusExt};
 use std::path::{Path, PathBuf};
 use std::process::ExitStatus;
 use std::sync::Arc;
@@ -29,10 +31,11 @@ use defe_api::{
     Response, SharingMode,
 };
 
-const USAGE: &str = "Usage: defe [opts...] <command>\n\nCommands:\n  exec <cmd...>\n  staging [--complete-liquidity]\n  serve --listenfd [--log-requests]\n\nOptions:\n  --tmp-dir <path>\n  --keep-temp\n  --no-keep-temp-on-failure\n  --log-dir <path>\n  --log-requests\n  --binary-path <dir>\n  --nostr-rs-relay-bin <path>\n  --push-gateway-bin <path>\n  --bitcoind-bin <path>\n  --fleet-manager-bin <path>\n  --fman-cli-bin <path>\n  --fi-cli-bin <path>\n  --liquidity-manager-daemon-bin <path>\n  --gatewayd-bin <path>\n  --gateway-cli-bin <path>\n  --defe-staging-bin <path>";
+const USAGE: &str = "Usage: defe [opts...] <command>\n\nCommands:\n  exec <cmd...>\n  env [--complete-liquidity] [-- COMMAND...]\n  serve --listenfd [--log-requests]\n\nOptions:\n  --tmp-dir <path>\n  --keep-temp\n  --no-keep-temp-on-failure\n  --log-dir <path>\n  --log-requests\n  --binary-path <dir>\n  --nostr-rs-relay-bin <path>\n  --push-gateway-bin <path>\n  --bitcoind-bin <path>\n  --fleet-manager-bin <path>\n  --fman-cli-bin <path>\n  --fi-cli-bin <path>\n  --liquidity-manager-daemon-bin <path>\n  --gatewayd-bin <path>\n  --gateway-cli-bin <path>\n  --defe-env-bin <path>";
 const SOCKET_FILE_NAME: &str = "s";
 const DEV_SERVER_TEMP_DIR_NAME: &str = "defe-dev-server";
 const DEFAULT_TEMP_DIR_ATTEMPTS: u16 = 256;
+const PGID_FD_ENV: &str = "DEV_DEFE_ENV_PGID_FD";
 
 fn main() {
     let args = env::args_os().skip(1).collect::<Vec<_>>();
@@ -68,11 +71,11 @@ async fn run(args: Vec<OsString>) -> Result<i32, String> {
 }
 
 async fn run_exec(exec: ExecArgs) -> Result<ExitStatus, String> {
-    if exec.command.is_empty() && exec.staging_args.is_none() {
+    if exec.command.is_empty() && exec.env_args.is_none() {
         return Err(format!("defe exec requires a command\n{USAGE}"));
     }
 
-    let staging = exec.staging_args.is_some();
+    let environment = exec.env_args.is_some();
     let log_requests = exec.options.log_requests;
     let mut generated_temp_root = None;
     let config = match prepare_server_config(exec.options, || {
@@ -89,11 +92,11 @@ async fn run_exec(exec: ExecArgs) -> Result<ExitStatus, String> {
         }
     };
     let mut command_args = exec.command;
-    if let Some(staging_args) = exec.staging_args {
+    if let Some(env_args) = exec.env_args {
         command_args = vec![
-            config.defe_staging_bin.clone(),
+            config.defe_env_bin.clone(),
             "--root".into(),
-            config.temp_root.join("staging").into_os_string(),
+            config.temp_root.join("env").into_os_string(),
             "--logs-dir".into(),
             config.log_dir.clone().into_os_string(),
             "--fi-cli".into(),
@@ -102,8 +105,19 @@ async fn run_exec(exec: ExecArgs) -> Result<ExitStatus, String> {
             config.fman_cli_bin.clone(),
             "--gateway-cli".into(),
             config.gateway_cli_bin.clone(),
+            "--bitcoin-cli".into(),
+            config.bitcoin_cli_bin.clone(),
         ];
-        command_args.extend(staging_args);
+        command_args.extend(env_args);
+        for (label, binary) in [
+            ("defe-env", &config.defe_env_bin),
+            ("fman-cli", &config.fman_cli_bin),
+            ("fi-cli", &config.fi_cli_bin),
+            ("gateway-cli", &config.gateway_cli_bin),
+            ("bitcoin-cli", &config.bitcoin_cli_bin),
+        ] {
+            validate_environment_binary(label, binary)?;
+        }
     }
     let resource_manager = create_resource_manager(&config);
     let request_logger = RequestLogger::new(log_requests);
@@ -131,9 +145,47 @@ async fn run_exec(exec: ExecArgs) -> Result<ExitStatus, String> {
     let mut command = Command::new(&command_args[0]);
     command.args(&command_args[1..]);
     command.env(DEV_DEFE_SOCKET_PATH, &socket_path);
+    let environment_manifest = environment.then(|| config.temp_root.join("env/env.json"));
+    let mut pgid_pipe = None;
+    if environment {
+        let mut pipe = [0_i32; 2];
+        if unsafe { libc::pipe(pipe.as_mut_ptr()) } != 0 {
+            return Err(format!(
+                "failed to create environment PGID channel: {}",
+                std::io::Error::last_os_error()
+            ));
+        }
+        command.env(PGID_FD_ENV, pipe[1].to_string());
+        unsafe {
+            command.as_std_mut().pre_exec(move || {
+                libc::close(pipe[0]);
+                Ok(())
+            });
+        }
+        pgid_pipe = Some(pipe);
+    }
     let status = match command.spawn() {
-        Ok(mut child) => wait_for_exec_child(&mut child, shutdown_rx.clone(), staging).await,
+        Ok(mut child) => {
+            let mut pgid_reader = pgid_pipe.map(|pipe| {
+                unsafe { libc::close(pipe[1]) };
+                unsafe { libc::fcntl(pipe[0], libc::F_SETFL, libc::O_NONBLOCK) };
+                unsafe { fs::File::from_raw_fd(pipe[0]) }
+            });
+            wait_for_exec_child(
+                &mut child,
+                shutdown_rx.clone(),
+                environment_manifest.as_deref(),
+                pgid_reader.as_mut(),
+            )
+            .await
+        }
         Err(err) => {
+            if let Some(pipe) = pgid_pipe {
+                unsafe {
+                    libc::close(pipe[0]);
+                    libc::close(pipe[1]);
+                }
+            }
             let _ = shutdown_tx.send(true);
             let _ = accept_task.await;
             resource_manager.shutdown();
@@ -269,14 +321,20 @@ fn prepare_server_config<F>(
 where
     F: FnOnce() -> Result<PathBuf, String>,
 {
-    let temp_root = match options.tmp_dir {
-        Some(temp_root) => temp_root,
-        None => default_temp_root()?,
-    };
+    let temp_root = stable_absolute_path(
+        match options.tmp_dir {
+            Some(temp_root) => temp_root,
+            None => default_temp_root()?,
+        },
+        "temp directory",
+    )?;
     validate_utf8_path(&temp_root, "temp directory")?;
     prepare_private_dir(&temp_root)?;
 
-    let log_dir = options.log_dir.unwrap_or_else(|| temp_root.join("logs"));
+    let log_dir = stable_absolute_path(
+        options.log_dir.unwrap_or_else(|| temp_root.join("logs")),
+        "log directory",
+    )?;
     validate_utf8_path(&log_dir, "log directory")?;
     fs::create_dir_all(&log_dir).map_err(|err| {
         format!(
@@ -296,6 +354,7 @@ where
         "fedi-decentralized-push-gateway",
     );
     let bitcoind_bin = resolve_binary(options.bitcoind_bin, &options.binary_paths, "bitcoind");
+    let bitcoin_cli_bin = resolve_binary(None, &options.binary_paths, "bitcoin-cli");
     let fleet_manager_bin = resolve_binary(
         options.fleet_manager_bin,
         &options.binary_paths,
@@ -314,39 +373,81 @@ where
         &options.binary_paths,
         "gateway-cli",
     );
-    let defe_staging_bin = resolve_binary(
-        options.defe_staging_bin,
-        &options.binary_paths,
-        "defe-staging",
-    );
-
+    let defe_env_bin = resolve_binary(options.defe_env_bin, &options.binary_paths, "defe-env");
     Ok(ServerConfig {
         temp_root,
         log_dir,
         relay_bin,
         push_gateway_bin,
         bitcoind_bin,
+        bitcoin_cli_bin,
         fleet_manager_bin,
         fman_cli_bin,
         fi_cli_bin,
         liquidity_manager_daemon_bin,
         gatewayd_bin,
         gateway_cli_bin,
-        defe_staging_bin,
+        defe_env_bin,
     })
 }
 
 fn resolve_binary(explicit: Option<PathBuf>, binary_paths: &[PathBuf], name: &str) -> OsString {
     if let Some(explicit) = explicit {
-        return explicit.into_os_string();
+        return absolute_path(explicit).into_os_string();
     }
 
     binary_paths
         .iter()
-        .map(|dir| dir.join(name))
+        .map(|dir| absolute_path(dir.join(name)))
         .find(|candidate| candidate.exists())
+        .or_else(|| {
+            env::var_os("PATH")
+                .into_iter()
+                .flat_map(|path| env::split_paths(&path).collect::<Vec<_>>())
+                .map(|dir| absolute_path(dir.join(name)))
+                .find(|candidate| candidate.exists())
+        })
         .map(PathBuf::into_os_string)
         .unwrap_or_else(|| OsString::from(name))
+}
+
+fn absolute_path(path: PathBuf) -> PathBuf {
+    if path.is_absolute() {
+        path
+    } else {
+        env::current_dir()
+            .map(|current| current.join(&path))
+            .unwrap_or(path)
+    }
+}
+
+fn stable_absolute_path(path: PathBuf, label: &str) -> Result<PathBuf, String> {
+    if path.is_absolute() {
+        return Ok(path);
+    }
+    env::current_dir()
+        .map(|current| current.join(path))
+        .map_err(|error| format!("failed to resolve relative {label}: {error}"))
+}
+
+fn validate_environment_binary(label: &str, binary: &OsString) -> Result<(), String> {
+    let path = Path::new(binary);
+    if path.to_str().is_none() {
+        return Err(format!("defe env requires a UTF-8 {label} path"));
+    }
+    let metadata = fs::metadata(path).map_err(|error| {
+        format!(
+            "defe env requires selected {label} at {}: {error}",
+            path.display()
+        )
+    })?;
+    if !metadata.is_file() || metadata.permissions().mode() & 0o111 == 0 || !path.is_absolute() {
+        return Err(format!(
+            "defe env requires an executable absolute {label} path: {}",
+            path.display()
+        ));
+    }
+    Ok(())
 }
 
 async fn accept_loop(
@@ -641,10 +742,11 @@ async fn write_response(stream: &mut UnixStream, response: &Response) -> Result<
 async fn wait_for_exec_child(
     child: &mut Child,
     mut shutdown: watch::Receiver<bool>,
-    graceful_shutdown: bool,
+    environment_manifest: Option<&Path>,
+    pgid_reader: Option<&mut fs::File>,
 ) -> std::io::Result<ExitStatus> {
     if *shutdown.borrow() {
-        return finish_exec_child(child, graceful_shutdown).await;
+        return finish_exec_child(child, environment_manifest, pgid_reader).await;
     }
 
     tokio::select! {
@@ -653,19 +755,31 @@ async fn wait_for_exec_child(
             if changed.is_ok() && !*shutdown.borrow() {
                 return child.wait().await;
             }
-            finish_exec_child(child, graceful_shutdown).await
+            finish_exec_child(child, environment_manifest, pgid_reader).await
         }
     }
 }
 
 async fn finish_exec_child(
     child: &mut Child,
-    graceful_shutdown: bool,
+    environment_manifest: Option<&Path>,
+    pgid_reader: Option<&mut fs::File>,
 ) -> std::io::Result<ExitStatus> {
-    if graceful_shutdown {
+    if let Some(environment_manifest) = environment_manifest {
+        if let Some(pid) = child.id() {
+            // The environment composer catches termination, reaps its foreground
+            // process group, and atomically marks the manifest stopped.
+            unsafe {
+                libc::kill(i32::try_from(pid).unwrap_or(i32::MAX), libc::SIGTERM);
+            }
+        }
         match tokio::time::timeout(Duration::from_secs(15), child.wait()).await {
             Ok(status) => status,
             Err(_) => {
+                invalidate_environment_manifest(environment_manifest);
+                if let Some(pgid_reader) = pgid_reader {
+                    terminate_recorded_environment_group(pgid_reader).await;
+                }
                 let _ = child.kill().await;
                 child.wait().await
             }
@@ -673,6 +787,50 @@ async fn finish_exec_child(
     } else {
         let _ = child.kill().await;
         child.wait().await
+    }
+}
+
+async fn terminate_recorded_environment_group(reader: &mut fs::File) {
+    let mut contents = String::new();
+    if reader.read_to_string(&mut contents).is_err() {
+        return;
+    }
+    let Ok(process_group) = contents.parse::<i32>() else {
+        return;
+    };
+    if process_group <= 1 {
+        return;
+    }
+    unsafe { libc::kill(-process_group, libc::SIGTERM) };
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(1);
+    while tokio::time::Instant::now() < deadline {
+        if unsafe { libc::kill(-process_group, 0) } != 0 {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    unsafe { libc::kill(-process_group, libc::SIGKILL) };
+}
+
+fn invalidate_environment_manifest(path: &Path) {
+    let result = (|| -> Result<(), String> {
+        let bytes = fs::read(path).map_err(|error| error.to_string())?;
+        let mut manifest: serde_json::Value =
+            serde_json::from_slice(&bytes).map_err(|error| error.to_string())?;
+        manifest["ready"] = false.into();
+        manifest["state"] = "stopped".into();
+        manifest["gateway"]["state"] = "stopped".into();
+        manifest["flip"]["state"] = "stopped".into();
+        let temporary = path.with_extension("json.tmp");
+        fs::write(&temporary, serde_json::to_vec_pretty(&manifest).unwrap())
+            .map_err(|error| error.to_string())?;
+        fs::set_permissions(&temporary, fs::Permissions::from_mode(0o600))
+            .map_err(|error| error.to_string())?;
+        fs::rename(temporary, path).map_err(|error| error.to_string())
+    })();
+    if let Err(error) = result {
+        let _ = fs::remove_file(path);
+        eprintln!("defe: removed environment manifest after invalidation failed: {error}");
     }
 }
 
@@ -803,15 +961,15 @@ fn parse_command(args: Vec<OsString>) -> Result<DefeCommand, String> {
                 options,
                 policy,
                 command: args[index + 1..].to_vec(),
-                staging_args: None,
+                env_args: None,
             }));
         }
-        if arg == "staging" {
+        if arg == "env" {
             return Ok(DefeCommand::Exec(ExecArgs {
                 options,
                 policy,
                 command: Vec::new(),
-                staging_args: Some(args[index + 1..].to_vec()),
+                env_args: Some(args[index + 1..].to_vec()),
             }));
         }
         if arg == "serve" {
@@ -881,9 +1039,9 @@ fn parse_command(args: Vec<OsString>) -> Result<DefeCommand, String> {
             index += 1;
             options.gateway_cli_bin = Some(take_path_arg(&args, index, "--gateway-cli-bin")?);
             index += 1;
-        } else if arg == "--defe-staging-bin" {
+        } else if arg == "--defe-env-bin" {
             index += 1;
-            options.defe_staging_bin = Some(take_path_arg(&args, index, "--defe-staging-bin")?);
+            options.defe_env_bin = Some(take_path_arg(&args, index, "--defe-env-bin")?);
             index += 1;
         } else {
             return Err(format!(
@@ -992,9 +1150,9 @@ fn parse_server_option(
         options.gateway_cli_bin = Some(take_path_arg(args, *index, "--gateway-cli-bin")?);
         *index += 1;
         Ok(true)
-    } else if arg == "--defe-staging-bin" {
+    } else if arg == "--defe-env-bin" {
         *index += 1;
-        options.defe_staging_bin = Some(take_path_arg(args, *index, "--defe-staging-bin")?);
+        options.defe_env_bin = Some(take_path_arg(args, *index, "--defe-env-bin")?);
         *index += 1;
         Ok(true)
     } else {
@@ -1028,7 +1186,7 @@ struct ExecArgs {
     options: ServerOptions,
     policy: TempPolicy,
     command: Vec<OsString>,
-    staging_args: Option<Vec<OsString>>,
+    env_args: Option<Vec<OsString>>,
 }
 
 #[derive(Debug)]
@@ -1052,7 +1210,7 @@ struct ServerOptions {
     liquidity_manager_daemon_bin: Option<PathBuf>,
     gatewayd_bin: Option<PathBuf>,
     gateway_cli_bin: Option<PathBuf>,
-    defe_staging_bin: Option<PathBuf>,
+    defe_env_bin: Option<PathBuf>,
 }
 
 #[derive(Debug)]
@@ -1062,13 +1220,14 @@ struct ServerConfig {
     relay_bin: OsString,
     push_gateway_bin: OsString,
     bitcoind_bin: OsString,
+    bitcoin_cli_bin: OsString,
     fleet_manager_bin: OsString,
     fman_cli_bin: OsString,
     fi_cli_bin: OsString,
     liquidity_manager_daemon_bin: OsString,
     gatewayd_bin: OsString,
     gateway_cli_bin: OsString,
-    defe_staging_bin: OsString,
+    defe_env_bin: OsString,
 }
 
 #[derive(Debug)]

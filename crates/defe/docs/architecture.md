@@ -21,8 +21,8 @@ Implementation should use these crates:
 - `crates/defe-client`
   - Client library.
   - Binary named `defe-cli`.
-- `crates/defe-staging`
-  - Foreground composer invoked by `defe staging`.
+- `crates/defe-env`
+  - Foreground composer invoked by `defe env`.
   - Holds leases while it forms a federation, connects gatewayd, configures
     FLIP, and publishes readiness for external clients.
 

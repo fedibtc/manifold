@@ -10,6 +10,7 @@ ctrlc = { version = "3.4", features = ["termination"] }
 defe-api = { path = "../defe-api" }
 defe-portalloc = { path = "../defe-portalloc" }
 fedi-decentralized-manifold-environment = { path = "../manifold-environment" }
+libc = "0.2"
 listenfd = "1"
 nostr = "0.44"
 secp256k1 = "0.30"

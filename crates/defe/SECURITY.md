@@ -5,7 +5,7 @@
 - Keep the Unix socket and temporary directory private to the current user/job.
 - Only pass trusted resource binary directories or explicit binaries using
   `--binary-path` or any `--*-bin` selector. This includes the
-  `--defe-staging-bin` composer, which executes with access to the private Defe
+  `--defe-env-bin` composer, which executes with access to the private Defe
   socket and resource descriptors.
 - Resource descriptors and exported `DEV_DEFE_*` variables are test infrastructure outputs and may reveal local temp paths and ports.
 - All `defe` servers sharing an IPv4 loopback namespace must share one

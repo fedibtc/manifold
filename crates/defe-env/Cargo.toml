@@ -1,5 +1,5 @@
 [package]
-name = "defe-staging"
+name = "defe-env"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -15,6 +15,7 @@ fedi-decentralized-manifold-environment = { path = "../manifold-environment" }
 fedi-decentralized-nostr = { path = "../nostr" }
 fedi-decentralized-service-liquidity-manager = { path = "../service-liquidity-manager" }
 iroh-base-035 = { package = "iroh-base", version = "=0.35.0" }
+libc = "0.2"
 nostr-sdk = "0.44"
 reqwest = { version = "0.12", default-features = false, features = [
   "json",

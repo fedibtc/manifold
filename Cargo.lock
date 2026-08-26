@@ -1852,6 +1852,7 @@ dependencies = [
  "defe-api",
  "defe-portalloc",
  "fedi-decentralized-manifold-environment",
+ "libc",
  "listenfd",
  "nostr",
  "secp256k1 0.30.0",
@@ -1886,18 +1887,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "defe-portalloc"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "dirs",
- "fs2",
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "defe-staging"
+name = "defe-env"
 version = "0.1.0"
 dependencies = [
  "anyhow",
@@ -1908,6 +1898,7 @@ dependencies = [
  "fedi-decentralized-nostr",
  "fedi-decentralized-service-liquidity-manager",
  "iroh-base 0.35.0",
+ "libc",
  "nostr-sdk",
  "reqwest 0.12.28",
  "serde",
@@ -1915,6 +1906,17 @@ dependencies = [
  "serde_json_canonicalizer",
  "sha2 0.10.9",
  "tokio",
+]
+
+[[package]]
+name = "defe-portalloc"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "dirs",
+ "fs2",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

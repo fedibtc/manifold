@@ -130,42 +130,35 @@ defe exec defe-cli ping
 
 A print-and-exit resource command may exist later, but it must clearly document that resources are released as soon as the command exits.
 
-## Disposable staging
+## Disposable environment
 
-`defe staging` owns a private, foreground environment for humans, UIs, and
-external E2E tests. It forms a seven-guardian federation, connects a gateway,
-configures FLIP and publishes its advertisement, then writes and prints the
-path to `env.json`. The manifest's `ready` field becomes true only after all of
-those phases succeed.
+`defe env [OPTIONS] [-- COMMAND...]` forms a seven-guardian federation, connects
+a gateway, advertises FLIP, then starts `COMMAND` with a ready-to-use environment.
+With no command it starts `$SHELL`. The composer owns every connection-scoped
+lease until that child exits; child exit is the teardown boundary and its status
+is preserved. A signal sent to a foreground job in the interactive shell remains
+inside that job's terminal process group. Terminating the outer `defe` process
+terminates and reaps the composer and its foreground process group.
 
-The manifest contains endpoints and paths, not credentials. Credentials live
-in a sibling mode-0600 `secrets.json` inside a mode-0700 staging directory.
-Each FMan manifest entry exposes its HTTP API proxy base as `api_base_url` and
-the exact POST endpoints as `auth_url` and `admin_url`; the base URL itself
-does not serve a browser page.
+The child receives `DEFE_ENV=1`, `DEFE_ENV_SCHEMA_VERSION=1`, paths for the root,
+manifest, secrets, logs, invite, FI state, and Iroh routes, plus the stable local
+Nostr, gateway, and FLIP endpoint variables. `$DEFE_ENV_BIN_DIR` is prepended to
+`PATH`. Its private cross-shell tools include `defe-env-info`, `fman-1` through
+`fman-7`, `fi-cli`, `gateway`, `bitcoin-cli`, `fman-ui`, and `fees`. (`fi` is a
+POSIX shell keyword and therefore cannot be a cross-shell executable name.) Every service
+wrapper selects the exact binary, state, endpoint, and dummy credential chosen by
+the composer and forwards its remaining arguments unchanged.
 
-The debug `fleet-manager` binary used by `just defe-staging` serves the HTTP
-API but does not embed the browser dashboard. The ready output prints an exact
-per-FMan Vite attach command and its loopback browser URL. Run the printed
-`pnpm install` command once, then run one attach command at a time (the
-dashboard uses fixed port 5174), open `http://127.0.0.1:5174`, and enter the
-printed matching FMan password. `secrets.json` keeps all credentials available
-for machine use, but ready output only prints FMan operator-UI passwords; it
-does not print gateway or FLIP credentials. The command also prints exact
-`fman-cli` examples, Defe's process-log directory, and each FMan safe-journal
-directory. For example:
+`fees show --guardian N` and `fees collect --guardian N|--all` invoke FMan's real
+guardian-fee admin path with the formed seat IDs. Collection prints a fresh
+post-collect status. These commands do not synthesize remittances or imply that
+traffic accrued production payer fees.
 
-```bash
-jq -e '.ready == true' /path/printed/by/defe/env.json
-```
+The mode-0600 JSON manifest changes atomically from `ready` to `stopped` before
+leases are released. Credentials remain in the mode-0600 `secrets.json` and in
+mode-0700 generated wrappers beneath the mode-0700 environment root. Successful
+commands remove the temporary root unless `--keep-temp`; failures preserve it by
+default unless `--no-keep-temp-on-failure` is selected.
 
-Press Ctrl-C to close the owning Defe connection and tear every resource down.
-Startup failures keep Defe's private temporary root by default, matching
-`defe exec`; use `--no-keep-temp-on-failure` to opt out.
-
-`--complete-liquidity` is reserved for driving the FI-funded liquidity
-allocation through consensus registration. It currently fails explicitly
-rather than making basic staging wait on that optional flow.
-
-Use `just defe-staging` in a checkout. Direct invocation requires all resource
-and composer binaries in `--binary-path`.
+`--complete-liquidity` remains reserved and fails explicitly. Use `just defe-env`
+to build the selected binaries and enter the environment.
