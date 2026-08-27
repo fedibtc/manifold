@@ -6,6 +6,7 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+base64.workspace = true
 fedi-decentralized-domain = { path = "../domain" }
 fedi-decentralized-manifold-environment = { path = "../manifold-environment" }
 fedi-decentralized-nostr = { path = "../nostr" }
@@ -23,6 +24,7 @@ rand = "0.8"
 secp256k1 = "0.30"
 serde.workspace = true
 serde_json.workspace = true
+sha2.workspace = true
 stability-pool-common = { workspace = true }
 thiserror.workspace = true
 tokio = { workspace = true, features = ["sync", "time"] }

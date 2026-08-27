@@ -3981,6 +3981,78 @@ async fn default_name_final_status_and_formed_reconciliation_are_typed() {
 }
 
 #[tokio::test]
+async fn backup_round_trip_restores_recovery_state_without_external_effects() {
+    let (payments, _) = TestPayments::new();
+    let source = open_client(
+        MemDatabase::new().into_database(),
+        payments,
+        Arc::new(FmanState::default()),
+        FmanConfig::given_away(),
+    )
+    .await;
+    source
+        .create_with_pinned_fmans(intent(), locators(), options())
+        .await
+        .expect("form source federation");
+    let expected_status = source
+        .inner
+        .store
+        .load_status(TestIdentity::fi_id())
+        .await
+        .expect("load durable source status");
+
+    let source_lease = source
+        .inner
+        .store
+        .acquire_driver_lease(Duration::from_secs(30), Duration::from_secs(10))
+        .await
+        .expect("hold source lease while exporting");
+    let backup = source.export_backup().await.expect("export FI backup");
+    source
+        .inner
+        .store
+        .release_driver_lease(source_lease)
+        .await
+        .expect("release source lease");
+
+    let destination_state = Arc::new(FmanState::default());
+    let (payments, _) = TestPayments::new();
+    let destination = open_client(
+        MemDatabase::new().into_database(),
+        payments,
+        destination_state.clone(),
+        FmanConfig::given_away(),
+    )
+    .await;
+    destination
+        .restore_backup(&backup)
+        .await
+        .expect("restore FI backup");
+
+    assert_eq!(destination.status(), expected_status);
+    assert_eq!(destination_state.quote_calls.load(Ordering::SeqCst), 0);
+    assert_eq!(destination_state.create_calls.load(Ordering::SeqCst), 0);
+    assert_eq!(destination_state.status_calls.load(Ordering::SeqCst), 0);
+    assert_eq!(destination_state.invite_calls.load(Ordering::SeqCst), 0);
+    let restored_lease = destination
+        .inner
+        .store
+        .acquire_driver_lease(Duration::from_secs(30), Duration::from_secs(10))
+        .await
+        .expect("backup does not restore the source lease");
+    destination
+        .inner
+        .store
+        .release_driver_lease(restored_lease)
+        .await
+        .expect("release restored lease");
+    assert!(matches!(
+        destination.restore_backup(&backup).await,
+        Err(FiError::Storage(message)) if message.contains("empty FI database namespace")
+    ));
+}
+
+#[tokio::test]
 async fn an_already_started_reply_resumes_through_status_instead_of_stranding_formation() {
     let (payments, _) = TestPayments::new();
     let fman_state = Arc::new(FmanState::default());

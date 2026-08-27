@@ -4052,6 +4052,7 @@ dependencies = [
 name = "fi-client"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
  "bitcoin",
  "blind-rsa-signatures",
  "fedi-credential-sdk-protocol",
@@ -4072,6 +4073,7 @@ dependencies = [
  "secp256k1 0.30.0",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "stability-pool-common",
  "thiserror 2.0.18",
  "tokio",

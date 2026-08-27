@@ -2,12 +2,10 @@
 
 ## Status
 
-Draft design for discussion. Event kind numbers and cryptographic labels are provisional.
-
-This document describes how `fi-client` can publish a self-encrypted recovery snapshot to Nostr so an app restored from the user's master seed can re-derive the FI keys, find prior FI state, and regain control of federations it initiated.
-
-All structured examples are JSON5 so comments can document field semantics next
-to the fields. Wire JSON can use the same field names with comments removed.
+Portable formation backup and restore is implemented in `fi-client`; the
+encryption, key derivation, and Nostr layers remain a draft. The JSON5 examples
+below still use the earlier `Reserve`/`ReservationId` protocol and must be
+updated to current `CreateSeat`/`SeatId` semantics before implementation.
 
 
 ## Summary

@@ -27,10 +27,11 @@ use nostr_sdk::{Event, PublicKey};
 use stability_pool_common::Account;
 
 use crate::{
-    FiError, FiResult, FiStatus, FormationActionRequired, FormationFreshness, FormationId,
-    FormationPhase, FormationSnapshot, GuardianReplacementId, GuardianReplacementRequirements,
-    GuardianReplacementSeat, PaymentAuthorizationId, PaymentRequirements, PaymentReservationId,
-    ResolvedFormationIntent, SeatPaymentRequirement, SeatPhase, SeatProgress,
+    FiBackup, FiError, FiResult, FiStatus, FormationActionRequired, FormationFreshness,
+    FormationId, FormationPhase, FormationSnapshot, GuardianReplacementId,
+    GuardianReplacementRequirements, GuardianReplacementSeat, PaymentAuthorizationId,
+    PaymentRequirements, PaymentReservationId, ResolvedFormationIntent, SeatPaymentRequirement,
+    SeatPhase, SeatProgress,
 };
 
 const STORAGE_SCHEMA_VERSION: u16 = 10;
@@ -108,6 +109,11 @@ impl_db_record!(
     value = StoredSeat,
     db_prefix = FiDbPrefix::Seat,
 );
+
+#[derive(Debug, Decodable, Encodable)]
+struct SeatKeyPrefix;
+
+impl_db_lookup!(key = SeatKey, query_prefix = SeatKeyPrefix);
 
 #[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
 struct StoredFormation {
@@ -564,6 +570,13 @@ impl DatabaseValue for crate::liquidity::StoredLiquidityOperation {
     }
 }
 
+#[derive(serde::Deserialize, serde::Serialize)]
+struct FiBackupPayload {
+    fi_id: FiId,
+    formation: Option<StoredFormation>,
+    seats: Vec<StoredSeat>,
+}
+
 /// One seat's public projection and its private recovery-only quote facts.
 pub(crate) struct SeatRecovery {
     pub(crate) progress: SeatProgress,
@@ -798,6 +811,89 @@ impl FiStore {
             #[cfg(test)]
             failed_restore: Arc::new(AtomicBool::new(false)),
         }
+    }
+
+    pub(crate) async fn export_backup(&self, fi_id: FiId) -> FiResult<FiBackup> {
+        let mut dbtx = self.database.begin_transaction_nc().await;
+        let formation = dbtx.get_value(&ActiveFormationKey).await;
+
+        let mut seats = Vec::new();
+        {
+            let mut entries = dbtx.find_by_prefix(&SeatKeyPrefix).await;
+            while let Some((key, seat)) = entries.next().await {
+                let stored = formation.as_ref().ok_or_else(|| {
+                    invalid_backup("FI storage contains seats without a formation")
+                })?;
+                if key.formation_id != stored.formation_id.0 || key.index != seat.index {
+                    return Err(invalid_backup(
+                        "FI seat keys do not match their durable records",
+                    ));
+                }
+                seats.push(seat);
+            }
+        }
+        seats.sort_by_key(|seat| seat.index);
+
+        let payload = FiBackupPayload {
+            fi_id,
+            formation,
+            seats,
+        };
+        validate_backup_payload(&payload, fi_id)?;
+        FiBackup::encode(&payload)
+    }
+
+    pub(crate) async fn restore_backup(
+        &self,
+        fi_id: FiId,
+        backup: &FiBackup,
+    ) -> FiResult<FiStatus> {
+        let payload: FiBackupPayload = backup.decode()?;
+        validate_backup_payload(&payload, fi_id)?;
+
+        let mut dbtx = self.database.begin_transaction().await;
+        let has_seats = {
+            let mut entries = dbtx.find_by_prefix(&SeatKeyPrefix).await;
+            entries.next().await.is_some()
+        };
+        let has_liquidity = {
+            let mut entries = dbtx.find_by_prefix(&LiquidityOperationKeyPrefix).await;
+            entries.next().await.is_some()
+        };
+        if dbtx.get_value(&ActiveFormationKey).await.is_some()
+            || dbtx.get_value(&DriverLeaseKey).await.is_some()
+            || dbtx.get_value(&SetupPaymentFederationsKey).await.is_some()
+            || has_seats
+            || has_liquidity
+        {
+            return Err(invalid_backup(
+                "restore requires an empty FI database namespace",
+            ));
+        }
+
+        let FiBackupPayload {
+            fi_id: _,
+            formation,
+            seats,
+        } = payload;
+        if let Some(formation) = formation {
+            let formation_id = formation.formation_id.0.clone();
+            dbtx.insert_entry(&ActiveFormationKey, &formation).await;
+            for seat in seats {
+                dbtx.insert_entry(
+                    &SeatKey {
+                        formation_id: formation_id.clone(),
+                        index: seat.index,
+                    },
+                    &seat,
+                )
+                .await;
+            }
+        }
+        dbtx.commit_tx_result()
+            .await
+            .map_err(|_| FiError::Storage("restoring FI backup transaction failed".to_owned()))?;
+        self.load_status(fi_id).await
     }
 
     pub(crate) async fn insert_liquidity_operation(
@@ -1258,7 +1354,7 @@ impl FiStore {
             }
             seats.push(seat);
         }
-        validate_formation_progress(&stored, &seats)?;
+        validate_formation_records(&stored, &seats)?;
 
         let mut recoveries = Vec::with_capacity(seats.len());
         for seat in seats {
@@ -1295,15 +1391,6 @@ impl FiStore {
             });
         }
 
-        validate_payment_authorization(stored.payment_authorization.as_ref(), &recoveries)?;
-        if stored.payment_reservation_release_intended && stored.payment_reservation_id.is_none() {
-            // No write path commits a release intent without its reservation
-            // or clears the reservation while the intent stands, so this
-            // combination cannot prove which cleanup it belongs to.
-            return Err(FiError::Storage(
-                "persisted FI release commitment names no wallet reservation".to_owned(),
-            ));
-        }
         let payment_requirements = payment_requirements(
             &stored.formation_id,
             &recoveries,
@@ -3547,9 +3634,55 @@ fn validate_formation_progress(formation: &StoredFormation, seats: &[StoredSeat]
     Ok(())
 }
 
+fn validate_formation_records(formation: &StoredFormation, seats: &[StoredSeat]) -> FiResult<()> {
+    validate_formation_progress(formation, seats)?;
+    validate_payment_authorization(formation.payment_authorization.as_ref(), seats)?;
+    if formation.payment_reservation_release_intended && formation.payment_reservation_id.is_none()
+    {
+        return Err(FiError::Storage(
+            "persisted FI release commitment names no wallet reservation".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_backup_payload(payload: &FiBackupPayload, expected_fi_id: FiId) -> FiResult<()> {
+    if payload.fi_id != expected_fi_id {
+        return Err(invalid_backup("backup belongs to a different FI identity"));
+    }
+
+    match payload.formation.as_ref() {
+        None => {
+            if !payload.seats.is_empty() {
+                return Err(invalid_backup(
+                    "backup contains recovery rows without a formation",
+                ));
+            }
+        }
+        Some(formation) => {
+            validate_schema_and_owner(formation, expected_fi_id)?;
+            if payload
+                .seats
+                .iter()
+                .enumerate()
+                .any(|(index, seat)| usize::from(seat.index) != index)
+            {
+                return Err(invalid_backup("backup seat indexes are not contiguous"));
+            }
+            validate_formation_records(formation, &payload.seats)?;
+        }
+    }
+
+    Ok(())
+}
+
+fn invalid_backup(message: &str) -> FiError {
+    FiError::Storage(format!("invalid FI backup: {message}"))
+}
+
 fn validate_payment_authorization(
     authorization: Option<&StoredPaymentAuthorization>,
-    recoveries: &[SeatRecovery],
+    seats: &[StoredSeat],
 ) -> FiResult<()> {
     let Some(authorization) = authorization else {
         return Ok(());
@@ -3560,22 +3693,20 @@ fn validate_payment_authorization(
         ));
     }
     for authorized in &authorization.quotes {
-        let recovery = recoveries
-            .get(usize::from(authorized.index))
-            .ok_or_else(|| {
-                FiError::Storage(format!(
-                    "persisted FI authorization names missing seat row {}",
-                    authorized.index
-                ))
-            })?;
-        let signed_quote = recovery.signed_quote.as_ref().ok_or_else(|| {
+        let seat = seats.get(usize::from(authorized.index)).ok_or_else(|| {
+            FiError::Storage(format!(
+                "persisted FI authorization names missing seat row {}",
+                authorized.index
+            ))
+        })?;
+        let signed_quote = seat.signed_quote.as_ref().ok_or_else(|| {
             FiError::Storage(format!(
                 "persisted FI authorization names a missing quote for seat row {}",
                 authorized.index
             ))
         })?;
         let quote = signed_quote
-            .verify(&recovery.progress.locator.service_pubkey)
+            .verify(&seat.locator.service_pubkey)
             .map_err(|error| {
                 FiError::Storage(format!(
                     "invalid authorized quote for FI seat row {}: {error}",

@@ -281,9 +281,10 @@ objects, trust conclusions, or lifecycle transitions:
 - **Identity** — one stable FI key that signs only library-constructed,
   domain-separated 32-byte BIP-340 digests.
 - **Storage** — an already-namespaced Fedimint `Database`; backend,
-  namespacing, encryption, and backup are consumer concerns, while the library
-  binds the durable root to the FI identity and fails closed on incompatible
-  state.
+  namespacing, and encryption remain consumer concerns. The library owns the
+  identity-bound portable `FiBackup` projection and restores it only into an
+  empty namespace after validating every durable recovery record. Consumers
+  encrypt, retain, and transport those sensitive backup bytes.
 - **Payments** — a wallet adapter that reports Ready federations, performs a
   value-free exact aggregate sufficiency check over a non-serializable typed
   aggregate binding each requirement to its verified quote (foreign output
@@ -469,6 +470,13 @@ work uses narrow row updates so one completion cannot overwrite another seat's
 recovery facts. The crate stays compatible with native mobile targets and
 `wasm32-unknown-unknown`.
 
+Portable backup export takes one consistent database read while holding the
+process guard. It includes the active formation and every seat recovery row,
+but excludes the driver lease and all consumer-owned identity and wallet
+secrets. Restore requires the same FI identity and an empty database namespace,
+validates the complete projection before one atomic write, publishes the
+restored status as unsynced, and performs no network, payment, or resume effect.
+
 ## Protocol ownership
 
 The driver owns availability checks, signed-quote verification, aggregate
@@ -562,6 +570,7 @@ observes success or replays the idempotent typed mutation.
 
 - `state` — public intent, status, and phase types.
 - `ports` — consumer and transport capability traits.
+- `backup` — opaque versioned portable envelope and integrity check.
 - `db` — Fedimint-database recovery facts, checkpoints, and the driver lease.
 - `discovery` — read-only FMan advertisement discovery and static
   admission.
@@ -583,8 +592,10 @@ State-engine tests use fake ports to cover validation, default-name
 persistence, quote-set readiness, aggregate authorization, parallel narrow
 writes with bounded conflict retries, cancellation, exact replay, refund retry,
 and reopen/resume; policy tests prove canonical kind-37707 selection and rollback
-rejection. Discovery tests cover one typed rejection per cheap admission
-stage plus per-author replacement, the local candidate cap,
+rejection. Backup tests cover exact recovery-state round-trip, identity binding,
+corruption rejection, empty-destination enforcement, lease exclusion, and
+absence of external effects. Discovery tests cover one typed rejection per
+cheap admission stage plus per-author replacement, the local candidate cap,
 deadline-expiry reporting, and the multi-candidate happy path. Selection
 tests substitute a deterministic badge-verification port and cover the
 subject-binding and claimed-issuer failures, the bounded envelope prefix,

@@ -2,6 +2,7 @@
 
 #![allow(async_fn_in_trait)]
 
+mod backup;
 mod db;
 mod discovery;
 mod error;
@@ -25,6 +26,7 @@ use nostr_sdk::PublicKey;
 use stability_pool_common::Account;
 use tokio::sync::{Mutex, watch};
 
+pub use backup::FiBackup;
 pub use discovery::{
     AdvertisementRejection, EligibleFmanCandidate, FMAN_ADVERTISEMENT_MAX_AGE,
     FMAN_ADVERTISEMENT_MAX_HOLDER_AUTHORIZATIONS, FMAN_DISCOVERY_TIMEOUT,
@@ -298,6 +300,39 @@ where
     #[must_use]
     pub fn status(&self) -> FiStatus {
         self.inner.progress.borrow().clone()
+    }
+
+    /// Export one consistent, portable copy of the durable FI recovery state.
+    ///
+    /// The returned bytes are sensitive and are not encrypted. Driver leases
+    /// and consumer-owned identity or wallet secrets are never included.
+    pub async fn export_backup(&self) -> FiResult<FiBackup> {
+        let _run = self.inner.run_guard.try_lock().map_err(|_| FiError::Busy)?;
+        let fi_id = self
+            .inner
+            .ports
+            .identity
+            .public_key()
+            .map_err(FiError::Identity)?;
+        self.inner.store.export_backup(fi_id).await
+    }
+
+    /// Restore a portable backup into this client's empty database namespace.
+    ///
+    /// The backup must belong to this FI identity. Restore validates and
+    /// commits local recovery state atomically, but performs no network,
+    /// payment, or formation-resume work.
+    pub async fn restore_backup(&self, backup: &FiBackup) -> FiResult<()> {
+        let _run = self.inner.run_guard.try_lock().map_err(|_| FiError::Busy)?;
+        let fi_id = self
+            .inner
+            .ports
+            .identity
+            .public_key()
+            .map_err(FiError::Identity)?;
+        let status = self.inner.store.restore_backup(fi_id, backup).await?;
+        self.inner.progress.send_replace(status);
+        Ok(())
     }
 
     /// Legacy registry-backed creation entry point.
