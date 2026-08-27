@@ -12,10 +12,6 @@
       url = "git+https://radicle.dpc.pw/z2HR882B4c4mTdAgdt4SozpdeTuMf.git";
       inputs.nixpkgs.follows = "nixpkgs";
     };
-    maan2003-skills = {
-      url = "github:maan2003/public-skills";
-      inputs.nixpkgs.follows = "nixpkgs";
-    };
     selfci = {
       url = "github:dpc/selfci";
       inputs.nixpkgs.follows = "nixpkgs";
@@ -45,7 +41,6 @@
       flake-utils,
       flakebox,
       dpc-public-skills,
-      maan2003-skills,
       selfci,
       credential-sdk-src,
       fedimint,
@@ -64,6 +59,75 @@
         selfciPkg = selfci.packages.${system}.default;
         mq = pkgs.writeShellScriptBin "mq" ''
           exec ${selfciPkg}/bin/selfci mq "$@"
+        '';
+        projectSkillNames = [
+          "linked-specs"
+          "linked-specs-updating"
+          "linked-specs-review"
+          "linked-specs-claims"
+          "linked-specs-claims-verification"
+          "dpc-general-multipart-review"
+          "dpc-review-coordination"
+          "dpc-review-architecture"
+          "dpc-review-judgment"
+          "dpc-review-maintainability"
+          "dpc-review-rust-style"
+          "dpc-review-reliability"
+        ];
+        linkProjectSkills = pkgs.writeShellScriptBin "link-project-skills" ''
+          set -eu
+
+          root=$1
+          skills_dir="$root/.agents/skills"
+          source_dir="${dpc-public-skills.packages.${system}.skills}/share/agents/skills"
+          ${pkgs.coreutils}/bin/mkdir -p "$skills_dir"
+
+          remove_old_link() {
+            target="$skills_dir/$1"
+            if [ -L "$target" ]; then
+              ${pkgs.coreutils}/bin/rm -f "$target"
+            elif [ -e "$target" ]; then
+              printf 'refusing to replace non-symlink: %s\n' "$target" >&2
+              exit 1
+            fi
+          }
+
+          remove_old_link dpc-public-skills
+          remove_old_link maan2003-skills
+
+          for name in ${pkgs.lib.escapeShellArgs projectSkillNames}; do
+            target="$skills_dir/$name"
+            if [ -e "$target" ] && [ ! -L "$target" ]; then
+              printf 'refusing to replace non-symlink: %s\n' "$target" >&2
+              exit 1
+            fi
+
+            tmp_dir="$(${pkgs.coreutils}/bin/mktemp -d "$skills_dir/.link-project-skills.XXXXXX")"
+            trap '${pkgs.coreutils}/bin/rm -rf "$tmp_dir"' EXIT HUP INT TERM
+            ${pkgs.coreutils}/bin/ln -s "$source_dir/$name" "$tmp_dir/$name"
+            ${pkgs.coreutils}/bin/mv -Tf "$tmp_dir/$name" "$target"
+            ${pkgs.coreutils}/bin/rmdir "$tmp_dir"
+            trap - EXIT HUP INT TERM
+          done
+
+          if exclude_file="$(${pkgs.git}/bin/git -C "$root" rev-parse --path-format=absolute --git-path info/exclude 2>/dev/null)"; then
+            ${pkgs.coreutils}/bin/mkdir -p "$(${pkgs.coreutils}/bin/dirname "$exclude_file")"
+            ${pkgs.coreutils}/bin/touch "$exclude_file"
+
+            tmp_file="$(${pkgs.coreutils}/bin/mktemp "$exclude_file.XXXXXX")"
+            ${pkgs.gnugrep}/bin/grep -Fvx \
+              -e '/.agents/skills/dpc-public-skills' \
+              -e '/.agents/skills/maan2003-skills' \
+              "$exclude_file" >"$tmp_file" || true
+            ${pkgs.coreutils}/bin/mv -f "$tmp_file" "$exclude_file"
+
+            for name in ${pkgs.lib.escapeShellArgs projectSkillNames}; do
+              pattern="/.agents/skills/$name"
+              if ! ${pkgs.gnugrep}/bin/grep -Fxq "$pattern" "$exclude_file"; then
+                printf '%s\n' "$pattern" >>"$exclude_file"
+              fi
+            done
+          fi
         '';
         # Cargo links this exact source, rather than a tracing-side filter, so
         # the upstream payment retry site cannot format payment authorization,
@@ -1872,8 +1936,7 @@
           shellHook = ''
             link-external-deps "$FLAKEBOX_PROJECT_ROOT_DIR"
 
-            ${dpc-public-skills.packages.${system}.install}/bin/install-dpc-public-skills
-            ${maan2003-skills.packages.${system}.install}/bin/install-maan2003-skills
+            ${linkProjectSkills}/bin/link-project-skills "$FLAKEBOX_PROJECT_ROOT_DIR"
 
             export DEFE_SOCKET="$PWD/.defe.sock"
             export DEV_DEFE_SOCKET_PATH="$DEFE_SOCKET"

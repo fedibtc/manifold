@@ -1859,26 +1859,6 @@
         "type": "github"
       }
     },
-    "maan2003-skills": {
-      "inputs": {
-        "nixpkgs": [
-          "nixpkgs"
-        ]
-      },
-      "locked": {
-        "lastModified": 1784313695,
-        "narHash": "sha256-r1YmnroifTBTGbrqSfQimQ7u4Rmey2U2D5wssAlVPZI=",
-        "owner": "maan2003",
-        "repo": "public-skills",
-        "rev": "a3c304a3cde88ae1a4ee23a5712b3821f7eb0b7d",
-        "type": "github"
-      },
-      "original": {
-        "owner": "maan2003",
-        "repo": "public-skills",
-        "type": "github"
-      }
-    },
     "nix-bundle": {
       "inputs": {
         "nixpkgs": [
@@ -2193,7 +2173,6 @@
         "fedimint": "fedimint",
         "flake-utils": "flake-utils_19",
         "flakebox": "flakebox_7",
-        "maan2003-skills": "maan2003-skills",
         "nixpkgs": "nixpkgs_9",
         "selfci": "selfci"
       }
