@@ -52,15 +52,22 @@ rather than narrowed.
 
 ## Residual windows
 
+- **Settlement-by-address txid provenance.** `claim_chain_evidence`
+  (`wallet.rs`) is a second production writer of the funding operation's
+  `txid`: it settles an operation lacking a txid from the first confirmed
+  output paying the operation's persisted address and amount. A deposit to
+  that address from outside the provider wallet therefore completes the item
+  on a txid the provider wallet never broadcast. This satisfies the claim's
+  attribution definition — the credit derives from the item's own persisted
+  operation and address — and the address is persisted only in FLIP's
+  `step_json` and gatewayd's database, never in a requester- or Admin-facing
+  response, so the modeled adversary cannot target it. A deployment that
+  leaks allocation addresses to third parties widens this window.
 - **Dishonest inputs and privileged corruption.** Malicious Admin behavior,
   direct database mutation, malicious configuration, and forged
   gateway/Fedimint or chain-observer responses remain outside the claim's
   adversary model. A forged `deposit-confirmed` log entry is a forged backend
   response and outside A2.
-- **Amount check.** The guard requires the claimed deposit amount to cover
-  the committed amount but does not subtract other claims against the same
-  txid; one funding txid belongs to one item by the `(operation_type,
-  item_id)` unique index, so no second item can present it.
 - **Liveness.** A claimed deposit whose log entry falls outside the bounded
   payment-log page delays completion rather than falsifying it; the
   payment-log read is newest-first and the page far exceeds the concurrent
