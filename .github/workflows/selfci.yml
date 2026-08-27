@@ -38,7 +38,7 @@ jobs:
           skipPush: true
         continue-on-error: true
       - name: Run selfci
-        run: nix develop --command selfci check
+        run: nix run .#selfci-check
       - name: Remove archived Nix input roots
         if: always()
         run: rm -rf "$RUNNER_TEMP/selfci-nix-roots" "$RUNNER_TEMP/selfci-flake-archive.json"

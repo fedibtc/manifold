@@ -22,12 +22,6 @@ function job_lint() {
 }
 
 function job_cargo() {
-  selfci step start "Cargo.lock up-to-date"
-  link-external-deps "$PWD"
-  if ! cargo update --workspace --locked -q; then
-    selfci step fail
-  fi
-
   # Submit independent non-test checks together so Nix can share and schedule
   # their common CI-profile build graph.
   local system

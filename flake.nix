@@ -57,6 +57,13 @@
         projectName = "decentralized-federations";
         pushGatewayVersion = (builtins.fromTOML (builtins.readFile ./Cargo.toml)).workspace.package.version;
         selfciPkg = selfci.packages.${system}.default;
+        selfciCheck = pkgs.writeShellApplication {
+          name = "selfci-check";
+          runtimeInputs = [ selfciPkg ];
+          text = ''
+            exec selfci check "$@"
+          '';
+        };
         mq = pkgs.writeShellScriptBin "mq" ''
           exec ${selfciPkg}/bin/selfci mq "$@"
         '';
@@ -1853,6 +1860,10 @@
           };
         }
         // pkgs.lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
+          selfci-check = {
+            type = "app";
+            program = "${selfciCheck}/bin/selfci-check";
+          };
           push-gateway-container-load = {
             type = "app";
             program = "${pushGatewayContainerLoad}/bin/push-gateway-container-load";
