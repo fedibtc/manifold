@@ -35,12 +35,18 @@ export const AuthorizationPanel = ({ data, isLoading, error }: AuthorizationPane
       {/* The key is shown whole, unlike BackupPage, which truncates the same class
           of value. That page lists keys for reference; this one shows the single
           value a holder may compare against their own application, and a truncated
-          value does not permit that comparison. The copy control carries the whole
-          request rather than the key, because that is what the holder app parses. */}
+          value does not permit that comparison. */}
       <div className={styles.keyRow}>
         <code className={styles.key}>{data.service_nostr_pubkey}</code>
 
-        <CopyButton value={request} label="Copy the authorization request" />
+        <CopyButton value={data.service_nostr_pubkey} label="Copy the service Nostr public key" />
+      </div>
+
+      {/* The request is the JSON the holder app parses, not the bare key, so it
+          gets a control that says which of the two it carries. An unlabelled icon
+          beside the key read as "copy this key" and handed over something else. */}
+      <div className={styles.requestRow}>
+        <CopyButton value={request} label="Copy the authorization request" showLabel />
       </div>
 
       {/* The holder side is credential-app PR #132, which accepts exactly this

@@ -1,5 +1,9 @@
+/* Setup replaces the app shell outright, so it inherits none of `uAppMain`'s
+   width or padding and was rendering edge to edge. It takes the same content
+   column the signed-in pages use, centred because there is no sidebar here to
+   offset it against. */
 .wrapper {
-  @apply uStack6;
+  @apply uStack6 mx-auto w-full max-w-content px-7 pb-10 pt-6;
 }
 
 .header {

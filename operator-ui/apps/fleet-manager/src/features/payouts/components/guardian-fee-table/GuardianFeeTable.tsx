@@ -1,4 +1,11 @@
-import { type Column, DataTable, SectionCard } from '@operator-ui/common-ui';
+import {
+  type Column,
+  CopyButton,
+  DataTable,
+  isTruncated,
+  SectionCard,
+  truncateMiddle
+} from '@operator-ui/common-ui';
 import { GuardianFeeActions } from '@/features/payouts/components/guardian-fee-actions/GuardianFeeActions';
 import type { GuardianFeeRow } from '@/features/payouts/hooks/use-guardian-fee-rows/useGuardianFeeRows';
 import { formatSats } from '@/shared/utils/format';
@@ -21,7 +28,13 @@ export const GuardianFeeTable = ({ rows, hasDestination }: GuardianFeeTableProps
     {
       key: 'seat',
       header: 'Seat',
-      render: (row) => <span className={styles.mono}>{row.seatId}</span>
+      render: (row) => (
+        <span className={styles.idRow}>
+          <span className={styles.mono}>{truncateMiddle(row.seatId, 8, 8)}</span>
+
+          {isTruncated(row.seatId, 8, 8) && <CopyButton value={row.seatId} label="Copy seat ID" />}
+        </span>
+      )
     },
     {
       key: 'pool',

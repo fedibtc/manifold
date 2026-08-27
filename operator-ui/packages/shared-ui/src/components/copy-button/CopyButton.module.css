@@ -2,10 +2,22 @@
   @apply inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full border-none bg-transparent p-0 text-ink/50 hover:text-ink;
 }
 
+.root[data-labelled="true"] {
+  @apply h-auto w-auto gap-1.5 rounded-none;
+}
+
 .icon {
-  @apply h-4 w-4;
+  @apply h-4 w-4 shrink-0;
+}
+
+.label {
+  @apply text-sm underline underline-offset-2;
 }
 
 .root[data-copied="true"] {
   @apply text-success;
+}
+
+.root[data-failed="true"] {
+  @apply text-error;
 }

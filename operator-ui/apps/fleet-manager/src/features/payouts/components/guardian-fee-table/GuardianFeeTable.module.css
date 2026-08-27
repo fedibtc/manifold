@@ -1,3 +1,9 @@
 .mono {
   @apply uMono;
 }
+
+/* Four columns leave this one narrow enough to break the truncated id across
+   two lines, which defeats the truncation. */
+.idRow {
+  @apply uCopyRow whitespace-nowrap;
+}
