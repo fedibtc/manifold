@@ -433,7 +433,9 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         keys.public_key(),
     )
     .await?;
-    let fedi_guardian_fee_account = manifold_environment.fedi_guardian_fee_account().cloned();
+    let guardian_verification_fee_account = manifold_environment
+        .guardian_verification_fee_account()
+        .cloned();
     let nostr = fman_nostr::FleetManagerNostr::new(
         keys,
         setup_payment_publisher,
@@ -445,7 +447,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     // ordinary constructor-owned state rather than a late-bound service mode.
     let rpc = FleetManagerRpc::new(
         fleet.clone(),
-        fedi_guardian_fee_account,
+        guardian_verification_fee_account,
         nostr.subscribe_setup_payment_federations(),
     );
     let server = FleetManagerServiceServer::new(rpc.clone());

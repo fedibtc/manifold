@@ -22,8 +22,8 @@ Each value resolves to a `ManifoldEnvironmentProfile` containing:
 - one or more typed PeerBadge issuer identity public keys;
 - a PeerBadge minimum trust level;
 - at most one typed setup-payment federation-list publisher public key;
-- at most one complete single-sig `BtcDepositor` account for Fedi's canonical
-  share of ongoing guardian-fee remittances;
+- at most one complete single-sig `BtcDepositor` Guardian Verification Fee
+  account;
 - the Bitcoin network on which the environment forms federations;
 - an optional typed public default Esplora URL; and
 - for development and staging only, the committed complete `IssuerSecretKeys`
@@ -32,9 +32,9 @@ Each value resolves to a `ManifoldEnvironmentProfile` containing:
   document derived from it (`pinned_issuer_authorities()`; empty for
   production).
 
-The profile exposes `profile_revision()`, currently `7`. Every change to an
+The profile exposes `profile_revision()`, currently `8`. Every change to an
 environment's relay, issuer-identity, committed issuer secret, PeerBadge
-minimum trust level, setup-payment-publisher, Fedi fee-account,
+minimum trust level, setup-payment-publisher, Guardian Verification Fee account,
 Bitcoin-network, or default-Esplora mapping must increment the shared
 revision.
 Operators must roll out such a change across
@@ -120,16 +120,13 @@ keeps the issuer channel shrink-only. Rotation, routine or emergency, ships a
 new profile default in a component release.
 
 Development and staging carry distinct unsafe test publisher identities,
-also distinct from the issuer identities. Production carries no publisher —
-the accessor returns typed `None` — until the real deployment-owned key
-exists; production consumers must fail closed rather than substitute a
-default.
+also distinct from the issuer identities. Production pins its
+deployment-owned publisher.
 
-`fedi_guardian_fee_account()` is the canonical recipient for Fedi's one share
-in the fixed Manifold 4:1:1 policy. Development and staging carry distinct
-unsafe known-test accounts. Production returns typed `None` until the
-deployment-owned account exists. FI policy construction and FMan validation
-both fail closed on absence; consumers must not generate a fallback.
+`guardian_verification_fee_account()` returns the one-weight Guardian
+Verification Fee account in the fixed Manifold recipient policy. Development
+and staging carry distinct unsafe known-test accounts. Production pins its
+deployment-owned account.
 
 The canonical relay list does not itself define consumer policy. PeerBadge
 verification interprets it as its issuer-authority lookup set; FMan uses it
@@ -140,8 +137,10 @@ Tests pin parsing/display aliases, exact relay ordering, development/staging
 sharing, the minimum PeerBadge trust level, distinct test issuer identities,
 distinct test publisher identities
 disjoint from the union of the development and staging issuer identities,
-distinct full development/staging Fedi fee accounts, the exact production
-issuer roster and its disjointness from every known-secret placeholder, the
+distinct full development/staging Guardian Verification Fee accounts, the
+exact production identities and their disjointness from every known-secret
+placeholder, the
 exact environment-to-Bitcoin-network mapping, the
-Mutinynet staging Esplora default, and the intentionally absent production
-publisher, Fedi fee account, and chain-backend default.
+Mutinynet staging Esplora default, and the production publisher, Guardian
+Verification Fee account, and intentionally absent production chain-backend
+default.

@@ -52,10 +52,9 @@ use crate::wallet::{LockedPaymentPrepareError, Msats};
 pub struct FleetManagerRpc {
     fleet: Arc<Fleet>,
     signing_key: Keypair,
-    /// Deployment-pinned recipient of Fedi's one guardian-fee share.
-    /// Production keeps this absent until the real account is configured, and
-    /// the fee-proposal path fails closed.
-    fedi_guardian_fee_account: Option<Account>,
+    /// Deployment-pinned Guardian Verification Fee account.
+    /// The fee-proposal path fails closed if this is absent.
+    guardian_verification_fee_account: Option<Account>,
     /// The FMan's public service identity, which signs peer attestations.
     ///
     /// Deliberately the *same* key `fman-nostr` signs kind-37701
@@ -106,7 +105,7 @@ impl FleetManagerRpc {
     /// Build the service with its deployment policy inputs.
     pub fn new(
         fleet: Arc<Fleet>,
-        fedi_guardian_fee_account: Option<Account>,
+        guardian_verification_fee_account: Option<Account>,
         setup_payment_policy: tokio::sync::watch::Receiver<Option<AdmittedSetupPaymentFederations>>,
     ) -> Self {
         let signing_key = fleet.identity().derive_service_signing_key();
@@ -122,7 +121,7 @@ impl FleetManagerRpc {
         Self {
             fleet,
             signing_key,
-            fedi_guardian_fee_account,
+            guardian_verification_fee_account,
             attestation_keys,
             trust_material: Arc::new(OnceLock::new()),
             setup_payment_policy,
@@ -254,8 +253,12 @@ fn fleet_manager_error_kind(error: &FleetManagerError) -> &'static str {
         FleetManagerError::InvalidDkgInput(_) => "invalid_dkg_input",
         FleetManagerError::MetaKeyRefused => "meta_key_refused",
         FleetManagerError::MetaValueInvalid => "meta_value_invalid",
-        FleetManagerError::FediFeeAccountUnavailable => "fedi_fee_account_unavailable",
-        FleetManagerError::FediFeeAccountMismatch => "fedi_fee_account_mismatch",
+        FleetManagerError::GuardianVerificationFeeAccountUnavailable => {
+            "guardian_verification_fee_account_unavailable"
+        }
+        FleetManagerError::GuardianVerificationFeeAccountMismatch => {
+            "guardian_verification_fee_account_mismatch"
+        }
         FleetManagerError::MetaConsensusChanged => "meta_consensus_changed",
         FleetManagerError::FormationMetaAlreadyPublished => "formation_meta_already_published",
         FleetManagerError::MetaTargetConflict => "meta_target_conflict",
@@ -765,7 +768,7 @@ impl FleetManagerService for FleetManagerRpc {
                 request.key.clone(),
                 request.value.clone(),
                 self.min_guardian_fee_ppm(),
-                self.fedi_guardian_fee_account.clone(),
+                self.guardian_verification_fee_account.clone(),
             )
             .await
             .map_err(|err| map_seat_error("set_meta_field", err))?;
@@ -786,14 +789,15 @@ impl FleetManagerService for FleetManagerRpc {
                 .map_err(|err| map_seat_error("propose_formation_meta", err))?;
             seat.reject_decommissioned()
                 .map_err(|err| map_seat_error("propose_formation_meta", err))?;
-            let fedi_account = self
-                .fedi_guardian_fee_account
+            let guardian_verification_fee_account = self
+                .guardian_verification_fee_account
                 .clone()
-                .ok_or(FleetManagerError::FediFeeAccountUnavailable)?;
-            let fedi_fee_account = GuardianFeeAccount::try_from(fedi_account)
-                .map_err(|_| FleetManagerError::FediFeeAccountUnavailable)?;
-            if request.fedi_fee_account != fedi_fee_account {
-                return Err(FleetManagerError::FediFeeAccountMismatch);
+                .ok_or(FleetManagerError::GuardianVerificationFeeAccountUnavailable)?;
+            let guardian_verification_fee_account =
+                GuardianFeeAccount::try_from(guardian_verification_fee_account)
+                    .map_err(|_| FleetManagerError::GuardianVerificationFeeAccountUnavailable)?;
+            if request.guardian_verification_fee_account != guardian_verification_fee_account {
+                return Err(FleetManagerError::GuardianVerificationFeeAccountMismatch);
             }
             seat.propose_formation_meta(
                 request.expected_base,
@@ -801,7 +805,7 @@ impl FleetManagerService for FleetManagerRpc {
                 request.fi_fee_account.clone().into_account(),
                 request.send_ppm,
                 self.min_guardian_fee_ppm(),
-                fedi_fee_account.as_account().clone(),
+                guardian_verification_fee_account.as_account().clone(),
             )
             .await
             .map_err(|err| map_seat_error("propose_formation_meta", err))?;

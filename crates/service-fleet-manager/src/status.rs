@@ -344,9 +344,9 @@ pub struct GuardianFeeAccountError;
 
 /// One recipient of the federation's guardian-fee remittances.
 ///
-/// The full account and repeated `account_id` exactly match the Fedi payer's
-/// versioned metadata contract. The repetition is validated rather than
-/// trusted. The FMan chooses the metadata version; it is not FI-selectable.
+/// The full account and repeated `account_id` exactly match the versioned
+/// metadata contract. The repetition is validated rather than trusted. The
+/// FMan chooses the metadata version; it is not FI-selectable.
 #[derive(serde::Deserialize, serde::Serialize, Clone, Debug, Eq, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct GuardianFeeRecipient {
@@ -372,7 +372,7 @@ impl GuardianFeeRecipient {
     }
 }
 
-/// Maximum weighted-recipient list length accepted by the Fedi payer.
+/// Maximum weighted-recipient list length accepted by the payer.
 pub const MAX_GUARDIAN_FEE_RECIPIENTS: usize = 32;
 /// Maximum canonical bytes for one validated full account.
 pub const MAX_GUARDIAN_FEE_ACCOUNT_BYTES: usize = 256;
@@ -387,8 +387,8 @@ pub const GUARDIAN_FEE_RECIPIENTS_META_FIELD_KEY: &str = "fedi:guardian_fee_remi
 pub const FI_GUARDIAN_FEE_WEIGHT: u64 = 4;
 /// Fixed share for each accepted guardian.
 pub const GUARDIAN_GUARDIAN_FEE_WEIGHT: u64 = 1;
-/// Fixed share for the deployment-pinned Fedi account.
-pub const FEDI_GUARDIAN_FEE_WEIGHT: u64 = 1;
+/// Fixed weight for the Guardian Verification Fee.
+pub const GUARDIAN_VERIFICATION_FEE_WEIGHT: u64 = 1;
 
 #[derive(serde::Serialize)]
 struct GuardianFeeRecipientList<'a> {
@@ -396,7 +396,7 @@ struct GuardianFeeRecipientList<'a> {
     recipients: &'a [GuardianFeeRecipient],
 }
 
-/// Why a recipient vector cannot be encoded into Fedi's v1 metadata shape.
+/// Why a recipient vector cannot be encoded into the version-1 metadata shape.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
 pub enum GuardianFeeRecipientListError {
     #[error("guardian-fee recipient count must be between 1 and 32")]
@@ -415,8 +415,7 @@ pub enum GuardianFeeRecipientListError {
     ListTooLarge,
 }
 
-/// Validate and encode the exact weighted-recipient metadata contract shared
-/// with the Fedi payer.
+/// Validate and encode the exact weighted-recipient metadata contract.
 pub fn canonical_guardian_fee_recipient_list(
     recipients: &[GuardianFeeRecipient],
 ) -> Result<String, GuardianFeeRecipientListError> {
@@ -481,9 +480,10 @@ pub struct ProposeFormationMetaRequest {
     /// Residual FI recipient account for the fixed fee split.
     pub fi_fee_account: GuardianFeeAccount,
 
-    /// Deployment-pinned Fedi account every FMan must match before voting.
+    /// Deployment-pinned Guardian Verification Fee account every FMan must
+    /// match before voting.
     /// The FI states the expected configuration; it does not choose the account.
-    pub fedi_fee_account: GuardianFeeAccount,
+    pub guardian_verification_fee_account: GuardianFeeAccount,
 
     /// Guardian-fee send rate in parts per million.
     pub send_ppm: u64,

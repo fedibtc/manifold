@@ -1186,7 +1186,7 @@ where
     ///
     /// The resolved FI account must be a single-signature `BtcDepositor`
     /// account and the rate must be within the pinned payer's inclusive
-    /// `0..=210_000`-ppm ceiling and at or above the Fedi-published minimum
+    /// `0..=210_000`-ppm ceiling and at or above the published minimum
     /// carried by the admitted setup-payment publication (1,500 ppm when none
     /// is admitted).
     /// Both bounds are refused here, before any guardian is contacted, so a
@@ -3825,16 +3825,17 @@ where
                     .map_err(|_| {
                         FiError::CapabilityUnavailable(crate::Capability::FeeArrangement)
                     })?;
-                let fedi_account = self.inner.fedi_guardian_fee_account.clone().ok_or(
-                    FiError::CapabilityUnavailable(crate::Capability::FeeArrangement),
-                )?;
+                let guardian_verification_fee_account =
+                    self.inner.guardian_verification_fee_account.clone().ok_or(
+                        FiError::CapabilityUnavailable(crate::Capability::FeeArrangement),
+                    )?;
                 let recipients = canonical_fee_recipients(
                     formation_config
                         .as_ref()
                         .expect("a new formation target has a downloaded config"),
                     &bindings,
                     fi_account.clone(),
-                    fedi_account.clone(),
+                    guardian_verification_fee_account.clone(),
                 )?;
                 let recipients =
                     canonical_guardian_fee_recipient_list(&recipients).map_err(|error| {
@@ -3849,15 +3850,15 @@ where
                 let fi_fee_account = GuardianFeeAccount::try_from(fi_account).map_err(|error| {
                     FiError::InvalidIntent(format!("FI guardian-fee account is invalid: {error}"))
                 })?;
-                let fedi_fee_account =
-                    GuardianFeeAccount::try_from(fedi_account).map_err(|_| {
-                        FiError::CapabilityUnavailable(crate::Capability::FeeArrangement)
-                    })?;
+                let guardian_verification_fee_account = GuardianFeeAccount::try_from(
+                    guardian_verification_fee_account,
+                )
+                .map_err(|_| FiError::CapabilityUnavailable(crate::Capability::FeeArrangement))?;
                 let target = FormationMetaTarget {
                     seat_bindings: bindings,
                     binding_entries,
                     fi_fee_account,
-                    fedi_fee_account,
+                    guardian_verification_fee_account,
                     send_ppm,
                     recipients,
                     confirmed: false,
@@ -3934,7 +3935,7 @@ where
                     expected_base,
                     &target.binding_entries,
                     &target.fi_fee_account,
-                    &target.fedi_fee_account,
+                    &target.guardian_verification_fee_account,
                     target.send_ppm,
                     run,
                 )
@@ -3956,8 +3957,8 @@ where
                         });
                     }
                     Err(MetaFieldSubmissionError::FleetManager(
-                        error @ (FleetManagerError::FediFeeAccountUnavailable
-                        | FleetManagerError::FediFeeAccountMismatch),
+                        error @ (FleetManagerError::GuardianVerificationFeeAccountUnavailable
+                        | FleetManagerError::GuardianVerificationFeeAccountMismatch),
                     )) => {
                         return Err(FiError::FleetManager {
                             index,
@@ -4041,7 +4042,7 @@ where
         expected_base: MetaConsensusBase,
         seat_bindings: &[FormationSeatBinding],
         fi_fee_account: &GuardianFeeAccount,
-        fedi_fee_account: &GuardianFeeAccount,
+        guardian_verification_fee_account: &GuardianFeeAccount,
         send_ppm: u64,
         run: DriverRun<'_>,
     ) -> Vec<(
@@ -4059,7 +4060,8 @@ where
                         expected_base,
                         seat_bindings: seat_bindings.to_vec(),
                         fi_fee_account: fi_fee_account.clone(),
-                        fedi_fee_account: fedi_fee_account.clone(),
+                        guardian_verification_fee_account: guardian_verification_fee_account
+                            .clone(),
                         send_ppm,
                     };
                     let request = run
@@ -4315,13 +4317,14 @@ fn canonical_fee_recipients(
     config: &ClientConfig,
     seat_bindings: &str,
     fi_account: Account,
-    fedi_account: Account,
+    guardian_verification_fee_account: Account,
 ) -> FiResult<Vec<GuardianFeeRecipient>> {
     let fi_fee_account = GuardianFeeAccount::try_from(fi_account.clone()).map_err(|error| {
         FiError::InvalidIntent(format!("FI guardian-fee account is invalid: {error}"))
     })?;
-    let fedi_fee_account = GuardianFeeAccount::try_from(fedi_account.clone())
-        .map_err(|_| FiError::CapabilityUnavailable(crate::Capability::FeeArrangement))?;
+    let guardian_verification_fee_account =
+        GuardianFeeAccount::try_from(guardian_verification_fee_account.clone())
+            .map_err(|_| FiError::CapabilityUnavailable(crate::Capability::FeeArrangement))?;
     let federation = federation_seats(config).map_err(|error| {
         FiError::InvalidFleetManagers(format!("formed federation config is invalid: {error}"))
     })?;
@@ -4352,8 +4355,8 @@ fn canonical_fee_recipients(
         FI_GUARDIAN_FEE_WEIGHT,
     ));
     recipients.push(GuardianFeeRecipient::new(
-        fedi_fee_account,
-        FEDI_GUARDIAN_FEE_WEIGHT,
+        guardian_verification_fee_account,
+        GUARDIAN_VERIFICATION_FEE_WEIGHT,
     ));
     recipients.sort_by_key(|recipient| recipient.account.as_account().id());
     canonical_guardian_fee_recipient_list(&recipients).map_err(|error| {

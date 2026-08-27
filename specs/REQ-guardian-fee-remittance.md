@@ -1,6 +1,6 @@
 # REQ-guardian-fee-remittance: Guardians earn ongoing revenue from the federations they host
 
-Source: Fedi product and business policy, required for MVP.
+Source: Product policy, required for MVP.
 
 A paid seat is a one-time payment for an open-ended hosting obligation
 ([ARCH-fleet-manager-product-boundary](../crates/fman/specs/ARCH-fleet-manager-product-boundary.md)), so an
@@ -19,11 +19,11 @@ consensus.
 - Two consensus-metadata keys are read together — `fedi:guardian_fee_send_ppm`
   and `fedi:guardian_fee_remittance_account`. Both or
   neither; a rate of zero stops new accrual while remittance stays available to
-  drain what already accrued. The one rate bound everywhere is the pinned
-  Fedi payer's 210,000-ppm compatibility ceiling: Manifold FI
+  drain what already accrued. The payer's 210,000-ppm compatibility ceiling is
+  the one rate bound everywhere: Manifold FI
   producers and every FMan validator enforce that same `0..=210,000` ppm —
-  there is no separate Manifold cap — with a 5,000-ppm default. Fedi also
-  publishes a **minimum** rate that every FMan enforces on new proposals
+  with a 5,000-ppm default. The payer also publishes a **minimum** rate that
+  every FMan enforces on new proposals
   ([SPEC-setup-payment-federations](./SPEC-setup-payment-federations.md)).
 - The payer accrues per guardian share and deposits a share into the
   **stability-pool BTC balance** of that share's recipient account once it
@@ -32,17 +32,13 @@ consensus.
 - Each recipient is a **single-sig `BtcDepositor` stability-pool account**, and
   each deposit carries an accounting breakdown sealed to that account's public
   key.
-- Fees split by **weighted shares**. The weighted recipient-list format is a
-  cross-repo agreement with the Fedi app; a single-recipient value is its
-  compatible predecessor.
-- The MVP split applies only to the ongoing per-transaction federation
-  guardian fee: FI receives four shares, every guardian one share, and the
-  canonical Fedi account one share. Setup payments and every other fee stream
-  remain unchanged. Every FI, Fedi, and guardian entitlement has its own
-  unique destination account. Whether Fedi's share applies to every
-  federation or only to Fedi-verified seat quorums is a recorded, deferred
-  product decision
-  ([SPEC-guardian-fee-policy](../crates/fman/specs/SPEC-guardian-fee-policy.md)).
+- Fees split by **weighted shares** using the versioned recipient list carried
+  in consensus metadata.
+- In the MVP policy, FI receives four shares, every guardian receives one, and
+  one share is the **Guardian Verification Fee**, paid to its deployment-owned
+  account. Setup payments and every other fee stream remain unchanged. The FI
+  account, every guardian account, and the Guardian Verification Fee account
+  use distinct destinations.
 
 ## Obligations on this repository
 
@@ -59,8 +55,8 @@ consensus.
    `fi-client` derives the vector
    only from a consumer capability resolving the formed federation FI's own
    SPv2 `BtcDepositor` account, each durable FMan-signed seat acceptance, and
-   the deployment profile's Fedi account. `fi-client`, not the operation
-   caller, chooses the exact lookup identity from its persisted formed invite;
+   the deployment profile's Guardian Verification Fee account. `fi-client`, not
+   the operation caller, chooses the exact lookup identity from its persisted formed invite;
    the fee-proposal operation accepts only the rate. A production consumer
    resolves that exact already joined federation client and returns
    `spv2.our_account(BtcDepositor)`. It must not accept an arbitrary recipient
@@ -70,10 +66,9 @@ consensus.
 
    `StartDKG` accepts bare upstream setup codes. It rejects the entire set
    before child mutation unless the count is exact, codes are unique, this
-   seat's Iroh API key is present, and its own code exactly recomputes. It no
-   longer cross-verifies endpoint signatures on other peers' codes: Fedimint's
-   DKG peer-to-peer handshake authenticates those endpoint keys, and the FI
-   ferrying the codes would otherwise only be protected from its own input.
+   seat's Iroh API key is present, and its own code exactly recomputes. It does
+   not cross-verify endpoint signatures on other peers' codes: Fedimint's DKG
+   peer-to-peer handshake authenticates those endpoint keys.
    Because later maintenance
    votes carry the whole metadata object, every submit path also revalidates
    any fee keys it carries against the endpoint-proof-bound directory and
@@ -99,10 +94,10 @@ consensus.
    operator, who decides whether to keep hosting it; the daemon does not
    withdraw service on its own.
 
-6. **Production recipient configuration fails closed.** The canonical Fedi
-   account is deployment-owned public configuration in the Manifold
-   environment profile. Production has typed absence until the real account
-   is supplied; no FI or FMan may substitute a generated fallback.
+6. **Production recipient configuration fails closed.** The Guardian
+   Verification Fee account is deployment-owned public configuration in the
+   Manifold environment profile; no FI or FMan may substitute a generated
+   fallback.
 
 7. **The production FI recipient is selected by capability, not by request.**
    The consumer capability receives the federation id `fi-client` parsed from

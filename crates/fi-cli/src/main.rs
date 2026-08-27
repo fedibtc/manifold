@@ -166,7 +166,7 @@ struct MetadataValueArgs {
 
 #[derive(Debug, ClapArgs)]
 struct ConfigureGuardianFeesArgs {
-    /// Ongoing fee rate in ppm; fi-client enforces the admitted Fedi minimum, up to 210000.
+    /// Ongoing fee rate in ppm; fi-client enforces the admitted published minimum, up to 210000.
     #[arg(long, default_value_t = GuardianFeePpm::MANIFOLD_DEFAULT.value())]
     send_ppm: u32,
 }
@@ -1677,7 +1677,7 @@ async fn open_client_with_fee_account_provider(
             CliConsensusReader::new().await?,
             fi_fee_account_provider,
             publisher,
-            profile.fedi_guardian_fee_account().cloned(),
+            profile.guardian_verification_fee_account().cloned(),
         )
         .await
         .context("open FI client"),

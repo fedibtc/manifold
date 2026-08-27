@@ -113,7 +113,7 @@ struct FiClientInner<I, P, N, F, C> {
     run_guard: Mutex<()>,
     peer_badge_verifier: PeerBadgeVerifier,
     setup_payment_publisher: Option<PublicKey>,
-    fedi_guardian_fee_account: Option<Account>,
+    guardian_verification_fee_account: Option<Account>,
 }
 
 impl<I, P, N, F, C> Clone for FiClient<I, P, N, F, C> {
@@ -147,8 +147,8 @@ where
     /// The mandatory verifier authenticates every PeerBadge the selection
     /// walk examines through [`Self::preview_fman_selection`]. The resulting
     /// sealed approval is consumed by [`Self::pay_and_create`]. The fee-account
-    /// provider and deployment Fedi account are explicit capabilities for the
-    /// formation fee arrangement.
+    /// provider and Guardian Verification Fee account are explicit capabilities
+    /// for the formation fee arrangement.
     #[allow(
         clippy::too_many_arguments,
         reason = "security-critical FI capability ports stay explicit at the public construction boundary"
@@ -190,7 +190,8 @@ where
     /// walk examines through [`Self::preview_fman_selection`]. The resulting
     /// sealed approval is consumed by [`Self::pay_and_create`]. The fee-account
     /// provider is an explicit local capability even though this constructor
-    /// has no deployment Fedi account and therefore cannot arrange fees.
+    /// has no Guardian Verification Fee account and therefore cannot arrange
+    /// fees.
     #[allow(
         clippy::too_many_arguments,
         reason = "security-critical FI capability ports stay explicit at the public construction boundary"
@@ -205,7 +206,7 @@ where
         consensus_reader: C,
         fi_fee_account_provider: impl FiFeeAccountProvider,
         setup_payment_publisher: PublicKey,
-        fedi_guardian_fee_account: Option<Account>,
+        guardian_verification_fee_account: Option<Account>,
     ) -> FiResult<Self> {
         Self::open_inner(
             database,
@@ -219,7 +220,7 @@ where
             },
             peer_badge_verifier,
             Some(setup_payment_publisher),
-            fedi_guardian_fee_account,
+            guardian_verification_fee_account,
         )
         .await
     }
@@ -227,11 +228,11 @@ where
     /// Open FI state from one canonical Manifold deployment profile.
     ///
     /// This is the production integration boundary: the same profile supplies
-    /// the setup-payment publisher and the deployment-owned Fedi guardian-fee
-    /// account. The separate fee-account provider resolves the formed
-    /// federation consumer's own local account. In production either profile
-    /// value or that local lookup may be absent until configuration and joined
-    /// state exist; the dependent operation then fails closed.
+    /// the setup-payment publisher and the deployment-owned Guardian
+    /// Verification Fee account. The separate fee-account provider resolves
+    /// the formed federation consumer's own local account. That lookup may be
+    /// absent until joined state exists; the dependent operation then fails
+    /// closed.
     #[allow(clippy::too_many_arguments)]
     pub async fn open_with_manifold_profile(
         database: Database,
@@ -245,7 +246,8 @@ where
         profile: ManifoldEnvironmentProfile,
     ) -> FiResult<Self> {
         let setup_payment_publisher = profile.setup_payment_publisher().copied();
-        let fedi_guardian_fee_account = profile.fedi_guardian_fee_account().cloned();
+        let guardian_verification_fee_account =
+            profile.guardian_verification_fee_account().cloned();
         Self::open_inner(
             database,
             FiClientPorts {
@@ -258,7 +260,7 @@ where
             },
             peer_badge_verifier,
             setup_payment_publisher,
-            fedi_guardian_fee_account,
+            guardian_verification_fee_account,
         )
         .await
     }
@@ -269,7 +271,7 @@ where
         ports: FiClientPorts<I, P, N, F, C>,
         peer_badge_verifier: PeerBadgeVerifier,
         setup_payment_publisher: Option<PublicKey>,
-        fedi_guardian_fee_account: Option<Account>,
+        guardian_verification_fee_account: Option<Account>,
     ) -> FiResult<Self> {
         let store = FiStore::new(database);
         let fi_id = ports.identity.public_key().map_err(FiError::Identity)?;
@@ -283,7 +285,7 @@ where
                 run_guard: Mutex::new(()),
                 peer_badge_verifier,
                 setup_payment_publisher,
-                fedi_guardian_fee_account,
+                guardian_verification_fee_account,
             }),
         })
     }

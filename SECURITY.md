@@ -498,8 +498,8 @@ revision, and tracking a coordinated rollout to every relying consumer. An
 empty root set fails verifier construction. The canonical mapping and rollout
 contract are defined by
 [`SPEC-manifold-environment`](crates/manifold-environment/specs/SPEC-manifold-environment.md).
-Production still has no setup-payment publisher or Fedi guardian-fee account,
-and those consumers continue to fail closed.
+Production pins its setup-payment publisher and Guardian Verification Fee
+account in that profile.
 
 Each relying path applies the same profile-owned minimum PeerBadge trust level
 after complete authentication and schema parsing. A profile-policy change must
@@ -808,20 +808,18 @@ account of its own. The key material crosses that boundary as a keypair with no
 formatting or serialization, and its only constructor takes mnemonic-derived
 bytes — review any new caller of `GuardianFeeAccountKey::keypair`.
 
-The FI-facing fee proposal accepts at most 210,000 ppm — the pinned Fedi
-payer's own historical parser ceiling, deliberately not a separate Manifold
-cap.
+The FI-facing fee proposal accepts at most the payer-compatible 210,000 ppm.
 Every recipient crosses the protocol boundary as a complete single-signature
 `BtcDepositor` account plus a repeated matching account id. FMan validates the
-exact Fedi v1 wire, positive non-overflowing weights, strict unique AccountId
+version-1 weighted-recipient wire, positive non-overflowing weights, strict unique AccountId
 order, its own mnemonic-derived guardian account, and the deployment-pinned
-Fedi account before touching fedimintd. The fixed policy is FI=4, every
-guardian=1, Fedi=1. FI and FMan identities are disjoint by construction, so
-there is no combined FI-guardian entry; a colliding account is refused as a
-duplicate. Development and staging use
-known-test Fedi accounts from the environment profile. Production deliberately
-has none and the proposal path fails closed until the real account is supplied;
-never accept a caller-provided fallback for Fedi's share.
+Guardian Verification Fee account before touching fedimintd. The fixed policy
+gives FI four shares and every guardian one share; one additional share is the
+Guardian Verification Fee. FI and FMan identities are disjoint by construction,
+so there is no combined FI-guardian entry; a colliding account is refused as a
+duplicate. Development and staging use known-test Guardian Verification Fee
+accounts from the environment profile. Never accept a caller-provided fallback
+for the Guardian Verification Fee account.
 
 Each remittance carries an accounting breakdown sealed to the recipient account
 key. Decrypted breakdowns and `WithdrawGuardianFees` tokens are operator-only
@@ -865,8 +863,8 @@ the same database transaction, refusing (and refunding) outstanding quotes
 against removed members. The FMan does not publish the membership in kind
 37701, `GetAvailability`, or relay tags. FI paid selection independently
 consumes the same authenticated common set. Fedi does not yet publish kind
-37707, and the production profile carries no publisher key, so production
-paid setup fails closed.
+37707, so production paid setup remains unavailable until the first
+publication.
 
 FI common-set policy is authorized only by a complete kind-37707 event from the
 deployment-pinned Fedi publisher. Admission verifies the event ID and signature,

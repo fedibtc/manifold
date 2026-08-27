@@ -416,7 +416,7 @@ fn fee_recipient(account: Account, weight: u64) -> GuardianFeeRecipient {
 /// floor, so they pass the one value that admits any rate.
 const NO_FEE_FLOOR: u64 = 0;
 
-fn fedi_fee_account() -> Account {
+fn guardian_verification_fee_account() -> Account {
     fee_account(0x31)
 }
 
@@ -437,8 +437,8 @@ fn guardian_fee_recipients(ours: &Account) -> Vec<GuardianFeeRecipient> {
         ),
         fee_recipient(fee_account(0x30), crate::guardian_fee::FI_RECIPIENT_WEIGHT),
         fee_recipient(
-            fedi_fee_account(),
-            crate::guardian_fee::FEDI_RECIPIENT_WEIGHT,
+            guardian_verification_fee_account(),
+            crate::guardian_fee::GUARDIAN_VERIFICATION_FEE_WEIGHT,
         ),
     ];
     recipients.sort_by_key(|recipient| recipient.account.as_account().id());
@@ -2190,7 +2190,7 @@ async fn meta_write_submits_the_directory_and_keeps_the_other_fields() {
         fee_account(0x30),
         5_000,
         NO_FEE_FLOOR,
-        fedi_fee_account(),
+        guardian_verification_fee_account(),
     )
     .await
     .unwrap();
@@ -2210,7 +2210,7 @@ async fn meta_write_submits_the_directory_and_keeps_the_other_fields() {
         ),
         MetaFieldValue(padded_name.clone()),
         NO_FEE_FLOOR,
-        Some(fedi_fee_account()),
+        Some(guardian_verification_fee_account()),
     )
     .await
     .unwrap();
@@ -2260,7 +2260,7 @@ async fn generic_meta_write_revalidates_every_carried_guardian_fee_entitlement()
     let (_, seat_id) = create_free_seat(&fleet, 70).await;
     let seat = fleet.seat_by_id(&seat_id).unwrap();
     let ours = fleet.guardian_fee_account_descriptor(&seat_id);
-    let fedi = fedi_fee_account();
+    let guardian_verification_fee_account = guardian_verification_fee_account();
     let directory = guardian_fee_directory(&fixture_client_config(), &ours);
     let guardians = fixture_guardians(&ours);
 
@@ -2301,7 +2301,7 @@ async fn generic_meta_write_revalidates_every_carried_guardian_fee_entitlement()
             MetaFieldKey(FEDERATION_NAME_META_FIELD_KEY.to_owned()),
             MetaFieldValue("Never copied".to_owned()),
             NO_FEE_FLOOR,
-            Some(fedi.clone())
+            Some(guardian_verification_fee_account.clone())
         )
         .await,
         Err(SeatVerbError::MetaValueInvalid)
@@ -2312,7 +2312,7 @@ async fn generic_meta_write_revalidates_every_carried_guardian_fee_entitlement()
         5_000,
         &guardian_fee_recipients(&ours),
         &guardians,
-        &fedi,
+        &guardian_verification_fee_account,
     )
     .unwrap();
     let valid = serde_json_canonicalizer::to_vec(&std::collections::BTreeMap::from([
@@ -2347,7 +2347,7 @@ async fn generic_meta_write_revalidates_every_carried_guardian_fee_entitlement()
         MetaFieldKey(FEDERATION_NAME_META_FIELD_KEY.to_owned()),
         MetaFieldValue("Authenticated carry-forward".to_owned()),
         NO_FEE_FLOOR,
-        Some(fedi),
+        Some(guardian_verification_fee_account),
     )
     .await
     .expect("a canonical authenticated policy can accompany maintenance");
@@ -2904,7 +2904,7 @@ async fn formation_meta_requires_paired_endpoint_proof_identity_and_key() {
             fee_account(0x30),
             1_500,
             1_500,
-            fedi_fee_account(),
+            guardian_verification_fee_account(),
         )
         .await,
         Err(SeatVerbError::MetaValueInvalid)
@@ -2929,7 +2929,7 @@ async fn formation_meta_requires_paired_endpoint_proof_identity_and_key() {
             fee_account(0x30),
             1_500,
             1_500,
-            fedi_fee_account(),
+            guardian_verification_fee_account(),
         )
         .await,
         Err(SeatVerbError::MetaValueInvalid)
@@ -2942,7 +2942,7 @@ async fn formation_meta_requires_paired_endpoint_proof_identity_and_key() {
         fee_account(0x30),
         1_500,
         1_500,
-        fedi_fee_account(),
+        guardian_verification_fee_account(),
     )
     .await
     .unwrap();
@@ -2981,7 +2981,7 @@ async fn formation_meta_rejects_rate_below_floor_before_child_access() {
             fee_account(0x30),
             1_499,
             1_500,
-            fedi_fee_account(),
+            guardian_verification_fee_account(),
         )
         .await,
         Err(SeatVerbError::MetaValueInvalid)
@@ -3019,7 +3019,7 @@ async fn formation_meta_distinguishes_an_already_published_directory() {
             fee_account(0x30),
             5_000,
             NO_FEE_FLOOR,
-            fedi_fee_account(),
+            guardian_verification_fee_account(),
         )
         .await,
         Err(SeatVerbError::FormationMetaAlreadyPublished)
@@ -3053,7 +3053,7 @@ async fn fee_and_metadata_proposals_cross_block_on_a_shared_admitted_base() {
                     5,
                     &guardian_fee_recipients(&ours),
                     &fixture_guardians(&ours),
-                    &fedi_fee_account(),
+                    &guardian_verification_fee_account(),
                 )
                 .unwrap(),
             ),
@@ -3073,7 +3073,7 @@ async fn fee_and_metadata_proposals_cross_block_on_a_shared_admitted_base() {
         MetaFieldKey(FEDERATION_NAME_META_FIELD_KEY.to_owned()),
         MetaFieldValue("Metadata First".to_owned()),
         NO_FEE_FLOOR,
-        Some(fedi_fee_account()),
+        Some(guardian_verification_fee_account()),
     )
     .await
     .expect("the metadata mutation admits base O first");
@@ -3089,7 +3089,7 @@ async fn fee_and_metadata_proposals_cross_block_on_a_shared_admitted_base() {
             MetaFieldKey(crate::guardian_fee::SEND_PPM_META_KEY.to_owned()),
             MetaFieldValue((42).to_string()),
             NO_FEE_FLOOR,
-            Some(fedi_fee_account())
+            Some(guardian_verification_fee_account())
         )
         .await,
         Err(SeatVerbError::MetaTargetConflict)
@@ -3119,7 +3119,7 @@ async fn guardian_fee_proposal_uses_the_same_stale_base_guard() {
             MetaFieldKey(crate::guardian_fee::SEND_PPM_META_KEY.to_owned()),
             MetaFieldValue((42).to_string()),
             NO_FEE_FLOOR,
-            Some(fedi_fee_account())
+            Some(guardian_verification_fee_account())
         )
         .await,
         Err(SeatVerbError::MetaConsensusChanged)
@@ -3154,7 +3154,7 @@ async fn set_meta_fee_rate_refuses_invalid_values_without_child_access() {
                 MetaFieldKey(crate::guardian_fee::SEND_PPM_META_KEY.to_owned()),
                 MetaFieldValue(value),
                 1_500,
-                Some(fedi_fee_account()),
+                Some(guardian_verification_fee_account()),
             )
             .await,
             Err(SeatVerbError::MetaValueInvalid)
@@ -3175,12 +3175,12 @@ async fn seat_status_guardian_fee_reads_the_seat_without_a_wallet_client() {
     let (_, seat_id) = create_free_seat(&fleet, 66).await;
     let _seat = fleet.seat_by_id(&seat_id).unwrap();
     let ours = fleet.guardian_fee_account_descriptor(&seat_id);
-    let fedi = fedi_fee_account();
+    let guardian_verification_fee_account = guardian_verification_fee_account();
     let recipients = crate::guardian_fee::canonical_proposal(
         42,
         &guardian_fee_recipients(&ours),
         &fixture_guardians(&ours),
-        &fedi,
+        &guardian_verification_fee_account,
     )
     .unwrap();
     let meta = serde_json::to_vec(&std::collections::BTreeMap::from([
@@ -3227,7 +3227,7 @@ async fn guardian_fee_proposal_replaces_partial_live_metadata() {
     let fake = fleet
         .form_fake_child(&seat_id, running_federation(0, Some(existing.clone())))
         .await;
-    let fedi = fedi_fee_account();
+    let guardian_verification_fee_account = guardian_verification_fee_account();
     let _recipients = guardian_fee_recipients(&ours);
 
     assert!(matches!(
@@ -3236,7 +3236,7 @@ async fn guardian_fee_proposal_replaces_partial_live_metadata() {
             MetaFieldKey(crate::guardian_fee::SEND_PPM_META_KEY.to_owned()),
             MetaFieldValue("42".to_owned()),
             NO_FEE_FLOOR,
-            Some(fedi),
+            Some(guardian_verification_fee_account),
         )
         .await,
         Err(SeatVerbError::MetaValueInvalid)
@@ -3246,9 +3246,9 @@ async fn guardian_fee_proposal_replaces_partial_live_metadata() {
     fleet.shutdown().await;
 }
 
-/// The Fedi-published floor is enforced by this FMan, not only by the Fedi
-/// app: a CLI-driven FI proposing below it gets no vote, and the refusal
-/// happens before the seat touches its child.
+/// The published floor is enforced by this FMan: a CLI-driven FI proposing
+/// below it gets no vote, and the refusal happens before the seat touches its
+/// child.
 #[tokio::test]
 async fn guardian_fee_proposal_below_the_published_minimum_casts_no_vote() {
     let temp = TempDir::new().unwrap();
@@ -3273,7 +3273,7 @@ async fn guardian_fee_proposal_below_the_published_minimum_casts_no_vote() {
                     5,
                     &guardian_fee_recipients(&ours),
                     &fixture_guardians(&ours),
-                    &fedi_fee_account(),
+                    &guardian_verification_fee_account(),
                 )
                 .unwrap(),
             ),
@@ -3292,7 +3292,7 @@ async fn guardian_fee_proposal_below_the_published_minimum_casts_no_vote() {
                 MetaFieldKey(crate::guardian_fee::SEND_PPM_META_KEY.to_owned()),
                 MetaFieldValue((send_ppm).to_string()),
                 floor,
-                Some(fedi_fee_account())
+                Some(guardian_verification_fee_account())
             )
             .await,
             Err(SeatVerbError::MetaValueInvalid)
@@ -3314,7 +3314,7 @@ async fn guardian_fee_proposal_below_the_published_minimum_casts_no_vote() {
         MetaFieldKey(crate::guardian_fee::SEND_PPM_META_KEY.to_owned()),
         MetaFieldValue((floor).to_string()),
         floor,
-        Some(fedi_fee_account()),
+        Some(guardian_verification_fee_account()),
     )
     .await
     .expect("a proposal at the published minimum is admitted");
@@ -3340,14 +3340,14 @@ async fn an_unrelated_meta_write_carries_a_sub_minimum_fee_rate_forward() {
     let seat = fleet.seat_by_id(&seat_id).unwrap();
     let ours = fleet.guardian_fee_account_descriptor(&seat_id);
     // 5 ppm: a policy this federation legitimately adopted, far below the
-    // 1,500-ppm minimum Fedi publishes now. Built through the real
+    // 1,500-ppm published minimum. Built through the real
     // canonicalizer, which also pins that it accepts a sub-minimum rate.
     let carried_send_ppm = "5";
     let carried_recipients = crate::guardian_fee::canonical_proposal(
         5,
         &guardian_fee_recipients(&ours),
         &fixture_guardians(&ours),
-        &fedi_fee_account(),
+        &guardian_verification_fee_account(),
     )
     .expect("a rate below the published floor is still a canonical fee policy");
     let existing = serde_json_canonicalizer::to_vec(&std::collections::BTreeMap::from([
@@ -3374,7 +3374,7 @@ async fn an_unrelated_meta_write_carries_a_sub_minimum_fee_rate_forward() {
         MetaFieldKey(FEDERATION_NAME_META_FIELD_KEY.to_owned()),
         MetaFieldValue("Renamed".to_owned()),
         NO_FEE_FLOOR,
-        Some(fedi_fee_account()),
+        Some(guardian_verification_fee_account()),
     )
     .await
     .expect("renaming a federation whose agreed rate is below the floor must still work");
@@ -3428,7 +3428,7 @@ async fn canonical_guardian_fee_submission(
                 5,
                 &guardian_fee_recipients(&ours),
                 &fixture_guardians(&ours),
-                &fedi_fee_account(),
+                &guardian_verification_fee_account(),
             )
             .unwrap(),
         ),
@@ -3442,7 +3442,7 @@ async fn canonical_guardian_fee_submission(
         MetaFieldKey(crate::guardian_fee::SEND_PPM_META_KEY.to_owned()),
         MetaFieldValue((42).to_string()),
         NO_FEE_FLOOR,
-        Some(fedi_fee_account()),
+        Some(guardian_verification_fee_account()),
     )
     .await
     .unwrap();

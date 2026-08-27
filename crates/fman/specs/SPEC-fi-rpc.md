@@ -201,10 +201,11 @@ and guardian-fee recipient list. Its FI signature covers the exact merge base,
 paired attestation/proof entries, FI fee account, initial rate,
 timestamp, FI id, and seat id. FMan checks the rate floor before child access,
 refuses an already-consensus directory as `FormationMetaAlreadyPublished`,
-verifies the constructed directory and paired proofs against the final config, checks its own
-seat identity, derives the fixed FI=4/guardian=1/Fedi=1 recipient list, and
-submits all three formation fields as one guarded target. Success means
-submitted, not live.
+verifies the constructed directory and paired proofs against the final config,
+and checks its own seat identity. It then derives the fixed recipient list—FI
+at weight four, every guardian at weight one, and the Guardian Verification Fee
+at weight one—and submits all three formation fields as one guarded target.
+Success means submitted, not live.
 
 After formation, `SetMetaField` may change only the guardian-fee rate. Every
 whole-object generic vote carrying fee fields revalidates the fixed recipient
