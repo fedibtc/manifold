@@ -350,18 +350,6 @@
               '';
             };
 
-            fmanTestArtifacts = craneLib.mkCargoDerivation {
-              pname = "${projectName}-nextest-artifacts-fman";
-              cargoArtifacts = workspaceDeps;
-              doCheck = false;
-              nativeBuildInputs = [ pkgs.cargo-nextest ];
-              buildPhaseCargoCommand = ''
-                cargo nextest run --no-run \
-                  ''${CARGO_PROFILE:+--cargo-profile $CARGO_PROFILE} \
-                  -p tests-e2e
-              '';
-            };
-
             runtimeBins = craneLib.buildPackage {
               cargoArtifacts = testArtifacts;
               # FMan and FLIP are the only published binaries whose release
@@ -371,12 +359,6 @@
               cargoExtraArgs = "-p defe --bin defe -p devmon --bin manifold-test-issuer -p fedi-decentralized-cloud-fman-telemetry --bin fedi-decentralized-cloud-fman-telemetry -p fedi-decentralized-push-gateway --bin fedi-decentralized-push-gateway -p fedi-decentralized-liquidity-manager-daemon --bin liquidity-manager-daemon -p fman --bin fleet-manager -p fman-cli --bin fman-cli -p fi-cli --bin fi-cli --features fedi-decentralized-liquidity-manager-daemon/embedded-operator-ui,fman/embedded-operator-ui";
               env.FLIP_OPERATOR_UI_DIST_DIR = "${operatorUi}/srv/flip";
               env.FMAN_OPERATOR_UI_DIST_DIR = "${operatorUi}/srv/fman";
-              env.FEDIMINT_BUILD_FORCE_GIT_HASH = fedimintSourceRev;
-            };
-
-            fmanRuntimeBins = craneLib.buildPackage {
-              cargoArtifacts = fmanTestArtifacts;
-              cargoExtraArgs = "-p defe --bin defe -p devmon --bin manifold-test-issuer -p fman --bin fleet-manager -p fman-cli --bin fman-cli -p fi-cli --bin fi-cli";
               env.FEDIMINT_BUILD_FORCE_GIT_HASH = fedimintSourceRev;
             };
 
@@ -453,31 +435,31 @@
                     "all() - binary(fleet_manager_0_1_formation) - binary(integration_live_liquidity) - binary(integration_flip_operator_e2e)"
                     null;
                 fmanFreeRunner =
-                  runTests "fman-free" fmanTestArtifacts fmanRuntimeBins "-p tests-e2e"
+                  runTests "fman-free" testArtifacts runtimeBins workspaceTestArgs
                     "binary(fleet_manager_0_1_formation) & test(fleet_manager_0_1_forms_seven_guardian_federation_under_defe)"
                     ordinaryRunner;
                 fmanRestoreRunner =
-                  runTests "fman-restore" fmanTestArtifacts fmanRuntimeBins "-p tests-e2e"
+                  runTests "fman-restore" testArtifacts runtimeBins workspaceTestArgs
                     "binary(fleet_manager_0_1_formation) & test(fman_restores_a_formed_fleet_from_mnemonic_and_nostr_under_defe)"
                     fmanFreeRunner;
                 fiCrashRecoveryRunner =
-                  runTests "fi-crash-recovery" fmanTestArtifacts fmanRuntimeBins "-p tests-e2e"
+                  runTests "fi-crash-recovery" testArtifacts runtimeBins workspaceTestArgs
                     "binary(fleet_manager_0_1_formation) & test(fi_client_resumes_real_dkg_after_sigkill_under_defe)"
                     fmanRestoreRunner;
                 fmanSeatLifecycleRunner =
-                  runTests "fman-seat-lifecycle" fmanTestArtifacts fmanRuntimeBins "-p tests-e2e"
+                  runTests "fman-seat-lifecycle" testArtifacts runtimeBins workspaceTestArgs
                     "binary(fleet_manager_0_1_formation) & test(fman_recovers_a_real_child_and_terminalizes_data_loss_under_defe)"
                     fiCrashRecoveryRunner;
                 fmanPostFormationRunner =
-                  runTests "fman-post-formation" fmanTestArtifacts fmanRuntimeBins "-p tests-e2e"
+                  runTests "fman-post-formation" testArtifacts runtimeBins workspaceTestArgs
                     "binary(fleet_manager_0_1_formation) & test(fman_remits_collects_and_recovers_guardian_fee_payout_under_defe)"
                     fmanSeatLifecycleRunner;
                 fmanPaidRunner =
-                  runTests "fman-paid" fmanTestArtifacts fmanRuntimeBins "-p tests-e2e"
+                  runTests "fman-paid" testArtifacts runtimeBins workspaceTestArgs
                     "binary(fleet_manager_0_1_formation) & test(fleet_manager_0_1_paid_formation_settles_real_ecash_under_defe)"
                     fmanPostFormationRunner;
                 fmanMultiRelayRunner =
-                  runTests "fman-multi-relay" fmanTestArtifacts fmanRuntimeBins "-p tests-e2e"
+                  runTests "fman-multi-relay" testArtifacts runtimeBins workspaceTestArgs
                     "binary(fleet_manager_0_1_formation) & test(fman_advertises_and_onboards_with_first_relay_down_under_defe)"
                     fmanPaidRunner;
                 flipHappyRunner =
