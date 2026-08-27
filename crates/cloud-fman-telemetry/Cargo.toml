@@ -21,6 +21,7 @@ fedi-decentralized-manifold-environment = { path = "../manifold-environment" }
 fedi-decentralized-peer-badge-verifier = { path = "../peer-badge-verifier" }
 fedi-decentralized-service-fleet-manager = { path = "../service-fleet-manager" }
 fedi-iroh-rpc = { path = "../fedi-iroh-rpc" }
+fedimint-core.workspace = true
 fs2 = "0.4"
 hex = "0.4.3"
 hyper = { version = "1", features = ["http1", "server"] }

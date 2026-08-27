@@ -14,6 +14,29 @@ use fedi_iroh_rpc::{
 
 use super::*;
 
+const VALID_INVITE: &str = "fed11qgqpu8rhwden5te0vejkg6tdd9h8gepwd4cxcumxv4jzuen0duhsqqfqh6nl7sgk72caxfx8khtfnn8y436q3nhyrkev3qp8ugdhdllnh86qmp42pm";
+
+#[test]
+fn federation_attribution_requires_a_parseable_invite() {
+    assert!(federation_id_from_invite(None).is_none());
+    assert!(
+        federation_id_from_invite(Some(&fedi_decentralized_service_fleet_manager::InviteCode(
+            "not-an-invite".to_owned()
+        )))
+        .is_none()
+    );
+    let federation_id = federation_id_from_invite(Some(
+        &fedi_decentralized_service_fleet_manager::InviteCode(VALID_INVITE.to_owned()),
+    ))
+    .unwrap();
+    assert_eq!(federation_id.len(), 64);
+    assert!(
+        federation_id
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    );
+}
+
 fn secure_state_path(directory: &tempfile::TempDir) -> std::path::PathBuf {
     let data_dir = directory.path().join("collector");
     drop(crate::data_root_lock::DataRootLock::acquire(&data_dir).unwrap());
@@ -37,11 +60,15 @@ impl GuardianTelemetryApi for TestService {
             seats: vec![
                 GuardianTelemetrySeat {
                     seat_id: self.good_seat.clone(),
-                    invite_code: None,
+                    invite_code: Some(fedi_decentralized_service_fleet_manager::InviteCode(
+                        VALID_INVITE.to_owned(),
+                    )),
                 },
                 GuardianTelemetrySeat {
                     seat_id: self.bad_seat.clone(),
-                    invite_code: None,
+                    invite_code: Some(fedi_decentralized_service_fleet_manager::InviteCode(
+                        VALID_INVITE.to_owned(),
+                    )),
                 },
             ],
         })
@@ -164,6 +191,14 @@ async fn authenticated_production_client_discovers_and_scrapes_a_seat() {
     assert!(started.elapsed() < Duration::from_secs(2));
     assert!(!commit.complete);
     assert_eq!(commit.snapshots.len(), 1);
+    let expected_federation = fedimint_core::invite_code::InviteCode::from_str(VALID_INVITE)
+        .unwrap()
+        .federation_id()
+        .to_string();
+    assert_eq!(
+        commit.snapshots[0].federation_id, expected_federation,
+        "the invite-derived binding stays with the exact scraped seat"
+    );
     assert!(
         commit
             .listed_seats

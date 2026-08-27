@@ -47,8 +47,8 @@ behavior is derived from the scoped code.
    sum, count, or bucket set, then emits every independently valid staged family.
 4. **[code] Input identity keys cannot override inserted identity.**
    `ParsedSample` rejects malformed or duplicate input labels, and policy shape
-   validation excludes `fman_id`, `fman_name`, and `guardian_seat_id` from the
-   input. `admit_until` then inserts exactly those three keys from the supplied
+   validation excludes `fman_id`, `fman_name`, `guardian_seat_id`, and
+   `federation_id` from the input. `admit_until` then inserts exactly those four keys from the supplied
    `MetricsIdentity`; this function does not establish that those values are
    canonical.
 5. **[code] Global failures are bounded and projection-local failures stay local.**
@@ -58,7 +58,7 @@ behavior is derived from the scoped code.
    duplicate, and histogram failures taint only the exact admitted family selected
    before parsing. Before adding a rendered
    sample, `MAX_OUTPUT_BYTES` rejects an aggregate over 2 MiB, including the
-   three inserted identity labels. The line, family, and label limits further
+   four inserted identity labels. The line, family, and label limits further
    constrain work but are not needed for the two claimed aggregate bounds.
 6. **[test] Hostile policy cases pin the principal rejection paths.**
    `unknown_and_invalid_families_do_not_suppress_an_unrelated_valid_family`,
@@ -69,7 +69,8 @@ behavior is derived from the scoped code.
    generated-suffix lookalikes, extra labels, identity override, malformed and
    duplicate input, incomplete histograms, and the exact hostile sample bound.
    `exact_inventory_adds_only_verified_identity` pins supplied identity
-   insertion.
+   insertion, including canonical rendering of `federation_id`; same-value and
+   different-value producer collisions exercise the same family-local rejection.
 
 ## Residuals
 

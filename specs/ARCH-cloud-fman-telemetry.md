@@ -22,10 +22,10 @@ registration revision that fences in-flight work. Neither form resets journal
 identity or cursor state.
 
 The authenticated FMan identity is the canonical Nostr public key established by
-registration. A seat id returned over that FMan's capability-authenticated Iroh
-connection is a stable guardian selector within that FMan, but it is only the
-FMan's assertion: it does not prove a federation or config binding. The collector
-does not use invite codes for identity.
+registration. A seat id and formed invite returned over that FMan's
+capability-authenticated Iroh connection bind the scrape selector to an
+operational federation id. This is the authenticated FMan's assertion; it does
+not independently prove guardian membership or the child's configuration.
 
 The collector collects only:
 
@@ -54,23 +54,33 @@ every admitted guardian series:
 - `fman_id`: the lowercase hexadecimal canonical FMan Nostr public key verified
   at registration;
 - `fman_name`: the deterministic lowercase `FmanName` derived from that key,
-  used only for display and never for series identity or merging; and
-- `guardian_seat_id`: the canonical seat id returned by the authenticated FMan.
+  used only for display and never for series identity or merging;
+- `guardian_seat_id`: the canonical seat id returned by the authenticated FMan;
+  and
+- `federation_id`: the canonical lowercase 64-hex id derived from the invite
+  asserted for that exact seat by the authenticated FMan.
 
 The key is already a public FMan identity, the possibly colliding name is its
 bounded human-readable fingerprint, and the seat id is bounded collector input
 from an authenticated FMan. `fman_id` and `guardian_seat_id` are stable across
 ordinary restart and capability rotation and operationally identify the source.
+The collector stores the federation id with the successful seat snapshot and
+rejects producer-owned collisions, missing or malformed current invites, and
+persisted metadata/sample mismatches. A later successful poll replaces the
+snapshot and its federation attribution together. The seat-scoped observation-time and stale
+metrics carry all four labels; FMan-global freshness and collector-global
+metrics do not carry `federation_id`.
+
 The collector must not substitute opaque-only target ids, caller-provided
-display names, invite data, capabilities, endpoints, journal data, or other
-unbounded values. Consumers must not interpret `guardian_seat_id` as independent
-federation attestation.
+display names, full invite data, capabilities, endpoints, journal data, or
+other unbounded values. This attribution is suitable for operational grouping,
+not authorization, billing, disputes, or independent membership attestation.
 
 `peer_id` and `self_id` remain bounded producer-owned metric dimensions. They
 are neither collector-owned source identity nor collector-verified federation
 configuration. Consumers must use the authenticated `fman_id` plus asserted
-`guardian_seat_id` for source identity and must not treat producer peer labels
-as membership attestation.
+`guardian_seat_id` and `federation_id` for operational source identity and must
+not treat any of these labels as independent membership attestation.
 
 Metrics are deliberate observations at a configured cadence of either 15 or 30
 minutes. The collector exposes its current admitted samples on a private

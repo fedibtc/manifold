@@ -2492,6 +2492,7 @@ dependencies = [
  "fedi-decentralized-peer-badge-verifier",
  "fedi-decentralized-service-fleet-manager",
  "fedi-iroh-rpc",
+ "fedimint-core",
  "fs2",
  "hex",
  "hyper",

@@ -32,9 +32,9 @@ trusted.
 2. **[test] Isolation and freshness.**
    `private_routes_keep_local_readiness_independent_of_remote_snapshots`,
    `partial_remote_poll_is_degraded_while_local_readiness_stays_ready`, the
-   snapshot freshness tests, and
-   `remote_failure_is_exposed_without_removing_healthy_targets` cover local
-   readiness and non-retimed stale exposition.
+    snapshot freshness tests, and
+    `remote_failure_is_exposed_without_removing_healthy_targets` cover local
+    readiness and non-retimed stale exposition.
    `same_day_archive_saturation_preserves_cursor_and_other_target_work` fills
    the shared archive with one target's valid frame, forces that target's next
    valid frame to be refused, and verifies that the cycle succeeds, another

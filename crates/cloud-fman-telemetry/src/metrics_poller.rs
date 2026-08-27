@@ -385,6 +385,12 @@ impl MetricsPoller {
         let mut complete = true;
         let mut total_bytes = 0usize;
         for seat in response.seats {
+            let Some(federation_id) = federation_id_from_invite(seat.invite_code.as_ref()) else {
+                self.observability
+                    .record(AdmissionOutcome::InvalidFederationInvite);
+                complete = false;
+                continue;
+            };
             let Some(remaining) = deadline.checked_duration_since(tokio::time::Instant::now())
             else {
                 complete = false;
@@ -425,6 +431,7 @@ impl MetricsPoller {
                     fman_id: target.fman_id(),
                     fman_name: target.fman_name(),
                     guardian_seat_id: &seat_id,
+                    federation_id: &federation_id,
                 },
                 Some(deadline.into_std()),
             ) {
@@ -478,6 +485,7 @@ impl MetricsPoller {
             }
             snapshots.push(SeatObservation {
                 guardian_seat_id: seat_id,
+                federation_id,
                 observed_at_ms,
                 samples: admitted.samples,
             });
@@ -516,6 +524,14 @@ impl MetricsPoller {
             ),
         ))
     }
+}
+
+fn federation_id_from_invite(
+    invite: Option<&fedi_decentralized_service_fleet_manager::InviteCode>,
+) -> Option<String> {
+    fedimint_core::invite_code::InviteCode::from_str(&invite?.0)
+        .ok()
+        .map(|invite| invite.federation_id().to_string())
 }
 
 fn fair_target_budget(cadence: Duration, concurrency: usize, targets: usize) -> Duration {

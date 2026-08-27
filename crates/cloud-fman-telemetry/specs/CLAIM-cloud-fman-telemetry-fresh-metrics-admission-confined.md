@@ -7,7 +7,7 @@ an admitted family's exact policy
 shape, an input-supplied collector identity label, a duplicate series, an
 incomplete histogram, a non-finite or sign-negative value, more than 20,000
 samples, or more than 2 MiB of rendered samples. Each result adds exactly the
-three collector identity keys with the values supplied in `MetricsIdentity`.
+four collector identity keys with the values supplied in `MetricsIdentity`.
 Absent one of the global failures below, an unknown, reviewed-deny, or locally
 invalid admitted family cannot suppress an unrelated independently valid
 admitted family. Complete failure is limited to a missing or invalid required
