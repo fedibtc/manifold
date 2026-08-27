@@ -13,7 +13,7 @@ nostr = "0.44"
 serde.workspace = true
 serde_json.workspace = true
 serde_json_canonicalizer = "0.3"
-sha2 = "0.10"
+sha2.workspace = true
 
 [dev-dependencies]
 blind-rsa-signatures = "0.17"

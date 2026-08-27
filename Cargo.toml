@@ -145,6 +145,7 @@ debug = false
 
 [workspace.dependencies]
 async-trait = "0.1"
+base64 = "0.22.1"
 ciborium = "0.2"
 clap = { version = "4.5.40", features = ["derive", "env"] }
 fedi-credential-sdk-protocol = { path = ".nix-deps/credential-sdk/crates/protocol" }
@@ -195,6 +196,7 @@ proc-macro2 = "1"
 quote = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+sha2 = "0.10.9"
 stability-pool-client = { git = "https://github.com/fedixyz/fedi", rev = "2f35ea4e3b2516d35b8ed315455718cd3b336758", package = "stability-pool-client" }
 stability-pool-common = { git = "https://github.com/fedixyz/fedi", rev = "2f35ea4e3b2516d35b8ed315455718cd3b336758", package = "stability-pool-common" }
 stability-pool-server = { git = "https://github.com/fedixyz/fedi", rev = "2f35ea4e3b2516d35b8ed315455718cd3b336758", package = "stability-pool-server" }

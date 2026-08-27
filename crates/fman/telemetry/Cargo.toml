@@ -6,7 +6,7 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-base64 = "0.22"
+base64.workspace = true
 bounded-rolling-file = { path = "../../bounded-rolling-file" }
 fedi-decentralized-domain = { path = "../../domain" }
 fedi-decentralized-guardian-metrics-policy = { path = "../../guardian-metrics-policy" }
@@ -21,7 +21,7 @@ reqwest = { version = "0.12", default-features = false, features = [
   "rustls-tls-webpki-roots",
 ] }
 serde_json = "1"
-sha2 = "0.10"
+sha2.workspace = true
 tokio = { workspace = true, features = ["rt", "sync", "time"] }
 tracing = "0.1"
 

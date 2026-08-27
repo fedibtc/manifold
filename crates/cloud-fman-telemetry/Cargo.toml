@@ -13,7 +13,7 @@ test-support = ["fedi-decentralized-peer-badge-verifier/test-support"]
 aes-gcm = "0.10.3"
 async-trait.workspace = true
 axum = "0.8.4"
-base64 = "0.22.1"
+base64.workspace = true
 clap.workspace = true
 fedi-decentralized-domain = { path = "../domain" }
 fedi-decentralized-guardian-metrics-policy = { path = "../guardian-metrics-policy" }
@@ -32,7 +32,7 @@ rand = "0.8"
 rustls = { version = "0.23", default-features = false, features = ["ring"] }
 serde.workspace = true
 serde_json.workspace = true
-sha2 = "0.10.9"
+sha2.workspace = true
 sqlx = { version = "0.8.6", features = ["migrate", "runtime-tokio", "sqlite"] }
 thiserror.workspace = true
 tokio = { version = "1.45.1", features = [

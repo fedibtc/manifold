@@ -88,7 +88,7 @@ rust-embed = { version = "8.12", optional = true, features = [
 rustls = { version = "0.23", default-features = false, features = ["ring"] }
 serde = { workspace = true }
 serde_json = { version = "1", features = ["arbitrary_precision"] }
-sha2 = "0.10"
+sha2.workspace = true
 # Not used directly. netwatch 0.5.0 (via iroh) needs socket2's `all` feature to
 # compile on darwin but does not enable it; declaring it here unifies the feature
 # so the daemon builds on macOS. Harmless elsewhere — socket2 is already in the
@@ -122,6 +122,6 @@ fedi-credential-sdk-protocol.workspace = true
 # takes fcntl record locks, which a plain `File::try_lock` (flock) cannot see.
 fedimint-rocksdb = { workspace = true }
 serde_json_canonicalizer = "0.3"
-sha2 = "0.10"
+sha2.workspace = true
 tokio-tungstenite = "0.26"
 tower = { version = "0.5.3", features = ["util"] }
