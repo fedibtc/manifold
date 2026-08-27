@@ -14,7 +14,14 @@ stream; Admin is trusted.
 
 ## Status
 
-Unverified.
+Established. Revalidated against current code on this branch: the only
+stability completion path is `complete_stability_pool_item`, reached only
+when the item's own saved `deposit_to_provide` operation id reports
+`Success` through the target client's operation stream
+(`stability_allocation.rs`, `observe_stability_deposit`). The account-wide
+report is a conjunction requirement that only corroborates an already
+attributed operation, so an unrelated deposit cannot complete a zero-call
+or failed item.
 
 ## Assumptions
 

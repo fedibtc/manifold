@@ -15,7 +15,14 @@ existing row.
 
 ## Status
 
-Unverified.
+Established with the documented override, revalidated against current code
+on this branch. A manual `Completed` resolution writes the operator's txid
+and leaves `tx_vout` unset — the durable marker that FLIP did not verify the
+transaction — and reaches that state only through the distinct
+`resolve_manual_review` verb behind Admin bearer authentication, never
+through the evidence-based `claim_chain_evidence` path. An operator's
+unverified assertion is therefore deliberate, recorded, and distinguishable
+from observer-verified completion, which is what this record requires.
 
 ## Assumptions
 

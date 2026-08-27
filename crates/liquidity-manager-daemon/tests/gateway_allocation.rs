@@ -17,7 +17,9 @@ use tokio::sync::Mutex;
 
 use super::*;
 use crate::allocation_store::load_allocation_status_by_federation;
-use crate::gateway::{GatewayFederationSnapshot, GatewaySnapshot};
+use crate::gateway::{
+    GatewayDepositClaim, GatewayFederationSnapshot, GatewaySnapshot,
+};
 use crate::manual_ops::{
     cancel_allocation_with_database, resolve_manual_review_with_database_for_test,
 };
@@ -325,6 +327,9 @@ async fn completed_wallet_operation_persists_gateway_completion_evidence() -> an
         },
     )
     .await?;
+    // The gateway's Fedimint client claims the output the funding operation
+    // paid. This is the only credit that completes the item.
+    gateway.claim_deposit("txid-1", 0, Sats(25_000)).await;
     gateway.set_balance("federation-1", Sats(25_000)).await;
 
     process_gateway_allocations_with(
@@ -379,19 +384,21 @@ async fn completed_wallet_operation_persists_gateway_completion_evidence() -> an
     Ok(())
 }
 
-/// E-cash the federation already held when the gateway connected must not
-/// count toward this item's required increase. The first anchor is taken
-/// before `connect_federation`, so without the re-anchor at submission time
-/// the whole pre-existing balance is free to satisfy the completion guard.
+/// A federation balance this item did not cause — e-cash held before the
+/// gateway connected, or a concurrent deposit the gateway claimed — must not
+/// complete it. Only a `deposit-confirmed` claim naming this item's own
+/// funding txid is attribution; every aggregate-balance increase is not.
 #[tokio::test]
-async fn preexisting_federation_balance_does_not_complete_gateway_item() -> anyhow::Result<()> {
-    let database = Database::connect(test_sqlite_path("gateway-preexisting-balance")).await?;
+async fn unrelated_target_credit_does_not_complete_gateway_item() -> anyhow::Result<()> {
+    let database =
+        Database::connect(test_sqlite_path("gateway-unrelated-credit")).await?;
     let setup = test_setup_config();
     let (federation_id, item_id) = seed_gateway_allocation(&database, &setup, Sats(25_000)).await?;
     let wallet = TestFundsWallet::new(setup.network, Sats(100_000), regtest_address());
     let gateway = FakeGateway::new(setup.network, regtest_address());
-    // The gateway joins a federation that already holds more than this item
-    // commits, and the item's own deposit is never credited.
+    // The federation holds far more than this item commits, and the gateway
+    // claims another deposit entirely — the exact pairing the aggregate
+    // inequality accepted.
     gateway.set_connect_balance(Sats(40_000)).await;
 
     process_gateway_allocations_with(
@@ -419,6 +426,8 @@ async fn preexisting_federation_balance_does_not_complete_gateway_item() -> anyh
     )
     .await?;
 
+    gateway.set_balance("federation-1", Sats(65_000)).await;
+    gateway.claim_deposit("other-txid", 1, Sats(25_000)).await;
     process_gateway_allocations_with(
         &database,
         &setup,
@@ -433,11 +442,11 @@ async fn preexisting_federation_balance_does_not_complete_gateway_item() -> anyh
     assert_eq!(
         status.item_statuses[0].status,
         ItemAllocationStatus::Running,
-        "a balance the federation already held is not evidence for this item"
+        "a credit that names another txid is not evidence for this item"
     );
 
-    // The item still completes once an increase over that anchor appears.
-    gateway.set_balance("federation-1", Sats(65_000)).await;
+    // The item completes once the gateway claims its own funding output.
+    gateway.claim_deposit("txid-1", 0, Sats(25_000)).await;
     process_gateway_allocations_with(
         &database,
         &setup,
@@ -821,6 +830,7 @@ struct FakeGatewayState {
     connect_balance: Sats,
     connect_error: Option<String>,
     connect_attempts: usize,
+    deposit_claims: Vec<GatewayDepositClaim>,
 }
 
 impl FakeGateway {
@@ -834,6 +844,7 @@ impl FakeGateway {
                 connect_balance: Sats(0),
                 connect_error: None,
                 connect_attempts: 0,
+                deposit_claims: Vec::new(),
             })),
         }
     }
@@ -861,6 +872,19 @@ impl FakeGateway {
 
     async fn connect_attempts(&self) -> usize {
         self.inner.lock().await.connect_attempts
+    }
+
+    /// Reports a deposit the gateway's Fedimint client has claimed.
+    async fn claim_deposit(&self, txid: &str, out_idx: u32, amount: Sats) {
+        self.inner
+            .lock()
+            .await
+            .deposit_claims
+            .push(GatewayDepositClaim {
+                txid: txid.to_owned(),
+                out_idx,
+                amount,
+            });
     }
 }
 
@@ -919,5 +943,12 @@ impl GatewayClient for FakeGateway {
         _expected_network: BitcoinNetwork,
     ) -> anyhow::Result<()> {
         Ok(())
+    }
+
+    async fn deposit_claims(
+        &self,
+        _federation_id: &str,
+    ) -> anyhow::Result<Vec<GatewayDepositClaim>> {
+        Ok(self.inner.lock().await.deposit_claims.clone())
     }
 }

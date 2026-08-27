@@ -447,8 +447,6 @@ pub(crate) struct StabilityPoolAllocationItem {
 
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub(crate) struct GatewayAllocationStep {
-    pub gateway_info_observed_at: Option<Timestamp>,
-    pub initial_gateway_balance: Option<Sats>,
     pub gateway_connected: bool,
     pub deposit_address: Option<String>,
     pub wallet_operation_id: Option<String>,

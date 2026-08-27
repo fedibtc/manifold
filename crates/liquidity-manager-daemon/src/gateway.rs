@@ -21,9 +21,10 @@ use fedi_decentralized_service_liquidity_manager::{
 use fedimint_connectors::ConnectorRegistry;
 use fedimint_core::config::FederationId;
 use fedimint_core::util::SafeUrl;
+use fedimint_gateway_client::payment_log;
 use fedimint_gateway_common::{
     ConnectFedPayload, DepositAddressPayload, DepositAddressRecheckPayload, GatewayInfo,
-    LightningInfo, RegisteredProtocol, V1_API_ENDPOINT,
+    LightningInfo, PaymentLogPayload, RegisteredProtocol, V1_API_ENDPOINT,
 };
 use fedimint_ln_common::client::GatewayApi;
 
@@ -42,6 +43,21 @@ pub(crate) struct GatewaySnapshot {
 pub(crate) struct GatewayFederationSnapshot {
     pub federation_id: String,
     pub balance: Sats,
+}
+
+/// A deposit the gateway's own Fedimint client observed and claimed.
+///
+/// This is the target-side record the completion guard needs: gatewayd logs a
+/// `deposit-confirmed` event for every peg-in its federation client claims,
+/// with the Bitcoin transaction id, output index, and amount of the deposit.
+/// A txid plus output index identifies exactly the output the item's funding
+/// operation paid, so matching it is what makes completion attribution and
+/// not a balance coincidence.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct GatewayDepositClaim {
+    pub txid: String,
+    pub out_idx: u32,
+    pub amount: Sats,
 }
 
 #[async_trait]
@@ -78,6 +94,14 @@ pub(crate) trait GatewayClient: Send + Sync {
             .find(|federation| federation.federation_id == federation_id)
             .map(|federation| federation.balance))
     }
+
+    /// Deposits the gateway's Fedimint client has observed and claimed for
+    /// this federation. The completion guard matches one of these against the
+    /// item's own funding txid; an aggregate balance read cannot.
+    async fn deposit_claims(
+        &self,
+        federation_id: &str,
+    ) -> anyhow::Result<Vec<GatewayDepositClaim>>;
 }
 
 /// What a gateway reports about itself, read before any config names it.
@@ -220,7 +244,52 @@ impl GatewayClient for ConfiguredGatewayClient {
         .await?;
         Ok(())
     }
+
+    async fn deposit_claims(
+        &self,
+        federation_id: &str,
+    ) -> anyhow::Result<Vec<GatewayDepositClaim>> {
+        let federation_id = federation_id.parse::<FederationId>()?;
+        let response = payment_log(
+            &self.api,
+            &self.base_url,
+            PaymentLogPayload {
+                // `None` starts at the newest log position, so the read covers
+                // every retained event.
+                end_position: None,
+                pagination_size: PAYMENT_LOG_PAGE_SIZE,
+                federation_id,
+                event_kinds: vec![DEPOSIT_CONFIRMED_KIND.into()],
+            },
+        )
+        .await?;
+        Ok(response
+            .0
+            .iter()
+            .filter_map(|entry| {
+                // `DepositConfirmed` is the wallet-client event gatewayd logs
+                // when its federation client claims a deposit; its payload
+                // carries the txid, output index, and deposit amount.
+                let payload: fedimint_wallet_client::events::DepositConfirmed =
+                    serde_json::from_slice(&entry.as_raw().payload).ok()?;
+                Some(GatewayDepositClaim {
+                    txid: payload.txid.to_string(),
+                    out_idx: payload.out_idx,
+                    amount: Sats(payload.amount.msats / 1000),
+                })
+            })
+            .collect())
+    }
 }
+
+/// Upper bound on deposit-confirmed entries read per completion check. The
+/// log is read newest-first and each item matches its own txid, so a page
+/// larger than the concurrent-item ceiling adds matches, not correctness.
+const PAYMENT_LOG_PAGE_SIZE: usize = 1000;
+
+/// Event kind gatewayd's federation clients log when they observe a confirmed
+/// deposit, from `fedimint_wallet_client::events::DepositConfirmed::KIND`.
+const DEPOSIT_CONFIRMED_KIND: &str = "deposit-confirmed";
 
 fn gateway_snapshot_from_info(info: GatewayInfo) -> anyhow::Result<GatewaySnapshot> {
     let (network, synced_to_chain) = match info.lightning_info {

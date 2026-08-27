@@ -23,7 +23,7 @@ use crate::gateway::{ConfiguredGatewayClient, GatewayClient, GatewaySnapshot};
 use crate::setup_store::{self};
 use crate::wallet::{FundsWallet, GatewaydFundsWallet, get_wallet_operation};
 use crate::{
-    checked_sats_add, now_timestamp, run_interval_task, unavailable, validate_deposit_address,
+    now_timestamp, run_interval_task, unavailable, validate_deposit_address,
 };
 
 pub(crate) async fn run_gateway_allocation_task(context: DaemonContext) -> anyhow::Result<()> {
@@ -122,13 +122,6 @@ async fn process_gateway_item(
         .federations
         .iter()
         .find(|federation| federation.federation_id == item.target.federation_id.0);
-    let observed_balance_now = observed_federation.map(|federation| federation.balance);
-    if item.step.initial_gateway_balance.is_none() {
-        item.step.initial_gateway_balance = Some(observed_balance_now.unwrap_or(Sats(0)));
-        item.step.gateway_info_observed_at = Some(now_timestamp());
-        allocation_store::update_item_step(database, &item.item_id, &item.step).await?;
-        advanced = true;
-    }
 
     if observed_federation.is_none() && !item.step.gateway_connected {
         // The same endpoint policy the target-client join takes, applied before
@@ -274,29 +267,6 @@ async fn process_gateway_item(
     }
     match operation.status {
         WalletOperationStatus::Pending => {
-            // Re-anchor the completion baseline to a balance read immediately
-            // before our funds leave. The first anchor is taken at the top of
-            // the item's first pass, before the gateway has connected to the
-            // federation, so it records nothing for a federation the gateway
-            // joins with e-cash already in it — leaving that whole balance free
-            // to satisfy this item's required increase. Every unrelated credit
-            // arriving before our own send has the same effect. Anchoring here
-            // narrows the misattribution window to the time between our send and
-            // its credit. It does not close it: completion is still an
-            // aggregate-balance inequality, and gatewayd exposes no way to ask
-            // whether the output this item paid to its own deposit address was
-            // the one claimed.
-            let anchor_balance = gateway
-                .observe_federation_balance(&item.target.federation_id.0)
-                .await
-                .map_err(unavailable)?;
-            if let Some(balance) = anchor_balance
-                && item.step.initial_gateway_balance != Some(balance)
-            {
-                item.step.initial_gateway_balance = Some(balance);
-                item.step.gateway_info_observed_at = Some(now_timestamp());
-                allocation_store::update_item_step(database, &item.item_id, &item.step).await?;
-            }
             allocation_funding::submit_funding_withdrawal(
                 database,
                 setup,
@@ -360,40 +330,43 @@ async fn complete_if_gateway_funded(
     item: GatewayAllocationItem,
     operation_id: WalletOperationId,
 ) -> ServiceResult<bool> {
+    let operation = get_wallet_operation(database, &operation_id).await?;
+    // The item's own funding output is the only target-side credit that can
+    // complete it. The gateway's `deposit-confirmed` log names the txid and
+    // output index of every deposit its Fedimint client claimed, so matching
+    // those against the funding operation's recorded txid is attribution;
+    // a federation-wide balance inequality is not, because a concurrent item
+    // or an independent deposit raises the same aggregate.
+    let Some(funding_txid) = operation.txid.as_deref() else {
+        recheck_gateway_deposit(setup, gateway, &item).await?;
+        return Ok(false);
+    };
+    let claims = gateway
+        .deposit_claims(&item.target.federation_id.0)
+        .await
+        .map_err(unavailable)?;
+    let claimed = claims
+        .iter()
+        .any(|claim| claim.txid == funding_txid && claim.amount.0 >= item.committed_amount.0);
+    if !claimed {
+        recheck_gateway_deposit(setup, gateway, &item).await?;
+        return Ok(false);
+    }
     let observed_balance = gateway
         .observe_federation_balance(&item.target.federation_id.0)
         .await
         .map_err(unavailable)?;
-    let Some(observed_balance) = observed_balance else {
-        recheck_gateway_deposit(setup, gateway, &item).await?;
-        return Ok(false);
-    };
     allocation_store::upsert_gateway_observation(
         database,
         &GatewayObservation {
             gateway_id: setup.gateway.gateway_id.clone(),
             federation_id: Some(item.target.federation_id.0.clone()),
             status: "federation_observed".to_owned(),
-            observed_balance: Some(observed_balance),
+            observed_balance,
             observed_at: now_timestamp(),
         },
     )
     .await?;
-    // Treating a missing anchor as zero would complete the item on any
-    // federation balance at or above the committed amount, including one built
-    // entirely from credit this item never sent. No pass reaches here without an
-    // anchor today — it is set earlier in the same pass whenever it is absent —
-    // so this guards that ordering rather than a reachable branch.
-    let Some(baseline_balance) = item.step.initial_gateway_balance else {
-        recheck_gateway_deposit(setup, gateway, &item).await?;
-        return Ok(false);
-    };
-    let required_balance = checked_sats_add(baseline_balance, item.committed_amount)?;
-    if observed_balance.0 < required_balance.0 {
-        recheck_gateway_deposit(setup, gateway, &item).await?;
-        return Ok(false);
-    }
-    let operation = get_wallet_operation(database, &operation_id).await?;
     let gateway_api = gateway
         .gateway_info()
         .await
@@ -408,7 +381,7 @@ async fn complete_if_gateway_funded(
             gateway_id: setup.gateway.gateway_id.clone(),
             gateway_api,
             fulfilled_amount: item.committed_amount,
-            observed_gateway_balance: observed_balance,
+            observed_gateway_balance: observed_balance.unwrap_or(Sats(0)),
             observed_at: now_timestamp(),
             withdrawal_txid: operation.txid,
             wallet_operation_id: Some(operation_id),

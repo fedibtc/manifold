@@ -55,11 +55,15 @@ nanosecond component, so a surviving counter is narrower than a reset one.
 
 ## Status
 
-Falsified: An honestly settled operation for item `I` can be
-paired with an aggregate gateway/Fedimint balance increase caused by concurrent
-same-federation item `J` (or an ordinary independent target deposit), after
-which the sole gateway completion writer durably records `I` completed without
-address/output-to-target-claim evidence.
+Established. The completion writer requires a `deposit-confirmed` entry from
+the gateway's payment log whose txid matches the item's own funding
+operation and whose amount covers the committed amount
+(`gateway_allocation.rs`, `complete_if_gateway_funded`); an aggregate
+balance is recorded as observation only and never satisfies the guard. The
+test `unrelated_target_credit_does_not_complete_gateway_item` pins the
+counterexample pairing this record falsified: a claimed unrelated deposit
+beneath a raised aggregate leaves the item running, and completion follows
+only when the gateway claims the item's own funding output.
 
 ## Assumptions
 
