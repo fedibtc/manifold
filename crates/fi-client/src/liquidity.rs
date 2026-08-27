@@ -238,6 +238,17 @@ impl StoredLiquidityOperation {
             gateway_view_verified,
         })
     }
+
+    pub(crate) fn validate_recovery(&self) -> FiResult<()> {
+        self.snapshot()?;
+        if let Some(response) = &self.response {
+            validate_request_response(self, response)?;
+        }
+        if let Some(status) = &self.status {
+            validate_status_response(self, status)?;
+        }
+        Ok(())
+    }
 }
 
 /// Consumer-owned post-formation request bounds.
@@ -1347,22 +1358,7 @@ where
         operation: &StoredLiquidityOperation,
         response: &Signed<RequestLiquidityResponse>,
     ) -> FiResult<()> {
-        verify_provider_rpc(
-            PublicRpcPayloadDomain::RequestLiquidityResponse,
-            response,
-            &operation.commitment.provider_pubkey,
-        )?;
-        if response.payload.version != PUBLIC_LIQUIDITY_PROTOCOL_VERSION
-            || response.payload.provider_pubkey != operation.commitment.provider_pubkey
-            || response.payload.details_payload_hash != operation.details_payload_hash
-        {
-            return Err(FiError::Liquidity(
-                "provider response does not match the exact persisted request".to_owned(),
-            ));
-        }
-        if let RequestLiquidityOutcome::Accepted(status) = &response.payload.outcome {
-            verify_allocation_status(operation, status)?;
-        }
+        validate_request_response(operation, response)?;
         verify_provider_freshness(response.payload.issued_at)
     }
 
@@ -1371,21 +1367,51 @@ where
         operation: &StoredLiquidityOperation,
         response: &Signed<GetAllocationStatusResponse>,
     ) -> FiResult<()> {
-        verify_provider_rpc(
-            PublicRpcPayloadDomain::GetAllocationStatusResponse,
-            response,
-            &operation.commitment.provider_pubkey,
-        )?;
-        if response.payload.version != PUBLIC_LIQUIDITY_PROTOCOL_VERSION
-            || response.payload.provider_pubkey != operation.commitment.provider_pubkey
-        {
-            return Err(FiError::Liquidity(
-                "provider status does not match the exact persisted request".to_owned(),
-            ));
-        }
-        verify_allocation_status(operation, &response.payload.status)?;
+        validate_status_response(operation, response)?;
         verify_provider_freshness(response.payload.issued_at)
     }
+}
+
+fn validate_request_response(
+    operation: &StoredLiquidityOperation,
+    response: &Signed<RequestLiquidityResponse>,
+) -> FiResult<()> {
+    verify_provider_rpc(
+        PublicRpcPayloadDomain::RequestLiquidityResponse,
+        response,
+        &operation.commitment.provider_pubkey,
+    )?;
+    if response.payload.version != PUBLIC_LIQUIDITY_PROTOCOL_VERSION
+        || response.payload.provider_pubkey != operation.commitment.provider_pubkey
+        || response.payload.details_payload_hash != operation.details_payload_hash
+    {
+        return Err(FiError::Liquidity(
+            "provider response does not match the exact persisted request".to_owned(),
+        ));
+    }
+    if let RequestLiquidityOutcome::Accepted(status) = &response.payload.outcome {
+        verify_allocation_status(operation, status)?;
+    }
+    Ok(())
+}
+
+fn validate_status_response(
+    operation: &StoredLiquidityOperation,
+    response: &Signed<GetAllocationStatusResponse>,
+) -> FiResult<()> {
+    verify_provider_rpc(
+        PublicRpcPayloadDomain::GetAllocationStatusResponse,
+        response,
+        &operation.commitment.provider_pubkey,
+    )?;
+    if response.payload.version != PUBLIC_LIQUIDITY_PROTOCOL_VERSION
+        || response.payload.provider_pubkey != operation.commitment.provider_pubkey
+    {
+        return Err(FiError::Liquidity(
+            "provider status does not match the exact persisted request".to_owned(),
+        ));
+    }
+    verify_allocation_status(operation, &response.payload.status)
 }
 
 struct FormedFmanSeat {

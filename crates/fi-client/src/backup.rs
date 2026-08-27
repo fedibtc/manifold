@@ -8,7 +8,7 @@ use crate::{FiError, FiResult};
 
 const BACKUP_FORMAT_VERSION: u16 = 1;
 
-/// Opaque, versioned copy of durable FI recovery state.
+/// Opaque, versioned copy of one formed federation's durable FI recovery state.
 ///
 /// This value is sensitive and is not encrypted. Consumers must encrypt it
 /// before storing it outside their protected local backup boundary.

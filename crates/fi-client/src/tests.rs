@@ -3994,12 +3994,39 @@ async fn backup_round_trip_restores_recovery_state_without_external_effects() {
         .create_with_pinned_fmans(intent(), locators(), options())
         .await
         .expect("form source federation");
+    source
+        .inner
+        .store
+        .store_setup_payment_federations_event(setup_payment_event(
+            test_now_secs(),
+            &[PAYMENT_INVITE],
+        ))
+        .await
+        .expect("store setup-payment policy outside the formed backup");
+    let mut liquidity = stored_liquidity_operation(42);
+    liquidity.formation_id = formation(&source.status()).formation_id.clone();
+    liquidity.commitment.requester_pubkey =
+        liquidity_api::Pubkey(TestIdentity::fi_id().0.to_string());
+    liquidity.details_payload_hash =
+        liquidity_api::request_liquidity_details_hash(&liquidity.commitment)
+            .expect("hash liquidity fixture");
+    liquidity.operation_id = LiquidityOperationId(hex::encode(liquidity.details_payload_hash.0));
+    source
+        .inner
+        .store
+        .insert_liquidity_operation(liquidity)
+        .await
+        .expect("store liquidity recovery row");
     let expected_status = source
         .inner
         .store
         .load_status(TestIdentity::fi_id())
         .await
         .expect("load durable source status");
+    let expected_liquidity = source
+        .list_liquidity_operations(None, 10)
+        .await
+        .expect("list source liquidity");
 
     let source_lease = source
         .inner
@@ -4030,6 +4057,22 @@ async fn backup_round_trip_restores_recovery_state_without_external_effects() {
         .expect("restore FI backup");
 
     assert_eq!(destination.status(), expected_status);
+    assert_eq!(
+        destination
+            .list_liquidity_operations(None, 10)
+            .await
+            .expect("list restored liquidity"),
+        expected_liquidity
+    );
+    assert!(
+        destination
+            .inner
+            .store
+            .load_setup_payment_federations_event()
+            .await
+            .is_none(),
+        "formed backups exclude setup-payment policy",
+    );
     assert_eq!(destination_state.quote_calls.load(Ordering::SeqCst), 0);
     assert_eq!(destination_state.create_calls.load(Ordering::SeqCst), 0);
     assert_eq!(destination_state.status_calls.load(Ordering::SeqCst), 0);
@@ -4049,6 +4092,84 @@ async fn backup_round_trip_restores_recovery_state_without_external_effects() {
     assert!(matches!(
         destination.restore_backup(&backup).await,
         Err(FiError::Storage(message)) if message.contains("empty FI database namespace")
+    ));
+}
+
+#[tokio::test]
+async fn backup_is_unavailable_until_formation_is_formed() {
+    let (payments, _) = TestPayments::new();
+    let source = open_client(
+        MemDatabase::new().into_database(),
+        payments,
+        Arc::new(FmanState::default()),
+        FmanConfig::given_away(),
+    )
+    .await;
+    assert!(matches!(
+        source.export_backup().await,
+        Err(FiError::Storage(message)) if message.contains("only for a formed federation")
+    ));
+
+    source
+        .inner
+        .store
+        .initialize(
+            TestIdentity::fi_id(),
+            FormationId("partial-formation".to_owned()),
+            resolved_intent_with_size(FederationSize(1)),
+            vec![seat_progress(0)],
+            crate::db::FormationCreationMode::Pinned,
+            None,
+        )
+        .await
+        .expect("initialize partial formation");
+    assert!(matches!(
+        source.export_backup().await,
+        Err(FiError::Storage(message)) if message.contains("only for a formed federation")
+    ));
+}
+
+#[tokio::test]
+async fn backup_rejects_wrong_identity_and_checksum_corruption() {
+    let (payments, _) = TestPayments::new();
+    let source = open_client(
+        MemDatabase::new().into_database(),
+        payments,
+        Arc::new(FmanState::default()),
+        FmanConfig::given_away(),
+    )
+    .await;
+    source
+        .create_with_pinned_fmans(intent(), locators(), options())
+        .await
+        .expect("form source federation");
+    let backup = source
+        .export_backup()
+        .await
+        .expect("export formed FI backup");
+    let other_store = db::FiStore::new(MemDatabase::new().into_database());
+    assert!(matches!(
+        other_store
+            .restore_backup(OtherIdentity.public_key().unwrap(), &backup)
+            .await,
+        Err(FiError::Storage(message)) if message.contains("different FI identity")
+    ));
+
+    let mut corrupted = backup.into_bytes();
+    let marker = b"\"payload\":\"";
+    let payload_byte = corrupted
+        .windows(marker.len())
+        .position(|window| window == marker)
+        .expect("payload field")
+        + marker.len();
+    corrupted[payload_byte] = if corrupted[payload_byte] == b'A' {
+        b'B'
+    } else {
+        b'A'
+    };
+    assert!(matches!(
+        FiBackup::from_bytes(corrupted),
+        Err(FiError::Storage(message)) if message.contains("checksum does not match")
     ));
 }
 

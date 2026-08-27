@@ -340,8 +340,8 @@ intent, public locators, exact signed quote terms, authorization binding, seat
 ids, public guardian-fee accounts, DKG codes, invite code, and an optional
 push-gateway callback URL. The callback URL is a bearer capability and its
 stable idempotency key can identify one formation operation. Neither is
-projected in public status or `Debug`, but database files and portable
-`FiBackup` values containing them remain sensitive. Schema 10 preserves the
+projected in public status or `Debug`, and database copies containing them
+remain sensitive. Schema 10 preserves the
 pre-`Formed` recovery and atomically clears it with the `Formed` checkpoint,
 after every FMan has durably assumed retry ownership. Only schema 9 migrates;
 older schemas remain fail-closed because they lack other current safety facts.
@@ -349,12 +349,13 @@ Logical clearing does not erase old pages or backups. FI storage must never
 contain raw bearer ecash, payment signatures, identity secret material, or
 wallet-private refund secrets.
 
-Although durable FI state contains no wallet or identity secret, it still
-contains operationally sensitive formation history, retry authority, and a
-federation invite. `FiBackup` intentionally has no `Debug` or serialization
-surface beyond explicit byte access; its checksum detects corruption but is not
-encryption or authentication. Consumers must encrypt, retain, transport, and
-erase both the database and portable backups according to their wallet policy.
+`FiBackup` is available only after `Formed`, when the callback has been cleared.
+It still contains operationally sensitive locators, quote and seat authority,
+guardian codes, the federation invite, and liquidity recovery state. The type
+intentionally has no `Debug` or serialization surface beyond explicit byte
+access; its checksum detects corruption but is not encryption or authentication.
+Consumers must encrypt, retain, transport, and erase both the database and
+portable backups according to their wallet policy.
 Avoid snapshots, locators, invite codes, push-hook capabilities, or detailed
 remote errors in routine logs and telemetry.
 
@@ -482,10 +483,11 @@ separate bounded read/modify/write transaction: every retry compares the
 candidate against the durable NIP-01 high-water so a residual replaced driver
 cannot roll policy back.
 
-Backup export holds the same process guard and reads one consistent database
-transaction. Restore holds that guard, accepts only an identity-matching backup
-and an empty namespace, excludes the source driver lease, validates the complete
-recovery projection before one atomic commit, and performs no external effect.
+Backup export holds the same process guard, accepts only `Formed`, and reads one
+consistent database transaction. Restore holds that guard, accepts only an
+identity-matching formed backup and an empty namespace, excludes the source
+driver lease, validates the complete recovery projection before one atomic
+commit, and performs no external effect.
 
 Lease-key write conflicts during acquire, renewal, or release return `Busy`;
 other commit failures return a sanitized storage error and never panic. Tests

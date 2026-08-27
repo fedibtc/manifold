@@ -2,24 +2,32 @@
 
 ## Status
 
-Portable formation backup and restore is implemented in `fi-client`; the
-encryption, key derivation, and Nostr layers remain a draft. The JSON5 examples
-below still use the earlier `Reserve`/`ReservationId` protocol and must be
-updated to current `CreateSeat`/`SeatId` semantics before implementation.
+`fi-client` implements a formed-only, identity-bound portable `FiBackup`.
+It contains the formed federation, its seat recovery rows, and liquidity
+operations; detects corruption; excludes setup-payment policy, driver leases,
+and consumer secrets; and restores atomically into an empty namespace without
+external effects. Partial-formation backup is a possible future iteration.
+Key derivation, encryption, Nostr publication, relay selection, refresh, and
+remote restore remain a draft.
+
+The JSON5 examples below describe the planned Nostr layer; they are not the
+current `FiBackup` wire format. Sections that describe partial formation or use
+the earlier `Reserve`/`ReservationId` protocol are not part of the current
+formed-only implementation.
 
 
 ## Summary
 
-The FI key remains deterministic from the app master seed. The Nostr backup is not a new authority and does not contain the master seed. Its job is to recover the small durable `fi-client` index that is not derivable from the seed or recoverable from authoritative services: which federations exist, which FMans hold seats, each opaque `ReservationId`, formed federation invite-code redundancy, unresolved mutating RPC idempotency material, FLIP request handles, and user-added trust or relay configuration. It is not a transcript of setup, trust evaluation, payments, DKG, or federation metadata.
+The FI key remains deterministic from the app master seed. The backup is not a new authority and does not contain the master seed. Its job is to preserve one formed federation's non-derivable control and recovery state: the selected FMan locators, signed quote and seat authority, guardian recovery facts, formed invite, and FLIP request state. It is not a wallet, identity-secret, setup-payment-policy, or partial-formation backup.
 
 Backups are published as encrypted addressable Nostr events authored by a separate deterministic backup key, not by the FI protocol key. Restore derives that backup key from the same master seed, queries the stable addressable backup coordinate across several relays, decrypts every valid candidate, and chooses the freshest valid snapshot. Nostr event ids are receipts and dedupe handles, not restore pointers.
 
 
 ## Goals
 
-- Restore a fresh app install from the master seed without any local `fi-client` database.
-- Let the restored app know which federations it initiated and which reservations it controls.
-- Preserve enough handles and unresolved idempotency state to resume or safely reconcile interrupted setup, renewal, fee, and liquidity flows.
+- Restore a fully formed federation into a fresh `fi-client` database.
+- Let the restored app know which federation it initiated and which FMan seats it controls.
+- Preserve the exact handles needed to reconcile formed seats and liquidity.
 - Keep all federation-specific data encrypted before it reaches Nostr relays.
 - Avoid linking backup events to the FI protocol pubkey unless the encrypted content is decrypted.
 - Keep backups available on multiple Nostr relays and refresh them because relays are not durable storage.
@@ -28,6 +36,7 @@ Backups are published as encrypted addressable Nostr events authored by a separa
 ## Non-goals
 
 - Backing up the app master seed or any private key derivable from it.
+- Backing up `Idle` or a partially formed federation.
 - Backing up spendable ecash or replacing the Fedi wallet's own backup mechanism.
 - Making Nostr a reliable archival storage provider. Redundancy and refresh reduce loss risk; they do not create a hard durability guarantee.
 - Multi-device live sync. This is a disaster-recovery snapshot format. Concurrent writers need fork detection and conservative reconciliation, not silent last-writer-wins mutation.
@@ -46,11 +55,14 @@ From [`ARCH-fi-client`](../crates/fi-client/specs/ARCH-fi-client.md) and `docs/f
 From `crates/fman/specs/SPEC-fi-rpc.md` and
 `crates/service-fleet-manager`:
 
-- FMan seat control after `Reserve` is by `ReservationId` plus FI signatures by the same `FiId` that was recorded as `CustomerId`.
-- `ReservationId` is unguessable and is not derivable from the FI key.
-- `Reserve` has, or is expected to have, an FI-generated `request_id` for idempotent lost-response recovery.
-- `ConfirmReservation` and `ConfirmPayment` are idempotent on the relevant ecash token hash/retry handle and signed FI identity.
-- Running seats expose `GetStatus`, `GetInviteCode`, FI-scoped `GetPeerAttestation`, public `GetFederationTrustMaterial`, `GetPayment`, `ConfirmPayment`, `SetMetaField`, and `GetFedimintStats`.
+- FMan seat control after `CreateSeat` is by `SeatId` plus FI signatures by the
+  same `FiId` that created the seat.
+- `SeatId` is the canonical identity of the accepted quote and is not
+  derivable from the FI key.
+- Durable signed quotes, guardian codes, and the formed invite are needed to
+  reconcile the current formed state safely.
+- Running seats expose FI-scoped status, invite, attestation, maintenance, and
+  statistics operations addressed by `SeatId`.
 
 From [`SPEC-fman-nostr-events`](../crates/nostr/specs/SPEC-fman-nostr-events.md):
 
@@ -58,9 +70,12 @@ From [`SPEC-fman-nostr-events`](../crates/nostr/specs/SPEC-fman-nostr-events.md)
 - Addressable events are already used for mutable latest-state documents.
 - Event kind numbers in the `377xx` range are provisional component-specific kinds.
 
-The main consequence: a restored FI key alone is insufficient. Without the backup, the app does not know which FMan pubkeys to contact or which `ReservationId`s to sign for.
+The main consequence: a restored FI key alone is insufficient. Without the
+backup, the app does not know which FMans and seats it controls or retain the
+local facts needed to reconcile that formed federation.
 
-This document does not silently change the FI persistence model. State that the FI design already treats as durable is required backup material. State that the FI design treats as soft, such as unpaid reservations and in-flight DKG progress, can be included as best-effort convenience data but restore must be able to discard or reconcile it.
+The current portable layer backs up only `Formed`. Partial formation remains
+ordinary local crash-recovery state and is outside the backup format.
 
 
 ## Key derivation

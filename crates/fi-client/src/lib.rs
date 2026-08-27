@@ -302,10 +302,11 @@ where
         self.inner.progress.borrow().clone()
     }
 
-    /// Export one consistent, portable copy of the durable FI recovery state.
+    /// Export one consistent, portable copy of a formed federation's recovery state.
     ///
-    /// The returned bytes are sensitive and are not encrypted. Driver leases
-    /// and consumer-owned identity or wallet secrets are never included.
+    /// Export is unavailable before [`FormationPhase::Formed`]. The returned
+    /// bytes are sensitive and are not encrypted. Driver leases, setup-payment
+    /// policy, and consumer-owned identity or wallet secrets are never included.
     pub async fn export_backup(&self) -> FiResult<FiBackup> {
         let _run = self.inner.run_guard.try_lock().map_err(|_| FiError::Busy)?;
         let fi_id = self
@@ -317,11 +318,11 @@ where
         self.inner.store.export_backup(fi_id).await
     }
 
-    /// Restore a portable backup into this client's empty database namespace.
+    /// Restore a formed-federation backup into this client's empty database namespace.
     ///
-    /// The backup must belong to this FI identity. Restore validates and
-    /// commits local recovery state atomically, but performs no network,
-    /// payment, or formation-resume work.
+    /// The backup must belong to this FI identity and contain a validated
+    /// [`FormationPhase::Formed`] record. Restore commits local recovery state
+    /// atomically, but performs no network, payment, or formation-resume work.
     pub async fn restore_backup(&self, backup: &FiBackup) -> FiResult<()> {
         let _run = self.inner.run_guard.try_lock().map_err(|_| FiError::Busy)?;
         let fi_id = self

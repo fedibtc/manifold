@@ -573,8 +573,9 @@ impl DatabaseValue for crate::liquidity::StoredLiquidityOperation {
 #[derive(serde::Deserialize, serde::Serialize)]
 struct FiBackupPayload {
     fi_id: FiId,
-    formation: Option<StoredFormation>,
+    formation: StoredFormation,
     seats: Vec<StoredSeat>,
+    liquidity_operations: Vec<crate::liquidity::StoredLiquidityOperation>,
 }
 
 /// One seat's public projection and its private recovery-only quote facts.
@@ -815,15 +816,19 @@ impl FiStore {
 
     pub(crate) async fn export_backup(&self, fi_id: FiId) -> FiResult<FiBackup> {
         let mut dbtx = self.database.begin_transaction_nc().await;
-        let formation = dbtx.get_value(&ActiveFormationKey).await;
+        let formation = dbtx
+            .get_value(&ActiveFormationKey)
+            .await
+            .ok_or_else(|| formed_backup_required())?;
+        if formation.phase != StoredFormationPhase::Formed {
+            return Err(formed_backup_required());
+        }
 
         let mut seats = Vec::new();
         {
             let mut entries = dbtx.find_by_prefix(&SeatKeyPrefix).await;
             while let Some((key, seat)) = entries.next().await {
-                let stored = formation.as_ref().ok_or_else(|| {
-                    invalid_backup("FI storage contains seats without a formation")
-                })?;
+                let stored = &formation;
                 if key.formation_id != stored.formation_id.0 || key.index != seat.index {
                     return Err(invalid_backup(
                         "FI seat keys do not match their durable records",
@@ -834,10 +839,25 @@ impl FiStore {
         }
         seats.sort_by_key(|seat| seat.index);
 
+        let mut liquidity_operations = Vec::new();
+        {
+            let mut entries = dbtx.find_by_prefix(&LiquidityOperationKeyPrefix).await;
+            while let Some((key, operation)) = entries.next().await {
+                if key.operation_id != operation.operation_id.0 {
+                    return Err(invalid_backup(
+                        "FI liquidity keys do not match their durable records",
+                    ));
+                }
+                liquidity_operations.push(operation);
+            }
+        }
+        liquidity_operations.sort_by(|left, right| left.operation_id.0.cmp(&right.operation_id.0));
+
         let payload = FiBackupPayload {
             fi_id,
             formation,
             seats,
+            liquidity_operations,
         };
         validate_backup_payload(&payload, fi_id)?;
         FiBackup::encode(&payload)
@@ -875,20 +895,28 @@ impl FiStore {
             fi_id: _,
             formation,
             seats,
+            liquidity_operations,
         } = payload;
-        if let Some(formation) = formation {
-            let formation_id = formation.formation_id.0.clone();
-            dbtx.insert_entry(&ActiveFormationKey, &formation).await;
-            for seat in seats {
-                dbtx.insert_entry(
-                    &SeatKey {
-                        formation_id: formation_id.clone(),
-                        index: seat.index,
-                    },
-                    &seat,
-                )
-                .await;
-            }
+        let formation_id = formation.formation_id.0.clone();
+        dbtx.insert_entry(&ActiveFormationKey, &formation).await;
+        for seat in seats {
+            dbtx.insert_entry(
+                &SeatKey {
+                    formation_id: formation_id.clone(),
+                    index: seat.index,
+                },
+                &seat,
+            )
+            .await;
+        }
+        for operation in liquidity_operations {
+            dbtx.insert_entry(
+                &LiquidityOperationKey {
+                    operation_id: operation.operation_id.0.clone(),
+                },
+                &operation,
+            )
+            .await;
         }
         dbtx.commit_tx_result()
             .await
@@ -3651,29 +3679,50 @@ fn validate_backup_payload(payload: &FiBackupPayload, expected_fi_id: FiId) -> F
         return Err(invalid_backup("backup belongs to a different FI identity"));
     }
 
-    match payload.formation.as_ref() {
-        None => {
-            if !payload.seats.is_empty() {
-                return Err(invalid_backup(
-                    "backup contains recovery rows without a formation",
-                ));
-            }
+    if payload
+        .liquidity_operations
+        .windows(2)
+        .any(|pair| pair[0].operation_id.0 >= pair[1].operation_id.0)
+    {
+        return Err(invalid_backup(
+            "backup liquidity operations are not uniquely ordered",
+        ));
+    }
+
+    let formation = &payload.formation;
+    validate_schema_and_owner(formation, expected_fi_id)?;
+    if formation.phase != StoredFormationPhase::Formed {
+        return Err(invalid_backup(
+            "backup does not contain a fully formed federation",
+        ));
+    }
+    if payload
+        .seats
+        .iter()
+        .enumerate()
+        .any(|(index, seat)| usize::from(seat.index) != index)
+    {
+        return Err(invalid_backup("backup seat indexes are not contiguous"));
+    }
+    validate_formation_records(formation, &payload.seats)?;
+    for operation in &payload.liquidity_operations {
+        if operation.formation_id != formation.formation_id
+            || operation.commitment.requester_pubkey.0 != expected_fi_id.0.to_string()
+        {
+            return Err(invalid_backup(
+                "backup liquidity operation belongs to another FI formation",
+            ));
         }
-        Some(formation) => {
-            validate_schema_and_owner(formation, expected_fi_id)?;
-            if payload
-                .seats
-                .iter()
-                .enumerate()
-                .any(|(index, seat)| usize::from(seat.index) != index)
-            {
-                return Err(invalid_backup("backup seat indexes are not contiguous"));
-            }
-            validate_formation_records(formation, &payload.seats)?;
-        }
+        operation
+            .validate_recovery()
+            .map_err(|_| invalid_backup("backup liquidity recovery state failed validation"))?;
     }
 
     Ok(())
+}
+
+fn formed_backup_required() -> FiError {
+    FiError::Storage("FI backup is available only for a formed federation".to_owned())
 }
 
 fn invalid_backup(message: &str) -> FiError {
