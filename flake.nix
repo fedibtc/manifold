@@ -383,6 +383,9 @@
             tests =
               let
 
+                # Keep every workspace runner on the artifact feature set.
+                # A mismatch makes Cargo recompile inside each isolated runner.
+                workspaceTestArgs = "--workspace --features fedi-decentralized-cloud-fman-telemetry/defe-test-support";
                 # Linux Nix sandboxes isolate each runner's loopback network.
                 # Darwin runners share host loopback while keeping independent
                 # $TMPDIR-backed defe-portalloc ledgers, so concurrent runners
@@ -446,8 +449,7 @@
                   };
 
                 ordinaryRunner =
-                  runTests "ordinary" testArtifacts runtimeBins
-                    "--workspace --features fedi-decentralized-cloud-fman-telemetry/defe-test-support"
+                  runTests "ordinary" testArtifacts runtimeBins workspaceTestArgs
                     "all() - binary(fleet_manager_0_1_formation) - binary(integration_live_liquidity) - binary(integration_flip_operator_e2e)"
                     null;
                 fmanFreeRunner =
@@ -479,72 +481,72 @@
                     "binary(fleet_manager_0_1_formation) & test(fman_advertises_and_onboards_with_first_relay_down_under_defe)"
                     fmanPaidRunner;
                 flipHappyRunner =
-                  runTests "flip-happy" testArtifacts runtimeBins "--workspace"
+                  runTests "flip-happy" testArtifacts runtimeBins workspaceTestArgs
                     "binary(integration_live_liquidity) & test(live_liquidity_happy_path_publishes_nostr_and_allocates_over_iroh)"
                     fmanMultiRelayRunner;
                 flipDepositRunner =
-                  runTests "flip-deposit" testArtifacts runtimeBins "--workspace"
+                  runTests "flip-deposit" testArtifacts runtimeBins workspaceTestArgs
                     "binary(integration_live_liquidity) & test(live_deposit_monitoring_restart_claims_funded_top_up)"
                     flipHappyRunner;
                 flipWithdrawalRunner =
-                  runTests "flip-withdrawal" testArtifacts runtimeBins "--workspace"
+                  runTests "flip-withdrawal" testArtifacts runtimeBins workspaceTestArgs
                     "binary(integration_live_liquidity) & test(live_gateway_withdrawal_restart_resumes_without_duplicate_funding)"
                     flipDepositRunner;
                 flipPegInRunner =
-                  runTests "flip-peg-in" testArtifacts runtimeBins "--workspace"
+                  runTests "flip-peg-in" testArtifacts runtimeBins workspaceTestArgs
                     "binary(integration_live_liquidity) & test(live_target_peg_in_restart_completes_after_wallet_operation_finality)"
                     flipWithdrawalRunner;
                 flipStabilityRunner =
-                  runTests "flip-stability" testArtifacts runtimeBins "--workspace"
+                  runTests "flip-stability" testArtifacts runtimeBins workspaceTestArgs
                     "binary(integration_live_liquidity) & test(live_stability_pool_happy_path_provides_into_pool)"
                     flipPegInRunner;
                 flipRestoreCredentialRunner =
-                  runTests "flip-restore-credential" testArtifacts runtimeBins "--workspace"
+                  runTests "flip-restore-credential" testArtifacts runtimeBins workspaceTestArgs
                     "binary(integration_flip_operator_e2e) & test(live_restore_reinstates_the_archived_admin_credential)"
                     flipStabilityRunner;
 
                 flipOperatorRemediationRunner =
-                  runTests "flip-operator-remediation" testArtifacts runtimeBins "--workspace"
+                  runTests "flip-operator-remediation" testArtifacts runtimeBins workspaceTestArgs
                     "binary(integration_flip_operator_e2e) & test(operator_remediation_preserves_send_once_guards_and_releases_abandoned_capacity)"
                     flipRestoreCredentialRunner;
                 flipRestoreRollbackRunner =
-                  runTests "flip-restore-rollback" testArtifacts runtimeBins "--workspace"
+                  runTests "flip-restore-rollback" testArtifacts runtimeBins workspaceTestArgs
                     "binary(integration_live_liquidity) & test(live_restore_rejects_allocation_rollback_and_replay_stays_idempotent)"
                     flipOperatorRemediationRunner;
                 flipTrustRejectRunner =
-                  runTests "flip-trust-reject" testArtifacts runtimeBins "--workspace"
+                  runTests "flip-trust-reject" testArtifacts runtimeBins workspaceTestArgs
                     "binary(integration_live_liquidity) & test(live_trust_reject_matrix_maps_each_failure_to_its_code)"
                     flipRestoreRollbackRunner;
                 flipStabilityRecoveryRunner =
-                  runTests "flip-stability-recovery" testArtifacts runtimeBins "--workspace"
+                  runTests "flip-stability-recovery" testArtifacts runtimeBins workspaceTestArgs
                     "binary(integration_live_liquidity) & test(live_stability_pre_submit_restart_adopts_the_deposit_already_made)"
                     flipTrustRejectRunner;
                 flipWithdrawalIntentRunner =
-                  runTests "flip-withdrawal-intent" testArtifacts runtimeBins "--workspace"
+                  runTests "flip-withdrawal-intent" testArtifacts runtimeBins workspaceTestArgs
                     "binary(integration_live_liquidity) & test(live_operator_withdrawal_intent_replays_once_and_rejects_conflicts)"
                     flipStabilityRecoveryRunner;
                 flipCombinedReplayRunner =
-                  runTests "flip-combined-replay" testArtifacts runtimeBins "--workspace"
+                  runTests "flip-combined-replay" testArtifacts runtimeBins workspaceTestArgs
                     "binary(integration_live_liquidity) & test(live_combined_request_concurrent_replay_creates_one_allocation)"
                     flipWithdrawalIntentRunner;
                 flipCapacityTopUpRunner =
-                  runTests "flip-capacity-top-up" testArtifacts runtimeBins "--workspace"
+                  runTests "flip-capacity-top-up" testArtifacts runtimeBins workspaceTestArgs
                     "binary(integration_live_liquidity) & test(live_top_up_admits_the_request_capacity_first_refused)"
                     flipCombinedReplayRunner;
                 flipDependencyOutageRunner =
-                  runTests "flip-dependency-outage" testArtifacts runtimeBins "--workspace"
+                  runTests "flip-dependency-outage" testArtifacts runtimeBins workspaceTestArgs
                     "binary(integration_live_liquidity) & test(live_dependency_outage_withdraws_the_advertisement_until_the_operator_republishes)"
                     flipCapacityTopUpRunner;
                 flipTwoFederationsRunner =
-                  runTests "flip-two-federations" testArtifacts runtimeBins "--workspace"
+                  runTests "flip-two-federations" testArtifacts runtimeBins workspaceTestArgs
                     "binary(integration_live_liquidity) & test(live_second_federation_is_funded_after_the_operator_tops_up)"
                     flipDependencyOutageRunner;
                 flipManualReviewRunner =
-                  runTests "flip-manual-review" testArtifacts runtimeBins "--workspace"
+                  runTests "flip-manual-review" testArtifacts runtimeBins workspaceTestArgs
                     "binary(integration_live_liquidity) & test(live_unresolvable_send_escalates_to_review_and_waits_for_the_operator)"
                     flipTwoFederationsRunner;
                 flipCancelCapacityRunner =
-                  runTests "flip-cancel-capacity" testArtifacts runtimeBins "--workspace"
+                  runTests "flip-cancel-capacity" testArtifacts runtimeBins workspaceTestArgs
                     "binary(integration_live_liquidity) & test(live_cancelling_a_wedged_allocation_frees_capacity_for_the_next_federation)"
                     flipManualReviewRunner;
 
