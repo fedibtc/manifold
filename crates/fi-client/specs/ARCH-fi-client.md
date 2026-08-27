@@ -278,13 +278,15 @@ requires the appropriate payer retry or a fresh preview.
 Consumers supply capabilities; they can never supply authenticated protocol
 objects, trust conclusions, or lifecycle transitions:
 
-- **Identity** — one stable FI key that signs only library-constructed,
-  domain-separated 32-byte BIP-340 digests.
+- **Identity** — one capability backed by the consumer's stable root. It exposes
+  the FI protocol pubkey and final BIP-340 signing operation, and derives the
+  separate environment-scoped backup author and content-encryption keys without
+  exposing the root or protocol secret.
 - **Storage** — an already-namespaced Fedimint `Database`; backend,
-  namespacing, and encryption remain consumer concerns. After formation, the
-  library owns the identity-bound portable `FiBackup` projection and restores
-  it only into an empty namespace after validating every recovery record.
-  Consumers encrypt, retain, and transport those sensitive backup bytes.
+  namespacing, and local encryption remain consumer concerns. After formation,
+  the library owns the identity-bound portable and encrypted backup envelopes
+  and restores them only into an empty namespace after validating every recovery
+  record. Consumers retain and transport the encrypted bytes.
 - **Payments** — a wallet adapter that reports Ready federations, performs a
   value-free exact aggregate sufficiency check over a non-serializable typed
   aggregate binding each requirement to its verified quote (foreign output
@@ -479,6 +481,15 @@ namespace, validates the complete formed projection before one atomic write,
 publishes the restored status as unsynced, and performs no network, payment, or
 resume effect.
 
+Encrypted export compresses the canonical portable bytes, frames their length,
+randomly pads to the smallest 8/16/32/64-KiB bucket, and seals the frame with
+XChaCha20-Poly1305 under a fresh nonce. HKDF-SHA256 derives separate author and
+content keys from the identity's stable root with deployment-environment
+separation. Associated data binds the author pubkey, provisional kind `37706`,
+stable `d` tag, and envelope version. Decryption bounds the public envelope,
+ciphertext bucket, compressed frame, and four-MiB output before parsing the
+inner `FiBackup`. Event signing and relay operations are separate future layers.
+
 ## Protocol ownership
 
 The driver owns availability checks, signed-quote verification, aggregate
@@ -595,10 +606,11 @@ persistence, quote-set readiness, aggregate authorization, parallel narrow
 writes with bounded conflict retries, cancellation, exact replay, refund retry,
 and reopen/resume; policy tests prove canonical kind-37707 selection and rollback
 rejection. Backup tests cover rejection before `Formed`, exact formed-state and
-liquidity round-trip, identity binding, corruption rejection, empty-destination
-enforcement, lease exclusion, and absence of external effects. Discovery tests
-cover one typed rejection per
-cheap admission stage plus per-author replacement, the local candidate cap,
+liquidity round-trip, identity and environment key separation, encrypted
+round-trip with fresh nonces, authentication and bound failures, corruption
+rejection, empty-destination enforcement, lease exclusion, and absence of
+external effects. Discovery tests cover one typed rejection per cheap admission
+stage plus per-author replacement, the local candidate cap,
 deadline-expiry reporting, and the multi-candidate happy path. Selection
 tests substitute a deterministic badge-verification port and cover the
 subject-binding and claimed-issuer failures, the bounded envelope prefix,

@@ -4055,6 +4055,7 @@ dependencies = [
  "base64 0.22.1",
  "bitcoin",
  "blind-rsa-signatures",
+ "chacha20poly1305",
  "fedi-credential-sdk-protocol",
  "fedi-decentralized-domain",
  "fedi-decentralized-manifold-environment",
@@ -4067,6 +4068,7 @@ dependencies = [
  "fedimint-core",
  "futures",
  "hex",
+ "hkdf",
  "iroh-base 0.35.0",
  "nostr-sdk",
  "rand 0.8.6",
@@ -4078,6 +4080,8 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "tracing",
+ "zeroize",
+ "zstd",
 ]
 
 [[package]]

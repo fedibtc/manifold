@@ -143,6 +143,14 @@ impl FiIdentity for TestIdentity {
             SECP256K1.sign_schnorr_no_aux_rand(&digest, &Self::keypair()),
         ))
     }
+
+    fn backup_keys(&self) -> Result<FiBackupKeys, String> {
+        FiBackupKeys::derive(
+            &Self::keypair().secret_bytes(),
+            ManifoldEnvironment::Development,
+        )
+        .map_err(|error| error.to_string())
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -166,6 +174,14 @@ impl FiIdentity for OtherIdentity {
         Ok(FiSignature(
             SECP256K1.sign_schnorr_no_aux_rand(&digest, &Self::keypair()),
         ))
+    }
+
+    fn backup_keys(&self) -> Result<FiBackupKeys, String> {
+        FiBackupKeys::derive(
+            &Self::keypair().secret_bytes(),
+            ManifoldEnvironment::Development,
+        )
+        .map_err(|error| error.to_string())
     }
 }
 
@@ -4035,6 +4051,10 @@ async fn backup_round_trip_restores_recovery_state_without_external_effects() {
         .await
         .expect("hold source lease while exporting");
     let backup = source.export_backup().await.expect("export FI backup");
+    let encrypted = source
+        .export_encrypted_backup()
+        .await
+        .expect("encrypt FI backup");
     source
         .inner
         .store
@@ -4052,9 +4072,9 @@ async fn backup_round_trip_restores_recovery_state_without_external_effects() {
     )
     .await;
     destination
-        .restore_backup(&backup)
+        .restore_encrypted_backup(&encrypted)
         .await
-        .expect("restore FI backup");
+        .expect("decrypt and restore FI backup");
 
     assert_eq!(destination.status(), expected_status);
     assert_eq!(

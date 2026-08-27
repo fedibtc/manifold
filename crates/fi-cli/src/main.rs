@@ -22,8 +22,8 @@ use fedimint_core::encoding::Encodable as _;
 use fedimint_core::invite_code::InviteCode as FedimintInviteCode;
 use fi_client::{
     FederationConsensusError, FederationConsensusReader, FederationConsensusSnapshot,
-    FedimintFederationId, FiClient, FiFeeAccountError, FiFeeAccountProvider, FiIdentity,
-    FiPaymentError, FiPayments, FiStatus, FleetManagerCallError, FleetManagerConnector,
+    FedimintFederationId, FiBackupKeys, FiClient, FiFeeAccountError, FiFeeAccountProvider,
+    FiIdentity, FiPaymentError, FiPayments, FiStatus, FleetManagerCallError, FleetManagerConnector,
     FleetManagerConnectorError, FmanCandidateRequirements, FmanDiscoveryOptions, FmanRegistryQuery,
     FmanSelectionRequest, FormationActionRequired, FormationIntent, FormationPhase,
     FormationRunOptions, GuardianFeePpm, LiquidityOperationId, LiquidityProviderConnector,
@@ -967,7 +967,8 @@ async fn run(
         .context("construct PeerBadge verifier for Manifold environment")?;
     match args.command {
         Command::Init => {
-            let identity = CliIdentity::load_or_create(&args.state_dir, true)?;
+            let identity =
+                CliIdentity::load_or_create(&args.state_dir, true, args.manifold_environment)?;
             let client = open_client(
                 &args.state_dir,
                 identity,
@@ -1084,7 +1085,8 @@ async fn run(
             } else {
                 None
             };
-            let identity = CliIdentity::load_or_create(&args.state_dir, false)?;
+            let identity =
+                CliIdentity::load_or_create(&args.state_dir, false, args.manifold_environment)?;
             let payments = CliPayments::open(payment_preflight, format, &mut output).await?;
             let live_registry = if let Some((registry, _)) = &selected {
                 Some(registry.clone())
@@ -1155,7 +1157,8 @@ async fn run(
             result?;
         }
         Command::Resume(resume) => {
-            let identity = CliIdentity::load_or_create(&args.state_dir, false)?;
+            let identity =
+                CliIdentity::load_or_create(&args.state_dir, false, args.manifold_environment)?;
             let endpoint = if std::env::var_os("FMAN_E2E_LOCAL_IROH").is_some() {
                 Endpoint::bind(presets::N0DisableRelay).await?
             } else {
@@ -1182,7 +1185,8 @@ async fn run(
             result?;
         }
         Command::AuthorizePayments(authorize) => {
-            let identity = CliIdentity::load_or_create(&args.state_dir, false)?;
+            let identity =
+                CliIdentity::load_or_create(&args.state_dir, false, args.manifold_environment)?;
             let endpoint = if std::env::var_os("FMAN_E2E_LOCAL_IROH").is_some() {
                 Endpoint::bind(presets::N0DisableRelay).await?
             } else {
@@ -1217,7 +1221,8 @@ async fn run(
             result?;
         }
         Command::Status => {
-            let identity = CliIdentity::load_or_create(&args.state_dir, false)?;
+            let identity =
+                CliIdentity::load_or_create(&args.state_dir, false, args.manifold_environment)?;
             let client = open_client(
                 &args.state_dir,
                 identity,
@@ -1267,7 +1272,8 @@ async fn run(
             let operation = maintenance_preflight
                 .expect("maintenance input is validated before FI state or network access");
             let endpoint = bind_iroh_endpoint().await?;
-            let identity = CliIdentity::load_or_create(&args.state_dir, false)?;
+            let identity =
+                CliIdentity::load_or_create(&args.state_dir, false, args.manifold_environment)?;
             let client = open_client_with_fee_account_provider(
                 &args.state_dir,
                 identity,
@@ -1420,7 +1426,8 @@ async fn run(
             LiquidityCommand::Discover(discover) => {
                 let endpoint = bind_iroh_endpoint().await?;
                 let registry = connect_environment_registry(args.manifold_environment).await?;
-                let identity = CliIdentity::load_or_create(&args.state_dir, false)?;
+                let identity =
+                    CliIdentity::load_or_create(&args.state_dir, false, args.manifold_environment)?;
                 let client = open_client(
                     &args.state_dir,
                     identity,
@@ -1446,7 +1453,8 @@ async fn run(
             LiquidityCommand::Request(request) => {
                 let endpoint = bind_iroh_endpoint().await?;
                 let registry = connect_environment_registry(args.manifold_environment).await?;
-                let identity = CliIdentity::load_or_create(&args.state_dir, false)?;
+                let identity =
+                    CliIdentity::load_or_create(&args.state_dir, false, args.manifold_environment)?;
                 let client = open_client(
                     &args.state_dir,
                     identity,
@@ -1497,7 +1505,8 @@ async fn run(
             LiquidityCommand::Resume(resume) => {
                 let endpoint = bind_iroh_endpoint().await?;
                 let registry = connect_environment_registry(args.manifold_environment).await?;
-                let identity = CliIdentity::load_or_create(&args.state_dir, false)?;
+                let identity =
+                    CliIdentity::load_or_create(&args.state_dir, false, args.manifold_environment)?;
                 let client = open_client(
                     &args.state_dir,
                     identity,
@@ -1523,7 +1532,8 @@ async fn run(
                 endpoint.close().await;
             }
             LiquidityCommand::Status(status) => {
-                let identity = CliIdentity::load_or_create(&args.state_dir, false)?;
+                let identity =
+                    CliIdentity::load_or_create(&args.state_dir, false, args.manifold_environment)?;
                 let client = open_client(
                     &args.state_dir,
                     identity,
@@ -1543,7 +1553,8 @@ async fn run(
                 output.liquidity_snapshot(&snapshot, format)?;
             }
             LiquidityCommand::List(list) => {
-                let identity = CliIdentity::load_or_create(&args.state_dir, false)?;
+                let identity =
+                    CliIdentity::load_or_create(&args.state_dir, false, args.manifold_environment)?;
                 let client = open_client(
                     &args.state_dir,
                     identity,
@@ -2824,14 +2835,19 @@ fn validate_aggregate_payment_total(actual_msats: u64, expected_msats: u64) -> a
 #[derive(Clone, Copy)]
 struct CliIdentity {
     secret_key: SecretKey,
+    environment: ManifoldEnvironment,
 }
 
 impl CliIdentity {
-    fn load_or_create(state_dir: &Path, create: bool) -> anyhow::Result<Self> {
+    fn load_or_create(
+        state_dir: &Path,
+        create: bool,
+        environment: ManifoldEnvironment,
+    ) -> anyhow::Result<Self> {
         std::fs::create_dir_all(state_dir).context("create FI state directory")?;
         let path = state_dir.join(IDENTITY_FILE);
         if path.exists() {
-            return Self::load(&path);
+            return Self::load(&path, environment);
         }
         ensure!(
             create,
@@ -2850,10 +2866,13 @@ impl CliIdentity {
         file.write_all(&secret_key.secret_bytes())
             .context("write FI identity")?;
         file.sync_all().context("sync FI identity")?;
-        Ok(Self { secret_key })
+        Ok(Self {
+            secret_key,
+            environment,
+        })
     }
 
-    fn load(path: &Path) -> anyhow::Result<Self> {
+    fn load(path: &Path, environment: ManifoldEnvironment) -> anyhow::Result<Self> {
         let file = OpenOptions::new()
             .read(true)
             .open(path)
@@ -2861,7 +2880,10 @@ impl CliIdentity {
         let bytes = read_identity_bytes(file).context("read FI identity")?;
         ensure!(bytes.len() == 32, "invalid FI identity length");
         let secret_key = SecretKey::from_slice(&bytes).context("invalid FI identity key")?;
-        Ok(Self { secret_key })
+        Ok(Self {
+            secret_key,
+            environment,
+        })
     }
 }
 
@@ -2884,6 +2906,11 @@ impl FiIdentity for CliIdentity {
         Ok(FiSignature(
             secp.sign_schnorr_no_aux_rand(&digest, &keypair),
         ))
+    }
+
+    fn backup_keys(&self) -> Result<FiBackupKeys, String> {
+        FiBackupKeys::derive(&self.secret_key.secret_bytes(), self.environment)
+            .map_err(|error| error.to_string())
     }
 }
 
@@ -3413,9 +3440,22 @@ mod tests {
     #[test]
     fn identity_is_stable_and_restrictive() {
         let dir = tempfile::tempdir().unwrap();
-        let first = CliIdentity::load_or_create(dir.path(), true).unwrap();
-        let second = CliIdentity::load_or_create(dir.path(), false).unwrap();
+        let first = CliIdentity::load_or_create(dir.path(), true, ManifoldEnvironment::Development)
+            .unwrap();
+        let second =
+            CliIdentity::load_or_create(dir.path(), false, ManifoldEnvironment::Development)
+                .unwrap();
         assert_eq!(first.public_key().unwrap(), second.public_key().unwrap());
+        assert_eq!(
+            first.backup_keys().unwrap().author_public_key(),
+            second.backup_keys().unwrap().author_public_key(),
+        );
+        let staging =
+            CliIdentity::load_or_create(dir.path(), false, ManifoldEnvironment::Staging).unwrap();
+        assert_ne!(
+            first.backup_keys().unwrap().author_public_key(),
+            staging.backup_keys().unwrap().author_public_key(),
+        );
 
         #[cfg(unix)]
         {

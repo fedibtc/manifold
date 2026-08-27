@@ -7,6 +7,7 @@ repository.workspace = true
 
 [dependencies]
 base64.workspace = true
+chacha20poly1305 = "0.10"
 fedi-decentralized-domain = { path = "../domain" }
 fedi-decentralized-manifold-environment = { path = "../manifold-environment" }
 fedi-decentralized-nostr = { path = "../nostr" }
@@ -18,6 +19,7 @@ fedi-iroh-rpc = { path = "../fedi-iroh-rpc" }
 fedimint-core.workspace = true
 futures = "0.3"
 hex = "0.4"
+hkdf = "0.12"
 iroh-base-035 = { package = "iroh-base", version = "=0.35.0" }
 nostr-sdk = "0.44"
 rand = "0.8"
@@ -29,6 +31,8 @@ stability-pool-common = { workspace = true }
 thiserror.workspace = true
 tokio = { workspace = true, features = ["sync", "time"] }
 tracing = "0.1"
+zeroize = "1"
+zstd = "0.13"
 
 [dev-dependencies]
 bitcoin = { version = "0.32.6", features = ["serde"] }

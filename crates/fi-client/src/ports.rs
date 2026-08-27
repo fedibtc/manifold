@@ -122,14 +122,17 @@ impl<'a> ExactPaymentPreflight<'a> {
 /// Consumer-owned FI identity.
 ///
 /// `fi-client` constructs and hashes protocol/domain-separated payloads. The
-/// consumer performs only the final BIP-340 signing operation so hardware or
-/// derived-key implementations do not need to reveal their secret key.
+/// consumer performs final signing and derives the separate backup key family
+/// from its stable root, so no protocol or root secret enters the library.
 pub trait FiIdentity: Send + Sync + 'static {
     /// Return the FI's stable x-only public key.
     fn public_key(&self) -> Result<FiId, String>;
 
     /// Sign a library-constructed 32-byte digest.
     fn sign_digest(&self, digest: [u8; 32]) -> Result<FiSignature, String>;
+
+    /// Derive the dedicated, environment-separated FI backup key family.
+    fn backup_keys(&self) -> Result<crate::FiBackupKeys, String>;
 }
 
 /// Sanitized failure to resolve the FI's own fee-recipient account.

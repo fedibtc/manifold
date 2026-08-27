@@ -351,13 +351,21 @@ wallet-private refund secrets.
 
 `FiBackup` is available only after `Formed`, when the callback has been cleared.
 It still contains operationally sensitive locators, quote and seat authority,
-guardian codes, the federation invite, and liquidity recovery state. The type
-intentionally has no `Debug` or serialization surface beyond explicit byte
-access; its checksum detects corruption but is not encryption or authentication.
-Consumers must encrypt, retain, transport, and erase both the database and
-portable backups according to their wallet policy.
+guardian codes, the federation invite, and liquidity recovery state. Its
+checksum detects corruption but is not authentication. `EncryptedFiBackup`
+compresses and bucket-pads those bytes before XChaCha20-Poly1305 sealing; its
+public envelope reveals only version and coarse bucket size. Neither type has a
+`Debug` implementation. Consumers retain, transport, and erase encrypted
+backups according to their wallet policy.
 Avoid snapshots, locators, invite codes, push-hook capabilities, or detailed
 remote errors in routine logs and telemetry.
+
+The single `FiIdentity` capability derives backup keys directly from its stable
+root with fixed HKDF labels and distinct environment salts. Backup author and
+content keys are separate from each other and from the FI protocol key.
+`sign_digest` is never key-derivation input: BIP-340 auxiliary randomness would
+make such a key unstable. Root, protocol, author-secret, and content-key bytes
+have no formatting or serialization surface.
 
 Identity and payment adapter errors crossing the public boundary must be
 sanitized. Never add `Debug`, serialization, metrics, or error formatting that
@@ -483,11 +491,13 @@ separate bounded read/modify/write transaction: every retry compares the
 candidate against the durable NIP-01 high-water so a residual replaced driver
 cannot roll policy back.
 
-Backup export holds the same process guard, accepts only `Formed`, and reads one
-consistent database transaction. Restore holds that guard, accepts only an
-identity-matching formed backup and an empty namespace, excludes the source
-driver lease, validates the complete recovery projection before one atomic
-commit, and performs no external effect.
+Portable export holds the same process guard, accepts only `Formed`, and reads
+one consistent database transaction. Encrypted export then seals that immutable
+copy without extending the database critical section. Restore authenticates and
+bounds the encrypted envelope before taking the guard; the inner restore accepts
+only an identity-matching formed backup and an empty namespace, excludes the
+source driver lease, validates the complete recovery projection before one
+atomic commit, and performs no external effect.
 
 Lease-key write conflicts during acquire, renewal, or release return `Busy`;
 other commit failures return a sanitized storage error and never panic. Tests

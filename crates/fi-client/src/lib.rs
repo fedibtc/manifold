@@ -26,7 +26,9 @@ use nostr_sdk::PublicKey;
 use stability_pool_common::Account;
 use tokio::sync::{Mutex, watch};
 
-pub use backup::FiBackup;
+pub use backup::{
+    EncryptedFiBackup, FI_BACKUP_D_TAG, FI_BACKUP_EVENT_KIND, FiBackup, FiBackupKeys,
+};
 pub use discovery::{
     AdvertisementRejection, EligibleFmanCandidate, FMAN_ADVERTISEMENT_MAX_AGE,
     FMAN_ADVERTISEMENT_MAX_HOLDER_AUTHORIZATIONS, FMAN_DISCOVERY_TIMEOUT,
@@ -334,6 +336,32 @@ where
         let status = self.inner.store.restore_backup(fi_id, backup).await?;
         self.inner.progress.send_replace(status);
         Ok(())
+    }
+
+    /// Export a formed federation directly into its encrypted backup envelope.
+    ///
+    /// The client's one [`FiIdentity`] derives the environment-separated
+    /// backup key family; callers never pass another identity or raw key.
+    pub async fn export_encrypted_backup(&self) -> FiResult<EncryptedFiBackup> {
+        let keys = self
+            .inner
+            .ports
+            .identity
+            .backup_keys()
+            .map_err(FiError::Identity)?;
+        self.export_backup().await?.encrypt(&keys)
+    }
+
+    /// Decrypt and restore a formed backup into this client's empty namespace.
+    pub async fn restore_encrypted_backup(&self, backup: &EncryptedFiBackup) -> FiResult<()> {
+        let keys = self
+            .inner
+            .ports
+            .identity
+            .backup_keys()
+            .map_err(FiError::Identity)?;
+        let backup = backup.decrypt(&keys)?;
+        self.restore_backup(&backup).await
     }
 
     /// Legacy registry-backed creation entry point.

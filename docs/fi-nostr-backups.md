@@ -2,12 +2,14 @@
 
 ## Status
 
-`fi-client` implements a formed-only, identity-bound portable `FiBackup`.
-It contains the formed federation, its seat recovery rows, and liquidity
-operations; detects corruption; excludes setup-payment policy, driver leases,
-and consumer secrets; and restores atomically into an empty namespace without
-external effects. Partial-formation backup is a possible future iteration.
-Key derivation, encryption, Nostr publication, relay selection, refresh, and
+`fi-client` implements a formed-only portable `FiBackup` and its encrypted
+`EncryptedFiBackup` envelope. One `FiIdentity` derives environment-separated
+backup author and content keys from its stable root. Encryption uses zstd,
+random 8/16/32/64-KiB padding, and XChaCha20-Poly1305 bound to the provisional
+kind-`37706` coordinate. The backup excludes setup-payment policy, driver
+leases, and consumer secrets and restores atomically into an empty namespace
+without external effects. Partial-formation backup is a possible future
+iteration. Nostr event signing, publication, relay selection, refresh, and
 remote restore remain a draft.
 
 The JSON5 examples below describe the planned Nostr layer; they are not the
@@ -47,9 +49,10 @@ Backups are published as encrypted addressable Nostr events authored by a separa
 
 From [`ARCH-fi-client`](../crates/fi-client/specs/ARCH-fi-client.md) and `docs/fedi-app/fedi-app.md`:
 
-- The consumer supplies the FI keypair; the Fedi app derives it from the user's root secret.
+- The consumer supplies one FI identity capability backed by its stable root.
 - `fi-client` uses durable storage for session state and can resume from checkpoints.
-- The FI key is the `FiId` / `CustomerId` for FMan requests and the `requester_pubkey` for FLIP.
+- The identity exposes the FI protocol key operations and derives the separate
+  environment-scoped backup key family; root and protocol secrets remain hidden.
 - FMan setup and maintenance are FI-pulled. There is no FMan push channel.
 
 From `crates/fman/specs/SPEC-fi-rpc.md` and
@@ -196,12 +199,11 @@ Blob layout: nonce[24] || ciphertext_and_tag
 
 Plaintext preparation before encryption:
 
-1. Build the `FiBackupPayload` as canonical JSON UTF-8.
-2. Compute `snapshot_id = SHA256("fedi-fi-backup/snapshot-id/v1\0" || canonical_payload)` for local dedupe and conflict detection. The snapshot id is not signed and does not need to be stored inside the payload.
-3. Compress the canonical payload bytes with zstd.
-4. Prefix the compressed bytes with a 4-byte big-endian compressed length.
-5. Pad with random bytes to the next bucket.
-6. Encrypt the framed, padded bytes once with XChaCha20-Poly1305 and a fresh random 24-byte nonce.
+1. Build the canonical portable `FiBackup` bytes.
+2. Compress those bytes with zstd.
+3. Prefix the compressed bytes with a 4-byte big-endian compressed length.
+4. Pad with random bytes to the next bucket.
+5. Encrypt the framed, padded bytes once with XChaCha20-Poly1305 and a fresh random 24-byte nonce.
 
 Padding buckets are measured on the framed compressed bytes before encryption. Padding is not meant to make all users indistinguishable; it primarily avoids leaking exact backup growth, such as when adding a seat, unresolved retry handle, or other recovery handle changes the compressed size by a recognizable amount. Suggested buckets:
 
@@ -214,7 +216,11 @@ If the framed compressed bytes do not fit the largest supported bucket, the impl
 Associated data for AEAD:
 
 ```text
-"fedi-fi-backup/event-aead/v1\0" || event_pubkey || event_kind || d_tag || envelope.version
+"fedi-fi-backup/event-aead/v1\0"
+|| lowercase-hex event_pubkey ASCII
+|| big-endian u16 event_kind
+|| UTF-8 d_tag
+|| big-endian u16 envelope.version
 ```
 
 The implementation has the outer event fields before decrypting, so this binds the ciphertext to the expected backup author, kind, and addressable coordinate. The nonce is authenticated by XChaCha20-Poly1305 as part of normal decryption because it is the AEAD nonce for this blob. The outer Nostr signature still MUST be verified before decryption. There is no second encryption layer: the event content is a single custom AEAD ciphertext envelope, not NIP-44 wrapping another encrypted payload.
