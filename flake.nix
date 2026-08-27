@@ -59,7 +59,10 @@
         selfciPkg = selfci.packages.${system}.default;
         selfciCheck = pkgs.writeShellApplication {
           name = "selfci-check";
-          runtimeInputs = [ selfciPkg ];
+          runtimeInputs = [
+            selfciPkg
+            pkgs.git
+          ];
           text = ''
             exec selfci check "$@"
           '';
