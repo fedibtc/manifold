@@ -11,13 +11,13 @@
 # stability-pool-server. Build and dev dependencies are intentionally excluded:
 # they do not link into the FMan runtime image. Any unaccounted same-source
 # Cargo.lock edge fails the check rather than silently evading this boundary.
-release_tag	0.11.1-fedi15
-producer	fedimint	fedibtc/fedimint	v0.11.1-fedi15	4c70c0e54f2f6a25df518c5082ac5a81d7a46d70
+release_tag	0.11.1-fedi16
+producer	fedimint	fedibtc/fedimint	v0.11.1-fedi16	881b0c2eda6b4b97785fce977a9c7ea65942a0ee
 producer	stability_pool	fedixyz/fedi	2f35ea4e3b2516d35b8ed315455718cd3b336758	2f35ea4e3b2516d35b8ed315455718cd3b336758
 package	stability_pool	stability-pool-common	crates/modules/stability-pool/common
 package	stability_pool	stability-pool-server	crates/modules/stability-pool/server
+revision	881b0c2eda6b4b97785fce977a9c7ea65942a0ee
 metric_version	0.11.1
-revision	4c70c0e54f2f6a25df518c5082ac5a81d7a46d70
 metric	admit	app_start_ts	fedimint
 metric	admit	backup_counts	fedimint
 metric	admit	backup_write_size_bytes	fedimint
@@ -48,12 +48,20 @@ metric	admit	ln_funded_contract_sats	fedimint
 metric	admit	ln_incoming_offer_total	fedimint
 metric	deny	ln_rpc_request_duration_seconds	fedimint
 metric	deny	ln_rpc_requests_total	fedimint
+metric	admit	lnv2_funded_contract_sats	fedimint
+metric	admit	lnv2_outgoing_contract_settled_total	fedimint
 metric	admit	mint_inout_fees_sats	fedimint
 metric	admit	mint_inout_sats	fedimint
 metric	admit	mint_issued_ecash_fees_sats	fedimint
 metric	admit	mint_issued_ecash_sats	fedimint
 metric	admit	mint_redeemed_ecash_fees_sats	fedimint
 metric	admit	mint_redeemed_ecash_sats	fedimint
+metric	admit	mintv2_inout_fees_sats	fedimint
+metric	admit	mintv2_inout_sats	fedimint
+metric	admit	mintv2_issued_ecash_fees_sats	fedimint
+metric	admit	mintv2_issued_ecash_sats	fedimint
+metric	admit	mintv2_redeemed_ecash_fees_sats	fedimint
+metric	admit	mintv2_redeemed_ecash_sats	fedimint
 metric	admit	peer_connect_total	fedimint
 metric	admit	peer_disconnect_total	fedimint
 metric	admit	peer_messages_total	fedimint
@@ -68,3 +76,10 @@ metric	admit	wallet_pegin_fees_sats	fedimint
 metric	admit	wallet_pegin_sats	fedimint
 metric	admit	wallet_pegout_fees_sats	fedimint
 metric	admit	wallet_pegout_sats	fedimint
+metric	admit	walletv2_block_count	fedimint
+metric	admit	walletv2_inout_fees_sats	fedimint
+metric	admit	walletv2_inout_sats	fedimint
+metric	admit	walletv2_pegin_fees_sats	fedimint
+metric	admit	walletv2_pegin_sats	fedimint
+metric	admit	walletv2_pegout_fees_sats	fedimint
+metric	admit	walletv2_pegout_sats	fedimint

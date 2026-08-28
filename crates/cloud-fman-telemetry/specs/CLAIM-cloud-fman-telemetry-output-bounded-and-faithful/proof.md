@@ -92,7 +92,7 @@ the payload fields inside each safe event.
 8. **[enum] Exit closure.** The 24 production Rust files contain four HTTP routes
    and 13 response shapes; six collector tracing call
    sites; the single validated archive content writer and its bounded path
-   constructors; 36 admitted source metric families plus exactly five generated
+   constructors; 51 admitted source metric families plus exactly five generated
    families; two Iroh connection sites; and four typed capability-bearing RPC
    sends. They contain no additional concrete held-material output path. Startup
    `Result` termination and the panic hook remain weaker, unexercised exits, so

@@ -9,9 +9,9 @@ their upstream fixes land and Manifold updates its pin.
 
 FMan and the collector compile one default-deny source policy, so release review
 must inventory the actual `fedimintd` source before changing that policy. This baseline was
-read from Manifold's pinned `fedibtc/fedimint/v0.11.1-fedi15` source at
-`4c70c0e54f2f6a25df518c5082ac5a81d7a46d70`. The machine-checked
-[`fedimint-metrics-v0.11.1-fedi15.tsv`](./fedimint-metrics-v0.11.1-fedi15.tsv)
+read from Manifold's pinned `fedibtc/fedimint/v0.11.1-fedi16` source at
+`881b0c2eda6b4b97785fce977a9c7ea65942a0ee`. The machine-checked
+[`fedimint-metrics-v0.11.1-fedi16.tsv`](./fedimint-metrics-v0.11.1-fedi16.tsv)
 enumerates every registration in the complete pinned Fedimint Rust source and
 its admission disposition. It fails the Nix check when either the lock pin or
 that source registration set drifts. The
@@ -27,7 +27,7 @@ Prometheus metric families of their own. "Including SPv2" therefore means this
 absence is checked from the exact Cargo-selected `fedixyz/fedi` stability-pool server
 source, not that it can be omitted from future review.
 
-The Fedimint release tag is `0.11.1-fedi15`, while `fedimintd` emits its
+The Fedimint release tag is `0.11.1-fedi16`, while `fedimintd` emits its
 upstream Cargo package version `0.11.1` in `app_start_ts{version=...}`. The
 collector image derives the latter from the same reviewed source and derives
 the emitted hash from the exact revision; it does not use the Fedi release tag
@@ -63,11 +63,18 @@ All names below receive the registry's `fm_` prefix.
 | Bitcoin RPC | `server_bitcoin_rpc_requests_total` | counter | the same exact `method`/`name`; `result` is exactly `success` or `error` |
 | mint | `mint_inout_sats`, `mint_inout_fees_sats` | histogram | `direction`, exactly `incoming` or `outgoing`; aggregate amount distribution |
 | mint | deprecated `mint_redeemed_ecash_sats`, `mint_redeemed_ecash_fees_sats`, `mint_issued_ecash_sats`, `mint_issued_ecash_fees_sats` | histogram | none; aggregate amount distribution |
+| mint v2 | `mintv2_inout_sats`, `mintv2_inout_fees_sats` | histogram | `direction`, exactly `incoming` or `outgoing`; aggregate amount distribution |
+| mint v2 | deprecated `mintv2_redeemed_ecash_sats`, `mintv2_redeemed_ecash_fees_sats`, `mintv2_issued_ecash_sats`, `mintv2_issued_ecash_fees_sats` | histogram | none; aggregate amount distribution |
 | Lightning | `ln_incoming_offer_total`, `ln_canceled_outgoing_contract_total` | counter | none |
 | Lightning | `ln_funded_contract_sats` | histogram | `direction`, exactly `incoming` or `outgoing`; aggregate amount distribution |
+| Lightning v2 | `lnv2_outgoing_contract_settled_total` | counter | `outcome`, exactly `claim`, `refund`, or `cancel` |
+| Lightning v2 | `lnv2_funded_contract_sats` | histogram | `direction`, exactly `incoming` or `outgoing`; aggregate amount distribution |
 | wallet | `wallet_block_count` | gauge | none |
 | wallet | `wallet_inout_sats`, `wallet_inout_fees_sats` | histogram | `direction`, exactly `incoming` or `outgoing`; aggregate amount distribution |
 | wallet | deprecated `wallet_pegin_sats`, `wallet_pegin_fees_sats`, `wallet_pegout_sats`, `wallet_pegout_fees_sats` | histogram | none; aggregate amount distribution |
+| wallet v2 | `walletv2_block_count` | gauge | none; registration is eager so the height gauge is present even before a block-count update |
+| wallet v2 | `walletv2_inout_sats`, `walletv2_inout_fees_sats` | histogram | `direction`, exactly `incoming` or `outgoing`; aggregate amount distribution |
+| wallet v2 | deprecated `walletv2_pegin_sats`, `walletv2_pegin_fees_sats`, `walletv2_pegout_sats`, `walletv2_pegout_fees_sats` | histogram | none; aggregate amount distribution |
 
 This table and the checked source-registration manifest are the complete
 reviewed base-family inventory; rows marked denied

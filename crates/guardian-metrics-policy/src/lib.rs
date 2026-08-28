@@ -7,7 +7,7 @@ pub const INVENTORY_REVISION: &str = "stage0-federation-identity-v4";
 /// Reviewed Fedimint release version compiled into both enforcement boundaries.
 pub const SOURCE_VERSION: &str = "0.11.1";
 /// Reviewed Fedimint source revision compiled into both enforcement boundaries.
-pub const SOURCE_VERSION_HASH: &str = "4c70c0e54f2f6a25df518c5082ac5a81d7a46d70";
+pub const SOURCE_VERSION_HASH: &str = "881b0c2eda6b4b97785fce977a9c7ea65942a0ee";
 // No combined source containing both open upstream fixes has been reviewed.
 // Re-inventory that exact pin and replace `None` with its hash before enabling
 // method-labeled families.
@@ -325,7 +325,7 @@ impl MetricsPolicy<'_> {
 
 #[doc(hidden)]
 pub fn checked_source_manifest_matches_policy() -> bool {
-    let manifest = include_str!("../../../docs/telemetry/fedimint-metrics-v0.11.1-fedi15.tsv")
+    let manifest = include_str!("../../../docs/telemetry/fedimint-metrics-v0.11.1-fedi16.tsv")
         .lines()
         .filter_map(|line| {
             let mut fields = line.split('\t');
@@ -364,12 +364,20 @@ const DEFAULT_ADMITTED_SOURCE_FAMILIES: &[&str] = &[
     "ln_canceled_outgoing_contract_total",
     "ln_funded_contract_sats",
     "ln_incoming_offer_total",
+    "lnv2_funded_contract_sats",
+    "lnv2_outgoing_contract_settled_total",
     "mint_inout_fees_sats",
     "mint_inout_sats",
     "mint_issued_ecash_fees_sats",
     "mint_issued_ecash_sats",
     "mint_redeemed_ecash_fees_sats",
     "mint_redeemed_ecash_sats",
+    "mintv2_inout_fees_sats",
+    "mintv2_inout_sats",
+    "mintv2_issued_ecash_fees_sats",
+    "mintv2_issued_ecash_sats",
+    "mintv2_redeemed_ecash_fees_sats",
+    "mintv2_redeemed_ecash_sats",
     "peer_connect_total",
     "peer_disconnect_total",
     "peer_messages_total",
@@ -384,6 +392,13 @@ const DEFAULT_ADMITTED_SOURCE_FAMILIES: &[&str] = &[
     "wallet_pegin_sats",
     "wallet_pegout_fees_sats",
     "wallet_pegout_sats",
+    "walletv2_block_count",
+    "walletv2_inout_fees_sats",
+    "walletv2_inout_sats",
+    "walletv2_pegin_fees_sats",
+    "walletv2_pegin_sats",
+    "walletv2_pegout_fees_sats",
+    "walletv2_pegout_sats",
 ];
 
 const DENIED_COUNTERS: &[&str] = &[
@@ -497,6 +512,7 @@ fn shape(name: &str, method_ready: bool) -> Result<Shape, MetricsPolicyError> {
         ),
         ("iroh_api_connections_active", &[]),
         ("wallet_block_count", &[]),
+        ("walletv2_block_count", &[]),
     ];
     const COUNTERS: &[(&str, &[&str])] = &[
         ("consensus_items_processed_total", &["peer_id"]),
@@ -505,6 +521,7 @@ fn shape(name: &str, method_ready: bool) -> Result<Shape, MetricsPolicyError> {
         ("peer_disconnect_total", &["self_id", "peer_id"]),
         ("ln_incoming_offer_total", &[]),
         ("ln_canceled_outgoing_contract_total", &[]),
+        ("lnv2_outgoing_contract_settled_total", &["outcome"]),
         (
             "server_bitcoin_rpc_requests_total",
             &["method", "name", "result"],
@@ -528,12 +545,25 @@ fn shape(name: &str, method_ready: bool) -> Result<Shape, MetricsPolicyError> {
         ("mint_issued_ecash_sats", &[]),
         ("mint_issued_ecash_fees_sats", &[]),
         ("ln_funded_contract_sats", &["direction"]),
+        ("lnv2_funded_contract_sats", &["direction"]),
+        ("mintv2_inout_sats", &["direction"]),
+        ("mintv2_inout_fees_sats", &["direction"]),
+        ("mintv2_redeemed_ecash_sats", &[]),
+        ("mintv2_redeemed_ecash_fees_sats", &[]),
+        ("mintv2_issued_ecash_sats", &[]),
+        ("mintv2_issued_ecash_fees_sats", &[]),
         ("wallet_inout_sats", &["direction"]),
         ("wallet_inout_fees_sats", &["direction"]),
         ("wallet_pegin_sats", &[]),
         ("wallet_pegin_fees_sats", &[]),
         ("wallet_pegout_sats", &[]),
         ("wallet_pegout_fees_sats", &[]),
+        ("walletv2_inout_sats", &["direction"]),
+        ("walletv2_inout_fees_sats", &["direction"]),
+        ("walletv2_pegin_sats", &[]),
+        ("walletv2_pegin_fees_sats", &[]),
+        ("walletv2_pegout_sats", &[]),
+        ("walletv2_pegout_fees_sats", &[]),
         (
             "server_bitcoin_rpc_request_duration_seconds",
             &["method", "name"],
@@ -616,6 +646,7 @@ fn validate_labels(
             "version_hash" => value == policy.version_hash,
             "timeframe" => matches!(value.as_str(), "1d" | "1w" | "1m" | "3m" | "all_time"),
             "direction" => matches!(value.as_str(), "incoming" | "outgoing"),
+            "outcome" => matches!(value.as_str(), "claim" | "refund" | "cancel"),
             "module_id" => value == "65535",
             // `meta` is the bundled `fedimint-meta-server` module. It is
             // registered by the pinned source and loaded by real federations,

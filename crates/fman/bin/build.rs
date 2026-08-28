@@ -10,7 +10,7 @@ use fedimint_build::envs::{FEDIMINT_BUILD_CODE_VERSION_ENV, FORCE_GIT_HASH_ENV};
 /// must stamp it too — not this checkout's own commit, which is what
 /// `fedimint_build::set_code_version` would read. `fleetManagerReleaseSync` in
 /// `flake.nix` keeps it equal to the flake input.
-const FEDIMINT_SOURCE_REV: &str = "4c70c0e54f2f6a25df518c5082ac5a81d7a46d70";
+const FEDIMINT_SOURCE_REV: &str = "881b0c2eda6b4b97785fce977a9c7ea65942a0ee";
 
 fn main() {
     // A packager can still override the stamp, as the Nix builds do.

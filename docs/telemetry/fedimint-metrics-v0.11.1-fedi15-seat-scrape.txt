@@ -1,10 +1,10 @@
-# Complete Prometheus response captured from a running fedimintd guardian seat
-# supervised by an FMan, at the exact pinned source this directory inventories:
-# release v0.11.1-fedi15, fm_app_start_ts version_hash
-# 4c70c0e54f2f6a25df518c5082ac5a81d7a46d70.
+# Complete Prometheus response captured from a running fedi15 fedimintd guardian
+# seat supervised by an FMan. It remains an actual legacy regression fixture for
+# the parser and allowlist when bound to its own fedi15 marker. Its old release
+# marker is intentional; it makes no production cross-release compatibility claim.
 #
 # Why this file exists. The policy is already checked against
-# `fedimint-metrics-v0.11.1-fedi15.tsv`, which enumerates what the pinned source
+# `fedimint-metrics-v0.11.1-fedi16.tsv`, which enumerates what the pinned source
 # *registers*. That is a source-level check: it cannot show what a running
 # producer actually *emits* -- which families are present, which label values
 # occur, which buckets are filled -- so the inventory can be self-consistent and
@@ -16,8 +16,8 @@
 # no keys, invite codes, addresses, hostnames, or transaction identifiers. Every
 # `#` line is skipped by the policy parser, so this header is inert.
 #
-# Re-capture and replace this file whenever the Fedimint pin or the bundled
-# module set changes, in the same change that re-runs the inventory.
+# Capture a fedi16 producer before treating this fixture as evidence for the new
+# v2 families; this retained capture only verifies the supported old-producer subset.
 # HELP fm_app_start_ts Unix timestamp of the application time with version labels
 # TYPE fm_app_start_ts gauge
 fm_app_start_ts{version="0.11.1",version_hash="4c70c0e54f2f6a25df518c5082ac5a81d7a46d70"} 1787233023
