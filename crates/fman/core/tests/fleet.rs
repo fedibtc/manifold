@@ -790,11 +790,10 @@ async fn accepted_paid_quote_cannot_become_a_refund_after_restart() {
     reopened.shutdown().await;
 }
 
-/// The wallet gate follows the price: a seat given away settles against
-/// nothing, which is what lets a deployment's first federation form before any
-/// ecash to pay with exists.
+/// Advertisement discovery follows the operator's offer, not payment-policy or
+/// process-local wallet readiness.
 #[tokio::test]
-async fn only_a_priced_offer_needs_a_receivable_payment_federation() {
+async fn advertisement_eligibility_changes_wake_publication_without_waiting_for_the_wallet() {
     let temp = TempDir::new().unwrap();
     let fleet = Arc::new(
         open_fleet(config(&temp, 1, 30_620).await, Arc::new(NoWallet))
@@ -816,6 +815,9 @@ async fn only_a_priced_offer_needs_a_receivable_payment_federation() {
     assert!(host.advertisement().await.is_none());
 
     fleet.set_offered_price(Some(Msats(0))).await.unwrap();
+    tokio::time::timeout(Duration::from_secs(1), host.advertisement_changed())
+        .await
+        .expect("an offer change wakes advertisement publication");
     assert!(
         fleet.availability_snapshot().await.accepting_seats,
         "a give-away needs no wallet"
@@ -823,11 +825,14 @@ async fn only_a_priced_offer_needs_a_receivable_payment_federation() {
     assert!(host.advertisement().await.is_some());
 
     fleet.set_offered_price(Some(Msats(1))).await.unwrap();
+    tokio::time::timeout(Duration::from_secs(1), host.advertisement_changed())
+        .await
+        .expect("a price change wakes advertisement publication");
     assert!(
-        !fleet.availability_snapshot().await.accepting_seats,
-        "a priced seat with nowhere to receive its payment is not for sale"
+        fleet.availability_snapshot().await.accepting_seats,
+        "a priced offer is discoverable before payment runtime preparation"
     );
-    assert!(host.advertisement().await.is_none());
+    assert!(host.advertisement().await.is_some());
     fleet.shutdown().await;
 }
 
@@ -892,8 +897,8 @@ async fn operator_settings_are_database_owned_and_persisted() {
 
     let availability = fleet.availability_snapshot().await;
     assert!(
-        !availability.accepting_seats,
-        "NoWallet gates a priced offer"
+        availability.accepting_seats,
+        "membership gates a priced offer"
     );
     // The stored offer is a price, so the advertised plan is rebuilt from it:
     // advertisement and quote cannot disagree about what is being sold.

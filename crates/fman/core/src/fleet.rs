@@ -207,6 +207,13 @@ impl FleetNostrHost {
                 plans: snapshot.plans,
             })
     }
+
+    /// Wait until daemon-owned state that contributes to the advertisement may
+    /// have changed. Notifications coalesce: the publisher always rebuilds one
+    /// complete snapshot instead of replaying individual mutations.
+    pub async fn advertisement_changed(&self) {
+        self.fleet.advertisement_changed.notified().await;
+    }
 }
 
 /// Couples durable retention of the admitted setup-payment publication to
@@ -307,6 +314,10 @@ pub struct Fleet {
     seats: RwLock<HashMap<SeatId, Arc<Seat>>>,
     telemetry_generation: AtomicU64,
     telemetry_registration_changed: Notify,
+    /// Edge trigger for the Nostr runtime to rebuild its advertisement. This is
+    /// deliberately independent of the offer epoch, whose only job is quote
+    /// validation.
+    advertisement_changed: Notify,
 }
 
 /// Failure while resolving a capability-scoped guardian metrics target.
@@ -452,6 +463,7 @@ impl Fleet {
             seats: RwLock::new(map),
             telemetry_generation: AtomicU64::new(telemetry_generation),
             telemetry_registration_changed: Notify::new(),
+            advertisement_changed: Notify::new(),
         };
         Ok(fleet)
     }
@@ -642,6 +654,7 @@ impl Fleet {
             );
         }
         self.db.set_offered_price(price).await?;
+        self.advertisement_changed.notify_one();
         Ok(())
     }
 
@@ -654,6 +667,7 @@ impl Fleet {
 
     pub async fn set_max_seats(&self, max_seats: u32) -> anyhow::Result<()> {
         self.db.set_max_seats(max_seats).await?;
+        self.advertisement_changed.notify_one();
         Ok(())
     }
 
@@ -678,9 +692,9 @@ impl Fleet {
 
     /// What the advertisement and `GetAvailability` say: whether a seat
     /// would be allocated right now. False with no free capacity, and false
-    /// when no payment federation can receive — such an FMan would answer
-    /// every quote with `WalletUnavailable`, so selection should filter it
-    /// out on availability alone (SPEC-advertisement *Availability gates*).
+    /// when the operator has configured no offer. Payment-policy membership and
+    /// retained wallet-client readiness are RPC concerns, not advertisement
+    /// availability; `GetQuote` remains authoritative.
     /// No advertisement is produced while this is false; an earlier one ages
     /// out at its signed expiry.
     pub(crate) async fn availability_snapshot(&self) -> AvailabilitySnapshot {
@@ -691,30 +705,8 @@ impl Fleet {
             .expect("offer snapshot");
         let settings = snapshot.offer.settings;
         AvailabilitySnapshot {
-            accepting_seats: snapshot.slots > 0 && self.can_settle(&settings).await,
+            accepting_seats: snapshot.slots > 0 && settings.price.is_some(),
             plans: settings.plans(),
-        }
-    }
-
-    /// Whether a seat sold under these settings could actually be paid for.
-    ///
-    /// A priced seat settles against a payment federation, so advertising
-    /// slots without a receivable one advertises a sale that cannot complete.
-    /// A seat given away settles against nothing and needs no wallet — this
-    /// is what lets the first federation in a deployment form, before any
-    /// ecash to pay with exists.
-    async fn can_settle(&self, settings: &QuoteSettings) -> bool {
-        match settings.price {
-            None => false,
-            Some(Msats(0)) => true,
-            Some(_) => {
-                for federation_id in &settings.payment_federations {
-                    if self.wallet.receivable(federation_id).await {
-                        return true;
-                    }
-                }
-                false
-            }
         }
     }
 
@@ -923,6 +915,7 @@ impl Fleet {
             // locally, and an unreachable relay must not delay an operator
             // retiring a seat.
             self.backup.mark();
+            self.advertisement_changed.notify_one();
         }
         Ok(decommissioned)
     }
