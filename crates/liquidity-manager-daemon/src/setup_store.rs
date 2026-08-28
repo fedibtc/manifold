@@ -206,7 +206,7 @@ async fn ensure_funding_policy_settled_tx(
     if !funding_policy_changes(stored, candidate) {
         return Ok(());
     }
-    refuse_unsettled_work(unsettled_work_counts(&mut **tx).await?)
+    refuse_unsettled_work(unsettled_work_counts(&mut *tx).await?)
 }
 
 fn funding_policy_changes(
