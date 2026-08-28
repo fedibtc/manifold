@@ -17,9 +17,7 @@ use tokio::sync::Mutex;
 
 use super::*;
 use crate::allocation_store::load_allocation_status_by_federation;
-use crate::gateway::{
-    GatewayDepositClaim, GatewayFederationSnapshot, GatewaySnapshot,
-};
+use crate::gateway::{GatewayDepositClaim, GatewayFederationSnapshot, GatewaySnapshot};
 use crate::manual_ops::{
     cancel_allocation_with_database, resolve_manual_review_with_database_for_test,
 };
@@ -390,8 +388,7 @@ async fn completed_wallet_operation_persists_gateway_completion_evidence() -> an
 /// funding txid is attribution; every aggregate-balance increase is not.
 #[tokio::test]
 async fn unrelated_target_credit_does_not_complete_gateway_item() -> anyhow::Result<()> {
-    let database =
-        Database::connect(test_sqlite_path("gateway-unrelated-credit")).await?;
+    let database = Database::connect(test_sqlite_path("gateway-unrelated-credit")).await?;
     let setup = test_setup_config();
     let (federation_id, item_id) = seed_gateway_allocation(&database, &setup, Sats(25_000)).await?;
     let wallet = TestFundsWallet::new(setup.network, Sats(100_000), regtest_address());
@@ -447,6 +444,92 @@ async fn unrelated_target_credit_does_not_complete_gateway_item() -> anyhow::Res
 
     // The item completes once the gateway claims its own funding output.
     gateway.claim_deposit("txid-1", 0, Sats(25_000)).await;
+    process_gateway_allocations_with(
+        &database,
+        &setup,
+        &wallet,
+        &gateway,
+        crate::endpoint_policy::EndpointPolicy::AllowPrivate,
+    )
+    .await?;
+    let status = load_allocation_status_by_federation(&database, &federation_id)
+        .await?
+        .expect("allocation status exists");
+    assert_eq!(
+        status.item_statuses[0].status,
+        ItemAllocationStatus::Completed
+    );
+    Ok(())
+}
+
+/// One transaction can pay two items' deposit addresses in separate outputs,
+/// so a shared txid is not attribution. Once chain observation has verified
+/// which output this item's send paid, only a claim of that output completes
+/// it.
+#[tokio::test]
+async fn claimed_output_index_gates_gateway_completion() -> anyhow::Result<()> {
+    let database = Database::connect(test_sqlite_path("gateway-claimed-vout")).await?;
+    let setup = test_setup_config();
+    let (federation_id, item_id) = seed_gateway_allocation(&database, &setup, Sats(25_000)).await?;
+    let wallet = TestFundsWallet::new(setup.network, Sats(100_000), regtest_address());
+    let gateway = FakeGateway::new(setup.network, regtest_address());
+
+    process_gateway_allocations_with(
+        &database,
+        &setup,
+        &wallet,
+        &gateway,
+        crate::endpoint_policy::EndpointPolicy::AllowPrivate,
+    )
+    .await?;
+    let operation =
+        wallet_operation_for_item(&database, WalletOperationType::GatewayFunding, &item_id)
+            .await?
+            .expect("wallet operation exists");
+
+    let funding_txid = operation.txid.clone().expect("the send was broadcast");
+
+    // Chain evidence is the settlement writer for a funding send, and it
+    // records the output index it verified.
+    let claim = crate::wallet::claim_chain_evidence(
+        &database,
+        &operation.operation_id,
+        &[crate::chain_observer::ChainOutputEvidence {
+            txid: funding_txid.clone(),
+            vout: 1,
+            address: Some(regtest_address()),
+            script_pubkey: String::new(),
+            amount_sats: 25_000,
+            confirmations: 6,
+        }],
+        1,
+    )
+    .await?;
+    assert!(
+        matches!(claim, crate::wallet::ChainEvidenceClaim::Applied(_)),
+        "{claim:?}"
+    );
+
+    gateway.set_balance("federation-1", Sats(25_000)).await;
+    gateway.claim_deposit(&funding_txid, 0, Sats(25_000)).await;
+    process_gateway_allocations_with(
+        &database,
+        &setup,
+        &wallet,
+        &gateway,
+        crate::endpoint_policy::EndpointPolicy::AllowPrivate,
+    )
+    .await?;
+    let status = load_allocation_status_by_federation(&database, &federation_id)
+        .await?
+        .expect("allocation status exists");
+    assert_eq!(
+        status.item_statuses[0].status,
+        ItemAllocationStatus::Running,
+        "another output of the same transaction is not evidence for this item"
+    );
+
+    gateway.claim_deposit(&funding_txid, 1, Sats(25_000)).await;
     process_gateway_allocations_with(
         &database,
         &setup,

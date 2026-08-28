@@ -30,6 +30,15 @@ use fedimint_ln_common::client::GatewayApi;
 
 use crate::wallet::{bitcoin_network_to_domain, domain_network_to_bitcoin};
 
+/// Upper bound on deposit-confirmed entries read per completion check. The
+/// log is read newest-first and each item matches its own txid, so a page
+/// larger than the concurrent-item ceiling adds matches, not correctness.
+const PAYMENT_LOG_PAGE_SIZE: usize = 1000;
+
+/// Event kind gatewayd's federation clients log when they observe a confirmed
+/// deposit, from `fedimint_wallet_client::events::DepositConfirmed::KIND`.
+const DEPOSIT_CONFIRMED_KIND: &str = "deposit-confirmed";
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct GatewaySnapshot {
     pub state: String,
@@ -98,10 +107,8 @@ pub(crate) trait GatewayClient: Send + Sync {
     /// Deposits the gateway's Fedimint client has observed and claimed for
     /// this federation. The completion guard matches one of these against the
     /// item's own funding txid; an aggregate balance read cannot.
-    async fn deposit_claims(
-        &self,
-        federation_id: &str,
-    ) -> anyhow::Result<Vec<GatewayDepositClaim>>;
+    async fn deposit_claims(&self, federation_id: &str)
+    -> anyhow::Result<Vec<GatewayDepositClaim>>;
 }
 
 /// What a gateway reports about itself, read before any config names it.
@@ -281,15 +288,6 @@ impl GatewayClient for ConfiguredGatewayClient {
             .collect())
     }
 }
-
-/// Upper bound on deposit-confirmed entries read per completion check. The
-/// log is read newest-first and each item matches its own txid, so a page
-/// larger than the concurrent-item ceiling adds matches, not correctness.
-const PAYMENT_LOG_PAGE_SIZE: usize = 1000;
-
-/// Event kind gatewayd's federation clients log when they observe a confirmed
-/// deposit, from `fedimint_wallet_client::events::DepositConfirmed::KIND`.
-const DEPOSIT_CONFIRMED_KIND: &str = "deposit-confirmed";
 
 fn gateway_snapshot_from_info(info: GatewayInfo) -> anyhow::Result<GatewaySnapshot> {
     let (network, synced_to_chain) = match info.lightning_info {

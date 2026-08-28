@@ -11,7 +11,7 @@ increased the same gateway/federation balance.
 
 The mechanically enumerable domains are: (G1) every production writer of a
 completed gateway item and every constructor/field of its completion evidence;
-(G2) every writer of `GatewayAllocationStep.initial_gateway_balance`; (G3)
+(G2) every production reader of the gateway's claimed-deposit evidence; (G3)
 every production gateway federation-balance reader; (G4) every production
 gateway deposit-address allocation and recheck call; (G5) every wallet status
 writer by which gateway completion becomes eligible; and (G6) schema keys and
@@ -55,15 +55,7 @@ nanosecond component, so a surviving counter is narrower than a reset one.
 
 ## Status
 
-Established. The completion writer requires a `deposit-confirmed` entry from
-the gateway's payment log whose txid matches the item's own funding
-operation and whose amount covers the committed amount
-(`gateway_allocation.rs`, `complete_if_gateway_funded`); an aggregate
-balance is recorded as observation only and never satisfies the guard. The
-test `unrelated_target_credit_does_not_complete_gateway_item` pins the
-counterexample pairing this record falsified: a claimed unrelated deposit
-beneath a raised aggregate leaves the item running, and completion follows
-only when the gateway claims the item's own funding output.
+Unverified.
 
 ## Assumptions
 

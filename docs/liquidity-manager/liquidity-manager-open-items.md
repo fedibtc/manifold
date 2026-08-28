@@ -348,22 +348,6 @@ work.
 
 ## Upstream dependency gaps
 
-The allocation gap below is not FLIP-side work. It needs a small addition to a
-pinned dependency, after which the FLIP change is short. FLIP ships the best
-local behaviour available without it.
-
-- **gatewayd exposes no per-address peg-in status.** Gateway allocation
-  completion compares the federation's aggregate e-cash balance against a
-  baseline, because no API answers whether the output this item paid to its own
-  deposit address is the one the gateway's Fedimint client claimed.
-  `recheck_address` returns nothing, `/info` and `/balances` are aggregates, and
-  `list_transactions` is served from the Lightning node rather than the Fedimint
-  client, so a federation peg-in never appears in it. The baseline is re-anchored
-  immediately before the send, which narrows the window but cannot close it. An
-  endpoint reporting peg-in or claim status for a given address — data gatewayd
-  already has, since `recheck_address` looks up exactly that address — is the
-  missing input. See
-  [`unrelated-gateway-balance-completes-item`](../../crates/liquidity-manager-daemon/claims/unrelated-gateway-balance-completes-item.md).
 ### A pin bump can silently reinstate a repaired defect
 
 `repeated-target-peg-in-allocation-after-crash` passes because upstream

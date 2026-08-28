@@ -26,8 +26,9 @@ and L2 gives the stated durable-row bound.
   source-specific crash recovery and submission guarantees require their own
   records.
 - The claim does not prove that an item completes with attributable target-side
-  liquidity; the existing `unrelated-gateway-balance-completes-item` record is
-  still falsified.
+  liquidity;
+  [CLAIM-unrelated-gateway-balance-completes-item](../CLAIM-unrelated-gateway-balance-completes-item.md)
+  covers that property separately.
 
 ## Weakest links
 
