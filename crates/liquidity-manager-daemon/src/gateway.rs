@@ -12,6 +12,8 @@
 //! dependencies is what lets `setup_store` probe a gatewayd without importing
 //! the worker that reads `setup_store` back.
 
+use std::collections::BTreeSet;
+
 use async_trait::async_trait;
 use bitcoin::Address;
 use bitcoin::address::NetworkUnchecked;
@@ -20,24 +22,44 @@ use fedi_decentralized_service_liquidity_manager::{
 };
 use fedimint_connectors::ConnectorRegistry;
 use fedimint_core::config::FederationId;
+use fedimint_core::core::OperationId;
 use fedimint_core::util::SafeUrl;
+use fedimint_eventlog::{Event, EventKind, PersistedLogEntry};
 use fedimint_gateway_client::payment_log;
 use fedimint_gateway_common::{
     ConnectFedPayload, DepositAddressPayload, DepositAddressRecheckPayload, GatewayInfo,
     LightningInfo, PaymentLogPayload, RegisteredProtocol, V1_API_ENDPOINT,
 };
 use fedimint_ln_common::client::GatewayApi;
+use fedimint_wallet_client::events::DepositConfirmed;
+use fedimint_walletv2_client::events::{
+    ReceivePaymentEvent, ReceivePaymentStatus, ReceivePaymentUpdateEvent,
+};
 
 use crate::wallet::{bitcoin_network_to_domain, domain_network_to_bitcoin};
 
-/// Upper bound on deposit-confirmed entries read per completion check. The
-/// log is read newest-first and each item matches its own txid, so a page
-/// larger than the concurrent-item ceiling adds matches, not correctness.
+/// Upper bound on claim events read per completion check. The log is read
+/// newest-first and each item matches its own output, so a page larger than
+/// the concurrent-item ceiling adds matches, not correctness. A claim older
+/// than the page delays that item's completion until a shorter log or a
+/// larger page reaches it.
 const PAYMENT_LOG_PAGE_SIZE: usize = 1000;
 
-/// Event kind gatewayd's federation clients log when they observe a confirmed
-/// deposit, from `fedimint_wallet_client::events::DepositConfirmed::KIND`.
-const DEPOSIT_CONFIRMED_KIND: &str = "deposit-confirmed";
+/// Event kinds a gateway's federation client logs when it claims a deposit.
+///
+/// The two wallet modules record a claim differently. A wallet v1 federation
+/// logs one [`DepositConfirmed`] per claimed peg-in. A walletv2 federation
+/// logs [`ReceivePaymentEvent`] when its client submits the claiming
+/// transaction and [`ReceivePaymentUpdateEvent`] when the federation accepts
+/// or rejects it, so both are needed to tell a claimed deposit from an
+/// attempted one.
+fn claim_event_kinds() -> Vec<EventKind> {
+    vec![
+        DepositConfirmed::KIND,
+        ReceivePaymentEvent::KIND,
+        ReceivePaymentUpdateEvent::KIND,
+    ]
+}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct GatewaySnapshot {
@@ -56,12 +78,13 @@ pub(crate) struct GatewayFederationSnapshot {
 
 /// A deposit the gateway's own Fedimint client observed and claimed.
 ///
-/// This is the target-side record the completion guard needs: gatewayd logs a
-/// `deposit-confirmed` event for every peg-in its federation client claims,
-/// with the Bitcoin transaction id, output index, and amount of the deposit.
-/// A txid plus output index identifies exactly the output the item's funding
-/// operation paid, so matching it is what makes completion attribution and
-/// not a balance coincidence.
+/// This is the target-side record the completion guard needs. Both wallet
+/// modules name the Bitcoin outpoint they claimed, so both reduce to this
+/// shape: a txid plus output index identifies exactly the output the item's
+/// funding operation paid, which is what makes completion attribution rather
+/// than a balance coincidence. `amount` is what the federation credited, so a
+/// module that charges its peg-in fee out of the deposit reports the value
+/// after that fee.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct GatewayDepositClaim {
     pub txid: String,
@@ -106,7 +129,8 @@ pub(crate) trait GatewayClient: Send + Sync {
 
     /// Deposits the gateway's Fedimint client has observed and claimed for
     /// this federation. The completion guard matches one of these against the
-    /// item's own funding txid; an aggregate balance read cannot.
+    /// output the item's own funding operation paid; an aggregate balance
+    /// read cannot.
     async fn deposit_claims(&self, federation_id: &str)
     -> anyhow::Result<Vec<GatewayDepositClaim>>;
 }
@@ -261,32 +285,66 @@ impl GatewayClient for ConfiguredGatewayClient {
             &self.api,
             &self.base_url,
             PaymentLogPayload {
-                // `None` starts at the newest log position, so the read covers
-                // every retained event.
+                // `None` starts at the newest log position and the read walks
+                // backwards from there, up to the page size.
                 end_position: None,
                 pagination_size: PAYMENT_LOG_PAGE_SIZE,
                 federation_id,
-                event_kinds: vec![DEPOSIT_CONFIRMED_KIND.into()],
+                event_kinds: claim_event_kinds(),
             },
         )
         .await?;
-        Ok(response
-            .0
-            .iter()
-            .filter_map(|entry| {
-                // `DepositConfirmed` is the wallet-client event gatewayd logs
-                // when its federation client claims a deposit; its payload
-                // carries the txid, output index, and deposit amount.
-                let payload: fedimint_wallet_client::events::DepositConfirmed =
-                    serde_json::from_slice(&entry.as_raw().payload).ok()?;
-                Some(GatewayDepositClaim {
-                    txid: payload.txid.to_string(),
-                    out_idx: payload.out_idx,
-                    amount: Sats(payload.amount.msats / 1000),
-                })
-            })
-            .collect())
+        Ok(deposit_claims_from_log(&response.0))
     }
+}
+
+/// Reduces a gateway's payment log to the deposits its federation client
+/// claimed, whichever wallet module served the federation.
+///
+/// A walletv2 receive is admitted only when the federation accepted the
+/// claiming transaction: [`ReceivePaymentEvent`] alone records an attempt, and
+/// its `Aborted` counterpart records one that failed. The credited amount is
+/// the output value less the module's receive fee, which is the ecash the
+/// client issued itself for that deposit.
+fn deposit_claims_from_log(entries: &[PersistedLogEntry]) -> Vec<GatewayDepositClaim> {
+    let accepted: BTreeSet<OperationId> = entries
+        .iter()
+        .filter(|entry| entry.as_raw().kind == ReceivePaymentUpdateEvent::KIND)
+        .filter_map(|entry| entry.as_raw().to_event::<ReceivePaymentUpdateEvent>())
+        .filter(|update| matches!(update.status, ReceivePaymentStatus::Success))
+        .map(|update| update.operation_id)
+        .collect();
+
+    entries
+        .iter()
+        .filter_map(|entry| {
+            let raw = entry.as_raw();
+            if raw.kind == DepositConfirmed::KIND {
+                let event = raw.to_event::<DepositConfirmed>()?;
+                return Some(GatewayDepositClaim {
+                    txid: event.txid.to_string(),
+                    out_idx: event.out_idx,
+                    amount: Sats(event.amount.msats / 1000),
+                });
+            }
+            if raw.kind == ReceivePaymentEvent::KIND {
+                let event = raw.to_event::<ReceivePaymentEvent>()?;
+                if !accepted.contains(&event.operation_id) {
+                    return None;
+                }
+                // A receive the federation has not yet assigned an outpoint
+                // names no output, so it attributes nothing.
+                let outpoint = event.outpoint?;
+                let credited = event.value.checked_sub(event.fee)?;
+                return Some(GatewayDepositClaim {
+                    txid: outpoint.txid.to_string(),
+                    out_idx: outpoint.vout,
+                    amount: Sats(credited.to_sat()),
+                });
+            }
+            None
+        })
+        .collect()
 }
 
 fn gateway_snapshot_from_info(info: GatewayInfo) -> anyhow::Result<GatewaySnapshot> {
@@ -325,3 +383,7 @@ fn gateway_snapshot_from_info(info: GatewayInfo) -> anyhow::Result<GatewaySnapsh
             .collect(),
     })
 }
+
+#[cfg(test)]
+#[path = "../tests/gateway.rs"]
+mod tests;

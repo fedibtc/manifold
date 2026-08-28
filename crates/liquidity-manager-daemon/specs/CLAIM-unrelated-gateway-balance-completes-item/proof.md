@@ -7,32 +7,46 @@
 The only production writer that sets a gateway item to `completed` is
 `allocation_store::complete_item`, called from `complete_if_gateway_funded`
 (`gateway_allocation.rs`). Before completing, the worker reads the item's own
-`gateway_funding` wallet operation and requires a `deposit-confirmed` entry
-from the configured gateway whose `txid` equals the operation's recorded txid,
-whose `out_idx` equals the operation's recorded `tx_vout` when chain
-observation has recorded one, and whose amount covers the committed amount. A
-transaction can pay two items' deposit addresses in separate outputs, so the
-output index is what separates them. A `deposit-confirmed` entry is
-logged by gatewayd's federation client exactly when it observes and claims a
-confirmed deposit (`fedimint-wallet-client`, `pegin_monitor.rs`,
-`claim_peg_in_inner`), and it carries the Bitcoin txid, output index, and
-amount of that deposit. The guard therefore holds an
-item-funding-output-to-target-claim identity; the aggregate federation
-balance is read afterwards as evidence observation and never satisfies the
-completion condition.
+`gateway_funding` wallet operation and requires a claim entry from the
+configured gateway whose `txid` equals the operation's recorded txid, whose
+`out_idx` equals the operation's recorded `tx_vout` when chain observation has
+recorded one, and whose amount covers the committed amount. A transaction can
+pay two items' deposit addresses in separate outputs, so the output index is
+what separates them. The guard therefore holds an
+item-funding-output-to-target-claim identity; the aggregate federation balance
+is read afterwards as evidence observation and never satisfies the completion
+condition.
 
-### L2 — the payment-log read returns per-deposit identity (`code`, pinned source)
+### L2 — the payment-log read returns per-deposit identity for both wallet modules (`code`, `test`, pinned source)
 
-`ConfiguredGatewayClient::deposit_claims` calls gatewayd's
-`/payment_log` endpoint for the target federation filtered to the
-`deposit-confirmed` event kind. At the pinned gatewayd source
+`ConfiguredGatewayClient::deposit_claims` calls gatewayd's `/payment_log`
+endpoint for the target federation, filtered to the kinds in
+`claim_event_kinds`. At the pinned gatewayd source
 (`fedimint-gateway-server/src/lib.rs`, `handle_payment_log_msg`) this reads
-the federation client's event log and returns `PersistedLogEntry` payloads;
-the `deposit-confirmed` payload deserializes as
-`fedimint_wallet_client::events::DepositConfirmed { txid, out_idx, amount }`.
-The event is emitted inside the claim transaction for that deposit's tweak
-index (`pegin_monitor.rs`, `claim_peg_in_inner`), so an entry is target-side
-claim evidence for the exact output it names, not an account aggregate.
+the federation client's event log and returns `PersistedLogEntry` payloads,
+filtered to whatever kinds the caller names. `deposit_claims_from_log`
+reduces both modules' records to one outpoint-keyed claim, which
+`tests/gateway.rs` pins.
+
+`handle_address_msg` decides which module serves a federation: wallet v1 if
+the client exposes `fedimint_wallet_client::WalletClientModule`, walletv2
+otherwise. The two record a claim differently.
+
+- Wallet v1 logs `DepositConfirmed { txid, out_idx, amount }` inside the claim
+  transaction for that deposit's tweak index (`pegin_monitor.rs`,
+  `claim_peg_in_inner`). `amount` is the output value before the federation's
+  peg-in fee.
+- Walletv2 logs `ReceivePaymentEvent { operation_id, value, fee, address,
+  outpoint }` when its client submits the claiming transaction
+  (`fedimint-walletv2-client/src/lib.rs`, `receive_output`) and
+  `ReceivePaymentUpdateEvent { operation_id, status }` when the federation
+  accepts or rejects it (`receive_sm.rs`, `transition_funding`). A receive
+  counts as a claim only with a `Success` update for the same operation, and
+  its credited amount is `value - fee`, which is the ecash the client issued
+  itself for that output.
+
+Either way an entry is target-side claim evidence for the exact output it
+names, not an account aggregate.
 
 ### L3 — the falsifying counterexample no longer completes the item (`test`)
 
@@ -72,7 +86,13 @@ federation leaves the item running rather than recording a substitute value.
   operation and address — and the address is persisted only in FLIP's
   `step_json` and gatewayd's database, never in a requester- or Admin-facing
   response, so the modeled adversary cannot target it. A deployment that
-  leaks allocation addresses to third parties widens this window.
+  leaks allocation addresses to third parties widens this window. It is wider
+  on walletv2 for a structural reason: `WalletClientModule::receive` returns
+  the address of the highest existing valid index rather than allocating a
+  fresh one, so one address serves every item of that federation and stays
+  payable. Attribution still holds, because the guard matches the outpoint and
+  not the address, but an address collision between two items is ordinary
+  there rather than exceptional.
 - **Operator-asserted settlement.** A manual review resolved as `Completed`
   writes the operator's txid and leaves `tx_vout` unset
   ([CLAIM-unrelated-manual-review-transaction-completes-operation](../CLAIM-unrelated-manual-review-transaction-completes-operation.md)),
@@ -92,10 +112,12 @@ federation leaves the item running rather than recording a substitute value.
 
 ## Weakest links
 
-1. **L2 (`code`, pinned source)** — the semantic hinge is that
-   `deposit-confirmed` entries name the claimed deposit's txid and are
-   emitted per claim. Recheck when the Fedimint flake pin or Cargo patching
-   changes.
+1. **L2 (`code`, pinned source)** — the semantic hinge is that each module's
+   claim events name the claimed deposit's outpoint and are emitted per claim,
+   and that a walletv2 receive is settled by its `Success` update. A third
+   wallet module, or a renamed event kind or payload field, produces an empty
+   read rather than a compile error. Recheck when the Fedimint flake pin or
+   Cargo patching changes.
 2. **L1 (`enum`)** — a new gateway completion writer requires regenerating
    this argument.
 3. **L3 (`test`)** — the counterexample pairings are pinned by unit tests
