@@ -364,6 +364,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     }
     onboarding.completed().await?;
 
+    let wallet_origin = db.wallet_origin().await?;
     let fleet = Arc::new(
         Fleet::open_with_wallet(
             db,
@@ -386,6 +387,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
                     wallet_dir,
                     &identity.derive_wallet_secret(),
                     &identity.derive_guardian_fee_secret(),
+                    wallet_origin,
                 )
                 .await?;
                 Ok(std::sync::Arc::new(wallet) as _)

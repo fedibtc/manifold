@@ -114,9 +114,13 @@ async fn mint_v2_receive_replay_child() {
         env::var_os(REPLAY_TOKEN_FILE_ENV).expect("parent supplies the bearer-token file");
     let wallet_dir = env::var_os(REPLAY_WALLET_DIR_ENV).expect("parent supplies the wallet dir");
     let token = std::fs::read_to_string(token_file).expect("read replay-test bearer token");
-    let wallet = FmanWallet::open(PathBuf::from(wallet_dir), &WalletSecret([91; 64]))
-        .await
-        .expect("open replay-test wallet");
+    let wallet = FmanWallet::open(
+        PathBuf::from(wallet_dir),
+        &WalletSecret([91; 64]),
+        fman_fedimint::WalletOrigin::Fresh,
+    )
+    .await
+    .expect("open replay-test wallet");
     let federation_id = wallet
         .join(&invite.parse().expect("parse payment invite"))
         .await
