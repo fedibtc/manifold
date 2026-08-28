@@ -57,6 +57,11 @@ Four kinds of state, and two of them are genuinely at risk:
 - **Consensus database** — recovered from peers, so deliberately not backed up.
   A restored guardian replays threshold-signed session history from the
   federation. This is what keeps the backup small enough to publish at all.
+- **Fedimint client database** — deliberately not backed up. Restore records a
+  restored wallet origin, causing every re-opened payment or guardian-fee scope
+  to scan its mnemonic-derived mint keys. Selectively replacing this database
+  in an otherwise live data root is outside the supported lifecycle; recovery
+  is whole-FMan restore onto a fresh data root.
 - **Federation consensus config** — public, identical for every guardian, and
   **not obtainable**. It is most of the archive's bytes, which is why the
   archive spans multiple events at all.

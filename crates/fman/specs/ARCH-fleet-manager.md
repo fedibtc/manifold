@@ -171,7 +171,13 @@ direction is strictly bottom-up; each layer only knows the ones below it.
   monotonically allocated prefix per client scope, with the allocator and its
    prefix-to-scope map under prefix zero. The prefix is reserved before
   Fedimint is handed the database and never reused, so a join that fails
-   partway cannot leave state a later client inherits. The crate name is
+   partway cannot leave state a later client inherits. Identity onboarding
+   records fresh-versus-restored wallet provenance: a fresh identity uses
+   Fedimint join for a scope absent from its never-removed map, while a restored
+   identity recovers mnemonic-derived keys. The wallet never leaves or forgets
+   a scope; policy removal only makes it dormant. Selective replacement of its
+   RocksDB is outside the supported data-root lifecycle. Pre-origin identities
+   migrate to restored provenance. The crate name is
    `fedimint` rather than `wallet` because a Fedimint client is not only a
    wallet. Payout starts are serialized per client scope. Under that fence the
    implementation first searches durable operation metadata for the caller's
@@ -348,7 +354,9 @@ Six kinds of state, six owners:
   publication and its derived accepted membership): read as a coherent
   snapshot and changed transactionally. Membership is written only by
   common-set replacement, never by an operator verb; the wallet joins
-  members from the admitted-set watch and never leaves.
+  members from the admitted-set watch and never leaves. Keeping every scope
+  mapping is also what makes absence under a freshly generated identity proof
+  that its federation-derived root has never been used.
 - **Wallet-implementation-owned payout jobs**: the `fman-fedimint` payout
   worker operates the shared SQLite ledger containing the caller request ID, immutable
   wallet scope (including the public guardian invite needed after seat

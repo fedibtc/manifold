@@ -124,9 +124,13 @@ async fn same_scope_payout_starts_are_serialized() {
 
     let temp = tempfile::tempdir().unwrap();
     let wallet = Arc::new(
-        Wallet::open(temp.path().to_owned(), &WalletSecret([42; 64]))
-            .await
-            .unwrap(),
+        Wallet::open(
+            temp.path().to_owned(),
+            &WalletSecret([42; 64]),
+            WalletOrigin::Fresh,
+        )
+        .await
+        .unwrap(),
     );
     let first = wallet.payout_exclusion(payment(1)).await;
     let (pending_tx, pending_rx) = tokio::sync::oneshot::channel();
@@ -310,9 +314,13 @@ async fn private_invite_is_rejected_before_fedimint_client_use() {
         Some("must-not-be-logged".to_owned()),
     );
     let temp = tempfile::tempdir().unwrap();
-    let wallet = Wallet::open(temp.path().to_owned(), &WalletSecret([42; 64]))
-        .await
-        .unwrap();
+    let wallet = Wallet::open(
+        temp.path().to_owned(),
+        &WalletSecret([42; 64]),
+        WalletOrigin::Fresh,
+    )
+    .await
+    .unwrap();
 
     assert!(matches!(
         wallet.join(&invite).await,
@@ -331,9 +339,13 @@ async fn preview_timeout_does_not_fence_same_process_retry() {
         None,
     );
     let temp = tempfile::tempdir().unwrap();
-    let wallet = Wallet::open(temp.path().to_owned(), &WalletSecret([42; 64]))
-        .await
-        .unwrap();
+    let wallet = Wallet::open(
+        temp.path().to_owned(),
+        &WalletSecret([42; 64]),
+        WalletOrigin::Fresh,
+    )
+    .await
+    .unwrap();
     let scope = ClientScope::Payment(invite.federation_id());
 
     for _ in 0..2 {
@@ -355,18 +367,30 @@ async fn preview_timeout_does_not_fence_same_process_retry() {
 #[tokio::test(flavor = "multi_thread")]
 async fn wallet_root_excludes_concurrent_openers() {
     let temp = tempfile::tempdir().unwrap();
-    let wallet = Wallet::open(temp.path().to_owned(), &WalletSecret([42; 64]))
-        .await
-        .unwrap();
+    let wallet = Wallet::open(
+        temp.path().to_owned(),
+        &WalletSecret([42; 64]),
+        WalletOrigin::Fresh,
+    )
+    .await
+    .unwrap();
     assert!(
-        Wallet::open(temp.path().to_owned(), &WalletSecret([42; 64]))
-            .await
-            .is_err()
+        Wallet::open(
+            temp.path().to_owned(),
+            &WalletSecret([42; 64]),
+            WalletOrigin::Fresh
+        )
+        .await
+        .is_err()
     );
     drop(wallet);
-    Wallet::open(temp.path().to_owned(), &WalletSecret([42; 64]))
-        .await
-        .unwrap();
+    Wallet::open(
+        temp.path().to_owned(),
+        &WalletSecret([42; 64]),
+        WalletOrigin::Fresh,
+    )
+    .await
+    .unwrap();
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -374,9 +398,13 @@ async fn wallet_root_lock_open_does_not_truncate_existing_contents() {
     let temp = tempfile::tempdir().unwrap();
     let lock_path = temp.path().join(WALLET_LOCK_FILE);
     std::fs::write(&lock_path, b"operator sentinel").unwrap();
-    let _wallet = Wallet::open(temp.path().to_owned(), &WalletSecret([42; 64]))
-        .await
-        .unwrap();
+    let _wallet = Wallet::open(
+        temp.path().to_owned(),
+        &WalletSecret([42; 64]),
+        WalletOrigin::Fresh,
+    )
+    .await
+    .unwrap();
     assert_eq!(std::fs::read(lock_path).unwrap(), b"operator sentinel");
 }
 
@@ -390,9 +418,13 @@ async fn wallet_root_lock_does_not_follow_or_truncate_a_symlink() {
     std::fs::write(&target, b"must remain intact").unwrap();
     symlink(&target, temp.path().join(WALLET_LOCK_FILE)).unwrap();
     assert!(
-        Wallet::open(temp.path().to_owned(), &WalletSecret([42; 64]))
-            .await
-            .is_err()
+        Wallet::open(
+            temp.path().to_owned(),
+            &WalletSecret([42; 64]),
+            WalletOrigin::Fresh
+        )
+        .await
+        .is_err()
     );
     assert_eq!(std::fs::read(target).unwrap(), b"must remain intact");
 }
@@ -401,9 +433,13 @@ async fn wallet_root_lock_does_not_follow_or_truncate_a_symlink() {
 async fn same_federation_join_is_excluded_while_unrelated_join_progresses() {
     let temp = tempfile::tempdir().unwrap();
     let wallet = Arc::new(
-        Wallet::open(temp.path().to_owned(), &WalletSecret([42; 64]))
-            .await
-            .unwrap(),
+        Wallet::open(
+            temp.path().to_owned(),
+            &WalletSecret([42; 64]),
+            WalletOrigin::Fresh,
+        )
+        .await
+        .unwrap(),
     );
     let first = wallet.join_exclusion(payment(1)).await;
     let same = tokio::spawn({
@@ -463,15 +499,23 @@ async fn prefix_mappings_persist_across_reopen() {
     let temp = tempfile::tempdir().unwrap();
     let first = payment(1);
     let second = guardian(1, 2);
-    let wallet = Wallet::open(temp.path().to_owned(), &WalletSecret([42; 64]))
-        .await
-        .unwrap();
+    let wallet = Wallet::open(
+        temp.path().to_owned(),
+        &WalletSecret([42; 64]),
+        WalletOrigin::Fresh,
+    )
+    .await
+    .unwrap();
     assert_eq!(reserve_prefix(&wallet.database, &first).await.unwrap(), 1);
     assert_eq!(reserve_prefix(&wallet.database, &second).await.unwrap(), 2);
     drop(wallet);
-    let reopened = Wallet::open(temp.path().to_owned(), &WalletSecret([42; 64]))
-        .await
-        .unwrap();
+    let reopened = Wallet::open(
+        temp.path().to_owned(),
+        &WalletSecret([42; 64]),
+        WalletOrigin::Fresh,
+    )
+    .await
+    .unwrap();
     assert_eq!(reopened.prefixes.read().await.get(&first), Some(&1));
     assert_eq!(reopened.prefixes.read().await.get(&second), Some(&2));
 }
@@ -484,6 +528,7 @@ async fn reopen_keeps_guardian_scope_dormant_until_fee_operation() {
         temp.path().to_owned(),
         &WalletSecret([42; 64]),
         &WalletSecret([43; 64]),
+        WalletOrigin::Fresh,
     )
     .await
     .unwrap();
@@ -494,6 +539,7 @@ async fn reopen_keeps_guardian_scope_dormant_until_fee_operation() {
         temp.path().to_owned(),
         &WalletSecret([42; 64]),
         &WalletSecret([43; 64]),
+        WalletOrigin::Fresh,
     )
     .await
     .unwrap();
@@ -505,15 +551,23 @@ async fn reopen_keeps_guardian_scope_dormant_until_fee_operation() {
 async fn reopen_keeps_removed_payment_scope_dormant() {
     let temp = tempfile::tempdir().unwrap();
     let scope = payment(1);
-    let wallet = Wallet::open(temp.path().to_owned(), &WalletSecret([42; 64]))
-        .await
-        .unwrap();
+    let wallet = Wallet::open(
+        temp.path().to_owned(),
+        &WalletSecret([42; 64]),
+        WalletOrigin::Fresh,
+    )
+    .await
+    .unwrap();
     assert_eq!(reserve_prefix(&wallet.database, &scope).await.unwrap(), 1);
     drop(wallet);
 
-    let reopened = Wallet::open(temp.path().to_owned(), &WalletSecret([42; 64]))
-        .await
-        .unwrap();
+    let reopened = Wallet::open(
+        temp.path().to_owned(),
+        &WalletSecret([42; 64]),
+        WalletOrigin::Fresh,
+    )
+    .await
+    .unwrap();
     assert_eq!(reopened.prefixes.read().await.get(&scope), Some(&1));
     assert!(reopened.federation_ids().await.is_empty());
     assert_eq!(
@@ -525,9 +579,13 @@ async fn reopen_keeps_removed_payment_scope_dormant() {
 #[tokio::test(flavor = "multi_thread")]
 async fn reserved_failed_join_prefix_is_never_reused() {
     let temp = tempfile::tempdir().unwrap();
-    let wallet = Wallet::open(temp.path().to_owned(), &WalletSecret([42; 64]))
-        .await
-        .unwrap();
+    let wallet = Wallet::open(
+        temp.path().to_owned(),
+        &WalletSecret([42; 64]),
+        WalletOrigin::Fresh,
+    )
+    .await
+    .unwrap();
     // Joining can fail after reservation; the next federation must not get its state.
     assert_eq!(
         reserve_prefix(&wallet.database, &payment(1)).await.unwrap(),

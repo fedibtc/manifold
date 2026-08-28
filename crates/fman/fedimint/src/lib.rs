@@ -47,6 +47,7 @@ mod wallet_drain;
 
 pub(crate) use payout_native::{await_payout, payout_for_request, payout_status, start_payout};
 
+pub use fman_core::db::WalletOrigin;
 pub use fman_core::guardian_fee::GuardianFeeAccountKey;
 pub use fman_core::wallet::WalletSecret;
 
@@ -214,6 +215,9 @@ pub struct Wallet {
     /// on a wallet that never guards (the FI side opens one of those).
     guardian_root_secret: Option<DerivableSecret>,
     wallet_secret: WalletSecretBytes,
+    /// Whether an uninitialized scope is proven never used (`Fresh`) or must
+    /// scan mnemonic-derived keys because this identity came from restore.
+    origin: WalletOrigin,
     federations: Arc<RwLock<BTreeMap<ClientScope, ClientHandleArc>>>,
     /// Serializes joins per federation while allowing unrelated federation
     /// joins to make progress independently.
@@ -245,8 +249,12 @@ impl Wallet {
     /// Acquires an exclusive, non-symlink-following lock under `data_dir` and
     /// holds it until the wallet drops. Opening a second wallet on the same
     /// root fails with the lock error as its source.
-    pub async fn open(data_dir: PathBuf, secret: &WalletSecret) -> anyhow::Result<Self> {
-        Self::open_inner(data_dir, secret, None).await
+    pub async fn open(
+        data_dir: PathBuf,
+        secret: &WalletSecret,
+        origin: WalletOrigin,
+    ) -> anyhow::Result<Self> {
+        Self::open_inner(data_dir, secret, None, origin).await
     }
 
     /// Open a wallet that also collects guardian fees.
@@ -260,14 +268,16 @@ impl Wallet {
         data_dir: PathBuf,
         secret: &WalletSecret,
         guardian_secret: &WalletSecret,
+        origin: WalletOrigin,
     ) -> anyhow::Result<Self> {
-        Self::open_inner(data_dir, secret, Some(guardian_secret)).await
+        Self::open_inner(data_dir, secret, Some(guardian_secret), origin).await
     }
 
     async fn open_inner(
         data_dir: PathBuf,
         secret: &WalletSecret,
         guardian_secret: Option<&WalletSecret>,
+        origin: WalletOrigin,
     ) -> anyhow::Result<Self> {
         let secret = &secret.0;
         let root_secret = DerivableSecret::new_root(secret, WALLET_SECRET_SALT);
@@ -301,6 +311,7 @@ impl Wallet {
             root_secret,
             guardian_root_secret,
             wallet_secret: WalletSecretBytes(Zeroizing::new(*secret)),
+            origin,
             federations: Arc::new(RwLock::new(BTreeMap::new())),
             join_locks: Mutex::new(BTreeMap::new()),
             payout_locks: Mutex::new(BTreeMap::new()),
@@ -394,24 +405,32 @@ impl Wallet {
             let recovery_scope = scope.clone();
             client_open_once(&self.open_attempted, scope.clone(), async move {
                 let root = RootSecret::StandardDoubleDerive(client_root.clone());
-                // Client roots survive mnemonic restore and may therefore have
-                // been used with a lost database. Recovery is also safe for a new
-                // root, at the cost of making every first join scan the federation.
-                // Recovery handles have no usable modules: finish the scan, shut
-                // down the handle, then reopen the same database.
-                let recovering = preview
-                    .recover(database.clone(), root.clone(), None)
-                    .await
-                    .context("recover federation")?;
-                self.finish_recovery(
-                    &recovery_scope,
-                    &database,
-                    &client_root,
-                    guardian_key,
-                    recovering,
-                    "recover federation",
-                )
-                .await
+                // Fresh onboarding plus the never-removed scope map proves an
+                // absent federation-derived root was never used, so it may take
+                // Fedimint's fast join path. A restored mnemonic has no such
+                // proof and must scan. Recovery handles have no usable modules:
+                // finish the scan, shut down the handle, then reopen the database.
+                match self.origin {
+                    WalletOrigin::Fresh => preview
+                        .join(database, root)
+                        .await
+                        .context("join fresh federation"),
+                    WalletOrigin::Restored => {
+                        let recovering = preview
+                            .recover(database.clone(), root, None)
+                            .await
+                            .context("recover federation")?;
+                        self.finish_recovery(
+                            &recovery_scope,
+                            &database,
+                            &client_root,
+                            guardian_key,
+                            recovering,
+                            "recover federation",
+                        )
+                        .await
+                    }
+                }
             })
             .await?
         };
@@ -492,13 +511,16 @@ impl Wallet {
         operation: &str,
     ) -> anyhow::Result<ClientHandle> {
         validate_stored_scope(database, scope).await?;
-        let recovery_needs_ready_marker = recovery_needs_ready_marker(database).await?;
         let root = RootSecret::StandardDoubleDerive(client_root.clone());
         let client = client_builder(guardian_key)
             .await?
             .open(connectors().await?, database.clone(), root)
             .await
             .with_context(|| operation.to_owned())?;
+        // A crashed fresh join can leave Pending(Fresh). Upstream open turns it
+        // into Complete(Fresh), so classify only afterwards; recovery-mode
+        // opens remain pending here until their module scans finish.
+        let recovery_needs_ready_marker = recovery_needs_ready_marker(database).await?;
         if !client.has_pending_recoveries() {
             if recovery_needs_ready_marker {
                 self.finish_completed_recovery(scope, database, &client)

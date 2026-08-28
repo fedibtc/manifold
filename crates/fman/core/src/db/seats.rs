@@ -922,12 +922,15 @@ impl Db {
                 .await?;
             }
         }
-        sqlx::query("INSERT INTO identity (id, mnemonic, created_at_ms) VALUES (?, ?, ?)")
-            .bind(IDENTITY_ID)
-            .bind(identity.phrase())
-            .bind(now_ms())
-            .execute(&mut *tx)
-            .await?;
+        sqlx::query(
+            "INSERT INTO identity (id, mnemonic, wallet_origin, created_at_ms) \
+             VALUES (?, ?, 'restored', ?)",
+        )
+        .bind(IDENTITY_ID)
+        .bind(identity.phrase())
+        .bind(now_ms())
+        .execute(&mut *tx)
+        .await?;
         let stage_update = sqlx::query(
             "UPDATE onboarding_state SET stage = 'holder_authorization', updated_at_ms = ? \
              WHERE id = 1 AND stage = 'identity'",

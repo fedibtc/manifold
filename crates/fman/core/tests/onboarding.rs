@@ -95,6 +95,10 @@ async fn onboarding_as_new_is_what_creates_the_identity() {
         "identity creation is only the first onboarding stage"
     );
     assert!(db.load_identity().await.unwrap().is_some());
+    assert_eq!(
+        db.wallet_origin().await.unwrap(),
+        crate::db::WalletOrigin::Fresh
+    );
 }
 
 /// Onboarding happens once, and the identity row is the enforcement: a second
@@ -225,6 +229,10 @@ async fn a_restore_returns_the_identity_its_documents_belong_to() {
     assert_eq!(
         db.load_identity().await.unwrap().unwrap().phrase(),
         identity.phrase()
+    );
+    assert_eq!(
+        db.wallet_origin().await.unwrap(),
+        crate::db::WalletOrigin::Restored
     );
     // And a second onboarding of any kind is now impossible.
     assert!(matches!(

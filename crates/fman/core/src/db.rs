@@ -30,6 +30,34 @@ pub enum OnboardingStage {
     Complete,
 }
 
+/// Whether onboarding created this mnemonic or adopted it from a backup.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum WalletOrigin {
+    Fresh,
+    Restored,
+}
+
+impl WalletOrigin {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Fresh => "fresh",
+            Self::Restored => "restored",
+        }
+    }
+
+    fn parse(value: &str) -> Result<Self, DbError> {
+        match value {
+            "fresh" => Ok(Self::Fresh),
+            "restored" => Ok(Self::Restored),
+            other => Err(DbError::CorruptRow {
+                table: "identity",
+                key: "1".to_owned(),
+                detail: format!("unknown wallet origin {other:?}"),
+            }),
+        }
+    }
+}
+
 impl OnboardingStage {
     fn parse(stage: &str) -> Result<Self, DbError> {
         match stage {
@@ -254,6 +282,13 @@ impl Db {
         OnboardingStage::parse(&stage)
     }
 
+    pub async fn wallet_origin(&self) -> Result<WalletOrigin, DbError> {
+        let origin: String = sqlx::query_scalar("SELECT wallet_origin FROM identity WHERE id = 1")
+            .fetch_one(&self.pool)
+            .await?;
+        WalletOrigin::parse(&origin)
+    }
+
     /// Write the identity onboarding chose, once.
     ///
     /// A Fleet Manager has exactly one mnemonic and acquires it exactly once,
@@ -279,12 +314,15 @@ impl Db {
                 actual: stage,
             });
         }
-        sqlx::query("INSERT INTO identity (id, mnemonic, created_at_ms) VALUES (?, ?, ?)")
-            .bind(IDENTITY_ID)
-            .bind(phrase)
-            .bind(created_at_ms)
-            .execute(&mut *tx)
-            .await?;
+        sqlx::query(
+            "INSERT INTO identity (id, mnemonic, wallet_origin, created_at_ms) VALUES (?, ?, ?, ?)",
+        )
+        .bind(IDENTITY_ID)
+        .bind(phrase)
+        .bind(WalletOrigin::Fresh.as_str())
+        .bind(created_at_ms)
+        .execute(&mut *tx)
+        .await?;
         let stage_update = sqlx::query(
             "UPDATE onboarding_state SET stage = 'holder_authorization', updated_at_ms = ? \
              WHERE id = 1 AND stage = 'identity'",

@@ -202,15 +202,34 @@ teardown without closing the stale-writer window first.
 
 Payment and guardian-fee joins apply a 30-second timeout only while previewing
 the federation configuration, before the permanent open fence and any client
-database initialization. Every fresh client-scope database is recovered,
-because both mnemonic-derived roots may have been used with a database lost to
-a restore. Before any scan, a stored config must name its mapped federation;
-new and stored configs must contain the supported mint modules. The wallet then
-requires a durable Fedimint recovery record for each configured mint and checks
-that every such record is done. This is deliberately stronger than
+database initialization. Onboarding records with the identity whether its
+mnemonic was freshly generated or restored. An uninitialized scope under a
+fresh identity uses Fedimint's fresh join: the durable scope map never removes
+a joined federation, even when policy membership removes it, so absence means
+that federation-derived root has never been used. FMan consequently has no
+leave-federation operation; removal makes a client dormant, not forgotten.
+Identities created before this origin was recorded migrate to restored, keeping
+their previous recovery behavior rather than assuming freshness retroactively.
+
+This proof assumes the data root, including `wallet/client.db`, remains one
+installation. Selective loss or replacement of the client database is outside
+the supported lifecycle and is not detected or repaired. An operator restores
+the whole FMan onto a fresh data root instead. Restore records restored origin,
+so every uninitialized scope recovers because both mnemonic-derived roots may
+have prior history in the lost database. Before any scan, a stored config must
+name its mapped federation; new and stored configs must contain the supported
+mint modules. The wallet then requires a durable Fedimint recovery record for
+each configured mint and checks that every such record is done. This is
+deliberately stronger than
 `wait_for_all_recoveries()`: the pinned client treats an unregistered or
 API-incompatible module as skipped, yet can report the recoveries it did spawn
 as complete.
+
+A crash after a fresh join writes Fedimint's `Pending(Fresh)` initialization
+record, but before it completes, is resumed by ordinary open. The pinned client
+completes that record before FMan classifies whether recovery-readiness work
+remains, so it neither starts a recovery scan nor leaves the fresh scope
+permanently pending.
 
 Recovery has no artificial timeout. It waits for those required mint scans,
 then shuts down the recovery handle, reopens the same database, and waits for
@@ -219,9 +238,10 @@ The marker remains absent when a crash happens after Fedimint changes its own
 state to `Complete(Recover)` but before FMan has checked the required mint
 records or the output state machines. Both the normal join and the lazy
 retained-payment open then finish or fail that readiness work; no recovery-only
-handle is published. This makes an initial join slower even for a never-used
-root, but avoids the pinned client's fund-loss behavior when a root is reused
-with a fresh join.
+handle is published. This makes the first join of each scope after an explicit
+restore slower, but avoids the pinned client's fund-loss behavior when a reused
+root takes a fresh join. Ordinary fresh installations do not pay that scan
+cost.
 
 This recovery applies to unspent mint ecash only. The pinned Lightning v1 and
 v2 modules use no-op recovery, so a completed wallet recovery neither recovers

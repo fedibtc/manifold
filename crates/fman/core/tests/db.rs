@@ -1,6 +1,33 @@
 use super::*;
 
 #[tokio::test]
+async fn pre_origin_identities_migrate_to_restored() {
+    let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+    sqlx::raw_sql(
+        "CREATE TABLE identity (\
+             id INTEGER PRIMARY KEY NOT NULL CHECK (id = 1), \
+             mnemonic TEXT NOT NULL, \
+             created_at_ms INTEGER NOT NULL\
+         ); \
+         INSERT INTO identity (id, mnemonic, created_at_ms) VALUES (1, 'old', 0);",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    sqlx::raw_sql(include_str!("../migrations/0002_wallet_origin.sql"))
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let origin: String = sqlx::query_scalar("SELECT wallet_origin FROM identity WHERE id = 1")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(origin, "restored");
+}
+
+#[tokio::test]
 async fn telemetry_generation_exhaustion_preserves_the_last_durable_value() {
     let dir = tempfile::tempdir().unwrap();
     let db = Db::open(dir.path()).await.unwrap();
