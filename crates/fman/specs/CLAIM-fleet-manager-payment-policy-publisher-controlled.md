@@ -20,8 +20,8 @@ database is initialized:
    preceding epoch is refused rather than accepted.
 
 “Treats as a member” covers every policy consequence in the daemon: selection
-for a priced quote, paid availability, the operator's `accepted` status, and
-wallet join reconciliation. The join reconciler deliberately retains wallet
+for a priced quote, the operator's `accepted` status, and wallet join
+reconciliation. The join reconciler deliberately retains wallet
 state for removed members, but that state is not acceptance and cannot make a
 new quote name the removed member.
 

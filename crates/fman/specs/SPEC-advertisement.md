@@ -2,7 +2,8 @@
 
 ## Status
 
-Paid-only availability gates on the accepted common setup-payment membership; there is no daemon-local accepted set.
+Advertisement availability depends only on a configured offer and physical
+capacity. Setup-payment membership is enforced when a priced quote is requested.
 
 ## Record justification
 
@@ -12,10 +13,12 @@ When configured with a relay, the daemon immediately begins a periodic Nostr
 publication cycle. It connects lazily, snapshots the fleet, and publishes only
 when that snapshot says a seat would be accepted. An eligible cycle reads
 durably enrolled Holder authorizations, signs a portable kind-37701 FMan
-advertisement, and publishes it. Cycles run every 30 minutes; a failed cycle is
-logged and retried at the next interval, and advertising failure never stops
-RPC service. Every document is stamped with the current Unix time and expires
-after 60 minutes. The same relay client is reused after a successful connect.
+advertisement, and publishes it. Cycles run every 30 minutes and promptly after
+daemon-owned offer or capacity changes; repeated changes may coalesce into one
+fresh snapshot. A failed cycle is logged and
+retried at the next trigger or interval, and advertising failure never stops RPC
+service. Every document is stamped with the current Unix time and expires after
+60 minutes. The same relay client is reused after a successful connect.
 
 This behavior implements the cross-program contract in
 [SPEC-fman-nostr-events](../../nostr/specs/SPEC-fman-nostr-events.md)
@@ -105,13 +108,11 @@ by the FI verification rules in
 The advertisement carries neither an availability boolean nor a count. Its
 existence means the publication cycle observed that the FMan was accepting
 seats: it had physical capacity after live seats — bounded by both the
-operator's seat limit and the remaining lifetime port grid — it was offering,
-and, for a nonzero price, it had joined a member of the accepted common
-setup-payment set (offline verification needs its client config). A seat offered
-at zero settles against nothing, so it is exempt from the wallet gate: that
-exemption is the deployment bootstrap, where the first federation's guardians
-are given away because no ecash to pay them with exists yet. Wallet
-receivability participates in the publication gate for priced offers; it does not alter the
-plan list or affect existing seats.
+operator's seat limit and the remaining lifetime port grid — and the operator
+had configured an offer. Setup-payment membership and opening a retained
+payment-federation client in the current daemon process are not advertisement
+gates; RPC remains authoritative. A seat offered at zero settles against
+nothing, which is the deployment bootstrap where the first federation's
+guardians are given away because no ecash to pay them with exists yet.
 `GetAvailability` uses the same gated-slot calculation, but independent calls
 can observe different settings epochs and live state.

@@ -399,6 +399,7 @@ async fn run_advertisements(inner: Arc<Inner>, host: Arc<FleetNostrHost>, nostr:
         }
         tokio::select! {
             () = tokio::time::sleep(REPUBLISH_INTERVAL) => {}
+            () = host.advertisement_changed() => {}
             changed = authorizations.changed() => {
                 if changed.is_err() {
                     return;

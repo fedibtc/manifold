@@ -201,13 +201,13 @@ behavior at this claim boundary.
    broader effect as contract-granted.
 
 3. **[code] The three public verbs stay within their read and quote contracts.**
-   `get_availability` calls `Fleet::availability_snapshot`, whose only external
-   operation is `wallet.receivable` for each admitted payment federation before
-   it returns only the supported-version, supported-size, current offer, and
-   capacity projection granted by `SPEC-fi-rpc`. `get_quote` first requires the
-   supported version and size, an exactly offered plan, an admitted and
-   receivable payment federation for nonzero price, and coherent refund
-   preparation. It reads one transactional `quote_offer` snapshot, calls
+   `get_availability` calls `Fleet::availability_snapshot`, which reads the
+   transactional offer projection and returns only the supported-version,
+   supported-size, current offer, and capacity projection granted by
+   `SPEC-fi-rpc`. `get_quote` first requires the supported version and size, an
+   exactly offered plan, an admitted payment federation for nonzero price, and
+   coherent refund preparation. It reads one transactional `quote_offer`
+   snapshot, calls
    `wallet.quote_locked` and `wallet.validate_quote_refund`, and returns the
    contract's stateless signed quote. It writes neither a seat nor a
    settlement; premise 13 covers operator-value consumption by these
@@ -256,9 +256,9 @@ behavior at this claim boundary.
 6. **[code] Guardian and external effects have no omitted authority source.**
    The complete handler/producer-to-effect roster is:
 
-   - **Public RPC:** `get_availability` reads the Fleet/SQLite projection and
-     calls each admitted payment wallet's `receivable`; `get_quote` reads
-     `quote_offer` and calls `quote_locked` and `validate_quote_refund`;
+   - **Public RPC:** `get_availability` reads the Fleet/SQLite projection;
+     `get_quote` reads `quote_offer` and calls `quote_locked` and
+     `validate_quote_refund`;
      `get_federation_trust_material` calls every registered seat's serialized
      `federation_binding` read (using the child API where the seat is live),
      skips failures, filters the resulting bindings by the requested

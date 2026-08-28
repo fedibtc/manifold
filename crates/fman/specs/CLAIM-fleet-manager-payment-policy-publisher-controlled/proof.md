@@ -43,8 +43,8 @@ database is initialized:
    preceding epoch is refused rather than accepted.
 
 “Treats as a member” covers every policy consequence in the daemon: selection
-for a priced quote, paid availability, the operator's `accepted` status, and
-wallet join reconciliation. The join reconciler deliberately retains wallet
+for a priced quote, the operator's `accepted` status, and wallet join
+reconciliation. The join reconciler deliberately retains wallet
 state for removed members, but that state is not acceptance and cannot make a
 new quote name the removed member.
 
@@ -224,10 +224,10 @@ list:
   requires a priced request's selected ID to be in that membership before
   asking the wallet to quote. The FI chooses among admitted IDs, not whether an
   ID is admitted.
-- `Fleet::availability_snapshot` reads the same snapshot and reports paid
-  capacity only if a wallet for at least one accepted member is receivable.
-  `GetAvailability` and the kind-37701 advertisement consume that result; they
-  do not publish or synthesize a separate membership.
+- `Fleet::availability_snapshot` reads the same snapshot, but availability and
+  kind-37701 advertisement discovery depend only on offer and capacity. They do
+  not publish or synthesize setup-payment membership; `get_quote` remains the
+  membership-enforcing boundary.
 - `Fleet::payment_federation_statuses` labels as `accepted` only IDs from that
   snapshot. Joined wallet-only leftovers are listed with `accepted: false`.
   `AdminRequest::ListPaymentFederations` only renders this view.
