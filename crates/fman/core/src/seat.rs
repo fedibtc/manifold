@@ -1550,7 +1550,7 @@ impl SeatLoop {
         submitted: &DkgCodeSet,
         own_code: &GuardianCode,
     ) -> Result<(), SeatVerbError> {
-        let (our_index, codes) = Self::ceremony_params(&submitted, &own_code)?;
+        let (our_index, codes) = Self::ceremony_params(submitted, own_code)?;
         let started = tokio::time::timeout(DKG_START_TIMEOUT, async {
             self.child
                 .client_mut()

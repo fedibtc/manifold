@@ -1819,6 +1819,7 @@
           # the CI test derivation and the OCI image use.
           fedimintd = fleetManagerFedimintd;
           fedimint-cli = fedimint.packages.${system}.fedimint-cli;
+          fedimint-load-test-tool = fedimint.packages.${system}.fedimint-load-test-tool;
           default = multiBuild.${projectName};
           liquidityManagerDaemon = multiBuild.liquidityManagerDaemon;
           # The built dashboards on their own, so the static output can be
@@ -1917,6 +1918,7 @@
             fedimint.packages.${system}.gateway-cli
             fedimint.packages.${system}.fedimintd
             fedimint.packages.${system}.fedimint-cli
+            fedimint.packages.${system}.fedimint-load-test-tool
             # esplora for the FMAN_E2E tier (scripts/test-e2e-local.sh); the
             # same flake-pinned build the CI tests derivation uses.
             fedimintPkgs.esplora-electrs

@@ -1,4 +1,4 @@
-//! Focused FLIP setup harness shared by the foreground staging composer.
+//! Focused FLIP setup harness shared by the foreground environment composer.
 
 use std::path::Path;
 use std::time::Duration;
@@ -220,7 +220,7 @@ fn setup_config(
         },
         "replenishment": {"warning_threshold": 1000, "critical_threshold": 500},
         "advertised_endpoint": {
-            "endpoint_id": "defe-staging-iroh-endpoint",
+            "endpoint_id": "defe-env-iroh-endpoint",
             "transport": "iroh",
             "address": endpoint_id,
             "discovery_hints": [],

@@ -13,7 +13,7 @@ use std::ffi::OsString;
 use std::fs;
 use std::os::unix::fs::{DirBuilderExt as _, FileTypeExt as _, PermissionsExt as _};
 use std::os::unix::net::{UnixListener as StdUnixListener, UnixStream as StdUnixStream};
-use std::os::unix::process::ExitStatusExt;
+use std::os::unix::process::{CommandExt as _, ExitStatusExt};
 use std::path::{Path, PathBuf};
 use std::process::ExitStatus;
 use std::sync::Arc;
@@ -29,7 +29,7 @@ use defe_api::{
     Response, SharingMode,
 };
 
-const USAGE: &str = "Usage: defe [opts...] <command>\n\nCommands:\n  exec <cmd...>\n  staging [--complete-liquidity]\n  serve --listenfd [--log-requests]\n\nOptions:\n  --tmp-dir <path>\n  --keep-temp\n  --no-keep-temp-on-failure\n  --log-dir <path>\n  --log-requests\n  --binary-path <dir>\n  --nostr-rs-relay-bin <path>\n  --push-gateway-bin <path>\n  --bitcoind-bin <path>\n  --fleet-manager-bin <path>\n  --fman-cli-bin <path>\n  --fi-cli-bin <path>\n  --liquidity-manager-daemon-bin <path>\n  --gatewayd-bin <path>\n  --gateway-cli-bin <path>\n  --defe-staging-bin <path>";
+const USAGE: &str = "Usage: defe [opts...] <command>\n\nCommands:\n  exec <cmd...>\n  env [--fedimint-load-test-tool-bin <path>] [--complete-liquidity] [-- COMMAND...]\n  serve --listenfd [--log-requests]\n\nOptions:\n  --tmp-dir <path>\n  --keep-temp\n  --no-keep-temp-on-failure\n  --log-dir <path>\n  --log-requests\n  --binary-path <dir>\n  --nostr-rs-relay-bin <path>\n  --push-gateway-bin <path>\n  --bitcoind-bin <path>\n  --fleet-manager-bin <path>\n  --fman-cli-bin <path>\n  --fi-cli-bin <path>\n  --liquidity-manager-daemon-bin <path>\n  --gatewayd-bin <path>\n  --gateway-cli-bin <path>\n  --defe-env-bin <path>";
 const SOCKET_FILE_NAME: &str = "s";
 const DEV_SERVER_TEMP_DIR_NAME: &str = "defe-dev-server";
 const DEFAULT_TEMP_DIR_ATTEMPTS: u16 = 256;
@@ -42,7 +42,7 @@ fn main() {
         .expect("build defe async runtime");
 
     match runtime.block_on(run(args)) {
-        Ok(code) => std::process::exit(code),
+        Ok(status) => exit_with_status(status),
         Err(message) => {
             eprintln!("{message}");
             std::process::exit(1);
@@ -50,29 +50,36 @@ fn main() {
     }
 }
 
-async fn run(args: Vec<OsString>) -> Result<i32, String> {
+async fn run(args: Vec<OsString>) -> Result<ExitStatus, String> {
     if args.is_empty()
         || args
             .first()
             .is_some_and(|arg| arg == "--help" || arg == "-h")
     {
         println!("{USAGE}");
-        return Ok(0);
+        return Ok(ExitStatus::from_raw(0));
     }
 
     let command = parse_command(args)?;
     match command {
-        DefeCommand::Exec(exec) => run_exec(exec).await.map(exit_code_from_status),
-        DefeCommand::Serve(serve) => run_serve(serve).await.map(|()| 0),
+        DefeCommand::Exec(exec) => run_exec(exec).await,
+        DefeCommand::Serve(serve) => run_serve(serve).await.map(|()| ExitStatus::from_raw(0)),
     }
 }
 
 async fn run_exec(exec: ExecArgs) -> Result<ExitStatus, String> {
-    if exec.command.is_empty() && exec.staging_args.is_none() {
+    if exec.command.is_empty() && exec.environment.is_none() {
         return Err(format!("defe exec requires a command\n{USAGE}"));
     }
 
-    let staging = exec.staging_args.is_some();
+    let environment = exec.environment.is_some();
+    let load_test_tool_bin = resolve_binary(
+        exec.environment
+            .as_ref()
+            .and_then(|environment| environment.load_test_tool_bin.clone()),
+        &exec.options.binary_paths,
+        "fedimint-load-test-tool",
+    );
     let log_requests = exec.options.log_requests;
     let mut generated_temp_root = None;
     let config = match prepare_server_config(exec.options, || {
@@ -89,11 +96,11 @@ async fn run_exec(exec: ExecArgs) -> Result<ExitStatus, String> {
         }
     };
     let mut command_args = exec.command;
-    if let Some(staging_args) = exec.staging_args {
+    if let Some(environment) = exec.environment {
         command_args = vec![
-            config.defe_staging_bin.clone(),
+            config.defe_env_bin.clone(),
             "--root".into(),
-            config.temp_root.join("staging").into_os_string(),
+            config.temp_root.join("env").into_os_string(),
             "--logs-dir".into(),
             config.log_dir.clone().into_os_string(),
             "--fi-cli".into(),
@@ -102,8 +109,22 @@ async fn run_exec(exec: ExecArgs) -> Result<ExitStatus, String> {
             config.fman_cli_bin.clone(),
             "--gateway-cli".into(),
             config.gateway_cli_bin.clone(),
+            "--bitcoin-cli".into(),
+            config.bitcoin_cli_bin.clone(),
+            "--load-test-tool".into(),
+            load_test_tool_bin.clone(),
         ];
-        command_args.extend(staging_args);
+        command_args.extend(environment.args);
+        for (label, binary) in [
+            ("defe-env", &config.defe_env_bin),
+            ("fman-cli", &config.fman_cli_bin),
+            ("fi-cli", &config.fi_cli_bin),
+            ("gateway-cli", &config.gateway_cli_bin),
+            ("bitcoin-cli", &config.bitcoin_cli_bin),
+            ("fedimint-load-test-tool", &load_test_tool_bin),
+        ] {
+            validate_environment_binary(label, binary)?;
+        }
     }
     let resource_manager = create_resource_manager(&config);
     let request_logger = RequestLogger::new(log_requests);
@@ -131,8 +152,19 @@ async fn run_exec(exec: ExecArgs) -> Result<ExitStatus, String> {
     let mut command = Command::new(&command_args[0]);
     command.args(&command_args[1..]);
     command.env(DEV_DEFE_SOCKET_PATH, &socket_path);
+    let environment_manifest = environment.then(|| config.temp_root.join("env/env.json"));
+    if environment {
+        command.as_std_mut().process_group(0);
+    }
     let status = match command.spawn() {
-        Ok(mut child) => wait_for_exec_child(&mut child, shutdown_rx.clone(), staging).await,
+        Ok(mut child) => {
+            wait_for_exec_child(
+                &mut child,
+                shutdown_rx.clone(),
+                environment_manifest.as_deref(),
+            )
+            .await
+        }
         Err(err) => {
             let _ = shutdown_tx.send(true);
             let _ = accept_task.await;
@@ -269,14 +301,20 @@ fn prepare_server_config<F>(
 where
     F: FnOnce() -> Result<PathBuf, String>,
 {
-    let temp_root = match options.tmp_dir {
-        Some(temp_root) => temp_root,
-        None => default_temp_root()?,
-    };
+    let temp_root = stable_absolute_path(
+        match options.tmp_dir {
+            Some(temp_root) => temp_root,
+            None => default_temp_root()?,
+        },
+        "temp directory",
+    )?;
     validate_utf8_path(&temp_root, "temp directory")?;
     prepare_private_dir(&temp_root)?;
 
-    let log_dir = options.log_dir.unwrap_or_else(|| temp_root.join("logs"));
+    let log_dir = stable_absolute_path(
+        options.log_dir.unwrap_or_else(|| temp_root.join("logs")),
+        "log directory",
+    )?;
     validate_utf8_path(&log_dir, "log directory")?;
     fs::create_dir_all(&log_dir).map_err(|err| {
         format!(
@@ -296,6 +334,7 @@ where
         "fedi-decentralized-push-gateway",
     );
     let bitcoind_bin = resolve_binary(options.bitcoind_bin, &options.binary_paths, "bitcoind");
+    let bitcoin_cli_bin = resolve_binary(None, &options.binary_paths, "bitcoin-cli");
     let fleet_manager_bin = resolve_binary(
         options.fleet_manager_bin,
         &options.binary_paths,
@@ -314,39 +353,81 @@ where
         &options.binary_paths,
         "gateway-cli",
     );
-    let defe_staging_bin = resolve_binary(
-        options.defe_staging_bin,
-        &options.binary_paths,
-        "defe-staging",
-    );
-
+    let defe_env_bin = resolve_binary(options.defe_env_bin, &options.binary_paths, "defe-env");
     Ok(ServerConfig {
         temp_root,
         log_dir,
         relay_bin,
         push_gateway_bin,
         bitcoind_bin,
+        bitcoin_cli_bin,
         fleet_manager_bin,
         fman_cli_bin,
         fi_cli_bin,
         liquidity_manager_daemon_bin,
         gatewayd_bin,
         gateway_cli_bin,
-        defe_staging_bin,
+        defe_env_bin,
     })
 }
 
 fn resolve_binary(explicit: Option<PathBuf>, binary_paths: &[PathBuf], name: &str) -> OsString {
     if let Some(explicit) = explicit {
-        return explicit.into_os_string();
+        return absolute_path(explicit).into_os_string();
     }
 
     binary_paths
         .iter()
-        .map(|dir| dir.join(name))
+        .map(|dir| absolute_path(dir.join(name)))
         .find(|candidate| candidate.exists())
+        .or_else(|| {
+            env::var_os("PATH")
+                .into_iter()
+                .flat_map(|path| env::split_paths(&path).collect::<Vec<_>>())
+                .map(|dir| absolute_path(dir.join(name)))
+                .find(|candidate| candidate.exists())
+        })
         .map(PathBuf::into_os_string)
         .unwrap_or_else(|| OsString::from(name))
+}
+
+fn absolute_path(path: PathBuf) -> PathBuf {
+    if path.is_absolute() {
+        path
+    } else {
+        env::current_dir()
+            .map(|current| current.join(&path))
+            .unwrap_or(path)
+    }
+}
+
+fn stable_absolute_path(path: PathBuf, label: &str) -> Result<PathBuf, String> {
+    if path.is_absolute() {
+        return Ok(path);
+    }
+    env::current_dir()
+        .map(|current| current.join(path))
+        .map_err(|error| format!("failed to resolve relative {label}: {error}"))
+}
+
+fn validate_environment_binary(label: &str, binary: &OsString) -> Result<(), String> {
+    let path = Path::new(binary);
+    if path.to_str().is_none() {
+        return Err(format!("defe env requires a UTF-8 {label} path"));
+    }
+    let metadata = fs::metadata(path).map_err(|error| {
+        format!(
+            "defe env requires selected {label} at {}: {error}",
+            path.display()
+        )
+    })?;
+    if !metadata.is_file() || metadata.permissions().mode() & 0o111 == 0 || !path.is_absolute() {
+        return Err(format!(
+            "defe env requires an executable absolute {label} path: {}",
+            path.display()
+        ));
+    }
+    Ok(())
 }
 
 async fn accept_loop(
@@ -641,10 +722,10 @@ async fn write_response(stream: &mut UnixStream, response: &Response) -> Result<
 async fn wait_for_exec_child(
     child: &mut Child,
     mut shutdown: watch::Receiver<bool>,
-    graceful_shutdown: bool,
+    environment_manifest: Option<&Path>,
 ) -> std::io::Result<ExitStatus> {
     if *shutdown.borrow() {
-        return finish_exec_child(child, graceful_shutdown).await;
+        return finish_exec_child(child, environment_manifest).await;
     }
 
     tokio::select! {
@@ -653,23 +734,27 @@ async fn wait_for_exec_child(
             if changed.is_ok() && !*shutdown.borrow() {
                 return child.wait().await;
             }
-            finish_exec_child(child, graceful_shutdown).await
+            finish_exec_child(child, environment_manifest).await
         }
     }
 }
 
 async fn finish_exec_child(
     child: &mut Child,
-    graceful_shutdown: bool,
+    environment_manifest: Option<&Path>,
 ) -> std::io::Result<ExitStatus> {
-    if graceful_shutdown {
-        match tokio::time::timeout(Duration::from_secs(15), child.wait()).await {
-            Ok(status) => status,
-            Err(_) => {
-                let _ = child.kill().await;
-                child.wait().await
+    if environment_manifest.is_some() {
+        if let Some(pid) = child.id() {
+            // The environment composer catches termination, reaps its complete
+            // descendant tree, and atomically marks the manifest stopped.
+            unsafe {
+                libc::kill(i32::try_from(pid).unwrap_or(i32::MAX), libc::SIGTERM);
             }
         }
+        // The composer owns teardown across all descendant process groups.
+        // Never kill it out from under that boundary and release server-owned
+        // resources while descendants may remain.
+        child.wait().await
     } else {
         let _ = child.kill().await;
         child.wait().await
@@ -803,15 +888,16 @@ fn parse_command(args: Vec<OsString>) -> Result<DefeCommand, String> {
                 options,
                 policy,
                 command: args[index + 1..].to_vec(),
-                staging_args: None,
+                environment: None,
             }));
         }
-        if arg == "staging" {
+        if arg == "env" {
+            let environment = parse_env_args(&args[index + 1..])?;
             return Ok(DefeCommand::Exec(ExecArgs {
                 options,
                 policy,
                 command: Vec::new(),
-                staging_args: Some(args[index + 1..].to_vec()),
+                environment: Some(environment),
             }));
         }
         if arg == "serve" {
@@ -881,9 +967,9 @@ fn parse_command(args: Vec<OsString>) -> Result<DefeCommand, String> {
             index += 1;
             options.gateway_cli_bin = Some(take_path_arg(&args, index, "--gateway-cli-bin")?);
             index += 1;
-        } else if arg == "--defe-staging-bin" {
+        } else if arg == "--defe-env-bin" {
             index += 1;
-            options.defe_staging_bin = Some(take_path_arg(&args, index, "--defe-staging-bin")?);
+            options.defe_env_bin = Some(take_path_arg(&args, index, "--defe-env-bin")?);
             index += 1;
         } else {
             return Err(format!(
@@ -894,6 +980,23 @@ fn parse_command(args: Vec<OsString>) -> Result<DefeCommand, String> {
     }
 
     Err(format!("missing defe command\n{USAGE}"))
+}
+
+fn parse_env_args(args: &[OsString]) -> Result<EnvironmentArgs, String> {
+    let mut load_test_tool = None;
+    let mut index = 0;
+    while args
+        .get(index)
+        .is_some_and(|argument| argument == "--fedimint-load-test-tool-bin")
+    {
+        index += 1;
+        load_test_tool = Some(take_path_arg(args, index, "--fedimint-load-test-tool-bin")?);
+        index += 1;
+    }
+    Ok(EnvironmentArgs {
+        args: args[index..].to_vec(),
+        load_test_tool_bin: load_test_tool,
+    })
 }
 
 fn parse_serve(mut options: ServerOptions, args: &[OsString]) -> Result<DefeCommand, String> {
@@ -992,9 +1095,9 @@ fn parse_server_option(
         options.gateway_cli_bin = Some(take_path_arg(args, *index, "--gateway-cli-bin")?);
         *index += 1;
         Ok(true)
-    } else if arg == "--defe-staging-bin" {
+    } else if arg == "--defe-env-bin" {
         *index += 1;
-        options.defe_staging_bin = Some(take_path_arg(args, *index, "--defe-staging-bin")?);
+        options.defe_env_bin = Some(take_path_arg(args, *index, "--defe-env-bin")?);
         *index += 1;
         Ok(true)
     } else {
@@ -1009,12 +1112,19 @@ fn take_path_arg(args: &[OsString], index: usize, option: &str) -> Result<PathBu
 }
 
 #[cfg(unix)]
-fn exit_code_from_status(status: ExitStatus) -> i32 {
-    if let Some(code) = status.code() {
-        return code;
+fn exit_with_status(status: ExitStatus) -> ! {
+    if let Some(signal) = status.signal() {
+        unsafe {
+            let mut signals = std::mem::zeroed::<libc::sigset_t>();
+            libc::sigemptyset(&raw mut signals);
+            libc::sigaddset(&raw mut signals, signal);
+            libc::pthread_sigmask(libc::SIG_UNBLOCK, &raw const signals, std::ptr::null_mut());
+            libc::signal(signal, libc::SIG_DFL);
+            libc::raise(signal);
+            libc::_exit(128 + signal);
+        }
     }
-
-    128 + status.signal().unwrap_or(1)
+    std::process::exit(status.code().unwrap_or(1))
 }
 
 #[derive(Debug)]
@@ -1028,7 +1138,13 @@ struct ExecArgs {
     options: ServerOptions,
     policy: TempPolicy,
     command: Vec<OsString>,
-    staging_args: Option<Vec<OsString>>,
+    environment: Option<EnvironmentArgs>,
+}
+
+#[derive(Debug)]
+struct EnvironmentArgs {
+    args: Vec<OsString>,
+    load_test_tool_bin: Option<PathBuf>,
 }
 
 #[derive(Debug)]
@@ -1052,7 +1168,7 @@ struct ServerOptions {
     liquidity_manager_daemon_bin: Option<PathBuf>,
     gatewayd_bin: Option<PathBuf>,
     gateway_cli_bin: Option<PathBuf>,
-    defe_staging_bin: Option<PathBuf>,
+    defe_env_bin: Option<PathBuf>,
 }
 
 #[derive(Debug)]
@@ -1062,13 +1178,14 @@ struct ServerConfig {
     relay_bin: OsString,
     push_gateway_bin: OsString,
     bitcoind_bin: OsString,
+    bitcoin_cli_bin: OsString,
     fleet_manager_bin: OsString,
     fman_cli_bin: OsString,
     fi_cli_bin: OsString,
     liquidity_manager_daemon_bin: OsString,
     gatewayd_bin: OsString,
     gateway_cli_bin: OsString,
-    defe_staging_bin: OsString,
+    defe_env_bin: OsString,
 }
 
 #[derive(Debug)]

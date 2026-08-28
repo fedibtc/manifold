@@ -1,5 +1,5 @@
 [package]
-name = "defe-staging"
+name = "defe-env"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -14,7 +14,10 @@ fedi-credential-sdk-protocol.workspace = true
 fedi-decentralized-manifold-environment = { path = "../manifold-environment" }
 fedi-decentralized-nostr = { path = "../nostr" }
 fedi-decentralized-service-liquidity-manager = { path = "../service-liquidity-manager" }
+fman-core = { path = "../fman/core" }
+hex = "0.4"
 iroh-base-035 = { package = "iroh-base", version = "=0.35.0" }
+libc = "0.2"
 nostr-sdk = "0.44"
 reqwest = { version = "0.12", default-features = false, features = [
   "json",
@@ -24,6 +27,7 @@ serde = { workspace = true, features = ["derive"] }
 serde_json = "1"
 serde_json_canonicalizer = "0.3"
 sha2 = "0.10"
+stability-pool-common.workspace = true
 tokio = { workspace = true, features = [
   "macros",
   "process",
@@ -31,3 +35,6 @@ tokio = { workspace = true, features = [
   "signal",
   "time",
 ] }
+
+[dev-dependencies]
+tempfile = "3"

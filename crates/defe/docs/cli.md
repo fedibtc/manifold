@@ -50,7 +50,16 @@ defe [opts...] serve --listenfd
 
 `serve --listenfd` takes an inherited Unix listener using the `listenfd`/systemd socket activation protocol. It does not unlink or bind the socket path itself; `systemfd --no-pid -s unix::$DEFE_SOCKET -- defe serve --listenfd` owns the socket path and passes the listener fd. The inherited listener is set nonblocking before the normal accept loop starts.
 
-Supported options are `--tmp-dir <path>`, `--log-dir <path>`, `--log-requests`, `--binary-path <dir>`, `--nostr-rs-relay-bin <path>`, `--push-gateway-bin <path>`, `--bitcoind-bin <path>`, `--fleet-manager-bin <path>`, `--liquidity-manager-daemon-bin <path>`, `--gatewayd-bin <path>`, and `--gateway-cli-bin <path>`. `--log-requests` writes simple client connection, disconnect, request, and error lines to stderr for persistent development servers. If `--tmp-dir` is omitted in serve mode, the server uses a stable development temp root under the system temp directory (`defe-dev-server`), so logs and resources are predictable across `cargo watch` restarts.
+Supported options are `--tmp-dir <path>`, `--log-dir <path>`, `--log-requests`,
+`--binary-path <dir>`, `--nostr-rs-relay-bin <path>`,
+`--push-gateway-bin <path>`, `--bitcoind-bin <path>`,
+`--fleet-manager-bin <path>`, `--liquidity-manager-daemon-bin <path>`,
+`--gatewayd-bin <path>` and `--gateway-cli-bin <path>`.
+`--log-requests` writes simple client connection, disconnect, request, and error
+lines to stderr for persistent development servers. If `--tmp-dir` is omitted in
+serve mode, the server uses a stable development temp root under the system temp
+directory (`defe-dev-server`), so logs and resources are predictable across
+`cargo watch` restarts.
 
 From the Nix dev shell, `just defe-serve` runs this mode through `systemfd` and `cargo watch` with `--log-requests` enabled. It does one initial build, watches `${CARGO_TARGET_DIR:-target}/<profile-dir>` for rebuilt binaries, and restarts `defe` with `--binary-path` pointing at that directory. `CARGO_PROFILE=debug` and `CARGO_PROFILE=dev` both use `target/debug`; `release` or a custom profile uses `target/<profile>`. The shell exports both `DEFE_SOCKET` and `DEV_DEFE_SOCKET_PATH` to the same workspace-local `.defe.sock` Unix socket path, and the recipe uses that same default if `DEFE_SOCKET` is unset. Run `just defe-serve` in one terminal and `cargo test` or `cargo nextest run` in another. Outside this flow, code using `AsyncDefeClient::connect_from_env().await` needs either `defe exec <cmd...>` or an already-running server with `DEV_DEFE_SOCKET_PATH` set.
 
@@ -130,42 +139,97 @@ defe exec defe-cli ping
 
 A print-and-exit resource command may exist later, but it must clearly document that resources are released as soon as the command exits.
 
-## Disposable staging
+## Disposable environment
 
-`defe staging` owns a private, foreground environment for humans, UIs, and
-external E2E tests. It forms a seven-guardian federation, connects a gateway,
-configures FLIP and publishes its advertisement, then writes and prints the
-path to `env.json`. The manifest's `ready` field becomes true only after all of
-those phases succeed.
+`defe env [OPTIONS] [-- COMMAND...]` forms a seven-guardian federation, connects
+a gateway, advertises FLIP, then starts `COMMAND` with a ready-to-use environment.
+With no command it starts `$SHELL`. The composer owns every connection-scoped
+lease until that child exits; child exit is the teardown boundary and its status
+is preserved. A signal sent to a foreground job in the interactive shell remains
+inside that job's terminal process group. Terminating the outer `defe` process
+also reaches the composer during setup. On command exit or external termination,
+the composer stops, terminates, and reaps every setup or command descendant,
+including foreground jobs and background or disowned jobs in separate process
+groups, before it marks the environment stopped and releases leases. A nested
+PID namespace supplies the kernel-owned containment boundary, while terminal
+sessions and job-control process groups remain unchanged. This strict descendant
+boundary requires Linux pidfds and enabled unprivileged user namespaces.
+Normal exit codes and native terminating signals cross both the composer and
+outer `defe` boundaries unchanged.
 
-The manifest contains endpoints and paths, not credentials. Credentials live
-in a sibling mode-0600 `secrets.json` inside a mode-0700 staging directory.
-Each FMan manifest entry exposes its HTTP API proxy base as `api_base_url` and
-the exact POST endpoints as `auth_url` and `admin_url`; the base URL itself
-does not serve a browser page.
+The child receives `DEFE_ENV=1`, `DEFE_ENV_SCHEMA_VERSION=1`, paths for the root,
+manifest, secrets, logs, invite, FI state, and Iroh routes, plus the stable local
+Nostr, gateway, and FLIP endpoint variables. `$DEFE_ENV_BIN_DIR` is prepended to
+`PATH`. Its private cross-shell tools include `defe-env-info`, `defe-list-commands`,
+`defe-connectivity`, `fman-1` through `fman-7`, `fi-cli`, `gateway`, `bitcoin-cli`,
+`fman-ui`, `fees`, and `traffic`. (`fi` is a POSIX shell keyword and therefore cannot
+be a cross-shell executable name.) Ready output remains concise and directs users to
+`defe-list-commands`, which describes each generated command. Run
+`defe-connectivity` when attaching to services: it prints the readiness query, paths,
+service URLs, FMan UI instructions and passwords, FMan API URLs and CLI examples, and
+safe-journal locations. Every service wrapper selects the exact binary, state,
+endpoint, and dummy credential chosen by the composer and forwards its remaining
+arguments unchanged.
 
-The debug `fleet-manager` binary used by `just defe-staging` serves the HTTP
-API but does not embed the browser dashboard. The ready output prints an exact
-per-FMan Vite attach command and its loopback browser URL. Run the printed
-`pnpm install` command once, then run one attach command at a time (the
-dashboard uses fixed port 5174), open `http://127.0.0.1:5174`, and enter the
-printed matching FMan password. `secrets.json` keeps all credentials available
-for machine use, but ready output only prints FMan operator-UI passwords; it
-does not print gateway or FLIP credentials. The command also prints exact
-`fman-cli` examples, Defe's process-log directory, and each FMan safe-journal
-directory. For example:
+The default shell starts in the private `$DEFE_ENV_ROOT/work` directory after
+Defe verifies that the directory and its ancestors contain no `.envrc` or
+`.env`. When
+the caller has an active direnv environment, Defe restores the pre-direnv user
+environment before adding its runtime variables and generated-tool path. It
+then clears transient direnv tracking, so prompt hooks cannot later restore a
+stale build `PATH`. An explicit `COMMAND` keeps the caller's current directory
+for relative arguments but receives the same environment neutralization.
+Defe rejects a default relative or non-executable `$SHELL`, an active direnv
+environment without an executable `direnv`, and active neutralization when `/`
+contains `.envrc` or `.env`; each case would make the runtime boundary
+ambiguous or execute an unexpected root environment. It also resolves an
+executable `pnpm` from the caller's pre-neutralization `PATH` for the generated
+`fman-ui` tool. A missing `pnpm` fails before service setup even when that tool
+would not be invoked, so every advertised runtime command remains usable after
+the development-toolchain overlay is removed.
 
-```bash
-jq -e '.ready == true' /path/printed/by/defe/env.json
-```
+`fees show --guardian N` and `fees collect --guardian N|--all` invoke FMan's real
+guardian-fee admin path with the formed seat IDs. Collection prints a fresh
+post-collect status. These commands do not synthesize remittances or imply that
+traffic accrued production payer fees.
 
-Press Ctrl-C to close the owning Defe connection and tear every resource down.
-Startup failures keep Defe's private temporary root by default, matching
-`defe exec`; use `--no-keep-temp-on-failure` to opt out.
+`fees synthetic-remit --guardian N --amount-msats AMOUNT` prepares one
+collectable remittance through the real wallet-v2 and stability-pool path. It
+reuses a dedicated disposable `fi-cli payment-wallet`, funds it when needed,
+seals a mint/send breakdown to the FMan's actual remittance account, and waits
+for `fees show` to observe the result. It then prints the exact `fees show` and
+`fees collect` next steps. This is deliberately synthetic: production payer
+accrual was bypassed, so it does not validate Fedi app accrual, 4:1:1 splitting,
+threshold accumulation, or scheduling. Every successful invocation adds a new
+remittance; after an uncertain failed invocation, inspect `fees show` before
+retrying.
 
-`--complete-liquidity` is reserved for driving the FI-funded liquidity
-allocation through consensus registration. It currently fails explicitly
-rather than making basic staging wait on that optional flow.
+`traffic connections [--users N] [--duration-secs S]` repeatedly downloads client
+configuration over real federation API connections through the pinned
+Fedimint 0.11.1 `fedimint-load-test-tool`. Its sustained-connection subcommand assumes endpoint
+URLs have TCP ports and panics on the formed federation's portless Iroh URLs, so
+the wrapper uses the tool's compatible config-download mode. Calls are serialized
+and time-bounded. User counts are limited to 1,000 and connection duration to one
+hour. The defaults are 10 users and 60 seconds.
 
-Use `just defe-staging` in a checkout. Direct invocation requires all resource
-and composer binaries in `--binary-path`.
+`traffic mint --users N --notes-per-user N` currently fails with an explicit
+unsupported-mode error. The formed federation has `mintv2` and `walletv2`, while
+the Fedimint 0.11.1 load tool hard-codes its v1 mint client and attempts funding
+through a v1 wallet. A mintv2-capable upstream load path is required.
+
+`traffic lightning --users N --invoices-per-user N` likewise fails explicitly.
+The Fedimint 0.11.1 tester forbids creating an invoice on the same gateway that
+pays it, and the composed environment does not yet provide an independent invoice
+source. All traffic modes state that ordinary federation operations do not cause
+or prove production Fedi fee accrual.
+
+The mode-0600 JSON manifest changes atomically from `ready` to `stopped` before
+leases are released. Credentials remain in the mode-0600 `secrets.json` and in
+mode-0700 generated wrappers beneath the mode-0700 environment root. Successful
+commands remove the temporary root unless `--keep-temp`; failures preserve it by
+default unless `--no-keep-temp-on-failure` is selected.
+
+`--complete-liquidity` remains reserved and fails explicitly. Use `just defe-env`
+to build the selected binaries and enter the environment. The environment-only
+`--fedimint-load-test-tool-bin PATH` option selects an exact trusted load-tool
+binary when it appears immediately after `env`.

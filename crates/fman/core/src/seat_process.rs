@@ -357,9 +357,11 @@ impl SeatProcess {
         if let SeatChild::Fake(child) = &self.child {
             return Ok(child.try_exit());
         }
+        #[cfg(not(test))]
+        let SeatChild::Real(child) = &mut self.child;
+        #[cfg(test)]
         let child = match &mut self.child {
             SeatChild::Real(child) => child,
-            #[cfg(test)]
             SeatChild::Fake(_) => unreachable!("fake child handled above"),
         };
         let Some(status) = child

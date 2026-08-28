@@ -14,6 +14,7 @@
 
 use std::env;
 use std::fmt;
+use std::os::fd::{AsFd as _, OwnedFd};
 use std::path::PathBuf;
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -35,6 +36,14 @@ pub struct AsyncDefeClient {
 }
 
 impl AsyncDefeClient {
+    /// Duplicates the connection solely to keep its server-side leases alive.
+    ///
+    /// The holder must never read from or write to this descriptor because the
+    /// active client owns the sequential request/response protocol.
+    pub fn duplicate_lifetime_guard(&self) -> std::io::Result<OwnedFd> {
+        self.stream.as_fd().try_clone_to_owned()
+    }
+
     /// Connect to the `defe` server named by [`DEV_DEFE_SOCKET_PATH`].
     pub async fn connect_from_env() -> Result<Self, DefeClientError> {
         let socket_path = env::var_os(DEV_DEFE_SOCKET_PATH).ok_or(DefeClientError::MissingEnv)?;

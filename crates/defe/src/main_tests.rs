@@ -32,6 +32,8 @@ fn parse_exec_keeps_existing_global_options() {
         "/bin/push-gateway".into(),
         "--fman-cli-bin".into(),
         "/bin/fman-cli".into(),
+        "--fi-cli-bin".into(),
+        "/bin/fi-cli".into(),
         "--liquidity-manager-daemon-bin".into(),
         "/bin/liquidity-manager-daemon".into(),
         "--keep-temp".into(),
@@ -67,23 +69,28 @@ fn parse_exec_keeps_existing_global_options() {
         exec.options.fman_cli_bin,
         Some(PathBuf::from("/bin/fman-cli"))
     );
+    assert_eq!(exec.options.fi_cli_bin, Some(PathBuf::from("/bin/fi-cli")));
     assert!(exec.policy.keep_temp);
     assert_eq!(exec.command, vec![OsString::from("true")]);
 }
 
 #[test]
-fn parse_staging_keeps_server_options_and_forwards_only_staging_arguments() {
+fn parse_env_keeps_server_options_and_forwards_only_environment_arguments() {
     let command = parse_command(vec![
         "--binary-path".into(),
         "/tmp/defe-bin".into(),
         "--keep-temp".into(),
-        "staging".into(),
+        "env".into(),
+        "--fedimint-load-test-tool-bin".into(),
+        "/bin/fedimint-load-test-tool".into(),
         "--complete-liquidity".into(),
+        "--".into(),
+        "sh".into(),
     ])
-    .expect("parse staging command");
+    .expect("parse env command");
 
     let DefeCommand::Exec(exec) = command else {
-        panic!("expected staging to use the one-shot exec lifecycle");
+        panic!("expected env to use the one-shot exec lifecycle");
     };
     assert_eq!(
         exec.options.binary_paths,
@@ -91,26 +98,43 @@ fn parse_staging_keeps_server_options_and_forwards_only_staging_arguments() {
     );
     assert!(exec.policy.keep_temp);
     assert!(exec.command.is_empty());
+    let environment = exec.environment.expect("environment arguments");
     assert_eq!(
-        exec.staging_args,
-        Some(vec![OsString::from("--complete-liquidity")])
+        environment.load_test_tool_bin,
+        Some(PathBuf::from("/bin/fedimint-load-test-tool"))
+    );
+    assert_eq!(
+        environment.args,
+        vec![
+            OsString::from("--complete-liquidity"),
+            OsString::from("--"),
+            OsString::from("sh"),
+        ]
     );
 }
 
 #[tokio::test]
-async fn graceful_exec_shutdown_preserves_a_successful_child_status() {
+async fn environment_shutdown_waits_for_composer_cleanup_and_preserves_status() {
+    let root = std::env::temp_dir().join(format!("defe-composer-cleanup-{}", std::process::id()));
+    fs::create_dir_all(&root).unwrap();
+    let cleaned = root.join("cleaned");
     let mut child = Command::new("sh")
-        .args(["-c", "sleep 0.1; exit 0"])
+        .arg("-c")
+        .arg("trap 'printf cleaned >\"$CLEANED\"; exit 0' TERM; while :; do sleep 1; done")
+        .env("CLEANED", &cleaned)
         .spawn()
         .expect("spawn signal-aware test composer");
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
 
+    tokio::time::sleep(Duration::from_millis(50)).await;
     shutdown_tx.send(true).expect("request parent shutdown");
-    let status = wait_for_exec_child(&mut child, shutdown_rx, true)
+    let status = wait_for_exec_child(&mut child, shutdown_rx, Some(Path::new("/unused")))
         .await
         .expect("wait for graceful composer exit");
 
     assert!(status.success(), "graceful child status: {status:?}");
+    assert_eq!(fs::read_to_string(&cleaned).unwrap(), "cleaned");
+    fs::remove_dir_all(root).unwrap();
 }
 
 #[test]
