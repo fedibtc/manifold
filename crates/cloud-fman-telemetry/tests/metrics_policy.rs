@@ -4,7 +4,7 @@ use fedi_decentralized_guardian_metrics_policy::{
 
 fn policy(methods: bool) -> MetricsPolicy<'static> {
     MetricsPolicy {
-        version: "0.11.1",
+        version_requirement: ">=0.11.2, <0.12.0",
         version_hash: "abc123",
         canonical_method_labels: methods,
     }
@@ -20,7 +20,7 @@ fn identity() -> MetricsIdentity<'static> {
 }
 
 fn release_marker() -> &'static str {
-    "fm_app_start_ts{version=\"0.11.1\",version_hash=\"abc123\"} 1\n"
+    "fm_app_start_ts{version=\"0.11.2+fedi\",version_hash=\"abc123\"} 1\n"
 }
 
 fn duration_histogram(family: &str, labels: &str) -> String {
@@ -78,7 +78,7 @@ fn amount_histogram(family: &str, labels: &str) -> String {
 fn exact_inventory_adds_only_verified_identity() {
     let body = br#"
 # TYPE fm_consensus_session_count gauge
-fm_app_start_ts{version="0.11.1",version_hash="abc123"} 1
+fm_app_start_ts{version="0.11.2+fedi",version_hash="abc123"} 1
 fm_consensus_session_count 7
 fm_peer_messages_total{self_id="0",peer_id="1",direction="incoming"} 4
 "#;
@@ -284,8 +284,8 @@ fn v2_module_metrics_have_exact_reviewed_shapes() {
 }
 
 #[test]
-fn release_labels_are_exact_and_peer_dimensions_are_finite_u16_values() {
-    let valid = "fm_app_start_ts{version=\"0.11.1\",version_hash=\"abc123\"} 1\n\
+fn release_range_and_peer_dimensions_are_checked() {
+    let valid = "fm_app_start_ts{version=\"0.11.2+fedi\",version_hash=\"abc123\"} 1\n\
                  fm_backup_counts{timeframe=\"3m\"} 1\n\
                  fm_consensus_items_processed_total{peer_id=\"65535\"} 1";
     assert!(
@@ -293,10 +293,29 @@ fn release_labels_are_exact_and_peer_dimensions_are_finite_u16_values() {
             .admit_until(valid.as_bytes(), identity(), None)
             .is_ok()
     );
+    for version in ["0.11.2+fedi", "0.11.3+fedi", "0.11.99"] {
+        let body =
+            format!("fm_app_start_ts{{version=\"{version}\",version_hash=\"different-hash\"}} 1");
+        assert!(
+            policy(false)
+                .admit_until(body.as_bytes(), identity(), None)
+                .is_ok(),
+            "compatible release {version} was rejected"
+        );
+    }
+    for version in ["other", "0.11.1+fedi", "0.11.2-rc.1", "0.12.0+fedi"] {
+        let body = format!("fm_app_start_ts{{version=\"{version}\",version_hash=\"abc123\"}} 1");
+        assert!(
+            policy(false)
+                .admit_until(body.as_bytes(), identity(), None)
+                .is_err(),
+            "unsupported release {version} was accepted"
+        );
+    }
     assert!(
         policy(false)
             .admit_until(
-                b"fm_app_start_ts{version=\"other\",version_hash=\"abc123\"} 1",
+                b"fm_app_start_ts{version=\"0.11.2+fedi\",version_hash=\"bad hash\"} 1",
                 identity(),
                 None
             )
@@ -313,6 +332,24 @@ fn release_labels_are_exact_and_peer_dimensions_are_finite_u16_values() {
         assert_eq!(admitted.samples.len(), 1);
         assert!(admitted.discarded_invalid_admitted);
     }
+}
+
+#[test]
+fn diagnostic_source_hash_does_not_rotate_the_policy() {
+    let first = policy(false);
+    let second = MetricsPolicy {
+        version_requirement: first.version_requirement,
+        version_hash: "another-hash",
+        canonical_method_labels: false,
+    };
+    let incompatible = MetricsPolicy {
+        version_requirement: ">=0.12.0, <0.13.0",
+        version_hash: first.version_hash,
+        canonical_method_labels: false,
+    };
+
+    assert_eq!(first.fingerprint(), second.fingerprint());
+    assert_ne!(first.fingerprint(), incompatible.fingerprint());
 }
 
 #[test]
@@ -516,7 +553,7 @@ fn maximal_hostile_body_observes_an_elapsed_parse_deadline() {
 fn persisted_samples_must_match_current_policy_identity_and_canonical_form() {
     let admitted = policy(false)
         .admit_until(
-            b"fm_app_start_ts{version=\"0.11.1\",version_hash=\"abc123\"} 1\n\
+            b"fm_app_start_ts{version=\"0.11.2+fedi\",version_hash=\"abc123\"} 1\n\
               fm_consensus_session_count 7",
             identity(),
             None,
@@ -608,13 +645,13 @@ const CAPTURED_SCRAPE: &str =
     include_str!("../../../docs/telemetry/fedimint-metrics-v0.11.1-fedi15-seat-scrape.txt");
 
 /// The release the captured response reports, which the policy matches exactly.
-const CAPTURED_VERSION: &str = "0.11.1";
+const CAPTURED_VERSION_REQUIREMENT: &str = "=0.11.1";
 const CAPTURED_VERSION_HASH: &str = "4c70c0e54f2f6a25df518c5082ac5a81d7a46d70";
 
 /// The deployed policy: method-labeled families stay disabled.
 fn captured_policy() -> MetricsPolicy<'static> {
     MetricsPolicy {
-        version: CAPTURED_VERSION,
+        version_requirement: CAPTURED_VERSION_REQUIREMENT,
         version_hash: CAPTURED_VERSION_HASH,
         canonical_method_labels: false,
     }
@@ -631,7 +668,7 @@ fn captured_release_marker() -> &'static str {
 
 /// Families carrying the given disposition in the reviewed source inventory.
 fn inventoried(disposition: &str) -> std::collections::BTreeSet<&'static str> {
-    include_str!("../../../docs/telemetry/fedimint-metrics-v0.11.1-fedi16.tsv")
+    include_str!("../../../docs/telemetry/fedimint-metrics-v0.11.2+fedi.tsv")
         .lines()
         .filter_map(|line| {
             let mut fields = line.split('\t');

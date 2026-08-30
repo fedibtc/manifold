@@ -31,6 +31,7 @@ libc = "0.2"
 nostr = "0.44.3"
 rand = "0.8"
 rustls = { version = "0.23", default-features = false, features = ["ring"] }
+semver.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2 = "0.10.9"

@@ -48,8 +48,8 @@ checked box is an operator assertion, not evidence supplied by this repository.
   NetworkPolicy that admits only the Prometheus scraper and authorized probe
   source; prove the policy with negative reachability tests. Setting
   `PRIVATE_BIND_ISOLATED=true` asserts this control but does not provide it.
-- [ ] **Release/source compatibility:** set the environment, source version,
-  source hash, and canonical-method-label assertion for the deployed
+- [ ] **Release/source compatibility:** set the environment, supported source
+  requirement, method-review hash, and canonical-method-label assertion for the deployed
   FMan/guardian release. Re-check them whenever either side changes.
 - [ ] **Telemetry backend:** configure the Prometheus-compatible backend with
   `honor_timestamps: true` and `track_timestamps_staleness: true`; assign TSDB,
@@ -116,8 +116,8 @@ authoritative CLI and environment-variable schema. In particular:
   `/v1/telemetry/registrations` to port 8175.
 - A non-loopback `PRIVATE_BIND` requires `PRIVATE_BIND_ISOLATED=true`. This is an
   explicit operator assertion, not an application check of NetworkPolicy.
-- `ENVIRONMENT`, source version, source hash, and the canonical-label assertion
-  must match the deployed FMan/guardian release.
+- `ENVIRONMENT`, the supported source requirement, method-review hash, and the
+  canonical-label assertion must match the deployed FMan/guardian policy.
 - metrics cadence is exactly 900 or 1800 seconds. Production should begin at
   1800 seconds. Safe-journal cadence is independent and defaults to 300 seconds.
 - the archive quota is compressed bytes and hard-fails new appends at the

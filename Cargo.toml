@@ -193,6 +193,7 @@ iroh = "1.0.0"
 proc-macro-crate = "3"
 proc-macro2 = "1"
 quote = "1"
+semver = "1.0.28"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 stability-pool-client = { git = "https://github.com/fedixyz/fedi", rev = "2f35ea4e3b2516d35b8ed315455718cd3b336758", package = "stability-pool-client" }

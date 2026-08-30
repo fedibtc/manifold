@@ -3033,7 +3033,7 @@ impl FiStore {
 
 pub(crate) fn map_lease_commit_error(error: DatabaseError) -> FiError {
     match error {
-        DatabaseError::WriteConflict => FiError::Busy,
+        DatabaseError::WriteConflict | DatabaseError::SnapshotTooOld(_) => FiError::Busy,
         DatabaseError::TransactionConsumed
         | DatabaseError::DatabaseBackend(_)
         | DatabaseError::Other(_) => {

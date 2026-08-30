@@ -1,7 +1,7 @@
 use std::{net::SocketAddr, path::PathBuf, str::FromStr as _};
 
 use clap::Parser;
-use fedi_decentralized_guardian_metrics_policy::{SOURCE_VERSION, SOURCE_VERSION_HASH};
+use fedi_decentralized_guardian_metrics_policy::{SOURCE_VERSION_HASH, SOURCE_VERSION_REQUIREMENT};
 use fedi_decentralized_manifold_environment::ManifoldEnvironment;
 
 pub(crate) const MAX_LOG_QUOTA_BYTES: u64 = 10 * 1024 * 1024 * 1024;
@@ -44,9 +44,9 @@ pub(crate) struct MetricsRuntimeConfig {
     pub(crate) concurrency: std::num::NonZeroUsize,
     /// Two-cadence remote freshness threshold.
     pub(crate) stale_after: std::time::Duration,
-    /// Exact expected `fm_app_start_ts` release.
-    pub(crate) source_version: String,
-    /// Exact expected `fm_app_start_ts` build hash.
+    /// Supported `fm_app_start_ts` release requirement.
+    pub(crate) source_version_requirement: String,
+    /// Exact reviewed hash used only by the canonical-method safety gate.
     pub(crate) source_version_hash: String,
     /// Operator assertion that the deployed source contains both canonicalizers.
     pub(crate) canonical_method_labels: bool,
@@ -112,10 +112,10 @@ pub struct Args {
         default_value_t = 4
     )]
     pub metrics_concurrency: usize,
-    /// Exact `fedimintd` release version admitted by the metrics inventory.
-    #[arg(long, env = "CLOUD_FMAN_TELEMETRY_METRICS_SOURCE_VERSION")]
-    pub metrics_source_version: String,
-    /// Exact `fedimintd` release hash admitted by the metrics inventory.
+    /// Supported `fedimintd` releases admitted by the metrics inventory.
+    #[arg(long, env = "CLOUD_FMAN_TELEMETRY_METRICS_SOURCE_VERSION_REQUIREMENT")]
+    pub metrics_source_version_requirement: String,
+    /// Exact reviewed hash used only by the canonical-method safety gate.
     #[arg(long, env = "CLOUD_FMAN_TELEMETRY_METRICS_SOURCE_VERSION_HASH")]
     pub metrics_source_version_hash: String,
     /// Assert that the deployed source includes Fedimint PRs 9032 and 9033.
@@ -219,12 +219,16 @@ impl Args {
         let metrics_concurrency = std::num::NonZeroUsize::new(self.metrics_concurrency)
             .filter(|value| value.get() <= 32)
             .ok_or("metrics concurrency must be in 1..=32")?;
-        if self.metrics_source_version.is_empty()
-            || self.metrics_source_version.len() > 128
-            || (self.environment == "production" && self.metrics_source_version == "REPLACE_ME")
+        if self.metrics_source_version_requirement.is_empty()
+            || self.metrics_source_version_requirement.len() > 128
+            || (self.environment == "production"
+                && self.metrics_source_version_requirement == "REPLACE_ME")
         {
-            return Err("metrics source version must contain 1..=128 bytes".into());
+            return Err("metrics source version requirement must contain 1..=128 bytes".into());
         }
+        let source_version_requirement =
+            semver::VersionReq::parse(&self.metrics_source_version_requirement)
+                .map_err(|_| "metrics source version requirement is invalid")?;
         if self.metrics_source_version_hash.is_empty()
             || self.metrics_source_version_hash.len() > 128
             || (self.environment == "production"
@@ -232,8 +236,10 @@ impl Args {
         {
             return Err("metrics source hash must contain 1..=128 bytes".into());
         }
+        let compiled_requirement = semver::VersionReq::parse(SOURCE_VERSION_REQUIREMENT)
+            .expect("compiled metrics source requirement is valid");
         if !cfg!(any(test, feature = "defe-test-support"))
-            && (self.metrics_source_version != SOURCE_VERSION
+            && (source_version_requirement != compiled_requirement
                 || self.metrics_source_version_hash != SOURCE_VERSION_HASH
                 || self.canonical_method_labels)
         {
@@ -258,7 +264,7 @@ impl Args {
                 stale_after: std::time::Duration::from_secs(
                     self.metrics_poll_seconds.saturating_mul(2),
                 ),
-                source_version: self.metrics_source_version.clone(),
+                source_version_requirement: self.metrics_source_version_requirement.clone(),
                 source_version_hash: self.metrics_source_version_hash.clone(),
                 canonical_method_labels: self.canonical_method_labels,
             },

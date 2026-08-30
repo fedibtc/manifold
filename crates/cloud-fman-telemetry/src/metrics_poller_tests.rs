@@ -87,7 +87,7 @@ impl GuardianTelemetryApi for TestService {
             status_code: if good { 200 } else { 503 },
             content_type: Some("text/plain; version=0.0.4".to_owned()),
             content_encoding: None,
-            body: b"fm_app_start_ts{version=\"test\",version_hash=\"hash\"} 1\nfm_consensus_session_count 2\n".to_vec(),
+            body: b"fm_app_start_ts{version=\"0.0.0\",version_hash=\"hash\"} 1\nfm_consensus_session_count 2\n".to_vec(),
         })
     }
 
@@ -177,7 +177,7 @@ async fn authenticated_production_client_discovers_and_scrapes_a_seat() {
     let mut poller = MetricsPoller::new(
         store.clone(),
         client_endpoint,
-        "test".to_owned(),
+        "*".to_owned(),
         "hash".to_owned(),
         false,
         std::num::NonZeroUsize::new(1).unwrap(),
@@ -208,7 +208,7 @@ async fn authenticated_production_client_discovers_and_scrapes_a_seat() {
     );
     store.commit_metrics(&target, commit, 101).await.unwrap();
     let policy = MetricsPolicy {
-        version: "test",
+        version_requirement: "*",
         version_hash: "hash",
         canonical_method_labels: false,
     };
@@ -300,7 +300,7 @@ async fn test_poller(store: Store) -> MetricsPoller {
     MetricsPoller::new(
         store,
         endpoint,
-        "test".into(),
+        "*".into(),
         "hash".into(),
         false,
         std::num::NonZeroUsize::new(1).unwrap(),
@@ -417,7 +417,7 @@ async fn fatal_sibling_does_not_cancel_snapshot_commit() {
     let poller = MetricsPoller::new(
         store,
         endpoint,
-        "test".into(),
+        "*".into(),
         "hash".into(),
         false,
         std::num::NonZeroUsize::new(2).unwrap(),
@@ -497,7 +497,7 @@ async fn fatal_sibling_does_not_cancel_attempt_reservation() {
     let poller = MetricsPoller::new(
         store,
         endpoint,
-        "test".into(),
+        "*".into(),
         "hash".into(),
         false,
         std::num::NonZeroUsize::new(2).unwrap(),

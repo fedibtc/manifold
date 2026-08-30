@@ -9,8 +9,9 @@ metric names or labels expose no collector-held capability, Holder envelope,
 endpoint, invite, cursor, incarnation, or raw rejected input. The collector does
 not inject that held material into archive bytes; those bytes are the exact
 upstream-approved safe-event payload and may contain fields approved at the
-source. These surfaces neither merge distinct FMan identities, accept unbounded
-source cardinality, nor retime an old metric observation as fresh. Authorized
+source. Apart from the bounded release version and hash supplied by a trusted,
+badged FMan, these surfaces neither merge distinct FMan identities, accept
+unbounded source cardinality, nor retime an old metric observation as fresh. Authorized
 outbound Iroh requests and encrypted persistence are outside these observed exit
 surfaces.
 
@@ -37,6 +38,8 @@ execution.
   stderr, span fields, or rendered child output. The source owns the payload
   fields of each approved event; this claim does not independently classify
   those fields.
-- The configured source version/hash identifies the reviewed current metric
-  inventory. Method families are enabled only for the separately reviewed
-  combined source hash with both required canonicalizers.
+- The configured source-version requirement covers releases compatible with
+  the reviewed metric inventory. Method families are enabled only for the
+  separately reviewed combined source hash with both required canonicalizers.
+- Authenticated, badged FMans are trusted to report their bounded release
+  version and hash; the collector preserves both as Prometheus diagnostics.

@@ -14,9 +14,10 @@ Iroh service. Fixed diagnostic strings are also treated as exit channels.
 
 ## Axioms
 
-The claim's two execution and serialization assumptions are trusted. The exact
-Fedimint version and revision compiled in `SOURCE_VERSION` and
-`SOURCE_VERSION_HASH` identify the reviewed inventory.
+The claim's two execution and serialization assumptions are trusted. The
+compiled source requirement identifies compatible releases, while the exact
+current revision identifies the source from which the closed family inventory
+was reviewed.
 
 ## Argument
 
@@ -36,11 +37,12 @@ Fedimint version and revision compiled in `SOURCE_VERSION` and
    histogram parts until final validation; taint or incompleteness discards that
    family alone.
 4. **[code] Release identity and global failures fail closed.** The unique
-   `app_start_ts` family must exactly match the compiled version and revision.
-   Invalid UTF-8, an unisolatable empty sample name, missing/duplicate/invalid
-   release identity, arithmetic overflow, or any global resource/deadline limit
-   returns an error. The caller constructs no `GuardianMetricsResponse` on that
-   path.
+   `app_start_ts` version must satisfy the compiled SemVer requirement, and its
+   diagnostic hash must have the bounded source-hash shape. A method-label gate
+   additionally requires its separately reviewed exact hash. Invalid UTF-8, an
+   unisolatable empty sample name, missing/duplicate/invalid release identity,
+   arithmetic overflow, or any global resource/deadline limit returns an error.
+   The caller constructs no `GuardianMetricsResponse` on that path.
 5. **[code] The only successful body is reconstructed projection output.**
    `fetch_guardian_metrics` drops the raw vector after `project_until`, joins
    only returned canonical samples, and constructs fixed successful metadata.

@@ -142,8 +142,10 @@ successful metrics observation per seat and exposes that state on its private
    it must be revisited when authoritative wording is supplied.
 5. **Data scope** — the release baseline is
    [`metrics-privacy-inventory.md`](./metrics-privacy-inventory.md). Re-run it
-   against every exact Fedimint/module pin. FMan applies this exact default-deny
-   policy before transport and the collector repeats it as defense in depth.
+   against every Fedimint/module pin. Compatible patch releases share one
+   supported SemVer requirement, but no version range broadens the exact
+   family/label policy. FMan applies that default-deny policy before transport
+   and the collector repeats it as defense in depth.
 
 Prometheus or Agent must scrape the private listener with:
 
@@ -152,8 +154,9 @@ honor_timestamps: true
 track_timestamps_staleness: true
 ```
 
-Prometheus owns metrics history and remote-write state. Changing the configured
-source release/hash, method-source gate, or inventory revision atomically clears
-the incompatible latest snapshots and poll deadlines before serving.
+Prometheus owns metrics history and remote-write state. Changing the supported
+source requirement, method-source gate, or inventory revision atomically clears
+the incompatible latest snapshots and poll deadlines before serving. A current
+source-hash change alone remains diagnostic.
 6. **Non-Fedi-verified FMans** — explicitly out of scope (blind spot
    acknowledged), since telemetry rides on the verification relationship.

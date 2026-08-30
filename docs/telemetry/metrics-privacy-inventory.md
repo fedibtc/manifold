@@ -9,9 +9,9 @@ their upstream fixes land and Manifold updates its pin.
 
 FMan and the collector compile one default-deny source policy, so release review
 must inventory the actual `fedimintd` source before changing that policy. This baseline was
-read from Manifold's pinned `fedibtc/fedimint/v0.11.1-fedi16` source at
-`881b0c2eda6b4b97785fce977a9c7ea65942a0ee`. The machine-checked
-[`fedimint-metrics-v0.11.1-fedi16.tsv`](./fedimint-metrics-v0.11.1-fedi16.tsv)
+read from Manifold's pinned `fedibtc/fedimint/v0.11.2+fedi` source at
+`01a203d82f1ac5796645febc8629de224ab59cf6`. The machine-checked
+[`fedimint-metrics-v0.11.2+fedi.tsv`](./fedimint-metrics-v0.11.2+fedi.tsv)
 enumerates every registration in the complete pinned Fedimint Rust source and
 its admission disposition. It fails the Nix check when either the lock pin or
 that source registration set drifts. The
@@ -27,11 +27,11 @@ Prometheus metric families of their own. "Including SPv2" therefore means this
 absence is checked from the exact Cargo-selected `fedixyz/fedi` stability-pool server
 source, not that it can be omitted from future review.
 
-The Fedimint release tag is `0.11.1-fedi16`, while `fedimintd` emits its
-upstream Cargo package version `0.11.1` in `app_start_ts{version=...}`. The
-collector image derives the latter from the same reviewed source and derives
-the emitted hash from the exact revision; it does not use the Fedi release tag
-as the Prometheus label.
+The Fedimint release tag and the version emitted in
+`app_start_ts{version=...}` are both `0.11.2+fedi`. The collector admits the
+reviewed compatible range `>=0.11.2, <0.12.0`; `version_hash` remains bounded
+diagnostic provenance and is exact only when it activates a separately
+reviewed method-label gate.
 
 ## Current explicit families
 
@@ -39,7 +39,7 @@ All names below receive the registry's `fm_` prefix.
 
 | Area | Metric families | Type | Exact source labels / privacy notes |
 | --- | --- | --- | --- |
-| process | `app_start_ts` | gauge | `version`, `version_hash`, each exact-matched to the collector's configured release pin; release fingerprint, no user id |
+| process | `app_start_ts` | gauge | `version` must satisfy the collector's supported release requirement; `version_hash` is bounded diagnostic provenance and becomes exact only for a reviewed method-label gate; no user id |
 | backups | `stored_backups_count`, `total_backup_size` | gauge | none; aggregate count/size, no backup key |
 | backups / active-wallet proxy | `backup_counts` | gauge | `timeframe`, restricted to `1d`, `1w`, `1m`, `3m`, `all_time` |
 | backups | `backup_write_size_bytes` | histogram | none; aggregate size distribution |
@@ -103,7 +103,7 @@ The checked bucket sets are:
   `0.005`, `0.01`, `0.025`, `0.05`, `0.1`, `0.25`, `0.5`, `1`, `2.5`,
    `5`, `10`.
 
-The collector requires exactly one matching `app_start_ts` series in every
+The collector requires exactly one compatible `app_start_ts` series in every
 response. Within each admitted family it rejects duplicate series and requires
 each present histogram labelset to contain exactly one `_sum`, one `_count`, and
 every reviewed bucket. A failure discards that family; a failure in the required
@@ -112,10 +112,11 @@ release-marker family rejects the response.
 A real release-binary scrape must confirm these families, types, labels, values,
 and buckets before production use.
 
-The collector uses an exact checked policy tied to the Fedimint pin and Manifold
-module set. It validates each family's type, exact labels, bounded label values,
-and generated suffixes; it does not accept a future family or label through a
-wildcard. Pin or module changes require re-inventory before collection.
+The collector uses an exact checked family policy tied to the reviewed Fedimint
+pin and Manifold module set, while release admission covers a compatible SemVer
+range. It validates each family's type, exact labels, bounded label values, and
+generated suffixes; it does not accept a future family or label through the
+version range. Pin or module changes require re-inventory before collection.
 The four routine API-client/connector families are deliberately reviewed-deny,
 so the collector discards each complete family without inspecting, retaining,
 forwarding, or exposing its labels or values. The same rule applies to every
@@ -209,7 +210,8 @@ line, sample, family, output, or deadline exhaustion reject the complete
 response because a safe bounded projection cannot be established.
 Durable state across all active targets is capped at 32 MiB and
 100,000 samples, and the private listener admits one aggregate scrape at a time.
-Changing the inventory revision, configured source version/hash, or canonical
-method-label gate atomically clears incompatible latest snapshots and durable
-attempt deadlines. Quarantine and expiry suppress and delete snapshots; renewal
+Changing the inventory revision, supported source-version requirement, or
+canonical method-label gate atomically clears incompatible latest snapshots and
+durable attempt deadlines. A current source-hash change alone is diagnostic and
+does not discard compatible snapshots. Quarantine and expiry suppress and delete snapshots; renewal
 after expiry cannot resurrect them.

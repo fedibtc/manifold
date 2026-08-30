@@ -34,7 +34,9 @@ cipher, parser, and operating-system semantics.
    slash; equal listeners; non-loopback private bind without the isolation
    assertion; empty or over-128-byte key id; lease at most 60; metrics cadence
    other than 900 or 1800; metrics concurrency outside `1..=32`; empty or
-   over-128-byte source version/hash; production `REPLACE_ME` source values;
+   over-128-byte source-version requirement/hash, an invalid SemVer
+   requirement, production `REPLACE_ME` source values, or a production
+   requirement and method-review hash that differ from the compiled policy;
    journal cadence outside `10..=86400`; journal concurrency outside `1..=32`;
    quota outside 1 MiB..=10 GiB; retention outside `1..=30`; and an
    unrecognized environment. Clap separately parses socket/IP syntax and

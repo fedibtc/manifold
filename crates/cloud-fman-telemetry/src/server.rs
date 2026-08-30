@@ -74,7 +74,7 @@ pub async fn registration_router_for_test(
             cadence: std::time::Duration::from_secs(1800),
             concurrency: std::num::NonZeroUsize::new(1).unwrap(),
             stale_after: std::time::Duration::from_secs(3600),
-            source_version: "test".into(),
+            source_version_requirement: "*".into(),
             source_version_hash: "test".into(),
             canonical_method_labels: false,
         },
@@ -162,7 +162,7 @@ pub async fn serve(args: Args) -> Result<(), Box<dyn Error>> {
     )
     .await?;
     let policy = MetricsPolicy {
-        version: &metrics_runtime.source_version,
+        version_requirement: &metrics_runtime.source_version_requirement,
         version_hash: &metrics_runtime.source_version_hash,
         canonical_method_labels: metrics_runtime.canonical_method_labels,
     };
@@ -197,7 +197,7 @@ pub async fn serve(args: Args) -> Result<(), Box<dyn Error>> {
     let metrics_poller = MetricsPoller::new(
         store.clone(),
         collector_endpoint,
-        metrics_runtime.source_version.clone(),
+        metrics_runtime.source_version_requirement.clone(),
         metrics_runtime.source_version_hash.clone(),
         metrics_runtime.canonical_method_labels,
         metrics_runtime.concurrency,
@@ -647,7 +647,7 @@ async fn metrics_at(state: AppState, now_ms: i64) -> Response {
     };
     let stale_after_ms = i64::try_from(state.metrics.stale_after.as_millis()).unwrap_or(i64::MAX);
     let policy = MetricsPolicy {
-        version: &state.metrics.source_version,
+        version_requirement: &state.metrics.source_version_requirement,
         version_hash: &state.metrics.source_version_hash,
         canonical_method_labels: state.metrics.canonical_method_labels,
     };
@@ -846,7 +846,7 @@ mod tests {
                 cadence: std::time::Duration::from_secs(1800),
                 concurrency: std::num::NonZeroUsize::new(1).unwrap(),
                 stale_after: std::time::Duration::from_secs(3600),
-                source_version: "test".into(),
+                source_version_requirement: "*".into(),
                 source_version_hash: "test".into(),
                 canonical_method_labels: false,
             },

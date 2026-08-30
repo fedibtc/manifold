@@ -1916,7 +1916,7 @@ mod tests {
 
     fn metrics_policy() -> MetricsPolicy<'static> {
         MetricsPolicy {
-            version: "test-version",
+            version_requirement: "*",
             version_hash: "test-hash",
             canonical_method_labels: false,
         }
@@ -1926,7 +1926,7 @@ mod tests {
         metrics_policy()
             .admit_until(
                 format!(
-                    "fm_app_start_ts{{version=\"test-version\",version_hash=\"test-hash\"}} 1\n\
+                    "fm_app_start_ts{{version=\"0.0.0\",version_hash=\"test-hash\"}} 1\n\
                      fm_consensus_session_count {value}"
                 )
                 .as_bytes(),
@@ -1944,7 +1944,7 @@ mod tests {
 
     fn stored_peer_samples(seat: &str) -> Vec<String> {
         let mut body =
-            "fm_app_start_ts{version=\"test-version\",version_hash=\"test-hash\"} 1\n".to_owned();
+            "fm_app_start_ts{version=\"0.0.0\",version_hash=\"test-hash\"} 1\n".to_owned();
         for peer_id in 0..9_999 {
             body.push_str(&format!(
                 "fm_consensus_items_processed_total{{peer_id=\"{peer_id}\"}} 1\n"

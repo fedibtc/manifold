@@ -14,8 +14,9 @@ Scope: `crates/cloud-fman-telemetry/src/*.rs`,
 `crates/fman/specs/SPEC-guardian-telemetry-proxy.md`,
 `specs/ARCH-cloud-fman-telemetry.md`, `SECURITY.md`.
 
-This leaf has no claim imports. It quantifies over arbitrary authenticated FMan
-responses, persisted snapshots and stream state, public registration responses,
+This leaf has no claim imports. It quantifies over authenticated FMan responses,
+with their bounded release identity granted by the claim's trust assumption,
+persisted snapshots and stream state, public registration responses,
 authorized private HTTP responses, process logs/traces/errors, archive
 paths/bytes, and emitted metric names and labels. It excludes encrypted
 persistence and capability-bearing authenticated outbound Iroh requests, which
@@ -29,9 +30,11 @@ held registration or cursor material.
 The authenticated FMan proxy and upstream safe-event mechanism satisfy the
 assumptions in
 [the claim](../CLAIM-cloud-fman-telemetry-output-bounded-and-faithful.md). The
-configured source version/hash and canonical-method-label switch identify the
-reviewed upstream release. Source approval, rather than this proof, classifies
-the payload fields inside each safe event.
+configured source-version requirement and canonical-method-label switch
+identify the reviewed compatibility envelope; only that separate method gate
+uses an exact reviewed source hash. The badged FMan's bounded version and hash
+are trusted release diagnostics. Source approval, rather than this proof,
+classifies the payload fields inside each safe event.
 
 ## Argument
 

@@ -78,8 +78,8 @@ Unverified.
   `2f35ea4e3b2516d35b8ed315455718cd3b336758`. The Nix `fedi` input selects the
   same revision for the stability-enabled test server. Workspace patches source
   Fedimint 0.11.1 from `.nix-deps/fedimint`; `flake.nix` names
-  `v0.11.1-fedi16` and `flake.lock` fixes it at
-  `881b0c2eda6b4b97785fce977a9c7ea65942a0ee`. Those immutable sources are in
+  `v0.11.2+fedi` and `flake.lock` fixes it at
+  `01a203d82f1ac5796645febc8629de224ab59cf6`. Those immutable sources are in
   Scope, rather than assumed library contracts.
 - **A4 — fair successful polling.** For the liveness counterexample, the daemon
   can run forever and the scheduler eventually starts every ten-second tick.

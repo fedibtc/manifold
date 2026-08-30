@@ -25,12 +25,12 @@ generation for the whole FMan, never bearer plaintext. There is no per-seat
 authorization or acknowledgement state.
 
 The `fedimintd` process remains the metrics producer. After authentication and
-seat selection, FMan applies the exact compiled source profile and transports
-only independently valid allowlisted families. The collector repeats the same
-default-deny projection before adding collector-owned identity labels. During a
-mixed rollout, new collectors therefore accept old raw FMan responses, while an
-old collector accepts a new FMan response as a strict safe subset of source
-metrics.
+seat selection, FMan applies the exact compiled family and label profile plus
+its supported release range, and transports only independently valid
+allowlisted families. The collector repeats the same default-deny projection
+before adding collector-owned identity labels. During a compatible patch
+rollout, either side therefore accepts the other's response as a strict safe
+subset of source metrics; unknown families remain discarded.
 
 ## Why this shape
 

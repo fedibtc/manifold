@@ -1,13 +1,17 @@
 //! Exact default-deny admission for guardian Prometheus text.
 
-use sha2::{Digest as _, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 
-pub const INVENTORY_REVISION: &str = "stage0-federation-identity-v4";
-/// Reviewed Fedimint release version compiled into both enforcement boundaries.
-pub const SOURCE_VERSION: &str = "0.11.1";
+use semver::{Version, VersionReq};
+use sha2::{Digest as _, Sha256};
+
+pub const INVENTORY_REVISION: &str = "stage0-federation-identity-v5-semver-range";
+/// Current Fedimint release version compiled into the FMan image.
+pub const SOURCE_VERSION: &str = "0.11.2+fedi";
+/// Fedimint releases whose metric shape this inventory supports.
+pub const SOURCE_VERSION_REQUIREMENT: &str = ">=0.11.2, <0.12.0";
 /// Reviewed Fedimint source revision compiled into both enforcement boundaries.
-pub const SOURCE_VERSION_HASH: &str = "881b0c2eda6b4b97785fce977a9c7ea65942a0ee";
+pub const SOURCE_VERSION_HASH: &str = "01a203d82f1ac5796645febc8629de224ab59cf6";
 // No combined source containing both open upstream fixes has been reviewed.
 // Re-inventory that exact pin and replace `None` with its hash before enabling
 // method-labeled families.
@@ -36,9 +40,9 @@ pub struct MetricsIdentity<'a> {
 
 /// Release-specific switches for families whose producer safety is not universal.
 pub struct MetricsPolicy<'a> {
-    /// Exact release version expected in `fm_app_start_ts`.
-    pub version: &'a str,
-    /// Exact release hash expected in `fm_app_start_ts`.
+    /// Supported release requirement applied to `fm_app_start_ts`.
+    pub version_requirement: &'a str,
+    /// Exact reviewed hash used only by the canonical-method safety gate.
     pub version_hash: &'a str,
     /// Whether the deployed source contains both canonical method-label fixes.
     pub canonical_method_labels: bool,
@@ -61,8 +65,10 @@ impl MetricsPolicy<'_> {
     pub fn fingerprint(&self) -> String {
         let digest = Sha256::digest(format!(
             "{INVENTORY_REVISION}\0{}\0{}\0{}\0{}\0{}",
-            self.version,
-            self.version_hash,
+            self.version_requirement,
+            self.method_source_ready()
+                .then_some(self.version_hash)
+                .unwrap_or("diagnostic"),
             self.canonical_method_labels,
             self.method_source_ready(),
             REVIEWED_METHOD_SOURCE_HASH.unwrap_or("disabled")
@@ -99,6 +105,8 @@ impl MetricsPolicy<'_> {
             return Err(MetricsPolicyError);
         }
         let text = std::str::from_utf8(body).map_err(|_| MetricsPolicyError)?;
+        let version_requirement =
+            VersionReq::parse(self.version_requirement).map_err(|_| MetricsPolicyError)?;
         check_deadline(deadline)?;
         let mut families = BTreeSet::new();
         let mut admitted_families: BTreeMap<&'static str, FamilyStage> = BTreeMap::new();
@@ -147,7 +155,7 @@ impl MetricsPolicy<'_> {
                     continue;
                 }
             };
-            if validate_labels(shape, &parsed.labels, self).is_err() {
+            if validate_labels(shape, &parsed.labels, self, &version_requirement).is_err() {
                 stage.tainted = true;
                 continue;
             }
@@ -325,7 +333,7 @@ impl MetricsPolicy<'_> {
 
 #[doc(hidden)]
 pub fn checked_source_manifest_matches_policy() -> bool {
-    let manifest = include_str!("../../../docs/telemetry/fedimint-metrics-v0.11.1-fedi16.tsv")
+    let manifest = include_str!("../../../docs/telemetry/fedimint-metrics-v0.11.2+fedi.tsv")
         .lines()
         .filter_map(|line| {
             let mut fields = line.split('\t');
@@ -632,6 +640,7 @@ fn validate_labels(
     shape: Shape,
     labels: &BTreeMap<String, String>,
     policy: &MetricsPolicy<'_>,
+    version_requirement: &VersionReq,
 ) -> Result<(), MetricsPolicyError> {
     let mut expected: BTreeSet<&str> = shape.labels.iter().copied().collect();
     if shape.kind == Kind::Histogram && shape.suffix == "_bucket" {
@@ -642,8 +651,13 @@ fn validate_labels(
     }
     for (name, value) in labels {
         let valid = match name.as_str() {
-            "version" => value == policy.version,
-            "version_hash" => value == policy.version_hash,
+            "version" => {
+                Version::parse(value).is_ok_and(|version| version_requirement.matches(&version))
+            }
+            "version_hash" => {
+                valid_source_hash(value)
+                    && (!policy.method_source_ready() || value == policy.version_hash)
+            }
             "timeframe" => matches!(value.as_str(), "1d" | "1w" | "1m" | "3m" | "all_time"),
             "direction" => matches!(value.as_str(), "incoming" | "outgoing"),
             "outcome" => matches!(value.as_str(), "claim" | "refund" | "cancel"),
@@ -692,6 +706,14 @@ fn validate_labels(
         }
     }
     Ok(())
+}
+
+fn valid_source_hash(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 128
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'_' | b'+'))
 }
 
 fn valid_bucket(family: &str, value: &str) -> bool {

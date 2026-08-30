@@ -324,6 +324,8 @@ attestation, and is insufficient for authorization, billing, or disputes.
 Capabilities, Holder envelopes, endpoints, full invite codes or data, journal selectors,
 incarnations, cursors, raw unverified identifiers, and caller-controlled or
 unbounded values remain forbidden in labels, logs, traces, and errors.
+The bounded `version` and `version_hash` labels from authenticated, badged FMans
+are the explicit exception: they remain visible as trusted release diagnostics.
 The collector's stderr formatter accepts only its exact crate-target namespace
 before applying `RUST_LOG`; operator directives cannot enable events or spans
 under nonmatching dependency targets that may format held endpoint or capability
@@ -344,7 +346,8 @@ immutable exposition generation may be live at a time; concurrent scrapes
 share it, while a changed revision gets HTTP 429 until slow readers release the
 old backing. Per-seat admitted text is capped at 2 MiB so JSON serialization stays
 within the 4 MiB durable row bound. A policy fingerprint covers the inventory
-revision, exact configured release/hash, and method-source gate. A fingerprint
+revision, supported release requirement, and method-source gate. The current
+source hash remains diagnostic unless that separate gate names it. A fingerprint
 change atomically discards snapshots and poll deadlines; Prometheus owns history.
 Shutdown and worker-failure paths stop new metrics work but join any cadence
 reservation or snapshot commit already in its durability segment. As with

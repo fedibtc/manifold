@@ -21,7 +21,7 @@
       url = "github:fedibtc/credential-sdk";
       flake = false;
     };
-    fedimint.url = "github:fedibtc/fedimint/v0.11.1-fedi16";
+    fedimint.url = "github:fedibtc/fedimint/v0.11.2+fedi";
     # SP-enabled fedimintd for the live stability-pool E2E. The stability-pool
     # server module lives only in the fedixyz/fedi monorepo; its `fedi-fedimintd`
     # package bundles it (enabled at runtime by FEDI_STABILITY_POOL_V2_MODULE_ENABLE).
@@ -231,7 +231,7 @@
           "crates"
           # The cloud telemetry policy checks its reviewed source manifest from
           # Rust tests, so it must be present in the filtered Nix build source.
-          "docs/telemetry/fedimint-metrics-v0.11.1-fedi16.tsv"
+          "docs/telemetry/fedimint-metrics-v0.11.2+fedi.tsv"
           # Same arrangement for the captured guardian response those tests
           # replay through the shipped policy. The manifest above records what
           # the pinned source registers; this records what a running producer
@@ -820,7 +820,7 @@
                 "CLOUD_FMAN_TELEMETRY_DATA_DIR=/var/lib/cloud-fman-telemetry"
                 "CLOUD_FMAN_TELEMETRY_KEY_FILE=/run/secrets/cloud-fman-telemetry-key"
                 "CLOUD_FMAN_TELEMETRY_METRICS_POLL_SECONDS=1800"
-                "CLOUD_FMAN_TELEMETRY_METRICS_SOURCE_VERSION=${fedimintdMetricVersion}"
+                "CLOUD_FMAN_TELEMETRY_METRICS_SOURCE_VERSION_REQUIREMENT=${fedimintdMetricVersionRequirement}"
                 "CLOUD_FMAN_TELEMETRY_METRICS_SOURCE_VERSION_HASH=${fedimintSourceRev}"
                 "CLOUD_FMAN_TELEMETRY_LOG_POLL_SECONDS=300"
                 "SSL_CERT_FILE=${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt"
@@ -992,7 +992,7 @@
                      "CLOUD_FMAN_TELEMETRY_DATA_DIR=/var/lib/cloud-fman-telemetry",
                      "CLOUD_FMAN_TELEMETRY_KEY_FILE=/run/secrets/cloud-fman-telemetry-key",
                      "CLOUD_FMAN_TELEMETRY_METRICS_POLL_SECONDS=1800",
-                     "CLOUD_FMAN_TELEMETRY_METRICS_SOURCE_VERSION=${fedimintdMetricVersion}",
+                     "CLOUD_FMAN_TELEMETRY_METRICS_SOURCE_VERSION_REQUIREMENT=${fedimintdMetricVersionRequirement}",
                      "CLOUD_FMAN_TELEMETRY_METRICS_SOURCE_VERSION_HASH=${fedimintSourceRev}",
                      "CLOUD_FMAN_TELEMETRY_LOG_POLL_SECONDS=300",
                      "SSL_CERT_FILE=${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt"
@@ -1031,7 +1031,7 @@
             --public-bind --private-bind --private-bind-isolated \
             --public-base-url --data-dir --key-file \
             --key-id --environment --lease-seconds --metrics-poll-seconds \
-            --metrics-source-version --metrics-source-version-hash \
+            --metrics-source-version-requirement --metrics-source-version-hash \
             --canonical-method-labels --log-poll-seconds --log-quota-bytes \
             --log-retention-days; do
             printf '%s\n' "$help" | grep -q -- "$flag" \
@@ -1093,13 +1093,11 @@
         # `fleetManagerReleaseSync` binds this to the Fedimint source revision,
         # the `FEDIMINTD_VERSION_0_1` Rust constant, and the package README; the
         # OCI image carries it as the `org.fedi.fedimintd.release` label. The
-        # binary's own `--version` reports upstream `0.11.1`, so the immutable
-        # release identity lives here and in the flake lock, not in the binary.
-        fedimintdRelease = "0.11.1-fedi16";
-        # `fedimintd` exports this upstream package version in `app_start_ts`.
-        # It deliberately differs from the Fedi release tag above.
-        fedimintdMetricVersion = "0.11.1";
-        fedimintSourceRev = "881b0c2eda6b4b97785fce977a9c7ea65942a0ee";
+        # binary's own version and `app_start_ts` marker carry this same release.
+        fedimintdRelease = "0.11.2+fedi";
+        fedimintdMetricVersion = "0.11.2+fedi";
+        fedimintdMetricVersionRequirement = ">=0.11.2, <0.12.0";
+        fedimintSourceRev = "01a203d82f1ac5796645febc8629de224ab59cf6";
         stabilityPoolSourceRev = "2f35ea4e3b2516d35b8ed315455718cd3b336758";
 
         # Nextest, CLI checks, and OCI runtime-contract checks all stay on the
@@ -1286,10 +1284,11 @@
               || { echo "release drift: $1 does not contain '$2' (release $release)" >&2; exit 1; }
           }
 
-          check ${./flake.nix} "fedibtc/fedimint/v0.11.1-fedi16"
+          check ${./flake.nix} "fedibtc/fedimint/v0.11.2+fedi"
           check ${./flake.lock} '"rev": "${fedimintSourceRev}"'
           check ${./crates/service-fleet-manager/src/lib.rs} "FEDIMINTD_VERSION_0_1: &str = \"$release\""
           check ${./crates/guardian-metrics-policy/src/lib.rs} "SOURCE_VERSION: &str = \"${fedimintdMetricVersion}\""
+          check ${./crates/guardian-metrics-policy/src/lib.rs} "SOURCE_VERSION_REQUIREMENT: &str = \"${fedimintdMetricVersionRequirement}\""
           check ${./crates/guardian-metrics-policy/src/lib.rs} "SOURCE_VERSION_HASH: &str = \"${fedimintSourceRev}\""
           check ${./crates/fman/bin/build.rs} "FEDIMINT_SOURCE_REV: &str = \"${fedimintSourceRev}\""
           check ${./packages/fleet-manager/README.md} "$tag"
@@ -1316,7 +1315,7 @@
             ''
               set -euo pipefail
 
-              manifest=${./docs/telemetry/fedimint-metrics-v0.11.1-fedi16.tsv}
+              manifest=${./docs/telemetry/fedimint-metrics-v0.11.2+fedi.tsv}
               privacy_inventory=${./docs/telemetry/metrics-privacy-inventory.md}
               source=${fedimint.outPath}
               stability_pool_source=${fedi.outPath}

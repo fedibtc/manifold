@@ -19,7 +19,7 @@ fn args() -> Args {
         lease_seconds: 3600,
         metrics_poll_seconds: 1800,
         metrics_concurrency: 4,
-        metrics_source_version: "0.11.1".into(),
+        metrics_source_version_requirement: "*".into(),
         metrics_source_version_hash: "release-hash".into(),
         canonical_method_labels: false,
         log_poll_seconds: 300,
@@ -52,8 +52,8 @@ fn parsed_args(extra: &[&str]) -> Args {
         "test",
         "--environment",
         "development",
-        "--metrics-source-version",
-        "0.11.1",
+        "--metrics-source-version-requirement",
+        "*",
         "--metrics-source-version-hash",
         "release-hash",
     ];
@@ -113,12 +113,29 @@ fn sparse_metrics_cadence_is_only_fifteen_or_thirty_minutes() {
 }
 
 #[test]
+fn metrics_source_requirement_must_be_bounded_semver() {
+    let mut invalid = args();
+    invalid.metrics_source_version_requirement = "not a requirement".into();
+    assert_eq!(
+        invalid.validate().err().as_deref(),
+        Some("metrics source version requirement is invalid")
+    );
+
+    let mut oversized = args();
+    oversized.metrics_source_version_requirement = "1".repeat(129);
+    assert_eq!(
+        oversized.validate().err().as_deref(),
+        Some("metrics source version requirement must contain 1..=128 bytes")
+    );
+}
+
+#[test]
 fn production_rejects_metrics_source_placeholders() {
     for placeholder in ["version", "hash"] {
         let mut args = args();
         args.environment = "production".into();
         match placeholder {
-            "version" => args.metrics_source_version = "REPLACE_ME".into(),
+            "version" => args.metrics_source_version_requirement = "REPLACE_ME".into(),
             "hash" => args.metrics_source_version_hash = "REPLACE_ME".into(),
             _ => unreachable!(),
         }

@@ -4417,7 +4417,13 @@ async fn takeover_during_lease_release_returns_busy_without_removing_replacement
 }
 
 #[test]
-fn non_conflict_lease_commit_error_is_storage_failure() {
+fn lease_commit_errors_are_mapped_by_retryability() {
+    assert!(matches!(
+        db::map_lease_commit_error(fedimint_core::db::DatabaseError::SnapshotTooOld(Box::new(
+            std::io::Error::other("test snapshot")
+        ))),
+        FiError::Busy
+    ));
     assert!(matches!(
         db::map_lease_commit_error(fedimint_core::db::DatabaseError::TransactionConsumed),
         FiError::Storage(message) if message == "FI driver lease database commit failed"

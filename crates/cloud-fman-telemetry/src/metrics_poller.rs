@@ -155,9 +155,9 @@ pub(crate) struct MetricsPoller {
     store: Store,
     /// Process-wide Iroh client endpoint.
     endpoint: Endpoint,
-    /// Exact expected source release version.
-    source_version: String,
-    /// Exact expected source release hash.
+    /// Supported source release requirement.
+    source_version_requirement: String,
+    /// Exact reviewed hash used only by the canonical-method safety gate.
     source_version_hash: String,
     /// Explicit readiness gate for upstream method canonicalization.
     canonical_method_labels: bool,
@@ -174,7 +174,7 @@ impl MetricsPoller {
     pub(crate) fn new(
         store: Store,
         endpoint: Endpoint,
-        source_version: String,
+        source_version_requirement: String,
         source_version_hash: String,
         canonical_method_labels: bool,
         concurrency: std::num::NonZeroUsize,
@@ -183,7 +183,7 @@ impl MetricsPoller {
         Self {
             store,
             endpoint,
-            source_version,
+            source_version_requirement,
             source_version_hash,
             canonical_method_labels,
             concurrency,
@@ -421,7 +421,7 @@ impl MetricsPoller {
             }
             let seat_id = seat.seat_id.to_string();
             let policy = MetricsPolicy {
-                version: &self.source_version,
+                version_requirement: &self.source_version_requirement,
                 version_hash: &self.source_version_hash,
                 canonical_method_labels: self.canonical_method_labels,
             };

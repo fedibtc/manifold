@@ -18,8 +18,10 @@ use fedi_decentralized_service_fleet_manager::{
 };
 use reqwest::header::{CONTENT_ENCODING, CONTENT_TYPE};
 
+#[cfg(test)]
+use fedi_decentralized_guardian_metrics_policy::SOURCE_VERSION;
 use fedi_decentralized_guardian_metrics_policy::{
-    MetricsPolicy, SOURCE_VERSION, SOURCE_VERSION_HASH,
+    MetricsPolicy, SOURCE_VERSION_HASH, SOURCE_VERSION_REQUIREMENT,
 };
 use fman_core::fleet::{Fleet, TelemetryAccessError};
 
@@ -151,7 +153,7 @@ async fn fetch_guardian_metrics(
 
     let projected = tokio::task::spawn_blocking(move || {
         MetricsPolicy {
-            version: SOURCE_VERSION,
+            version_requirement: SOURCE_VERSION_REQUIREMENT,
             version_hash: SOURCE_VERSION_HASH,
             canonical_method_labels: false,
         }
