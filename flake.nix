@@ -21,7 +21,7 @@
       url = "github:fedibtc/credential-sdk";
       flake = false;
     };
-    fedimint.url = "github:fedibtc/fedimint/v0.11.1-fedi15";
+    fedimint.url = "github:fedibtc/fedimint/v0.11.1-fedi16";
     # SP-enabled fedimintd for the live stability-pool E2E. The stability-pool
     # server module lives only in the fedixyz/fedi monorepo; its `fedi-fedimintd`
     # package bundles it (enabled at runtime by FEDI_STABILITY_POOL_V2_MODULE_ENABLE).
@@ -231,7 +231,7 @@
           "crates"
           # The cloud telemetry policy checks its reviewed source manifest from
           # Rust tests, so it must be present in the filtered Nix build source.
-          "docs/telemetry/fedimint-metrics-v0.11.1-fedi15.tsv"
+          "docs/telemetry/fedimint-metrics-v0.11.1-fedi16.tsv"
           # Same arrangement for the captured guardian response those tests
           # replay through the shipped policy. The manifest above records what
           # the pinned source registers; this records what a running producer
@@ -1095,11 +1095,11 @@
         # OCI image carries it as the `org.fedi.fedimintd.release` label. The
         # binary's own `--version` reports upstream `0.11.1`, so the immutable
         # release identity lives here and in the flake lock, not in the binary.
-        fedimintdRelease = "0.11.1-fedi15";
+        fedimintdRelease = "0.11.1-fedi16";
         # `fedimintd` exports this upstream package version in `app_start_ts`.
         # It deliberately differs from the Fedi release tag above.
         fedimintdMetricVersion = "0.11.1";
-        fedimintSourceRev = "4c70c0e54f2f6a25df518c5082ac5a81d7a46d70";
+        fedimintSourceRev = "881b0c2eda6b4b97785fce977a9c7ea65942a0ee";
         stabilityPoolSourceRev = "2f35ea4e3b2516d35b8ed315455718cd3b336758";
 
         # Nextest, CLI checks, and OCI runtime-contract checks all stay on the
@@ -1286,7 +1286,7 @@
               || { echo "release drift: $1 does not contain '$2' (release $release)" >&2; exit 1; }
           }
 
-          check ${./flake.nix} "fedibtc/fedimint/v0.11.1-fedi15"
+          check ${./flake.nix} "fedibtc/fedimint/v0.11.1-fedi16"
           check ${./flake.lock} '"rev": "${fedimintSourceRev}"'
           check ${./crates/service-fleet-manager/src/lib.rs} "FEDIMINTD_VERSION_0_1: &str = \"$release\""
           check ${./crates/guardian-metrics-policy/src/lib.rs} "SOURCE_VERSION: &str = \"${fedimintdMetricVersion}\""
@@ -1316,7 +1316,7 @@
             ''
               set -euo pipefail
 
-              manifest=${./docs/telemetry/fedimint-metrics-v0.11.1-fedi15.tsv}
+              manifest=${./docs/telemetry/fedimint-metrics-v0.11.1-fedi16.tsv}
               privacy_inventory=${./docs/telemetry/metrics-privacy-inventory.md}
               source=${fedimint.outPath}
               stability_pool_source=${fedi.outPath}

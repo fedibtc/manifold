@@ -206,7 +206,7 @@ from the same wallet root.
 The FI side needs client support for paying to externally supplied
 blinded nonces and finalizing issuance from relayed blinded signatures —
 client-side additions only. For mintv2 the fleet consumes fedimint from
-the `fedibtc/fedimint` Fedi release line (tag `v0.11.1-fedi15`: upstream
+the `fedibtc/fedimint` Fedi release line (tag `v0.11.1-fedi16`: upstream
 v0.11.1 plus the Fedi MintV2 additions, fee-quote/spendable-amount APIs for
 revenue sweeps, and tagged server diagnostics) whose two added
 `MintClientModule` methods

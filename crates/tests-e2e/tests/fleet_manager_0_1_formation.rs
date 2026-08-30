@@ -238,6 +238,9 @@ async fn run_fleet_manager_formation() -> anyhow::Result<()> {
         .expect(
             "the FMan seat-binding directory reached consensus using the local-E2E child Iroh keys",
         );
+    exercise_guardian_telemetry(&fleet_manager_bin, &temp, &locators[0])
+        .await
+        .expect("the exact bundled guardian exposes every reviewed v2 metric");
     shutdown_daemons(daemons)
         .await
         .expect("Fleet Managers shut down cleanly before journal inspection");
@@ -1420,6 +1423,45 @@ async fn exercise_guardian_telemetry(
         metrics.status_code == 200 && !metrics.body.is_empty(),
         "running guardian must expose non-empty metrics"
     );
+    // This request reaches the fedimintd embedded in the exact fleet-manager
+    // binary selected by the CI runtime bundle. The proxy replays that live
+    // response through the shipped default-deny policy before returning it.
+    // One surviving sample proves each named histogram had its complete,
+    // exact reviewed shape: projection drops the whole family otherwise.
+    let metrics_body =
+        std::str::from_utf8(&metrics.body).context("guardian metrics are valid UTF-8")?;
+    anyhow::ensure!(
+        metrics_body.lines().any(|line| {
+            line.starts_with("fm_app_start_ts{")
+                && line.contains("version=\"0.11.1\"")
+                && line.contains("version_hash=\"881b0c2eda6b4b97785fce977a9c7ea65942a0ee\"")
+        }),
+        "the exact bundled fedi16 guardian must expose its release marker"
+    );
+    for family in [
+        "lnv2_funded_contract_sats",
+        "lnv2_outgoing_contract_settled_total",
+        "mintv2_inout_sats",
+        "mintv2_inout_fees_sats",
+        "mintv2_redeemed_ecash_sats",
+        "mintv2_redeemed_ecash_fees_sats",
+        "mintv2_issued_ecash_sats",
+        "mintv2_issued_ecash_fees_sats",
+        "walletv2_block_count",
+        "walletv2_inout_sats",
+        "walletv2_inout_fees_sats",
+        "walletv2_pegin_sats",
+        "walletv2_pegin_fees_sats",
+        "walletv2_pegout_sats",
+        "walletv2_pegout_fees_sats",
+    ] {
+        anyhow::ensure!(
+            metrics_body
+                .lines()
+                .any(|line| line.starts_with(&format!("fm_{family}"))),
+            "the exact bundled fedi16 guardian must expose fm_{family}"
+        );
+    }
     let missing_seat = SeatId::new("ff".repeat(32))?;
     let denied_missing_seat = match connect()
         .await?

@@ -96,7 +96,7 @@ final payer balance as setup prices plus Fedimint fees plus returned spendable
 change, and waits for an accepted payment to settle into an FMan wallet. The
 harness also runs an esplora indexer
 over the defe bitcoind (hence the esplora binary): the Fedi fedimint
-(`v0.11.1-fedi15`) wallet *client* can only watch the chain through esplora, so
+(`v0.11.1-fedi16`) wallet *client* can only watch the chain through esplora, so
 the FI wallet's peg-in would never confirm without one.
 
 The Linux-only

@@ -43,6 +43,37 @@ fn duration_histogram(family: &str, labels: &str) -> String {
     body
 }
 
+fn amount_histogram(family: &str, labels: &str) -> String {
+    let mut body = String::new();
+    for bucket in [
+        "0",
+        "0.1",
+        "1",
+        "10",
+        "100",
+        "1000",
+        "10000",
+        "100000",
+        "1000000",
+        "10000000",
+        "100000000",
+        "+Inf",
+    ] {
+        body.push_str(&format!(
+            "fm_{family}_bucket{{{labels}le=\"{bucket}\"}} 1\n"
+        ));
+    }
+    body.push_str(&format!(
+        "fm_{family}_sum{{{}}} 1\n",
+        labels.trim_end_matches(',')
+    ));
+    body.push_str(&format!(
+        "fm_{family}_count{{{}}} 1\n",
+        labels.trim_end_matches(',')
+    ));
+    body
+}
+
 #[test]
 fn exact_inventory_adds_only_verified_identity() {
     let body = br#"
@@ -197,6 +228,59 @@ fn pinned_client_and_connector_families_are_discarded_in_full() {
 #[test]
 fn checked_source_manifest_matches_default_deny_policy() {
     assert!(checked_source_manifest_matches_policy());
+}
+
+#[test]
+fn v2_module_metrics_have_exact_reviewed_shapes() {
+    let mut body = release_marker().to_owned();
+    body.push_str("fm_walletv2_block_count 1\n");
+    body.push_str("fm_lnv2_outgoing_contract_settled_total{outcome=\"claim\"} 1\n");
+    for (family, labels) in [
+        ("lnv2_funded_contract_sats", "direction=\"incoming\","),
+        ("mintv2_inout_sats", "direction=\"outgoing\","),
+        ("mintv2_inout_fees_sats", "direction=\"incoming\","),
+        ("mintv2_redeemed_ecash_sats", ""),
+        ("mintv2_redeemed_ecash_fees_sats", ""),
+        ("mintv2_issued_ecash_sats", ""),
+        ("mintv2_issued_ecash_fees_sats", ""),
+        ("walletv2_inout_sats", "direction=\"incoming\","),
+        ("walletv2_inout_fees_sats", "direction=\"outgoing\","),
+        ("walletv2_pegin_sats", ""),
+        ("walletv2_pegin_fees_sats", ""),
+        ("walletv2_pegout_sats", ""),
+        ("walletv2_pegout_fees_sats", ""),
+    ] {
+        body.push_str(&amount_histogram(family, labels));
+    }
+    let admitted = policy(false)
+        .admit_until(body.as_bytes(), identity(), None)
+        .expect("every reviewed v2 module metric has its registered shape");
+    assert!(!admitted.discarded_invalid_admitted);
+    for family in [
+        "walletv2_block_count",
+        "lnv2_outgoing_contract_settled_total",
+        "lnv2_funded_contract_sats",
+        "mintv2_inout_sats",
+        "mintv2_inout_fees_sats",
+        "mintv2_redeemed_ecash_sats",
+        "mintv2_redeemed_ecash_fees_sats",
+        "mintv2_issued_ecash_sats",
+        "mintv2_issued_ecash_fees_sats",
+        "walletv2_inout_sats",
+        "walletv2_inout_fees_sats",
+        "walletv2_pegin_sats",
+        "walletv2_pegin_fees_sats",
+        "walletv2_pegout_sats",
+        "walletv2_pegout_fees_sats",
+    ] {
+        assert!(
+            admitted
+                .samples
+                .iter()
+                .any(|sample| sample.starts_with(&format!("fm_{family}"))),
+            "{family} should be admitted"
+        );
+    }
 }
 
 #[test]
@@ -518,7 +602,8 @@ fn revalidation_accepts_canonical_identity_labels_over_the_raw_line_limit() {
 // policy. See the fixture header for its provenance and re-capture rule.
 // ---------------------------------------------------------------------------
 
-/// Complete Prometheus response from one running seat at the pinned release.
+/// Complete Prometheus response from one fedi15 seat. It remains a real legacy fixture that validates parser and allowlist behavior when
+/// bound to its own fedi15 release marker.
 const CAPTURED_SCRAPE: &str =
     include_str!("../../../docs/telemetry/fedimint-metrics-v0.11.1-fedi15-seat-scrape.txt");
 
@@ -546,7 +631,7 @@ fn captured_release_marker() -> &'static str {
 
 /// Families carrying the given disposition in the reviewed source inventory.
 fn inventoried(disposition: &str) -> std::collections::BTreeSet<&'static str> {
-    include_str!("../../../docs/telemetry/fedimint-metrics-v0.11.1-fedi15.tsv")
+    include_str!("../../../docs/telemetry/fedimint-metrics-v0.11.1-fedi16.tsv")
         .lines()
         .filter_map(|line| {
             let mut fields = line.split('\t');
@@ -607,8 +692,7 @@ fn a_real_producer_emits_only_families_the_inventory_classified() {
         .collect();
     assert!(
         unclassified.is_empty(),
-        "the running producer emits families the reviewed inventory never classified, \
-         so the inventory is stale for its own pin: {unclassified:?}"
+        "the legacy fixture emits families the current reviewed inventory never classified: {unclassified:?}"
     );
 }
 
@@ -629,10 +713,8 @@ fn every_admitted_family_a_real_producer_emits_is_accepted() {
             captured_policy()
                 .admit_until(body.as_bytes(), identity(), None)
                 .is_ok(),
-            "family fm_{family} is inventoried `admit`, and the running producer emits it, \
-             but the shipped policy refuses the real samples. The inventory disagrees with \
-             the producer it was written for: a label value, bucket, or type is not what \
-             was enumerated."
+            "family fm_{family} is inventoried `admit`, and the legacy fixture emits it, \
+             but the policy bound to the fixture's own release marker refuses the samples: a label value, bucket, or type is not what was enumerated."
         );
     }
 }
@@ -642,7 +724,7 @@ fn complete_real_scrape_projects_exact_output_and_unknown_is_locally_discarded()
     let admitted = captured_policy()
         .admit_until(CAPTURED_SCRAPE.as_bytes(), identity(), None)
         .expect(
-            "the complete real scrape must discard reviewed-deny families while admitting \
+            "the complete legacy scrape must discard reviewed-deny families while admitting \
              every reviewed-safe sample",
         );
     assert_eq!(admitted.samples.len(), 341);
