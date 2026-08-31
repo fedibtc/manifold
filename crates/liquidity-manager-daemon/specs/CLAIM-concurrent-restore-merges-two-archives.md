@@ -4,9 +4,7 @@ Two concurrent restore operations cannot merge different archives into one data 
 
 ## Status
 
-Falsified: two concurrent `restore_backup` calls can both pass the second
-empty-directory check and then move different staged archives into the same
-data root.
+Unverified.
 
 ## Assumptions
 
