@@ -6,11 +6,11 @@ use fedimint_build::envs::{FEDIMINT_BUILD_CODE_VERSION_ENV, FORCE_GIT_HASH_ENV};
 
 /// Git revision of the pinned Fedimint input (`flake.lock`). The bundled
 /// fedimintd reports it as `version_hash` in `fm_app_start_ts`, and the
-/// guardian metrics policy refuses every other value, so plain `cargo` builds
-/// must stamp it too — not this checkout's own commit, which is what
+/// guardian metrics policy forwards that diagnostic, so plain `cargo` builds
+/// must stamp the pinned source too — not this checkout's own commit, which is what
 /// `fedimint_build::set_code_version` would read. `fleetManagerReleaseSync` in
 /// `flake.nix` keeps it equal to the flake input.
-const FEDIMINT_SOURCE_REV: &str = "881b0c2eda6b4b97785fce977a9c7ea65942a0ee";
+const FEDIMINT_SOURCE_REV: &str = "e2606265b94983cd491e341291ca8f9f37d87645";
 
 fn main() {
     // A packager can still override the stamp, as the Nix builds do.

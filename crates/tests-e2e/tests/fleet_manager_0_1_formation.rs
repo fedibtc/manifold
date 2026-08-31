@@ -1434,9 +1434,9 @@ async fn exercise_guardian_telemetry(
         metrics_body.lines().any(|line| {
             line.starts_with("fm_app_start_ts{")
                 && line.contains("version=\"0.11.1\"")
-                && line.contains("version_hash=\"881b0c2eda6b4b97785fce977a9c7ea65942a0ee\"")
+                && line.contains("version_hash=\"e2606265b94983cd491e341291ca8f9f37d87645\"")
         }),
-        "the exact bundled fedi16 guardian must expose its release marker"
+        "the exact bundled fedi17 guardian must expose its release marker"
     );
     for family in [
         "lnv2_funded_contract_sats",
@@ -1459,7 +1459,7 @@ async fn exercise_guardian_telemetry(
             metrics_body
                 .lines()
                 .any(|line| line.starts_with(&format!("fm_{family}"))),
-            "the exact bundled fedi16 guardian must expose fm_{family}"
+            "the exact bundled fedi17 guardian must expose fm_{family}"
         );
     }
     let missing_seat = SeatId::new("ff".repeat(32))?;
