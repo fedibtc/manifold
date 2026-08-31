@@ -30,7 +30,7 @@ async fn protocol_frames_round_trip_over_socketpair() {
 fn startup_frames_fit_socketpair_without_a_reader() {
     let hello = ChildMessage::Hello {
         proto: PROTOCOL_VERSION,
-        code_version: "v0.11.1-fedi16".to_owned(),
+        code_version: "v0.11.1-fedi17".to_owned(),
         state: ChildState::AlreadyConfigured {
             invite_code: "fed1-test".repeat(32),
         },
