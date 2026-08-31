@@ -1838,6 +1838,15 @@
         };
 
         apps = {
+          # The dev shell relinks these on entry, so this entrypoint looks
+          # redundant. It is not: entering that shell on darwin also builds the
+          # fedimint runtime binaries from source, and those are E2E fixtures
+          # rather than build inputs, so exposing the relink on its own lets a
+          # stale link be repaired without paying for them.
+          link-external-deps = {
+            type = "app";
+            program = "${linkExternalDeps}/bin/link-external-deps";
+          };
           push-gateway = {
             type = "app";
             program = "${multiBuild.pushGateway}/bin/fedi-decentralized-push-gateway";

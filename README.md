@@ -40,6 +40,16 @@ nix develop --command cargo metadata --locked
 Review both lockfiles: `flake.lock` owns the SDK source revision and content
 hash, while `Cargo.lock` owns the resolved Rust package graph.
 
+### Building a crate on macOS
+
+Cargo resolves the `fedimint` and `credential-sdk` sources through symlinks under `.nix-deps/`. Those links break whenever the store path they point at is garbage collected or the input is bumped, and Cargo then fails naming a missing `Cargo.toml` deep inside one of those trees rather than the stale link. Relink them without entering the dev shell:
+
+```bash
+nix run .#link-external-deps -- "$PWD"
+```
+
+A plain `cargo build -p <crate>` then works natively. That matters most on darwin, where entering the dev shell also compiles the fedimint runtime binaries from source. Those are E2E fixtures rather than build inputs, so building a crate does not need them. Tiers that do run those binaries still expect the full shell.
+
 ### Running the Linux CI locally (Docker)
 
 CI runs on Linux. To build the `.#ci.*` checks from a macOS workstation — which
