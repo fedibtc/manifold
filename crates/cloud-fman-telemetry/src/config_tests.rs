@@ -19,9 +19,6 @@ fn args() -> Args {
         lease_seconds: 3600,
         metrics_poll_seconds: 1800,
         metrics_concurrency: 4,
-        metrics_source_version: "0.11.1".into(),
-        metrics_source_version_hash: "release-hash".into(),
-        canonical_method_labels: false,
         log_poll_seconds: 300,
         log_concurrency: 4,
         log_quota_bytes: MAX_LOG_QUOTA_BYTES,
@@ -52,10 +49,6 @@ fn parsed_args(extra: &[&str]) -> Args {
         "test",
         "--environment",
         "development",
-        "--metrics-source-version",
-        "0.11.1",
-        "--metrics-source-version-hash",
-        "release-hash",
     ];
     arguments.extend_from_slice(extra);
     Args::try_parse_from(arguments).unwrap()
@@ -110,21 +103,4 @@ fn sparse_metrics_cadence_is_only_fifteen_or_thirty_minutes() {
     let mut rapid_retry = args();
     rapid_retry.metrics_poll_seconds = 60;
     assert!(rapid_retry.validate().is_err());
-}
-
-#[test]
-fn production_rejects_metrics_source_placeholders() {
-    for placeholder in ["version", "hash"] {
-        let mut args = args();
-        args.environment = "production".into();
-        match placeholder {
-            "version" => args.metrics_source_version = "REPLACE_ME".into(),
-            "hash" => args.metrics_source_version_hash = "REPLACE_ME".into(),
-            _ => unreachable!(),
-        }
-        assert!(
-            args.validate().is_err(),
-            "{placeholder} placeholder was accepted"
-        );
-    }
 }

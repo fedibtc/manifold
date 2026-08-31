@@ -1,9 +1,8 @@
 # Guardian metrics privacy inventory
 
-Status: exact implemented collector policy baseline, 2026-08-19. The pinned
-source still uses raw JSON-RPC and Iroh method labels;
-the canonical-name/`unknown` contracts below remain current deviations until
-their upstream fixes land and Manifold updates its pin.
+Status: exact implemented collector policy baseline, 2026-08-31. The pinned
+source can still emit raw JSON-RPC and Iroh method labels, but both telemetry
+boundaries retain only the compiled canonical core-method set or `unknown`.
 
 ## Release boundary
 
@@ -28,10 +27,11 @@ absence is checked from the exact Cargo-selected `fedixyz/fedi` stability-pool s
 source, not that it can be omitted from future review.
 
 The Fedimint release tag is `0.11.1-fedi16`, while `fedimintd` emits its
-upstream Cargo package version `0.11.1` in `app_start_ts{version=...}`. The
-collector image derives the latter from the same reviewed source and derives
-the emitted hash from the exact revision; it does not use the Fedi release tag
-as the Prometheus label.
+upstream Cargo package version `0.11.1` in `app_start_ts{version=...}`. That
+reviewed baseline selects the current safe shapes; it is not a collector
+target-version requirement. The collector accepts bounded release metadata from
+older and newer sources when the marker is otherwise valid, and still admits
+other independently valid families when it is absent or invalid.
 
 ## Current explicit families
 
@@ -39,7 +39,7 @@ All names below receive the registry's `fm_` prefix.
 
 | Area | Metric families | Type | Exact source labels / privacy notes |
 | --- | --- | --- | --- |
-| process | `app_start_ts` | gauge | `version`, `version_hash`, each exact-matched to the collector's configured release pin; release fingerprint, no user id |
+| process | `app_start_ts` | gauge | `version`, `version_hash`, each 1–128 ASCII alphanumeric or `.`, `_`, `-`, `+`, `:` bytes; bounded release metadata, no user id |
 | backups | `stored_backups_count`, `total_backup_size` | gauge | none; aggregate count/size, no backup key |
 | backups / active-wallet proxy | `backup_counts` | gauge | `timeframe`, restricted to `1d`, `1w`, `1m`, `3m`, `all_time` |
 | backups | `backup_write_size_bytes` | histogram | none; aggregate size distribution |
@@ -53,9 +53,9 @@ All names below receive the registry's `fm_` prefix.
 | peer transport | `peer_disconnect_total` | counter | `self_id`, `peer_id`, each an at-most-five-byte value parseable as `u16`; bounded producer-owned operational dimensions, not collector-verified config membership |
 | APIs | `iroh_api_connections_active` | gauge | none |
 | APIs | `iroh_api_connection_duration_seconds` | histogram | none |
-| APIs | `iroh_api_request_duration_seconds` | histogram | denied: the pinned source's `method` is raw caller input; current deviation below |
-| APIs | `jsonrpc_api_request_duration_seconds` | histogram | denied until `method` is restricted to pinned canonical registered names or constant `unknown`; current deviation below |
-| APIs | `jsonrpc_api_request_response_code_total` | counter | denied until `method` is restricted as above and `code`/`type` are restricted to the source's fixed projections; current deviation below |
+| APIs | `iroh_api_request_duration_seconds` | histogram | `method` is exactly `unknown` or a source-coded core API method; an unrecognized value discards the family |
+| APIs | `jsonrpc_api_request_duration_seconds` | histogram | `method` is exactly `unknown` or a source-coded core API method; an unrecognized value discards the family |
+| APIs | `jsonrpc_api_request_response_code_total` | counter | `method` is exactly `unknown` or a source-coded core API method; `code` is `0`, `400`, `401`, `404`, `500`, or `-32700` through `-32603`; `type` is `subscription`, `batch`, or `default` |
 | API client | `client_api_request_duration_seconds`, `client_api_requests_total` | histogram, counter | denied intentionally: FMan's API-announcement and guardian-metadata tasks instantiate `DynGlobalApi`, which records raw request `method` labels |
 | connectors | `connector_connection_duration_seconds`, `connector_connection_attempts_total` | histogram, counter | denied intentionally: routine client/connector output remains outside this minimum telemetry surface |
 | non-FMan Fedimint components | `bitcoind_rpc_request_duration_seconds`, `bitcoind_rpc_requests_total`, `gateway_htlc_handling_duration_seconds`, `gateway_htlc_lnv1_attempt_duration_seconds`, `gateway_htlc_lnv2_attempt_duration_seconds`, `ln_rpc_request_duration_seconds`, `ln_rpc_requests_total` | histogram, counter | denied: the exhaustive pinned-source scan includes these registrations, but the bundled FMan does not expose them |
@@ -103,19 +103,23 @@ The checked bucket sets are:
   `0.005`, `0.01`, `0.025`, `0.05`, `0.1`, `0.25`, `0.5`, `1`, `2.5`,
    `5`, `10`.
 
-The collector requires exactly one matching `app_start_ts` series in every
-response. Within each admitted family it rejects duplicate series and requires
+`app_start_ts` is optional release metadata rather than a compatibility gate.
+Within each admitted family the collector rejects duplicate series and requires
 each present histogram labelset to contain exactly one `_sum`, one `_count`, and
-every reviewed bucket. A failure discards that family; a failure in the required
-release-marker family rejects the response.
+every reviewed bucket. A missing, duplicate, or invalid marker discards that
+family only; it cannot reject another independently valid family or prevent
+safe-journal collection.
 
 A real release-binary scrape must confirm these families, types, labels, values,
 and buckets before production use.
 
-The collector uses an exact checked policy tied to the Fedimint pin and Manifold
-module set. It validates each family's type, exact labels, bounded label values,
-and generated suffixes; it does not accept a future family or label through a
-wildcard. Pin or module changes require re-inventory before collection.
+The collector uses an exact checked policy derived from the reviewed Fedimint
+pin and Manifold module set. It validates each family's type, exact labels,
+bounded label values, and generated suffixes; it does not accept a future family
+or label through a wildcard. Pin or module changes require re-inventory before
+expanding or changing that policy, not before contacting targets on other
+releases: the collector keeps every independently valid family in the current
+intersection.
 The four routine API-client/connector families are deliberately reviewed-deny,
 so the collector discards each complete family without inspecting, retaining,
 forwarding, or exposing its labels or values. The same rule applies to every
@@ -143,32 +147,14 @@ use `fman_id`, `guardian_seat_id`, and the asserted `federation_id` for
 operational source identity and must not interpret
 these producer labels as configuration or federation membership proofs.
 
-The JSON-RPC families are admitted only when the pinned source maps every
-recognized request to its registered canonical method name and every
-unrecognized request to the constant `unknown`. The currently pinned source
-instead labels them from the raw request method, which is caller-controlled and
-unbounded. Until the upstream g8cs fix lands and Manifold updates and
-re-inventories the pin, the collector policy must discard
-`jsonrpc_api_request_duration_seconds` and
-`jsonrpc_api_request_response_code_total` in full, including generated series.
-
-No combined source containing both still-open upstream fixes has been reviewed,
-so the source-hash gate currently has no enabling hash and all method-labeled
-families remain denied even when the operator assertion is set. After a fixed
-source is pinned, re-inventory it and bind the gate to that exact hash. That
-inventory must partition core endpoints from each module's endpoints and bind
-module ids to their actual module kinds; a union of endpoint names or a
-syntactically bounded id is not sufficient. The only miss label is `unknown`;
-arbitrary bounded-looking strings remain unadmitted.
-
-The pinned `fedimint-server::consensus::handle_request` similarly converts
-`IrohApiRequest.method` to a label before looking it up, so
-`iroh_api_request_duration_seconds{method=...}` currently accepts raw
-caller-controlled `ApiMethod::Core(String)` and `ApiMethod::Module(_, String)`
-values. The collector must discard that complete family, including generated
-series. It becomes admissible only after the pinned producer maps registered
-methods to their canonical names, maps every other value to constant `unknown`,
-and the updated release pin is re-inventoried.
+The API families are admitted independently of FMan or Fedimint release only
+when `method` is `unknown` or one of the compiled `CORE_API_METHODS`. The FMan
+and collector both apply that exact allowlist, so raw caller-controlled
+`ApiMethod::Core(String)` or `ApiMethod::Module(_, String)` values cannot create
+new label values or series: an unrecognized method taints and discards that
+family. This keeps the cardinality and privacy boundary closed even when a
+producer emits a raw method label. The fixed `code` and `type` projections
+remain required for `jsonrpc_api_request_response_code_total`.
 
 Every admitted guardian series receives exactly these collector labels:
 
@@ -203,13 +189,12 @@ One seat response may contain at most 20,000 samples, including discarded
 reviewed-deny samples, and produces at most 2 MiB of admitted canonical text.
 The collector stages each admitted family until its exact labels, values,
 duplicates, suffixes, and histogram completeness have been checked. It discards
-only the affected family when that local validation fails. Missing or invalid
-release identity, invalid UTF-8 or an unisolatable family boundary, and global
-line, sample, family, output, or deadline exhaustion reject the complete
-response because a safe bounded projection cannot be established.
+only the affected family when that local validation fails. Invalid UTF-8 or an
+unisolatable family boundary, and global line, sample, family, output, or
+deadline exhaustion reject the complete response because a safe bounded
+projection cannot be established. A release-marker failure remains family-local.
 Durable state across all active targets is capped at 32 MiB and
 100,000 samples, and the private listener admits one aggregate scrape at a time.
-Changing the inventory revision, configured source version/hash, or canonical
-method-label gate atomically clears incompatible latest snapshots and durable
-attempt deadlines. Quarantine and expiry suppress and delete snapshots; renewal
-after expiry cannot resurrect them.
+Changing the inventory revision atomically clears incompatible latest snapshots
+and durable attempt deadlines. Quarantine and expiry suppress and delete
+snapshots; renewal after expiry cannot resurrect them.

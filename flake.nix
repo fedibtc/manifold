@@ -820,8 +820,6 @@
                 "CLOUD_FMAN_TELEMETRY_DATA_DIR=/var/lib/cloud-fman-telemetry"
                 "CLOUD_FMAN_TELEMETRY_KEY_FILE=/run/secrets/cloud-fman-telemetry-key"
                 "CLOUD_FMAN_TELEMETRY_METRICS_POLL_SECONDS=1800"
-                "CLOUD_FMAN_TELEMETRY_METRICS_SOURCE_VERSION=${fedimintdMetricVersion}"
-                "CLOUD_FMAN_TELEMETRY_METRICS_SOURCE_VERSION_HASH=${fedimintSourceRev}"
                 "CLOUD_FMAN_TELEMETRY_LOG_POLL_SECONDS=300"
                 "SSL_CERT_FILE=${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt"
               ];
@@ -992,8 +990,6 @@
                      "CLOUD_FMAN_TELEMETRY_DATA_DIR=/var/lib/cloud-fman-telemetry",
                      "CLOUD_FMAN_TELEMETRY_KEY_FILE=/run/secrets/cloud-fman-telemetry-key",
                      "CLOUD_FMAN_TELEMETRY_METRICS_POLL_SECONDS=1800",
-                     "CLOUD_FMAN_TELEMETRY_METRICS_SOURCE_VERSION=${fedimintdMetricVersion}",
-                     "CLOUD_FMAN_TELEMETRY_METRICS_SOURCE_VERSION_HASH=${fedimintSourceRev}",
                      "CLOUD_FMAN_TELEMETRY_LOG_POLL_SECONDS=300",
                      "SSL_CERT_FILE=${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt"
                    ] | sort))
@@ -1031,8 +1027,7 @@
             --public-bind --private-bind --private-bind-isolated \
             --public-base-url --data-dir --key-file \
             --key-id --environment --lease-seconds --metrics-poll-seconds \
-            --metrics-source-version --metrics-source-version-hash \
-            --canonical-method-labels --log-poll-seconds --log-quota-bytes \
+            --log-poll-seconds --log-quota-bytes \
             --log-retention-days; do
             printf '%s\n' "$help" | grep -q -- "$flag" \
               || { echo "collector help omits $flag" >&2; exit 1; }
@@ -1289,8 +1284,6 @@
           check ${./flake.nix} "fedibtc/fedimint/v0.11.1-fedi16"
           check ${./flake.lock} '"rev": "${fedimintSourceRev}"'
           check ${./crates/service-fleet-manager/src/lib.rs} "FEDIMINTD_VERSION_0_1: &str = \"$release\""
-          check ${./crates/guardian-metrics-policy/src/lib.rs} "SOURCE_VERSION: &str = \"${fedimintdMetricVersion}\""
-          check ${./crates/guardian-metrics-policy/src/lib.rs} "SOURCE_VERSION_HASH: &str = \"${fedimintSourceRev}\""
           check ${./crates/fman/bin/build.rs} "FEDIMINT_SOURCE_REV: &str = \"${fedimintSourceRev}\""
           check ${./packages/fleet-manager/README.md} "$tag"
 

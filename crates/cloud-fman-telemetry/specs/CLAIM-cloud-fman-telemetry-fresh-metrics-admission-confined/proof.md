@@ -25,13 +25,15 @@ behavior is derived from the scoped code.
 1. **[code] Family disposition and admitted parsing fail closed.**
    `admit_until` decodes UTF-8, bounds line count and line size, parses each
    non-comment sample name, and sends it through `shape`. `shape` accepts only
-   the explicit gauge, counter, and histogram families and enabled method
-   families. An exact source-coded reviewed-deny counter name or histogram
-   generated-series name is skipped; unknown names and suffix variants are also
-   skipped. Skipped lines still consume line, sample, family, and deadline
-   budgets. Every admitted line then passes full parsing, and `validate_labels`
-   requires equality, not a subset, between input label keys and the selected
-   shape.
+   the explicit gauge, counter, and histogram families. Method-labelled API
+   families have exact source-coded shapes, and their `method` label accepts only
+   `unknown` or `CORE_API_METHODS`; a raw or unrecognized value taints and
+   discards that family. An exact source-coded reviewed-deny counter name or
+   histogram generated-series name is skipped; unknown names and suffix variants
+   are also skipped. Skipped lines still consume line, sample, family, and
+   deadline budgets. Every admitted line then passes full parsing, and
+   `validate_labels` requires equality, not a subset, between input label keys
+   and the selected shape.
 2. **[test, code] Values must be finite and not sign-negative.**
    After parsing each value as `f64`, `admit_until` taints its family when
    `!value.is_finite()` or `value.is_sign_negative()`. The latter excludes
@@ -53,8 +55,9 @@ behavior is derived from the scoped code.
    canonical.
 5. **[code] Global failures are bounded and projection-local failures stay local.**
    `MAX_SAMPLES` rejects a 20,001st input sample. Invalid UTF-8, an empty family
-   boundary, line/family/deadline exhaustion, and a missing or tainted required
-   release-marker family reject the response. Other parsing, shape, label, value,
+   boundary, and line/family/deadline exhaustion reject the response. A missing
+   marker creates no family, while duplicate or invalid `app_start_ts` samples
+   taint and discard only that family. Other parsing, shape, label, value,
    duplicate, and histogram failures taint only the exact admitted family selected
    before parsing. Before adding a rendered
    sample, `MAX_OUTPUT_BYTES` rejects an aggregate over 2 MiB, including the
@@ -63,8 +66,9 @@ behavior is derived from the scoped code.
 6. **[test] Hostile policy cases pin the principal rejection paths.**
    `unknown_and_invalid_families_do_not_suppress_an_unrelated_valid_family`,
    `complete_real_scrape_projects_exact_output_and_unknown_is_locally_discarded`,
-   `missing_or_duplicate_release_fails_globally_but_incomplete_histogram_is_local`,
-   and
+   `method_families_use_a_version_independent_canonical_allowlist`,
+   `canonical_method_metrics_survive_fman_projection_from_any_release`,
+   `release_markers_are_optional_and_invalid_markers_are_local`, and
    `malformed_and_hostile_cardinality_are_bounded` cover unknown shape and
    generated-suffix lookalikes, extra labels, identity override, malformed and
    duplicate input, incomplete histograms, and the exact hostile sample bound.

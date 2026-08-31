@@ -96,7 +96,9 @@ conclusion nor a real production deployment.
 The property excludes multi-active collectors, remote or split database/archive
 storage, best-effort source-journal loss before collection, arbitrary
 whole-volume rollback, telemetry accepted after a backup recovery point,
-inventory or upstream method-family changes without a new reviewed pin,
+inventory changes without a new reviewed inventory, or upstream method-family
+enablement without a reviewed version-independent bounded/canonical label
+contract,
 dependencies and load outside declared bounds, and Prometheus/Grafana behavior
 outside the direct deployment axioms. These boundaries narrow the quantified
 property; they do not classify an in-scope failure as harmless.

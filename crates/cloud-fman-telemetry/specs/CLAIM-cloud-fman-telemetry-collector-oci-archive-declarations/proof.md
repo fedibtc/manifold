@@ -36,9 +36,9 @@ delivery, network policy, and deployment selection are outside the claim.
 3. **[test] Closed OCI metadata.** The check compares both exposed ports, the
    sole data-volume declaration, healthcheck, OCI labels, and the complete
    environment against exact expected values.
-4. **[test, enum] Nine environment defaults.** The expected environment is
-   public bind, private bind, data path, key-file path, metrics cadence, source
-   version, source hash, journal cadence, and `SSL_CERT_FILE`. No other
+4. **[test, enum] Seven environment defaults.** The expected environment is
+   public bind, private bind, data path, key-file path, metrics cadence, journal
+   cadence, and `SSL_CERT_FILE`. No other
    environment entry or application-secret value can satisfy the equality.
 5. **[code] Configured publication route.** The publish workflow builds the
    release aggregate and passes its cloud-collector member to

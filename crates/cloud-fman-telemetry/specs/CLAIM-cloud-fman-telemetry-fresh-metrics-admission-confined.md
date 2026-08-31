@@ -3,17 +3,17 @@
 For arbitrary metrics response bytes and `MetricsIdentity` values passed to one
 call of `MetricsPolicy::admit_until`, a successful result cannot contain an
 explicitly reviewed-deny or unknown metric family, an input label key outside
-an admitted family's exact policy
-shape, an input-supplied collector identity label, a duplicate series, an
-incomplete histogram, a non-finite or sign-negative value, more than 20,000
-samples, or more than 2 MiB of rendered samples. Each result adds exactly the
-four collector identity keys with the values supplied in `MetricsIdentity`.
+an admitted family's exact policy shape, an input label value outside its
+source-coded bound, an input-supplied collector identity label, a duplicate
+series, an incomplete histogram, a non-finite or sign-negative value, more than
+20,000 samples, or more than 2 MiB of rendered samples. Each result adds exactly
+the four collector identity keys with the values supplied in `MetricsIdentity`.
 Absent one of the global failures below, an unknown, reviewed-deny, or locally
 invalid admitted family cannot suppress an unrelated independently valid
-admitted family. Complete failure is limited to a missing or invalid required
-release marker, invalid UTF-8 or unisolatable family boundary, global
-resource/deadline exhaustion, or failure to render within the global output
-bound.
+admitted family. Complete failure is limited to invalid UTF-8 or an
+unisolatable family boundary, global resource/deadline exhaustion, or failure
+to render within the global output bound. A missing, duplicate, or invalid
+release-marker family is a family-local discard.
 
 “Admitted” means the source-coded `shape` table in this revision. Exact
 source-coded reviewed-deny families are discarded in full before their labels

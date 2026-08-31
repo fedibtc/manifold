@@ -544,7 +544,7 @@ impl Store {
         Ok(changed == 1)
     }
 
-    /// Bind durable metrics state to the exact source and inventory policy.
+    /// Bind durable metrics state to the exact inventory policy.
     pub(crate) async fn configure_metrics_policy(
         &self,
         fingerprint: &str,
@@ -933,7 +933,7 @@ impl Store {
     /// Read one lifecycle-consistent private metrics exposition view.
     pub(crate) async fn metric_exposition(
         &self,
-        policy: &MetricsPolicy<'_>,
+        policy: &MetricsPolicy,
         now: i64,
         now_ms: i64,
         stale_after: i64,
@@ -1160,7 +1160,7 @@ impl Store {
 
     pub(crate) async fn metric_snapshots(
         &self,
-        policy: &MetricsPolicy<'_>,
+        policy: &MetricsPolicy,
         now_seconds: i64,
         now_ms: i64,
     ) -> Result<LoadedMetricSnapshots, StoreError> {
@@ -1914,12 +1914,8 @@ mod tests {
         }
     }
 
-    fn metrics_policy() -> MetricsPolicy<'static> {
-        MetricsPolicy {
-            version: "test-version",
-            version_hash: "test-hash",
-            canonical_method_labels: false,
-        }
+    fn metrics_policy() -> MetricsPolicy {
+        MetricsPolicy
     }
 
     fn stored_samples(seat: &str, value: u64) -> Vec<String> {

@@ -32,6 +32,17 @@ mixed rollout, new collectors therefore accept old raw FMan responses, while an
 old collector accepts a new FMan response as a strict safe subset of source
 metrics.
 
+The collector does not require a matching FMan, Fedimint, or build version.
+`app_start_ts` is optional bounded source metadata: an absent, duplicate, or
+locally invalid marker discards only that family, not independently valid metric
+families or safe journals. The fixed ALPN
+`fedi/fman/guardian-telemetry/1` is the protocol-version compatibility boundary.
+A future incompatible telemetry protocol must negotiate another ALPN/version;
+release metadata is not a substitute for that protocol negotiation.
+Method-labelled API families likewise use the same compiled canonical-method
+allowlist at both boundaries for every release; a raw or unrecognized method
+value discards its family.
+
 ## Why this shape
 
 The stakeholder decision in

@@ -37,6 +37,6 @@ execution.
   stderr, span fields, or rendered child output. The source owns the payload
   fields of each approved event; this claim does not independently classify
   those fields.
-- The configured source version/hash identifies the reviewed current metric
-  inventory. Method families are enabled only for the separately reviewed
-  combined source hash with both required canonicalizers.
+- The reviewed source inventory identifies the current admitted metric shapes.
+  Source release metadata does not authorize or reject a target; method-labeled
+  families admit only their source-coded canonical method labels.

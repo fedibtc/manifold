@@ -344,8 +344,10 @@ immutable exposition generation may be live at a time; concurrent scrapes
 share it, while a changed revision gets HTTP 429 until slow readers release the
 old backing. Per-seat admitted text is capped at 2 MiB so JSON serialization stays
 within the 4 MiB durable row bound. A policy fingerprint covers the inventory
-revision, exact configured release/hash, and method-source gate. A fingerprint
-change atomically discards snapshots and poll deadlines; Prometheus owns history.
+revision and unconditional static method allowlist. FMan, Fedimint, and build
+release metadata do not authorize targets or enable metric families; a
+non-allowlisted method taints only its own family. A fingerprint change atomically
+discards snapshots and poll deadlines; Prometheus owns history.
 Shutdown and worker-failure paths stop new metrics work but join any cadence
 reservation or snapshot commit already in its durability segment. As with
 safe-journal commits, storage-device completion retains the operating system

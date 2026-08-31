@@ -28,10 +28,10 @@ alone cannot establish an external control.
    encryption, and key rotation to deployment systems. It requires actual
    network policy/firewall isolation and a negative reachability test for the
    unauthenticated private listener; the daemon boolean is only an assertion.
-3. **[code] Source and external telemetry.** The guide requires deployed source
-   pins and canonicalizer correspondence beyond local string validation. It
-   specifies Prometheus timestamp/staleness settings and assigns TSDB, WAL,
-   remote write, and Grafana query ownership to the external backend.
+3. **[code] Protocol and external telemetry.** The guide identifies the telemetry
+   ALPN as the wire-compatibility boundary and prohibits FMan/Fedimint release
+   allowlists. It specifies Prometheus timestamp/staleness settings and assigns
+   TSDB, WAL, remote write, and Grafana query ownership to the external backend.
 4. **[code] Backup, capacity, and lifecycle.** The guide requires a stopped,
    coupled SQLite/WAL/archive/key recovery point; private empty-volume restore;
    storage headroom and poison/capacity response; readiness before traffic; and

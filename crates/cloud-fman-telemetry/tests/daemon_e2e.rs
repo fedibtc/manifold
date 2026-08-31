@@ -134,8 +134,6 @@ async fn real_daemon_registers_pulls_persists_and_restarts() {
     .env("CLOUD_FMAN_TELEMETRY_KEY_FILE", "/nonexistent")
     .env("CLOUD_FMAN_TELEMETRY_KEY_ID", "test")
     .env("CLOUD_FMAN_TELEMETRY_ENVIRONMENT", "development")
-    .env("CLOUD_FMAN_TELEMETRY_METRICS_SOURCE_VERSION", "test")
-    .env("CLOUD_FMAN_TELEMETRY_METRICS_SOURCE_VERSION_HASH", "hash")
     .output()
     .await
     .expect("run fail-closed E2E configuration probe");
@@ -395,8 +393,6 @@ async fn start_daemon(
         .env("CLOUD_FMAN_TELEMETRY_KEY_FILE", key)
         .env("CLOUD_FMAN_TELEMETRY_KEY_ID", "test-key")
         .env("CLOUD_FMAN_TELEMETRY_ENVIRONMENT", "development")
-        .env("CLOUD_FMAN_TELEMETRY_METRICS_SOURCE_VERSION", "test")
-        .env("CLOUD_FMAN_TELEMETRY_METRICS_SOURCE_VERSION_HASH", "hash")
         .env("CLOUD_FMAN_TELEMETRY_E2E_IROH_ENDPOINT_ADDR", endpoint)
         .env("CLOUD_FMAN_TELEMETRY_E2E_POLL_MILLIS", "100")
         .env("CLOUD_FMAN_TELEMETRY_E2E_ISSUER", issuer)

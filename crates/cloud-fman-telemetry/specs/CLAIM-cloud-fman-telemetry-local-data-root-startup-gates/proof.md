@@ -33,12 +33,10 @@ cipher, parser, and operating-system semantics.
    credential-free HTTPS origin with no query, fragment, path, or trailing
    slash; equal listeners; non-loopback private bind without the isolation
    assertion; empty or over-128-byte key id; lease at most 60; metrics cadence
-   other than 900 or 1800; metrics concurrency outside `1..=32`; empty or
-   over-128-byte source version/hash; production `REPLACE_ME` source values;
-   journal cadence outside `10..=86400`; journal concurrency outside `1..=32`;
-   quota outside 1 MiB..=10 GiB; retention outside `1..=30`; and an
-   unrecognized environment. Clap separately parses socket/IP syntax and
-   trusted proxies. `canonical_method_labels` remains an operator assertion.
+   other than 900 or 1800; metrics concurrency outside `1..=32`; journal cadence
+   outside `10..=86400`; journal concurrency outside `1..=32`; quota outside
+   1 MiB..=10 GiB; retention outside `1..=30`; and an unrecognized environment.
+   Clap separately parses socket/IP syntax and trusted proxies.
    The `defe-test-support` branch adds direct-endpoint test configuration and is
    explicitly outside this production-build claim.
 2. **[code, test] Root and known-path gate.** `DataRootLock::acquire` creates a
@@ -79,5 +77,4 @@ guarantee.
 
 Filesystem and process behavior, SQLite, and authenticated encryption remain
 axioms. Validator completeness and startup ordering are `code`; focused tests
-pin the high-risk non-loopback, production-placeholder, pathname, lock, and
-identity paths.
+pin the high-risk non-loopback, pathname, lock, and identity paths.
