@@ -12,8 +12,7 @@ use nostr_sdk::Timestamp;
 
 use crate::formation::{DriverRun, finish_driver_run, start_driver_run};
 use crate::{
-    FederationConsensusReader, FiClient, FiError, FiIdentity, FiPayments, FiResult,
-    FleetManagerConnector,
+    FederationConsensusReader, FiClient, FiError, FiPayments, FiResult, FleetManagerConnector,
 };
 
 /// One authenticated setup-payment federation and the invite that joins it.
@@ -49,9 +48,8 @@ impl AdmittedSetupPaymentFederation {
     }
 }
 
-impl<I, P, N, F, C> FiClient<I, P, N, F, C>
+impl<P, N, F, C> FiClient<P, N, F, C>
 where
-    I: FiIdentity,
     P: FiPayments,
     N: FiNostrClient,
     F: FleetManagerConnector,

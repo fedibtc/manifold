@@ -17,6 +17,7 @@ fedi-decentralized-service-fleet-manager = { path = "../service-fleet-manager" }
 fedi-decentralized-service-liquidity-manager = { path = "../service-liquidity-manager" }
 fedi-iroh-rpc = { path = "../fedi-iroh-rpc" }
 fedimint-core.workspace = true
+fedimint-derive-secret.workspace = true
 futures = "0.3"
 hex = "0.4"
 hkdf = "0.12"

@@ -24,6 +24,7 @@ use fedimint_core::PeerId;
 use fedimint_core::db::{IRawDatabaseExt as _, mem_impl::MemDatabase};
 use fedimint_core::invite_code::InviteCode as FedimintInviteCode;
 use fedimint_core::util::SafeUrl;
+use fedimint_derive_secret::DerivableSecret;
 use nostr_sdk::{Event, EventBuilder, Keys, Kind, PublicKey, Tag};
 use secp256k1::{Keypair, SECP256K1, SecretKey};
 use stability_pool_common::{Account, AccountType};
@@ -117,71 +118,31 @@ fn peer_badge_verifier(environment: ManifoldEnvironment) -> PeerBadgeVerifier {
     .expect("test PeerBadge verifier")
 }
 
-#[derive(Clone, Copy)]
 struct TestIdentity;
 
 impl TestIdentity {
-    fn keypair() -> Keypair {
-        Keypair::from_secret_key(
-            SECP256K1,
-            &SecretKey::from_byte_array(&[7; 32]).expect("valid test secret"),
-        )
+    fn root() -> DerivableSecret {
+        DerivableSecret::new_root(&[7; 32], b"fi-client-test-root")
     }
 
     fn fi_id() -> FiId {
-        FiId(Self::keypair().x_only_public_key().0)
+        Self::keys().fi_id()
+    }
+
+    fn keys() -> crate::identity::FiKeys {
+        crate::identity::FiKeys::new(Self::root(), ManifoldEnvironment::Development)
     }
 }
 
-impl FiIdentity for TestIdentity {
-    fn public_key(&self) -> Result<FiId, String> {
-        Ok(Self::fi_id())
-    }
-
-    fn sign_digest(&self, digest: [u8; 32]) -> Result<FiSignature, String> {
-        Ok(FiSignature(
-            SECP256K1.sign_schnorr_no_aux_rand(&digest, &Self::keypair()),
-        ))
-    }
-
-    fn backup_keys(&self) -> Result<FiBackupKeys, String> {
-        FiBackupKeys::derive(
-            &Self::keypair().secret_bytes(),
-            ManifoldEnvironment::Development,
-        )
-        .map_err(|error| error.to_string())
-    }
-}
-
-#[derive(Clone, Copy)]
 struct OtherIdentity;
 
 impl OtherIdentity {
-    fn keypair() -> Keypair {
-        Keypair::from_secret_key(
-            SECP256K1,
-            &SecretKey::from_byte_array(&[8; 32]).expect("valid test secret"),
-        )
-    }
-}
-
-impl FiIdentity for OtherIdentity {
-    fn public_key(&self) -> Result<FiId, String> {
-        Ok(FiId(Self::keypair().x_only_public_key().0))
+    fn root() -> DerivableSecret {
+        DerivableSecret::new_root(&[8; 32], b"fi-client-test-root")
     }
 
-    fn sign_digest(&self, digest: [u8; 32]) -> Result<FiSignature, String> {
-        Ok(FiSignature(
-            SECP256K1.sign_schnorr_no_aux_rand(&digest, &Self::keypair()),
-        ))
-    }
-
-    fn backup_keys(&self) -> Result<FiBackupKeys, String> {
-        FiBackupKeys::derive(
-            &Self::keypair().secret_bytes(),
-            ManifoldEnvironment::Development,
-        )
-        .map_err(|error| error.to_string())
+    fn fi_id() -> FiId {
+        crate::identity::FiKeys::new(Self::root(), ManifoldEnvironment::Development).fi_id()
     }
 }
 
@@ -3061,8 +3022,7 @@ fn formation_run_options_enforce_boundaries_and_lease_horizon() {
     );
 }
 
-type TestClient =
-    FiClient<TestIdentity, TestPayments, TestRegistry, TestConnector, TestConsensusReader>;
+type TestClient = FiClient<TestPayments, TestRegistry, TestConnector, TestConsensusReader>;
 
 trait TestSetupPaymentSelection {
     async fn select_setup_payment_federation_for_test(
@@ -3119,7 +3079,7 @@ async fn open_client_that_cannot_pay(
     FiClient::open_inner(
         database,
         FiClientPorts {
-            identity: TestIdentity,
+            identity: TestIdentity::keys(),
             payments,
             registry: TestRegistry::default(),
             fman_connector: TestConnector {
@@ -3225,7 +3185,7 @@ async fn open_client_with_registry_reader_and_fee_account(
     FiClient::open_inner(
         database,
         FiClientPorts {
-            identity: TestIdentity,
+            identity: TestIdentity::keys(),
             payments,
             registry,
             fman_connector: TestConnector { state, config },
@@ -3256,7 +3216,7 @@ async fn open_client_with_verifier(
     FiClient::open_inner(
         database,
         FiClientPorts {
-            identity: TestIdentity,
+            identity: TestIdentity::keys(),
             payments,
             registry,
             fman_connector: TestConnector {
@@ -3302,7 +3262,7 @@ async fn open_client_with_store_and_registry(
         inner: Arc::new(FiClientInner {
             store,
             ports: FiClientPorts {
-                identity: TestIdentity,
+                identity: TestIdentity::keys(),
                 payments,
                 registry,
                 fman_connector: TestConnector {
@@ -3784,7 +3744,7 @@ async fn intent_and_locator_validation_precede_external_calls() {
         client
             .inner
             .store
-            .load_recovery(TestIdentity.public_key().unwrap())
+            .load_recovery(TestIdentity::fi_id())
             .await
             .unwrap(),
         FiRecovery::Idle
@@ -4170,7 +4130,7 @@ async fn backup_rejects_wrong_identity_and_checksum_corruption() {
     let other_store = db::FiStore::new(MemDatabase::new().into_database());
     assert!(matches!(
         other_store
-            .restore_backup(OtherIdentity.public_key().unwrap(), &backup)
+            .restore_backup(OtherIdentity::fi_id(), &backup)
             .await,
         Err(FiError::Storage(message)) if message.contains("different FI identity")
     ));
@@ -4255,7 +4215,8 @@ async fn inconsistent_formed_storage_is_rejected_before_status_publication() {
 
         let reopened = FiClient::open(
             database,
-            TestIdentity,
+            TestIdentity::root(),
+            ManifoldEnvironment::Development,
             payments,
             TestRegistry::default(),
             TestConnector {
@@ -4869,7 +4830,8 @@ async fn persisted_formation_rejects_a_different_identity_before_observation() {
 
     let reopened = FiClient::open(
         database,
-        OtherIdentity,
+        OtherIdentity::root(),
+        ManifoldEnvironment::Development,
         payments,
         TestRegistry::default(),
         TestConnector {
@@ -4918,7 +4880,8 @@ async fn pre_tombstone_schema_record_is_rejected_fail_closed() {
 
     let reopened = FiClient::open(
         database,
-        TestIdentity,
+        TestIdentity::root(),
+        ManifoldEnvironment::Development,
         payments,
         TestRegistry::default(),
         TestConnector {
@@ -6656,7 +6619,8 @@ async fn generic_open_fails_closed_for_the_deployment_fedi_fee_account() {
     let fman_state = Arc::new(FmanState::default());
     let client = FiClient::open(
         MemDatabase::new().into_database(),
-        TestIdentity,
+        TestIdentity::root(),
+        ManifoldEnvironment::Development,
         payments,
         TestRegistry::default(),
         TestConnector {

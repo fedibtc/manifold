@@ -43,8 +43,8 @@ use serde::Serialize;
 
 use crate::formation::DriverRun;
 use crate::{
-    FederationConsensusReader, FiClient, FiError, FiIdentity, FiPayments, FiResult,
-    FleetManagerConnector, FormationFreshness, FormationId, FormationPhase, FormationRunOptions,
+    FederationConsensusReader, FiClient, FiError, FiPayments, FiResult, FleetManagerConnector,
+    FormationFreshness, FormationId, FormationPhase, FormationRunOptions,
     LiquidityProviderConnector, Locator, SeatId,
 };
 
@@ -467,9 +467,8 @@ where
     }
 }
 
-impl<I, P, N, F, C> FiClient<I, P, N, F, C>
+impl<P, N, F, C> FiClient<P, N, F, C>
 where
-    I: FiIdentity,
     P: FiPayments,
     N: FiNostrClient,
     F: FleetManagerConnector,
@@ -851,7 +850,7 @@ where
         let Some(gateway_api) = gateway_api else {
             return operation.snapshot();
         };
-        self.register_gateway_pinned(gateway_api.clone(), self.fi_id()?, run)
+        self.register_gateway_pinned(gateway_api.clone(), self.fi_id(), run)
             .await?;
         self.inner
             .store
@@ -1058,12 +1057,7 @@ where
                 ));
             }
         }
-        let fi_id = self
-            .inner
-            .ports
-            .identity
-            .public_key()
-            .map_err(FiError::Identity)?;
+        let fi_id = self.fi_id();
         let recovery = match self.inner.store.load_recovery(fi_id).await? {
             crate::db::FiRecovery::Idle => return Err(FiError::NoActiveFormation),
             crate::db::FiRecovery::Formation(recovery) => *recovery,
@@ -1323,12 +1317,7 @@ where
     }
 
     fn requester_pubkey(&self) -> FiResult<Pubkey> {
-        self.inner
-            .ports
-            .identity
-            .public_key()
-            .map(|id| Pubkey(id.0.to_string()))
-            .map_err(FiError::Identity)
+        Ok(Pubkey(self.fi_id().0.to_string()))
     }
 
     fn sign_public_rpc<T>(&self, domain: PublicRpcPayloadDomain, payload: T) -> FiResult<Signed<T>>
@@ -1337,12 +1326,7 @@ where
     {
         let hash = public_rpc_payload_hash(domain, &payload)
             .map_err(|error| FiError::Liquidity(format!("hashing provider RPC: {error}")))?;
-        let signature = self
-            .inner
-            .ports
-            .identity
-            .sign_digest(hash.0)
-            .map_err(FiError::Identity)?;
+        let signature = self.inner.ports.identity.sign_digest(hash.0);
         Ok(Signed {
             payload,
             proof: PayloadProof {

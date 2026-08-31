@@ -360,12 +360,11 @@ backups according to their wallet policy.
 Avoid snapshots, locators, invite codes, push-hook capabilities, or detailed
 remote errors in routine logs and telemetry.
 
-The single `FiIdentity` capability derives backup keys directly from its stable
-root with fixed HKDF labels and distinct environment salts. Backup author and
-content keys are separate from each other and from the FI protocol key.
-`sign_digest` is never key-derivation input: BIP-340 auxiliary randomness would
-make such a key unstable. Root, protocol, author-secret, and content-key bytes
-have no formatting or serialization surface.
+The consumer supplies one stable FI-scoped `DerivableSecret`; it never supplies
+protocol or backup keys. `fi-client` converts that exact root to the protocol
+key and derives backup keys with fixed HKDF labels and distinct environment
+salts. Root, protocol, author-secret, and content-key bytes have no formatting,
+serialization, or storage surface.
 
 Identity and payment adapter errors crossing the public boundary must be
 sanitized. Never add `Debug`, serialization, metrics, or error formatting that

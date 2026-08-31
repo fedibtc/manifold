@@ -3,8 +3,8 @@
 ## Status
 
 `fi-client` implements a formed-only portable `FiBackup` and its encrypted
-`EncryptedFiBackup` envelope. One `FiIdentity` derives environment-separated
-backup author and content keys from its stable root. Encryption uses zstd,
+`EncryptedFiBackup` envelope. The consumer supplies one FI-scoped root;
+`fi-client` derives its protocol, backup-author, and content keys. Encryption uses zstd,
 random 8/16/32/64-KiB padding, and XChaCha20-Poly1305 bound to the provisional
 kind-`37706` coordinate. The backup excludes setup-payment policy, driver
 leases, and consumer secrets and restores atomically into an empty namespace
@@ -49,10 +49,10 @@ Backups are published as encrypted addressable Nostr events authored by a separa
 
 From [`ARCH-fi-client`](../crates/fi-client/specs/ARCH-fi-client.md) and `docs/fedi-app/fedi-app.md`:
 
-- The consumer supplies one FI identity capability backed by its stable root.
+- The consumer supplies one stable FI-scoped root from its app key hierarchy.
 - `fi-client` uses durable storage for session state and can resume from checkpoints.
-- The identity exposes the FI protocol key operations and derives the separate
-  environment-scoped backup key family; root and protocol secrets remain hidden.
+- `fi-client` derives the protocol key and the separate environment-scoped
+  backup key family; none of those secrets are exposed or persisted.
 - FMan setup and maintenance are FI-pulled. There is no FMan push channel.
 
 From `crates/fman/specs/SPEC-fi-rpc.md` and
@@ -83,12 +83,14 @@ ordinary local crash-recovery state and is outside the backup format.
 
 ## Key derivation
 
-The app derives independent key families from the existing master seed or root secret bytes using domain-separated HKDF-SHA256. The exact root input must be the same stable binary root used by the existing app key hierarchy, not the mnemonic string if the app already normalizes the mnemonic into a root seed.
+The app scopes its existing root to FI child 17 and passes that `DerivableSecret`
+to `fi-client`. `fi-client` converts it directly to the protocol secp256k1 key,
+preserving Fedi's existing identity, and uses its deterministic raw-byte output
+as the input to environment-separated HKDF-SHA256 backup derivation.
 
 Domain labels:
 
 ```text
-fedi-fi/protocol-signing/v1
 fedi-fi-backup/nostr-author/v1
 fedi-fi-backup/content-encryption/v1
 ```

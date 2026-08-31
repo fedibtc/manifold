@@ -8,6 +8,7 @@ mod discovery;
 mod error;
 mod formation;
 mod guardian_fee_ppm;
+mod identity;
 mod liquidity;
 mod maintenance;
 mod ports;
@@ -18,17 +19,16 @@ mod unavailable;
 
 use std::sync::Arc;
 
-use fedi_decentralized_manifold_environment::ManifoldEnvironmentProfile;
+use fedi_decentralized_manifold_environment::{ManifoldEnvironment, ManifoldEnvironmentProfile};
 use fedi_decentralized_nostr_clients::FiNostrClient;
 use fedi_decentralized_peer_badge_verifier::PeerBadgeVerifier;
 use fedimint_core::db::Database;
+use fedimint_derive_secret::DerivableSecret;
 use nostr_sdk::PublicKey;
 use stability_pool_common::Account;
 use tokio::sync::{Mutex, watch};
 
-pub use backup::{
-    EncryptedFiBackup, FI_BACKUP_D_TAG, FI_BACKUP_EVENT_KIND, FiBackup, FiBackupKeys,
-};
+pub use backup::{EncryptedFiBackup, FI_BACKUP_D_TAG, FI_BACKUP_EVENT_KIND, FiBackup};
 pub use discovery::{
     AdvertisementRejection, EligibleFmanCandidate, FMAN_ADVERTISEMENT_MAX_AGE,
     FMAN_ADVERTISEMENT_MAX_HOLDER_AUTHORIZATIONS, FMAN_DISCOVERY_TIMEOUT,
@@ -72,10 +72,9 @@ pub use maintenance::{
 pub use ports::{
     ExactPaymentPreflight, ExactSeatPaymentPreflight, FederationConsensusError,
     FederationConsensusReader, FederationConsensusSnapshot, FiFeeAccountError,
-    FiFeeAccountProvider, FiIdentity, FiPaymentError, FiPayments, FleetManagerCallError,
-    FleetManagerConnector, FleetManagerConnectorError, LiquidityProviderConnector,
-    LiquidityProviderConnectorError, PaymentReservationRecovery, PreparedSeatPayment,
-    SeatPaymentRecovery, SettledSeatRefund,
+    FiFeeAccountProvider, FiPaymentError, FiPayments, FleetManagerCallError, FleetManagerConnector,
+    FleetManagerConnectorError, LiquidityProviderConnector, LiquidityProviderConnectorError,
+    PaymentReservationRecovery, PreparedSeatPayment, SeatPaymentRecovery, SettledSeatRefund,
 };
 pub use selection::{
     FMAN_SELECTION_PREVIEW_VALIDITY, FMAN_SELECTION_PROBE_TIMEOUT, FmanReplacementApproval,
@@ -103,16 +102,17 @@ pub use unavailable::{
 };
 
 use crate::db::FiStore;
+use crate::identity::FiKeys;
 use crate::ports::FiClientPorts;
 
 /// Stateful Federation Initiator client.
-pub struct FiClient<I, P, N, F, C> {
-    inner: Arc<FiClientInner<I, P, N, F, C>>,
+pub struct FiClient<P, N, F, C> {
+    inner: Arc<FiClientInner<P, N, F, C>>,
 }
 
-struct FiClientInner<I, P, N, F, C> {
+struct FiClientInner<P, N, F, C> {
     store: FiStore,
-    ports: FiClientPorts<I, P, N, F, C>,
+    ports: FiClientPorts<P, N, F, C>,
     progress: watch::Sender<FiStatus>,
     run_guard: Mutex<()>,
     peer_badge_verifier: PeerBadgeVerifier,
@@ -120,7 +120,7 @@ struct FiClientInner<I, P, N, F, C> {
     fedi_guardian_fee_account: Option<Account>,
 }
 
-impl<I, P, N, F, C> Clone for FiClient<I, P, N, F, C> {
+impl<P, N, F, C> Clone for FiClient<P, N, F, C> {
     fn clone(&self) -> Self {
         Self {
             inner: self.inner.clone(),
@@ -128,9 +128,8 @@ impl<I, P, N, F, C> Clone for FiClient<I, P, N, F, C> {
     }
 }
 
-impl<I, P, N, F, C> FiClient<I, P, N, F, C>
+impl<P, N, F, C> FiClient<P, N, F, C>
 where
-    I: FiIdentity,
     P: FiPayments,
     N: FiNostrClient,
     F: FleetManagerConnector,
@@ -138,7 +137,7 @@ where
 {
     /// Open FI state from a consumer-provided, already-namespaced database.
     ///
-    /// The same stable identity must be supplied on every reopen. Durable
+    /// The same stable, consumer-scoped FI root must be supplied on every reopen. Durable
     /// state is identity-bound before it is observed. Mutating operations also
     /// acquire a database-wide expiring lease, so separately opened clients
     /// cannot concurrently perform external effects.
@@ -159,7 +158,8 @@ where
     )]
     pub async fn open(
         database: Database,
-        identity: I,
+        fi_root: DerivableSecret,
+        environment: ManifoldEnvironment,
         payments: P,
         registry: N,
         fman_connector: F,
@@ -170,7 +170,7 @@ where
         Self::open_inner(
             database,
             FiClientPorts {
-                identity,
+                identity: FiKeys::new(fi_root, environment),
                 payments,
                 registry,
                 fman_connector,
@@ -201,7 +201,8 @@ where
     )]
     pub async fn open_with_setup_payment_publisher(
         database: Database,
-        identity: I,
+        fi_root: DerivableSecret,
+        environment: ManifoldEnvironment,
         payments: P,
         registry: N,
         fman_connector: F,
@@ -214,7 +215,7 @@ where
         Self::open_inner(
             database,
             FiClientPorts {
-                identity,
+                identity: FiKeys::new(fi_root, environment),
                 payments,
                 registry,
                 fman_connector,
@@ -239,7 +240,7 @@ where
     #[allow(clippy::too_many_arguments)]
     pub async fn open_with_manifold_profile(
         database: Database,
-        identity: I,
+        fi_root: DerivableSecret,
         payments: P,
         registry: N,
         fman_connector: F,
@@ -248,12 +249,13 @@ where
         fi_fee_account_provider: impl FiFeeAccountProvider,
         profile: ManifoldEnvironmentProfile,
     ) -> FiResult<Self> {
+        let environment = profile.environment();
         let setup_payment_publisher = profile.setup_payment_publisher().copied();
         let fedi_guardian_fee_account = profile.fedi_guardian_fee_account().cloned();
         Self::open_inner(
             database,
             FiClientPorts {
-                identity,
+                identity: FiKeys::new(fi_root, environment),
                 payments,
                 registry,
                 fman_connector,
@@ -270,13 +272,13 @@ where
     #[allow(clippy::too_many_arguments)]
     async fn open_inner(
         database: Database,
-        ports: FiClientPorts<I, P, N, F, C>,
+        ports: FiClientPorts<P, N, F, C>,
         peer_badge_verifier: PeerBadgeVerifier,
         setup_payment_publisher: Option<PublicKey>,
         fedi_guardian_fee_account: Option<Account>,
     ) -> FiResult<Self> {
         let store = FiStore::new(database);
-        let fi_id = ports.identity.public_key().map_err(FiError::Identity)?;
+        let fi_id = ports.identity.fi_id();
         let status = store.load_status(fi_id).await?;
         let (progress, _) = watch::channel(status);
         Ok(Self {
@@ -304,6 +306,12 @@ where
         self.inner.progress.borrow().clone()
     }
 
+    /// Return the protocol identity derived from the consumer-scoped FI root.
+    #[must_use]
+    pub fn fi_id(&self) -> FiId {
+        self.inner.ports.identity.fi_id()
+    }
+
     /// Export one consistent, portable copy of a formed federation's recovery state.
     ///
     /// Export is unavailable before [`FormationPhase::Formed`]. The returned
@@ -311,13 +319,7 @@ where
     /// policy, and consumer-owned identity or wallet secrets are never included.
     pub async fn export_backup(&self) -> FiResult<FiBackup> {
         let _run = self.inner.run_guard.try_lock().map_err(|_| FiError::Busy)?;
-        let fi_id = self
-            .inner
-            .ports
-            .identity
-            .public_key()
-            .map_err(FiError::Identity)?;
-        self.inner.store.export_backup(fi_id).await
+        self.inner.store.export_backup(self.fi_id()).await
     }
 
     /// Restore a formed-federation backup into this client's empty database namespace.
@@ -327,39 +329,27 @@ where
     /// atomically, but performs no network, payment, or formation-resume work.
     pub async fn restore_backup(&self, backup: &FiBackup) -> FiResult<()> {
         let _run = self.inner.run_guard.try_lock().map_err(|_| FiError::Busy)?;
-        let fi_id = self
+        let status = self
             .inner
-            .ports
-            .identity
-            .public_key()
-            .map_err(FiError::Identity)?;
-        let status = self.inner.store.restore_backup(fi_id, backup).await?;
+            .store
+            .restore_backup(self.fi_id(), backup)
+            .await?;
         self.inner.progress.send_replace(status);
         Ok(())
     }
 
     /// Export a formed federation directly into its encrypted backup envelope.
     ///
-    /// The client's one [`FiIdentity`] derives the environment-separated
-    /// backup key family; callers never pass another identity or raw key.
+    /// `fi-client` derives the environment-separated backup key family from
+    /// the same scoped root as the protocol identity.
     pub async fn export_encrypted_backup(&self) -> FiResult<EncryptedFiBackup> {
-        let keys = self
-            .inner
-            .ports
-            .identity
-            .backup_keys()
-            .map_err(FiError::Identity)?;
+        let keys = self.inner.ports.identity.backup_keys();
         self.export_backup().await?.encrypt(&keys)
     }
 
     /// Decrypt and restore a formed backup into this client's empty namespace.
     pub async fn restore_encrypted_backup(&self, backup: &EncryptedFiBackup) -> FiResult<()> {
-        let keys = self
-            .inner
-            .ports
-            .identity
-            .backup_keys()
-            .map_err(FiError::Identity)?;
+        let keys = self.inner.ports.identity.backup_keys();
         let backup = backup.decrypt(&keys)?;
         self.restore_backup(&backup).await
     }
@@ -372,12 +362,7 @@ where
     /// payer, spending cap, or sealed selection approval.
     pub async fn create(&self, _intent: FormationIntent) -> FiResult<()> {
         let _run = self.inner.run_guard.try_lock().map_err(|_| FiError::Busy)?;
-        let _fi_pubkey = self
-            .inner
-            .ports
-            .identity
-            .public_key()
-            .map_err(FiError::Identity)?;
+        let _fi_pubkey = self.fi_id();
         let _ = (
             &self.inner.ports.payments,
             &self.inner.ports.registry,
@@ -436,12 +421,7 @@ where
         let _run = self.inner.run_guard.try_lock().map_err(|_| FiError::Busy)?;
         let options = FormationRunOptions::default();
         options.validate_for_start(&self.inner.store)?;
-        let fi_id = self
-            .inner
-            .ports
-            .identity
-            .public_key()
-            .map_err(FiError::Identity)?;
+        let fi_id = self.fi_id();
         let (deadline, lease) = formation::start_driver_run(&self.inner.store, options).await?;
         let result = async {
             let recovery = self.inner.store.load_recovery(fi_id).await?;

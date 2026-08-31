@@ -19,7 +19,7 @@ use crate::formation::{
 };
 use crate::{
     FederationConsensusError, FederationConsensusReader, FederationConsensusSnapshot, FiClient,
-    FiError, FiIdentity, FiPayments, FiResult, FleetManagerConnector, FormationPhase,
+    FiError, FiPayments, FiResult, FleetManagerConnector, FormationPhase,
 };
 
 const MAINTENANCE_RETRY_MAX_DELAY: Duration = Duration::from_secs(5);
@@ -172,9 +172,8 @@ enum MaintenanceConnection<C> {
     Retryable { index: u16, message: String },
 }
 
-impl<I, P, N, F, C> FiClient<I, P, N, F, C>
+impl<P, N, F, C> FiClient<P, N, F, C>
 where
-    I: FiIdentity,
     P: FiPayments,
     N: FiNostrClient,
     F: FleetManagerConnector,
@@ -194,7 +193,7 @@ where
         let _guard = self.inner.run_guard.try_lock().map_err(|_| FiError::Busy)?;
         let options = options.0;
         options.validate_for_start(&self.inner.store)?;
-        let fi_id = self.fi_id()?;
+        let fi_id = self.fi_id();
         let (deadline, lease) = start_driver_run(&self.inner.store, options).await?;
         let run = DriverRun::new(options, deadline, &lease);
         let result = self.register_gateway_pinned(gateway_api, fi_id, run).await;
@@ -394,7 +393,7 @@ where
         let _guard = self.inner.run_guard.try_lock().map_err(|_| FiError::Busy)?;
         let options = options.0;
         options.validate_for_start(&self.inner.store)?;
-        let fi_id = self.fi_id()?;
+        let fi_id = self.fi_id();
         let (deadline, lease) = start_driver_run(&self.inner.store, options).await?;
         let run = DriverRun::new(options, deadline, &lease);
         let (key, value) = update.into_field();

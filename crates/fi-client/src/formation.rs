@@ -27,13 +27,12 @@ use crate::db::{
 };
 use crate::selection::AvailabilityMismatch;
 use crate::{
-    FederationConsensusReader, FederationConsensusSnapshot, FiClient, FiError, FiIdentity,
-    FiPayments, FiResult, FiStatus, FleetManagerConnector, FmanReplacementApproval,
-    FmanReplacementPreview, FmanSelectionApproval, FmanSelectionRequest, FormationActionRequired,
-    FormationFreshness, FormationId, FormationIntent, FormationPhase, FormationSnapshot,
-    GuardianFeePpm, PaymentAuthorizationId, PaymentRequirements, PaymentReservationId,
-    PaymentReservationRecovery, ResolvedFormationIntent, SeatPaymentRecovery, SeatPhase,
-    SelectionReauthorizationReason,
+    FederationConsensusReader, FederationConsensusSnapshot, FiClient, FiError, FiPayments,
+    FiResult, FiStatus, FleetManagerConnector, FmanReplacementApproval, FmanReplacementPreview,
+    FmanSelectionApproval, FmanSelectionRequest, FormationActionRequired, FormationFreshness,
+    FormationId, FormationIntent, FormationPhase, FormationSnapshot, GuardianFeePpm,
+    PaymentAuthorizationId, PaymentRequirements, PaymentReservationId, PaymentReservationRecovery,
+    ResolvedFormationIntent, SeatPaymentRecovery, SeatPhase, SelectionReauthorizationReason,
 };
 
 /// Smallest duration represented without truncation by native and WASM runtime timers.
@@ -609,9 +608,8 @@ fn apply_authorized_effect_in_memory(
     Ok(())
 }
 
-impl<I, P, N, F, C> FiClient<I, P, N, F, C>
+impl<P, N, F, C> FiClient<P, N, F, C>
 where
-    I: FiIdentity,
     P: FiPayments,
     N: FiNostrClient,
     F: FleetManagerConnector,
@@ -824,7 +822,7 @@ where
         &self,
         options: crate::FmanDiscoveryOptions,
     ) -> FiResult<FmanReplacementPreview> {
-        let fi_id = self.fi_id()?;
+        let fi_id = self.fi_id();
         let recovery = self.active_recovery(fi_id).await?;
         let requirements =
             crate::db::replacement_requirements(&recovery.snapshot.formation_id, &recovery.seats)
@@ -902,7 +900,7 @@ where
     ) -> FiResult<()> {
         let _guard = self.inner.run_guard.try_lock().map_err(|_| FiError::Busy)?;
         options.validate_for_start(&self.inner.store)?;
-        let fi_id = self.fi_id()?;
+        let fi_id = self.fi_id();
         let (deadline, lease) = start_driver_run(&self.inner.store, options).await?;
         let run = DriverRun::new(options, deadline, &lease);
         let result = async {
@@ -1019,7 +1017,7 @@ where
     ) -> FiResult<()> {
         let _run = self.inner.run_guard.try_lock().map_err(|_| FiError::Busy)?;
         options.validate_for_start(&self.inner.store)?;
-        let fi_id = self.fi_id()?;
+        let fi_id = self.fi_id();
         let (deadline, lease) = start_driver_run(&self.inner.store, options).await?;
         let run = DriverRun::new(options, deadline, &lease);
         let result = async {
@@ -1088,7 +1086,7 @@ where
     ) -> FiResult<()> {
         let _run = self.inner.run_guard.try_lock().map_err(|_| FiError::Busy)?;
         options.validate_for_start(&self.inner.store)?;
-        let fi_id = self.fi_id()?;
+        let fi_id = self.fi_id();
         let (deadline, lease) = start_driver_run(&self.inner.store, options).await?;
         let run = DriverRun::new(options, deadline, &lease);
         let result = async {
@@ -1158,7 +1156,7 @@ where
     pub async fn abandon_formation(&self, options: FormationRunOptions) -> FiResult<()> {
         let _run = self.inner.run_guard.try_lock().map_err(|_| FiError::Busy)?;
         options.validate_for_start(&self.inner.store)?;
-        let fi_id = self.fi_id()?;
+        let fi_id = self.fi_id();
         // The same bounded run fences reconstruction and explicit release of
         // any exact pre-output wallet reservation before the local wipe.
         let (deadline, lease) = start_driver_run(&self.inner.store, options).await?;
@@ -1216,7 +1214,7 @@ where
                 "guardian fee ppm is below the published minimum of {min_send_ppm}"
             )));
         }
-        let fi_id = self.fi_id()?;
+        let fi_id = self.fi_id();
         let (deadline, lease) = start_driver_run(&self.inner.store, options).await?;
         let run = DriverRun::new(options, deadline, &lease);
         let key = MetaFieldKey(
@@ -1235,7 +1233,7 @@ where
         deadline: Instant,
         lease: &DriverLease,
     ) -> FiResult<()> {
-        let fi_id = self.fi_id()?;
+        let fi_id = self.fi_id();
         let run = DriverRun::new(options, deadline, lease);
         self.drive_pinned(recovery, fi_id, run).await
     }
@@ -4250,17 +4248,9 @@ where
             .send_replace(FiStatus::Formation(snapshot));
     }
 
-    pub(crate) fn fi_id(&self) -> FiResult<FiId> {
-        self.inner
-            .ports
-            .identity
-            .public_key()
-            .map_err(FiError::Identity)
-    }
-
     pub(crate) fn sign<T: FiSignedRequest>(&self, request: &T) -> FiResult<SignedRequest<T>> {
         SignedRequest::create_with_signer(request, |digest| {
-            self.inner.ports.identity.sign_digest(digest)
+            Ok::<_, String>(self.inner.ports.identity.sign_digest(digest))
         })
         .map_err(|error| FiError::Identity(error.to_string()))
     }

@@ -4,10 +4,9 @@ use std::sync::Arc;
 
 use fedi_decentralized_domain::BitcoinNetwork;
 use fedi_decentralized_service_fleet_manager::{
-    FederationId, FiId, FiSignature, FleetManagerService, FmResult, GetAvailabilityRequest,
-    GetAvailabilityResponse, GetQuoteRequest, GetQuoteResponse, InviteCode, Locator,
-    LockedBlindedSignature, MintGeneration, Plan, RefundIssuance, RefundTransaction,
-    SignatureVerified, SignedResponse,
+    FederationId, FleetManagerService, FmResult, GetAvailabilityRequest, GetAvailabilityResponse,
+    GetQuoteRequest, GetQuoteResponse, InviteCode, Locator, LockedBlindedSignature, MintGeneration,
+    Plan, RefundIssuance, RefundTransaction, SignatureVerified, SignedResponse,
 };
 use fedi_decentralized_service_liquidity_manager::PublicLiquidityApi;
 use fedi_iroh_rpc::iroh::EndpointAddr;
@@ -117,22 +116,6 @@ impl<'a> ExactPaymentPreflight<'a> {
     pub fn max_total_msats(&self) -> Option<u64> {
         self.max_total_msats
     }
-}
-
-/// Consumer-owned FI identity.
-///
-/// `fi-client` constructs and hashes protocol/domain-separated payloads. The
-/// consumer performs final signing and derives the separate backup key family
-/// from its stable root, so no protocol or root secret enters the library.
-pub trait FiIdentity: Send + Sync + 'static {
-    /// Return the FI's stable x-only public key.
-    fn public_key(&self) -> Result<FiId, String>;
-
-    /// Sign a library-constructed 32-byte digest.
-    fn sign_digest(&self, digest: [u8; 32]) -> Result<FiSignature, String>;
-
-    /// Derive the dedicated, environment-separated FI backup key family.
-    fn backup_keys(&self) -> Result<crate::FiBackupKeys, String>;
 }
 
 /// Sanitized failure to resolve the FI's own fee-recipient account.
@@ -656,8 +639,8 @@ pub trait FederationConsensusReader: Send + Sync + 'static {
     ) -> Result<Vec<fedi_decentralized_domain::GatewayApiUrl>, FederationConsensusError>;
 }
 
-pub(crate) struct FiClientPorts<I, P, N, F, C> {
-    pub(crate) identity: I,
+pub(crate) struct FiClientPorts<P, N, F, C> {
+    pub(crate) identity: crate::identity::FiKeys,
     pub(crate) payments: P,
     pub(crate) registry: N,
     pub(crate) fman_connector: F,

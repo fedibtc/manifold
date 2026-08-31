@@ -25,9 +25,10 @@ dependency-availability preconditions stated by the release.
 The following are axioms, copied from
 [the claim](../CLAIM-fi-client-production-ready.md):
 
-1. The consumer supplies one stable FI signing identity, protects and
-   namespaces the database, preserves it across supported restarts, and backs
-   it up with the identity and wallet recovery material needed to resume.
+1. The consumer supplies one stable FI-scoped root, protects and namespaces
+   the database, preserves it across supported restarts, and backs it up with
+   the root and wallet recovery material needed to resume. `fi-client` derives
+   every FI protocol and backup key from that root.
 2. The payment adapter makes each funding operation recoverable before
    committing value, recovers before creating a replacement, replays exact
    quote-bound payments and refund context, reports terminal rejection
@@ -80,7 +81,7 @@ prove their practical truth.
 | Material dimension | Assumptions that bound it | Local consequence |
 | --- | --- | --- |
 | Supported execution universe and time bounds | 6, 8, 9 | The argument ranges only over declared sizes, loads, dependencies, deadlines, recovery objective, and features; every nonterminal attempt has a unique next transition that completes within its allocation, and cumulative start/resume-to-terminal bounds fit the stated deadline or objective. |
-| Stable authority and resumable state | 1 | A supported restart retains the one FI authority and the namespaced durable state, identity, and wallet-recovery inputs required to continue. |
+| Stable authority and resumable state | 1 | A supported restart retains the one FI root, its derived authority, and the namespaced durable state and wallet-recovery inputs required to continue. |
 | Value commitment and refund effects | 2, 4, 7 | A value effect is recoverable before replacement, bound to its signed quote and exact replay context, and given one durable authorized key and at-most-once execution; signed refunds converge idempotently, and terminal rejection becomes an accurate typed input instead of a new commitment. |
 | Authentic lifecycle inputs | 3, 4, 5, 7 | Threshold configuration reads, authenticated RPCs, signed lifecycle artifacts, pinned trust roots and minimum-level policy, fresh clocks, authentic relays, and phase-valid client acceptance exclude fabricated consensus configuration, unauthenticated lifecycle facts, and substituted trust material. This proof does not establish the claim's selection behavior. |
 | Formation agreement, policy, and publication | 4, 7, 8 | The authenticated commitment, DKG, status, and invite contracts supply the agreement artifacts; the state machine preserves admitted payment policy and can publish `Formed` only after durable matching agreement by every selected seat. |
@@ -118,7 +119,7 @@ preconditions return.
 The claim does not cover unsupported formation sizes or workloads, unavailable
 dependencies after the stated availability preconditions are required again,
 features outside the enumerated envelope, consumer loss of the required
-identity/database/wallet-recovery material, or failures of the assumed adapters,
+root/database/wallet-recovery material, or failures of the assumed adapters,
 FMan, transport, trust services, clocks, cryptography, or persistence
 dependencies.
 

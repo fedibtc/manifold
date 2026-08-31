@@ -44,9 +44,8 @@ use crate::discovery::{
 };
 use crate::state::{MAX_FEDERATION_SIZE, MAX_FEDERATION_SIZE_EXCLUSIVE, MIN_FEDERATION_SIZE};
 use crate::{
-    FederationConsensusReader, FiClient, FiError, FiIdentity, FiPayments, FiResult,
-    FleetManagerConnector, GuardianReplacementRequirements, PlanPreference,
-    SelectionReauthorizationReason,
+    FederationConsensusReader, FiClient, FiError, FiPayments, FiResult, FleetManagerConnector,
+    GuardianReplacementRequirements, PlanPreference, SelectionReauthorizationReason,
 };
 
 /// How long one freshly fetched advertisement selection may authorize the
@@ -805,9 +804,8 @@ pub(crate) fn match_requested_availability<'a>(
         .ok_or(AvailabilityMismatch::Plan)
 }
 
-impl<I, P, N, F, C> FiClient<I, P, N, F, C>
+impl<P, N, F, C> FiClient<P, N, F, C>
 where
-    I: FiIdentity,
     P: FiPayments,
     N: FiNostrClient,
     F: FleetManagerConnector,

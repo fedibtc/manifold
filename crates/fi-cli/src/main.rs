@@ -20,16 +20,17 @@ use fedimint_core::Amount;
 use fedimint_core::core::OperationId as FedimintOperationId;
 use fedimint_core::encoding::Encodable as _;
 use fedimint_core::invite_code::InviteCode as FedimintInviteCode;
+use fedimint_derive_secret::DerivableSecret;
 use fi_client::{
     FederationConsensusError, FederationConsensusReader, FederationConsensusSnapshot,
-    FedimintFederationId, FiBackupKeys, FiClient, FiFeeAccountError, FiFeeAccountProvider,
-    FiIdentity, FiPaymentError, FiPayments, FiStatus, FleetManagerCallError, FleetManagerConnector,
-    FleetManagerConnectorError, FmanCandidateRequirements, FmanDiscoveryOptions, FmanRegistryQuery,
-    FmanSelectionRequest, FormationActionRequired, FormationIntent, FormationPhase,
-    FormationRunOptions, GuardianFeePpm, LiquidityOperationId, LiquidityProviderConnector,
-    LiquidityProviderConnectorError, LiquidityRequestIntent, MaintenanceRunOptions,
-    PaymentAuthorizationId, PaymentReservationRecovery, PlanPreference, PreparedSeatPayment,
-    SeatPaymentRecovery, SeatPaymentRequirement, SettledSeatRefund,
+    FedimintFederationId, FiClient, FiFeeAccountError, FiFeeAccountProvider, FiPaymentError,
+    FiPayments, FiStatus, FleetManagerCallError, FleetManagerConnector, FleetManagerConnectorError,
+    FmanCandidateRequirements, FmanDiscoveryOptions, FmanRegistryQuery, FmanSelectionRequest,
+    FormationActionRequired, FormationIntent, FormationPhase, FormationRunOptions, GuardianFeePpm,
+    LiquidityOperationId, LiquidityProviderConnector, LiquidityProviderConnectorError,
+    LiquidityRequestIntent, MaintenanceRunOptions, PaymentAuthorizationId,
+    PaymentReservationRecovery, PlanPreference, PreparedSeatPayment, SeatPaymentRecovery,
+    SeatPaymentRequirement, SettledSeatRefund,
 };
 use iroh::Endpoint;
 use iroh::endpoint::presets;
@@ -42,7 +43,7 @@ use payer::{
     LockedPaymentRecovery, LockedPaymentReservation, LockedPaymentTerminalRelease,
 };
 use rand::rngs::OsRng;
-use secp256k1::{Keypair, Secp256k1, SecretKey, XOnlyPublicKey};
+use secp256k1::SecretKey;
 use wallet::{Wallet, WalletSecret};
 use zeroize::{Zeroize, Zeroizing};
 
@@ -60,10 +61,10 @@ use output::CliOutput;
 use output::OutputFormat;
 
 const IDENTITY_FILE: &str = "fi-identity";
+const FI_ROOT_SALT: &[u8] = b"fedi-fi-cli/root/v1";
 const DATABASE_DIR: &str = "fi-client.db";
 
-type CliClient =
-    FiClient<CliIdentity, CliPayments, CliRegistry, CliFmanConnector, CliConsensusReader>;
+type CliClient = FiClient<CliPayments, CliRegistry, CliFmanConnector, CliConsensusReader>;
 
 #[derive(Debug, Parser)]
 #[command(
@@ -982,7 +983,7 @@ async fn run(
                 profile.clone(),
             )
             .await?;
-            let fi_pubkey = identity.public_key().map_err(anyhow::Error::msg)?;
+            let fi_pubkey = client.fi_id();
             if args.json {
                 output.init(fi_pubkey, &client.status())?;
             } else {
@@ -1677,10 +1678,12 @@ async fn open_client_with_fee_account_provider(
         .context("open FI database")?
         .into();
     let registry = setup_payment.registry(live_registry);
+    let fi_root = identity.root();
     match setup_payment.publisher {
         Some(publisher) => FiClient::open_with_setup_payment_publisher(
             database,
-            identity,
+            fi_root,
+            identity.environment,
             payments,
             registry,
             connector,
@@ -1694,7 +1697,7 @@ async fn open_client_with_fee_account_provider(
         .context("open FI client"),
         None => FiClient::open_with_manifold_profile(
             database,
-            identity,
+            fi_root,
             payments,
             registry,
             connector,
@@ -2885,6 +2888,10 @@ impl CliIdentity {
             environment,
         })
     }
+
+    fn root(&self) -> DerivableSecret {
+        DerivableSecret::new_root(&self.secret_key.secret_bytes(), FI_ROOT_SALT)
+    }
 }
 
 fn read_identity_bytes(reader: impl Read) -> std::io::Result<Vec<u8>> {
@@ -2893,30 +2900,10 @@ fn read_identity_bytes(reader: impl Read) -> std::io::Result<Vec<u8>> {
     Ok(bytes)
 }
 
-impl FiIdentity for CliIdentity {
-    fn public_key(&self) -> Result<FiId, String> {
-        let keypair = Keypair::from_secret_key(&Secp256k1::new(), &self.secret_key);
-        let (public_key, _) = XOnlyPublicKey::from_keypair(&keypair);
-        Ok(FiId(public_key))
-    }
-
-    fn sign_digest(&self, digest: [u8; 32]) -> Result<FiSignature, String> {
-        let secp = Secp256k1::new();
-        let keypair = Keypair::from_secret_key(&secp, &self.secret_key);
-        Ok(FiSignature(
-            secp.sign_schnorr_no_aux_rand(&digest, &keypair),
-        ))
-    }
-
-    fn backup_keys(&self) -> Result<FiBackupKeys, String> {
-        FiBackupKeys::derive(&self.secret_key.secret_bytes(), self.environment)
-            .map_err(|error| error.to_string())
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use clap::CommandFactory as _;
+    use secp256k1::{Keypair, Secp256k1};
 
     use super::*;
 
@@ -3445,16 +3432,9 @@ mod tests {
         let second =
             CliIdentity::load_or_create(dir.path(), false, ManifoldEnvironment::Development)
                 .unwrap();
-        assert_eq!(first.public_key().unwrap(), second.public_key().unwrap());
         assert_eq!(
-            first.backup_keys().unwrap().author_public_key(),
-            second.backup_keys().unwrap().author_public_key(),
-        );
-        let staging =
-            CliIdentity::load_or_create(dir.path(), false, ManifoldEnvironment::Staging).unwrap();
-        assert_ne!(
-            first.backup_keys().unwrap().author_public_key(),
-            staging.backup_keys().unwrap().author_public_key(),
+            first.root().to_random_bytes::<32>(),
+            second.root().to_random_bytes::<32>()
         );
 
         #[cfg(unix)]

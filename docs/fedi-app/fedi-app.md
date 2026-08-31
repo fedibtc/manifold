@@ -4,8 +4,8 @@
 
 The Fedi app is the primary consumer of
 [`fi-client`](../../crates/fi-client/specs/ARCH-fi-client.md). The bridge gives
-the library a root-derived FI identity, an isolated database namespace, an
-Iroh adapter, and a typed RPC surface. The front end supplies formation intent,
+the library an FI-scoped root, an isolated database namespace, an Iroh adapter,
+and a typed RPC surface. The front end supplies formation intent,
 presents the library's verified advertisement preview, selects one eligible
 joined payer, and invokes Pay-and-create. `fi-client` owns the guardian set,
 exact quotes, payment boundary, and formation transitions.
@@ -39,7 +39,7 @@ flowchart LR
 
 | Concern | Fedi owns | `fi-client` owns |
 | --- | --- | --- |
-| Identity | Derive and protect the stable FI key from the app root secret; sign requested digests | Construct every domain-separated protocol digest |
+| Identity | Derive and protect the FI-scoped root from the app root secret | Derive every FI protocol and backup key; construct and sign protocol digests |
 | Storage | Allocate a dedicated encrypted bridge database prefix | Define and update formation recovery records |
 | Payments | Project joined/balance state, prove exact quote aggregate plus fees/reserve is fundable without outputs, recover exact wallet operations, settle refunds | Authenticate admitted payers, verify quote terms, and enforce commercial and output boundaries |
 | Transport | Bind and reuse an Iroh endpoint | Drive `FleetManagerService` and verify manager commitments against each locator |

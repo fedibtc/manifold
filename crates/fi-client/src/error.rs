@@ -112,7 +112,7 @@ pub enum FiErrorCode {
     InvalidOptions,
     /// Durable state could not be read or written.
     Storage,
-    /// The consumer-provided identity could not be used.
+    /// An FI root-derived key operation failed.
     Identity,
     /// Another driver is already active.
     Busy,
@@ -163,7 +163,7 @@ pub enum FiError {
     /// Durable state could not be read or written.
     #[error("FI storage failure: {0}")]
     Storage(String),
-    /// The consumer-provided identity could not be used.
+    /// An FI root-derived key operation failed.
     #[error("FI identity failure: {0}")]
     Identity(String),
     /// Another driver is already active.

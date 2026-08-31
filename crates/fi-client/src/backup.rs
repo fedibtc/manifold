@@ -41,18 +41,14 @@ pub struct FiBackup {
     bytes: Vec<u8>,
 }
 
-/// Dedicated FI backup key family derived from the consumer's stable root.
-///
-/// This type intentionally exposes only the author public key. It has no
-/// formatting or serialization implementation.
-pub struct FiBackupKeys {
+/// Dedicated FI backup key family derived internally from the scoped FI root.
+pub(crate) struct FiBackupKeys {
     author: Keys,
     content_key: Zeroizing<[u8; 32]>,
 }
 
 impl FiBackupKeys {
-    /// Derive environment-separated backup keys from stable consumer root bytes.
-    pub fn derive(root_secret: &[u8], environment: ManifoldEnvironment) -> FiResult<Self> {
+    pub(crate) fn derive(root_secret: &[u8], environment: ManifoldEnvironment) -> FiResult<Self> {
         let hkdf = Hkdf::<Sha256>::new(Some(environment_salt(environment)), root_secret);
         let mut content_key = Zeroizing::new([0_u8; 32]);
         hkdf.expand(CONTENT_KEY_INFO, content_key.as_mut())
@@ -77,9 +73,7 @@ impl FiBackupKeys {
         ))
     }
 
-    /// Public key that will author the encrypted backup's Nostr event.
-    #[must_use]
-    pub fn author_public_key(&self) -> PublicKey {
+    pub(crate) fn author_public_key(&self) -> PublicKey {
         self.author.public_key()
     }
 

@@ -4066,6 +4066,7 @@ dependencies = [
  "fedi-decentralized-service-liquidity-manager",
  "fedi-iroh-rpc",
  "fedimint-core",
+ "fedimint-derive-secret",
  "futures",
  "hex",
  "hkdf",

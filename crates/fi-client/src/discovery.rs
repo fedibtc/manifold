@@ -37,8 +37,7 @@ use nostr_sdk::{Event, EventId, Kind, PublicKey};
 use rand::seq::SliceRandom as _;
 
 use crate::{
-    FederationConsensusReader, FiClient, FiError, FiIdentity, FiPayments, FiResult,
-    FleetManagerConnector,
+    FederationConsensusReader, FiClient, FiError, FiPayments, FiResult, FleetManagerConnector,
 };
 
 /// Default absolute deadline for one complete discovery run.
@@ -461,9 +460,8 @@ impl FmanDiscovery {
     }
 }
 
-impl<I, P, N, F, C> FiClient<I, P, N, F, C>
+impl<P, N, F, C> FiClient<P, N, F, C>
 where
-    I: FiIdentity,
     P: FiPayments,
     N: FiNostrClient,
     F: FleetManagerConnector,

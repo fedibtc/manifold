@@ -278,10 +278,9 @@ requires the appropriate payer retry or a fresh preview.
 Consumers supply capabilities; they can never supply authenticated protocol
 objects, trust conclusions, or lifecycle transitions:
 
-- **Identity** — one capability backed by the consumer's stable root. It exposes
-  the FI protocol pubkey and final BIP-340 signing operation, and derives the
-  separate environment-scoped backup author and content-encryption keys without
-  exposing the root or protocol secret.
+- **Identity** — the consumer supplies one stable FI-scoped `DerivableSecret`.
+  The consumer owns its place in the app key hierarchy; the library derives the
+  protocol, backup-author, and content-encryption keys below that boundary.
 - **Storage** — an already-namespaced Fedimint `Database`; backend,
   namespacing, and local encryption remain consumer concerns. After formation,
   the library owns the identity-bound portable and encrypted backup envelopes
@@ -484,7 +483,7 @@ resume effect.
 Encrypted export compresses the canonical portable bytes, frames their length,
 randomly pads to the smallest 8/16/32/64-KiB bucket, and seals the frame with
 XChaCha20-Poly1305 under a fresh nonce. HKDF-SHA256 derives separate author and
-content keys from the identity's stable root with deployment-environment
+content keys from the consumer-scoped FI root with deployment-environment
 separation. Associated data binds the author pubkey, provisional kind `37706`,
 stable `d` tag, and envelope version. Decryption bounds the public envelope,
 ciphertext bucket, compressed frame, and four-MiB output before parsing the
@@ -582,6 +581,7 @@ observes success or replays the idempotent typed mutation.
 ## Modules
 
 - `state` — public intent, status, and phase types.
+- `identity` — protocol and backup keys derived from the consumer-scoped root.
 - `ports` — consumer and transport capability traits.
 - `backup` — opaque versioned portable envelope and integrity check.
 - `db` — Fedimint-database recovery facts, checkpoints, and the driver lease.

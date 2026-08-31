@@ -51,9 +51,10 @@ proof re-derivation over the extended envelope.
 
 ## Assumptions
 
-- The consumer supplies one stable FI signing identity, protects and namespaces
-  the database, preserves it across supported restarts, and backs it up with the
-  identity and wallet recovery material needed to resume.
+- The consumer supplies one stable FI-scoped root, protects and namespaces the
+  database, preserves it across supported restarts, and backs it up with the
+  root and wallet recovery material needed to resume. `fi-client` derives every
+  FI protocol and backup key from that root.
 - The payment adapter durably reserves each exact aggregate by deterministic
   id, makes each funding operation recoverable before committing value,
   recovers before creating a replacement, replays exact quote-bound payments

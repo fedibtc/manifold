@@ -14,6 +14,11 @@ deadline. Supported failure, restart, backup, restore, and upgrade paths recover
 service within the release's documented recovery objective or expose an
 actionable failure before the affected component serves traffic.
 
+## Status
+
+Unverified. The FI consumer identity premise and its proof changed from a
+consumer-supplied signing identity to a consumer-supplied scoped root.
+
 ## Assumptions
 
 - [CLAIM-fleet-manager-production-ready](../crates/fman/specs/CLAIM-fleet-manager-production-ready.md)
@@ -26,9 +31,10 @@ actionable failure before the affected component serves traffic.
   dependency-availability preconditions, operation deadlines, and recovery
   objectives, and that combination is wire-, schema-, trust-profile-, and
   packaging-compatible for every workflow the release designates as supported.
-- The production Fedi consumer supplies the identity, encrypted and namespaced
-  durable storage, backup, wallet and payment ports, scheduling, and user
-  interaction required by the `fi-client` contract.
+- The production Fedi consumer supplies one stable FI-scoped root, encrypted
+  and namespaced durable storage, backup, wallet and payment ports, scheduling,
+  and user interaction required by the `fi-client` contract. `fi-client`
+  derives every FI protocol and backup key from that root.
 - Within each supported release and workflow, the production Fedi consumer's
   `fi-client` integration durably retains FI-client-owned state and credentials
   or restores them from required backup, and discloses them only to
