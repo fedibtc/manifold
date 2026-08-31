@@ -9,6 +9,7 @@ use std::collections::{BTreeMap, HashSet};
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Component, Path, PathBuf};
+use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use tokio::time::timeout;
@@ -475,7 +476,69 @@ fn ensure_restorable_identity(
     }
 }
 
-pub(crate) async fn restore_backup(
+/// Serializes restore-mode restores of one data directory.
+///
+/// [`restore_backup`] checks the data dir is empty, stages an archive, checks
+/// again, and then moves the staged contents in. The check and the move are
+/// separate steps over a shared directory, and [`move_staged_contents`] renames
+/// entries in without a predicate, so neither move fails on the other's output.
+/// Two callers that interleave those steps each land a different archive in the
+/// same root. Nothing downstream reports it: checksums are verified per archive
+/// during staging, so both archives verify, and what remains is two verified
+/// archives interleaved. The daemon then starts against a data root that no
+/// backup describes.
+///
+/// The exclusion therefore has to span the whole operation. It cannot live
+/// inside the move: a move that refused partway would leave the second caller a
+/// data root it can neither use nor clean up.
+///
+/// One process is the right scope. [`crate::daemon::DaemonLock`] holds an
+/// exclusive lock on the data dir for the process lifetime, so a second process
+/// cannot reach this directory. Two concurrent calls into one restore-mode
+/// process are what remain, and they share this target.
+#[derive(Clone, Default)]
+pub(crate) struct RestoreTarget {
+    busy: Arc<tokio::sync::Mutex<()>>,
+}
+
+impl RestoreTarget {
+    /// Takes the target for one restore, or reports that one is in flight.
+    ///
+    /// This rejects rather than queues. A queued caller would wait out the
+    /// first extraction, extract its own archive, and then fail the
+    /// empty-directory check because the first restore filled the directory —
+    /// an expensive route to a worse error message. The live-restore path
+    /// rejects a second restore for the same reason.
+    pub(crate) fn begin(&self) -> ServiceResult<RestoreTargetGuard> {
+        self.busy
+            .clone()
+            .try_lock_owned()
+            .map(|guard| RestoreTargetGuard { _guard: guard })
+            .map_err(|_| unavailable("a restore is already in progress"))
+    }
+
+    /// Restores an archive into the data dir, holding the target throughout.
+    pub(crate) async fn restore(
+        &self,
+        args: &DaemonArgs,
+        paths: &DaemonPaths,
+        request: RestoreBackupRequest,
+    ) -> ServiceResult<RestoreBackupResponse> {
+        let _guard = self.begin()?;
+        restore_backup(args, paths, request).await
+    }
+}
+
+/// Evidence that one caller holds a [`RestoreTarget`]. Releases on drop.
+pub(crate) struct RestoreTargetGuard {
+    _guard: tokio::sync::OwnedMutexGuard<()>,
+}
+
+/// Applies a staged archive to an empty data dir.
+///
+/// Private because the empty-check/move sequence below is only safe under a
+/// [`RestoreTarget`]; [`RestoreTarget::restore`] is the way in.
+async fn restore_backup(
     args: &DaemonArgs,
     paths: &DaemonPaths,
     request: RestoreBackupRequest,

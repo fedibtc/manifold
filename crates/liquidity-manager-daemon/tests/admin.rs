@@ -805,6 +805,7 @@ fn test_restore_context() -> anyhow::Result<RestoreAdminContext> {
         args,
         paths,
         shutdown: CancellationToken::new(),
+        restore_target: crate::backup::RestoreTarget::default(),
     })
 }
 

@@ -1139,6 +1139,7 @@ pub async fn run_restore_daemon(args: DaemonArgs) -> anyhow::Result<()> {
         args,
         paths,
         shutdown: shutdown.clone(),
+        restore_target: crate::backup::RestoreTarget::default(),
     };
 
     supervise_tasks(
