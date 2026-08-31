@@ -48,9 +48,11 @@ checked box is an operator assertion, not evidence supplied by this repository.
   NetworkPolicy that admits only the Prometheus scraper and authorized probe
   source; prove the policy with negative reachability tests. Setting
   `PRIVATE_BIND_ISOLATED=true` asserts this control but does not provide it.
-- [ ] **Release/source compatibility:** set the environment, source version,
-  source hash, and canonical-method-label assertion for the deployed
-  FMan/guardian release. Re-check them whenever either side changes.
+- [ ] **Protocol compatibility:** deploy a collector that supports the FMan
+  telemetry ALPN `fedi/fman/guardian-telemetry/1`. Do not configure a FMan or
+  Fedimint release allowlist: the collector retains every independently valid
+  family from compatible targets and continues journal polling when metrics are
+  absent or invalid.
 - [ ] **Telemetry backend:** configure the Prometheus-compatible backend with
   `honor_timestamps: true` and `track_timestamps_staleness: true`; assign TSDB,
   WAL, staleness, remote-write, and Grafana-query ownership to that backend.
@@ -116,8 +118,10 @@ authoritative CLI and environment-variable schema. In particular:
   `/v1/telemetry/registrations` to port 8175.
 - A non-loopback `PRIVATE_BIND` requires `PRIVATE_BIND_ISOLATED=true`. This is an
   explicit operator assertion, not an application check of NetworkPolicy.
-- `ENVIRONMENT`, source version, source hash, and the canonical-label assertion
-  must match the deployed FMan/guardian release.
+- `ENVIRONMENT` selects credential verification policy; it does not select an
+  FMan or Fedimint version. The telemetry ALPN is the wire-compatibility
+  boundary. A future incompatible protocol needs a new negotiated ALPN/version,
+  not a release-version setting.
 - metrics cadence is exactly 900 or 1800 seconds. Production should begin at
   1800 seconds. Safe-journal cadence is independent and defaults to 300 seconds.
 - the archive quota is compressed bytes and hard-fails new appends at the
@@ -190,7 +194,7 @@ or that staging qualifies as production.
 | Data-root provisioning and custody | A digest-pinned UID-0 init container sets `10001:10001`/`0700`, verifies fsync as UID 10001, and copies a read-only projected key to memory. The init identity is consequently a source-key/data custodian. Secret-manager, RBAC, and actual access controls are unknown. | Declared match; custody enforcement unknown. |
 | Public registration boundary | A TLS Ingress routes only the exact registration path to the public Service. Certificate validity and live routing are unknown. | Declared match; live behavior unknown. |
 | Private-listener isolation | The private Service has no Ingress, but the staging documentation says these clusters do not enforce NetworkPolicy and any pod can reach TCP 8176. | **Intentional staging relaxation; not production-compatible.** |
-| Release/source compatibility | The manifest carries staging environment and source-related settings, while the collector image supplies some source values. Compatibility with the live FMan/guardian image and release remains unknown. | Partial; live correspondence unknown. |
+| Telemetry protocol compatibility | The manifest selects the collector image but cannot establish which live FMan releases support the collector's telemetry ALPN. Compatible targets are collected best-effort; an incompatible wire protocol cannot be inferred from release metadata. | Partial; live ALPN support unknown. |
 | Prometheus backend | The ServiceMonitor preserves timestamps and staleness at 30 seconds. Backend WAL, remote write, Grafana query ownership, and actual scraping remain unknown. | Partial. |
 | Coupled backup and restore | The staging collector README says to exercise coupled backup/restore before treating it as durable; the manifest audit found no evidence of a completed rehearsal or encrypted backup custody. | Unknown. |
 | Capacity, traffic, and shutdown | The PVC requests 20 GiB for a 10 GiB archive quota; readiness/liveness use loopback and termination grace is 75 seconds. Free-space monitoring, capacity response, and live traffic gating remain unknown. | Declared partial match; operations unknown. |

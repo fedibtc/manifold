@@ -29,8 +29,8 @@ held registration or cursor material.
 The authenticated FMan proxy and upstream safe-event mechanism satisfy the
 assumptions in
 [the claim](../CLAIM-cloud-fman-telemetry-output-bounded-and-faithful.md). The
-configured source version/hash and canonical-method-label switch identify the
-reviewed upstream release. Source approval, rather than this proof, classifies
+reviewed source inventory identifies the admitted shapes without imposing a
+target-release allowlist. Source approval, rather than this proof, classifies
 the payload fields inside each safe event.
 
 ## Argument
@@ -64,8 +64,8 @@ the payload fields inside each safe event.
    collection, durable scheduling, target health, and later exposition.
 5. **[test] Persisted metrics revalidation.** Metrics-policy and store tests
    require the exact FMan/seat/federation identity labels, remove only those labels,
-   then re-admit under the current release, family, label, series, histogram, and
-   resource policy before accepting byte-identical canonical output. Same-policy
+   then re-admit under the current inventory, family, label, series, histogram,
+   and resource policy before accepting byte-identical canonical output. Same-policy
    restart tests omit hostile identity, label, duplicate-series, cardinality, and
    aggregate-overflow rows while retaining a valid neighbor and its original
    observation time.

@@ -14,9 +14,9 @@ Iroh service. Fixed diagnostic strings are also treated as exit channels.
 
 ## Axioms
 
-The claim's two execution and serialization assumptions are trusted. The exact
-Fedimint version and revision compiled in `SOURCE_VERSION` and
-`SOURCE_VERSION_HASH` identify the reviewed inventory.
+The claim's two execution and serialization assumptions are trusted. The
+reviewed Fedimint pin identifies the current inventory baseline, but policy
+admission does not require a source release match.
 
 ## Argument
 
@@ -34,13 +34,14 @@ Fedimint version and revision compiled in `SOURCE_VERSION` and
    Known-denied and unknown lines are discarded before labels and values are
    rendered. Each admitted family stages samples, duplicate-series state, and
    histogram parts until final validation; taint or incompleteness discards that
-   family alone.
-4. **[code] Release identity and global failures fail closed.** The unique
-   `app_start_ts` family must exactly match the compiled version and revision.
-   Invalid UTF-8, an unisolatable empty sample name, missing/duplicate/invalid
-   release identity, arithmetic overflow, or any global resource/deadline limit
-   returns an error. The caller constructs no `GuardianMetricsResponse` on that
-   path.
+   family alone. API `method` labels admit only `unknown` or the compiled
+   canonical core-method set, independent of the source release.
+4. **[code] Version metadata is local, while global failures fail closed.**
+   `app_start_ts` accepts bounded release labels without comparing them to the
+   compiled pin. Missing, duplicate, or locally invalid marker samples taint and
+   discard only that family. Invalid UTF-8, an unisolatable empty sample name,
+   arithmetic overflow, or any global resource/deadline limit returns an error.
+   The caller constructs no `GuardianMetricsResponse` on that path.
 5. **[code] The only successful body is reconstructed projection output.**
    `fetch_guardian_metrics` drops the raw vector after `project_until`, joins
    only returned canonical samples, and constructs fixed successful metadata.
@@ -50,8 +51,8 @@ Fedimint version and revision compiled in `SOURCE_VERSION` and
    family alongside known-denied, unknown, and locally invalid families and
    checks that rejected contents and collector-owned identity labels are absent.
    The shared policy tests additionally pin exact suffixes, duplicates,
-   histogram completeness, hostile cardinality, release mismatch, inventory
-   parity, and the captured real-seat projection.
+   histogram completeness, hostile cardinality, version-independent release
+   metadata, inventory parity, and the captured real-seat projection.
 7. **[code] Diagnostics have fixed cardinality and content.** Every FMan
    projection failure log and service error is a source-coded constant. The code
    never formats the response, metric name, label, value, seat id, endpoint, or
@@ -68,5 +69,6 @@ storage but cannot retroactively establish this FMan egress property.
 
 Family dispatch, staging, and exit-channel enumeration remain on the `code`
 rung. Tests cover adversarial representatives rather than mechanically
-enumerating all byte strings. The source revision correspondence depends on the
-checked inventory build and release packaging.
+enumerating all byte strings. The inventory correspondence depends on the
+checked inventory build and release packaging; it does not imply a
+target-release allowlist.

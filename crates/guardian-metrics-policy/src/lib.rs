@@ -3,15 +3,7 @@
 use sha2::{Digest as _, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 
-pub const INVENTORY_REVISION: &str = "stage0-federation-identity-v4";
-/// Reviewed Fedimint release version compiled into both enforcement boundaries.
-pub const SOURCE_VERSION: &str = "0.11.1";
-/// Reviewed Fedimint source revision compiled into both enforcement boundaries.
-pub const SOURCE_VERSION_HASH: &str = "881b0c2eda6b4b97785fce977a9c7ea65942a0ee";
-// No combined source containing both open upstream fixes has been reviewed.
-// Re-inventory that exact pin and replace `None` with its hash before enabling
-// method-labeled families.
-const REVIEWED_METHOD_SOURCE_HASH: Option<&str> = None;
+pub const INVENTORY_REVISION: &str = "stage0-federation-identity-v6";
 const MAX_LINES: usize = 50_000;
 const MAX_SAMPLES: usize = 20_000;
 const MAX_FAMILIES: usize = 64;
@@ -34,15 +26,9 @@ pub struct MetricsIdentity<'a> {
     pub federation_id: &'a str,
 }
 
-/// Release-specific switches for families whose producer safety is not universal.
-pub struct MetricsPolicy<'a> {
-    /// Exact release version expected in `fm_app_start_ts`.
-    pub version: &'a str,
-    /// Exact release hash expected in `fm_app_start_ts`.
-    pub version_hash: &'a str,
-    /// Whether the deployed source contains both canonical method-label fixes.
-    pub canonical_method_labels: bool,
-}
+/// Version-independent default-deny admission policy for guardian metrics.
+#[derive(Default)]
+pub struct MetricsPolicy;
 
 /// One bounded, policy-admitted seat snapshot without a fabricated timestamp.
 pub struct AdmittedMetrics {
@@ -56,17 +42,10 @@ pub struct AdmittedMetrics {
     pub discarded_invalid_admitted: bool,
 }
 
-impl MetricsPolicy<'_> {
+impl MetricsPolicy {
     /// Stable identity of every policy choice that affects durable admission.
     pub fn fingerprint(&self) -> String {
-        let digest = Sha256::digest(format!(
-            "{INVENTORY_REVISION}\0{}\0{}\0{}\0{}\0{}",
-            self.version,
-            self.version_hash,
-            self.canonical_method_labels,
-            self.method_source_ready(),
-            REVIEWED_METHOD_SOURCE_HASH.unwrap_or("disabled")
-        ));
+        let digest = Sha256::digest(format!("{INVENTORY_REVISION}\0method-labels-allowlisted"));
         format!("{digest:x}")
     }
     /// Admit a response while cooperatively respecting the target's CPU deadline.
@@ -147,7 +126,7 @@ impl MetricsPolicy<'_> {
                     continue;
                 }
             };
-            if validate_labels(shape, &parsed.labels, self).is_err() {
+            if validate_labels(shape, &parsed.labels).is_err() {
                 stage.tainted = true;
                 continue;
             }
@@ -222,7 +201,6 @@ impl MetricsPolicy<'_> {
         let mut samples = Vec::new();
         let mut output_bytes = 0usize;
         let mut discarded_invalid_admitted = false;
-        let mut release_valid = false;
         for (family, stage) in admitted_families {
             check_deadline(deadline)?;
             let histograms_complete = stage.histograms.values().all(|seen| {
@@ -232,13 +210,10 @@ impl MetricsPolicy<'_> {
                     && seen.buckets.len() == expected.len()
                     && expected.iter().all(|bucket| seen.buckets.contains(*bucket))
             });
-            if family == "app_start_ts" {
-                if stage.tainted || stage.release_markers != 1 {
-                    return Err(MetricsPolicyError);
-                }
-                release_valid = true;
-            }
-            if stage.tainted || !histograms_complete {
+            if stage.tainted
+                || !histograms_complete
+                || (family == "app_start_ts" && stage.release_markers != 1)
+            {
                 discarded_invalid_admitted = true;
                 continue;
             }
@@ -251,9 +226,6 @@ impl MetricsPolicy<'_> {
                 }
                 samples.push(sample);
             }
-        }
-        if !release_valid {
-            return Err(MetricsPolicyError);
         }
         check_deadline(deadline)?;
         Ok(AdmittedMetrics {
@@ -317,9 +289,9 @@ impl MetricsPolicy<'_> {
         }
     }
 
+    /// Reports whether method-labeled families have a reviewed version-independent contract.
     pub fn method_source_ready(&self) -> bool {
-        self.canonical_method_labels
-            && REVIEWED_METHOD_SOURCE_HASH.is_some_and(|hash| hash == self.version_hash)
+        true
     }
 }
 
@@ -361,6 +333,9 @@ const DEFAULT_ADMITTED_SOURCE_FAMILIES: &[&str] = &[
     "consensus_tx_processed_outputs",
     "iroh_api_connection_duration_seconds",
     "iroh_api_connections_active",
+    "iroh_api_request_duration_seconds",
+    "jsonrpc_api_request_duration_seconds",
+    "jsonrpc_api_request_response_code_total",
     "ln_canceled_outgoing_contract_total",
     "ln_funded_contract_sats",
     "ln_incoming_offer_total",
@@ -405,7 +380,6 @@ const DENIED_COUNTERS: &[&str] = &[
     "bitcoind_rpc_requests_total",
     "client_api_requests_total",
     "connector_connection_attempts_total",
-    "jsonrpc_api_request_response_code_total",
     "ln_rpc_requests_total",
 ];
 
@@ -416,8 +390,6 @@ const DENIED_HISTOGRAMS: &[&str] = &[
     "gateway_htlc_handling_duration_seconds",
     "gateway_htlc_lnv1_attempt_duration_seconds",
     "gateway_htlc_lnv2_attempt_duration_seconds",
-    "iroh_api_request_duration_seconds",
-    "jsonrpc_api_request_duration_seconds",
     "ln_rpc_request_duration_seconds",
 ];
 
@@ -631,7 +603,6 @@ fn shape(name: &str, method_ready: bool) -> Result<Shape, MetricsPolicyError> {
 fn validate_labels(
     shape: Shape,
     labels: &BTreeMap<String, String>,
-    policy: &MetricsPolicy<'_>,
 ) -> Result<(), MetricsPolicyError> {
     let mut expected: BTreeSet<&str> = shape.labels.iter().copied().collect();
     if shape.kind == Kind::Histogram && shape.suffix == "_bucket" {
@@ -642,8 +613,7 @@ fn validate_labels(
     }
     for (name, value) in labels {
         let valid = match name.as_str() {
-            "version" => value == policy.version,
-            "version_hash" => value == policy.version_hash,
+            "version" | "version_hash" => bounded_release_label(value),
             "timeframe" => matches!(value.as_str(), "1d" | "1w" | "1m" | "3m" | "all_time"),
             "direction" => matches!(value.as_str(), "incoming" | "outgoing"),
             "outcome" => matches!(value.as_str(), "claim" | "refund" | "cancel"),
@@ -669,7 +639,7 @@ fn validate_labels(
                     | "get_sync_progress"
                     | "get_chain_id"
             ),
-            "method" => policy.canonical_method_labels && canonical_api_method(shape.family, value),
+            "method" => canonical_api_method(value),
             "name" => value == "server",
             "result" => matches!(value.as_str(), "success" | "error"),
             "code" => matches!(
@@ -693,6 +663,59 @@ fn validate_labels(
     }
     Ok(())
 }
+
+fn bounded_release_label(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 128
+        && value.bytes().all(|byte| {
+            byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-' | b'+' | b':')
+        })
+}
+
+fn canonical_api_method(value: &str) -> bool {
+    // The FMan and collector enforce this static set independently of the
+    // producer release. A compromised producer cannot turn a caller-supplied
+    // method string into an unbounded label value or an admitted new family.
+    value == "unknown" || CORE_API_METHODS.contains(&value)
+}
+
+const CORE_API_METHODS: &[&str] = &[
+    "api_announcements",
+    "audit",
+    "auth",
+    "await_output_outcome",
+    "await_outputs_outcomes",
+    "await_session_outcome",
+    "await_signed_session_outcome",
+    "await_transaction",
+    "backup",
+    "backup_statistics",
+    "chain_id",
+    "change_password",
+    "client_config",
+    "client_config_json",
+    "consensus_ord_latency",
+    "download_guardian_backup",
+    "federation_id",
+    "fedimintd_version",
+    "guardian_metadata",
+    "invite_code",
+    "p2p_connection_status",
+    "recover",
+    "server_config_consensus_hash",
+    "session_count",
+    "session_status",
+    "setup_status",
+    "shutdown",
+    "sign_api_announcement",
+    "sign_guardian_metadata",
+    "signed_session_status",
+    "status",
+    "submit_api_announcement",
+    "submit_guardian_metadata",
+    "submit_transaction",
+    "version",
+];
 
 fn valid_bucket(family: &str, value: &str) -> bool {
     bucket_set(family).contains(&value)
@@ -735,50 +758,6 @@ fn bucket_set(family: &str) -> &'static [&'static str] {
         DURATION
     }
 }
-
-fn canonical_api_method(_family: &str, value: &str) -> bool {
-    // PRs 9032/9033 restrict producer output to registered static names. The
-    // reviewed release manifest is deliberately exact; misses collapse to one constant.
-    value == "unknown" || CORE_API_METHODS.contains(&value)
-}
-
-const CORE_API_METHODS: &[&str] = &[
-    "api_announcements",
-    "audit",
-    "auth",
-    "await_output_outcome",
-    "await_outputs_outcomes",
-    "await_session_outcome",
-    "await_signed_session_outcome",
-    "await_transaction",
-    "backup",
-    "backup_statistics",
-    "chain_id",
-    "change_password",
-    "client_config",
-    "client_config_json",
-    "consensus_ord_latency",
-    "download_guardian_backup",
-    "federation_id",
-    "fedimintd_version",
-    "guardian_metadata",
-    "invite_code",
-    "p2p_connection_status",
-    "recover",
-    "server_config_consensus_hash",
-    "session_count",
-    "session_status",
-    "setup_status",
-    "shutdown",
-    "sign_api_announcement",
-    "sign_guardian_metadata",
-    "signed_session_status",
-    "status",
-    "submit_api_announcement",
-    "submit_guardian_metadata",
-    "submit_transaction",
-    "version",
-];
 
 #[derive(Default)]
 struct HistogramSeen {

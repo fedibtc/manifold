@@ -134,21 +134,20 @@ fn impossible_or_corrupted_snapshot_state_fails_closed() {
     corrupt.samples[0].push('\n');
     assert!(render_metrics(vec![corrupt], vec![], 0, 2_000, 60_000, false).is_err());
 
-    let mut disabled_method_family = snapshot("11", "aa", 1_000);
-    disabled_method_family.samples = vec![
-        "fm_jsonrpc_api_request_response_code_total{fman_id=\"11\",fman_name=\"same-display-name\",guardian_seat_id=\"aa\",method=\"unknown\",response_code=\"200\"} 1".into(),
+    let mut canonical_method_family = snapshot("11", "aa", 1_000);
+    canonical_method_family.samples = vec![
+        "fm_jsonrpc_api_request_response_code_total{code=\"0\",federation_id=\"0000000000000000000000000000000000000000000000000000000000000000\",fman_id=\"11\",fman_name=\"same-display-name\",guardian_seat_id=\"aa\",method=\"unknown\",type=\"default\"} 1".into(),
     ];
-    assert!(
-        render_metrics(
-            vec![disabled_method_family],
-            vec![],
-            0,
-            2_000,
-            60_000,
-            false
-        )
-        .is_err()
-    );
+    let output = render_metrics(
+        vec![canonical_method_family],
+        vec![],
+        0,
+        2_000,
+        60_000,
+        true,
+    )
+    .unwrap();
+    assert!(output.contains("# TYPE fm_jsonrpc_api_request_response_code_total counter\n"));
 }
 
 #[test]

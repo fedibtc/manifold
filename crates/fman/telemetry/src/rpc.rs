@@ -18,9 +18,7 @@ use fedi_decentralized_service_fleet_manager::{
 };
 use reqwest::header::{CONTENT_ENCODING, CONTENT_TYPE};
 
-use fedi_decentralized_guardian_metrics_policy::{
-    MetricsPolicy, SOURCE_VERSION, SOURCE_VERSION_HASH,
-};
+use fedi_decentralized_guardian_metrics_policy::MetricsPolicy;
 use fman_core::fleet::{Fleet, TelemetryAccessError};
 
 const UPSTREAM_CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
@@ -150,12 +148,7 @@ async fn fetch_guardian_metrics(
     }
 
     let projected = tokio::task::spawn_blocking(move || {
-        MetricsPolicy {
-            version: SOURCE_VERSION,
-            version_hash: SOURCE_VERSION_HASH,
-            canonical_method_labels: false,
-        }
-        .project_until(&body, Some(std::time::Instant::now() + PROJECTION_TIMEOUT))
+        MetricsPolicy.project_until(&body, Some(std::time::Instant::now() + PROJECTION_TIMEOUT))
     })
     .await
     .map_err(|_| {
@@ -414,9 +407,10 @@ mod tests {
     #[tokio::test]
     async fn emits_only_independently_valid_allowlisted_families() {
         let body = format!(
-            "fm_app_start_ts{{version=\"{SOURCE_VERSION}\",version_hash=\"{SOURCE_VERSION_HASH}\"}} 1\n\
+            "fm_app_start_ts{{version=\"legacy\",version_hash=\"legacy-build\"}} 1\n\
              fm_backup_counts{{timeframe=\"1d\"}} 7\n\
              fm_client_api_requests_total{{method=\"secret\",peer_id=\"0\",result=\"success\"}} 1\n\
+             fm_jsonrpc_api_request_response_code_total{{method=\"secret\",code=\"0\",type=\"default\"}} 1\n\
              fm_consensus_session_count{{private=\"secret\"}} 8\n\
              fm_future_private_value{{token=\"secret\"}} 9\n"
         );
@@ -432,9 +426,50 @@ mod tests {
         assert!(text.contains("fm_backup_counts{timeframe=\"1d\"} 7"));
         assert!(!text.contains("secret"));
         assert!(!text.contains("client_api"));
+        assert!(!text.contains("jsonrpc_api"));
         assert!(!text.contains("consensus_session_count"));
         assert!(!text.contains("future_private"));
         assert!(!text.contains("fman_id"));
+    }
+
+    #[tokio::test]
+    async fn projects_canonical_api_metrics_from_any_release() {
+        for release in [
+            "fm_app_start_ts{version=\"legacy\",version_hash=\"old-build\"} 1\n",
+            "fm_app_start_ts{version=\"future\",version_hash=\"new-build\"} 1\n",
+        ] {
+            let body = format!(
+                "{release}fm_jsonrpc_api_request_response_code_total{{method=\"status\",code=\"0\",type=\"default\"}} 1\n"
+            );
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/plain; version=0.0.4\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            let port = serve_once(response).await;
+
+            let result = fetch_guardian_metrics(&client(), port, 4096).await.unwrap();
+            let text = String::from_utf8(result.body).unwrap();
+            assert!(text.contains("fm_app_start_ts{"));
+            assert!(text.contains(
+                "fm_jsonrpc_api_request_response_code_total{code=\"0\",method=\"status\",type=\"default\"} 1"
+            ));
+        }
+    }
+
+    #[tokio::test]
+    async fn projects_valid_metrics_without_a_release_marker() {
+        let body = "fm_backup_counts{timeframe=\"1d\"} 7\n";
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/plain; version=0.0.4\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        let port = serve_once(response.as_bytes()).await;
+
+        let result = fetch_guardian_metrics(&client(), port, 4096).await.unwrap();
+        assert_eq!(
+            String::from_utf8(result.body).unwrap(),
+            "fm_backup_counts{timeframe=\"1d\"} 7\n"
+        );
     }
 
     #[tokio::test]

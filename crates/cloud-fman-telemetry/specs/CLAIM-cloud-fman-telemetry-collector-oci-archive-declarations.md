@@ -5,7 +5,7 @@ On Linux, successful evaluation of the explicitly invocable
 `cloudFmanTelemetryContainerImage` archive selected by the repository release
 aggregate declares the collector entrypoint, null command, numeric
 `10001:10001` user, `/var/lib/cloud-fman-telemetry` working directory, two
-ports, one data volume, healthcheck, OCI labels, and exactly nine checked
+ports, one data volume, healthcheck, OCI labels, and exactly seven checked
 non-secret environment defaults. Its final root filesystem contains executable,
 non-escaping entrypoint and healthcheck binaries and a real mode-`0700` image
 data directory whose final-layer entry is owned by UID/GID 10001. The

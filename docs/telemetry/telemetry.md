@@ -152,8 +152,9 @@ honor_timestamps: true
 track_timestamps_staleness: true
 ```
 
-Prometheus owns metrics history and remote-write state. Changing the configured
-source release/hash, method-source gate, or inventory revision atomically clears
-the incompatible latest snapshots and poll deadlines before serving.
+Prometheus owns metrics history and remote-write state. Changing the inventory
+revision or static method allowlist atomically clears incompatible latest
+snapshots and poll deadlines before serving. Source release metadata never
+authorizes a target or enables a metric family.
 6. **Non-Fedi-verified FMans** — explicitly out of scope (blind spot
    acknowledged), since telemetry rides on the verification relationship.

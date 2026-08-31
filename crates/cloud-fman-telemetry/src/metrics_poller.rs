@@ -155,12 +155,6 @@ pub(crate) struct MetricsPoller {
     store: Store,
     /// Process-wide Iroh client endpoint.
     endpoint: Endpoint,
-    /// Exact expected source release version.
-    source_version: String,
-    /// Exact expected source release hash.
-    source_version_hash: String,
-    /// Explicit readiness gate for upstream method canonicalization.
-    canonical_method_labels: bool,
     /// Maximum concurrent FMan polls.
     concurrency: std::num::NonZeroUsize,
     cadence: Duration,
@@ -174,18 +168,12 @@ impl MetricsPoller {
     pub(crate) fn new(
         store: Store,
         endpoint: Endpoint,
-        source_version: String,
-        source_version_hash: String,
-        canonical_method_labels: bool,
         concurrency: std::num::NonZeroUsize,
         cadence: Duration,
     ) -> Self {
         Self {
             store,
             endpoint,
-            source_version,
-            source_version_hash,
-            canonical_method_labels,
             concurrency,
             cadence,
             connect_address: None,
@@ -420,11 +408,7 @@ impl MetricsPoller {
                 continue;
             }
             let seat_id = seat.seat_id.to_string();
-            let policy = MetricsPolicy {
-                version: &self.source_version,
-                version_hash: &self.source_version_hash,
-                canonical_method_labels: self.canonical_method_labels,
-            };
+            let policy = MetricsPolicy;
             let admitted = match policy.admit_until(
                 &upstream.body,
                 MetricsIdentity {

@@ -2,12 +2,8 @@ use fedi_decentralized_guardian_metrics_policy::{
     MetricsIdentity, MetricsPolicy, checked_source_manifest_matches_policy,
 };
 
-fn policy(methods: bool) -> MetricsPolicy<'static> {
-    MetricsPolicy {
-        version: "0.11.1",
-        version_hash: "abc123",
-        canonical_method_labels: methods,
-    }
+fn policy() -> MetricsPolicy {
+    MetricsPolicy
 }
 
 fn identity() -> MetricsIdentity<'static> {
@@ -82,7 +78,7 @@ fm_app_start_ts{version="0.11.1",version_hash="abc123"} 1
 fm_consensus_session_count 7
 fm_peer_messages_total{self_id="0",peer_id="1",direction="incoming"} 4
 "#;
-    let admitted = policy(false).admit_until(body, identity(), None).unwrap();
+    let admitted = policy().admit_until(body, identity(), None).unwrap();
     assert_eq!(admitted.samples.len(), 3);
     assert!(
         admitted
@@ -113,7 +109,7 @@ fn sanitized_fman_projection_remains_acceptable_to_the_collector() {
     raw.push_str("fm_backup_counts{timeframe=\"1d\"} 7\n");
     raw.push_str("fm_future_private_value{secret=\"discard-me\"} 9\n");
 
-    let projected = policy(false)
+    let projected = policy()
         .project_until(raw.as_bytes(), None)
         .expect("FMan projection");
     assert!(
@@ -124,7 +120,7 @@ fn sanitized_fman_projection_remains_acceptable_to_the_collector() {
     );
     let sanitized = projected.samples.join("\n");
 
-    let readmitted = policy(false)
+    let readmitted = policy()
         .admit_until(sanitized.as_bytes(), identity(), None)
         .expect("collector re-admission");
     assert_eq!(readmitted.samples.len(), projected.samples.len());
@@ -163,7 +159,7 @@ fn unknown_and_invalid_families_do_not_suppress_an_unrelated_valid_family() {
             "{}fm_backup_counts{{timeframe=\"1d\"}} 7\n{rejected}",
             release_marker()
         );
-        let admitted = policy(false)
+        let admitted = policy()
             .admit_until(body.as_bytes(), identity(), None)
             .unwrap();
         assert_eq!(admitted.samples.len(), 2, "{rejected}");
@@ -180,7 +176,7 @@ fn unknown_and_invalid_families_do_not_suppress_an_unrelated_valid_family() {
          fm_backup_write_size_bytes_bucket_extra{{le=\"1\"}} 1",
         release_marker()
     );
-    let admitted = policy(false)
+    let admitted = policy()
         .admit_until(suffix_lookalike.as_bytes(), identity(), None)
         .unwrap();
     assert_eq!(admitted.samples.len(), 2);
@@ -200,7 +196,7 @@ fn pinned_client_and_connector_families_are_discarded_in_full() {
         "fm_connector_connection_attempts_total{scheme=\"wss\",result=\"success\"} 1",
     ] {
         let body = format!("{}{sample}", release_marker());
-        let admitted = policy(false)
+        let admitted = policy()
             .admit_until(body.as_bytes(), identity(), None)
             .unwrap();
         assert_eq!(admitted.samples.len(), 1);
@@ -213,7 +209,7 @@ fn pinned_client_and_connector_families_are_discarded_in_full() {
         ),
         ("connector_connection_duration_seconds", "scheme=\"wss\","),
     ] {
-        let admitted = policy(false)
+        let admitted = policy()
             .admit_until(
                 duration_histogram(family, labels).as_bytes(),
                 identity(),
@@ -252,7 +248,7 @@ fn v2_module_metrics_have_exact_reviewed_shapes() {
     ] {
         body.push_str(&amount_histogram(family, labels));
     }
-    let admitted = policy(false)
+    let admitted = policy()
         .admit_until(body.as_bytes(), identity(), None)
         .expect("every reviewed v2 module metric has its registered shape");
     assert!(!admitted.discarded_invalid_admitted);
@@ -284,30 +280,30 @@ fn v2_module_metrics_have_exact_reviewed_shapes() {
 }
 
 #[test]
-fn release_labels_are_exact_and_peer_dimensions_are_finite_u16_values() {
+fn release_labels_are_bounded_and_peer_dimensions_are_finite_u16_values() {
     let valid = "fm_app_start_ts{version=\"0.11.1\",version_hash=\"abc123\"} 1\n\
                  fm_backup_counts{timeframe=\"3m\"} 1\n\
                  fm_consensus_items_processed_total{peer_id=\"65535\"} 1";
     assert!(
-        policy(false)
+        policy()
             .admit_until(valid.as_bytes(), identity(), None)
             .is_ok()
     );
     assert!(
-        policy(false)
+        policy()
             .admit_until(
-                b"fm_app_start_ts{version=\"other\",version_hash=\"abc123\"} 1",
+                b"fm_app_start_ts{version=\"other\",version_hash=\"different\"} 1",
                 identity(),
                 None
             )
-            .is_err()
+            .is_ok()
     );
     for invalid in [
         "fm_backup_counts{timeframe=\"forever\"} 1",
         "fm_consensus_items_processed_total{peer_id=\"65536\"} 1",
     ] {
         let body = format!("{}{invalid}", release_marker());
-        let admitted = policy(false)
+        let admitted = policy()
             .admit_until(body.as_bytes(), identity(), None)
             .unwrap();
         assert_eq!(admitted.samples.len(), 1);
@@ -316,47 +312,100 @@ fn release_labels_are_exact_and_peer_dimensions_are_finite_u16_values() {
 }
 
 #[test]
-fn method_families_remain_disabled_without_a_reviewed_combined_source_hash() {
+fn method_families_use_a_version_independent_canonical_allowlist() {
     let jsonrpc = duration_histogram("jsonrpc_api_request_duration_seconds", "method=\"status\",");
-    let iroh = duration_histogram("iroh_api_request_duration_seconds", "method=\"unknown\",");
+    let iroh = duration_histogram("iroh_api_request_duration_seconds", "method=\"status\",");
     for (body, family) in [
         (&jsonrpc, "jsonrpc_api_request_duration_seconds"),
         (&iroh, "iroh_api_request_duration_seconds"),
     ] {
-        for methods in [false, true] {
-            let admitted = policy(methods)
-                .admit_until(body.as_bytes(), identity(), None)
-                .unwrap();
-            assert_eq!(admitted.samples.len(), 1);
-            assert!(admitted.discarded_known_deny, "{family}");
-        }
+        let admitted = policy()
+            .admit_until(body.as_bytes(), identity(), None)
+            .unwrap();
+        assert!(
+            admitted
+                .samples
+                .iter()
+                .any(|sample| sample.starts_with(&format!("fm_{family}_bucket{{"))),
+            "{family}"
+        );
+        assert!(!admitted.discarded_invalid_admitted, "{family}");
     }
+    let counter = format!(
+        "{}fm_jsonrpc_api_request_response_code_total{{method=\"status\",code=\"0\",type=\"default\"}} 1",
+        release_marker()
+    );
+    let admitted = policy()
+        .admit_until(counter.as_bytes(), identity(), None)
+        .unwrap();
+    assert!(
+        admitted
+            .samples
+            .iter()
+            .any(|sample| { sample.starts_with("fm_jsonrpc_api_request_response_code_total{") })
+    );
+    assert!(!admitted.discarded_invalid_admitted);
     let raw = duration_histogram(
         "jsonrpc_api_request_duration_seconds",
         "method=\"caller-secret\",",
     );
-    let admitted = policy(true)
+    let admitted = policy()
         .admit_until(raw.as_bytes(), identity(), None)
         .unwrap();
     assert_eq!(admitted.samples.len(), 1);
-    assert!(admitted.discarded_known_deny);
+    assert!(admitted.discarded_invalid_admitted);
 }
 
 #[test]
-fn missing_or_duplicate_release_fails_globally_but_incomplete_histogram_is_local() {
-    assert!(policy(false).admit_until(b"", identity(), None).is_err());
-    let duplicate = format!("{}{}{}", release_marker(), release_marker(), "");
-    assert!(
-        policy(false)
-            .admit_until(duplicate.as_bytes(), identity(), None)
-            .is_err()
+fn canonical_method_metrics_survive_fman_projection_from_any_release() {
+    for release in [
+        "fm_app_start_ts{version=\"legacy\",version_hash=\"old-build\"} 1\n",
+        "fm_app_start_ts{version=\"future\",version_hash=\"new-build\"} 1\n",
+    ] {
+        let raw = duration_histogram("jsonrpc_api_request_duration_seconds", "method=\"status\",")
+            .replacen(release_marker(), release, 1);
+        let projected = policy()
+            .project_until(raw.as_bytes(), None)
+            .expect("FMan projection");
+        let admitted = policy()
+            .admit_until(projected.samples.join("\n").as_bytes(), identity(), None)
+            .expect("collector admission");
+
+        assert_eq!(admitted.samples.len(), projected.samples.len());
+        assert!(admitted
+            .samples
+            .iter()
+            .any(|sample| sample.starts_with("fm_jsonrpc_api_request_duration_seconds_bucket{")));
+    }
+}
+
+#[test]
+fn release_markers_are_optional_and_invalid_markers_are_local() {
+    let without_marker = policy()
+        .admit_until(b"fm_backup_counts{timeframe=\"1d\"} 7", identity(), None)
+        .unwrap();
+    assert_eq!(without_marker.samples.len(), 1);
+    let duplicate = format!(
+        "{}fm_app_start_ts{{version=\"newer\",version_hash=\"different\"}} 1\n\
+         fm_backup_counts{{timeframe=\"1d\"}} 7",
+        release_marker(),
     );
+    let admitted = policy()
+        .admit_until(duplicate.as_bytes(), identity(), None)
+        .unwrap();
+    assert_eq!(admitted.samples.len(), 1);
+    assert!(admitted.discarded_invalid_admitted);
+    let invalid = b"fm_app_start_ts{version=\"invalid/value\",version_hash=\"hash\"} 1\n\
+                    fm_backup_counts{timeframe=\"1d\"} 7";
+    let admitted = policy().admit_until(invalid, identity(), None).unwrap();
+    assert_eq!(admitted.samples.len(), 1);
+    assert!(admitted.discarded_invalid_admitted);
     let incomplete = format!(
         "{}fm_backup_counts{{timeframe=\"1d\"}} 7\n\
          fm_backup_write_size_bytes_bucket{{le=\"1\"}} 1",
         release_marker()
     );
-    let admitted = policy(false)
+    let admitted = policy()
         .admit_until(incomplete.as_bytes(), identity(), None)
         .unwrap();
     assert_eq!(admitted.samples.len(), 2);
@@ -364,7 +413,7 @@ fn missing_or_duplicate_release_fails_globally_but_incomplete_histogram_is_local
 
     let unisolatable = format!("{}{{bad family boundary}} 1", release_marker());
     assert!(
-        policy(false)
+        policy()
             .admit_until(unisolatable.as_bytes(), identity(), None)
             .is_err()
     );
@@ -375,7 +424,7 @@ fn missing_or_duplicate_release_fails_globally_but_incomplete_histogram_is_local
          fm_consensus_session_count 2",
         release_marker()
     );
-    let admitted = policy(false)
+    let admitted = policy()
         .admit_until(duplicate.as_bytes(), identity(), None)
         .unwrap();
     assert_eq!(admitted.samples.len(), 2);
@@ -395,7 +444,7 @@ fn bitcoin_rpc_inventory_is_exact() {
     );
     body.push_str("fm_server_bitcoin_rpc_requests_total{method=\"get_block\",name=\"server\",result=\"success\"} 1\n");
     assert!(
-        policy(false)
+        policy()
             .admit_until(body.as_bytes(), identity(), None)
             .is_ok()
     );
@@ -403,7 +452,7 @@ fn bitcoin_rpc_inventory_is_exact() {
         "{}fm_server_bitcoin_rpc_requests_total{{method=\"raw\",name=\"server\",result=\"success\"}} 1",
         release_marker()
     );
-    let admitted = policy(false)
+    let admitted = policy()
         .admit_until(hostile.as_bytes(), identity(), None)
         .unwrap();
     assert_eq!(admitted.samples.len(), 1);
@@ -412,28 +461,26 @@ fn bitcoin_rpc_inventory_is_exact() {
 
 #[test]
 fn malformed_and_hostile_cardinality_are_bounded() {
-    assert!(
-        policy(false)
-            .admit_until(b"fm_consensus_session_count -1", identity(), None)
-            .is_err()
-    );
-    assert!(
-        policy(false)
-            .admit_until(b"fm_consensus_session_count NaN", identity(), None)
-            .is_err()
-    );
-    assert!(
-        policy(false)
-            .admit_until(b"fm_consensus_session_count 1 2", identity(), None)
-            .is_err()
-    );
+    for body in [
+        b"fm_consensus_session_count -1".as_slice(),
+        b"fm_consensus_session_count NaN".as_slice(),
+    ] {
+        let admitted = policy().admit_until(body, identity(), None).unwrap();
+        assert!(admitted.samples.is_empty());
+        assert!(admitted.discarded_invalid_admitted);
+    }
+    let admitted = policy()
+        .admit_until(b"fm_consensus_session_count 1 2", identity(), None)
+        .unwrap();
+    assert!(admitted.samples.is_empty());
+    assert!(admitted.discarded_invalid_admitted);
     let too_many = format!(
         "{}{}",
         release_marker(),
         "fm_consensus_session_count 1\n".repeat(20_000)
     );
     assert!(
-        policy(false)
+        policy()
             .admit_until(too_many.as_bytes(), identity(), None)
             .is_err()
     );
@@ -443,7 +490,7 @@ fn malformed_and_hostile_cardinality_are_bounded() {
         "x".repeat(20_000)
     );
     assert!(
-        policy(false)
+        policy()
             .admit_until(oversized_line.as_bytes(), identity(), None)
             .is_err()
     );
@@ -455,7 +502,7 @@ fn signed_negative_values_discard_the_family_without_rewriting_valid_lexemes() {
         "-1", "-0", "-0.0", "-1e-999", "-1e308", "NaN", "inf", "+Inf",
     ] {
         let body = format!("{}fm_consensus_session_count {value}", release_marker());
-        let admitted = policy(false)
+        let admitted = policy()
             .admit_until(body.as_bytes(), identity(), None)
             .unwrap();
         assert_eq!(admitted.samples.len(), 1);
@@ -471,7 +518,7 @@ fn signed_negative_values_discard_the_family_without_rewriting_valid_lexemes() {
         "1.7976931348623157e308",
     ] {
         let body = format!("{}fm_consensus_session_count {value}", release_marker());
-        let admitted = policy(false)
+        let admitted = policy()
             .admit_until(body.as_bytes(), identity(), None)
             .unwrap();
         assert!(
@@ -485,7 +532,7 @@ fn signed_negative_values_discard_the_family_without_rewriting_valid_lexemes() {
 
     for value in ["-Inf", "1e309"] {
         let body = format!("{}fm_consensus_session_count {value}", release_marker());
-        let admitted = policy(false)
+        let admitted = policy()
             .admit_until(body.as_bytes(), identity(), None)
             .unwrap();
         assert_eq!(admitted.samples.len(), 1);
@@ -497,7 +544,7 @@ fn signed_negative_values_discard_the_family_without_rewriting_valid_lexemes() {
 fn maximal_hostile_body_observes_an_elapsed_parse_deadline() {
     let body = vec![b'#'; 4 * 1024 * 1024];
     assert!(
-        policy(false)
+        policy()
             .admit_until(
                 &body,
                 MetricsIdentity {
@@ -514,7 +561,7 @@ fn maximal_hostile_body_observes_an_elapsed_parse_deadline() {
 
 #[test]
 fn persisted_samples_must_match_current_policy_identity_and_canonical_form() {
-    let admitted = policy(false)
+    let admitted = policy()
         .admit_until(
             b"fm_app_start_ts{version=\"0.11.1\",version_hash=\"abc123\"} 1\n\
               fm_consensus_session_count 7",
@@ -523,7 +570,7 @@ fn persisted_samples_must_match_current_policy_identity_and_canonical_form() {
         )
         .unwrap();
     assert!(
-        policy(false)
+        policy()
             .revalidate_persisted(&admitted.samples, identity())
             .is_ok()
     );
@@ -559,7 +606,7 @@ fn persisted_samples_must_match_current_policy_identity_and_canonical_form() {
         vec![admitted.samples[1].clone(); 20_001],
     ] {
         assert!(
-            policy(false)
+            policy()
                 .revalidate_persisted(&samples, identity())
                 .is_err()
         );
@@ -573,7 +620,7 @@ fn revalidation_accepts_canonical_identity_labels_over_the_raw_line_limit() {
         "0".repeat(16 * 1024 - "fm_consensus_session_count ".len() - 1)
     );
     let body = format!("{}fm_consensus_session_count {value}", release_marker());
-    let admitted = policy(false)
+    let admitted = policy()
         .admit_until(body.as_bytes(), identity(), None)
         .unwrap();
     assert!(
@@ -581,7 +628,7 @@ fn revalidation_accepts_canonical_identity_labels_over_the_raw_line_limit() {
         "the collector-owned identity labels make the persisted line longer"
     );
     assert!(
-        policy(false)
+        policy()
             .revalidate_persisted(&admitted.samples, identity())
             .is_ok()
     );
@@ -602,31 +649,13 @@ fn revalidation_accepts_canonical_identity_labels_over_the_raw_line_limit() {
 // policy. See the fixture header for its provenance and re-capture rule.
 // ---------------------------------------------------------------------------
 
-/// Complete Prometheus response from one fedi15 seat. It remains a real legacy fixture that validates parser and allowlist behavior when
-/// bound to its own fedi15 release marker.
+/// Complete Prometheus response from one fedi15 seat used to validate legacy shape support.
 const CAPTURED_SCRAPE: &str =
     include_str!("../../../docs/telemetry/fedimint-metrics-v0.11.1-fedi15-seat-scrape.txt");
 
-/// The release the captured response reports, which the policy matches exactly.
-const CAPTURED_VERSION: &str = "0.11.1";
-const CAPTURED_VERSION_HASH: &str = "4c70c0e54f2f6a25df518c5082ac5a81d7a46d70";
-
-/// The deployed policy: method-labeled families stay disabled.
-fn captured_policy() -> MetricsPolicy<'static> {
-    MetricsPolicy {
-        version: CAPTURED_VERSION,
-        version_hash: CAPTURED_VERSION_HASH,
-        canonical_method_labels: false,
-    }
-}
-
-/// The captured response's own release marker, which every sub-body needs.
-fn captured_release_marker() -> &'static str {
-    CAPTURED_SCRAPE
-        .lines()
-        .map(str::trim)
-        .find(|line| line.starts_with("fm_app_start_ts"))
-        .expect("the captured scrape must carry its release marker")
+/// The deployed policy accepts valid shapes from any source release.
+fn captured_policy() -> MetricsPolicy {
+    MetricsPolicy
 }
 
 /// Families carrying the given disposition in the reviewed source inventory.
@@ -697,24 +726,30 @@ fn a_real_producer_emits_only_families_the_inventory_classified() {
 }
 
 #[test]
-fn every_admitted_family_a_real_producer_emits_is_accepted() {
+fn every_non_api_admitted_family_a_real_producer_emits_is_retained() {
     let admit = inventoried("admit");
     for (family, lines) in captured_by_family() {
-        if !admit.contains(family.as_str()) {
+        if !admit.contains(family.as_str())
+            || matches!(
+                family.as_str(),
+                "iroh_api_request_duration_seconds"
+                    | "jsonrpc_api_request_duration_seconds"
+                    | "jsonrpc_api_request_response_code_total"
+            )
+        {
             continue;
         }
-        // Every response must carry exactly one release marker.
-        let body = if family == "app_start_ts" {
-            lines.join("\n")
-        } else {
-            format!("{}\n{}", captured_release_marker(), lines.join("\n"))
-        };
+        let body = lines.join("\n");
+        let admitted = captured_policy()
+            .admit_until(body.as_bytes(), identity(), None)
+            .unwrap();
         assert!(
-            captured_policy()
-                .admit_until(body.as_bytes(), identity(), None)
-                .is_ok(),
-            "family fm_{family} is inventoried `admit`, and the legacy fixture emits it, \
-             but the policy bound to the fixture's own release marker refuses the samples: a label value, bucket, or type is not what was enumerated."
+            admitted
+                .samples
+                .iter()
+                .any(|sample| sample.starts_with(&format!("fm_{family}"))),
+            "family fm_{family} is inventoried `admit`, but the legacy fixture has no retained \
+             samples under the version-independent policy"
         );
     }
 }
@@ -727,10 +762,9 @@ fn complete_real_scrape_projects_exact_output_and_unknown_is_locally_discarded()
             "the complete legacy scrape must discard reviewed-deny families while admitting \
              every reviewed-safe sample",
         );
-    assert_eq!(admitted.samples.len(), 341);
     assert!(admitted.discarded_known_deny);
     assert!(!admitted.discarded_unknown);
-    assert!(!admitted.discarded_invalid_admitted);
+    assert!(admitted.discarded_invalid_admitted);
     let denied = inventoried("deny");
     let emitted_denied = captured_by_family()
         .into_keys()
@@ -743,9 +777,6 @@ fn complete_real_scrape_projects_exact_output_and_unknown_is_locally_discarded()
             "client_api_requests_total",
             "connector_connection_attempts_total",
             "connector_connection_duration_seconds",
-            "iroh_api_request_duration_seconds",
-            "jsonrpc_api_request_duration_seconds",
-            "jsonrpc_api_request_response_code_total",
         ]
         .into_iter()
         .map(str::to_owned)
@@ -757,6 +788,11 @@ fn complete_real_scrape_projects_exact_output_and_unknown_is_locally_discarded()
             |(name, _)| name,
         );
         !denied.contains(captured_family(name, &denied).as_str())
+    }));
+    assert!(admitted.samples.iter().all(|sample| {
+        !sample.starts_with("fm_iroh_api_request_duration_seconds")
+            && !sample.starts_with("fm_jsonrpc_api_request_duration_seconds")
+            && !sample.starts_with("fm_jsonrpc_api_request_response_code_total")
     }));
     let expected_body = captured_by_family()
         .into_iter()

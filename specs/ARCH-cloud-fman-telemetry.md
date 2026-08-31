@@ -104,8 +104,20 @@ successful seats survive a later timeout. Shutdown and a fatal sibling stop
 new target scheduling but join reservations and snapshot commits already in
 their durability segment. Local contention before a reservation commits never
 contacts the FMan and backs off for one cadence in-process.
-A pin or module-set change requires a new exact inventory; future
-families never enter by wildcard.
+The reviewed pin and module set define the current default-deny inventory, but
+they do not define which FMans the collector may contact. The collector does
+not compare FMan, Fedimint, or `app_start_ts` release metadata with a configured
+release: it admits every independently valid family in the reviewed default-deny
+policy and discards only unknown or invalid families. Method-labelled API
+families require an exact compiled canonical-method allowlist, not a release
+match. A missing, duplicate, or invalid
+release-marker family cannot suppress another valid family, and journal polling
+is independent of metric admission. The fixed telemetry ALPN
+`fedi/fman/guardian-telemetry/1` is the protocol compatibility boundary; a
+future incompatible wire protocol needs a separately negotiated ALPN/version,
+not a release allowlist. Pin or module-set changes require a new inventory only
+to expand or alter the allowed metric shapes; future families never enter by
+wildcard.
 
 The private listener is a deployment trust boundary, not an Internet-facing
 API. Operators must place it on loopback or an access-controlled private

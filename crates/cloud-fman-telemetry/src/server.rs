@@ -74,9 +74,6 @@ pub async fn registration_router_for_test(
             cadence: std::time::Duration::from_secs(1800),
             concurrency: std::num::NonZeroUsize::new(1).unwrap(),
             stale_after: std::time::Duration::from_secs(3600),
-            source_version: "test".into(),
-            source_version_hash: "test".into(),
-            canonical_method_labels: false,
         },
         metrics_scrape: Arc::new(tokio::sync::Semaphore::new(1)),
         metrics_generation: Arc::new(tokio::sync::Semaphore::new(1)),
@@ -161,11 +158,7 @@ pub async fn serve(args: Args) -> Result<(), Box<dyn Error>> {
         args.lease_seconds,
     )
     .await?;
-    let policy = MetricsPolicy {
-        version: &metrics_runtime.source_version,
-        version_hash: &metrics_runtime.source_version_hash,
-        canonical_method_labels: metrics_runtime.canonical_method_labels,
-    };
+    let policy = MetricsPolicy;
     store
         .configure_metrics_policy(&policy.fingerprint())
         .await?;
@@ -197,9 +190,6 @@ pub async fn serve(args: Args) -> Result<(), Box<dyn Error>> {
     let metrics_poller = MetricsPoller::new(
         store.clone(),
         collector_endpoint,
-        metrics_runtime.source_version.clone(),
-        metrics_runtime.source_version_hash.clone(),
-        metrics_runtime.canonical_method_labels,
         metrics_runtime.concurrency,
         e2e_poll_cadence.unwrap_or(metrics_runtime.cadence),
     )
@@ -646,11 +636,7 @@ async fn metrics_at(state: AppState, now_ms: i64) -> Response {
         return StatusCode::TOO_MANY_REQUESTS.into_response();
     };
     let stale_after_ms = i64::try_from(state.metrics.stale_after.as_millis()).unwrap_or(i64::MAX);
-    let policy = MetricsPolicy {
-        version: &state.metrics.source_version,
-        version_hash: &state.metrics.source_version_hash,
-        canonical_method_labels: state.metrics.canonical_method_labels,
-    };
+    let policy = MetricsPolicy;
     let MetricExpositionView {
         version,
         snapshots,
@@ -846,9 +832,6 @@ mod tests {
                 cadence: std::time::Duration::from_secs(1800),
                 concurrency: std::num::NonZeroUsize::new(1).unwrap(),
                 stale_after: std::time::Duration::from_secs(3600),
-                source_version: "test".into(),
-                source_version_hash: "test".into(),
-                canonical_method_labels: false,
             },
             metrics_scrape: Arc::new(tokio::sync::Semaphore::new(1)),
             metrics_generation: Arc::new(tokio::sync::Semaphore::new(1)),
