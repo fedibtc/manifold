@@ -13,6 +13,7 @@ use fedi_decentralized_service_liquidity_manager::PublicLiquidityApi;
 use fedi_iroh_rpc::iroh::EndpointAddr;
 use fedimint_core::config::ClientConfig;
 use fedimint_core::task::{MaybeSend, MaybeSync};
+use fedimint_derive_secret::{ChildId, DerivableSecret};
 
 use crate::{
     FedimintFederationId, FiError, FiResult, GuardianFeeAccount, PaymentRequirements,
@@ -119,17 +120,42 @@ impl<'a> ExactPaymentPreflight<'a> {
     }
 }
 
-/// Consumer-owned FI identity.
+/// Consumer-owned stable root for the FI key family.
 ///
-/// `fi-client` constructs and hashes protocol/domain-separated payloads. The
-/// consumer performs only the final BIP-340 signing operation so hardware or
-/// derived-key implementations do not need to reveal their secret key.
+/// Consumers choose its place in their key hierarchy. `fi-client` derives all
+/// protocol and backup keys below this boundary so those authorities cannot
+/// silently disagree.
 pub trait FiIdentity: Send + Sync + 'static {
-    /// Return the FI's stable x-only public key.
-    fn public_key(&self) -> Result<FiId, String>;
+    /// Return the stable, consumer-scoped FI root.
+    fn scoped_root(&self) -> DerivableSecret;
+}
 
-    /// Sign a library-constructed 32-byte digest.
-    fn sign_digest(&self, digest: [u8; 32]) -> Result<FiSignature, String>;
+pub(crate) trait FiIdentityExt: FiIdentity {
+    fn public_key(&self) -> Result<FiId, String> {
+        Ok(FiId(
+            protocol_keypair(&self.scoped_root()).x_only_public_key().0,
+        ))
+    }
+
+    fn sign_digest(&self, digest: [u8; 32]) -> Result<FiSignature, String> {
+        let keypair = protocol_keypair(&self.scoped_root());
+        Ok(FiSignature(
+            secp256k1::Secp256k1::new().sign_schnorr_no_aux_rand(&digest, &keypair),
+        ))
+    }
+}
+
+impl<T: FiIdentity> FiIdentityExt for T {}
+
+const FI_PROTOCOL_CHILD_ID: ChildId = ChildId(0);
+
+pub(crate) fn protocol_keypair(root: &DerivableSecret) -> secp256k1::Keypair {
+    let derived = root
+        .child_key(FI_PROTOCOL_CHILD_ID)
+        .to_secp_key(&fedimint_core::secp256k1::Secp256k1::new());
+    let secret = secp256k1::SecretKey::from_byte_array(&derived.secret_key().secret_bytes())
+        .expect("Fedimint derived a valid secp256k1 secret");
+    secp256k1::Keypair::from_secret_key(&secp256k1::Secp256k1::new(), &secret)
 }
 
 /// Sanitized failure to resolve the FI's own fee-recipient account.
