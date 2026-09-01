@@ -1,4 +1,4 @@
-use super::{FedimintdVersion, FedimintdVersionCore, MetaConsensusBase};
+use super::{FedimintdDkgVersion, FedimintdVersion, FedimintdVersionCore, MetaConsensusBase};
 
 #[test]
 fn fedimintd_version_is_semver_and_uses_string_serde() {
@@ -27,8 +27,8 @@ fn fedimintd_version_is_semver_and_uses_string_serde() {
 }
 
 #[test]
-fn fedimintd_version_separates_dkg_core_from_fedi_revision() {
-    let version = "0.11.1-fedi17"
+fn fedimintd_version_separates_release_range_from_dkg_compatibility() {
+    let version = "0.11.1-fedi17+fedi"
         .parse::<FedimintdVersion>()
         .expect("valid release version");
 
@@ -41,12 +41,43 @@ fn fedimintd_version_separates_dkg_core_from_fedi_revision() {
         }
     );
     assert_eq!(version.core().to_string(), "0.11.1");
+    assert_eq!(version.dkg_version().to_string(), "0.11+fedi");
+    assert!(version.dkg_version().is_fedi());
+    assert_eq!(
+        version.dkg_version(),
+        "0.11.2-rc.1+fedi"
+            .parse::<FedimintdVersion>()
+            .expect("valid patch-skewed version")
+            .dkg_version()
+    );
+    assert_ne!(
+        version.dkg_version(),
+        "0.11.2"
+            .parse::<FedimintdVersion>()
+            .expect("valid upstream version")
+            .dkg_version()
+    );
+    assert_ne!(
+        version.dkg_version(),
+        "0.11.2+acme"
+            .parse::<FedimintdVersion>()
+            .expect("valid other-vendor version")
+            .dkg_version()
+    );
     assert!(
         serde_json::from_value::<FedimintdVersionCore>(serde_json::json!({
             "major": 0,
             "minor": 11,
             "patch": 1,
             "build": "fedi17"
+        }))
+        .is_err()
+    );
+    assert!(
+        serde_json::from_value::<FedimintdDkgVersion>(serde_json::json!({
+            "major": 0,
+            "minor": 11,
+            "vendor": "not valid"
         }))
         .is_err()
     );
