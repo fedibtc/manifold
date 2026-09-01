@@ -8137,7 +8137,7 @@ async fn selected_formation_persists_and_enforces_its_compatible_release() {
     let database = MemDatabase::new().into_database();
     let (payments, _) = TestPayments::new();
     let fman_state = Arc::new(FmanState::default());
-    set_fman_version(&fman_state, 0, "0.11.2-rc.1+fedi");
+    set_fman_version(&fman_state, 0, "0.11.1+fedi");
     let client = open_client(database, payments, fman_state.clone(), FmanConfig::paid()).await;
     let cap = PAYMENT_AMOUNT_MSATS * u64::from(MIN_FEDERATION_SIZE);
 
@@ -8171,7 +8171,7 @@ async fn selected_formation_persists_and_enforces_its_compatible_release() {
             .lock()
             .expect("test lock")
             .iter()
-            .any(|record| record.fedimintd_version.to_string() == "0.11.2-rc.1+fedi"),
+            .any(|record| record.fedimintd_version.to_string() == "0.11.1+fedi"),
         "same-minor patch drift is used for the exact quote",
     );
 }

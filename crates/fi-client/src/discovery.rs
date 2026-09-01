@@ -445,7 +445,7 @@ pub struct InsecureUntrustedPinnedFman {
     pub locator: Locator,
 }
 
-/// Test-only diagnostic locator discovery with the ordinary typed rejections.
+/// Development/test-only diagnostic locator discovery with ordinary typed rejections.
 #[cfg(any(test, feature = "dev-pinned-formation"))]
 #[derive(Debug, Default)]
 pub struct InsecureUntrustedPinnedFmanDiscovery {

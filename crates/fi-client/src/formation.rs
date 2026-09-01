@@ -621,6 +621,9 @@ where
 {
     /// Form a federation through explicitly pinned FMan locators.
     ///
+    /// This development/test-only entry point requires a version range that
+    /// contains exactly one patch release.
+    ///
     /// The returned future owns no background task. Dropping it cancels
     /// in-flight work, while every completed durable checkpoint remains
     /// resumable through [`FiClient::resume`]. If paid quotes are selected,
@@ -655,6 +658,9 @@ where
 
     /// Form through pinned FMan locators and durably attach one installation
     /// callback to every guardian's DKG attempt.
+    ///
+    /// This development/test-only entry point requires a version range that
+    /// contains exactly one patch release.
     ///
     /// This has the same cancellation, payment-readiness, and explicit payment
     /// authorization behavior as [`Self::create_with_pinned_fmans`]. FI
@@ -1071,8 +1077,8 @@ where
         finish_driver_run(result, self.inner.store.release_driver_lease(lease).await)
     }
 
-    /// Validate pinned locator inputs without accessing identity, storage,
-    /// wallets, or the network.
+    /// Validate the development-only pinned path's single-patch range and
+    /// locators without accessing identity, storage, wallets, or the network.
     #[cfg(any(test, feature = "dev-pinned-formation"))]
     pub fn preflight_create_with_pinned_fmans(
         intent: &FormationIntent,
