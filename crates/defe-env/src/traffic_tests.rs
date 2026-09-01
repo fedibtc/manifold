@@ -62,10 +62,10 @@ fn accepts_discoverable_unsupported_mode_options() {
 #[tokio::test]
 async fn unsupported_modes_fail_without_running_a_tool() {
     let mint = run(&common(&["mint"])).await.unwrap_err().to_string();
-    assert!(mint.contains("unsupported with pinned Fedimint 0.11.1"));
+    assert!(mint.contains("unsupported with pinned Fedimint 0.11.2"));
     assert!(mint.contains("does not cause or prove production Fedi fee accrual"));
     let lightning = run(&common(&["lightning"])).await.unwrap_err().to_string();
-    assert!(lightning.contains("unsupported with pinned Fedimint 0.11.1"));
+    assert!(lightning.contains("unsupported with pinned Fedimint 0.11.2"));
     assert!(lightning.contains("does not cause or prove production Fedi fee accrual"));
 }
 

@@ -1433,10 +1433,10 @@ async fn exercise_guardian_telemetry(
     anyhow::ensure!(
         metrics_body.lines().any(|line| {
             line.starts_with("fm_app_start_ts{")
-                && line.contains("version=\"0.11.1\"")
-                && line.contains("version_hash=\"5703f543f76746369f0a11e0d1635ac395b2efac\"")
+                && line.contains("version=\"0.11.2\"")
+                && line.contains("version_hash=\"a6fa6d83f4bea26d4f51cbf26d305d0b64727e00\"")
         }),
-        "the exact bundled fedi17 guardian must expose its release marker"
+        "the exact bundled fedi2 guardian must expose its release marker"
     );
     for family in [
         "lnv2_funded_contract_sats",

@@ -11260,7 +11260,7 @@ async fn selection_approval_rejects_request_context_drift_before_external_work()
         None,
         FederationSize(MIN_FEDERATION_SIZE),
         PlanPreference::InfiniteBestEffort,
-        version_range("0.11.2"),
+        version_range("0.11.3"),
     )
     .unwrap();
 

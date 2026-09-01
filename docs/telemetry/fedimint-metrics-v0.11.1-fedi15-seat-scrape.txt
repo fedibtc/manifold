@@ -4,7 +4,7 @@
 # marker is intentional; it makes no production cross-release compatibility claim.
 #
 # Why this file exists. The policy is already checked against
-# `fedimint-metrics-v0.11.1-fedi18.tsv`, which enumerates what the pinned source
+# `fedimint-metrics-v0.11.2-fedi2.tsv`, which enumerates what the pinned source
 # *registers*. That is a source-level check: it cannot show what a running
 # producer actually *emits* -- which families are present, which label values
 # occur, which buckets are filled -- so the inventory can be self-consistent and

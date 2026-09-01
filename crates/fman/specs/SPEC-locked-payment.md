@@ -206,8 +206,8 @@ from the same wallet root.
 The FI side needs client support for paying to externally supplied
 blinded nonces and finalizing issuance from relayed blinded signatures —
 client-side additions only. For mintv2 the fleet consumes fedimint from
-the `fedibtc/fedimint` Fedi release line (tag `v0.11.1-fedi18`: upstream
-v0.11.1 plus the Fedi MintV2 additions, fee-quote/spendable-amount APIs for
+the `fedibtc/fedimint` Fedi release line (tag `v0.11.2-fedi2`: upstream
+v0.11.2 plus the Fedi MintV2 additions, fee-quote/spendable-amount APIs for
 revenue sweeps, and tagged server diagnostics) whose two added
 `MintClientModule` methods
 carry the locked-payment additions:
@@ -217,7 +217,7 @@ collection and refund finalization, both FI-side — and
 `finalize_external_issuance` unblinds relayed signatures and verifies
 the notes against the mint's aggregate keys offline (FMan acceptance
 and claim). The locked-payment addition itself requires no fedimintd protocol
-change; everything else uses the public v0.11.1 API. The design uses real module APIs rather than raw endpoint workarounds and structured methods rather than visibility changes.
+change; everything else uses the public v0.11.2 API. The design uses real module APIs rather than raw endpoint workarounds and structured methods rather than visibility changes.
 
 ## Rejected alternatives
 
@@ -260,7 +260,7 @@ These alternatives remain relevant to the current design tradeoffs.
   keeps to seconds — while the FI's own material heals every
   non-orphan case without it. Grinding also coupled `GetQuote` to the
   private scan filter, which must never be shared.
-- **A quarantined second v2 wallet for escrowed notes**: v0.11.1 has
+- **A quarantined second v2 wallet for escrowed notes**: v0.11.2 has
   no public API for importing a foreign finalized note into a wallet
   (balance entry is only the fee-bearing receive reissue), so
   quarantine needs that API twice plus its own recovery story.

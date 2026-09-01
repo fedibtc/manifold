@@ -25,9 +25,10 @@ Unverified.
   generated IDs is negligible.
 - **A3 pinned client contract:** Fedi revision
   `2f35ea4e3b2516d35b8ed315455718cd3b336758` accepts a caller operation ID.
-  Its client resolves against separately pinned Fedimint `v0.11.1-fedi18`
-  (`5703f543f76746369f0a11e0d1635ac395b2efac`). The fedi18 delta changes
-  DKG/version configuration only, outside this claim's client state machines.
+  Its client resolves against separately pinned Fedimint `v0.11.2-fedi2`
+  (`a6fa6d83f4bea26d4f51cbf26d305d0b64727e00`). The update from fedi18
+  leaves the transaction-finalization and operation-log sources used by this
+  claim unchanged.
   `finalize_and_submit_transaction_dbtx` rejects an existing ID, writes transaction
   submission state machines and the global operation-log entry in one database
   transaction, and performs no federation network submission before that

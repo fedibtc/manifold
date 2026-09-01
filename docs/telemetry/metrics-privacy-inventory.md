@@ -1,6 +1,6 @@
 # Guardian metrics privacy inventory
 
-Status: exact implemented collector policy baseline, 2026-08-31. The pinned
+Status: exact implemented collector policy baseline, 2026-09-01. The pinned
 source can still emit raw JSON-RPC and Iroh method labels, but both telemetry
 boundaries retain only the compiled canonical core-method set or `unknown`.
 
@@ -8,14 +8,15 @@ boundaries retain only the compiled canonical core-method set or `unknown`.
 
 FMan and the collector compile one default-deny source policy, so release review
 must inventory the actual `fedimintd` source before changing that policy. This baseline was
-read from Manifold's pinned `fedibtc/fedimint/v0.11.1-fedi18` source at
-`5703f543f76746369f0a11e0d1635ac395b2efac`. The machine-checked
-[`fedimint-metrics-v0.11.1-fedi18.tsv`](./fedimint-metrics-v0.11.1-fedi18.tsv)
+read from Manifold's pinned `fedibtc/fedimint/v0.11.2-fedi2` source at
+`a6fa6d83f4bea26d4f51cbf26d305d0b64727e00`. The machine-checked
+[`fedimint-metrics-v0.11.2-fedi2.tsv`](./fedimint-metrics-v0.11.2-fedi2.tsv)
 enumerates every registration in the complete pinned Fedimint Rust source and
 its admission disposition. It fails the Nix check when either the lock pin or
 that source registration set drifts. The
-release-pin recheck found no metric registration changes from fedi10 through
-fedi15. This
+release-pin recheck found one new registration,
+`iroh_api_connection_idle_timeout_total`, and keeps it outside the current
+minimum telemetry surface. This
 telemetry stack includes the Fedi SPv2 server source at
 `2f35ea4e3b2516d35b8ed315455718cd3b336758`. Re-run the inventory against the
 exact combined integration tip whenever either pin or the attached module set
@@ -26,8 +27,8 @@ Prometheus metric families of their own. "Including SPv2" therefore means this
 absence is checked from the exact Cargo-selected `fedixyz/fedi` stability-pool server
 source, not that it can be omitted from future review.
 
-The Fedimint release tag is `0.11.1-fedi18`, while `fedimintd` emits its
-upstream Cargo package version `0.11.1` in `app_start_ts{version=...}`. That
+The Fedimint release tag is `0.11.2-fedi2`, while `fedimintd` emits its
+upstream Cargo package version `0.11.2` in `app_start_ts{version=...}`. That
 reviewed baseline selects the current safe shapes; it is not a collector
 target-version requirement. The collector accepts bounded release metadata from
 older and newer sources when the marker is otherwise valid, and still admits
@@ -53,6 +54,7 @@ All names below receive the registry's `fm_` prefix.
 | peer transport | `peer_disconnect_total` | counter | `self_id`, `peer_id`, each an at-most-five-byte value parseable as `u16`; bounded producer-owned operational dimensions, not collector-verified config membership |
 | APIs | `iroh_api_connections_active` | gauge | none |
 | APIs | `iroh_api_connection_duration_seconds` | histogram | none |
+| APIs | `iroh_api_connection_idle_timeout_total` | counter | denied: aggregate idle-timeout count remains outside the current minimum telemetry surface |
 | APIs | `iroh_api_request_duration_seconds` | histogram | `method` is exactly `unknown` or a source-coded core API method; an unrecognized value discards the family |
 | APIs | `jsonrpc_api_request_duration_seconds` | histogram | `method` is exactly `unknown` or a source-coded core API method; an unrecognized value discards the family |
 | APIs | `jsonrpc_api_request_response_code_total` | counter | `method` is exactly `unknown` or a source-coded core API method; `code` is `0`, `400`, `401`, `404`, `500`, or `-32700` through `-32603`; `type` is `subscription`, `batch`, or `default` |

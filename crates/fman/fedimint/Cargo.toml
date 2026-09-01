@@ -11,7 +11,7 @@ bitcoin = { version = "0.32.6", features = ["serde"] }
 bitcoin_hashes = "0.14"
 fedi-decentralized-domain = { path = "../../domain" }
 fedi-decentralized-service-fleet-manager = { path = "../../service-fleet-manager" }
-fedimint-aead = "0.11.1"
+fedimint-aead = "0.11.2"
 fedimint-api-client = { workspace = true }
 fedimint-client = { workspace = true }
 fedimint-client-module = { workspace = true }
