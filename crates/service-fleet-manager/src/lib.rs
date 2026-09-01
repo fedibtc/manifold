@@ -97,8 +97,8 @@ pub use telemetry::{
 };
 pub use types::{
     AvailabilityInfo, FEDERATION_ICON_URL_META_FIELD_KEY, FEDERATION_NAME_META_FIELD_KEY,
-    FederationSize, FedimintStats, FedimintdVersion, FedimintdVersionCore, FiId, FiSignature,
-    GuardianCode, GuardianName, ManagerSignature, MetaConsensusBase, MetaFieldKey, MetaFieldValue,
-    ModuleConfig, OobEcashToken, Plan, SeatHealth, TERMS_OF_SERVICE_URL_META_FIELD_KEY,
-    ValidUntilDate, WELCOME_MESSAGE_META_FIELD_KEY,
+    FederationSize, FedimintStats, FedimintdDkgVersion, FedimintdVersion, FedimintdVersionCore,
+    FiId, FiSignature, GuardianCode, GuardianName, ManagerSignature, MetaConsensusBase,
+    MetaFieldKey, MetaFieldValue, ModuleConfig, OobEcashToken, Plan, SeatHealth,
+    TERMS_OF_SERVICE_URL_META_FIELD_KEY, ValidUntilDate, WELCOME_MESSAGE_META_FIELD_KEY,
 };
