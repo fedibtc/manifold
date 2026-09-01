@@ -1,8 +1,8 @@
 //! Public FI intent and progress state.
 
 use fedi_decentralized_service_fleet_manager::{
-    FederationId, FederationName, FederationSize, FedimintdVersion, FmanName, GuardianCode,
-    InviteCode, Locator, Plan, QuoteId, SeatId,
+    FederationId, FederationName, FederationSize, FedimintdVersion, FedimintdVersionCore, FmanName,
+    GuardianCode, InviteCode, Locator, Plan, QuoteId, SeatId,
 };
 use nostr_sdk::PublicKey;
 
@@ -17,6 +17,109 @@ pub const MAX_FEDERATION_SIZE_EXCLUSIVE: u16 = MAX_FEDERATION_SIZE + 1;
 /// Largest guardian fee the FI proposes, in parts per million (21%): the
 /// pinned Fedi payer's own ceiling, not a separate product cap.
 pub const MAX_GUARDIAN_FEE_PPM: u32 = 210_000;
+
+/// FI-approved half-open range of three-number Fedimint releases.
+///
+/// Prerelease suffixes such as `-fedi17` are intentionally outside these
+/// bounds. They may differ between FMans in one DKG as long as the core
+/// release is the same and that release is inside this range.
+#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
+#[serde(try_from = "UncheckedFedimintdVersionRange")]
+pub struct FedimintdVersionRange {
+    minimum: FedimintdVersionCore,
+    maximum_exclusive: FedimintdVersionCore,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct UncheckedFedimintdVersionRange {
+    minimum: FedimintdVersionCore,
+    maximum_exclusive: FedimintdVersionCore,
+}
+
+impl TryFrom<UncheckedFedimintdVersionRange> for FedimintdVersionRange {
+    type Error = FiError;
+
+    fn try_from(value: UncheckedFedimintdVersionRange) -> FiResult<Self> {
+        Self::from_cores(value.minimum, value.maximum_exclusive)
+    }
+}
+
+impl FedimintdVersionRange {
+    /// Construct `[minimum, maximum_exclusive)` from two Fedimint versions.
+    ///
+    /// Any prerelease suffixes on the bounds are ignored.
+    pub fn new(minimum: FedimintdVersion, maximum_exclusive: FedimintdVersion) -> FiResult<Self> {
+        Self::from_cores(minimum.core(), maximum_exclusive.core())
+    }
+
+    /// Construct a range directly from DKG release cores.
+    pub fn from_cores(
+        minimum: FedimintdVersionCore,
+        maximum_exclusive: FedimintdVersionCore,
+    ) -> FiResult<Self> {
+        let range = Self {
+            minimum,
+            maximum_exclusive,
+        };
+        range.validate()?;
+        Ok(range)
+    }
+
+    fn validate(&self) -> FiResult<()> {
+        if self.minimum >= self.maximum_exclusive {
+            return Err(FiError::InvalidIntent(
+                "fedimintd version range must have a lower minimum than maximum".to_owned(),
+            ));
+        }
+        Ok(())
+    }
+
+    /// Range containing exactly one three-number release.
+    pub fn one_core(core: FedimintdVersionCore) -> FiResult<Self> {
+        let maximum_exclusive = FedimintdVersionCore {
+            major: core.major,
+            minor: core.minor,
+            patch: core.patch.checked_add(1).ok_or_else(|| {
+                FiError::InvalidIntent("fedimintd release patch cannot be ranged".to_owned())
+            })?,
+        };
+        Self::from_cores(core, maximum_exclusive)
+    }
+
+    /// Return the sole DKG release when this range contains exactly one.
+    #[must_use]
+    pub fn only_core(&self) -> Option<FedimintdVersionCore> {
+        Self::one_core(self.minimum)
+            .ok()
+            .filter(|single| single.maximum_exclusive == self.maximum_exclusive)
+            .map(|_| self.minimum)
+    }
+
+    /// Inclusive lower release bound.
+    #[must_use]
+    pub fn minimum(&self) -> FedimintdVersionCore {
+        self.minimum
+    }
+
+    /// Exclusive upper release bound.
+    #[must_use]
+    pub fn maximum_exclusive(&self) -> FedimintdVersionCore {
+        self.maximum_exclusive
+    }
+
+    /// Whether one exact FMan build lies inside this release range.
+    #[must_use]
+    pub fn contains(&self, version: &FedimintdVersion) -> bool {
+        self.contains_core(version.core())
+    }
+
+    /// Whether one DKG release core lies inside this range.
+    #[must_use]
+    pub fn contains_core(&self, core: FedimintdVersionCore) -> bool {
+        self.minimum <= core && core < self.maximum_exclusive
+    }
+}
 
 /// Stable identifier for one formation record.
 #[derive(Clone, Debug, Eq, Hash, PartialEq, serde::Deserialize, serde::Serialize)]

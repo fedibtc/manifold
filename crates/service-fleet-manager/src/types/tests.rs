@@ -1,4 +1,4 @@
-use super::{FedimintdVersion, MetaConsensusBase};
+use super::{FedimintdVersion, FedimintdVersionCore, MetaConsensusBase};
 
 #[test]
 fn fedimintd_version_is_semver_and_uses_string_serde() {
@@ -24,6 +24,32 @@ fn fedimintd_version_is_semver_and_uses_string_serde() {
             "{invalid}"
         );
     }
+}
+
+#[test]
+fn fedimintd_version_separates_dkg_core_from_fedi_revision() {
+    let version = "0.11.1-fedi17"
+        .parse::<FedimintdVersion>()
+        .expect("valid release version");
+
+    assert_eq!(
+        version.core(),
+        FedimintdVersionCore {
+            major: 0,
+            minor: 11,
+            patch: 1,
+        }
+    );
+    assert_eq!(version.core().to_string(), "0.11.1");
+    assert!(
+        serde_json::from_value::<FedimintdVersionCore>(serde_json::json!({
+            "major": 0,
+            "minor": 11,
+            "patch": 1,
+            "build": "fedi17"
+        }))
+        .is_err()
+    );
 }
 
 #[test]
