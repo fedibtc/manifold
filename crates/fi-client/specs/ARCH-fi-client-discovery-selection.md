@@ -27,8 +27,9 @@ coupled and must be revised together.
 
 A fresh, authenticated advertisement is eligible only when it:
 
-- advertises the requested federation size and exactly one parseable
-  `fedimintd` version inside the FI's allowed range;
+- advertises the requested federation size and a typed scalar `fedimintd`
+  version inside the FI's allowed range whose SemVer build metadata is exactly
+  `fedi`;
 - contains an `InfiniteBestEffort` plan, whose numeric millisatoshi price is the
   advertised estimate; unknown plan families do not prevent use of a supported
   plan;
@@ -49,7 +50,7 @@ records that falsification.
 
 The 16 MiB bound is deliberately lower than the candidate ceiling multiplied by
 the per-event cap. The measured worst-case legitimate advertisement event is
-7,830 bytes, so 2,048 such events fit within it. **TODO:** tighten the
+7,299 bytes, so 2,048 such events fit within it. **TODO:** tighten the
 advertisement-specific per-event cap from that measurement with margin; the
 follow-up is beside `FMAN_ADVERTISEMENTS_RETAINED_MAX_BYTES` in
 `crates/nostr-clients/src/fi.rs`. A relay response that ends, closes, or times
@@ -69,11 +70,12 @@ discovery fixture.
 
 ## Selection
 
-`preview_fman_selection` groups eligible candidates by the three-number
-`fedimintd` release, ignoring suffixes such as `-fedi17`, because different
-releases cannot enter DKG together. It runs selection independently for every
-cohort that can fill the federation, chooses the lowest advertised total, and
-prefers the newer release when totals tie. It then buckets that cohort by the
+`preview_fman_selection` groups eligible candidates by the DKG compatibility
+identity Fedimint itself uses: major/minor plus exact vendor, ignoring patch and
+prerelease differences. FI admits only the `fedi` vendor. It runs selection
+independently for every compatible minor line that can fill the federation,
+chooses the lowest advertised total, and prefers the newer line when totals
+tie. It then buckets that cohort by the
 untrusted claimed issuance key, sorts each bucket by advertised setup fee while
 preserving discovery order for ties, and fills seats round-robin across buckets. For example, three buckets
 `[A, B]`, `[C, D]`, and `[E, F]` yield `A, C, E, B, D, F`. The result is
@@ -104,8 +106,8 @@ shortfall, is the property in
 [CLAIM-fi-client-selection-deadline](./CLAIM-fi-client-selection-deadline.md).
 
 After badge and key checks, a connector-equipped walk calls `GetAvailability`
-and applies the same size, allowed range, selected release, accepting-seats,
-exactly-one-version, and plan-family predicate as quoting. Incompatible responses get typed `Live*` rejections; connection,
+and applies the same size, allowed range, selected major/minor/vendor identity,
+accepting-seats, and plan-family predicate as quoting. Incompatible responses get typed `Live*` rejections; connection,
 RPC, and per-candidate-budget failures get `ProbeFailed`. The probe is
 price-blind: a live price change is resolved only by the signed quote. The
 transport-less `FmanSelectionQuery` intentionally uses advertised claims alone;
@@ -122,7 +124,7 @@ the typed `InsufficientFmanSeats` partial failure.
 The preview is read-only: it returns selected seats, their locators, advertised
 prices, verified provenance, estimate, and seen/eligible/selected summary. Its
 result is valid for two minutes and can become a non-serializable
-`FmanSelectionApproval` that seals the complete request, selected release,
+`FmanSelectionApproval` that seals the complete request, selected DKG identity,
 verifier/environment provenance, locators, estimate, and user cap. Leaving the screen, restarting, or
 re-entering obtains a new preview.
 

@@ -771,7 +771,7 @@ where
                 .request
                 .fedimintd_versions()
                 .contains(intent.fedimintd_version())
-            || approval.fedimintd_version_core != intent.fedimintd_version().core()
+            || approval.fedimintd_dkg_version != intent.fedimintd_version().dkg_version()
             || approval.request.plan() != intent.plan()
         {
             return Err(FiError::InvalidIntent(
@@ -888,7 +888,7 @@ where
             },
             self.inner.peer_badge_verifier.provenance(),
             &request,
-            recovery.snapshot.intent.fedimintd_version.core(),
+            &recovery.snapshot.intent.fedimintd_version.dkg_version(),
             requirements,
             excluded,
             retained_service_pubkeys,
@@ -3341,13 +3341,12 @@ where
         // One shared predicate with the selection walk's live probe
         // (`selection::match_requested_availability`), so a candidate the
         // probing preview seats is exactly a candidate this gate accepts.
-        let versions =
-            crate::FedimintdVersionRange::one_core(intent.fedimintd_version.core())?;
+        let versions = crate::FedimintdVersionRange::one_core(intent.fedimintd_version.core())?;
         let matched = match crate::selection::match_requested_availability(
             &availability,
             intent.federation_size,
             &versions,
-            intent.fedimintd_version.core(),
+            &intent.fedimintd_version.dkg_version(),
             intent.plan,
         ) {
             Ok(matched) => matched,
@@ -3463,7 +3462,7 @@ where
             .map_err(|error| fman_error(index, format!("invalid signed quote: {error}")))?;
         let request = &quote.terms.request;
         if request.fi_id != fi_id
-            || request.fedimintd_version.core() != intent.fedimintd_version.core()
+            || request.fedimintd_version.dkg_version() != intent.fedimintd_version.dkg_version()
             || request.federation_size != intent.federation_size
             || !intent.plan.matches(&request.plan)
         {

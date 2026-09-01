@@ -20,9 +20,9 @@ pub const MAX_GUARDIAN_FEE_PPM: u32 = 210_000;
 
 /// FI-approved half-open range of three-number Fedimint releases.
 ///
-/// Prerelease suffixes such as `-fedi17` are intentionally outside these
-/// bounds. They may differ between FMans in one DKG as long as the core
-/// release is the same and that release is inside this range.
+/// Prerelease and build metadata are intentionally outside these bounds. This
+/// policy controls which exact releases the FI accepts; DKG compatibility is
+/// separately based on major/minor/vendor and may span patches in the range.
 #[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
 #[serde(try_from = "UncheckedFedimintdVersionRange")]
 pub struct FedimintdVersionRange {
@@ -53,7 +53,7 @@ impl FedimintdVersionRange {
         Self::from_cores(minimum.core(), maximum_exclusive.core())
     }
 
-    /// Construct a range directly from DKG release cores.
+    /// Construct a range directly from three-number releases.
     pub fn from_cores(
         minimum: FedimintdVersionCore,
         maximum_exclusive: FedimintdVersionCore,
@@ -75,7 +75,7 @@ impl FedimintdVersionRange {
         Ok(())
     }
 
-    /// Range containing exactly one three-number release.
+    /// Range containing exactly one patch release.
     pub fn one_core(core: FedimintdVersionCore) -> FiResult<Self> {
         let maximum_exclusive = FedimintdVersionCore {
             major: core.major,
@@ -87,7 +87,7 @@ impl FedimintdVersionRange {
         Self::from_cores(core, maximum_exclusive)
     }
 
-    /// Return the sole DKG release when this range contains exactly one.
+    /// Return the sole patch release when this range contains exactly one.
     #[must_use]
     pub fn only_core(&self) -> Option<FedimintdVersionCore> {
         Self::one_core(self.minimum)
@@ -114,7 +114,7 @@ impl FedimintdVersionRange {
         self.contains_core(version.core())
     }
 
-    /// Whether one DKG release core lies inside this range.
+    /// Whether one three-number release lies inside this range.
     #[must_use]
     pub fn contains_core(&self, core: FedimintdVersionCore) -> bool {
         self.minimum <= core && core < self.maximum_exclusive

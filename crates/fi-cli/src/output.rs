@@ -1,6 +1,6 @@
 use std::io::{self, Write};
 
-use fedi_decentralized_service_fleet_manager::FiId;
+use fedi_decentralized_service_fleet_manager::{FedimintdVersion, FiId};
 use fi_client::{FiStatus, PaymentRequirements};
 use serde::Serialize;
 
@@ -17,7 +17,7 @@ struct DiscoveryCandidateJson<'a> {
     fman_pubkey: String,
     advertised_price_msats: u64,
     federation_sizes: &'a [u16],
-    fedimintd_versions: &'a [String],
+    fedimintd_version: &'a FedimintdVersion,
     claimed_issuer: String,
     api_endpoints: Vec<ApiEndpointJson<'a>>,
     locator: &'a fi_client::Locator,
@@ -31,7 +31,7 @@ impl<'a> From<&'a fi_client::EligibleFmanCandidate> for DiscoveryCandidateJson<'
             fman_pubkey: candidate.fman_id().to_string(),
             advertised_price_msats: candidate.advertised_price_msats(),
             federation_sizes: &candidate.availability().federation_sizes,
-            fedimintd_versions: &candidate.availability().fedimintd_versions,
+            fedimintd_version: &candidate.availability().fedimintd_version,
             claimed_issuer: candidate.claimed_issuer().to_string(),
             api_endpoints: candidate
                 .api_endpoints()

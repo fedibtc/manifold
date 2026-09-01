@@ -142,7 +142,7 @@ impl SelectionBadgeVerifier for PendingBadgeVerifier {
 fn compatible_availability() -> GetAvailabilityResponse {
     GetAvailabilityResponse {
         accepting_seats: true,
-        fedimintd_versions: vec![FEDIMINTD_VERSION_0_1.parse().expect("test version parses")],
+        fedimintd_version: FEDIMINTD_VERSION_0_1.parse().expect("test version parses"),
         federation_sizes: vec![FederationSize(MIN_FEDERATION_SIZE)],
         plans: vec![
             fedi_decentralized_service_fleet_manager::Plan::InfiniteBestEffort {
@@ -231,7 +231,7 @@ async fn select(
         verifier,
         &AdOnlySelection,
         &preview_request(MIN_FEDERATION_SIZE),
-        fedimintd_version().core(),
+        &fedimintd_version().dkg_version(),
         candidates,
         FederationSize(seats),
         BTreeMap::new(),
@@ -255,7 +255,7 @@ async fn select_probed(
         verifier,
         prober,
         &preview_request(MIN_FEDERATION_SIZE),
-        fedimintd_version().core(),
+        &fedimintd_version().dkg_version(),
         candidates,
         FederationSize(seats),
         BTreeMap::new(),
@@ -305,7 +305,7 @@ async fn replacement_preview_excludes_every_persisted_sibling_locator() {
         &AdOnlySelection,
         test_peer_badge_verifier().provenance(),
         &request,
-        fedimintd_version().core(),
+        &fedimintd_version().dkg_version(),
         requirements.clone(),
         BTreeSet::from([excluded_service_key]),
         BTreeMap::new(),
@@ -366,7 +366,7 @@ async fn replacement_preview_skips_a_retained_service_key_and_continues_the_buck
         &AdOnlySelection,
         test_peer_badge_verifier().provenance(),
         &request,
-        fedimintd_version().core(),
+        &fedimintd_version().dkg_version(),
         requirements,
         BTreeSet::new(),
         BTreeMap::from([(retained_service_pubkey, retained_fman)]),
@@ -417,7 +417,7 @@ async fn replacement_preview_for_public_approval(
         &AdOnlySelection,
         test_peer_badge_verifier().provenance(),
         &request,
-        fedimintd_version().core(),
+        &fedimintd_version().dkg_version(),
         requirements,
         excluded,
         BTreeMap::new(),
@@ -622,7 +622,7 @@ pub(super) fn issuer_ad_for_version(
         price_msats,
         1,
     );
-    payload.availability.fedimintd_versions = vec![version.to_owned()];
+    payload.availability.fedimintd_version = version.parse().expect("test version parses");
     ad_event(fman, payload)
 }
 
@@ -1614,17 +1614,14 @@ async fn live_mismatches_reject_with_their_typed_reasons() {
         ),
         (
             GetAvailabilityResponse {
-                fedimintd_versions: vec!["9.9.9".parse().expect("test version parses")],
+                fedimintd_version: "9.9.9+fedi".parse().expect("test version parses"),
                 ..compatible_availability()
             },
             "live_unsupported_fedimintd_version",
         ),
         (
             GetAvailabilityResponse {
-                fedimintd_versions: vec![
-                    FEDIMINTD_VERSION_0_1.parse().expect("test version parses"),
-                    "0.11.1-fedi18".parse().expect("test version parses"),
-                ],
+                fedimintd_version: "0.11.1+acme".parse().expect("test version parses"),
                 ..compatible_availability()
             },
             "live_unsupported_fedimintd_version",
@@ -1737,7 +1734,7 @@ async fn hung_probe_at_the_walk_deadline_is_deadline_expired() {
         &StubBadgeVerifier::default(),
         &prober,
         &preview_request(MIN_FEDERATION_SIZE),
-        fedimintd_version().core(),
+        &fedimintd_version().dkg_version(),
         candidates,
         FederationSize(1),
         BTreeMap::new(),
@@ -1811,7 +1808,7 @@ async fn deadline_expiry_stops_the_walk_with_a_typed_rejection() {
         &verifier,
         &AdOnlySelection,
         &preview_request(MIN_FEDERATION_SIZE),
-        fedimintd_version().core(),
+        &fedimintd_version().dkg_version(),
         candidates,
         FederationSize(1),
         BTreeMap::new(),
@@ -1922,7 +1919,7 @@ fn multi_release_preview_request(size: u16) -> FmanSelectionRequest {
         FederationSize(size),
         FedimintdVersionRange::new(
             "0.11.1".parse().expect("range minimum parses"),
-            "0.11.3".parse().expect("range maximum parses"),
+            "0.13.0".parse().expect("range maximum parses"),
         )
         .expect("test range is ordered"),
         PlanPreference::InfiniteBestEffort,
@@ -1952,23 +1949,23 @@ async fn preview_cohorts(events: Vec<Event>) -> FiResult<FmanSelectionPreview> {
 }
 
 #[tokio::test]
-async fn preview_accepts_a_new_fedi_build_in_the_same_release() {
+async fn preview_accepts_patch_skew_within_the_fedi_minor_line() {
     let preview = preview_cohorts(cohort_ads(
         1,
         u8::try_from(MIN_FEDERATION_SIZE).expect("small test size"),
         1_000,
-        "0.11.1-fedi18",
+        "0.11.2-rc.1+fedi",
     ))
     .await
-    .expect("a suffix bump stays in the same DKG cohort");
+    .expect("Fedi patch skew stays in the same DKG cohort");
 
-    assert_eq!(preview.fedimintd_version_core(), fedimintd_version().core());
+    assert_eq!(preview.fedimintd_dkg_version().to_string(), "0.11+fedi");
 }
 
 #[tokio::test]
-async fn preview_never_mixes_release_cores_to_fill_a_federation() {
-    let mut events = cohort_ads(1, 4, 1_000, "0.11.1-fedi18");
-    events.extend(cohort_ads(5, 3, 1_000, "0.11.2-fedi1"));
+async fn preview_never_mixes_minor_lines_to_fill_a_federation() {
+    let mut events = cohort_ads(1, 4, 1_000, "0.11.1+fedi");
+    events.extend(cohort_ads(5, 3, 1_000, "0.12.0+fedi"));
     let error = preview_cohorts(events)
         .await
         .expect_err("partial cohorts cannot be combined");
@@ -1986,13 +1983,13 @@ async fn preview_never_mixes_release_cores_to_fill_a_federation() {
 #[tokio::test]
 async fn preview_chooses_cheapest_complete_cohort_then_newer_on_a_tie() {
     let count = u8::try_from(MIN_FEDERATION_SIZE).expect("small test size");
-    for (new_price, expected_core) in [(2_000, "0.11.1"), (1_000, "0.11.2")] {
-        let mut events = cohort_ads(1, count, 1_000, "0.11.1-fedi18");
-        events.extend(cohort_ads(8, count, new_price, "0.11.2-fedi1"));
+    for (new_price, expected_dkg) in [(2_000, "0.11+fedi"), (1_000, "0.12+fedi")] {
+        let mut events = cohort_ads(1, count, 1_000, "0.11.1+fedi");
+        events.extend(cohort_ads(8, count, new_price, "0.12.0+fedi"));
         let preview = preview_cohorts(events)
             .await
             .expect("both cohorts can fill the federation");
-        assert_eq!(preview.fedimintd_version_core().to_string(), expected_core);
+        assert_eq!(preview.fedimintd_dkg_version().to_string(), expected_dkg);
         assert_eq!(
             preview.total_advertised_msats(),
             u64::from(MIN_FEDERATION_SIZE) * 1_000

@@ -339,7 +339,7 @@ async fn holder_trust_badge_to_concrete_fi_selection_flow() {
             url: format!("{IROH_API_ENDPOINT_URL_SCHEME}{first_endpoint_id}"),
         }],
         availability: Availability {
-            fedimintd_versions: vec!["0.8.0".to_owned()],
+            fedimintd_version: "0.8.0+fedi".parse().expect("version parses"),
             federation_sizes: vec![7, 10, 13],
         },
         plans: vec![Plan::InfiniteBestEffort {
@@ -492,7 +492,7 @@ async fn holder_trust_badge_to_concrete_fi_selection_flow() {
                 url: format!("{IROH_API_ENDPOINT_URL_SCHEME}{endpoint_id}"),
             }],
             availability: Availability {
-                fedimintd_versions: vec!["0.8.0".to_owned()],
+                fedimintd_version: "0.8.0+fedi".parse().expect("version parses"),
                 federation_sizes: vec![7, 10, 13],
             },
             plans: vec![Plan::InfiniteBestEffort {
