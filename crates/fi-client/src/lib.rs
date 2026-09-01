@@ -2,6 +2,8 @@
 
 #![allow(async_fn_in_trait)]
 
+mod backup;
+mod backup_worker;
 mod db;
 mod discovery;
 mod error;
@@ -21,6 +23,7 @@ use fedi_decentralized_manifold_environment::ManifoldEnvironmentProfile;
 use fedi_decentralized_nostr_clients::FiNostrClient;
 use fedi_decentralized_peer_badge_verifier::PeerBadgeVerifier;
 use fedimint_core::db::Database;
+use fedimint_core::task::TaskGroup;
 use nostr_sdk::PublicKey;
 use stability_pool_common::Account;
 use tokio::sync::{Mutex, watch};
@@ -116,6 +119,13 @@ struct FiClientInner<I, P, N, F, C> {
     peer_badge_verifier: PeerBadgeVerifier,
     setup_payment_publisher: Option<PublicKey>,
     guardian_verification_fee_account: Option<Account>,
+    backup_tasks: TaskGroup,
+}
+
+impl<I, P, N, F, C> Drop for FiClientInner<I, P, N, F, C> {
+    fn drop(&mut self) {
+        self.backup_tasks.shutdown();
+    }
 }
 
 impl<I, P, N, F, C> Clone for FiClient<I, P, N, F, C> {
@@ -248,7 +258,8 @@ where
         let setup_payment_publisher = profile.setup_payment_publisher().copied();
         let guardian_verification_fee_account =
             profile.guardian_verification_fee_account().cloned();
-        Self::open_inner(
+        let relays = profile.nostr_relays().as_urls().to_vec();
+        let client = Self::open_inner(
             database,
             FiClientPorts {
                 identity,
@@ -262,7 +273,14 @@ where
             setup_payment_publisher,
             guardian_verification_fee_account,
         )
-        .await
+        .await?;
+        backup_worker::spawn_workers(
+            &client.inner.backup_tasks,
+            client.inner.store.clone(),
+            client.inner.ports.identity.scoped_root(),
+            relays,
+        );
+        Ok(client)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -277,6 +295,7 @@ where
         let fi_id = ports.identity.public_key().map_err(FiError::Identity)?;
         let status = store.load_status(fi_id).await?;
         let (progress, _) = watch::channel(status);
+        let backup_tasks = TaskGroup::new();
         Ok(Self {
             inner: Arc::new(FiClientInner {
                 store,
@@ -286,6 +305,7 @@ where
                 peer_badge_verifier,
                 setup_payment_publisher,
                 guardian_verification_fee_account,
+                backup_tasks,
             }),
         })
     }
