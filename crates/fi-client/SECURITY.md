@@ -42,9 +42,11 @@ generating outputs or creating recovery state. The FMan's availability response
 never establishes federation-specific payment policy for FI selection.
 
 Validate the complete formation intent before durable or remote side effects.
-Resolve an absent display name exactly once, validate the resolved name, and
-persist it before continuing. Unsupported future fields must be rejected or
-absent from the public intent, never silently ignored.
+A pinned broad range may then use value-free availability reads to resolve one
+shared release. Resolve an absent display name exactly once, validate it, and
+persist it with that release before quotes, payments, seat creation, or DKG.
+Unsupported future fields must be rejected or absent from the public intent,
+never silently ignored.
 
 ## Registry discovery and selection
 
@@ -104,7 +106,8 @@ holding a connector) dials only reached, badge-verified, non-duplicate
 candidates' self-attested locators, so advertisement spam cannot multiply
 dials beyond the verifier round trips it already costs. The live
 `GetAvailabilityResponse` is untrusted FMan-authored input consumed only by
-the shared four-check availability predicate into typed rejections; its
+the shared exactly-one-version, range, selected-release, size, accepting-seats, and plan predicate
+into typed rejections; its
 offered plans and prices confer nothing — the signed quote remains the only
 commercial term. Probe failure text carries only the sanitized-by-contract
 local connector error descriptions or a fixed marker for a Fleet
@@ -155,8 +158,8 @@ freshness tolerates zero clock skew, so a consumer with a fast clock
 rejects fresh advertisements; and the claimed-issuer bucketing key is
 publisher-controlled, so a publisher can choose its bucket — the issuer
 equality check makes a false claim cost the candidate its seat, but
-region spread remains a heuristic, not a guarantee. The advertised price
-used for ranking and the preview estimate is likewise a publisher claim;
+region spread remains a heuristic, not a guarantee. The advertised price used
+within and across compatible release cohorts is likewise a publisher claim;
 the exact signed quote at formation time is the only commercial term.
 Selection also treats the locator's self-attested commitment-signing
 `service_pubkey` as an operator/failure-domain identity: after both authors
@@ -341,10 +344,10 @@ ids, public guardian-fee accounts, DKG codes, invite code, and an optional
 push-gateway callback URL. The callback URL is a bearer capability and its
 stable idempotency key can identify one formation operation. Neither is
 projected in public status or `Debug`, but database files and backups containing
-them remain sensitive. Schema 10 preserves the callback through every
+them remain sensitive. Schema 11 preserves the callback through every
 pre-`Formed` recovery and atomically clears it with the `Formed` checkpoint,
-after every FMan has durably assumed retry ownership. Only schema 9 migrates;
-older schemas remain fail-closed because they lack other current safety facts.
+after every FMan has durably assumed retry ownership. Older pre-production
+schemas fail closed and require reset.
 Logical clearing does not erase old pages or backups. FI storage must never
 contain raw bearer ecash, payment signatures, identity secret material, or
 wallet-private refund secrets.

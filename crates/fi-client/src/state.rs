@@ -1,8 +1,8 @@
 //! Public FI intent and progress state.
 
 use fedi_decentralized_service_fleet_manager::{
-    FederationId, FederationName, FederationSize, FedimintdVersion, FmanName, GuardianCode,
-    InviteCode, Locator, Plan, QuoteId, SeatId,
+    FederationId, FederationName, FederationSize, FedimintdVersion, FedimintdVersionCore, FmanName,
+    GuardianCode, InviteCode, Locator, Plan, QuoteId, SeatId,
 };
 use nostr_sdk::PublicKey;
 
@@ -17,6 +17,109 @@ pub const MAX_FEDERATION_SIZE_EXCLUSIVE: u16 = MAX_FEDERATION_SIZE + 1;
 /// Largest guardian fee the FI proposes, in parts per million (21%): the
 /// pinned Fedi payer's own ceiling, not a separate product cap.
 pub const MAX_GUARDIAN_FEE_PPM: u32 = 210_000;
+
+/// FI-approved half-open range of three-number Fedimint releases.
+///
+/// Prerelease suffixes such as `-fedi17` are intentionally outside these
+/// bounds. They may differ between FMans in one DKG as long as the core
+/// release is the same and that release is inside this range.
+#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
+#[serde(try_from = "UncheckedFedimintdVersionRange")]
+pub struct FedimintdVersionRange {
+    minimum: FedimintdVersionCore,
+    maximum_exclusive: FedimintdVersionCore,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct UncheckedFedimintdVersionRange {
+    minimum: FedimintdVersionCore,
+    maximum_exclusive: FedimintdVersionCore,
+}
+
+impl TryFrom<UncheckedFedimintdVersionRange> for FedimintdVersionRange {
+    type Error = FiError;
+
+    fn try_from(value: UncheckedFedimintdVersionRange) -> FiResult<Self> {
+        Self::from_cores(value.minimum, value.maximum_exclusive)
+    }
+}
+
+impl FedimintdVersionRange {
+    /// Construct `[minimum, maximum_exclusive)` from two Fedimint versions.
+    ///
+    /// Any prerelease suffixes on the bounds are ignored.
+    pub fn new(minimum: FedimintdVersion, maximum_exclusive: FedimintdVersion) -> FiResult<Self> {
+        Self::from_cores(minimum.core(), maximum_exclusive.core())
+    }
+
+    /// Construct a range directly from DKG release cores.
+    pub fn from_cores(
+        minimum: FedimintdVersionCore,
+        maximum_exclusive: FedimintdVersionCore,
+    ) -> FiResult<Self> {
+        let range = Self {
+            minimum,
+            maximum_exclusive,
+        };
+        range.validate()?;
+        Ok(range)
+    }
+
+    fn validate(&self) -> FiResult<()> {
+        if self.minimum >= self.maximum_exclusive {
+            return Err(FiError::InvalidIntent(
+                "fedimintd version range must have a lower minimum than maximum".to_owned(),
+            ));
+        }
+        Ok(())
+    }
+
+    /// Range containing exactly one three-number release.
+    pub fn one_core(core: FedimintdVersionCore) -> FiResult<Self> {
+        let maximum_exclusive = FedimintdVersionCore {
+            major: core.major,
+            minor: core.minor,
+            patch: core.patch.checked_add(1).ok_or_else(|| {
+                FiError::InvalidIntent("fedimintd release patch cannot be ranged".to_owned())
+            })?,
+        };
+        Self::from_cores(core, maximum_exclusive)
+    }
+
+    /// Return the sole DKG release when this range contains exactly one.
+    #[must_use]
+    pub fn only_core(&self) -> Option<FedimintdVersionCore> {
+        Self::one_core(self.minimum)
+            .ok()
+            .filter(|single| single.maximum_exclusive == self.maximum_exclusive)
+            .map(|_| self.minimum)
+    }
+
+    /// Inclusive lower release bound.
+    #[must_use]
+    pub fn minimum(&self) -> FedimintdVersionCore {
+        self.minimum
+    }
+
+    /// Exclusive upper release bound.
+    #[must_use]
+    pub fn maximum_exclusive(&self) -> FedimintdVersionCore {
+        self.maximum_exclusive
+    }
+
+    /// Whether one exact FMan build lies inside this release range.
+    #[must_use]
+    pub fn contains(&self, version: &FedimintdVersion) -> bool {
+        self.contains_core(version.core())
+    }
+
+    /// Whether one DKG release core lies inside this range.
+    #[must_use]
+    pub fn contains_core(&self, core: FedimintdVersionCore) -> bool {
+        self.minimum <= core && core < self.maximum_exclusive
+    }
+}
 
 /// Stable identifier for one formation record.
 #[derive(Clone, Debug, Eq, Hash, PartialEq, serde::Deserialize, serde::Serialize)]
@@ -54,7 +157,7 @@ impl PlanPreference {
 /// Consumer-owned federation formation request.
 ///
 /// A missing name asks `fi-client` to generate a human-friendly default. The
-/// resolved name is persisted before any external side effect and is exposed
+/// resolved name is persisted before any stateful formation effect and is exposed
 /// in [`FormationSnapshot::intent`]. Deserialization rejects unknown object
 /// fields and values that violate the name, size, or spending-cap
 /// invariants. Construction
@@ -75,7 +178,7 @@ impl PlanPreference {
 /// older serialized intent without the field decodes to no cap, and a
 /// capless intent serializes without the field, so independently serialized
 /// public intent values remain interoperable. This does not migrate durable
-/// FI store records. Those are separate: schema 9 requires explicit creation mode,
+/// FI store records. Those are separate: schema 11 requires explicit creation mode,
 /// commercial-history, and wallet-output tombstones; every older pre-launch
 /// record is rejected fail-closed with reset guidance.
 #[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
@@ -87,22 +190,22 @@ pub struct FormationIntent {
     federation_size: FederationSize,
     /// Requested FMan plan family.
     plan: PlanPreference,
-    /// Requested fedimintd version.
-    fedimintd_version: FedimintdVersion,
+    /// FI-approved Fedimint release range.
+    fedimintd_versions: FedimintdVersionRange,
     /// Optional aggregate spending cap in millisatoshis.
     #[serde(skip_serializing_if = "Option::is_none")]
     max_total_msats: Option<u64>,
 }
 
 impl FormationIntent {
-    /// Construct an intent, returning [`FiError::InvalidIntent`] for an
-    /// invalid name or a federation size outside 7..20.
+    /// Construct an intent with an FI-controlled compatibility range.
     pub fn new(
         federation_name: Option<FederationName>,
         federation_size: FederationSize,
         plan: PlanPreference,
-        fedimintd_version: FedimintdVersion,
+        fedimintd_versions: FedimintdVersionRange,
     ) -> FiResult<Self> {
+        fedimintd_versions.validate()?;
         if let Some(name) = &federation_name {
             validate_federation_name(name)?;
         }
@@ -116,7 +219,7 @@ impl FormationIntent {
             federation_name,
             federation_size,
             plan,
-            fedimintd_version,
+            fedimintd_versions,
             max_total_msats: None,
         })
     }
@@ -162,19 +265,29 @@ impl FormationIntent {
         self.plan
     }
 
-    /// Return the requested fedimintd version.
-    pub fn fedimintd_version(&self) -> &FedimintdVersion {
-        &self.fedimintd_version
+    /// Return the FI-approved Fedimint release range.
+    pub fn fedimintd_versions(&self) -> &FedimintdVersionRange {
+        &self.fedimintd_versions
     }
 
-    pub(crate) fn resolve(self, default_name: FederationName) -> FiResult<ResolvedFormationIntent> {
+    pub(crate) fn resolve_for_core(
+        self,
+        default_name: FederationName,
+        core: FedimintdVersionCore,
+    ) -> FiResult<ResolvedFormationIntent> {
+        if !self.fedimintd_versions.contains_core(core) {
+            return Err(FiError::InvalidIntent(
+                "selected fedimintd release is outside the formation intent".to_owned(),
+            ));
+        }
         let federation_name = self.federation_name.unwrap_or(default_name);
         validate_federation_name(&federation_name)?;
         Ok(ResolvedFormationIntent {
             federation_name,
             federation_size: self.federation_size,
             plan: self.plan,
-            fedimintd_version: self.fedimintd_version,
+            fedimintd_versions: self.fedimintd_versions,
+            fedimintd_version_core: core,
             max_total_msats: self.max_total_msats,
         })
     }
@@ -186,7 +299,7 @@ struct UncheckedFormationIntent {
     federation_name: Option<FederationName>,
     federation_size: FederationSize,
     plan: PlanPreference,
-    fedimintd_version: FedimintdVersion,
+    fedimintd_versions: FedimintdVersionRange,
     /// Deliberate serde evolution inside the strict schema: absent means no
     /// cap, so pre-cap serialized intents keep decoding.
     #[serde(default)]
@@ -201,7 +314,7 @@ impl TryFrom<UncheckedFormationIntent> for FormationIntent {
             value.federation_name,
             value.federation_size,
             value.plan,
-            value.fedimintd_version,
+            value.fedimintd_versions,
         )?;
         match value.max_total_msats {
             Some(max_total_msats) => intent.with_max_total_msats(max_total_msats),
@@ -234,8 +347,10 @@ pub struct ResolvedFormationIntent {
     pub federation_size: FederationSize,
     /// Requested FMan plan family.
     pub plan: PlanPreference,
-    /// Requested fedimintd version.
-    pub fedimintd_version: FedimintdVersion,
+    /// FI-approved Fedimint release range.
+    pub fedimintd_versions: FedimintdVersionRange,
+    /// Three-number release shared by every FMan in this DKG.
+    pub fedimintd_version_core: FedimintdVersionCore,
     /// Optional aggregate spending cap in millisatoshis, persisted with the
     /// intent so it survives resume. The serde default supports standalone
     /// public intent values; pre-tombstone stored formations are rejected by

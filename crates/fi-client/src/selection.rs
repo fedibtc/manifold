@@ -30,8 +30,8 @@ use fedi_decentralized_peer_badge_verifier::{
     PeerBadgeVerificationError, PeerBadgeVerifier, PeerBadgeVerifierProvenance,
 };
 use fedi_decentralized_service_fleet_manager::{
-    FederationSize, FedimintdVersion, FmanName, GetAvailabilityRequest, GetAvailabilityResponse,
-    Locator, Plan, Timestamp,
+    FederationSize, FedimintdVersion, FedimintdVersionCore, FmanName, GetAvailabilityRequest,
+    GetAvailabilityResponse, Locator, Plan, Timestamp,
 };
 use fedimint_core::runtime::{Instant, sleep_until};
 use futures::future::{Either, select};
@@ -42,7 +42,9 @@ use crate::discovery::{
     FmanCandidateRequirements, FmanRegistryQuery, RejectedAdvertisement,
     discover_fman_candidates_with,
 };
-use crate::state::{MAX_FEDERATION_SIZE, MAX_FEDERATION_SIZE_EXCLUSIVE, MIN_FEDERATION_SIZE};
+use crate::state::{
+    FedimintdVersionRange, MAX_FEDERATION_SIZE, MAX_FEDERATION_SIZE_EXCLUSIVE, MIN_FEDERATION_SIZE,
+};
 use crate::{
     FederationConsensusReader, FiClient, FiError, FiIdentity, FiPayments, FiResult,
     FleetManagerConnector, GuardianReplacementRequirements, PlanPreference,
@@ -297,7 +299,7 @@ impl SelectedFmanSeat {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct FmanSelectionRequest {
     federation_size: FederationSize,
-    fedimintd_version: FedimintdVersion,
+    fedimintd_versions: FedimintdVersionRange,
     plan: PlanPreference,
 }
 
@@ -352,7 +354,7 @@ impl<N, F> FmanSelectionQuery<N, F> {
 }
 
 impl FmanSelectionRequest {
-    /// Construct a selection request.
+    /// Construct a selection request with an FI-controlled compatibility range.
     ///
     /// # Errors
     ///
@@ -362,7 +364,7 @@ impl FmanSelectionRequest {
     /// (`specs/ARCH-fi-client-discovery-selection.md`, *Discovery*).
     pub fn new(
         federation_size: FederationSize,
-        fedimintd_version: FedimintdVersion,
+        fedimintd_versions: FedimintdVersionRange,
         plan: PlanPreference,
     ) -> FiResult<Self> {
         if !(MIN_FEDERATION_SIZE..MAX_FEDERATION_SIZE_EXCLUSIVE).contains(&federation_size.0) {
@@ -380,7 +382,7 @@ impl FmanSelectionRequest {
         }
         Ok(Self {
             federation_size,
-            fedimintd_version,
+            fedimintd_versions,
             plan,
         })
     }
@@ -391,10 +393,10 @@ impl FmanSelectionRequest {
         self.federation_size
     }
 
-    /// Requested fedimintd release.
+    /// FI-approved Fedimint release range.
     #[must_use]
-    pub fn fedimintd_version(&self) -> &FedimintdVersion {
-        &self.fedimintd_version
+    pub fn fedimintd_versions(&self) -> &FedimintdVersionRange {
+        &self.fedimintd_versions
     }
 
     /// Requested plan family.
@@ -415,6 +417,9 @@ pub struct FmanSelectionPreview {
     /// Complete request whose verified selection this preview represents.
     request: FmanSelectionRequest,
 
+    /// Three-number Fedimint release shared by every selected FMan.
+    fedimintd_version_core: FedimintdVersionCore,
+
     /// Immutable trust configuration used to verify every selected seat.
     verifier_provenance: PeerBadgeVerifierProvenance,
 
@@ -433,9 +438,9 @@ pub struct FmanSelectionPreview {
     /// Statically admitted, currently eligible candidates before the walk.
     eligible: usize,
 
-    /// Advertisements observed but not seated, with typed reasons. Eligible
-    /// candidates the walk never needed are not rejections and do not
-    /// appear here.
+    /// Static non-admissions plus typed failures encountered while producing
+    /// the chosen cohort. Unneeded candidates and failures from cohorts the
+    /// preview did not choose do not appear here.
     rejected: Vec<RejectedAdvertisement>,
 
     /// Wall-clock deadline used only to reject a stale approval before any
@@ -444,6 +449,12 @@ pub struct FmanSelectionPreview {
 }
 
 impl FmanSelectionPreview {
+    /// Three-number Fedimint release shared by every selected FMan.
+    #[must_use]
+    pub fn fedimintd_version_core(&self) -> FedimintdVersionCore {
+        self.fedimintd_version_core
+    }
+
     /// Verified seats in deterministic selection order.
     #[must_use]
     pub fn seats(&self) -> &[SelectedFmanSeat] {
@@ -474,7 +485,7 @@ impl FmanSelectionPreview {
         self.eligible
     }
 
-    /// Typed non-admissions and walked verification failures.
+    /// Typed non-admissions and chosen-cohort verification failures.
     #[must_use]
     pub fn rejected(&self) -> &[RejectedAdvertisement] {
         &self.rejected
@@ -502,6 +513,7 @@ impl FmanSelectionPreview {
         }
         Ok(FmanSelectionApproval {
             request: self.request,
+            fedimintd_version_core: self.fedimintd_version_core,
             verifier_provenance: self.verifier_provenance,
             seats: self.seats.into_iter().map(ApprovedFmanSeat::from).collect(),
             advertised_total_msats: self.total_advertised_msats,
@@ -520,6 +532,7 @@ impl FmanSelectionPreview {
 #[derive(Clone, Debug)]
 pub struct FmanSelectionApproval {
     pub(crate) request: FmanSelectionRequest,
+    pub(crate) fedimintd_version_core: FedimintdVersionCore,
     pub(crate) verifier_provenance: PeerBadgeVerifierProvenance,
     pub(crate) seats: Vec<ApprovedFmanSeat>,
     pub(crate) advertised_total_msats: u64,
@@ -745,7 +758,7 @@ pub(crate) enum AvailabilityMismatch {
     NotAcceptingSeats,
     /// The requested federation size is not offered.
     FederationSize,
-    /// The requested fedimintd version is not offered.
+    /// Exactly one build in the selected release and FI range is not offered.
     FedimintdVersion,
     /// No offered plan matches the requested plan preference.
     Plan,
@@ -758,7 +771,9 @@ impl AvailabilityMismatch {
         match self {
             Self::NotAcceptingSeats => "Fleet Manager is not accepting seats",
             Self::FederationSize => "requested federation size is not offered",
-            Self::FedimintdVersion => "requested fedimintd version is not offered",
+            Self::FedimintdVersion => {
+                "Fleet Manager does not offer one build in the selected fedimintd release"
+            }
             Self::Plan => "requested plan is not offered",
         }
     }
@@ -775,34 +790,51 @@ impl From<AvailabilityMismatch> for AdvertisementRejection {
     }
 }
 
+/// Exact live build and plan chosen for one compatible FMan.
+pub(crate) struct MatchedAvailability<'a> {
+    pub(crate) fedimintd_version: &'a FedimintdVersion,
+    pub(crate) plan: &'a Plan,
+}
+
 /// The one definition of "this live availability serves the request".
 ///
 /// Shared by the selection walk's probe and formation's quote-time gate so
 /// the two stages can never disagree about what a compatible FMan is. On
-/// success returns the offered plan matching the preference, which quoting
-/// clones to price and selection discards. Deliberately price-blind: the
+/// success returns the FMan's sole exact build plus the offered plan matching
+/// the preference. Quoting uses both; selection discards the build and plan.
+/// Deliberately price-blind: the
 /// signed quote remains the only commercial term, so a live price drift
 /// still surfaces at quote time, not here.
 pub(crate) fn match_requested_availability<'a>(
     availability: &'a GetAvailabilityResponse,
     federation_size: FederationSize,
-    fedimintd_version: &FedimintdVersion,
+    fedimintd_versions: &FedimintdVersionRange,
+    fedimintd_version_core: FedimintdVersionCore,
     plan: PlanPreference,
-) -> Result<&'a Plan, AvailabilityMismatch> {
+) -> Result<MatchedAvailability<'a>, AvailabilityMismatch> {
     if !availability.accepting_seats {
         return Err(AvailabilityMismatch::NotAcceptingSeats);
     }
     if !availability.federation_sizes.contains(&federation_size) {
         return Err(AvailabilityMismatch::FederationSize);
     }
-    if !availability.fedimintd_versions.contains(fedimintd_version) {
+    let [fedimintd_version] = availability.fedimintd_versions.as_slice() else {
+        return Err(AvailabilityMismatch::FedimintdVersion);
+    };
+    if fedimintd_version.core() != fedimintd_version_core
+        || !fedimintd_versions.contains(fedimintd_version)
+    {
         return Err(AvailabilityMismatch::FedimintdVersion);
     }
-    availability
+    let plan = availability
         .plans
         .iter()
         .find(|offered| plan.matches(offered))
-        .ok_or(AvailabilityMismatch::Plan)
+        .ok_or(AvailabilityMismatch::Plan)?;
+    Ok(MatchedAvailability {
+        fedimintd_version,
+        plan,
+    })
 }
 
 impl<I, P, N, F, C> FiClient<I, P, N, F, C>
@@ -980,44 +1012,73 @@ pub(crate) async fn preview_fman_selection_with(
 ) -> FiResult<FmanSelectionPreview> {
     let requirements = FmanCandidateRequirements {
         federation_size: request.federation_size,
-        fedimintd_version: request.fedimintd_version.clone(),
+        fedimintd_versions: request.fedimintd_versions.clone(),
     };
     let discovery = discover_fman_candidates_with(registry, &requirements, deadline, now).await?;
     let seen = discovery.seen();
     let eligible = discovery.candidates.len();
+    let mut cohorts = BTreeMap::<FedimintdVersionCore, Vec<EligibleFmanCandidate>>::new();
+    for candidate in discovery.candidates {
+        cohorts
+            .entry(candidate.fedimintd_version_core)
+            .or_default()
+            .push(candidate);
+    }
+    let mut best = None;
+    let mut largest_partial = 0;
+    let mut complete_overflowed = false;
+    for (core, candidates) in cohorts.into_iter().rev() {
+        let mut cohort_rejected = Vec::new();
+        let seats = select_fman_seats(
+            verifier,
+            prober,
+            request,
+            core,
+            candidates,
+            request.federation_size,
+            BTreeMap::new(),
+            deadline,
+            &mut cohort_rejected,
+        )
+        .await;
+        largest_partial = largest_partial.max(seats.len());
+        if seats.len() < usize::from(request.federation_size.0) {
+            continue;
+        }
+        let Some(total) = seats.iter().try_fold(0u64, |total, seat| {
+            total.checked_add(seat.advertised_price_msats())
+        }) else {
+            complete_overflowed = true;
+            continue;
+        };
+        let replace = best.as_ref().is_none_or(|(best_total, best_core, _, _)| {
+            total < *best_total || (total == *best_total && core > *best_core)
+        });
+        if replace {
+            best = Some((total, core, seats, cohort_rejected));
+        }
+    }
 
-    let mut rejected = discovery.rejected;
-    let seats = select_fman_seats(
-        verifier,
-        prober,
-        request,
-        discovery.candidates,
-        request.federation_size,
-        BTreeMap::new(),
-        deadline,
-        &mut rejected,
-    )
-    .await;
-
-    if seats.len() < usize::from(request.federation_size.0) {
+    let Some((total_advertised_msats, fedimintd_version_core, seats, cohort_rejected)) = best
+    else {
+        if complete_overflowed {
+            return Err(FiError::SelectionEstimateOverflow);
+        }
         return Err(FiError::InsufficientFmanSeats {
             requested: request.federation_size.0,
-            selected: u16::try_from(seats.len()).expect("selected seats fit the requested u16"),
+            selected: u16::try_from(largest_partial).expect("selected seats fit the requested u16"),
             seen,
             eligible,
         });
-    }
-    let total_advertised_msats = seats.iter().try_fold(0u64, |total, seat| {
-        total.checked_add(seat.advertised_price_msats())
-    });
-    let Some(total_advertised_msats) = total_advertised_msats else {
-        return Err(FiError::SelectionEstimateOverflow);
     };
+    let mut rejected = discovery.rejected;
+    rejected.extend(cohort_rejected);
     let valid_until = completed_at()
         .checked_add(FMAN_SELECTION_PREVIEW_VALIDITY.as_secs())
         .ok_or_else(|| FiError::Selection("selection preview expiry overflows".to_owned()))?;
     Ok(FmanSelectionPreview {
         request: request.clone(),
+        fedimintd_version_core,
         verifier_provenance,
         seats,
         total_advertised_msats,
@@ -1035,6 +1096,7 @@ pub(crate) async fn preview_fman_replacements_with(
     prober: &impl SelectionAvailabilityProber,
     verifier_provenance: PeerBadgeVerifierProvenance,
     request: &FmanSelectionRequest,
+    fedimintd_version_core: FedimintdVersionCore,
     requirements: GuardianReplacementRequirements,
     excluded: BTreeSet<PublicKey>,
     retained_service_pubkeys: BTreeMap<secp256k1::XOnlyPublicKey, PublicKey>,
@@ -1044,7 +1106,7 @@ pub(crate) async fn preview_fman_replacements_with(
 ) -> FiResult<FmanReplacementPreview> {
     let discovery_requirements = FmanCandidateRequirements {
         federation_size: request.federation_size,
-        fedimintd_version: request.fedimintd_version.clone(),
+        fedimintd_versions: request.fedimintd_versions.clone(),
     };
     let mut discovery =
         discover_fman_candidates_with(registry, &discovery_requirements, deadline, now).await?;
@@ -1059,6 +1121,7 @@ pub(crate) async fn preview_fman_replacements_with(
         verifier,
         prober,
         request,
+        fedimintd_version_core,
         discovery.candidates,
         FederationSize(requested),
         retained_service_pubkeys,
@@ -1115,6 +1178,7 @@ pub(crate) async fn select_fman_seats(
     verifier: &impl SelectionBadgeVerifier,
     prober: &impl SelectionAvailabilityProber,
     request: &FmanSelectionRequest,
+    fedimintd_version_core: FedimintdVersionCore,
     candidates: Vec<EligibleFmanCandidate>,
     seats_to_fill: FederationSize,
     mut selected_service_pubkeys: BTreeMap<secp256k1::XOnlyPublicKey, PublicKey>,
@@ -1165,8 +1229,14 @@ pub(crate) async fn select_fman_seats(
                         }
                         // Probe after the duplicate check so a candidate that
                         // can never seat is not dialed at all.
-                        if let Err(reason) =
-                            probe_reached_candidate(prober, &candidate, request, deadline).await
+                        if let Err(reason) = probe_reached_candidate(
+                            prober,
+                            &candidate,
+                            request,
+                            fedimintd_version_core,
+                            deadline,
+                        )
+                        .await
                         {
                             let expired = matches!(reason, AdvertisementRejection::DeadlineExpired);
                             rejected.push(RejectedAdvertisement {
@@ -1281,6 +1351,7 @@ async fn probe_reached_candidate(
     prober: &impl SelectionAvailabilityProber,
     candidate: &EligibleFmanCandidate,
     request: &FmanSelectionRequest,
+    fedimintd_version_core: FedimintdVersionCore,
     deadline: Instant,
 ) -> Result<(), AdvertisementRejection> {
     if Instant::now() >= deadline {
@@ -1314,10 +1385,11 @@ async fn probe_reached_candidate(
         LiveProbeOutcome::Available(availability) => match_requested_availability(
             &availability,
             request.federation_size,
-            &request.fedimintd_version,
+            &request.fedimintd_versions,
+            fedimintd_version_core,
             request.plan,
         )
-        .map(|_plan| ())
+        .map(|_availability| ())
         .map_err(AdvertisementRejection::from),
     }
 }

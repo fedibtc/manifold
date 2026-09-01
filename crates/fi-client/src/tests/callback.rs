@@ -108,7 +108,7 @@ async fn paid_selection_sends_the_callback_to_every_guardian_and_clears_it_at_fo
 }
 
 #[tokio::test]
-async fn callback_is_durable_private_state_and_schema_nine_migrates_safely() {
+async fn callback_is_durable_private_state_and_old_schemas_fail_closed() {
     let database = MemDatabase::new().into_database();
     let (payments, _) = TestPayments::new();
     let client = open_client(
@@ -195,35 +195,16 @@ async fn callback_is_durable_private_state_and_schema_nine_migrates_safely() {
             .await,
         (9, false)
     );
-    drop(migration_client);
-    let (payments, _) = TestPayments::new();
-    let migration_client = open_client(
-        migration_database,
-        payments,
-        Arc::new(FmanState::default()),
-        FmanConfig::paid(),
-    )
-    .await;
-    let migrated = active_recovery(
+    assert!(matches!(
         migration_client
             .inner
             .store
             .load_recovery(TestIdentity::fi_id())
-            .await
-            .unwrap(),
-    );
-    assert_eq!(migrated.snapshot.formation_id.0, "schema-nine");
-    assert_eq!(migrated.snapshot.phase, FormationPhase::Preparing);
-    assert_eq!(migrated.seats.len(), 1);
-    assert!(migrated.dkg_completion_callback.is_none());
-    assert_eq!(
-        migration_client
-            .inner
-            .store
-            .stored_schema_and_callback_field_for_test()
             .await,
-        (10, true)
-    );
+        Err(FiError::Storage(error))
+            if error.contains("unsupported FI storage schema version 9")
+                && error.contains("reset this unreleased FI namespace")
+    ));
 
     let (payments, _) = TestPayments::new();
     let future_client = open_client(
@@ -249,7 +230,7 @@ async fn callback_is_durable_private_state_and_schema_nine_migrates_safely() {
     future_client
         .inner
         .store
-        .set_schema_version_for_test(11)
+        .set_schema_version_for_test(12)
         .await;
     assert!(matches!(
         future_client
@@ -258,7 +239,7 @@ async fn callback_is_durable_private_state_and_schema_nine_migrates_safely() {
             .load_recovery(TestIdentity::fi_id())
             .await,
         Err(FiError::Storage(error))
-            if error.contains("unsupported FI storage schema version 11")
+            if error.contains("unsupported FI storage schema version 12")
     ));
 }
 
@@ -300,7 +281,7 @@ async fn callback_schema_rejects_missing_current_field_and_hybrid_legacy_bytes()
             .load_recovery(TestIdentity::fi_id())
             .await,
         Err(FiError::Storage(error))
-            if error.contains("schema 10 formation omits dkg_completion_callback")
+            if error.contains("schema 11 formation omits dkg_completion_callback")
     ));
 
     let hybrid_database = MemDatabase::new().into_database();
@@ -333,7 +314,7 @@ async fn callback_schema_rejects_missing_current_field_and_hybrid_legacy_bytes()
             .load_recovery(TestIdentity::fi_id())
             .await,
         Err(FiError::Storage(error))
-            if error.contains("schema 9 unexpectedly contains a DKG completion callback field")
+            if error.contains("unsupported FI storage schema version 9")
     ));
 
     let null_hybrid_database = MemDatabase::new().into_database();
@@ -366,6 +347,6 @@ async fn callback_schema_rejects_missing_current_field_and_hybrid_legacy_bytes()
             .load_recovery(TestIdentity::fi_id())
             .await,
         Err(FiError::Storage(error))
-            if error.contains("schema 9 unexpectedly contains a DKG completion callback field")
+            if error.contains("unsupported FI storage schema version 9")
     ));
 }

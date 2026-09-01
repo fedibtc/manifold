@@ -33,7 +33,7 @@ use crate::{
     ResolvedFormationIntent, SeatPaymentRequirement, SeatPhase, SeatProgress,
 };
 
-const STORAGE_SCHEMA_VERSION: u16 = 10;
+const STORAGE_SCHEMA_VERSION: u16 = 11;
 const FORMATION_TX_MAX_ATTEMPTS: usize = 10;
 
 #[derive(Clone, Copy)]
@@ -120,7 +120,7 @@ struct StoredFormation {
     phase: StoredFormationPhase,
     intent: ResolvedFormationIntent,
     seat_count: u16,
-    /// Explicit creation contract. This is required in schema 9 so an
+    /// Explicit creation contract. This is required in schema 11 so an
     /// explicitly absent selected-bootstrap payer remains distinguishable
     /// from legacy pinned formation.
     creation_mode: FormationCreationMode,
@@ -164,8 +164,8 @@ struct StoredFormation {
 }
 
 /// Distinguishes a missing legacy JSON field from explicit current-schema
-/// `null`; schema 10 requires `Present`, while genuine schema 9 requires
-/// `Missing`.
+/// `null`; current storage requires `Present`, while older schemas may
+/// decode it as `Missing` before being rejected.
 #[derive(Clone, Debug, Default)]
 enum FieldPresence<T> {
     #[default]
@@ -1234,7 +1234,6 @@ impl FiStore {
     }
 
     pub(crate) async fn load_recovery(&self, fi_id: FiId) -> FiResult<FiRecovery> {
-        self.migrate_schema_9(fi_id).await?;
         let mut dbtx = self.database.begin_transaction_nc().await;
         let Some(stored) = dbtx.get_value(&ActiveFormationKey).await else {
             return Ok(FiRecovery::Idle);
@@ -1359,44 +1358,6 @@ impl FiStore {
             formation_meta_target: stored.formation_meta_target,
             dkg_completion_callback: stored.dkg_completion_callback.into_value(),
         })))
-    }
-
-    /// Upgrade the immediately preceding schema before any resume effect.
-    ///
-    /// Schema 9 contains every current monetary-safety fact and decodes the new
-    /// optional callback as absent. Schemas 8 and earlier remain fail-closed.
-    async fn migrate_schema_9(&self, fi_id: FiId) -> FiResult<()> {
-        self.database
-            .autocommit(
-                move |dbtx, _| {
-                    Box::pin(async move {
-                        let Some(mut formation) = dbtx.get_value(&ActiveFormationKey).await else {
-                            return Ok(());
-                        };
-                        if formation.schema_version != 9 {
-                            return Ok(());
-                        }
-                        if formation.fi_id != Some(fi_id) {
-                            return Err(FiError::Storage(
-                                "persisted FI formation belongs to a different identity".to_owned(),
-                            ));
-                        }
-                        if formation.dkg_completion_callback.is_present() {
-                            return Err(FiError::Storage(
-                                "schema 9 unexpectedly contains a DKG completion callback field"
-                                    .to_owned(),
-                            ));
-                        }
-                        formation.schema_version = STORAGE_SCHEMA_VERSION;
-                        formation.dkg_completion_callback = FieldPresence::new(None);
-                        dbtx.insert_entry(&ActiveFormationKey, &formation).await;
-                        Ok(())
-                    })
-                },
-                Some(FORMATION_TX_MAX_ATTEMPTS),
-            )
-            .await
-            .map_err(map_formation_tx_error)
     }
 
     /// Load the complete last durably admitted setup-payment publication.
@@ -3168,7 +3129,10 @@ fn payment_requirements(
         let request = &quote.terms.request;
         let plan_matches = intent.plan.matches(&request.plan);
         if request.fi_id != fi_id
-            || request.fedimintd_version != intent.fedimintd_version
+            || request.fedimintd_version.core() != intent.fedimintd_version_core
+            || !intent
+                .fedimintd_versions
+                .contains(&request.fedimintd_version)
             || request.federation_size != intent.federation_size
             || !plan_matches
         {
@@ -3641,6 +3605,10 @@ fn validate_schema(formation: &StoredFormation) -> FiResult<()> {
                  from pinned formation and cannot be migrated safely; reset this unreleased FI \
                  namespace and restart formation"
             }
+            9 | 10 => {
+                "; this pre-production schema predates durable Fedimint compatibility ranges and \
+                 DKG cohort selection; reset this unreleased FI namespace and restart formation"
+            }
             _ => "",
         };
         return Err(FiError::Storage(format!(
@@ -3665,9 +3633,18 @@ fn validate_schema(formation: &StoredFormation) -> FiResult<()> {
             }
         }
     }
+    if !formation
+        .intent
+        .fedimintd_versions
+        .contains_core(formation.intent.fedimintd_version_core)
+    {
+        return Err(FiError::Storage(
+            "persisted FI fedimintd release is outside its version policy".to_owned(),
+        ));
+    }
     if !formation.dkg_completion_callback.is_present() {
         return Err(FiError::Storage(
-            "persisted FI schema 10 formation omits dkg_completion_callback".to_owned(),
+            "persisted FI schema 11 formation omits dkg_completion_callback".to_owned(),
         ));
     }
     Ok(())

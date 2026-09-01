@@ -3,7 +3,7 @@ use std::io::{Read, Write as _};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use anyhow::{Context as _, ensure};
+use anyhow::{Context as _, bail, ensure};
 use clap::{Args as ClapArgs, Parser, Subcommand};
 use fedi_decentralized_domain::BitcoinNetwork;
 use fedi_decentralized_manifold_environment::{ManifoldEnvironment, ManifoldEnvironmentProfile};
@@ -22,8 +22,8 @@ use fedimint_core::encoding::Encodable as _;
 use fedimint_core::invite_code::InviteCode as FedimintInviteCode;
 use fi_client::{
     FederationConsensusError, FederationConsensusReader, FederationConsensusSnapshot,
-    FedimintFederationId, FiClient, FiFeeAccountError, FiFeeAccountProvider, FiIdentity,
-    FiPaymentError, FiPayments, FiStatus, FleetManagerCallError, FleetManagerConnector,
+    FedimintFederationId, FedimintdVersionRange, FiClient, FiFeeAccountError, FiFeeAccountProvider,
+    FiIdentity, FiPaymentError, FiPayments, FiStatus, FleetManagerCallError, FleetManagerConnector,
     FleetManagerConnectorError, FmanCandidateRequirements, FmanDiscoveryOptions, FmanRegistryQuery,
     FmanSelectionRequest, FormationActionRequired, FormationIntent, FormationPhase,
     FormationRunOptions, GuardianFeePpm, LiquidityOperationId, LiquidityProviderConnector,
@@ -565,9 +565,12 @@ struct RegistryQueryArgs {
     /// Federation size the eligibility filter and selection target.
     #[arg(long)]
     federation_size: u16,
-    /// Fedimintd version the eligibility filter targets.
-    #[arg(long)]
-    fedimintd_version: Option<String>,
+    /// Inclusive lower three-number Fedimint release bound.
+    #[arg(long, requires = "fedimintd_version_maximum_exclusive")]
+    fedimintd_version_minimum: Option<String>,
+    /// Exclusive upper three-number Fedimint release bound.
+    #[arg(long, requires = "fedimintd_version_minimum")]
+    fedimintd_version_maximum_exclusive: Option<String>,
     /// Absolute run deadline in seconds, at least 1 (enumeration plus
     /// verification).
     #[arg(long, default_value_t = 60)]
@@ -655,9 +658,12 @@ struct CreateArgs {
     /// `authorize-payments` command.
     #[arg(long)]
     max_total_msats: Option<u64>,
-    /// Requested fedimintd version override.
-    #[arg(long)]
-    fedimintd_version: Option<String>,
+    /// Inclusive lower three-number Fedimint release bound.
+    #[arg(long, requires = "fedimintd_version_maximum_exclusive")]
+    fedimintd_version_minimum: Option<String>,
+    /// Exclusive upper three-number Fedimint release bound.
+    #[arg(long, requires = "fedimintd_version_minimum")]
+    fedimintd_version_maximum_exclusive: Option<String>,
     /// Pinned-driver probe interval, 1..=2,147,483 seconds; ignored without locators.
     #[arg(long, default_value_t = 2)]
     poll_interval_secs: u64,
@@ -703,7 +709,8 @@ struct IntentFile {
     federation_name: Option<FederationName>,
     federation_size: Option<FederationSize>,
     plan: Option<PlanPreference>,
-    fedimintd_version: Option<FedimintdVersion>,
+    fedimintd_version_minimum: Option<FedimintdVersion>,
+    fedimintd_version_maximum_exclusive: Option<FedimintdVersion>,
     max_total_msats: Option<u64>,
 }
 
@@ -1024,7 +1031,7 @@ async fn run(
                 let registry = connect_environment_registry(args.manifold_environment).await?;
                 let requirements = FmanCandidateRequirements {
                     federation_size: intent.federation_size(),
-                    fedimintd_version: intent.fedimintd_version().clone(),
+                    fedimintd_versions: intent.fedimintd_versions().clone(),
                 };
                 let discovery = FmanRegistryQuery::new(registry.clone())
                     .insecure_discover_untrusted_pinned_fmans(
@@ -1067,7 +1074,7 @@ async fn run(
                 let registry = connect_environment_registry(args.manifold_environment).await?;
                 let request = FmanSelectionRequest::new(
                     intent.federation_size(),
-                    intent.fedimintd_version().clone(),
+                    intent.fedimintd_versions().clone(),
                     intent.plan(),
                 )?;
                 let preview = FmanRegistryQuery::new(registry.clone())
@@ -1235,7 +1242,10 @@ async fn run(
         Command::Discover(discover) => {
             let requirements = FmanCandidateRequirements {
                 federation_size: FederationSize(discover.federation_size),
-                fedimintd_version: parse_fedimintd_version(discover.fedimintd_version.as_deref())?,
+                fedimintd_versions: parse_fedimintd_range(
+                    discover.fedimintd_version_minimum.as_deref(),
+                    discover.fedimintd_version_maximum_exclusive.as_deref(),
+                )?,
             };
             let options = discover.discovery_options()?;
             let registry = connect_environment_registry(args.manifold_environment).await?;
@@ -1248,7 +1258,10 @@ async fn run(
         Command::Preview(preview) => {
             let request = FmanSelectionRequest::new(
                 FederationSize(preview.federation_size),
-                parse_fedimintd_version(preview.fedimintd_version.as_deref())?,
+                parse_fedimintd_range(
+                    preview.fedimintd_version_minimum.as_deref(),
+                    preview.fedimintd_version_maximum_exclusive.as_deref(),
+                )?,
                 PlanPreference::InfiniteBestEffort,
             )?;
             let options = preview.discovery_options()?;
@@ -1578,14 +1591,28 @@ fn command_requires_peer_badge_verifier(command: &Command) -> bool {
     !matches!(command, Command::Discover(_) | Command::PaymentWallet(_))
 }
 
-fn parse_fedimintd_version(version: Option<&str>) -> anyhow::Result<FedimintdVersion> {
-    match version {
-        Some(version) => version
-            .parse()
-            .context("parse --fedimintd-version as a semantic version"),
-        None => Ok(FEDIMINTD_VERSION_0_1
-            .parse()
-            .expect("the supported fedimintd version constant is valid SemVer")),
+fn parse_fedimintd_range(
+    minimum: Option<&str>,
+    maximum_exclusive: Option<&str>,
+) -> anyhow::Result<FedimintdVersionRange> {
+    match (minimum, maximum_exclusive) {
+        (Some(minimum), Some(maximum)) => FedimintdVersionRange::new(
+            minimum
+                .parse()
+                .context("parse --fedimintd-version-minimum as a semantic version")?,
+            maximum
+                .parse()
+                .context("parse --fedimintd-version-maximum-exclusive as a semantic version")?,
+        )
+        .map_err(Into::into),
+        (None, None) => FedimintdVersionRange::one_core(
+            FEDIMINTD_VERSION_0_1
+                .parse::<FedimintdVersion>()
+                .expect("the supported fedimintd version constant is valid SemVer")
+                .core(),
+        )
+        .map_err(Into::into),
+        _ => bail!("fedimintd version range requires both minimum and maximum-exclusive bounds"),
     }
 }
 
@@ -1712,26 +1739,42 @@ fn load_intent(args: &CreateArgs) -> anyhow::Result<FormationIntent> {
     if let Some(value) = args.federation_size {
         file.federation_size = Some(FederationSize(value));
     }
-    if let Some(value) = &args.fedimintd_version {
-        file.fedimintd_version = Some(
+    if let Some(value) = &args.fedimintd_version_minimum {
+        file.fedimintd_version_minimum = Some(
             value
                 .parse()
-                .context("parse --fedimintd-version as a semantic version")?,
+                .context("parse --fedimintd-version-minimum as a semantic version")?,
+        );
+    }
+    if let Some(value) = &args.fedimintd_version_maximum_exclusive {
+        file.fedimintd_version_maximum_exclusive = Some(
+            value
+                .parse()
+                .context("parse --fedimintd-version-maximum-exclusive as a semantic version")?,
         );
     }
     if let Some(value) = args.max_total_msats {
         file.max_total_msats = Some(value);
     }
+    let fedimintd_versions = match (
+        file.fedimintd_version_minimum,
+        file.fedimintd_version_maximum_exclusive,
+    ) {
+        (Some(minimum), Some(maximum)) => FedimintdVersionRange::new(minimum, maximum)?,
+        (None, None) => FedimintdVersionRange::one_core(
+            FEDIMINTD_VERSION_0_1
+                .parse::<FedimintdVersion>()
+                .expect("the supported fedimintd version constant is valid SemVer")
+                .core(),
+        )?,
+        _ => bail!("fedimintd version range requires both minimum and maximum-exclusive bounds"),
+    };
     let intent = FormationIntent::new(
         file.federation_name,
         file.federation_size
             .context("formation intent requires federation_size")?,
         file.plan.unwrap_or_default(),
-        file.fedimintd_version.unwrap_or_else(|| {
-            FEDIMINTD_VERSION_0_1
-                .parse()
-                .expect("the supported fedimintd version constant is valid SemVer")
-        }),
+        fedimintd_versions,
     )?;
     match file.max_total_msats {
         Some(max_total_msats) => intent
@@ -2953,7 +2996,8 @@ mod tests {
         // quantum.
         let args = RegistryQueryArgs {
             federation_size: 7,
-            fedimintd_version: None,
+            fedimintd_version_minimum: None,
+            fedimintd_version_maximum_exclusive: None,
             timeout_secs: 0,
         };
         let error = args.discovery_options().unwrap_err();
@@ -3467,7 +3511,8 @@ mod tests {
             r#"
 federation_name = "file"
 federation_size = 7
-fedimintd_version = "0.11.1-fedi10"
+fedimintd_version_minimum = "0.11.1"
+fedimintd_version_maximum_exclusive = "0.11.3"
 max_total_msats = 1000
 "#,
         )
@@ -3480,7 +3525,8 @@ max_total_msats = 1000
             federation_name: Some("override".to_owned()),
             federation_size: None,
             max_total_msats: Some(21_000),
-            fedimintd_version: None,
+            fedimintd_version_minimum: None,
+            fedimintd_version_maximum_exclusive: None,
             poll_interval_secs: 2,
             poll_timeout_secs: 600,
             completion_callback_url_file: None,
@@ -3497,9 +3543,10 @@ max_total_msats = 1000
             Some(&FederationName("override".to_owned()))
         );
         assert_eq!(intent.federation_size(), FederationSize(7));
+        assert_eq!(intent.fedimintd_versions().minimum().to_string(), "0.11.1");
         assert_eq!(
-            intent.fedimintd_version(),
-            &"0.11.1-fedi10".parse::<FedimintdVersion>().unwrap()
+            intent.fedimintd_versions().maximum_exclusive().to_string(),
+            "0.11.3"
         );
         assert_eq!(intent.plan(), PlanPreference::InfiniteBestEffort);
         assert_eq!(intent.max_total_msats(), Some(21_000));
@@ -3515,7 +3562,8 @@ max_total_msats = 1000
             federation_name: None,
             federation_size: Some(7),
             max_total_msats: Some(0),
-            fedimintd_version: None,
+            fedimintd_version_minimum: None,
+            fedimintd_version_maximum_exclusive: None,
             poll_interval_secs: 2,
             poll_timeout_secs: 600,
             completion_callback_url_file: None,
@@ -3544,7 +3592,8 @@ max_total_msats = 1000
             federation_name: None,
             federation_size: None,
             max_total_msats: None,
-            fedimintd_version: None,
+            fedimintd_version_minimum: None,
+            fedimintd_version_maximum_exclusive: None,
             poll_interval_secs: 2,
             poll_timeout_secs: 600,
             completion_callback_url_file: None,
@@ -3575,7 +3624,8 @@ max_total_msats = 1000
             federation_name: None,
             federation_size: None,
             max_total_msats: None,
-            fedimintd_version: None,
+            fedimintd_version_minimum: None,
+            fedimintd_version_maximum_exclusive: None,
             poll_interval_secs: 2,
             poll_timeout_secs: 600,
             completion_callback_url_file: None,
@@ -3609,7 +3659,8 @@ max_total_msats = 1000
             &config,
             r#"
 federation_size = 7
-fedimintd_version = "0.11.1-fedi10"
+fedimintd_version_minimum = "0.11.1"
+fedimintd_version_maximum_exclusive = "0.11.2"
 guardian_fee_pmm = 100
 "#,
         )
@@ -3684,7 +3735,8 @@ guardian_fee_pmm = 100
             federation_name: None,
             federation_size: Some(7),
             max_total_msats: None,
-            fedimintd_version: None,
+            fedimintd_version_minimum: None,
+            fedimintd_version_maximum_exclusive: None,
             poll_interval_secs: 2,
             poll_timeout_secs,
             completion_callback_url_file: None,
@@ -3756,7 +3808,8 @@ guardian_fee_pmm = 100
                 federation_name: None,
                 federation_size: Some(7),
                 max_total_msats: None,
-                fedimintd_version: None,
+                fedimintd_version_minimum: None,
+                fedimintd_version_maximum_exclusive: None,
                 poll_interval_secs: 2,
                 poll_timeout_secs: 600,
                 completion_callback_url_file: None,
@@ -4269,7 +4322,8 @@ guardian_fee_pmm = 100
     fn static_discovery_does_not_require_peer_badge_trust_configuration() {
         let args = RegistryQueryArgs {
             federation_size: 7,
-            fedimintd_version: None,
+            fedimintd_version_minimum: None,
+            fedimintd_version_maximum_exclusive: None,
             timeout_secs: 60,
         };
         assert!(!command_requires_peer_badge_verifier(&Command::Discover(
@@ -4278,7 +4332,8 @@ guardian_fee_pmm = 100
 
         let preview_args = RegistryQueryArgs {
             federation_size: 7,
-            fedimintd_version: None,
+            fedimintd_version_minimum: None,
+            fedimintd_version_maximum_exclusive: None,
             timeout_secs: 60,
         };
         assert!(command_requires_peer_badge_verifier(&Command::Preview(

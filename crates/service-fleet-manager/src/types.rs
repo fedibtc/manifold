@@ -27,6 +27,27 @@ pub struct FiId(pub secp256k1::XOnlyPublicKey);
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct FedimintdVersion(semver::Version);
 
+/// Three-number Fedimint release that must agree across one DKG.
+///
+/// FMan build suffixes such as `-fedi17` do not change this value. They name
+/// different builds that may participate together when their core release is
+/// the same.
+#[derive(
+    serde::Deserialize, serde::Serialize, Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd,
+)]
+#[serde(deny_unknown_fields)]
+pub struct FedimintdVersionCore {
+    pub major: u64,
+    pub minor: u64,
+    pub patch: u64,
+}
+
+impl fmt::Display for FedimintdVersionCore {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}.{}.{}", self.major, self.minor, self.patch)
+    }
+}
+
 impl FromStr for FedimintdVersion {
     type Err = semver::Error;
 
@@ -38,6 +59,18 @@ impl FromStr for FedimintdVersion {
 impl fmt::Display for FedimintdVersion {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.0.fmt(f)
+    }
+}
+
+impl FedimintdVersion {
+    /// Return the three-number release used to group DKG-compatible builds.
+    #[must_use]
+    pub fn core(&self) -> FedimintdVersionCore {
+        FedimintdVersionCore {
+            major: self.0.major,
+            minor: self.0.minor,
+            patch: self.0.patch,
+        }
     }
 }
 

@@ -12,7 +12,7 @@ use super::*;
 const ACTIVE_STATUS: &str = concat!(
     r#"{"formation":{"formation_id":"formation-1","intent":{"federation_name":"contract","#,
     r#""federation_size":7,"plan":"infinite_best_effort","#,
-    r#""fedimintd_version":"0.6.0"},"phase":"awaiting_payment_readiness","seats":[],"#,
+    r#""fedimintd_versions":{"minimum":{"major":0,"minor":6,"patch":0},"maximum_exclusive":{"major":0,"minor":6,"patch":1}},"fedimintd_version_core":{"major":0,"minor":6,"patch":0}},"phase":"awaiting_payment_readiness","seats":[],"#,
     r#""freshness":"unsynced","action_required":null,"invite_code":null,"last_error":null}}"#
 );
 const PAYMENT_REQUIREMENTS: &str = concat!(
@@ -61,7 +61,7 @@ fn active_status_json_has_exact_schema_on_stdout() {
     assert_eq!(
         stdout,
         concat!(
-            r#"{"formation":{"formation_id":"formation-1","intent":{"federation_name":"contract","federation_size":7,"plan":"infinite_best_effort","fedimintd_version":"0.6.0"},"phase":"awaiting_payment_readiness","seats":[{"index":2,"locator":{"version":1,"endpoint_addr":{"id":"8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c","addrs":[]},"service_pubkey":"4d4b6cd1361032ca9bd2aeb9d900aa4d45d9ead80ac9423374c451a7254d0766"},"seat_id":null,"guardian_code":null,"phase":"quote_ready","freshness":"unsynced"}],"freshness":"unsynced","action_required":{"authorize_payments":{"authorization_id":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","total_msats":21000,"seats":[{"index":2,"quote_id":[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],"payment_federation_id":"1111111111111111111111111111111111111111111111111111111111111111","amount_msats":21000}]}},"payment_outputs_started":false,"invite_code":null,"last_error":null}}"#,
+            r#"{"formation":{"formation_id":"formation-1","intent":{"federation_name":"contract","federation_size":7,"plan":"infinite_best_effort","fedimintd_versions":{"minimum":{"major":0,"minor":6,"patch":0},"maximum_exclusive":{"major":0,"minor":6,"patch":1}},"fedimintd_version_core":{"major":0,"minor":6,"patch":0}},"phase":"awaiting_payment_readiness","seats":[{"index":2,"locator":{"version":1,"endpoint_addr":{"id":"8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c","addrs":[]},"service_pubkey":"4d4b6cd1361032ca9bd2aeb9d900aa4d45d9ead80ac9423374c451a7254d0766"},"seat_id":null,"guardian_code":null,"phase":"quote_ready","freshness":"unsynced"}],"freshness":"unsynced","action_required":{"authorize_payments":{"authorization_id":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","total_msats":21000,"seats":[{"index":2,"quote_id":[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],"payment_federation_id":"1111111111111111111111111111111111111111111111111111111111111111","amount_msats":21000}]}},"payment_outputs_started":false,"invite_code":null,"last_error":null}}"#,
             "\n"
         )
     );
@@ -174,6 +174,7 @@ fn populated_registry_row_dtos_have_exact_schemas() {
             seen: 1,
             eligible: 1,
             selected: 1,
+            fedimintd_version_core: "0.11.1".to_owned(),
             total_advertised_msats: 21_000,
             seats: vec![seat],
             rejected: vec![RejectionJson {
@@ -182,7 +183,7 @@ fn populated_registry_row_dtos_have_exact_schemas() {
             }],
         })
         .unwrap(),
-        r#"{"seen":1,"eligible":1,"selected":1,"totalAdvertisedMsats":21000,"seats":[{"fmanPubkey":"1111111111111111111111111111111111111111111111111111111111111111","advertisedPriceMsats":21000,"locator":{"version":1,"endpoint_addr":{"id":"8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c","addrs":[]},"service_pubkey":"4d4b6cd1361032ca9bd2aeb9d900aa4d45d9ead80ac9423374c451a7254d0766"},"issuer":"2222222222222222222222222222222222222222222222222222222222222222","holder":"3333333333333333333333333333333333333333333333333333333333333333","trustLevel":6,"provenance":"fedi_attested"}],"rejected":[{"author":"4444444444444444444444444444444444444444444444444444444444444444","reason":"deadline_expired"}]}"#
+        r#"{"seen":1,"eligible":1,"selected":1,"fedimintdVersionCore":"0.11.1","totalAdvertisedMsats":21000,"seats":[{"fmanPubkey":"1111111111111111111111111111111111111111111111111111111111111111","advertisedPriceMsats":21000,"locator":{"version":1,"endpoint_addr":{"id":"8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c","addrs":[]},"service_pubkey":"4d4b6cd1361032ca9bd2aeb9d900aa4d45d9ead80ac9423374c451a7254d0766"},"issuer":"2222222222222222222222222222222222222222222222222222222222222222","holder":"3333333333333333333333333333333333333333333333333333333333333333","trustLevel":6,"provenance":"fedi_attested"}],"rejected":[{"author":"4444444444444444444444444444444444444444444444444444444444444444","reason":"deadline_expired"}]}"#
     );
 }
 

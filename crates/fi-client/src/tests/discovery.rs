@@ -150,7 +150,13 @@ pub(crate) fn ad_event(fman: &Keys, payload: AdvertisementPayload) -> Event {
 pub(crate) fn requirements() -> crate::FmanCandidateRequirements {
     crate::FmanCandidateRequirements {
         federation_size: FederationSize(MIN_FEDERATION_SIZE),
-        fedimintd_version: FEDIMINTD_VERSION_0_1.parse().expect("test version parses"),
+        fedimintd_versions: FedimintdVersionRange::one_core(
+            FEDIMINTD_VERSION_0_1
+                .parse::<FedimintdVersion>()
+                .expect("test version parses")
+                .core(),
+        )
+        .expect("test version core can form a range"),
     }
 }
 
@@ -494,14 +500,19 @@ async fn unsupported_federation_size_is_rejected() {
 
 #[tokio::test]
 async fn unsupported_fedimintd_version_is_rejected() {
-    let fman = fman_keys(1);
-    let mut payload = self_authorized_payload(&fman);
-    payload.availability.fedimintd_versions = vec!["0.99.0".to_owned(), "not-semver".to_owned()];
-    let reason = sole_rejection(vec![ad_event(&fman, payload)]).await;
-    assert!(matches!(
-        reason,
-        AdvertisementRejection::UnsupportedFedimintdVersion
-    ));
+    for versions in [
+        vec!["not-semver".to_owned()],
+        vec![FEDIMINTD_VERSION_0_1.to_owned(), "0.11.1-fedi18".to_owned()],
+    ] {
+        let fman = fman_keys(1);
+        let mut payload = self_authorized_payload(&fman);
+        payload.availability.fedimintd_versions = versions;
+        let reason = sole_rejection(vec![ad_event(&fman, payload)]).await;
+        assert!(matches!(
+            reason,
+            AdvertisementRejection::UnsupportedFedimintdVersion
+        ));
+    }
 }
 
 #[tokio::test]

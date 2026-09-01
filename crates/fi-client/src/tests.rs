@@ -760,6 +760,7 @@ impl FmanConfig {
 struct QuoteRecord {
     quote_id: QuoteId,
     payment_federation_id: Option<FederationId>,
+    fedimintd_version: FedimintdVersion,
 }
 
 #[derive(Clone)]
@@ -782,6 +783,7 @@ struct FmanState {
     offline_indices: Mutex<HashSet<usize>>,
     availability_calls: AtomicUsize,
     availability_transport_failures_remaining: AtomicUsize,
+    fedimintd_version_overrides: Mutex<HashMap<usize, FedimintdVersion>>,
     quote_calls: AtomicUsize,
     quote_transport_failures_remaining: AtomicUsize,
     create_calls: AtomicUsize,
@@ -1038,9 +1040,17 @@ impl FleetManagerService for TestFman {
         let plans = vec![Plan::InfiniteBestEffort {
             price_msats: self.price_msats(),
         }];
+        let fedimintd_version = self
+            .state
+            .fedimintd_version_overrides
+            .lock()
+            .expect("test lock")
+            .get(&self.index)
+            .cloned()
+            .unwrap_or_else(fedimintd_version);
         Ok(GetAvailabilityResponse {
             accepting_seats: self.config.accepting_seats,
-            fedimintd_versions: vec![fedimintd_version()],
+            fedimintd_versions: vec![fedimintd_version],
             federation_sizes: vec![self.config.federation_size],
             plans,
             additional_info: Vec::new(),
@@ -1063,6 +1073,7 @@ impl FleetManagerService for TestFman {
             }
         }
         let payment_federation_id = request.payment_federation_id.clone();
+        let fedimintd_version = request.fedimintd_version.clone();
         if self.config.reject_quote {
             return Err(FleetManagerError::Other(
                 "test daemon rejects the selected payment federation".to_owned(),
@@ -1125,6 +1136,7 @@ impl FleetManagerService for TestFman {
             .push(QuoteRecord {
                 quote_id,
                 payment_federation_id,
+                fedimintd_version,
             });
         Ok(signed_quote)
     }
@@ -2026,6 +2038,29 @@ fn fedimintd_version() -> FedimintdVersion {
         .expect("release version is valid")
 }
 
+fn fedimintd_version_range() -> FedimintdVersionRange {
+    FedimintdVersionRange::one_core(fedimintd_version().core())
+        .expect("test release can form a range")
+}
+
+fn version_range(version: &str) -> FedimintdVersionRange {
+    FedimintdVersionRange::one_core(
+        version
+            .parse::<FedimintdVersion>()
+            .expect("test version parses")
+            .core(),
+    )
+    .expect("test release can form a range")
+}
+
+fn set_fman_version(state: &FmanState, index: usize, version: &str) {
+    state
+        .fedimintd_version_overrides
+        .lock()
+        .expect("test lock")
+        .insert(index, version.parse().expect("test version parses"));
+}
+
 fn test_invite(index: usize) -> InviteCode {
     test_invite_for_federation(index, 0)
 }
@@ -2133,10 +2168,11 @@ fn selection_approval(max_total_msats: u64) -> FmanSelectionApproval {
     FmanSelectionApproval {
         request: FmanSelectionRequest::new(
             FederationSize(MIN_FEDERATION_SIZE),
-            fedimintd_version(),
+            fedimintd_version_range(),
             PlanPreference::InfiniteBestEffort,
         )
         .expect("valid test selection request"),
+        fedimintd_version_core: fedimintd_version().core(),
         verifier_provenance: test_peer_badge_verifier().provenance(),
         seats: locators()
             .into_iter()
@@ -2152,12 +2188,27 @@ fn selection_approval(max_total_msats: u64) -> FmanSelectionApproval {
     }
 }
 
+fn compatible_selection_approval(max_total_msats: u64) -> FmanSelectionApproval {
+    let mut approval = selection_approval(max_total_msats);
+    approval.request = FmanSelectionRequest::new(
+        FederationSize(MIN_FEDERATION_SIZE),
+        FedimintdVersionRange::new(
+            "0.11.1".parse().expect("range minimum parses"),
+            "0.11.3".parse().expect("range maximum parses"),
+        )
+        .expect("test range is ordered"),
+        PlanPreference::InfiniteBestEffort,
+    )
+    .expect("valid test selection request");
+    approval
+}
+
 fn intent() -> FormationIntent {
     FormationIntent::new(
         Some(FederationName("Test Federation".to_owned())),
         FederationSize(MIN_FEDERATION_SIZE),
         PlanPreference::InfiniteBestEffort,
-        fedimintd_version(),
+        fedimintd_version_range(),
     )
     .unwrap()
 }
@@ -2168,7 +2219,7 @@ fn serialized_intent_rejects_unknown_fields() {
         "federation_name": null,
         "federation_size": 7,
         "plan": "infinite_best_effort",
-        "fedimintd_version": "0.11.1-fedi10",
+        "fedimintd_versions": {"minimum":{"major":0,"minor":11,"patch":1},"maximum_exclusive":{"major":0,"minor":11,"patch":2}},
         "unknown_field": 100,
     }))
     .unwrap_err();
@@ -2186,7 +2237,7 @@ fn serialized_intent_rejects_the_retired_formation_time_fee_field() {
         "federation_size": 7,
         "guardian_fee_ppm": 0,
         "plan": "infinite_best_effort",
-        "fedimintd_version": "0.11.1-fedi10",
+        "fedimintd_versions": {"minimum":{"major":0,"minor":11,"patch":1},"maximum_exclusive":{"major":0,"minor":11,"patch":2}},
     }))
     .unwrap_err();
 
@@ -2216,8 +2267,8 @@ fn serialized_intent_rejects_invalid_product_values() {
             serde_json::json!("friends_with_benefits"),
         );
         object.insert(
-            "fedimintd_version".to_owned(),
-            serde_json::json!("0.11.1-fedi10"),
+            "fedimintd_versions".to_owned(),
+            serde_json::json!({"minimum":{"major":0,"minor":11,"patch":1},"maximum_exclusive":{"major":0,"minor":11,"patch":2}}),
         );
         assert!(serde_json::from_value::<FormationIntent>(value).is_err());
     }
@@ -2310,7 +2361,7 @@ fn formation_intent_accepts_product_size_boundaries_only() {
                 None,
                 FederationSize(size),
                 PlanPreference::InfiniteBestEffort,
-                fedimintd_version(),
+                fedimintd_version_range(),
             )
             .is_ok()
         );
@@ -2321,7 +2372,7 @@ fn formation_intent_accepts_product_size_boundaries_only() {
                 None,
                 FederationSize(size),
                 PlanPreference::InfiniteBestEffort,
-                fedimintd_version(),
+                fedimintd_version_range(),
             )
             .is_err()
         );
@@ -2330,7 +2381,10 @@ fn formation_intent_accepts_product_size_boundaries_only() {
 
 fn resolved_intent() -> ResolvedFormationIntent {
     intent()
-        .resolve(FederationName("Fallback Name".to_owned()))
+        .resolve_for_core(
+            FederationName("Fallback Name".to_owned()),
+            fedimintd_version().core(),
+        )
         .expect("valid test intent")
 }
 
@@ -2406,7 +2460,7 @@ fn signed_quote_at_price(
                 offer_epoch: OfferEpoch::from_bytes([0; 32]),
                 request: GetQuoteRequest {
                     fi_id: TestIdentity::fi_id(),
-                    fedimintd_version: intent.fedimintd_version.clone(),
+                    fedimintd_version: fedimintd_version(),
                     federation_size: intent.federation_size,
                     plan,
                     payment_federation_id,
@@ -2439,7 +2493,7 @@ fn signed_free_quote(
                 offer_epoch: OfferEpoch::from_bytes([0; 32]),
                 request: GetQuoteRequest {
                     fi_id: TestIdentity::fi_id(),
-                    fedimintd_version: intent.fedimintd_version.clone(),
+                    fedimintd_version: fedimintd_version(),
                     federation_size: intent.federation_size,
                     plan: Plan::InfiniteBestEffort { price_msats: 0 },
                     payment_federation_id: None,
@@ -3709,7 +3763,7 @@ async fn intent_and_locator_validation_precede_external_calls() {
                 None,
                 FederationSize(size),
                 PlanPreference::InfiniteBestEffort,
-                fedimintd_version(),
+                fedimintd_version_range(),
             ),
             Err(FiError::InvalidIntent(_))
         ));
@@ -3719,7 +3773,7 @@ async fn intent_and_locator_validation_precede_external_calls() {
             None,
             FederationSize(MAX_FEDERATION_SIZE_EXCLUSIVE - 1),
             PlanPreference::InfiniteBestEffort,
-            fedimintd_version(),
+            fedimintd_version_range(),
         )
         .is_ok()
     );
@@ -3735,7 +3789,7 @@ async fn intent_and_locator_validation_precede_external_calls() {
                 Some(FederationName(name)),
                 FederationSize(MIN_FEDERATION_SIZE),
                 PlanPreference::InfiniteBestEffort,
-                fedimintd_version(),
+                fedimintd_version_range(),
             ),
             Err(FiError::InvalidIntent(_))
         ));
@@ -3907,7 +3961,7 @@ async fn default_name_final_status_and_formed_reconciliation_are_typed() {
         None,
         FederationSize(MIN_FEDERATION_SIZE),
         PlanPreference::InfiniteBestEffort,
-        fedimintd_version(),
+        fedimintd_version_range(),
     )
     .unwrap();
     client
@@ -4773,7 +4827,7 @@ async fn current_storage_requires_selected_mode_and_output_tombstone_fields() {
                 .store
                 .rejects_missing_recovery_field_for_test(field)
                 .await,
-            "schema 9 must reject a missing {field}"
+            "schema 11 must reject a missing {field}"
         );
     }
 }
@@ -5057,7 +5111,10 @@ async fn replacement_authority_requires_selected_post_output_terminal_transition
     let resolved = intent()
         .with_max_total_msats(1_000)
         .unwrap()
-        .resolve(FederationName("Replacement Gate".to_owned()))
+        .resolve_for_core(
+            FederationName("Replacement Gate".to_owned()),
+            fedimintd_version().core(),
+        )
         .unwrap();
     store
         .initialize(
@@ -7770,6 +7827,55 @@ fn capped_paid_intent(max_total_msats: u64) -> FormationIntent {
         .expect("valid test spending cap")
 }
 
+fn compatible_intent() -> FormationIntent {
+    FormationIntent::new(
+        Some(FederationName("Test Federation".to_owned())),
+        FederationSize(MIN_FEDERATION_SIZE),
+        PlanPreference::InfiniteBestEffort,
+        FedimintdVersionRange::new(
+            "0.11.1".parse().expect("range minimum parses"),
+            "0.11.3".parse().expect("range maximum parses"),
+        )
+        .expect("test range is ordered"),
+    )
+    .expect("compatible test intent is valid")
+}
+
+#[test]
+fn fedimintd_range_ignores_build_suffixes_but_not_release_cores() {
+    let range = FedimintdVersionRange::new(
+        "0.11.1-fedi17".parse().expect("minimum parses"),
+        "0.11.3".parse().expect("maximum parses"),
+    )
+    .expect("ordered release range");
+
+    assert!(range.contains(&"0.11.1-fedi99".parse().expect("version parses")));
+    assert!(range.contains(&"0.11.2-fedi1".parse().expect("version parses")));
+    assert!(!range.contains(&"0.11.3-fedi1".parse().expect("version parses")));
+    assert!(
+        FedimintdVersionRange::new(
+            "0.11.2".parse().expect("minimum parses"),
+            "0.11.2".parse().expect("maximum parses"),
+        )
+        .is_err()
+    );
+    assert!(
+        serde_json::from_value::<FedimintdVersionRange>(serde_json::json!({
+            "minimum": {"major": 0, "minor": 11, "patch": 2},
+            "maximum_exclusive": {"major": 0, "minor": 11, "patch": 1}
+        }))
+        .is_err()
+    );
+    assert!(
+        serde_json::from_value::<FedimintdVersionRange>(serde_json::json!({
+            "minimum": {"major": 0, "minor": 11, "patch": 1},
+            "maximum_exclusive": {"major": 0, "minor": 12, "patch": 0},
+            "include_prereleases": false
+        }))
+        .is_err()
+    );
+}
+
 #[test]
 fn spending_cap_rejects_zero_and_roundtrips_through_the_strict_schema() {
     assert!(matches!(
@@ -7781,7 +7887,7 @@ fn spending_cap_rejects_zero_and_roundtrips_through_the_strict_schema() {
             "federation_name": null,
             "federation_size": 7,
             "plan": "infinite_best_effort",
-            "fedimintd_version": "0.11.1-fedi10",
+            "fedimintd_versions": {"minimum":{"major":0,"minor":11,"patch":1},"maximum_exclusive":{"major":0,"minor":11,"patch":2}},
             "max_total_msats": 0,
         }))
         .is_err()
@@ -7816,7 +7922,7 @@ fn spending_cap_rejects_zero_and_roundtrips_through_the_strict_schema() {
             "federation_name": null,
             "federation_size": 7,
             "plan": "infinite_best_effort",
-            "fedimintd_version": "0.11.1-fedi10",
+            "fedimintd_versions": {"minimum":{"major":0,"minor":11,"patch":1},"maximum_exclusive":{"major":0,"minor":11,"patch":2}},
             "max_total_msat": 5,
         }))
         .is_err()
@@ -7981,6 +8087,256 @@ async fn pay_and_create_uses_the_explicit_ready_payer_and_arms_outputs() {
     assert_eq!(
         payment_state.create_calls.load(Ordering::SeqCst),
         usize::from(MIN_FEDERATION_SIZE)
+    );
+}
+
+#[tokio::test]
+async fn selected_formation_persists_and_enforces_its_compatible_release() {
+    let database = MemDatabase::new().into_database();
+    let (payments, _) = TestPayments::new();
+    let fman_state = Arc::new(FmanState::default());
+    set_fman_version(&fman_state, 0, "0.11.1-fedi18");
+    let client = open_client(database, payments, fman_state.clone(), FmanConfig::paid()).await;
+    let cap = PAYMENT_AMOUNT_MSATS * u64::from(MIN_FEDERATION_SIZE);
+
+    client
+        .pay_and_create(
+            compatible_intent(),
+            compatible_selection_approval(cap),
+            payment_federation_id(),
+            options(),
+        )
+        .await
+        .expect("every live FMan offers a build in the sealed cohort");
+
+    let formed = formation(&client.status()).clone();
+    assert_eq!(formed.phase, FormationPhase::Formed);
+    assert_eq!(
+        formed.intent.fedimintd_version_core,
+        fedimintd_version().core()
+    );
+    assert_eq!(
+        formed
+            .intent
+            .fedimintd_versions
+            .maximum_exclusive()
+            .to_string(),
+        "0.11.3"
+    );
+    assert!(
+        fman_state
+            .quote_records
+            .lock()
+            .expect("test lock")
+            .iter()
+            .any(|record| record.fedimintd_version.to_string() == "0.11.1-fedi18"),
+        "same-release build drift is used for the exact quote",
+    );
+}
+
+#[tokio::test]
+async fn selected_fman_core_drift_requires_fresh_selection_before_payment() {
+    let (payments, payment_state) = TestPayments::new();
+    let fman_state = Arc::new(FmanState::default());
+    set_fman_version(&fman_state, 0, "0.11.2-fedi1");
+    let client = open_client(
+        MemDatabase::new().into_database(),
+        payments,
+        fman_state.clone(),
+        FmanConfig::paid(),
+    )
+    .await;
+
+    let error = client
+        .pay_and_create(
+            compatible_intent(),
+            compatible_selection_approval(PAYMENT_AMOUNT_MSATS * u64::from(MIN_FEDERATION_SIZE)),
+            payment_federation_id(),
+            options(),
+        )
+        .await
+        .expect_err("a different live release invalidates the selected set");
+
+    assert!(matches!(
+        error,
+        FiError::SelectionReauthorizationRequired(
+            SelectionReauthorizationReason::SelectedFmanUnavailable
+        )
+    ));
+    assert!(matches!(client.status(), FiStatus::Idle));
+    assert_eq!(payment_state.create_calls.load(Ordering::SeqCst), 0);
+    assert!(
+        fman_state
+            .quote_records
+            .lock()
+            .expect("test lock")
+            .iter()
+            .all(|record| record.fedimintd_version.core() == fedimintd_version().core())
+    );
+}
+
+#[tokio::test]
+async fn reopen_preserves_and_enforces_the_selected_release() {
+    let database = MemDatabase::new().into_database();
+    let (payments, payment_state) = TestPayments::new();
+    let fman_state = Arc::new(FmanState::default());
+    let client = open_client(
+        database.clone(),
+        payments.clone(),
+        fman_state.clone(),
+        FmanConfig::paid(),
+    )
+    .await;
+    let resolved = compatible_intent()
+        .with_max_total_msats(PAYMENT_AMOUNT_MSATS * u64::from(MIN_FEDERATION_SIZE))
+        .unwrap()
+        .resolve_for_core(
+            FederationName("Restart Range".to_owned()),
+            fedimintd_version().core(),
+        )
+        .unwrap();
+    client
+        .inner
+        .store
+        .initialize(
+            TestIdentity::fi_id(),
+            FormationId("restart-range".to_owned()),
+            resolved,
+            (0..MIN_FEDERATION_SIZE)
+                .map(|index| selected_initial_seat(index, test_now_secs() + 120))
+                .collect(),
+            crate::db::FormationCreationMode::Selected {
+                payment_federation_id: Some(payment_federation_id()),
+            },
+            None,
+        )
+        .await
+        .unwrap();
+    drop(client);
+    set_fman_version(&fman_state, 0, "0.11.2-fedi1");
+
+    let reopened = open_client(database, payments, fman_state, FmanConfig::paid()).await;
+    let persisted = formation(&reopened.status()).clone();
+    assert_eq!(
+        persisted.intent.fedimintd_version_core,
+        fedimintd_version().core()
+    );
+    assert_eq!(
+        persisted
+            .intent
+            .fedimintd_versions
+            .maximum_exclusive()
+            .to_string(),
+        "0.11.3"
+    );
+    let error = reopened
+        .resume()
+        .await
+        .expect_err("reopen must not widen the selected release");
+    assert!(matches!(
+        error,
+        FiError::SelectionReauthorizationRequired(
+            SelectionReauthorizationReason::SelectedFmanUnavailable
+        )
+    ));
+    assert!(matches!(reopened.status(), FiStatus::Idle));
+    assert_eq!(payment_state.create_calls.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn persisted_formation_rejects_a_cross_release_replacement() {
+    let registry = TestRegistry::default();
+    registry
+        .candidates
+        .lock()
+        .expect("test lock")
+        .push(setup_payment_event(test_now_secs(), &[PAYMENT_INVITE]));
+    registry
+        .advertisements
+        .lock()
+        .expect("test lock")
+        .push(selection::issuer_ad_for_version(
+            &fman_keys(20),
+            &discovery::issuer_keys(1),
+            PAYMENT_AMOUNT_MSATS,
+            "0.11.2-fedi1",
+        ));
+    let (payments, _) = TestPayments::new();
+    let client = open_client_with_registry(
+        MemDatabase::new().into_database(),
+        payments,
+        Arc::new(FmanState::default()),
+        FmanConfig {
+            create_behavior: CreateBehavior::RefuseFirstQuote,
+            ..FmanConfig::paid()
+        },
+        registry,
+    )
+    .await;
+
+    let error = client
+        .pay_and_create(
+            compatible_intent(),
+            compatible_selection_approval(PAYMENT_AMOUNT_MSATS * u64::from(MIN_FEDERATION_SIZE)),
+            payment_federation_id(),
+            options(),
+        )
+        .await
+        .expect_err("the original selected guardian refuses its paid presentation");
+    assert!(matches!(error, FiError::SeatRefused { .. }));
+    let persisted = formation(&client.status()).clone();
+    assert_eq!(
+        persisted.intent.fedimintd_version_core,
+        fedimintd_version().core()
+    );
+    assert!(matches!(
+        persisted.action_required,
+        Some(FormationActionRequired::ReplaceGuardians(_))
+    ));
+
+    let error = client
+        .preview_fman_replacements(crate::FmanDiscoveryOptions::default())
+        .await
+        .expect_err("replacement discovery must keep the formed release");
+    assert!(matches!(
+        error,
+        FiError::InsufficientFmanSeats {
+            selected: 0,
+            eligible: 0,
+            ..
+        }
+    ));
+}
+
+#[tokio::test]
+async fn pinned_formation_derives_one_shared_release_from_its_range() {
+    let (payments, _) = TestPayments::new();
+    let client = open_client(
+        MemDatabase::new().into_database(),
+        payments,
+        Arc::new(FmanState::default()),
+        FmanConfig::given_away(),
+    )
+    .await;
+
+    client
+        .create_with_pinned_fmans(compatible_intent(), locators(), options())
+        .await
+        .expect("the pinned set shares one release inside the FI range");
+
+    let formed = formation(&client.status()).clone();
+    assert_eq!(formed.phase, FormationPhase::Formed);
+    assert_eq!(
+        formed.intent.fedimintd_version_core,
+        fedimintd_version().core()
+    );
+    assert_eq!(
+        formed
+            .intent
+            .fedimintd_versions
+            .maximum_exclusive()
+            .to_string(),
+        "0.11.3"
     );
 }
 
@@ -9229,7 +9585,10 @@ async fn crashed_selected_over_cap_record_reopens_without_legacy_action_and_clea
     let resolved = intent()
         .with_max_total_msats(exact_total - 1)
         .unwrap()
-        .resolve(FederationName("Crash Recovery".to_owned()))
+        .resolve_for_core(
+            FederationName("Crash Recovery".to_owned()),
+            fedimintd_version().core(),
+        )
         .unwrap();
     let formation_id = FormationId("selected-over-cap-crash".to_owned());
     client
@@ -9299,7 +9658,10 @@ async fn crashed_selected_record_cannot_resume_after_its_preview_expires() {
     let resolved = intent()
         .with_max_total_msats(1_000)
         .unwrap()
-        .resolve(FederationName("Expired Crash".to_owned()))
+        .resolve_for_core(
+            FederationName("Expired Crash".to_owned()),
+            fedimintd_version().core(),
+        )
         .unwrap();
     client
         .inner
@@ -9357,7 +9719,10 @@ async fn selected_reopen_under_changed_verifier_requires_fresh_pre_output_author
             intent()
                 .with_max_total_msats(1_000)
                 .unwrap()
-                .resolve(FederationName("Verifier Drift".to_owned()))
+                .resolve_for_core(
+                    FederationName("Verifier Drift".to_owned()),
+                    fedimintd_version().core(),
+                )
                 .unwrap(),
             (0..MIN_FEDERATION_SIZE)
                 .map(|index| selected_initial_seat(index, test_now_secs() + 120))
@@ -9406,7 +9771,10 @@ async fn selected_reopen_after_output_tombstone_uses_durable_admission_provenanc
     let resolved = intent()
         .with_max_total_msats(1_000)
         .unwrap()
-        .resolve(FederationName("Verifier Drift Recovery".to_owned()))
+        .resolve_for_core(
+            FederationName("Verifier Drift Recovery".to_owned()),
+            fedimintd_version().core(),
+        )
         .unwrap();
     client
         .inner
@@ -9548,7 +9916,10 @@ async fn expired_selected_cleanup_reconstructs_and_releases_wallet_reservation_b
     let resolved = intent()
         .with_max_total_msats(1_000)
         .unwrap()
-        .resolve(FederationName("Expired Reserved Crash".to_owned()))
+        .resolve_for_core(
+            FederationName("Expired Reserved Crash".to_owned()),
+            fedimintd_version().core(),
+        )
         .unwrap();
     let formation_id = FormationId("selected-expired-reserved-crash".to_owned());
     client
@@ -9671,7 +10042,10 @@ async fn seed_lost_selected_reservation_result(
                 .expect("test aggregate fits"),
         )
         .unwrap()
-        .resolve(FederationName("Lost Reservation Result".to_owned()))
+        .resolve_for_core(
+            FederationName("Lost Reservation Result".to_owned()),
+            fedimintd_version().core(),
+        )
         .unwrap();
     client
         .inner
@@ -10106,7 +10480,10 @@ async fn seed_selected_recorded_reservation(
                 .expect("test aggregate fits"),
         )
         .unwrap()
-        .resolve(FederationName("Recorded Reservation".to_owned()))
+        .resolve_for_core(
+            FederationName("Recorded Reservation".to_owned()),
+            fedimintd_version().core(),
+        )
         .unwrap();
     client
         .inner
@@ -10826,7 +11203,7 @@ async fn selection_approval_rejects_request_context_drift_before_external_work()
         None,
         FederationSize(MIN_FEDERATION_SIZE),
         PlanPreference::InfiniteBestEffort,
-        "0.11.2".parse().expect("valid different release"),
+        version_range("0.11.2"),
     )
     .unwrap();
 

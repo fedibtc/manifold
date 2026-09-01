@@ -643,6 +643,7 @@ where
             seats,
             FormationCreationMode::Pinned,
             None,
+            None,
             options,
         )
         .await
@@ -652,9 +653,11 @@ where
     /// callback to every guardian's DKG attempt.
     ///
     /// This has the same cancellation, payment-readiness, and explicit payment
-    /// authorization behavior as [`Self::create_with_pinned_fmans`]. FI persists
-    /// the callback before remote work, retains it through every pre-`Formed`
-    /// recovery, and sends the same value to every guardian. Public formation
+    /// authorization behavior as [`Self::create_with_pinned_fmans`]. A broad
+    /// version range may require value-free availability reads first; FI then
+    /// persists the callback before quotes, payments, seat creation, or DKG,
+    /// retains it through every pre-`Formed` recovery, and sends the same value
+    /// to every guardian. Public formation
     /// snapshots never expose the bearer. FI clears its copy atomically with the
     /// `Formed` checkpoint after every FMan has accepted durable retry ownership.
     pub async fn create_with_pinned_fmans_and_callback(
@@ -674,6 +677,7 @@ where
             intent,
             seats,
             FormationCreationMode::Pinned,
+            None,
             Some(completion_callback),
             options,
         )
@@ -767,7 +771,7 @@ where
             )));
         }
         if approval.request.federation_size() != intent.federation_size()
-            || approval.request.fedimintd_version() != intent.fedimintd_version()
+            || intent.fedimintd_versions() != approval.request.fedimintd_versions()
             || approval.request.plan() != intent.plan()
         {
             return Err(FiError::InvalidIntent(
@@ -780,6 +784,7 @@ where
             ));
         }
         let approval_valid_until = approval.valid_until;
+        let fedimintd_version_core = approval.fedimintd_version_core;
         let verifier_provenance = approval.verifier_provenance.into();
         let approved_seats = approval.into_seats_at(Timestamp(now_secs()?))?;
         let seats = approved_seats
@@ -812,6 +817,7 @@ where
             FormationCreationMode::Selected {
                 payment_federation_id,
             },
+            Some(fedimintd_version_core),
             completion_callback,
             options,
         )
@@ -833,7 +839,9 @@ where
             })?;
         let request = FmanSelectionRequest::new(
             recovery.snapshot.intent.federation_size,
-            recovery.snapshot.intent.fedimintd_version.clone(),
+            crate::FedimintdVersionRange::one_core(
+                recovery.snapshot.intent.fedimintd_version_core,
+            )?,
             recovery.snapshot.intent.plan,
         )?;
         let excluded = recovery
@@ -882,6 +890,7 @@ where
             },
             self.inner.peer_badge_verifier.provenance(),
             &request,
+            recovery.snapshot.intent.fedimintd_version_core,
             requirements,
             excluded,
             retained_service_pubkeys,
@@ -1014,6 +1023,7 @@ where
         intent: FormationIntent,
         seats: Vec<InitialSeat>,
         creation_mode: FormationCreationMode,
+        fedimintd_version_core: Option<crate::FedimintdVersionCore>,
         completion_callback: Option<DkgCompletionCallback>,
         options: FormationRunOptions,
     ) -> FiResult<()> {
@@ -1039,7 +1049,11 @@ where
             let created_at = now_secs()?;
             let formation_id = FormationId(format!("{}-{created_at}", fi_id.0));
             let default_name = default_federation_name(fi_id, created_at);
-            let intent = intent.resolve(default_name)?;
+            let core = match fedimintd_version_core {
+                Some(core) => core,
+                None => self.select_pinned_core(&intent, &seats, run).await?,
+            };
+            let intent = intent.resolve_for_core(default_name, core)?;
             self.inner
                 .store
                 .initialize(
@@ -1057,6 +1071,92 @@ where
         }
         .await;
         finish_driver_run(result, self.inner.store.release_driver_lease(lease).await)
+    }
+
+    async fn select_pinned_core(
+        &self,
+        intent: &FormationIntent,
+        seats: &[InitialSeat],
+        run: DriverRun<'_>,
+    ) -> FiResult<FedimintdVersionCore> {
+        if let Some(core) = intent.fedimintd_versions().only_core() {
+            return Ok(core);
+        }
+        let mut common = None::<BTreeSet<FedimintdVersionCore>>;
+        for seat in seats {
+            let index = seat.progress.index;
+            let client = run
+                .call("connecting to pinned Fleet Manager", || {
+                    Ok(self
+                        .inner
+                        .ports
+                        .fman_connector
+                        .connect(&seat.progress.locator))
+                })
+                .await?
+                .map_err(|error| fman_error(usize::from(index), error.to_string()))?;
+            let availability = run
+                .call("checking pinned Fleet Manager availability", || {
+                    Ok(self
+                        .inner
+                        .ports
+                        .fman_connector
+                        .get_availability(&client, GetAvailabilityRequest))
+                })
+                .await?
+                .map_err(|error| fman_error(usize::from(index), error.to_string()))?
+                .map_err(|error| fman_error(usize::from(index), error.to_string()))?;
+            if !availability.accepting_seats {
+                return Err(fman_error(
+                    usize::from(index),
+                    AvailabilityMismatch::NotAcceptingSeats.message(),
+                ));
+            }
+            if !availability
+                .federation_sizes
+                .contains(&intent.federation_size())
+            {
+                return Err(fman_error(
+                    usize::from(index),
+                    AvailabilityMismatch::FederationSize.message(),
+                ));
+            }
+            if !availability
+                .plans
+                .iter()
+                .any(|plan| intent.plan().matches(plan))
+            {
+                return Err(fman_error(
+                    usize::from(index),
+                    AvailabilityMismatch::Plan.message(),
+                ));
+            }
+            let [version] = availability.fedimintd_versions.as_slice() else {
+                return Err(fman_error(
+                    usize::from(index),
+                    AvailabilityMismatch::FedimintdVersion.message(),
+                ));
+            };
+            if !intent.fedimintd_versions().contains(version) {
+                return Err(fman_error(
+                    usize::from(index),
+                    AvailabilityMismatch::FedimintdVersion.message(),
+                ));
+            }
+            let offered = BTreeSet::from([version.core()]);
+            common = Some(match common {
+                None => offered,
+                Some(common) => common.intersection(&offered).copied().collect(),
+            });
+        }
+        common
+            .and_then(|common| common.into_iter().next_back())
+            .ok_or_else(|| {
+                FiError::InvalidFleetManagers(
+                    "pinned Fleet Managers do not share a fedimintd release inside the FI range"
+                        .to_owned(),
+                )
+            })
     }
 
     /// Validate pinned locator inputs without accessing identity, storage,
@@ -3334,13 +3434,14 @@ where
         // One shared predicate with the selection walk's live probe
         // (`selection::match_requested_availability`), so a candidate the
         // probing preview seats is exactly a candidate this gate accepts.
-        let plan = match crate::selection::match_requested_availability(
+        let matched = match crate::selection::match_requested_availability(
             &availability,
             intent.federation_size,
-            &intent.fedimintd_version,
+            &intent.fedimintd_versions,
+            intent.fedimintd_version_core,
             intent.plan,
         ) {
-            Ok(plan) => plan.clone(),
+            Ok(matched) => matched,
             Err(mismatch @ AvailabilityMismatch::NotAcceptingSeats) => {
                 return Err((if policy.allows_selection_reauthorization() {
                     FiError::SelectionReauthorizationRequired(
@@ -3355,6 +3456,8 @@ where
                 return Err(selected_availability_error(policy, index, mismatch.message()).into());
             }
         };
+        let fedimintd_version = matched.fedimintd_version.clone();
+        let plan = matched.plan.clone();
         // Free-ness is a property of the price, not of the plan: an FMan that
         // gives its seats away is quoted against no payment federation
         // whatever this FI is configured to pay from, and one that charges
@@ -3409,7 +3512,7 @@ where
         };
         let quote_request = GetQuoteRequest {
             fi_id,
-            fedimintd_version: intent.fedimintd_version.clone(),
+            fedimintd_version,
             federation_size: intent.federation_size,
             plan,
             payment_federation_id,
@@ -3451,7 +3554,10 @@ where
             .map_err(|error| fman_error(index, format!("invalid signed quote: {error}")))?;
         let request = &quote.terms.request;
         if request.fi_id != fi_id
-            || request.fedimintd_version != intent.fedimintd_version
+            || request.fedimintd_version.core() != intent.fedimintd_version_core
+            || !intent
+                .fedimintd_versions
+                .contains(&request.fedimintd_version)
             || request.federation_size != intent.federation_size
             || !intent.plan.matches(&request.plan)
         {

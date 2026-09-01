@@ -94,6 +94,7 @@ struct SelectionPreviewJson<'a> {
     seen: usize,
     eligible: usize,
     selected: usize,
+    fedimintd_version_core: String,
     total_advertised_msats: u64,
     seats: Vec<SelectionSeatJson<'a>>,
     rejected: Vec<RejectionJson>,
@@ -574,6 +575,7 @@ impl<'a> CliOutput<'a> {
                     seen: preview.seen(),
                     eligible: preview.eligible(),
                     selected: preview.selected(),
+                    fedimintd_version_core: preview.fedimintd_version_core().to_string(),
                     total_advertised_msats: preview.total_advertised_msats(),
                     seats,
                     rejected: rejections_json(preview.rejected()),
@@ -584,8 +586,9 @@ impl<'a> CliOutput<'a> {
         }
         writeln!(
             self.stdout,
-            "selected {} seat(s) ({} seen, {} eligible), estimated total {} msat",
+            "selected {} seat(s) for fedimintd {} ({} seen, {} eligible), estimated total {} msat",
             preview.selected(),
+            preview.fedimintd_version_core(),
             preview.seen(),
             preview.eligible(),
             preview.total_advertised_msats(),

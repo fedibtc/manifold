@@ -26,9 +26,9 @@ Post-formation liquidity is governed by
 Each increment extends this consumer boundary and state engine rather than
 adding a second driver to any consumer. The public `FormationIntent`
 therefore carries only an optional display name (resolved to one generated
-two-word name and persisted before remote work), federation size (accepted
+two-word name and persisted before stateful remote work), federation size (accepted
 product range 7 through 20 guardians), current plan
-family, canonical `FedimintdVersion`, and an optional aggregate spending
+family, a half-open `FedimintdVersionRange`, and an optional aggregate spending
 cap `max_total_msats` (must be greater than zero; persisted with the
 resolved intent so it survives resume). The formation intent carries no guardian-fee rate: formation installs the
 fixed recipient mapping and an initial rate, while post-formation
@@ -44,10 +44,10 @@ and cap invariants are rejected rather than producing an invalid intent.
 The optional cap has a default: a serialized intent without it decodes to no
 cap and a capless intent serializes without the field, while any *unknown*
 field stays rejected. Durable FI storage is a separate fail-closed schema:
-schema 9 makes
+schema 11 also persists the selected three-number DKG release beside
 the selected-vs-pinned mode, durable verifier provenance, selected preview
 deadline, exact aggregate reservation identity, commercial-history tombstone,
-and wallet-output tombstone explicit. Every older record must be
+and wallet-output tombstone. Every older record must be
 reset rather than migrated in this pre-launch namespace.
 
 The cap changes only payment-readiness behavior, and it is **one-shot**: it
@@ -87,7 +87,7 @@ every replacement aggregate after its one-shot authorization. Before any
 output generation, the selected product path never publishes or accepts that
 second exact-quote authorization action. It instead returns typed
 `SelectionReauthorizationRequired` and value-safely restores durable `Idle`.
-If a process dies before cleanup, schema 9 preserves selected mode and approval
+If a process dies before cleanup, schema 11 preserves selected mode and approval
 expiry: reopen exposes no superseded authorization action, and resume either continues the still-live
 exact set or performs the same typed cleanup. A cloned live approval can then
 retry a different ready payer. An unavailable or replacement FMan always
@@ -127,11 +127,19 @@ size. Before requesting a quote from an FMan, the FI requires that FMan's live
 availability to advertise the intent's exact size. Concurrently processed
 siblings may already have supplied quotes, but formation can proceed only where
 product policy and every selected operator's release capabilities overlap.
+Selected formation persists the original FI range and the chosen three-number
+release. Quote-time checks accept a different `-fediN` build only within that
+release; replacements and restart recovery remain fixed to it. Stored quotes
+must name an exact build inside both persisted constraints.
+The diagnostic pinned path has no advertisement selection, so it reads every
+pinned FMan's live availability before persistence and chooses the newest
+three-number release shared by the whole set inside the same FI range.
 
 The callback-aware pinned-formation entry point accepts one
 `DkgCompletionCallback` created by the consumer for the initiating app
-installation. It persists that bearer capability with the formation before
-remote work and sends the same callback and idempotency key to every FMan in
+installation. A value-free availability read may first resolve the pinned
+set's common release; FI then persists the bearer before quotes, payments,
+seat creation, or DKG and sends the same callback and idempotency key to every FMan in
 the signed `StartDkg` wave. The ordinary entry point leaves the optional
 callback absent. An ordinary resume repeats the idempotent `StartDkg` wave
 with the same durable guardian codes; each FMan retains the first start
@@ -142,12 +150,9 @@ only source of lifecycle progress after the app resumes.
 Cross-component durability verification is recorded in
 [`crates/fman/testing.md`](../../fman/testing.md).
 
-Formation storage schema 10 owns this callback lifecycle. A schema-9 record is
-transactionally rewritten to schema 10 before recovery with a genuinely absent
-callback; schemas 8 and earlier remain fail-closed because they also lack
-unrelated current monetary-safety facts. The higher version makes schema-9
-binaries reject rather than rewrite callback-bearing state. FI retains the
-bearer across every pre-`Formed` crash, then clears it in
+Formation storage schema 11 owns this callback lifecycle and the selected
+Fedimint release. Older pre-production records fail closed and require reset.
+FI retains the bearer across every pre-`Formed` crash, then clears it in
 the same transaction that records the terminal invite because every FMan has
 already accepted durable retry ownership.
 
@@ -201,6 +206,9 @@ run over that pool: it runs lazily, in selection order, inside the
 selection walk, so only candidates the ranked walk reaches cost verifier
 round trips. Verification includes the canonical environment's minimum trust
 level, so a cryptographically authentic badge below that policy is rejected.
+Selection evaluates each three-number Fedimint release inside the FI range as
+a separate DKG cohort, chooses the cheapest complete cohort, and prefers the
+newer release when complete cohorts have equal advertised totals.
 The walk buckets eligible candidates by the advertisement's
 claimed issuance key (untrusted, read locally), ranks each bucket by
 advertised fee with the freshly randomized discovery order breaking ties, and
@@ -256,8 +264,9 @@ trust conclusion and cannot construct a selection approval.
 
 `preview_fman_selection` is the read-only public surface over
 enumerate → admit → select: it returns the selected seat set, the checked
-aggregate advertised estimate, and the seen/eligible/selected rejection
-summary for the consumer's estimate screen. It takes the same
+aggregate advertised estimate, and the seen/eligible/selected summary plus
+static non-admissions and chosen-cohort failures for the consumer's estimate
+screen. It takes the same
 `FmanDiscoveryOptions` clamped-timeout bound as `discover_fman_candidates`
 — not formation run options, since no lease or driver timing applies to a
 read-only query. It has no durable state and no lease. The result carries a
