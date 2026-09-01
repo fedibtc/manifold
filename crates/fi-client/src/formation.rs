@@ -27,6 +27,7 @@ use crate::db::{
     FormationCreationMode, FormationMetaTarget, InitialSeat, QuoteAuthorization,
     StoredVerifierProvenance,
 };
+use crate::ports::FiIdentityExt as _;
 use crate::selection::AvailabilityMismatch;
 use crate::{
     FederationConsensusReader, FederationConsensusSnapshot, FiClient, FiError, FiIdentity,

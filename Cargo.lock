@@ -10243,6 +10243,7 @@ dependencies = [
  "fedi-decentralized-service-fleet-manager",
  "fedi-iroh-rpc",
  "fedimint-core",
+ "fedimint-derive-secret",
  "fedimint-mintv2-client",
  "fi-client",
  "fman-core",

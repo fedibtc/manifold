@@ -101,7 +101,7 @@ pub use unavailable::{
 };
 
 use crate::db::FiStore;
-use crate::ports::FiClientPorts;
+use crate::ports::{FiClientPorts, FiIdentityExt as _};
 
 /// Stateful Federation Initiator client.
 pub struct FiClient<I, P, N, F, C> {
