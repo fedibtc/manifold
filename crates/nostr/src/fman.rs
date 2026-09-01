@@ -12,7 +12,7 @@ mod tests;
 
 use fedi_credential_sdk_protocol::SchnorrSignatureProof;
 use fedi_decentralized_domain::{HolderAuthorizationEnvelope, ProtocolV1};
-use fedi_decentralized_service_fleet_manager::Plan;
+use fedi_decentralized_service_fleet_manager::{FedimintdVersion, Plan};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 
@@ -158,8 +158,8 @@ pub struct ApiEndpoint {
 /// What the FMan will serve; non-trust hints.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct Availability {
-    /// Fedimintd releases the FMan can run (singleton in MVP).
-    pub fedimintd_versions: Vec<String>,
+    /// Exact Fedimintd version this FMan runs.
+    pub fedimintd_version: FedimintdVersion,
 
     /// Federation sizes the FMan's release supports.
     pub federation_sizes: Vec<u16>,

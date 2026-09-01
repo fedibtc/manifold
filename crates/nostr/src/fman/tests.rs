@@ -24,7 +24,9 @@ fn payload(keys: &Keys) -> AdvertisementPayload {
             url: format!("{IROH_API_ENDPOINT_URL_SCHEME}endpoint"),
         }],
         availability: Availability {
-            fedimintd_versions: vec![FEDIMINTD_VERSION_0_1.to_owned()],
+            fedimintd_version: FEDIMINTD_VERSION_0_1
+                .parse()
+                .expect("the bundled fedimintd version is valid SemVer"),
             federation_sizes: FEDERATION_SIZES_0_1.to_vec(),
         },
         plans: vec![
@@ -65,7 +67,7 @@ fn advertisement_signature_round_trips_and_pins_the_payload() {
                     "url": "iroh://endpoint",
                 }],
                 "availability": {
-                    "fedimintd_versions": [FEDIMINTD_VERSION_0_1],
+                    "fedimintd_version": FEDIMINTD_VERSION_0_1,
                     "federation_sizes": FEDERATION_SIZES_0_1,
                 },
                 "plans": [{"InfiniteBestEffort": {"price_msats": 250_000}}],
@@ -113,6 +115,22 @@ fn unsupported_advertisement_version_is_rejected() {
 }
 
 #[test]
+fn advertisement_requires_one_typed_fedimintd_version() {
+    let keys = Keys::generate();
+    let mut value = serde_json::to_value(payload(&keys)).unwrap();
+    value["availability"]["fedimintd_version"] = serde_json::json!("not-semver");
+    assert!(serde_json::from_value::<AdvertisementPayload>(value).is_err());
+
+    let mut old_shape = serde_json::to_value(payload(&keys)).unwrap();
+    old_shape["availability"]
+        .as_object_mut()
+        .unwrap()
+        .remove("fedimintd_version");
+    old_shape["availability"]["fedimintd_versions"] = serde_json::json!(["0.11.1+fedi"]);
+    assert!(serde_json::from_value::<AdvertisementPayload>(old_shape).is_err());
+}
+
+#[test]
 fn advertisement_requires_service_pubkey() {
     let keys = Keys::generate();
     let mut value = serde_json::to_value(payload(&keys)).unwrap();
@@ -129,7 +147,7 @@ fn advertisement_requires_service_pubkey() {
 /// verifiers.
 #[test]
 fn pinned_signed_advertisement_fixture_stays_accepted() {
-    const FIXTURE: &str = r#"{"payload":{"version":1,"fman_id_pubkey":"f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f9","service_pubkey":"2f8bde4d1a07209355b4a7250a5c5128e88b84bddc619ab7cba8d569b240efe4","issued_at":1730000000,"expires_at":1730007200,"api_endpoints":[{"transport":"iroh","url":"iroh://fixture-endpoint"}],"availability":{"fedimintd_versions":["0.8.1"],"federation_sizes":[7,13]},"plans":[{"InfiniteBestEffort":{"price_msats":250000}}],"holder_authorizations":[]},"proof":{"signature":"I6xKBqvYwtTfyAV3xHnzV5q7umzuK3T7H2DV5Qum3BurPSRSjbFaHdzSS7n6sHjABqkdtmP5clUfWxVV6vTKTQ"}}"#;
+    const FIXTURE: &str = r#"{"payload":{"version":1,"fman_id_pubkey":"f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f9","service_pubkey":"2f8bde4d1a07209355b4a7250a5c5128e88b84bddc619ab7cba8d569b240efe4","issued_at":1730000000,"expires_at":1730007200,"api_endpoints":[{"transport":"iroh","url":"iroh://fixture-endpoint"}],"availability":{"fedimintd_version":"0.8.1+fedi","federation_sizes":[7,13]},"plans":[{"InfiniteBestEffort":{"price_msats":250000}}],"holder_authorizations":[]},"proof":{"signature":"3FMOmhFQ0sHinyiy0bnyGzp8xFRYL4lcewDve5fn8bjlS8AMS-RUrVIxMmkIyB_4buZfOC9stXfANFyJGBghew"}}"#;
 
     let document =
         serde_json::from_str::<AdvertisementDocument>(FIXTURE).expect("pinned fixture parses");
@@ -211,10 +229,10 @@ fn worst_case_envelope(
 /// it under the shared 256 KiB per-event relay cap.
 ///
 /// Every field is filled to a generous realistic maximum: 8 long iroh
-/// endpoint URLs, 8 long fedimintd version strings, 64 federation sizes,
+/// endpoint URLs, one long fedimintd version, 64 federation sizes,
 /// 4 plans with verbose prices, and 4 complete holder-authorization
 /// envelopes (`FMAN_ADVERTISEMENT_MAX_HOLDER_AUTHORIZATIONS` examines at
-/// most 4). Measured size at the time of writing: 7830 bytes (~7.6 KiB) —
+/// most 4). Measured size at the time of writing: 7299 bytes (~7.1 KiB) —
 /// roughly 3% of the 256 KiB cap. The consumers' per-event cap
 /// (`ROLE_FETCHED_EVENT_MAX_BYTES` in `crates/nostr-clients`) should be
 /// tightened toward this measurement, with margin, in a follow-up; see the
@@ -245,9 +263,9 @@ fn worst_case_advertisement_event_fits_the_per_event_cap() {
             })
             .collect(),
         availability: Availability {
-            fedimintd_versions: (0..8)
-                .map(|index| format!("0.{index}.{index}-fedi{index}+build.2026.07.31.deadbeef"))
-                .collect(),
+            fedimintd_version: "0.11.1-fedi17+fedi"
+                .parse()
+                .expect("worst-case version is valid SemVer"),
             federation_sizes: (1..=64).collect(),
         },
         plans: vec![

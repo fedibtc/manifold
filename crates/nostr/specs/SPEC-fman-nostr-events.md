@@ -87,8 +87,9 @@ published by `fman-nostr`'s advertisement loop):
   verify signed FMan responses. Distinct from `fman_id_pubkey`, the Nostr
   service identity (`fman/v1/service-nostr`);
 - `api_endpoints` — `{transport, url}` entries for pre-formation FI setup RPC;
-- `availability` — `fedimintd_versions` (singleton in MVP: a release bundles
-  one fedimintd) and `federation_sizes`; the event is published only while the
+- `availability` — typed scalar `fedimintd_version` and `federation_sizes`;
+  the version's SemVer build metadata is the exact DKG vendor identity, and FI
+  admits only `+fedi`. The event is published only while the
   FMan is accepting seats, so the payload carries neither a boolean nor a count;
 - `plans` — the `service-fleet-manager` `Plan` enum in its own canonical serde
   form, identical to `GetAvailability`, so advertisement and RPC cannot

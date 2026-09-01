@@ -29,7 +29,7 @@ use fedi_decentralized_nostr::has_exact_d_tag;
 use fedi_decentralized_nostr_clients::{FMAN_ADVERTISEMENTS_CANDIDATE_LIMIT, FiNostrClient};
 use fedi_decentralized_peer_badge_verifier::PeerBadgeVerificationError;
 use fedi_decentralized_service_fleet_manager::{
-    FederationSize, FedimintdVersionCore, FmanName, Locator, Plan, Timestamp,
+    FederationSize, FedimintdDkgVersion, FmanName, Locator, Plan, Timestamp,
 };
 use fedi_iroh_rpc::iroh::{EndpointAddr, EndpointId};
 use fedimint_core::runtime::Instant;
@@ -171,8 +171,8 @@ pub struct EligibleFmanCandidate {
     /// millisatoshis.
     pub(crate) advertised_price_msats: u64,
 
-    /// Parsed three-number release from the advertisement's sole version.
-    pub(crate) fedimintd_version_core: FedimintdVersionCore,
+    /// DKG compatibility identity derived from the advertised version.
+    pub(crate) fedimintd_dkg_version: FedimintdDkgVersion,
 
     /// What the ad says the FMan will serve; non-trust hints re-checked
     /// live during a probing selection walk and again at quote time.
@@ -336,8 +336,8 @@ pub enum AdvertisementRejection {
     /// federation size.
     LiveUnsupportedFederationSize,
 
-    /// The live response does not offer exactly one build in the selected
-    /// release and FI range.
+    /// The live response's version is outside the FI range or selected DKG
+    /// identity.
     LiveUnsupportedFedimintdVersion,
 
     /// The live availability response offers no plan matching the requested
@@ -356,8 +356,7 @@ pub enum AdvertisementRejection {
     /// The advertised sizes do not include the requested federation size.
     UnsupportedFederationSize,
 
-    /// The advertisement does not contain exactly one parseable version in
-    /// the FI range.
+    /// The typed advertised version is outside the FI range or is not Fedi.
     UnsupportedFedimintdVersion,
 
     /// The advertisement offers no `InfiniteBestEffort` plan.
@@ -701,7 +700,7 @@ fn admit_eligible_advertisement(
     now: u64,
     deadline: Instant,
 ) -> Result<EligibleFmanCandidate, AdvertisementRejection> {
-    let (payload, advertised_price_msats, locator, fedimintd_version_core) =
+    let (payload, advertised_price_msats, locator, fedimintd_dkg_version) =
         admit_eligible_payload(requirements, document, now, deadline)?;
     // An advertisement with no envelope can never verify during selection,
     // and the claimed issuer used for bucketing comes from the first
@@ -717,7 +716,7 @@ fn admit_eligible_advertisement(
         api_endpoints: payload.api_endpoints,
         locator,
         advertised_price_msats,
-        fedimintd_version_core,
+        fedimintd_dkg_version,
         availability: payload.availability,
         issued_at: Timestamp(payload.issued_at),
         expires_at: Timestamp(payload.expires_at),
@@ -748,7 +747,7 @@ fn admit_eligible_payload(
     document: AdvertisementDocument,
     now: u64,
     deadline: Instant,
-) -> Result<(AdvertisementPayload, u64, Locator, FedimintdVersionCore), AdvertisementRejection> {
+) -> Result<(AdvertisementPayload, u64, Locator, FedimintdDkgVersion), AdvertisementRejection> {
     if Instant::now() >= deadline {
         return Err(AdvertisementRejection::DeadlineExpired);
     }
@@ -769,16 +768,14 @@ fn admit_eligible_payload(
     {
         return Err(AdvertisementRejection::UnsupportedFederationSize);
     }
-    let [version] = availability.fedimintd_versions.as_slice() else {
-        return Err(AdvertisementRejection::UnsupportedFedimintdVersion);
-    };
-    let version = version
-        .parse()
-        .map_err(|_| AdvertisementRejection::UnsupportedFedimintdVersion)?;
+    let version = &availability.fedimintd_version;
     if !requirements.fedimintd_versions.contains(&version) {
         return Err(AdvertisementRejection::UnsupportedFedimintdVersion);
     }
-    let fedimintd_version_core = version.core();
+    let fedimintd_dkg_version = version.dkg_version();
+    if !fedimintd_dkg_version.is_fedi() {
+        return Err(AdvertisementRejection::UnsupportedFedimintdVersion);
+    }
     let advertised_price_msats = payload
         .plans
         .iter()
@@ -792,7 +789,7 @@ fn admit_eligible_payload(
         payload,
         advertised_price_msats,
         locator,
-        fedimintd_version_core,
+        fedimintd_dkg_version,
     ))
 }
 

@@ -118,7 +118,7 @@ pub(crate) fn payload(
             url: format!("{IROH_API_ENDPOINT_URL_SCHEME}{}", endpoint_id()),
         }],
         availability: Availability {
-            fedimintd_versions: vec![FEDIMINTD_VERSION_0_1.to_owned()],
+            fedimintd_version: FEDIMINTD_VERSION_0_1.parse().expect("test version parses"),
             federation_sizes: FEDERATION_SIZES_0_1.to_vec(),
         },
         plans: vec![Plan::InfiniteBestEffort {
@@ -381,11 +381,8 @@ async fn invalid_advertisement_proof_is_rejected() {
     let fman = fman_keys(1);
     let mut document =
         sign_advertisement(self_authorized_payload(&fman), &fman).expect("test ad signs");
-    document
-        .payload
-        .availability
-        .fedimintd_versions
-        .push("9.9.9".to_owned());
+    document.payload.availability.fedimintd_version =
+        "9.9.9+fedi".parse().expect("test version parses");
     let event = EventBuilder::new(
         Kind::Custom(FMAN_ADVERTISEMENT_EVENT_KIND),
         serde_json::to_string(&document).expect("test ad serializes"),
@@ -500,13 +497,10 @@ async fn unsupported_federation_size_is_rejected() {
 
 #[tokio::test]
 async fn unsupported_fedimintd_version_is_rejected() {
-    for versions in [
-        vec!["not-semver".to_owned()],
-        vec![FEDIMINTD_VERSION_0_1.to_owned(), "0.11.1-fedi18".to_owned()],
-    ] {
+    for version in ["9.9.9+fedi", "0.11.1", "0.11.1+acme"] {
         let fman = fman_keys(1);
         let mut payload = self_authorized_payload(&fman);
-        payload.availability.fedimintd_versions = versions;
+        payload.availability.fedimintd_version = version.parse().expect("test version parses");
         let reason = sole_rejection(vec![ad_event(&fman, payload)]).await;
         assert!(matches!(
             reason,

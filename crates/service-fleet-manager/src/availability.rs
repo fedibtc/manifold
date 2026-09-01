@@ -14,10 +14,10 @@ pub struct GetAvailabilityResponse {
     /// operator business, and any caller could poll for it.
     pub accepting_seats: bool,
 
-    /// Fedimint daemon versions this FM can host.
-    pub fedimintd_versions: Vec<FedimintdVersion>,
+    /// Exact Fedimint daemon version this FM hosts.
+    pub fedimintd_version: FedimintdVersion,
 
-    /// Federation sizes this FM will host. Like `fedimintd_versions`, the set
+    /// Federation sizes this FM will host. Like `fedimintd_version`, the set
     /// ships with the FM release rather than being an operator knob.
     pub federation_sizes: Vec<FederationSize>,
 

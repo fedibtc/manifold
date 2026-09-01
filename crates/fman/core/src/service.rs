@@ -359,7 +359,7 @@ impl FleetManagerService for FleetManagerRpc {
             // Use the same wallet-gated projection as advertising. Independent
             // calls may observe different settings epochs or live state.
             accepting_seats: availability.accepting_seats,
-            fedimintd_versions: vec![supported_fedimintd_version()],
+            fedimintd_version: supported_fedimintd_version(),
             federation_sizes,
             plans: availability.plans,
             additional_info: vec![],

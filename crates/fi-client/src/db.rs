@@ -3129,7 +3129,7 @@ fn payment_requirements(
         let request = &quote.terms.request;
         let plan_matches = intent.plan.matches(&request.plan);
         if request.fi_id != fi_id
-            || request.fedimintd_version.core() != intent.fedimintd_version_core
+            || request.fedimintd_version.dkg_version() != intent.fedimintd_dkg_version
             || !intent
                 .fedimintd_versions
                 .contains(&request.fedimintd_version)

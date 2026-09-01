@@ -8,7 +8,7 @@
 /// The single fedimintd version a 0.1 FMan hosts (and the version an FI
 /// requests by default); one hardcoded constant shipping with the release,
 /// no runtime probe (SPEC-fi-rpc release policy).
-pub const FEDIMINTD_VERSION_0_1: &str = "0.11.1-fedi17";
+pub const FEDIMINTD_VERSION_0_1: &str = "0.11.1+fedi";
 
 /// Federation sizes a 0.1 FMan hosts: every size from 7 through 20 inclusive,
 /// with 7, 10, and 13 as UI presets and no hidden development-only size
@@ -97,8 +97,8 @@ pub use telemetry::{
 };
 pub use types::{
     AvailabilityInfo, FEDERATION_ICON_URL_META_FIELD_KEY, FEDERATION_NAME_META_FIELD_KEY,
-    FederationSize, FedimintStats, FedimintdVersion, FedimintdVersionCore, FiId, FiSignature,
-    GuardianCode, GuardianName, ManagerSignature, MetaConsensusBase, MetaFieldKey, MetaFieldValue,
-    ModuleConfig, OobEcashToken, Plan, SeatHealth, TERMS_OF_SERVICE_URL_META_FIELD_KEY,
-    ValidUntilDate, WELCOME_MESSAGE_META_FIELD_KEY,
+    FederationSize, FedimintStats, FedimintdDkgVersion, FedimintdVersion, FedimintdVersionCore,
+    FiId, FiSignature, GuardianCode, GuardianName, ManagerSignature, MetaConsensusBase,
+    MetaFieldKey, MetaFieldValue, ModuleConfig, OobEcashToken, Plan, SeatHealth,
+    TERMS_OF_SERVICE_URL_META_FIELD_KEY, ValidUntilDate, WELCOME_MESSAGE_META_FIELD_KEY,
 };

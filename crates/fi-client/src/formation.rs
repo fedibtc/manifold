@@ -782,7 +782,7 @@ where
             ));
         }
         let approval_valid_until = approval.valid_until;
-        let fedimintd_version_core = approval.fedimintd_version_core;
+        let fedimintd_dkg_version = approval.fedimintd_dkg_version.clone();
         let verifier_provenance = approval.verifier_provenance.into();
         let approved_seats = approval.into_seats_at(Timestamp(now_secs()?))?;
         let seats = approved_seats
@@ -815,7 +815,7 @@ where
             FormationCreationMode::Selected {
                 payment_federation_id,
             },
-            Some(fedimintd_version_core),
+            Some(fedimintd_dkg_version),
             completion_callback,
             options,
         )
@@ -888,7 +888,7 @@ where
             },
             self.inner.peer_badge_verifier.provenance(),
             &request,
-            recovery.snapshot.intent.fedimintd_version_core,
+            &recovery.snapshot.intent.fedimintd_dkg_version,
             requirements,
             excluded,
             retained_service_pubkeys,
@@ -3354,7 +3354,7 @@ where
             &availability,
             intent.federation_size,
             &intent.fedimintd_versions,
-            intent.fedimintd_version_core,
+            &intent.fedimintd_dkg_version,
             intent.plan,
         ) {
             Ok(matched) => matched,
@@ -3470,7 +3470,7 @@ where
             .map_err(|error| fman_error(index, format!("invalid signed quote: {error}")))?;
         let request = &quote.terms.request;
         if request.fi_id != fi_id
-            || request.fedimintd_version.core() != intent.fedimintd_version_core
+            || request.fedimintd_version.dkg_version() != intent.fedimintd_dkg_version
             || !intent
                 .fedimintd_versions
                 .contains(&request.fedimintd_version)

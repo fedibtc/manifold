@@ -1050,7 +1050,7 @@ impl FleetManagerService for TestFman {
             .unwrap_or_else(fedimintd_version);
         Ok(GetAvailabilityResponse {
             accepting_seats: self.config.accepting_seats,
-            fedimintd_versions: vec![fedimintd_version],
+            fedimintd_version,
             federation_sizes: vec![self.config.federation_size],
             plans,
             additional_info: Vec::new(),
@@ -2172,7 +2172,7 @@ fn selection_approval(max_total_msats: u64) -> FmanSelectionApproval {
             PlanPreference::InfiniteBestEffort,
         )
         .expect("valid test selection request"),
-        fedimintd_version_core: fedimintd_version().core(),
+        fedimintd_dkg_version: fedimintd_version().dkg_version(),
         verifier_provenance: test_peer_badge_verifier().provenance(),
         seats: locators()
             .into_iter()
