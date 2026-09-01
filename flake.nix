@@ -1084,13 +1084,12 @@
         # `nix build .#fedimintd`. FMan runs its own bundled build.
         fleetManagerFedimintd = fedimint.packages.${system}.fedimintd;
 
-        # Single source of truth for the bundled fedimintd's release identity.
+        # Single source of truth for the bundled fedimintd's fork release.
         # `fleetManagerReleaseSync` binds this to the Fedimint source revision,
-        # the `FEDIMINTD_VERSION_0_1` Rust constant, and the package README; the
-        # OCI image carries it as the `org.fedi.fedimintd.release` label. The
-        # binary's own `--version` reports upstream `0.11.1`, so the immutable
-        # release identity lives here and in the flake lock, not in the binary.
+        # the package README, and the OCI label. DKG uses a separate typed
+        # major/minor/vendor identity, independent of the fork tag revision.
         fedimintdRelease = "0.11.1-fedi17";
+        fedimintdDkgVersion = "0.11.1+fedi";
         # `fedimintd` exports this upstream package version in `app_start_ts`.
         # It deliberately differs from the Fedi release tag above.
         fedimintdMetricVersion = "0.11.1";
@@ -1270,8 +1269,8 @@
             '';
 
         # Anti-drift: bind the Fedimint release tag in flake.nix to its resolved
-        # revision in flake.lock, the FEDIMINTD_VERSION_0_1 Rust constant, the
-        # package README, and the OCI label.
+        # revision in flake.lock, the separate FEDIMINTD_VERSION_0_1 DKG
+        # identity, the package README, and the OCI label.
         fleetManagerReleaseSync = pkgs.runCommand "fleet-manager-release-sync" { } ''
           release="${fedimintdRelease}"
           tag="v''${release}"
@@ -1283,7 +1282,7 @@
 
           check ${./flake.nix} "fedibtc/fedimint/v0.11.1-fedi17"
           check ${./flake.lock} '"rev": "${fedimintSourceRev}"'
-          check ${./crates/service-fleet-manager/src/lib.rs} "FEDIMINTD_VERSION_0_1: &str = \"$release\""
+          check ${./crates/service-fleet-manager/src/lib.rs} "FEDIMINTD_VERSION_0_1: &str = \"${fedimintdDkgVersion}\""
           check ${./crates/fman/bin/build.rs} "FEDIMINT_SOURCE_REV: &str = \"${fedimintSourceRev}\""
           check ${./packages/fleet-manager/README.md} "$tag"
 
