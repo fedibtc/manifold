@@ -1,8 +1,8 @@
 //! Public FI intent and progress state.
 
 use fedi_decentralized_service_fleet_manager::{
-    FederationId, FederationName, FederationSize, FedimintdVersion, FedimintdVersionCore, FmanName,
-    GuardianCode, InviteCode, Locator, Plan, QuoteId, SeatId,
+    FederationId, FederationName, FederationSize, FedimintdDkgVersion, FedimintdVersion,
+    FedimintdVersionCore, FmanName, GuardianCode, InviteCode, Locator, Plan, QuoteId, SeatId,
 };
 use nostr_sdk::PublicKey;
 
@@ -118,6 +118,16 @@ impl FedimintdVersionRange {
     #[must_use]
     pub fn contains_core(&self, core: FedimintdVersionCore) -> bool {
         self.minimum <= core && core < self.maximum_exclusive
+    }
+
+    /// Whether this range contains any patch from one DKG major/minor line.
+    #[must_use]
+    pub fn overlaps_dkg(&self, dkg: &FedimintdDkgVersion) -> bool {
+        let line = dkg.major_minor();
+        let minimum_line = (self.minimum.major, self.minimum.minor);
+        let maximum_line = (self.maximum_exclusive.major, self.maximum_exclusive.minor);
+        minimum_line <= line
+            && (line < maximum_line || (line == maximum_line && self.maximum_exclusive.patch > 0))
     }
 }
 
@@ -270,14 +280,14 @@ impl FormationIntent {
         &self.fedimintd_versions
     }
 
-    pub(crate) fn resolve_for_core(
+    pub(crate) fn resolve_for_dkg(
         self,
         default_name: FederationName,
-        core: FedimintdVersionCore,
+        dkg: FedimintdDkgVersion,
     ) -> FiResult<ResolvedFormationIntent> {
-        if !self.fedimintd_versions.contains_core(core) {
+        if !dkg.is_fedi() || !self.fedimintd_versions.overlaps_dkg(&dkg) {
             return Err(FiError::InvalidIntent(
-                "selected fedimintd release is outside the formation intent".to_owned(),
+                "selected Fedimint DKG identity is outside the formation intent".to_owned(),
             ));
         }
         let federation_name = self.federation_name.unwrap_or(default_name);
@@ -287,7 +297,7 @@ impl FormationIntent {
             federation_size: self.federation_size,
             plan: self.plan,
             fedimintd_versions: self.fedimintd_versions,
-            fedimintd_version_core: core,
+            fedimintd_dkg_version: dkg,
             max_total_msats: self.max_total_msats,
         })
     }
@@ -349,8 +359,8 @@ pub struct ResolvedFormationIntent {
     pub plan: PlanPreference,
     /// FI-approved Fedimint release range.
     pub fedimintd_versions: FedimintdVersionRange,
-    /// Three-number release shared by every FMan in this DKG.
-    pub fedimintd_version_core: FedimintdVersionCore,
+    /// Major/minor/vendor identity shared by every FMan in this DKG.
+    pub fedimintd_dkg_version: FedimintdDkgVersion,
     /// Optional aggregate spending cap in millisatoshis, persisted with the
     /// intent so it survives resume. The serde default supports standalone
     /// public intent values; pre-tombstone stored formations are rejected by

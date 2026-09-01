@@ -44,7 +44,7 @@ and cap invariants are rejected rather than producing an invalid intent.
 The optional cap has a default: a serialized intent without it decodes to no
 cap and a capless intent serializes without the field, while any *unknown*
 field stays rejected. Durable FI storage is a separate fail-closed schema:
-schema 11 also persists the selected three-number DKG release beside
+schema 11 also persists the selected major/minor/vendor DKG identity beside
 the selected-vs-pinned mode, durable verifier provenance, selected preview
 deadline, exact aggregate reservation identity, commercial-history tombstone,
 and wallet-output tombstone. Every older record must be
@@ -143,7 +143,7 @@ Cross-component durability verification is recorded in
 [`crates/fman/testing.md`](../../fman/testing.md).
 
 Formation storage schema 11 owns this callback lifecycle and the selected
-Fedimint release. Older pre-production records fail closed and require reset.
+Fedimint DKG identity. Older pre-production records fail closed and require reset.
 FI retains the bearer across every pre-`Formed` crash, then clears it in
 the same transaction that records the terminal invite because every FMan has
 already accepted durable retry ownership.
@@ -198,9 +198,10 @@ run over that pool: it runs lazily, in selection order, inside the
 selection walk, so only candidates the ranked walk reaches cost verifier
 round trips. Verification includes the canonical environment's minimum trust
 level, so a cryptographically authentic badge below that policy is rejected.
-Selection evaluates each three-number Fedimint release inside the FI range as
-a separate DKG cohort, chooses the cheapest complete cohort, and prefers the
-newer release when complete cohorts have equal advertised totals.
+Selection evaluates each Fedimint major/minor/vendor identity intersecting the
+FI range as a separate DKG cohort, chooses the cheapest complete cohort, and
+prefers the newer compatible line when complete cohorts have equal advertised
+totals. Patch and prerelease differences inside one identity may mix.
 The walk buckets eligible candidates by the advertisement's
 claimed issuance key (untrusted, read locally), ranks each bucket by
 advertised fee with the freshly randomized discovery order breaking ties, and

@@ -135,10 +135,10 @@ offer before requesting its quote. Pre-output expiry, unavailable selected seats
 quote drift or over-cap, and the wallet's proven pre-journal insufficient balance
 return the selected formation to `Idle` with typed reauthorization. Binding,
 storage, and ambiguous post-journal errors remain exact recovery.
-The approval seals the FI range and selected three-number release, not one build
-suffix. Quote-time availability must contain exactly one build inside both; a
-same-release `-fediN` change is accepted, while a release change requires fresh
-selection before payment.
+The approval seals the FI range and selected major/minor/vendor DKG identity,
+not one exact build. Quote-time availability must name a typed version inside
+both; patch and prerelease changes are accepted, while a minor or vendor change
+requires fresh selection before payment.
 
 A terminal payment rejection or settled signed refund makes only that row a
 replacement requirement. `preview_fman_replacements` excludes current FMan
@@ -150,6 +150,6 @@ its durable id. Siblings that are accepted, paid, prepared, or ambiguous are
 never reselected or repaid. A post-output replacement that exceeds its renewed
 cap exposes exact `AuthorizePayments`; a pre-output cap failure instead returns
 to `Idle`.
-Replacement discovery is narrowed to the persisted release, even when the
-original FI range spans newer releases. Recovery accepts stored or refreshed
-quotes only when their exact build remains inside that range and release.
+Replacement discovery keeps the original FI range but admits only the persisted
+DKG identity. Recovery accepts stored or refreshed quotes only when their exact
+build remains inside that range and major/minor/vendor identity.

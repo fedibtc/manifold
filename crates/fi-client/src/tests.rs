@@ -2381,9 +2381,9 @@ fn formation_intent_accepts_product_size_boundaries_only() {
 
 fn resolved_intent() -> ResolvedFormationIntent {
     intent()
-        .resolve_for_core(
+        .resolve_for_dkg(
             FederationName("Fallback Name".to_owned()),
-            fedimintd_version().core(),
+            fedimintd_version().dkg_version(),
         )
         .expect("valid test intent")
 }
@@ -5111,9 +5111,9 @@ async fn replacement_authority_requires_selected_post_output_terminal_transition
     let resolved = intent()
         .with_max_total_msats(1_000)
         .unwrap()
-        .resolve_for_core(
+        .resolve_for_dkg(
             FederationName("Replacement Gate".to_owned()),
-            fedimintd_version().core(),
+            fedimintd_version().dkg_version(),
         )
         .unwrap();
     store
@@ -7842,16 +7842,32 @@ fn compatible_intent() -> FormationIntent {
 }
 
 #[test]
-fn fedimintd_range_ignores_build_suffixes_but_not_release_cores() {
+fn fedimintd_range_and_dkg_identity_enforce_separate_boundaries() {
     let range = FedimintdVersionRange::new(
-        "0.11.1-fedi17".parse().expect("minimum parses"),
+        "0.11.1-fedi17+fedi".parse().expect("minimum parses"),
         "0.11.3".parse().expect("maximum parses"),
     )
     .expect("ordered release range");
 
-    assert!(range.contains(&"0.11.1-fedi99".parse().expect("version parses")));
-    assert!(range.contains(&"0.11.2-fedi1".parse().expect("version parses")));
-    assert!(!range.contains(&"0.11.3-fedi1".parse().expect("version parses")));
+    assert!(range.contains(&"0.11.1-fedi99+fedi".parse().expect("version parses")));
+    assert!(range.contains(&"0.11.2+fedi".parse().expect("version parses")));
+    assert!(!range.contains(&"0.11.3+fedi".parse().expect("version parses")));
+    assert!(
+        range.overlaps_dkg(
+            &"0.11.9+fedi"
+                .parse::<FedimintdVersion>()
+                .expect("version parses")
+                .dkg_version()
+        )
+    );
+    assert!(
+        !range.overlaps_dkg(
+            &"0.12.0+fedi"
+                .parse::<FedimintdVersion>()
+                .expect("version parses")
+                .dkg_version()
+        )
+    );
     assert!(
         FedimintdVersionRange::new(
             "0.11.2".parse().expect("minimum parses"),
@@ -7874,6 +7890,24 @@ fn fedimintd_range_ignores_build_suffixes_but_not_release_cores() {
         }))
         .is_err()
     );
+}
+
+#[test]
+fn resolved_intent_requires_an_allowed_fedi_dkg_identity() {
+    for version in ["0.11.2", "0.11.2+acme", "0.12.0+fedi"] {
+        assert!(
+            compatible_intent()
+                .resolve_for_dkg(
+                    FederationName("Rejected DKG".to_owned()),
+                    version
+                        .parse::<FedimintdVersion>()
+                        .expect("version parses")
+                        .dkg_version(),
+                )
+                .is_err(),
+            "{version} must not produce durable formation intent"
+        );
+    }
 }
 
 #[test]
@@ -8095,7 +8129,7 @@ async fn selected_formation_persists_and_enforces_its_compatible_release() {
     let database = MemDatabase::new().into_database();
     let (payments, _) = TestPayments::new();
     let fman_state = Arc::new(FmanState::default());
-    set_fman_version(&fman_state, 0, "0.11.1-fedi18");
+    set_fman_version(&fman_state, 0, "0.11.2-rc.1+fedi");
     let client = open_client(database, payments, fman_state.clone(), FmanConfig::paid()).await;
     let cap = PAYMENT_AMOUNT_MSATS * u64::from(MIN_FEDERATION_SIZE);
 
@@ -8112,8 +8146,8 @@ async fn selected_formation_persists_and_enforces_its_compatible_release() {
     let formed = formation(&client.status()).clone();
     assert_eq!(formed.phase, FormationPhase::Formed);
     assert_eq!(
-        formed.intent.fedimintd_version_core,
-        fedimintd_version().core()
+        formed.intent.fedimintd_dkg_version,
+        fedimintd_version().dkg_version()
     );
     assert_eq!(
         formed
@@ -8129,16 +8163,16 @@ async fn selected_formation_persists_and_enforces_its_compatible_release() {
             .lock()
             .expect("test lock")
             .iter()
-            .any(|record| record.fedimintd_version.to_string() == "0.11.1-fedi18"),
-        "same-release build drift is used for the exact quote",
+            .any(|record| record.fedimintd_version.to_string() == "0.11.2-rc.1+fedi"),
+        "same-minor patch drift is used for the exact quote",
     );
 }
 
 #[tokio::test]
-async fn selected_fman_core_drift_requires_fresh_selection_before_payment() {
+async fn selected_fman_minor_drift_requires_fresh_selection_before_payment() {
     let (payments, payment_state) = TestPayments::new();
     let fman_state = Arc::new(FmanState::default());
-    set_fman_version(&fman_state, 0, "0.11.2-fedi1");
+    set_fman_version(&fman_state, 0, "0.12.0+fedi");
     let client = open_client(
         MemDatabase::new().into_database(),
         payments,
@@ -8155,7 +8189,7 @@ async fn selected_fman_core_drift_requires_fresh_selection_before_payment() {
             options(),
         )
         .await
-        .expect_err("a different live release invalidates the selected set");
+        .expect_err("a different live minor invalidates the selected set");
 
     assert!(matches!(
         error,
@@ -8171,12 +8205,13 @@ async fn selected_fman_core_drift_requires_fresh_selection_before_payment() {
             .lock()
             .expect("test lock")
             .iter()
-            .all(|record| record.fedimintd_version.core() == fedimintd_version().core())
+            .all(|record| record.fedimintd_version.dkg_version()
+                == fedimintd_version().dkg_version())
     );
 }
 
 #[tokio::test]
-async fn reopen_preserves_and_enforces_the_selected_release() {
+async fn reopen_preserves_the_selected_dkg_identity_and_accepts_patch_skew() {
     let database = MemDatabase::new().into_database();
     let (payments, payment_state) = TestPayments::new();
     let fman_state = Arc::new(FmanState::default());
@@ -8190,9 +8225,9 @@ async fn reopen_preserves_and_enforces_the_selected_release() {
     let resolved = compatible_intent()
         .with_max_total_msats(PAYMENT_AMOUNT_MSATS * u64::from(MIN_FEDERATION_SIZE))
         .unwrap()
-        .resolve_for_core(
+        .resolve_for_dkg(
             FederationName("Restart Range".to_owned()),
-            fedimintd_version().core(),
+            fedimintd_version().dkg_version(),
         )
         .unwrap();
     client
@@ -8213,13 +8248,13 @@ async fn reopen_preserves_and_enforces_the_selected_release() {
         .await
         .unwrap();
     drop(client);
-    set_fman_version(&fman_state, 0, "0.11.2-fedi1");
+    set_fman_version(&fman_state, 0, "0.11.2+fedi");
 
     let reopened = open_client(database, payments, fman_state, FmanConfig::paid()).await;
     let persisted = formation(&reopened.status()).clone();
     assert_eq!(
-        persisted.intent.fedimintd_version_core,
-        fedimintd_version().core()
+        persisted.intent.fedimintd_dkg_version,
+        fedimintd_version().dkg_version()
     );
     assert_eq!(
         persisted
@@ -8229,38 +8264,35 @@ async fn reopen_preserves_and_enforces_the_selected_release() {
             .to_string(),
         "0.11.3"
     );
-    let error = reopened
+    reopened
         .resume()
         .await
-        .expect_err("reopen must not widen the selected release");
-    assert!(matches!(
-        error,
-        FiError::SelectionReauthorizationRequired(
-            SelectionReauthorizationReason::SelectedFmanUnavailable
-        )
-    ));
-    assert!(matches!(reopened.status(), FiStatus::Idle));
-    assert_eq!(payment_state.create_calls.load(Ordering::SeqCst), 0);
+        .expect("reopen accepts patch skew inside the persisted DKG identity");
+    assert_eq!(formation(&reopened.status()).phase, FormationPhase::Formed);
+    assert_eq!(
+        payment_state.create_calls.load(Ordering::SeqCst),
+        usize::from(MIN_FEDERATION_SIZE)
+    );
 }
 
 #[tokio::test]
-async fn persisted_formation_rejects_a_cross_release_replacement() {
+async fn persisted_formation_rejects_a_cross_minor_replacement() {
     let registry = TestRegistry::default();
     registry
         .candidates
         .lock()
         .expect("test lock")
         .push(setup_payment_event(test_now_secs(), &[PAYMENT_INVITE]));
-    registry
-        .advertisements
-        .lock()
-        .expect("test lock")
-        .push(selection::issuer_ad_for_version(
+    registry.advertisements.lock().expect("test lock").push(
+        selection::issuer_ad_for_version_and_service_key_at(
             &fman_keys(20),
-            &discovery::issuer_keys(1),
+            &discovery::issuer_keys(0),
             PAYMENT_AMOUNT_MSATS,
-            "0.11.2-fedi1",
-        ));
+            "0.12.0+fedi",
+            manager_key(20).x_only_public_key().0,
+            test_now_secs(),
+        ),
+    );
     let (payments, _) = TestPayments::new();
     let client = open_client_with_registry(
         MemDatabase::new().into_database(),
@@ -8286,8 +8318,8 @@ async fn persisted_formation_rejects_a_cross_release_replacement() {
     assert!(matches!(error, FiError::SeatRefused { .. }));
     let persisted = formation(&client.status()).clone();
     assert_eq!(
-        persisted.intent.fedimintd_version_core,
-        fedimintd_version().core()
+        persisted.intent.fedimintd_dkg_version,
+        fedimintd_version().dkg_version()
     );
     assert!(matches!(
         persisted.action_required,
@@ -8297,7 +8329,7 @@ async fn persisted_formation_rejects_a_cross_release_replacement() {
     let error = client
         .preview_fman_replacements(crate::FmanDiscoveryOptions::default())
         .await
-        .expect_err("replacement discovery must keep the formed release");
+        .expect_err("replacement discovery keeps the persisted DKG identity");
     assert!(matches!(
         error,
         FiError::InsufficientFmanSeats {
@@ -9553,9 +9585,9 @@ async fn crashed_selected_over_cap_record_reopens_without_legacy_action_and_clea
     let resolved = intent()
         .with_max_total_msats(exact_total - 1)
         .unwrap()
-        .resolve_for_core(
+        .resolve_for_dkg(
             FederationName("Crash Recovery".to_owned()),
-            fedimintd_version().core(),
+            fedimintd_version().dkg_version(),
         )
         .unwrap();
     let formation_id = FormationId("selected-over-cap-crash".to_owned());
@@ -9626,9 +9658,9 @@ async fn crashed_selected_record_cannot_resume_after_its_preview_expires() {
     let resolved = intent()
         .with_max_total_msats(1_000)
         .unwrap()
-        .resolve_for_core(
+        .resolve_for_dkg(
             FederationName("Expired Crash".to_owned()),
-            fedimintd_version().core(),
+            fedimintd_version().dkg_version(),
         )
         .unwrap();
     client
@@ -9687,9 +9719,9 @@ async fn selected_reopen_under_changed_verifier_requires_fresh_pre_output_author
             intent()
                 .with_max_total_msats(1_000)
                 .unwrap()
-                .resolve_for_core(
+                .resolve_for_dkg(
                     FederationName("Verifier Drift".to_owned()),
-                    fedimintd_version().core(),
+                    fedimintd_version().dkg_version(),
                 )
                 .unwrap(),
             (0..MIN_FEDERATION_SIZE)
@@ -9739,9 +9771,9 @@ async fn selected_reopen_after_output_tombstone_uses_durable_admission_provenanc
     let resolved = intent()
         .with_max_total_msats(1_000)
         .unwrap()
-        .resolve_for_core(
+        .resolve_for_dkg(
             FederationName("Verifier Drift Recovery".to_owned()),
-            fedimintd_version().core(),
+            fedimintd_version().dkg_version(),
         )
         .unwrap();
     client
@@ -9884,9 +9916,9 @@ async fn expired_selected_cleanup_reconstructs_and_releases_wallet_reservation_b
     let resolved = intent()
         .with_max_total_msats(1_000)
         .unwrap()
-        .resolve_for_core(
+        .resolve_for_dkg(
             FederationName("Expired Reserved Crash".to_owned()),
-            fedimintd_version().core(),
+            fedimintd_version().dkg_version(),
         )
         .unwrap();
     let formation_id = FormationId("selected-expired-reserved-crash".to_owned());
@@ -10010,9 +10042,9 @@ async fn seed_lost_selected_reservation_result(
                 .expect("test aggregate fits"),
         )
         .unwrap()
-        .resolve_for_core(
+        .resolve_for_dkg(
             FederationName("Lost Reservation Result".to_owned()),
-            fedimintd_version().core(),
+            fedimintd_version().dkg_version(),
         )
         .unwrap();
     client
@@ -10448,9 +10480,9 @@ async fn seed_selected_recorded_reservation(
                 .expect("test aggregate fits"),
         )
         .unwrap()
-        .resolve_for_core(
+        .resolve_for_dkg(
             FederationName("Recorded Reservation".to_owned()),
-            fedimintd_version().core(),
+            fedimintd_version().dkg_version(),
         )
         .unwrap();
     client

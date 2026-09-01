@@ -837,9 +837,7 @@ where
             })?;
         let request = FmanSelectionRequest::new(
             recovery.snapshot.intent.federation_size,
-            crate::FedimintdVersionRange::one_core(
-                recovery.snapshot.intent.fedimintd_version_core,
-            )?,
+            recovery.snapshot.intent.fedimintd_versions.clone(),
             recovery.snapshot.intent.plan,
         )?;
         let excluded = recovery
@@ -1021,7 +1019,7 @@ where
         intent: FormationIntent,
         seats: Vec<InitialSeat>,
         creation_mode: FormationCreationMode,
-        fedimintd_version_core: Option<crate::FedimintdVersionCore>,
+        fedimintd_dkg_version: Option<crate::FedimintdDkgVersion>,
         completion_callback: Option<DkgCompletionCallback>,
         options: FormationRunOptions,
     ) -> FiResult<()> {
@@ -1047,15 +1045,21 @@ where
             let created_at = now_secs()?;
             let formation_id = FormationId(format!("{}-{created_at}", fi_id.0));
             let default_name = default_federation_name(fi_id, created_at);
-            let core = match fedimintd_version_core {
-                Some(core) => core,
-                None => intent.fedimintd_versions().only_core().ok_or_else(|| {
-                    FiError::InvalidIntent(
-                        "pinned formation requires one fedimintd release".to_owned(),
-                    )
-                })?,
+            let dkg = match fedimintd_dkg_version {
+                Some(dkg) => dkg,
+                None => {
+                    let core = intent.fedimintd_versions().only_core().ok_or_else(|| {
+                        FiError::InvalidIntent(
+                            "pinned formation requires one fedimintd release".to_owned(),
+                        )
+                    })?;
+                    format!("{core}+fedi")
+                        .parse::<crate::FedimintdVersion>()
+                        .expect("a release core with the fixed Fedi vendor is valid SemVer")
+                        .dkg_version()
+                }
             };
-            let intent = intent.resolve_for_core(default_name, core)?;
+            let intent = intent.resolve_for_dkg(default_name, dkg)?;
             self.inner
                 .store
                 .initialize(

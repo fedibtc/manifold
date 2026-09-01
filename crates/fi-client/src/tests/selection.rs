@@ -396,17 +396,44 @@ async fn replacement_preview_for_public_approval(
     advertised_price_msats: u64,
     completed_at: u64,
 ) -> FmanReplacementPreview {
+    replacement_preview_for_version(
+        requirements,
+        excluded,
+        advertised_price_msats,
+        FEDIMINTD_VERSION_0_1,
+        completed_at,
+    )
+    .await
+}
+
+async fn replacement_preview_for_version(
+    requirements: GuardianReplacementRequirements,
+    excluded: BTreeSet<PublicKey>,
+    advertised_price_msats: u64,
+    version: &str,
+    completed_at: u64,
+) -> FmanReplacementPreview {
     let fman = fman_keys(19);
     let issuer = issuer_keys(1);
     let service_pubkey = manager_key(usize::from(MAX_FEDERATION_SIZE))
         .x_only_public_key()
         .0;
-    let event =
-        issuer_ad_with_service_pubkey(&fman, &issuer, advertised_price_msats, 1, service_pubkey);
+    let event = issuer_ad_for_version_and_service_key_at(
+        &fman,
+        &issuer,
+        advertised_price_msats,
+        version,
+        service_pubkey,
+        NOW,
+    );
     let registry = registry(vec![event]);
     let request = FmanSelectionRequest::new(
         FederationSize(MIN_FEDERATION_SIZE),
-        fedimintd_version_range(),
+        FedimintdVersionRange::new(
+            "0.11.1".parse().expect("range minimum parses"),
+            "0.11.3".parse().expect("range maximum parses"),
+        )
+        .expect("replacement range is ordered"),
         PlanPreference::InfiniteBestEffort,
     )
     .expect("test replacement request is valid");
@@ -427,6 +454,29 @@ async fn replacement_preview_for_public_approval(
     )
     .await
     .expect("replacement preview succeeds")
+}
+
+#[tokio::test]
+async fn replacement_preview_accepts_patch_skew_in_the_selected_dkg_identity() {
+    let requirements = GuardianReplacementRequirements {
+        replacement_id: GuardianReplacementId::from_digest([99; 32]),
+        seats: vec![GuardianReplacementSeat {
+            index: 3,
+            previous_fman_id: None,
+            previous_quote_id: QuoteId([42; 32]),
+            previous_locator: locator(0),
+        }],
+    };
+    let preview = replacement_preview_for_version(
+        requirements,
+        BTreeSet::new(),
+        AD_PRICE_MSATS,
+        "0.11.2+fedi",
+        NOW,
+    )
+    .await;
+
+    assert_eq!(preview.seats().len(), 1);
 }
 
 #[tokio::test]
@@ -612,6 +662,34 @@ pub(super) fn issuer_ad_for_version(
     price_msats: u64,
     version: &str,
 ) -> Event {
+    issuer_ad_for_version_at(fman, issuer, price_msats, version, NOW)
+}
+
+pub(super) fn issuer_ad_for_version_at(
+    fman: &Keys,
+    issuer: &Keys,
+    price_msats: u64,
+    version: &str,
+    now: u64,
+) -> Event {
+    issuer_ad_for_version_and_service_key_at(
+        fman,
+        issuer,
+        price_msats,
+        version,
+        service_pubkey(fman),
+        now,
+    )
+}
+
+pub(super) fn issuer_ad_for_version_and_service_key_at(
+    fman: &Keys,
+    issuer: &Keys,
+    price_msats: u64,
+    version: &str,
+    service_pubkey: secp256k1::XOnlyPublicKey,
+    now: u64,
+) -> Event {
     let mut payload = priced_payload(
         fman,
         vec![envelope_with_issuer(
@@ -622,7 +700,10 @@ pub(super) fn issuer_ad_for_version(
         price_msats,
         1,
     );
+    payload.issued_at = now.saturating_sub(1);
+    payload.expires_at = now + 3_600;
     payload.availability.fedimintd_version = version.parse().expect("test version parses");
+    payload.service_pubkey = service_pubkey.to_string();
     ad_event(fman, payload)
 }
 

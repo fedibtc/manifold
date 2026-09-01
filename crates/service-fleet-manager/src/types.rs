@@ -100,6 +100,12 @@ impl fmt::Display for FedimintdDkgVersion {
 }
 
 impl FedimintdDkgVersion {
+    /// Major/minor line compared by Fedimint DKG.
+    #[must_use]
+    pub fn major_minor(&self) -> (u64, u64) {
+        (self.major, self.minor)
+    }
+
     /// Whether this compatibility identity names the required Fedi build.
     #[must_use]
     pub fn is_fedi(&self) -> bool {
