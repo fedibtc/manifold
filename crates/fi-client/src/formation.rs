@@ -643,6 +643,7 @@ where
             seats,
             FormationCreationMode::Pinned,
             None,
+            None,
             options,
         )
         .await
@@ -674,6 +675,7 @@ where
             intent,
             seats,
             FormationCreationMode::Pinned,
+            None,
             Some(completion_callback),
             options,
         )
@@ -767,11 +769,7 @@ where
             )));
         }
         if approval.request.federation_size() != intent.federation_size()
-            || !approval
-                .request
-                .fedimintd_versions()
-                .contains(intent.fedimintd_version())
-            || approval.fedimintd_version_core != intent.fedimintd_version().core()
+            || intent.fedimintd_versions() != approval.request.fedimintd_versions()
             || approval.request.plan() != intent.plan()
         {
             return Err(FiError::InvalidIntent(
@@ -784,6 +782,7 @@ where
             ));
         }
         let approval_valid_until = approval.valid_until;
+        let fedimintd_version_core = approval.fedimintd_version_core;
         let verifier_provenance = approval.verifier_provenance.into();
         let approved_seats = approval.into_seats_at(Timestamp(now_secs()?))?;
         let seats = approved_seats
@@ -816,6 +815,7 @@ where
             FormationCreationMode::Selected {
                 payment_federation_id,
             },
+            Some(fedimintd_version_core),
             completion_callback,
             options,
         )
@@ -838,7 +838,7 @@ where
         let request = FmanSelectionRequest::new(
             recovery.snapshot.intent.federation_size,
             crate::FedimintdVersionRange::one_core(
-                recovery.snapshot.intent.fedimintd_version.core(),
+                recovery.snapshot.intent.fedimintd_version_core,
             )?,
             recovery.snapshot.intent.plan,
         )?;
@@ -888,7 +888,7 @@ where
             },
             self.inner.peer_badge_verifier.provenance(),
             &request,
-            recovery.snapshot.intent.fedimintd_version.core(),
+            recovery.snapshot.intent.fedimintd_version_core,
             requirements,
             excluded,
             retained_service_pubkeys,
@@ -1021,6 +1021,7 @@ where
         intent: FormationIntent,
         seats: Vec<InitialSeat>,
         creation_mode: FormationCreationMode,
+        fedimintd_version_core: Option<crate::FedimintdVersionCore>,
         completion_callback: Option<DkgCompletionCallback>,
         options: FormationRunOptions,
     ) -> FiResult<()> {
@@ -1046,7 +1047,15 @@ where
             let created_at = now_secs()?;
             let formation_id = FormationId(format!("{}-{created_at}", fi_id.0));
             let default_name = default_federation_name(fi_id, created_at);
-            let intent = intent.resolve(default_name)?;
+            let core = match fedimintd_version_core {
+                Some(core) => core,
+                None => intent.fedimintd_versions().only_core().ok_or_else(|| {
+                    FiError::InvalidIntent(
+                        "pinned formation requires one fedimintd release".to_owned(),
+                    )
+                })?,
+            };
+            let intent = intent.resolve_for_core(default_name, core)?;
             self.inner
                 .store
                 .initialize(
@@ -3341,13 +3350,11 @@ where
         // One shared predicate with the selection walk's live probe
         // (`selection::match_requested_availability`), so a candidate the
         // probing preview seats is exactly a candidate this gate accepts.
-        let versions =
-            crate::FedimintdVersionRange::one_core(intent.fedimintd_version.core())?;
         let matched = match crate::selection::match_requested_availability(
             &availability,
             intent.federation_size,
-            &versions,
-            intent.fedimintd_version.core(),
+            &intent.fedimintd_versions,
+            intent.fedimintd_version_core,
             intent.plan,
         ) {
             Ok(matched) => matched,
@@ -3463,7 +3470,10 @@ where
             .map_err(|error| fman_error(index, format!("invalid signed quote: {error}")))?;
         let request = &quote.terms.request;
         if request.fi_id != fi_id
-            || request.fedimintd_version.core() != intent.fedimintd_version.core()
+            || request.fedimintd_version.core() != intent.fedimintd_version_core
+            || !intent
+                .fedimintd_versions
+                .contains(&request.fedimintd_version)
             || request.federation_size != intent.federation_size
             || !intent.plan.matches(&request.plan)
         {

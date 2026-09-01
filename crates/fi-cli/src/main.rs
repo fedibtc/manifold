@@ -1024,9 +1024,7 @@ async fn run(
                 let registry = connect_environment_registry(args.manifold_environment).await?;
                 let requirements = FmanCandidateRequirements {
                     federation_size: intent.federation_size(),
-                    fedimintd_versions: FedimintdVersionRange::one_core(
-                        intent.fedimintd_version().core(),
-                    )?,
+                    fedimintd_versions: intent.fedimintd_versions().clone(),
                 };
                 let discovery = FmanRegistryQuery::new(registry.clone())
                     .insecure_discover_untrusted_pinned_fmans(
@@ -1069,7 +1067,7 @@ async fn run(
                 let registry = connect_environment_registry(args.manifold_environment).await?;
                 let request = FmanSelectionRequest::new(
                     intent.federation_size(),
-                    FedimintdVersionRange::one_core(intent.fedimintd_version().core())?,
+                    intent.fedimintd_versions().clone(),
                     intent.plan(),
                 )?;
                 let preview = FmanRegistryQuery::new(registry.clone())
@@ -1733,11 +1731,15 @@ fn load_intent(args: &CreateArgs) -> anyhow::Result<FormationIntent> {
         file.federation_size
             .context("formation intent requires federation_size")?,
         file.plan.unwrap_or_default(),
-        file.fedimintd_version.unwrap_or_else(|| {
-            FEDIMINTD_VERSION_0_1
-                .parse()
-                .expect("the supported fedimintd version constant is valid SemVer")
-        }),
+        FedimintdVersionRange::one_core(
+            file.fedimintd_version
+                .unwrap_or_else(|| {
+                    FEDIMINTD_VERSION_0_1
+                        .parse()
+                        .expect("the supported fedimintd version constant is valid SemVer")
+                })
+                .core(),
+        )?,
     )?;
     match file.max_total_msats {
         Some(max_total_msats) => intent
@@ -3504,8 +3506,8 @@ max_total_msats = 1000
         );
         assert_eq!(intent.federation_size(), FederationSize(7));
         assert_eq!(
-            intent.fedimintd_version(),
-            &"0.11.1-fedi10".parse::<FedimintdVersion>().unwrap()
+            intent.fedimintd_versions().minimum().to_string(),
+            "0.11.1"
         );
         assert_eq!(intent.plan(), PlanPreference::InfiniteBestEffort);
         assert_eq!(intent.max_total_msats(), Some(21_000));
