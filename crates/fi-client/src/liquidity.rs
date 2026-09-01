@@ -166,6 +166,13 @@ pub(crate) struct StoredLiquidityOperation {
 }
 
 impl StoredLiquidityOperation {
+    pub(crate) fn is_terminal_for_backup(&self) -> FiResult<bool> {
+        Ok(matches!(
+            self.response.as_ref().map(|v| &v.payload.outcome),
+            Some(RequestLiquidityOutcome::Rejected(_))
+        ) || self.snapshot()?.is_complete())
+    }
+
     fn allocation_status(&self) -> Option<&AllocationStatus> {
         self.status
             .as_ref()
