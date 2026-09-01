@@ -1086,9 +1086,8 @@
 
         # Single source of truth for the bundled fedimintd's fork release.
         # `fleetManagerReleaseSync` binds this to the Fedimint source revision,
-        # the package README, and the OCI label. The Git tag identifies the
-        # fork build; `FEDIMINTD_VERSION_0_1` owns the separate typed DKG
-        # identity below.
+        # the package README, and the OCI label. DKG uses a separate typed
+        # major/minor/vendor identity, independent of the fork tag revision.
         fedimintdRelease = "0.11.1-fedi18";
         fedimintdDkgVersion = "0.11.1+fedi";
         # `fedimintd` exports this upstream package version in `app_start_ts`.
