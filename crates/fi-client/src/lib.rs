@@ -29,8 +29,10 @@ pub use discovery::{
     AdvertisementRejection, EligibleFmanCandidate, FMAN_ADVERTISEMENT_MAX_AGE,
     FMAN_ADVERTISEMENT_MAX_HOLDER_AUTHORIZATIONS, FMAN_DISCOVERY_TIMEOUT,
     FmanCandidateRequirements, FmanDiscovery, FmanDiscoveryOptions, FmanRegistryQuery,
-    InsecureUntrustedPinnedFman, InsecureUntrustedPinnedFmanDiscovery, RejectedAdvertisement,
+    RejectedAdvertisement,
 };
+#[cfg(any(test, feature = "dev-pinned-formation"))]
+pub use discovery::{InsecureUntrustedPinnedFman, InsecureUntrustedPinnedFmanDiscovery};
 pub use error::{
     AbandonUnavailableReason, Capability, FiError, FiErrorCode, FiResult,
     SelectionReauthorizationReason,

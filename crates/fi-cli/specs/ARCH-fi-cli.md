@@ -33,7 +33,9 @@ It has no protocol, trust, signing, or lifecycle implementation of its own —
 transition, and checkpoint.
 
 The CLI implements the concrete Iroh connector and Fedimint wallet
-payment/refund port for both formation modes. `fi-client` owns payment
+payment/refund port for both formation modes. As a development/test consumer,
+it is the only workspace package that enables fi-client's
+`dev-pinned-formation` feature. `fi-client` owns payment
 scheduling for initial formation, resume, and replacement: it starts one new
 member at a time and checkpoints the completed seat before the next. The CLI
 adapter provides only exact aggregate reservation and operation/recovery
@@ -56,7 +58,8 @@ by lower-level protocol E2E tests. That path accepts a paired 0600
 completion-callback URL file and idempotency key and delegates protocol
 validation, durable ownership, and delivery entirely to `fi-client` and the
 pinned FMans; the CLI never places the URL bearer in argv, persists it, or
-emits it.
+emits it. Pinned creation accepts only a version range containing one patch
+release; broader ranges remain available to the automatic selection path.
 For temporarily incomplete development/staging trust infrastructure,
 `--insecure-skip-fman-trust` explicitly discovers authenticated, fresh,
 compatible advertisements through `insecure_discover_untrusted_pinned_fmans` and feeds
