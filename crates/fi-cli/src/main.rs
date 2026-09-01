@@ -3505,10 +3505,7 @@ max_total_msats = 1000
             Some(&FederationName("override".to_owned()))
         );
         assert_eq!(intent.federation_size(), FederationSize(7));
-        assert_eq!(
-            intent.fedimintd_versions().minimum().to_string(),
-            "0.11.1"
-        );
+        assert_eq!(intent.fedimintd_versions().minimum().to_string(), "0.11.1");
         assert_eq!(intent.plan(), PlanPreference::InfiniteBestEffort);
         assert_eq!(intent.max_total_msats(), Some(21_000));
     }
