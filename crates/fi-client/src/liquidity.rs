@@ -42,6 +42,7 @@ use secp256k1::{XOnlyPublicKey, schnorr::Signature};
 use serde::Serialize;
 
 use crate::formation::DriverRun;
+use crate::ports::FiIdentityExt as _;
 use crate::{
     FederationConsensusReader, FiClient, FiError, FiIdentity, FiPayments, FiResult,
     FleetManagerConnector, FormationFreshness, FormationId, FormationPhase, FormationRunOptions,

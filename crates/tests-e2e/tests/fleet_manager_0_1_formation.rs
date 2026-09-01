@@ -31,6 +31,7 @@ use fedi_decentralized_service_fleet_manager::{
     TelemetryCapability, Timestamp,
 };
 use fedi_iroh_rpc::iroh::{Endpoint, endpoint::presets};
+use fedimint_derive_secret::{ChildId, DerivableSecret};
 use fman_fedimint::{Wallet as FmanWallet, WalletSecret};
 use futures_util::future::join_all;
 use iroh_base_035::ticket::NodeTicket;
@@ -1743,8 +1744,12 @@ async fn register_gateway_with_every_guardian(
 
     let identity =
         std::fs::read(state_dir.join("fi-identity")).context("read the test FI identity")?;
-    let fi_key =
-        secp256k1::SecretKey::from_slice(&identity).context("parse the test FI identity")?;
+    let fi_root = DerivableSecret::new_root(&identity, b"fedi-fi-cli/root/v1");
+    let protocol_key = fi_root
+        .child_key(ChildId(0))
+        .to_secp_key(&fedimint_core::secp256k1::Secp256k1::new());
+    let fi_key = secp256k1::SecretKey::from_byte_array(&protocol_key.secret_key().secret_bytes())
+        .context("derive the test FI protocol identity")?;
     let keypair = secp256k1::Keypair::from_secret_key(&secp256k1::Secp256k1::new(), &fi_key);
     let fi_id = FiId(secp256k1::XOnlyPublicKey::from_keypair(&keypair).0);
     let gateway_api = GatewayApiUrl::try_from("https://gateway.example/")

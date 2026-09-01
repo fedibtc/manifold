@@ -30,6 +30,7 @@ fedi-decentralized-peer-badge-verifier = { path = "../peer-badge-verifier", feat
 fedi-decentralized-service-fleet-manager = { path = "../service-fleet-manager" }
 fedi-iroh-rpc = { path = "../fedi-iroh-rpc" }
 fedimint-core.workspace = true
+fedimint-derive-secret.workspace = true
 fedimint-mintv2-client.workspace = true
 fi-client = { path = "../fi-client" }
 fman-core = { path = "../fman/core" }
