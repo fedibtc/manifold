@@ -3,6 +3,7 @@
 #[cfg(test)]
 mod test_support;
 
+use bitcoin_hashes::sha256;
 use fedimint_core::db::{
     AutocommitError, Database, DatabaseError, DatabaseKeyPrefix, DatabaseValue, DecodingError,
     IDatabaseTransactionOpsCore as _, IDatabaseTransactionOpsCoreTyped as _,
@@ -51,6 +52,44 @@ enum FiDbPrefix {
     DriverLease = 0x02,
     SetupPaymentFederations = 0x03,
     LiquidityOperation = 0x04,
+    BackupGeneration = 0x05,
+    BackupRelayConfirmation = 0x06,
+}
+
+#[derive(Debug, Decodable, Encodable)]
+struct BackupGenerationKey;
+impl_db_record!(
+    key = BackupGenerationKey,
+    value = BackupGenerationState,
+    db_prefix = FiDbPrefix::BackupGeneration
+);
+
+#[derive(Debug, Decodable, Encodable)]
+struct BackupRelayConfirmationKey {
+    relay: String,
+}
+impl_db_record!(
+    key = BackupRelayConfirmationKey,
+    value = BackupRelayConfirmation,
+    db_prefix = FiDbPrefix::BackupRelayConfirmation
+);
+
+#[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
+struct BackupGenerationState {
+    generation: u64,
+    semantic_hash: sha256::Hash,
+    document_hash: sha256::Hash,
+    nostr_created_at: u64,
+}
+
+pub(crate) const BACKUP_REFRESH_INTERVAL_SECS: u64 = 15 * 24 * 60 * 60;
+
+#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
+pub(crate) struct BackupRelayConfirmation {
+    pub(crate) document_hash: sha256::Hash,
+    pub(crate) generation: u64,
+    pub(crate) event_id: String,
+    pub(crate) confirmed_at_secs: u64,
 }
 
 #[derive(Debug, Decodable, Encodable)]
@@ -544,8 +583,9 @@ json_database_value!(StoredDriverLease);
 struct StoredSetupPaymentFederationsEvent(Event);
 
 json_database_value!(StoredSetupPaymentFederationsEvent);
-
 json_database_value!(crate::liquidity::StoredLiquidityOperation);
+json_database_value!(BackupGenerationState);
+json_database_value!(BackupRelayConfirmation);
 
 /// One seat's public projection and its private recovery-only quote facts.
 pub(crate) struct SeatRecovery {
@@ -781,6 +821,150 @@ impl FiStore {
             #[cfg(test)]
             failed_restore: Arc::new(AtomicBool::new(false)),
         }
+    }
+
+    /// Prepare one eligible backup, allocating its generation and Nostr
+    /// timestamp in the same transaction. Unchanged facts reuse both until the
+    /// next refresh boundary; changed facts advance both immediately.
+    pub(crate) async fn backup_payload(&self) -> FiResult<crate::backup::PreparedFiBackup> {
+        let mut dbtx = self.database.begin_transaction().await;
+        let formation = dbtx
+            .get_value(&ActiveFormationKey)
+            .await
+            .ok_or_else(formed_backup_required)?;
+        if formation.phase != StoredFormationPhase::Formed
+            || !formation
+                .formation_meta_target
+                .as_ref()
+                .is_some_and(|target| target.confirmed)
+        {
+            return Err(formed_backup_required());
+        }
+        let federation_invite = formation
+            .invite_code
+            .clone()
+            .ok_or_else(formed_backup_required)?;
+        let mut seats = Vec::with_capacity(usize::from(formation.seat_count));
+        for index in 0..formation.seat_count {
+            let seat = dbtx
+                .get_value(&SeatKey {
+                    formation_id: formation.formation_id.0.clone(),
+                    index,
+                })
+                .await
+                .ok_or_else(|| FiError::Storage("formed FI backup is missing a seat".to_owned()))?;
+            seats.push(crate::backup::FiBackupSeat {
+                fman_identity: seat.admission.fman_id().ok_or_else(|| {
+                    FiError::Storage(
+                        "formed FI backup seat has no authenticated FMan identity".to_owned(),
+                    )
+                })?,
+                seat_id: seat.seat_id.ok_or_else(|| {
+                    FiError::Storage("formed FI backup seat has no seat id".to_owned())
+                })?,
+                locator: seat.locator,
+            });
+        }
+        let mut entries = dbtx.find_by_prefix(&LiquidityOperationKeyPrefix).await;
+        let mut liquidity = None;
+        while let Some((_key, operation)) = entries.next().await {
+            if !operation.is_terminal_for_backup()? {
+                if liquidity.replace(operation.commitment).is_some() {
+                    return Err(FiError::Storage(
+                        "more than one live FI liquidity request".to_owned(),
+                    ));
+                }
+            }
+        }
+        drop(entries);
+        let mut payload = crate::backup::FiBackupPayload {
+            schema_version: crate::backup::BACKUP_SCHEMA_VERSION,
+            snapshot_generation: 0,
+            federation_invite,
+            seats,
+            liquidity,
+        };
+        let semantic_hash = crate::backup::semantic_hash(&payload)?;
+        let prior = dbtx.get_value(&BackupGenerationKey).await;
+        let generation = match prior.as_ref() {
+            Some(prior) if prior.semantic_hash == semantic_hash => prior.generation,
+            Some(prior) => prior.generation.checked_add(1).ok_or_else(|| {
+                FiError::Storage("FI backup snapshot generation exhausted".to_owned())
+            })?,
+            None => 1,
+        };
+        payload.snapshot_generation = generation;
+        let document_hash = crate::backup::document_hash(&payload)?;
+        let now = fedimint_core::time::duration_since_epoch().as_secs();
+        let created_at = match prior.as_ref() {
+            Some(prior) if prior.semantic_hash == semantic_hash => {
+                let elapsed = now.saturating_sub(prior.nostr_created_at);
+                prior.nostr_created_at.saturating_add(
+                    elapsed / BACKUP_REFRESH_INTERVAL_SECS * BACKUP_REFRESH_INTERVAL_SECS,
+                )
+            }
+            Some(prior) => now.max(prior.nostr_created_at.saturating_add(1)),
+            None => now,
+        };
+        dbtx.insert_entry(
+            &BackupGenerationKey,
+            &BackupGenerationState {
+                generation,
+                semantic_hash,
+                document_hash,
+                nostr_created_at: created_at,
+            },
+        )
+        .await;
+        dbtx.commit_tx_result()
+            .await
+            .map_err(|_| FiError::Storage("persisting FI backup generation failed".to_owned()))?;
+        Ok(crate::backup::PreparedFiBackup {
+            payload,
+            document_hash,
+            created_at,
+        })
+    }
+
+    pub(crate) async fn backup_confirmation(&self, relay: &str) -> Option<BackupRelayConfirmation> {
+        self.database
+            .begin_transaction_nc()
+            .await
+            .get_value(&BackupRelayConfirmationKey {
+                relay: relay.to_owned(),
+            })
+            .await
+    }
+
+    pub(crate) async fn record_backup_confirmation(
+        &self,
+        relay: &str,
+        confirmation: BackupRelayConfirmation,
+    ) -> FiResult<()> {
+        let mut dbtx = self.database.begin_transaction().await;
+        if dbtx
+            .get_value(&BackupRelayConfirmationKey {
+                relay: relay.to_owned(),
+            })
+            .await
+            .is_some_and(|current| {
+                current.generation > confirmation.generation
+                    || (current.generation == confirmation.generation
+                        && current.confirmed_at_secs > confirmation.confirmed_at_secs)
+            })
+        {
+            return Ok(());
+        }
+        dbtx.insert_entry(
+            &BackupRelayConfirmationKey {
+                relay: relay.to_owned(),
+            },
+            &confirmation,
+        )
+        .await;
+        dbtx.commit_tx_result().await.map_err(|_| {
+            FiError::Storage("persisting FI relay backup confirmation failed".to_owned())
+        })
     }
 
     pub(crate) async fn insert_liquidity_operation(
@@ -1192,6 +1376,22 @@ impl FiStore {
         let mut seat = dbtx.get_value(&key).await.expect("test seat exists");
         seat.guardian_code = None;
         dbtx.insert_entry(&key, &seat).await;
+        dbtx.insert_entry(&ActiveFormationKey, &formation).await;
+        dbtx.commit_tx().await;
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn unconfirm_formation_meta_target_for_test(&self) {
+        let mut dbtx = self.database.begin_transaction().await;
+        let mut formation = dbtx
+            .get_value(&ActiveFormationKey)
+            .await
+            .expect("test formation exists");
+        formation
+            .formation_meta_target
+            .as_mut()
+            .expect("test metadata target")
+            .confirmed = false;
         dbtx.insert_entry(&ActiveFormationKey, &formation).await;
         dbtx.commit_tx().await;
     }
@@ -3549,6 +3749,10 @@ fn validate_payment_authorization(
         }
     }
     Ok(())
+}
+
+fn formed_backup_required() -> FiError {
+    FiError::Storage("FI backup is available only after formed metadata is confirmed".to_owned())
 }
 
 fn public_phase(
