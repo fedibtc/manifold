@@ -653,9 +653,11 @@ where
     /// callback to every guardian's DKG attempt.
     ///
     /// This has the same cancellation, payment-readiness, and explicit payment
-    /// authorization behavior as [`Self::create_with_pinned_fmans`]. FI persists
-    /// the callback before remote work, retains it through every pre-`Formed`
-    /// recovery, and sends the same value to every guardian. Public formation
+    /// authorization behavior as [`Self::create_with_pinned_fmans`]. A broad
+    /// version range may require value-free availability reads first; FI then
+    /// persists the callback before quotes, payments, seat creation, or DKG,
+    /// retains it through every pre-`Formed` recovery, and sends the same value
+    /// to every guardian. Public formation
     /// snapshots never expose the bearer. FI clears its copy atomically with the
     /// `Formed` checkpoint after every FMan has accepted durable retry ownership.
     pub async fn create_with_pinned_fmans_and_callback(
@@ -1049,11 +1051,7 @@ where
             let default_name = default_federation_name(fi_id, created_at);
             let core = match fedimintd_version_core {
                 Some(core) => core,
-                None => intent.fedimintd_versions().only_core().ok_or_else(|| {
-                    FiError::InvalidIntent(
-                        "pinned formation requires one fedimintd release".to_owned(),
-                    )
-                })?,
+                None => self.select_pinned_core(&intent, &seats, run).await?,
             };
             let intent = intent.resolve_for_core(default_name, core)?;
             self.inner
@@ -1073,6 +1071,92 @@ where
         }
         .await;
         finish_driver_run(result, self.inner.store.release_driver_lease(lease).await)
+    }
+
+    async fn select_pinned_core(
+        &self,
+        intent: &FormationIntent,
+        seats: &[InitialSeat],
+        run: DriverRun<'_>,
+    ) -> FiResult<FedimintdVersionCore> {
+        if let Some(core) = intent.fedimintd_versions().only_core() {
+            return Ok(core);
+        }
+        let mut common = None::<BTreeSet<FedimintdVersionCore>>;
+        for seat in seats {
+            let index = seat.progress.index;
+            let client = run
+                .call("connecting to pinned Fleet Manager", || {
+                    Ok(self
+                        .inner
+                        .ports
+                        .fman_connector
+                        .connect(&seat.progress.locator))
+                })
+                .await?
+                .map_err(|error| fman_error(usize::from(index), error.to_string()))?;
+            let availability = run
+                .call("checking pinned Fleet Manager availability", || {
+                    Ok(self
+                        .inner
+                        .ports
+                        .fman_connector
+                        .get_availability(&client, GetAvailabilityRequest))
+                })
+                .await?
+                .map_err(|error| fman_error(usize::from(index), error.to_string()))?
+                .map_err(|error| fman_error(usize::from(index), error.to_string()))?;
+            if !availability.accepting_seats {
+                return Err(fman_error(
+                    usize::from(index),
+                    AvailabilityMismatch::NotAcceptingSeats.message(),
+                ));
+            }
+            if !availability
+                .federation_sizes
+                .contains(&intent.federation_size())
+            {
+                return Err(fman_error(
+                    usize::from(index),
+                    AvailabilityMismatch::FederationSize.message(),
+                ));
+            }
+            if !availability
+                .plans
+                .iter()
+                .any(|plan| intent.plan().matches(plan))
+            {
+                return Err(fman_error(
+                    usize::from(index),
+                    AvailabilityMismatch::Plan.message(),
+                ));
+            }
+            let [version] = availability.fedimintd_versions.as_slice() else {
+                return Err(fman_error(
+                    usize::from(index),
+                    AvailabilityMismatch::FedimintdVersion.message(),
+                ));
+            };
+            if !intent.fedimintd_versions().contains(version) {
+                return Err(fman_error(
+                    usize::from(index),
+                    AvailabilityMismatch::FedimintdVersion.message(),
+                ));
+            }
+            let offered = BTreeSet::from([version.core()]);
+            common = Some(match common {
+                None => offered,
+                Some(common) => common.intersection(&offered).copied().collect(),
+            });
+        }
+        common
+            .and_then(|common| common.into_iter().next_back())
+            .ok_or_else(|| {
+                FiError::InvalidFleetManagers(
+                    "pinned Fleet Managers do not share a fedimintd release inside the FI range"
+                        .to_owned(),
+                )
+            })
     }
 
     /// Validate pinned locator inputs without accessing identity, storage,

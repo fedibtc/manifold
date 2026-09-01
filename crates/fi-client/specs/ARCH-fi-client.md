@@ -127,11 +127,19 @@ size. Before requesting a quote from an FMan, the FI requires that FMan's live
 availability to advertise the intent's exact size. Concurrently processed
 siblings may already have supplied quotes, but formation can proceed only where
 product policy and every selected operator's release capabilities overlap.
+Selected formation persists the original FI range and the chosen three-number
+release. Quote-time checks accept a different `-fediN` build only within that
+release; replacements and restart recovery remain fixed to it. Stored quotes
+must name an exact build inside both persisted constraints.
+The diagnostic pinned path has no advertisement selection, so it reads every
+pinned FMan's live availability before persistence and chooses the newest
+three-number release shared by the whole set inside the same FI range.
 
 The callback-aware pinned-formation entry point accepts one
 `DkgCompletionCallback` created by the consumer for the initiating app
-installation. It persists that bearer capability with the formation before
-remote work and sends the same callback and idempotency key to every FMan in
+installation. A value-free availability read may first resolve the pinned
+set's common release; FI then persists the bearer before quotes, payments,
+seat creation, or DKG and sends the same callback and idempotency key to every FMan in
 the signed `StartDkg` wave. The ordinary entry point leaves the optional
 callback absent. An ordinary resume repeats the idempotent `StartDkg` wave
 with the same durable guardian codes; each FMan retains the first start

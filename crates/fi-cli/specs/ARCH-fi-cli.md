@@ -224,12 +224,14 @@ against hostile local filesystem behavior.
 `--json` is a stable, newline-delimited output contract. Successful `init`
 writes exactly one stdout object with `fiPubkey` and `state`; `status`, `create`,
 `resume`, and successful `authorize-payments` write exactly one stdout `FiStatus`
-value. When a paid formation
+value. A formation intent carries `fedimintd_versions` as its inclusive-minimum,
+exclusive-maximum range and `fedimintd_version_core` as the release selected for
+that DKG. When a paid formation
 reaches payment readiness, `create` additionally writes exactly one stderr
 object with the sole top-level field `authorizingPayments`, whose value is the
 library-provided `PaymentRequirements`. Successful `discover` and `preview`
 write exactly one stdout object carrying the `seen`/`eligible` (and, for
-`preview`, `selected` and `totalAdvertisedMsats`) summary with the
+`preview`, `selected`, `fedimintdVersionCore`, and `totalAdvertisedMsats`) summary with the
 candidate or seat list and typed rejection reasons rendered as strings.
 Rejection and provenance strings are explicit lower-snake-case machine codes
 owned by `fi-client` (`expired`, `badge_rejected`, `fedi_attested`, and so on),

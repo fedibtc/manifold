@@ -174,6 +174,7 @@ fn populated_registry_row_dtos_have_exact_schemas() {
             seen: 1,
             eligible: 1,
             selected: 1,
+            fedimintd_version_core: "0.11.1".to_owned(),
             total_advertised_msats: 21_000,
             seats: vec![seat],
             rejected: vec![RejectionJson {
@@ -182,7 +183,7 @@ fn populated_registry_row_dtos_have_exact_schemas() {
             }],
         })
         .unwrap(),
-        r#"{"seen":1,"eligible":1,"selected":1,"totalAdvertisedMsats":21000,"seats":[{"fmanPubkey":"1111111111111111111111111111111111111111111111111111111111111111","advertisedPriceMsats":21000,"locator":{"version":1,"endpoint_addr":{"id":"8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c","addrs":[]},"service_pubkey":"4d4b6cd1361032ca9bd2aeb9d900aa4d45d9ead80ac9423374c451a7254d0766"},"issuer":"2222222222222222222222222222222222222222222222222222222222222222","holder":"3333333333333333333333333333333333333333333333333333333333333333","trustLevel":6,"provenance":"fedi_attested"}],"rejected":[{"author":"4444444444444444444444444444444444444444444444444444444444444444","reason":"deadline_expired"}]}"#
+        r#"{"seen":1,"eligible":1,"selected":1,"fedimintdVersionCore":"0.11.1","totalAdvertisedMsats":21000,"seats":[{"fmanPubkey":"1111111111111111111111111111111111111111111111111111111111111111","advertisedPriceMsats":21000,"locator":{"version":1,"endpoint_addr":{"id":"8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c","addrs":[]},"service_pubkey":"4d4b6cd1361032ca9bd2aeb9d900aa4d45d9ead80ac9423374c451a7254d0766"},"issuer":"2222222222222222222222222222222222222222222222222222222222222222","holder":"3333333333333333333333333333333333333333333333333333333333333333","trustLevel":6,"provenance":"fedi_attested"}],"rejected":[{"author":"4444444444444444444444444444444444444444444444444444444444444444","reason":"deadline_expired"}]}"#
     );
 }
 

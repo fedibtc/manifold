@@ -8309,6 +8309,38 @@ async fn persisted_formation_rejects_a_cross_release_replacement() {
 }
 
 #[tokio::test]
+async fn pinned_formation_derives_one_shared_release_from_its_range() {
+    let (payments, _) = TestPayments::new();
+    let client = open_client(
+        MemDatabase::new().into_database(),
+        payments,
+        Arc::new(FmanState::default()),
+        FmanConfig::given_away(),
+    )
+    .await;
+
+    client
+        .create_with_pinned_fmans(compatible_intent(), locators(), options())
+        .await
+        .expect("the pinned set shares one release inside the FI range");
+
+    let formed = formation(&client.status()).clone();
+    assert_eq!(formed.phase, FormationPhase::Formed);
+    assert_eq!(
+        formed.intent.fedimintd_version_core,
+        fedimintd_version().core()
+    );
+    assert_eq!(
+        formed
+            .intent
+            .fedimintd_versions
+            .maximum_exclusive()
+            .to_string(),
+        "0.11.3"
+    );
+}
+
+#[tokio::test]
 async fn selected_connection_failure_retries_before_requesting_replacement() {
     let database = MemDatabase::new().into_database();
     let (payments, _payment_state) = TestPayments::new();
