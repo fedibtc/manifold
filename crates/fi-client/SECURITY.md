@@ -350,8 +350,8 @@ stable idempotency key can identify one formation operation. Neither is
 projected in public status or `Debug`, but database files and backups containing
 them remain sensitive. Schema 11 preserves the callback through every
 pre-`Formed` recovery and atomically clears it with the `Formed` checkpoint,
-after every FMan has durably assumed retry ownership. Older pre-production
-schemas fail closed and require reset.
+after every FMan has durably assumed retry ownership. Schema 9 migration writes
+an explicitly absent callback; schema 10 migration preserves its callback.
 Logical clearing does not erase old pages or backups. FI storage must never
 contain raw bearer ecash, payment signatures, identity secret material, or
 wallet-private refund secrets.
@@ -494,7 +494,9 @@ pin deferred effect construction and polling, the registry-to-wallet composite
 boundary, and coarse run-lease conflict handling.
 
 The durable root is bound to the FI public identity before any status is
-published. Storage schema changes fail closed. Schemas 4 through 8 predate one
+published. Compatible schemas 9 and 10 migrate in one database transaction
+before status publication or resume effects, after owner and legacy-version
+validation; failure leaves the stored record unchanged. Schemas 4 through 8 predate one
 or more of durable identity binding, the post-DKG seat-binding directory,
 commercial authorization history, the distinct wallet-output tombstone, and
 the explicit selected-vs-pinned recovery discriminator/deadline, and signed

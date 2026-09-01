@@ -122,7 +122,7 @@ impl FedimintdVersionRange {
 
     /// Whether this range contains any patch from one DKG major/minor line.
     #[must_use]
-    pub fn overlaps_dkg(&self, dkg: &FedimintdDkgVersion) -> bool {
+    pub fn overlaps_dkg_release_line(&self, dkg: &FedimintdDkgVersion) -> bool {
         let line = dkg.major_minor();
         let minimum_line = (self.minimum.major, self.minimum.minor);
         let maximum_line = (self.maximum_exclusive.major, self.maximum_exclusive.minor);
@@ -189,8 +189,8 @@ impl PlanPreference {
 /// capless intent serializes without the field, so independently serialized
 /// public intent values remain interoperable. This does not migrate durable
 /// FI store records. Those are separate: schema 11 requires explicit creation mode,
-/// commercial-history, and wallet-output tombstones; every older pre-launch
-/// record is rejected fail-closed with reset guidance.
+/// commercial-history, and wallet-output tombstones. Storage privately migrates
+/// compatible schemas 9 and 10; older pre-launch records are rejected fail-closed.
 #[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
 #[serde(try_from = "UncheckedFormationIntent")]
 pub struct FormationIntent {
@@ -285,7 +285,7 @@ impl FormationIntent {
         default_name: FederationName,
         dkg: FedimintdDkgVersion,
     ) -> FiResult<ResolvedFormationIntent> {
-        if !dkg.is_fedi() || !self.fedimintd_versions.overlaps_dkg(&dkg) {
+        if !dkg.is_fedi() || !self.fedimintd_versions.overlaps_dkg_release_line(&dkg) {
             return Err(FiError::InvalidIntent(
                 "selected Fedimint DKG identity is outside the formation intent".to_owned(),
             ));

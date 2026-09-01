@@ -5,7 +5,7 @@ mod test_support;
 
 use fedimint_core::db::{
     AutocommitError, Database, DatabaseError, DatabaseValue, DecodingError,
-    IDatabaseTransactionOpsCoreTyped as _,
+    IDatabaseTransactionOpsCore as _, IDatabaseTransactionOpsCoreTyped as _,
 };
 use fedimint_core::encoding::{Decodable, Encodable};
 use fedimint_core::module::registry::ModuleDecoderRegistry;
@@ -1234,6 +1234,7 @@ impl FiStore {
     }
 
     pub(crate) async fn load_recovery(&self, fi_id: FiId) -> FiResult<FiRecovery> {
+        self.migrate_legacy_formation(fi_id).await?;
         let mut dbtx = self.database.begin_transaction_nc().await;
         let Some(stored) = dbtx.get_value(&ActiveFormationKey).await else {
             return Ok(FiRecovery::Idle);
@@ -1358,6 +1359,37 @@ impl FiStore {
             formation_meta_target: stored.formation_meta_target,
             dkg_completion_callback: stored.dkg_completion_callback.into_value(),
         })))
+    }
+
+    /// Upgrade compatible legacy state before open can publish it or resume it.
+    async fn migrate_legacy_formation(&self, fi_id: FiId) -> FiResult<()> {
+        let key = <ActiveFormationKey as fedimint_core::db::DatabaseKeyPrefix>::to_bytes(
+            &ActiveFormationKey,
+        );
+        self.database
+            .autocommit(
+                move |dbtx, _| {
+                    let key = key.clone();
+                    Box::pin(async move {
+                        let Some(bytes) = dbtx.raw_get_bytes(&key).await.map_err(|_| {
+                            FiError::Storage("reading FI formation for migration failed".to_owned())
+                        })?
+                        else {
+                            return Ok(());
+                        };
+                        let Some(migrated) = migrate_legacy_formation_json(&bytes, fi_id)? else {
+                            return Ok(());
+                        };
+                        dbtx.raw_insert_bytes(&key, &migrated).await.map_err(|_| {
+                            FiError::Storage("writing migrated FI formation failed".to_owned())
+                        })?;
+                        Ok(())
+                    })
+                },
+                Some(FORMATION_TX_MAX_ATTEMPTS),
+            )
+            .await
+            .map_err(map_formation_tx_error)
     }
 
     /// Load the complete last durably admitted setup-payment publication.
@@ -3581,6 +3613,95 @@ fn public_phase(
     }
 }
 
+fn migrate_legacy_formation_json(bytes: &[u8], fi_id: FiId) -> FiResult<Option<Vec<u8>>> {
+    let mut value: serde_json::Value = serde_json::from_slice(bytes)
+        .map_err(|_| FiError::Storage("decoding FI formation for migration failed".to_owned()))?;
+    let formation = value.as_object_mut().ok_or_else(|| {
+        FiError::Storage("persisted FI formation is not a JSON object".to_owned())
+    })?;
+    let schema = formation
+        .get("schema_version")
+        .and_then(serde_json::Value::as_u64)
+        .ok_or_else(|| {
+            FiError::Storage("persisted FI formation has no numeric schema".to_owned())
+        })?;
+    if !matches!(schema, 9 | 10) {
+        return Ok(None);
+    }
+    let owner = formation
+        .get("fi_id")
+        .cloned()
+        .ok_or_else(|| FiError::Storage("legacy FI formation has no owner identity".to_owned()))?;
+    let owner: FiId = serde_json::from_value(owner).map_err(|_| {
+        FiError::Storage("legacy FI formation has an invalid owner identity".to_owned())
+    })?;
+    if owner != fi_id {
+        return Err(FiError::Storage(
+            "persisted FI formation belongs to a different identity".to_owned(),
+        ));
+    }
+    let has_callback = formation.contains_key("dkg_completion_callback");
+    if schema == 9 && has_callback {
+        return Err(FiError::Storage(
+            "schema 9 unexpectedly contains a DKG completion callback field".to_owned(),
+        ));
+    }
+    if schema == 10 && !has_callback {
+        return Err(FiError::Storage(
+            "schema 10 formation omits dkg_completion_callback".to_owned(),
+        ));
+    }
+    let intent = formation
+        .get_mut("intent")
+        .and_then(serde_json::Value::as_object_mut)
+        .ok_or_else(|| FiError::Storage("legacy FI formation has no intent object".to_owned()))?;
+    if intent.contains_key("fedimintd_versions") || intent.contains_key("fedimintd_dkg_version") {
+        return Err(FiError::Storage(
+            "legacy FI formation mixes old and current Fedimint version fields".to_owned(),
+        ));
+    }
+    let version = intent
+        .remove("fedimintd_version")
+        .and_then(|value| value.as_str().map(str::to_owned))
+        .ok_or_else(|| {
+            FiError::Storage("legacy FI formation has no Fedimint version".to_owned())
+        })?;
+    let Some(suffix) = version.strip_prefix("0.11.1-fedi") else {
+        return Err(FiError::Storage(format!(
+            "unsupported legacy FI Fedimint version {version}"
+        )));
+    };
+    if suffix.is_empty() || !suffix.bytes().all(|byte| byte.is_ascii_digit()) {
+        return Err(FiError::Storage(format!(
+            "unsupported legacy FI Fedimint version {version}"
+        )));
+    }
+    intent.insert(
+        "fedimintd_versions".to_owned(),
+        serde_json::json!({
+            "minimum": {"major": 0, "minor": 11, "patch": 1},
+            "maximum_exclusive": {"major": 0, "minor": 11, "patch": 3}
+        }),
+    );
+    intent.insert(
+        "fedimintd_dkg_version".to_owned(),
+        serde_json::json!({"major": 0, "minor": 11, "vendor": "fedi"}),
+    );
+    formation.insert("schema_version".to_owned(), serde_json::json!(11));
+    if schema == 9 {
+        formation.insert(
+            "dkg_completion_callback".to_owned(),
+            serde_json::Value::Null,
+        );
+    }
+    let migrated: StoredFormation = serde_json::from_value(value.clone())
+        .map_err(|_| FiError::Storage("migrated FI formation is invalid".to_owned()))?;
+    validate_schema_and_owner(&migrated, fi_id)?;
+    serde_json::to_vec(&value)
+        .map(Some)
+        .map_err(|_| FiError::Storage("encoding migrated FI formation failed".to_owned()))
+}
+
 fn validate_schema(formation: &StoredFormation) -> FiResult<()> {
     if formation.schema_version != STORAGE_SCHEMA_VERSION {
         let guidance = match formation.schema_version {
@@ -3604,10 +3725,6 @@ fn validate_schema(formation: &StoredFormation) -> FiResult<()> {
                 "; schema 8 does not explicitly distinguish selected Pay-and-create recovery \
                  from pinned formation and cannot be migrated safely; reset this unreleased FI \
                  namespace and restart formation"
-            }
-            9 | 10 => {
-                "; this pre-production schema predates durable Fedimint compatibility ranges and \
-                 DKG cohort selection; reset this unreleased FI namespace and restart formation"
             }
             _ => "",
         };
@@ -3637,7 +3754,7 @@ fn validate_schema(formation: &StoredFormation) -> FiResult<()> {
         || !formation
             .intent
             .fedimintd_versions
-            .overlaps_dkg(&formation.intent.fedimintd_dkg_version)
+            .overlaps_dkg_release_line(&formation.intent.fedimintd_dkg_version)
     {
         return Err(FiError::Storage(
             "persisted FI Fedimint DKG identity is outside its version policy".to_owned(),

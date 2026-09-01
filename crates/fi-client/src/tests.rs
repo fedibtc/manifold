@@ -7861,7 +7861,7 @@ fn fedimintd_range_and_dkg_identity_enforce_separate_boundaries() {
     assert!(range.contains(&"0.11.2+fedi".parse().expect("version parses")));
     assert!(!range.contains(&"0.11.3+fedi".parse().expect("version parses")));
     assert!(
-        range.overlaps_dkg(
+        range.overlaps_dkg_release_line(
             &"0.11.9+fedi"
                 .parse::<FedimintdVersion>()
                 .expect("version parses")
@@ -7869,7 +7869,7 @@ fn fedimintd_range_and_dkg_identity_enforce_separate_boundaries() {
         )
     );
     assert!(
-        !range.overlaps_dkg(
+        !range.overlaps_dkg_release_line(
             &"0.12.0+fedi"
                 .parse::<FedimintdVersion>()
                 .expect("version parses")

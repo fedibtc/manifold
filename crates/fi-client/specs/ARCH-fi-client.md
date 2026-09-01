@@ -49,8 +49,11 @@ field stays rejected. Durable FI storage is a separate fail-closed schema:
 schema 11 also persists the selected major/minor/vendor DKG identity beside
 the selected-vs-pinned mode, durable verifier provenance, selected preview
 deadline, exact aggregate reservation identity, commercial-history tombstone,
-and wallet-output tombstone. Every older record must be
-reset rather than migrated in this pre-launch namespace.
+and wallet-output tombstone. On open, schemas 9 and 10 with a legacy
+`0.11.1-fedi<digits>` release migrate atomically to the `[0.11.1, 0.11.3)`
+range and `0.11+fedi` DKG identity before status or resume work. Schema 9 gains
+an absent callback, while schema 10 keeps its callback. Earlier records still
+require reset.
 
 The cap changes only payment-readiness behavior, and it is **one-shot**: it
 is the consumer's approval of the initial aggregate only. In the product path
@@ -153,7 +156,8 @@ Cross-component durability verification is recorded in
 [`crates/fman/testing.md`](../../fman/testing.md).
 
 Formation storage schema 11 owns this callback lifecycle and the selected
-Fedimint DKG identity. Older pre-production records fail closed and require reset.
+Fedimint DKG identity. Compatible schemas 9 and 10 migrate as described above;
+earlier pre-production records fail closed and require reset.
 FI retains the bearer across every pre-`Formed` crash, then clears it in
 the same transaction that records the terminal invite because every FMan has
 already accepted durable retry ownership.
