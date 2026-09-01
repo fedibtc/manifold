@@ -11,6 +11,10 @@ repository.workspace = true
 dev-pinned-formation = []
 
 [dependencies]
+base64 = "0.22"
+bitcoin_hashes = { version = "0.14", features = ["serde"] }
+chacha20poly1305 = "0.10"
+ciborium = "0.2"
 fedi-decentralized-domain = { path = "../domain" }
 fedi-decentralized-manifold-environment = { path = "../manifold-environment" }
 fedi-decentralized-nostr = { path = "../nostr" }
@@ -20,6 +24,7 @@ fedi-decentralized-service-fleet-manager = { path = "../service-fleet-manager" }
 fedi-decentralized-service-liquidity-manager = { path = "../service-liquidity-manager" }
 fedi-iroh-rpc = { path = "../fedi-iroh-rpc" }
 fedimint-core.workspace = true
+fedimint-derive-secret.workspace = true
 futures = "0.3"
 hex = "0.4"
 iroh-base-035 = { package = "iroh-base", version = "=0.35.0" }
@@ -28,6 +33,7 @@ rand = "0.8"
 secp256k1 = "0.30"
 serde.workspace = true
 serde_json.workspace = true
+sha2 = "0.10"
 stability-pool-common = { workspace = true }
 thiserror.workspace = true
 tokio = { workspace = true, features = ["sync", "time"] }
