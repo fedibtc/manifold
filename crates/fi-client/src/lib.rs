@@ -39,9 +39,9 @@ pub use fedi_decentralized_nostr::fman::{ApiEndpoint, Availability};
 pub use fedi_decentralized_service_fleet_manager::{
     DkgCompletionCallback, FederationId, FederationMetadataIconUrl, FederationMetadataName,
     FederationMetadataUpdate, FederationMetadataWelcomeMessage, FederationName, FederationSize,
-    FedimintdVersion, FedimintdVersionCore, FiId, FiSignature, FmanName, GatewayApiUrl,
-    GuardianCode, InvalidFederationMetadataValue, InvalidGatewayApiUrl, InviteCode, Locator,
-    QuoteId, SeatId, Timestamp,
+    FedimintdDkgVersion, FedimintdVersion, FedimintdVersionCore, FiId, FiSignature, FmanName,
+    GatewayApiUrl, GuardianCode, InvalidFederationMetadataValue, InvalidGatewayApiUrl, InviteCode,
+    Locator, QuoteId, SeatId, Timestamp,
 };
 pub use fedi_decentralized_service_liquidity_manager::{
     AllocationItemStatus, LiquidityAmountBounds, Pubkey, Sats, Sha256Digest, SourceType,

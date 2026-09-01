@@ -3129,7 +3129,7 @@ fn payment_requirements(
         let request = &quote.terms.request;
         let plan_matches = intent.plan.matches(&request.plan);
         if request.fi_id != fi_id
-            || request.fedimintd_version.core() != intent.fedimintd_version_core
+            || request.fedimintd_version.dkg_version() != intent.fedimintd_dkg_version
             || !intent
                 .fedimintd_versions
                 .contains(&request.fedimintd_version)
@@ -3633,13 +3633,14 @@ fn validate_schema(formation: &StoredFormation) -> FiResult<()> {
             }
         }
     }
-    if !formation
-        .intent
-        .fedimintd_versions
-        .contains_core(formation.intent.fedimintd_version_core)
+    if !formation.intent.fedimintd_dkg_version.is_fedi()
+        || !formation
+            .intent
+            .fedimintd_versions
+            .overlaps_dkg(&formation.intent.fedimintd_dkg_version)
     {
         return Err(FiError::Storage(
-            "persisted FI fedimintd release is outside its version policy".to_owned(),
+            "persisted FI Fedimint DKG identity is outside its version policy".to_owned(),
         ));
     }
     if !formation.dkg_completion_callback.is_present() {

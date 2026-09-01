@@ -12,7 +12,7 @@ use super::*;
 const ACTIVE_STATUS: &str = concat!(
     r#"{"formation":{"formation_id":"formation-1","intent":{"federation_name":"contract","#,
     r#""federation_size":7,"plan":"infinite_best_effort","#,
-    r#""fedimintd_versions":{"minimum":{"major":0,"minor":6,"patch":0},"maximum_exclusive":{"major":0,"minor":6,"patch":1}},"fedimintd_version_core":{"major":0,"minor":6,"patch":0}},"phase":"awaiting_payment_readiness","seats":[],"#,
+    r#""fedimintd_versions":{"minimum":{"major":0,"minor":6,"patch":0},"maximum_exclusive":{"major":0,"minor":6,"patch":1}},"fedimintd_dkg_version":{"major":0,"minor":6,"vendor":"fedi"}},"phase":"awaiting_payment_readiness","seats":[],"#,
     r#""freshness":"unsynced","action_required":null,"invite_code":null,"last_error":null}}"#
 );
 const PAYMENT_REQUIREMENTS: &str = concat!(
@@ -61,7 +61,7 @@ fn active_status_json_has_exact_schema_on_stdout() {
     assert_eq!(
         stdout,
         concat!(
-            r#"{"formation":{"formation_id":"formation-1","intent":{"federation_name":"contract","federation_size":7,"plan":"infinite_best_effort","fedimintd_versions":{"minimum":{"major":0,"minor":6,"patch":0},"maximum_exclusive":{"major":0,"minor":6,"patch":1}},"fedimintd_version_core":{"major":0,"minor":6,"patch":0}},"phase":"awaiting_payment_readiness","seats":[{"index":2,"locator":{"version":1,"endpoint_addr":{"id":"8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c","addrs":[]},"service_pubkey":"4d4b6cd1361032ca9bd2aeb9d900aa4d45d9ead80ac9423374c451a7254d0766"},"seat_id":null,"guardian_code":null,"phase":"quote_ready","freshness":"unsynced"}],"freshness":"unsynced","action_required":{"authorize_payments":{"authorization_id":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","total_msats":21000,"seats":[{"index":2,"quote_id":[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],"payment_federation_id":"1111111111111111111111111111111111111111111111111111111111111111","amount_msats":21000}]}},"payment_outputs_started":false,"invite_code":null,"last_error":null}}"#,
+            r#"{"formation":{"formation_id":"formation-1","intent":{"federation_name":"contract","federation_size":7,"plan":"infinite_best_effort","fedimintd_versions":{"minimum":{"major":0,"minor":6,"patch":0},"maximum_exclusive":{"major":0,"minor":6,"patch":1}},"fedimintd_dkg_version":{"major":0,"minor":6,"vendor":"fedi"}},"phase":"awaiting_payment_readiness","seats":[{"index":2,"locator":{"version":1,"endpoint_addr":{"id":"8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c","addrs":[]},"service_pubkey":"4d4b6cd1361032ca9bd2aeb9d900aa4d45d9ead80ac9423374c451a7254d0766"},"seat_id":null,"guardian_code":null,"phase":"quote_ready","freshness":"unsynced"}],"freshness":"unsynced","action_required":{"authorize_payments":{"authorization_id":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","total_msats":21000,"seats":[{"index":2,"quote_id":[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],"payment_federation_id":"1111111111111111111111111111111111111111111111111111111111111111","amount_msats":21000}]}},"payment_outputs_started":false,"invite_code":null,"last_error":null}}"#,
             "\n"
         )
     );
@@ -134,12 +134,12 @@ fn populated_registry_row_dtos_have_exact_schemas() {
         service_key.x_only_public_key(secp256k1::SECP256K1).0,
     );
     let federation_sizes = [7, 10];
-    let fedimintd_versions = vec!["0.11.1-fedi10".to_owned()];
+    let fedimintd_version = "0.11.1+fedi".parse().unwrap();
     let candidate = DiscoveryCandidateJson {
         fman_pubkey: "11".repeat(32),
         advertised_price_msats: 21_000,
         federation_sizes: &federation_sizes,
-        fedimintd_versions: &fedimintd_versions,
+        fedimintd_version: &fedimintd_version,
         claimed_issuer: "22".repeat(32),
         api_endpoints: vec![ApiEndpointJson {
             transport: "iroh",
@@ -157,7 +157,7 @@ fn populated_registry_row_dtos_have_exact_schemas() {
             rejected: vec![],
         })
         .unwrap(),
-        r#"{"seen":1,"eligible":1,"candidates":[{"fmanPubkey":"1111111111111111111111111111111111111111111111111111111111111111","advertisedPriceMsats":21000,"federationSizes":[7,10],"fedimintdVersions":["0.11.1-fedi10"],"claimedIssuer":"2222222222222222222222222222222222222222222222222222222222222222","apiEndpoints":[{"transport":"iroh","url":"iroh://endpoint"}],"locator":{"version":1,"endpoint_addr":{"id":"8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c","addrs":[]},"service_pubkey":"4d4b6cd1361032ca9bd2aeb9d900aa4d45d9ead80ac9423374c451a7254d0766"},"issuedAt":100,"expiresAt":200}],"rejected":[]}"#
+        r#"{"seen":1,"eligible":1,"candidates":[{"fmanPubkey":"1111111111111111111111111111111111111111111111111111111111111111","advertisedPriceMsats":21000,"federationSizes":[7,10],"fedimintdVersion":"0.11.1+fedi","claimedIssuer":"2222222222222222222222222222222222222222222222222222222222222222","apiEndpoints":[{"transport":"iroh","url":"iroh://endpoint"}],"locator":{"version":1,"endpoint_addr":{"id":"8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c","addrs":[]},"service_pubkey":"4d4b6cd1361032ca9bd2aeb9d900aa4d45d9ead80ac9423374c451a7254d0766"},"issuedAt":100,"expiresAt":200}],"rejected":[]}"#
     );
 
     let seat = SelectionSeatJson {

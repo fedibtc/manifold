@@ -784,7 +784,7 @@ where
             ));
         }
         let approval_valid_until = approval.valid_until;
-        let fedimintd_version_core = approval.fedimintd_version_core;
+        let fedimintd_dkg_version = approval.fedimintd_dkg_version.clone();
         let verifier_provenance = approval.verifier_provenance.into();
         let approved_seats = approval.into_seats_at(Timestamp(now_secs()?))?;
         let seats = approved_seats
@@ -817,7 +817,7 @@ where
             FormationCreationMode::Selected {
                 payment_federation_id,
             },
-            Some(fedimintd_version_core),
+            Some(fedimintd_dkg_version),
             completion_callback,
             options,
         )
@@ -839,9 +839,7 @@ where
             })?;
         let request = FmanSelectionRequest::new(
             recovery.snapshot.intent.federation_size,
-            crate::FedimintdVersionRange::one_core(
-                recovery.snapshot.intent.fedimintd_version_core,
-            )?,
+            recovery.snapshot.intent.fedimintd_versions.clone(),
             recovery.snapshot.intent.plan,
         )?;
         let excluded = recovery
@@ -890,7 +888,7 @@ where
             },
             self.inner.peer_badge_verifier.provenance(),
             &request,
-            recovery.snapshot.intent.fedimintd_version_core,
+            &recovery.snapshot.intent.fedimintd_dkg_version,
             requirements,
             excluded,
             retained_service_pubkeys,
@@ -1023,7 +1021,7 @@ where
         intent: FormationIntent,
         seats: Vec<InitialSeat>,
         creation_mode: FormationCreationMode,
-        fedimintd_version_core: Option<crate::FedimintdVersionCore>,
+        fedimintd_dkg_version: Option<crate::FedimintdDkgVersion>,
         completion_callback: Option<DkgCompletionCallback>,
         options: FormationRunOptions,
     ) -> FiResult<()> {
@@ -1049,11 +1047,11 @@ where
             let created_at = now_secs()?;
             let formation_id = FormationId(format!("{}-{created_at}", fi_id.0));
             let default_name = default_federation_name(fi_id, created_at);
-            let core = match fedimintd_version_core {
-                Some(core) => core,
-                None => self.select_pinned_core(&intent, &seats, run).await?,
+            let dkg = match fedimintd_dkg_version {
+                Some(dkg) => dkg,
+                None => self.select_pinned_dkg(&intent, &seats, run).await?,
             };
-            let intent = intent.resolve_for_core(default_name, core)?;
+            let intent = intent.resolve_for_dkg(default_name, dkg)?;
             self.inner
                 .store
                 .initialize(
@@ -3438,7 +3436,7 @@ where
             &availability,
             intent.federation_size,
             &intent.fedimintd_versions,
-            intent.fedimintd_version_core,
+            &intent.fedimintd_dkg_version,
             intent.plan,
         ) {
             Ok(matched) => matched,
@@ -3554,7 +3552,7 @@ where
             .map_err(|error| fman_error(index, format!("invalid signed quote: {error}")))?;
         let request = &quote.terms.request;
         if request.fi_id != fi_id
-            || request.fedimintd_version.core() != intent.fedimintd_version_core
+            || request.fedimintd_version.dkg_version() != intent.fedimintd_dkg_version
             || !intent
                 .fedimintd_versions
                 .contains(&request.fedimintd_version)
