@@ -104,7 +104,8 @@ holding a connector) dials only reached, badge-verified, non-duplicate
 candidates' self-attested locators, so advertisement spam cannot multiply
 dials beyond the verifier round trips it already costs. The live
 `GetAvailabilityResponse` is untrusted FMan-authored input consumed only by
-the shared four-check availability predicate into typed rejections; its
+the shared exactly-one-version, range, selected-release, size, accepting-seats, and plan predicate
+into typed rejections; its
 offered plans and prices confer nothing — the signed quote remains the only
 commercial term. Probe failure text carries only the sanitized-by-contract
 local connector error descriptions or a fixed marker for a Fleet
@@ -155,8 +156,8 @@ freshness tolerates zero clock skew, so a consumer with a fast clock
 rejects fresh advertisements; and the claimed-issuer bucketing key is
 publisher-controlled, so a publisher can choose its bucket — the issuer
 equality check makes a false claim cost the candidate its seat, but
-region spread remains a heuristic, not a guarantee. The advertised price
-used for ranking and the preview estimate is likewise a publisher claim;
+region spread remains a heuristic, not a guarantee. The advertised price used
+within and across compatible release cohorts is likewise a publisher claim;
 the exact signed quote at formation time is the only commercial term.
 Selection also treats the locator's self-attested commitment-signing
 `service_pubkey` as an operator/failure-domain identity: after both authors

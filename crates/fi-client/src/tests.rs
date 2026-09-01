@@ -2026,6 +2026,11 @@ fn fedimintd_version() -> FedimintdVersion {
         .expect("release version is valid")
 }
 
+fn fedimintd_version_range() -> FedimintdVersionRange {
+    FedimintdVersionRange::one_core(fedimintd_version().core())
+        .expect("test release can form a range")
+}
+
 fn test_invite(index: usize) -> InviteCode {
     test_invite_for_federation(index, 0)
 }
@@ -2133,10 +2138,11 @@ fn selection_approval(max_total_msats: u64) -> FmanSelectionApproval {
     FmanSelectionApproval {
         request: FmanSelectionRequest::new(
             FederationSize(MIN_FEDERATION_SIZE),
-            fedimintd_version(),
+            fedimintd_version_range(),
             PlanPreference::InfiniteBestEffort,
         )
         .expect("valid test selection request"),
+        fedimintd_version_core: fedimintd_version().core(),
         verifier_provenance: test_peer_badge_verifier().provenance(),
         seats: locators()
             .into_iter()

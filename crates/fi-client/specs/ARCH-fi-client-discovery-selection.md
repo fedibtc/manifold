@@ -27,8 +27,8 @@ coupled and must be revised together.
 
 A fresh, authenticated advertisement is eligible only when it:
 
-- advertises the requested federation size and `fedimintd` version; malformed
-  version entries simply do not match;
+- advertises the requested federation size and exactly one parseable
+  `fedimintd` version inside the FI's allowed range;
 - contains an `InfiniteBestEffort` plan, whose numeric millisatoshi price is the
   advertised estimate; unknown plan families do not prevent use of a supported
   plan;
@@ -69,13 +69,20 @@ discovery fixture.
 
 ## Selection
 
-`preview_fman_selection` reduces eligible candidates to exactly the requested
-number of seats. It buckets candidates by the untrusted claimed issuance key,
-sorts each bucket by advertised setup fee while preserving discovery order for
-ties, and fills seats round-robin across buckets. For example, three buckets
+`preview_fman_selection` groups eligible candidates by the three-number
+`fedimintd` release, ignoring suffixes such as `-fedi17`, because different
+releases cannot enter DKG together. It runs selection independently for every
+cohort that can fill the federation, chooses the lowest advertised total, and
+prefers the newer release when totals tie. It then buckets that cohort by the
+untrusted claimed issuance key, sorts each bucket by advertised setup fee while
+preserving discovery order for ties, and fills seats round-robin across buckets. For example, three buckets
 `[A, B]`, `[C, D]`, and `[E, F]` yield `A, C, E, B, D, F`. The result is
 deterministic for a fixed pool but intentionally changes with the shuffled,
 changing pool to favour operator distribution.
+The preview rejection summary combines static non-admissions from the complete
+enumeration with badge, key, and live failures encountered while producing the
+chosen cohort. Failures from incomplete or more expensive cohorts are omitted;
+they neither explain nor affect the displayed selection.
 
 Every product-path seat must have a PeerBadge that verifies through a configured
 trusted issuer root, meets the environment minimum trust level, binds its Holder
@@ -97,8 +104,8 @@ shortfall, is the property in
 [CLAIM-fi-client-selection-deadline](./CLAIM-fi-client-selection-deadline.md).
 
 After badge and key checks, a connector-equipped walk calls `GetAvailability`
-and applies the same size, version, accepting-seats, and plan-family predicate
-as quoting. Incompatible responses get typed `Live*` rejections; connection,
+and applies the same size, allowed range, selected release, accepting-seats,
+exactly-one-version, and plan-family predicate as quoting. Incompatible responses get typed `Live*` rejections; connection,
 RPC, and per-candidate-budget failures get `ProbeFailed`. The probe is
 price-blind: a live price change is resolved only by the signed quote. The
 transport-less `FmanSelectionQuery` intentionally uses advertised claims alone;
@@ -115,8 +122,8 @@ the typed `InsufficientFmanSeats` partial failure.
 The preview is read-only: it returns selected seats, their locators, advertised
 prices, verified provenance, estimate, and seen/eligible/selected summary. Its
 result is valid for two minutes and can become a non-serializable
-`FmanSelectionApproval` that seals the complete request, verifier/environment
-provenance, locators, estimate, and user cap. Leaving the screen, restarting, or
+`FmanSelectionApproval` that seals the complete request, selected release,
+verifier/environment provenance, locators, estimate, and user cap. Leaving the screen, restarting, or
 re-entering obtains a new preview.
 
 `pay_and_create` requests exact quotes only after the consumer supplies that
