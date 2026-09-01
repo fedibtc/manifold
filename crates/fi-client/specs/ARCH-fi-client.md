@@ -127,18 +127,20 @@ size. Before requesting a quote from an FMan, the FI requires that FMan's live
 availability to advertise the intent's exact size. Concurrently processed
 siblings may already have supplied quotes, but formation can proceed only where
 product policy and every selected operator's release capabilities overlap.
-Selected formation persists the original FI range and the chosen three-number
-release. Quote-time checks accept a different `-fediN` build only within that
-release; replacements and restart recovery remain fixed to it. Stored quotes
-must name an exact build inside both persisted constraints.
+Selected formation persists the original FI range and the chosen
+major/minor/vendor DKG identity. Quote-time checks accept patch or prerelease
+differences inside both; replacements and restart recovery remain fixed to that
+identity. Stored quotes must name an exact build inside both persisted constraints.
 The diagnostic pinned path has no advertisement selection, so it reads every
-pinned FMan's live availability before persistence and chooses the newest
-three-number release shared by the whole set inside the same FI range.
+pinned FMan's typed live version before persisting a broad range and requires
+one shared `major.minor+fedi` DKG identity inside that range. A one-patch range
+already determines that identity and proceeds directly to the same quote-time
+live gate used by every path.
 
 The callback-aware pinned-formation entry point accepts one
 `DkgCompletionCallback` created by the consumer for the initiating app
-installation. A value-free availability read may first resolve the pinned
-set's common release; FI then persists the bearer before quotes, payments,
+installation. A value-free availability read first resolves the pinned set's
+common DKG identity; FI then persists the bearer before quotes, payments,
 seat creation, or DKG and sends the same callback and idempotency key to every FMan in
 the signed `StartDkg` wave. The ordinary entry point leaves the optional
 callback absent. An ordinary resume repeats the idempotent `StartDkg` wave

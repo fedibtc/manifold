@@ -68,8 +68,10 @@ Unverified.
   secret to use an external client are excluded.  A host may remove a
   crash-left daemon lock so restart is possible.
 - **A3 — pinned sources.** `flake.nix`, `flake.lock`, the root workspace
-  dependencies, and Cargo patches select Fedimint tag `v0.11.1-fedi17`, exact
-  revision `e2606265b94983cd491e341291ca8f9f37d87645`.  The daemon manifest and
+  dependencies, and Cargo patches select Fedimint tag `v0.11.1-fedi18`, exact
+  revision `5703f543f76746369f0a11e0d1635ac395b2efac`. Its delta changes
+  DKG/version configuration only, outside the mint and stability paths in this
+  claim. The daemon manifest and
   `Cargo.lock` select `stability-pool-client` 0.3.0 and common at Fedi
   revision `2f35ea4e3b2516d35b8ed315455718cd3b336758`.  Those sources, rather
   than similarly numbered crates.io code, define the external semantics below.

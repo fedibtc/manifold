@@ -1071,16 +1071,19 @@ where
         finish_driver_run(result, self.inner.store.release_driver_lease(lease).await)
     }
 
-    async fn select_pinned_core(
+    async fn select_pinned_dkg(
         &self,
         intent: &FormationIntent,
         seats: &[InitialSeat],
         run: DriverRun<'_>,
-    ) -> FiResult<FedimintdVersionCore> {
+    ) -> FiResult<FedimintdDkgVersion> {
         if let Some(core) = intent.fedimintd_versions().only_core() {
-            return Ok(core);
+            return Ok(format!("{core}+fedi")
+                .parse::<FedimintdVersion>()
+                .expect("a release core with the fixed Fedi vendor is valid SemVer")
+                .dkg_version());
         }
-        let mut common = None::<BTreeSet<FedimintdVersionCore>>;
+        let mut selected = None::<FedimintdDkgVersion>;
         for seat in seats {
             let index = seat.progress.index;
             let client = run
@@ -1129,32 +1132,28 @@ where
                     AvailabilityMismatch::Plan.message(),
                 ));
             }
-            let [version] = availability.fedimintd_versions.as_slice() else {
-                return Err(fman_error(
-                    usize::from(index),
-                    AvailabilityMismatch::FedimintdVersion.message(),
-                ));
-            };
+            let version = &availability.fedimintd_version;
             if !intent.fedimintd_versions().contains(version) {
                 return Err(fman_error(
                     usize::from(index),
                     AvailabilityMismatch::FedimintdVersion.message(),
                 ));
             }
-            let offered = BTreeSet::from([version.core()]);
-            common = Some(match common {
-                None => offered,
-                Some(common) => common.intersection(&offered).copied().collect(),
-            });
+            let dkg = version.dkg_version();
+            if !dkg.is_fedi() || selected.as_ref().is_some_and(|selected| selected != &dkg) {
+                return Err(fman_error(
+                    usize::from(index),
+                    AvailabilityMismatch::FedimintdVersion.message(),
+                ));
+            }
+            selected = Some(dkg);
         }
-        common
-            .and_then(|common| common.into_iter().next_back())
-            .ok_or_else(|| {
-                FiError::InvalidFleetManagers(
-                    "pinned Fleet Managers do not share a fedimintd release inside the FI range"
-                        .to_owned(),
-                )
-            })
+        selected.ok_or_else(|| {
+            FiError::InvalidFleetManagers(
+                "pinned Fleet Managers do not share a Fedi DKG identity inside the FI range"
+                    .to_owned(),
+            )
+        })
     }
 
     /// Validate pinned locator inputs without accessing identity, storage,

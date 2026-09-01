@@ -78,9 +78,10 @@ Unverified.
   `2f35ea4e3b2516d35b8ed315455718cd3b336758`. The Nix `fedi` input selects the
   same revision for the stability-enabled test server. Workspace patches source
   Fedimint 0.11.1 from `.nix-deps/fedimint`; `flake.nix` names
-  `v0.11.1-fedi17` and `flake.lock` fixes it at
-  `e2606265b94983cd491e341291ca8f9f37d87645`. Those immutable sources are in
-  Scope, rather than assumed library contracts.
+  `v0.11.1-fedi18` and `flake.lock` fixes it at
+  `5703f543f76746369f0a11e0d1635ac395b2efac`. Its delta changes DKG/version
+  configuration only, not the client state machines in this claim. Those
+  immutable sources are in Scope, rather than assumed library contracts.
 - **A4 — fair successful polling.** For the liveness counterexample, the daemon
   can run forever and the scheduler eventually starts every ten-second tick.
   Store/client opening and SQLite writes succeed. This does not assume a prompt

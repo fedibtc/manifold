@@ -29,12 +29,13 @@ evidence durably co-locates two facts but does not bind them.
 ### L2 — `FederationInfo.balance_msat` is an aggregate ecash balance (`code`, `enum`, axiom A2) — fails
 
 The dependency is not inferred from a fake. `flake.nix` supplies
-Fedimint tag `v0.11.1-fedi17`; `flake.lock` pins it to GitHub revision
-`e2606265b94983cd491e341291ca8f9f37d87645`; root `Cargo.toml` declares
+Fedimint tag `v0.11.1-fedi18`; `flake.lock` pins it to GitHub revision
+`5703f543f76746369f0a11e0d1635ac395b2efac`; root `Cargo.toml` declares
 Fedimint `0.11.1` workspace dependencies and patches registry and Fedimint git
 crates to that source, while the daemon inherits the gateway crates with
 `{ workspace = true }`. Their path-package entries in `Cargo.lock` resolve
-through that patch.
+through that patch. The fedi18 delta changes DKG/version configuration only,
+outside the gateway client paths used by this proof.
 The workspace Fedi stability-pool source is exactly
 `https://github.com/fedixyz/fedi` revision
 `2f35ea4e3b2516d35b8ed315455718cd3b336758`; it is not on this gateway

@@ -29,14 +29,13 @@ the optimized image is first built in the trusted publish workflow.
 The bundled `fedimintd` is compiled into the daemon binary from the `fedimint`
 flake input pinned in
 [`flake.nix`](../../flake.nix) — currently the immutable Fedi release
-[`v0.11.1-fedi17`](https://github.com/fedibtc/fedimint/tree/v0.11.1-fedi17)
-(commit `e2606265b94983cd491e341291ca8f9f37d87645`), whose release identity is
-carried as
-`0.11.1-fedi17` (the `FEDIMINTD_VERSION_0_1` constant and the image's
-`org.fedi.fedimintd.release` label). The pinned release is bumped by updating
+[`v0.11.1-fedi18`](https://github.com/fedibtc/fedimint/tree/v0.11.1-fedi18)
+(commit `5703f543f76746369f0a11e0d1635ac395b2efac`). Its image
+`org.fedi.fedimintd.release` label is `0.11.1-fedi18`, while the typed DKG
+identity in `FEDIMINTD_VERSION_0_1` is `0.11.1+fedi`. The pinned release is bumped by updating
 the `fedimint` flake input (and `flake.lock`), not this package. The
-`fleet-manager-cli-contract` / OCI-image checks fail if the tag, the release
-constant, this document, and the image label drift apart.
+`fleet-manager-cli-contract` / OCI-image checks fail if the tag, DKG constant,
+this document, and image label drift apart.
 
 ## Runtime contract
 

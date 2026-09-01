@@ -42,8 +42,8 @@ generating outputs or creating recovery state. The FMan's availability response
 never establishes federation-specific payment policy for FI selection.
 
 Validate the complete formation intent before durable or remote side effects.
-A pinned broad range may then use value-free availability reads to resolve one
-shared release. Resolve an absent display name exactly once, validate it, and
+A broad pinned range uses value-free availability reads to require one shared
+Fedi DKG identity. Resolve an absent display name exactly once, validate it, and
 persist it with that release before quotes, payments, seat creation, or DKG.
 Unsupported future fields must be rejected or absent from the public intent,
 never silently ignored.

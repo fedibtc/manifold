@@ -8341,12 +8341,15 @@ async fn persisted_formation_rejects_a_cross_minor_replacement() {
 }
 
 #[tokio::test]
-async fn pinned_formation_derives_one_shared_release_from_its_range() {
+async fn pinned_formation_derives_one_shared_dkg_identity_across_patches() {
     let (payments, _) = TestPayments::new();
+    let fman_state = Arc::new(FmanState::default());
+    set_fman_version(&fman_state, 0, "0.11.2+fedi");
+    set_fman_version(&fman_state, 1, "0.11.1-rc.1+fedi");
     let client = open_client(
         MemDatabase::new().into_database(),
         payments,
-        Arc::new(FmanState::default()),
+        fman_state,
         FmanConfig::given_away(),
     )
     .await;
@@ -8354,13 +8357,13 @@ async fn pinned_formation_derives_one_shared_release_from_its_range() {
     client
         .create_with_pinned_fmans(compatible_intent(), locators(), options())
         .await
-        .expect("the pinned set shares one release inside the FI range");
+        .expect("the pinned set shares one DKG identity inside the FI range");
 
     let formed = formation(&client.status()).clone();
     assert_eq!(formed.phase, FormationPhase::Formed);
     assert_eq!(
-        formed.intent.fedimintd_version_core,
-        fedimintd_version().core()
+        formed.intent.fedimintd_dkg_version,
+        fedimintd_version().dkg_version()
     );
     assert_eq!(
         formed
@@ -8370,6 +8373,28 @@ async fn pinned_formation_derives_one_shared_release_from_its_range() {
             .to_string(),
         "0.11.3"
     );
+}
+
+#[tokio::test]
+async fn pinned_formation_rejects_a_non_fedi_vendor_before_persistence() {
+    let (payments, _) = TestPayments::new();
+    let fman_state = Arc::new(FmanState::default());
+    set_fman_version(&fman_state, 0, "0.11.1+acme");
+    let client = open_client(
+        MemDatabase::new().into_database(),
+        payments,
+        fman_state,
+        FmanConfig::given_away(),
+    )
+    .await;
+
+    assert!(
+        client
+            .create_with_pinned_fmans(compatible_intent(), locators(), options())
+            .await
+            .is_err()
+    );
+    assert!(matches!(client.status(), FiStatus::Idle));
 }
 
 #[tokio::test]

@@ -65,9 +65,10 @@ Unverified.
   `.nix-deps/fedimint`; root workspace dependencies request Fedimint 0.11.1,
   the daemon inherits them with `{ workspace = true }`, and root `[patch]`
   entries select that Nix-provided source pinned by `flake.lock` to
-  `fedibtc/fedimint@e2606265b94983cd491e341291ca8f9f37d87645` (original ref
-  `v0.11.1-fedi17`). The downstream stability client is pinned in the daemon
-  manifest and `Cargo.lock` to
+  `fedibtc/fedimint@5703f543f76746369f0a11e0d1635ac395b2efac` (original ref
+  `v0.11.1-fedi18`). Its delta changes DKG/version configuration only, not the
+  wallet/client paths in this claim. The downstream stability client is pinned
+  in the daemon manifest and `Cargo.lock` to
   `fedixyz/fedi@2f35ea4e3b2516d35b8ed315455718cd3b336758`. Downstream deposit
   submission is outside the core bad thing; its pin is stated to prevent
   silently importing different post-claim semantics.
