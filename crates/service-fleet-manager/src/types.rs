@@ -24,8 +24,88 @@ pub struct FiId(pub secp256k1::XOnlyPublicKey);
 /// SemVer release of the Fedimint daemon requested or supported by an FM.
 ///
 /// Parsing is the validity gate; the wire representation remains a string.
-#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[derive(
+    serde::Deserialize, serde::Serialize, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd,
+)]
+#[serde(transparent)]
 pub struct FedimintdVersion(semver::Version);
+
+/// Three-number Fedimint release used by FI version ranges.
+///
+/// Prerelease and build metadata do not change this value. DKG compatibility
+/// is a separate [`FedimintdDkgVersion`] because compatible guardians may run
+/// different patches.
+#[derive(
+    serde::Deserialize, serde::Serialize, Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd,
+)]
+#[serde(deny_unknown_fields)]
+pub struct FedimintdVersionCore {
+    pub major: u64,
+    pub minor: u64,
+    pub patch: u64,
+}
+
+impl fmt::Display for FedimintdVersionCore {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}.{}.{}", self.major, self.minor, self.patch)
+    }
+}
+
+/// Fedimint identity that must agree across one DKG.
+///
+/// Patch and prerelease components do not affect compatibility. Build metadata
+/// carries the exact optional vendor identity, matching Fedimint's DKG policy.
+#[derive(
+    serde::Deserialize, serde::Serialize, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd,
+)]
+#[serde(try_from = "UncheckedFedimintdDkgVersion")]
+pub struct FedimintdDkgVersion {
+    major: u64,
+    minor: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    vendor: Option<String>,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct UncheckedFedimintdDkgVersion {
+    major: u64,
+    minor: u64,
+    vendor: Option<String>,
+}
+
+impl TryFrom<UncheckedFedimintdDkgVersion> for FedimintdDkgVersion {
+    type Error = semver::Error;
+
+    fn try_from(value: UncheckedFedimintdDkgVersion) -> Result<Self, Self::Error> {
+        if let Some(vendor) = &value.vendor {
+            semver::BuildMetadata::new(vendor)?;
+        }
+        Ok(Self {
+            major: value.major,
+            minor: value.minor,
+            vendor: value.vendor,
+        })
+    }
+}
+
+impl fmt::Display for FedimintdDkgVersion {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}.{}", self.major, self.minor)?;
+        if let Some(vendor) = &self.vendor {
+            write!(f, "+{vendor}")?;
+        }
+        Ok(())
+    }
+}
+
+impl FedimintdDkgVersion {
+    /// Whether this compatibility identity names the required Fedi build.
+    #[must_use]
+    pub fn is_fedi(&self) -> bool {
+        self.vendor.as_deref() == Some("fedi")
+    }
+}
 
 impl FromStr for FedimintdVersion {
     type Err = semver::Error;
@@ -41,22 +121,25 @@ impl fmt::Display for FedimintdVersion {
     }
 }
 
-impl serde::Serialize for FedimintdVersion {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        serializer.collect_str(self)
+impl FedimintdVersion {
+    /// Return the three-number release used by FI version ranges.
+    #[must_use]
+    pub fn core(&self) -> FedimintdVersionCore {
+        FedimintdVersionCore {
+            major: self.0.major,
+            minor: self.0.minor,
+            patch: self.0.patch,
+        }
     }
-}
 
-impl<'de> serde::Deserialize<'de> for FedimintdVersion {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        let value = <String as serde::Deserialize>::deserialize(deserializer)?;
-        value.parse().map_err(serde::de::Error::custom)
+    /// Return the major/minor and exact optional vendor identity used by DKG.
+    #[must_use]
+    pub fn dkg_version(&self) -> FedimintdDkgVersion {
+        FedimintdDkgVersion {
+            major: self.0.major,
+            minor: self.0.minor,
+            vendor: (!self.0.build.is_empty()).then(|| self.0.build.to_string()),
+        }
     }
 }
 

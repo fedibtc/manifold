@@ -39,9 +39,9 @@ pub use fedi_decentralized_nostr::fman::{ApiEndpoint, Availability};
 pub use fedi_decentralized_service_fleet_manager::{
     DkgCompletionCallback, FederationId, FederationMetadataIconUrl, FederationMetadataName,
     FederationMetadataUpdate, FederationMetadataWelcomeMessage, FederationName, FederationSize,
-    FedimintdVersion, FiId, FiSignature, FmanName, GatewayApiUrl, GuardianCode,
-    InvalidFederationMetadataValue, InvalidGatewayApiUrl, InviteCode, Locator, QuoteId, SeatId,
-    Timestamp,
+    FedimintdDkgVersion, FedimintdVersion, FedimintdVersionCore, FiId, FiSignature, FmanName,
+    GatewayApiUrl, GuardianCode, InvalidFederationMetadataValue, InvalidGatewayApiUrl, InviteCode,
+    Locator, QuoteId, SeatId, Timestamp,
 };
 pub use fedi_decentralized_service_liquidity_manager::{
     AllocationItemStatus, LiquidityAmountBounds, Pubkey, Sats, Sha256Digest, SourceType,
@@ -86,12 +86,12 @@ pub use setup_payment_federations::AdmittedSetupPaymentFederation;
 /// revision of `stability-pool-common`.
 pub use stability_pool_common::Account as GuardianFeeAccount;
 pub use state::{
-    FiStatus, FormationActionRequired, FormationFreshness, FormationId, FormationIntent,
-    FormationPhase, FormationSnapshot, GuardianReplacementId, GuardianReplacementRequirements,
-    GuardianReplacementSeat, MAX_FEDERATION_SIZE, MAX_FEDERATION_SIZE_EXCLUSIVE,
-    MAX_GUARDIAN_FEE_PPM, MIN_FEDERATION_SIZE, PaymentAuthorizationId, PaymentRequirements,
-    PaymentReservationId, PlanPreference, ResolvedFormationIntent, SeatPaymentRequirement,
-    SeatPhase, SeatProgress,
+    FedimintdVersionRange, FiStatus, FormationActionRequired, FormationFreshness, FormationId,
+    FormationIntent, FormationPhase, FormationSnapshot, GuardianReplacementId,
+    GuardianReplacementRequirements, GuardianReplacementSeat, MAX_FEDERATION_SIZE,
+    MAX_FEDERATION_SIZE_EXCLUSIVE, MAX_GUARDIAN_FEE_PPM, MIN_FEDERATION_SIZE,
+    PaymentAuthorizationId, PaymentRequirements, PaymentReservationId, PlanPreference,
+    ResolvedFormationIntent, SeatPaymentRequirement, SeatPhase, SeatProgress,
 };
 pub use unavailable::{
     UnavailableFederationConsensusReader, UnavailableFiFeeAccountProvider,
