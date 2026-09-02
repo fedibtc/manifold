@@ -356,10 +356,14 @@ Logical clearing does not erase old pages or backups. FI storage must never
 contain raw bearer ecash, payment signatures, identity secret material, or
 wallet-private refund secrets.
 
-Although the durable FI record contains no wallet or identity secret, it still
-contains operationally sensitive formation history and a federation invite.
-Consumers must protect, namespace, back up, and erase its backing database
-according to their wallet policy. Avoid including snapshots, locators, invite
+The encrypted Nostr backup is not a database copy. Its purpose-built payload
+contains only the formed invite, stable seat identities/locators, and an
+optional exact live-liquidity commitment. It excludes quotes, guardian codes,
+fee accounts, payment and trust state, signed responses, history, secrets, and
+value. One CBOR item is fixed-frame padded and authenticated under FI-specific
+key/AAD domains; restore ignores invalid candidates and chooses the highest
+authenticated generation. Publication workers never hold the operation guard
+or block ordinary FI work. Avoid including snapshots, locators, invite
 codes, or detailed remote errors in routine logs and telemetry.
 The same rule covers push hook URLs and their idempotency keys.
 

@@ -291,12 +291,13 @@ requires the appropriate payer retry or a fresh preview.
 Consumers supply capabilities; they can never supply authenticated protocol
 objects, trust conclusions, or lifecycle transitions:
 
-- **Identity** — one stable FI key that signs only library-constructed,
-  domain-separated 32-byte BIP-340 digests.
+- **Identity** — one stable consumer-scoped FI root. The library derives the
+  protocol signer and FI-specific backup author/encryption families.
 - **Storage** — an already-namespaced Fedimint `Database`; backend,
-  namespacing, encryption, and backup are consumer concerns, while the library
-  binds the durable root to the FI identity and fails closed on incompatible
-  state.
+  namespacing and local encryption remain consumer concerns. The library owns
+  the purpose-built encrypted Nostr recovery document and imports only its
+  lean authenticated facts as `Unsynced` state
+  ([`SPEC-fi-backup-payload`](./SPEC-fi-backup-payload.md)).
 - **Payments** — a wallet adapter that reports Ready federations, performs a
   value-free exact aggregate sufficiency check over a non-serializable typed
   aggregate binding each requirement to its verified quote (foreign output
