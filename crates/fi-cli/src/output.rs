@@ -208,6 +208,14 @@ impl<'a> CliOutput<'a> {
                         }
                     }
                 }
+                FiStatus::Restored(snapshot) => {
+                    writeln!(self.stdout, "{}", snapshot.federation_invite.0)?;
+                    let freshness = match snapshot.freshness {
+                        fi_client::FormationFreshness::Fresh => "fresh",
+                        fi_client::FormationFreshness::Unsynced => "unsynced",
+                    };
+                    writeln!(self.stdout, "recovery state: {freshness}")?;
+                }
             }
         }
         Ok(())

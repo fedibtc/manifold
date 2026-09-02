@@ -96,7 +96,8 @@ pub use state::{
     GuardianReplacementRequirements, GuardianReplacementSeat, MAX_FEDERATION_SIZE,
     MAX_FEDERATION_SIZE_EXCLUSIVE, MAX_GUARDIAN_FEE_PPM, MIN_FEDERATION_SIZE,
     PaymentAuthorizationId, PaymentRequirements, PaymentReservationId, PlanPreference,
-    ResolvedFormationIntent, SeatPaymentRequirement, SeatPhase, SeatProgress,
+    ResolvedFormationIntent, RestoredFormationSnapshot, RestoredSeat, SeatPaymentRequirement,
+    SeatPhase, SeatProgress,
 };
 pub use unavailable::{
     UnavailableFederationConsensusReader, UnavailableFiFeeAccountProvider,
@@ -322,6 +323,30 @@ where
         self.inner.progress.borrow().clone()
     }
 
+    /// Query every relay in the supplied canonical profile and restore the
+    /// highest authenticated snapshot generation, ignoring bad candidates.
+    pub async fn restore_from_manifold_profile(
+        &self,
+        profile: &ManifoldEnvironmentProfile,
+    ) -> FiResult<()> {
+        let _run = self.inner.run_guard.try_lock().map_err(|_| FiError::Busy)?;
+        let fi_id = self
+            .inner
+            .ports
+            .identity
+            .public_key()
+            .map_err(FiError::Identity)?;
+        let status = backup_worker::restore_from_relays(
+            &self.inner.store,
+            &self.inner.ports.identity.scoped_root(),
+            fi_id,
+            profile.nostr_relays().as_urls(),
+        )
+        .await?;
+        self.inner.progress.send_replace(status);
+        Ok(())
+    }
+
     /// Legacy registry-backed creation entry point.
     ///
     /// MVP automatic selection uses [`Self::preview_fman_selection`] followed
@@ -411,6 +436,22 @@ where
                         .send_replace(FiStatus::Formation(recovery.snapshot.clone()));
                     self.resume_pinned(*recovery, options, deadline, &lease)
                         .await
+                }
+                db::FiRecovery::Restored(snapshot)
+                    if snapshot.freshness == FormationFreshness::Fresh =>
+                {
+                    Ok(())
+                }
+                db::FiRecovery::Restored(snapshot) => {
+                    self.inner
+                        .progress
+                        .send_replace(FiStatus::Restored(snapshot.clone()));
+                    self.reconcile_restored(
+                        snapshot,
+                        fi_id,
+                        formation::DriverRun::new(options, deadline, &lease),
+                    )
+                    .await
                 }
             }
         }

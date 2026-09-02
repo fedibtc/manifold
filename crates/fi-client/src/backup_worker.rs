@@ -169,3 +169,94 @@ async fn deliver(relay: &RelayUrl, desired: &Desired) -> Result<(), FiError> {
     }
     Ok(())
 }
+
+pub(crate) async fn restore_from_relays(
+    store: &FiStore,
+    root: &DerivableSecret,
+    fi_id: FiId,
+    relays: &[RelayUrl],
+) -> FiResult<FiStatus> {
+    let keys = FiBackupKeys::derive(root);
+    let queries = relays.iter().cloned().map(|relay| {
+        let author = keys.public_key();
+        async move {
+            let client = NostrRelayClient::connect_without_signer(&relay, RELAY_TIMEOUT)
+                .await
+                .ok()?;
+            client
+                .fetch_events_complete_capped(
+                    Filter::new()
+                        .author(author)
+                        .kind(Kind::Custom(FI_BACKUP_EVENT_KIND))
+                        .identifier(FI_BACKUP_D_TAG),
+                    Instant::now() + RELAY_TIMEOUT,
+                    16,
+                )
+                .await
+                .ok()
+        }
+    });
+    let mut best = None;
+    for events in futures::future::join_all(queries)
+        .await
+        .into_iter()
+        .flatten()
+    {
+        for event in events {
+            if event.pubkey != keys.public_key() || event.verify().is_err() {
+                continue;
+            }
+            let Ok(candidate) = EncryptedFiBackup::from_bytes(event.content.into_bytes()) else {
+                continue;
+            };
+            let Ok(payload) = keys.open(&candidate) else {
+                continue;
+            };
+            if best
+                .as_ref()
+                .is_none_or(|current: &crate::backup::FiBackupPayload| {
+                    payload.snapshot_generation > current.snapshot_generation
+                })
+            {
+                best = Some(payload);
+            }
+        }
+    }
+    let payload = best.ok_or_else(|| {
+        FiError::Storage("no authenticated FI backup found on configured relays".to_owned())
+    })?;
+    store.restore_backup_payload(fi_id, payload).await
+}
+
+#[cfg(test)]
+mod tests {
+    use bitcoin_hashes::Hash as _;
+
+    use super::*;
+
+    #[test]
+    fn backup_confirmation_expires_after_refresh_interval() {
+        let hash = sha256::Hash::from_byte_array([7; 32]);
+        let confirmation = BackupRelayConfirmation {
+            document_hash: hash,
+            generation: 3,
+            event_id: "event".to_owned(),
+            confirmed_at_secs: 100,
+        };
+        assert!(confirmation_is_fresh(
+            Some(&confirmation),
+            hash,
+            100 + BACKUP_REFRESH_INTERVAL_SECS - 1,
+        ));
+        assert!(!confirmation_is_fresh(
+            Some(&confirmation),
+            hash,
+            100 + BACKUP_REFRESH_INTERVAL_SECS,
+        ));
+        assert!(!confirmation_is_fresh(
+            Some(&confirmation),
+            sha256::Hash::from_byte_array([8; 32]),
+            100,
+        ));
+    }
+}

@@ -710,4 +710,27 @@ pub enum FiStatus {
     Idle,
     /// One active or completed formation exists.
     Formation(FormationSnapshot),
+    /// Authenticated backup facts awaiting authoritative reconciliation.
+    Restored(RestoredFormationSnapshot),
+}
+
+/// Lean recovery facts imported from an authenticated FI backup.
+#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
+pub struct RestoredFormationSnapshot {
+    pub snapshot_generation: u64,
+    /// Stable local handle derived when the authenticated backup is imported.
+    pub formation_id: FormationId,
+    pub federation_invite: InviteCode,
+    /// Fresh display metadata, when federation consensus published it.
+    pub federation_name: Option<FederationName>,
+    pub seats: Vec<RestoredSeat>,
+    pub phase: FormationPhase,
+    pub freshness: FormationFreshness,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
+pub struct RestoredSeat {
+    pub fman_identity: PublicKey,
+    pub seat_id: SeatId,
+    pub locator: Locator,
 }

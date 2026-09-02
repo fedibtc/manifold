@@ -121,7 +121,7 @@ pub struct LiquidityOperationSnapshot {
     pub operation_id: LiquidityOperationId,
     pub formation_id: FormationId,
     pub provider_pubkey: Pubkey,
-    pub endpoint_hint: Url,
+    pub endpoint_hint: Option<Url>,
     pub details_payload_hash: Sha256Digest,
     pub amounts: LiquidityAmountBounds,
     pub phase: LiquidityOperationPhase,
@@ -158,7 +158,7 @@ pub(crate) struct StoredLiquidityOperation {
     pub(crate) operation_id: LiquidityOperationId,
     pub(crate) formation_id: FormationId,
     pub(crate) commitment: RequestLiquidityDetailsCommitmentV1,
-    pub(crate) endpoint_hint: Url,
+    pub(crate) endpoint_hint: Option<Url>,
     pub(crate) details_payload_hash: Sha256Digest,
     pub(crate) response: Option<Signed<RequestLiquidityResponse>>,
     pub(crate) status: Option<Signed<GetAllocationStatusResponse>>,
@@ -172,7 +172,6 @@ impl StoredLiquidityOperation {
             Some(RequestLiquidityOutcome::Rejected(_))
         ) || self.snapshot()?.is_complete())
     }
-
     fn allocation_status(&self) -> Option<&AllocationStatus> {
         self.status
             .as_ref()
@@ -618,7 +617,7 @@ where
                 operation_id,
                 formation_id: formation_id.clone(),
                 commitment,
-                endpoint_hint: provider.endpoint_url.clone(),
+                endpoint_hint: Some(provider.endpoint_url.clone()),
                 details_payload_hash,
                 response: None,
                 status: None,
@@ -920,7 +919,12 @@ where
     ) -> FiResult<Option<LiquidityOperationSnapshot>> {
         let formation_id = match self.status() {
             crate::FiStatus::Formation(snapshot) => snapshot.formation_id,
-            crate::FiStatus::Idle => return Ok(None),
+            crate::FiStatus::Restored(snapshot)
+                if snapshot.freshness == FormationFreshness::Fresh =>
+            {
+                snapshot.formation_id
+            }
+            crate::FiStatus::Idle | crate::FiStatus::Restored(_) => return Ok(None),
         };
         self.find_live_liquidity_operation(|operation| operation.formation_id == formation_id)
             .await
@@ -1048,6 +1052,10 @@ where
                 if &snapshot.formation_id == expected_formation_id
                     && snapshot.phase == FormationPhase::Formed
                     && snapshot.freshness == FormationFreshness::Fresh => {}
+            crate::FiStatus::Restored(snapshot)
+                if &snapshot.formation_id == expected_formation_id
+                    && snapshot.phase == FormationPhase::Formed
+                    && snapshot.freshness == FormationFreshness::Fresh => {}
             _ => {
                 return Err(FiError::Liquidity(
                     "formation must be freshly reconciled and formed before requesting liquidity"
@@ -1061,23 +1069,18 @@ where
             .identity
             .public_key()
             .map_err(FiError::Identity)?;
-        let recovery = match self.inner.store.load_recovery(fi_id).await? {
-            crate::db::FiRecovery::Idle => return Err(FiError::NoActiveFormation),
-            crate::db::FiRecovery::Formation(recovery) => *recovery,
-        };
-        if &recovery.snapshot.formation_id != expected_formation_id {
+        let authority = self.post_formed_authority(fi_id).await.map_err(|_| {
+            FiError::Liquidity(
+                "formation must be freshly reconciled and formed before requesting liquidity"
+                    .to_owned(),
+            )
+        })?;
+        if &authority.formation_id != expected_formation_id {
             return Err(FiError::Liquidity(
                 "liquidity operation does not belong to the active formation".to_owned(),
             ));
         }
-        if recovery.snapshot.phase != FormationPhase::Formed {
-            return Err(FiError::Liquidity(
-                "durable formation is not formed".to_owned(),
-            ));
-        }
-        let invite_code = recovery.snapshot.invite_code.clone().ok_or_else(|| {
-            FiError::Storage("formed FI record has no federation invite".to_owned())
-        })?;
+        let invite_code = authority.invite_code.clone();
         let consensus = timeout(
             FI_LIQUIDITY_RPC_TIMEOUT,
             self.inner
@@ -1100,28 +1103,29 @@ where
             .map_err(|error| {
                 FiError::Liquidity(format!("verifying FMan seat directory: {error}"))
             })?;
-        let seats = recovery
+        let seats = authority
             .seats
             .into_iter()
             .map(|seat| {
-                let fman_id = seat.admission.fman_id().ok_or_else(|| {
-                    FiError::Liquidity(
-                        "post-formation liquidity requires badge-vouched FMan identities"
-                            .to_owned(),
-                    )
-                })?;
-                let seat_id = seat.progress.seat_id.ok_or_else(|| {
-                    FiError::Storage("formed FI seat has no durable seat id".to_owned())
-                })?;
                 Ok(FormedFmanSeat {
-                    fman_id,
-                    locator: seat.progress.locator,
-                    seat_id,
+                    fman_id: seat.fman_id.ok_or_else(|| {
+                        FiError::Liquidity(
+                            "post-formation liquidity requires authenticated FMan identities"
+                                .to_owned(),
+                        )
+                    })?,
+                    locator: seat.locator,
+                    seat_id: seat.seat_id,
                 })
             })
             .collect::<FiResult<Vec<_>>>()?;
         Ok(FormedLiquidityContext {
-            federation_name: recovery.snapshot.intent.federation_name,
+            federation_name: authority.federation_name.ok_or_else(|| {
+                FiError::Liquidity(
+                    "restored federation has no consensus display name for a new liquidity request"
+                        .to_owned(),
+                )
+            })?,
             invite_code,
             network: consensus.network,
             federation,
@@ -1396,19 +1400,19 @@ where
     }
 }
 
-struct FormedFmanSeat {
-    fman_id: PublicKey,
-    locator: Locator,
-    seat_id: SeatId,
+pub(crate) struct FormedFmanSeat {
+    pub(crate) fman_id: PublicKey,
+    pub(crate) locator: Locator,
+    pub(crate) seat_id: SeatId,
 }
 
-struct FormedLiquidityContext {
-    federation_name: crate::FederationName,
-    invite_code: crate::InviteCode,
-    network: BitcoinNetwork,
-    federation: fedi_decentralized_domain::FederationSeats,
-    bindings: Vec<VerifiedSeatBinding>,
-    seats: Vec<FormedFmanSeat>,
+pub(crate) struct FormedLiquidityContext {
+    pub(crate) federation_name: crate::FederationName,
+    pub(crate) invite_code: crate::InviteCode,
+    pub(crate) network: BitcoinNetwork,
+    pub(crate) federation: fedi_decentralized_domain::FederationSeats,
+    pub(crate) bindings: Vec<VerifiedSeatBinding>,
+    pub(crate) seats: Vec<FormedFmanSeat>,
 }
 
 impl FormedLiquidityContext {
@@ -1421,7 +1425,19 @@ impl FormedLiquidityContext {
     /// `details_payload_hash`. Contradictory material — a binding whose FMan
     /// identity matches no recovered seat or more than one, or one seat
     /// claimed by two bindings — fails closed instead of fabricating a hint.
-    fn federation_details(&self) -> FiResult<FederationLiquidityDetails> {
+    pub(crate) fn federation_details(&self) -> FiResult<FederationLiquidityDetails> {
+        let fleet_seat_hints = self.fleet_seat_hints()?;
+        Ok(FederationLiquidityDetails {
+            invite_code: self.invite_code.clone(),
+            federation_id: self.federation.federation_id().clone(),
+            federation_name: self.federation_name.clone(),
+            federation_config_hash: self.federation.federation_config_hash().clone(),
+            fleet_seat_hints,
+            revocation_locations: Vec::new(),
+        })
+    }
+
+    pub(crate) fn fleet_seat_hints(&self) -> FiResult<Vec<FleetSeat>> {
         let mut claimed = vec![false; self.seats.len()];
         let fleet_seat_hints = self
             .bindings
@@ -1461,17 +1477,19 @@ impl FormedLiquidityContext {
                 })
             })
             .collect::<FiResult<Vec<_>>>()?;
-        Ok(FederationLiquidityDetails {
-            invite_code: self.invite_code.clone(),
-            federation_id: self.federation.federation_id().clone(),
-            federation_name: self.federation_name.clone(),
-            federation_config_hash: self.federation.federation_config_hash().clone(),
-            fleet_seat_hints,
-            revocation_locations: Vec::new(),
-        })
+        if claimed.iter().any(|claimed| !claimed) {
+            return Err(FiError::Liquidity(
+                "formation recovery contains an FMan identity absent from consensus seat bindings"
+                    .to_owned(),
+            ));
+        }
+        Ok(fleet_seat_hints)
     }
 
-    fn matches_commitment(&self, commitment: &RequestLiquidityDetailsCommitmentV1) -> FiResult<()> {
+    pub(crate) fn matches_commitment(
+        &self,
+        commitment: &RequestLiquidityDetailsCommitmentV1,
+    ) -> FiResult<()> {
         let current = self.federation_details()?;
         // Display metadata is intentionally mutable after formation. Recovery
         // binds to final federation identity/config and replays the committed
@@ -1492,7 +1510,9 @@ impl FormedLiquidityContext {
     }
 }
 
-fn liquidity_seat_bindings_field(meta_value: &Option<Vec<u8>>) -> FiResult<Option<String>> {
+pub(crate) fn liquidity_seat_bindings_field(
+    meta_value: &Option<Vec<u8>>,
+) -> FiResult<Option<String>> {
     let Some(meta_value) = meta_value else {
         return Ok(None);
     };
@@ -2126,7 +2146,7 @@ mod tests {
             operation_id: LiquidityOperationId(hex::encode(hash.0)),
             formation_id: FormationId("formation".to_owned()),
             commitment,
-            endpoint_hint: Url("iroh://hint".to_owned()),
+            endpoint_hint: Some(Url("iroh://hint".to_owned())),
             details_payload_hash: hash,
             response: None,
             status: Some(Signed {
