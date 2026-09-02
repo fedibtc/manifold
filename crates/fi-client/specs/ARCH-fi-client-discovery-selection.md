@@ -135,7 +135,8 @@ offer before requesting its quote. Pre-output expiry, unavailable selected seats
 quote drift or over-cap, and the wallet's proven pre-journal insufficient balance
 return the selected formation to `Idle` with typed reauthorization. Binding,
 storage, and ambiguous post-journal errors remain exact recovery.
-The approval seals the FI range and selected major/minor/vendor DKG identity,
+The approval seals the FI range with its exact Fedi vendor policy and the
+selected major/minor/vendor DKG identity,
 not one exact build. Quote-time availability must name a typed version inside
 both; patch and prerelease changes are accepted, while a minor or vendor change
 requires fresh selection before payment.

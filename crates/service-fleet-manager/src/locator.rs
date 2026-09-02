@@ -9,17 +9,18 @@ use fedi_iroh_rpc::iroh::EndpointAddr;
 use secp256k1::XOnlyPublicKey;
 
 /// ALPN for the App ↔ Fleet Manager iroh protocol.
-pub const FLEET_MANAGER_ALPN: &[u8] = b"fedi/fleet-manager/0.1";
+pub const FLEET_MANAGER_ALPN: &[u8] = b"fedi/fleet-manager/0.2";
 
-/// The one locator format this crate speaks. Version 1 means: dial
+/// The one locator format this crate speaks. Version 2 means: dial
 /// `endpoint_addr` over iroh with [`FLEET_MANAGER_ALPN`].
-const LOCATOR_VERSION: u8 = 1;
+const LOCATOR_VERSION: u8 = 2;
 
 /// Everything an FI needs to reach and trust one FMan: iroh dialing info
 /// plus the service key its commitment signatures verify against.
 #[derive(serde::Deserialize, serde::Serialize, Clone, Debug, Eq, PartialEq)]
+#[serde(try_from = "UncheckedLocator")]
 pub struct Locator {
-    /// Locator format version; [`Locator::parse`] accepts only version 1.
+    /// Locator format version; [`Locator::parse`] accepts only version 2.
     /// Private so every in-memory locator speaks the one format this crate
     /// does: [`Locator::new`] stamps it, `parse` rejects anything else.
     /// The transport (iroh) and ALPN are what the version means, not
@@ -36,6 +37,28 @@ pub struct Locator {
     /// wire; scheme governed by ARCH-fleet-manager-identity *Signature
     /// scheme*); FIs verify FMan commitment signatures against it.
     pub service_pubkey: XOnlyPublicKey,
+}
+
+#[derive(serde::Deserialize)]
+struct UncheckedLocator {
+    version: u8,
+    endpoint_addr: EndpointAddr,
+    service_pubkey: XOnlyPublicKey,
+}
+
+impl TryFrom<UncheckedLocator> for Locator {
+    type Error = LocatorError;
+
+    fn try_from(value: UncheckedLocator) -> Result<Self, Self::Error> {
+        if value.version != LOCATOR_VERSION {
+            return Err(LocatorError::UnsupportedVersion(value.version));
+        }
+        Ok(Self {
+            version: value.version,
+            endpoint_addr: value.endpoint_addr,
+            service_pubkey: value.service_pubkey,
+        })
+    }
 }
 
 impl Locator {
@@ -55,11 +78,7 @@ impl Locator {
     /// Parse one locator JSON line, rejecting formats this crate does not
     /// speak.
     pub fn parse(json: &str) -> Result<Self, LocatorError> {
-        let locator: Self = serde_json::from_str(json)?;
-        if locator.version != LOCATOR_VERSION {
-            return Err(LocatorError::UnsupportedVersion(locator.version));
-        }
-        Ok(locator)
+        serde_json::from_str::<UncheckedLocator>(json)?.try_into()
     }
 
     pub fn to_json(&self) -> String {

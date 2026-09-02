@@ -14,8 +14,8 @@ use fedi_credential_sdk_protocol::{
 use fedi_decentralized_domain::HolderAuthorizationEnvelope;
 use fedi_decentralized_nostr::fman::{
     AdvertisementPayload, ApiEndpoint, Availability, FMAN_ADVERTISEMENT_D_TAG,
-    FMAN_ADVERTISEMENT_EVENT_KIND, FMAN_ADVERTISEMENT_HASHTAG, IROH_API_ENDPOINT_TRANSPORT,
-    IROH_API_ENDPOINT_URL_SCHEME, sign_advertisement,
+    FMAN_ADVERTISEMENT_EVENT_KIND, FMAN_ADVERTISEMENT_HASHTAG, FMAN_ADVERTISEMENT_PROTOCOL_VERSION,
+    IROH_API_ENDPOINT_TRANSPORT, IROH_API_ENDPOINT_URL_SCHEME, sign_advertisement,
 };
 use fedi_decentralized_nostr_clients::FMAN_ADVERTISEMENTS_CANDIDATE_LIMIT;
 use fedimint_core::runtime::Instant;
@@ -108,7 +108,7 @@ pub(crate) fn payload(
     envelopes: Vec<HolderAuthorizationEnvelope>,
 ) -> AdvertisementPayload {
     AdvertisementPayload {
-        version: ProtocolV1,
+        version: FMAN_ADVERTISEMENT_PROTOCOL_VERSION,
         fman_id_pubkey: fman.public_key().to_string(),
         service_pubkey: service_pubkey(fman).to_string(),
         issued_at: NOW - 3_600,

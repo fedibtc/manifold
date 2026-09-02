@@ -48,7 +48,7 @@ discovery hint rather than a capacity reservation. The payload contains:
   backing signed credentials, deduplicated by credential digest.
 
 The inner document is Schnorr-signed by the Nostr identity over
-`SHA256(fedi-fman-advertisement-domain || JCS(payload))`; the Nostr event supplies
+`SHA256("fedi-fman-advertisement/v2\0" || JCS(payload))`; the Nostr event supplies
 its own signature as well. The payload identity is required to match the signing
 key. Availability fields are discovery hints, not trust claims. Setup-payment
 federation identities and join material appear in neither content nor relay

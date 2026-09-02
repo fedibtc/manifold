@@ -848,9 +848,9 @@ where
                 FiError::InvalidIntent("no guardian replacement is required".to_owned())
             })?;
         let request = FmanSelectionRequest::new(
-            recovery.snapshot.intent.federation_size,
-            recovery.snapshot.intent.fedimintd_versions.clone(),
-            recovery.snapshot.intent.plan,
+            recovery.snapshot.intent.federation_size(),
+            recovery.snapshot.intent.fedimintd_versions().clone(),
+            recovery.snapshot.intent.plan(),
         )?;
         let excluded = recovery
             .seats
@@ -898,7 +898,7 @@ where
             },
             self.inner.peer_badge_verifier.provenance(),
             &request,
-            &recovery.snapshot.intent.fedimintd_dkg_version,
+            &recovery.snapshot.intent.fedimintd_dkg_version(),
             requirements,
             excluded,
             retained_service_pubkeys,
@@ -1625,7 +1625,7 @@ where
                 && recovery
                     .snapshot
                     .intent
-                    .max_total_msats
+                    .max_total_msats()
                     .is_some_and(|cap| requirements.total_msats <= cap);
             if under_cap {
                 let authorizations = requirements
@@ -2928,7 +2928,7 @@ where
         for (position, session) in sessions.iter().enumerate() {
             let existing = recovery.seats[position].progress.guardian_code.clone();
             let federation_name =
-                (position == 0).then(|| recovery.snapshot.intent.federation_name.clone());
+                (position == 0).then(|| recovery.snapshot.intent.federation_name().clone());
             pending_codes.push(async move {
                 let code = self
                     .get_dkg_code_with_retry(session, fi_id, federation_name, existing.clone(), run)
@@ -3356,10 +3356,10 @@ where
         // probing preview seats is exactly a candidate this gate accepts.
         let matched = match crate::selection::match_requested_availability(
             &availability,
-            intent.federation_size,
-            &intent.fedimintd_versions,
-            &intent.fedimintd_dkg_version,
-            intent.plan,
+            intent.federation_size(),
+            &intent.fedimintd_versions(),
+            &intent.fedimintd_dkg_version(),
+            intent.plan(),
         ) {
             Ok(matched) => matched,
             Err(mismatch @ AvailabilityMismatch::NotAcceptingSeats) => {
@@ -3433,7 +3433,7 @@ where
         let quote_request = GetQuoteRequest {
             fi_id,
             fedimintd_version,
-            federation_size: intent.federation_size,
+            federation_size: intent.federation_size(),
             plan,
             payment_federation_id,
             refund_issuance,
@@ -3474,12 +3474,12 @@ where
             .map_err(|error| fman_error(index, format!("invalid signed quote: {error}")))?;
         let request = &quote.terms.request;
         if request.fi_id != fi_id
-            || request.fedimintd_version.dkg_version() != intent.fedimintd_dkg_version
+            || request.fedimintd_version.dkg_version() != *intent.fedimintd_dkg_version()
             || !intent
-                .fedimintd_versions
+                .fedimintd_versions()
                 .contains(&request.fedimintd_version)
-            || request.federation_size != intent.federation_size
-            || !intent.plan.matches(&request.plan)
+            || request.federation_size != intent.federation_size()
+            || !intent.plan().matches(&request.plan)
         {
             return Err(fman_error(
                 index,
@@ -4398,7 +4398,7 @@ fn pinned_dkg_version(intent: &FormationIntent) -> FiResult<FedimintdDkgVersion>
     let core = intent.fedimintd_versions().only_core().ok_or_else(|| {
         FiError::InvalidIntent("pinned formation requires one fedimintd patch release".to_owned())
     })?;
-    Ok(format!("{core}+fedi")
+    Ok(format!("{core}+{FEDIMINTD_VENDOR_0_1}")
         .parse::<FedimintdVersion>()
         .expect("a release core with the fixed Fedi vendor is valid SemVer")
         .dkg_version())

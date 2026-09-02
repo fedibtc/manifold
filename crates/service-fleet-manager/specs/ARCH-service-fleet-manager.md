@@ -8,6 +8,10 @@ raw-metrics and safe-event pull transport consumed by the Fedi telemetry
 collector; it is not an FI diagnostic extension. The `fleet-manager` daemon
 consumes both.
 
+The current FI control-plane DTO set uses `fedi/fleet-manager/0.2`. Its
+`GetAvailabilityResponse` carries one exact `fedimintd_version`; the preceding
+0.1 list shape is a different protocol and must not share this ALPN.
+
 It must not depend on the `fleet-manager` daemon crate or own FMan
 authorization, allowlisting, or consensus policy. In addition to wire- and
 storage-facing DTOs, it may own small semantic protocol values whose parsing

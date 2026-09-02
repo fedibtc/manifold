@@ -45,7 +45,9 @@ never establishes federation-specific payment policy for FI selection.
 
 Validate the complete formation intent before durable or remote side effects.
 The development-only pinned path accepts one patch release and derives its Fedi
-DKG identity before any value-free availability read or other effect. Resolve
+DKG identity before any value-free availability read or other effect. Release
+range construction and decoding reject vendorless or non-`+fedi` policy
+inputs rather than discarding that metadata and failing after selection. Resolve
 an absent display name exactly once, validate it, and persist it with that
 release before quotes, payments, seat creation, or DKG.
 Unsupported future fields must be rejected or absent from the public intent,
@@ -348,10 +350,10 @@ ids, public guardian-fee accounts, DKG codes, invite code, and an optional
 push-gateway callback URL. The callback URL is a bearer capability and its
 stable idempotency key can identify one formation operation. Neither is
 projected in public status or `Debug`, but database files and backups containing
-them remain sensitive. Schema 11 preserves the callback through every
+them remain sensitive. The current schema 12 preserves the callback through every
 pre-`Formed` recovery and atomically clears it with the `Formed` checkpoint,
 after every FMan has durably assumed retry ownership. Older pre-production
-schemas fail closed and require reset.
+schemas, including schema 11, fail closed and require reset.
 Logical clearing does not erase old pages or backups. FI storage must never
 contain raw bearer ecash, payment signatures, identity secret material, or
 wallet-private refund secrets.

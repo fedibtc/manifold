@@ -8,8 +8,10 @@ Paid quoting checks the authenticated common setup-payment membership and quotes
 
 The FI RPC contract spans service wire types, daemon handlers, wallet payment flows, and FI consumers, so no single implementation artifact can own it coherently.
 
-The Fleet Manager exposes the FI control plane over the service protocol's
-Iroh ALPN. Its advertised or out-of-band locator supplies the endpoint and
+The Fleet Manager exposes the current FI control plane over Iroh ALPN
+`fedi/fleet-manager/0.2`. Version 0.2 replaces the former availability release
+list with one exact advertised release; clients and servers must not reuse the
+0.1 ALPN for either DTO shape. Its advertised or out-of-band locator supplies the endpoint and
 the commitment-verification key. The payment mechanism is
 [SPEC-locked-payment](./SPEC-locked-payment.md); the byte-level
 authentication mechanism is

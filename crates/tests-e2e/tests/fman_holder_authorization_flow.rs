@@ -19,9 +19,10 @@ use fedi_decentralized_nostr::attester::{
 };
 use fedi_decentralized_nostr::fman::{
     AdvertisementPayload, ApiEndpoint, Availability, FMAN_ADVERTISEMENT_D_TAG,
-    FMAN_ADVERTISEMENT_EVENT_KIND, FMAN_ADVERTISEMENT_HASHTAG, FMAN_ADVERTISEMENT_SIGNATURE_DOMAIN,
-    FMAN_AUTHORIZATION_HASHTAG, HOLDER_AUTHORIZATION_EVENT_KIND, IROH_API_ENDPOINT_TRANSPORT,
-    IROH_API_ENDPOINT_URL_SCHEME, fman_authorization_d_tag, sign_advertisement,
+    FMAN_ADVERTISEMENT_EVENT_KIND, FMAN_ADVERTISEMENT_HASHTAG, FMAN_ADVERTISEMENT_PROTOCOL_VERSION,
+    FMAN_ADVERTISEMENT_SIGNATURE_DOMAIN, FMAN_AUTHORIZATION_HASHTAG,
+    HOLDER_AUTHORIZATION_EVENT_KIND, IROH_API_ENDPOINT_TRANSPORT, IROH_API_ENDPOINT_URL_SCHEME,
+    fman_authorization_d_tag, sign_advertisement,
 };
 use fedi_decentralized_nostr_clients::{
     FiNostrClient, HolderNostrClient, NostrFiClient, NostrHolderClient, NostrRelayClient,
@@ -329,7 +330,7 @@ async fn holder_trust_badge_to_concrete_fi_selection_flow() {
         .to_string();
     let first_endpoint_id = IrohSecretKey::from_bytes(&[43; 32]).public();
     let advertisement_payload = AdvertisementPayload {
-        version: fedi_credential_sdk_protocol::ProtocolV1,
+        version: FMAN_ADVERTISEMENT_PROTOCOL_VERSION,
         fman_id_pubkey: fman_pubkey_string.clone(),
         service_pubkey: first_service_pubkey,
         issued_at,
@@ -479,7 +480,7 @@ async fn holder_trust_badge_to_concrete_fi_selection_flow() {
         let endpoint_id = IrohSecretKey::from_bytes(&[50 + index; 32]).public();
         let service_key = SecretKey::from_slice(&[70 + index; 32]).expect("test key is valid");
         let payload = AdvertisementPayload {
-            version: fedi_credential_sdk_protocol::ProtocolV1,
+            version: FMAN_ADVERTISEMENT_PROTOCOL_VERSION,
             fman_id_pubkey: fman_pubkey.to_string(),
             service_pubkey: service_key
                 .x_only_public_key(&Secp256k1::new())

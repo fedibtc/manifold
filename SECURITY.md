@@ -94,6 +94,14 @@ be used only with test accounts and test funds.
 ### Fleet Manager bundled guardian process
 
 FMan links and directly spawns its pinned `fedimintd` as the guardian process.
+The pinned fork is also a compatibility prerequisite: guardians may be selected
+across patch and prerelease skew only because the exact pinned commit contains
+the reviewed Fedi 0.11 backport of Fedimint PR #9092. Both bundled-daemon run
+paths must pass the shared `fedi` vendor identity. Any Fedimint pin change must
+re-verify the source ancestry/backport, advertised exact release, runtime vendor
+wiring, mixed-release DKG behavior, and release-sync checks. This 0.11 backport
+cannot reject an incompatible major/minor/vendor while exchanging setup codes;
+it detects the mismatch at the final consensus-config checksum instead.
 Treat that code as part of FMan's trusted computing base. The process boundary
 contains lifecycle and crash effects; it does not establish a UID, mount,
 network, PID, seccomp, or container boundary against a malicious child. A

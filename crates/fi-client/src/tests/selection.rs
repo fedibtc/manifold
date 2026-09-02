@@ -430,8 +430,8 @@ async fn replacement_preview_for_version(
     let request = FmanSelectionRequest::new(
         FederationSize(MIN_FEDERATION_SIZE),
         FedimintdVersionRange::new(
-            "0.11.1".parse().expect("range minimum parses"),
-            "0.11.3".parse().expect("range maximum parses"),
+            "0.11.1+fedi".parse().expect("range minimum parses"),
+            "0.11.3+fedi".parse().expect("range maximum parses"),
         )
         .expect("replacement range is ordered"),
         PlanPreference::InfiniteBestEffort,
@@ -1999,8 +1999,8 @@ fn multi_release_preview_request(size: u16) -> FmanSelectionRequest {
     FmanSelectionRequest::new(
         FederationSize(size),
         FedimintdVersionRange::new(
-            "0.11.1".parse().expect("range minimum parses"),
-            "0.13.0".parse().expect("range maximum parses"),
+            "0.11.1+fedi".parse().expect("range minimum parses"),
+            "0.13.0+fedi".parse().expect("range maximum parses"),
         )
         .expect("test range is ordered"),
         PlanPreference::InfiniteBestEffort,
@@ -2031,14 +2031,31 @@ async fn preview_cohorts(events: Vec<Event>) -> FiResult<FmanSelectionPreview> {
 
 #[tokio::test]
 async fn preview_accepts_patch_skew_within_the_fedi_minor_line() {
-    let preview = preview_cohorts(cohort_ads(
-        1,
-        u8::try_from(MIN_FEDERATION_SIZE).expect("small test size"),
-        1_000,
+    let issuer = issuer_keys(1);
+    let versions = [
+        "0.11.1+fedi",
         "0.11.2-rc.1+fedi",
-    ))
-    .await
-    .expect("Fedi patch skew stays in the same DKG cohort");
+        "0.11.2+fedi",
+        "0.11.1-beta.2+fedi",
+        "0.11.2-rc.3+fedi",
+        "0.11.1+fedi",
+        "0.11.2+fedi",
+    ];
+    let events = versions
+        .into_iter()
+        .enumerate()
+        .map(|(index, version)| {
+            issuer_ad_for_version(
+                &fman_keys(u8::try_from(index + 1).expect("small test index")),
+                &issuer,
+                1_000,
+                version,
+            )
+        })
+        .collect();
+    let preview = preview_cohorts(events)
+        .await
+        .expect("mixed Fedi patches and prereleases stay in one DKG cohort");
 
     assert_eq!(preview.fedimintd_dkg_version().to_string(), "0.11+fedi");
 }

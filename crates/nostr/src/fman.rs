@@ -94,7 +94,38 @@ pub const IROH_API_ENDPOINT_URL_SCHEME: &str = "iroh://";
 /// repository sign and verify advertisements against exactly these bytes and
 /// the JCS canonicalization in `payload_digest`. Changing either is a
 /// coordinated wire break, never a local refactor.
-pub const FMAN_ADVERTISEMENT_SIGNATURE_DOMAIN: &[u8] = b"fedi-fman-advertisement/v1\0";
+pub const FMAN_ADVERTISEMENT_SIGNATURE_DOMAIN: &[u8] = b"fedi-fman-advertisement/v2\0";
+
+/// Current advertisement payload schema.
+pub const FMAN_ADVERTISEMENT_PROTOCOL_VERSION: AdvertisementProtocolV2 = AdvertisementProtocolV2;
+
+/// Exact version-2 discriminator for the scalar-release advertisement shape.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct AdvertisementProtocolV2;
+
+impl Serialize for AdvertisementProtocolV2 {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_u16(2)
+    }
+}
+
+impl<'de> Deserialize<'de> for AdvertisementProtocolV2 {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        if u16::deserialize(deserializer)? == 2 {
+            Ok(Self)
+        } else {
+            Err(serde::de::Error::custom(
+                "unsupported FMan advertisement version",
+            ))
+        }
+    }
+}
 
 /// The portable signed advertisement document (Nostr event `content`).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -106,11 +137,11 @@ pub struct AdvertisementDocument {
     pub proof: SchnorrSignatureProof,
 }
 
-/// Unsigned FMan advertisement payload (`SPEC-fman-nostr-events`, v1).
+/// Unsigned FMan advertisement payload (`SPEC-fman-nostr-events`, v2).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct AdvertisementPayload {
-    /// Payload schema version; v1 is the only published shape.
-    pub version: ProtocolV1,
+    /// Payload schema version; v2 carries one exact advertised release.
+    pub version: AdvertisementProtocolV2,
 
     /// MUST equal the Nostr event author pubkey (MVP identity rule).
     pub fman_id_pubkey: String,
@@ -135,7 +166,7 @@ pub struct AdvertisementPayload {
 
     /// Mirrors the `Plan` enum's own wire encoding, as `GetAvailability`
     /// serves it, so advertisement and RPC can never disagree. The protocol
-    /// crate's canonical serde form is the published v1 shape, recorded in
+    /// crate's canonical serde form is the published v2 shape, recorded in
     /// `SPEC-fman-nostr-events` (`crates/nostr/specs/`).
     pub plans: Vec<Plan>,
 
@@ -148,7 +179,7 @@ pub struct AdvertisementPayload {
 /// One pre-formation FI setup RPC endpoint declared by an advertisement.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ApiEndpoint {
-    /// Transport identifier, [`IROH_API_ENDPOINT_TRANSPORT`] in v1.
+    /// Transport identifier, [`IROH_API_ENDPOINT_TRANSPORT`] in v2.
     pub transport: String,
 
     /// Transport-specific endpoint URL.

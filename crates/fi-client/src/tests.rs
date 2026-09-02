@@ -2193,8 +2193,8 @@ fn compatible_selection_approval(max_total_msats: u64) -> FmanSelectionApproval 
     approval.request = FmanSelectionRequest::new(
         FederationSize(MIN_FEDERATION_SIZE),
         FedimintdVersionRange::new(
-            "0.11.1".parse().expect("range minimum parses"),
-            "0.11.3".parse().expect("range maximum parses"),
+            "0.11.1+fedi".parse().expect("range minimum parses"),
+            "0.11.3+fedi".parse().expect("range maximum parses"),
         )
         .expect("test range is ordered"),
         PlanPreference::InfiniteBestEffort,
@@ -2219,7 +2219,7 @@ fn serialized_intent_rejects_unknown_fields() {
         "federation_name": null,
         "federation_size": 7,
         "plan": "infinite_best_effort",
-        "fedimintd_versions": {"minimum":{"major":0,"minor":11,"patch":1},"maximum_exclusive":{"major":0,"minor":11,"patch":2}},
+        "fedimintd_versions": {"minimum":{"major":0,"minor":11,"patch":1},"maximum_exclusive":{"major":0,"minor":11,"patch":2},"vendor":"fedi"},
         "unknown_field": 100,
     }))
     .unwrap_err();
@@ -2237,7 +2237,7 @@ fn serialized_intent_rejects_the_retired_formation_time_fee_field() {
         "federation_size": 7,
         "guardian_fee_ppm": 0,
         "plan": "infinite_best_effort",
-        "fedimintd_versions": {"minimum":{"major":0,"minor":11,"patch":1},"maximum_exclusive":{"major":0,"minor":11,"patch":2}},
+        "fedimintd_versions": {"minimum":{"major":0,"minor":11,"patch":1},"maximum_exclusive":{"major":0,"minor":11,"patch":2},"vendor":"fedi"},
     }))
     .unwrap_err();
 
@@ -2268,7 +2268,7 @@ fn serialized_intent_rejects_invalid_product_values() {
         );
         object.insert(
             "fedimintd_versions".to_owned(),
-            serde_json::json!({"minimum":{"major":0,"minor":11,"patch":1},"maximum_exclusive":{"major":0,"minor":11,"patch":2}}),
+            serde_json::json!({"minimum":{"major":0,"minor":11,"patch":1},"maximum_exclusive":{"major":0,"minor":11,"patch":2},"vendor":"fedi"}),
         );
         assert!(serde_json::from_value::<FormationIntent>(value).is_err());
     }
@@ -2388,9 +2388,9 @@ fn resolved_intent() -> ResolvedFormationIntent {
         .expect("valid test intent")
 }
 
-fn resolved_intent_with_size(federation_size: FederationSize) -> ResolvedFormationIntent {
+fn minimum_resolved_intent() -> ResolvedFormationIntent {
     let mut intent = resolved_intent();
-    intent.federation_size = federation_size;
+    intent.set_federation_size_for_test(FederationSize(MIN_FEDERATION_SIZE));
     intent
 }
 
@@ -2404,6 +2404,10 @@ fn seat_progress(index: u16) -> SeatProgress {
         phase: SeatPhase::Selected,
         freshness: FormationFreshness::Fresh,
     }
+}
+
+fn minimum_seat_progress() -> Vec<SeatProgress> {
+    (0..MIN_FEDERATION_SIZE).map(seat_progress).collect()
 }
 
 fn test_fman_id(index: usize) -> nostr_sdk::PublicKey {
@@ -2436,8 +2440,39 @@ fn signed_quote_at_price(
     quote_nonce: [u8; 32],
     payment_amount_msats: u64,
 ) -> SignedResponse<GetQuoteResponse> {
+    signed_quote_at_price_for_payer(
+        manager_index,
+        intent,
+        quote_nonce,
+        payment_amount_msats,
+        payment_federation_id(),
+    )
+}
+
+fn signed_quote_at_price_for_payer(
+    manager_index: usize,
+    intent: &ResolvedFormationIntent,
+    quote_nonce: [u8; 32],
+    payment_amount_msats: u64,
+    federation_id: FederationId,
+) -> SignedResponse<GetQuoteResponse> {
+    signed_quote_at_price_for_payer_and_size(
+        manager_index,
+        quote_nonce,
+        payment_amount_msats,
+        federation_id,
+        intent.federation_size(),
+    )
+}
+
+fn signed_quote_at_price_for_payer_and_size(
+    manager_index: usize,
+    quote_nonce: [u8; 32],
+    payment_amount_msats: u64,
+    federation_id: FederationId,
+    federation_size: FederationSize,
+) -> SignedResponse<GetQuoteResponse> {
     let (plan, price_msats, payment_federation_id, payment) = {
-        let federation_id = payment_federation_id();
         (
             Plan::InfiniteBestEffort {
                 price_msats: payment_amount_msats,
@@ -2461,7 +2496,7 @@ fn signed_quote_at_price(
                 request: GetQuoteRequest {
                     fi_id: TestIdentity::fi_id(),
                     fedimintd_version: fedimintd_version(),
-                    federation_size: intent.federation_size,
+                    federation_size,
                     plan,
                     payment_federation_id,
                     refund_issuance: payment.as_ref().map(|_| RefundIssuance::MintV1 {
@@ -2494,7 +2529,7 @@ fn signed_free_quote(
                 request: GetQuoteRequest {
                     fi_id: TestIdentity::fi_id(),
                     fedimintd_version: fedimintd_version(),
-                    federation_size: intent.federation_size,
+                    federation_size: intent.federation_size(),
                     plan: Plan::InfiniteBestEffort { price_msats: 0 },
                     payment_federation_id: None,
                     refund_issuance: None,
@@ -3989,7 +4024,7 @@ async fn default_name_final_status_and_formed_reconciliation_are_typed() {
             .iter()
             .all(|seat| seat.phase == SeatPhase::Running)
     );
-    let generated_name = formed.intent.federation_name.clone();
+    let generated_name = formed.intent.federation_name().clone();
     assert_eq!(generated_name.0.split_whitespace().count(), 2);
 
     let json = serde_json::to_value(&formed_status).unwrap();
@@ -4019,7 +4054,7 @@ async fn default_name_final_status_and_formed_reconciliation_are_typed() {
     let reloaded = formation(&reloaded_status);
     assert_eq!(reloaded.phase, FormationPhase::Formed);
     assert_eq!(reloaded.freshness, FormationFreshness::Unsynced);
-    assert_eq!(reloaded.intent.federation_name, generated_name);
+    assert_eq!(reloaded.intent.federation_name(), &generated_name);
     assert!(
         reloaded
             .seats
@@ -4032,7 +4067,7 @@ async fn default_name_final_status_and_formed_reconciliation_are_typed() {
     let reconciled = formation(&reconciled_status);
     assert_eq!(reconciled.phase, FormationPhase::Formed);
     assert_eq!(reconciled.freshness, FormationFreshness::Fresh);
-    assert_eq!(reconciled.intent.federation_name, generated_name);
+    assert_eq!(reconciled.intent.federation_name(), &generated_name);
     assert_eq!(fman_state.quote_calls.load(Ordering::SeqCst), quote_calls);
     assert_eq!(fman_state.create_calls.load(Ordering::SeqCst), create_calls);
     assert_eq!(
@@ -4681,8 +4716,8 @@ async fn initialized_formation_reloads_as_unsynced_typed_status() {
         .initialize(
             TestIdentity::fi_id(),
             FormationId("formation1".to_owned()),
-            resolved_intent_with_size(FederationSize(1)),
-            vec![seat_progress(0)],
+            minimum_resolved_intent(),
+            minimum_seat_progress(),
             crate::db::FormationCreationMode::Pinned,
             None,
         )
@@ -4717,8 +4752,8 @@ async fn persisted_formation_rejects_a_different_identity_before_observation() {
         .initialize(
             TestIdentity::fi_id(),
             FormationId("ownedformation".to_owned()),
-            resolved_intent_with_size(FederationSize(1)),
-            vec![seat_progress(0)],
+            minimum_resolved_intent(),
+            minimum_seat_progress(),
             crate::db::FormationCreationMode::Pinned,
             None,
         )
@@ -4765,8 +4800,8 @@ async fn pre_tombstone_schema_record_is_rejected_fail_closed() {
         .initialize(
             TestIdentity::fi_id(),
             FormationId("prebranchformation".to_owned()),
-            resolved_intent_with_size(FederationSize(1)),
-            vec![seat_progress(0)],
+            minimum_resolved_intent(),
+            minimum_seat_progress(),
             crate::db::FormationCreationMode::Pinned,
             None,
         )
@@ -4815,8 +4850,8 @@ async fn current_storage_requires_selected_mode_and_output_tombstone_fields() {
         .initialize(
             TestIdentity::fi_id(),
             FormationId("required-schema-fields".to_owned()),
-            resolved_intent_with_size(FederationSize(1)),
-            vec![seat_progress(0)],
+            minimum_resolved_intent(),
+            minimum_seat_progress(),
             crate::db::FormationCreationMode::Pinned,
             None,
         )
@@ -4835,9 +4870,87 @@ async fn current_storage_requires_selected_mode_and_output_tombstone_fields() {
                 .store
                 .rejects_missing_recovery_field_for_test(field)
                 .await,
-            "schema 11 must reject a missing {field}"
+            "schema 12 must reject a missing {field}"
         );
     }
+
+    client
+        .inner
+        .store
+        .remove_recovery_field_for_test("last_accepted_seat_index")
+        .await;
+    assert!(
+        matches!(
+            client
+                .inner
+                .store
+                .load_recovery(TestIdentity::fi_id())
+                .await,
+            Err(FiError::Storage(message))
+                if message.contains("accepted-seat checkpoint discriminator")
+        ),
+        "schema 12 must reject a missing accepted-seat checkpoint through the public load path",
+    );
+}
+
+#[tokio::test]
+async fn schema_11_record_reopens_with_reset_guidance_instead_of_panicking() {
+    // Literal output from the base schema-11 implementation. In particular,
+    // `fedimintd_versions.vendor` and `last_accepted_seat_index` do not exist.
+    const SCHEMA_11_FORMATION: &str = r#"{"creation_mode":"pinned","dkg_completion_callback":null,"fi_id":"989c0b76cb563971fdc9bef31ec06c3560f3249d6ee9e5d83c57625596e05f6f","formation_id":"schema-eleven-formation","formation_meta_target":null,"intent":{"federation_name":"Test Federation","federation_size":7,"fedimintd_dkg_version":{"major":0,"minor":11,"vendor":"fedi"},"fedimintd_versions":{"maximum_exclusive":{"major":0,"minor":11,"patch":3},"minimum":{"major":0,"minor":11,"patch":2}},"plan":"infinite_best_effort"},"invite_code":null,"payment_authorization":null,"payment_authorization_recorded":false,"payment_outputs_started":false,"payment_reservation_id":null,"payment_reservation_release_intended":false,"phase":"initialized","schema_version":11,"seat_count":7}"#;
+
+    let database = MemDatabase::new().into_database();
+    let (payments, _) = TestPayments::new();
+    let fman_state = Arc::new(FmanState::default());
+    let client = open_client(
+        database.clone(),
+        payments.clone(),
+        fman_state.clone(),
+        FmanConfig::given_away(),
+    )
+    .await;
+    client
+        .inner
+        .store
+        .initialize(
+            TestIdentity::fi_id(),
+            FormationId("schema-eleven-formation".to_owned()),
+            minimum_resolved_intent(),
+            minimum_seat_progress(),
+            crate::db::FormationCreationMode::Pinned,
+            None,
+        )
+        .await
+        .unwrap();
+    client
+        .inner
+        .store
+        .insert_raw_formation_for_test(SCHEMA_11_FORMATION)
+        .await;
+
+    let reopened = FiClient::open(
+        database,
+        TestIdentity,
+        payments,
+        TestRegistry::default(),
+        TestConnector {
+            state: fman_state.clone(),
+            config: FmanConfig::given_away(),
+        },
+        test_peer_badge_verifier(),
+        TestConsensusReader::new(fman_state),
+        TestFiFeeAccountProvider::default(),
+    )
+    .await;
+    assert!(
+        matches!(
+            reopened,
+            Err(FiError::Storage(message))
+                if message.contains("unsupported FI storage schema version 11")
+                    && message.contains("reset this unreleased FI namespace")
+        ),
+        "schema 11 must decode far enough to return reset guidance",
+    );
 }
 
 #[tokio::test]
@@ -4852,7 +4965,7 @@ async fn accepting_one_seat_preserves_a_sibling_journaled_quote() {
     )
     .await;
     let formation_id = FormationId("twoseatinterleaving".to_owned());
-    let intent = resolved_intent_with_size(FederationSize(2));
+    let intent = minimum_resolved_intent();
     client
         .inner
         .store
@@ -4860,7 +4973,7 @@ async fn accepting_one_seat_preserves_a_sibling_journaled_quote() {
             TestIdentity::fi_id(),
             formation_id.clone(),
             intent.clone(),
-            vec![seat_progress(0), seat_progress(1)],
+            minimum_seat_progress(),
             crate::db::FormationCreationMode::Pinned,
             None,
         )
@@ -4910,7 +5023,145 @@ async fn accepting_one_seat_preserves_a_sibling_journaled_quote() {
 }
 
 #[tokio::test]
-async fn concurrent_two_seat_acceptance_retries_and_derives_completion_from_durable_siblings() {
+async fn accepted_seat_quote_must_still_match_the_persisted_contract() {
+    let (payments, _) = TestPayments::new();
+    let client = open_client(
+        MemDatabase::new().into_database(),
+        payments,
+        Arc::new(FmanState::default()),
+        FmanConfig::paid(),
+    )
+    .await;
+    let formation_id = FormationId("accepted-quote-contract".to_owned());
+    let intent = minimum_resolved_intent();
+    client
+        .inner
+        .store
+        .initialize(
+            TestIdentity::fi_id(),
+            formation_id.clone(),
+            intent.clone(),
+            minimum_seat_progress(),
+            crate::db::FormationCreationMode::Pinned,
+            None,
+        )
+        .await
+        .unwrap();
+    client
+        .inner
+        .store
+        .store_quote(&formation_id, 0, signed_quote(0, &intent, [21; 32]))
+        .await
+        .unwrap();
+    client
+        .inner
+        .store
+        .record_seat_accepted(
+            &formation_id,
+            0,
+            SeatId::from(QuoteId([0x01; 32])),
+            guardian_fee_account(32),
+        )
+        .await
+        .unwrap();
+    client
+        .inner
+        .store
+        .replace_quote_for_test(
+            0,
+            signed_quote_at_price_for_payer_and_size(
+                0,
+                [22; 32],
+                PAYMENT_AMOUNT_MSATS,
+                payment_federation_id(),
+                FederationSize(intent.federation_size().0 + 1),
+            ),
+        )
+        .await;
+
+    assert!(
+        matches!(
+            client
+                .inner
+                .store
+                .load_recovery(TestIdentity::fi_id())
+                .await,
+            Err(FiError::Storage(message))
+                if message.contains("does not match intent or identity")
+        ),
+        "accepted rows must validate their retained quote before payment filtering",
+    );
+}
+
+#[tokio::test]
+async fn selected_recovery_rejects_a_quote_for_another_payer() {
+    let (payments, _) = TestPayments::new();
+    let client = open_client(
+        MemDatabase::new().into_database(),
+        payments,
+        Arc::new(FmanState::default()),
+        FmanConfig::paid(),
+    )
+    .await;
+    let formation_id = FormationId("foreign-selected-payer".to_owned());
+    let intent = intent()
+        .with_max_total_msats(1_000)
+        .unwrap()
+        .resolve_for_dkg(
+            FederationName("Foreign selected payer".to_owned()),
+            fedimintd_version().dkg_version(),
+        )
+        .unwrap();
+    client
+        .inner
+        .store
+        .initialize(
+            TestIdentity::fi_id(),
+            formation_id.clone(),
+            intent.clone(),
+            (0..MIN_FEDERATION_SIZE)
+                .map(|index| selected_initial_seat(index, test_now_secs() + 120))
+                .collect(),
+            crate::db::FormationCreationMode::Selected {
+                payment_federation_id: Some(payment_federation_id()),
+            },
+            None,
+        )
+        .await
+        .unwrap();
+    client
+        .inner
+        .store
+        .store_quote(
+            &formation_id,
+            0,
+            signed_quote_at_price_for_payer(
+                0,
+                &intent,
+                [23; 32],
+                PAYMENT_AMOUNT_MSATS,
+                FederationId("foreign-payer".to_owned()),
+            ),
+        )
+        .await
+        .unwrap();
+
+    assert!(
+        matches!(
+            client
+                .inner
+                .store
+                .load_recovery(TestIdentity::fi_id())
+                .await,
+            Err(FiError::Storage(message))
+                if message.contains("another selected payer")
+        ),
+        "selected recovery must retain its exact payer contract",
+    );
+}
+
+#[tokio::test]
+async fn concurrent_final_seat_acceptance_derives_completion_from_durable_siblings() {
     let database = MemDatabase::new().into_database();
     let (payments, _) = TestPayments::new();
     let client = open_client(
@@ -4922,19 +5173,19 @@ async fn concurrent_two_seat_acceptance_retries_and_derives_completion_from_dura
     .await;
     let store = &client.inner.store;
     let formation_id = FormationId("concurrentseatacceptance".to_owned());
-    let intent = resolved_intent_with_size(FederationSize(2));
+    let intent = minimum_resolved_intent();
     store
         .initialize(
             TestIdentity::fi_id(),
             formation_id.clone(),
             intent.clone(),
-            vec![seat_progress(0), seat_progress(1)],
+            minimum_seat_progress(),
             crate::db::FormationCreationMode::Pinned,
             None,
         )
         .await
         .unwrap();
-    for index in 0..2 {
+    for index in 0..MIN_FEDERATION_SIZE {
         store
             .store_quote(
                 &formation_id,
@@ -4944,6 +5195,18 @@ async fn concurrent_two_seat_acceptance_retries_and_derives_completion_from_dura
                     &intent,
                     [40 + u8::try_from(index).unwrap(); 32],
                 ),
+            )
+            .await
+            .unwrap();
+    }
+
+    for index in 2..MIN_FEDERATION_SIZE {
+        store
+            .record_seat_accepted(
+                &formation_id,
+                index,
+                SeatId::from(QuoteId([u8::try_from(index).unwrap(); 32])),
+                guardian_fee_account(u8::try_from(index).unwrap() + 40),
             )
             .await
             .unwrap();
@@ -4997,30 +5260,44 @@ async fn concurrent_two_seat_clear_and_changed_term_store_retry_without_losing_s
     .await;
     let store = &client.inner.store;
     let formation_id = FormationId("concurrentquotereplacement".to_owned());
-    let intent = resolved_intent_with_size(FederationSize(2));
+    let intent = minimum_resolved_intent();
     store
         .initialize(
             TestIdentity::fi_id(),
             formation_id.clone(),
             intent.clone(),
-            vec![seat_progress(0), seat_progress(1)],
+            minimum_seat_progress(),
             crate::db::FormationCreationMode::Pinned,
             None,
         )
         .await
         .unwrap();
-    let old_quotes = [
-        signed_quote(0, &intent, [31; 32]),
-        signed_quote(1, &intent, [32; 32]),
-    ];
-    store
-        .store_quote(&formation_id, 0, old_quotes[0].clone())
-        .await
-        .unwrap();
-    store
-        .store_quote(&formation_id, 1, old_quotes[1].clone())
-        .await
-        .unwrap();
+    let old_quotes = (0..MIN_FEDERATION_SIZE)
+        .map(|index| {
+            signed_quote(
+                usize::from(index),
+                &intent,
+                [31 + u8::try_from(index).unwrap(); 32],
+            )
+        })
+        .collect::<Vec<_>>();
+    for (index, quote) in old_quotes.iter().enumerate() {
+        store
+            .store_quote(&formation_id, u16::try_from(index).unwrap(), quote.clone())
+            .await
+            .unwrap();
+    }
+    for index in 2..MIN_FEDERATION_SIZE {
+        store
+            .record_seat_accepted(
+                &formation_id,
+                index,
+                SeatId::from(QuoteId([u8::try_from(index).unwrap(); 32])),
+                guardian_fee_account(u8::try_from(index).unwrap() + 50),
+            )
+            .await
+            .unwrap();
+    }
     let status = store.load_status(TestIdentity::fi_id()).await.unwrap();
     let requirements = payment_requirements(&status).clone();
     let authorizations = requirements
@@ -5052,7 +5329,11 @@ async fn concurrent_two_seat_clear_and_changed_term_store_retry_without_losing_s
     first_clear.unwrap();
     second_clear.unwrap();
     let cleared = active_recovery(store.load_recovery(TestIdentity::fi_id()).await.unwrap());
-    assert!(cleared.seats.iter().all(|seat| seat.signed_quote.is_none()));
+    assert!(
+        cleared.seats[..2]
+            .iter()
+            .all(|seat| seat.signed_quote.is_none())
+    );
     assert!(
         cleared
             .seats
@@ -5244,7 +5525,7 @@ async fn recovery_rejects_mixed_quote_and_replacement_authority() {
     )
     .await;
     let formation_id = FormationId("mixed-replacement-corruption".to_owned());
-    let resolved = resolved_intent_with_size(FederationSize(1));
+    let resolved = minimum_resolved_intent();
     client
         .inner
         .store
@@ -5252,7 +5533,7 @@ async fn recovery_rejects_mixed_quote_and_replacement_authority() {
             TestIdentity::fi_id(),
             formation_id.clone(),
             resolved.clone(),
-            vec![seat_progress(0)],
+            minimum_seat_progress(),
             crate::db::FormationCreationMode::Pinned,
             None,
         )
@@ -5495,7 +5776,7 @@ async fn partial_seat_recovery_projects_payment_readiness_after_replacement() {
     )
     .await;
     let formation_id = FormationId("partialpaymentreadiness".to_owned());
-    let intent = resolved_intent_with_size(FederationSize(2));
+    let intent = minimum_resolved_intent();
     client
         .inner
         .store
@@ -5503,26 +5784,42 @@ async fn partial_seat_recovery_projects_payment_readiness_after_replacement() {
             TestIdentity::fi_id(),
             formation_id.clone(),
             intent.clone(),
-            vec![seat_progress(0), seat_progress(1)],
+            minimum_seat_progress(),
             crate::db::FormationCreationMode::Pinned,
             None,
         )
         .await
         .unwrap();
-    let first_quote = signed_quote(0, &intent, [51; 32]);
-    let second_quote = signed_quote(1, &intent, [52; 32]);
-    client
-        .inner
-        .store
-        .store_quote(&formation_id, 0, first_quote)
-        .await
-        .unwrap();
-    client
-        .inner
-        .store
-        .store_quote(&formation_id, 1, second_quote.clone())
-        .await
-        .unwrap();
+    let quotes = (0..MIN_FEDERATION_SIZE)
+        .map(|index| {
+            signed_quote(
+                usize::from(index),
+                &intent,
+                [51 + u8::try_from(index).unwrap(); 32],
+            )
+        })
+        .collect::<Vec<_>>();
+    for (index, quote) in quotes.iter().enumerate() {
+        client
+            .inner
+            .store
+            .store_quote(&formation_id, u16::try_from(index).unwrap(), quote.clone())
+            .await
+            .unwrap();
+    }
+    for index in 2..MIN_FEDERATION_SIZE {
+        client
+            .inner
+            .store
+            .record_seat_accepted(
+                &formation_id,
+                index,
+                SeatId::from(QuoteId([u8::try_from(index).unwrap(); 32])),
+                guardian_fee_account(u8::try_from(index).unwrap() + 60),
+            )
+            .await
+            .unwrap();
+    }
     let status = client
         .inner
         .store
@@ -5562,13 +5859,14 @@ async fn partial_seat_recovery_projects_payment_readiness_after_replacement() {
     client
         .inner
         .store
-        .clear_quote(&formation_id, 1, &second_quote)
+        .clear_quote(&formation_id, 1, &quotes[1])
         .await
         .unwrap();
+    let replacement_quote = signed_quote(1, &intent, [53; 32]);
     client
         .inner
         .store
-        .store_quote(&formation_id, 1, signed_quote(1, &intent, [53; 32]))
+        .store_quote(&formation_id, 1, replacement_quote.clone())
         .await
         .unwrap();
 
@@ -5583,6 +5881,15 @@ async fn partial_seat_recovery_projects_payment_readiness_after_replacement() {
         FormationPhase::AwaitingPaymentReadiness
     );
     assert_eq!(payment_requirements(&recovered).seats.len(), 1);
+    let recovery = active_recovery(
+        client
+            .inner
+            .store
+            .load_recovery(TestIdentity::fi_id())
+            .await
+            .unwrap(),
+    );
+    assert_eq!(recovery.seats[1].signed_quote, Some(replacement_quote));
 }
 
 #[tokio::test]
@@ -7841,8 +8148,8 @@ fn compatible_intent() -> FormationIntent {
         FederationSize(MIN_FEDERATION_SIZE),
         PlanPreference::InfiniteBestEffort,
         FedimintdVersionRange::new(
-            "0.11.1".parse().expect("range minimum parses"),
-            "0.11.3".parse().expect("range maximum parses"),
+            "0.11.1+fedi".parse().expect("range minimum parses"),
+            "0.11.3+fedi".parse().expect("range maximum parses"),
         )
         .expect("test range is ordered"),
     )
@@ -7853,12 +8160,14 @@ fn compatible_intent() -> FormationIntent {
 fn fedimintd_range_and_dkg_identity_enforce_separate_boundaries() {
     let range = FedimintdVersionRange::new(
         "0.11.1-fedi17+fedi".parse().expect("minimum parses"),
-        "0.11.3".parse().expect("maximum parses"),
+        "0.11.3+fedi".parse().expect("maximum parses"),
     )
     .expect("ordered release range");
 
     assert!(range.contains(&"0.11.1-fedi99+fedi".parse().expect("version parses")));
     assert!(range.contains(&"0.11.2+fedi".parse().expect("version parses")));
+    assert!(!range.contains(&"0.11.2".parse().expect("version parses")));
+    assert!(!range.contains(&"0.11.2+acme".parse().expect("version parses")));
     assert!(!range.contains(&"0.11.3+fedi".parse().expect("version parses")));
     assert!(
         range.overlaps_dkg(
@@ -7878,15 +8187,30 @@ fn fedimintd_range_and_dkg_identity_enforce_separate_boundaries() {
     );
     assert!(
         FedimintdVersionRange::new(
-            "0.11.2".parse().expect("minimum parses"),
-            "0.11.2".parse().expect("maximum parses"),
+            "0.11.2+fedi".parse().expect("minimum parses"),
+            "0.11.2+fedi".parse().expect("maximum parses"),
         )
         .is_err()
     );
+    for (minimum, maximum) in [
+        ("0.11.1", "0.11.3+fedi"),
+        ("0.11.1+fedi", "0.11.3"),
+        ("0.11.1+acme", "0.11.3+acme"),
+    ] {
+        assert!(
+            FedimintdVersionRange::new(
+                minimum.parse().expect("minimum parses"),
+                maximum.parse().expect("maximum parses"),
+            )
+            .is_err(),
+            "{minimum}..{maximum} must not enter Fedi-only policy"
+        );
+    }
     assert!(
         serde_json::from_value::<FedimintdVersionRange>(serde_json::json!({
             "minimum": {"major": 0, "minor": 11, "patch": 2},
-            "maximum_exclusive": {"major": 0, "minor": 11, "patch": 1}
+            "maximum_exclusive": {"major": 0, "minor": 11, "patch": 1},
+            "vendor": "fedi"
         }))
         .is_err()
     );
@@ -7894,6 +8218,7 @@ fn fedimintd_range_and_dkg_identity_enforce_separate_boundaries() {
         serde_json::from_value::<FedimintdVersionRange>(serde_json::json!({
             "minimum": {"major": 0, "minor": 11, "patch": 1},
             "maximum_exclusive": {"major": 0, "minor": 12, "patch": 0},
+            "vendor": "fedi",
             "include_prereleases": false
         }))
         .is_err()
@@ -7919,6 +8244,31 @@ fn resolved_intent_requires_an_allowed_fedi_dkg_identity() {
 }
 
 #[test]
+fn resolved_intent_deserialization_enforces_every_construction_invariant() {
+    let valid = serde_json::to_value(resolved_intent()).expect("resolved intent serializes");
+    for mutation in [
+        ("federation_name", serde_json::json!("")),
+        (
+            "federation_size",
+            serde_json::json!(MIN_FEDERATION_SIZE - 1),
+        ),
+        ("max_total_msats", serde_json::json!(0)),
+        (
+            "fedimintd_dkg_version",
+            serde_json::json!({"major": 0, "minor": 12, "vendor": "fedi"}),
+        ),
+    ] {
+        let mut value = valid.clone();
+        value[mutation.0] = mutation.1;
+        assert!(
+            serde_json::from_value::<ResolvedFormationIntent>(value).is_err(),
+            "{} must remain a resolved-intent invariant",
+            mutation.0
+        );
+    }
+}
+
+#[test]
 fn spending_cap_rejects_zero_and_roundtrips_through_the_strict_schema() {
     assert!(matches!(
         intent().with_max_total_msats(0),
@@ -7929,7 +8279,7 @@ fn spending_cap_rejects_zero_and_roundtrips_through_the_strict_schema() {
             "federation_name": null,
             "federation_size": 7,
             "plan": "infinite_best_effort",
-            "fedimintd_versions": {"minimum":{"major":0,"minor":11,"patch":1},"maximum_exclusive":{"major":0,"minor":11,"patch":2}},
+            "fedimintd_versions": {"minimum":{"major":0,"minor":11,"patch":1},"maximum_exclusive":{"major":0,"minor":11,"patch":2},"vendor":"fedi"},
             "max_total_msats": 0,
         }))
         .is_err()
@@ -7964,7 +8314,7 @@ fn spending_cap_rejects_zero_and_roundtrips_through_the_strict_schema() {
             "federation_name": null,
             "federation_size": 7,
             "plan": "infinite_best_effort",
-            "fedimintd_versions": {"minimum":{"major":0,"minor":11,"patch":1},"maximum_exclusive":{"major":0,"minor":11,"patch":2}},
+            "fedimintd_versions": {"minimum":{"major":0,"minor":11,"patch":1},"maximum_exclusive":{"major":0,"minor":11,"patch":2},"vendor":"fedi"},
             "max_total_msat": 5,
         }))
         .is_err()
@@ -8054,7 +8404,7 @@ async fn over_cap_paid_formation_parks_with_both_numbers() {
         FormationPhase::AwaitingPaymentReadiness
     );
     assert_eq!(
-        formation(&reopened_status).intent.max_total_msats,
+        formation(&reopened_status).intent.max_total_msats(),
         Some(cap)
     );
     assert_eq!(
@@ -8154,13 +8504,13 @@ async fn selected_formation_persists_and_enforces_its_compatible_release() {
     let formed = formation(&client.status()).clone();
     assert_eq!(formed.phase, FormationPhase::Formed);
     assert_eq!(
-        formed.intent.fedimintd_dkg_version,
-        fedimintd_version().dkg_version()
+        formed.intent.fedimintd_dkg_version(),
+        &fedimintd_version().dkg_version()
     );
     assert_eq!(
         formed
             .intent
-            .fedimintd_versions
+            .fedimintd_versions()
             .maximum_exclusive()
             .to_string(),
         "0.11.3"
@@ -8261,13 +8611,13 @@ async fn reopen_preserves_the_selected_dkg_identity_and_accepts_patch_skew() {
     let reopened = open_client(database, payments, fman_state, FmanConfig::paid()).await;
     let persisted = formation(&reopened.status()).clone();
     assert_eq!(
-        persisted.intent.fedimintd_dkg_version,
-        fedimintd_version().dkg_version()
+        persisted.intent.fedimintd_dkg_version(),
+        &fedimintd_version().dkg_version()
     );
     assert_eq!(
         persisted
             .intent
-            .fedimintd_versions
+            .fedimintd_versions()
             .maximum_exclusive()
             .to_string(),
         "0.11.3"
@@ -8326,8 +8676,8 @@ async fn persisted_formation_rejects_a_cross_minor_replacement() {
     assert!(matches!(error, FiError::SeatRefused { .. }));
     let persisted = formation(&client.status()).clone();
     assert_eq!(
-        persisted.intent.fedimintd_dkg_version,
-        fedimintd_version().dkg_version()
+        persisted.intent.fedimintd_dkg_version(),
+        &fedimintd_version().dkg_version()
     );
     assert!(matches!(
         persisted.action_required,
@@ -11383,7 +11733,7 @@ async fn under_cap_self_authorization_survives_reopen_and_resume() {
     reopened.resume().await.unwrap();
     let status = reopened.status();
     assert_eq!(formation(&status).phase, FormationPhase::Formed);
-    assert_eq!(formation(&status).intent.max_total_msats, Some(cap));
+    assert_eq!(formation(&status).intent.max_total_msats(), Some(cap));
 }
 
 #[tokio::test]

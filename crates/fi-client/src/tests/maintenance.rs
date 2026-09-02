@@ -145,8 +145,8 @@ async fn pre_formed_rejection_has_no_connector_or_metadata_effect() {
         .initialize(
             TestIdentity::fi_id(),
             FormationId("maintenance-pre-formed".to_owned()),
-            resolved_intent_with_size(FederationSize(1)),
-            vec![seat_progress(0)],
+            minimum_resolved_intent(),
+            minimum_seat_progress(),
             crate::db::FormationCreationMode::Pinned,
             None,
         )

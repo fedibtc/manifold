@@ -1595,16 +1595,26 @@ fn parse_fedimintd_range(
     minimum: Option<&str>,
     maximum_exclusive: Option<&str>,
 ) -> anyhow::Result<FedimintdVersionRange> {
+    fedimintd_range_from_bounds(
+        minimum
+            .map(str::parse)
+            .transpose()
+            .context("parse --fedimintd-version-minimum as a semantic version")?,
+        maximum_exclusive
+            .map(str::parse)
+            .transpose()
+            .context("parse --fedimintd-version-maximum-exclusive as a semantic version")?,
+    )
+}
+
+fn fedimintd_range_from_bounds(
+    minimum: Option<FedimintdVersion>,
+    maximum_exclusive: Option<FedimintdVersion>,
+) -> anyhow::Result<FedimintdVersionRange> {
     match (minimum, maximum_exclusive) {
-        (Some(minimum), Some(maximum)) => FedimintdVersionRange::new(
-            minimum
-                .parse()
-                .context("parse --fedimintd-version-minimum as a semantic version")?,
-            maximum
-                .parse()
-                .context("parse --fedimintd-version-maximum-exclusive as a semantic version")?,
-        )
-        .map_err(Into::into),
+        (Some(minimum), Some(maximum)) => {
+            FedimintdVersionRange::new(minimum, maximum).map_err(Into::into)
+        }
         (None, None) => FedimintdVersionRange::one_core(
             FEDIMINTD_VERSION_0_1
                 .parse::<FedimintdVersion>()
@@ -1756,19 +1766,10 @@ fn load_intent(args: &CreateArgs) -> anyhow::Result<FormationIntent> {
     if let Some(value) = args.max_total_msats {
         file.max_total_msats = Some(value);
     }
-    let fedimintd_versions = match (
+    let fedimintd_versions = fedimintd_range_from_bounds(
         file.fedimintd_version_minimum,
         file.fedimintd_version_maximum_exclusive,
-    ) {
-        (Some(minimum), Some(maximum)) => FedimintdVersionRange::new(minimum, maximum)?,
-        (None, None) => FedimintdVersionRange::one_core(
-            FEDIMINTD_VERSION_0_1
-                .parse::<FedimintdVersion>()
-                .expect("the supported fedimintd version constant is valid SemVer")
-                .core(),
-        )?,
-        _ => bail!("fedimintd version range requires both minimum and maximum-exclusive bounds"),
-    };
+    )?;
     let intent = FormationIntent::new(
         file.federation_name,
         file.federation_size
@@ -3511,8 +3512,8 @@ mod tests {
             r#"
 federation_name = "file"
 federation_size = 7
-fedimintd_version_minimum = "0.11.1"
-fedimintd_version_maximum_exclusive = "0.11.3"
+fedimintd_version_minimum = "0.11.1+fedi"
+fedimintd_version_maximum_exclusive = "0.11.3+fedi"
 max_total_msats = 1000
 "#,
         )

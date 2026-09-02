@@ -106,10 +106,16 @@ impl FedimintdDkgVersion {
         (self.major, self.minor)
     }
 
+    /// Exact optional vendor identity compared by Fedimint DKG.
+    #[must_use]
+    pub fn vendor(&self) -> Option<&str> {
+        self.vendor.as_deref()
+    }
+
     /// Whether this compatibility identity names the required Fedi build.
     #[must_use]
     pub fn is_fedi(&self) -> bool {
-        self.vendor.as_deref() == Some("fedi")
+        self.vendor.as_deref() == Some(crate::FEDIMINTD_VENDOR_0_1)
     }
 }
 

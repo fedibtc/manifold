@@ -1113,7 +1113,7 @@ where
             })
             .collect::<FiResult<Vec<_>>>()?;
         Ok(FormedLiquidityContext {
-            federation_name: recovery.snapshot.intent.federation_name,
+            federation_name: recovery.snapshot.intent.federation_name().clone(),
             invite_code,
             network: consensus.network,
             federation,

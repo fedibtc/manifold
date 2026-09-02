@@ -1,6 +1,10 @@
 This project uses the Linked Specs convention; consult the `linked-specs`
 skill before working with specs or governed code.
 
+Before changing the pinned Fedimint source, bundled daemon version/vendor
+wiring, or FI release-cohort rules, read the bundled-guardian requirements in
+[`SECURITY.md`](SECURITY.md).
+
 Before adding, removing, or changing a tracing event marked
 `safe_to_share = true`, consult the `safe-to-share-tracing` skill.
 

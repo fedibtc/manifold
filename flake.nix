@@ -1087,9 +1087,11 @@
         # Single source of truth for the bundled fedimintd's fork release.
         # `fleetManagerReleaseSync` binds this to the Fedimint source revision,
         # the package README, and the OCI label. DKG uses a separate typed
-        # major/minor/vendor identity, independent of the fork tag revision.
+        # exact advertised release; Fedimint derives the distinct
+        # major/minor/vendor DKG identity from it.
         fedimintdRelease = "0.11.2-fedi2";
-        fedimintdDkgVersion = "0.11.2+fedi";
+        fedimintdAdvertisedVersion = "0.11.2+fedi";
+        fedimintdDkgIdentity = "0.11+fedi";
         # `fedimintd` exports this upstream package version in `app_start_ts`.
         # It deliberately differs from the Fedi release tag above.
         fedimintdMetricVersion = "0.11.2";
@@ -1269,25 +1271,61 @@
             '';
 
         # Anti-drift: bind the Fedimint release tag in flake.nix to its resolved
-        # revision in flake.lock, the separate FEDIMINTD_VERSION_0_1 DKG
-        # identity, the package README, and the OCI label.
-        fleetManagerReleaseSync = pkgs.runCommand "fleet-manager-release-sync" { } ''
-          release="${fedimintdRelease}"
-          tag="v''${release}"
+        # revision in flake.lock, the separate exact advertised release, the
+        # package README, and the OCI label.
+        fleetManagerReleaseSync =
+          pkgs.runCommand "fleet-manager-release-sync"
+            {
+              nativeBuildInputs = [ pkgs.gawk ];
+            }
+            ''
+              release="${fedimintdRelease}"
+              tag="v''${release}"
+              source=${fedimintPatched}
 
-          check() {
-            grep -q -- "$2" "$1" \
-              || { echo "release drift: $1 does not contain '$2' (release $release)" >&2; exit 1; }
-          }
+              check() {
+                grep -q -- "$2" "$1" \
+                  || { echo "release drift: $1 does not contain '$2' (release $release)" >&2; exit 1; }
+              }
 
-          check ${./flake.nix} "fedibtc/fedimint/v0.11.2-fedi2"
-          check ${./flake.lock} '"rev": "${fedimintSourceRev}"'
-          check ${./crates/service-fleet-manager/src/lib.rs} "FEDIMINTD_VERSION_0_1: &str = \"${fedimintdDkgVersion}\""
-          check ${./crates/fman/bin/build.rs} "FEDIMINT_SOURCE_REV: &str = \"${fedimintSourceRev}\""
-          check ${./packages/fleet-manager/README.md} "$tag"
+              grep -Fqx \
+                "    fedimint.url = \"github:fedibtc/fedimint/v''${release}\";" \
+                ${./flake.nix} \
+                || { echo "release drift: fedimint input does not select v$release" >&2; exit 1; }
+              check ${./flake.lock} '"rev": "${fedimintSourceRev}"'
+              check ${./crates/service-fleet-manager/src/lib.rs} "FEDIMINTD_VERSION_0_1: &str = \"${fedimintdAdvertisedVersion}\""
+              check ${./crates/fman/bin/build.rs} "FEDIMINT_SOURCE_REV: &str = \"${fedimintSourceRev}\""
+              check ${./packages/fleet-manager/README.md} "$tag"
 
-          touch "$out"
-        '';
+              fork_core="''${release%%-fedi*}"
+              advertised="${fedimintdAdvertisedVersion}"
+              advertised_core="''${advertised%%+*}"
+              test "$fork_core" = "$advertised_core" \
+                || { echo "release drift: fork $fork_core != advertised $advertised_core" >&2; exit 1; }
+              source_version=$(
+                awk '
+                  /^\[workspace\.package\]$/ { in_workspace_package = 1; next }
+                  /^\[/ { in_workspace_package = 0 }
+                  in_workspace_package && /^version[[:space:]]*=/ {
+                    gsub(/^[^"]*"|".*$/, "")
+                    print
+                    exit
+                  }
+                ' "$source/Cargo.toml"
+              )
+              test "$source_version" = "$advertised_core" \
+                || { echo "release drift: bundled source $source_version != advertised $advertised_core" >&2; exit 1; }
+              advertised_vendor="''${advertised#*+}"
+              check ${./crates/service-fleet-manager/src/lib.rs} \
+                "FEDIMINTD_VENDOR_0_1: &str = \"$advertised_vendor\""
+              derived_dkg="''${advertised_core%.*}+''${advertised_vendor}"
+              test "$derived_dkg" = "${fedimintdDkgIdentity}" \
+                || { echo "release drift: derived DKG $derived_dkg != ${fedimintdDkgIdentity}" >&2; exit 1; }
+              check ${./packages/fleet-manager/README.md} "${fedimintdAdvertisedVersion}"
+              check ${./packages/fleet-manager/README.md} "${fedimintdDkgIdentity}"
+
+              touch "$out"
+            '';
 
         # The Markdown inventory gives the privacy rationale; this compact
         # manifest gives source registration a fail-closed mechanical boundary.

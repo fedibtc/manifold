@@ -5,6 +5,7 @@
 mod db;
 mod discovery;
 mod error;
+mod fedimintd_version_range;
 mod formation;
 mod guardian_fee_ppm;
 mod liquidity;

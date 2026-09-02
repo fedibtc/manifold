@@ -777,9 +777,6 @@ fn admit_eligible_payload(
         return Err(AdvertisementRejection::UnsupportedFedimintdVersion);
     }
     let fedimintd_dkg_version = version.dkg_version();
-    if !fedimintd_dkg_version.is_fedi() {
-        return Err(AdvertisementRejection::UnsupportedFedimintdVersion);
-    }
     let advertised_price_msats = payload
         .plans
         .iter()

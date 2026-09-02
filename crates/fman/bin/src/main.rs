@@ -21,7 +21,7 @@ use anyhow::Context as _;
 use clap::{Parser, ValueEnum};
 use fedi_decentralized_manifold_environment::{ManifoldEnvironment, ManifoldEnvironmentProfile};
 use fedi_decentralized_service_fleet_manager::{
-    FLEET_MANAGER_ALPN, FleetManagerServiceServer, GUARDIAN_TELEMETRY_ALPN,
+    FEDIMINTD_VENDOR_0_1, FLEET_MANAGER_ALPN, FleetManagerServiceServer, GUARDIAN_TELEMETRY_ALPN,
     GuardianTelemetryApiServer, Locator,
 };
 use fedi_iroh_rpc::IrohProtocol;
@@ -583,7 +583,7 @@ async fn run_bundled_fedimintd(
         fedimintd::run_with_extra_logging_layer(
             manifold_modules(),
             fedimint_core::fedimint_build_code_version_env!(),
-            Some("fedi"),
+            Some(FEDIMINTD_VENDOR_0_1),
             layer,
         )
         .await
@@ -591,7 +591,7 @@ async fn run_bundled_fedimintd(
         fedimintd::run(
             manifold_modules(),
             fedimint_core::fedimint_build_code_version_env!(),
-            Some("fedi"),
+            Some(FEDIMINTD_VENDOR_0_1),
         )
         .await
     }

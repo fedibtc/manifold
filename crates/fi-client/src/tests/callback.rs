@@ -129,8 +129,8 @@ async fn callback_is_durable_private_state_and_old_schemas_fail_closed() {
         .initialize(
             TestIdentity::fi_id(),
             FormationId("callback-formation".to_owned()),
-            resolved_intent_with_size(FederationSize(1)),
-            vec![seat_progress(0)],
+            minimum_resolved_intent(),
+            minimum_seat_progress(),
             crate::db::FormationCreationMode::Pinned,
             Some(callback.clone()),
         )
@@ -175,8 +175,8 @@ async fn callback_is_durable_private_state_and_old_schemas_fail_closed() {
         .initialize(
             TestIdentity::fi_id(),
             FormationId("schema-nine".to_owned()),
-            resolved_intent_with_size(FederationSize(1)),
-            vec![seat_progress(0)],
+            minimum_resolved_intent(),
+            minimum_seat_progress(),
             crate::db::FormationCreationMode::Pinned,
             None,
         )
@@ -220,8 +220,8 @@ async fn callback_is_durable_private_state_and_old_schemas_fail_closed() {
         .initialize(
             TestIdentity::fi_id(),
             FormationId("schema-future".to_owned()),
-            resolved_intent_with_size(FederationSize(1)),
-            vec![seat_progress(0)],
+            minimum_resolved_intent(),
+            minimum_seat_progress(),
             crate::db::FormationCreationMode::Pinned,
             None,
         )
@@ -230,7 +230,7 @@ async fn callback_is_durable_private_state_and_old_schemas_fail_closed() {
     future_client
         .inner
         .store
-        .set_schema_version_for_test(12)
+        .set_schema_version_for_test(13)
         .await;
     assert!(matches!(
         future_client
@@ -239,7 +239,7 @@ async fn callback_is_durable_private_state_and_old_schemas_fail_closed() {
             .load_recovery(TestIdentity::fi_id())
             .await,
         Err(FiError::Storage(error))
-            if error.contains("unsupported FI storage schema version 12")
+            if error.contains("unsupported FI storage schema version 13")
     ));
 }
 
@@ -266,8 +266,8 @@ async fn callback_schema_rejects_missing_current_field_and_hybrid_legacy_bytes()
         .initialize(
             TestIdentity::fi_id(),
             FormationId("missing-current-callback-field".to_owned()),
-            resolved_intent_with_size(FederationSize(1)),
-            vec![seat_progress(0)],
+            minimum_resolved_intent(),
+            minimum_seat_progress(),
             crate::db::FormationCreationMode::Pinned,
             None,
         )
@@ -281,7 +281,7 @@ async fn callback_schema_rejects_missing_current_field_and_hybrid_legacy_bytes()
             .load_recovery(TestIdentity::fi_id())
             .await,
         Err(FiError::Storage(error))
-            if error.contains("schema 11 formation omits dkg_completion_callback")
+            if error.contains("schema 12 formation omits dkg_completion_callback")
     ));
 
     let hybrid_database = MemDatabase::new().into_database();
@@ -299,8 +299,8 @@ async fn callback_schema_rejects_missing_current_field_and_hybrid_legacy_bytes()
         .initialize(
             TestIdentity::fi_id(),
             FormationId("hybrid-schema-nine".to_owned()),
-            resolved_intent_with_size(FederationSize(1)),
-            vec![seat_progress(0)],
+            minimum_resolved_intent(),
+            minimum_seat_progress(),
             crate::db::FormationCreationMode::Pinned,
             Some(callback),
         )
@@ -332,8 +332,8 @@ async fn callback_schema_rejects_missing_current_field_and_hybrid_legacy_bytes()
         .initialize(
             TestIdentity::fi_id(),
             FormationId("null-hybrid-schema-nine".to_owned()),
-            resolved_intent_with_size(FederationSize(1)),
-            vec![seat_progress(0)],
+            minimum_resolved_intent(),
+            minimum_seat_progress(),
             crate::db::FormationCreationMode::Pinned,
             None,
         )

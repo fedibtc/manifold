@@ -15,7 +15,7 @@ rely on through the shared PeerBadge verifier, binding the returned subject
 to the event author. A document that passes `verify_advertisement_self_signature` alone
 proves nothing about who published it or whether anyone vouches for them.
 
-The v1 advertisement payload's `service_pubkey` — the FMan's
+The v2 advertisement payload's `service_pubkey` — the FMan's
 commitment-signing key, which locators carry and FIs verify signed FMan
 responses against — is attested only by the chain above: it sits inside the
 self-signed payload, whose signer the consumer pipeline binds to the

@@ -3,6 +3,8 @@
 #[cfg(test)]
 mod test_support;
 
+#[cfg(test)]
+use fedimint_core::db::IDatabaseTransactionOpsCore as _;
 use fedimint_core::db::{
     AutocommitError, Database, DatabaseError, DatabaseValue, DecodingError,
     IDatabaseTransactionOpsCoreTyped as _,
@@ -19,9 +21,9 @@ use tokio::sync::Mutex;
 use fedi_decentralized_manifold_environment::ManifoldEnvironment;
 use fedi_decentralized_peer_badge_verifier::PeerBadgeVerifierProvenance;
 use fedi_decentralized_service_fleet_manager::{
-    DkgCompletionCallback, FederationId, FiId, FormationSeatBinding, GetQuoteResponse,
-    GuardianCode, GuardianFeeAccount, InviteCode, Locator, QuoteId, SeatId, SignedResponse,
-    Timestamp,
+    DkgCompletionCallback, FEDIMINTD_VENDOR_0_1, FederationId, FiId, FormationSeatBinding,
+    GetQuoteResponse, GuardianCode, GuardianFeeAccount, InviteCode, Locator, QuoteId, SeatId,
+    SignatureVerified, SignedResponse, Timestamp,
 };
 use nostr_sdk::{Event, PublicKey};
 use stability_pool_common::Account;
@@ -33,7 +35,7 @@ use crate::{
     ResolvedFormationIntent, SeatPaymentRequirement, SeatPhase, SeatProgress,
 };
 
-const STORAGE_SCHEMA_VERSION: u16 = 11;
+const STORAGE_SCHEMA_VERSION: u16 = 12;
 const FORMATION_TX_MAX_ATTEMPTS: usize = 10;
 
 #[derive(Clone, Copy)]
@@ -120,7 +122,7 @@ struct StoredFormation {
     phase: StoredFormationPhase,
     intent: ResolvedFormationIntent,
     seat_count: u16,
-    /// Explicit creation contract. This is required in schema 11 so an
+    /// Explicit creation contract. This is required in schema 12 so an
     /// explicitly absent selected-bootstrap payer remains distinguishable
     /// from legacy pinned formation.
     creation_mode: FormationCreationMode,
@@ -154,6 +156,14 @@ struct StoredFormation {
     /// generation future is polled. Unlike commercial authorization, this is
     /// the value-safety gate for payer switching and abandon.
     payment_outputs_started: bool,
+    /// Last seat checkpoint committed through the formation row.
+    ///
+    /// Besides diagnostic value, this makes concurrent checkpoints for
+    /// different seat rows write distinct formation values. The database can
+    /// then detect the conflict and retry one transaction against its newly
+    /// durable sibling before deriving the aggregate phase.
+    #[serde(default)]
+    last_accepted_seat_index: FieldPresence<u16>,
     invite_code: Option<InviteCode>,
     /// Exact formation metadata target, persisted before its first vote.
     formation_meta_target: Option<FormationMetaTarget>,
@@ -201,7 +211,7 @@ impl<T: serde::Serialize> serde::Serialize for FieldPresence<T> {
     {
         match self {
             Self::Missing => Err(serde::ser::Error::custom(
-                "missing legacy callback field cannot be serialized",
+                "missing legacy recovery field cannot be serialized",
             )),
             Self::Present(value) => value.serialize(serializer),
         }
@@ -447,7 +457,23 @@ enum StoredFormationPhase {
 
 impl DatabaseValue for StoredFormation {
     fn from_bytes(data: &[u8], _modules: &ModuleDecoderRegistry) -> Result<Self, DecodingError> {
-        serde_json::from_slice(data).map_err(DecodingError::other)
+        let mut value =
+            serde_json::from_slice::<serde_json::Value>(data).map_err(DecodingError::other)?;
+        if value
+            .get("schema_version")
+            .and_then(serde_json::Value::as_u64)
+            == Some(11)
+        {
+            // Schema 11 predates the explicit release vendor and concurrent-seat
+            // checkpoint discriminator. Fill only those historical omissions so
+            // typed database access can reach `validate_schema` and return the
+            // documented reset-required error. Current-schema omissions still
+            // fail closed instead of receiving legacy defaults.
+            value["intent"]["fedimintd_versions"]["vendor"] =
+                serde_json::Value::String(FEDIMINTD_VENDOR_0_1.to_owned());
+            value["last_accepted_seat_index"] = serde_json::Value::Null;
+        }
+        serde_json::from_value(value).map_err(DecodingError::other)
     }
 
     fn to_bytes(&self) -> Vec<u8> {
@@ -1161,6 +1187,29 @@ impl FiStore {
     }
 
     #[cfg(test)]
+    /// Replace one durable quote without applying the production transition
+    /// guards, so recovery validation can be exercised against corruption.
+    pub(crate) async fn replace_quote_for_test(
+        &self,
+        index: u16,
+        signed_quote: SignedResponse<GetQuoteResponse>,
+    ) {
+        let mut dbtx = self.database.begin_transaction().await;
+        let formation = dbtx
+            .get_value(&ActiveFormationKey)
+            .await
+            .expect("test formation exists");
+        let key = SeatKey {
+            formation_id: formation.formation_id.0,
+            index,
+        };
+        let mut seat = dbtx.get_value(&key).await.expect("test seat exists");
+        seat.signed_quote = Some(signed_quote);
+        dbtx.insert_entry(&key, &seat).await;
+        dbtx.commit_tx().await;
+    }
+
+    #[cfg(test)]
     /// Rewrite the stored schema version to exercise fail-closed loading.
     pub(crate) async fn downgrade_schema_for_test(&self, schema_version: u16) {
         let mut dbtx = self.database.begin_transaction().await;
@@ -1188,6 +1237,43 @@ impl FiStore {
             .expect("stored formation is an object")
             .remove(field);
         serde_json::from_value::<StoredFormation>(value).is_err()
+    }
+
+    #[cfg(test)]
+    /// Remove one field from the raw active-formation JSON while preserving the
+    /// current schema marker.
+    pub(crate) async fn remove_recovery_field_for_test(&self, field: &str) {
+        let mut dbtx = self.database.begin_transaction().await;
+        let formation = dbtx
+            .get_value(&ActiveFormationKey)
+            .await
+            .expect("test formation exists");
+        let mut value = serde_json::to_value(formation).expect("stored formation serializes");
+        value
+            .as_object_mut()
+            .expect("stored formation is an object")
+            .remove(field);
+        dbtx.raw_insert_bytes(
+            &fedimint_core::db::DatabaseKeyPrefix::to_bytes(&ActiveFormationKey),
+            &serde_json::to_vec(&value).expect("test row serializes"),
+        )
+        .await
+        .expect("test row is inserted");
+        dbtx.commit_tx().await;
+    }
+
+    #[cfg(test)]
+    /// Replace the active formation with literal raw JSON so compatibility tests
+    /// exercise the exact historical wire shape rather than current serde.
+    pub(crate) async fn insert_raw_formation_for_test(&self, json: &str) {
+        let mut dbtx = self.database.begin_transaction().await;
+        dbtx.raw_insert_bytes(
+            &fedimint_core::db::DatabaseKeyPrefix::to_bytes(&ActiveFormationKey),
+            json.as_bytes(),
+        )
+        .await
+        .expect("raw test formation is inserted");
+        dbtx.commit_tx().await;
     }
 
     #[cfg(test)]
@@ -1294,6 +1380,7 @@ impl FiStore {
             });
         }
 
+        validate_retained_quotes(&recoveries, &stored.intent, fi_id, &stored.creation_mode)?;
         validate_payment_authorization(stored.payment_authorization.as_ref(), &recoveries)?;
         if stored.payment_reservation_release_intended && stored.payment_reservation_id.is_none() {
             // No write path commits a release intent without its reservation
@@ -1439,6 +1526,7 @@ impl FiStore {
                 payment_reservation_release_intended: false,
                 payment_authorization_recorded: false,
                 payment_outputs_started: false,
+                last_accepted_seat_index: FieldPresence::new(None),
                 invite_code: None,
                 formation_meta_target: None,
                 dkg_completion_callback: FieldPresence::new(dkg_completion_callback),
@@ -1579,6 +1667,7 @@ impl FiStore {
                         } else {
                             StoredFormationPhase::SeatsPartiallyCreated
                         };
+                        formation.last_accepted_seat_index = FieldPresence::new(Some(index));
                         dbtx.insert_entry(&ActiveFormationKey, &formation).await;
                         store.wait_before_hooked_formation_commit().await;
                         Ok(())
@@ -2830,7 +2919,7 @@ impl FiStore {
                         // new cap-bound authorization opportunity for exactly
                         // the newly quoted subset.
                         formation.payment_authorization_recorded = false;
-                        formation.intent.max_total_msats = Some(max_total_msats);
+                        formation.intent.set_max_total_msats(max_total_msats)?;
                         dbtx.insert_entry(&ActiveFormationKey, &formation).await;
                         Ok(())
                     })
@@ -3118,35 +3207,7 @@ fn payment_requirements(
         let Some(signed_quote) = &recovery.signed_quote else {
             continue;
         };
-        let quote = signed_quote
-            .verify(&recovery.progress.locator.service_pubkey)
-            .map_err(|error| {
-                FiError::Storage(format!(
-                    "invalid persisted quote for FI seat row {}: {error}",
-                    recovery.progress.index
-                ))
-            })?;
-        let request = &quote.terms.request;
-        let plan_matches = intent.plan.matches(&request.plan);
-        if request.fi_id != fi_id
-            || request.fedimintd_version.dkg_version() != intent.fedimintd_dkg_version
-            || !intent
-                .fedimintd_versions
-                .contains(&request.fedimintd_version)
-            || request.federation_size != intent.federation_size
-            || !plan_matches
-        {
-            return Err(FiError::Storage(format!(
-                "persisted quote for FI seat row {} does not match intent or identity",
-                recovery.progress.index
-            )));
-        }
-        quote.terms.check_coherent().map_err(|error| {
-            FiError::Storage(format!(
-                "persisted quote for FI seat row {} is incoherent: {error}",
-                recovery.progress.index
-            ))
-        })?;
+        let quote = verify_persisted_quote(recovery, signed_quote, intent, fi_id)?;
         let Some(payment) = &quote.terms.payment else {
             continue;
         };
@@ -3174,9 +3235,104 @@ fn payment_requirements(
     Ok((!seats.is_empty()).then(|| PaymentRequirements {
         authorization_id: payment_authorization_id(formation_id, total_msats, &seats),
         total_msats,
-        max_total_msats: intent.max_total_msats,
+        max_total_msats: intent.max_total_msats(),
         seats,
     }))
+}
+
+fn verify_persisted_quote(
+    recovery: &SeatRecovery,
+    signed_quote: &SignedResponse<GetQuoteResponse>,
+    intent: &ResolvedFormationIntent,
+    fi_id: FiId,
+) -> FiResult<SignatureVerified<GetQuoteResponse>> {
+    let quote = signed_quote
+        .verify(&recovery.progress.locator.service_pubkey)
+        .map_err(|error| {
+            FiError::Storage(format!(
+                "invalid persisted quote for FI seat row {}: {error}",
+                recovery.progress.index
+            ))
+        })?;
+    let request = &quote.terms.request;
+    if request.fi_id != fi_id
+        || request.fedimintd_version.dkg_version() != *intent.fedimintd_dkg_version()
+        || !intent
+            .fedimintd_versions()
+            .contains(&request.fedimintd_version)
+        || request.federation_size != intent.federation_size()
+        || !intent.plan().matches(&request.plan)
+    {
+        return Err(FiError::Storage(format!(
+            "persisted quote for FI seat row {} does not match intent or identity",
+            recovery.progress.index
+        )));
+    }
+    quote.terms.check_coherent().map_err(|error| {
+        FiError::Storage(format!(
+            "persisted quote for FI seat row {} is incoherent: {error}",
+            recovery.progress.index
+        ))
+    })?;
+    Ok(quote)
+}
+
+/// Validate every durable quote before recovery filters accepted rows out of
+/// payment readiness. Accepted seats still depend on their exact quote for
+/// replay, so they must satisfy the same persisted formation contract as
+/// unaccepted rows.
+fn validate_retained_quotes(
+    recoveries: &[SeatRecovery],
+    intent: &ResolvedFormationIntent,
+    fi_id: FiId,
+    creation_mode: &FormationCreationMode,
+) -> FiResult<()> {
+    for recovery in recoveries {
+        let Some(signed_quote) = &recovery.signed_quote else {
+            continue;
+        };
+        let quote = verify_persisted_quote(recovery, signed_quote, intent, fi_id)?;
+        if let FormationCreationMode::Selected {
+            payment_federation_id,
+        } = creation_mode
+            && let Some(quoted_payer) = quote
+                .terms
+                .payment
+                .as_ref()
+                .map(|payment| payment.federation_id())
+            && Some(quoted_payer) != payment_federation_id.as_ref()
+        {
+            return Err(FiError::Storage(format!(
+                "persisted quote for FI seat row {} names another selected payer (expected \
+                 {payment_federation_id:?}, got {:?})",
+                recovery.progress.index,
+                quote
+                    .terms
+                    .payment
+                    .as_ref()
+                    .map(|payment| payment.federation_id())
+            )));
+        }
+        if let Some((quote_id, effect)) = recovery.admission.authorized_effect() {
+            if quote.quote_id() != quote_id {
+                return Err(FiError::Storage(format!(
+                    "persisted FI seat row {} admission names another quote",
+                    recovery.progress.index
+                )));
+            }
+            let effect_matches = match effect {
+                AdmissionEffect::PaidOutput => quote.terms.payment.is_some(),
+                AdmissionEffect::FreePresentation => quote.terms.payment.is_none(),
+            };
+            if !effect_matches {
+                return Err(FiError::Storage(format!(
+                    "persisted FI seat row {} admission effect disagrees with its quote",
+                    recovery.progress.index
+                )));
+            }
+        }
+    }
+    Ok(())
 }
 
 pub(crate) fn replacement_requirements(
@@ -3319,7 +3475,7 @@ fn validate_fresh_admission(
 }
 
 fn validate_formation_progress(formation: &StoredFormation, seats: &[StoredSeat]) -> FiResult<()> {
-    if formation.seat_count != formation.intent.federation_size.0
+    if formation.seat_count != formation.intent.federation_size().0
         || seats.len() != usize::from(formation.seat_count)
     {
         return Err(FiError::Storage(
@@ -3489,6 +3645,22 @@ fn validate_formation_progress(formation: &StoredFormation, seats: &[StoredSeat]
             "persisted FI formation phase disagrees with accepted-seat rows".to_owned(),
         ));
     }
+    match formation.last_accepted_seat_index.clone().into_value() {
+        None if created == 0 => {}
+        Some(index)
+            if usize::from(index) < seats.len() && seats[usize::from(index)].seat_id.is_some() => {}
+        None => {
+            return Err(FiError::Storage(
+                "persisted FI accepted seats lack their formation checkpoint discriminator"
+                    .to_owned(),
+            ));
+        }
+        Some(index) => {
+            return Err(FiError::Storage(format!(
+                "persisted FI formation checkpoint discriminator names unaccepted seat {index}"
+            )));
+        }
+    }
 
     if formation.phase == StoredFormationPhase::Formed {
         if formation.invite_code.is_none() {
@@ -3609,6 +3781,10 @@ fn validate_schema(formation: &StoredFormation) -> FiResult<()> {
                 "; this pre-production schema predates durable Fedimint compatibility ranges and \
                  DKG cohort selection; reset this unreleased FI namespace and restart formation"
             }
+            11 => {
+                "; schema 11 predates serialized concurrent seat checkpoints and cannot be \
+                 migrated safely; reset this unreleased FI namespace and restart formation"
+            }
             _ => "",
         };
         return Err(FiError::Storage(format!(
@@ -3621,23 +3797,28 @@ fn validate_schema(formation: &StoredFormation) -> FiResult<()> {
             "current FI storage record is missing its owner identity".to_owned(),
         ));
     }
+    if !formation.last_accepted_seat_index.is_present() {
+        return Err(FiError::Storage(
+            "current FI storage record is missing its accepted-seat checkpoint discriminator"
+                .to_owned(),
+        ));
+    }
     match &formation.creation_mode {
         FormationCreationMode::Pinned => {}
         FormationCreationMode::Selected {
             payment_federation_id,
         } => {
-            if payment_federation_id.is_some() && formation.intent.max_total_msats.is_none() {
+            if payment_federation_id.is_some() && formation.intent.max_total_msats().is_none() {
                 return Err(FiError::Storage(
                     "paid selected FI storage record is missing its spending cap".to_owned(),
                 ));
             }
         }
     }
-    if !formation.intent.fedimintd_dkg_version.is_fedi()
-        || !formation
-            .intent
-            .fedimintd_versions
-            .overlaps_dkg(&formation.intent.fedimintd_dkg_version)
+    if !formation
+        .intent
+        .fedimintd_versions()
+        .overlaps_dkg(&formation.intent.fedimintd_dkg_version())
     {
         return Err(FiError::Storage(
             "persisted FI Fedimint DKG identity is outside its version policy".to_owned(),
@@ -3645,7 +3826,7 @@ fn validate_schema(formation: &StoredFormation) -> FiResult<()> {
     }
     if !formation.dkg_completion_callback.is_present() {
         return Err(FiError::Storage(
-            "persisted FI schema 11 formation omits dkg_completion_callback".to_owned(),
+            "persisted FI schema 12 formation omits dkg_completion_callback".to_owned(),
         ));
     }
     Ok(())

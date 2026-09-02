@@ -336,7 +336,12 @@ Each federation record is a compact recovery index. It is not the formation tran
   // wants this for UX.
   formation_intent: {
     federation_size: 10,
-    fedimintd_version: "0.8.0",
+    fedimintd_versions: {
+      minimum: { major: 0, minor: 11, patch: 1 },
+      maximum_exclusive: { major: 0, minor: 11, patch: 3 },
+      vendor: "fedi"
+    },
+    fedimintd_dkg_version: { major: 0, minor: 11, vendor: "fedi" },
     module_config: "BASE64URL_CBOR_OR_NULL"
   },
 

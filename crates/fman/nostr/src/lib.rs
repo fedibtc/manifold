@@ -21,14 +21,14 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use anyhow::Context as _;
+use fedi_decentralized_domain::FMAN_HOLDER_AUTHORIZATION_MAX_FUTURE_SKEW_SECS;
 pub use fedi_decentralized_domain::{AdmittedSetupPaymentFederations, HolderAuthorizationEnvelope};
-use fedi_decentralized_domain::{FMAN_HOLDER_AUTHORIZATION_MAX_FUTURE_SKEW_SECS, ProtocolV1};
 use fedi_decentralized_manifold_environment::ManifoldEnvironmentProfile;
 use fedi_decentralized_nostr::fman::HolderAuthorizationEventContent;
 pub use fedi_decentralized_nostr::fman::{
     AdvertisementDocument, AdvertisementPayload, ApiEndpoint, Availability,
-    IROH_API_ENDPOINT_TRANSPORT, IROH_API_ENDPOINT_URL_SCHEME, sign_advertisement,
-    verify_advertisement_self_signature,
+    FMAN_ADVERTISEMENT_PROTOCOL_VERSION, IROH_API_ENDPOINT_TRANSPORT, IROH_API_ENDPOINT_URL_SCHEME,
+    sign_advertisement, verify_advertisement_self_signature,
 };
 use fedi_decentralized_nostr::setup_payment_federations::{
     AdmittedSetupPaymentFederationsEvent, admit_setup_payment_federations_event,
@@ -369,7 +369,7 @@ fn now_secs() -> u64 {
 fn build_payload(snapshot: AdvertisementSnapshot, keys: &Keys) -> AdvertisementPayload {
     let now = now_secs();
     AdvertisementPayload {
-        version: ProtocolV1,
+        version: FMAN_ADVERTISEMENT_PROTOCOL_VERSION,
         fman_id_pubkey: keys.public_key().to_string(),
         service_pubkey: snapshot.service_pubkey.to_string(),
         issued_at: now,

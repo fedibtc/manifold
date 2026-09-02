@@ -30,12 +30,18 @@ The bundled `fedimintd` is compiled into the daemon binary from the `fedimint`
 flake input pinned in
 [`flake.nix`](../../flake.nix) — currently the immutable Fedi release
 [`v0.11.2-fedi2`](https://github.com/fedibtc/fedimint/tree/v0.11.2-fedi2)
-(commit `a6fa6d83f4bea26d4f51cbf26d305d0b64727e00`). Its image
-`org.fedi.fedimintd.release` label is `0.11.2-fedi2`, while the typed DKG
-identity in `FEDIMINTD_VERSION_0_1` is `0.11.2+fedi`. The pinned release is bumped by updating
+(commit `a6fa6d83f4bea26d4f51cbf26d305d0b64727e00`), whose final commit backports
+Fedimint PR #9092's patch-compatible DKG rule to the Fedi 0.11 fork. Its image
+`org.fedi.fedimintd.release` label is the packaged fork tag `0.11.2-fedi2`.
+`FEDIMINTD_VERSION_0_1` is the distinct exact advertised release
+`0.11.2+fedi`; Fedimint projects that to the DKG identity `0.11+fedi`. The
+fork tag's `0.11.2` release component must match the advertised version, while
+its `fedi2` fork revision and the DKG vendor identity remain independent.
+The pinned release is bumped by updating
 the `fedimint` flake input (and `flake.lock`), not this package. The
-`fleet-manager-cli-contract` / OCI-image checks fail if the tag, DKG constant,
-this document, and image label drift apart.
+release-sync and OCI checks bind the immutable source commit, packaged fork
+tag, exact advertised release, derived DKG identity, this document, and image
+label so drift fails closed.
 
 ## Runtime contract
 

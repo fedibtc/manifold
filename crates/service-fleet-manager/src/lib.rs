@@ -5,9 +5,12 @@
 
 #![allow(async_fn_in_trait)]
 
-/// The single fedimintd version a 0.1 FMan hosts (and the version an FI
-/// requests by default); one hardcoded constant shipping with the release,
-/// no runtime probe (SPEC-fi-rpc release policy).
+/// Vendor identity passed to the bundled daemon and required by FI policy.
+pub const FEDIMINTD_VENDOR_0_1: &str = "fedi";
+
+/// The exact fedimintd release a 0.1 FMan advertises (and an FI requests by
+/// default); one hardcoded constant shipping with the release, no runtime probe
+/// (SPEC-fi-rpc release policy).
 pub const FEDIMINTD_VERSION_0_1: &str = "0.11.2+fedi";
 
 /// Federation sizes a 0.1 FMan hosts: every size from 7 through 20 inclusive,

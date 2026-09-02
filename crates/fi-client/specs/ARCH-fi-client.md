@@ -46,10 +46,16 @@ and cap invariants are rejected rather than producing an invalid intent.
 The optional cap has a default: a serialized intent without it decodes to no
 cap and a capless intent serializes without the field, while any *unknown*
 field stays rejected. Durable FI storage is a separate fail-closed schema:
-schema 11 also persists the selected major/minor/vendor DKG identity beside
+schema 12 also persists the approved release range (including its exact vendor
+policy) and the selected major/minor/vendor DKG identity beside
 the selected-vs-pinned mode, durable verifier provenance, selected preview
 deadline, exact aggregate reservation identity, commercial-history tombstone,
-and wallet-output tombstone. Every older record must be
+wallet-output tombstone, and the last accepted-seat checkpoint discriminator.
+The discriminator makes concurrent checkpoints for different seats write
+different formation values, forcing one transaction to retry and derive the
+aggregate phase from its newly durable sibling. Recovery requires the
+discriminator to name an accepted seat whenever any accepted seat exists.
+Every older record must be
 reset rather than migrated in this pre-launch namespace.
 
 The cap changes only payment-readiness behavior, and it is **one-shot**: it
@@ -89,7 +95,7 @@ every replacement aggregate after its one-shot authorization. Before any
 output generation, the selected product path never publishes or accepts that
 second exact-quote authorization action. It instead returns typed
 `SelectionReauthorizationRequired` and value-safely restores durable `Idle`.
-If a process dies before cleanup, schema 11 preserves selected mode and approval
+If a process dies before cleanup, schema 12 preserves selected mode and approval
 expiry: reopen exposes no superseded authorization action, and resume either continues the still-live
 exact set or performs the same typed cleanup. A cloned live approval can then
 retry a different ready payer. An unavailable or replacement FMan always
@@ -152,7 +158,7 @@ only source of lifecycle progress after the app resumes.
 Cross-component durability verification is recorded in
 [`crates/fman/testing.md`](../../fman/testing.md).
 
-Formation storage schema 11 owns this callback lifecycle and the selected
+Formation storage schema 12 owns this callback lifecycle and the selected
 Fedimint DKG identity. Older pre-production records fail closed and require reset.
 FI retains the bearer across every pre-`Formed` crash, then clears it in
 the same transaction that records the terminal invite because every FMan has

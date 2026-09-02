@@ -14,7 +14,7 @@ const SERVICE_PUBKEY_HEX: &str = "f9308a019258c31049344f85f89d5229b531c845836f99
 
 fn payload(keys: &Keys) -> AdvertisementPayload {
     AdvertisementPayload {
-        version: ProtocolV1,
+        version: FMAN_ADVERTISEMENT_PROTOCOL_VERSION,
         fman_id_pubkey: keys.public_key().to_string(),
         service_pubkey: SERVICE_PUBKEY_HEX.to_owned(),
         issued_at: 1_730_000_000,
@@ -57,7 +57,7 @@ fn advertisement_signature_round_trips_and_pins_the_payload() {
         value,
         serde_json::json!({
             "payload": {
-                "version": 1,
+                "version": 2,
                 "fman_id_pubkey": keys.public_key().to_string(),
                 "service_pubkey": SERVICE_PUBKEY_HEX,
                 "issued_at": 1_730_000_000_u64,
@@ -110,7 +110,7 @@ fn advertisement_verification_rejects_a_malformed_pubkey() {
 fn unsupported_advertisement_version_is_rejected() {
     let keys = Keys::generate();
     let mut value = serde_json::to_value(payload(&keys)).unwrap();
-    value["version"] = serde_json::json!(2);
+    value["version"] = serde_json::json!(1);
     assert!(serde_json::from_value::<AdvertisementPayload>(value).is_err());
 }
 
@@ -138,43 +138,42 @@ fn advertisement_requires_service_pubkey() {
     assert!(serde_json::from_value::<AdvertisementPayload>(value).is_err());
 }
 
-/// Pinned cross-program fixture (`testing.md`): a fully signed v1 kind-37701
-/// advertisement document captured as literal JSON from hardcoded keys
-/// (Nostr identity secret `0x...03`, advertised service pubkey from secret
-/// `0x...05`). `verify_advertisement_self_signature` must keep accepting
-/// these exact bytes; a failure here means the signing convention or the v1
-/// payload schema changed in a way that breaks external producers and
-/// verifiers.
+/// The former signed v1 fixture cannot be mistaken for a v2 advertisement.
 #[test]
-fn pinned_signed_advertisement_fixture_stays_accepted() {
+fn pinned_v1_advertisement_fixture_is_rejected_after_the_versioned_break() {
     const FIXTURE: &str = r#"{"payload":{"version":1,"fman_id_pubkey":"f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f9","service_pubkey":"2f8bde4d1a07209355b4a7250a5c5128e88b84bddc619ab7cba8d569b240efe4","issued_at":1730000000,"expires_at":1730007200,"api_endpoints":[{"transport":"iroh","url":"iroh://fixture-endpoint"}],"availability":{"fedimintd_version":"0.8.1+fedi","federation_sizes":[7,13]},"plans":[{"InfiniteBestEffort":{"price_msats":250000}}],"holder_authorizations":[]},"proof":{"signature":"3FMOmhFQ0sHinyiy0bnyGzp8xFRYL4lcewDve5fn8bjlS8AMS-RUrVIxMmkIyB_4buZfOC9stXfANFyJGBghew"}}"#;
 
-    let document =
-        serde_json::from_str::<AdvertisementDocument>(FIXTURE).expect("pinned fixture parses");
-    verify_advertisement_self_signature(&document).expect("pinned fixture stays verifiable");
+    assert!(serde_json::from_str::<AdvertisementDocument>(FIXTURE).is_err());
+}
 
-    // Literal expectations, not production constants, so a constant change
-    // cannot silently move implementation and expectation together.
-    assert_eq!(document.payload.version, ProtocolV1);
+#[test]
+fn pinned_v2_advertisement_fixture_verifies_exact_signing_bytes() {
+    // Generated independently once with fixed secret scalar 3. Keeping the
+    // complete document literal pins the v2 schema, JCS bytes, domain
+    // separator, and signature against coordinated producer/verifier drift.
+    const FIXTURE: &str = r#"{"payload":{"version":2,"fman_id_pubkey":"f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f9","service_pubkey":"2f8bde4d1a07209355b4a7250a5c5128e88b84bddc619ab7cba8d569b240efe4","issued_at":1730000000,"expires_at":1730007200,"api_endpoints":[{"transport":"iroh","url":"iroh://fixture-endpoint"}],"availability":{"fedimintd_version":"0.11.2+fedi","federation_sizes":[7,13]},"plans":[{"InfiniteBestEffort":{"price_msats":250000}}],"holder_authorizations":[]},"proof":{"signature":"mNruInBNqo1ccqxEtmTAaSO8mtJBMvF8PqwctYgwzf8G2ZLvHiDrZmgyb0Sqb_bL3n8Nt7jrntOLk8FlkHJYFQ"}}"#;
+
+    let document = serde_json::from_str::<AdvertisementDocument>(FIXTURE).unwrap();
+    assert_eq!(
+        document.payload.version,
+        FMAN_ADVERTISEMENT_PROTOCOL_VERSION
+    );
     assert_eq!(
         document.payload.fman_id_pubkey,
-        "f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f9",
+        "f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f9"
     );
     assert_eq!(
-        document.payload.service_pubkey,
-        "2f8bde4d1a07209355b4a7250a5c5128e88b84bddc619ab7cba8d569b240efe4",
+        document.payload.availability.fedimintd_version.to_string(),
+        "0.11.2+fedi"
     );
-    assert_eq!(document.payload.issued_at, 1_730_000_000);
-    assert_eq!(document.payload.expires_at, 1_730_007_200);
+    assert_eq!(document.payload.availability.federation_sizes, [7, 13]);
+    verify_advertisement_self_signature(&document).unwrap();
 
-    // The pinned signature binds the advertised service key.
-    let mut tampered_key = document;
-    tampered_key.payload.service_pubkey =
-        "f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f9".to_owned();
+    let mut tampered = document;
+    tampered.payload.issued_at += 1;
     assert_eq!(
-        verify_advertisement_self_signature(&tampered_key).unwrap_err(),
-        AdvertisementDocumentError::InvalidProof,
-        "swapping the advertised service pubkey must invalidate the signature",
+        verify_advertisement_self_signature(&tampered).unwrap_err(),
+        AdvertisementDocumentError::InvalidProof
     );
 }
 
@@ -249,7 +248,7 @@ fn worst_case_advertisement_event_fits_the_per_event_cap() {
     let holder = Keys::generate();
     let issuer = Keys::generate();
     let payload = AdvertisementPayload {
-        version: ProtocolV1,
+        version: FMAN_ADVERTISEMENT_PROTOCOL_VERSION,
         fman_id_pubkey: fman.public_key().to_string(),
         service_pubkey: SERVICE_PUBKEY_HEX.to_owned(),
         issued_at: 1_730_000_000,
@@ -258,7 +257,7 @@ fn worst_case_advertisement_event_fits_the_per_event_cap() {
             .map(|index| ApiEndpoint {
                 transport: IROH_API_ENDPOINT_TRANSPORT.to_owned(),
                 url: format!(
-                    "{IROH_API_ENDPOINT_URL_SCHEME}{index:064x}?relay=https://use1-1.relay.example.iroh.network/&alpn=fedi-fman-fi-setup/1"
+                    "{IROH_API_ENDPOINT_URL_SCHEME}{index:064x}?relay=https://use1-1.relay.example.iroh.network/&alpn=fedi/fleet-manager/0.2"
                 ),
             })
             .collect(),

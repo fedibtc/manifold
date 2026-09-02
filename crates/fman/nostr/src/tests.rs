@@ -170,7 +170,7 @@ async fn built_payload_advertises_the_service_pubkey() {
     let keys = Keys::generate();
     let payload = build_payload(test_snapshot(), &keys);
 
-    assert_eq!(payload.version, ProtocolV1);
+    assert_eq!(payload.version, FMAN_ADVERTISEMENT_PROTOCOL_VERSION);
     assert_eq!(
         payload.expires_at - payload.issued_at,
         60 * 60,

@@ -69,12 +69,15 @@ Kind-`37701` events and relay tags never carry an FMan-local payment set.
 The event `content` is a portable signed document (Nostr is only one
 publication transport): a `payload` plus a `proof.signature` — a Schnorr
 signature by the FMan service key over
-`SHA256("fedi-fman-advertisement/v1\0" || JCS(payload))`. The MVP identity
+`SHA256("fedi-fman-advertisement/v2\0" || JCS(payload))`. Version 2 replaces
+the former release list with one exact advertised release; the changed signed
+shape therefore uses both a new payload discriminator and signature domain.
+The MVP identity
 rule is `FMan id == FMan Nostr pubkey`: the event author must equal
 `payload.fman_id_pubkey`, and this is the FMan's self-generated service
 identity, never the operator's holder identity.
 
-Payload fields (v1, rendered by this crate's `fman::AdvertisementPayload` and
+Payload fields (v2, rendered by this crate's `fman::AdvertisementPayload` and
 published by `fman-nostr`'s advertisement loop):
 
 - `version`, `fman_id_pubkey` (canonical lowercase hex), `issued_at`,
@@ -115,7 +118,7 @@ necessary to interpret an existing field safely. A change that requires new
 client behavior for trust, authorization, or endpoint safety uses an
 incompatible schema version instead.
 
-`version` is strictly `1`; other values and a missing `service_pubkey` do not
+`version` is strictly `2`; other values and a missing `service_pubkey` do not
 parse as this schema.
 
 `service_pubkey` sits inside the self-signed payload, so its attestation
