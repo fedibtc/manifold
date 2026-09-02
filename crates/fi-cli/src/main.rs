@@ -1005,7 +1005,7 @@ async fn run(
             let mut locators = create
                 .locators
                 .iter()
-                .map(|input| Locator::parse(input).context("parse pinned FMan locator"))
+                .map(|input| serde_json::from_str(input).context("parse pinned FMan locator"))
                 .collect::<anyhow::Result<Vec<_>>>()?;
             ensure!(
                 !create.insecure_skip_fman_trust || locators.is_empty(),

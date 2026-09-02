@@ -45,7 +45,7 @@ pub use fedi_decentralized_services::domain::{
 };
 pub use fedi_decentralized_services::{ServiceError, ServiceErrorCode, ServiceResult};
 pub use fman_name::FmanName;
-pub use locator::{FLEET_MANAGER_ALPN, Locator, LocatorError};
+pub use locator::{FLEET_MANAGER_ALPN, Locator};
 pub use locked_payment::{
     CreateSeatOutcome, CreateSeatRequest, CreateSeatResponse, GetQuoteRequest, GetQuoteResponse,
     InvalidSeatId, LockedBlindedSignature, LockedIssuanceRequest, LockedIssuanceRequestV2,
