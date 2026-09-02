@@ -452,15 +452,24 @@ enum StoredFormationPhase {
     Formed,
 }
 
-impl DatabaseValue for StoredFormation {
-    fn from_bytes(data: &[u8], _modules: &ModuleDecoderRegistry) -> Result<Self, DecodingError> {
-        serde_json::from_slice(data).map_err(DecodingError::other)
-    }
+macro_rules! json_database_value {
+    ($type:ty) => {
+        impl DatabaseValue for $type {
+            fn from_bytes(
+                data: &[u8],
+                _modules: &ModuleDecoderRegistry,
+            ) -> Result<Self, DecodingError> {
+                serde_json::from_slice(data).map_err(DecodingError::other)
+            }
 
-    fn to_bytes(&self) -> Vec<u8> {
-        serde_json::to_vec(self).expect("StoredFormation serialization is infallible")
-    }
+            fn to_bytes(&self) -> Vec<u8> {
+                serde_json::to_vec(self)
+                    .expect(concat!(stringify!($type), " serialization is infallible"))
+            }
+        }
+    };
 }
+json_database_value!(StoredFormation);
 
 /// Durable protocol facts for one selected seat.
 ///
@@ -515,15 +524,7 @@ pub(crate) enum FormedFact {
     GuardianCode,
 }
 
-impl DatabaseValue for StoredSeat {
-    fn from_bytes(data: &[u8], _modules: &ModuleDecoderRegistry) -> Result<Self, DecodingError> {
-        serde_json::from_slice(data).map_err(DecodingError::other)
-    }
-
-    fn to_bytes(&self) -> Vec<u8> {
-        serde_json::to_vec(self).expect("StoredSeat serialization is infallible")
-    }
-}
+json_database_value!(StoredSeat);
 
 #[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
 struct StoredPaymentAuthorization {
@@ -537,39 +538,14 @@ struct StoredDriverLease {
     expires_at: u64,
 }
 
-impl DatabaseValue for StoredDriverLease {
-    fn from_bytes(data: &[u8], _modules: &ModuleDecoderRegistry) -> Result<Self, DecodingError> {
-        serde_json::from_slice(data).map_err(DecodingError::other)
-    }
-
-    fn to_bytes(&self) -> Vec<u8> {
-        serde_json::to_vec(self).expect("StoredDriverLease serialization is infallible")
-    }
-}
+json_database_value!(StoredDriverLease);
 
 #[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
 struct StoredSetupPaymentFederationsEvent(Event);
 
-impl DatabaseValue for StoredSetupPaymentFederationsEvent {
-    fn from_bytes(data: &[u8], _modules: &ModuleDecoderRegistry) -> Result<Self, DecodingError> {
-        serde_json::from_slice(data).map_err(DecodingError::other)
-    }
+json_database_value!(StoredSetupPaymentFederationsEvent);
 
-    fn to_bytes(&self) -> Vec<u8> {
-        serde_json::to_vec(self)
-            .expect("StoredSetupPaymentFederationsEvent serialization is infallible")
-    }
-}
-
-impl DatabaseValue for crate::liquidity::StoredLiquidityOperation {
-    fn from_bytes(data: &[u8], _modules: &ModuleDecoderRegistry) -> Result<Self, DecodingError> {
-        serde_json::from_slice(data).map_err(DecodingError::other)
-    }
-
-    fn to_bytes(&self) -> Vec<u8> {
-        serde_json::to_vec(self).expect("StoredLiquidityOperation serialization is infallible")
-    }
-}
+json_database_value!(crate::liquidity::StoredLiquidityOperation);
 
 /// One seat's public projection and its private recovery-only quote facts.
 pub(crate) struct SeatRecovery {
