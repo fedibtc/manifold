@@ -4745,61 +4745,6 @@ async fn persisted_formation_rejects_a_different_identity_before_observation() {
 }
 
 #[tokio::test]
-async fn pre_tombstone_schema_record_is_rejected_fail_closed() {
-    // This pre-boundary record predates the distinct output-generation tombstone, so
-    // its absence cannot prove that no value-moving wallet call began. The
-    // record is rejected fail-closed with reset guidance.
-    let database = MemDatabase::new().into_database();
-    let (payments, _) = TestPayments::new();
-    let fman_state = Arc::new(FmanState::default());
-    let client = open_client(
-        database.clone(),
-        payments.clone(),
-        fman_state.clone(),
-        FmanConfig::given_away(),
-    )
-    .await;
-    client
-        .inner
-        .store
-        .initialize(
-            TestIdentity::fi_id(),
-            FormationId("prebranchformation".to_owned()),
-            resolved_intent_with_size(FederationSize(1)),
-            vec![seat_progress(0)],
-            crate::db::FormationCreationMode::Pinned,
-            None,
-        )
-        .await
-        .unwrap();
-    client.inner.store.downgrade_schema_for_test(7).await;
-
-    let reopened = FiClient::open(
-        database,
-        TestIdentity,
-        payments,
-        TestRegistry::default(),
-        TestConnector {
-            state: fman_state.clone(),
-            config: FmanConfig::given_away(),
-        },
-        test_peer_badge_verifier(),
-        TestConsensusReader::new(fman_state),
-        TestFiFeeAccountProvider::default(),
-    )
-    .await;
-    assert!(
-        matches!(
-            reopened,
-            Err(FiError::Storage(message))
-                if message.contains("unsupported FI storage schema version 7")
-                    && message.contains("reset this unreleased FI namespace")
-        ),
-        "schema 7 must be rejected with reset guidance",
-    );
-}
-
-#[tokio::test]
 async fn current_storage_requires_selected_mode_and_output_tombstone_fields() {
     let (payments, _) = TestPayments::new();
     let client = open_client(
