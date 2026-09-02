@@ -31,8 +31,8 @@ use fedi_decentralized_peer_badge_verifier::{PeerBadgeVerifier, PeerBadgeVerifie
 use fedi_decentralized_service_fleet_manager::{FederationSize, FedimintdVersion, Plan};
 use fedi_iroh_rpc::iroh::SecretKey as IrohSecretKey;
 use fi_client::{
-    FmanCandidateRequirements, FmanDiscoveryOptions, FmanRegistryQuery, FmanSelectionRequest,
-    PlanPreference,
+    FedimintdVersionRange, FmanCandidateRequirements, FmanDiscoveryOptions, FmanRegistryQuery,
+    FmanSelectionRequest, PlanPreference,
 };
 use nostr_sdk::{
     Event, EventBuilder, Filter, Keys as NostrKeys, Kind, PublicKey as NostrPublicKey,
@@ -339,7 +339,7 @@ async fn holder_trust_badge_to_concrete_fi_selection_flow() {
             url: format!("{IROH_API_ENDPOINT_URL_SCHEME}{first_endpoint_id}"),
         }],
         availability: Availability {
-            fedimintd_versions: vec!["0.8.0".to_owned()],
+            fedimintd_version: "0.8.0+fedi".parse().expect("version parses"),
             federation_sizes: vec![7, 10, 13],
         },
         plans: vec![Plan::InfiniteBestEffort {
@@ -492,7 +492,7 @@ async fn holder_trust_badge_to_concrete_fi_selection_flow() {
                 url: format!("{IROH_API_ENDPOINT_URL_SCHEME}{endpoint_id}"),
             }],
             availability: Availability {
-                fedimintd_versions: vec!["0.8.0".to_owned()],
+                fedimintd_version: "0.8.0+fedi".parse().expect("version parses"),
                 federation_sizes: vec![7, 10, 13],
             },
             plans: vec![Plan::InfiniteBestEffort {
@@ -590,7 +590,13 @@ async fn holder_trust_badge_to_concrete_fi_selection_flow() {
     let discovery_options = FmanDiscoveryOptions::with_timeout(Duration::from_secs(30));
     let requirements = FmanCandidateRequirements {
         federation_size: FederationSize(7),
-        fedimintd_version: "0.8.0".parse().expect("version parses"),
+        fedimintd_versions: FedimintdVersionRange::one_core(
+            "0.8.0"
+                .parse::<FedimintdVersion>()
+                .expect("version parses")
+                .core(),
+        )
+        .expect("version core can form a range"),
     };
     let discovery = registry_query
         .discover_fman_candidates(&requirements, discovery_options)
@@ -653,7 +659,7 @@ async fn holder_trust_badge_to_concrete_fi_selection_flow() {
         .preview_fman_selection(
             &FmanSelectionRequest::new(
                 FederationSize(7),
-                "0.8.0".parse::<FedimintdVersion>().expect("version parses"),
+                requirements.fedimintd_versions.clone(),
                 PlanPreference::InfiniteBestEffort,
             )
             .expect("selection request is valid"),

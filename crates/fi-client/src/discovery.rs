@@ -29,7 +29,7 @@ use fedi_decentralized_nostr::has_exact_d_tag;
 use fedi_decentralized_nostr_clients::{FMAN_ADVERTISEMENTS_CANDIDATE_LIMIT, FiNostrClient};
 use fedi_decentralized_peer_badge_verifier::PeerBadgeVerificationError;
 use fedi_decentralized_service_fleet_manager::{
-    FederationSize, FedimintdVersion, FmanName, Locator, Plan, Timestamp,
+    FederationSize, FedimintdDkgVersion, FmanName, Locator, Plan, Timestamp,
 };
 use fedi_iroh_rpc::iroh::{EndpointAddr, EndpointId};
 use fedimint_core::runtime::Instant;
@@ -37,8 +37,8 @@ use nostr_sdk::{Event, EventId, Kind, PublicKey};
 use rand::seq::SliceRandom as _;
 
 use crate::{
-    FederationConsensusReader, FiClient, FiError, FiIdentity, FiPayments, FiResult,
-    FleetManagerConnector,
+    FederationConsensusReader, FedimintdVersionRange, FiClient, FiError, FiIdentity, FiPayments,
+    FiResult, FleetManagerConnector,
 };
 
 /// Default absolute deadline for one complete discovery run.
@@ -75,8 +75,8 @@ pub struct FmanCandidateRequirements {
     /// Federation size the FI intends to request.
     pub federation_size: FederationSize,
 
-    /// Fedimintd release the FI intends to request.
-    pub fedimintd_version: FedimintdVersion,
+    /// FI-approved Fedimint release range.
+    pub fedimintd_versions: FedimintdVersionRange,
 }
 
 /// Options for one discovery run.
@@ -170,6 +170,9 @@ pub struct EligibleFmanCandidate {
     /// Advertised one-time price of the ad's `InfiniteBestEffort` plan, in
     /// millisatoshis.
     pub(crate) advertised_price_msats: u64,
+
+    /// DKG compatibility identity derived from the advertised version.
+    pub(crate) fedimintd_dkg_version: FedimintdDkgVersion,
 
     /// What the ad says the FMan will serve; non-trust hints re-checked
     /// live during a probing selection walk and again at quote time.
@@ -333,8 +336,8 @@ pub enum AdvertisementRejection {
     /// federation size.
     LiveUnsupportedFederationSize,
 
-    /// The live availability response does not offer the requested fedimintd
-    /// version.
+    /// The live response's version is outside the FI range or selected DKG
+    /// identity.
     LiveUnsupportedFedimintdVersion,
 
     /// The live availability response offers no plan matching the requested
@@ -353,7 +356,7 @@ pub enum AdvertisementRejection {
     /// The advertised sizes do not include the requested federation size.
     UnsupportedFederationSize,
 
-    /// The advertised releases do not include the requested fedimintd version.
+    /// The typed advertised version is outside the FI range or is not Fedi.
     UnsupportedFedimintdVersion,
 
     /// The advertisement offers no `InfiniteBestEffort` plan.
@@ -697,7 +700,7 @@ fn admit_eligible_advertisement(
     now: u64,
     deadline: Instant,
 ) -> Result<EligibleFmanCandidate, AdvertisementRejection> {
-    let (payload, advertised_price_msats, locator) =
+    let (payload, advertised_price_msats, locator, fedimintd_dkg_version) =
         admit_eligible_payload(requirements, document, now, deadline)?;
     // An advertisement with no envelope can never verify during selection,
     // and the claimed issuer used for bucketing comes from the first
@@ -713,6 +716,7 @@ fn admit_eligible_advertisement(
         api_endpoints: payload.api_endpoints,
         locator,
         advertised_price_msats,
+        fedimintd_dkg_version,
         availability: payload.availability,
         issued_at: Timestamp(payload.issued_at),
         expires_at: Timestamp(payload.expires_at),
@@ -728,7 +732,7 @@ fn admit_insecure_untrusted_pinned_fman(
     now: u64,
     deadline: Instant,
 ) -> Result<InsecureUntrustedPinnedFman, AdvertisementRejection> {
-    let (payload, _, locator) = admit_eligible_payload(requirements, document, now, deadline)?;
+    let (payload, _, locator, _) = admit_eligible_payload(requirements, document, now, deadline)?;
     debug_assert_eq!(payload.fman_id_pubkey, author.to_string());
     Ok(InsecureUntrustedPinnedFman {
         fman_id: author,
@@ -743,7 +747,7 @@ fn admit_eligible_payload(
     document: AdvertisementDocument,
     now: u64,
     deadline: Instant,
-) -> Result<(AdvertisementPayload, u64, Locator), AdvertisementRejection> {
+) -> Result<(AdvertisementPayload, u64, Locator, FedimintdDkgVersion), AdvertisementRejection> {
     if Instant::now() >= deadline {
         return Err(AdvertisementRejection::DeadlineExpired);
     }
@@ -764,11 +768,12 @@ fn admit_eligible_payload(
     {
         return Err(AdvertisementRejection::UnsupportedFederationSize);
     }
-    if !availability.fedimintd_versions.iter().any(|version| {
-        version
-            .parse::<FedimintdVersion>()
-            .is_ok_and(|version| version == requirements.fedimintd_version)
-    }) {
+    let version = &availability.fedimintd_version;
+    if !requirements.fedimintd_versions.contains(&version) {
+        return Err(AdvertisementRejection::UnsupportedFedimintdVersion);
+    }
+    let fedimintd_dkg_version = version.dkg_version();
+    if !fedimintd_dkg_version.is_fedi() {
         return Err(AdvertisementRejection::UnsupportedFedimintdVersion);
     }
     let advertised_price_msats = payload
@@ -780,7 +785,12 @@ fn admit_eligible_payload(
         })
         .ok_or(AdvertisementRejection::NoInfiniteBestEffortPlan)?;
     let locator = dialing_locator(&payload)?;
-    Ok((payload, advertised_price_msats, locator))
+    Ok((
+        payload,
+        advertised_price_msats,
+        locator,
+        fedimintd_dkg_version,
+    ))
 }
 
 /// Build the dialing [`Locator`] an eligible advertisement implies.

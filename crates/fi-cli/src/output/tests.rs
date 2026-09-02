@@ -134,12 +134,12 @@ fn populated_registry_row_dtos_have_exact_schemas() {
         service_key.x_only_public_key(secp256k1::SECP256K1).0,
     );
     let federation_sizes = [7, 10];
-    let fedimintd_versions = vec!["0.11.1-fedi10".to_owned()];
+    let fedimintd_version = "0.11.1+fedi".parse().unwrap();
     let candidate = DiscoveryCandidateJson {
         fman_pubkey: "11".repeat(32),
         advertised_price_msats: 21_000,
         federation_sizes: &federation_sizes,
-        fedimintd_versions: &fedimintd_versions,
+        fedimintd_version: &fedimintd_version,
         claimed_issuer: "22".repeat(32),
         api_endpoints: vec![ApiEndpointJson {
             transport: "iroh",
@@ -157,7 +157,7 @@ fn populated_registry_row_dtos_have_exact_schemas() {
             rejected: vec![],
         })
         .unwrap(),
-        r#"{"seen":1,"eligible":1,"candidates":[{"fmanPubkey":"1111111111111111111111111111111111111111111111111111111111111111","advertisedPriceMsats":21000,"federationSizes":[7,10],"fedimintdVersions":["0.11.1-fedi10"],"claimedIssuer":"2222222222222222222222222222222222222222222222222222222222222222","apiEndpoints":[{"transport":"iroh","url":"iroh://endpoint"}],"locator":{"version":1,"endpoint_addr":{"id":"8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c","addrs":[]},"service_pubkey":"4d4b6cd1361032ca9bd2aeb9d900aa4d45d9ead80ac9423374c451a7254d0766"},"issuedAt":100,"expiresAt":200}],"rejected":[]}"#
+        r#"{"seen":1,"eligible":1,"candidates":[{"fmanPubkey":"1111111111111111111111111111111111111111111111111111111111111111","advertisedPriceMsats":21000,"federationSizes":[7,10],"fedimintdVersion":"0.11.1+fedi","claimedIssuer":"2222222222222222222222222222222222222222222222222222222222222222","apiEndpoints":[{"transport":"iroh","url":"iroh://endpoint"}],"locator":{"version":1,"endpoint_addr":{"id":"8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c","addrs":[]},"service_pubkey":"4d4b6cd1361032ca9bd2aeb9d900aa4d45d9ead80ac9423374c451a7254d0766"},"issuedAt":100,"expiresAt":200}],"rejected":[]}"#
     );
 
     let seat = SelectionSeatJson {

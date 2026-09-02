@@ -3168,7 +3168,7 @@ fn payment_requirements(
         let request = &quote.terms.request;
         let plan_matches = intent.plan.matches(&request.plan);
         if request.fi_id != fi_id
-            || request.fedimintd_version != intent.fedimintd_version
+            || request.fedimintd_version.dkg_version() != intent.fedimintd_version.dkg_version()
             || request.federation_size != intent.federation_size
             || !plan_matches
         {

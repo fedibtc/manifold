@@ -22,8 +22,8 @@ use fedimint_core::encoding::Encodable as _;
 use fedimint_core::invite_code::InviteCode as FedimintInviteCode;
 use fi_client::{
     FederationConsensusError, FederationConsensusReader, FederationConsensusSnapshot,
-    FedimintFederationId, FiClient, FiFeeAccountError, FiFeeAccountProvider, FiIdentity,
-    FiPaymentError, FiPayments, FiStatus, FleetManagerCallError, FleetManagerConnector,
+    FedimintFederationId, FedimintdVersionRange, FiClient, FiFeeAccountError, FiFeeAccountProvider,
+    FiIdentity, FiPaymentError, FiPayments, FiStatus, FleetManagerCallError, FleetManagerConnector,
     FleetManagerConnectorError, FmanCandidateRequirements, FmanDiscoveryOptions, FmanRegistryQuery,
     FmanSelectionRequest, FormationActionRequired, FormationIntent, FormationPhase,
     FormationRunOptions, GuardianFeePpm, LiquidityOperationId, LiquidityProviderConnector,
@@ -1024,7 +1024,9 @@ async fn run(
                 let registry = connect_environment_registry(args.manifold_environment).await?;
                 let requirements = FmanCandidateRequirements {
                     federation_size: intent.federation_size(),
-                    fedimintd_version: intent.fedimintd_version().clone(),
+                    fedimintd_versions: FedimintdVersionRange::one_core(
+                        intent.fedimintd_version().core(),
+                    )?,
                 };
                 let discovery = FmanRegistryQuery::new(registry.clone())
                     .insecure_discover_untrusted_pinned_fmans(
@@ -1067,7 +1069,7 @@ async fn run(
                 let registry = connect_environment_registry(args.manifold_environment).await?;
                 let request = FmanSelectionRequest::new(
                     intent.federation_size(),
-                    intent.fedimintd_version().clone(),
+                    FedimintdVersionRange::one_core(intent.fedimintd_version().core())?,
                     intent.plan(),
                 )?;
                 let preview = FmanRegistryQuery::new(registry.clone())
@@ -1235,7 +1237,9 @@ async fn run(
         Command::Discover(discover) => {
             let requirements = FmanCandidateRequirements {
                 federation_size: FederationSize(discover.federation_size),
-                fedimintd_version: parse_fedimintd_version(discover.fedimintd_version.as_deref())?,
+                fedimintd_versions: FedimintdVersionRange::one_core(
+                    parse_fedimintd_version(discover.fedimintd_version.as_deref())?.core(),
+                )?,
             };
             let options = discover.discovery_options()?;
             let registry = connect_environment_registry(args.manifold_environment).await?;
@@ -1248,7 +1252,9 @@ async fn run(
         Command::Preview(preview) => {
             let request = FmanSelectionRequest::new(
                 FederationSize(preview.federation_size),
-                parse_fedimintd_version(preview.fedimintd_version.as_deref())?,
+                FedimintdVersionRange::one_core(
+                    parse_fedimintd_version(preview.fedimintd_version.as_deref())?.core(),
+                )?,
                 PlanPreference::InfiniteBestEffort,
             )?;
             let options = preview.discovery_options()?;

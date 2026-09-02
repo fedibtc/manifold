@@ -767,7 +767,11 @@ where
             )));
         }
         if approval.request.federation_size() != intent.federation_size()
-            || approval.request.fedimintd_version() != intent.fedimintd_version()
+            || !approval
+                .request
+                .fedimintd_versions()
+                .contains(intent.fedimintd_version())
+            || approval.fedimintd_dkg_version != intent.fedimintd_version().dkg_version()
             || approval.request.plan() != intent.plan()
         {
             return Err(FiError::InvalidIntent(
@@ -833,7 +837,9 @@ where
             })?;
         let request = FmanSelectionRequest::new(
             recovery.snapshot.intent.federation_size,
-            recovery.snapshot.intent.fedimintd_version.clone(),
+            crate::FedimintdVersionRange::one_core(
+                recovery.snapshot.intent.fedimintd_version.core(),
+            )?,
             recovery.snapshot.intent.plan,
         )?;
         let excluded = recovery
@@ -882,6 +888,7 @@ where
             },
             self.inner.peer_badge_verifier.provenance(),
             &request,
+            &recovery.snapshot.intent.fedimintd_version.dkg_version(),
             requirements,
             excluded,
             retained_service_pubkeys,
@@ -3334,13 +3341,15 @@ where
         // One shared predicate with the selection walk's live probe
         // (`selection::match_requested_availability`), so a candidate the
         // probing preview seats is exactly a candidate this gate accepts.
-        let plan = match crate::selection::match_requested_availability(
+        let versions = crate::FedimintdVersionRange::one_core(intent.fedimintd_version.core())?;
+        let matched = match crate::selection::match_requested_availability(
             &availability,
             intent.federation_size,
-            &intent.fedimintd_version,
+            &versions,
+            &intent.fedimintd_version.dkg_version(),
             intent.plan,
         ) {
-            Ok(plan) => plan.clone(),
+            Ok(matched) => matched,
             Err(mismatch @ AvailabilityMismatch::NotAcceptingSeats) => {
                 return Err((if policy.allows_selection_reauthorization() {
                     FiError::SelectionReauthorizationRequired(
@@ -3355,6 +3364,8 @@ where
                 return Err(selected_availability_error(policy, index, mismatch.message()).into());
             }
         };
+        let fedimintd_version = matched.fedimintd_version.clone();
+        let plan = matched.plan.clone();
         // Free-ness is a property of the price, not of the plan: an FMan that
         // gives its seats away is quoted against no payment federation
         // whatever this FI is configured to pay from, and one that charges
@@ -3409,7 +3420,7 @@ where
         };
         let quote_request = GetQuoteRequest {
             fi_id,
-            fedimintd_version: intent.fedimintd_version.clone(),
+            fedimintd_version,
             federation_size: intent.federation_size,
             plan,
             payment_federation_id,
@@ -3451,7 +3462,7 @@ where
             .map_err(|error| fman_error(index, format!("invalid signed quote: {error}")))?;
         let request = &quote.terms.request;
         if request.fi_id != fi_id
-            || request.fedimintd_version != intent.fedimintd_version
+            || request.fedimintd_version.dkg_version() != intent.fedimintd_version.dkg_version()
             || request.federation_size != intent.federation_size
             || !intent.plan.matches(&request.plan)
         {

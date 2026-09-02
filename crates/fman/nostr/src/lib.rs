@@ -382,7 +382,9 @@ fn build_payload(snapshot: AdvertisementSnapshot, keys: &Keys) -> AdvertisementP
             ),
         }],
         availability: Availability {
-            fedimintd_versions: vec![FEDIMINTD_VERSION_0_1.to_owned()],
+            fedimintd_version: FEDIMINTD_VERSION_0_1
+                .parse()
+                .expect("the bundled fedimintd version is valid SemVer"),
             federation_sizes: FEDERATION_SIZES_0_1.to_vec(),
         },
         plans: snapshot.plans,
