@@ -1,8 +1,8 @@
 //! Public FI intent and progress state.
 
 use fedi_decentralized_service_fleet_manager::{
-    FederationId, FederationName, FederationSize, FedimintdVersion, FedimintdVersionCore, FmanName,
-    GuardianCode, InviteCode, Locator, Plan, QuoteId, SeatId,
+    FederationId, FederationName, FederationSize, FedimintdDkgVersion, FedimintdVersion,
+    FedimintdVersionCore, FmanName, GuardianCode, InviteCode, Locator, Plan, QuoteId, SeatId,
 };
 use nostr_sdk::PublicKey;
 
@@ -119,6 +119,16 @@ impl FedimintdVersionRange {
     pub fn contains_core(&self, core: FedimintdVersionCore) -> bool {
         self.minimum <= core && core < self.maximum_exclusive
     }
+
+    /// Whether this range contains any patch from one DKG major/minor line.
+    #[must_use]
+    pub fn overlaps_dkg(&self, dkg: &FedimintdDkgVersion) -> bool {
+        let line = dkg.major_minor();
+        let minimum_line = (self.minimum.major, self.minimum.minor);
+        let maximum_line = (self.maximum_exclusive.major, self.maximum_exclusive.minor);
+        minimum_line <= line
+            && (line < maximum_line || (line == maximum_line && self.maximum_exclusive.patch > 0))
+    }
 }
 
 /// Stable identifier for one formation record.
@@ -157,7 +167,7 @@ impl PlanPreference {
 /// Consumer-owned federation formation request.
 ///
 /// A missing name asks `fi-client` to generate a human-friendly default. The
-/// resolved name is persisted before any external side effect and is exposed
+/// resolved name is persisted before any stateful formation effect and is exposed
 /// in [`FormationSnapshot::intent`]. Deserialization rejects unknown object
 /// fields and values that violate the name, size, or spending-cap
 /// invariants. Construction
@@ -178,7 +188,7 @@ impl PlanPreference {
 /// older serialized intent without the field decodes to no cap, and a
 /// capless intent serializes without the field, so independently serialized
 /// public intent values remain interoperable. This does not migrate durable
-/// FI store records. Those are separate: schema 9 requires explicit creation mode,
+/// FI store records. Those are separate: schema 11 requires explicit creation mode,
 /// commercial-history, and wallet-output tombstones; every older pre-launch
 /// record is rejected fail-closed with reset guidance.
 #[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
@@ -190,22 +200,22 @@ pub struct FormationIntent {
     federation_size: FederationSize,
     /// Requested FMan plan family.
     plan: PlanPreference,
-    /// Requested fedimintd version.
-    fedimintd_version: FedimintdVersion,
+    /// FI-approved Fedimint release range.
+    fedimintd_versions: FedimintdVersionRange,
     /// Optional aggregate spending cap in millisatoshis.
     #[serde(skip_serializing_if = "Option::is_none")]
     max_total_msats: Option<u64>,
 }
 
 impl FormationIntent {
-    /// Construct an intent, returning [`FiError::InvalidIntent`] for an
-    /// invalid name or a federation size outside 7..20.
+    /// Construct an intent with an FI-controlled compatibility range.
     pub fn new(
         federation_name: Option<FederationName>,
         federation_size: FederationSize,
         plan: PlanPreference,
-        fedimintd_version: FedimintdVersion,
+        fedimintd_versions: FedimintdVersionRange,
     ) -> FiResult<Self> {
+        fedimintd_versions.validate()?;
         if let Some(name) = &federation_name {
             validate_federation_name(name)?;
         }
@@ -219,7 +229,7 @@ impl FormationIntent {
             federation_name,
             federation_size,
             plan,
-            fedimintd_version,
+            fedimintd_versions,
             max_total_msats: None,
         })
     }
@@ -265,19 +275,29 @@ impl FormationIntent {
         self.plan
     }
 
-    /// Return the requested fedimintd version.
-    pub fn fedimintd_version(&self) -> &FedimintdVersion {
-        &self.fedimintd_version
+    /// Return the FI-approved Fedimint release range.
+    pub fn fedimintd_versions(&self) -> &FedimintdVersionRange {
+        &self.fedimintd_versions
     }
 
-    pub(crate) fn resolve(self, default_name: FederationName) -> FiResult<ResolvedFormationIntent> {
+    pub(crate) fn resolve_for_dkg(
+        self,
+        default_name: FederationName,
+        dkg: FedimintdDkgVersion,
+    ) -> FiResult<ResolvedFormationIntent> {
+        if !dkg.is_fedi() || !self.fedimintd_versions.overlaps_dkg(&dkg) {
+            return Err(FiError::InvalidIntent(
+                "selected Fedimint DKG identity is outside the formation intent".to_owned(),
+            ));
+        }
         let federation_name = self.federation_name.unwrap_or(default_name);
         validate_federation_name(&federation_name)?;
         Ok(ResolvedFormationIntent {
             federation_name,
             federation_size: self.federation_size,
             plan: self.plan,
-            fedimintd_version: self.fedimintd_version,
+            fedimintd_versions: self.fedimintd_versions,
+            fedimintd_dkg_version: dkg,
             max_total_msats: self.max_total_msats,
         })
     }
@@ -289,7 +309,7 @@ struct UncheckedFormationIntent {
     federation_name: Option<FederationName>,
     federation_size: FederationSize,
     plan: PlanPreference,
-    fedimintd_version: FedimintdVersion,
+    fedimintd_versions: FedimintdVersionRange,
     /// Deliberate serde evolution inside the strict schema: absent means no
     /// cap, so pre-cap serialized intents keep decoding.
     #[serde(default)]
@@ -304,7 +324,7 @@ impl TryFrom<UncheckedFormationIntent> for FormationIntent {
             value.federation_name,
             value.federation_size,
             value.plan,
-            value.fedimintd_version,
+            value.fedimintd_versions,
         )?;
         match value.max_total_msats {
             Some(max_total_msats) => intent.with_max_total_msats(max_total_msats),
@@ -337,8 +357,10 @@ pub struct ResolvedFormationIntent {
     pub federation_size: FederationSize,
     /// Requested FMan plan family.
     pub plan: PlanPreference,
-    /// Requested fedimintd version.
-    pub fedimintd_version: FedimintdVersion,
+    /// FI-approved Fedimint release range.
+    pub fedimintd_versions: FedimintdVersionRange,
+    /// Major/minor/vendor identity shared by every FMan in this DKG.
+    pub fedimintd_dkg_version: FedimintdDkgVersion,
     /// Optional aggregate spending cap in millisatoshis, persisted with the
     /// intent so it survives resume. The serde default supports standalone
     /// public intent values; pre-tombstone stored formations are rejected by

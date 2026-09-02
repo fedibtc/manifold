@@ -342,10 +342,10 @@ ids, public guardian-fee accounts, DKG codes, invite code, and an optional
 push-gateway callback URL. The callback URL is a bearer capability and its
 stable idempotency key can identify one formation operation. Neither is
 projected in public status or `Debug`, but database files and backups containing
-them remain sensitive. Schema 10 preserves the callback through every
+them remain sensitive. Schema 11 preserves the callback through every
 pre-`Formed` recovery and atomically clears it with the `Formed` checkpoint,
-after every FMan has durably assumed retry ownership. Only schema 9 migrates;
-older schemas remain fail-closed because they lack other current safety facts.
+after every FMan has durably assumed retry ownership. Older pre-production
+schemas fail closed and require reset.
 Logical clearing does not erase old pages or backups. FI storage must never
 contain raw bearer ecash, payment signatures, identity secret material, or
 wallet-private refund secrets.
