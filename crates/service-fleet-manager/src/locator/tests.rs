@@ -16,24 +16,37 @@ fn service_pubkey() -> XOnlyPublicKey {
 #[test]
 fn locator_round_trips_through_json() {
     let locator = Locator::new(endpoint_addr(), service_pubkey());
-    let parsed = Locator::parse(&locator.to_json()).unwrap();
+    let parsed: Locator = serde_json::from_str(&locator.to_json()).unwrap();
 
-    assert_eq!(parsed.version, 1);
+    assert_eq!(parsed.version, ProtocolV1);
     assert_eq!(parsed.endpoint_addr, locator.endpoint_addr);
     assert_eq!(parsed.service_pubkey, service_pubkey());
 }
 
 #[test]
-fn parse_rejects_formats_this_crate_does_not_speak() {
-    let mut wrong_version = Locator::new(endpoint_addr(), service_pubkey());
-    wrong_version.version = 2;
-    assert!(matches!(
-        Locator::parse(&wrong_version.to_json()),
-        Err(LocatorError::UnsupportedVersion(2))
-    ));
+fn serde_rejects_invalid_and_unsupported_locator_json() {
+    let mut wrong_version =
+        serde_json::to_value(Locator::new(endpoint_addr(), service_pubkey())).unwrap();
+    wrong_version["version"] = serde_json::json!(2);
+    assert!(serde_json::from_value::<Locator>(wrong_version).is_err());
+    assert!(serde_json::from_str::<Locator>("not json").is_err());
+}
 
-    assert!(matches!(
-        Locator::parse("not json"),
-        Err(LocatorError::Json(_))
-    ));
+#[test]
+fn serde_rejects_unsupported_locators_at_top_level_and_nested() {
+    let mut unsupported =
+        serde_json::to_value(Locator::new(endpoint_addr(), service_pubkey())).unwrap();
+    unsupported["version"] = serde_json::json!(2);
+    assert!(serde_json::from_value::<Locator>(unsupported.clone()).is_err());
+
+    #[derive(serde::Deserialize)]
+    struct Stored {
+        locator: Locator,
+    }
+
+    assert!(
+        serde_json::from_value::<Stored>(serde_json::json!({ "locator": unsupported }))
+            .map(|stored| stored.locator)
+            .is_err()
+    );
 }
