@@ -141,10 +141,8 @@ where
     /// acquire a database-wide expiring lease, so separately opened clients
     /// cannot concurrently perform external effects.
     ///
-    /// Storage schemas are intentionally fail-closed. Pre-schema-9 records
-    /// predate one or more identity, recovery-tombstone, or selected-flow
-    /// discriminators and, because this API is pre-launch, must be reset rather
-    /// than guessed or adopted by a new key.
+    /// Because this API is pre-production, opening an older storage schema
+    /// atomically clears the complete supplied namespace and starts from Idle.
     ///
     /// The mandatory verifier authenticates every PeerBadge the selection
     /// walk examines through [`Self::preview_fman_selection`]. The resulting

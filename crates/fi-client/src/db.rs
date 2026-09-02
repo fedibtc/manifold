@@ -4,8 +4,8 @@
 mod test_support;
 
 use fedimint_core::db::{
-    AutocommitError, Database, DatabaseError, DatabaseValue, DecodingError,
-    IDatabaseTransactionOpsCoreTyped as _,
+    AutocommitError, Database, DatabaseError, DatabaseKeyPrefix, DatabaseValue, DecodingError,
+    IDatabaseTransactionOpsCore as _, IDatabaseTransactionOpsCoreTyped as _,
 };
 use fedimint_core::encoding::{Decodable, Encodable};
 use fedimint_core::module::registry::ModuleDecoderRegistry;
@@ -34,6 +34,8 @@ use crate::{
 };
 
 const STORAGE_SCHEMA_VERSION: u16 = 11;
+// Keep this fixed when advancing the schema written by current code.
+const RESET_BEFORE_SCHEMA_VERSION: u16 = 11;
 const FORMATION_TX_MAX_ATTEMPTS: usize = 10;
 
 #[derive(Clone, Copy)]
@@ -161,6 +163,11 @@ struct StoredFormation {
     /// Its semantic type redacts `Debug`; database copies remain sensitive.
     #[serde(default)]
     dkg_completion_callback: FieldPresence<DkgCompletionCallback>,
+}
+
+#[derive(serde::Deserialize)]
+struct StoredFormationEnvelope {
+    schema_version: u16,
 }
 
 /// Distinguishes a missing legacy JSON field from explicit current-schema
@@ -1161,19 +1168,6 @@ impl FiStore {
     }
 
     #[cfg(test)]
-    /// Rewrite the stored schema version to exercise fail-closed loading.
-    pub(crate) async fn downgrade_schema_for_test(&self, schema_version: u16) {
-        let mut dbtx = self.database.begin_transaction().await;
-        let mut formation = dbtx
-            .get_value(&ActiveFormationKey)
-            .await
-            .expect("test formation exists");
-        formation.schema_version = schema_version;
-        dbtx.insert_entry(&ActiveFormationKey, &formation).await;
-        dbtx.commit_tx().await;
-    }
-
-    #[cfg(test)]
     /// Return whether the current schema fails closed when one required JSON
     /// recovery discriminator is removed.
     pub(crate) async fn rejects_missing_recovery_field_for_test(&self, field: &str) -> bool {
@@ -1234,7 +1228,32 @@ impl FiStore {
     }
 
     pub(crate) async fn load_recovery(&self, fi_id: FiId) -> FiResult<FiRecovery> {
-        let mut dbtx = self.database.begin_transaction_nc().await;
+        let mut dbtx = self.database.begin_transaction().await;
+        let Some(bytes) = dbtx
+            .raw_get_bytes(&DatabaseKeyPrefix::to_bytes(&ActiveFormationKey))
+            .await
+            .map_err(|_| FiError::Storage("reading FI storage failed".to_owned()))?
+        else {
+            return Ok(FiRecovery::Idle);
+        };
+        let envelope: StoredFormationEnvelope = serde_json::from_slice(&bytes).map_err(|_| {
+            FiError::Storage("persisted FI formation header is malformed".to_owned())
+        })?;
+        if envelope.schema_version < RESET_BEFORE_SCHEMA_VERSION {
+            dbtx.raw_remove_by_prefix(&[])
+                .await
+                .map_err(|_| FiError::Storage("resetting legacy FI storage failed".to_owned()))?;
+            dbtx.commit_tx_result()
+                .await
+                .map_err(|_| FiError::Storage("committing legacy FI reset failed".to_owned()))?;
+            return Ok(FiRecovery::Idle);
+        }
+        if envelope.schema_version > STORAGE_SCHEMA_VERSION {
+            return Err(FiError::Storage(format!(
+                "unsupported FI storage schema version {}",
+                envelope.schema_version
+            )));
+        }
         let Some(stored) = dbtx.get_value(&ActiveFormationKey).await else {
             return Ok(FiRecovery::Idle);
         };

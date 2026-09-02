@@ -108,7 +108,7 @@ async fn paid_selection_sends_the_callback_to_every_guardian_and_clears_it_at_fo
 }
 
 #[tokio::test]
-async fn callback_is_durable_private_state_and_old_schemas_fail_closed() {
+async fn callback_is_durable_private_state_and_old_schema_resets() {
     let database = MemDatabase::new().into_database();
     let (payments, _) = TestPayments::new();
     let client = open_client(
@@ -160,51 +160,19 @@ async fn callback_is_durable_private_state_and_old_schemas_fail_closed() {
     assert!(!public.contains("bearer-secret"));
     assert!(!public.contains("formation-dkg-complete"));
 
+    let legacy_database = MemDatabase::new().into_database();
+    let legacy_store = crate::db::FiStore::new(legacy_database.clone());
+    legacy_store.install_schema_9_fixture_for_test().await;
     let (payments, _) = TestPayments::new();
-    let migration_database = MemDatabase::new().into_database();
-    let migration_client = open_client(
-        migration_database.clone(),
+    let reset = open_client(
+        legacy_database,
         payments,
         Arc::new(FmanState::default()),
         FmanConfig::paid(),
     )
     .await;
-    migration_client
-        .inner
-        .store
-        .initialize(
-            TestIdentity::fi_id(),
-            FormationId("schema-nine".to_owned()),
-            resolved_intent_with_size(FederationSize(1)),
-            vec![seat_progress(0)],
-            crate::db::FormationCreationMode::Pinned,
-            None,
-        )
-        .await
-        .unwrap();
-    migration_client
-        .inner
-        .store
-        .install_schema_9_fixture_for_test()
-        .await;
-    assert_eq!(
-        migration_client
-            .inner
-            .store
-            .stored_schema_and_callback_field_for_test()
-            .await,
-        (9, false)
-    );
-    assert!(matches!(
-        migration_client
-            .inner
-            .store
-            .load_recovery(TestIdentity::fi_id())
-            .await,
-        Err(FiError::Storage(error))
-            if error.contains("unsupported FI storage schema version 9")
-                && error.contains("reset this unreleased FI namespace")
-    ));
+    assert_eq!(reset.status(), FiStatus::Idle);
+    assert!(legacy_store.raw_namespace_is_empty_for_test().await);
 
     let (payments, _) = TestPayments::new();
     let future_client = open_client(
@@ -241,16 +209,26 @@ async fn callback_is_durable_private_state_and_old_schemas_fail_closed() {
         Err(FiError::Storage(error))
             if error.contains("unsupported FI storage schema version 12")
     ));
+    assert!(
+        !future_client
+            .inner
+            .store
+            .raw_namespace_is_empty_for_test()
+            .await
+    );
+
+    let malformed_store = crate::db::FiStore::new(MemDatabase::new().into_database());
+    malformed_store.install_raw_formation_for_test(b"{").await;
+    assert!(matches!(
+        malformed_store.load_recovery(TestIdentity::fi_id()).await,
+        Err(FiError::Storage(error))
+            if error.contains("persisted FI formation header is malformed")
+    ));
+    assert!(!malformed_store.raw_namespace_is_empty_for_test().await);
 }
 
 #[tokio::test]
-async fn callback_schema_rejects_missing_current_field_and_hybrid_legacy_bytes() {
-    let callback = DkgCompletionCallback::new(DkgCompletionCallbackInput {
-        callback_url: "https://push.example/hooks/hook-id/bearer-secret".to_owned(),
-        idempotency_key: "formation-dkg-complete".to_owned(),
-    })
-    .unwrap();
-
+async fn callback_schema_rejects_missing_current_field() {
     let missing_database = MemDatabase::new().into_database();
     let (payments, _) = TestPayments::new();
     let missing = open_client(
@@ -282,71 +260,5 @@ async fn callback_schema_rejects_missing_current_field_and_hybrid_legacy_bytes()
             .await,
         Err(FiError::Storage(error))
             if error.contains("schema 11 formation omits dkg_completion_callback")
-    ));
-
-    let hybrid_database = MemDatabase::new().into_database();
-    let (payments, _) = TestPayments::new();
-    let hybrid = open_client(
-        hybrid_database,
-        payments,
-        Arc::new(FmanState::default()),
-        FmanConfig::paid(),
-    )
-    .await;
-    hybrid
-        .inner
-        .store
-        .initialize(
-            TestIdentity::fi_id(),
-            FormationId("hybrid-schema-nine".to_owned()),
-            resolved_intent_with_size(FederationSize(1)),
-            vec![seat_progress(0)],
-            crate::db::FormationCreationMode::Pinned,
-            Some(callback),
-        )
-        .await
-        .unwrap();
-    hybrid.inner.store.set_schema_version_for_test(9).await;
-    assert!(matches!(
-        hybrid
-            .inner
-            .store
-            .load_recovery(TestIdentity::fi_id())
-            .await,
-        Err(FiError::Storage(error))
-            if error.contains("unsupported FI storage schema version 9")
-    ));
-
-    let null_hybrid_database = MemDatabase::new().into_database();
-    let (payments, _) = TestPayments::new();
-    let null_hybrid = open_client(
-        null_hybrid_database,
-        payments,
-        Arc::new(FmanState::default()),
-        FmanConfig::paid(),
-    )
-    .await;
-    null_hybrid
-        .inner
-        .store
-        .initialize(
-            TestIdentity::fi_id(),
-            FormationId("null-hybrid-schema-nine".to_owned()),
-            resolved_intent_with_size(FederationSize(1)),
-            vec![seat_progress(0)],
-            crate::db::FormationCreationMode::Pinned,
-            None,
-        )
-        .await
-        .unwrap();
-    null_hybrid.inner.store.set_schema_version_for_test(9).await;
-    assert!(matches!(
-        null_hybrid
-            .inner
-            .store
-            .load_recovery(TestIdentity::fi_id())
-            .await,
-        Err(FiError::Storage(error))
-            if error.contains("unsupported FI storage schema version 9")
     ));
 }
