@@ -69,6 +69,27 @@ fn active_status_json_has_exact_schema_on_stdout() {
 }
 
 #[test]
+fn restored_text_status_reports_current_freshness() {
+    for (freshness, expected) in [
+        (fi_client::FormationFreshness::Unsynced, "unsynced"),
+        (fi_client::FormationFreshness::Fresh, "fresh"),
+    ] {
+        let status = FiStatus::Restored(fi_client::RestoredFormationSnapshot {
+            snapshot_generation: 1,
+            formation_id: fi_client::FormationId("restored-formation".to_owned()),
+            federation_invite: fi_client::InviteCode("invite".to_owned()),
+            federation_name: None,
+            seats: Vec::new(),
+            phase: fi_client::FormationPhase::Formed,
+            freshness,
+        });
+        let (stdout, stderr) = capture(|output| output.snapshot(&status, OutputFormat::Human));
+        assert_eq!(stdout, format!("invite\nrecovery state: {expected}\n"));
+        assert_eq!(stderr, "");
+    }
+}
+
+#[test]
 fn payment_readiness_json_has_exact_schema_on_stderr() {
     let requirements: PaymentRequirements = serde_json::from_str(PAYMENT_REQUIREMENTS).unwrap();
     let (stdout, stderr) =
@@ -425,9 +446,9 @@ fn liquidity_operation_json_is_one_stable_stdout_value() {
         operation_id: fi_client::LiquidityOperationId("11".repeat(32)),
         formation_id: fi_client::FormationId("formation-1".to_owned()),
         provider_pubkey: fi_client::Pubkey("provider-1".to_owned()),
-        endpoint_hint: fedi_decentralized_service_liquidity_manager::Url(
+        endpoint_hint: Some(fedi_decentralized_service_liquidity_manager::Url(
             "iroh://provider".to_owned(),
-        ),
+        )),
         details_payload_hash: fi_client::Sha256Digest([2; 32]),
         amounts: fi_client::LiquidityAmountBounds {
             gateway_min_amount: fi_client::Sats(100_000),
