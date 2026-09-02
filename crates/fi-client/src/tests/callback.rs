@@ -49,7 +49,7 @@ async fn one_durable_completion_callback_is_sent_to_every_guardian() {
         .unwrap()
     {
         FiRecovery::Formation(recovery) => recovery,
-        FiRecovery::Idle => panic!("formed recovery remains available"),
+        FiRecovery::Idle | FiRecovery::Restored(_) => panic!("formed recovery remains available"),
     };
     assert_eq!(recovery.snapshot.phase, FormationPhase::Formed);
     assert!(recovery.dkg_completion_callback.is_none());
@@ -101,7 +101,7 @@ async fn paid_selection_sends_the_callback_to_every_guardian_and_clears_it_at_fo
         .unwrap()
     {
         FiRecovery::Formation(recovery) => recovery,
-        FiRecovery::Idle => panic!("formed recovery remains available"),
+        FiRecovery::Idle | FiRecovery::Restored(_) => panic!("formed recovery remains available"),
     };
     assert_eq!(recovery.snapshot.phase, FormationPhase::Formed);
     assert!(recovery.dkg_completion_callback.is_none());
@@ -153,7 +153,7 @@ async fn callback_is_durable_private_state_and_old_schema_resets() {
         .unwrap()
     {
         FiRecovery::Formation(recovery) => recovery,
-        FiRecovery::Idle => panic!("callback formation is durable"),
+        FiRecovery::Idle | FiRecovery::Restored(_) => panic!("callback formation is durable"),
     };
     assert_eq!(recovery.dkg_completion_callback, Some(callback));
     let public = serde_json::to_string(&recovery.snapshot).unwrap();
