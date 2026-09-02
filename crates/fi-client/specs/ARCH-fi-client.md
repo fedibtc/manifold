@@ -14,7 +14,9 @@ secret-exclusion, and replay invariants that make the money path safe.
 
 The current product path implements advertisement preview through selected-set
 payment, DKG, and invite-code recovery. The lower-level pinned-locator driver
-remains for CLI diagnostics and protocol tests. A locator is dialing data plus the FMan
+is excluded from the default public API and exists only behind the
+`dev-pinned-formation` feature for CLI diagnostics and protocol tests. A
+locator is dialing data plus the FMan
 commitment-verification key — an out-of-band fact, never an issuer attestation
 or a consumer trust verdict. Registry discovery is implemented as a
 read-only statically admitted enumeration, and trust-based selection with
@@ -127,12 +129,20 @@ size. Before requesting a quote from an FMan, the FI requires that FMan's live
 availability to advertise the intent's exact size. Concurrently processed
 siblings may already have supplied quotes, but formation can proceed only where
 product policy and every selected operator's release capabilities overlap.
+Selected formation persists the original FI range and the chosen
+major/minor/vendor DKG identity. Quote-time checks accept patch or prerelease
+differences inside both; replacements and restart recovery remain fixed to that
+identity. Stored quotes must name an exact build inside both persisted constraints.
+The diagnostic pinned path accepts only a range containing one patch release.
+That range determines its `major.minor+fedi` DKG identity before any durable or
+remote work; the ordinary quote-time live gate still checks every pinned FMan.
 
 The callback-aware pinned-formation entry point accepts one
 `DkgCompletionCallback` created by the consumer for the initiating app
-installation. It persists that bearer capability with the formation before
-remote work and sends the same callback and idempotency key to every FMan in
-the signed `StartDkg` wave. The ordinary entry point leaves the optional
+installation. FI derives the pinned set's common DKG identity from the single
+allowed patch, then persists the bearer before quotes, payments, seat creation,
+or DKG and sends the same callback and idempotency key to every FMan in the
+signed `StartDkg` wave. The ordinary entry point leaves the optional
 callback absent. An ordinary resume repeats the idempotent `StartDkg` wave
 with the same durable guardian codes; each FMan retains the first start
 choice.
@@ -250,7 +260,8 @@ facts.
 Every MVP seat is subject to that complete PeerBadge verification. There is no
 unverified FI-owned, pinned, or bring-your-own exception in the product path.
 The separate `insecure_discover_untrusted_pinned_fmans` query exists only for explicit
-development/test consumers of the already-diagnostic pinned formation driver.
+development/test consumers that enable `dev-pinned-formation` alongside the
+already-diagnostic pinned formation driver.
 It still authenticates the event and advertisement, freshness, compatibility,
 capacity, and dialing material, but deliberately projects no credential or
 trust conclusion and cannot construct a selection approval.
@@ -335,8 +346,8 @@ objects, trust conclusions, or lifecycle transitions:
 `FormationIntent` itself rejects invalid construction and decoding. The creation
 APIs additionally expose side-effect-free, operation-specific preflights for
 consumers: selected creation validates the sealed seat count, preview age,
-explicit payer, and cap; pinned creation validates locator count and unique
-FMan keys.
+explicit payer, and cap; the development-only pinned creation preflight
+validates a single-patch range, locator count, and unique FMan keys.
 Timing options likewise have private fields and checked construction; invalid
 runtime or lease bounds cannot reach identity, durable state, lease, wallet, or
 network access.

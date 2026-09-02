@@ -583,7 +583,7 @@ async fn run_bundled_fedimintd(
         fedimintd::run_with_extra_logging_layer(
             manifold_modules(),
             fedimint_core::fedimint_build_code_version_env!(),
-            None,
+            Some("fedi"),
             layer,
         )
         .await
@@ -591,7 +591,7 @@ async fn run_bundled_fedimintd(
         fedimintd::run(
             manifold_modules(),
             fedimint_core::fedimint_build_code_version_env!(),
-            None,
+            Some("fedi"),
         )
         .await
     }

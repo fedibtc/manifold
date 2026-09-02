@@ -3,7 +3,9 @@
 #[cfg(test)]
 mod tests;
 
-use std::collections::{BTreeMap, BTreeSet, HashSet};
+#[cfg(any(test, feature = "dev-pinned-formation"))]
+use std::collections::HashSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::future::Future;
 use std::str::FromStr as _;
 use std::time::Duration;
@@ -619,6 +621,9 @@ where
 {
     /// Form a federation through explicitly pinned FMan locators.
     ///
+    /// This development/test-only entry point requires a version range that
+    /// contains exactly one patch release.
+    ///
     /// The returned future owns no background task. Dropping it cancels
     /// in-flight work, while every completed durable checkpoint remains
     /// resumable through [`FiClient::resume`]. If paid quotes are selected,
@@ -626,6 +631,7 @@ where
     /// [`FormationPhase::AwaitingPaymentReadiness`] without spending; the
     /// consumer must inspect the aggregate requirements and explicitly call
     /// [`FiClient::authorize_payments`].
+    #[cfg(any(test, feature = "dev-pinned-formation"))]
     pub async fn create_with_pinned_fmans(
         &self,
         intent: FormationIntent,
@@ -633,6 +639,7 @@ where
         options: FormationRunOptions,
     ) -> FiResult<()> {
         Self::preflight_create_with_pinned_fmans(&intent, &locators)?;
+        let fedimintd_dkg_version = pinned_dkg_version(&intent)?;
         let seats = locators
             .into_iter()
             .enumerate()
@@ -642,7 +649,7 @@ where
             intent,
             seats,
             FormationCreationMode::Pinned,
-            None,
+            fedimintd_dkg_version,
             None,
             options,
         )
@@ -652,12 +659,17 @@ where
     /// Form through pinned FMan locators and durably attach one installation
     /// callback to every guardian's DKG attempt.
     ///
+    /// This development/test-only entry point requires a version range that
+    /// contains exactly one patch release.
+    ///
     /// This has the same cancellation, payment-readiness, and explicit payment
-    /// authorization behavior as [`Self::create_with_pinned_fmans`]. FI persists
-    /// the callback before remote work, retains it through every pre-`Formed`
-    /// recovery, and sends the same value to every guardian. Public formation
+    /// authorization behavior as [`Self::create_with_pinned_fmans`]. FI
+    /// persists the callback before quotes, payments, seat creation, or DKG,
+    /// retains it through every pre-`Formed` recovery, and sends the same value
+    /// to every guardian. Public formation
     /// snapshots never expose the bearer. FI clears its copy atomically with the
     /// `Formed` checkpoint after every FMan has accepted durable retry ownership.
+    #[cfg(any(test, feature = "dev-pinned-formation"))]
     pub async fn create_with_pinned_fmans_and_callback(
         &self,
         intent: FormationIntent,
@@ -666,6 +678,7 @@ where
         options: FormationRunOptions,
     ) -> FiResult<()> {
         Self::preflight_create_with_pinned_fmans(&intent, &locators)?;
+        let fedimintd_dkg_version = pinned_dkg_version(&intent)?;
         let seats = locators
             .into_iter()
             .enumerate()
@@ -675,7 +688,7 @@ where
             intent,
             seats,
             FormationCreationMode::Pinned,
-            None,
+            fedimintd_dkg_version,
             Some(completion_callback),
             options,
         )
@@ -707,12 +720,11 @@ where
     /// Execute Pay-and-create while atomically binding one installation-scoped
     /// DKG completion callback before quotes, payments, or remote seat work.
     ///
-    /// The callback has the same durability contract as
-    /// [`Self::create_with_pinned_fmans_and_callback`]: FI persists it before
-    /// any remote work, retains it through every pre-`Formed` recovery, sends
-    /// the same value to every guardian, never exposes the bearer in public
-    /// formation snapshots, and clears its copy atomically with the `Formed`
-    /// checkpoint once every FMan has accepted durable retry ownership.
+    /// FI persists the callback before any remote work, retains it through
+    /// every pre-`Formed` recovery, sends the same value to every guardian,
+    /// never exposes the bearer in public formation snapshots, and clears its
+    /// copy atomically with the `Formed` checkpoint once every FMan has accepted
+    /// durable retry ownership.
     pub async fn pay_and_create_with_callback(
         &self,
         intent: FormationIntent,
@@ -815,7 +827,7 @@ where
             FormationCreationMode::Selected {
                 payment_federation_id,
             },
-            Some(fedimintd_dkg_version),
+            fedimintd_dkg_version,
             completion_callback,
             options,
         )
@@ -1019,7 +1031,7 @@ where
         intent: FormationIntent,
         seats: Vec<InitialSeat>,
         creation_mode: FormationCreationMode,
-        fedimintd_dkg_version: Option<crate::FedimintdDkgVersion>,
+        fedimintd_dkg_version: crate::FedimintdDkgVersion,
         completion_callback: Option<DkgCompletionCallback>,
         options: FormationRunOptions,
     ) -> FiResult<()> {
@@ -1045,21 +1057,7 @@ where
             let created_at = now_secs()?;
             let formation_id = FormationId(format!("{}-{created_at}", fi_id.0));
             let default_name = default_federation_name(fi_id, created_at);
-            let dkg = match fedimintd_dkg_version {
-                Some(dkg) => dkg,
-                None => {
-                    let core = intent.fedimintd_versions().only_core().ok_or_else(|| {
-                        FiError::InvalidIntent(
-                            "pinned formation requires one fedimintd release".to_owned(),
-                        )
-                    })?;
-                    format!("{core}+fedi")
-                        .parse::<crate::FedimintdVersion>()
-                        .expect("a release core with the fixed Fedi vendor is valid SemVer")
-                        .dkg_version()
-                }
-            };
-            let intent = intent.resolve_for_dkg(default_name, dkg)?;
+            let intent = intent.resolve_for_dkg(default_name, fedimintd_dkg_version)?;
             self.inner
                 .store
                 .initialize(
@@ -1079,13 +1077,15 @@ where
         finish_driver_run(result, self.inner.store.release_driver_lease(lease).await)
     }
 
-    /// Validate pinned locator inputs without accessing identity, storage,
-    /// wallets, or the network.
+    /// Validate the development-only pinned path's single-patch range and
+    /// locators without accessing identity, storage, wallets, or the network.
+    #[cfg(any(test, feature = "dev-pinned-formation"))]
     pub fn preflight_create_with_pinned_fmans(
         intent: &FormationIntent,
         locators: &[Locator],
     ) -> FiResult<()> {
-        validate_locators(intent, locators)
+        validate_locators(intent, locators)?;
+        pinned_dkg_version(intent).map(|_| ())
     }
 
     /// Explicitly authorize the paid terms currently exposed by the aggregate
@@ -4393,6 +4393,18 @@ fn canonical_fee_recipients(
     Ok(recipients)
 }
 
+#[cfg(any(test, feature = "dev-pinned-formation"))]
+fn pinned_dkg_version(intent: &FormationIntent) -> FiResult<FedimintdDkgVersion> {
+    let core = intent.fedimintd_versions().only_core().ok_or_else(|| {
+        FiError::InvalidIntent("pinned formation requires one fedimintd patch release".to_owned())
+    })?;
+    Ok(format!("{core}+fedi")
+        .parse::<FedimintdVersion>()
+        .expect("a release core with the fixed Fedi vendor is valid SemVer")
+        .dkg_version())
+}
+
+#[cfg(any(test, feature = "dev-pinned-formation"))]
 fn validate_locators(intent: &FormationIntent, locators: &[Locator]) -> FiResult<()> {
     if locators.len() != usize::from(intent.federation_size().0) {
         return Err(FiError::InvalidFleetManagers(format!(

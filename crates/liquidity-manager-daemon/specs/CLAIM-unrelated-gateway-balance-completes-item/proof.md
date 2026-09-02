@@ -29,12 +29,16 @@ evidence durably co-locates two facts but does not bind them.
 ### L2 — `FederationInfo.balance_msat` is an aggregate ecash balance (`code`, `enum`, axiom A2) — fails
 
 The dependency is not inferred from a fake. `flake.nix` supplies
-Fedimint tag `v0.11.1-fedi17`; `flake.lock` pins it to GitHub revision
-`e2606265b94983cd491e341291ca8f9f37d87645`; root `Cargo.toml` declares
-Fedimint `0.11.1` workspace dependencies and patches registry and Fedimint git
+Fedimint tag `v0.11.2-fedi2`; `flake.lock` pins it to GitHub revision
+`a6fa6d83f4bea26d4f51cbf26d305d0b64727e00`; root `Cargo.toml` declares
+Fedimint `0.11.2`-compatible workspace dependencies and patches registry and Fedimint git
 crates to that source, while the daemon inherits the gateway crates with
 `{ workspace = true }`. Their path-package entries in `Cargo.lock` resolve
-through that patch.
+through that patch. The update changes gateway-server sources, so the existing
+counterexample was rechecked at this pin: `GatewayInfo` still carries each
+federation's aggregate `balance_msat`, `get_info` still obtains it through
+`federation_info_all_federations`, and that method still reads
+`get_balance_for_btc` rather than deposit-specific evidence.
 The workspace Fedi stability-pool source is exactly
 `https://github.com/fedixyz/fedi` revision
 `2f35ea4e3b2516d35b8ed315455718cd3b336758`; it is not on this gateway
@@ -42,12 +46,12 @@ completion route.
 
 At the pinned Fedimint revision, `FederationInfo.balance_msat` is only an
 `Amount` beside `federation_id` and config
-(`gateway/fedimint-gateway-common/src/lib.rs:168-176`). Gatewayd's `get_info`
+(`gateway/fedimint-gateway-common/src/lib.rs:170-178`). Gatewayd's `get_info`
 calls `federation_info_all_federations`, which calls each federation client's
 `get_balance_for_btc` and places that result directly in `balance_msat`
-(`gateway/fedimint-gateway-server/src/lib.rs:1916-1967`;
-`federation_manager.rs:254-291`). `get_balance_for_btc` delegates to the primary
-Bitcoin module's `get_balance` (`fedimint-client/src/client.rs:978-994`). Mint v1
+(`gateway/fedimint-gateway-server/src/lib.rs:2038-2044`;
+`federation_manager.rs:265-300`). `get_balance_for_btc` delegates to the primary
+Bitcoin module's `get_balance` (`fedimint-client/src/client.rs:1115-1128`). Mint v1
 returns the total amount of all spendable notes, and mint v2 sums every local
 denomination/count (`modules/fedimint-mint-client/src/lib.rs:1080-1087`;
 `modules/fedimint-mintv2-client/src/lib.rs:510-519`). It is therefore the entire
@@ -86,7 +90,7 @@ gatewayd and validates the returned address's network; the item persists the
 string before creating its wallet operation
 (`gateway.rs:116-130`; `gateway.rs:152-194`). At the pinned source,
 gatewayd selects that federation client and calls
-`allocate_deposit_address_expert_only` (`fedimint-gateway-server/src/lib.rs:1326-1346`),
+`allocate_deposit_address_expert_only` (`fedimint-gateway-server/src/lib.rs:1362-1377`),
 which durably derives an address, tweak index, and its own Fedimint operation id
 (`modules/fedimint-wallet-client/src/lib.rs:798-826,1029-1050`). FLIP discards
 the returned upstream operation id because the gateway API returns only the
@@ -96,7 +100,7 @@ When the aggregate is absent or below threshold, FLIP's sole recheck sends the
 persisted address and federation id (`gateway.rs:272-294,314-326`;
 `gateway.rs:133-153`). Pinned gatewayd schedules that particular wallet-module
 address for an immediate check, but returns only success; wallet-v2 makes this
-verb a no-op (`fedimint-gateway-server/src/lib.rs:1442-1460`;
+verb a no-op (`fedimint-gateway-server/src/lib.rs:1478-1496`;
 `modules/fedimint-wallet-client/src/lib.rs:1588-1625`). Critically, recheck is
 not called when an unrelated aggregate increase already passes the inequality,
 and even a successful recheck response is not evidence that this address found

@@ -3847,6 +3847,14 @@ async fn intent_and_locator_validation_precede_external_calls() {
         Err(FiError::InvalidFleetManagers(_))
     ));
     assert_eq!(fman_state.availability_calls.load(Ordering::SeqCst), 0);
+
+    assert!(matches!(
+        client
+            .create_with_pinned_fmans(compatible_intent(), locators(), options())
+            .await,
+        Err(FiError::InvalidIntent(_))
+    ));
+    assert_eq!(fman_state.availability_calls.load(Ordering::SeqCst), 0);
 }
 
 /// The deployment bootstrap: the first federation forms before any ecash to
@@ -8129,7 +8137,7 @@ async fn selected_formation_persists_and_enforces_its_compatible_release() {
     let database = MemDatabase::new().into_database();
     let (payments, _) = TestPayments::new();
     let fman_state = Arc::new(FmanState::default());
-    set_fman_version(&fman_state, 0, "0.11.2-rc.1+fedi");
+    set_fman_version(&fman_state, 0, "0.11.1+fedi");
     let client = open_client(database, payments, fman_state.clone(), FmanConfig::paid()).await;
     let cap = PAYMENT_AMOUNT_MSATS * u64::from(MIN_FEDERATION_SIZE);
 
@@ -8163,7 +8171,7 @@ async fn selected_formation_persists_and_enforces_its_compatible_release() {
             .lock()
             .expect("test lock")
             .iter()
-            .any(|record| record.fedimintd_version.to_string() == "0.11.2-rc.1+fedi"),
+            .any(|record| record.fedimintd_version.to_string() == "0.11.1+fedi"),
         "same-minor patch drift is used for the exact quote",
     );
 }
@@ -11203,7 +11211,7 @@ async fn selection_approval_rejects_request_context_drift_before_external_work()
         None,
         FederationSize(MIN_FEDERATION_SIZE),
         PlanPreference::InfiniteBestEffort,
-        version_range("0.11.2"),
+        version_range("0.11.3"),
     )
     .unwrap();
 

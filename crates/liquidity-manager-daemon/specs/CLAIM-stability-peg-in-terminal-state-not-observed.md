@@ -62,12 +62,13 @@ Unverified.
   and the client's committed output state makes those notes spendable. The
   argument does not infer this from confirmations or elapsed time.
 - **A4 (pin identity):** `flake.nix` exposes the locked Fedimint input as
-  `.nix-deps/fedimint`; root workspace dependencies request Fedimint 0.11.1,
+  `.nix-deps/fedimint`; root workspace dependencies request Fedimint 0.11.2,
   the daemon inherits them with `{ workspace = true }`, and root `[patch]`
   entries select that Nix-provided source pinned by `flake.lock` to
-  `fedibtc/fedimint@e2606265b94983cd491e341291ca8f9f37d87645` (original ref
-  `v0.11.1-fedi17`). The downstream stability client is pinned in the daemon
-  manifest and `Cargo.lock` to
+  `fedibtc/fedimint@a6fa6d83f4bea26d4f51cbf26d305d0b64727e00` (original ref
+  `v0.11.2-fedi2`). The update from fedi18 leaves the wallet-client and
+  operation-outcome paths used by this claim unchanged. The downstream stability client is pinned
+  in the daemon manifest and `Cargo.lock` to
   `fedixyz/fedi@2f35ea4e3b2516d35b8ed315455718cd3b336758`. Downstream deposit
   submission is outside the core bad thing; its pin is stated to prevent
   silently importing different post-claim semantics.

@@ -33,7 +33,9 @@ It has no protocol, trust, signing, or lifecycle implementation of its own —
 transition, and checkpoint.
 
 The CLI implements the concrete Iroh connector and Fedimint wallet
-payment/refund port for both formation modes. `fi-client` owns payment
+payment/refund port for both formation modes. As a development/test consumer,
+it is the only workspace package that enables fi-client's
+`dev-pinned-formation` feature. `fi-client` owns payment
 scheduling for initial formation, resume, and replacement: it starts one new
 member at a time and checkpoints the completed seat before the next. The CLI
 adapter provides only exact aggregate reservation and operation/recovery
@@ -56,7 +58,8 @@ by lower-level protocol E2E tests. That path accepts a paired 0600
 completion-callback URL file and idempotency key and delegates protocol
 validation, durable ownership, and delivery entirely to `fi-client` and the
 pinned FMans; the CLI never places the URL bearer in argv, persists it, or
-emits it.
+emits it. Pinned creation accepts only a version range containing one patch
+release; broader ranges remain available to the automatic selection path.
 For temporarily incomplete development/staging trust infrastructure,
 `--insecure-skip-fman-trust` explicitly discovers authenticated, fresh,
 compatible advertisements through `insecure_discover_untrusted_pinned_fmans` and feeds
@@ -224,12 +227,14 @@ against hostile local filesystem behavior.
 `--json` is a stable, newline-delimited output contract. Successful `init`
 writes exactly one stdout object with `fiPubkey` and `state`; `status`, `create`,
 `resume`, and successful `authorize-payments` write exactly one stdout `FiStatus`
-value. When a paid formation
+value. A formation intent carries `fedimintd_versions` as its inclusive-minimum,
+exclusive-maximum range and `fedimintd_dkg_version` as the selected
+major/minor/vendor identity. When a paid formation
 reaches payment readiness, `create` additionally writes exactly one stderr
 object with the sole top-level field `authorizingPayments`, whose value is the
 library-provided `PaymentRequirements`. Successful `discover` and `preview`
 write exactly one stdout object carrying the `seen`/`eligible` (and, for
-`preview`, `selected` and `totalAdvertisedMsats`) summary with the
+`preview`, `selected`, `fedimintdDkgVersion`, and `totalAdvertisedMsats`) summary with the
 candidate or seat list and typed rejection reasons rendered as strings.
 Rejection and provenance strings are explicit lower-snake-case machine codes
 owned by `fi-client` (`expired`, `badge_rejected`, `fedi_attested`, and so on),

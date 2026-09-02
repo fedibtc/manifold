@@ -28,8 +28,10 @@ fn invalid_timing_precedes_cli_state_and_runtime_resources() {
                 "{}",
                 "--federation-size",
                 "7",
-                "--fedimintd-version",
-                "0.11.1-fedi10",
+                "--fedimintd-version-minimum",
+                "0.11.1",
+                "--fedimintd-version-maximum-exclusive",
+                "0.11.2",
                 "--wallet-secret-file",
             ])
             .arg(&wallet_secret)

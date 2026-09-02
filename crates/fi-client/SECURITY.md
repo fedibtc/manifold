@@ -6,7 +6,9 @@ persistence, cancellation, or progress output are security-sensitive.
 
 ## Trust boundary
 
-Pinned Fleet Manager locators are untrusted input except for the concrete facts
+The disabled-by-default `dev-pinned-formation` feature exposes pinned Fleet
+Manager locators only to development/test consumers. Those locators are
+untrusted input except for the concrete facts
 they encode: dialing information and a manager commitment key. A locator is not
 an issuer attestation or a consumer-provided trust decision. Verify every
 manager commitment against its locator key and validate all echoed request
@@ -42,9 +44,12 @@ generating outputs or creating recovery state. The FMan's availability response
 never establishes federation-specific payment policy for FI selection.
 
 Validate the complete formation intent before durable or remote side effects.
-Resolve an absent display name exactly once, validate the resolved name, and
-persist it before continuing. Unsupported future fields must be rejected or
-absent from the public intent, never silently ignored.
+The development-only pinned path accepts one patch release and derives its Fedi
+DKG identity before any value-free availability read or other effect. Resolve
+an absent display name exactly once, validate it, and persist it with that
+release before quotes, payments, seat creation, or DKG.
+Unsupported future fields must be rejected or absent from the public intent,
+never silently ignored.
 
 ## Registry discovery and selection
 
@@ -230,7 +235,8 @@ Re-check this section when the verification order or any cap changes, or
 when the sealed selected-creation contract changes.
 
 The purpose-specific `insecure_discover_untrusted_pinned_fmans` surface is not a
-product-path exception. It returns only authenticated, fresh, compatible and
+product-path exception and is compiled only with `dev-pinned-formation` or
+crate tests. It returns only authenticated, fresh, compatible and
 dialable identities/locators for the existing pinned protocol-test driver; it
 does not return `EligibleFmanCandidate`, a verified candidate, badge facts, or
 a selection approval. Production consumers must not expose it.

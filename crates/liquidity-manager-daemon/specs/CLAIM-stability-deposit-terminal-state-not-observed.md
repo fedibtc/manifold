@@ -77,10 +77,12 @@ Unverified.
   and server all select public Fedi revision
   `2f35ea4e3b2516d35b8ed315455718cd3b336758`. The Nix `fedi` input selects the
   same revision for the stability-enabled test server. Workspace patches source
-  Fedimint 0.11.1 from `.nix-deps/fedimint`; `flake.nix` names
-  `v0.11.1-fedi17` and `flake.lock` fixes it at
-  `e2606265b94983cd491e341291ca8f9f37d87645`. Those immutable sources are in
-  Scope, rather than assumed library contracts.
+  Fedimint 0.11.2 from `.nix-deps/fedimint`; `flake.nix` names
+  `v0.11.2-fedi2` and `flake.lock` fixes it at
+  `a6fa6d83f4bea26d4f51cbf26d305d0b64727e00`. The update from fedi18 leaves
+  the client transaction, outcome-cache, and operation-log sources used by
+  this claim unchanged. Those
+  immutable sources are in Scope, rather than assumed library contracts.
 - **A4 — fair successful polling.** For the liveness counterexample, the daemon
   can run forever and the scheduler eventually starts every ten-second tick.
   Store/client opening and SQLite writes succeed. This does not assume a prompt

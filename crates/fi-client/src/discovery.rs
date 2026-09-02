@@ -438,13 +438,15 @@ pub struct FmanDiscovery {
 /// pinned diagnostic locator, without requiring PeerBadge material.
 ///
 /// This type carries no trust conclusion and cannot enter verified selection.
+#[cfg(any(test, feature = "dev-pinned-formation"))]
 #[derive(Clone, Debug, PartialEq)]
 pub struct InsecureUntrustedPinnedFman {
     pub fman_id: PublicKey,
     pub locator: Locator,
 }
 
-/// Test-only diagnostic locator discovery with the ordinary typed rejections.
+/// Development/test-only diagnostic locator discovery with ordinary typed rejections.
+#[cfg(any(test, feature = "dev-pinned-formation"))]
 #[derive(Debug, Default)]
 pub struct InsecureUntrustedPinnedFmanDiscovery {
     pub candidates: Vec<InsecureUntrustedPinnedFman>,
@@ -537,6 +539,7 @@ where
     /// HolderAuthorization presence and PeerBadge verification are deliberately
     /// omitted. The result cannot be converted into a verified selection and
     /// must never be used by a production consumer.
+    #[cfg(any(test, feature = "dev-pinned-formation"))]
     pub async fn insecure_discover_untrusted_pinned_fmans(
         &self,
         requirements: &FmanCandidateRequirements,
@@ -725,6 +728,7 @@ fn admit_eligible_advertisement(
     })
 }
 
+#[cfg(any(test, feature = "dev-pinned-formation"))]
 fn admit_insecure_untrusted_pinned_fman(
     requirements: &FmanCandidateRequirements,
     author: PublicKey,

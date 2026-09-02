@@ -11,13 +11,13 @@
 # stability-pool-server. Build and dev dependencies are intentionally excluded:
 # they do not link into the FMan runtime image. Any unaccounted same-source
 # Cargo.lock edge fails the check rather than silently evading this boundary.
-release_tag	0.11.1-fedi17
-producer	fedimint	fedibtc/fedimint	v0.11.1-fedi17	e2606265b94983cd491e341291ca8f9f37d87645
+release_tag	0.11.2-fedi2
+producer	fedimint	fedibtc/fedimint	v0.11.2-fedi2	a6fa6d83f4bea26d4f51cbf26d305d0b64727e00
 producer	stability_pool	fedixyz/fedi	2f35ea4e3b2516d35b8ed315455718cd3b336758	2f35ea4e3b2516d35b8ed315455718cd3b336758
 package	stability_pool	stability-pool-common	crates/modules/stability-pool/common
 package	stability_pool	stability-pool-server	crates/modules/stability-pool/server
-revision	e2606265b94983cd491e341291ca8f9f37d87645
-metric_version	0.11.1
+revision	a6fa6d83f4bea26d4f51cbf26d305d0b64727e00
+metric_version	0.11.2
 metric	admit	app_start_ts	fedimint
 metric	admit	backup_counts	fedimint
 metric	admit	backup_write_size_bytes	fedimint
@@ -39,6 +39,7 @@ metric	deny	gateway_htlc_handling_duration_seconds	fedimint
 metric	deny	gateway_htlc_lnv1_attempt_duration_seconds	fedimint
 metric	deny	gateway_htlc_lnv2_attempt_duration_seconds	fedimint
 metric	admit	iroh_api_connection_duration_seconds	fedimint
+metric	deny	iroh_api_connection_idle_timeout_total	fedimint
 metric	admit	iroh_api_connections_active	fedimint
 metric	admit	iroh_api_request_duration_seconds	fedimint
 metric	admit	jsonrpc_api_request_duration_seconds	fedimint

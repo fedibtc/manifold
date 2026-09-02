@@ -5,6 +5,11 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[features]
+# Development-only escape hatch for fi-cli protocol tests. Product consumers
+# use verified selection and must not enable this feature.
+dev-pinned-formation = []
+
 [dependencies]
 fedi-decentralized-domain = { path = "../domain" }
 fedi-decentralized-manifold-environment = { path = "../manifold-environment" }

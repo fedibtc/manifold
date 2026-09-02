@@ -206,7 +206,7 @@ retrying.
 
 `traffic connections [--users N] [--duration-secs S]` repeatedly downloads client
 configuration over real federation API connections through the pinned
-Fedimint 0.11.1 `fedimint-load-test-tool`. Its sustained-connection subcommand assumes endpoint
+Fedimint 0.11.2 `fedimint-load-test-tool`. Its sustained-connection subcommand assumes endpoint
 URLs have TCP ports and panics on the formed federation's portless Iroh URLs, so
 the wrapper uses the tool's compatible config-download mode. Calls are serialized
 and time-bounded. User counts are limited to 1,000 and connection duration to one
@@ -214,11 +214,11 @@ hour. The defaults are 10 users and 60 seconds.
 
 `traffic mint --users N --notes-per-user N` currently fails with an explicit
 unsupported-mode error. The formed federation has `mintv2` and `walletv2`, while
-the Fedimint 0.11.1 load tool hard-codes its v1 mint client and attempts funding
+the Fedimint 0.11.2 load tool hard-codes its v1 mint client and attempts funding
 through a v1 wallet. A mintv2-capable upstream load path is required.
 
 `traffic lightning --users N --invoices-per-user N` likewise fails explicitly.
-The Fedimint 0.11.1 tester forbids creating an invoice on the same gateway that
+The Fedimint 0.11.2 tester forbids creating an invoice on the same gateway that
 pays it, and the composed environment does not yet provide an independent invoice
 source. All traffic modes state that ordinary federation operations do not cause
 or prove production Fedi fee accrual.

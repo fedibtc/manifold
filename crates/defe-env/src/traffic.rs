@@ -35,7 +35,7 @@ pub(crate) async fn run(raw_args: &[OsString]) -> Result<()> {
             eprintln!(
                 "traffic connections: exercising real federation operations; this does not cause or prove production Fedi fee accrual"
             );
-            // Fedimint 0.11.1 `test-connect` assumes every endpoint URL has a
+            // Fedimint 0.11.2 `test-connect` assumes every endpoint URL has a
             // TCP port and panics on this federation's portless Iroh URLs.
             // Repeated config downloads use the same pinned connector registry
             // without that invalid formatting assumption.
@@ -62,10 +62,10 @@ pub(crate) async fn run(raw_args: &[OsString]) -> Result<()> {
             }
         }
         Traffic::Mint => bail!(
-            "mint traffic is unsupported with pinned Fedimint 0.11.1: the formed federation uses mintv2 and walletv2, while fedimint-load-test-tool requires the v1 mint and funds it through a v1 wallet; a mintv2-capable upstream load path is required. This mode does not cause or prove production Fedi fee accrual"
+            "mint traffic is unsupported with pinned Fedimint 0.11.2: the formed federation uses mintv2 and walletv2, while fedimint-load-test-tool requires the v1 mint and funds it through a v1 wallet; a mintv2-capable upstream load path is required. This mode does not cause or prove production Fedi fee accrual"
         ),
         Traffic::Lightning => bail!(
-            "lightning traffic is unsupported with pinned Fedimint 0.11.1: the composed environment has one gateway, while fedimint-load-test-tool rejects invoices created by the paying gateway; add an independent connected invoice source before enabling this mode. This mode does not cause or prove production Fedi fee accrual"
+            "lightning traffic is unsupported with pinned Fedimint 0.11.2: the composed environment has one gateway, while fedimint-load-test-tool rejects invoices created by the paying gateway; add an independent connected invoice source before enabling this mode. This mode does not cause or prove production Fedi fee accrual"
         ),
     }
     Ok(())
