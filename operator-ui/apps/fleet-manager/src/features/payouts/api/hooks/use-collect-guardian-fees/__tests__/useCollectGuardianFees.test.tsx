@@ -16,9 +16,11 @@ afterEach(() => {
 
 describe('useCollectGuardianFees', () => {
   it('should collect one seat out of the pool', async () => {
-    const adminCall = vi
-      .spyOn(adminCallModule, 'adminCall')
-      .mockResolvedValue({ claimed_msat: 13_000_000, awaiting_cycle_msat: 3_000_000 });
+    const adminCall = vi.spyOn(adminCallModule, 'adminCall').mockResolvedValue({
+      claimed_msat: '13000000',
+      recorded_claimed_msat: '13000000',
+      awaiting_cycle_msat: '3000000'
+    });
 
     const { result } = renderHook(() => useCollectGuardianFees('seat-01'), { wrapper });
     result.current.mutate();
@@ -32,8 +34,9 @@ describe('useCollectGuardianFees', () => {
   // account.
   it('should carry both the claimed and the awaiting-cycle figures', async () => {
     vi.spyOn(adminCallModule, 'adminCall').mockResolvedValue({
-      claimed_msat: 13_000_000,
-      awaiting_cycle_msat: 3_000_000
+      claimed_msat: '13000000',
+      recorded_claimed_msat: '13000000',
+      awaiting_cycle_msat: '3000000'
     });
 
     const { result } = renderHook(() => useCollectGuardianFees('seat-01'), { wrapper });
@@ -41,8 +44,9 @@ describe('useCollectGuardianFees', () => {
 
     await waitFor(() => expect(result.current.isSuccess).toBe(true));
     expect(result.current.data).toEqual({
-      claimed_msat: 13_000_000,
-      awaiting_cycle_msat: 3_000_000
+      claimed_msat: '13000000',
+      recorded_claimed_msat: '13000000',
+      awaiting_cycle_msat: '3000000'
     });
   });
 });

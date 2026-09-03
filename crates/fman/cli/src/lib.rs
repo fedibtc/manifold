@@ -327,7 +327,7 @@ pub async fn run(data_dir: &Path, verb: AdminVerb) -> anyhow::Result<()> {
             println!("{}", serde_json::to_string_pretty(&value)?);
             if let Some(incomplete) = value.get("incomplete") {
                 tracing::warn!(
-                    claimed_msat = value["claimed_msat"].as_u64().unwrap_or_default(),
+                    claimed_msat = %value["claimed_msat"].as_str().unwrap_or("unknown"),
                     phase = incomplete["phase"].as_str().unwrap_or("unknown"),
                     error = incomplete["error"]
                         .as_str()

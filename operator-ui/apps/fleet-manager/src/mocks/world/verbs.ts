@@ -128,7 +128,11 @@ const collectGuardianFees: Verb<'CollectGuardianFees'> = ({ seat_id }) => {
   ledger.staged_msat = 0;
   ledger.idle_msat = 0;
   ledger.collected_ecash_msat += claimed;
-  return { claimed_msat: claimed, awaiting_cycle_msat: ledger.locked_msat };
+  return {
+    claimed_msat: claimed.toString(),
+    recorded_claimed_msat: ledger.collected_ecash_msat.toString(),
+    awaiting_cycle_msat: ledger.locked_msat.toString()
+  };
 };
 
 // Every revenue sweep leaves through the one configured Lightning destination,

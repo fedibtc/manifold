@@ -162,6 +162,51 @@ async fn same_scope_payout_starts_are_serialized() {
         .unwrap();
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn same_guardian_scope_collections_are_serialized() {
+    use std::future::Future as _;
+    use std::task::Poll;
+
+    let temp = tempfile::tempdir().unwrap();
+    let wallet = Arc::new(
+        Wallet::open(
+            temp.path().to_owned(),
+            &WalletSecret([43; 64]),
+            WalletOrigin::Fresh,
+        )
+        .await
+        .unwrap(),
+    );
+    let scope = guardian(1, 1);
+    let first = wallet.collection_exclusion(scope.clone()).await;
+    let (pending_tx, pending_rx) = tokio::sync::oneshot::channel();
+    let second = tokio::spawn({
+        let wallet = wallet.clone();
+        async move {
+            let mut acquisition = Box::pin(wallet.collection_exclusion(scope));
+            let mut pending_tx = Some(pending_tx);
+            std::future::poll_fn(move |context| match acquisition.as_mut().poll(context) {
+                Poll::Pending => {
+                    if let Some(pending_tx) = pending_tx.take() {
+                        pending_tx.send(()).unwrap();
+                    }
+                    Poll::Pending
+                }
+                Poll::Ready(guard) => Poll::Ready(guard),
+            })
+            .await
+        }
+    });
+    pending_rx.await.unwrap();
+    assert!(!second.is_finished());
+    drop(wallet.collection_exclusion(guardian(1, 2)).await);
+    drop(first);
+    tokio::time::timeout(std::time::Duration::from_secs(1), second)
+        .await
+        .unwrap()
+        .unwrap();
+}
+
 fn federation_id(byte: u8) -> FederationId {
     format!("{byte:02x}").repeat(32).parse().unwrap()
 }

@@ -1102,17 +1102,16 @@ impl Fleet {
         &self,
         seat_id: &SeatId,
     ) -> anyhow::Result<fedimint_core::invite_code::InviteCode> {
-        let seat = self
-            .seat_by_id(seat_id)
-            .ok_or_else(|| anyhow!("unknown seat"))?;
-        let report = seat.report().await.map_err(anyhow::Error::new)?;
-        let SeatReport::Active {
-            phase: crate::seat::SeatPhase::Running { invite_code },
-            ..
-        } = report
-        else {
-            anyhow::bail!("seat has no federation yet: guardian fees start after DKG completes");
-        };
+        // The immutable formed row, not the live seat report, owns this public
+        // client coordinate. Decommission stops the guardian but must not make
+        // retained or later-arriving fee value unreachable to the operator.
+        let invite_code = self
+            .db
+            .formed_federation_invite(seat_id)
+            .await?
+            .ok_or_else(|| {
+                anyhow!("seat has no federation yet: guardian fees start after DKG completes")
+            })?;
         invite_code
             .0
             .parse()
