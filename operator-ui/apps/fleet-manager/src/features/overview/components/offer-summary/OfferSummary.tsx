@@ -12,8 +12,11 @@ export const OfferSummary = ({ priceMsat }: OfferSummaryProps) => (
     <div className={styles.root}>
       <span className={styles.price}>{describeOffer(priceMsat)}</span>
 
+      {/* The page behind this link sets the seat ceiling as well as the price,
+          and it is the only way to reach either. A link that named only the
+          price is how the ceiling stayed unreachable after setup. */}
       <Link to="/offer" className={styles.editLink}>
-        Change price
+        Change offer
       </Link>
     </div>
   </SectionCard>

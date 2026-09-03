@@ -22,6 +22,10 @@
   @apply uLabel;
 }
 
+.hint {
+  @apply uFieldHint;
+}
+
 .input {
   @apply uInputXs;
 }
