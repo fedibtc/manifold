@@ -33,6 +33,7 @@ async fn rpc(temp: &TempDir) -> FleetManagerRpc {
                 fedi_decentralized_manifold_environment::ManifoldEnvironment::Development,
             first_port_base: PortBase::new(30_000).unwrap(),
             setup_payments_configured: true,
+            guardian_verification_fee_account: None,
             respawn: RespawnPolicy::default(),
             // Tests hold the relay down and watch the retry land; a
             // production cadence would only make them slow.

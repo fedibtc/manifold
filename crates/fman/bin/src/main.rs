@@ -364,7 +364,10 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     }
     onboarding.completed().await?;
 
-    let wallet_origin = db.wallet_origin().await?;
+let wallet_origin = db.wallet_origin().await?;
+    let guardian_verification_fee_account = manifold_environment
+        .guardian_verification_fee_account()
+        .cloned();
     let fleet = Arc::new(
         Fleet::open_with_wallet(
             db,
@@ -374,6 +377,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
                     anyhow::anyhow!("--first-port-base leaves no room for a seat's port block")
                 })?,
                 setup_payments_configured: manifold_environment.setup_payment_publisher().is_some(),
+                guardian_verification_fee_account: guardian_verification_fee_account.clone(),
                 respawn: RespawnPolicy::default(),
                 backup_scan_interval: fman_core::backup_worker::DEFAULT_SCAN_INTERVAL,
                 push_gateway_origin,
@@ -435,9 +439,6 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         keys.public_key(),
     )
     .await?;
-    let guardian_verification_fee_account = manifold_environment
-        .guardian_verification_fee_account()
-        .cloned();
     let nostr = fman_nostr::FleetManagerNostr::new(
         keys,
         setup_payment_publisher,

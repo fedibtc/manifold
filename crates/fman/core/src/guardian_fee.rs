@@ -161,20 +161,19 @@ pub struct FeePolicy {
     /// parse, or names it in a shape this version does not understand — all of
     /// which mean the same thing operationally: no share is provably ours.
     pub our_share: Option<(u64, u64)>,
+    /// Whether the complete live policy equals the authenticated fixed split,
+    /// not merely whether this seat appears with weight one.
+    pub authenticated_policy_matches: bool,
 }
 
 impl FeePolicy {
     /// Whether the live metadata leaves this guardian's compiled share intact.
     ///
-    /// No recipient policy is acceptable: guardian fees are optional. Once a
-    /// recipient value exists, however, malformed metadata, omission of this
-    /// guardian, and any weight other than the fixed guardian weight are all a
-    /// policy violation rather than merely "not currently paying us".
+    /// No fee policy is acceptable: guardian fees are optional. Once one
+    /// exists, however, the complete directory and recipient split must match;
+    /// this guardian merely appearing at weight one is not sufficient.
     pub fn share_matches_policy(&self) -> bool {
-        self.recipients.is_none()
-            || self
-                .our_share
-                .is_some_and(|(ours, _)| ours == GUARDIAN_RECIPIENT_WEIGHT)
+        self.authenticated_policy_matches
     }
 }
 
@@ -247,6 +246,7 @@ pub fn fee_policy_from_meta(meta: &BTreeMap<String, String>, ours: AccountId) ->
         .and_then(|value| value.parse::<u64>().ok());
     let recipients = meta.get(REMITTANCE_ACCOUNT_META_KEY).cloned();
     let valid = validate_fee_policy(send_ppm, recipients.as_deref()).is_ok();
+    let authenticated_policy_matches = recipients.is_none() && send_ppm.is_none();
     let our_share = valid
         .then(|| {
             recipients
@@ -259,6 +259,10 @@ pub fn fee_policy_from_meta(meta: &BTreeMap<String, String>, ours: AccountId) ->
         send_ppm,
         recipients,
         our_share,
+        // The seat read path replaces this with a check against its live
+        // federation config, authenticated directory, and deployment account.
+        // This parser alone cannot establish those inputs.
+        authenticated_policy_matches,
     }
 }
 

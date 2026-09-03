@@ -151,6 +151,7 @@ fn policy_reader_derives_a_view_from_the_consensus_meta_map() {
             send_ppm: Some(1_000),
             recipients: Some(recipients),
             our_share: Some((3, 4)),
+            authenticated_policy_matches: false,
         }
     );
 }
@@ -176,12 +177,13 @@ fn overflowing_weights_are_not_a_share() {
 }
 
 #[test]
-fn share_policy_accepts_unset_and_requires_our_exact_guardian_weight() {
+fn share_policy_reports_the_complete_authenticated_policy_check() {
     let unset = FeePolicy {
         configured: false,
         send_ppm: None,
         recipients: None,
         our_share: None,
+        authenticated_policy_matches: true,
     };
     assert!(unset.share_matches_policy());
 
@@ -190,12 +192,13 @@ fn share_policy_accepts_unset_and_requires_our_exact_guardian_weight() {
         send_ppm: Some(1_000),
         recipients: Some(String::new()),
         our_share: Some((GUARDIAN_RECIPIENT_WEIGHT, 7)),
+        authenticated_policy_matches: true,
     };
     assert!(expected.share_matches_policy());
 
     assert!(
         !FeePolicy {
-            our_share: Some((GUARDIAN_RECIPIENT_WEIGHT + 1, 8)),
+            authenticated_policy_matches: false,
             ..expected.clone()
         }
         .share_matches_policy()
@@ -203,6 +206,7 @@ fn share_policy_accepts_unset_and_requires_our_exact_guardian_weight() {
     assert!(
         !FeePolicy {
             our_share: None,
+            authenticated_policy_matches: false,
             ..expected
         }
         .share_matches_policy()

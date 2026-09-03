@@ -225,6 +225,7 @@ async fn config(temp: &TempDir, max_seats: u32, first_port_base: u16) -> FleetCo
         first_port_base: PortBase::new(first_port_base).unwrap(),
         respawn: RespawnPolicy::default(),
         setup_payments_configured: true,
+        guardian_verification_fee_account: Some(guardian_verification_fee_account()),
         // Tests hold the relay down and watch the retry land; a
         // production cadence would only make them slow.
         backup_scan_interval: Duration::from_millis(10),
@@ -443,6 +444,21 @@ fn guardian_fee_recipients(ours: &Account) -> Vec<GuardianFeeRecipient> {
     ];
     recipients.sort_by_key(|recipient| recipient.account.as_account().id());
     recipients.into_iter().collect()
+}
+
+async fn pin_guardian_fee_policy(
+    fleet: &Fleet,
+    seat_id: &SeatId,
+    directory: &str,
+    recipients: &str,
+) {
+    assert!(
+        fleet
+            .db
+            .pin_formation_fee_policy(seat_id, directory, recipients)
+            .await
+            .unwrap()
+    );
 }
 
 fn fixture_guardians(ours: &Account) -> Vec<Account> {
@@ -2269,19 +2285,29 @@ async fn generic_meta_write_revalidates_every_carried_guardian_fee_entitlement()
     let directory = guardian_fee_directory(&fixture_client_config(), &ours);
     let guardians = fixture_guardians(&ours);
 
-    // This value is payer-parseable but changes the FI's fixed entitlement.
+    // This value is payer-parseable but substitutes the formation-selected FI
+    // account while preserving its fixed weight.
     // An unrelated name vote must not copy it forward as this guardian's vote.
     let mut hostile_recipients = guardian_fee_recipients(&ours);
     let fi = hostile_recipients
         .iter_mut()
         .find(|recipient| recipient.weight == crate::guardian_fee::FI_RECIPIENT_WEIGHT)
         .unwrap();
-    fi.weight -= 1;
+    *fi = fee_recipient(fee_account(0x32), crate::guardian_fee::FI_RECIPIENT_WEIGHT);
+    hostile_recipients.sort_by_key(|recipient| recipient.account.as_account().id());
     let hostile_value =
         fedi_decentralized_service_fleet_manager::canonical_guardian_fee_recipient_list(
             &hostile_recipients,
         )
         .unwrap();
+    let admitted_value = crate::guardian_fee::canonical_proposal(
+        5_000,
+        &guardian_fee_recipients(&ours),
+        &guardians,
+        &guardian_verification_fee_account,
+    )
+    .unwrap();
+    pin_guardian_fee_policy(&fleet, &seat_id, &directory, &admitted_value).await;
     let hostile = serde_json_canonicalizer::to_vec(&std::collections::BTreeMap::from([
         (
             fedi_decentralized_domain::FMAN_SEAT_BINDINGS_META_FIELD_KEY,
@@ -2300,6 +2326,16 @@ async fn generic_meta_write_revalidates_every_carried_guardian_fee_entitlement()
     let fake = fleet
         .form_fake_child(&seat_id, running_federation(0, Some(hostile.clone())))
         .await;
+    let reported = fleet.guardian_fee_policy(&seat_id).await.unwrap();
+    assert_eq!(
+        reported.our_share.map(|(weight, _)| weight),
+        Some(crate::guardian_fee::GUARDIAN_RECIPIENT_WEIGHT),
+        "the hostile policy deliberately keeps this seat's entry plausible"
+    );
+    assert!(
+        !reported.share_matches_policy(),
+        "a substituted FI account must not be reported as matching merely because this seat still has weight one"
+    );
     assert!(matches!(
         seat.submit_meta_field(
             MetaConsensusBase::from_consensus(Some((0, &hostile))),
@@ -2357,6 +2393,124 @@ async fn generic_meta_write_revalidates_every_carried_guardian_fee_entitlement()
     .await
     .expect("a canonical authenticated policy can accompany maintenance");
     assert_eq!(fake.state().meta_submissions.len(), 1);
+    fleet.shutdown().await;
+}
+
+#[tokio::test]
+async fn carried_policy_rejects_a_threshold_replaced_self_signed_directory() {
+    let temp = TempDir::new().unwrap();
+    let config = config(&temp, 1, 30_973).await;
+    let fleet = open_fleet(config, Arc::new(NoWallet)).await.unwrap();
+    let (_, seat_id) = create_free_seat(&fleet, 70).await;
+    let seat = fleet.seat_by_id(&seat_id).unwrap();
+    let ours = fleet.guardian_fee_account_descriptor(&seat_id);
+    let verification = guardian_verification_fee_account();
+    let admitted_directory = guardian_fee_directory(&fixture_client_config(), &ours);
+    let admitted_recipients = crate::guardian_fee::canonical_proposal(
+        5_000,
+        &guardian_fee_recipients(&ours),
+        &fixture_guardians(&ours),
+        &verification,
+    )
+    .unwrap();
+    pin_guardian_fee_policy(&fleet, &seat_id, &admitted_directory, &admitted_recipients).await;
+
+    let hostile_directory = fixture_directory(&fixture_client_config());
+    let hostile_guardians = (0..4)
+        .map(|peer| fee_account(0x20 + peer))
+        .collect::<Vec<_>>();
+    let mut hostile_recipients = hostile_guardians
+        .iter()
+        .cloned()
+        .map(|account| fee_recipient(account, crate::guardian_fee::GUARDIAN_RECIPIENT_WEIGHT))
+        .collect::<Vec<_>>();
+    hostile_recipients.push(fee_recipient(
+        fee_account(0x30),
+        crate::guardian_fee::FI_RECIPIENT_WEIGHT,
+    ));
+    hostile_recipients.push(fee_recipient(
+        verification.clone(),
+        crate::guardian_fee::GUARDIAN_VERIFICATION_FEE_WEIGHT,
+    ));
+    hostile_recipients.sort_by_key(|recipient| recipient.account.as_account().id());
+    let hostile_recipients = crate::guardian_fee::canonical_proposal(
+        5_000,
+        &hostile_recipients,
+        &hostile_guardians,
+        &verification,
+    )
+    .unwrap();
+    let hostile = serde_json_canonicalizer::to_vec(&std::collections::BTreeMap::from([
+        (
+            fedi_decentralized_domain::FMAN_SEAT_BINDINGS_META_FIELD_KEY,
+            serde_json::Value::String(hostile_directory),
+        ),
+        (
+            crate::guardian_fee::SEND_PPM_META_KEY,
+            serde_json::Value::String("5000".to_owned()),
+        ),
+        (
+            crate::guardian_fee::REMITTANCE_ACCOUNT_META_KEY,
+            serde_json::Value::String(hostile_recipients),
+        ),
+    ]))
+    .unwrap();
+    let fake = fleet
+        .form_fake_child(&seat_id, running_federation(0, Some(hostile.clone())))
+        .await;
+
+    let reported = fleet.guardian_fee_policy(&seat_id).await.unwrap();
+    assert!(!reported.share_matches_policy());
+    assert!(matches!(
+        seat.submit_meta_field(
+            MetaConsensusBase::from_consensus(Some((0, &hostile))),
+            MetaFieldKey(FEDERATION_NAME_META_FIELD_KEY.to_owned()),
+            MetaFieldValue("Never copied".to_owned()),
+            NO_FEE_FLOOR,
+            Some(verification),
+        )
+        .await,
+        Err(SeatVerbError::MetaValueInvalid)
+    ));
+    assert!(fake.state().meta_submissions.is_empty());
+    fleet.shutdown().await;
+}
+
+#[tokio::test]
+async fn carried_policy_rejects_a_non_string_directory_without_a_formation_pin() {
+    let temp = TempDir::new().unwrap();
+    let config = config(&temp, 1, 30_974).await;
+    let fleet = open_fleet(config, Arc::new(NoWallet)).await.unwrap();
+    let (_, seat_id) = create_free_seat(&fleet, 70).await;
+    let seat = fleet.seat_by_id(&seat_id).unwrap();
+    let hostile = serde_json_canonicalizer::to_vec(&std::collections::BTreeMap::from([(
+        fedi_decentralized_domain::FMAN_SEAT_BINDINGS_META_FIELD_KEY,
+        serde_json::Value::Null,
+    )]))
+    .unwrap();
+    let fake = fleet
+        .form_fake_child(&seat_id, running_federation(0, Some(hostile.clone())))
+        .await;
+
+    assert!(
+        !fleet
+            .guardian_fee_policy(&seat_id)
+            .await
+            .unwrap()
+            .share_matches_policy()
+    );
+    assert!(matches!(
+        seat.submit_meta_field(
+            MetaConsensusBase::from_consensus(Some((0, &hostile))),
+            MetaFieldKey(FEDERATION_NAME_META_FIELD_KEY.to_owned()),
+            MetaFieldValue("Never copied".to_owned()),
+            NO_FEE_FLOOR,
+            Some(guardian_verification_fee_account()),
+        )
+        .await,
+        Err(SeatVerbError::MetaValueInvalid)
+    ));
+    assert!(fake.state().meta_submissions.is_empty());
     fleet.shutdown().await;
 }
 
@@ -3042,6 +3196,14 @@ async fn fee_and_metadata_proposals_cross_block_on_a_shared_admitted_base() {
     let seat = fleet.seat_by_id(&seat_id).unwrap();
     let ours = fleet.guardian_fee_account_descriptor(&seat_id);
     let directory = guardian_fee_directory(&fixture_client_config(), &ours);
+    let recipients = crate::guardian_fee::canonical_proposal(
+        5,
+        &guardian_fee_recipients(&ours),
+        &fixture_guardians(&ours),
+        &guardian_verification_fee_account(),
+    )
+    .unwrap();
+    pin_guardian_fee_policy(&fleet, &seat_id, &directory, &recipients).await;
     let original = serde_json_canonicalizer::to_vec(&std::collections::BTreeMap::from([
         (
             fedi_decentralized_domain::FMAN_SEAT_BINDINGS_META_FIELD_KEY,
@@ -3053,15 +3215,7 @@ async fn fee_and_metadata_proposals_cross_block_on_a_shared_admitted_base() {
         ),
         (
             crate::guardian_fee::REMITTANCE_ACCOUNT_META_KEY,
-            serde_json::Value::String(
-                crate::guardian_fee::canonical_proposal(
-                    5,
-                    &guardian_fee_recipients(&ours),
-                    &fixture_guardians(&ours),
-                    &guardian_verification_fee_account(),
-                )
-                .unwrap(),
-            ),
+            serde_json::Value::String(recipients),
         ),
         (
             "unrelated",
@@ -3188,7 +3342,13 @@ async fn seat_status_guardian_fee_reads_the_seat_without_a_wallet_client() {
         &guardian_verification_fee_account,
     )
     .unwrap();
+    let directory = guardian_fee_directory(&fixture_client_config(), &ours);
+    pin_guardian_fee_policy(&fleet, &seat_id, &directory, &recipients).await;
     let meta = serde_json::to_vec(&std::collections::BTreeMap::from([
+        (
+            fedi_decentralized_domain::FMAN_SEAT_BINDINGS_META_FIELD_KEY,
+            serde_json::Value::String(directory),
+        ),
         (
             crate::guardian_fee::SEND_PPM_META_KEY,
             serde_json::Value::String("42".to_owned()),
@@ -3262,10 +3422,19 @@ async fn guardian_fee_proposal_below_the_published_minimum_casts_no_vote() {
     let (_, seat_id) = create_free_seat(&fleet, 71).await;
     let seat = fleet.seat_by_id(&seat_id).unwrap();
     let ours = fleet.guardian_fee_account_descriptor(&seat_id);
+    let directory = guardian_fee_directory(&fixture_client_config(), &ours);
+    let recipients = crate::guardian_fee::canonical_proposal(
+        5,
+        &guardian_fee_recipients(&ours),
+        &fixture_guardians(&ours),
+        &guardian_verification_fee_account(),
+    )
+    .unwrap();
+    pin_guardian_fee_policy(&fleet, &seat_id, &directory, &recipients).await;
     let existing = serde_json_canonicalizer::to_vec(&std::collections::BTreeMap::from([
         (
             fedi_decentralized_domain::FMAN_SEAT_BINDINGS_META_FIELD_KEY,
-            serde_json::Value::String(guardian_fee_directory(&fixture_client_config(), &ours)),
+            serde_json::Value::String(directory),
         ),
         (
             crate::guardian_fee::SEND_PPM_META_KEY,
@@ -3273,15 +3442,7 @@ async fn guardian_fee_proposal_below_the_published_minimum_casts_no_vote() {
         ),
         (
             crate::guardian_fee::REMITTANCE_ACCOUNT_META_KEY,
-            serde_json::Value::String(
-                crate::guardian_fee::canonical_proposal(
-                    5,
-                    &guardian_fee_recipients(&ours),
-                    &fixture_guardians(&ours),
-                    &guardian_verification_fee_account(),
-                )
-                .unwrap(),
-            ),
+            serde_json::Value::String(recipients),
         ),
     ]))
     .unwrap();
@@ -3355,10 +3516,12 @@ async fn an_unrelated_meta_write_carries_a_sub_minimum_fee_rate_forward() {
         &guardian_verification_fee_account(),
     )
     .expect("a rate below the published floor is still a canonical fee policy");
+    let directory = guardian_fee_directory(&fixture_client_config(), &ours);
+    pin_guardian_fee_policy(&fleet, &seat_id, &directory, &carried_recipients).await;
     let existing = serde_json_canonicalizer::to_vec(&std::collections::BTreeMap::from([
         (
             fedi_decentralized_domain::FMAN_SEAT_BINDINGS_META_FIELD_KEY,
-            serde_json::Value::String(guardian_fee_directory(&fixture_client_config(), &ours)),
+            serde_json::Value::String(directory),
         ),
         (
             crate::guardian_fee::SEND_PPM_META_KEY,
@@ -3426,17 +3589,17 @@ async fn canonical_guardian_fee_submission(
         crate::guardian_fee::SEND_PPM_META_KEY.to_owned(),
         serde_json::Value::String("5".to_owned()),
     );
+    let recipients = crate::guardian_fee::canonical_proposal(
+        5,
+        &guardian_fee_recipients(&ours),
+        &fixture_guardians(&ours),
+        &guardian_verification_fee_account(),
+    )
+    .unwrap();
+    pin_guardian_fee_policy(fleet, seat_id, directory, &recipients).await;
     current_fields.insert(
         crate::guardian_fee::REMITTANCE_ACCOUNT_META_KEY.to_owned(),
-        serde_json::Value::String(
-            crate::guardian_fee::canonical_proposal(
-                5,
-                &guardian_fee_recipients(&ours),
-                &fixture_guardians(&ours),
-                &guardian_verification_fee_account(),
-            )
-            .unwrap(),
-        ),
+        serde_json::Value::String(recipients),
     );
     let current = serde_json::to_vec(&current_fields).unwrap();
     let fake = fleet
