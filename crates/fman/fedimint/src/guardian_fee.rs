@@ -14,10 +14,12 @@ use std::ops::Range;
 use anyhow::Context as _;
 use fedi_decentralized_service_fleet_manager::SeatId;
 use fedimint_client::ClientHandleArc;
+use fedimint_client::db::{OperationLogKey, OperationLogKeyPrefix};
 use fedimint_client::module::ClientModuleInstance;
+use fedimint_client_module::oplog::OperationLogEntry;
 use fedimint_core::Amount;
 use fedimint_core::core::OperationId;
-use fedimint_core::db::{Database, IDatabaseTransactionOpsCore};
+use fedimint_core::db::{Database, IDatabaseTransactionOpsCore, IDatabaseTransactionOpsCoreTyped};
 use fedimint_core::encoding::{Decodable, Encodable};
 use fedimint_core::invite_code::InviteCode;
 use fedimint_core::module::registry::ModuleDecoderRegistry;
@@ -34,7 +36,6 @@ use stability_pool_client::{
 
 use crate::{ClientScope, Wallet};
 
-const COLLECTION_OPERATION_PAGE: usize = 128;
 const COLLECTION_RECEIPT_TOTAL_KEY: &[u8] = b"total";
 
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
@@ -242,7 +243,7 @@ trait CollectionOperations: Sync {
         &self,
         operation: &Self::Operation,
         amount: Amount,
-    ) -> anyhow::Result<()>;
+    ) -> anyhow::Result<Amount>;
 
     /// Read current stability-pool balances.
     async fn balances(&self) -> anyhow::Result<CollectionBalances>;
@@ -288,122 +289,107 @@ impl CollectionOperations for FedimintCollectionOperations<'_> {
                 )
             })?,
         };
-        let mut last_seen = None;
-        loop {
-            let page = self
-                .client
-                .operation_log()
-                .paginate_operations_rev(COLLECTION_OPERATION_PAGE, last_seen)
-                .await;
-            if page.is_empty() {
-                return Ok(reconciled);
+        // Scan the operation-ID index directly. The chronological paginator
+        // starts at wall-clock `now`, so a clock correction can otherwise
+        // hide a durable future-dated operation from recovery.
+        for (key, entry) in operation_log_entries(self.client.db()).await {
+            let Ok(meta) = entry.try_meta::<StabilityPoolMeta>() else {
+                continue;
+            };
+            let (extra_meta, phase) = match meta {
+                StabilityPoolMeta::Withdrawal { extra_meta, .. } => {
+                    (extra_meta, CollectionFailurePhase::Unlock)
+                }
+                StabilityPoolMeta::WithdrawIdleBalance { extra_meta, .. } => {
+                    (extra_meta, CollectionFailurePhase::IdleClaim)
+                }
+                _ => continue,
+            };
+            if serde_json::from_value::<CollectionOperationMeta>(extra_meta)
+                .ok()
+                .filter(|meta| meta.fman_guardian_fee_collection == 1)
+                .is_none()
+            {
+                continue;
             }
-            last_seen = page.last().map(|(key, _)| *key);
-            let page_len = page.len();
-            for (key, entry) in page {
-                let Ok(meta) = entry.try_meta::<StabilityPoolMeta>() else {
-                    continue;
-                };
-                let (extra_meta, phase) = match meta {
-                    StabilityPoolMeta::Withdrawal { extra_meta, .. } => {
-                        (extra_meta, CollectionFailurePhase::Unlock)
-                    }
-                    StabilityPoolMeta::WithdrawIdleBalance { extra_meta, .. } => {
-                        (extra_meta, CollectionFailurePhase::IdleClaim)
-                    }
-                    _ => continue,
-                };
-                if serde_json::from_value::<CollectionOperationMeta>(extra_meta)
-                    .ok()
-                    .filter(|meta| meta.fman_guardian_fee_collection == 1)
-                    .is_none()
-                {
-                    continue;
-                }
-                if self
-                    .receipt(&key.operation_id)
-                    .await
-                    .map_err(|_| (CollectionFailurePhase::Receipt, reconciled))?
-                    .is_some()
-                {
-                    continue;
-                }
-                match entry
-                    .try_outcome::<StabilityPoolWithdrawalOperationState>()
-                    .map_err(|_| (phase, reconciled))?
-                {
-                    Some(state) if withdrawal_terminal(&state) => {
-                        let amount = withdrawal_success_amount(&state).unwrap_or(Amount::ZERO);
-                        self.record_receipt(&key.operation_id, amount)
-                            .await
-                            .map_err(|_| (CollectionFailurePhase::Receipt, reconciled))?;
-                        reconciled.newly_claimed = checked_amount_sum(
-                            reconciled.newly_claimed,
-                            amount,
-                            "recovered guardian-fee claims",
-                        )
-                        .map_err(|_| (phase, reconciled))?;
-                        reconciled.recorded_claimed = self
-                            .recorded_claimed()
-                            .await
-                            .map_err(|_| (CollectionFailurePhase::Receipt, reconciled))?;
-                        continue;
-                    }
-                    Some(_) => return Err((phase, reconciled)),
-                    None => {}
-                }
-                let result = match phase {
-                    CollectionFailurePhase::IdleClaim => self.await_idle(key.operation_id).await,
-                    CollectionFailurePhase::Unlock => self.await_unlock(key.operation_id).await,
-                    CollectionFailurePhase::Receipt => unreachable!(),
-                    CollectionFailurePhase::BalanceRefresh => unreachable!(),
-                };
-                match result {
-                    Ok(amount) => {
-                        self.record_receipt(&key.operation_id, amount)
-                            .await
-                            .map_err(|_| (CollectionFailurePhase::Receipt, reconciled))?;
-                        reconciled.newly_claimed = checked_amount_sum(
-                            reconciled.newly_claimed,
-                            amount,
-                            "recovered guardian-fee claims",
-                        )
-                        .map_err(|_| (phase, reconciled))?;
-                        reconciled.recorded_claimed = self
-                            .recorded_claimed()
-                            .await
-                            .map_err(|_| (CollectionFailurePhase::Receipt, reconciled))?;
-                    }
-                    Err(_) => {
-                        // A defined terminal failure is cached after EOF and
-                        // must not wedge later work. An uncached error remains
-                        // ambiguous and blocks a new snapshot/submission.
-                        let terminal = self
-                            .client
-                            .operation_log()
-                            .get_operation(key.operation_id)
-                            .await
-                            .and_then(|entry| {
-                                entry
-                                    .try_outcome::<StabilityPoolWithdrawalOperationState>()
-                                    .ok()
-                                    .flatten()
-                                    .filter(withdrawal_terminal)
-                            })
-                            .is_some();
-                        if !terminal {
-                            return Err((phase, reconciled));
-                        }
-                        self.record_receipt(&key.operation_id, Amount::ZERO)
-                            .await
-                            .map_err(|_| (CollectionFailurePhase::Receipt, reconciled))?;
-                    }
-                }
+            if self
+                .receipt(&key.operation_id)
+                .await
+                .map_err(|_| (CollectionFailurePhase::Receipt, reconciled))?
+                .is_some()
+            {
+                continue;
             }
-            if page_len < COLLECTION_OPERATION_PAGE {
-                return Ok(reconciled);
+            match entry
+                .try_outcome::<StabilityPoolWithdrawalOperationState>()
+                .map_err(|_| (phase, reconciled))?
+            {
+                Some(state) if withdrawal_terminal(&state) => {
+                    let amount = withdrawal_success_amount(&state).unwrap_or(Amount::ZERO);
+                    let recorded_claimed = self
+                        .record_receipt(&key.operation_id, amount)
+                        .await
+                        .map_err(|_| (CollectionFailurePhase::Receipt, reconciled))?;
+                    reconciled.recorded_claimed = recorded_claimed;
+                    reconciled.newly_claimed = checked_amount_sum(
+                        reconciled.newly_claimed,
+                        amount,
+                        "recovered guardian-fee claims",
+                    )
+                    .map_err(|_| (phase, reconciled))?;
+                    continue;
+                }
+                Some(_) => return Err((phase, reconciled)),
+                None => {}
+            }
+            let result = match phase {
+                CollectionFailurePhase::IdleClaim => self.await_idle(key.operation_id).await,
+                CollectionFailurePhase::Unlock => self.await_unlock(key.operation_id).await,
+                CollectionFailurePhase::Receipt => unreachable!(),
+                CollectionFailurePhase::BalanceRefresh => unreachable!(),
+            };
+            match result {
+                Ok(amount) => {
+                    let recorded_claimed = self
+                        .record_receipt(&key.operation_id, amount)
+                        .await
+                        .map_err(|_| (CollectionFailurePhase::Receipt, reconciled))?;
+                    reconciled.recorded_claimed = recorded_claimed;
+                    reconciled.newly_claimed = checked_amount_sum(
+                        reconciled.newly_claimed,
+                        amount,
+                        "recovered guardian-fee claims",
+                    )
+                    .map_err(|_| (phase, reconciled))?;
+                }
+                Err(_) => {
+                    // A defined terminal failure is cached after EOF and
+                    // must not wedge later work. An uncached error remains
+                    // ambiguous and blocks a new snapshot/submission.
+                    let terminal = self
+                        .client
+                        .operation_log()
+                        .get_operation(key.operation_id)
+                        .await
+                        .and_then(|entry| {
+                            entry
+                                .try_outcome::<StabilityPoolWithdrawalOperationState>()
+                                .ok()
+                                .flatten()
+                                .filter(withdrawal_terminal)
+                        })
+                        .is_some();
+                    if !terminal {
+                        return Err((phase, reconciled));
+                    }
+                    reconciled.recorded_claimed = self
+                        .record_receipt(&key.operation_id, Amount::ZERO)
+                        .await
+                        .map_err(|_| (CollectionFailurePhase::Receipt, reconciled))?;
+                }
             }
         }
+        Ok(reconciled)
     }
 
     async fn receipt(&self, operation: &Self::Operation) -> anyhow::Result<Option<Amount>> {
@@ -418,7 +404,7 @@ impl CollectionOperations for FedimintCollectionOperations<'_> {
         &self,
         operation: &Self::Operation,
         amount: Amount,
-    ) -> anyhow::Result<()> {
+    ) -> anyhow::Result<Amount> {
         record_collection_receipt(&self.receipts, operation, amount).await
     }
 
@@ -475,6 +461,14 @@ impl CollectionOperations for FedimintCollectionOperations<'_> {
     }
 }
 
+async fn operation_log_entries(database: &Database) -> Vec<(OperationLogKey, OperationLogEntry)> {
+    let mut dbtx = database.begin_transaction_nc().await;
+    dbtx.find_by_prefix(&OperationLogKeyPrefix)
+        .await
+        .collect::<Vec<_>>()
+        .await
+}
+
 fn withdrawal_terminal(state: &StabilityPoolWithdrawalOperationState) -> bool {
     matches!(
         state,
@@ -521,13 +515,13 @@ async fn record_collection_receipt(
     receipts: &Database,
     operation: &OperationId,
     amount: Amount,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<Amount> {
     let key = receipt_key(operation);
     let value = amount.consensus_encode_to_vec();
     let mut tx = receipts.begin_transaction().await;
     if let Some(existing) = tx.raw_get_bytes(&key).await? {
         anyhow::ensure!(existing == value, "guardian-fee receipt amount changed");
-        return Ok(());
+        return decode_receipt_amount(tx.raw_get_bytes(COLLECTION_RECEIPT_TOTAL_KEY).await?);
     }
     let total = decode_receipt_amount(tx.raw_get_bytes(COLLECTION_RECEIPT_TOTAL_KEY).await?)?;
     let total = checked_amount_sum(total, amount, "recorded guardian-fee claims")?;
@@ -538,7 +532,7 @@ async fn record_collection_receipt(
     )
     .await?;
     tx.commit_tx().await;
-    Ok(())
+    Ok(total)
 }
 
 fn decode_receipt_amount(value: Option<Vec<u8>>) -> anyhow::Result<Amount> {
@@ -562,6 +556,14 @@ fn withdrawal_success_amount(state: &StabilityPoolWithdrawalOperationState) -> O
 async fn collect_operations(operations: &impl CollectionOperations) -> anyhow::Result<Collected> {
     let reconciled = match operations.reconcile_unobserved().await {
         Ok(reconciled) => reconciled,
+        // Without a durable total there is no truthful cumulative amount to
+        // put in an incomplete response. Surface an error instead of
+        // fabricating zero.
+        Err((CollectionFailurePhase::BalanceRefresh, _)) => {
+            return Err(anyhow::anyhow!(
+                "read durable guardian-fee collection total"
+            ));
+        }
         Err((phase, reconciled)) => {
             return Ok(incomplete_after_refresh(
                 operations,
@@ -591,11 +593,8 @@ async fn collect_operations(operations: &impl CollectionOperations) -> anyhow::R
         operation_exists = true;
         match operations.await_idle(operation.clone()).await {
             Ok(claimed) => {
-                if operations
-                    .record_receipt(&operation, claimed)
-                    .await
-                    .is_err()
-                {
+                let Ok(committed_total) = operations.record_receipt(&operation, claimed).await
+                else {
                     return Ok(incomplete_after_refresh(
                         operations,
                         confirmed_claimed,
@@ -604,14 +603,13 @@ async fn collect_operations(operations: &impl CollectionOperations) -> anyhow::R
                         true,
                     )
                     .await);
-                }
+                };
                 confirmed_claimed = checked_amount_sum(
                     confirmed_claimed,
                     claimed,
                     "confirmed guardian-fee claims",
                 )?;
-                recorded_claimed =
-                    checked_amount_sum(recorded_claimed, claimed, "recorded guardian-fee claims")?;
+                recorded_claimed = committed_total;
             }
             Err(_) => {
                 return Ok(incomplete_after_refresh(
@@ -646,11 +644,8 @@ async fn collect_operations(operations: &impl CollectionOperations) -> anyhow::R
         operation_exists = true;
         match operations.await_unlock(operation.clone()).await {
             Ok(claimed) => {
-                if operations
-                    .record_receipt(&operation, claimed)
-                    .await
-                    .is_err()
-                {
+                let Ok(committed_total) = operations.record_receipt(&operation, claimed).await
+                else {
                     return Ok(incomplete_after_refresh(
                         operations,
                         confirmed_claimed,
@@ -659,14 +654,13 @@ async fn collect_operations(operations: &impl CollectionOperations) -> anyhow::R
                         true,
                     )
                     .await);
-                }
+                };
                 confirmed_claimed = checked_amount_sum(
                     confirmed_claimed,
                     claimed,
                     "confirmed guardian-fee claims",
                 )?;
-                recorded_claimed =
-                    checked_amount_sum(recorded_claimed, claimed, "recorded guardian-fee claims")?;
+                recorded_claimed = committed_total;
             }
             Err(_) => {
                 return Ok(incomplete_after_refresh(

@@ -36,9 +36,9 @@ fn guardian_fee_collection_json_preserves_complete_shape_and_structures_incomple
             awaiting_cycle: fedimint_core::Amount::from_msats(50),
         }),
         serde_json::json!({
-            "claimed_msat": 100,
-            "recorded_claimed_msat": 100,
-            "awaiting_cycle_msat": 50,
+            "claimed_msat": "100",
+            "recorded_claimed_msat": "100",
+            "awaiting_cycle_msat": "50",
         })
     );
 
@@ -53,8 +53,8 @@ fn guardian_fee_collection_json_preserves_complete_shape_and_structures_incomple
             },
         }),
         serde_json::json!({
-            "claimed_msat": 100,
-            "recorded_claimed_msat": 100,
+            "claimed_msat": "100",
+            "recorded_claimed_msat": "100",
             "awaiting_cycle_msat": null,
             "incomplete": {
                 "phase": "unlock",
@@ -62,6 +62,15 @@ fn guardian_fee_collection_json_preserves_complete_shape_and_structures_incomple
                 "error": "guardian-fee unlock was submitted but did not complete; refresh status before retrying",
             },
         })
+    );
+
+    assert_eq!(
+        collect_guardian_fees_json(Collected::Complete {
+            claimed: fedimint_core::Amount::from_msats(u64::MAX),
+            recorded_claimed: fedimint_core::Amount::from_msats(u64::MAX),
+            awaiting_cycle: fedimint_core::Amount::ZERO,
+        })["claimed_msat"],
+        "18446744073709551615"
     );
 }
 

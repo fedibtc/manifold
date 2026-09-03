@@ -21,9 +21,9 @@ describe('describeCollection', () => {
   // deposit is waiting for the next cycle turnover.
   it('should state the locked remainder alongside what was claimed', () => {
     const sentence = describeCollection({
-      claimed_msat: 13_000_000,
-      recorded_claimed_msat: 13_000_000,
-      awaiting_cycle_msat: 3_000_000,
+      claimed_msat: '13000000',
+      recorded_claimed_msat: '13000000',
+      awaiting_cycle_msat: '3000000',
     });
 
     expect(sentence).toContain('13,000 sats');
@@ -35,9 +35,9 @@ describe('describeCollection', () => {
 
   it('should still state the waiting figure when nothing is locked', () => {
     const sentence = describeCollection({
-      claimed_msat: 13_000_000,
-      recorded_claimed_msat: 13_000_000,
-      awaiting_cycle_msat: 0,
+      claimed_msat: '13000000',
+      recorded_claimed_msat: '13000000',
+      awaiting_cycle_msat: '0',
     });
 
     expect(sentence).toBe('Claimed 13,000 sats. 0 sats are waiting for the next cycle turnover.');
@@ -48,9 +48,9 @@ describe('describeCollection', () => {
   it('should render a claim of nothing as an explicit zero', () => {
     expect(
       describeCollection({
-        claimed_msat: 0,
-        recorded_claimed_msat: 13_000_000,
-        awaiting_cycle_msat: 4_000_000,
+        claimed_msat: '0',
+        recorded_claimed_msat: '13000000',
+        awaiting_cycle_msat: '4000000',
       })
     ).toContain('Claimed 0 sats.');
   });
@@ -60,9 +60,9 @@ describe('describeCollection', () => {
   // again. Saying "Claimed X" flat would read as a finished job.
   it('should say the collection stopped and name the step it stopped at', () => {
     const sentence = describeCollection({
-      claimed_msat: 13_000_000,
-      recorded_claimed_msat: 13_000_000,
-      awaiting_cycle_msat: 3_000_000,
+      claimed_msat: '13000000',
+      recorded_claimed_msat: '13000000',
+      awaiting_cycle_msat: '3000000',
       incomplete: { phase: 'unlock', operation_submitted: true, error: 'pool timed out' }
     });
 
@@ -76,8 +76,8 @@ describe('describeCollection', () => {
   // operator's money, which is the one thing this module exists to prevent.
   it('should render an unreadable waiting balance as unknown, never as zero', () => {
     const sentence = describeCollection({
-      claimed_msat: 13_000_000,
-      recorded_claimed_msat: 13_000_000,
+      claimed_msat: '13000000',
+      recorded_claimed_msat: '13000000',
       awaiting_cycle_msat: null,
       incomplete: { phase: 'balance_refresh', operation_submitted: false, error: 'read failed' }
     });
@@ -85,5 +85,15 @@ describe('describeCollection', () => {
     expect(sentence).toContain('—');
     expect(sentence).toContain('could not be read back');
     expect(sentence).not.toContain('0 sats are waiting');
+  });
+
+  it('should preserve max-u64 wire amounts while describing collection', () => {
+    expect(
+      describeCollection({
+        claimed_msat: '18446744073709551615',
+        recorded_claimed_msat: '18446744073709551615',
+        awaiting_cycle_msat: '18446744073709551615',
+      })
+    ).toContain('18,446,744,073,709,551 sats');
   });
 });

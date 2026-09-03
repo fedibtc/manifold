@@ -642,9 +642,9 @@ pub fn collect_guardian_fees_json(collected: Collected) -> Value {
             recorded_claimed,
             awaiting_cycle,
         } => json!({
-            "claimed_msat": claimed.msats,
-            "recorded_claimed_msat": recorded_claimed.msats,
-            "awaiting_cycle_msat": awaiting_cycle.msats,
+            "claimed_msat": claimed.msats.to_string(),
+            "recorded_claimed_msat": recorded_claimed.msats.to_string(),
+            "awaiting_cycle_msat": awaiting_cycle.msats.to_string(),
         }),
         Collected::Incomplete {
             confirmed_claimed,
@@ -671,9 +671,9 @@ pub fn collect_guardian_fees_json(collected: Collected) -> Value {
                 format!("guardian-fee {action} could not be submitted; collection stopped")
             };
             json!({
-                "claimed_msat": confirmed_claimed.msats,
-                "recorded_claimed_msat": recorded_claimed.msats,
-                "awaiting_cycle_msat": observed_awaiting_cycle.map(|amount| amount.msats),
+                "claimed_msat": confirmed_claimed.msats.to_string(),
+                "recorded_claimed_msat": recorded_claimed.msats.to_string(),
+                "awaiting_cycle_msat": observed_awaiting_cycle.map(|amount| amount.msats.to_string()),
                 "incomplete": {
                     "phase": phase,
                     "operation_submitted": failure.operation_submitted,

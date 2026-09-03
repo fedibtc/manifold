@@ -31,7 +31,7 @@ export const describeCollection = (collected: CollectGuardianFeesResponse): stri
   const awaiting =
     collected.awaiting_cycle_msat === null
       ? `${formatSats(null)} is waiting for the next cycle turnover — the balance could not be read back.`
-      : collected.awaiting_cycle_msat > 0
+      : BigInt(collected.awaiting_cycle_msat) > 0n
         ? `${formatSats(collected.awaiting_cycle_msat)} stay locked until the next cycle turnover.`
         : '0 sats are waiting for the next cycle turnover.';
 

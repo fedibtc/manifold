@@ -8,10 +8,10 @@ export const UNKNOWN_AMOUNT = '—';
 // convert to sats and label the unit (MVP-SPEC rule 6). `null`/`undefined` means
 // "not known", which is why the parameter is nullable rather than defaulted: a
 // caller cannot silently coerce a missing figure into a zero.
-export const formatSats = (amountMsat: number | null | undefined): string =>
+export const formatSats = (amountMsat: number | bigint | string | null | undefined): string =>
   amountMsat === null || amountMsat === undefined
     ? UNKNOWN_AMOUNT
-    : `${Math.floor(amountMsat / 1000).toLocaleString('en-US')} sats`;
+    : `${(BigInt(amountMsat) / 1000n).toLocaleString('en-US')} sats`;
 
 export const formatDate = (timestampMs: number): string =>
   new Date(timestampMs).toISOString().slice(0, 10);

@@ -129,9 +129,9 @@ const collectGuardianFees: Verb<'CollectGuardianFees'> = ({ seat_id }) => {
   ledger.idle_msat = 0;
   ledger.collected_ecash_msat += claimed;
   return {
-    claimed_msat: claimed,
-    recorded_claimed_msat: ledger.collected_ecash_msat,
-    awaiting_cycle_msat: ledger.locked_msat,
+    claimed_msat: claimed.toString(),
+    recorded_claimed_msat: ledger.collected_ecash_msat.toString(),
+    awaiting_cycle_msat: ledger.locked_msat.toString(),
   };
 };
 

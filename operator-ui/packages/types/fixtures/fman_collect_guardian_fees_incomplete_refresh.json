@@ -1,10 +1,10 @@
 {
   "awaiting_cycle_msat": null,
-  "claimed_msat": 1750000,
+  "claimed_msat": "1750000",
   "incomplete": {
     "error": "guardian-fee operations completed but the updated balance could not be read; refresh status before retrying",
     "operation_submitted": false,
     "phase": "balance_refresh"
   },
-  "recorded_claimed_msat": 2250000
+  "recorded_claimed_msat": "2250000"
 }

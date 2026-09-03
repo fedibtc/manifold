@@ -3,16 +3,18 @@ use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
+use fedimint_client::db::OperationLogKey;
+use fedimint_client_module::oplog::{JsonStringed, OperationLogEntry};
 use fedimint_core::Amount;
 use fedimint_core::core::OperationId;
-use fedimint_core::db::Database;
+use fedimint_core::db::{Database, IDatabaseTransactionOpsCoreTyped};
 use fman_core::guardian_fee::{Collected, CollectionFailure, CollectionFailurePhase};
 use stability_pool_client::StabilityPoolWithdrawalOperationState;
 
 use super::{
     CollectionBalances, CollectionOperations, Reconciled, collect_operations,
-    collection_receipt_prefix, read_collection_receipt, read_recorded_claimed,
-    record_collection_receipt, terminal_withdrawal,
+    collection_receipt_prefix, operation_log_entries, read_collection_receipt,
+    read_recorded_claimed, record_collection_receipt, terminal_withdrawal,
 };
 
 struct FakeOperations {
@@ -24,6 +26,9 @@ struct FakeOperations {
     idle_submit_calls: AtomicUsize,
     unlock_submit_calls: AtomicUsize,
     receipts: Mutex<std::collections::BTreeMap<u8, Amount>>,
+    fail_reconcile_total_read: bool,
+    fail_receipt_write: bool,
+    committed_total: Option<Amount>,
 }
 
 impl FakeOperations {
@@ -37,6 +42,9 @@ impl FakeOperations {
             idle_submit_calls: AtomicUsize::new(0),
             unlock_submit_calls: AtomicUsize::new(0),
             receipts: Mutex::default(),
+            fail_reconcile_total_read: false,
+            fail_receipt_write: false,
+            committed_total: None,
         }
     }
 
@@ -51,6 +59,21 @@ impl FakeOperations {
         self.unlock_await.lock().unwrap().extend(complete);
         self
     }
+
+    fn failing_total_read(mut self) -> Self {
+        self.fail_reconcile_total_read = true;
+        self
+    }
+
+    fn failing_receipt_write(mut self) -> Self {
+        self.fail_receipt_write = true;
+        self
+    }
+
+    fn committed_total(mut self, total: u64) -> Self {
+        self.committed_total = Some(Amount::from_msats(total));
+        self
+    }
 }
 
 #[async_trait::async_trait]
@@ -60,6 +83,12 @@ impl CollectionOperations for FakeOperations {
     async fn reconcile_unobserved(
         &self,
     ) -> Result<Reconciled, (CollectionFailurePhase, Reconciled)> {
+        if self.fail_reconcile_total_read {
+            return Err((
+                CollectionFailurePhase::BalanceRefresh,
+                Reconciled::default(),
+            ));
+        }
         Ok(Reconciled::default())
     }
 
@@ -68,22 +97,27 @@ impl CollectionOperations for FakeOperations {
     }
 
     async fn recorded_claimed(&self) -> anyhow::Result<Amount> {
-        Ok(self
-            .receipts
+        self.receipts
             .lock()
             .unwrap()
             .values()
             .copied()
-            .fold(Amount::ZERO, |total, amount| total + amount))
+            .try_fold(Amount::ZERO, |total, amount| {
+                super::checked_amount_sum(total, amount, "fake receipt total")
+            })
     }
 
     async fn record_receipt(
         &self,
         operation: &Self::Operation,
         amount: Amount,
-    ) -> anyhow::Result<()> {
+    ) -> anyhow::Result<Amount> {
+        anyhow::ensure!(!self.fail_receipt_write, "injected receipt failure");
         self.receipts.lock().unwrap().insert(*operation, amount);
-        Ok(())
+        match self.committed_total {
+            Some(total) => Ok(total),
+            None => self.recorded_claimed().await,
+        }
     }
 
     async fn balances(&self) -> anyhow::Result<CollectionBalances> {
@@ -187,11 +221,11 @@ impl CollectionOperations for CancellationOperations {
         &self,
         _operation: &Self::Operation,
         amount: Amount,
-    ) -> anyhow::Result<()> {
+    ) -> anyhow::Result<Amount> {
         self.recorded.store(amount.msats, Ordering::SeqCst);
         self.pending.store(0, Ordering::SeqCst);
         self.receipt_recorded.notify_waiters();
-        Ok(())
+        Ok(amount)
     }
 
     async fn balances(&self) -> anyhow::Result<CollectionBalances> {
@@ -297,6 +331,32 @@ async fn collection_receipts_use_user_data_namespace_and_survive_reopen() {
     }
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn recovery_enumerates_operation_ids_without_a_chronological_entry() {
+    let temp = tempfile::tempdir().unwrap();
+    let database: Database = fedimint_rocksdb::RocksDb::build(temp.path().join("operations.db"))
+        .open()
+        .await
+        .unwrap()
+        .into();
+    let operation_id = OperationId([8; 32]);
+    let mut tx = database.begin_transaction().await;
+    tx.insert_entry(
+        &OperationLogKey { operation_id },
+        &OperationLogEntry::new(
+            "stability_pool".to_owned(),
+            JsonStringed(serde_json::json!({})),
+            None,
+        ),
+    )
+    .await;
+    tx.commit_tx().await;
+
+    let entries = operation_log_entries(&database).await;
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].0.operation_id, operation_id);
+}
+
 #[tokio::test]
 async fn cancellation_after_durable_operation_id_is_reconciled_without_resubmission() {
     let operations = Arc::new(CancellationOperations::new(100, false));
@@ -353,6 +413,41 @@ async fn pre_read_and_idle_pre_id_failures_remain_outer_errors() {
         .idle(Err(anyhow::anyhow!("submission failed")), None);
     assert!(collect_operations(&submission).await.is_err());
     assert_eq!(submission.balances.lock().unwrap().len(), 0);
+}
+
+#[tokio::test]
+async fn durable_total_read_failure_never_fabricates_an_incomplete_zero() {
+    let operations = FakeOperations::new(vec![]).failing_total_read();
+
+    assert!(collect_operations(&operations).await.is_err());
+}
+
+#[tokio::test]
+async fn receipt_write_failure_is_explicit_and_does_not_claim_success() {
+    let operations = FakeOperations::new(vec![balances(100, 0, 0), balances(0, 0, 0)])
+        .idle(Ok(1), Some(Ok(Amount::from_msats(100))))
+        .failing_receipt_write();
+
+    assert_eq!(
+        collect_operations(&operations).await.unwrap(),
+        incomplete(0, Some(0), CollectionFailurePhase::Receipt, true)
+    );
+}
+
+#[tokio::test]
+async fn receipt_commit_result_supplies_the_cumulative_total_without_a_reread() {
+    let operations = FakeOperations::new(vec![balances(100, 0, 0), balances(0, 0, 0)])
+        .idle(Ok(1), Some(Ok(Amount::from_msats(100))))
+        .committed_total(500);
+
+    assert_eq!(
+        collect_operations(&operations).await.unwrap(),
+        Collected::Complete {
+            claimed: Amount::from_msats(100),
+            recorded_claimed: Amount::from_msats(500),
+            awaiting_cycle: Amount::ZERO,
+        }
+    );
 }
 
 #[tokio::test]
@@ -455,11 +550,14 @@ async fn overflowing_final_refresh_without_operation_remains_outer_error() {
 
 #[tokio::test]
 async fn overflowing_confirmed_claim_total_is_rejected() {
-    let operations = FakeOperations::new(vec![balances(1, 1, 0)])
+    let operations = FakeOperations::new(vec![balances(1, 1, 0), balances(0, 0, 0)])
         .idle(Ok(1), Some(Ok(Amount::from_msats(u64::MAX))))
         .unlock(Ok(2), Some(Ok(Amount::from_msats(1))));
 
-    assert!(collect_operations(&operations).await.is_err());
+    assert_eq!(
+        collect_operations(&operations).await.unwrap(),
+        incomplete(u64::MAX, Some(0), CollectionFailurePhase::Receipt, true)
+    );
 }
 
 #[tokio::test]

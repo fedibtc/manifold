@@ -1,5 +1,5 @@
 {
-  "awaiting_cycle_msat": 500000,
-  "claimed_msat": 1750000,
-  "recorded_claimed_msat": 2250000
+  "awaiting_cycle_msat": "500000",
+  "claimed_msat": "1750000",
+  "recorded_claimed_msat": "2250000"
 }

@@ -375,22 +375,24 @@ export interface GuardianFeesResponse {
   remittances: Remittance[];
 }
 export interface CompleteGuardianFeeCollection {
+  // Exact decimal msat strings preserve the Rust u64 range through JSON.
   // Terminal success newly observed by this invocation.
-  claimed_msat: number;
+  claimed_msat: string;
   // All collection successes durably receipted by Fleet Manager.
-  recorded_claimed_msat: number;
+  recorded_claimed_msat: string;
   // Locked deposits leave only at the next cycle turnover, so a collection
   // reports what it could take rather than promising an empty account.
-  awaiting_cycle_msat: number;
+  awaiting_cycle_msat: string;
   incomplete?: never;
 }
 export interface IncompleteGuardianFeeCollection {
+  // Exact decimal msat strings preserve the Rust u64 range through JSON.
   // Only value confirmed by a terminal operation success is counted.
-  claimed_msat: number;
+  claimed_msat: string;
   // All collection successes durably receipted by Fleet Manager.
-  recorded_claimed_msat: number;
+  recorded_claimed_msat: string;
   // A post-failure read may itself fail, in which case the current balance is unknown.
-  awaiting_cycle_msat: number | null;
+  awaiting_cycle_msat: string | null;
   incomplete: {
     phase: 'idle_claim' | 'unlock' | 'receipt' | 'balance_refresh';
     operation_submitted: boolean;
