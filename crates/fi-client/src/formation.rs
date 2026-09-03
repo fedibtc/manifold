@@ -19,6 +19,7 @@ use fedimint_core::config::{ClientConfig, FederationId as FedimintFederationId};
 use fedimint_core::invite_code::InviteCode as FedimintInviteCode;
 use fedimint_core::runtime::{Instant, sleep, timeout};
 use futures::stream::{FuturesUnordered, StreamExt as _};
+use sha2::{Digest as _, Sha256};
 use stability_pool_common::Account;
 use tokio::sync::OnceCell;
 
@@ -27,6 +28,7 @@ use crate::db::{
     FormationCreationMode, FormationMetaTarget, InitialSeat, QuoteAuthorization,
     StoredVerifierProvenance,
 };
+use crate::ports::FiIdentityExt as _;
 use crate::selection::AvailabilityMismatch;
 use crate::{
     FederationConsensusReader, FederationConsensusSnapshot, FiClient, FiError, FiIdentity,
@@ -422,6 +424,21 @@ pub(crate) struct SeatSession<C> {
     pub(crate) index: u16,
     pub(crate) client: C,
     pub(crate) seat_id: SeatId,
+}
+
+#[derive(Clone)]
+pub(crate) struct PostFormedSeat {
+    pub(crate) index: u16,
+    pub(crate) fman_id: Option<nostr_sdk::PublicKey>,
+    pub(crate) locator: Locator,
+    pub(crate) seat_id: SeatId,
+}
+
+pub(crate) struct PostFormedAuthority {
+    pub(crate) formation_id: FormationId,
+    pub(crate) invite_code: InviteCode,
+    pub(crate) federation_name: Option<crate::FederationName>,
+    pub(crate) seats: Vec<PostFormedSeat>,
 }
 
 /// One guardian's guarded metadata-vote result.
@@ -3775,6 +3792,165 @@ where
         Ok(())
     }
 
+    pub(crate) async fn reconcile_restored(
+        &self,
+        snapshot: crate::RestoredFormationSnapshot,
+        fi_id: FiId,
+        run: DriverRun<'_>,
+    ) -> FiResult<()> {
+        let payload = self.inner.store.restored_backup_payload(fi_id).await?;
+        if payload.seats.is_empty() {
+            return Err(FiError::InvalidFleetManagers(
+                "restored FI backup contains no seats".to_owned(),
+            ));
+        }
+        let mut sessions = Vec::with_capacity(payload.seats.len());
+        for (position, seat) in payload.seats.iter().enumerate() {
+            let client = run
+                .call("reconnecting to restored Fleet Manager", || {
+                    Ok(self.inner.ports.fman_connector.connect(&seat.locator))
+                })
+                .await?
+                .map_err(|error| fman_error(position, error.to_string()))?;
+            sessions.push(SeatSession {
+                index: u16::try_from(position)
+                    .map_err(|_| FiError::Storage("restored FI seat index overflow".to_owned()))?,
+                client,
+                seat_id: seat.seat_id.clone(),
+            });
+        }
+
+        loop {
+            ensure_time_remaining(
+                run.deadline,
+                "waiting for every restored FMan to report running",
+            )?;
+            let mut pending = FuturesUnordered::new();
+            for (position, session) in sessions.iter().enumerate() {
+                pending.push(async move {
+                    let request = GetStatusRequest {
+                        ts: Timestamp(now_secs()?),
+                        fi_id,
+                        seat_id: session.seat_id.clone(),
+                    };
+                    let request = run
+                        .construct("signing restored GetStatus request", || self.sign(&request))
+                        .await?;
+                    let response = run
+                        .call("checking restored Fleet Manager status", || {
+                            Ok(session.client.get_status(request))
+                        })
+                        .await?
+                        .map_err(|error| fman_error(position, error.to_string()))?;
+                    Ok::<_, FiError>(response)
+                });
+            }
+            let mut running = 0;
+            while let Some(response) = pending.next().await {
+                let response = response?;
+                if response.status == ServiceStatus::Running
+                    && response.seat_health == Some(SeatHealth::Healthy)
+                {
+                    running += 1;
+                }
+            }
+            if running == sessions.len() {
+                break;
+            }
+            sleep_for_retry(run.deadline, run.options.poll_interval).await?;
+        }
+
+        let invite = self.fetch_agreed_invite(&sessions, fi_id, run).await?;
+        if invite_federation_id(&invite)? != invite_federation_id(&snapshot.federation_invite)? {
+            return Err(FiError::InvalidFleetManagers(
+                "restored Fleet Managers reported a different federation identity".to_owned(),
+            ));
+        }
+        let consensus = run
+            .call("reading restored federation consensus", || {
+                Ok(self
+                    .inner
+                    .ports
+                    .consensus_reader
+                    .read_consensus(&snapshot.federation_invite))
+            })
+            .await?
+            .map_err(|error| {
+                FiError::InvalidFleetManagers(format!(
+                    "reading restored federation consensus failed: {error}"
+                ))
+            })?;
+        let federation = federation_seats(&consensus.config).map_err(|error| {
+            FiError::InvalidFleetManagers(format!(
+                "restored federation config is not usable: {error}"
+            ))
+        })?;
+        let directory = crate::liquidity::liquidity_seat_bindings_field(&consensus.meta_value)?
+            .ok_or_else(|| {
+                FiError::InvalidFleetManagers(
+                    "restored federation has no FMan seat-binding directory".to_owned(),
+                )
+            })?;
+        let bindings = FmanSeatBindings::parse_canonical(&directory)
+            .and_then(|bindings| bindings.verify_for_federation(&federation))
+            .map_err(|error| {
+                FiError::InvalidFleetManagers(format!(
+                    "restored federation seat-binding directory is invalid: {error}"
+                ))
+            })?;
+        let federation_name = restored_federation_name(&consensus.meta_value)?;
+        let validation_name = federation_name
+            .clone()
+            .or_else(|| {
+                payload
+                    .liquidity
+                    .as_ref()
+                    .map(|value| value.federation_details.federation_name.clone())
+            })
+            .unwrap_or_else(|| crate::FederationName(String::new()));
+        let context = crate::liquidity::FormedLiquidityContext {
+            federation_name: validation_name,
+            invite_code: snapshot.federation_invite.clone(),
+            network: consensus.network,
+            federation,
+            bindings,
+            seats: payload
+                .seats
+                .iter()
+                .map(|seat| crate::liquidity::FormedFmanSeat {
+                    fman_id: seat.fman_identity,
+                    locator: seat.locator.clone(),
+                    seat_id: seat.seat_id.clone(),
+                })
+                .collect(),
+        };
+        context.fleet_seat_hints().map_err(|error| {
+            FiError::InvalidFleetManagers(format!(
+                "restored seats do not match federation consensus: {error}"
+            ))
+        })?;
+        if let Some(commitment) = &payload.liquidity {
+            context.matches_commitment(commitment)?;
+        }
+
+        let persisted_federation_name = federation_name.or_else(|| {
+            payload
+                .liquidity
+                .as_ref()
+                .map(|value| value.federation_details.federation_name.clone())
+        });
+        self.inner
+            .store
+            .reconcile_restored_backup(fi_id, persisted_federation_name)
+            .await?;
+        let mut status = self.inner.store.load_status(fi_id).await?;
+        if let FiStatus::Restored(snapshot) = &mut status {
+            snapshot.freshness = FormationFreshness::Fresh;
+        }
+        self.inner.progress.send_replace(status);
+        Ok(())
+    }
+
     async fn formed_sessions(
         &self,
         recovery: &ActiveFormationRecovery,
@@ -4267,8 +4443,70 @@ where
 
     pub(crate) async fn active_recovery(&self, fi_id: FiId) -> FiResult<ActiveFormationRecovery> {
         match self.inner.store.load_recovery(fi_id).await? {
-            FiRecovery::Idle => Err(FiError::NoActiveFormation),
+            FiRecovery::Idle | FiRecovery::Restored(_) => Err(FiError::NoActiveFormation),
             FiRecovery::Formation(recovery) => Ok(*recovery),
+        }
+    }
+
+    pub(crate) async fn post_formed_authority(&self, fi_id: FiId) -> FiResult<PostFormedAuthority> {
+        match self.inner.store.load_recovery(fi_id).await? {
+            FiRecovery::Idle => Err(FiError::NoActiveFormation),
+            FiRecovery::Formation(recovery) => {
+                let recovery = *recovery;
+                if recovery.snapshot.phase != FormationPhase::Formed {
+                    return Err(FiError::NoActiveFormation);
+                }
+                let invite_code = recovery.snapshot.invite_code.clone().ok_or_else(|| {
+                    FiError::Storage("formed FI record has no federation invite".to_owned())
+                })?;
+                let seats = recovery
+                    .seats
+                    .into_iter()
+                    .map(|seat| {
+                        Ok(PostFormedSeat {
+                            index: seat.progress.index,
+                            fman_id: seat.admission.fman_id(),
+                            locator: seat.progress.locator,
+                            seat_id: seat.progress.seat_id.ok_or_else(|| {
+                                FiError::Storage("formed FI seat has no seat id".to_owned())
+                            })?,
+                        })
+                    })
+                    .collect::<FiResult<Vec<_>>>()?;
+                Ok(PostFormedAuthority {
+                    formation_id: recovery.snapshot.formation_id,
+                    invite_code,
+                    federation_name: Some(recovery.snapshot.intent.federation_name),
+                    seats,
+                })
+            }
+            FiRecovery::Restored(snapshot) => {
+                if snapshot.phase != FormationPhase::Formed {
+                    return Err(FiError::NoActiveFormation);
+                }
+                let formation_id = snapshot.formation_id;
+                let seats = snapshot
+                    .seats
+                    .into_iter()
+                    .enumerate()
+                    .map(|(index, seat)| {
+                        Ok(PostFormedSeat {
+                            index: u16::try_from(index).map_err(|_| {
+                                FiError::Storage("restored FI seat index overflow".to_owned())
+                            })?,
+                            fman_id: Some(seat.fman_identity),
+                            locator: seat.locator,
+                            seat_id: seat.seat_id,
+                        })
+                    })
+                    .collect::<FiResult<Vec<_>>>()?;
+                Ok(PostFormedAuthority {
+                    formation_id,
+                    invite_code: snapshot.federation_invite,
+                    federation_name: snapshot.federation_name,
+                    seats,
+                })
+            }
         }
     }
 
@@ -4291,6 +4529,27 @@ where
             self.inner.ports.identity.sign_digest(digest)
         })
         .map_err(|error| FiError::Identity(error.to_string()))
+    }
+}
+
+fn restored_federation_name(
+    meta_value: &Option<Vec<u8>>,
+) -> FiResult<Option<crate::FederationName>> {
+    let Some(bytes) = meta_value else {
+        return Ok(None);
+    };
+    let fields: BTreeMap<String, serde_json::Value> =
+        serde_json::from_slice(bytes).map_err(|error| {
+            FiError::InvalidFleetManagers(format!(
+                "restored federation metadata is invalid: {error}"
+            ))
+        })?;
+    match fields.get(FEDERATION_NAME_META_FIELD_KEY) {
+        None => Ok(None),
+        Some(serde_json::Value::String(value)) => Ok(Some(crate::FederationName(value.clone()))),
+        Some(_) => Err(FiError::InvalidFleetManagers(
+            "restored federation name metadata is not a string".to_owned(),
+        )),
     }
 }
 
@@ -4700,6 +4959,18 @@ fn validate_live_admissions(
         seat.admission.validate_if_fresh(expected_provenance, now)?;
     }
     Ok(())
+}
+
+pub(crate) fn restored_formation_id(fi_id: FiId, invite: &InviteCode) -> FiResult<FormationId> {
+    let federation_id = invite_federation_id(invite)?;
+    let mut digest = Sha256::new();
+    digest.update(b"fedi-fi-restored-formation-id/v1\0");
+    digest.update(fi_id.0.serialize());
+    digest.update(federation_id.to_string().as_bytes());
+    Ok(FormationId(format!(
+        "restored-{}",
+        hex::encode(digest.finalize())
+    )))
 }
 
 fn invite_federation_id(invite: &InviteCode) -> FiResult<FedimintFederationId> {

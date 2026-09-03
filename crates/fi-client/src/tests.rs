@@ -11,6 +11,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use bitcoin::secp256k1::{PublicKey as BitcoinPublicKey, SecretKey as BitcoinSecretKey};
+use bitcoin_hashes::{Hash as _, sha256};
 use fedi_decentralized_manifold_environment::ManifoldEnvironment;
 use fedi_decentralized_nostr::setup_payment_federations::{
     SETUP_PAYMENT_FEDERATIONS_D_TAG, SETUP_PAYMENT_FEDERATIONS_EVENT_KIND,
@@ -122,10 +123,7 @@ struct TestIdentity;
 
 impl TestIdentity {
     fn keypair() -> Keypair {
-        Keypair::from_secret_key(
-            SECP256K1,
-            &SecretKey::from_byte_array(&[7; 32]).expect("valid test secret"),
-        )
+        crate::ports::protocol_keypair(&Self.scoped_root())
     }
 
     fn fi_id() -> FiId {
@@ -134,38 +132,17 @@ impl TestIdentity {
 }
 
 impl FiIdentity for TestIdentity {
-    fn public_key(&self) -> Result<FiId, String> {
-        Ok(Self::fi_id())
-    }
-
-    fn sign_digest(&self, digest: [u8; 32]) -> Result<FiSignature, String> {
-        Ok(FiSignature(
-            SECP256K1.sign_schnorr_no_aux_rand(&digest, &Self::keypair()),
-        ))
+    fn scoped_root(&self) -> fedimint_derive_secret::DerivableSecret {
+        fedimint_derive_secret::DerivableSecret::new_root(&[7; 64], b"fi-client-test-root")
     }
 }
 
 #[derive(Clone, Copy)]
 struct OtherIdentity;
 
-impl OtherIdentity {
-    fn keypair() -> Keypair {
-        Keypair::from_secret_key(
-            SECP256K1,
-            &SecretKey::from_byte_array(&[8; 32]).expect("valid test secret"),
-        )
-    }
-}
-
 impl FiIdentity for OtherIdentity {
-    fn public_key(&self) -> Result<FiId, String> {
-        Ok(FiId(Self::keypair().x_only_public_key().0))
-    }
-
-    fn sign_digest(&self, digest: [u8; 32]) -> Result<FiSignature, String> {
-        Ok(FiSignature(
-            SECP256K1.sign_schnorr_no_aux_rand(&digest, &Self::keypair()),
-        ))
+    fn scoped_root(&self) -> fedimint_derive_secret::DerivableSecret {
+        fedimint_derive_secret::DerivableSecret::new_root(&[8; 64], b"fi-client-test-root")
     }
 }
 
@@ -2554,7 +2531,7 @@ fn stored_liquidity_operation(marker: u64) -> crate::liquidity::StoredLiquidityO
         operation_id: LiquidityOperationId(hex::encode(details_payload_hash.0)),
         formation_id: FormationId(format!("formation-{marker}")),
         commitment,
-        endpoint_hint: Url("iroh://provider".to_owned()),
+        endpoint_hint: Some(Url("iroh://provider".to_owned())),
         details_payload_hash,
         response: None,
         status: None,
@@ -3026,6 +3003,308 @@ async fn formed_client_for_liquidity() -> (
     )
 }
 
+#[tokio::test]
+async fn backup_payload_is_lean_stable_and_requires_confirmed_formed_metadata() {
+    let (client, _, _, _) = formed_client_for_liquidity().await;
+    let first = client.inner.store.backup_payload().await.unwrap();
+    let second = client.inner.store.backup_payload().await.unwrap();
+    assert_eq!(first.payload.snapshot_generation, 1);
+    assert_eq!(second.payload.snapshot_generation, 1);
+    assert_eq!(first.created_at, second.created_at);
+    assert_eq!(first.payload.federation_invite, test_invite(0));
+    assert_eq!(first.payload.seats.len(), usize::from(MIN_FEDERATION_SIZE));
+    assert!(first.payload.seats.iter().all(|seat| {
+        seat.seat_id.to_string().len() == 64 && seat.locator.service_pubkey.serialize().len() == 32
+    }));
+    assert!(first.payload.liquidity.is_none());
+
+    // The purpose-built type cannot carry internal rows: its serialized field
+    // set pins the inclusion/exclusion boundary directly.
+    let value = serde_json::to_value(&first.payload).unwrap();
+    let fields = value
+        .as_object()
+        .unwrap()
+        .keys()
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    assert_eq!(
+        fields,
+        BTreeSet::from([
+            "federation_invite".to_owned(),
+            "schema_version".to_owned(),
+            "seats".to_owned(),
+            "snapshot_generation".to_owned(),
+        ])
+    );
+    let seat_fields = value["seats"][0]
+        .as_object()
+        .unwrap()
+        .keys()
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    assert_eq!(
+        seat_fields,
+        BTreeSet::from([
+            "fman_identity".to_owned(),
+            "locator".to_owned(),
+            "seat_id".to_owned(),
+        ])
+    );
+
+    client
+        .inner
+        .store
+        .unconfirm_formation_meta_target_for_test()
+        .await;
+    assert!(client.inner.store.backup_payload().await.is_err());
+}
+
+#[tokio::test]
+async fn encrypted_backup_restore_imports_unsynced_lean_state_and_blocks_create() {
+    let (source, _, _, _) = formed_client_for_liquidity().await;
+    let keys = crate::backup::FiBackupKeys::derive(&source.inner.ports.identity.scoped_root());
+    let encrypted = keys
+        .seal(&source.inner.store.backup_payload().await.unwrap().payload)
+        .unwrap();
+    let mut newer_payload = source.inner.store.backup_payload().await.unwrap().payload;
+    newer_payload.snapshot_generation = 4;
+    let newer = keys.seal(&newer_payload).unwrap();
+    let invalid = crate::backup::EncryptedFiBackup::from_bytes(b"not base64".to_vec()).err();
+    assert!(invalid.is_some());
+    let database = MemDatabase::new().into_database();
+    let (payments, _) = TestPayments::new();
+    let restored = open_client(
+        database,
+        payments,
+        Arc::new(FmanState::default()),
+        FmanConfig::given_away(),
+    )
+    .await;
+    let payload = [&encrypted, &newer]
+        .into_iter()
+        .filter_map(|candidate| keys.open(candidate).ok())
+        .max_by_key(|payload| payload.snapshot_generation)
+        .unwrap();
+    let fi_id = restored.inner.ports.identity.public_key().unwrap();
+    let status = restored
+        .inner
+        .store
+        .restore_backup_payload(fi_id, payload)
+        .await
+        .unwrap();
+    restored.inner.progress.send_replace(status);
+    let FiStatus::Restored(snapshot) = restored.status() else {
+        panic!("restored status");
+    };
+    assert_eq!(snapshot.freshness, FormationFreshness::Unsynced);
+    assert_eq!(snapshot.snapshot_generation, 4);
+    assert_eq!(snapshot.seats.len(), usize::from(MIN_FEDERATION_SIZE));
+    assert!(
+        restored
+            .create_with_pinned_fmans(intent(), locators(), options())
+            .await
+            .is_err()
+    );
+}
+
+#[tokio::test]
+async fn restored_backup_reconciles_to_usable_authority_and_hydrates_liquidity() {
+    let (source, formation_id, fman_state, connector) = formed_client_for_liquidity().await;
+    connector.0.fail_next_connect.store(true, Ordering::SeqCst);
+    let provider = liquidity_api::Pubkey(liquidity_provider_keys().public_key().to_string());
+    source
+        .start_liquidity_for_test(
+            &formation_id,
+            &provider,
+            LiquidityRequestIntent::gateway(250_000, Some(260_000)),
+            &connector,
+            &TestLiquidityVerifier,
+        )
+        .await
+        .expect_err("provider connection fails after persisting the commitment");
+    let source_operation = source
+        .list_liquidity_operations(None, 10)
+        .await
+        .unwrap()
+        .operations
+        .pop()
+        .expect("source prepared operation");
+    let keys = crate::backup::FiBackupKeys::derive(&source.inner.ports.identity.scoped_root());
+    let encrypted = keys
+        .seal(&source.inner.store.backup_payload().await.unwrap().payload)
+        .unwrap();
+
+    let registry = TestRegistry::default();
+    registry
+        .advertisements
+        .lock()
+        .expect("test lock")
+        .push(liquidity_provider_event());
+    let (payments, _) = TestPayments::new();
+    let restored = open_client_with_registry(
+        MemDatabase::new().into_database(),
+        payments,
+        fman_state.clone(),
+        FmanConfig::given_away(),
+        registry,
+    )
+    .await;
+    let payload = keys.open(&encrypted).unwrap();
+    let fi_id = restored.inner.ports.identity.public_key().unwrap();
+    let status = restored
+        .inner
+        .store
+        .restore_backup_payload(fi_id, payload)
+        .await
+        .unwrap();
+    restored.inner.progress.send_replace(status);
+    let FiStatus::Restored(imported) = restored.status() else {
+        panic!("restored status");
+    };
+    assert_eq!(imported.freshness, FormationFreshness::Unsynced);
+    assert_eq!(imported.phase, FormationPhase::Formed);
+    let restored_formation_id = imported.formation_id.clone();
+    let restored_generation = imported.snapshot_generation;
+    assert!(
+        restored.inner.store.backup_payload().await.is_err(),
+        "an imported snapshot is not backup-eligible before authority reconciliation",
+    );
+
+    restored
+        .resume()
+        .await
+        .expect("authenticate restored seats and federation consensus");
+    let FiStatus::Restored(reconciled) = restored.status() else {
+        panic!("reconciled restored status");
+    };
+    assert_eq!(reconciled.freshness, FormationFreshness::Fresh);
+    assert_eq!(reconciled.phase, FormationPhase::Formed);
+    assert_eq!(reconciled.formation_id, restored_formation_id);
+    let republished = restored.inner.store.backup_payload().await.unwrap();
+    assert_eq!(republished.payload.snapshot_generation, restored_generation);
+    assert_eq!(
+        republished.payload.liquidity.as_ref().map(|commitment| {
+            liquidity_api::request_liquidity_details_hash(commitment).unwrap()
+        }),
+        Some(source_operation.details_payload_hash),
+        "the restored writer can publish its current lean authority",
+    );
+
+    let hydrated = restored
+        .current_liquidity_operation()
+        .await
+        .unwrap()
+        .expect("pending commitment is hydrated");
+    assert_eq!(hydrated.operation_id, source_operation.operation_id);
+    assert_eq!(
+        hydrated.details_payload_hash,
+        source_operation.details_payload_hash
+    );
+    assert_eq!(hydrated.endpoint_hint, None);
+    let resumed = restored
+        .resume_liquidity_for_test(&hydrated.operation_id, &connector, &TestLiquidityVerifier)
+        .await
+        .expect("restored authority can resume the exact pending request");
+    assert_eq!(resumed.phase, LiquidityOperationPhase::Accepted);
+
+    fman_state
+        .connect_failures_remaining
+        .store(1, Ordering::SeqCst);
+    restored
+        .resume()
+        .await
+        .expect_err("a failed fresh reconciliation invalidates prior authority");
+    let FiStatus::Restored(invalidated) = restored.status() else {
+        panic!("invalidated restored status");
+    };
+    assert_eq!(invalidated.freshness, FormationFreshness::Unsynced);
+    assert!(
+        restored
+            .current_liquidity_operation()
+            .await
+            .unwrap()
+            .is_none(),
+        "post-formed mutations remain gated after failed reconciliation",
+    );
+}
+
+#[tokio::test]
+async fn backup_relay_progress_is_independent_and_workers_do_not_block_fi_operations() {
+    let (client, _, _, _) = formed_client_for_liquidity().await;
+    let hash = sha256::Hash::from_byte_array([9; 32]);
+    client
+        .inner
+        .store
+        .record_backup_confirmation(
+            "wss://first.example",
+            db::BackupRelayConfirmation {
+                document_hash: hash,
+                generation: 3,
+                event_id: "event-a".to_owned(),
+                confirmed_at_secs: 7,
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        client
+            .inner
+            .store
+            .backup_confirmation("wss://first.example")
+            .await
+            .unwrap()
+            .generation,
+        3
+    );
+    assert!(
+        client
+            .inner
+            .store
+            .backup_confirmation("wss://second.example")
+            .await
+            .is_none()
+    );
+
+    client
+        .inner
+        .store
+        .record_backup_confirmation(
+            "wss://first.example",
+            db::BackupRelayConfirmation {
+                document_hash: sha256::Hash::from_byte_array([1; 32]),
+                generation: 2,
+                event_id: "stale-event".to_owned(),
+                confirmed_at_secs: 8,
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        client
+            .inner
+            .store
+            .backup_confirmation("wss://first.example")
+            .await
+            .unwrap()
+            .event_id,
+        "event-a"
+    );
+    let backup_tasks = fedimint_core::task::TaskGroup::new();
+    crate::backup_worker::spawn_workers(
+        &backup_tasks,
+        client.inner.store.clone(),
+        client.inner.ports.identity.scoped_root(),
+        vec![nostr_sdk::RelayUrl::parse("ws://127.0.0.1:1").unwrap()],
+    );
+    // The unreachable relay is owned solely by background delivery; it does
+    // not take the FI operation guard or extend local backup reads with network I/O.
+    tokio::time::timeout(Duration::from_secs(1), client.inner.store.backup_payload())
+        .await
+        .expect("ordinary FI operation did not wait for relay")
+        .unwrap();
+    backup_tasks.shutdown_join_all(None).await.unwrap();
+}
+
 fn options() -> FormationRunOptions {
     FormationRunOptions::new(crate::FormationRunOptionsConfig {
         poll_interval: Duration::from_millis(1),
@@ -3358,6 +3637,7 @@ async fn open_client_with_store_and_registry(
             peer_badge_verifier: test_peer_badge_verifier(),
             setup_payment_publisher: Some(setup_payment_keys().public_key()),
             guardian_verification_fee_account: Some(guardian_fee_account(31)),
+            backup_tasks: fedimint_core::task::TaskGroup::new(),
         }),
     }
 }
@@ -3365,7 +3645,7 @@ async fn open_client_with_store_and_registry(
 fn formation(status: &FiStatus) -> &FormationSnapshot {
     match status {
         FiStatus::Formation(snapshot) => snapshot,
-        FiStatus::Idle => panic!("expected active formation"),
+        FiStatus::Idle | FiStatus::Restored(_) => panic!("expected active formation"),
     }
 }
 
@@ -3382,7 +3662,7 @@ fn payment_requirements(status: &FiStatus) -> &PaymentRequirements {
 fn active_recovery(recovery: FiRecovery) -> crate::db::ActiveFormationRecovery {
     match recovery {
         FiRecovery::Formation(recovery) => *recovery,
-        FiRecovery::Idle => panic!("expected active formation"),
+        FiRecovery::Idle | FiRecovery::Restored(_) => panic!("expected active formation"),
     }
 }
 

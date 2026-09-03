@@ -19,7 +19,8 @@ use crate::formation::{
 };
 use crate::{
     FederationConsensusError, FederationConsensusReader, FederationConsensusSnapshot, FiClient,
-    FiError, FiIdentity, FiPayments, FiResult, FleetManagerConnector, FormationPhase,
+    FiError, FiIdentity, FiPayments, FiResult, FiStatus, FleetManagerConnector, FormationFreshness,
+    FormationPhase,
 };
 
 const MAINTENANCE_RETRY_MAX_DELAY: Duration = Duration::from_secs(5);
@@ -207,24 +208,13 @@ where
         fi_id: FiId,
         run: DriverRun<'_>,
     ) -> FiResult<()> {
-        let recovery = self.active_recovery(fi_id).await?;
-        if recovery.snapshot.phase != FormationPhase::Formed {
-            return Err(FiError::MaintenanceWrongState {
-                phase: recovery.snapshot.phase,
-            });
-        }
-        let invite = recovery.snapshot.invite_code.clone().ok_or_else(|| {
-            FiError::Storage("formed FI record contains no persisted invite".to_owned())
-        })?;
+        let authority = self.maintenance_authority(fi_id).await?;
+        let invite = authority.invite_code.clone();
         let snapshot = self
             .read_metadata_consensus(&invite, run)
             .await?
             .map_err(|error| FiError::MaintenanceConvergence {
-                unresolved: recovery
-                    .seats
-                    .iter()
-                    .map(|seat| seat.progress.index)
-                    .collect(),
+                unresolved: authority.seats.iter().map(|seat| seat.index).collect(),
                 guardian_errors: Vec::new(),
                 consensus_error: Some(error.to_string()),
             })?;
@@ -236,10 +226,10 @@ where
             })?;
         let threshold = usize::try_from(federation.consensus_threshold())
             .map_err(|_| FiError::Storage("federation threshold does not fit usize".to_owned()))?;
-        let all = recovery
+        let all = authority
             .seats
             .iter()
-            .map(|seat| seat.progress.index)
+            .map(|seat| seat.index)
             .collect::<BTreeSet<_>>();
         let mut accepted = BTreeSet::new();
         let mut terminal: BTreeMap<u16, FleetManagerError> = BTreeMap::new();
@@ -288,7 +278,7 @@ where
 
             let mut sessions = Vec::with_capacity(unresolved.len());
             for outcome in self
-                .connect_unresolved_formed_sessions(&recovery, &unresolved, run)
+                .connect_unresolved_formed_sessions(&authority, &unresolved, run)
                 .await?
             {
                 match outcome {
@@ -409,19 +399,12 @@ where
         fi_id: FiId,
         run: DriverRun<'_>,
     ) -> FiResult<()> {
-        let recovery = self.active_recovery(fi_id).await?;
-        if recovery.snapshot.phase != FormationPhase::Formed {
-            return Err(FiError::MaintenanceWrongState {
-                phase: recovery.snapshot.phase,
-            });
-        }
-        let invite = recovery.snapshot.invite_code.clone().ok_or_else(|| {
-            FiError::Storage("formed FI record contains no persisted invite".to_owned())
-        })?;
-        let all_indices = recovery
+        let authority = self.maintenance_authority(fi_id).await?;
+        let invite = authority.invite_code.clone();
+        let all_indices = authority
             .seats
             .iter()
-            .map(|seat| seat.progress.index)
+            .map(|seat| seat.index)
             .collect::<BTreeSet<_>>();
         let mut active_base = None;
         let mut unresolved = all_indices.clone();
@@ -499,7 +482,7 @@ where
                 .collect::<BTreeSet<_>>();
             let mut sessions = Vec::with_capacity(submit_rows.len());
             for outcome in self
-                .connect_unresolved_formed_sessions(&recovery, &submit_rows, run)
+                .connect_unresolved_formed_sessions(&authority, &submit_rows, run)
                 .await?
             {
                 match outcome {
@@ -612,20 +595,18 @@ where
 
     async fn connect_unresolved_formed_sessions(
         &self,
-        recovery: &crate::db::ActiveFormationRecovery,
+        authority: &crate::formation::PostFormedAuthority,
         unresolved: &BTreeSet<u16>,
         run: DriverRun<'_>,
     ) -> FiResult<Vec<MaintenanceConnection<F::Client>>> {
         let mut pending = FuturesUnordered::new();
-        for seat in &recovery.seats {
-            if !unresolved.contains(&seat.progress.index) {
+        for seat in &authority.seats {
+            if !unresolved.contains(&seat.index) {
                 continue;
             }
-            let index = seat.progress.index;
-            let seat_id = seat.progress.seat_id.clone().ok_or_else(|| {
-                FiError::Storage(format!("formed FI seat row {index} has no seat id"))
-            })?;
-            let locator = seat.progress.locator.clone();
+            let index = seat.index;
+            let seat_id = seat.seat_id.clone();
+            let locator = seat.locator.clone();
             pending.push(async move {
                 let result = run
                     .call("reconnecting to formed Fleet Manager", || {
@@ -655,6 +636,36 @@ where
             }
         }
         Ok(outcomes)
+    }
+
+    async fn maintenance_authority(
+        &self,
+        fi_id: FiId,
+    ) -> FiResult<crate::formation::PostFormedAuthority> {
+        match self.inner.store.load_recovery(fi_id).await? {
+            crate::db::FiRecovery::Idle => return Err(FiError::NoActiveFormation),
+            crate::db::FiRecovery::Formation(recovery)
+                if recovery.snapshot.phase != FormationPhase::Formed =>
+            {
+                return Err(FiError::MaintenanceWrongState {
+                    phase: recovery.snapshot.phase,
+                });
+            }
+            crate::db::FiRecovery::Restored(snapshot)
+                if !matches!(
+                    self.status(),
+                    FiStatus::Restored(current)
+                        if current.freshness == FormationFreshness::Fresh
+                            && current.formation_id == snapshot.formation_id
+                ) =>
+            {
+                return Err(FiError::MaintenanceWrongState {
+                    phase: snapshot.phase,
+                });
+            }
+            crate::db::FiRecovery::Formation(_) | crate::db::FiRecovery::Restored(_) => {}
+        }
+        self.post_formed_authority(fi_id).await
     }
 }
 

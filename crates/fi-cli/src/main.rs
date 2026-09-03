@@ -20,6 +20,7 @@ use fedimint_core::Amount;
 use fedimint_core::core::OperationId as FedimintOperationId;
 use fedimint_core::encoding::Encodable as _;
 use fedimint_core::invite_code::InviteCode as FedimintInviteCode;
+use fedimint_derive_secret::ChildId;
 use fi_client::{
     FederationConsensusError, FederationConsensusReader, FederationConsensusSnapshot,
     FedimintFederationId, FedimintdVersionRange, FiClient, FiFeeAccountError, FiFeeAccountProvider,
@@ -42,7 +43,7 @@ use payer::{
     LockedPaymentRecovery, LockedPaymentReservation, LockedPaymentTerminalRelease,
 };
 use rand::rngs::OsRng;
-use secp256k1::{Keypair, Secp256k1, SecretKey, XOnlyPublicKey};
+use secp256k1::{Keypair, Secp256k1, SecretKey};
 use wallet::{Wallet, WalletSecret};
 use zeroize::{Zeroize, Zeroizing};
 
@@ -2870,6 +2871,20 @@ struct CliIdentity {
 }
 
 impl CliIdentity {
+    fn public_key(&self) -> Result<fi_client::FiId, String> {
+        let protocol = self
+            .scoped_root()
+            .child_key(ChildId(0))
+            .to_secp_key(&fedimint_core::secp256k1::Secp256k1::new());
+        let secret = SecretKey::from_byte_array(&protocol.secret_key().secret_bytes())
+            .map_err(|error| error.to_string())?;
+        Ok(fi_client::FiId(
+            Keypair::from_secret_key(&Secp256k1::new(), &secret)
+                .x_only_public_key()
+                .0,
+        ))
+    }
+
     fn load_or_create(state_dir: &Path, create: bool) -> anyhow::Result<Self> {
         std::fs::create_dir_all(state_dir).context("create FI state directory")?;
         let path = state_dir.join(IDENTITY_FILE);
@@ -2915,18 +2930,11 @@ fn read_identity_bytes(reader: impl Read) -> std::io::Result<Vec<u8>> {
 }
 
 impl FiIdentity for CliIdentity {
-    fn public_key(&self) -> Result<FiId, String> {
-        let keypair = Keypair::from_secret_key(&Secp256k1::new(), &self.secret_key);
-        let (public_key, _) = XOnlyPublicKey::from_keypair(&keypair);
-        Ok(FiId(public_key))
-    }
-
-    fn sign_digest(&self, digest: [u8; 32]) -> Result<FiSignature, String> {
-        let secp = Secp256k1::new();
-        let keypair = Keypair::from_secret_key(&secp, &self.secret_key);
-        Ok(FiSignature(
-            secp.sign_schnorr_no_aux_rand(&digest, &keypair),
-        ))
+    fn scoped_root(&self) -> fedimint_derive_secret::DerivableSecret {
+        fedimint_derive_secret::DerivableSecret::new_root(
+            &self.secret_key.secret_bytes(),
+            b"fedi-fi-cli/root/v1",
+        )
     }
 }
 
@@ -3460,6 +3468,14 @@ mod tests {
         let first = CliIdentity::load_or_create(dir.path(), true).unwrap();
         let second = CliIdentity::load_or_create(dir.path(), false).unwrap();
         assert_eq!(first.public_key().unwrap(), second.public_key().unwrap());
+        let protocol = first
+            .scoped_root()
+            .child_key(ChildId(0))
+            .to_secp_key(&fedimint_core::secp256k1::Secp256k1::new());
+        assert_eq!(
+            first.public_key().unwrap().0.serialize(),
+            protocol.x_only_public_key().0.serialize(),
+        );
 
         #[cfg(unix)]
         {

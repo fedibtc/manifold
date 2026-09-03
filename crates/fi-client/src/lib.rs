@@ -2,6 +2,8 @@
 
 #![allow(async_fn_in_trait)]
 
+mod backup;
+mod backup_worker;
 mod db;
 mod discovery;
 mod error;
@@ -21,6 +23,7 @@ use fedi_decentralized_manifold_environment::ManifoldEnvironmentProfile;
 use fedi_decentralized_nostr_clients::FiNostrClient;
 use fedi_decentralized_peer_badge_verifier::PeerBadgeVerifier;
 use fedimint_core::db::Database;
+use fedimint_core::task::TaskGroup;
 use nostr_sdk::PublicKey;
 use stability_pool_common::Account;
 use tokio::sync::{Mutex, watch};
@@ -93,7 +96,8 @@ pub use state::{
     GuardianReplacementRequirements, GuardianReplacementSeat, MAX_FEDERATION_SIZE,
     MAX_FEDERATION_SIZE_EXCLUSIVE, MAX_GUARDIAN_FEE_PPM, MIN_FEDERATION_SIZE,
     PaymentAuthorizationId, PaymentRequirements, PaymentReservationId, PlanPreference,
-    ResolvedFormationIntent, SeatPaymentRequirement, SeatPhase, SeatProgress,
+    ResolvedFormationIntent, RestoredFormationSnapshot, RestoredSeat, SeatPaymentRequirement,
+    SeatPhase, SeatProgress,
 };
 pub use unavailable::{
     UnavailableFederationConsensusReader, UnavailableFiFeeAccountProvider,
@@ -101,7 +105,7 @@ pub use unavailable::{
 };
 
 use crate::db::FiStore;
-use crate::ports::FiClientPorts;
+use crate::ports::{FiClientPorts, FiIdentityExt as _};
 
 /// Stateful Federation Initiator client.
 pub struct FiClient<I, P, N, F, C> {
@@ -116,6 +120,13 @@ struct FiClientInner<I, P, N, F, C> {
     peer_badge_verifier: PeerBadgeVerifier,
     setup_payment_publisher: Option<PublicKey>,
     guardian_verification_fee_account: Option<Account>,
+    backup_tasks: TaskGroup,
+}
+
+impl<I, P, N, F, C> Drop for FiClientInner<I, P, N, F, C> {
+    fn drop(&mut self) {
+        self.backup_tasks.shutdown();
+    }
 }
 
 impl<I, P, N, F, C> Clone for FiClient<I, P, N, F, C> {
@@ -248,7 +259,8 @@ where
         let setup_payment_publisher = profile.setup_payment_publisher().copied();
         let guardian_verification_fee_account =
             profile.guardian_verification_fee_account().cloned();
-        Self::open_inner(
+        let relays = profile.nostr_relays().as_urls().to_vec();
+        let client = Self::open_inner(
             database,
             FiClientPorts {
                 identity,
@@ -262,7 +274,14 @@ where
             setup_payment_publisher,
             guardian_verification_fee_account,
         )
-        .await
+        .await?;
+        backup_worker::spawn_workers(
+            &client.inner.backup_tasks,
+            client.inner.store.clone(),
+            client.inner.ports.identity.scoped_root(),
+            relays,
+        );
+        Ok(client)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -277,6 +296,7 @@ where
         let fi_id = ports.identity.public_key().map_err(FiError::Identity)?;
         let status = store.load_status(fi_id).await?;
         let (progress, _) = watch::channel(status);
+        let backup_tasks = TaskGroup::new();
         Ok(Self {
             inner: Arc::new(FiClientInner {
                 store,
@@ -286,6 +306,7 @@ where
                 peer_badge_verifier,
                 setup_payment_publisher,
                 guardian_verification_fee_account,
+                backup_tasks,
             }),
         })
     }
@@ -300,6 +321,30 @@ where
     #[must_use]
     pub fn status(&self) -> FiStatus {
         self.inner.progress.borrow().clone()
+    }
+
+    /// Query every relay in the supplied canonical profile and restore the
+    /// highest authenticated snapshot generation, ignoring bad candidates.
+    pub async fn restore_from_manifold_profile(
+        &self,
+        profile: &ManifoldEnvironmentProfile,
+    ) -> FiResult<()> {
+        let _run = self.inner.run_guard.try_lock().map_err(|_| FiError::Busy)?;
+        let fi_id = self
+            .inner
+            .ports
+            .identity
+            .public_key()
+            .map_err(FiError::Identity)?;
+        let status = backup_worker::restore_from_relays(
+            &self.inner.store,
+            &self.inner.ports.identity.scoped_root(),
+            fi_id,
+            profile.nostr_relays().as_urls(),
+        )
+        .await?;
+        self.inner.progress.send_replace(status);
+        Ok(())
     }
 
     /// Legacy registry-backed creation entry point.
@@ -391,6 +436,22 @@ where
                         .send_replace(FiStatus::Formation(recovery.snapshot.clone()));
                     self.resume_pinned(*recovery, options, deadline, &lease)
                         .await
+                }
+                db::FiRecovery::Restored(snapshot)
+                    if snapshot.freshness == FormationFreshness::Fresh =>
+                {
+                    Ok(())
+                }
+                db::FiRecovery::Restored(snapshot) => {
+                    self.inner
+                        .progress
+                        .send_replace(FiStatus::Restored(snapshot.clone()));
+                    self.reconcile_restored(
+                        snapshot,
+                        fi_id,
+                        formation::DriverRun::new(options, deadline, &lease),
+                    )
+                    .await
                 }
             }
         }

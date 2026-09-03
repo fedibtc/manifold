@@ -3,6 +3,7 @@
 #[cfg(test)]
 mod test_support;
 
+use bitcoin_hashes::sha256;
 use fedimint_core::db::{
     AutocommitError, Database, DatabaseError, DatabaseKeyPrefix, DatabaseValue, DecodingError,
     IDatabaseTransactionOpsCore as _, IDatabaseTransactionOpsCoreTyped as _,
@@ -51,6 +52,62 @@ enum FiDbPrefix {
     DriverLease = 0x02,
     SetupPaymentFederations = 0x03,
     LiquidityOperation = 0x04,
+    BackupGeneration = 0x05,
+    BackupRelayConfirmation = 0x06,
+    RestoredBackup = 0x07,
+}
+
+#[derive(Debug, Decodable, Encodable)]
+struct BackupGenerationKey;
+impl_db_record!(
+    key = BackupGenerationKey,
+    value = BackupGenerationState,
+    db_prefix = FiDbPrefix::BackupGeneration
+);
+
+#[derive(Debug, Decodable, Encodable)]
+struct BackupRelayConfirmationKey {
+    relay: String,
+}
+impl_db_record!(
+    key = BackupRelayConfirmationKey,
+    value = BackupRelayConfirmation,
+    db_prefix = FiDbPrefix::BackupRelayConfirmation
+);
+
+#[derive(Debug, Decodable, Encodable)]
+struct RestoredBackupKey;
+impl_db_record!(
+    key = RestoredBackupKey,
+    value = RestoredBackupState,
+    db_prefix = FiDbPrefix::RestoredBackup
+);
+
+#[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
+struct BackupGenerationState {
+    generation: u64,
+    semantic_hash: sha256::Hash,
+    document_hash: sha256::Hash,
+    nostr_created_at: u64,
+}
+
+pub(crate) const BACKUP_REFRESH_INTERVAL_SECS: u64 = 15 * 24 * 60 * 60;
+
+#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
+pub(crate) struct BackupRelayConfirmation {
+    pub(crate) document_hash: sha256::Hash,
+    pub(crate) generation: u64,
+    pub(crate) event_id: String,
+    pub(crate) confirmed_at_secs: u64,
+}
+
+#[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
+struct RestoredBackupState {
+    fi_id: FiId,
+    payload: crate::backup::FiBackupPayload,
+    formation_id: FormationId,
+    backup_eligible: bool,
+    federation_name: Option<crate::FederationName>,
 }
 
 #[derive(Debug, Decodable, Encodable)]
@@ -452,15 +509,24 @@ enum StoredFormationPhase {
     Formed,
 }
 
-impl DatabaseValue for StoredFormation {
-    fn from_bytes(data: &[u8], _modules: &ModuleDecoderRegistry) -> Result<Self, DecodingError> {
-        serde_json::from_slice(data).map_err(DecodingError::other)
-    }
+macro_rules! json_database_value {
+    ($type:ty) => {
+        impl DatabaseValue for $type {
+            fn from_bytes(
+                data: &[u8],
+                _modules: &ModuleDecoderRegistry,
+            ) -> Result<Self, DecodingError> {
+                serde_json::from_slice(data).map_err(DecodingError::other)
+            }
 
-    fn to_bytes(&self) -> Vec<u8> {
-        serde_json::to_vec(self).expect("StoredFormation serialization is infallible")
-    }
+            fn to_bytes(&self) -> Vec<u8> {
+                serde_json::to_vec(self)
+                    .expect(concat!(stringify!($type), " serialization is infallible"))
+            }
+        }
+    };
 }
+json_database_value!(StoredFormation);
 
 /// Durable protocol facts for one selected seat.
 ///
@@ -515,15 +581,7 @@ pub(crate) enum FormedFact {
     GuardianCode,
 }
 
-impl DatabaseValue for StoredSeat {
-    fn from_bytes(data: &[u8], _modules: &ModuleDecoderRegistry) -> Result<Self, DecodingError> {
-        serde_json::from_slice(data).map_err(DecodingError::other)
-    }
-
-    fn to_bytes(&self) -> Vec<u8> {
-        serde_json::to_vec(self).expect("StoredSeat serialization is infallible")
-    }
-}
+json_database_value!(StoredSeat);
 
 #[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
 struct StoredPaymentAuthorization {
@@ -537,39 +595,16 @@ struct StoredDriverLease {
     expires_at: u64,
 }
 
-impl DatabaseValue for StoredDriverLease {
-    fn from_bytes(data: &[u8], _modules: &ModuleDecoderRegistry) -> Result<Self, DecodingError> {
-        serde_json::from_slice(data).map_err(DecodingError::other)
-    }
-
-    fn to_bytes(&self) -> Vec<u8> {
-        serde_json::to_vec(self).expect("StoredDriverLease serialization is infallible")
-    }
-}
+json_database_value!(StoredDriverLease);
 
 #[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
 struct StoredSetupPaymentFederationsEvent(Event);
 
-impl DatabaseValue for StoredSetupPaymentFederationsEvent {
-    fn from_bytes(data: &[u8], _modules: &ModuleDecoderRegistry) -> Result<Self, DecodingError> {
-        serde_json::from_slice(data).map_err(DecodingError::other)
-    }
-
-    fn to_bytes(&self) -> Vec<u8> {
-        serde_json::to_vec(self)
-            .expect("StoredSetupPaymentFederationsEvent serialization is infallible")
-    }
-}
-
-impl DatabaseValue for crate::liquidity::StoredLiquidityOperation {
-    fn from_bytes(data: &[u8], _modules: &ModuleDecoderRegistry) -> Result<Self, DecodingError> {
-        serde_json::from_slice(data).map_err(DecodingError::other)
-    }
-
-    fn to_bytes(&self) -> Vec<u8> {
-        serde_json::to_vec(self).expect("StoredLiquidityOperation serialization is infallible")
-    }
-}
+json_database_value!(StoredSetupPaymentFederationsEvent);
+json_database_value!(crate::liquidity::StoredLiquidityOperation);
+json_database_value!(BackupGenerationState);
+json_database_value!(BackupRelayConfirmation);
+json_database_value!(RestoredBackupState);
 
 /// One seat's public projection and its private recovery-only quote facts.
 pub(crate) struct SeatRecovery {
@@ -674,6 +709,7 @@ impl ActiveFormationRecovery {
 pub(crate) enum FiRecovery {
     Idle,
     Formation(Box<ActiveFormationRecovery>),
+    Restored(crate::RestoredFormationSnapshot),
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
@@ -805,6 +841,302 @@ impl FiStore {
             #[cfg(test)]
             failed_restore: Arc::new(AtomicBool::new(false)),
         }
+    }
+
+    /// Prepare one eligible backup, allocating its generation and Nostr
+    /// timestamp in the same transaction. Unchanged facts reuse both until the
+    /// next refresh boundary; changed facts advance both immediately.
+    pub(crate) async fn backup_payload(&self) -> FiResult<crate::backup::PreparedFiBackup> {
+        let mut dbtx = self.database.begin_transaction().await;
+        let (federation_invite, seats, restored_baseline) = if let Some(formation) =
+            dbtx.get_value(&ActiveFormationKey).await
+        {
+            if formation.phase != StoredFormationPhase::Formed
+                || !formation
+                    .formation_meta_target
+                    .as_ref()
+                    .is_some_and(|target| target.confirmed)
+            {
+                return Err(formed_backup_required());
+            }
+            let federation_invite = formation
+                .invite_code
+                .clone()
+                .ok_or_else(formed_backup_required)?;
+            let mut seats = Vec::with_capacity(usize::from(formation.seat_count));
+            for index in 0..formation.seat_count {
+                let seat = dbtx
+                    .get_value(&SeatKey {
+                        formation_id: formation.formation_id.0.clone(),
+                        index,
+                    })
+                    .await
+                    .ok_or_else(|| {
+                        FiError::Storage("formed FI backup is missing a seat".to_owned())
+                    })?;
+                seats.push(crate::backup::FiBackupSeat {
+                    fman_identity: seat.admission.fman_id().ok_or_else(|| {
+                        FiError::Storage(
+                            "formed FI backup seat has no authenticated FMan identity".to_owned(),
+                        )
+                    })?,
+                    seat_id: seat.seat_id.ok_or_else(|| {
+                        FiError::Storage("formed FI backup seat has no seat id".to_owned())
+                    })?,
+                    locator: seat.locator,
+                });
+            }
+            (federation_invite, seats, None)
+        } else {
+            let restored = dbtx
+                .get_value(&RestoredBackupKey)
+                .await
+                .filter(|restored| restored.backup_eligible)
+                .ok_or_else(formed_backup_required)?;
+            let baseline = Some((
+                restored.payload.snapshot_generation,
+                crate::backup::semantic_hash(&restored.payload)?,
+            ));
+            (
+                restored.payload.federation_invite,
+                restored.payload.seats,
+                baseline,
+            )
+        };
+        let mut entries = dbtx.find_by_prefix(&LiquidityOperationKeyPrefix).await;
+        let mut liquidity = None;
+        while let Some((_key, operation)) = entries.next().await {
+            if !operation.is_terminal_for_backup()? {
+                if liquidity.replace(operation.commitment).is_some() {
+                    return Err(FiError::Storage(
+                        "more than one live FI liquidity request".to_owned(),
+                    ));
+                }
+            }
+        }
+        drop(entries);
+        let mut payload = crate::backup::FiBackupPayload {
+            schema_version: crate::backup::BACKUP_SCHEMA_VERSION,
+            snapshot_generation: 0,
+            federation_invite,
+            seats,
+            liquidity,
+        };
+        let semantic_hash = crate::backup::semantic_hash(&payload)?;
+        let prior = dbtx.get_value(&BackupGenerationKey).await;
+        let generation = match prior.as_ref() {
+            Some(prior) if prior.semantic_hash == semantic_hash => prior.generation,
+            Some(prior) => prior.generation.checked_add(1).ok_or_else(|| {
+                FiError::Storage("FI backup snapshot generation exhausted".to_owned())
+            })?,
+            None => match restored_baseline {
+                Some((generation, restored_hash)) if restored_hash == semantic_hash => generation,
+                Some((generation, _)) => generation.checked_add(1).ok_or_else(|| {
+                    FiError::Storage("FI backup snapshot generation exhausted".to_owned())
+                })?,
+                None => 1,
+            },
+        };
+        payload.snapshot_generation = generation;
+        let document_hash = crate::backup::document_hash(&payload)?;
+        let now = fedimint_core::time::duration_since_epoch().as_secs();
+        let created_at = match prior.as_ref() {
+            Some(prior) if prior.semantic_hash == semantic_hash => {
+                let elapsed = now.saturating_sub(prior.nostr_created_at);
+                prior.nostr_created_at.saturating_add(
+                    elapsed / BACKUP_REFRESH_INTERVAL_SECS * BACKUP_REFRESH_INTERVAL_SECS,
+                )
+            }
+            Some(prior) => now.max(prior.nostr_created_at.saturating_add(1)),
+            None => now,
+        };
+        dbtx.insert_entry(
+            &BackupGenerationKey,
+            &BackupGenerationState {
+                generation,
+                semantic_hash,
+                document_hash,
+                nostr_created_at: created_at,
+            },
+        )
+        .await;
+        dbtx.commit_tx_result()
+            .await
+            .map_err(|_| FiError::Storage("persisting FI backup generation failed".to_owned()))?;
+        Ok(crate::backup::PreparedFiBackup {
+            payload,
+            document_hash,
+            created_at,
+        })
+    }
+
+    pub(crate) async fn restore_backup_payload(
+        &self,
+        fi_id: FiId,
+        payload: crate::backup::FiBackupPayload,
+    ) -> FiResult<FiStatus> {
+        if let Some(commitment) = &payload.liquidity {
+            if commitment.requester_pubkey.0 != fi_id.0.to_string() {
+                return Err(FiError::Storage(
+                    "authenticated FI backup liquidity belongs to another requester".to_owned(),
+                ));
+            }
+            fedi_decentralized_service_liquidity_manager::request_liquidity_details_hash(
+                commitment,
+            )
+            .map_err(|_| {
+                FiError::Storage(
+                    "authenticated FI backup has an invalid liquidity commitment".to_owned(),
+                )
+            })?;
+        }
+        let formation_id =
+            crate::formation::restored_formation_id(fi_id, &payload.federation_invite)?;
+        let mut dbtx = self.database.begin_transaction().await;
+        if dbtx.get_value(&ActiveFormationKey).await.is_some()
+            || dbtx.get_value(&RestoredBackupKey).await.is_some()
+            || dbtx.get_value(&SetupPaymentFederationsKey).await.is_some()
+            || dbtx.get_value(&DriverLeaseKey).await.is_some()
+            || dbtx
+                .find_by_prefix(&LiquidityOperationKeyPrefix)
+                .await
+                .next()
+                .await
+                .is_some()
+        {
+            return Err(FiError::Storage(
+                "FI restore requires an empty database namespace".to_owned(),
+            ));
+        }
+        dbtx.insert_entry(
+            &RestoredBackupKey,
+            &RestoredBackupState {
+                fi_id,
+                payload: payload.clone(),
+                formation_id,
+                backup_eligible: false,
+                federation_name: None,
+            },
+        )
+        .await;
+        dbtx.commit_tx_result().await.map_err(|_| {
+            FiError::Storage("committing authenticated FI restore failed".to_owned())
+        })?;
+        self.load_status(fi_id).await
+    }
+
+    pub(crate) async fn backup_confirmation(&self, relay: &str) -> Option<BackupRelayConfirmation> {
+        self.database
+            .begin_transaction_nc()
+            .await
+            .get_value(&BackupRelayConfirmationKey {
+                relay: relay.to_owned(),
+            })
+            .await
+    }
+
+    pub(crate) async fn reconcile_restored_backup(
+        &self,
+        fi_id: FiId,
+        federation_name: Option<crate::FederationName>,
+    ) -> FiResult<()> {
+        let mut dbtx = self.database.begin_transaction().await;
+        let mut restored = dbtx.get_value(&RestoredBackupKey).await.ok_or_else(|| {
+            FiError::Storage("restored FI backup disappeared during reconciliation".to_owned())
+        })?;
+        if restored.fi_id != fi_id {
+            return Err(FiError::Storage(
+                "restored FI backup belongs to another scoped root".to_owned(),
+            ));
+        }
+        restored.backup_eligible = true;
+        restored.federation_name = federation_name;
+        if let Some(commitment) = restored.payload.liquidity.clone() {
+            let details_payload_hash =
+                fedi_decentralized_service_liquidity_manager::request_liquidity_details_hash(
+                    &commitment,
+                )
+                .map_err(|error| {
+                    FiError::Storage(format!(
+                        "hashing restored liquidity commitment failed: {error}"
+                    ))
+                })?;
+            let operation_id = crate::LiquidityOperationId(hex::encode(details_payload_hash.0));
+            let key = LiquidityOperationKey {
+                operation_id: operation_id.0.clone(),
+            };
+            if dbtx.get_value(&key).await.is_none() {
+                dbtx.insert_entry(
+                    &key,
+                    &crate::liquidity::StoredLiquidityOperation {
+                        schema_version: 3,
+                        operation_id,
+                        formation_id: restored.formation_id.clone(),
+                        commitment,
+                        endpoint_hint: None,
+                        details_payload_hash,
+                        response: None,
+                        status: None,
+                        verified_gateway_api: None,
+                    },
+                )
+                .await;
+            }
+        }
+        dbtx.insert_entry(&RestoredBackupKey, &restored).await;
+        dbtx.commit_tx_result().await.map_err(|_| {
+            FiError::Storage("committing restored FI reconciliation failed".to_owned())
+        })
+    }
+
+    pub(crate) async fn restored_backup_payload(
+        &self,
+        fi_id: FiId,
+    ) -> FiResult<crate::backup::FiBackupPayload> {
+        let restored = self
+            .database
+            .begin_transaction_nc()
+            .await
+            .get_value(&RestoredBackupKey)
+            .await
+            .ok_or(FiError::NoActiveFormation)?;
+        if restored.fi_id != fi_id {
+            return Err(FiError::Storage(
+                "restored FI backup belongs to another scoped root".to_owned(),
+            ));
+        }
+        Ok(restored.payload)
+    }
+
+    pub(crate) async fn record_backup_confirmation(
+        &self,
+        relay: &str,
+        confirmation: BackupRelayConfirmation,
+    ) -> FiResult<()> {
+        let mut dbtx = self.database.begin_transaction().await;
+        if dbtx
+            .get_value(&BackupRelayConfirmationKey {
+                relay: relay.to_owned(),
+            })
+            .await
+            .is_some_and(|current| {
+                current.generation > confirmation.generation
+                    || (current.generation == confirmation.generation
+                        && current.confirmed_at_secs > confirmation.confirmed_at_secs)
+            })
+        {
+            return Ok(());
+        }
+        dbtx.insert_entry(
+            &BackupRelayConfirmationKey {
+                relay: relay.to_owned(),
+            },
+            &confirmation,
+        )
+        .await;
+        dbtx.commit_tx_result().await.map_err(|_| {
+            FiError::Storage("persisting FI relay backup confirmation failed".to_owned())
+        })
     }
 
     pub(crate) async fn insert_liquidity_operation(
@@ -1220,42 +1552,84 @@ impl FiStore {
         dbtx.commit_tx().await;
     }
 
+    #[cfg(test)]
+    pub(crate) async fn unconfirm_formation_meta_target_for_test(&self) {
+        let mut dbtx = self.database.begin_transaction().await;
+        let mut formation = dbtx
+            .get_value(&ActiveFormationKey)
+            .await
+            .expect("test formation exists");
+        formation
+            .formation_meta_target
+            .as_mut()
+            .expect("test metadata target")
+            .confirmed = false;
+        dbtx.insert_entry(&ActiveFormationKey, &formation).await;
+        dbtx.commit_tx().await;
+    }
+
     pub(crate) async fn load_status(&self, fi_id: FiId) -> FiResult<FiStatus> {
         Ok(match self.load_recovery(fi_id).await? {
             FiRecovery::Idle => FiStatus::Idle,
             FiRecovery::Formation(recovery) => FiStatus::Formation(recovery.snapshot),
+            FiRecovery::Restored(snapshot) => FiStatus::Restored(snapshot),
         })
     }
 
     pub(crate) async fn load_recovery(&self, fi_id: FiId) -> FiResult<FiRecovery> {
         let mut dbtx = self.database.begin_transaction().await;
-        let Some(bytes) = dbtx
+        if let Some(bytes) = dbtx
             .raw_get_bytes(&DatabaseKeyPrefix::to_bytes(&ActiveFormationKey))
             .await
             .map_err(|_| FiError::Storage("reading FI storage failed".to_owned()))?
-        else {
-            return Ok(FiRecovery::Idle);
-        };
-        let envelope: StoredFormationEnvelope = serde_json::from_slice(&bytes).map_err(|_| {
-            FiError::Storage("persisted FI formation header is malformed".to_owned())
-        })?;
-        if envelope.schema_version < RESET_BEFORE_SCHEMA_VERSION {
-            dbtx.raw_remove_by_prefix(&[])
-                .await
-                .map_err(|_| FiError::Storage("resetting legacy FI storage failed".to_owned()))?;
-            dbtx.commit_tx_result()
-                .await
-                .map_err(|_| FiError::Storage("committing legacy FI reset failed".to_owned()))?;
-            return Ok(FiRecovery::Idle);
-        }
-        if envelope.schema_version > STORAGE_SCHEMA_VERSION {
-            return Err(FiError::Storage(format!(
-                "unsupported FI storage schema version {}",
-                envelope.schema_version
-            )));
+        {
+            let envelope: StoredFormationEnvelope =
+                serde_json::from_slice(&bytes).map_err(|_| {
+                    FiError::Storage("persisted FI formation header is malformed".to_owned())
+                })?;
+            if envelope.schema_version < RESET_BEFORE_SCHEMA_VERSION {
+                dbtx.raw_remove_by_prefix(&[]).await.map_err(|_| {
+                    FiError::Storage("resetting legacy FI storage failed".to_owned())
+                })?;
+                dbtx.commit_tx_result().await.map_err(|_| {
+                    FiError::Storage("committing legacy FI reset failed".to_owned())
+                })?;
+                return Ok(FiRecovery::Idle);
+            }
+            if envelope.schema_version > STORAGE_SCHEMA_VERSION {
+                return Err(FiError::Storage(format!(
+                    "unsupported FI storage schema version {}",
+                    envelope.schema_version
+                )));
+            }
         }
         let Some(stored) = dbtx.get_value(&ActiveFormationKey).await else {
-            return Ok(FiRecovery::Idle);
+            let Some(restored) = dbtx.get_value(&RestoredBackupKey).await else {
+                return Ok(FiRecovery::Idle);
+            };
+            if restored.fi_id != fi_id {
+                return Err(FiError::Storage(
+                    "restored FI backup belongs to another scoped root".to_owned(),
+                ));
+            }
+            return Ok(FiRecovery::Restored(crate::RestoredFormationSnapshot {
+                snapshot_generation: restored.payload.snapshot_generation,
+                formation_id: restored.formation_id.clone(),
+                federation_invite: restored.payload.federation_invite,
+                federation_name: restored.federation_name,
+                seats: restored
+                    .payload
+                    .seats
+                    .into_iter()
+                    .map(|seat| crate::RestoredSeat {
+                        fman_identity: seat.fman_identity,
+                        seat_id: seat.seat_id,
+                        locator: seat.locator,
+                    })
+                    .collect(),
+                phase: FormationPhase::Formed,
+                freshness: FormationFreshness::Unsynced,
+            }));
         };
         validate_schema_and_owner(&stored, fi_id)?;
 
@@ -1438,7 +1812,9 @@ impl FiStore {
         let seat_count = u16::try_from(seats.len())
             .map_err(|_| FiError::Storage("too many FI seat rows".to_owned()))?;
         let mut dbtx = self.database.begin_transaction().await;
-        if dbtx.get_value(&ActiveFormationKey).await.is_some() {
+        if dbtx.get_value(&ActiveFormationKey).await.is_some()
+            || dbtx.get_value(&RestoredBackupKey).await.is_some()
+        {
             return Err(FiError::Storage(
                 "cannot initialize over an active FI formation".to_owned(),
             ));
@@ -3573,6 +3949,10 @@ fn validate_payment_authorization(
         }
     }
     Ok(())
+}
+
+fn formed_backup_required() -> FiError {
+    FiError::Storage("FI backup is available only after formed metadata is confirmed".to_owned())
 }
 
 fn public_phase(

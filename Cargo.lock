@@ -4064,8 +4064,12 @@ dependencies = [
 name = "fi-client"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
  "bitcoin",
+ "bitcoin_hashes",
  "blind-rsa-signatures",
+ "chacha20poly1305",
+ "ciborium",
  "fedi-credential-sdk-protocol",
  "fedi-decentralized-domain",
  "fedi-decentralized-manifold-environment",
@@ -4076,6 +4080,7 @@ dependencies = [
  "fedi-decentralized-service-liquidity-manager",
  "fedi-iroh-rpc",
  "fedimint-core",
+ "fedimint-derive-secret",
  "futures",
  "hex",
  "iroh-base 0.35.0",
@@ -4084,6 +4089,7 @@ dependencies = [
  "secp256k1 0.30.0",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "stability-pool-common",
  "thiserror 2.0.18",
  "tokio",
@@ -10243,6 +10249,7 @@ dependencies = [
  "fedi-decentralized-service-fleet-manager",
  "fedi-iroh-rpc",
  "fedimint-core",
+ "fedimint-derive-secret",
  "fedimint-mintv2-client",
  "fi-client",
  "fman-core",
