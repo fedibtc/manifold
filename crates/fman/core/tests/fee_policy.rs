@@ -140,12 +140,15 @@ fn policy_reader_derives_a_view_from_the_consensus_meta_map() {
     let (ours, peer) = (account(0x11), account(0x22));
     let recipients = list(&[(&ours, 3), (&peer, 1)]);
     let meta = std::collections::BTreeMap::from([
-        (SEND_PPM_META_KEY.to_owned(), "1000".to_owned()),
-        (REMITTANCE_ACCOUNT_META_KEY.to_owned(), recipients.clone()),
+        (SEND_PPM_META_KEY.to_owned(), "1000".into()),
+        (
+            REMITTANCE_ACCOUNT_META_KEY.to_owned(),
+            recipients.clone().into(),
+        ),
     ]);
 
     assert_eq!(
-        fee_policy_from_meta(&meta, ours.id()),
+        fee_policy_from_meta(&meta, ours.id()).unwrap(),
         FeePolicy {
             configured: true,
             send_ppm: Some(1_000),
@@ -154,6 +157,40 @@ fn policy_reader_derives_a_view_from_the_consensus_meta_map() {
             authenticated_policy_matches: false,
         }
     );
+}
+
+#[test]
+fn policy_reader_distinguishes_unset_from_malformed_fee_metadata() {
+    let ours = account(0x11);
+    assert_eq!(
+        fee_policy_from_meta(&std::collections::BTreeMap::new(), ours.id()).unwrap(),
+        FeePolicy {
+            configured: false,
+            send_ppm: None,
+            recipients: None,
+            our_share: None,
+        }
+    );
+    assert!(matches!(
+        fee_policy_from_meta(
+            &std::collections::BTreeMap::from([(
+                SEND_PPM_META_KEY.to_owned(),
+                serde_json::Value::String("bad".to_owned()),
+            )]),
+            ours.id(),
+        ),
+        Err(FeePolicyError::InvalidSendPpm)
+    ));
+    assert!(matches!(
+        fee_policy_from_meta(
+            &std::collections::BTreeMap::from([(
+                SEND_PPM_META_KEY.to_owned(),
+                serde_json::json!(1000),
+            )]),
+            ours.id(),
+        ),
+        Err(FeePolicyError::NonStringValue)
+    ));
 }
 
 /// A list longer than the payer honours is refused there, so this end must not
@@ -403,11 +440,12 @@ fn the_published_minimum_gates_new_proposals_only() {
         assert!(
             fee_policy_from_meta(
                 &std::collections::BTreeMap::from([
-                    (SEND_PPM_META_KEY.to_owned(), send_ppm.to_string()),
-                    (REMITTANCE_ACCOUNT_META_KEY.to_owned(), value),
+                    (SEND_PPM_META_KEY.to_owned(), send_ppm.to_string().into()),
+                    (REMITTANCE_ACCOUNT_META_KEY.to_owned(), value.into()),
                 ]),
                 ours.id(),
             )
+            .unwrap()
             .configured
         );
     }

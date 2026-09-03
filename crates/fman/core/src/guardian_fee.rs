@@ -198,6 +198,10 @@ struct RecipientEntry {
 /// Why a guardian-fee metadata value is one the payer will not honour.
 #[derive(Debug, thiserror::Error)]
 pub enum FeePolicyError {
+    #[error("guardian-fee metadata values must be strings")]
+    NonStringValue,
+    #[error("guardian-fee rate is not an unsigned integer")]
+    InvalidSendPpm,
     #[error("guardian-fee rate and recipient list must be present together")]
     Incomplete,
     #[error("guardian-fee rate exceeds the payer cap of {MAX_SEND_PPM} ppm")]
@@ -240,30 +244,38 @@ pub fn validate_fee_policy(
 /// The caller supplies the map from the meta module; this deliberately does
 /// not obtain it through a client, so policy reads can use the guardian's own
 /// consensus connection rather than a wallet client.
-pub fn fee_policy_from_meta(meta: &BTreeMap<String, String>, ours: AccountId) -> FeePolicy {
-    let send_ppm = meta
-        .get(SEND_PPM_META_KEY)
-        .and_then(|value| value.parse::<u64>().ok());
-    let recipients = meta.get(REMITTANCE_ACCOUNT_META_KEY).cloned();
-    let valid = validate_fee_policy(send_ppm, recipients.as_deref()).is_ok();
-    let authenticated_policy_matches = recipients.is_none() && send_ppm.is_none();
-    let our_share = valid
-        .then(|| {
-            recipients
-                .as_deref()
-                .and_then(|value| our_share_of(value, ours))
+pub fn fee_policy_from_meta(
+    meta: &BTreeMap<String, serde_json::Value>,
+    ours: AccountId,
+) -> Result<FeePolicy, FeePolicyError> {
+    let string_value = |key| match meta.get(key) {
+        None => Ok(None),
+        Some(serde_json::Value::String(value)) => Ok(Some(value.clone())),
+        Some(_) => Err(FeePolicyError::NonStringValue),
+    };
+    let send_ppm = string_value(SEND_PPM_META_KEY)?
+        .map(|value| {
+            value
+                .parse::<u64>()
+                .map_err(|_| FeePolicyError::InvalidSendPpm)
         })
-        .flatten();
-    FeePolicy {
-        configured: valid && send_ppm.is_some() && recipients.is_some(),
+        .transpose()?;
+    let recipients = string_value(REMITTANCE_ACCOUNT_META_KEY)?;
+    validate_fee_policy(send_ppm, recipients.as_deref())?;
+    let authenticated_policy_matches = recipients.is_none() && send_ppm.is_none();
+    let our_share = recipients
+        .as_deref()
+        .and_then(|value| our_share_of(value, ours));
+    Ok(FeePolicy {
+        configured: send_ppm.is_some() && recipients.is_some(),
         send_ppm,
         recipients,
         our_share,
         // The seat read path replaces this with a check against its live
         // federation config, authenticated directory, and deployment account.
-        // This parser alone cannot establish those inputs.
+        // This parser alone can establish only that policy is absent.
         authenticated_policy_matches,
-    }
+    })
 }
 
 /// The recipient value this FMan will vote for, or why it will not.

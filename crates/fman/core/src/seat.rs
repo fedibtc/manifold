@@ -2247,18 +2247,8 @@ impl SeatLoop {
                 formation_policy.as_ref(),
             )
             .is_ok();
-        // Non-string values are skipped rather than failing the read: the
-        // payer reads the fee keys as strings, so a non-string fee value is
-        // not honoured anyway, and an unrelated foreign key must not make
-        // this FMan's own policy unreadable.
-        let meta = fields
-            .into_iter()
-            .filter_map(|(key, value)| match value {
-                serde_json::Value::String(value) => Some((key, value)),
-                _ => None,
-            })
-            .collect();
-        let mut policy = crate::guardian_fee::fee_policy_from_meta(&meta, our_account_id);
+        let mut policy = crate::guardian_fee::fee_policy_from_meta(&fields, our_account_id)
+            .map_err(SeatVerbError::internal)?;
         policy.authenticated_policy_matches = authenticated_policy_matches;
         Ok(policy)
     }
