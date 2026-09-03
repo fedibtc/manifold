@@ -455,7 +455,17 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     let server = FleetManagerServiceServer::new(rpc.clone());
     let telemetry = GuardianTelemetryApiServer::new(GuardianTelemetryRpc::new(fleet.clone())?);
     let router = Router::builder(endpoint)
-        .accept(FLEET_MANAGER_ALPN, IrohProtocol::new(server))
+        .accept(
+            FLEET_MANAGER_ALPN,
+            // Give each unsigned verb a full handler-pool-sized response-write
+            // partition. Slow readers of one verb cannot retain shared handler
+            // capacity or consume another verb's bounded writer slots.
+            IrohProtocol::new(server).with_method_response_write_limits([
+                ("get_availability", 128),
+                ("get_quote", 128),
+                ("get_federation_trust_material", 128),
+            ]),
+        )
         .accept(
             GUARDIAN_TELEMETRY_ALPN,
             IrohProtocol::with_limits_and_request_read_timeout(
