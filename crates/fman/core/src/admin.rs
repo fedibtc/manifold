@@ -479,7 +479,11 @@ pub(crate) async fn dispatch(
         }
         AdminRequest::GuardianFees { seat_id, limit } => {
             let status = fleet.guardian_fee_status(&seat_id).await?;
-            let policy = fleet.guardian_fee_policy(&seat_id).await?;
+            // A decommissioned guardian has no live consensus connection, but
+            // its retained fee pool and wallet remain operator-drainable.
+            // Policy is therefore a best-effort diagnostic, not a gate on the
+            // monetary state in this response.
+            let policy = fleet.guardian_fee_policy(&seat_id).await;
             let remittances = fleet
                 .guardian_fee_remittances(&seat_id, limit.unwrap_or(20))
                 .await?;
@@ -490,7 +494,7 @@ pub(crate) async fn dispatch(
                 fleet.guardian_fee_account(&seat_id)?,
                 wallet,
                 fleet.guardian_fee_total_remitted(&seat_id).await?.msats,
-                &policy,
+                policy.as_ref().map_err(|err| format!("{err:#}")),
                 remittances,
             ))
         }
@@ -600,9 +604,20 @@ pub fn guardian_fees_json(
     remittance_account: String,
     wallet: crate::payout_wire::WalletDrainStatusWire,
     lifetime_remitted_msat: u64,
-    policy: &FeePolicy,
+    policy: Result<&FeePolicy, String>,
     remittances: Vec<Remittance>,
 ) -> Value {
+    let policy = match policy {
+        Ok(policy) => json!({
+            "configured": policy.configured,
+            "send_ppm": policy.send_ppm,
+            "recipients": policy.recipients,
+            "share_matches_policy": policy.share_matches_policy(),
+            "our_weight": policy.our_share.map(|(ours, _)| ours),
+            "total_weight": policy.our_share.map(|(_, total)| total),
+        }),
+        Err(error) => json!({ "error": error }),
+    };
     json!({
         "seat_id": seat_id,
         "federation_id": status.federation_id.to_string(),
@@ -613,14 +628,7 @@ pub fn guardian_fees_json(
         "idle_msat": status.idle.msats,
         "wallet": wallet,
         "lifetime_remitted_msat": lifetime_remitted_msat,
-        "policy": {
-            "configured": policy.configured,
-            "send_ppm": policy.send_ppm,
-            "recipients": policy.recipients,
-            "share_matches_policy": policy.share_matches_policy(),
-            "our_weight": policy.our_share.map(|(ours, _)| ours),
-            "total_weight": policy.our_share.map(|(_, total)| total),
-        },
+        "policy": policy,
         "remittances": remittances.into_iter().map(remittance_json).collect::<Vec<_>>(),
     })
 }

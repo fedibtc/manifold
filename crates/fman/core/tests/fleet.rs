@@ -1407,6 +1407,27 @@ async fn decommission_retains_the_final_guardian_data_directory() {
 }
 
 #[tokio::test]
+async fn decommission_retains_the_guardian_fee_client_coordinate() {
+    let temp = TempDir::new().unwrap();
+    let config = config(&temp, 1, 31_248).await;
+    let fleet = open_fleet(config, Arc::new(NoWallet)).await.unwrap();
+    let (_, seat_id) = create_free_seat(&fleet, 134).await;
+    fleet
+        .form_fake_child(&seat_id, running_federation(0, None))
+        .await;
+    let before = fleet.seat_federation(&seat_id).await.unwrap();
+
+    fleet.decommission_seat(&seat_id).await.unwrap();
+
+    assert_eq!(
+        fleet.seat_federation(&seat_id).await.unwrap(),
+        before,
+        "decommission must retain the public coordinate used to inspect, collect, and drain fees",
+    );
+    fleet.shutdown().await;
+}
+
+#[tokio::test]
 async fn formed_watchdog_tracks_health_without_refetching_the_durable_invite() {
     let temp = TempDir::new().unwrap();
     let config = config(&temp, 1, 31_247).await;
