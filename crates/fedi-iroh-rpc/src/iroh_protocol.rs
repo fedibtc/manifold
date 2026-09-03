@@ -1,4 +1,5 @@
 use std::{
+    collections::HashMap,
     io::{self, Write},
     sync::Arc,
     time::Duration,
@@ -21,6 +22,8 @@ pub struct IrohProtocol<H> {
     request_read_timeout: Duration,
     response_write_timeout: Duration,
     stream_permits: Arc<Semaphore>,
+    response_write_permits: Arc<Semaphore>,
+    method_response_write_permits: Arc<HashMap<String, Arc<Semaphore>>>,
 }
 
 impl<H> IrohProtocol<H> {
@@ -90,8 +93,9 @@ impl<H> IrohProtocol<H> {
     /// Creates an iroh protocol handler with explicit resource limits.
     ///
     /// `max_response_bytes` limits the complete encoded response frame.
-    /// `max_concurrent_streams` accounts for each detached stream task through
-    /// response completion or abandonment.
+    /// `max_concurrent_streams` separately caps active handlers and response
+    /// writers. A completed handler transfers to the bounded writer pool, so a
+    /// slow reader cannot occupy handler capacity.
     /// A response limit too small to encode a transport error can cause the
     /// server to close a rejected stream without a response frame.
     ///
@@ -116,6 +120,8 @@ impl<H> IrohProtocol<H> {
             request_read_timeout,
             response_write_timeout,
             stream_permits: Arc::new(Semaphore::new(max_concurrent_streams)),
+            response_write_permits: Arc::new(Semaphore::new(max_concurrent_streams)),
+            method_response_write_permits: Arc::new(HashMap::new()),
         }
     }
 
@@ -123,6 +129,31 @@ impl<H> IrohProtocol<H> {
     #[must_use]
     pub fn with_max_request_bytes(handler: H, max_request_bytes: usize) -> Self {
         Self::with_limits(handler, max_request_bytes, 128)
+    }
+
+    /// Isolate bounded response writers for selected methods.
+    ///
+    /// All methods release their shared handler permit before writing. A
+    /// configured method uses its own writer partition instead of the bounded
+    /// fallback writer pool. If that partition is full, the response is
+    /// abandoned rather than allowing its slow readers to starve other methods.
+    #[must_use]
+    pub fn with_method_response_write_limits(
+        mut self,
+        limits: impl IntoIterator<Item = (&'static str, usize)>,
+    ) -> Self {
+        let mut permits = HashMap::new();
+        for (method, limit) in limits {
+            assert!(limit > 0, "method response-write limit must be nonzero");
+            assert!(
+                permits
+                    .insert(method.to_owned(), Arc::new(Semaphore::new(limit)))
+                    .is_none(),
+                "method response-write limit must be unique"
+            );
+        }
+        self.method_response_write_permits = Arc::new(permits);
+        self
     }
 }
 
@@ -150,6 +181,8 @@ impl<H> Clone for IrohProtocol<H> {
             request_read_timeout: self.request_read_timeout,
             response_write_timeout: self.response_write_timeout,
             stream_permits: Arc::clone(&self.stream_permits),
+            response_write_permits: Arc::clone(&self.response_write_permits),
+            method_response_write_permits: Arc::clone(&self.method_response_write_permits),
         }
     }
 }
@@ -175,6 +208,8 @@ where
             let max_response_bytes = self.max_response_bytes;
             let request_read_timeout = self.request_read_timeout;
             let response_write_timeout = self.response_write_timeout;
+            let response_write_permits = Arc::clone(&self.response_write_permits);
+            let method_response_write_permits = Arc::clone(&self.method_response_write_permits);
             let context = connection_context.clone();
             // Deliberately detached: a handler runs to completion even if
             // the client disconnects (only the response write fails).
@@ -185,7 +220,7 @@ where
             // on disconnect without auditing those dependents.
             tokio::spawn(async move {
                 let _permit = permit;
-                let response = {
+                let (response, method_write_permits) = {
                     match tokio::time::timeout(
                         request_read_timeout,
                         recv.read_to_end(max_request_bytes),
@@ -194,14 +229,17 @@ where
                     {
                         Ok(Ok(bytes)) => match decode_frame(&bytes) {
                             Ok(frame) => {
-                                handler
+                                let write_permits =
+                                    method_response_write_permits.get(&frame.method).cloned();
+                                let response = handler
                                     .handle_rpc_with_context(context, &frame.method, &frame.body)
-                                    .await
+                                    .await;
+                                (response, write_permits)
                             }
-                            Err(err) => Err(err),
+                            Err(err) => (Err(err), None),
                         },
-                        Ok(Err(err)) => Err(map_request_read_error(err)),
-                        Err(_) => Err(RpcError::RequestTimedOut),
+                        Ok(Err(err)) => (Err(map_request_read_error(err)), None),
+                        Err(_) => (Err(RpcError::RequestTimedOut), None),
                     }
                 };
 
@@ -220,6 +258,12 @@ where
                     }
                     Err(_) => return,
                 };
+
+                let write_permits = method_write_permits.unwrap_or(response_write_permits);
+                let Ok(_write_permit) = write_permits.try_acquire_owned() else {
+                    return;
+                };
+                drop(_permit);
 
                 let _ = tokio::time::timeout(response_write_timeout, async {
                     if send.write_all(&response_bytes).await.is_ok() {
@@ -502,7 +546,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn slow_readers_are_task_capped_and_response_timeout_releases_permits()
+    async fn slow_readers_are_writer_capped_and_release_handler_permits()
     -> Result<(), Box<dyn std::error::Error>> {
         let server_endpoint = Endpoint::builder(presets::N0)
             .relay_mode(RelayMode::Disabled)
@@ -543,19 +587,83 @@ mod tests {
         }
 
         tokio::time::timeout(Duration::from_secs(1), async {
-            while 0 < protocol.stream_permits.available_permits() {
+            while 0 < protocol.response_write_permits.available_permits() {
                 tokio::task::yield_now().await;
             }
         })
         .await?;
-        assert_eq!(protocol.stream_permits.available_permits(), 0);
+        assert_eq!(protocol.stream_permits.available_permits(), 2);
+        assert_eq!(protocol.response_write_permits.available_permits(), 0);
 
         tokio::time::sleep(Duration::from_millis(100)).await;
         assert_eq!(
-            protocol.stream_permits.available_permits(),
+            protocol.response_write_permits.available_permits(),
             0,
-            "slow response tasks must retain both permits before their deadline"
+            "slow response tasks must retain both writer permits before their deadline"
         );
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while protocol.response_write_permits.available_permits() != 2 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await?;
+
+        drop(unread_streams);
+        router.shutdown().await?;
+        attacker_endpoint.close().await;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn method_write_partition_keeps_unrelated_method_available()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server_endpoint = Endpoint::builder(presets::N0)
+            .relay_mode(RelayMode::Disabled)
+            .bind()
+            .await?;
+        let protocol = IrohProtocol::with_resource_limits(
+            LargeResponseHandler { bytes: 32 * 1024 },
+            1024,
+            256 * 1024,
+            2,
+            Duration::from_secs(1),
+            Duration::from_secs(1),
+        )
+        .with_method_response_write_limits([("unrelated", 1)]);
+        let router = Router::builder(server_endpoint)
+            .accept(ALPN, protocol.clone())
+            .spawn();
+
+        let tiny_receive_window = QuicTransportConfig::builder()
+            .receive_window(32_u8.into())
+            .stream_receive_window(16_u8.into())
+            .build();
+        let attacker_endpoint = Endpoint::builder(presets::N0)
+            .relay_mode(RelayMode::Disabled)
+            .transport_config(tiny_receive_window)
+            .bind()
+            .await?;
+        let attacker_connection = attacker_endpoint
+            .connect(router.endpoint().addr(), ALPN)
+            .await?;
+        let request_bytes =
+            crate::client::encode(&RequestFrame::new("large", crate::client::encode(&())?))?;
+        let mut unread_streams = Vec::new();
+        for _ in 0..2 {
+            let (mut send, recv) = attacker_connection.open_bi().await?;
+            send.write_all(&request_bytes).await?;
+            send.finish()?;
+            unread_streams.push(recv);
+        }
+
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while protocol.response_write_permits.available_permits() != 0
+                || protocol.stream_permits.available_permits() != 2
+            {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await?;
 
         let legitimate_endpoint = Endpoint::builder(presets::N0)
             .relay_mode(RelayMode::Disabled)
@@ -564,18 +672,11 @@ mod tests {
         let legitimate_connection = legitimate_endpoint
             .connect(router.endpoint().addr(), ALPN)
             .await?;
-        let mut legitimate_call = tokio::spawn(async move {
-            RpcClient::new(legitimate_connection)
-                .call::<_, Vec<u8>>("large", ())
-                .await
-        });
-        assert!(
-            tokio::time::timeout(Duration::from_millis(100), &mut legitimate_call)
-                .await
-                .is_err(),
-            "a third task must remain queued before the response deadline"
-        );
-        let response = tokio::time::timeout(Duration::from_secs(2), legitimate_call).await???;
+        let response = tokio::time::timeout(
+            Duration::from_millis(250),
+            RpcClient::new(legitimate_connection).call::<_, Vec<u8>>("unrelated", ()),
+        )
+        .await??;
         assert_eq!(response.len(), 32 * 1024);
 
         drop(unread_streams);

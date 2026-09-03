@@ -9,6 +9,7 @@ use fedimint_core::db::{Database, IDatabaseTransactionOpsCore, IDatabaseTransact
 use fedimint_core::encoding::DynRawFallback;
 use fedimint_core::module::registry::ModuleRegistry;
 use fedimint_core::module::{AmountUnit, CoreConsensusVersion};
+use fman_core::wallet::{EcashWallet as _, LockedPaymentPrepareError};
 use locked_payments::standard_module_root_secret;
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -454,6 +455,38 @@ async fn same_federation_join_is_excluded_while_unrelated_join_progresses() {
         .await
         .unwrap()
         .unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn paid_quote_does_not_wait_for_payment_client_join() {
+    let temp = tempfile::tempdir().unwrap();
+    let wallet = Wallet::open(
+        temp.path().to_owned(),
+        &WalletSecret([42; 64]),
+        WalletOrigin::Fresh,
+    )
+    .await
+    .unwrap();
+    let federation_id = federation_id(1);
+    let _joining = wallet
+        .join_exclusion(ClientScope::Payment(federation_id))
+        .await;
+
+    let result = tokio::time::timeout(
+        std::time::Duration::from_millis(100),
+        wallet.quote_locked(
+            &fedi_decentralized_service_fleet_manager::FederationId(federation_id.to_string()),
+            fman_core::wallet::Msats(1_000),
+            &[0; 32],
+        ),
+    )
+    .await
+    .expect("quote refuses instead of waiting on join exclusion");
+
+    assert!(matches!(
+        result,
+        Err(LockedPaymentPrepareError::Unavailable)
+    ));
 }
 
 #[test]

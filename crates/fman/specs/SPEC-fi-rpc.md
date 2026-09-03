@@ -277,7 +277,10 @@ exactly match a currently offered plan. For a paid plan, the named payment
 federation must be a member of the accepted common setup-payment set — read
 from the same database snapshot as the offer epoch, so a quote can never
 outlive a removal without an epoch change — and its wallet must already be
-joined; otherwise the quote fails with `PaymentFederationNotAccepted`.
+joined. A federation outside the accepted set fails with
+`PaymentFederationNotAccepted`; an accepted federation whose local client is
+still joining or unavailable fails with the retryable
+`PaymentFederationUnavailable`.
 
 `CreateSeat` verifies the echoed manager signature, re-checks quote coherence,
 and verifies payment offline (including distinct finalized note nonces), then
@@ -311,8 +314,8 @@ another FI.
 
 Expected policy and lifecycle failures retain typed wire errors,
 including `UnsupportedVersion`, `UnsupportedFederationSize`,
-`PlanNotOffered` and `PaymentFederationNotAccepted` (both at `GetQuote`
-only — redemption honors the quote),
+`PlanNotOffered`, `PaymentFederationNotAccepted` (both at `GetQuote` only),
+and retryable `PaymentFederationUnavailable`,
 `InvalidPayment`, `UnknownSeat`, `WrongState`,
 `SeatUnavailable`, `InvalidDkgInput`, and `FederationIsRunning`.
 A refusal of a paid presentation is not an error: it is a signed `CreateSeat`

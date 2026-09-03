@@ -198,6 +198,8 @@ pub enum ClaimOutcome {
 pub enum LockedPaymentPrepareError {
     #[error("invalid key-locked payment")]
     Invalid,
+    #[error("payment federation temporarily unavailable")]
+    Unavailable,
     #[error(transparent)]
     Internal(#[from] anyhow::Error),
 }

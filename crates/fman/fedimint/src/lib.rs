@@ -746,6 +746,17 @@ impl Wallet {
             .collect()
     }
 
+    /// Whether a payment client is already open in this process.
+    ///
+    /// Public quote handlers must fail fast while policy reconciliation is
+    /// joining or recovering a client; they must never wait on join exclusion.
+    pub(crate) async fn payment_client_is_open(&self, federation_id: FederationId) -> bool {
+        self.federations
+            .read()
+            .await
+            .contains_key(&ClientScope::Payment(federation_id))
+    }
+
     /// Every durable payment scope, whether or not its client is open now.
     pub(crate) async fn retained_federation_ids(&self) -> Vec<FederationId> {
         self.prefixes
