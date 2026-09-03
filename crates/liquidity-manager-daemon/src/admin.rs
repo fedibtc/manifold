@@ -611,6 +611,9 @@ pub(crate) struct RestoreAdminContext {
 
     /// Cooperative shutdown signal.
     pub shutdown: tokio_util::sync::CancellationToken,
+
+    /// Exclusion covering the empty-check and move of a restore.
+    pub restore_target: crate::backup::RestoreTarget,
 }
 
 /// Builds the restore-only private Operator Admin API router.
@@ -955,7 +958,12 @@ async fn restore_restore_backup(
     State(context): State<RestoreAdminContext>,
     Json(request): Json<RestoreBackupRequest>,
 ) -> Response {
-    service_response(backup::restore_backup(&context.args, &context.paths, request).await)
+    service_response(
+        context
+            .restore_target
+            .restore(&context.args, &context.paths, request)
+            .await,
+    )
 }
 
 async fn get_funds(Live(context): Live) -> Response {

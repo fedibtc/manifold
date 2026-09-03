@@ -121,29 +121,6 @@ Two things remain open.
   adding when FLIP gains a metrics surface; not worth inventing one for this
   alone.
 
-### Concurrent restore-mode restores can merge two archives
-
-`restore_backup` checks the data directory is empty, stages the archive, checks
-again, and then moves the staged contents in. Staging is safe: `staging_dir_for`
-carries the pid and a unique suffix, so each call stages into its own directory.
-**The unguarded window is between the second check and the move.** Two concurrent
-authenticated calls can both pass the check and then both move, and
-`move_staged_contents` renames entries into the data directory with no
-predicate, so the result is two archives merged into one data root.
-
-This is the **restore-mode** verb, gated on `args.mode == DaemonMode::Restore`.
-The live-restore path is separately serialised: `DaemonShell::queue_restore`
-refuses with "another live restore is already pending" while it holds the
-pending-restore lock.
-
-No claim record covers it. It attacks restore atomicity rather than confinement,
-which is what
-[`restore-mode-starts-generation-machinery`](../../crates/liquidity-manager-daemon/claims/restore-mode-starts-generation-machinery.md)
-and
-[`unauthenticated-admin-reaches-privileged-effect`](../../crates/liquidity-manager-daemon/claims/unauthenticated-admin-reaches-privileged-effect.md)
-cover. Filed as
-[`concurrent-restore-merges-two-archives`](../../crates/liquidity-manager-daemon/claims/found-bugs/concurrent-restore-merges-two-archives.md).
-
 ### Backup archives are not authenticated
 
 An archive carries `backup-checksums.json`, a SHA-256 digest per archived file,

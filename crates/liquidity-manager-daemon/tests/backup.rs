@@ -446,6 +446,110 @@ fn a_missing_or_unrecorded_file_is_refused() {
     assert!(verify_checksums(&declared, &declared).is_ok());
 }
 
+/// A held restore target keeps a second archive out of the data dir.
+///
+/// `restore_backup` checks the data dir is empty, stages an archive, checks
+/// again, and moves the staged contents in. Two callers that interleave those
+/// steps each land a different archive in one root, and per-archive checksums
+/// verify both, so nothing downstream reports the mixture.
+///
+/// The load-bearing assertions are the two about the data dir. The refused
+/// caller must leave nothing behind, and the caller that follows it must land
+/// its own archive alone. A `restore` that stopped consulting the target would
+/// put `unwanted` in the data dir next to `wanted`, which is the merge this
+/// pins.
+#[tokio::test]
+async fn a_restore_cannot_land_while_another_holds_the_target() -> anyhow::Result<()> {
+    let (_wanted_source, wanted) = restorable_archive("restore-target-wanted", "wanted").await?;
+    let (_unwanted_source, unwanted) =
+        restorable_archive("restore-target-unwanted", "unwanted").await?;
+
+    let temp = TestDir::new("restore-target")?;
+    let paths = test_paths(&temp.path);
+    let args = restore_mode_args(&paths);
+    let target = RestoreTarget::default();
+
+    let held = target.begin().expect("the target starts free");
+
+    let error = target
+        .restore(&args, &paths, restore_request(&unwanted))
+        .await
+        .expect_err("a restore must be refused while another holds the target");
+    assert_eq!(
+        error.code(),
+        fedi_decentralized_service_liquidity_manager::ServiceErrorCode::Unavailable
+    );
+    assert!(
+        error.message().contains("restore is already in progress"),
+        "the refusal must name its cause: {error}"
+    );
+    assert!(
+        !temp.path.join("unwanted").exists(),
+        "a refused restore must not reach the data dir"
+    );
+
+    // The target is taken for one restore, not for the process: the next
+    // caller gets it, and lands its own archive by itself.
+    drop(held);
+    target
+        .restore(&args, &paths, restore_request(&wanted))
+        .await
+        .map_err(anyhow_from_service_error)?;
+    assert!(temp.path.join("wanted").exists());
+    assert!(
+        !temp.path.join("unwanted").exists(),
+        "the data dir must carry one archive, not two"
+    );
+
+    Ok(())
+}
+
+/// Builds an archive of a data dir carrying a real database and one marker
+/// file, so a restore of it both validates and is identifiable afterwards.
+///
+/// The returned [`TestDir`] owns the archive; dropping it removes the file.
+async fn restorable_archive(name: &str, marker: &str) -> anyhow::Result<(TestDir, PathBuf)> {
+    let source = TestDir::new(name)?;
+    let paths = test_paths(&source.path);
+    // A restore opens and pings the database it staged, so a placeholder file
+    // would be rejected before the move this test is about.
+    Database::connect(&paths.sqlite_path).await?;
+    fs::write(source.path.join(marker), marker.as_bytes())?;
+
+    let archive = create_archive(
+        &paths,
+        &paths.data_dir,
+        &manifest(Timestamp(1_700_000_000), Timestamp(1_699_999_990)),
+    )?;
+    Ok((source, archive))
+}
+
+fn restore_request(archive: &Path) -> RestoreBackupRequest {
+    RestoreBackupRequest {
+        archive: BackupArchive(archive.display().to_string()),
+    }
+}
+
+fn restore_mode_args(paths: &DaemonPaths) -> DaemonArgs {
+    DaemonArgs {
+        manifold_environment:
+            fedi_decentralized_manifold_environment::ManifoldEnvironment::Development,
+        data_dir: paths.data_dir.clone(),
+        sqlite_path: paths.sqlite_path.clone(),
+        admin_bind_address: "127.0.0.1:0".parse().expect("a valid bind address"),
+        public_bind_address: "127.0.0.1:0".parse().expect("a valid bind address"),
+        bootstrap_admin_token: Some("test-admin-token".to_owned()),
+        // None, so the staged archive's own key file is what the restore reads.
+        secret_store_key: None,
+        allow_bootstrap_token_fallback: false,
+        mode: crate::config::DaemonMode::Restore,
+        provider_nostr_secret_key: None,
+        trust_fixtures_dir: None,
+        max_open_target_clients: crate::target_fedimint::DEFAULT_MAX_OPEN_TARGET_CLIENTS,
+        allow_private_federation_endpoints: false,
+    }
+}
+
 /// Rewrites an archive with one payload substring replaced by another of
 /// the same length, so every tar header stays correct.
 fn rewrite_payload(path: &Path, from: &[u8], to: &[u8]) -> anyhow::Result<TestDir> {
