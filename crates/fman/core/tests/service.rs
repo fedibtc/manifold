@@ -1,9 +1,9 @@
 use fedi_decentralized_service_fleet_manager::{
-    CreateSeatOutcome, DkgCompletionCallback, FederationName, FederationSize, FiId,
-    GetDkgCodeRequest, GetFedimintStatsRequest, GetPeerAttestationRequest, GetQuoteRequest,
-    GetQuoteResponse, GuardianFeeAccount, MetaConsensusBase, MetaFieldKey, MetaFieldValue,
-    OfferEpoch, Plan, ProposeFormationMetaRequest, RefusalReason, RestartDkgRequest,
-    SetMetaFieldRequest, StartDkgRequest,
+    CreateSeatOutcome, DkgCompletionCallback, FederationName, FederationSize, FiId, GatewayApiUrl,
+    GetDkgCodeRequest, GetFedimintStatsRequest, GetInviteCodeRequest, GetPeerAttestationRequest,
+    GetQuoteRequest, GetQuoteResponse, GetStatusRequest, GuardianFeeAccount, MetaConsensusBase,
+    MetaFieldKey, MetaFieldValue, OfferEpoch, Plan, ProposeFormationMetaRequest, RefusalReason,
+    RegisterGatewayRequest, RestartDkgRequest, SetMetaFieldRequest, StartDkgRequest,
 };
 use tempfile::TempDir;
 
@@ -450,6 +450,44 @@ async fn wrong_owner_precedes_policy_and_unsupported_results() {
         FleetManagerError::UnknownSeat
     );
 
+    let start = StartDkgRequest {
+        ts: now(),
+        fi_id: attacker_id,
+        seat_id: seat_id.clone(),
+        guardian_codes: Vec::new(),
+        completion_callback: None,
+    };
+    assert_eq!(
+        rpc.start_dkg(SignedRequest::create(&start, &attacker_key).unwrap())
+            .await
+            .unwrap_err(),
+        FleetManagerError::UnknownSeat
+    );
+
+    let status = GetStatusRequest {
+        ts: now(),
+        fi_id: attacker_id,
+        seat_id: seat_id.clone(),
+    };
+    assert_eq!(
+        rpc.get_status(SignedRequest::create(&status, &attacker_key).unwrap())
+            .await
+            .unwrap_err(),
+        FleetManagerError::UnknownSeat
+    );
+
+    let invite = GetInviteCodeRequest {
+        ts: now(),
+        fi_id: attacker_id,
+        seat_id: seat_id.clone(),
+    };
+    assert_eq!(
+        rpc.get_invite_code(SignedRequest::create(&invite, &attacker_key).unwrap())
+            .await
+            .unwrap_err(),
+        FleetManagerError::UnknownSeat
+    );
+
     // Once ownership succeeds, malformed human-facing names remain typed
     // policy errors and are rejected before the unavailable child is touched.
     let invalid_name = GetDkgCodeRequest {
@@ -528,6 +566,19 @@ async fn wrong_owner_precedes_policy_and_unsupported_results() {
     };
     assert_eq!(
         rpc.propose_formation_meta(SignedRequest::create(&formation_meta, &attacker_key).unwrap())
+            .await
+            .unwrap_err(),
+        FleetManagerError::UnknownSeat
+    );
+
+    let register_gateway = RegisterGatewayRequest {
+        ts: now(),
+        fi_id: attacker_id,
+        seat_id: seat_id.clone(),
+        gateway_api: GatewayApiUrl::try_from("https://gateway.example/").unwrap(),
+    };
+    assert_eq!(
+        rpc.register_gateway(SignedRequest::create(&register_gateway, &attacker_key).unwrap())
             .await
             .unwrap_err(),
         FleetManagerError::UnknownSeat
