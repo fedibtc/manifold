@@ -811,43 +811,6 @@ impl Db {
         .map(InviteCode))
     }
 
-    /// Pin the first authenticated formation-owned directory and recipients.
-    /// Exact replay is idempotent; a different target is rejected forever.
-    pub(crate) async fn pin_formation_fee_policy(
-        &self,
-        seat_id: &SeatId,
-        directory: &str,
-        recipients: &str,
-    ) -> Result<bool, DbError> {
-        sqlx::query(
-            "INSERT INTO formation_fee_policies (quote_id, directory, recipients) \
-             VALUES (?, ?, ?) ON CONFLICT (quote_id) DO NOTHING",
-        )
-        .bind(seat_id.as_bytes().as_slice())
-        .bind(directory)
-        .bind(recipients)
-        .execute(self.pool())
-        .await?;
-        Ok(self
-            .formation_fee_policy(seat_id)
-            .await?
-            .is_some_and(|pinned| pinned == (directory.to_owned(), recipients.to_owned())))
-    }
-
-    /// The immutable formation-owned directory and recipient value, if this
-    /// guardian has admitted a formation target.
-    pub(crate) async fn formation_fee_policy(
-        &self,
-        seat_id: &SeatId,
-    ) -> Result<Option<(String, String)>, DbError> {
-        Ok(sqlx::query_as(
-            "SELECT directory, recipients FROM formation_fee_policies WHERE quote_id = ?",
-        )
-        .bind(seat_id.as_bytes().as_slice())
-        .fetch_optional(self.pool())
-        .await?)
-    }
-
     /// Insert one seat exactly as a backup describes it.
     ///
     /// Distinct from [`Self::admit_seat`] in every way that matters, which is

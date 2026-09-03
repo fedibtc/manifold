@@ -161,19 +161,23 @@ pub struct FeePolicy {
     /// parse, or names it in a shape this version does not understand — all of
     /// which mean the same thing operationally: no share is provably ours.
     pub our_share: Option<(u64, u64)>,
-    /// Whether the complete live policy equals the authenticated fixed split,
-    /// not merely whether this seat appears with weight one.
-    pub authenticated_policy_matches: bool,
+    /// Whether the complete live policy has the canonical split implied by
+    /// the current live directory and deployment account.
+    pub live_policy_matches: bool,
 }
 
 impl FeePolicy {
     /// Whether the live metadata leaves this guardian's compiled share intact.
     ///
     /// No fee policy is acceptable: guardian fees are optional. Once one
-    /// exists, however, the complete directory and recipient split must match;
-    /// this guardian merely appearing at weight one is not sufficient.
+    /// exists, the live policy must be structurally canonical and this
+    /// mnemonic-derived guardian account must appear at its compiled weight.
     pub fn share_matches_policy(&self) -> bool {
-        self.authenticated_policy_matches
+        !self.configured
+            || (self.live_policy_matches
+                && self
+                    .our_share
+                    .is_some_and(|(weight, _)| weight == GUARDIAN_RECIPIENT_WEIGHT))
     }
 }
 
@@ -262,7 +266,7 @@ pub fn fee_policy_from_meta(
         .transpose()?;
     let recipients = string_value(REMITTANCE_ACCOUNT_META_KEY)?;
     validate_fee_policy(send_ppm, recipients.as_deref())?;
-    let authenticated_policy_matches = recipients.is_none() && send_ppm.is_none();
+    let live_policy_matches = recipients.is_none() && send_ppm.is_none();
     let our_share = recipients
         .as_deref()
         .and_then(|value| our_share_of(value, ours));
@@ -272,9 +276,9 @@ pub fn fee_policy_from_meta(
         recipients,
         our_share,
         // The seat read path replaces this with a check against its live
-        // federation config, authenticated directory, and deployment account.
+        // federation config, current directory, and deployment account.
         // This parser alone can establish only that policy is absent.
-        authenticated_policy_matches,
+        live_policy_matches,
     })
 }
 

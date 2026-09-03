@@ -69,11 +69,13 @@ consensus.
    seat's Iroh API key is present, and its own code exactly recomputes. It does
    not cross-verify endpoint signatures on other peers' codes: Fedimint's DKG
    peer-to-peer handshake authenticates those endpoint keys.
-   Because later maintenance
-   votes carry the whole metadata object, every submit path also revalidates
-   any fee keys it carries against the endpoint-proof-bound directory and
-   fixed role split; an unrelated field update cannot copy forward an invalid
-   fee policy as this guardian's vote.
+   Later maintenance is authorized one field at a time. Although the upstream
+   module requires a whole-object vote, FMan validates the requested field and
+   carries all other fields from the exact observed consensus occurrence
+   unchanged. The formation-owned directory and recipient keys cannot be
+   targeted through ordinary maintenance. Detecting and stopping a guardian
+   after threshold consensus replaces either formation-owned value is a
+   possible future lifecycle response and is not currently implemented.
 
 2. **Revenue recovers from the operator mnemonic alone.** Earning it must not
    create new backup material: an operator still backs up the mnemonic plus the

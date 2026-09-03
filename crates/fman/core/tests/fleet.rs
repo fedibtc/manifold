@@ -446,21 +446,6 @@ fn guardian_fee_recipients(ours: &Account) -> Vec<GuardianFeeRecipient> {
     recipients.into_iter().collect()
 }
 
-async fn pin_guardian_fee_policy(
-    fleet: &Fleet,
-    seat_id: &SeatId,
-    directory: &str,
-    recipients: &str,
-) {
-    assert!(
-        fleet
-            .db
-            .pin_formation_fee_policy(seat_id, directory, recipients)
-            .await
-            .unwrap()
-    );
-}
-
 fn fixture_guardians(ours: &Account) -> Vec<Account> {
     [
         ours.clone(),
@@ -2046,8 +2031,7 @@ async fn meta_write_refuses_unknown_keys_and_bad_values_without_submitting() {
             MetaConsensusBase::Absent,
             MetaFieldKey("fedi:something_else".to_owned()),
             MetaFieldValue("anything".to_owned()),
-            NO_FEE_FLOOR,
-            None
+            NO_FEE_FLOOR
         )
         .await,
         Err(SeatVerbError::MetaKeyRefused)
@@ -2071,8 +2055,7 @@ async fn meta_write_refuses_unknown_keys_and_bad_values_without_submitting() {
                 fedi_decentralized_service_fleet_manager::FEDERATION_NAME_META_FIELD_KEY.to_owned(),
             ),
             MetaFieldValue(" ".repeat(65_537)),
-            NO_FEE_FLOOR,
-            None
+            NO_FEE_FLOOR
         )
         .await,
         Err(SeatVerbError::MetaValueInvalid)
@@ -2096,8 +2079,7 @@ async fn meta_write_refuses_unknown_keys_and_bad_values_without_submitting() {
             MetaConsensusBase::Absent,
             MetaFieldKey("x".repeat(65_537)),
             MetaFieldValue("anything".to_owned()),
-            NO_FEE_FLOOR,
-            None
+            NO_FEE_FLOOR
         )
         .await,
         Err(SeatVerbError::MetaKeyRefused)
@@ -2119,8 +2101,7 @@ async fn meta_write_refuses_unknown_keys_and_bad_values_without_submitting() {
             MetaConsensusBase::Absent,
             MetaFieldKey(fedi_decentralized_domain::FMAN_SEAT_BINDINGS_META_FIELD_KEY.to_owned()),
             MetaFieldValue("{\"version\":1}".to_owned()),
-            NO_FEE_FLOOR,
-            None
+            NO_FEE_FLOOR
         )
         .await,
         Err(SeatVerbError::MetaKeyRefused)
@@ -2135,8 +2116,7 @@ async fn meta_write_refuses_unknown_keys_and_bad_values_without_submitting() {
             MetaConsensusBase::Absent,
             MetaFieldKey(fedi_decentralized_domain::FMAN_SEAT_BINDINGS_META_FIELD_KEY.to_owned()),
             MetaFieldValue(fixture_directory(&other)),
-            NO_FEE_FLOOR,
-            None
+            NO_FEE_FLOOR
         )
         .await,
         Err(SeatVerbError::MetaKeyRefused)
@@ -2171,7 +2151,6 @@ async fn set_meta_refuses_formation_owned_directory_and_recipient_keys() {
                 MetaFieldKey(key.to_owned()),
                 MetaFieldValue("not inspected".to_owned()),
                 NO_FEE_FLOOR,
-                None,
             )
             .await,
             Err(SeatVerbError::MetaKeyRefused)
@@ -2231,7 +2210,6 @@ async fn meta_write_submits_the_directory_and_keeps_the_other_fields() {
         ),
         MetaFieldValue(padded_name.clone()),
         NO_FEE_FLOOR,
-        Some(guardian_verification_fee_account()),
     )
     .await
     .unwrap();
@@ -2274,44 +2252,22 @@ async fn meta_write_submits_the_directory_and_keeps_the_other_fields() {
 }
 
 #[tokio::test]
-async fn generic_meta_write_revalidates_every_carried_guardian_fee_entitlement() {
+async fn generic_meta_write_preserves_formation_owned_fields_without_revalidating_them() {
     let temp = TempDir::new().unwrap();
     let config = config(&temp, 1, 30_972).await;
     let fleet = open_fleet(config, Arc::new(NoWallet)).await.unwrap();
     let (_, seat_id) = create_free_seat(&fleet, 70).await;
     let seat = fleet.seat_by_id(&seat_id).unwrap();
-    let ours = fleet.guardian_fee_account_descriptor(&seat_id);
-    let guardian_verification_fee_account = guardian_verification_fee_account();
-    let directory = guardian_fee_directory(&fixture_client_config(), &ours);
-    let guardians = fixture_guardians(&ours);
 
-    // This value is payer-parseable but substitutes the formation-selected FI
-    // account while preserving its fixed weight.
-    // An unrelated name vote must not copy it forward as this guardian's vote.
-    let mut hostile_recipients = guardian_fee_recipients(&ours);
-    let fi = hostile_recipients
-        .iter_mut()
-        .find(|recipient| recipient.weight == crate::guardian_fee::FI_RECIPIENT_WEIGHT)
-        .unwrap();
-    *fi = fee_recipient(fee_account(0x32), crate::guardian_fee::FI_RECIPIENT_WEIGHT);
-    hostile_recipients.sort_by_key(|recipient| recipient.account.as_account().id());
-    let hostile_value =
-        fedi_decentralized_service_fleet_manager::canonical_guardian_fee_recipient_list(
-            &hostile_recipients,
-        )
-        .unwrap();
-    let admitted_value = crate::guardian_fee::canonical_proposal(
-        5_000,
-        &guardian_fee_recipients(&ours),
-        &guardians,
-        &guardian_verification_fee_account,
-    )
-    .unwrap();
-    pin_guardian_fee_policy(&fleet, &seat_id, &directory, &admitted_value).await;
-    let hostile = serde_json_canonicalizer::to_vec(&std::collections::BTreeMap::from([
+    // A threshold-replaced recipient value is a seat-integrity/lifecycle
+    // concern, not authority for SetMetaField to rewrite or reinterpret it.
+    // Maintenance changes only the requested field and carries every other
+    // consensus byte through unchanged.
+    let replaced_recipients = "threshold-controlled value";
+    let current = serde_json_canonicalizer::to_vec(&std::collections::BTreeMap::from([
         (
             fedi_decentralized_domain::FMAN_SEAT_BINDINGS_META_FIELD_KEY,
-            serde_json::Value::String(directory.clone()),
+            serde_json::Value::String("threshold-controlled directory".to_owned()),
         ),
         (
             crate::guardian_fee::SEND_PPM_META_KEY,
@@ -2319,44 +2275,67 @@ async fn generic_meta_write_revalidates_every_carried_guardian_fee_entitlement()
         ),
         (
             crate::guardian_fee::REMITTANCE_ACCOUNT_META_KEY,
-            serde_json::Value::String(hostile_value),
+            serde_json::Value::String(replaced_recipients.to_owned()),
         ),
     ]))
     .unwrap();
     let fake = fleet
-        .form_fake_child(&seat_id, running_federation(0, Some(hostile.clone())))
+        .form_fake_child(&seat_id, running_federation(0, Some(current.clone())))
         .await;
-    let reported = fleet.guardian_fee_policy(&seat_id).await.unwrap();
-    assert_eq!(
-        reported.our_share.map(|(weight, _)| weight),
-        Some(crate::guardian_fee::GUARDIAN_RECIPIENT_WEIGHT),
-        "the hostile policy deliberately keeps this seat's entry plausible"
-    );
-    assert!(
-        !reported.share_matches_policy(),
-        "a substituted FI account must not be reported as matching merely because this seat still has weight one"
-    );
-    assert!(matches!(
-        seat.submit_meta_field(
-            MetaConsensusBase::from_consensus(Some((0, &hostile))),
-            MetaFieldKey(FEDERATION_NAME_META_FIELD_KEY.to_owned()),
-            MetaFieldValue("Never copied".to_owned()),
-            NO_FEE_FLOOR,
-            Some(guardian_verification_fee_account.clone())
-        )
-        .await,
-        Err(SeatVerbError::MetaValueInvalid)
-    ));
-    assert!(fake.state().meta_submissions.is_empty());
 
-    let valid_value = crate::guardian_fee::canonical_proposal(
-        5_000,
-        &guardian_fee_recipients(&ours),
-        &guardians,
-        &guardian_verification_fee_account,
+    seat.submit_meta_field(
+        MetaConsensusBase::from_consensus(Some((0, &current))),
+        MetaFieldKey(FEDERATION_NAME_META_FIELD_KEY.to_owned()),
+        MetaFieldValue("Renamed".to_owned()),
+        NO_FEE_FLOOR,
     )
-    .unwrap();
-    let valid = serde_json_canonicalizer::to_vec(&std::collections::BTreeMap::from([
+    .await
+    .expect("an unrelated write does not adjudicate threshold-controlled recipients");
+
+    let state = fake.state();
+    assert_eq!(state.meta_submissions.len(), 1);
+    let submitted: std::collections::BTreeMap<String, serde_json::Value> =
+        serde_json::from_slice(&state.meta_submissions[0]).unwrap();
+    assert_eq!(
+        submitted[crate::guardian_fee::REMITTANCE_ACCOUNT_META_KEY],
+        serde_json::Value::String(replaced_recipients.to_owned()),
+    );
+    assert_eq!(
+        submitted[FEDERATION_NAME_META_FIELD_KEY],
+        serde_json::Value::String("Renamed".to_owned()),
+    );
+    fleet.shutdown().await;
+}
+
+#[tokio::test]
+async fn live_structural_policy_excluding_our_account_reports_no_matching_share() {
+    let temp = TempDir::new().unwrap();
+    let config = config(&temp, 1, 30_973).await;
+    let fleet = open_fleet(config, Arc::new(NoWallet)).await.unwrap();
+    let (_, seat_id) = create_free_seat(&fleet, 70).await;
+    let verification = guardian_verification_fee_account();
+    let directory = fixture_directory(&fixture_client_config());
+    let guardians = (0..4)
+        .map(|peer| fee_account(0x20 + peer))
+        .collect::<Vec<_>>();
+    let mut recipients = guardians
+        .iter()
+        .cloned()
+        .map(|account| fee_recipient(account, crate::guardian_fee::GUARDIAN_RECIPIENT_WEIGHT))
+        .collect::<Vec<_>>();
+    recipients.push(fee_recipient(
+        fee_account(0x30),
+        crate::guardian_fee::FI_RECIPIENT_WEIGHT,
+    ));
+    recipients.push(fee_recipient(
+        verification.clone(),
+        crate::guardian_fee::GUARDIAN_VERIFICATION_FEE_WEIGHT,
+    ));
+    recipients.sort_by_key(|recipient| recipient.account.as_account().id());
+    let recipients =
+        crate::guardian_fee::canonical_proposal(5_000, &recipients, &guardians, &verification)
+            .unwrap();
+    let meta = serde_json_canonicalizer::to_vec(&std::collections::BTreeMap::from([
         (
             fedi_decentralized_domain::FMAN_SEAT_BINDINGS_META_FIELD_KEY,
             serde_json::Value::String(directory),
@@ -2367,150 +2346,17 @@ async fn generic_meta_write_revalidates_every_carried_guardian_fee_entitlement()
         ),
         (
             crate::guardian_fee::REMITTANCE_ACCOUNT_META_KEY,
-            serde_json::Value::String(valid_value),
+            serde_json::Value::String(recipients),
         ),
     ]))
     .unwrap();
-    let valid_revision = fake.set_meta_consensus(Some(valid.clone()));
-    assert!(matches!(
-        seat.submit_meta_field(
-            MetaConsensusBase::from_consensus(Some((valid_revision, &valid))),
-            MetaFieldKey(FEDERATION_NAME_META_FIELD_KEY.to_owned()),
-            MetaFieldValue("Production still fails closed".to_owned()),
-            NO_FEE_FLOOR,
-            None
-        )
-        .await,
-        Err(SeatVerbError::MetaValueInvalid)
-    ));
-    seat.submit_meta_field(
-        MetaConsensusBase::from_consensus(Some((valid_revision, &valid))),
-        MetaFieldKey(FEDERATION_NAME_META_FIELD_KEY.to_owned()),
-        MetaFieldValue("Authenticated carry-forward".to_owned()),
-        NO_FEE_FLOOR,
-        Some(guardian_verification_fee_account),
-    )
-    .await
-    .expect("a canonical authenticated policy can accompany maintenance");
-    assert_eq!(fake.state().meta_submissions.len(), 1);
-    fleet.shutdown().await;
-}
-
-#[tokio::test]
-async fn carried_policy_rejects_a_threshold_replaced_self_signed_directory() {
-    let temp = TempDir::new().unwrap();
-    let config = config(&temp, 1, 30_973).await;
-    let fleet = open_fleet(config, Arc::new(NoWallet)).await.unwrap();
-    let (_, seat_id) = create_free_seat(&fleet, 70).await;
-    let seat = fleet.seat_by_id(&seat_id).unwrap();
-    let ours = fleet.guardian_fee_account_descriptor(&seat_id);
-    let verification = guardian_verification_fee_account();
-    let admitted_directory = guardian_fee_directory(&fixture_client_config(), &ours);
-    let admitted_recipients = crate::guardian_fee::canonical_proposal(
-        5_000,
-        &guardian_fee_recipients(&ours),
-        &fixture_guardians(&ours),
-        &verification,
-    )
-    .unwrap();
-    pin_guardian_fee_policy(&fleet, &seat_id, &admitted_directory, &admitted_recipients).await;
-
-    let hostile_directory = fixture_directory(&fixture_client_config());
-    let hostile_guardians = (0..4)
-        .map(|peer| fee_account(0x20 + peer))
-        .collect::<Vec<_>>();
-    let mut hostile_recipients = hostile_guardians
-        .iter()
-        .cloned()
-        .map(|account| fee_recipient(account, crate::guardian_fee::GUARDIAN_RECIPIENT_WEIGHT))
-        .collect::<Vec<_>>();
-    hostile_recipients.push(fee_recipient(
-        fee_account(0x30),
-        crate::guardian_fee::FI_RECIPIENT_WEIGHT,
-    ));
-    hostile_recipients.push(fee_recipient(
-        verification.clone(),
-        crate::guardian_fee::GUARDIAN_VERIFICATION_FEE_WEIGHT,
-    ));
-    hostile_recipients.sort_by_key(|recipient| recipient.account.as_account().id());
-    let hostile_recipients = crate::guardian_fee::canonical_proposal(
-        5_000,
-        &hostile_recipients,
-        &hostile_guardians,
-        &verification,
-    )
-    .unwrap();
-    let hostile = serde_json_canonicalizer::to_vec(&std::collections::BTreeMap::from([
-        (
-            fedi_decentralized_domain::FMAN_SEAT_BINDINGS_META_FIELD_KEY,
-            serde_json::Value::String(hostile_directory),
-        ),
-        (
-            crate::guardian_fee::SEND_PPM_META_KEY,
-            serde_json::Value::String("5000".to_owned()),
-        ),
-        (
-            crate::guardian_fee::REMITTANCE_ACCOUNT_META_KEY,
-            serde_json::Value::String(hostile_recipients),
-        ),
-    ]))
-    .unwrap();
-    let fake = fleet
-        .form_fake_child(&seat_id, running_federation(0, Some(hostile.clone())))
+    let _fake = fleet
+        .form_fake_child(&seat_id, running_federation(0, Some(meta)))
         .await;
 
-    let reported = fleet.guardian_fee_policy(&seat_id).await.unwrap();
-    assert!(!reported.share_matches_policy());
-    assert!(matches!(
-        seat.submit_meta_field(
-            MetaConsensusBase::from_consensus(Some((0, &hostile))),
-            MetaFieldKey(FEDERATION_NAME_META_FIELD_KEY.to_owned()),
-            MetaFieldValue("Never copied".to_owned()),
-            NO_FEE_FLOOR,
-            Some(verification),
-        )
-        .await,
-        Err(SeatVerbError::MetaValueInvalid)
-    ));
-    assert!(fake.state().meta_submissions.is_empty());
-    fleet.shutdown().await;
-}
-
-#[tokio::test]
-async fn carried_policy_rejects_a_non_string_directory_without_a_formation_pin() {
-    let temp = TempDir::new().unwrap();
-    let config = config(&temp, 1, 30_974).await;
-    let fleet = open_fleet(config, Arc::new(NoWallet)).await.unwrap();
-    let (_, seat_id) = create_free_seat(&fleet, 70).await;
-    let seat = fleet.seat_by_id(&seat_id).unwrap();
-    let hostile = serde_json_canonicalizer::to_vec(&std::collections::BTreeMap::from([(
-        fedi_decentralized_domain::FMAN_SEAT_BINDINGS_META_FIELD_KEY,
-        serde_json::Value::Null,
-    )]))
-    .unwrap();
-    let fake = fleet
-        .form_fake_child(&seat_id, running_federation(0, Some(hostile.clone())))
-        .await;
-
-    assert!(
-        !fleet
-            .guardian_fee_policy(&seat_id)
-            .await
-            .unwrap()
-            .share_matches_policy()
-    );
-    assert!(matches!(
-        seat.submit_meta_field(
-            MetaConsensusBase::from_consensus(Some((0, &hostile))),
-            MetaFieldKey(FEDERATION_NAME_META_FIELD_KEY.to_owned()),
-            MetaFieldValue("Never copied".to_owned()),
-            NO_FEE_FLOOR,
-            Some(guardian_verification_fee_account()),
-        )
-        .await,
-        Err(SeatVerbError::MetaValueInvalid)
-    ));
-    assert!(fake.state().meta_submissions.is_empty());
+    let guardian_fee = crate::admin::read_seat_guardian_fee(&fleet, &seat_id).await;
+    assert!(guardian_fee["our_weight"].is_null());
+    assert_eq!(guardian_fee["share_matches_policy"], false);
     fleet.shutdown().await;
 }
 
@@ -2533,8 +2379,7 @@ async fn meta_write_refuses_a_stale_base_without_submitting() {
                 fedi_decentralized_service_fleet_manager::FEDERATION_NAME_META_FIELD_KEY.to_owned(),
             ),
             MetaFieldValue("New Federation".to_owned()),
-            NO_FEE_FLOOR,
-            None
+            NO_FEE_FLOOR
         )
         .await,
         Err(SeatVerbError::MetaConsensusChanged)
@@ -2586,7 +2431,6 @@ async fn meta_write_enforces_the_complete_object_cap_before_parse_and_submit() {
         MetaFieldKey(FEDERATION_NAME_META_FIELD_KEY.to_owned()),
         MetaFieldValue("Bounded Federation".to_owned()),
         NO_FEE_FLOOR,
-        None,
     )
     .await
     .expect("the inclusive complete-object cap is accepted");
@@ -2613,8 +2457,7 @@ async fn meta_write_enforces_the_complete_object_cap_before_parse_and_submit() {
             MetaConsensusBase::from_consensus(Some((0, &under_cap_source))),
             MetaFieldKey(FEDERATION_NAME_META_FIELD_KEY.to_owned()),
             MetaFieldValue("Bounded Federation".to_owned()),
-            NO_FEE_FLOOR,
-            None
+            NO_FEE_FLOOR
         )
         .await,
         Err(SeatVerbError::MetaValueInvalid)
@@ -2633,8 +2476,7 @@ async fn meta_write_enforces_the_complete_object_cap_before_parse_and_submit() {
             MetaConsensusBase::from_consensus(Some((0, &oversized))),
             MetaFieldKey(FEDERATION_NAME_META_FIELD_KEY.to_owned()),
             MetaFieldValue("Never Parsed".to_owned()),
-            NO_FEE_FLOOR,
-            None
+            NO_FEE_FLOOR
         )
         .await,
         Err(SeatVerbError::MetaValueInvalid)
@@ -2675,7 +2517,6 @@ async fn same_base_admission_fences_a_handler_delayed_before_the_seat_queue() {
                 MetaFieldKey(FEDERATION_NAME_META_FIELD_KEY.to_owned()),
                 MetaFieldValue("Older A".to_owned()),
                 NO_FEE_FLOOR,
-                None,
             )
             .await
         }
@@ -2692,7 +2533,6 @@ async fn same_base_admission_fences_a_handler_delayed_before_the_seat_queue() {
         MetaFieldKey(FEDERATION_NAME_META_FIELD_KEY.to_owned()),
         MetaFieldValue("Newer B".to_owned()),
         NO_FEE_FLOOR,
-        None,
     )
     .await
     .expect("request B submits first");
@@ -2732,8 +2572,7 @@ async fn same_base_admission_fences_a_handler_delayed_before_the_seat_queue() {
             base,
             MetaFieldKey(FEDERATION_NAME_META_FIELD_KEY.to_owned()),
             MetaFieldValue("Older A".to_owned()),
-            NO_FEE_FLOOR,
-            None
+            NO_FEE_FLOOR
         )
         .await,
         Err(SeatVerbError::MetaConsensusChanged)
@@ -2770,7 +2609,6 @@ async fn same_base_admission_survives_an_ambiguous_submit_response() {
             MetaFieldKey(FEDERATION_NAME_META_FIELD_KEY.to_owned()),
             MetaFieldValue("Admitted B".to_owned()),
             NO_FEE_FLOOR,
-            None,
         )
         .await;
     assert!(first.is_err(), "the fake withholds the success response");
@@ -2781,8 +2619,7 @@ async fn same_base_admission_survives_an_ambiguous_submit_response() {
             base,
             MetaFieldKey(FEDERATION_NAME_META_FIELD_KEY.to_owned()),
             MetaFieldValue("Conflicting A".to_owned()),
-            NO_FEE_FLOOR,
-            None
+            NO_FEE_FLOOR
         )
         .await,
         Err(SeatVerbError::MetaTargetConflict)
@@ -2794,7 +2631,6 @@ async fn same_base_admission_survives_an_ambiguous_submit_response() {
         MetaFieldKey(FEDERATION_NAME_META_FIELD_KEY.to_owned()),
         MetaFieldValue("Admitted B".to_owned()),
         NO_FEE_FLOOR,
-        None,
     )
     .await
     .expect("exact replay remains permitted after an ambiguous response");
@@ -2838,7 +2674,6 @@ async fn recurring_content_under_a_fresh_revision_stales_a_delayed_handler() {
                 MetaFieldKey(FEDERATION_NAME_META_FIELD_KEY.to_owned()),
                 MetaFieldValue("Delayed A".to_owned()),
                 NO_FEE_FLOOR,
-                None,
             )
             .await
         }
@@ -2849,7 +2684,6 @@ async fn recurring_content_under_a_fresh_revision_stales_a_delayed_handler() {
         MetaFieldKey(FEDERATION_NAME_META_FIELD_KEY.to_owned()),
         MetaFieldValue("Newer B".to_owned()),
         NO_FEE_FLOOR,
-        None,
     )
     .await
     .expect("O to B submits");
@@ -2861,7 +2695,6 @@ async fn recurring_content_under_a_fresh_revision_stales_a_delayed_handler() {
         MetaFieldKey(FEDERATION_NAME_META_FIELD_KEY.to_owned()),
         MetaFieldValue("Original O".to_owned()),
         NO_FEE_FLOOR,
-        None,
     )
     .await
     .expect("B to exact O submits");
@@ -2910,7 +2743,6 @@ async fn superseded_pin_is_discarded_when_the_base_moves() {
         MetaFieldKey(FEDERATION_NAME_META_FIELD_KEY.to_owned()),
         MetaFieldValue("First Target".to_owned()),
         NO_FEE_FLOOR,
-        None,
     )
     .await
     .expect("the first occurrence admits its target");
@@ -2925,7 +2757,6 @@ async fn superseded_pin_is_discarded_when_the_base_moves() {
         MetaFieldKey(FEDERATION_NAME_META_FIELD_KEY.to_owned()),
         MetaFieldValue("Second Target".to_owned()),
         NO_FEE_FLOOR,
-        None,
     )
     .await
     .expect("a superseded pin does not fence the live occurrence");
@@ -2938,8 +2769,7 @@ async fn superseded_pin_is_discarded_when_the_base_moves() {
             MetaConsensusBase::from_consensus(Some((revision, &adopted))),
             MetaFieldKey(FEDERATION_NAME_META_FIELD_KEY.to_owned()),
             MetaFieldValue("Third Target".to_owned()),
-            NO_FEE_FLOOR,
-            None
+            NO_FEE_FLOOR
         )
         .await,
         Err(SeatVerbError::MetaTargetConflict)
@@ -2949,7 +2779,6 @@ async fn superseded_pin_is_discarded_when_the_base_moves() {
         MetaFieldKey(FEDERATION_NAME_META_FIELD_KEY.to_owned()),
         MetaFieldValue("Second Target".to_owned()),
         NO_FEE_FLOOR,
-        None,
     )
     .await
     .expect("exact replay of the live pin remains permitted");
@@ -2987,7 +2816,6 @@ async fn revert_then_depart_in_a_new_direction_does_not_wedge() {
         MetaFieldKey(FEDERATION_NAME_META_FIELD_KEY.to_owned()),
         MetaFieldValue("Name B".to_owned()),
         NO_FEE_FLOOR,
-        None,
     )
     .await
     .expect("A to B submits");
@@ -3000,7 +2828,6 @@ async fn revert_then_depart_in_a_new_direction_does_not_wedge() {
         MetaFieldKey(FEDERATION_NAME_META_FIELD_KEY.to_owned()),
         MetaFieldValue("Name A".to_owned()),
         NO_FEE_FLOOR,
-        None,
     )
     .await
     .expect("B back to exact A submits");
@@ -3016,7 +2843,6 @@ async fn revert_then_depart_in_a_new_direction_does_not_wedge() {
         MetaFieldKey(FEDERATION_NAME_META_FIELD_KEY.to_owned()),
         MetaFieldValue("Name C".to_owned()),
         NO_FEE_FLOOR,
-        None,
     )
     .await
     .expect("recurred A departs toward C without a pinned-target refusal");
@@ -3203,7 +3029,6 @@ async fn fee_and_metadata_proposals_cross_block_on_a_shared_admitted_base() {
         &guardian_verification_fee_account(),
     )
     .unwrap();
-    pin_guardian_fee_policy(&fleet, &seat_id, &directory, &recipients).await;
     let original = serde_json_canonicalizer::to_vec(&std::collections::BTreeMap::from([
         (
             fedi_decentralized_domain::FMAN_SEAT_BINDINGS_META_FIELD_KEY,
@@ -3232,7 +3057,6 @@ async fn fee_and_metadata_proposals_cross_block_on_a_shared_admitted_base() {
         MetaFieldKey(FEDERATION_NAME_META_FIELD_KEY.to_owned()),
         MetaFieldValue("Metadata First".to_owned()),
         NO_FEE_FLOOR,
-        Some(guardian_verification_fee_account()),
     )
     .await
     .expect("the metadata mutation admits base O first");
@@ -3247,8 +3071,7 @@ async fn fee_and_metadata_proposals_cross_block_on_a_shared_admitted_base() {
             MetaConsensusBase::from_consensus(Some((0, &original))),
             MetaFieldKey(crate::guardian_fee::SEND_PPM_META_KEY.to_owned()),
             MetaFieldValue((42).to_string()),
-            NO_FEE_FLOOR,
-            Some(guardian_verification_fee_account())
+            NO_FEE_FLOOR
         )
         .await,
         Err(SeatVerbError::MetaTargetConflict)
@@ -3277,8 +3100,7 @@ async fn guardian_fee_proposal_uses_the_same_stale_base_guard() {
             MetaConsensusBase::Absent,
             MetaFieldKey(crate::guardian_fee::SEND_PPM_META_KEY.to_owned()),
             MetaFieldValue((42).to_string()),
-            NO_FEE_FLOOR,
-            Some(guardian_verification_fee_account())
+            NO_FEE_FLOOR
         )
         .await,
         Err(SeatVerbError::MetaConsensusChanged)
@@ -3313,7 +3135,6 @@ async fn set_meta_fee_rate_refuses_invalid_values_without_child_access() {
                 MetaFieldKey(crate::guardian_fee::SEND_PPM_META_KEY.to_owned()),
                 MetaFieldValue(value),
                 1_500,
-                Some(guardian_verification_fee_account()),
             )
             .await,
             Err(SeatVerbError::MetaValueInvalid)
@@ -3343,7 +3164,6 @@ async fn seat_status_guardian_fee_reads_the_seat_without_a_wallet_client() {
     )
     .unwrap();
     let directory = guardian_fee_directory(&fixture_client_config(), &ours);
-    pin_guardian_fee_policy(&fleet, &seat_id, &directory, &recipients).await;
     let meta = serde_json::to_vec(&std::collections::BTreeMap::from([
         (
             fedi_decentralized_domain::FMAN_SEAT_BINDINGS_META_FIELD_KEY,
@@ -3373,16 +3193,15 @@ async fn seat_status_guardian_fee_reads_the_seat_without_a_wallet_client() {
 }
 
 #[tokio::test]
-async fn guardian_fee_proposal_replaces_partial_live_metadata() {
+async fn guardian_fee_rate_update_preserves_partial_live_metadata() {
     let temp = TempDir::new().unwrap();
     let config = config(&temp, 1, 30_990).await;
     let fleet = open_fleet(config, Arc::new(NoWallet)).await.unwrap();
     let (_, seat_id) = create_free_seat(&fleet, 66).await;
     let seat = fleet.seat_by_id(&seat_id).unwrap();
     let ours = fleet.guardian_fee_account_descriptor(&seat_id);
-    // The live source is deliberately partial. The proposal is judged on its
-    // own contents and updates both values; it does not compare itself to a
-    // previous policy or consult config metadata.
+    // The live source is deliberately partial. SetMetaField owns only the
+    // requested rate; it neither repairs nor rejects other consensus fields.
     let existing = serde_json::to_vec(&serde_json::json!({
         "fedi:guardian_fee_send_ppm": "5",
         "fedi:fman_seat_bindings": guardian_fee_directory(&fixture_client_config(), &ours),
@@ -3392,22 +3211,24 @@ async fn guardian_fee_proposal_replaces_partial_live_metadata() {
     let fake = fleet
         .form_fake_child(&seat_id, running_federation(0, Some(existing.clone())))
         .await;
-    let guardian_verification_fee_account = guardian_verification_fee_account();
-    let _recipients = guardian_fee_recipients(&ours);
+    seat.submit_meta_field(
+        MetaConsensusBase::from_consensus(Some((0, &existing))),
+        MetaFieldKey(crate::guardian_fee::SEND_PPM_META_KEY.to_owned()),
+        MetaFieldValue("42".to_owned()),
+        NO_FEE_FLOOR,
+    )
+    .await
+    .expect("a rate write does not adjudicate the carried recipient field");
 
-    assert!(matches!(
-        seat.submit_meta_field(
-            MetaConsensusBase::from_consensus(Some((0, &existing))),
-            MetaFieldKey(crate::guardian_fee::SEND_PPM_META_KEY.to_owned()),
-            MetaFieldValue("42".to_owned()),
-            NO_FEE_FLOOR,
-            Some(guardian_verification_fee_account),
-        )
-        .await,
-        Err(SeatVerbError::MetaValueInvalid)
-    ));
-
-    assert!(fake.state().meta_submissions.is_empty());
+    let state = fake.state();
+    assert_eq!(state.meta_submissions.len(), 1);
+    let submitted: std::collections::BTreeMap<String, serde_json::Value> =
+        serde_json::from_slice(&state.meta_submissions[0]).unwrap();
+    assert_eq!(
+        submitted[crate::guardian_fee::SEND_PPM_META_KEY],
+        serde_json::Value::String("42".to_owned()),
+    );
+    assert!(!submitted.contains_key(crate::guardian_fee::REMITTANCE_ACCOUNT_META_KEY));
     fleet.shutdown().await;
 }
 
@@ -3430,7 +3251,6 @@ async fn guardian_fee_proposal_below_the_published_minimum_casts_no_vote() {
         &guardian_verification_fee_account(),
     )
     .unwrap();
-    pin_guardian_fee_policy(&fleet, &seat_id, &directory, &recipients).await;
     let existing = serde_json_canonicalizer::to_vec(&std::collections::BTreeMap::from([
         (
             fedi_decentralized_domain::FMAN_SEAT_BINDINGS_META_FIELD_KEY,
@@ -3457,8 +3277,7 @@ async fn guardian_fee_proposal_below_the_published_minimum_casts_no_vote() {
                 MetaConsensusBase::from_consensus(Some((0, &existing))),
                 MetaFieldKey(crate::guardian_fee::SEND_PPM_META_KEY.to_owned()),
                 MetaFieldValue((send_ppm).to_string()),
-                floor,
-                Some(guardian_verification_fee_account())
+                floor
             )
             .await,
             Err(SeatVerbError::MetaValueInvalid)
@@ -3480,7 +3299,6 @@ async fn guardian_fee_proposal_below_the_published_minimum_casts_no_vote() {
         MetaFieldKey(crate::guardian_fee::SEND_PPM_META_KEY.to_owned()),
         MetaFieldValue((floor).to_string()),
         floor,
-        Some(guardian_verification_fee_account()),
     )
     .await
     .expect("a proposal at the published minimum is admitted");
@@ -3494,9 +3312,9 @@ async fn guardian_fee_proposal_below_the_published_minimum_casts_no_vote() {
 
 /// The regression the placement of the floor check protects: a federation that
 /// agreed a rate below a later-published minimum stays maintainable. An
-/// unrelated field update revalidates the fee keys it carries forward, and
-/// that revalidation must not apply the floor — otherwise a rename would be
-/// unvotable and the federation would freeze.
+/// unrelated field update carries the fee keys unchanged and must not apply
+/// the current floor — otherwise a rename would be unvotable and the
+/// federation would freeze.
 #[tokio::test]
 async fn an_unrelated_meta_write_carries_a_sub_minimum_fee_rate_forward() {
     let temp = TempDir::new().unwrap();
@@ -3517,7 +3335,6 @@ async fn an_unrelated_meta_write_carries_a_sub_minimum_fee_rate_forward() {
     )
     .expect("a rate below the published floor is still a canonical fee policy");
     let directory = guardian_fee_directory(&fixture_client_config(), &ours);
-    pin_guardian_fee_policy(&fleet, &seat_id, &directory, &carried_recipients).await;
     let existing = serde_json_canonicalizer::to_vec(&std::collections::BTreeMap::from([
         (
             fedi_decentralized_domain::FMAN_SEAT_BINDINGS_META_FIELD_KEY,
@@ -3542,7 +3359,6 @@ async fn an_unrelated_meta_write_carries_a_sub_minimum_fee_rate_forward() {
         MetaFieldKey(FEDERATION_NAME_META_FIELD_KEY.to_owned()),
         MetaFieldValue("Renamed".to_owned()),
         NO_FEE_FLOOR,
-        Some(guardian_verification_fee_account()),
     )
     .await
     .expect("renaming a federation whose agreed rate is below the floor must still work");
@@ -3596,7 +3412,6 @@ async fn canonical_guardian_fee_submission(
         &guardian_verification_fee_account(),
     )
     .unwrap();
-    pin_guardian_fee_policy(fleet, seat_id, directory, &recipients).await;
     current_fields.insert(
         crate::guardian_fee::REMITTANCE_ACCOUNT_META_KEY.to_owned(),
         serde_json::Value::String(recipients),
@@ -3610,7 +3425,6 @@ async fn canonical_guardian_fee_submission(
         MetaFieldKey(crate::guardian_fee::SEND_PPM_META_KEY.to_owned()),
         MetaFieldValue((42).to_string()),
         NO_FEE_FLOOR,
-        Some(guardian_verification_fee_account()),
     )
     .await
     .unwrap();

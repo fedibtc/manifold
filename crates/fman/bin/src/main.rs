@@ -364,7 +364,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     }
     onboarding.completed().await?;
 
-let wallet_origin = db.wallet_origin().await?;
+    let wallet_origin = db.wallet_origin().await?;
     let guardian_verification_fee_account = manifold_environment
         .guardian_verification_fee_account()
         .cloned();

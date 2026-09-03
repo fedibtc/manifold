@@ -105,25 +105,6 @@ BEFORE DELETE ON formed_seats BEGIN
     SELECT RAISE(ABORT, 'formed seat records are immutable');
 END;
 
--- The first formation metadata target this guardian admitted. Consensus may
--- later be controlled by a hostile threshold, so live metadata cannot itself
--- authenticate formation-owned directory and recipient policy.
-CREATE TABLE formation_fee_policies (
-    quote_id BLOB PRIMARY KEY NOT NULL REFERENCES seats (quote_id),
-    directory TEXT NOT NULL,
-    recipients TEXT NOT NULL
-);
-
-CREATE TRIGGER formation_fee_policies_immutable_update
-BEFORE UPDATE ON formation_fee_policies BEGIN
-    SELECT RAISE(ABORT, 'formation fee policy is immutable');
-END;
-
-CREATE TRIGGER formation_fee_policies_immutable_delete
-BEFORE DELETE ON formation_fee_policies BEGIN
-    SELECT RAISE(ABORT, 'formation fee policy is immutable');
-END;
-
 -- The last backup publication of each seat this install confirmed the relay
 -- serves (SPEC-nostr-backup-restore). The relay is semi-trusted to keep
 -- serving the latest event per coordinate, so a confirmed publication is a

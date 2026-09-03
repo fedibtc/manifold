@@ -74,12 +74,11 @@ already equals consensus, so it must satisfy the currently published floor.
 Copying an older sub-floor rate unchanged while writing another key is not a
 rate proposal and remains valid carry-forward behavior.
 
-Every generic whole-object write that carries an existing fee policy revalidates
-it before voting. It parses the stored canonical directory, verifies its FMan
-attestations against the live federation config and requires the carried
-account-keyed recipient list to equal the fixed recipient split. The
-stored directory cannot re-prove endpoint ownership: its API endpoint
-proofs were admission-time evidence and are intentionally not consensus data.
+`SetMetaField` is implemented as a whole-object read-modify-write, but its
+authority is field-local: it validates the requested key and value and carries
+all other fields from the exact observed consensus occurrence unchanged. It
+does not treat an unrelated write as authority to re-adjudicate, repair, or
+historically authenticate formation-owned fields.
 
 That boundary leaves a precise residual collusion model. A threshold of hostile
 guardians already controls federation consensus and can adopt hostile metadata.
@@ -88,9 +87,11 @@ non-colluding guardian by supplying threshold-valid endpoint evidence for the
 seats they control. They cannot forge the excluded guardian's endpoint proof,
 so including that honest endpoint under a false FMan identity is rejected.
 Misattributing a guardian that joins the hostile threshold adds no independent
-funds-control power: that threshold already controls the federation. Operators
-still detect a live policy that stops paying them; FMan reports the policy but
-does not automatically withdraw service.
+funds-control power: that threshold already controls the federation. An
+observed post-formation change to the directory or recipients is a seat
+integrity failure whose eventual response is to stop that guardian and require
+operator remediation. Detection and automatic shutdown are not implemented by
+metadata maintenance and remain outside this specification's current behavior.
 
 ## Whole-object safety and recovery
 
@@ -118,7 +119,9 @@ is the only source; config metadata is never used for guardian fees.
 ## Reporting
 
 FMan stores no separate fee agreement. `SeatStatus` and `GuardianFees` derive
-the current rate, expected account, share, and policy match from live consensus
-metadata. An unset policy, malformed policy, and policy excluding this guardian
-remain distinct observations. Revenue disagreement is reported for an operator
-decision rather than causing automatic shutdown.
+the current rate, expected account, share, and structural policy match from live
+consensus metadata. A structurally matching report is not historical proof that
+the values equal the formation proposal. An unset policy, malformed policy, and
+policy excluding this guardian remain distinct observations. Revenue
+disagreement is reported for an operator decision rather than causing
+automatic shutdown.

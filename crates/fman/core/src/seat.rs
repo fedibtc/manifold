@@ -432,7 +432,6 @@ enum SeatCommand {
         key: MetaFieldKey,
         value: MetaFieldValue,
         min_send_ppm: u64,
-        guardian_verification_fee_account: Option<Account>,
         reply: oneshot::Sender<Result<(), SeatVerbError>>,
     },
     RegisterGateway {
@@ -780,14 +779,12 @@ impl Seat {
         key: MetaFieldKey,
         value: MetaFieldValue,
         min_send_ppm: u64,
-        guardian_verification_fee_account: Option<Account>,
     ) -> Result<(), SeatVerbError> {
         self.verb_request(|reply| SeatCommand::SubmitMetaField {
             expected_base,
             key,
             value,
             min_send_ppm,
-            guardian_verification_fee_account,
             reply,
         })
         .await
@@ -1124,17 +1121,10 @@ impl SeatLoop {
                     key,
                     value,
                     min_send_ppm,
-                    guardian_verification_fee_account,
                     reply,
                 } => {
                     let result = self
-                        .submit_meta_field(
-                            expected_base,
-                            &key,
-                            &value,
-                            min_send_ppm,
-                            guardian_verification_fee_account.as_ref(),
-                        )
+                        .submit_meta_field(expected_base, &key, &value, min_send_ppm)
                         .await;
                     let _ = reply.send(result);
                 }
@@ -1857,7 +1847,7 @@ impl SeatLoop {
         .map_err(|_| SeatVerbError::MetaValueInvalid)?;
         fields.insert(
             FMAN_SEAT_BINDINGS_META_FIELD_KEY.to_owned(),
-            serde_json::Value::String(canonical_bindings.clone()),
+            serde_json::Value::String(canonical_bindings),
         );
         fields.insert(
             crate::guardian_fee::SEND_PPM_META_KEY.to_owned(),
@@ -1871,20 +1861,6 @@ impl SeatLoop {
             SeatVerbError::internal(anyhow!("could not canonicalize consensus metadata: {err}"))
         })?;
         self.ensure_meta_object_size(&encoded, "propose_formation_meta")?;
-        if !self
-            .db
-            .pin_formation_fee_policy(
-                &self.facts.seat_id,
-                &canonical_bindings,
-                fields[crate::guardian_fee::REMITTANCE_ACCOUNT_META_KEY]
-                    .as_str()
-                    .expect("formation inserted recipient string"),
-            )
-            .await
-            .map_err(SeatVerbError::internal)?
-        {
-            return Err(SeatVerbError::MetaTargetConflict);
-        }
         self.submit_admitted_meta_target(
             &client,
             meta_id,
@@ -1952,7 +1928,6 @@ impl SeatLoop {
         key: &MetaFieldKey,
         value: &MetaFieldValue,
         min_send_ppm: u64,
-        guardian_verification_fee_account: Option<&Account>,
     ) -> Result<(), SeatVerbError> {
         validate_meta_field(key, value).map_err(|err| self.meta_field_error(key.0.len(), err))?;
         if key.0 == crate::guardian_fee::SEND_PPM_META_KEY {
@@ -1971,7 +1946,6 @@ impl SeatLoop {
             &config,
             expected_base,
             BTreeMap::from([(key.0.clone(), serde_json::Value::String(value.0.clone()))]),
-            guardian_verification_fee_account,
             "set_meta_field",
         )
         .await
@@ -1993,20 +1967,12 @@ impl SeatLoop {
         config: &ClientConfig,
         expected_base: MetaConsensusBase,
         updates: BTreeMap<String, serde_json::Value>,
-        guardian_verification_fee_account: Option<&Account>,
         operation: &'static str,
     ) -> Result<(), SeatVerbError> {
-        self.submit_meta_mutation(
-            client,
-            config,
-            expected_base,
-            guardian_verification_fee_account,
-            operation,
-            |fields| {
-                fields.extend(updates);
-                Ok(())
-            },
-        )
+        self.submit_meta_mutation(client, config, expected_base, operation, |fields| {
+            fields.extend(updates);
+            Ok(())
+        })
         .await
     }
 
@@ -2015,7 +1981,6 @@ impl SeatLoop {
         client: &FedimintApi,
         config: &ClientConfig,
         expected_base: MetaConsensusBase,
-        guardian_verification_fee_account: Option<&Account>,
         operation: &'static str,
         mutate: impl FnOnce(&mut BTreeMap<String, serde_json::Value>) -> Result<(), SeatVerbError>,
     ) -> Result<(), SeatVerbError> {
@@ -2053,18 +2018,6 @@ impl SeatLoop {
             None => BTreeMap::new(),
         };
         mutate(&mut fields)?;
-        let formation_policy = self
-            .db
-            .formation_fee_policy(&self.facts.seat_id)
-            .await
-            .map_err(SeatVerbError::internal)?;
-        self.validate_carried_guardian_fee_policy(
-            &fields,
-            config,
-            guardian_verification_fee_account,
-            formation_policy.as_ref(),
-        )?;
-
         // Canonicalize rather than merely serialize: guardians reach threshold
         // only on byte-identical submissions, so encoding cannot depend on the
         // input object's field order.
@@ -2077,33 +2030,16 @@ impl SeatLoop {
             .await
     }
 
-    /// Every meta submission is a vote for the entire object, including fee
-    /// keys that an unrelated maintenance request merely carries forward.
-    /// Re-derive the authenticated split here so the generic path cannot vote
-    /// for a hostile or stale fee policy by accident.
-    fn validate_carried_guardian_fee_policy(
+    /// Classify whether the live policy has the canonical shape implied by its
+    /// live directory. This is reporting validation, not historical identity:
+    /// detecting a threshold-replaced formation policy is a seat-lifecycle
+    /// concern and is intentionally outside metadata maintenance.
+    fn validate_live_guardian_fee_policy(
         &self,
         fields: &BTreeMap<String, serde_json::Value>,
         config: &ClientConfig,
         guardian_verification_fee_account: Option<&Account>,
-        formation_policy: Option<&(String, String)>,
     ) -> Result<(), SeatVerbError> {
-        let directory_field = fields.get(FMAN_SEAT_BINDINGS_META_FIELD_KEY);
-        let directory_value = directory_field.and_then(serde_json::Value::as_str);
-        let pinned_recipients = match formation_policy {
-            Some((pinned_directory, pinned_recipients)) => {
-                if directory_value != Some(pinned_directory.as_str()) {
-                    return Err(SeatVerbError::MetaValueInvalid);
-                }
-                Some(pinned_recipients)
-            }
-            None => {
-                if directory_field.is_some() {
-                    return Err(SeatVerbError::MetaValueInvalid);
-                }
-                None
-            }
-        };
         let send_ppm = fields.get(crate::guardian_fee::SEND_PPM_META_KEY);
         let recipients = fields.get(crate::guardian_fee::REMITTANCE_ACCOUNT_META_KEY);
         let (Some(send_ppm), Some(recipients)) = (send_ppm, recipients) else {
@@ -2118,13 +2054,13 @@ impl SeatLoop {
             .and_then(|value| value.parse::<u64>().ok())
             .ok_or(SeatVerbError::MetaValueInvalid)?;
         let recipients = recipients.as_str().ok_or(SeatVerbError::MetaValueInvalid)?;
-        if Some(recipients) != pinned_recipients.map(String::as_str) {
-            return Err(SeatVerbError::MetaValueInvalid);
-        }
         let guardian_verification_fee_account =
             guardian_verification_fee_account.ok_or(SeatVerbError::MetaValueInvalid)?;
         let federation = derive_federation_seats(config)?;
-        let directory_value = directory_value.ok_or(SeatVerbError::MetaValueInvalid)?;
+        let directory_value = fields
+            .get(FMAN_SEAT_BINDINGS_META_FIELD_KEY)
+            .and_then(serde_json::Value::as_str)
+            .ok_or(SeatVerbError::MetaValueInvalid)?;
         let bindings = FmanSeatBindings::parse_canonical(directory_value)
             .and_then(|bindings| bindings.verify_for_federation(&federation))
             .map_err(|_| SeatVerbError::MetaValueInvalid)?;
@@ -2234,22 +2170,12 @@ impl SeatLoop {
     ) -> Result<FeePolicy, SeatVerbError> {
         let (client, config) = self.running_client_config().await?;
         let (_, fields) = consensus_meta_fields(&client, &config).await?;
-        let formation_policy = self
-            .db
-            .formation_fee_policy(&self.facts.seat_id)
-            .await
-            .map_err(SeatVerbError::internal)?;
-        let authenticated_policy_matches = self
-            .validate_carried_guardian_fee_policy(
-                &fields,
-                &config,
-                guardian_verification_fee_account,
-                formation_policy.as_ref(),
-            )
+        let live_policy_matches = self
+            .validate_live_guardian_fee_policy(&fields, &config, guardian_verification_fee_account)
             .is_ok();
         let mut policy = crate::guardian_fee::fee_policy_from_meta(&fields, our_account_id)
             .map_err(SeatVerbError::internal)?;
-        policy.authenticated_policy_matches = authenticated_policy_matches;
+        policy.live_policy_matches = live_policy_matches;
         Ok(policy)
     }
 

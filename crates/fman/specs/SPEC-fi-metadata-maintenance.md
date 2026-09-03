@@ -67,17 +67,17 @@ cap immediately after each read, before hashing, parsing, connecting, signing,
 or fan-out. FMan checks the live object and canonical target. Formation applies
 the same cap before its proposal wave.
 
-## Carried fee-policy validation
+## Formation-owned fields during maintenance
 
-A generic write carrying fee fields must carry both the rate and recipient
-list. Before voting, FMan verifies the stored canonical seat directory against
-the live final config, derives all guardian accounts, and checks the fixed
-recipient split—FI at weight four, every guardian at weight one, and the
-Guardian Verification Fee at weight one—plus the rate bounds. The stored
-directory does not contain endpoint proofs; those are admission-time inputs to
-`ProposeFormationMeta`, not permanent self-verifying evidence. This prevents an
-unrelated name or icon update from silently copying a malformed fee policy as
-this guardian's vote.
+The directory and guardian-fee recipient list are absent from the compiled
+generic field registry, so `SetMetaField` rejects requests targeting either
+before child access. For an allowed key, FMan carries every other field from
+the exact observed consensus occurrence unchanged; it does not revalidate or
+rewrite formation-owned values as a side effect of an unrelated update.
+
+A threshold-replaced directory or recipient list is a seat-integrity failure,
+not a metadata-field admission decision. Detecting that condition and stopping
+the guardian remains outside the current maintenance implementation.
 
 ## Failure and security notes
 

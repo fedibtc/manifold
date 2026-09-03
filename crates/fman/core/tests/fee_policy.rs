@@ -154,7 +154,7 @@ fn policy_reader_derives_a_view_from_the_consensus_meta_map() {
             send_ppm: Some(1_000),
             recipients: Some(recipients),
             our_share: Some((3, 4)),
-            authenticated_policy_matches: false,
+            live_policy_matches: false,
         }
     );
 }
@@ -169,6 +169,7 @@ fn policy_reader_distinguishes_unset_from_malformed_fee_metadata() {
             send_ppm: None,
             recipients: None,
             our_share: None,
+            live_policy_matches: true,
         }
     );
     assert!(matches!(
@@ -214,13 +215,13 @@ fn overflowing_weights_are_not_a_share() {
 }
 
 #[test]
-fn share_policy_reports_the_complete_authenticated_policy_check() {
+fn share_policy_requires_the_live_split_and_our_compiled_weight() {
     let unset = FeePolicy {
         configured: false,
         send_ppm: None,
         recipients: None,
         our_share: None,
-        authenticated_policy_matches: true,
+        live_policy_matches: true,
     };
     assert!(unset.share_matches_policy());
 
@@ -229,13 +230,13 @@ fn share_policy_reports_the_complete_authenticated_policy_check() {
         send_ppm: Some(1_000),
         recipients: Some(String::new()),
         our_share: Some((GUARDIAN_RECIPIENT_WEIGHT, 7)),
-        authenticated_policy_matches: true,
+        live_policy_matches: true,
     };
     assert!(expected.share_matches_policy());
 
     assert!(
         !FeePolicy {
-            authenticated_policy_matches: false,
+            live_policy_matches: false,
             ..expected.clone()
         }
         .share_matches_policy()
@@ -243,7 +244,7 @@ fn share_policy_reports_the_complete_authenticated_policy_check() {
     assert!(
         !FeePolicy {
             our_share: None,
-            authenticated_policy_matches: false,
+            live_policy_matches: true,
             ..expected
         }
         .share_matches_policy()
