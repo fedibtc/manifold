@@ -52,7 +52,7 @@ From `crates/fman/specs/SPEC-fi-rpc.md` and
 - `ReservationId` is unguessable and is not derivable from the FI key.
 - `Reserve` has, or is expected to have, an FI-generated `request_id` for idempotent lost-response recovery.
 - `ConfirmReservation` and `ConfirmPayment` are idempotent on the relevant ecash token hash/retry handle and signed FI identity.
-- Running seats expose `GetStatus`, `GetInviteCode`, FI-scoped `GetPeerAttestation`, public `GetFederationTrustMaterial`, `GetPayment`, `ConfirmPayment`, `SetMetaField`, and `GetFedimintStats`.
+- Running seats expose `GetStatus`, `GetInviteCode`, FI-scoped `GetPeerAttestation`, public `GetFmanTrustMaterial`, `GetPayment`, `ConfirmPayment`, `SetMetaField`, and `GetFedimintStats`.
 
 From [`SPEC-fman-nostr-events`](../crates/nostr/specs/SPEC-fman-nostr-events.md):
 

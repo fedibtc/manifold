@@ -222,19 +222,17 @@ LNv2 `add_gateway` endpoint. It stores the URL; it does not probe it or claim
 independent reachability/trust validation. The boolean response distinguishes a
 new insertion from an idempotent replay.
 
-The unsigned `GetFederationTrustMaterial` serves this FMan's signed trust
-material for one federation: the peer attestations for every seat it runs
-there, the Holder authorizations durably enrolled through the operator flow,
-and its current `iroh://` endpoint, signed by the service Nostr key that also signs
-the kind-37701 advertisement and every peer attestation. It is unauthenticated
-because the material is what any verifier holding an invite code is meant to
-be able to fetch, so there is no requester to authorize and no seat the caller
-names — the request names a federation instead. An FMan running no seat in
-that federation answers with an empty attestation list rather than an error,
-since that is a fact about the federation and not a failure to serve. Its
-response carries an issue and expiry timestamp and the relying verifier
-applies its own upper bound on that window. It also performs fresh issuer-policy
-and revocation checks over every retained envelope. Before a Nostr relay is
+The unsigned `GetFmanTrustMaterial` serves this FMan's signed current trust
+material: the Holder authorizations durably enrolled through the operator flow
+and its current `iroh://` endpoint, signed by the service Nostr key that also
+signs the kind-37701 advertisement and every peer attestation. Federation seat
+membership comes only from the consensus `fedi:fman_seat_bindings` directory;
+the live response does not repeat it. The verb is unauthenticated because the
+material is what any verifier holding an invite code is meant to be able to
+fetch, so there is no requester, federation, or seat to authorize. Its response
+carries an issue and expiry timestamp and the relying verifier
+applies its own upper bound on that window. The relying verifier also performs
+fresh issuer-policy and revocation checks over every retained envelope. Before a Nostr relay is
 configured the FMan cannot enroll a Holder authorization, so the verb
 answers `UnsupportedVerb` rather than an empty document, which would let a
 verifier read "not participating" as "participating but untrusted".

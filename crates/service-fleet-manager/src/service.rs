@@ -5,13 +5,13 @@ use fedi_iroh_rpc::service;
 use crate::status::{GetFedimintStatsRequest, GetFedimintStatsResponse};
 use crate::{
     CreateSeatRequest, CreateSeatResponse, FleetManagerError, GetAvailabilityRequest,
-    GetAvailabilityResponse, GetDkgCodeRequest, GetDkgCodeResponse,
-    GetFederationTrustMaterialRequest, GetFederationTrustMaterialResponse, GetInviteCodeRequest,
-    GetInviteCodeResponse, GetPeerAttestationRequest, GetPeerAttestationResponse, GetQuoteRequest,
-    GetQuoteResponse, GetStatusRequest, GetStatusResponse, ProposeFormationMetaRequest,
-    ProposeFormationMetaResponse, RegisterGatewayRequest, RegisterGatewayResponse,
-    RestartDkgRequest, RestartDkgResponse, SetMetaFieldRequest, SetMetaFieldResponse,
-    SignedRequest, SignedResponse, StartDkgRequest, StartDkgResponse,
+    GetAvailabilityResponse, GetDkgCodeRequest, GetDkgCodeResponse, GetFmanTrustMaterialRequest,
+    GetFmanTrustMaterialResponse, GetInviteCodeRequest, GetInviteCodeResponse,
+    GetPeerAttestationRequest, GetPeerAttestationResponse, GetQuoteRequest, GetQuoteResponse,
+    GetStatusRequest, GetStatusResponse, ProposeFormationMetaRequest, ProposeFormationMetaResponse,
+    RegisterGatewayRequest, RegisterGatewayResponse, RestartDkgRequest, RestartDkgResponse,
+    SetMetaFieldRequest, SetMetaFieldResponse, SignedRequest, SignedResponse, StartDkgRequest,
+    StartDkgResponse,
 };
 
 /// Result type for Fleet Manager protocol calls.
@@ -81,17 +81,15 @@ pub trait FleetManagerService {
         request: SignedRequest<GetPeerAttestationRequest>,
     ) -> FmResult<GetPeerAttestationResponse>;
 
-    /// Get public signed trust material for an invite-code-discovered
-    /// federation.
+    /// Get this FMan's public signed current trust material.
     ///
     /// This unauthenticated read-only API is the FLIP/external-verifier source
-    /// for FMan peer attestations, holder authorizations, and backing trust
-    /// badges after the verifier discovers this FMan through
-    /// `fedi:fman_api_urls` consensus metadata.
-    async fn get_federation_trust_material(
+    /// for holder authorizations and backing trust badges after consensus
+    /// `fedi:fman_seat_bindings` metadata identifies this FMan as an operator.
+    async fn get_fman_trust_material(
         &self,
-        request: GetFederationTrustMaterialRequest,
-    ) -> FmResult<GetFederationTrustMaterialResponse>;
+        request: GetFmanTrustMaterialRequest,
+    ) -> FmResult<GetFmanTrustMaterialResponse>;
 
     /// Set a metadata field on the running federation.
     async fn set_meta_field(

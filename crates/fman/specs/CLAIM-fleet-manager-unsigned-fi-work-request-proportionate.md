@@ -1,7 +1,7 @@
 # CLAIM-fleet-manager-unsigned-fi-work-request-proportionate: Unsigned FI work is request-proportionate
 
 Each unsigned FI verb—`GetAvailability`, `GetQuote`, and
-`GetFederationTrustMaterial`—performs bounded, request-proportionate daemon work.
+`GetFmanTrustMaterial`—performs bounded, request-proportionate daemon work.
 A cheap valid request does not fan out into an unbounded database scan, wallet
 operation, child I/O, allocation, or signing work, and a bounded batch of such
 requests cannot amplify one slow dependency into starvation of unrelated FI
@@ -9,10 +9,10 @@ verbs.
 
 ## Status
 
-Falsified: `GetFederationTrustMaterial` probes every seat before filtering, so a
-bounded handler-sized batch can serialize behind one withholding child while
-retaining the shared FI permits. See the
-[durable counterexample](CLAIM-fleet-manager-unsigned-fi-work-request-proportionate/falsification-trust-material-seat-fanout.md).
+Unverified. `GetFmanTrustMaterial` no longer accepts federation or peer selectors
+and no longer probes seats, so the recorded seat-fanout counterexample does not
+apply. This change repairs that falsification but does not re-verify the complete
+three-verb property.
 
 ## Assumptions
 

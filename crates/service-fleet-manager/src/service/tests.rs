@@ -112,10 +112,10 @@ impl FleetManagerService for TestFleetManager {
     ) -> FmResult<GetPeerAttestationResponse> {
         unsupported()
     }
-    async fn get_federation_trust_material(
+    async fn get_fman_trust_material(
         &self,
-        _: GetFederationTrustMaterialRequest,
-    ) -> FmResult<GetFederationTrustMaterialResponse> {
+        _: GetFmanTrustMaterialRequest,
+    ) -> FmResult<GetFmanTrustMaterialResponse> {
         unsupported()
     }
     async fn set_meta_field(

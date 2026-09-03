@@ -107,24 +107,6 @@ pub enum FleetManagerError {
     #[error("invalid gateway API URL")]
     InvalidGatewayApiUrl,
 
-    /// Public trust-material request refers to a federation this FMan does not
-    /// operate.
-    #[error("unknown federation")]
-    UnknownFederation,
-
-    /// Public trust-material request config hash does not match this FMan's
-    /// recorded final config hash for the federation.
-    #[error("federation config hash mismatch")]
-    FederationConfigHashMismatch,
-
-    /// Public trust-material request selector is malformed or unsupported.
-    #[error("invalid trust material selector")]
-    InvalidTrustMaterialSelector,
-
-    /// Public trust-material API is temporarily unavailable.
-    #[error("trust material temporarily unavailable")]
-    TrustMaterialUnavailable,
-
     /// The verb exists in the protocol crate but is intentionally not
     /// implemented by this daemon/profile version.
     #[error("{verb} unsupported in this Fleet Manager profile")]

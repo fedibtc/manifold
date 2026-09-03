@@ -12,14 +12,12 @@ use std::str::FromStr as _;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use fedi_decentralized_federation_preview::FederationPreview;
 use fedi_decentralized_service_liquidity_manager::{
-    CredentialDigest, FederationId, FmanFederationTrustMaterial, FmanSeatBindings,
-    GetFederationTrustMaterialRequest, HolderAuthorizationEnvelope, HolderTrustEnvelopeError,
-    PeerBadgeTrustPolicy, PeerBadgeTrustPolicyError, ProtocolV1, Pubkey, PublicRejection,
-    PublicRejectionCode, RequestLiquidityRequest, SetupConfigView, Timestamp, TrustScoreBadgeV1,
-    VerificationCheck, VerificationCheckStatus, VerificationContext, VerificationRequirement,
-    VerificationSummary, VerifiedSeatBinding, verify_holder_trust_envelope,
+    CredentialDigest, FederationId, FmanSeatBindings, HolderAuthorizationEnvelope,
+    HolderTrustEnvelopeError, PeerBadgeTrustPolicy, PeerBadgeTrustPolicyError, Pubkey,
+    PublicRejection, PublicRejectionCode, RequestLiquidityRequest, SetupConfigView, Timestamp,
+    TrustScoreBadgeV1, VerificationCheck, VerificationCheckStatus, VerificationContext,
+    VerificationRequirement, VerificationSummary, verify_holder_trust_envelope,
 };
 
 use crate::database::Database;
@@ -70,57 +68,6 @@ enum FmanPeerBadgeError {
 
     #[error(transparent)]
     TrustPolicy(#[from] PeerBadgeTrustPolicyError),
-}
-
-/// Check an FMan's own peer attestations against the seat-binding directory.
-///
-/// Both describe which seats this FMan operates, and they are produced
-/// independently — the directory reached consensus among threshold guardians,
-/// the material was signed by this FMan alone. Agreement is expected; a
-/// disagreement means one of them is describing a federation it is not in, and
-/// the directory is the one with a federation behind it.
-///
-/// Only the seats the material claims are checked. An FMan may legitimately
-/// answer for fewer seats than it holds (the request's peer filter allows
-/// exactly that), so a missing claim is not a contradiction — a *wrong* one is.
-fn cross_check_attestations(
-    material: &FmanFederationTrustMaterial,
-    verified_bindings: &[VerifiedSeatBinding],
-) -> Result<(), String> {
-    for attestation in &material.peer_attestations {
-        let statement = attestation
-            .verify()
-            .map_err(|error| format!("nested peer attestation does not verify: {error}"))?;
-        let Some(binding) = verified_bindings
-            .iter()
-            .find(|binding| binding.peer_id == statement.peer_id)
-        else {
-            return Err(format!(
-                "material claims peer {} which the directory does not name",
-                statement.peer_id.0
-            ));
-        };
-        if binding.fman_pubkey != statement.fman_pubkey {
-            return Err(format!(
-                "material claims peer {} for {}, but the directory binds it to {}",
-                statement.peer_id.0, statement.fman_pubkey.0, binding.fman_pubkey.0
-            ));
-        }
-        if binding.guardian_identity != statement.guardian_identity {
-            return Err(format!(
-                "material claims a different guardian identity for peer {}",
-                statement.peer_id.0
-            ));
-        }
-        if binding.guardian_fee_account != statement.guardian_fee_account {
-            return Err(format!(
-                "material claims a different guardian-fee account for peer {}",
-                statement.peer_id.0
-            ));
-        }
-    }
-
-    Ok(())
 }
 
 /// The one mode name the trust pipeline reports.
@@ -428,9 +375,7 @@ impl VerificationPipeline {
     fn resolve_trust_material(
         &self,
         request: &RequestLiquidityRequest,
-        preview: &FederationPreview,
         operators: &BTreeSet<String>,
-        verified_bindings: &[VerifiedSeatBinding],
         now: fedi_decentralized_service_liquidity_manager::Timestamp,
         checks: &mut PipelineChecks,
     ) -> Result<Vec<ResolvedTrustMaterial>, (PublicRejectionCode, String)> {
@@ -447,7 +392,8 @@ impl VerificationPipeline {
         // seat-binding container refuses a repeated peer id.
         let mut seen: BTreeSet<&str> = BTreeSet::new();
         for response in material {
-            if !seen.insert(response.material.fman_pubkey.0.as_str()) {
+            let fman_pubkey = response.material.fman_pubkey.0.as_str();
+            if operators.contains(fman_pubkey) && !seen.insert(fman_pubkey) {
                 return Err((
                     PublicRejectionCode::InvalidCredentials,
                     format!(
@@ -457,16 +403,6 @@ impl VerificationPipeline {
                 ));
             }
         }
-
-        // Built from the preview, never from `federation_details`, for the same
-        // reason the admission gate reads the invite code: the requester
-        // supplies both, and only the preview is derived from the federation.
-        let material_request = GetFederationTrustMaterialRequest {
-            version: ProtocolV1,
-            federation_id: preview.federation_id.clone(),
-            federation_config_hash: preview.federation_config_hash.clone(),
-            peer_ids: Vec::new(),
-        };
 
         let mut resolved = Vec::new();
         for fman_pubkey in operators {
@@ -484,8 +420,8 @@ impl VerificationPipeline {
             };
 
             let verified = response
-                .verify_for_request(
-                    &material_request,
+                .verify_for_fman(
+                    &Pubkey(fman_pubkey.clone()),
                     now,
                     FLIP_TRUST_MATERIAL_MAX_VALIDITY_SECS,
                 )
@@ -496,24 +432,11 @@ impl VerificationPipeline {
                     )
                 })?;
 
-            // The material's own attestations are cross-checked against the
-            // directory rather than trusted in its place. `verify_for_request`
-            // has already proven each one is signed by this FMan and names this
-            // federation and config revision; what it cannot know is which
-            // seats the federation actually assigned. Disagreement means one of
-            // the two is describing a different federation than it claims to.
-            cross_check_attestations(&verified, verified_bindings).map_err(|reason| {
-                (
-                    PublicRejectionCode::InvalidCredentials,
-                    format!("FMan trust material contradicts the seat-binding directory: {reason}"),
-                )
-            })?;
-
             checks.credential.push(check(
                 "fman_trust_material",
                 VerificationCheckStatus::Passed,
                 Some(fman_pubkey.clone()),
-                "signed trust material verified against the previewed federation",
+                "signed trust material verified for the consensus-listed FMan identity",
             ));
             resolved.push(ResolvedTrustMaterial {
                 fman_pubkey: Pubkey(fman_pubkey.clone()),
@@ -636,14 +559,7 @@ impl VerificationPipeline {
             .iter()
             .map(|binding| binding.fman_pubkey.0.clone())
             .collect();
-        let advertisements = self.resolve_trust_material(
-            request,
-            &preview,
-            &operators,
-            &verified_bindings,
-            now,
-            checks,
-        )?;
+        let advertisements = self.resolve_trust_material(request, &operators, now, checks)?;
 
         // 6. Pair and verify holder trust envelopes per distinct FMan
         //    identity, with fresh fail-closed revocation lookups.

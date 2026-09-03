@@ -212,7 +212,7 @@ pub enum VerificationRequirement {
 
     /// Distinct trusted FMan identities must satisfy the consensus threshold.
     ///
-    /// The verifier first matches FMan peer attestations to config peers, then
+    /// The verifier first matches consensus FMan peer attestations to config peers, then
     /// counts each trusted `fman_pubkey` once when evaluating the threshold,
     /// regardless of how many peers that FMan operates.
     #[strum(serialize = "consensus_majority_trusted")]
@@ -402,8 +402,8 @@ pub struct RpcEndpoint {
 ///
 /// FLIP treats this app-provided seat as an optional diagnostic hint. The
 /// authoritative peer list, guardian identities, consensus threshold, FMan API
-/// directory, and peer attestations are derived from the invite code, consensus
-/// metadata, and public FMan APIs.
+/// directory, and peer attestations are derived from the invite code and
+/// consensus metadata. Public FMan APIs supply only current identity trust.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct FleetSeat {
     /// Seat identifier assigned by the app or formation protocol.

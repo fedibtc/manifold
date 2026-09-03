@@ -37,11 +37,11 @@ pub use dkg::{
 };
 pub use error::FleetManagerError;
 pub use fedi_decentralized_services::domain::{
-    FMAN_API_URLS_META_FIELD_KEY, FMAN_FEDERATION_TRUST_MATERIAL_SIGNATURE_DOMAIN_SEPARATOR,
-    FMAN_TRUST_MATERIAL_MAX_RESPONSE_BYTES, FMAN_TRUST_MATERIAL_PEER_FILTER_MAX_COUNT,
-    FederationId, FederationName, FmanApiUrlsMetadata, FmanFederationTrustMaterial,
-    FmanFederationTrustMaterialVerificationError, GatewayApiUrl, GetFederationTrustMaterialRequest,
-    GetFederationTrustMaterialResponse, InvalidGatewayApiUrl, InviteCode, Timestamp,
+    FMAN_API_URLS_META_FIELD_KEY, FMAN_TRUST_MATERIAL_MAX_RESPONSE_BYTES,
+    FMAN_TRUST_MATERIAL_SIGNATURE_DOMAIN_SEPARATOR, FederationId, FederationName,
+    FmanApiUrlsMetadata, FmanTrustMaterial, FmanTrustMaterialVerificationError, GatewayApiUrl,
+    GetFmanTrustMaterialRequest, GetFmanTrustMaterialResponse, InvalidGatewayApiUrl, InviteCode,
+    Timestamp,
 };
 pub use fedi_decentralized_services::{ServiceError, ServiceErrorCode, ServiceResult};
 pub use fman_name::FmanName;

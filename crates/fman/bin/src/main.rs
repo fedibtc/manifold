@@ -463,7 +463,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
             IrohProtocol::new(server).with_method_response_write_limits([
                 ("get_availability", 128),
                 ("get_quote", 128),
-                ("get_federation_trust_material", 128),
+                ("get_fman_trust_material", 128),
             ]),
         )
         .accept(

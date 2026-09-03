@@ -2,12 +2,14 @@
 
 ## Evidence maintenance
 
-The mint-v2 receive-replay narrow review found that one exact protected
-operation-log lookup occurs only inside a selected wallet's inbound receive
-after `AlreadyReceived`. It adds no unsigned FI verb, trust request, seat
-fan-out, permit retention, or network wait. The documented trust-material
-counterexample and the claim's `Falsified` status remain unchanged. This local
-maintenance does not re-verify the claim.
+The FMan-scoped trust-material redesign removed federation/peer selectors and
+all fleet/seat traversal from the public trust read. The former seat-fanout
+counterexample was checked against the new handler and is no longer reachable:
+the handler reads one bounded in-memory authorization snapshot and the current
+endpoint, then signs and validates one bounded response without child I/O. The
+obsolete falsification record was removed. This maintenance sets the claim to
+Unverified rather than treating repair of one counterexample as full
+re-verification.
 
 ## Scope and model
 
@@ -60,72 +62,44 @@ examines at most 1,000,000 msat across the client's finite configured tier set.
 Together with request frame/semantic bounds, these explicit work bounds limit
 one call; repetition alone is the request volume A-abuse-controls owns.
 
-**L3 (code) — trust material ignores the cheap filter until after fleet-wide
-child IO.** The request is semantically capped at 4 KiB and 64 peer ids. Despite
-that small input, `federation_bindings` first clones **every** seat in the fleet
-and sequentially calls `Seat::federation_binding` on each, then compares that
-seat's returned federation id/config hash before moving to the next seat. Each
-call occupies that seat's serialized
-command loop and, for a running seat, performs local child RPC for `status`,
-`client_config`, and `invite_code`, deriving and parsing the whole federation
-configuration. This per-seat federation comparison cannot avoid probing any
-seat. Only after the fleet scan does service code build the peer-id filter. It
-then signs one attestation per match, clones every cached holder
-authorization, digests the complete response, and signs it. Neither the
-request's federation mismatch nor a one-peer filter avoids the scan. No binding
-or final response is cached.
+**L3 (code) — FMan trust material is one bounded identity snapshot.**
+`GetFmanTrustMaterial` accepts only `ProtocolV1`; unknown fields fail decoding.
+The handler performs no fleet lookup, seat scan, child command, database access,
+or federation-client operation. It clones the current public endpoint and the
+FMan-wide retained holder-authorization set, whose retention limit equals the
+64-envelope response limit, signs the canonical response, and validates its
+size, URL, subject, freshness, and signature bounds before returning. Work is
+therefore bounded by the fixed authorization and response caps rather than by
+the number or health of hosted seats.
 
-The configured `max_seats` is an unconstrained `u32`; actual port allocation
-places a host-dependent ceiling on live seats, but the cost is still O(all
-installed seats), not O(the small request or returned matches). Consumer-side
-limits of 64 attestations and 128 KiB do not cap server-side scanning before a
-response is built.
+**L4 (code) — response writing is isolated from handler execution.** Iroh's
+bounded handler task owns a global stream permit only through request decoding,
+service execution, and typed response serialization. It hands the encoded
+response to a separately bounded per-method writer partition before releasing
+handler capacity. A slow reader can consume that method's writer capacity, but
+cannot retain all handler permits or the writer capacity of an unrelated
+unsigned FI verb.
 
-**L4 (code) — transport turns repeated fan-out into a global permit amplifier.**
-Iroh grants 128 global stream permits. A permit covers request read, decoded
-service execution, and typed-service response serialization; it is released
-before the outer response-frame encoding and response write. Each seat command
-channel has capacity one and its loop processes
-commands serially. Consequently concurrent trust-material handlers aimed at
-any federation queue behind the same first slow seat while retaining their
-global permits. The ten-second Iroh timeout covers only initial frame reading;
-the child client's separate five-second connection and ten-second request
-timeouts bound each active child operation but do not bound time spent waiting
-behind earlier seat commands.
-
-The first two verbs therefore have bounded local work under the assumptions.
-L3 and L4 do not establish the property for `GetFederationTrustMaterial`:
-they expose fleet-wide child I/O before filtering and retention of the global
-permit while handlers queue behind a capacity-one seat loop. The current
-counterexample is preserved in
-[falsification-trust-material-seat-fanout.md](falsification-trust-material-seat-fanout.md).
+L3 removes the previously recorded trust-material amplification path. L1, L2,
+and the transport argument have not been comprehensively re-audited in this
+maintenance pass, so the parent claim remains Unverified.
 
 ## Residual windows
 
-- The exact delay observed by an unrelated request depends on semaphore wake
-  order and when it arrives. The
-  [counterexample](falsification-trust-material-seat-fanout.md) needs only the
-  reachable initial interval in which all permits are held; once the first
-  timeout releases a permit, a queued unrelated request can run.
-  It does not claim every unrelated request waits for all 128 child timeouts.
 - `GetAvailability`'s SQLite aggregate and `GetQuote`'s denomination/signing
-  work are uncached, but one request is bounded by the quote/refund output caps
-  and fixed refund-repair search. This record does not label ordinary bounded
-  healthy cost a violation once A-abuse-controls limits repetition.
-- A trust response can itself exceed verifier limits if the fleet/source
-  contains too many matching bindings or authorizations. That correctness gap
-  is not needed for the documented counterexample; the amplification occurs
-  before response validation or writing.
-- Child RPC deadlines rely on Tokio monotonic time. V9 clock behavior is owned
-  by
-  the persisted-wall-clock recovery gap.
+  work remain uncached; their existing local bounds have not been re-verified
+  here.
+- The response writer pools are finite. Saturating one unsigned method's writer
+  partition can delay that method, while the per-method partition prevents it
+  from consuming another unsigned method's writers.
+- Trust-material verification still performs work proportional to the retained
+  authorization set and serialized response, both bounded by shared constants.
 
 ## Weakest links
 
-The qualitative word “disproportionate” is grounded here in two concrete
-ratios: O(all seats) work for a constant-size mismatch and 128 accepted calls
-retaining the whole fixed handler pool while a capacity-one seat queue performs
-serial timed IO. The 1,280-second aggregate/last-request tail is illustrative for a withholding
-`status` request; connection refusal or an earlier failure is cheaper. The
-source reading has no load regression test, but the scan/filter order, channel
-capacity, timeouts, and permit scope are explicit.
+L1 and L2 retain manual cost inventories for availability and quote preparation.
+L3 relies on the shared authorization-retention and response-size constants
+remaining aligned with the producer, while L4 relies on the transport's
+per-method writer partitions remaining distinct. This maintenance reran the
+former source-level seat-fanout counterexample against the new call graph, not a
+complete load or scheduler verification of all three verbs.

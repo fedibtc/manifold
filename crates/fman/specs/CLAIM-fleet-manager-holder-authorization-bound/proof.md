@@ -45,7 +45,7 @@ authentic events and may return events that do not match the requested kind or
 tags. It cannot forge a signature under an uncompromised key or find the hash
 collisions excluded by A1. The claim covers the daemon's durable authorization cache, current in-memory
 authorization vector, the operator's `AuthorizationObserved` projection, the
-FI-facing `GetFederationTrustMaterial` response, kind-37701 advertisement
+FI-facing `GetFmanTrustMaterial` response, kind-37701 advertisement
 carriage, and guardian telemetry-registration carriage. It makes no claim about a relying consumer's acceptance of that
 material.
 
@@ -131,7 +131,7 @@ and `holder_authorizations()` gives the complete official sink list:
   advertisement; and
 - the binary's concrete `NostrTrustMaterialSource::holder_authorizations`
   clones the same watch. The official binary binds that source once into the
-  RPC service; `get_federation_trust_material` copies it into the response and
+  RPC service; `get_fman_trust_material` copies it into the response and
   signs the complete material.
 - the telemetry worker clones the same runtime vector, deterministically selects
   one envelope, and passes it to `Fleet::telemetry_registration_requests`.

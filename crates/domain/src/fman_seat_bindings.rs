@@ -218,6 +218,7 @@ impl FmanSeatBindings {
                 ));
             }
             verified.push(VerifiedSeatBinding {
+                attestation: binding.clone(),
                 peer_id: statement.peer_id,
                 guardian_identity: statement.guardian_identity,
                 fman_pubkey: statement.fman_pubkey,
@@ -276,6 +277,9 @@ struct RawFmanSeatBindings {
 /// One seat binding that verified against a federation's final config.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct VerifiedSeatBinding {
+    /// Original FMan-signed attestation carried by consensus metadata.
+    pub attestation: FmanPeerAttestation,
+
     /// Fedimint peer id this binding covers.
     pub peer_id: PeerId,
 

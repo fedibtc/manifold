@@ -1,75 +1,75 @@
-//! Tests for FMan federation-directory and public trust-material types.
+//! Tests for FMan directory and public trust-material types.
+
+use std::sync::LazyLock;
 
 use super::*;
-use crate::FmanPeerAttestationStatement;
-use bitcoin::secp256k1::{PublicKey, SECP256K1, SecretKey as BitcoinSecretKey};
+use fedi_credential_sdk_protocol::{
+    HolderAuthorizationRequest, HolderContext, IssuerContext, IssuerSecretKeys, PendingIssuance,
+};
 use nostr::{
     Keys, SecretKey,
     secp256k1::{Message, schnorr::Signature as SchnorrSignature},
 };
-use stability_pool_common::{Account, AccountType};
 
-fn guardian_fee_account(byte: u8) -> Account {
-    Account::single(
-        PublicKey::from_secret_key(
-            SECP256K1,
-            &BitcoinSecretKey::from_slice(&[byte; 32]).expect("fixed test scalar is valid"),
-        ),
-        AccountType::BtcDepositor,
+static ISSUER_SECRET_KEYS: LazyLock<IssuerSecretKeys> = LazyLock::new(|| {
+    serde_json::from_str(include_str!("../trust_score/issuer-secret-keys.json"))
+        .expect("fixed test issuer keys deserialize")
+});
+
+fn holder_envelope(subject: &Pubkey) -> HolderAuthorizationEnvelope {
+    let issuer = IssuerContext::import_secret_key(&ISSUER_SECRET_KEYS).expect("import issuer");
+    let authority = issuer.issuer_authority(vec![]).expect("issuer authority");
+    let holder = HolderContext::generate();
+    let info = crate::trust_score_info_v1(6).expect("legal trust level");
+    let (request, pending) = PendingIssuance::create_request(
+        &authority.issuer.issuance_key,
+        authority.issuer.issuer_id_pubkey.clone(),
+        info.clone(),
+        serde_json::json!(holder.public_key().to_string()),
     )
-}
-
-fn example_request() -> GetFederationTrustMaterialRequest {
-    GetFederationTrustMaterialRequest {
-        version: ProtocolV1,
-        federation_id: FederationId("fed".to_owned()),
-        federation_config_hash: HashBytes(vec![1, 2, 3]),
-        peer_ids: vec![],
+    .expect("create issuance request");
+    let issued = issuer
+        .issue_credential(info, &request)
+        .expect("issue credential");
+    let credential = pending
+        .finalize(&authority.issuer.issuance_key, &issued)
+        .expect("finalize credential");
+    let holder_authorization = holder
+        .authorize_credential_use_at_time(
+            HolderAuthorizationRequest {
+                subject_pubkey: subject.0.parse().expect("subject pubkey"),
+            },
+            &credential,
+            1_000,
+        )
+        .expect("authorize credential use");
+    HolderAuthorizationEnvelope {
+        holder_authorization,
+        signed_credential: credential,
     }
 }
 
-fn example_material(keys: &Keys) -> FmanFederationTrustMaterial {
-    FmanFederationTrustMaterial {
+fn example_request() -> GetFmanTrustMaterialRequest {
+    GetFmanTrustMaterialRequest {
+        version: ProtocolV1,
+    }
+}
+
+fn example_material(keys: &Keys) -> FmanTrustMaterial {
+    FmanTrustMaterial {
         fman_pubkey: Pubkey(keys.public_key().to_string()),
-        federation_id: FederationId("fed".to_owned()),
-        federation_config_hash: HashBytes(vec![1, 2, 3]),
         issued_at: Timestamp(10),
         expires_at: Timestamp(20),
         public_api_urls: vec![Url("iroh://node-a".to_owned())],
-        peer_attestations: vec![],
         holder_authorizations: vec![],
     }
 }
 
-fn signed_response(
-    keys: &Keys,
-    material: FmanFederationTrustMaterial,
-) -> GetFederationTrustMaterialResponse {
+fn signed_response(keys: &Keys, material: FmanTrustMaterial) -> GetFmanTrustMaterialResponse {
     let message = Message::from_digest(material.digest().expect("material digests"));
-    GetFederationTrustMaterialResponse {
+    GetFmanTrustMaterialResponse {
         version: ProtocolV1,
         material,
-        proof: SchnorrSignatureProof {
-            signature: keys.sign_schnorr(&message),
-        },
-    }
-}
-
-fn signed_peer_attestation(keys: &Keys, peer_id: &str) -> FmanPeerAttestation {
-    let statement = FmanPeerAttestationStatement {
-        fman_pubkey: Pubkey(keys.public_key().to_string()),
-        federation_id: FederationId("fed".to_owned()),
-        federation_config_hash: HashBytes(vec![1, 2, 3]),
-        peer_id: PeerId(peer_id.to_owned()),
-        guardian_identity: crate::GuardianIdentity(format!("guardian-{peer_id}")),
-        guardian_fee_account: guardian_fee_account(1),
-        issued_at: Timestamp(11),
-    };
-    let message = Message::from_digest(statement.digest().expect("attestation digests"));
-
-    FmanPeerAttestation {
-        version: ProtocolV1,
-        attestation: statement,
         proof: SchnorrSignatureProof {
             signature: keys.sign_schnorr(&message),
         },
@@ -84,7 +84,6 @@ fn fman_api_urls_metadata_sorts_dedupes_and_canonicalizes() {
         Url("iroh://node-a".to_owned()),
     ])
     .expect("metadata validates");
-
     assert_eq!(
         metadata.fman_api_urls(),
         [
@@ -102,7 +101,6 @@ fn fman_api_urls_metadata_sorts_dedupes_and_canonicalizes() {
 fn fman_api_urls_parse_requires_exact_canonical_value() {
     let canonical = "{\"fman_api_urls\":[\"iroh://node-a\",\"iroh://node-b\"],\"version\":1}";
     let parsed = FmanApiUrlsMetadata::parse_canonical(canonical).expect("canonical parses");
-
     assert_eq!(
         parsed.fman_api_urls(),
         [
@@ -154,7 +152,6 @@ fn fman_api_urls_validator_rejects_non_iroh_discovery_data() {
 #[test]
 fn fman_api_urls_validator_rejects_long_url() {
     let url = Url(format!("iroh://{}", "a".repeat(FMAN_API_URL_MAX_BYTES)));
-
     assert_eq!(
         validate_fman_api_url(&url).unwrap_err(),
         FmanApiUrlsMetadataError::UrlTooLong
@@ -166,7 +163,6 @@ fn fman_api_urls_metadata_enforces_count_limit() {
     let urls = (0..=FMAN_API_URLS_MAX_COUNT)
         .map(|idx| Url(format!("iroh://node-{idx}")))
         .collect::<Vec<_>>();
-
     assert_eq!(
         FmanApiUrlsMetadata::new(urls).unwrap_err(),
         FmanApiUrlsMetadataError::TooManyUrls
@@ -178,7 +174,6 @@ fn fman_api_urls_metadata_enforces_canonical_value_size_limit() {
     let urls = (0..FMAN_API_URLS_MAX_COUNT)
         .map(|idx| Url(format!("iroh://{}-{idx}", "a".repeat(120))))
         .collect::<Vec<_>>();
-
     assert_eq!(
         FmanApiUrlsMetadata::new(urls).unwrap_err(),
         FmanApiUrlsMetadataError::ValueTooLarge
@@ -186,85 +181,87 @@ fn fman_api_urls_metadata_enforces_canonical_value_size_limit() {
 }
 
 #[test]
-fn federation_trust_material_canonical_payload_is_typed() {
-    let material = FmanFederationTrustMaterial {
+fn fman_trust_material_canonical_payload_is_typed() {
+    let material = FmanTrustMaterial {
         fman_pubkey: Pubkey("fman".to_owned()),
-        federation_id: FederationId("fed".to_owned()),
-        federation_config_hash: HashBytes(vec![1, 2, 3]),
         issued_at: Timestamp(10),
         expires_at: Timestamp(20),
         public_api_urls: vec![Url("iroh://node-a".to_owned())],
-        peer_attestations: vec![],
         holder_authorizations: vec![],
     };
-
     assert_eq!(
         String::from_utf8(material.canonical_bytes().expect("material canonicalizes")).unwrap(),
-        "{\"material\":{\"expires_at\":20,\"federation_config_hash\":[1,2,3],\"federation_id\":\"fed\",\"fman_pubkey\":\"fman\",\"holder_authorizations\":[],\"issued_at\":10,\"peer_attestations\":[],\"public_api_urls\":[\"iroh://node-a\"]},\"type\":\"fedi.fman.federation-trust-material\",\"version\":1}"
+        "{\"material\":{\"expires_at\":20,\"fman_pubkey\":\"fman\",\"holder_authorizations\":[],\"issued_at\":10,\"public_api_urls\":[\"iroh://node-a\"]},\"type\":\"fedi.fman.trust-material\",\"version\":1}"
     );
 }
 
 #[test]
-fn federation_trust_material_digest_is_stable() {
-    let material = FmanFederationTrustMaterial {
+fn fman_trust_material_digest_is_stable() {
+    let material = FmanTrustMaterial {
         fman_pubkey: Pubkey("fman".to_owned()),
-        federation_id: FederationId("fed".to_owned()),
-        federation_config_hash: HashBytes(vec![1, 2, 3]),
         issued_at: Timestamp(10),
         expires_at: Timestamp(20),
         public_api_urls: vec![Url("iroh://node-a".to_owned())],
-        peer_attestations: vec![],
         holder_authorizations: vec![],
     };
-
-    // Repinned on 2026-08-03 when `signed_credentials` was folded into
-    // `holder_authorizations` as envelopes. The digest is what the FMan signs
-    // and what every verifier recomputes, so a change here is a wire break, not
-    // a refactor — safe only because the verb had no producer at the time.
     assert_eq!(
         material.digest().expect("material digests"),
         [
-            59, 194, 16, 177, 241, 189, 99, 231, 206, 31, 215, 120, 186, 255, 22, 104, 234, 75, 38,
-            226, 118, 174, 54, 186, 2, 10, 62, 247, 209, 161, 122, 163,
+            181, 197, 231, 84, 87, 214, 0, 126, 17, 117, 73, 30, 49, 27, 217, 38, 31, 146, 51, 168,
+            63, 202, 32, 140, 113, 26, 249, 167, 214, 178, 103, 66
         ]
     );
 }
 
 #[test]
-fn federation_trust_material_response_verifies_signature() {
+fn fman_trust_material_response_verifies_for_expected_identity() {
     let keys = Keys::generate();
     let response = signed_response(&keys, example_material(&keys));
-
+    let expected = Pubkey(keys.public_key().to_string());
     assert_eq!(
         response
-            .verify_envelope_signature()
+            .verify_for_fman(&expected, Timestamp(12), 60)
             .expect("response verifies"),
         response.material
     );
 }
 
 #[test]
-fn federation_trust_material_response_rejects_wrong_signature() {
+fn fman_trust_material_response_rejects_unexpected_identity() {
     let keys = Keys::generate();
-    let wrong_keys = Keys::generate();
-    let material = example_material(&keys);
-    let message = Message::from_digest([7_u8; 32]);
-    let response = GetFederationTrustMaterialResponse {
-        version: ProtocolV1,
-        material,
-        proof: SchnorrSignatureProof {
-            signature: wrong_keys.sign_schnorr(&message),
-        },
-    };
-
+    let response = signed_response(&keys, example_material(&keys));
+    let unexpected = Pubkey(Keys::generate().public_key().to_string());
     assert_eq!(
-        response.verify_envelope_signature().unwrap_err(),
-        FmanFederationTrustMaterialVerificationError::InvalidSignature
+        response
+            .verify_for_fman(&unexpected, Timestamp(12), 60)
+            .unwrap_err(),
+        FmanTrustMaterialVerificationError::UnexpectedFman
     );
 }
 
 #[test]
-fn federation_trust_material_response_wire_shape_includes_proof() {
+fn fman_trust_material_response_rejects_wrong_signature() {
+    let keys = Keys::generate();
+    let wrong_keys = Keys::generate();
+    let material = example_material(&keys);
+    let expected = material.fman_pubkey.clone();
+    let response = GetFmanTrustMaterialResponse {
+        version: ProtocolV1,
+        material,
+        proof: SchnorrSignatureProof {
+            signature: wrong_keys.sign_schnorr(&Message::from_digest([7_u8; 32])),
+        },
+    };
+    assert_eq!(
+        response
+            .verify_for_fman(&expected, Timestamp(12), 60)
+            .unwrap_err(),
+        FmanTrustMaterialVerificationError::InvalidSignature
+    );
+}
+
+#[test]
+fn fman_trust_material_response_wire_shape_includes_proof() {
     let secret =
         SecretKey::parse("0000000000000000000000000000000000000000000000000000000000000001")
             .expect("test secret parses");
@@ -272,19 +269,15 @@ fn federation_trust_material_response_wire_shape_includes_proof() {
     let mut response = signed_response(&keys, example_material(&keys));
     response.proof.signature =
         SchnorrSignature::from_slice(&[1_u8; 64]).expect("test signature parses");
-
     assert_eq!(
         serde_json::to_value(&response).expect("response serializes"),
         serde_json::json!({
             "version": 1,
             "material": {
                 "fman_pubkey": "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",
-                "federation_id": "fed",
-                "federation_config_hash": [1, 2, 3],
                 "issued_at": 10,
                 "expires_at": 20,
                 "public_api_urls": ["iroh://node-a"],
-                "peer_attestations": [],
                 "holder_authorizations": [],
             },
             "proof": {
@@ -295,229 +288,193 @@ fn federation_trust_material_response_wire_shape_includes_proof() {
 }
 
 #[test]
-fn federation_trust_material_response_verifies_for_request() {
+fn fman_trust_material_response_rejects_invalid_time_windows() {
     let keys = Keys::generate();
-    let mut material = example_material(&keys);
-    material.peer_attestations = vec![signed_peer_attestation(&keys, "0")];
-    let response = signed_response(&keys, material);
-
-    assert_eq!(
-        response
-            .verify_for_request(&example_request(), Timestamp(12), 60)
-            .expect("response verifies"),
-        response.material
-    );
-}
-
-#[test]
-fn federation_trust_material_response_rejects_config_hash_mismatch() {
-    let keys = Keys::generate();
-    let response = signed_response(&keys, example_material(&keys));
-    let mut request = example_request();
-    request.federation_config_hash = HashBytes(vec![9]);
-
-    assert_eq!(
-        response
-            .verify_for_request(&request, Timestamp(12), 60)
-            .unwrap_err(),
-        FmanFederationTrustMaterialVerificationError::ConfigHashMismatch
-    );
-}
-
-#[test]
-fn federation_trust_material_request_rejects_oversized_fields() {
-    let mut request = example_request();
-    request.federation_id =
-        FederationId("a".repeat(FMAN_TRUST_MATERIAL_FEDERATION_ID_MAX_BYTES + 1));
-    assert_eq!(
-        request.validate().unwrap_err(),
-        FmanFederationTrustMaterialVerificationError::InvalidFederationId
-    );
-
-    let mut request = example_request();
-    request.federation_config_hash =
-        HashBytes(vec![1; FMAN_TRUST_MATERIAL_CONFIG_HASH_MAX_BYTES + 1]);
-    assert_eq!(
-        request.validate().unwrap_err(),
-        FmanFederationTrustMaterialVerificationError::InvalidConfigHash
-    );
-
-    let mut request = example_request();
-    request.peer_ids = vec![PeerId(
-        "a".repeat(FMAN_TRUST_MATERIAL_PEER_ID_MAX_BYTES + 1),
-    )];
-    assert_eq!(
-        request.validate().unwrap_err(),
-        FmanFederationTrustMaterialVerificationError::InvalidPeerId
-    );
-}
-
-#[test]
-fn federation_trust_material_request_rejects_oversized_request() {
-    let mut request = example_request();
-    request.peer_ids = (0..FMAN_TRUST_MATERIAL_PEER_FILTER_MAX_COUNT)
-        .map(|idx| PeerId(format!("peer-{idx}-{}", "a".repeat(55))))
-        .collect();
-
-    assert_eq!(
-        request.validate().unwrap_err(),
-        FmanFederationTrustMaterialVerificationError::RequestTooLarge
-    );
-}
-
-#[test]
-fn federation_trust_material_response_rejects_invalid_time_windows() {
-    let keys = Keys::generate();
+    let expected = Pubkey(keys.public_key().to_string());
     let mut material = example_material(&keys);
     material.expires_at = Timestamp(10);
-    let response = signed_response(&keys, material);
-
     assert_eq!(
-        response
-            .verify_for_request(&example_request(), Timestamp(12), 60)
+        signed_response(&keys, material)
+            .verify_for_fman(&expected, Timestamp(12), 60)
             .unwrap_err(),
-        FmanFederationTrustMaterialVerificationError::InvalidFreshnessWindow
+        FmanTrustMaterialVerificationError::InvalidFreshnessWindow
     );
 
     let mut material = example_material(&keys);
     material.issued_at = Timestamp(5000);
     material.expires_at = Timestamp(5010);
-    let response = signed_response(&keys, material);
     assert_eq!(
-        response
-            .verify_for_request(&example_request(), Timestamp(12), 60)
+        signed_response(&keys, material)
+            .verify_for_fman(&expected, Timestamp(12), 60)
             .unwrap_err(),
-        FmanFederationTrustMaterialVerificationError::IssuedInFuture
+        FmanTrustMaterialVerificationError::IssuedInFuture
     );
 }
 
 #[test]
-fn federation_trust_material_response_rejects_invalid_public_urls() {
+fn fman_trust_material_response_rejects_invalid_or_noncanonical_public_urls() {
     let keys = Keys::generate();
+    let expected = Pubkey(keys.public_key().to_string());
     let mut material = example_material(&keys);
     material.public_api_urls = vec![Url("https://node-a".to_owned())];
-    let response = signed_response(&keys, material);
-
     assert_eq!(
-        response
-            .verify_for_request(&example_request(), Timestamp(12), 60)
+        signed_response(&keys, material)
+            .verify_for_fman(&expected, Timestamp(12), 60)
             .unwrap_err(),
-        FmanFederationTrustMaterialVerificationError::InvalidPublicApiUrls(
+        FmanTrustMaterialVerificationError::InvalidPublicApiUrls(
             FmanApiUrlsMetadataError::UnsupportedUrlScheme
         )
     );
-}
 
-#[test]
-fn federation_trust_material_response_rejects_noncanonical_public_urls() {
-    let keys = Keys::generate();
     let mut material = example_material(&keys);
     material.public_api_urls = vec![
         Url("iroh://node-b".to_owned()),
         Url("iroh://node-a".to_owned()),
     ];
-    let response = signed_response(&keys, material);
-
     assert_eq!(
-        response
-            .verify_for_request(&example_request(), Timestamp(12), 60)
+        signed_response(&keys, material)
+            .verify_for_fman(&expected, Timestamp(12), 60)
             .unwrap_err(),
-        FmanFederationTrustMaterialVerificationError::InvalidPublicApiUrls(
+        FmanTrustMaterialVerificationError::InvalidPublicApiUrls(
             FmanApiUrlsMetadataError::NonCanonical
         )
     );
 }
 
 #[test]
-fn federation_trust_material_response_rejects_duplicate_public_urls() {
+fn fman_trust_material_response_rejects_noncanonical_fman_pubkey() {
     let keys = Keys::generate();
+    let mut material = example_material(&keys);
+    material.fman_pubkey = Pubkey(keys.public_key().to_string().to_uppercase());
+    let response = signed_response(&keys, material);
+    assert_eq!(
+        response.verify_envelope_signature().unwrap_err(),
+        FmanTrustMaterialVerificationError::InvalidFmanPubkey
+    );
+}
+
+#[test]
+fn fman_trust_material_response_rejects_expired_and_overlong_validity() {
+    let keys = Keys::generate();
+    let expected = Pubkey(keys.public_key().to_string());
+    let mut material = example_material(&keys);
+    material.issued_at = Timestamp(1);
+    material.expires_at = Timestamp(10);
+    assert_eq!(
+        signed_response(&keys, material)
+            .verify_for_fman(&expected, Timestamp(10), 60)
+            .unwrap_err(),
+        FmanTrustMaterialVerificationError::Expired
+    );
+
+    let mut material = example_material(&keys);
+    material.expires_at = Timestamp(100);
+    assert_eq!(
+        signed_response(&keys, material)
+            .verify_for_fman(&expected, Timestamp(12), 60)
+            .unwrap_err(),
+        FmanTrustMaterialVerificationError::ValidityWindowTooLarge
+    );
+}
+
+#[test]
+fn fman_trust_material_response_enforces_response_and_holder_bounds() {
+    let keys = Keys::generate();
+    let expected = Pubkey(keys.public_key().to_string());
+    let mut material = example_material(&keys);
+    material.public_api_urls = vec![Url(format!(
+        "iroh://{}",
+        "a".repeat(FMAN_TRUST_MATERIAL_MAX_RESPONSE_BYTES)
+    ))];
+    assert_eq!(
+        signed_response(&keys, material)
+            .verify_for_fman(&expected, Timestamp(12), 60)
+            .unwrap_err(),
+        FmanTrustMaterialVerificationError::ResponseTooLarge
+    );
+
+    let mut material = example_material(&keys);
+    let envelope = holder_envelope(&expected);
+    material.holder_authorizations =
+        vec![envelope; FMAN_TRUST_MATERIAL_MAX_HOLDER_AUTHORIZATIONS + 1];
+    assert_eq!(
+        signed_response(&keys, material)
+            .verify_for_fman(&expected, Timestamp(12), 60)
+            .unwrap_err(),
+        FmanTrustMaterialVerificationError::TooManyHolderAuthorizations
+    );
+}
+
+#[test]
+fn fman_trust_material_response_rejects_wrong_holder_subject() {
+    let keys = Keys::generate();
+    let expected = Pubkey(keys.public_key().to_string());
+    let other = Pubkey(Keys::generate().public_key().to_string());
+    let mut material = example_material(&keys);
+    material.holder_authorizations = vec![holder_envelope(&other)];
+    assert_eq!(
+        signed_response(&keys, material)
+            .verify_for_fman(&expected, Timestamp(12), 60)
+            .unwrap_err(),
+        FmanTrustMaterialVerificationError::HolderAuthorizationSubjectMismatch
+    );
+}
+
+#[test]
+fn fman_trust_material_response_rejects_duplicate_public_urls() {
+    let keys = Keys::generate();
+    let expected = Pubkey(keys.public_key().to_string());
     let mut material = example_material(&keys);
     material.public_api_urls = vec![
         Url("iroh://node-a".to_owned()),
         Url("iroh://node-a".to_owned()),
     ];
-    let response = signed_response(&keys, material);
-
     assert_eq!(
-        response
-            .verify_for_request(&example_request(), Timestamp(12), 60)
+        signed_response(&keys, material)
+            .verify_for_fman(&expected, Timestamp(12), 60)
             .unwrap_err(),
-        FmanFederationTrustMaterialVerificationError::InvalidPublicApiUrls(
+        FmanTrustMaterialVerificationError::InvalidPublicApiUrls(
             FmanApiUrlsMetadataError::NonCanonical
         )
     );
 }
 
 #[test]
-fn federation_trust_material_response_rejects_nested_fman_mismatch() {
-    let keys = Keys::generate();
-    let other_keys = Keys::generate();
-    let mut material = example_material(&keys);
-    material.peer_attestations = vec![signed_peer_attestation(&other_keys, "0")];
-    let response = signed_response(&keys, material);
-
-    assert_eq!(
-        response
-            .verify_for_request(&example_request(), Timestamp(12), 60)
-            .unwrap_err(),
-        FmanFederationTrustMaterialVerificationError::NestedFmanMismatch
-    );
-}
-
-#[test]
-fn federation_trust_material_response_rejects_peer_filter_mismatch() {
-    let keys = Keys::generate();
-    let mut material = example_material(&keys);
-    material.peer_attestations = vec![signed_peer_attestation(&keys, "1")];
-    let response = signed_response(&keys, material);
-    let mut request = example_request();
-    request.peer_ids = vec![PeerId("0".to_owned())];
-
-    assert_eq!(
-        response
-            .verify_for_request(&request, Timestamp(12), 60)
-            .unwrap_err(),
-        FmanFederationTrustMaterialVerificationError::PeerFilterMismatch
-    );
-}
-
-#[test]
-fn federation_trust_material_response_rejects_noncanonical_fman_pubkey() {
-    let keys = Keys::generate();
-    let mut material = example_material(&keys);
-    material.fman_pubkey = Pubkey(keys.public_key().to_string().to_uppercase());
-    let response = signed_response(&keys, material);
-
-    assert_eq!(
-        response.verify_envelope_signature().unwrap_err(),
-        FmanFederationTrustMaterialVerificationError::InvalidFmanPubkey
-    );
-}
-
-#[test]
-fn federation_trust_material_response_rejects_malformed_fman_pubkey() {
+fn fman_trust_material_response_rejects_malformed_fman_pubkey() {
     let keys = Keys::generate();
     let mut material = example_material(&keys);
     material.fman_pubkey = Pubkey("not-a-nostr-key".to_owned());
     let response = signed_response(&keys, material);
-
     assert_eq!(
         response.verify_envelope_signature().unwrap_err(),
-        FmanFederationTrustMaterialVerificationError::InvalidFmanPubkey
+        FmanTrustMaterialVerificationError::InvalidFmanPubkey
     );
 }
 
 #[test]
-fn federation_trust_material_request_wire_shape_is_stable() {
-    let request = example_request();
-
+fn fman_trust_material_request_wire_shape_is_stable() {
     assert_eq!(
-        serde_json::to_value(request).expect("request serializes"),
-        serde_json::json!({
-            "version": 1,
-            "federation_id": "fed",
-            "federation_config_hash": [1, 2, 3],
-            "peer_ids": [],
-        })
+        serde_json::to_value(example_request()).expect("request serializes"),
+        serde_json::json!({"version": 1})
     );
+    assert!(
+        serde_json::from_value::<GetFmanTrustMaterialRequest>(serde_json::json!({
+            "version": 1,
+            "federation_id": "old-shape-is-not-accepted"
+        }))
+        .is_err()
+    );
+}
+
+#[test]
+fn fman_trust_material_wire_rejects_unknown_response_fields() {
+    let keys = Keys::generate();
+    let response = signed_response(&keys, example_material(&keys));
+    let mut value = serde_json::to_value(&response).expect("response serializes");
+    value["material"]["federation_id"] = serde_json::json!("old-field");
+    assert!(serde_json::from_value::<GetFmanTrustMaterialResponse>(value).is_err());
+
+    let mut value = serde_json::to_value(response).expect("response serializes");
+    value["peer_attestations"] = serde_json::json!([]);
+    assert!(serde_json::from_value::<GetFmanTrustMaterialResponse>(value).is_err());
 }
