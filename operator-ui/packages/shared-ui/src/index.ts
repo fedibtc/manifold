@@ -21,4 +21,5 @@ export {
   readQueryDisposition,
   useQueryDisposition
 } from './query/use-query-disposition/useQueryDisposition';
+export { newIdempotencyKey } from './utils/newIdempotencyKey';
 export { isTruncated, truncateMiddle } from './utils/truncateMiddle';

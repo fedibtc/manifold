@@ -1,4 +1,4 @@
-import { Banner, Button, TextInput } from '@operator-ui/common-ui';
+import { Banner, Button, newIdempotencyKey, TextInput } from '@operator-ui/common-ui';
 import type { RequestWithdrawalRequest } from '@operator-ui/types';
 import { useId, useState } from 'react';
 import { TopupPanel } from '@/features/funds/components/topup-panel/TopupPanel';
@@ -28,7 +28,7 @@ export const FundsActions = () => {
       return;
     }
     const request: RequestWithdrawalRequest = {
-      withdrawal_intent_id: crypto.randomUUID(),
+      withdrawal_intent_id: newIdempotencyKey(),
       address: trimmedAddress,
       amount: withdrawAmountValue,
       fee_rate_sat_per_vbyte: null

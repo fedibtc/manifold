@@ -1,3 +1,4 @@
+import { newIdempotencyKey } from '@operator-ui/common-ui';
 import type { SweepPaymentFeesResponse } from '@operator-ui/types';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { useRef } from 'react';
@@ -10,7 +11,7 @@ import { PAYMENT_FEDERATIONS_KEY } from '@/shared/api/hooks/use-payment-federati
 // amount can fail on mint and routing fees.
 export const useSweepPaymentFees = (federationId: string) => {
   const queryClient = useQueryClient();
-  const requestId = useRef(crypto.randomUUID());
+  const requestId = useRef(newIdempotencyKey());
 
   return useMutation({
     mutationFn: () =>
@@ -18,7 +19,7 @@ export const useSweepPaymentFees = (federationId: string) => {
         SweepPaymentFees: { federation_id: federationId, request_id: requestId.current }
       }),
     onSuccess: () => {
-      requestId.current = crypto.randomUUID();
+      requestId.current = newIdempotencyKey();
       void queryClient.invalidateQueries({ queryKey: PAYMENT_FEDERATIONS_KEY });
     }
   });

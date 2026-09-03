@@ -1,3 +1,4 @@
+import { newIdempotencyKey } from '@operator-ui/common-ui';
 import type { SweepGuardianFeesResponse } from '@operator-ui/types';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { useRef } from 'react';
@@ -9,7 +10,7 @@ import { guardianFeesKey } from '@/shared/api/hooks/use-guardian-fees/useGuardia
 // (crates/fman/core/src/admin.rs:104). Nothing still in the pool leaves this way.
 export const useSweepGuardianFees = (seatId: string) => {
   const queryClient = useQueryClient();
-  const requestId = useRef(crypto.randomUUID());
+  const requestId = useRef(newIdempotencyKey());
 
   return useMutation({
     mutationFn: () =>
@@ -17,7 +18,7 @@ export const useSweepGuardianFees = (seatId: string) => {
         SweepGuardianFees: { seat_id: seatId, request_id: requestId.current }
       }),
     onSuccess: () => {
-      requestId.current = crypto.randomUUID();
+      requestId.current = newIdempotencyKey();
       void queryClient.invalidateQueries({ queryKey: guardianFeesKey(seatId) });
     }
   });
