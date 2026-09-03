@@ -768,7 +768,6 @@ impl FleetManagerService for FleetManagerRpc {
                 request.key.clone(),
                 request.value.clone(),
                 self.min_guardian_fee_ppm(),
-                self.guardian_verification_fee_account.clone(),
             )
             .await
             .map_err(|err| map_seat_error("set_meta_field", err))?;

@@ -102,6 +102,7 @@ async fn opened_fleet(temp: &TempDir, db: crate::db::Db) -> Arc<crate::fleet::Fl
                     fedi_decentralized_manifold_environment::ManifoldEnvironment::Development,
                 first_port_base: PortBase::new(31_500).unwrap(),
                 setup_payments_configured: true,
+                guardian_verification_fee_account: None,
                 respawn: RespawnPolicy::default(),
                 // Tests hold the relay down and watch the scan land; a production
                 // cadence would only make them slow.

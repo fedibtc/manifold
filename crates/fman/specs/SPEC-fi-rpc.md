@@ -207,10 +207,12 @@ at weight four, every guardian at weight one, and the Guardian Verification Fee
 at weight one—and submits all three formation fields as one guarded target.
 Success means submitted, not live.
 
-After formation, `SetMetaField` may change only the guardian-fee rate. Every
-whole-object generic vote carrying fee fields revalidates the fixed recipient
-policy from the stored signed directory and live config. Endpoint proofs are
-not stored in the directory and are not rechecked during maintenance.
+After formation, `SetMetaField` may change only the guardian-fee rate among the
+fee-policy fields. The directory and recipient list are absent from the generic
+field registry. A generic write carries all non-target fields from the exact
+observed consensus occurrence unchanged; detecting a threshold replacement of
+formation-owned values and stopping the guardian is a separate, currently
+unimplemented lifecycle response.
 
 `RegisterGateway` carries the shared canonical `GatewayApiUrl` returned in
 signed FLIP completion evidence. The type accepts only public HTTPS or

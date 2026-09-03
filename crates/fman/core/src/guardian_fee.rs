@@ -161,20 +161,23 @@ pub struct FeePolicy {
     /// parse, or names it in a shape this version does not understand — all of
     /// which mean the same thing operationally: no share is provably ours.
     pub our_share: Option<(u64, u64)>,
+    /// Whether the complete live policy has the canonical split implied by
+    /// the current live directory and deployment account.
+    pub live_policy_matches: bool,
 }
 
 impl FeePolicy {
     /// Whether the live metadata leaves this guardian's compiled share intact.
     ///
-    /// No recipient policy is acceptable: guardian fees are optional. Once a
-    /// recipient value exists, however, malformed metadata, omission of this
-    /// guardian, and any weight other than the fixed guardian weight are all a
-    /// policy violation rather than merely "not currently paying us".
+    /// No fee policy is acceptable: guardian fees are optional. Once one
+    /// exists, the live policy must be structurally canonical and this
+    /// mnemonic-derived guardian account must appear at its compiled weight.
     pub fn share_matches_policy(&self) -> bool {
-        self.recipients.is_none()
-            || self
-                .our_share
-                .is_some_and(|(ours, _)| ours == GUARDIAN_RECIPIENT_WEIGHT)
+        !self.configured
+            || (self.live_policy_matches
+                && self
+                    .our_share
+                    .is_some_and(|(weight, _)| weight == GUARDIAN_RECIPIENT_WEIGHT))
     }
 }
 
@@ -199,6 +202,10 @@ struct RecipientEntry {
 /// Why a guardian-fee metadata value is one the payer will not honour.
 #[derive(Debug, thiserror::Error)]
 pub enum FeePolicyError {
+    #[error("guardian-fee metadata values must be strings")]
+    NonStringValue,
+    #[error("guardian-fee rate is not an unsigned integer")]
+    InvalidSendPpm,
     #[error("guardian-fee rate and recipient list must be present together")]
     Incomplete,
     #[error("guardian-fee rate exceeds the payer cap of {MAX_SEND_PPM} ppm")]
@@ -241,25 +248,38 @@ pub fn validate_fee_policy(
 /// The caller supplies the map from the meta module; this deliberately does
 /// not obtain it through a client, so policy reads can use the guardian's own
 /// consensus connection rather than a wallet client.
-pub fn fee_policy_from_meta(meta: &BTreeMap<String, String>, ours: AccountId) -> FeePolicy {
-    let send_ppm = meta
-        .get(SEND_PPM_META_KEY)
-        .and_then(|value| value.parse::<u64>().ok());
-    let recipients = meta.get(REMITTANCE_ACCOUNT_META_KEY).cloned();
-    let valid = validate_fee_policy(send_ppm, recipients.as_deref()).is_ok();
-    let our_share = valid
-        .then(|| {
-            recipients
-                .as_deref()
-                .and_then(|value| our_share_of(value, ours))
+pub fn fee_policy_from_meta(
+    meta: &BTreeMap<String, serde_json::Value>,
+    ours: AccountId,
+) -> Result<FeePolicy, FeePolicyError> {
+    let string_value = |key| match meta.get(key) {
+        None => Ok(None),
+        Some(serde_json::Value::String(value)) => Ok(Some(value.clone())),
+        Some(_) => Err(FeePolicyError::NonStringValue),
+    };
+    let send_ppm = string_value(SEND_PPM_META_KEY)?
+        .map(|value| {
+            value
+                .parse::<u64>()
+                .map_err(|_| FeePolicyError::InvalidSendPpm)
         })
-        .flatten();
-    FeePolicy {
-        configured: valid && send_ppm.is_some() && recipients.is_some(),
+        .transpose()?;
+    let recipients = string_value(REMITTANCE_ACCOUNT_META_KEY)?;
+    validate_fee_policy(send_ppm, recipients.as_deref())?;
+    let live_policy_matches = recipients.is_none() && send_ppm.is_none();
+    let our_share = recipients
+        .as_deref()
+        .and_then(|value| our_share_of(value, ours));
+    Ok(FeePolicy {
+        configured: send_ppm.is_some() && recipients.is_some(),
         send_ppm,
         recipients,
         our_share,
-    }
+        // The seat read path replaces this with a check against its live
+        // federation config, current directory, and deployment account.
+        // This parser alone can establish only that policy is absent.
+        live_policy_matches,
+    })
 }
 
 /// The recipient value this FMan will vote for, or why it will not.

@@ -63,6 +63,9 @@ pub struct FleetConfig {
     /// never be paid; `set_offered_price` refuses rather than selling seats
     /// no one can buy.
     pub setup_payments_configured: bool,
+    /// Deployment-owned Guardian Verification Fee account used both when
+    /// admitting votes and when judging the live policy shown to operators.
+    pub guardian_verification_fee_account: Option<stability_pool_client::common::Account>,
     /// How often the backup worker rescans every seat with nothing marked
     /// ([`crate::backup_worker::DEFAULT_SCAN_INTERVAL`]).
     pub backup_scan_interval: Duration,
@@ -1076,9 +1079,12 @@ impl Fleet {
         let seat = self
             .seat_by_id(seat_id)
             .ok_or_else(|| anyhow!("unknown seat"))?;
-        seat.guardian_fee_policy(self.guardian_fee_account_id(seat_id))
-            .await
-            .map_err(anyhow::Error::new)
+        seat.guardian_fee_policy(
+            self.guardian_fee_account_id(seat_id),
+            self.config.guardian_verification_fee_account.clone(),
+        )
+        .await
+        .map_err(anyhow::Error::new)
     }
 
     /// Collected ecash sitting in the guardian-fee client, not yet swept.
