@@ -437,6 +437,39 @@ fn release_markers_are_optional_and_invalid_markers_are_local() {
 }
 
 #[test]
+fn duplicate_histogram_parts_drop_only_their_family() {
+    for duplicate_suffix in ["bucket", "sum", "count"] {
+        let mut body = duration_histogram("iroh_api_connection_duration_seconds", "");
+        let duplicate = match duplicate_suffix {
+            "bucket" => "fm_iroh_api_connection_duration_seconds_bucket{le=\"0.005\"} 2\n",
+            "sum" => "fm_iroh_api_connection_duration_seconds_sum{} 2\n",
+            "count" => "fm_iroh_api_connection_duration_seconds_count{} 2\n",
+            _ => unreachable!(),
+        };
+        body.push_str(duplicate);
+        body.push_str("fm_backup_counts{timeframe=\"1d\"} 7\n");
+
+        let admitted = policy()
+            .project_until(body.as_bytes(), None)
+            .expect("a duplicate histogram part is family-local");
+        assert!(admitted.discarded_invalid_admitted, "{duplicate_suffix}");
+        assert_eq!(admitted.samples.len(), 2, "{duplicate_suffix}");
+        assert!(
+            admitted
+                .samples
+                .iter()
+                .any(|sample| sample.starts_with("fm_backup_counts{"))
+        );
+        assert!(
+            admitted
+                .samples
+                .iter()
+                .all(|sample| !sample.starts_with("fm_iroh_api_connection_duration_seconds_"))
+        );
+    }
+}
+
+#[test]
 fn bitcoin_rpc_inventory_is_exact() {
     let mut body = duration_histogram(
         "server_bitcoin_rpc_request_duration_seconds",
