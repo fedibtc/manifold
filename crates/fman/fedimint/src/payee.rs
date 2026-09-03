@@ -827,6 +827,12 @@ impl EcashWallet for Wallet {
             .0
             .parse()
             .map_err(|_| LockedPaymentPrepareError::Invalid)?;
+        // Policy publication can precede completion of the background join.
+        // Quotes are public and share transport capacity with unrelated FI
+        // verbs, so never let them queue behind join/open/recovery exclusion.
+        if !self.payment_client_is_open(parsed).await {
+            return Err(LockedPaymentPrepareError::Unavailable);
+        }
         if self.has_mint_v2_module(parsed).await.map_err(internal)? {
             self.quote_locked_v2(federation_id, parsed, price).await
         } else {

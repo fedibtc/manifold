@@ -241,6 +241,7 @@ fn fleet_manager_error_kind(error: &FleetManagerError) -> &'static str {
     match error {
         FleetManagerError::PlanNotOffered => "plan_not_offered",
         FleetManagerError::PaymentFederationNotAccepted => "payment_federation_not_accepted",
+        FleetManagerError::PaymentFederationUnavailable => "payment_federation_unavailable",
         FleetManagerError::InvalidPayment => "invalid_payment",
         FleetManagerError::CapacityExhausted => "capacity_exhausted",
         FleetManagerError::UnknownSeat => "unknown_seat",
@@ -428,6 +429,9 @@ impl FleetManagerService for FleetManagerRpc {
                         LockedPaymentPrepareError::Invalid => {
                             FleetManagerError::PaymentFederationNotAccepted
                         }
+                        LockedPaymentPrepareError::Unavailable => {
+                            FleetManagerError::PaymentFederationUnavailable
+                        }
                         LockedPaymentPrepareError::Internal(err) => {
                             internal_chain("get_quote", &err)
                         }
@@ -442,6 +446,9 @@ impl FleetManagerService for FleetManagerRpc {
                     .await
                     .map_err(|err| match err {
                         LockedPaymentPrepareError::Invalid => FleetManagerError::PlanNotOffered,
+                        LockedPaymentPrepareError::Unavailable => {
+                            FleetManagerError::PaymentFederationUnavailable
+                        }
                         LockedPaymentPrepareError::Internal(err) => {
                             internal_chain("get_quote", &err)
                         }
@@ -499,6 +506,9 @@ impl FleetManagerService for FleetManagerRpc {
                         .await
                         .map_err(|err| match err {
                             LockedPaymentPrepareError::Invalid => FleetManagerError::InvalidPayment,
+                            LockedPaymentPrepareError::Unavailable => {
+                                FleetManagerError::PaymentFederationUnavailable
+                            }
                             LockedPaymentPrepareError::Internal(err) => {
                                 internal_chain("create_seat", &err)
                             }

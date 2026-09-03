@@ -18,6 +18,10 @@ pub enum FleetManagerError {
     #[error("payment federation not accepted")]
     PaymentFederationNotAccepted,
 
+    /// The federation is accepted, but this FMan's payment client is not ready.
+    #[error("payment federation temporarily unavailable, retry")]
+    PaymentFederationUnavailable,
+
     /// Quote or payment evidence failed offline validation.
     #[error("invalid payment")]
     InvalidPayment,
