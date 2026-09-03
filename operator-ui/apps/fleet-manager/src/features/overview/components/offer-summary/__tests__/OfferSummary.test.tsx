@@ -29,11 +29,11 @@ describe('OfferSummary', () => {
     expect(screen.getByText('Not selling seats')).toBeTruthy();
   });
 
-  // The link names the whole offer, not just the price: the page behind it also
-  // sets the seat ceiling, and it is the only route to either.
   it('should link to the offer page', () => {
     renderSummary(50_000_000);
 
-    expect(screen.getByRole('link', { name: 'Change offer' }).getAttribute('href')).toBe('/offer');
+    expect(screen.getByRole('link', { name: 'Change price and seats' }).getAttribute('href')).toBe(
+      '/offer'
+    );
   });
 });

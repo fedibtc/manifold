@@ -4,7 +4,6 @@ import { useConfigureInitialOffer } from '@/features/setup/api/hooks/use-configu
 import { useOnboarding } from '@/shared/api/hooks/use-onboarding/useOnboarding';
 import { describeActionError } from '@/shared/utils/describeActionError';
 import { parsePriceField } from '@/shared/utils/offerPrice';
-import { parseSeatsField } from '@/shared/utils/seatCapacity';
 import styles from './SetupPrice.module.css';
 
 interface SetupPriceProps {
@@ -44,14 +43,14 @@ export const SetupPrice = ({ onDone }: SetupPriceProps) => {
       setValidationError(parsed.error);
       return;
     }
-    const parsedMaxSeats = parseSeatsField(maxSeats);
-    if (!parsedMaxSeats.ok) {
-      setValidationError(parsedMaxSeats.error);
+    const parsedMaxSeats = Number(maxSeats);
+    if (!Number.isInteger(parsedMaxSeats) || parsedMaxSeats < 0 || parsedMaxSeats > 4_294_967_295) {
+      setValidationError('Maximum seats must be a whole number from 0 to 4294967295.');
       return;
     }
     setValidationError(null);
     configureOffer.mutate(
-      { maxSeats: parsedMaxSeats.maxSeats, priceMsat: parsed.priceMsat },
+      { maxSeats: parsedMaxSeats, priceMsat: parsed.priceMsat },
       { onSuccess: onDone }
     );
   };
