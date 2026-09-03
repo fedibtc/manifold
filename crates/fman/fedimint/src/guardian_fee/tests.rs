@@ -1,12 +1,19 @@
 use std::collections::VecDeque;
+use std::sync::Arc;
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
 use fedimint_core::Amount;
+use fedimint_core::core::OperationId;
+use fedimint_core::db::Database;
 use fman_core::guardian_fee::{Collected, CollectionFailure, CollectionFailurePhase};
 use stability_pool_client::StabilityPoolWithdrawalOperationState;
 
-use super::{CollectionBalances, CollectionOperations, collect_operations, terminal_withdrawal};
+use super::{
+    CollectionBalances, CollectionOperations, Reconciled, collect_operations,
+    collection_receipt_prefix, read_collection_receipt, read_recorded_claimed,
+    record_collection_receipt, terminal_withdrawal,
+};
 
 struct FakeOperations {
     balances: Mutex<VecDeque<anyhow::Result<CollectionBalances>>>,
@@ -16,6 +23,7 @@ struct FakeOperations {
     unlock_await: Mutex<VecDeque<anyhow::Result<Amount>>>,
     idle_submit_calls: AtomicUsize,
     unlock_submit_calls: AtomicUsize,
+    receipts: Mutex<std::collections::BTreeMap<u8, Amount>>,
 }
 
 impl FakeOperations {
@@ -28,6 +36,7 @@ impl FakeOperations {
             unlock_await: Mutex::default(),
             idle_submit_calls: AtomicUsize::new(0),
             unlock_submit_calls: AtomicUsize::new(0),
+            receipts: Mutex::default(),
         }
     }
 
@@ -47,6 +56,35 @@ impl FakeOperations {
 #[async_trait::async_trait]
 impl CollectionOperations for FakeOperations {
     type Operation = u8;
+
+    async fn reconcile_unobserved(
+        &self,
+    ) -> Result<Reconciled, (CollectionFailurePhase, Reconciled)> {
+        Ok(Reconciled::default())
+    }
+
+    async fn receipt(&self, operation: &Self::Operation) -> anyhow::Result<Option<Amount>> {
+        Ok(self.receipts.lock().unwrap().get(operation).copied())
+    }
+
+    async fn recorded_claimed(&self) -> anyhow::Result<Amount> {
+        Ok(self
+            .receipts
+            .lock()
+            .unwrap()
+            .values()
+            .copied()
+            .fold(Amount::ZERO, |total, amount| total + amount))
+    }
+
+    async fn record_receipt(
+        &self,
+        operation: &Self::Operation,
+        amount: Amount,
+    ) -> anyhow::Result<()> {
+        self.receipts.lock().unwrap().insert(*operation, amount);
+        Ok(())
+    }
 
     async fn balances(&self) -> anyhow::Result<CollectionBalances> {
         self.balances
@@ -91,6 +129,105 @@ impl CollectionOperations for FakeOperations {
     }
 }
 
+/// A native operation survives cancellation while its FMan stack frame does
+/// not. Reconciliation is the only route from `pending` back to the caller.
+struct CancellationOperations {
+    idle: AtomicU64,
+    pending: AtomicU64,
+    recorded: AtomicU64,
+    await_completes: bool,
+    block_refresh: std::sync::atomic::AtomicBool,
+    submit_calls: AtomicUsize,
+    submitted: tokio::sync::Notify,
+    receipt_recorded: tokio::sync::Notify,
+}
+
+impl CancellationOperations {
+    fn new(idle: u64, await_completes: bool) -> Self {
+        Self {
+            idle: AtomicU64::new(idle),
+            pending: AtomicU64::new(0),
+            recorded: AtomicU64::new(0),
+            await_completes,
+            block_refresh: std::sync::atomic::AtomicBool::new(await_completes),
+            submit_calls: AtomicUsize::new(0),
+            submitted: tokio::sync::Notify::new(),
+            receipt_recorded: tokio::sync::Notify::new(),
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl CollectionOperations for CancellationOperations {
+    type Operation = u8;
+
+    async fn reconcile_unobserved(
+        &self,
+    ) -> Result<Reconciled, (CollectionFailurePhase, Reconciled)> {
+        let recovered = self.pending.swap(0, Ordering::SeqCst);
+        if recovered != 0 {
+            self.recorded.store(recovered, Ordering::SeqCst);
+        }
+        Ok(Reconciled {
+            newly_claimed: Amount::from_msats(recovered),
+            recorded_claimed: Amount::from_msats(self.recorded.load(Ordering::SeqCst)),
+        })
+    }
+
+    async fn receipt(&self, _operation: &Self::Operation) -> anyhow::Result<Option<Amount>> {
+        let amount = self.recorded.load(Ordering::SeqCst);
+        Ok((amount != 0).then(|| Amount::from_msats(amount)))
+    }
+
+    async fn recorded_claimed(&self) -> anyhow::Result<Amount> {
+        Ok(Amount::from_msats(self.recorded.load(Ordering::SeqCst)))
+    }
+
+    async fn record_receipt(
+        &self,
+        _operation: &Self::Operation,
+        amount: Amount,
+    ) -> anyhow::Result<()> {
+        self.recorded.store(amount.msats, Ordering::SeqCst);
+        self.pending.store(0, Ordering::SeqCst);
+        self.receipt_recorded.notify_waiters();
+        Ok(())
+    }
+
+    async fn balances(&self) -> anyhow::Result<CollectionBalances> {
+        let idle = self.idle.load(Ordering::SeqCst);
+        if idle == 0 && self.block_refresh.load(Ordering::SeqCst) {
+            std::future::pending().await
+        } else {
+            balances(idle, 0, 0)
+        }
+    }
+
+    async fn submit_idle(&self, amount: Amount) -> anyhow::Result<Self::Operation> {
+        self.submit_calls.fetch_add(1, Ordering::SeqCst);
+        self.idle.store(0, Ordering::SeqCst);
+        self.pending.store(amount.msats, Ordering::SeqCst);
+        self.submitted.notify_waiters();
+        Ok(1)
+    }
+
+    async fn await_idle(&self, _operation: Self::Operation) -> anyhow::Result<Amount> {
+        if self.await_completes {
+            Ok(Amount::from_msats(self.pending.load(Ordering::SeqCst)))
+        } else {
+            std::future::pending().await
+        }
+    }
+
+    async fn submit_unlock(&self) -> anyhow::Result<Self::Operation> {
+        panic!("no locked value in cancellation regression")
+    }
+
+    async fn await_unlock(&self, _operation: Self::Operation) -> anyhow::Result<Amount> {
+        panic!("no unlock operation in cancellation regression")
+    }
+}
+
 fn balances(idle: u64, staged: u64, locked: u64) -> anyhow::Result<CollectionBalances> {
     Ok(CollectionBalances {
         idle: Amount::from_msats(idle),
@@ -107,12 +244,102 @@ fn incomplete(
 ) -> Collected {
     Collected::Incomplete {
         confirmed_claimed: Amount::from_msats(claimed),
+        recorded_claimed: Amount::from_msats(claimed),
         observed_awaiting_cycle: observed.map(Amount::from_msats),
         failure: CollectionFailure {
             phase,
             operation_submitted,
         },
     }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn collection_receipts_use_user_data_namespace_and_survive_reopen() {
+    assert_eq!(
+        collection_receipt_prefix().first().copied(),
+        Some(fedimint_client::db::DbKeyPrefix::UserData as u8)
+    );
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("receipts.db");
+    let operation = OperationId([7; 32]);
+    {
+        let database: Database = fedimint_rocksdb::RocksDb::build(path.clone())
+            .open()
+            .await
+            .unwrap()
+            .into();
+        let receipts = database.with_prefix(collection_receipt_prefix());
+        record_collection_receipt(&receipts, &operation, Amount::from_msats(100))
+            .await
+            .unwrap();
+        // An exact replay cannot advance the durable total twice.
+        record_collection_receipt(&receipts, &operation, Amount::from_msats(100))
+            .await
+            .unwrap();
+    }
+    {
+        let database: Database = fedimint_rocksdb::RocksDb::build(path)
+            .open()
+            .await
+            .unwrap()
+            .into();
+        let receipts = database.with_prefix(collection_receipt_prefix());
+        assert_eq!(
+            read_collection_receipt(&receipts, &operation)
+                .await
+                .unwrap(),
+            Some(Amount::from_msats(100))
+        );
+        assert_eq!(
+            read_recorded_claimed(&receipts).await.unwrap(),
+            Amount::from_msats(100)
+        );
+    }
+}
+
+#[tokio::test]
+async fn cancellation_after_durable_operation_id_is_reconciled_without_resubmission() {
+    let operations = Arc::new(CancellationOperations::new(100, false));
+    let submitted = operations.submitted.notified();
+    let first_operations = operations.clone();
+    let first = tokio::spawn(async move { collect_operations(&*first_operations).await });
+
+    submitted.await;
+    first.abort();
+    assert!(first.await.unwrap_err().is_cancelled());
+
+    assert_eq!(
+        collect_operations(&*operations).await.unwrap(),
+        Collected::Complete {
+            claimed: Amount::from_msats(100),
+            recorded_claimed: Amount::from_msats(100),
+            awaiting_cycle: Amount::ZERO,
+        }
+    );
+    assert_eq!(operations.submit_calls.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn cancellation_after_receipt_does_not_repeat_or_forget_claimed_value() {
+    let operations = Arc::new(CancellationOperations::new(100, true));
+    let receipt_recorded = operations.receipt_recorded.notified();
+    let first_operations = operations.clone();
+    let first = tokio::spawn(async move { collect_operations(&*first_operations).await });
+
+    receipt_recorded.await;
+    first.abort();
+    assert!(first.await.unwrap_err().is_cancelled());
+    operations.block_refresh.store(false, Ordering::SeqCst);
+
+    assert_eq!(
+        collect_operations(&*operations).await.unwrap(),
+        Collected::Complete {
+            claimed: Amount::ZERO,
+            recorded_claimed: Amount::from_msats(100),
+            awaiting_cycle: Amount::ZERO,
+        }
+    );
+    assert_eq!(operations.submit_calls.load(Ordering::SeqCst), 1);
 }
 
 #[tokio::test]
@@ -255,6 +482,7 @@ async fn complete_collection_reports_combined_claim_and_refreshed_balance() {
         collect_operations(&operations).await.unwrap(),
         Collected::Complete {
             claimed: Amount::from_msats(150),
+            recorded_claimed: Amount::from_msats(150),
             awaiting_cycle: Amount::from_msats(40),
         }
     );
@@ -287,4 +515,14 @@ async fn terminal_errors_and_ended_stream_are_errors() {
 
     let mut ended = futures::stream::empty();
     assert!(terminal_withdrawal(&mut ended, "unlock").await.is_err());
+
+    let mut contradictory = futures::stream::iter([
+        StabilityPoolWithdrawalOperationState::Success(Amount::from_msats(1)),
+        StabilityPoolWithdrawalOperationState::Success(Amount::from_msats(2)),
+    ]);
+    assert!(
+        terminal_withdrawal(&mut contradictory, "unlock")
+            .await
+            .is_err()
+    );
 }

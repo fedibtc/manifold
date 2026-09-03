@@ -32,10 +32,12 @@ fn guardian_fee_collection_json_preserves_complete_shape_and_structures_incomple
     assert_eq!(
         collect_guardian_fees_json(Collected::Complete {
             claimed: fedimint_core::Amount::from_msats(100),
+            recorded_claimed: fedimint_core::Amount::from_msats(100),
             awaiting_cycle: fedimint_core::Amount::from_msats(50),
         }),
         serde_json::json!({
             "claimed_msat": 100,
+            "recorded_claimed_msat": 100,
             "awaiting_cycle_msat": 50,
         })
     );
@@ -43,6 +45,7 @@ fn guardian_fee_collection_json_preserves_complete_shape_and_structures_incomple
     assert_eq!(
         collect_guardian_fees_json(Collected::Incomplete {
             confirmed_claimed: fedimint_core::Amount::from_msats(100),
+            recorded_claimed: fedimint_core::Amount::from_msats(100),
             observed_awaiting_cycle: None,
             failure: CollectionFailure {
                 phase: CollectionFailurePhase::Unlock,
@@ -51,6 +54,7 @@ fn guardian_fee_collection_json_preserves_complete_shape_and_structures_incomple
         }),
         serde_json::json!({
             "claimed_msat": 100,
+            "recorded_claimed_msat": 100,
             "awaiting_cycle_msat": null,
             "incomplete": {
                 "phase": "unlock",

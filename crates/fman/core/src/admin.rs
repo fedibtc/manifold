@@ -639,19 +639,23 @@ pub fn collect_guardian_fees_json(collected: Collected) -> Value {
     match collected {
         Collected::Complete {
             claimed,
+            recorded_claimed,
             awaiting_cycle,
         } => json!({
             "claimed_msat": claimed.msats,
+            "recorded_claimed_msat": recorded_claimed.msats,
             "awaiting_cycle_msat": awaiting_cycle.msats,
         }),
         Collected::Incomplete {
             confirmed_claimed,
+            recorded_claimed,
             observed_awaiting_cycle,
             failure,
         } => {
             let (phase, action) = match failure.phase {
                 CollectionFailurePhase::IdleClaim => ("idle_claim", "idle-balance claim"),
                 CollectionFailurePhase::Unlock => ("unlock", "unlock"),
+                CollectionFailurePhase::Receipt => ("receipt", "collection receipt"),
                 CollectionFailurePhase::BalanceRefresh => ("balance_refresh", "balance refresh"),
             };
             let message = if failure.operation_submitted {
@@ -668,6 +672,7 @@ pub fn collect_guardian_fees_json(collected: Collected) -> Value {
             };
             json!({
                 "claimed_msat": confirmed_claimed.msats,
+                "recorded_claimed_msat": recorded_claimed.msats,
                 "awaiting_cycle_msat": observed_awaiting_cycle.map(|amount| amount.msats),
                 "incomplete": {
                     "phase": phase,

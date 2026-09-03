@@ -375,7 +375,10 @@ export interface GuardianFeesResponse {
   remittances: Remittance[];
 }
 export interface CompleteGuardianFeeCollection {
+  // Terminal success newly observed by this invocation.
   claimed_msat: number;
+  // All collection successes durably receipted by Fleet Manager.
+  recorded_claimed_msat: number;
   // Locked deposits leave only at the next cycle turnover, so a collection
   // reports what it could take rather than promising an empty account.
   awaiting_cycle_msat: number;
@@ -384,10 +387,12 @@ export interface CompleteGuardianFeeCollection {
 export interface IncompleteGuardianFeeCollection {
   // Only value confirmed by a terminal operation success is counted.
   claimed_msat: number;
+  // All collection successes durably receipted by Fleet Manager.
+  recorded_claimed_msat: number;
   // A post-failure read may itself fail, in which case the current balance is unknown.
   awaiting_cycle_msat: number | null;
   incomplete: {
-    phase: 'idle_claim' | 'unlock' | 'balance_refresh';
+    phase: 'idle_claim' | 'unlock' | 'receipt' | 'balance_refresh';
     operation_submitted: boolean;
     error: string;
   };

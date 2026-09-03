@@ -741,6 +741,7 @@ fn guardian_fees_fixture_with_policy(policy: Result<&FeePolicy, String>) -> Valu
 pub fn collect_guardian_fees_fixture() -> Value {
     admin::collect_guardian_fees_json(Collected::Complete {
         claimed: Amount::from_msats(1_750_000),
+        recorded_claimed: Amount::from_msats(2_250_000),
         awaiting_cycle: Amount::from_msats(500_000),
     })
 }
@@ -748,6 +749,7 @@ pub fn collect_guardian_fees_fixture() -> Value {
 pub fn collect_guardian_fees_incomplete_fixture() -> Value {
     admin::collect_guardian_fees_json(Collected::Incomplete {
         confirmed_claimed: Amount::from_msats(1_750_000),
+        recorded_claimed: Amount::from_msats(2_250_000),
         observed_awaiting_cycle: None,
         failure: CollectionFailure {
             phase: CollectionFailurePhase::Unlock,
@@ -759,6 +761,7 @@ pub fn collect_guardian_fees_incomplete_fixture() -> Value {
 pub fn collect_guardian_fees_incomplete_idle_fixture() -> Value {
     admin::collect_guardian_fees_json(Collected::Incomplete {
         confirmed_claimed: Amount::ZERO,
+        recorded_claimed: Amount::from_msats(500_000),
         observed_awaiting_cycle: Some(Amount::from_msats(500_000)),
         failure: CollectionFailure {
             phase: CollectionFailurePhase::IdleClaim,
@@ -770,6 +773,7 @@ pub fn collect_guardian_fees_incomplete_idle_fixture() -> Value {
 pub fn collect_guardian_fees_incomplete_refresh_fixture() -> Value {
     admin::collect_guardian_fees_json(Collected::Incomplete {
         confirmed_claimed: Amount::from_msats(1_750_000),
+        recorded_claimed: Amount::from_msats(2_250_000),
         observed_awaiting_cycle: None,
         failure: CollectionFailure {
             phase: CollectionFailurePhase::BalanceRefresh,

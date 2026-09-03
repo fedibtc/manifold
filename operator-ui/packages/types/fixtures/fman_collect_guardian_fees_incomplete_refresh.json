@@ -5,5 +5,6 @@
     "error": "guardian-fee operations completed but the updated balance could not be read; refresh status before retrying",
     "operation_submitted": false,
     "phase": "balance_refresh"
-  }
+  },
+  "recorded_claimed_msat": 2250000
 }

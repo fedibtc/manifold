@@ -22,7 +22,8 @@ describe('describeCollection', () => {
   it('should state the locked remainder alongside what was claimed', () => {
     const sentence = describeCollection({
       claimed_msat: 13_000_000,
-      awaiting_cycle_msat: 3_000_000
+      recorded_claimed_msat: 13_000_000,
+      awaiting_cycle_msat: 3_000_000,
     });
 
     expect(sentence).toContain('13,000 sats');
@@ -33,7 +34,11 @@ describe('describeCollection', () => {
   });
 
   it('should still state the waiting figure when nothing is locked', () => {
-    const sentence = describeCollection({ claimed_msat: 13_000_000, awaiting_cycle_msat: 0 });
+    const sentence = describeCollection({
+      claimed_msat: 13_000_000,
+      recorded_claimed_msat: 13_000_000,
+      awaiting_cycle_msat: 0,
+    });
 
     expect(sentence).toBe('Claimed 13,000 sats. 0 sats are waiting for the next cycle turnover.');
   });
@@ -41,9 +46,13 @@ describe('describeCollection', () => {
   // Zero here is the daemon's answer, not a missing figure, so it is rendered as
   // a zero rather than as the unknown-amount dash.
   it('should render a claim of nothing as an explicit zero', () => {
-    expect(describeCollection({ claimed_msat: 0, awaiting_cycle_msat: 4_000_000 })).toContain(
-      'Claimed 0 sats.'
-    );
+    expect(
+      describeCollection({
+        claimed_msat: 0,
+        recorded_claimed_msat: 13_000_000,
+        awaiting_cycle_msat: 4_000_000,
+      })
+    ).toContain('Claimed 0 sats.');
   });
 
   // A collection that stopped partway counts only what a terminal operation
@@ -52,6 +61,7 @@ describe('describeCollection', () => {
   it('should say the collection stopped and name the step it stopped at', () => {
     const sentence = describeCollection({
       claimed_msat: 13_000_000,
+      recorded_claimed_msat: 13_000_000,
       awaiting_cycle_msat: 3_000_000,
       incomplete: { phase: 'unlock', operation_submitted: true, error: 'pool timed out' }
     });
@@ -67,6 +77,7 @@ describe('describeCollection', () => {
   it('should render an unreadable waiting balance as unknown, never as zero', () => {
     const sentence = describeCollection({
       claimed_msat: 13_000_000,
+      recorded_claimed_msat: 13_000_000,
       awaiting_cycle_msat: null,
       incomplete: { phase: 'balance_refresh', operation_submitted: false, error: 'read failed' }
     });

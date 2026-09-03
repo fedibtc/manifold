@@ -585,11 +585,13 @@ const fmanGuardianFeesMirror = {
 
 const fmanCollectGuardianFeesMirror = {
   claimed_msat: 1_750_000,
+  recorded_claimed_msat: 2_250_000,
   awaiting_cycle_msat: 500_000
 } satisfies CollectGuardianFeesResponse;
 
 const fmanCollectGuardianFeesIncompleteMirror = {
   claimed_msat: 1_750_000,
+  recorded_claimed_msat: 2_250_000,
   awaiting_cycle_msat: null,
   incomplete: {
     phase: 'unlock',
@@ -600,6 +602,7 @@ const fmanCollectGuardianFeesIncompleteMirror = {
 
 const fmanCollectGuardianFeesIncompleteIdleMirror = {
   claimed_msat: 0,
+  recorded_claimed_msat: 500_000,
   awaiting_cycle_msat: 500_000,
   incomplete: {
     phase: 'idle_claim',
@@ -611,6 +614,7 @@ const fmanCollectGuardianFeesIncompleteIdleMirror = {
 
 const fmanCollectGuardianFeesIncompleteRefreshMirror = {
   claimed_msat: 1_750_000,
+  recorded_claimed_msat: 2_250_000,
   awaiting_cycle_msat: null,
   incomplete: {
     phase: 'balance_refresh',
