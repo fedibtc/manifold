@@ -27,8 +27,9 @@ trust and failure boundary:
   identity to the final federation config and this seat's peer once consensus
   is running. It stays a diagnostic/recovery read for the FI, not FLIP's trust
   source: verifiers read the directory out of consensus metadata.
-- **Public trust material — shipped.** `GetFederationTrustMaterial` returns the
-  FMan's signed public material for the requested federation. It is
+- **Public trust material — shipped.** `GetFmanTrustMaterial` returns the
+  FMan's signed current endpoint and holder trust material. Federation seat
+  ownership remains exclusively in consensus metadata. The RPC is
   intentionally unauthenticated because an invite-code verifier needs to fetch
   it; [SPEC-fi-rpc](./specs/SPEC-fi-rpc.md) and `SECURITY.md` define its validation
   and relying-verifier boundary.

@@ -4,9 +4,9 @@ use fedi_credential_sdk_protocol::{HolderContext, SignedCredential as SdkSignedC
 use fedi_decentralized_service_liquidity_manager::{
     AcceptedAttesterPolicy, BitcoinNetwork, FederationId, FederationLiquidityDetails,
     FederationName, FleetSeat, FleetSeatId, FmanEndorsement, FmanPeerAttestation,
-    FmanPeerAttestationStatement, GetFederationTrustMaterialResponse, GuardianIdentity, HashBytes,
-    InviteCode, PeerId, ProtocolV1, ProtocolVersion, ProviderPolicy, Sats, SchnorrSignatureProof,
-    Sha256Digest, Url,
+    FmanPeerAttestationStatement, FmanTrustMaterial, GetFmanTrustMaterialResponse,
+    GuardianIdentity, HashBytes, InviteCode, PeerId, ProtocolV1, ProtocolVersion, ProviderPolicy,
+    Sats, SchnorrSignatureProof, Sha256Digest, Url,
 };
 use nostr_sdk::Keys;
 use nostr_sdk::secp256k1::Message;
@@ -108,39 +108,23 @@ fn envelope_for(
 }
 
 /// Signed trust material for `fman`, as that FMan's own daemon would serve
-/// it: attestations for every seat the fixture assigns it, plus whatever
-/// holder authorizations the test wants it to carry.
+/// it, with whatever holder authorizations the test wants it to carry.
 fn material_for(
-    preview: &FederationPreview,
     fman: &Fman,
     holder_authorizations: Vec<HolderAuthorizationEnvelope>,
-) -> GetFederationTrustMaterialResponse {
+) -> GetFmanTrustMaterialResponse {
     let now = now_timestamp();
-    let material = FmanFederationTrustMaterial {
+    let material = FmanTrustMaterial {
         fman_pubkey: Pubkey(fman.pubkey_hex.clone()),
-        federation_id: preview.federation_id.clone(),
-        federation_config_hash: preview.federation_config_hash.clone(),
         issued_at: now,
         expires_at: Timestamp(now.0 + 600),
         public_api_urls: vec![Url(format!("iroh://{}", fman.pubkey_hex))],
-        peer_attestations: fman
-            .peers
-            .iter()
-            .map(|peer| {
-                attestation_for(
-                    preview,
-                    fman,
-                    &peer.to_string(),
-                    &format!("guardian-{peer}"),
-                )
-            })
-            .collect(),
         holder_authorizations,
     };
     let message = nostr_sdk::secp256k1::Message::from_digest(
         material.digest().expect("fixture material digests"),
     );
-    GetFederationTrustMaterialResponse {
+    GetFmanTrustMaterialResponse {
         version: ProtocolV1,
         material,
         proof: SchnorrSignatureProof {
@@ -180,7 +164,7 @@ struct Harness {
     /// Trust material the requester will carry. Tests build it up per FMan; an
     /// identity nothing programs is simply absent from the request, which is
     /// what "unresolvable" means.
-    trust_material: std::sync::Mutex<Vec<GetFederationTrustMaterialResponse>>,
+    trust_material: std::sync::Mutex<Vec<GetFmanTrustMaterialResponse>>,
     revocation: std::sync::Arc<FakeRevocationFetcher>,
     invite: String,
     endorsement: FmanEndorsement,
@@ -403,7 +387,6 @@ impl Harness {
         let fman = &self.fmans[fman_index];
         let (holder_authorization, signed_credential) = self.trust_envelope_for(fman)?;
         self.push_material(material_for(
-            &self.preview,
             fman,
             vec![HolderAuthorizationEnvelope {
                 holder_authorization,
@@ -417,13 +400,13 @@ impl Harness {
     /// but stays untrusted.
     fn program_untrusted(&self, fman_index: usize) {
         let fman = &self.fmans[fman_index];
-        self.push_material(material_for(&self.preview, fman, vec![]));
+        self.push_material(material_for(fman, vec![]));
     }
 
     /// Replaces any existing entry for the same FMan: material is that
     /// FMan's one current answer, so a test re-programming an identity is
     /// changing what it serves, not adding a second opinion.
-    fn push_material(&self, response: GetFederationTrustMaterialResponse) {
+    fn push_material(&self, response: GetFmanTrustMaterialResponse) {
         let mut material = self.trust_material.lock().expect("fixture material lock");
         material.retain(|existing| existing.material.fman_pubkey != response.material.fman_pubkey);
         material.push(response);
@@ -922,19 +905,26 @@ async fn a_request_carrying_no_trust_material_is_rejected() -> anyhow::Result<()
 }
 
 #[tokio::test]
-async fn material_signed_for_another_federation_is_rejected() -> anyhow::Result<()> {
-    // The material is bound to the previewed federation and config
-    // revision, so material minted for a different federation cannot be
-    // replayed into this request even though it verifies on its own.
+async fn fman_material_needs_no_federation_selector() -> anyhow::Result<()> {
+    // Live material is FMan-scoped. The verified consensus directory, not a
+    // field echoed by this response, decides which federation the FMan operates.
     let harness = Harness::new("foreign-material", 2, 2, &[&[0], &[1]]).await?;
     harness.program_trusted(0)?;
-
-    let mut foreign_preview = harness.preview.clone();
-    foreign_preview.federation_id = FederationId("some-other-federation".to_owned());
-    harness.push_material(material_for(&foreign_preview, &harness.fmans[1], vec![]));
+    let (holder_authorization, signed_credential) =
+        harness.trust_envelope_for(&harness.fmans[1])?;
+    harness.push_material(material_for(
+        &harness.fmans[1],
+        vec![HolderAuthorizationEnvelope {
+            holder_authorization,
+            signed_credential,
+        }],
+    ));
 
     let outcome = harness.verify(VerificationRequirement::AllTrusted).await;
-    assert_rejects(&outcome, PublicRejectionCode::InvalidCredentials);
+    assert!(
+        outcome.rejection.is_none(),
+        "FMan-scoped material should pass"
+    );
     Ok(())
 }
 
@@ -966,25 +956,37 @@ async fn duplicate_material_for_one_identity_is_rejected() -> anyhow::Result<()>
 }
 
 #[tokio::test]
-async fn material_contradicting_the_directory_is_rejected() -> anyhow::Result<()> {
-    // Both the directory and the material say which seats an FMan runs. The
-    // directory reached consensus among threshold guardians; the material
-    // is one FMan's word. A disagreement means one of them is describing a
-    // federation it is not in, and the directory is the one with a
-    // federation behind it.
-    let harness = Harness::new("contradicting-material", 2, 2, &[&[0], &[1]]).await?;
+async fn duplicate_material_for_an_irrelevant_identity_is_ignored() -> anyhow::Result<()> {
+    let harness = Harness::new("irrelevant-material", 2, 2, &[&[0], &[1]]).await?;
     harness.program_trusted(0)?;
+    harness.program_trusted(1)?;
 
-    // FMan 1 claims peer 0, which the directory binds to FMan 0.
-    let liar = Fman {
-        pubkey_hex: harness.fmans[1].pubkey_hex.clone(),
-        keys: harness.fmans[1].keys.clone(),
-        peers: vec![0],
+    let outsider = Fman {
+        keys: Keys::generate(),
+        pubkey_hex: String::new(),
+        peers: vec![],
     };
-    harness.push_material(material_for(&harness.preview, &liar, vec![]));
+    let outsider = Fman {
+        pubkey_hex: outsider.keys.public_key().to_string(),
+        ..outsider
+    };
+    let extra = material_for(&outsider, vec![]);
+    let mut request = harness.request();
+    let material = request.fman_trust_material.as_mut().expect("material");
+    material.push(extra.clone());
+    material.push(extra);
 
-    let outcome = harness.verify(VerificationRequirement::AllTrusted).await;
-    assert_rejects(&outcome, PublicRejectionCode::InvalidCredentials);
+    let outcome = harness
+        .provider()
+        .verify(
+            &request,
+            &harness.config(VerificationRequirement::AllTrusted),
+        )
+        .await;
+    assert!(
+        outcome.rejection.is_none(),
+        "irrelevant material is ignored"
+    );
     Ok(())
 }
 
@@ -1274,7 +1276,6 @@ async fn no_nostr_advertisement_authority_is_unavailable() -> anyhow::Result<()>
     let (holder_authorization, signed_credential) =
         envelope_for(&issuer, &authority, &harness.fmans[0])?;
     harness.push_material(material_for(
-        &harness.preview,
         &harness.fmans[0],
         vec![HolderAuthorizationEnvelope {
             holder_authorization,
@@ -1317,7 +1318,7 @@ async fn below_minimum_fman_material_rejects_invalid_credentials() -> anyhow::Re
     let fman = &harness.fmans[0];
     let envelope =
         harness.trust_envelope_for_at_level(fman, UNIT_TEST_PEER_BADGE_TRUST_LEVEL - 1)?;
-    harness.push_material(material_for(&harness.preview, fman, vec![envelope]));
+    harness.push_material(material_for(fman, vec![envelope]));
 
     let outcome = harness.verify(VerificationRequirement::AllTrusted).await;
     assert_rejects(&outcome, PublicRejectionCode::InvalidCredentials);
@@ -1359,7 +1360,6 @@ async fn a_badge_with_the_wrong_schema_rejects_invalid_credentials() -> anyhow::
         &Pubkey(fman.pubkey_hex.clone()),
     )?;
     harness.push_material(material_for(
-        &harness.preview,
         fman,
         vec![HolderAuthorizationEnvelope {
             holder_authorization: authorization,

@@ -8,10 +8,11 @@ distinct `BTreeSet` of operators from those verified bindings
 ([`verification.rs`](../src/verification.rs)).
 
 **L2 (`code`) — resolution consults only selected identities.**
-`resolve_trust_material` rejects duplicate material identities, looks up material
-only while iterating L1's operator set, leaves missing directory identities
-untrusted, and ignores extras. It verifies material for the previewed federation
-and config, then cross-checks every claimed peer against the directory.
+`resolve_trust_material` scans request material for duplicate public keys in
+L1's operator set and ignores extras. While iterating that operator set it finds
+material by the expected key and calls `verify_for_fman(expected)`, so missing
+identities remain untrusted and one operator's signed material cannot substitute
+for another's.
 
 **L3 (`code`) — policy counts resolved directory identities.** Candidate envelopes
 retain the resolved FMan key and the policy stage evaluates distinct resolved

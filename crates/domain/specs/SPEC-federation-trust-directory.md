@@ -20,8 +20,8 @@ expensive to change, the other mutable and cheap.
   byte-identical bytes, which is what makes it trustworthy and also what makes
   it unsuitable for anything that changes.
 - **FMan-signed trust material** is authoritative for *whether* an FMan is
-  currently trusted: its holder trust envelopes, bound to a named federation
-  and config revision, carrying their own issue and expiry timestamps. A badge
+  currently trusted: its holder trust envelopes and current public endpoint,
+  carried in an FMan-signed document with issue and expiry timestamps. A badge
   frozen into the directory could never be withdrawn, which is why standing
   lives outside it.
 - **Nostr** remains authoritative for *revocation*: fresh kind-`37704` lookups
@@ -162,9 +162,9 @@ network, and consensus threshold; parse the canonical container; verify every
 attestation signature and match each to exactly one final-config guardian by
 federation id, config hash, peer id, and guardian identity (missing, extra,
 or conflicting bindings are invalid); resolve each distinct `fman_pubkey`'s
-trust material, verifying that it is signed by that identity, names this
-federation and config revision, and lies within the verifier's accepted
-validity window; run fresh fail-closed revocation checks; and apply policy over
+trust material, verifying that it is signed by that exact directory-selected
+identity and lies within the verifier's accepted validity window; run fresh
+fail-closed revocation checks; and apply policy over
 distinct trusted identities — one FMan may operate several seats but counts
 once.
 
@@ -172,7 +172,7 @@ The identity set comes from the directory, never from the material, and the
 order matters: a verifier that enumerated identities from the material it was
 handed would let whoever supplied it decide who the federation's operators are.
 Material naming an identity the directory does not name can never be consulted
-and needs no special handling; material contradicting the directory about a
-seat is invalid, because the directory is the claim with a federation behind
-it. FLIP's policy profile and rejection mapping are
+and needs no special handling. The live document carries no seat claims: the
+consensus directory is the sole source for federation membership. FLIP's policy
+profile and rejection mapping are
 [SPEC-flip-federation-trust](../../liquidity-manager-daemon/specs/SPEC-flip-federation-trust.md).

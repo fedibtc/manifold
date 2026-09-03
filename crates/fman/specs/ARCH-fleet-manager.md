@@ -379,7 +379,7 @@ Six kinds of state, six owners:
 
 - FI requests arrive over iroh from anyone. Signed seat-scoped requests are
   authenticated by their envelope and the seat's creation-time `fi_id` binding.
-  `GetAvailability`, `GetQuote`, and `GetFederationTrustMaterial` are
+  `GetAvailability`, `GetQuote`, and `GetFmanTrustMaterial` are
   intentionally unauthenticated reads; the latter returns signed public trust
   material. Quotes bind their `fi_id` and payment binds the quote, so
   unsolicited payment is unrepresentable

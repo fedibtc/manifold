@@ -38,12 +38,11 @@ use fedi_decentralized_liquidity_manager_daemon::{
 use fedi_decentralized_service_liquidity_manager::{
     AllocationItemTarget, BitcoinNetwork, FederationId, FederationLiquidityDetails, FederationName,
     FmanEndorsement, GetAllocationStatusRequest, GetAllocationStatusResponse,
-    GetFederationTrustMaterialResponse, HashBytes, InviteCode as ServiceInviteCode,
-    ItemAllocationStatus, LiquidityAmountBounds, LiquidityProviderAdvertisement, PayloadProof,
-    ProtocolVersion, Pubkey, PublicLiquidityApi, PublicLiquidityApiClient, PublicRejectionCode,
-    PublicRpcPayloadDomain, RequestLiquidityOutcome, RequestLiquidityRequest, Sats, Sha256Digest,
-    Signature, Signed, Timestamp, Url, public_rpc_payload_hash,
-    request_liquidity_details_hash_for_request,
+    GetFmanTrustMaterialResponse, HashBytes, InviteCode as ServiceInviteCode, ItemAllocationStatus,
+    LiquidityAmountBounds, LiquidityProviderAdvertisement, PayloadProof, ProtocolVersion, Pubkey,
+    PublicLiquidityApi, PublicLiquidityApiClient, PublicRejectionCode, PublicRpcPayloadDomain,
+    RequestLiquidityOutcome, RequestLiquidityRequest, Sats, Sha256Digest, Signature, Signed,
+    Timestamp, Url, public_rpc_payload_hash, request_liquidity_details_hash_for_request,
 };
 use fedi_iroh_rpc::iroh::{Endpoint, EndpointAddr, TransportAddr, endpoint::presets};
 use nostr_sdk::secp256k1::Message;
@@ -256,7 +255,7 @@ struct LiveLiquidityStack {
     wallet: LiveWalletStack,
     target_fedimint: FedimintFixture,
     endorsement: FmanEndorsement,
-    trust_material: Vec<GetFederationTrustMaterialResponse>,
+    trust_material: Vec<GetFmanTrustMaterialResponse>,
 }
 
 impl LiveLiquidityStack {
@@ -3482,7 +3481,7 @@ fn live_liquidity_request(
     provider_pubkey: &Pubkey,
     invite_code: &str,
     endorsement: &FmanEndorsement,
-    trust_material: &[GetFederationTrustMaterialResponse],
+    trust_material: &[GetFmanTrustMaterialResponse],
 ) -> anyhow::Result<RequestLiquidityRequest> {
     live_request_with_amounts(
         provider_pubkey,
@@ -3504,7 +3503,7 @@ fn live_stability_request(
     provider_pubkey: &Pubkey,
     invite_code: &str,
     endorsement: &FmanEndorsement,
-    trust_material: &[GetFederationTrustMaterialResponse],
+    trust_material: &[GetFmanTrustMaterialResponse],
     config_hash: &HashBytes,
 ) -> anyhow::Result<RequestLiquidityRequest> {
     live_request_with_amounts(
@@ -3526,7 +3525,7 @@ fn live_request_with_amounts(
     provider_pubkey: &Pubkey,
     invite_code: &str,
     endorsement: &FmanEndorsement,
-    trust_material: &[GetFederationTrustMaterialResponse],
+    trust_material: &[GetFmanTrustMaterialResponse],
     config_hash: &HashBytes,
     amounts: LiquidityAmountBounds,
 ) -> anyhow::Result<RequestLiquidityRequest> {

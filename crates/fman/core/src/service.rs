@@ -13,23 +13,23 @@ use std::sync::{Arc, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use fedi_decentralized_domain::{
-    AdmittedSetupPaymentFederations, DEFAULT_SETUP_PAYMENT_MIN_FEE_PPM,
-    FmanFederationTrustMaterial, FmanPeerAttestation, FmanPeerAttestationStatement,
-    HolderAuthorizationEnvelope, ProtocolV1, Pubkey, SchnorrSignatureProof, Url,
+    AdmittedSetupPaymentFederations, DEFAULT_SETUP_PAYMENT_MIN_FEE_PPM, FmanPeerAttestation,
+    FmanPeerAttestationStatement, FmanTrustMaterial, HolderAuthorizationEnvelope, ProtocolV1,
+    Pubkey, SchnorrSignatureProof, Url,
 };
 use fedi_decentralized_service_fleet_manager::{
     CreateSeatOutcome, CreateSeatRequest, CreateSeatResponse, DkgStatusInfo, EndedReason,
     EndedStatusInfo, FEDERATION_SIZES_0_1, FEDIMINTD_VERSION_0_1, FederationSize,
     FederationStatusInfo, FedimintdVersion, FiSignedRequest, FleetManagerError,
     FleetManagerService, FmResult, GetAvailabilityRequest, GetAvailabilityResponse,
-    GetDkgCodeRequest, GetDkgCodeResponse, GetFederationTrustMaterialRequest,
-    GetFederationTrustMaterialResponse, GetFedimintStatsRequest, GetFedimintStatsResponse,
-    GetInviteCodeRequest, GetInviteCodeResponse, GetPeerAttestationRequest,
-    GetPeerAttestationResponse, GetStatusRequest, GetStatusResponse, GuardianFeeAccount, Plan,
-    ProposeFormationMetaRequest, ProposeFormationMetaResponse, QuoteTerms, RegisterGatewayRequest,
-    RegisterGatewayResponse, RestartDkgRequest, RestartDkgResponse, ServiceStatus,
-    SetMetaFieldRequest, SetMetaFieldResponse, SignedRequest, SignedResponse, StartDkgRequest,
-    StartDkgResponse, StatusDetail, Timestamp, VerifiedFiRequest,
+    GetDkgCodeRequest, GetDkgCodeResponse, GetFedimintStatsRequest, GetFedimintStatsResponse,
+    GetFmanTrustMaterialRequest, GetFmanTrustMaterialResponse, GetInviteCodeRequest,
+    GetInviteCodeResponse, GetPeerAttestationRequest, GetPeerAttestationResponse, GetStatusRequest,
+    GetStatusResponse, GuardianFeeAccount, Plan, ProposeFormationMetaRequest,
+    ProposeFormationMetaResponse, QuoteTerms, RegisterGatewayRequest, RegisterGatewayResponse,
+    RestartDkgRequest, RestartDkgResponse, ServiceStatus, SetMetaFieldRequest,
+    SetMetaFieldResponse, SignedRequest, SignedResponse, StartDkgRequest, StartDkgResponse,
+    StatusDetail, Timestamp, VerifiedFiRequest,
 };
 use fedimint_core::util::SafeUrl;
 use secp256k1::Keypair;
@@ -65,7 +65,7 @@ pub struct FleetManagerRpc {
     /// ([`ARCH-fleet-manager-identity`](../../specs/ARCH-fleet-manager-identity.md)).
     attestation_keys: nostr_sdk::Keys,
 
-    /// Inputs `get_federation_trust_material` needs that do not exist yet when
+    /// Inputs `get_fman_trust_material` needs that do not exist yet when
     /// this service is constructed.
     ///
     /// The daemon's wiring is genuinely circular: this service goes into the
@@ -88,7 +88,7 @@ pub struct FleetManagerRpc {
     setup_payment_policy: tokio::sync::watch::Receiver<Option<AdmittedSetupPaymentFederations>>,
 }
 
-/// The late-bound inputs behind `get_federation_trust_material`.
+/// The late-bound inputs behind `get_fman_trust_material`.
 ///
 /// A port rather than a direct `fman-nostr` handle so the RPC layer
 /// keeps depending only on what it uses, and so tests can serve trust material
@@ -264,10 +264,6 @@ fn fleet_manager_error_kind(error: &FleetManagerError) -> &'static str {
         FleetManagerError::FormationMetaAlreadyPublished => "formation_meta_already_published",
         FleetManagerError::MetaTargetConflict => "meta_target_conflict",
         FleetManagerError::InvalidGatewayApiUrl => "invalid_gateway_api_url",
-        FleetManagerError::UnknownFederation => "unknown_federation",
-        FleetManagerError::FederationConfigHashMismatch => "federation_config_hash_mismatch",
-        FleetManagerError::InvalidTrustMaterialSelector => "invalid_trust_material_selector",
-        FleetManagerError::TrustMaterialUnavailable => "trust_material_unavailable",
         FleetManagerError::UnsupportedVerb { .. } => "unsupported_verb",
         FleetManagerError::Other(_) => "internal_or_other",
     }
@@ -856,83 +852,58 @@ impl FleetManagerService for FleetManagerRpc {
         unsupported("GetFedimintStats")
     }
 
-    /// Serve this FMan's signed trust material for one federation.
+    /// Serve this FMan's current signed trust material.
     ///
     /// Unauthenticated by design: this is the material every verifier holding
-    /// an invite code is meant to be able to fetch, so there is no requester to
-    /// authorize and no seat the caller names. The request instead names a
-    /// federation, and the answer covers only seats this FMan actually runs in
-    /// it — an FMan that runs none answers with an empty attestation list
-    /// rather than an error, because "I am not in that federation" is a fact
-    /// about the federation, not a failure to serve.
+    /// an invite code is meant to be able to fetch, so there is no requester or
+    /// seat to authorize. Consensus metadata, not this response, establishes
+    /// which federations and guardian seats this FMan operates.
     ///
     /// The response is signed by the service Nostr key, the same identity that
     /// signs the kind-37701 advertisement and every peer attestation, because
     /// a verifier resolves this FMan *by* that pubkey.
-    async fn get_federation_trust_material(
+    async fn get_fman_trust_material(
         &self,
-        request: GetFederationTrustMaterialRequest,
-    ) -> FmResult<GetFederationTrustMaterialResponse> {
-        request.validate().map_err(|err| {
-            tracing::warn!(error = %err, "rejecting malformed trust-material request");
-            FleetManagerError::Other("invalid trust-material request".to_owned())
-        })?;
-
+        _request: GetFmanTrustMaterialRequest,
+    ) -> FmResult<GetFmanTrustMaterialResponse> {
         let Some(source) = self.trust_material.get() else {
             // No Nostr relay is configured, so this FMan has never learned a
             // holder authorization and cannot produce trust material at all.
             // Answering `unsupported` rather than an empty document keeps a
             // verifier from reading "no authorizations" as "untrusted FMan"
             // when the truth is "this FMan is not participating".
-            return unsupported("GetFederationTrustMaterial");
+            return unsupported("GetFmanTrustMaterial");
         };
 
-        let bindings = self
-            .fleet
-            .federation_bindings(&request.federation_id, &request.federation_config_hash)
-            .await;
-
-        let filter: std::collections::BTreeSet<_> = request.peer_ids.iter().collect();
         let issued_at = now();
-        let mut peer_attestations = Vec::new();
-        for binding in &bindings {
-            if !filter.is_empty() && !filter.contains(&binding.seat.peer_id) {
-                continue;
-            }
-            peer_attestations.push(
-                sign_peer_attestation(
-                    &self.attestation_keys,
-                    binding,
-                    self.fleet.guardian_fee_account_descriptor(&binding.seat_id),
-                    issued_at,
-                )
-                .map_err(|err| internal("get_federation_trust_material", err))?,
-            );
-        }
-
-        let material = FmanFederationTrustMaterial {
+        let material = FmanTrustMaterial {
             fman_pubkey: Pubkey(self.attestation_keys.public_key().to_string()),
-            federation_id: request.federation_id.clone(),
-            federation_config_hash: request.federation_config_hash.clone(),
             issued_at,
             expires_at: Timestamp(issued_at.0.saturating_add(TRUST_MATERIAL_VALIDITY_SECS)),
             public_api_urls: vec![source.iroh_endpoint_url()],
-            peer_attestations,
             holder_authorizations: source.holder_authorizations(),
         };
 
         let digest = material
             .digest()
-            .map_err(|err| internal("get_federation_trust_material", err))?;
+            .map_err(|err| internal("get_fman_trust_material", err))?;
         let signature = self
             .attestation_keys
             .sign_schnorr(&nostr_sdk::secp256k1::Message::from_digest(digest));
 
-        Ok(GetFederationTrustMaterialResponse {
+        let response = GetFmanTrustMaterialResponse {
             version: ProtocolV1,
             material,
             proof: SchnorrSignatureProof { signature },
-        })
+        };
+        response
+            .verify_for_fman(
+                &response.material.fman_pubkey,
+                issued_at,
+                TRUST_MATERIAL_VALIDITY_SECS,
+            )
+            .map_err(|err| internal("get_fman_trust_material", err))?;
+        Ok(response)
     }
 }
 

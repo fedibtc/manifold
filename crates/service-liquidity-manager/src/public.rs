@@ -2,7 +2,7 @@
 
 use crate::{
     AcceptedAttesterPolicy, BitcoinNetwork, FederationId, FederationName, FleetSeat,
-    FmanPeerAttestation, GatewayApiUrl, GatewayId, GatewayName, GetFederationTrustMaterialResponse,
+    FmanPeerAttestation, GatewayApiUrl, GatewayId, GatewayName, GetFmanTrustMaterialResponse,
     HashBytes, HolderAuthorizationEnvelope, InviteCode, ItemId, ProtocolVersion, ProviderDisplay,
     ProviderPolicy, Pubkey, RevocationLocation, RpcEndpointId, Sats, Sha256Digest, SourceType,
     Timestamp, Url, WalletOperationId,
@@ -190,7 +190,7 @@ pub struct RequestLiquidityRequest {
     /// `fman_endorsement`: material is collected per attempt, so a retry
     /// carrying freshly fetched material must hash identically and resolve to
     /// the existing allocation.
-    pub fman_trust_material: Option<Vec<GetFederationTrustMaterialResponse>>,
+    pub fman_trust_material: Option<Vec<GetFmanTrustMaterialResponse>>,
 
     /// Request expiry.
     pub expires_at: Timestamp,
@@ -275,14 +275,14 @@ pub struct FederationLiquidityDetails {
     /// FI-observed hash of final federation config or formation transcript.
     ///
     /// The provider must derive the authoritative value from the invite-code
-    /// preview before matching FMan peer attestations.
+    /// preview before matching the consensus seat-binding directory.
     pub federation_config_hash: HashBytes,
 
     /// Optional FI-provided seat hints from formation.
     ///
     /// The provider must preview the invite code, derive the authoritative peer
-    /// set itself, fetch consensus metadata, and retrieve FMan-signed peer
-    /// attestations from public FMan APIs. These hints are retained only for
+    /// set itself, and fetch FMan-signed peer attestations from consensus
+    /// metadata. These hints are retained only for
     /// diagnostics, idempotency analysis, and operator support.
     pub fleet_seat_hints: Vec<FleetSeat>,
 

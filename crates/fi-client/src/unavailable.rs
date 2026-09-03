@@ -248,10 +248,10 @@ impl FleetManagerService for UnavailableFleetManagerClient {
         Err(unavailable())
     }
 
-    async fn get_federation_trust_material(
+    async fn get_fman_trust_material(
         &self,
-        _request: GetFederationTrustMaterialRequest,
-    ) -> FmResult<GetFederationTrustMaterialResponse> {
+        _request: GetFmanTrustMaterialRequest,
+    ) -> FmResult<GetFmanTrustMaterialResponse> {
         Err(unavailable())
     }
 

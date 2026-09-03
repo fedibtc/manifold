@@ -18,10 +18,10 @@ use anyhow::Context;
 use fedi_credential_sdk_protocol::{HolderContext, IssuerAuthority, IssuerContext};
 use fedi_decentralized_liquidity_manager_daemon::{FederationPreview, PreviewPeer, trust_fixtures};
 use fedi_decentralized_service_liquidity_manager::{
-    AttestationInstallRequest, BitcoinNetwork, FederationId, FmanEndorsement,
-    FmanFederationTrustMaterial, FmanPeerAttestation, FmanPeerAttestationStatement,
-    FmanSeatBindings, GetFederationTrustMaterialResponse, GuardianIdentity, HashBytes,
-    HolderAuthorizationEnvelope, PeerId, ProtocolV1, Pubkey, SchnorrSignatureProof, Timestamp, Url,
+    AttestationInstallRequest, BitcoinNetwork, FederationId, FmanEndorsement, FmanPeerAttestation,
+    FmanPeerAttestationStatement, FmanSeatBindings, FmanTrustMaterial,
+    GetFmanTrustMaterialResponse, GuardianIdentity, HashBytes, HolderAuthorizationEnvelope, PeerId,
+    ProtocolV1, Pubkey, SchnorrSignatureProof, Timestamp, Url,
 };
 use nostr_sdk::Keys;
 use nostr_sdk::secp256k1::Message;
@@ -206,9 +206,9 @@ pub struct TrustFixtureArtifacts {
     pub endorsement: FmanEndorsement,
 
     /// Per-FMan signed trust material, in fixture order, as each FMan's own
-    /// `get_federation_trust_material` would serve it. Requests carry these;
+    /// `get_fman_trust_material` would serve it. Requests carry these;
     /// withholding one is how a test makes an identity unanswered.
-    pub trust_material: Vec<GetFederationTrustMaterialResponse>,
+    pub trust_material: Vec<GetFmanTrustMaterialResponse>,
 
     /// The coherent preview written to the fixture directory.
     pub preview: FederationPreview,
@@ -259,8 +259,8 @@ pub fn write_trust_fixtures(
             federation_config_hash,
             now,
         )?;
-        // The first FMan's material already carries everything an admission
-        // endorsement needs, so reuse it rather than minting a second identity.
+        // The first FMan's consensus-bound attestation and matching holder
+        // envelope form the admission endorsement without a second identity.
         if endorsement.is_none() {
             endorsement = Some(FmanEndorsement {
                 attestation: attestation.clone(),
@@ -272,7 +272,6 @@ pub fn write_trust_fixtures(
         }
         material_inputs.push((
             keys.clone(),
-            attestation.clone(),
             HolderAuthorizationEnvelope {
                 holder_authorization,
                 signed_credential: signed_credential.clone(),
@@ -306,9 +305,7 @@ pub fn write_trust_fixtures(
 
     let trust_material = material_inputs
         .into_iter()
-        .map(|(keys, attestation, envelope)| {
-            sign_trust_material(&keys, &preview, vec![attestation], vec![envelope], now)
-        })
+        .map(|(keys, envelope)| sign_trust_material(&keys, vec![envelope], now))
         .collect::<anyhow::Result<Vec<_>>>()?;
 
     Ok(TrustFixtureArtifacts {
@@ -326,23 +323,18 @@ pub fn write_trust_fixtures(
 /// signing role while every byte the daemon verifies stays real.
 pub fn sign_trust_material(
     fman_keys: &Keys,
-    preview: &FederationPreview,
-    peer_attestations: Vec<FmanPeerAttestation>,
     holder_authorizations: Vec<HolderAuthorizationEnvelope>,
     now: u64,
-) -> anyhow::Result<GetFederationTrustMaterialResponse> {
-    let material = FmanFederationTrustMaterial {
+) -> anyhow::Result<GetFmanTrustMaterialResponse> {
+    let material = FmanTrustMaterial {
         fman_pubkey: Pubkey(fman_keys.public_key().to_hex()),
-        federation_id: preview.federation_id.clone(),
-        federation_config_hash: preview.federation_config_hash.clone(),
         issued_at: Timestamp(now),
         expires_at: Timestamp(now + 600),
         public_api_urls: vec![Url(format!("iroh://{}", fman_keys.public_key().to_hex()))],
-        peer_attestations,
         holder_authorizations,
     };
     let message = Message::from_digest(material.digest()?);
-    Ok(GetFederationTrustMaterialResponse {
+    Ok(GetFmanTrustMaterialResponse {
         version: ProtocolV1,
         material,
         proof: SchnorrSignatureProof {

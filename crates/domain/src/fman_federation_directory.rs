@@ -3,27 +3,22 @@
 #[cfg(test)]
 mod tests;
 
-use std::collections::BTreeSet;
-
 use serde::de::Error as _;
 use serde_json::json;
 use sha2::{Digest, Sha256};
 
 use crate::{
-    FederationId, HashBytes, HolderAuthorizationEnvelope, PeerId, ProtocolV1, Pubkey,
-    SchnorrSignatureProof, Timestamp, Url, fman_peer_attestation::FmanPeerAttestation,
+    HolderAuthorizationEnvelope, ProtocolV1, Pubkey, SchnorrSignatureProof, Timestamp, Url,
 };
 
 /// Fedimint consensus metadata key containing public FMan API URLs.
 pub const FMAN_API_URLS_META_FIELD_KEY: &str = "fedi:fman_api_urls";
 
-/// Canonical payload type string for public FMan federation trust-material responses.
-pub const FMAN_FEDERATION_TRUST_MATERIAL_CANONICAL_TYPE: &str =
-    "fedi.fman.federation-trust-material";
+/// Canonical payload type string for public FMan trust-material responses.
+pub const FMAN_TRUST_MATERIAL_CANONICAL_TYPE: &str = "fedi.fman.trust-material";
 
-/// Signature domain for public FMan federation trust-material responses.
-pub const FMAN_FEDERATION_TRUST_MATERIAL_SIGNATURE_DOMAIN_SEPARATOR: &[u8] =
-    b"fedi-fman-federation-trust-material/v1\0";
+/// Signature domain for public FMan trust-material responses.
+pub const FMAN_TRUST_MATERIAL_SIGNATURE_DOMAIN_SEPARATOR: &[u8] = b"fedi-fman-trust-material/v1\0";
 
 /// Maximum number of FMan public API URLs accepted in federation metadata.
 pub const FMAN_API_URLS_MAX_COUNT: usize = 64;
@@ -34,33 +29,8 @@ pub const FMAN_API_URLS_MAX_VALUE_BYTES: usize = 8192;
 /// Maximum individual public FMan API URL length accepted in federation metadata.
 pub const FMAN_API_URL_MAX_BYTES: usize = 512;
 
-/// Maximum peer ids accepted in one public trust-material request filter.
-pub const FMAN_TRUST_MATERIAL_PEER_FILTER_MAX_COUNT: usize = 64;
-
-/// Maximum canonical public trust-material request size accepted by FMans.
-pub const FMAN_TRUST_MATERIAL_MAX_REQUEST_BYTES: usize = 4096;
-
-/// Intended maximum raw public trust-material request body size before
-/// deserialization.
-///
-/// The current FMan server uses the generic iroh RPC frame limit instead and
-/// does not apply this trust-material-specific limit before deserialization.
-pub const FMAN_TRUST_MATERIAL_MAX_RAW_REQUEST_BYTES: usize = 4096;
-
-/// Maximum federation id length accepted in public trust-material requests.
-pub const FMAN_TRUST_MATERIAL_FEDERATION_ID_MAX_BYTES: usize = 128;
-
-/// Maximum federation config hash length accepted in public trust-material requests.
-pub const FMAN_TRUST_MATERIAL_CONFIG_HASH_MAX_BYTES: usize = 128;
-
-/// Maximum peer id length accepted in public trust-material request filters.
-pub const FMAN_TRUST_MATERIAL_PEER_ID_MAX_BYTES: usize = 64;
-
 /// Maximum canonical public trust-material response size accepted by verifiers.
 pub const FMAN_TRUST_MATERIAL_MAX_RESPONSE_BYTES: usize = 131_072;
-
-/// Maximum FMan peer attestations accepted in one public trust-material response.
-pub const FMAN_TRUST_MATERIAL_MAX_PEER_ATTESTATIONS: usize = 64;
 
 /// Maximum holder authorizations accepted in one public trust-material response.
 ///
@@ -313,63 +283,20 @@ fn validate_canonical_url_order(urls: &[Url]) -> Result<(), FmanApiUrlsMetadataE
     Ok(())
 }
 
-/// Public request for a FMan's trust material for one federation.
+/// Public request for an FMan's current trust material.
 #[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
-pub struct GetFederationTrustMaterialRequest {
+#[serde(deny_unknown_fields)]
+pub struct GetFmanTrustMaterialRequest {
     /// Protocol version for this request shape.
     pub version: ProtocolV1,
-
-    /// Target federation id derived from the invite-code-previewed final config.
-    pub federation_id: FederationId,
-
-    /// Hash of the invite-code-previewed final federation config.
-    pub federation_config_hash: HashBytes,
-
-    /// Peer filter for callers that only need a subset.
-    ///
-    /// Empty means "return every peer this FMan operates in the requested
-    /// federation."
-    pub peer_ids: Vec<PeerId>,
 }
 
-impl GetFederationTrustMaterialRequest {
-    /// Validate this public trust-material request.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the canonical request is too large, identifiers are
-    /// malformed/oversized, or the peer filter is too large or contains
-    /// duplicates.
-    pub fn validate(&self) -> Result<(), FmanFederationTrustMaterialVerificationError> {
-        let request_bytes = serde_json_canonicalizer::to_vec(self)
-            .map_err(|_| FmanFederationTrustMaterialVerificationError::CanonicalizationFailed)?;
-        if request_bytes.len() > FMAN_TRUST_MATERIAL_MAX_REQUEST_BYTES {
-            return Err(FmanFederationTrustMaterialVerificationError::RequestTooLarge);
-        }
-        validate_identifier(
-            &self.federation_id.0,
-            FMAN_TRUST_MATERIAL_FEDERATION_ID_MAX_BYTES,
-            FmanFederationTrustMaterialVerificationError::InvalidFederationId,
-        )?;
-        validate_hash_bytes(
-            &self.federation_config_hash,
-            FMAN_TRUST_MATERIAL_CONFIG_HASH_MAX_BYTES,
-        )?;
-        validate_peer_filter(&self.peer_ids)
-    }
-}
-
-/// FMan trust material for one federation, signed by the FMan service key.
+/// Current FMan trust material signed by the FMan service key.
 #[derive(Clone, Debug, PartialEq, serde::Deserialize, serde::Serialize)]
-pub struct FmanFederationTrustMaterial {
+#[serde(deny_unknown_fields)]
+pub struct FmanTrustMaterial {
     /// FMan service/advertisement pubkey that signs this response.
     pub fman_pubkey: Pubkey,
-
-    /// Target federation id derived from the final config.
-    pub federation_id: FederationId,
-
-    /// Hash of the final federation config.
-    pub federation_config_hash: HashBytes,
 
     /// Response issue timestamp.
     pub issued_at: Timestamp,
@@ -379,9 +306,6 @@ pub struct FmanFederationTrustMaterial {
 
     /// Current public FMan API URLs for this service identity.
     pub public_api_urls: Vec<Url>,
-
-    /// FMan-signed peer attestations for peers this FMan operates.
-    pub peer_attestations: Vec<FmanPeerAttestation>,
 
     /// Holder authorizations binding holder-owned badges to this FMan identity,
     /// each carried together with the credential backing it.
@@ -397,7 +321,7 @@ pub struct FmanFederationTrustMaterial {
     pub holder_authorizations: Vec<HolderAuthorizationEnvelope>,
 }
 
-impl FmanFederationTrustMaterial {
+impl FmanTrustMaterial {
     /// Build JCS canonical bytes for this public trust-material payload.
     ///
     /// # Errors
@@ -405,7 +329,7 @@ impl FmanFederationTrustMaterial {
     /// Returns an error if canonical JSON serialization fails.
     pub fn canonical_bytes(&self) -> Result<Vec<u8>, serde_json::Error> {
         let payload = json!({
-            "type": FMAN_FEDERATION_TRUST_MATERIAL_CANONICAL_TYPE,
+            "type": FMAN_TRUST_MATERIAL_CANONICAL_TYPE,
             "version": ProtocolV1,
             "material": self,
         });
@@ -420,7 +344,7 @@ impl FmanFederationTrustMaterial {
     /// Returns an error if canonical JSON serialization fails.
     pub fn digest(&self) -> Result<[u8; 32], serde_json::Error> {
         let digest = Sha256::new()
-            .chain_update(FMAN_FEDERATION_TRUST_MATERIAL_SIGNATURE_DOMAIN_SEPARATOR)
+            .chain_update(FMAN_TRUST_MATERIAL_SIGNATURE_DOMAIN_SEPARATOR)
             .chain_update(self.canonical_bytes()?)
             .finalize();
 
@@ -430,23 +354,23 @@ impl FmanFederationTrustMaterial {
 
 /// Signed response returned by the public FMan trust-material API.
 #[derive(Clone, Debug, PartialEq, serde::Deserialize, serde::Serialize)]
-pub struct GetFederationTrustMaterialResponse {
+#[serde(deny_unknown_fields)]
+pub struct GetFmanTrustMaterialResponse {
     /// Protocol version for this response shape.
     pub version: ProtocolV1,
 
     /// FMan trust material payload.
-    pub material: FmanFederationTrustMaterial,
+    pub material: FmanTrustMaterial,
 
     /// Schnorr signature by `material.fman_pubkey` over the canonical payload.
     pub proof: SchnorrSignatureProof,
 }
 
-impl GetFederationTrustMaterialResponse {
+impl GetFmanTrustMaterialResponse {
     /// Verify this response's FMan service-key envelope signature.
     ///
     /// This verifies only the outer signed public trust-material envelope.
-    /// Prefer [`Self::verify_for_request`] when evaluating material fetched for
-    /// a concrete invite-code-derived federation.
+    /// Prefer [`Self::verify_for_fman`] when evaluating freshly fetched material.
     ///
     /// # Errors
     ///
@@ -454,34 +378,33 @@ impl GetFederationTrustMaterialResponse {
     /// fails, or the Schnorr signature does not verify.
     pub fn verify_envelope_signature(
         &self,
-    ) -> Result<FmanFederationTrustMaterial, FmanFederationTrustMaterialVerificationError> {
+    ) -> Result<FmanTrustMaterial, FmanTrustMaterialVerificationError> {
         let public_key = nostr::PublicKey::parse(&self.material.fman_pubkey.0)
-            .map_err(|_| FmanFederationTrustMaterialVerificationError::InvalidFmanPubkey)?;
+            .map_err(|_| FmanTrustMaterialVerificationError::InvalidFmanPubkey)?;
         if self.material.fman_pubkey.0 != public_key.to_string() {
-            return Err(FmanFederationTrustMaterialVerificationError::InvalidFmanPubkey);
+            return Err(FmanTrustMaterialVerificationError::InvalidFmanPubkey);
         }
         let public_key = public_key
             .xonly()
-            .map_err(|_| FmanFederationTrustMaterialVerificationError::InvalidFmanPubkey)?;
-        let message =
-            nostr::secp256k1::Message::from_digest(self.material.digest().map_err(|_| {
-                FmanFederationTrustMaterialVerificationError::CanonicalizationFailed
-            })?);
+            .map_err(|_| FmanTrustMaterialVerificationError::InvalidFmanPubkey)?;
+        let message = nostr::secp256k1::Message::from_digest(
+            self.material
+                .digest()
+                .map_err(|_| FmanTrustMaterialVerificationError::CanonicalizationFailed)?,
+        );
 
         nostr::SECP256K1
             .verify_schnorr(&self.proof.signature, &message, &public_key)
-            .map_err(|_| FmanFederationTrustMaterialVerificationError::InvalidSignature)?;
+            .map_err(|_| FmanTrustMaterialVerificationError::InvalidSignature)?;
 
         Ok(self.material.clone())
     }
 
-    /// Verify this response for a concrete request and verifier clock.
+    /// Verify this response for an expected FMan and verifier clock.
     ///
     /// This helper verifies envelope signature, response resource bounds,
-    /// request federation/config-hash binding, freshness/expiry, public API URL
-    /// validation, nested peer-attestation signatures, FMan ownership of nested
-    /// attestations and holder authorizations, peer-filter handling, and duplicate
-    /// peer-claim rejection. Credential cryptography, issuer trust, and revocation
+    /// freshness/expiry, public API URL validation, and FMan ownership of holder
+    /// authorizations. Credential cryptography, issuer trust, and revocation
     /// checks remain caller responsibilities because they depend on local verifier
     /// policy and issuer-controlled inputs.
     ///
@@ -492,20 +415,15 @@ impl GetFederationTrustMaterialResponse {
     ///
     /// Returns an error if any envelope, freshness, resource-bound, or nested
     /// ownership check fails.
-    pub fn verify_for_request(
+    pub fn verify_for_fman(
         &self,
-        request: &GetFederationTrustMaterialRequest,
+        expected_fman: &Pubkey,
         now: Timestamp,
         max_validity_secs: u64,
-    ) -> Result<FmanFederationTrustMaterial, FmanFederationTrustMaterialVerificationError> {
-        request.validate()?;
+    ) -> Result<FmanTrustMaterial, FmanTrustMaterialVerificationError> {
         validate_response_bounds(self)?;
-
-        if self.material.federation_id != request.federation_id {
-            return Err(FmanFederationTrustMaterialVerificationError::FederationMismatch);
-        }
-        if self.material.federation_config_hash != request.federation_config_hash {
-            return Err(FmanFederationTrustMaterialVerificationError::ConfigHashMismatch);
+        if &self.material.fman_pubkey != expected_fman {
+            return Err(FmanTrustMaterialVerificationError::UnexpectedFman);
         }
         validate_freshness(
             self.material.issued_at,
@@ -515,12 +433,11 @@ impl GetFederationTrustMaterialResponse {
         )?;
 
         FmanApiUrlsMetadata::new(self.material.public_api_urls.clone())
-            .map_err(FmanFederationTrustMaterialVerificationError::InvalidPublicApiUrls)?;
+            .map_err(FmanTrustMaterialVerificationError::InvalidPublicApiUrls)?;
         validate_canonical_url_order(&self.material.public_api_urls)
-            .map_err(FmanFederationTrustMaterialVerificationError::InvalidPublicApiUrls)?;
+            .map_err(FmanTrustMaterialVerificationError::InvalidPublicApiUrls)?;
 
         let verified_material = self.verify_envelope_signature()?;
-        validate_nested_peer_attestations(request, &verified_material)?;
         validate_holder_authorization_subjects(&verified_material)?;
 
         Ok(verified_material)
@@ -529,7 +446,7 @@ impl GetFederationTrustMaterialResponse {
 
 /// Error returned when verifying a public FMan trust-material response.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub enum FmanFederationTrustMaterialVerificationError {
+pub enum FmanTrustMaterialVerificationError {
     /// The material's `fman_pubkey` is not a valid canonical Nostr/secp256k1
     /// public key.
     InvalidFmanPubkey,
@@ -540,23 +457,8 @@ pub enum FmanFederationTrustMaterialVerificationError {
     /// The Schnorr signature does not verify for the claimed FMan pubkey.
     InvalidSignature,
 
-    /// The request peer filter contains too many peer ids.
-    PeerFilterTooLarge,
-
-    /// The canonical request is too large.
-    RequestTooLarge,
-
-    /// The request federation id is malformed or too long.
-    InvalidFederationId,
-
-    /// The request federation config hash is empty or too long.
-    InvalidConfigHash,
-
-    /// A request peer id is malformed or too long.
-    InvalidPeerId,
-
-    /// The request peer filter contains duplicate peer ids.
-    DuplicatePeerFilter,
+    /// The response identity is not the FMan selected by consensus metadata.
+    UnexpectedFman,
 
     /// The canonical response is too large.
     ResponseTooLarge,
@@ -564,17 +466,8 @@ pub enum FmanFederationTrustMaterialVerificationError {
     /// The response contains too many public API URLs.
     TooManyPublicApiUrls,
 
-    /// The response contains too many peer attestations.
-    TooManyPeerAttestations,
-
     /// The response contains too many holder authorizations.
     TooManyHolderAuthorizations,
-
-    /// The response federation id does not match the request.
-    FederationMismatch,
-
-    /// The response federation config hash does not match the request.
-    ConfigHashMismatch,
 
     /// The response expires before or at its issue time.
     InvalidFreshnessWindow,
@@ -591,62 +484,26 @@ pub enum FmanFederationTrustMaterialVerificationError {
     /// The response public API URL list is invalid.
     InvalidPublicApiUrls(FmanApiUrlsMetadataError),
 
-    /// A nested peer attestation failed signature verification.
-    InvalidPeerAttestation,
-
-    /// A nested peer attestation claims a different FMan pubkey.
-    NestedFmanMismatch,
-
-    /// A nested peer attestation claims a different federation id.
-    NestedFederationMismatch,
-
-    /// A nested peer attestation claims a different federation config hash.
-    NestedConfigHashMismatch,
-
-    /// A nested peer attestation is outside the requested peer filter.
-    PeerFilterMismatch,
-
-    /// More than one nested peer attestation claims the same peer id.
-    DuplicatePeerClaim,
-
     /// A holder authorization subject does not equal `material.fman_pubkey`.
     HolderAuthorizationSubjectMismatch,
 }
 
-impl core::fmt::Display for FmanFederationTrustMaterialVerificationError {
+impl core::fmt::Display for FmanTrustMaterialVerificationError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
             Self::InvalidFmanPubkey => f.write_str("invalid FMan pubkey"),
             Self::CanonicalizationFailed => {
-                f.write_str("FMan federation trust material canonicalization failed")
+                f.write_str("FMan trust material canonicalization failed")
             }
-            Self::InvalidSignature => {
-                f.write_str("invalid FMan federation trust material signature")
-            }
-            Self::PeerFilterTooLarge => f.write_str("FMan trust material peer filter is too large"),
-            Self::RequestTooLarge => f.write_str("FMan trust material request is too large"),
-            Self::InvalidFederationId => {
-                f.write_str("FMan trust material request federation id is invalid")
-            }
-            Self::InvalidConfigHash => {
-                f.write_str("FMan trust material request config hash is invalid")
-            }
-            Self::InvalidPeerId => f.write_str("FMan trust material request peer id is invalid"),
-            Self::DuplicatePeerFilter => {
-                f.write_str("FMan trust material peer filter contains duplicates")
-            }
+            Self::InvalidSignature => f.write_str("invalid FMan trust material signature"),
+            Self::UnexpectedFman => f.write_str("FMan trust material identity mismatch"),
             Self::ResponseTooLarge => f.write_str("FMan trust material response is too large"),
             Self::TooManyPublicApiUrls => {
                 f.write_str("FMan trust material response has too many public API URLs")
             }
-            Self::TooManyPeerAttestations => {
-                f.write_str("FMan trust material response has too many peer attestations")
-            }
             Self::TooManyHolderAuthorizations => {
                 f.write_str("FMan trust material response has too many holder authorizations")
             }
-            Self::FederationMismatch => f.write_str("FMan trust material federation mismatch"),
-            Self::ConfigHashMismatch => f.write_str("FMan trust material config hash mismatch"),
             Self::InvalidFreshnessWindow => {
                 f.write_str("FMan trust material freshness window is invalid")
             }
@@ -656,18 +513,6 @@ impl core::fmt::Display for FmanFederationTrustMaterialVerificationError {
                 f.write_str("FMan trust material validity window is too large")
             }
             Self::InvalidPublicApiUrls(err) => write!(f, "invalid public FMan API URLs: {err}"),
-            Self::InvalidPeerAttestation => f.write_str("invalid nested FMan peer attestation"),
-            Self::NestedFmanMismatch => f.write_str("nested FMan peer attestation pubkey mismatch"),
-            Self::NestedFederationMismatch => {
-                f.write_str("nested FMan peer attestation federation mismatch")
-            }
-            Self::NestedConfigHashMismatch => {
-                f.write_str("nested FMan peer attestation config hash mismatch")
-            }
-            Self::PeerFilterMismatch => {
-                f.write_str("nested FMan peer attestation outside peer filter")
-            }
-            Self::DuplicatePeerClaim => f.write_str("duplicate nested FMan peer claim"),
             Self::HolderAuthorizationSubjectMismatch => {
                 f.write_str("holder authorization subject does not match FMan pubkey")
             }
@@ -675,73 +520,23 @@ impl core::fmt::Display for FmanFederationTrustMaterialVerificationError {
     }
 }
 
-impl std::error::Error for FmanFederationTrustMaterialVerificationError {}
-
-/// Validate request peer-filter bounds and uniqueness.
-fn validate_peer_filter(
-    peer_ids: &[PeerId],
-) -> Result<(), FmanFederationTrustMaterialVerificationError> {
-    if peer_ids.len() > FMAN_TRUST_MATERIAL_PEER_FILTER_MAX_COUNT {
-        return Err(FmanFederationTrustMaterialVerificationError::PeerFilterTooLarge);
-    }
-    let unique = peer_ids.iter().collect::<BTreeSet<_>>();
-    if unique.len() != peer_ids.len() {
-        return Err(FmanFederationTrustMaterialVerificationError::DuplicatePeerFilter);
-    }
-    for peer_id in peer_ids {
-        validate_identifier(
-            &peer_id.0,
-            FMAN_TRUST_MATERIAL_PEER_ID_MAX_BYTES,
-            FmanFederationTrustMaterialVerificationError::InvalidPeerId,
-        )?;
-    }
-
-    Ok(())
-}
-
-/// Validate a string identifier used in a public trust-material request.
-fn validate_identifier(
-    value: &str,
-    max_len: usize,
-    error: FmanFederationTrustMaterialVerificationError,
-) -> Result<(), FmanFederationTrustMaterialVerificationError> {
-    if value.is_empty() || value.len() > max_len || value.chars().any(char::is_control) {
-        return Err(error);
-    }
-
-    Ok(())
-}
-
-/// Validate hash bytes used in a public trust-material request.
-fn validate_hash_bytes(
-    value: &HashBytes,
-    max_len: usize,
-) -> Result<(), FmanFederationTrustMaterialVerificationError> {
-    if value.0.is_empty() || value.0.len() > max_len {
-        return Err(FmanFederationTrustMaterialVerificationError::InvalidConfigHash);
-    }
-
-    Ok(())
-}
+impl std::error::Error for FmanTrustMaterialVerificationError {}
 
 /// Validate response size and count bounds.
 fn validate_response_bounds(
-    response: &GetFederationTrustMaterialResponse,
-) -> Result<(), FmanFederationTrustMaterialVerificationError> {
+    response: &GetFmanTrustMaterialResponse,
+) -> Result<(), FmanTrustMaterialVerificationError> {
     let response_bytes = serde_json_canonicalizer::to_vec(response)
-        .map_err(|_| FmanFederationTrustMaterialVerificationError::CanonicalizationFailed)?;
+        .map_err(|_| FmanTrustMaterialVerificationError::CanonicalizationFailed)?;
     if response_bytes.len() > FMAN_TRUST_MATERIAL_MAX_RESPONSE_BYTES {
-        return Err(FmanFederationTrustMaterialVerificationError::ResponseTooLarge);
+        return Err(FmanTrustMaterialVerificationError::ResponseTooLarge);
     }
     if response.material.public_api_urls.len() > FMAN_API_URLS_MAX_COUNT {
-        return Err(FmanFederationTrustMaterialVerificationError::TooManyPublicApiUrls);
-    }
-    if response.material.peer_attestations.len() > FMAN_TRUST_MATERIAL_MAX_PEER_ATTESTATIONS {
-        return Err(FmanFederationTrustMaterialVerificationError::TooManyPeerAttestations);
+        return Err(FmanTrustMaterialVerificationError::TooManyPublicApiUrls);
     }
     if response.material.holder_authorizations.len() > FMAN_TRUST_MATERIAL_MAX_HOLDER_AUTHORIZATIONS
     {
-        return Err(FmanFederationTrustMaterialVerificationError::TooManyHolderAuthorizations);
+        return Err(FmanTrustMaterialVerificationError::TooManyHolderAuthorizations);
     }
 
     Ok(())
@@ -753,54 +548,22 @@ fn validate_freshness(
     expires_at: Timestamp,
     now: Timestamp,
     max_validity_secs: u64,
-) -> Result<(), FmanFederationTrustMaterialVerificationError> {
+) -> Result<(), FmanTrustMaterialVerificationError> {
     if expires_at <= issued_at {
-        return Err(FmanFederationTrustMaterialVerificationError::InvalidFreshnessWindow);
+        return Err(FmanTrustMaterialVerificationError::InvalidFreshnessWindow);
     }
     if issued_at.0
         > now
             .0
             .saturating_add(FMAN_TRUST_MATERIAL_MAX_FUTURE_SKEW_SECS)
     {
-        return Err(FmanFederationTrustMaterialVerificationError::IssuedInFuture);
+        return Err(FmanTrustMaterialVerificationError::IssuedInFuture);
     }
     if expires_at <= now {
-        return Err(FmanFederationTrustMaterialVerificationError::Expired);
+        return Err(FmanTrustMaterialVerificationError::Expired);
     }
     if expires_at.0.saturating_sub(issued_at.0) > max_validity_secs {
-        return Err(FmanFederationTrustMaterialVerificationError::ValidityWindowTooLarge);
-    }
-
-    Ok(())
-}
-
-/// Validate nested peer attestations against the request and material owner.
-fn validate_nested_peer_attestations(
-    request: &GetFederationTrustMaterialRequest,
-    material: &FmanFederationTrustMaterial,
-) -> Result<(), FmanFederationTrustMaterialVerificationError> {
-    let filter = request.peer_ids.iter().collect::<BTreeSet<_>>();
-    let mut seen_peers = BTreeSet::new();
-
-    for attestation in &material.peer_attestations {
-        let statement = attestation
-            .verify()
-            .map_err(|_| FmanFederationTrustMaterialVerificationError::InvalidPeerAttestation)?;
-        if statement.fman_pubkey != material.fman_pubkey {
-            return Err(FmanFederationTrustMaterialVerificationError::NestedFmanMismatch);
-        }
-        if statement.federation_id != request.federation_id {
-            return Err(FmanFederationTrustMaterialVerificationError::NestedFederationMismatch);
-        }
-        if statement.federation_config_hash != request.federation_config_hash {
-            return Err(FmanFederationTrustMaterialVerificationError::NestedConfigHashMismatch);
-        }
-        if !filter.is_empty() && !filter.contains(&statement.peer_id) {
-            return Err(FmanFederationTrustMaterialVerificationError::PeerFilterMismatch);
-        }
-        if !seen_peers.insert(statement.peer_id) {
-            return Err(FmanFederationTrustMaterialVerificationError::DuplicatePeerClaim);
-        }
+        return Err(FmanTrustMaterialVerificationError::ValidityWindowTooLarge);
     }
 
     Ok(())
@@ -808,8 +571,8 @@ fn validate_nested_peer_attestations(
 
 /// Validate holder authorization subjects against the material owner.
 fn validate_holder_authorization_subjects(
-    material: &FmanFederationTrustMaterial,
-) -> Result<(), FmanFederationTrustMaterialVerificationError> {
+    material: &FmanTrustMaterial,
+) -> Result<(), FmanTrustMaterialVerificationError> {
     for envelope in &material.holder_authorizations {
         if envelope
             .holder_authorization
@@ -819,9 +582,7 @@ fn validate_holder_authorization_subjects(
             .to_string()
             != material.fman_pubkey.0
         {
-            return Err(
-                FmanFederationTrustMaterialVerificationError::HolderAuthorizationSubjectMismatch,
-            );
+            return Err(FmanTrustMaterialVerificationError::HolderAuthorizationSubjectMismatch);
         }
     }
 

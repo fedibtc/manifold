@@ -26,7 +26,7 @@ authentic events and may return events that do not match the requested kind or
 tags. It cannot forge a signature under an uncompromised key or find the hash
 collisions excluded by A1. The claim covers the daemon's durable authorization cache, current in-memory
 authorization vector, the operator's `AuthorizationObserved` projection, the
-FI-facing `GetFederationTrustMaterial` response, kind-37701 advertisement
+FI-facing `GetFmanTrustMaterial` response, kind-37701 advertisement
 carriage, and guardian telemetry-registration carriage. It makes no claim about a relying consumer's acceptance of that
 material.
 

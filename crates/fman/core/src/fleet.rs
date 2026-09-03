@@ -19,7 +19,7 @@ use std::sync::{
 use std::time::Duration;
 
 use anyhow::{Context as _, anyhow};
-use fedi_decentralized_domain::{HashBytes, Pubkey};
+use fedi_decentralized_domain::Pubkey;
 use fedi_decentralized_service_fleet_manager::{
     CreateSeatResponse, FederationId, FiId, GuardianTelemetrySeat, Plan, QuoteId, QuoteTerms,
     RefundTransaction, RefusalReason, SafeEventJournal, SeatId, SeatScopedFiRequest,
@@ -42,8 +42,8 @@ use crate::identity::RootMnemonic;
 use crate::payout_wire::WalletDrainStatusWire;
 use crate::push_callback::{CompletionCallbackInvoker, CompletionHookWorker, PushGatewayOrigin};
 use crate::seat::{
-    PaymentClaimStatus, Seat, SeatDurableState, SeatFederationBinding, SeatReport,
-    SeatRuntimeDependencies, SeatSummary, SeatVerbError,
+    PaymentClaimStatus, Seat, SeatDurableState, SeatReport, SeatRuntimeDependencies, SeatSummary,
+    SeatVerbError,
 };
 use crate::seat_process::{RespawnPolicy, SeatProcessConfig, SeatProcessSpawner};
 
@@ -1125,55 +1125,6 @@ impl Fleet {
             .expect("seat registry lock is never poisoned")
             .get(seat_id)
             .cloned()
-    }
-
-    /// Bindings for every seat this FMan runs in the named federation.
-    ///
-    /// The second crate-visible seat-selection path, and deliberately shaped so
-    /// it cannot become a general one: it hands back [`SeatFederationBinding`]s
-    /// rather than [`Seat`]s, so a caller can read a seat's place in a
-    /// federation it already named and nothing else. `authorize` stays the only
-    /// path for verbs whose requester names a seat; the public trust-material
-    /// verb has no requester to authorize, because what it returns is material
-    /// every verifier is meant to be able to fetch.
-    ///
-    /// Seats that cannot produce a binding — pre-DKG, decommissioned, or
-    /// otherwise not running — are skipped rather than reported. From the
-    /// caller's side they are indistinguishable from seats in some other
-    /// federation, which is the same answer either way.
-    pub(crate) async fn federation_bindings(
-        &self,
-        federation_id: &FederationId,
-        federation_config_hash: &HashBytes,
-    ) -> Vec<SeatFederationBinding> {
-        let seats: Vec<_> = self
-            .seats
-            .read()
-            .expect("seat registry lock is never poisoned")
-            .values()
-            .cloned()
-            .collect();
-
-        let mut bindings = Vec::new();
-        for seat in seats {
-            let Ok(binding) = seat.federation_binding().await else {
-                continue;
-            };
-            if binding.federation.federation_id() == federation_id
-                && binding.federation.federation_config_hash() == federation_config_hash
-            {
-                bindings.push(binding);
-            }
-        }
-        // Numeric peer order, matching `FmanSeatBindings::new`. `PeerId` is a
-        // decimal string, so sorting it as text puts peer 10 before peer 2.
-        bindings.sort_by_key(|binding| {
-            (
-                binding.seat.peer_id.0.parse::<u64>().ok(),
-                binding.seat.peer_id.0.clone(),
-            )
-        });
-        bindings
     }
 
     /// The only crate-visible seat-selection path: resolve the verified

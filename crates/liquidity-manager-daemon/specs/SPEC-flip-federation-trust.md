@@ -42,8 +42,8 @@ only whether an identity is answered for — and an unanswered identity is
 untrusted. Material for an identity the directory does not name is ignored
 rather than refused, since it can never be consulted; two documents for one
 identity are refused, because resolving them by position would let list order
-decide a trust outcome. Each document's own peer attestations are cross-checked
-against the directory and must not contradict it. FLIP bounds the accepted
+decide a trust outcome. Live documents carry no peer attestations; the verified
+consensus directory is the sole seat-membership source. FLIP bounds the accepted
 `expires_at - issued_at` window, which is the only remaining bound on how long
 a withdrawn FMan's material outlives it.
 
@@ -153,8 +153,9 @@ structurally valid but insufficient distinct trusted identities are
 wrong-subject, or wrong-federation credential material is
 `invalid_credentials`, as are a
 request carrying no trust material at all, duplicate documents for one
-identity, and material contradicting the directory. Seat-binding or config
-mismatch, missing or extra bindings, or malformed metadata is
+identity, and material signed by an identity other than the expected
+consensus-listed FMan. Seat-binding or config mismatch, missing or extra
+bindings, or malformed metadata is
 `invalid_seat_binding` (or `invalid_details_payload` for the details
 themselves). An invite endpoint refused by the transport policy is also
 `invalid_details_payload`, with the sanitized reason `invite endpoint rejected

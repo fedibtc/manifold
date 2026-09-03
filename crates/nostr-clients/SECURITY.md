@@ -68,11 +68,14 @@ FMan holder-authorization discovery returns a bounded candidate set instead of a
 
 Legacy FLIP FMan advertisement lookup likewise returns bounded untrusted
 candidates, but current FLIP federation-eligibility verification must not use
-Nostr as the authoritative FMan trust-material directory. FLIP starts from the
-invite code, reads `fedi:fman_api_urls` consensus metadata, queries public FMan
-APIs, verifies signed `GetFederationTrustMaterial` responses, verifies returned
-`FmanPeerAttestation` objects against the final config, and performs fresh
-required revocation lookups before accepting liquidity. Relay `Filter::limit`
+Nostr as the authoritative FMan trust-material directory. External verifiers
+may use `fedi:fman_api_urls` consensus metadata to query public FMan APIs; FI
+instead uses its persisted formation locators and verifies each signed
+`GetFmanTrustMaterial` response against the selected identity. FLIP receives
+those responses with the request, independently verifies and joins each one to
+the exact FMan identity named by the verified `fedi:fman_seat_bindings`
+directory, and performs fresh required revocation lookups before accepting
+liquidity. Relay `Filter::limit`
 values are only hints: any role-specific hard cap must be enforced before using
 helpers that accumulate all matching events or event IDs. The legacy bounded
 manual subscription still unsubscribes as soon as the local cap or timeout is

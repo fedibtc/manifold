@@ -152,7 +152,7 @@ behavior at this claim boundary.
    [`FleetManagerService`](../../../service-fleet-manager/src/service.rs)
    contains thirteen methods. Three are intentionally unsigned:
    `get_availability`, `get_quote`, and
-   `get_federation_trust_material`. Ten take `SignedRequest`:
+   `get_fman_trust_material`. Ten take `SignedRequest`:
    `create_seat`, `get_dkg_code`, `start_dkg`, `restart_dkg`, `get_status`,
    `get_invite_code`, `get_peer_attestation`, `set_meta_field`,
    `propose_guardian_fees`, and `get_fedimint_stats`. The production
@@ -212,15 +212,13 @@ behavior at this claim boundary.
    contract's stateless signed quote. It writes neither a seat nor a
    settlement; premise 13 covers operator-value consumption by these
    unauthenticated wallet calls.
-   `get_federation_trust_material` validates the request bounds, calls the
-   serialized `federation_binding` read on every registered seat (live seats
-   may use their localhost child API; non-running seats fail and are skipped),
-   then selects bindings by exact federation id and config hash, optionally
-   filters peer ids, and signs the response under the advertised FMan identity.
-   Its contract grants only public API URLs, matching peer attestations, and the
-   premise-15 current holder-authorization set in that signed response.
+   `get_fman_trust_material` accepts only the protocol version, reads the
+   current public API URL and premise-15 FMan-wide holder-authorization set,
+   and signs the bounded response under the advertised FMan identity. It does
+   not inspect fleet, seat, child, or federation state; consensus
+   `fedi:fman_seat_bindings` is the separate authority for seat membership.
    Premises 7–13 and 17 exclude authority or protected effects through the
-   wallet and all-seat reads.
+   wallet and this public identity read.
 
 4. **[code] The Nostr input inventory is complete at this boundary.**
    [`fman-nostr`](../../nostr/src/lib.rs) admits two relay-derived categories
@@ -259,11 +257,10 @@ behavior at this claim boundary.
    - **Public RPC:** `get_availability` reads the Fleet/SQLite projection;
      `get_quote` reads `quote_offer` and calls `quote_locked` and
      `validate_quote_refund`;
-     `get_federation_trust_material` calls every registered seat's serialized
-     `federation_binding` read (using the child API where the seat is live),
-     skips failures, filters the resulting bindings by the requested
-     federation/config and peer ids, samples durably enrolled holder authorizations,
-     and signs a response. These are the three paths detailed in
+     `get_fman_trust_material` samples the public endpoint and durably enrolled
+     FMan-wide holder authorizations, then signs and validates one bounded
+     identity response without fleet, seat, child, or federation access. These
+     are the three paths detailed in
      [`service`](../../core/src/service.rs) and lemma 3.
    - **Signed RPC:** `create_seat` calls `verify_locked`, then
      [`Fleet::create_seat`](../../core/src/fleet.rs), whose outcomes write
@@ -440,7 +437,7 @@ the production-readiness fault model
 Under V1's fault model in the production-readiness fault model, after this version of the daemon has
 normalized, learned, and exposed at least one Holder-authorization envelope,
 outage or withholding by every configured Nostr relay cannot make the otherwise
-local `GetFederationTrustMaterial` status/report verb silently change its
+local `GetFmanTrustMaterial` status/report verb silently change its
 authorization vector from nonempty to empty (A2), provided the receiver's
 maximum admissible issue time does not move backward.
 
@@ -460,7 +457,7 @@ credential validity. The operator restarts the daemon at most once.
   occur.
 - **A-authorization:** before the outage, at least one authentic Holder
   authorization for this FMan was fetched, normalized by this version's
-  bounded loader, and exposed by `GetFederationTrustMaterial`.
+  bounded loader, and exposed by `GetFmanTrustMaterial`.
 - **A-clock:** from first exposure through the quantified refreshes and optional
   restart, each `now + 1h` maximum passed to the durable store's `merge` or
   `load` operation is greater than or equal to the preceding durable-operation
@@ -520,7 +517,7 @@ source.
 
 **L4 (enum + code) — the reachable FI response remains nonempty.** The
 official `NostrTrustMaterialSource` clones the seeded or post-refresh
-authorization watch. `get_federation_trust_material` places that vector into
+authorization watch. `get_fman_trust_material` places that vector into
 the signed response without consulting the relay. L1 establishes durable
 nonemptiness, L2 preserves it across every refresh, and L3 preserves it across
 restart; therefore the reachable FI response cannot silently become empty due
@@ -559,7 +556,7 @@ wall-clock bound. The focused database tests establish clean reopen, aggregate
 and future-time cleanup, and merge mechanics, not crash durability or a live
 relay outage through the RPC exit channel.
 
-# Evidence: trust material misbinds federation state
+# Evidence: trust material cannot redefine federation state
 
 
 
@@ -583,11 +580,10 @@ Imports:
 Under the fault model of `wip-fman-has-no-bugs`, an honest-path
 `GetPeerAttestation` binds the requested owned seat to that seat's own durable
 final federation config and peer identity. An honest-path
-`GetFederationTrustMaterial` response names the requested federation id and
-config hash, contains attestations only for bindings successfully sampled
-from this FMan's seats when their serialized `federation_binding` commands ran,
-whose final configs match both selectors (and the optional peer filter), and
-signs that complete material under this FMan's service Nostr key (H4).
+`GetFmanTrustMaterial` response makes no federation or seat claim: it binds the
+current public endpoint and admitted holder-authorization set to this FMan's
+service Nostr key (H4), with a bounded freshness interval. Consensus
+`fedi:fman_seat_bindings` separately determines where that identity operates.
 
 Holder-authorization *authenticity and admission* are imported from
 [CLAIM-fleet-manager-holder-authorization-bound](../CLAIM-fleet-manager-holder-authorization-bound.md); this claim adds only the
@@ -617,43 +613,42 @@ being attested. `sign_peer_attestation` copies every binding field and signs
 its digest. The fleet tests pin pre-consensus refusal and the service tests pin
 request ownership.
 
-**L2 (enum + code) — the federation query cannot leak a binding from another
-requested federation.** `Fleet::federation_bindings` snapshots the seat
-handles, asks each for the L1 binding, skips failures, and retains a binding
-only when both its derived federation id and config hash equal the request.
-The service then applies the optional peer-id filter and signs each retained
-binding. The outer material copies the request's id and hash and the signature
-covers the whole response. The request validator rejects malformed selectors
-and duplicate filters. `trust_material_is_signed_and_bound_to_the_requested_federation`
-pins empty honest absence and rejection when replayed for another id or hash.
+**L2 (enum + code) — the live identity response cannot redefine federation
+membership.** `GetFmanTrustMaterialRequest` contains only `ProtocolV1` and
+rejects unknown fields. The response contains no federation id, config hash,
+peer id, or peer attestation. Its canonical digest covers the FMan pubkey,
+current public URLs, freshness interval, and authorization envelopes. The
+shared `verify_for_fman` entry point requires an expected pubkey, then verifies
+that exact identity, the signature, bounds, URL canonicality, freshness, and
+authorization subjects. Callers obtain the expected identity from the verified
+consensus directory rather than from this response.
 
-**L3 (claim + code) — official holder-authorization carriage cannot change
+**L3 (claim + code) — official holder-authorization carriage cannot create a
 seat or federation binding.** The official trust source clones the runtime's
-durably enrolled envelope vector, whose three binding properties are the imported claim conclusion.
-Those global FMan authorizations do not name a federation and are not used to
-select bindings. They are copied only after L2 has selected peer attestations,
-then the outer signature covers both collections and the requested selectors.
+durably enrolled envelope vector, whose three binding properties are the
+imported claim conclusion. Those global FMan authorizations do not name a
+federation. The response validator requires every authorization subject to
+equal the signing FMan identity, and the outer signature covers the complete
+bounded vector.
 
-**L4 (code + claim + axiom) — concurrency permits stale membership, not a false
-cross-binding.** Each seat command is serialized by its seat loop. Concurrent
-decommission or child failure before sampling can make a seat fail and be
-omitted. If it happens after a binding was sampled, that binding can still be
-signed and returned after the seat is durably decommissioned or no longer live.
-Neither case can splice fields from two configs because
-`SeatFederationBinding` owns the roster and selected seat together. A daemon
-crash emits no response. After restart, attestations are regenerated from each
-recovered child's durable final config. The authorization watch is seeded from
-complete cached events only after they are reverified; an invalid cache fails
-startup rather than serving it. The router exists before cache loading, but pre-binding trust requests return
-`Unsupported` rather than an empty document. Every item returned after binding
-still satisfies the imported conclusion, while the response asserts no
-completeness or current issuer/revocation bit.
+**L4 (code + claim + axiom) — concurrency and restart affect freshness, not
+membership.** The handler reads no seat or child state, so concurrent
+formation, decommission, or child failure cannot alter or delay its membership
+answer: it has none. A daemon crash emits no response. After restart, the
+authorization watch is seeded from complete cached events only after they are
+reverified; an invalid cache fails startup rather than serving it. The router
+exists before cache loading, but pre-binding trust requests return `Unsupported`
+rather than an empty document. Every item returned after binding still
+satisfies the imported conclusion, while relying verifiers independently join
+the response to consensus membership and perform issuer-policy and revocation
+checks.
 
-**Conclusion.** L1 prevents per-seat misbinding, L2 enforces both federation
-selectors and the peer filter, L3 keeps global authorization carriage separate
-from seat selection, and L4 confines adverse timing to omission or stale seat
-membership rather than field cross-binding. Under the axioms, no served item
-falsely belongs to another requested seat or federation. ∎
+**Conclusion.** L1 prevents per-seat misbinding in the separate authenticated
+attestation API. L2 makes the public trust response incapable of asserting seat
+membership and binds it to the exact consensus-selected FMan identity. L3 and
+L4 preserve authorization authenticity across carriage and restart. Under the
+axioms, the live response cannot falsely place an FMan in a requested seat or
+federation. ∎
 
 ## Residual windows
 
@@ -662,24 +657,17 @@ falsely belongs to another requested seat or federation. ∎
   an unseen or replacement authorization, and the response has no completeness
   marker. Relying FIs must perform fresh issuer-policy and revocation checks;
   any stronger live-completeness/current-validity claim is false.
-- `federation_bindings` deliberately suppresses each seat error. A transient
-  child/config/invite failure yields an incomplete attestation list rather
-  than failing the query, and the response has no partial-results flag. This
-  record proves membership of returned entries, not completeness.
-- An empty peer filter means all matching bindings successfully sampled, not a
-  durable enumeration or response-time liveness promise. A binding sampled
-  before concurrent `DecommissionSeat` commits (or before a child crash) can be
-  included after the seat is terminal or unavailable; a failure before
-  sampling instead omits it. The payload has no snapshot generation or
-  per-binding sampled-at marker.
+- The live response proves a recent FMan identity snapshot, not that the FMan is
+  currently serving any particular federation. That membership conclusion
+  requires the separately verified consensus seat-binding directory.
 - Imported admission proves narrow authorization authenticity, not issuer
   validity, credential trust, current holder intent, or revocation. Those
   limitations remain the imported record's residuals.
 
 ## Weakest links
 
-L2's seat-path and sink enumeration is manual. A-root/deps carries the
-correspondence between fedimintd's live APIs and its durable final config. The
-largest product-level ambiguity is the unmarked partial result in the seat and
-authorization residuals; narrowing the claim to returned-entry fidelity
-is essential, not cosmetic.
+L1's authenticated seat path and the public sink enumeration remain manual.
+A-root/deps carries the correspondence between fedimintd's live APIs and its
+durable final config. The live response deliberately makes no federation
+membership claim; correctness of the relying party's consensus-directory join
+is outside this FMan-local subclaim.

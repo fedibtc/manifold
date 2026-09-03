@@ -49,7 +49,7 @@ use crate::{
 };
 
 use fedi_decentralized_service_fleet_manager::{
-    FleetManagerService, GetFederationTrustMaterialRequest, GetFederationTrustMaterialResponse,
+    FleetManagerService, GetFmanTrustMaterialRequest, GetFmanTrustMaterialResponse,
     Timestamp as FmanTimestamp,
 };
 
@@ -1196,25 +1196,18 @@ where
         &self,
         context: &FormedLiquidityContext,
         verifier: &V,
-    ) -> FiResult<(FmanEndorsement, Vec<GetFederationTrustMaterialResponse>)>
+    ) -> FiResult<(FmanEndorsement, Vec<GetFmanTrustMaterialResponse>)>
     where
         V: LiquidityBadgeVerifier,
     {
-        let mut peer_ids_by_fman = BTreeMap::<Pubkey, Vec<PeerId>>::new();
+        let mut attestation_by_fman = BTreeMap::<Pubkey, _>::new();
         for binding in &context.bindings {
-            peer_ids_by_fman
+            attestation_by_fman
                 .entry(binding.fman_pubkey.clone())
-                .or_default()
-                .push(PeerId(binding.peer_id.0.clone()));
+                .or_insert_with(|| binding.attestation.clone());
         }
-        let request_base = GetFederationTrustMaterialRequest {
-            version: ProtocolV1,
-            federation_id: context.federation.federation_id().clone(),
-            federation_config_hash: context.federation.federation_config_hash().clone(),
-            peer_ids: Vec::new(),
-        };
         let mut pending = FuturesUnordered::new();
-        for (fman_pubkey, peer_ids) in peer_ids_by_fman {
+        for (fman_pubkey, attestation) in attestation_by_fman {
             let locator = context
                 .seats
                 .iter()
@@ -1227,9 +1220,8 @@ where
                     )
                 })?
                 .clone();
-            let request = GetFederationTrustMaterialRequest {
-                peer_ids,
-                ..request_base.clone()
+            let request = GetFmanTrustMaterialRequest {
+                version: ProtocolV1,
             };
             pending.push(async move {
                 let client = self
@@ -1242,26 +1234,20 @@ where
                         FiError::Liquidity(format!("connecting to federation FMan: {error}"))
                     })?;
                 let response = client
-                    .get_federation_trust_material(request.clone())
+                    .get_fman_trust_material(request.clone())
                     .await
                     .map_err(|error| {
                         FiError::Liquidity(format!("fetching FMan trust material: {error}"))
                     })?;
                 let material = response
-                    .verify_for_request(
-                        &request,
+                    .verify_for_fman(
+                        &fman_pubkey,
                         FmanTimestamp(now_secs()?),
                         FI_LIQUIDITY_TRUST_MATERIAL_VALIDITY.as_secs(),
                     )
                     .map_err(|error| {
                         FiError::Liquidity(format!("verifying FMan trust material: {error}"))
                     })?;
-                if material.fman_pubkey != fman_pubkey {
-                    return Err(FiError::Liquidity(
-                        "FMan trust response identity does not match consensus directory"
-                            .to_owned(),
-                    ));
-                }
                 let trust = first_verified_badge(
                     &fman_pubkey,
                     &material.holder_authorizations,
@@ -1275,15 +1261,15 @@ where
                         reason.code()
                     ))
                 })?;
-                Ok::<_, FiError>((fman_pubkey, response, material, trust))
+                Ok::<_, FiError>((fman_pubkey, response, material, trust, attestation))
             });
         }
 
         let collected = timeout(FI_LIQUIDITY_RPC_TIMEOUT, async move {
             let mut all = BTreeMap::new();
             while let Some(result) = pending.next().await {
-                let (pubkey, response, material, trust) = result?;
-                all.insert(pubkey, (response, material, trust));
+                let (pubkey, response, material, trust, attestation) = result?;
+                all.insert(pubkey, (response, material, trust, attestation));
             }
             Ok::<_, FiError>(all)
         })
@@ -1292,13 +1278,8 @@ where
 
         let mut endorsement = None;
         let mut all = Vec::with_capacity(collected.len());
-        for (_pubkey, (response, material, trust)) in collected {
+        for (_pubkey, (response, _material, trust, attestation)) in collected {
             if endorsement.is_none() {
-                let attestation = material.peer_attestations.first().cloned().ok_or_else(|| {
-                    FiError::Liquidity(
-                        "FMan trust response contains no peer attestation".to_owned(),
-                    )
-                })?;
                 endorsement = Some(FmanEndorsement { attestation, trust });
             }
             all.push(response);
@@ -1997,20 +1978,39 @@ mod tests {
         let scalar = peer
             .bytes()
             .fold(1u8, |acc, byte| acc.wrapping_add(byte).max(1));
-        VerifiedSeatBinding {
-            peer_id: fedi_decentralized_domain::PeerId(peer.to_owned()),
-            guardian_identity: fedi_decentralized_domain::GuardianIdentity(format!(
-                "guardian-{peer}"
-            )),
-            fman_pubkey,
-            guardian_fee_account: stability_pool_common::Account::single(
-                bitcoin::secp256k1::PublicKey::from_secret_key(
-                    bitcoin::secp256k1::SECP256K1,
-                    &bitcoin::secp256k1::SecretKey::from_slice(&[scalar; 32])
-                        .expect("fixed test scalar is valid"),
-                ),
-                stability_pool_common::AccountType::BtcDepositor,
+        let peer_id = fedi_decentralized_domain::PeerId(peer.to_owned());
+        let guardian_identity =
+            fedi_decentralized_domain::GuardianIdentity(format!("guardian-{peer}"));
+        let guardian_fee_account = stability_pool_common::Account::single(
+            bitcoin::secp256k1::PublicKey::from_secret_key(
+                bitcoin::secp256k1::SECP256K1,
+                &bitcoin::secp256k1::SecretKey::from_slice(&[scalar; 32])
+                    .expect("fixed test scalar is valid"),
             ),
+            stability_pool_common::AccountType::BtcDepositor,
+        );
+        let attestation = fedi_decentralized_domain::FmanPeerAttestation {
+            version: ProtocolV1,
+            attestation: fedi_decentralized_domain::FmanPeerAttestationStatement {
+                fman_pubkey: fman_pubkey.clone(),
+                federation_id: FederationId("federation".to_owned()),
+                federation_config_hash: HashBytes(vec![7; 32]),
+                peer_id: peer_id.clone(),
+                guardian_identity: guardian_identity.clone(),
+                guardian_fee_account: guardian_fee_account.clone(),
+                issued_at: FmanTimestamp(1),
+            },
+            proof: fedi_decentralized_domain::SchnorrSignatureProof {
+                signature: nostr_sdk::secp256k1::schnorr::Signature::from_slice(&[1; 64])
+                    .expect("fixed test signature parses"),
+            },
+        };
+        VerifiedSeatBinding {
+            attestation,
+            peer_id,
+            guardian_identity,
+            fman_pubkey,
+            guardian_fee_account,
         }
     }
 

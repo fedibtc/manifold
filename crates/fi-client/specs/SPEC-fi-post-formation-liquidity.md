@@ -41,12 +41,13 @@ commitment. A restored provider hint is never current trust.
 Only a freshly reconciled `Formed` record can request liquidity. From the final
 invite and a real consensus read, the FI derives the authoritative federation
 id, config hash, network, peers, and `fedi:fman_seat_bindings` directory. The FI
-reconnects to every persisted running FMan seat and fetches
-`get_federation_trust_material` at request time. It verifies every response and
+reconnects once to every distinct consensus-listed FMan identity and fetches
+`get_fman_trust_material` at request time. It verifies every response and
 current PeerBadge, then carries:
 
-- one FMan peer attestation plus its matching live holder-authorization as the
-  bearer `fman_endorsement`; and
+- one peer attestation taken from the verified consensus directory plus its
+  FMan's matching live holder authorization as the bearer `fman_endorsement`;
+  and
 - one signed trust-material response for every distinct FMan identity named by
   the consensus directory.
 

@@ -580,10 +580,14 @@ cannot compose into this, because the undo mints a fresh occurrence. A
 durable signed mutation sequence can replace the restart-scoped pin if the
 product later needs immediate supersession within one occurrence.
 `fedi:fman_api_urls` consensus metadata is a public directory only; it is not
-trust evidence. FLIP/external verifiers start from the invite code, fetch final
-config plus consensus metadata, parse the canonical URL directory, query public
-FMan APIs, verify signed `GetFederationTrustMaterial` responses, and only then
-evaluate returned peer attestations and credentials.
+trust evidence. External verifiers may use that directory to query public FMan
+APIs; FI instead reconnects through its persisted formation locator for each
+consensus-listed FMan and verifies the signed `GetFmanTrustMaterial` response
+against that identity. FLIP receives those responses with the request,
+independently verifies and joins each one to the exact FMan identity named by
+the verified `fedi:fman_seat_bindings` directory, and then evaluates its current
+credentials. Peer attestations come from consensus metadata, not the live
+response.
 
 `FmanPeerAttestation` binds an FMan service/ad key to a concrete federation peer
 and that seat's public guardian-fee account
@@ -603,16 +607,15 @@ threshold.
 
 The current v1 FMan enables the public trust-material API. The generic iroh RPC
 adapter limits raw request frames to 1 MiB, 128 concurrent stream handlers, and
-a 10-second initial-frame read; the trust-material handler then validates the
-canonical request's 4096-byte limit, identifiers, and peer filter before reading
-fleet state. It has no endpoint-specific rate limit or 4096-byte
-pre-deserialization limit, so deployment-level abuse controls remain necessary.
-Relying verifiers must cap canonical response size, public API URLs, peer
-attestations, holder authorizations, and credentials; reject stale, overlong,
+a 10-second initial-frame read. The version-only trust-material request rejects
+unknown fields, and the handler reads no fleet, seat, child, or federation
+state. It has no endpoint-specific rate limit, so deployment-level abuse
+controls remain necessary. Relying verifiers must cap canonical response size,
+public API URLs, holder authorizations, and credentials; reject stale, overlong,
 future-issued, or expired responses; and fail closed when required issuer
-revocation lookups are unavailable. Nested peer attestations and holder
-authorizations must bind to the response
-`material.fman_pubkey`; relayed material from another FMan is rejected unless a
+revocation lookups are unavailable. The response signature and every holder
+authorization must bind to the exact `material.fman_pubkey` selected from
+consensus metadata; relayed material from another FMan is rejected unless a
 future protocol explicitly defines delegation.
 
 Each seat's fedimintd binds its p2p and api ports on all interfaces because

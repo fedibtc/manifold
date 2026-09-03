@@ -603,17 +603,10 @@ impl crate::service::TrustMaterialSource for FakeTrustMaterialSource {
     }
 }
 
-fn trust_material_request(
-    federation_id: &str,
-    config_hash: Vec<u8>,
-) -> fedi_decentralized_service_fleet_manager::GetFederationTrustMaterialRequest {
-    fedi_decentralized_service_fleet_manager::GetFederationTrustMaterialRequest {
+fn trust_material_request() -> fedi_decentralized_service_fleet_manager::GetFmanTrustMaterialRequest
+{
+    fedi_decentralized_service_fleet_manager::GetFmanTrustMaterialRequest {
         version: fedi_decentralized_domain::ProtocolV1,
-        federation_id: fedi_decentralized_service_fleet_manager::FederationId(
-            federation_id.to_owned(),
-        ),
-        federation_config_hash: fedi_decentralized_domain::HashBytes(config_hash),
-        peer_ids: vec![],
     }
 }
 
@@ -626,7 +619,7 @@ async fn trust_material_is_unsupported_until_a_source_is_bound() {
     let rpc = rpc(&temp).await;
 
     let error = rpc
-        .get_federation_trust_material(trust_material_request("fed", vec![1, 2, 3]))
+        .get_fman_trust_material(trust_material_request())
         .await
         .unwrap_err();
 
@@ -638,67 +631,22 @@ async fn trust_material_is_unsupported_until_a_source_is_bound() {
 }
 
 #[tokio::test]
-async fn trust_material_is_signed_and_bound_to_the_requested_federation() {
+async fn trust_material_is_signed_for_the_fman_identity() {
     let temp = TempDir::new().unwrap();
     let rpc = rpc(&temp).await;
     rpc.bind_trust_material_source(Arc::new(FakeTrustMaterialSource {
         authorizations: vec![],
     }));
 
-    let request = trust_material_request("fed-a", vec![1, 2, 3]);
     let response = rpc
-        .get_federation_trust_material(request.clone())
+        .get_fman_trust_material(trust_material_request())
         .await
         .unwrap();
-
-    // This FMan runs no seat in that federation, which is a fact about the
-    // federation rather than a failure: an empty attestation list, still signed.
-    assert!(response.material.peer_attestations.is_empty());
-
+    let expected = fedi_decentralized_domain::Pubkey(rpc.attestation_keys.public_key().to_string());
     let now = fedi_decentralized_domain::Timestamp(response.material.issued_at.0);
     response
-        .verify_for_request(&request, now, 3600)
-        .expect("the FMan's own response verifies for the request it answered");
+        .verify_for_fman(&expected, now, 3600)
+        .expect("the FMan's own response verifies for its consensus-listed identity");
 
-    // The signature covers the federation binding, so the same response cannot
-    // be replayed as an answer about a different federation.
-    let other_federation = trust_material_request("fed-b", vec![1, 2, 3]);
-    assert!(
-        response
-            .verify_for_request(&other_federation, now, 3600)
-            .is_err(),
-        "material must not verify for a federation it does not name"
-    );
-    let other_config = trust_material_request("fed-a", vec![9, 9, 9]);
-    assert!(
-        response
-            .verify_for_request(&other_config, now, 3600)
-            .is_err(),
-        "material must not verify for a different config revision"
-    );
-
-    rpc.fleet.shutdown().await;
-}
-
-#[tokio::test]
-async fn trust_material_rejects_a_malformed_request() {
-    let temp = TempDir::new().unwrap();
-    let rpc = rpc(&temp).await;
-    rpc.bind_trust_material_source(Arc::new(FakeTrustMaterialSource {
-        authorizations: vec![],
-    }));
-
-    // A duplicated peer filter entry is refused by the shared request
-    // validator, before any seat state is consulted.
-    let mut request = trust_material_request("fed-a", vec![1, 2, 3]);
-    request.peer_ids = vec![
-        fedi_decentralized_domain::PeerId("0".to_owned()),
-        fedi_decentralized_domain::PeerId("0".to_owned()),
-    ];
-
-    assert!(
-        rpc.get_federation_trust_material(request).await.is_err(),
-        "a duplicated peer filter must be refused"
-    );
     rpc.fleet.shutdown().await;
 }

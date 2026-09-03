@@ -16,5 +16,4 @@ Unverified.
   the target federation's authoritative seats and `verify_for_federation` checks
   their complete correspondence.
 - **A2 — signature/canonical verification soundness.** The domain verification
-  routines accept only material signed for their documented identity, federation,
-  and configuration.
+  routines accept only material signed by the exact expected FMan identity.

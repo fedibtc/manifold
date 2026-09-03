@@ -20,16 +20,15 @@ pub use fedi_credential_sdk_protocol::{
 };
 pub use fedi_decentralized_services::domain::{
     BitcoinNetwork, CanonicalPayload, FMAN_API_URLS_META_FIELD_KEY,
-    FMAN_FEDERATION_TRUST_MATERIAL_SIGNATURE_DOMAIN_SEPARATOR,
     FMAN_PEER_ATTESTATION_SIGNATURE_DOMAIN_SEPARATOR, FMAN_SEAT_BINDINGS_META_FIELD_KEY,
-    FMAN_TRUST_MATERIAL_MAX_RESPONSE_BYTES, FMAN_TRUST_MATERIAL_PEER_FILTER_MAX_COUNT,
+    FMAN_TRUST_MATERIAL_MAX_RESPONSE_BYTES, FMAN_TRUST_MATERIAL_SIGNATURE_DOMAIN_SEPARATOR,
     FederationId, FederationName, FederationSeat, FederationSeats, FleetSeatId,
-    FmanApiUrlsMetadata, FmanFederationTrustMaterial, FmanFederationTrustMaterialVerificationError,
-    FmanPeerAttestation, FmanPeerAttestationStatement, FmanSeatBindings, FmanSeatBindingsError,
-    GatewayApiUrl, GetFederationTrustMaterialRequest, GetFederationTrustMaterialResponse,
-    GuardianIdentity, HashBytes, HolderAuthorizationEnvelope, HolderTrustEnvelopeError, InviteCode,
-    PayloadProof, PeerBadgeTrustPolicy, PeerBadgeTrustPolicyConfigError, PeerBadgeTrustPolicyError,
-    PeerId, ProtocolVersion, Pubkey, Sats, SecretString, Signature, Signed, TRUST_SCORE_SCHEMA_V1,
+    FmanApiUrlsMetadata, FmanPeerAttestation, FmanPeerAttestationStatement, FmanSeatBindings,
+    FmanSeatBindingsError, FmanTrustMaterial, FmanTrustMaterialVerificationError, GatewayApiUrl,
+    GetFmanTrustMaterialRequest, GetFmanTrustMaterialResponse, GuardianIdentity, HashBytes,
+    HolderAuthorizationEnvelope, HolderTrustEnvelopeError, InviteCode, PayloadProof,
+    PeerBadgeTrustPolicy, PeerBadgeTrustPolicyConfigError, PeerBadgeTrustPolicyError, PeerId,
+    ProtocolVersion, Pubkey, Sats, SecretString, Signature, Signed, TRUST_SCORE_SCHEMA_V1,
     Timestamp, TrustScoreBadgeV1, TrustScoreSchemaError, Url, VerifiedSeatBinding,
     federation_seats, parse_trust_score_badge_v1, verify_holder_trust_envelope,
 };

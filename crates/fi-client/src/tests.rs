@@ -858,8 +858,8 @@ struct FmanState {
     attest_foreign_peer: AtomicBool,
     /// Seat 0 signs an account different from its earlier signed acceptance.
     attest_wrong_fee_account: AtomicBool,
-    /// One entry per public trust-material request, preserving FMan and peers.
-    trust_material_requests: Mutex<Vec<(usize, Vec<fedi_decentralized_domain::PeerId>)>>,
+    /// One entry per public trust-material request, preserving the FMan queried.
+    trust_material_requests: Mutex<Vec<usize>>,
     /// Corrupt the first FMan trust-material response signature.
     corrupt_trust_material_signature: AtomicBool,
 }
@@ -1372,21 +1372,19 @@ impl FleetManagerService for TestFman {
         })
     }
 
-    async fn get_federation_trust_material(
+    async fn get_fman_trust_material(
         &self,
-        request: GetFederationTrustMaterialRequest,
-    ) -> FmResult<GetFederationTrustMaterialResponse> {
+        _request: GetFmanTrustMaterialRequest,
+    ) -> FmResult<GetFmanTrustMaterialResponse> {
         self.state
             .trust_material_requests
             .lock()
             .expect("test lock")
-            .push((self.index, request.peer_ids.clone()));
+            .push(self.index);
         let now = test_now_secs();
         let keys = fman_keys(self.index);
-        let material = fedi_decentralized_domain::FmanFederationTrustMaterial {
+        let material = fedi_decentralized_domain::FmanTrustMaterial {
             fman_pubkey: fedi_decentralized_domain::Pubkey(keys.public_key().to_string()),
-            federation_id: request.federation_id,
-            federation_config_hash: request.federation_config_hash,
             issued_at: Timestamp(now),
             expires_at: Timestamp(
                 now + crate::liquidity::FI_LIQUIDITY_TRUST_MATERIAL_VALIDITY.as_secs(),
@@ -1395,7 +1393,6 @@ impl FleetManagerService for TestFman {
                 "iroh://{}",
                 locator(self.index).endpoint_addr.id
             ))],
-            peer_attestations: vec![test_attestation(self.index)],
             holder_authorizations: vec![discovery::envelope(
                 &discovery::holder_keys(),
                 keys.public_key(),
@@ -1413,7 +1410,7 @@ impl FleetManagerService for TestFman {
         } else {
             keys
         };
-        Ok(GetFederationTrustMaterialResponse {
+        Ok(GetFmanTrustMaterialResponse {
             version: fedi_decentralized_domain::ProtocolV1,
             proof: fedi_decentralized_domain::SchnorrSignatureProof {
                 signature: signing_keys
@@ -11512,7 +11509,30 @@ async fn post_formation_liquidity_supports_gateway_stability_and_combined_intent
         let requests = connector.0.requests.lock().expect("test lock");
         assert_eq!(requests.len(), 1);
         let request = &requests[0];
-        assert!(request.payload.fman_endorsement.is_some());
+        let endorsement = request
+            .payload
+            .fman_endorsement
+            .as_ref()
+            .expect("request carries one admission endorsement");
+        assert!(
+            (0..usize::from(MIN_FEDERATION_SIZE))
+                .map(test_attestation)
+                .any(|attestation| {
+                    attestation.attestation == endorsement.attestation.attestation
+                }),
+            "the endorsement attestation statement comes from the verified consensus directory",
+        );
+        assert_eq!(
+            endorsement
+                .trust
+                .holder_authorization
+                .authorization
+                .subject_pubkey
+                .0
+                .to_string(),
+            endorsement.attestation.attestation.fman_pubkey.0,
+            "the live holder authorization is for the directory attestation's FMan",
+        );
         let trust = request
             .payload
             .fman_trust_material
@@ -11536,18 +11556,9 @@ async fn post_formation_liquidity_supports_gateway_stability_and_combined_intent
             .expect("test lock");
         assert_eq!(trust_requests.len(), usize::from(MIN_FEDERATION_SIZE));
         assert_eq!(
-            trust_requests
-                .iter()
-                .map(|(index, _)| *index)
-                .collect::<HashSet<_>>()
-                .len(),
+            trust_requests.iter().copied().collect::<HashSet<_>>().len(),
             usize::from(MIN_FEDERATION_SIZE),
             "each distinct FMan is queried once per exact request",
-        );
-        assert!(
-            trust_requests
-                .iter()
-                .all(|(_, peer_ids)| peer_ids.len() == 1)
         );
     }
 }
