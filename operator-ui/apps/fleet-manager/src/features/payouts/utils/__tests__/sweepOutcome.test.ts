@@ -23,7 +23,7 @@ describe('describeCollection', () => {
     const sentence = describeCollection({
       claimed_msat: '13000000',
       recorded_claimed_msat: '13000000',
-      awaiting_cycle_msat: '3000000',
+      awaiting_cycle_msat: '3000000'
     });
 
     expect(sentence).toContain('13,000 sats');
@@ -37,7 +37,7 @@ describe('describeCollection', () => {
     const sentence = describeCollection({
       claimed_msat: '13000000',
       recorded_claimed_msat: '13000000',
-      awaiting_cycle_msat: '0',
+      awaiting_cycle_msat: '0'
     });
 
     expect(sentence).toBe('Claimed 13,000 sats. 0 sats are waiting for the next cycle turnover.');
@@ -50,7 +50,7 @@ describe('describeCollection', () => {
       describeCollection({
         claimed_msat: '0',
         recorded_claimed_msat: '13000000',
-        awaiting_cycle_msat: '4000000',
+        awaiting_cycle_msat: '4000000'
       })
     ).toContain('Claimed 0 sats.');
   });
@@ -92,7 +92,7 @@ describe('describeCollection', () => {
       describeCollection({
         claimed_msat: '18446744073709551615',
         recorded_claimed_msat: '18446744073709551615',
-        awaiting_cycle_msat: '18446744073709551615',
+        awaiting_cycle_msat: '18446744073709551615'
       })
     ).toContain('18,446,744,073,709,551 sats');
   });

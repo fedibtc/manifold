@@ -16,13 +16,11 @@ afterEach(() => {
 
 describe('useCollectGuardianFees', () => {
   it('should collect one seat out of the pool', async () => {
-    const adminCall = vi
-      .spyOn(adminCallModule, 'adminCall')
-      .mockResolvedValue({
-        claimed_msat: '13000000',
-        recorded_claimed_msat: '13000000',
-        awaiting_cycle_msat: '3000000',
-      });
+    const adminCall = vi.spyOn(adminCallModule, 'adminCall').mockResolvedValue({
+      claimed_msat: '13000000',
+      recorded_claimed_msat: '13000000',
+      awaiting_cycle_msat: '3000000'
+    });
 
     const { result } = renderHook(() => useCollectGuardianFees('seat-01'), { wrapper });
     result.current.mutate();
@@ -38,7 +36,7 @@ describe('useCollectGuardianFees', () => {
     vi.spyOn(adminCallModule, 'adminCall').mockResolvedValue({
       claimed_msat: '13000000',
       recorded_claimed_msat: '13000000',
-      awaiting_cycle_msat: '3000000',
+      awaiting_cycle_msat: '3000000'
     });
 
     const { result } = renderHook(() => useCollectGuardianFees('seat-01'), { wrapper });
@@ -48,7 +46,7 @@ describe('useCollectGuardianFees', () => {
     expect(result.current.data).toEqual({
       claimed_msat: '13000000',
       recorded_claimed_msat: '13000000',
-      awaiting_cycle_msat: '3000000',
+      awaiting_cycle_msat: '3000000'
     });
   });
 });

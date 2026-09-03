@@ -131,7 +131,7 @@ const collectGuardianFees: Verb<'CollectGuardianFees'> = ({ seat_id }) => {
   return {
     claimed_msat: claimed.toString(),
     recorded_claimed_msat: ledger.collected_ecash_msat.toString(),
-    awaiting_cycle_msat: ledger.locked_msat.toString(),
+    awaiting_cycle_msat: ledger.locked_msat.toString()
   };
 };
 

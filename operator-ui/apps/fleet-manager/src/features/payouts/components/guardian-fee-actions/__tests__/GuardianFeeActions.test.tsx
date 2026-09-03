@@ -37,13 +37,11 @@ afterEach(() => {
 
 describe('GuardianFeeActions', () => {
   it('should collect the seat out of the pool', async () => {
-    const adminCall = vi
-      .spyOn(adminCallModule, 'adminCall')
-      .mockResolvedValue({
-        claimed_msat: '13000000',
-        recorded_claimed_msat: '13000000',
-        awaiting_cycle_msat: '3000000',
-      });
+    const adminCall = vi.spyOn(adminCallModule, 'adminCall').mockResolvedValue({
+      claimed_msat: '13000000',
+      recorded_claimed_msat: '13000000',
+      awaiting_cycle_msat: '3000000'
+    });
     renderActions();
 
     fireEvent.click(collectButton());
@@ -62,7 +60,7 @@ describe('GuardianFeeActions', () => {
     vi.spyOn(adminCallModule, 'adminCall').mockResolvedValue({
       claimed_msat: '13000000',
       recorded_claimed_msat: '13000000',
-      awaiting_cycle_msat: '3000000',
+      awaiting_cycle_msat: '3000000'
     });
     renderActions();
 
@@ -78,7 +76,7 @@ describe('GuardianFeeActions', () => {
     vi.spyOn(adminCallModule, 'adminCall').mockResolvedValue({
       claimed_msat: '13000000',
       recorded_claimed_msat: '13000000',
-      awaiting_cycle_msat: '0',
+      awaiting_cycle_msat: '0'
     });
     renderActions();
 

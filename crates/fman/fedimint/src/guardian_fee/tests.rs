@@ -1,13 +1,20 @@
 use std::collections::VecDeque;
+use std::ops::Range;
+use std::path::Path;
 use std::sync::Arc;
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
 use fedimint_client::db::OperationLogKey;
 use fedimint_client_module::oplog::{JsonStringed, OperationLogEntry};
 use fedimint_core::Amount;
 use fedimint_core::core::OperationId;
-use fedimint_core::db::{Database, IDatabaseTransactionOpsCoreTyped};
+use fedimint_core::db::mem_impl::{MemDatabase, MemTransaction};
+use fedimint_core::db::{
+    Database, DatabaseError, DatabaseResult, IDatabaseTransactionOps, IDatabaseTransactionOpsCore,
+    IDatabaseTransactionOpsCoreTyped, IRawDatabase, IRawDatabaseTransaction, PrefixStream,
+};
+use fedimint_core::module::registry::ModuleDecoderRegistry;
 use fman_core::guardian_fee::{Collected, CollectionFailure, CollectionFailurePhase};
 use stability_pool_client::StabilityPoolWithdrawalOperationState;
 
@@ -29,6 +36,101 @@ struct FakeOperations {
     fail_reconcile_total_read: bool,
     fail_receipt_write: bool,
     committed_total: Option<Amount>,
+}
+
+#[derive(Debug, Default)]
+struct FailFirstCommitDatabase {
+    inner: MemDatabase,
+    fail_next_commit: AtomicBool,
+}
+
+impl FailFirstCommitDatabase {
+    fn new() -> Self {
+        Self {
+            inner: MemDatabase::new(),
+            fail_next_commit: AtomicBool::new(true),
+        }
+    }
+}
+
+#[derive(Debug)]
+struct FailFirstCommitTransaction<'a> {
+    inner: MemTransaction<'a>,
+    fail_next_commit: &'a AtomicBool,
+}
+
+#[async_trait::async_trait]
+impl IRawDatabase for FailFirstCommitDatabase {
+    type Transaction<'a> = FailFirstCommitTransaction<'a>;
+
+    async fn begin_transaction(&self) -> Self::Transaction<'_> {
+        FailFirstCommitTransaction {
+            inner: self.inner.begin_transaction().await,
+            fail_next_commit: &self.fail_next_commit,
+        }
+    }
+
+    fn checkpoint(&self, path: &Path) -> DatabaseResult<()> {
+        self.inner.checkpoint(path)
+    }
+}
+
+#[async_trait::async_trait]
+impl IDatabaseTransactionOpsCore for FailFirstCommitTransaction<'_> {
+    async fn raw_insert_bytes(
+        &mut self,
+        key: &[u8],
+        value: &[u8],
+    ) -> DatabaseResult<Option<Vec<u8>>> {
+        self.inner.raw_insert_bytes(key, value).await
+    }
+
+    async fn raw_get_bytes(&mut self, key: &[u8]) -> DatabaseResult<Option<Vec<u8>>> {
+        self.inner.raw_get_bytes(key).await
+    }
+
+    async fn raw_remove_entry(&mut self, key: &[u8]) -> DatabaseResult<Option<Vec<u8>>> {
+        self.inner.raw_remove_entry(key).await
+    }
+
+    async fn raw_find_by_range(&mut self, range: Range<&[u8]>) -> DatabaseResult<PrefixStream<'_>> {
+        self.inner.raw_find_by_range(range).await
+    }
+
+    async fn raw_find_by_prefix(&mut self, prefix: &[u8]) -> DatabaseResult<PrefixStream<'_>> {
+        self.inner.raw_find_by_prefix(prefix).await
+    }
+
+    async fn raw_remove_by_prefix(&mut self, prefix: &[u8]) -> DatabaseResult<()> {
+        self.inner.raw_remove_by_prefix(prefix).await
+    }
+
+    async fn raw_find_by_prefix_sorted_descending(
+        &mut self,
+        prefix: &[u8],
+    ) -> DatabaseResult<PrefixStream<'_>> {
+        self.inner
+            .raw_find_by_prefix_sorted_descending(prefix)
+            .await
+    }
+}
+
+impl IDatabaseTransactionOps for FailFirstCommitTransaction<'_> {}
+
+#[async_trait::async_trait]
+impl IRawDatabaseTransaction for FailFirstCommitTransaction<'_> {
+    async fn commit_tx(self) -> DatabaseResult<()> {
+        if self.fail_next_commit.swap(false, Ordering::SeqCst) {
+            return Err(DatabaseError::Other(anyhow::anyhow!(
+                "injected backend commit failure"
+            )));
+        }
+        self.inner.commit_tx().await
+    }
+}
+
+struct CommitFailureOperations {
+    receipts: Database,
 }
 
 impl FakeOperations {
@@ -160,6 +262,93 @@ impl CollectionOperations for FakeOperations {
             .unwrap()
             .pop_front()
             .expect("test supplied an unlock completion result")
+    }
+}
+
+#[async_trait::async_trait]
+impl CollectionOperations for CommitFailureOperations {
+    type Operation = OperationId;
+
+    async fn reconcile_unobserved(
+        &self,
+    ) -> Result<Reconciled, (CollectionFailurePhase, Reconciled)> {
+        let operation = OperationId([9; 32]);
+        let recorded_claimed = read_recorded_claimed(&self.receipts).await.map_err(|_| {
+            (
+                CollectionFailurePhase::BalanceRefresh,
+                Reconciled::default(),
+            )
+        })?;
+        if read_collection_receipt(&self.receipts, &operation)
+            .await
+            .map_err(|_| {
+                (
+                    CollectionFailurePhase::Receipt,
+                    Reconciled {
+                        newly_claimed: Amount::ZERO,
+                        recorded_claimed,
+                    },
+                )
+            })?
+            .is_some()
+        {
+            return Ok(Reconciled {
+                newly_claimed: Amount::ZERO,
+                recorded_claimed,
+            });
+        }
+        let recorded_claimed =
+            record_collection_receipt(&self.receipts, &operation, Amount::from_msats(100))
+                .await
+                .map_err(|_| {
+                    (
+                        CollectionFailurePhase::Receipt,
+                        Reconciled {
+                            newly_claimed: Amount::ZERO,
+                            recorded_claimed,
+                        },
+                    )
+                })?;
+        Ok(Reconciled {
+            newly_claimed: Amount::from_msats(100),
+            recorded_claimed,
+        })
+    }
+
+    async fn receipt(&self, operation: &Self::Operation) -> anyhow::Result<Option<Amount>> {
+        read_collection_receipt(&self.receipts, operation).await
+    }
+
+    async fn recorded_claimed(&self) -> anyhow::Result<Amount> {
+        read_recorded_claimed(&self.receipts).await
+    }
+
+    async fn record_receipt(
+        &self,
+        operation: &Self::Operation,
+        amount: Amount,
+    ) -> anyhow::Result<Amount> {
+        record_collection_receipt(&self.receipts, operation, amount).await
+    }
+
+    async fn balances(&self) -> anyhow::Result<CollectionBalances> {
+        balances(0, 0, 0)
+    }
+
+    async fn submit_idle(&self, _amount: Amount) -> anyhow::Result<Self::Operation> {
+        panic!("reconciliation leaves no idle value")
+    }
+
+    async fn await_idle(&self, _operation: Self::Operation) -> anyhow::Result<Amount> {
+        panic!("reconciliation leaves no idle operation")
+    }
+
+    async fn submit_unlock(&self) -> anyhow::Result<Self::Operation> {
+        panic!("reconciliation leaves no locked value")
+    }
+
+    async fn await_unlock(&self, _operation: Self::Operation) -> anyhow::Result<Amount> {
+        panic!("reconciliation leaves no unlock operation")
     }
 }
 
@@ -355,6 +544,38 @@ async fn recovery_enumerates_operation_ids_without_a_chronological_entry() {
     let entries = operation_log_entries(&database).await;
     assert_eq!(entries.len(), 1);
     assert_eq!(entries[0].0.operation_id, operation_id);
+}
+
+#[tokio::test]
+async fn backend_receipt_commit_failure_is_incomplete_and_retry_reconciles_once() {
+    let operations = CommitFailureOperations {
+        receipts: Database::new(
+            FailFirstCommitDatabase::new(),
+            ModuleDecoderRegistry::default(),
+        )
+        .with_prefix(collection_receipt_prefix()),
+    };
+
+    assert_eq!(
+        collect_operations(&operations).await.unwrap(),
+        incomplete(0, Some(0), CollectionFailurePhase::Receipt, true)
+    );
+    assert_eq!(
+        collect_operations(&operations).await.unwrap(),
+        Collected::Complete {
+            claimed: Amount::from_msats(100),
+            recorded_claimed: Amount::from_msats(100),
+            awaiting_cycle: Amount::ZERO,
+        }
+    );
+    assert_eq!(
+        collect_operations(&operations).await.unwrap(),
+        Collected::Complete {
+            claimed: Amount::ZERO,
+            recorded_claimed: Amount::from_msats(100),
+            awaiting_cycle: Amount::ZERO,
+        }
+    );
 }
 
 #[tokio::test]

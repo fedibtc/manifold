@@ -531,7 +531,9 @@ async fn record_collection_receipt(
         &total.consensus_encode_to_vec(),
     )
     .await?;
-    tx.commit_tx().await;
+    tx.commit_tx_result()
+        .await
+        .context("commit guardian-fee collection receipt")?;
     Ok(total)
 }
 
