@@ -36,20 +36,19 @@ the output or that the target consumed it.
 
 **C (`enum` + `code`) — completion has two irreducible source leaves.** The
 only completion writer is `complete_item`, reached by the gateway and
-stability-pool workers. Gateway completion currently combines its completed
-wallet operation with a federation-wide gateway balance inequality. Stability
+stability-pool workers. Gateway completion requires the target gateway to
+report a claim of the output its own funding operation paid. Stability
 completion follows the item's recorded peg-in and stability deposit operation,
 then corroborates it with the provider account report. Both paths must be
 separately re-derived; neither can borrow attribution from the other.
 
-**Cg (`claim`, pending regeneration) — gateway target attribution is the
-current attack leaf.** The existing
-[`unrelated-gateway-balance-completes-item`](../CLAIM-unrelated-gateway-balance-completes-item.md)
-record describes a counterexample: an independent credit can satisfy the
-aggregate balance inequality without identifying this item's output-to-claim
-path. Its counterexample blocks the root conclusion. This DAG does not
-import it as a lemma because falsified records cannot be imports; it makes the
-required re-derivation boundary explicit.
+**Cg (`claim`) — gateway target attribution has its own lineage.**
+[CLAIM-unrelated-gateway-balance-completes-item](../CLAIM-unrelated-gateway-balance-completes-item.md)
+derives that the target-side increase justifying a gateway completion is the
+Bitcoin output the item's own persisted wallet operation paid to its own
+persisted deposit address, as claimed by the target gateway's Fedimint
+client, and not an aggregate balance high enough for another reason. This DAG
+imports that exact property.
 
 **Cs (`claim`) — stability has a distinct operation lineage.**
 The regenerated

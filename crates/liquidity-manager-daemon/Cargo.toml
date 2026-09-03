@@ -61,6 +61,7 @@ fedimint-client = { workspace = true }
 fedimint-connectors = { workspace = true }
 fedimint-core = { workspace = true }
 fedimint-db-locked = { workspace = true }
+fedimint-eventlog = { workspace = true }
 fedimint-gateway-client = { workspace = true }
 fedimint-gateway-common = { workspace = true }
 fedimint-ln-client = { workspace = true }
@@ -69,6 +70,7 @@ fedimint-meta-client = { workspace = true }
 fedimint-mint-client = { workspace = true }
 fedimint-rocksdb = { workspace = true }
 fedimint-wallet-client = { workspace = true }
+fedimint-walletv2-client = { workspace = true }
 flate2 = "1"
 futures-util = "0.3"
 hex = "0.4.3"

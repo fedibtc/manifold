@@ -2,238 +2,124 @@
 
 ## Argument
 
-### L1 — completion-writer and evidence enumeration (`enum`, `code`, `type`) — fails
+### L1 — the sole gateway completion writer requires claim attribution (`enum`, `code`)
 
-There is one production SQL writer capable of the bad transition:
-`allocation_store::complete_item` unconditionally updates the selected
-`allocation_items` row to `completed`, writes `fulfilled_amount_sats` and
-serialized evidence, recomputes roll-ups, and commits
-(`allocation_store.rs:278-301`). Its two production callers are the gateway
-caller at `gateway.rs:296-310` and the stability-pool caller at
-`stability_allocation.rs:387-401`; only the former constructs
-`CompletionEvidence::Gateway`. The other `complete_item` occurrence and the
-other gateway-evidence constructors are tests. There is no Admin/manual gateway
-item-completion writer.
+The only production writer that sets a gateway item to `completed` is
+`allocation_store::complete_item`, called from `complete_if_gateway_funded`
+(`gateway_allocation.rs`). Before completing, the worker reads the item's own
+`gateway_funding` wallet operation and requires a claim entry from the
+configured gateway whose `txid` equals the operation's recorded txid, whose
+`out_idx` equals the operation's recorded `tx_vout` when chain observation has
+recorded one, and whose amount covers the committed amount. A transaction can
+pay two items' deposit addresses in separate outputs, so the output index is
+what separates them. The guard therefore holds an
+item-funding-output-to-target-claim identity; the aggregate federation balance
+is read afterwards as evidence observation and never satisfies the completion
+condition.
 
-The `GatewayCompletionEvidence` type has exactly `gateway_id`,
-`gateway_api`, `fulfilled_amount`, `observed_gateway_balance`, `observed_at`, optional
-`withdrawal_txid`, and optional `wallet_operation_id`
-(`service-liquidity-manager/src/public.rs:472-505`). The type rung ensures these
-shapes serialize, but no field names the federation, initial baseline/delta, a
-deposit address, Bitcoin output index/value, Fedimint peg-in operation, or
-claimed target outpoint. At completion, code re-reads the
-wallet row only to copy its `txid`; it does not compare that row's address or
-txid with any gateway/Fedimint claim (`gateway.rs:295-308`). Thus the
-evidence durably co-locates two facts but does not bind them.
+### L2 — the payment-log read returns per-deposit identity for both wallet modules (`code`, `test`, pinned source)
 
-### L2 — `FederationInfo.balance_msat` is an aggregate ecash balance (`code`, `enum`, axiom A2) — fails
+`ConfiguredGatewayClient::deposit_claims` calls gatewayd's `/payment_log`
+endpoint for the target federation, filtered to the kinds in
+`claim_event_kinds`. At the pinned gatewayd source
+(`fedimint-gateway-server/src/lib.rs`, `handle_payment_log_msg`) this reads
+the federation client's event log and returns `PersistedLogEntry` payloads,
+filtered to whatever kinds the caller names. `deposit_claims_from_log`
+reduces both modules' records to one outpoint-keyed claim, which
+`tests/gateway.rs` pins.
 
-The dependency is not inferred from a fake. `flake.nix` supplies
-Fedimint tag `v0.11.2-fedi2`; `flake.lock` pins it to GitHub revision
-`a6fa6d83f4bea26d4f51cbf26d305d0b64727e00`; root `Cargo.toml` declares
-Fedimint `0.11.2`-compatible workspace dependencies and patches registry and Fedimint git
-crates to that source, while the daemon inherits the gateway crates with
-`{ workspace = true }`. Their path-package entries in `Cargo.lock` resolve
-through that patch. The update changes gateway-server sources, so the existing
-counterexample was rechecked at this pin: `GatewayInfo` still carries each
-federation's aggregate `balance_msat`, `get_info` still obtains it through
-`federation_info_all_federations`, and that method still reads
-`get_balance_for_btc` rather than deposit-specific evidence.
-The workspace Fedi stability-pool source is exactly
-`https://github.com/fedixyz/fedi` revision
-`2f35ea4e3b2516d35b8ed315455718cd3b336758`; it is not on this gateway
-completion route.
+`handle_address_msg` decides which module serves a federation: wallet v1 if
+the client exposes `fedimint_wallet_client::WalletClientModule`, walletv2
+otherwise. The two record a claim differently.
 
-At the pinned Fedimint revision, `FederationInfo.balance_msat` is only an
-`Amount` beside `federation_id` and config
-(`gateway/fedimint-gateway-common/src/lib.rs:170-178`). Gatewayd's `get_info`
-calls `federation_info_all_federations`, which calls each federation client's
-`get_balance_for_btc` and places that result directly in `balance_msat`
-(`gateway/fedimint-gateway-server/src/lib.rs:2038-2044`;
-`federation_manager.rs:265-300`). `get_balance_for_btc` delegates to the primary
-Bitcoin module's `get_balance` (`fedimint-client/src/client.rs:1115-1128`). Mint v1
-returns the total amount of all spendable notes, and mint v2 sums every local
-denomination/count (`modules/fedimint-mint-client/src/lib.rs:1080-1087`;
-`modules/fedimint-mintv2-client/src/lib.rs:510-519`). It is therefore the entire
-gateway client's spendable ecash balance in that federation—not the on-chain
-balance of one allocated address, not an inbound-LN capacity measurement, and
-not an item/txid/outpoint-specific receipt.
+- Wallet v1 logs `DepositConfirmed { txid, out_idx, amount }` inside the claim
+  transaction for that deposit's tweak index (`pegin_monitor.rs`,
+  `claim_peg_in_inner`). `amount` is the output value before the federation's
+  peg-in fee.
+- Walletv2 logs `ReceivePaymentEvent { operation_id, value, fee, address,
+  outpoint }` when its client submits the claiming transaction
+  (`fedimint-walletv2-client/src/lib.rs`, `receive_output`) and
+  `ReceivePaymentUpdateEvent { operation_id, status }` when the federation
+  accepts or rejects it (`receive_sm.rs`, `transition_funding`). A receive
+  counts as a claim only with a `Success` update for the same operation, and
+  its credited amount is `value - fee`, which is the ecash the client issued
+  itself for that output.
 
-FLIP's `gateway_snapshot_from_info` and `connect_federation` merely divide that
-amount by 1000, rounding down to sats (`gateway.rs:90-113,157-180`). The
-enumerated target balance reads are: initial `gateway_info` in
-`process_gateway_item`; completion's `observe_federation_balance`, whose default
-implementation calls `gateway_info`; and the separate observation task's
-`gateway_info` used only to UPSERT monitoring rows
-(`gateway.rs:43-46,74-107,261-286,328-357`; `gateway.rs:52-63`). None
-returns deposit provenance.
+Either way an entry is target-side claim evidence for the exact output it
+names, not an account aggregate.
 
-### L3 — baseline, address, schema, and concurrency enumeration (`enum`, `schema`, `code`) — fails
+### L3 — the falsifying counterexample no longer completes the item (`test`)
 
-There is exactly one production baseline writer. On the first processing of an
-item whose deserialized step has no baseline, it takes the matching
-federation-wide balance from one `gateway_info` snapshot (or zero if the
-federation is absent), adds an observation timestamp, and persists the whole
-step JSON (`gateway.rs:96-109`;
-`allocation_store.rs:58-65,256-269,577-598`). A restart reloads that value; it
-does not re-baseline or reserve a portion of the aggregate for the item. There
-is a second independent failure when the federation is absent from this first
-snapshot: code persists zero, then connects with `recover: Some(true)` but does
-not replace the baseline with the connect response's balance
-(`gateway.rs:96-112`; `gateway.rs:96-113`). Honest pre-existing
-ecash recovered by gatewayd can therefore satisfy the later threshold without
-any post-baseline credit from the item.
+`unrelated_target_credit_does_not_complete_gateway_item` seeds an item whose
+funding operation carries `txid-1`, then presents the gateway with a raised
+federation balance and a claim for a different txid. The item stays
+`running`. After the gateway also reports a claim for `txid-1`, the next pass
+completes it. `claimed_output_index_gates_gateway_completion` settles the
+funding operation through `claim_chain_evidence` at output index 1 and then
+claims index 0 of the same txid; the item stays `running` until the gateway
+claims index 1. The happy-path test
+`completed_wallet_operation_persists_gateway_completion_evidence` covers the
+claiming side, and `gateway_allocation_in_doubt_is_not_resubmitted` still
+pins that a wallet operation without a txid never reaches completion.
 
-There is one target gateway address-allocation call and one recheck call.
-`ConfiguredGatewayClient::deposit_address` sends only `federation_id` to
-gatewayd and validates the returned address's network; the item persists the
-string before creating its wallet operation
-(`gateway.rs:116-130`; `gateway.rs:152-194`). At the pinned source,
-gatewayd selects that federation client and calls
-`allocate_deposit_address_expert_only` (`fedimint-gateway-server/src/lib.rs:1362-1377`),
-which durably derives an address, tweak index, and its own Fedimint operation id
-(`modules/fedimint-wallet-client/src/lib.rs:798-826,1029-1050`). FLIP discards
-the returned upstream operation id because the gateway API returns only the
-address.
+### L4 — no aggregate balance is a completion input (`enum`, `code`)
 
-When the aggregate is absent or below threshold, FLIP's sole recheck sends the
-persisted address and federation id (`gateway.rs:272-294,314-326`;
-`gateway.rs:133-153`). Pinned gatewayd schedules that particular wallet-module
-address for an immediate check, but returns only success; wallet-v2 makes this
-verb a no-op (`fedimint-gateway-server/src/lib.rs:1478-1496`;
-`modules/fedimint-wallet-client/src/lib.rs:1588-1625`). Critically, recheck is
-not called when an unrelated aggregate increase already passes the inequality,
-and even a successful recheck response is not evidence that this address found
-or claimed an output.
-
-The schema's only item uniqueness is `(funding_target_id, source_type)` and its
-only wallet/item uniqueness is `(operation_type, item_id)`; neither address,
-federation id, txid, nor output is unique or claimed
-(`20260716000000_initial_schema.sql:135-192`). Different requests obtain
-different funding targets and can name the same federation: `target_json`
-contains the federation id, but the funding-target uniqueness key is
-`(provider_pubkey, request_id, details_payload_hash)`
-(`public.rs:500-572`; migration lines 94-115). The schema rung therefore
-permits multiple active gateway items for the same configured gateway and
-federation, and `active_gateway_items` loads all of them ordered by update time
-without a federation lock (`allocation_store.rs:180-198`).
-
-### L4 — wallet terminality is necessary but not target attribution (`enum`, `code`) — fails
-
-For each item, `ensure_wallet_operation` persists one pending
-`gateway_funding` row containing its item id, target id, amount, and already
-persisted address; the unique item/type index prevents a second row
-(`allocation_funding.rs:51-94`). Submission pre-marks it `in_doubt`, sends to
-that address, then records a returned txid as `broadcast`
-(`allocation_funding.rs:96-139`). This correctly associates the provider-wallet
-operation with the item and address.
-
-The gateway worker allows target completion only in the
-`WalletOperationStatus::Completed` match arm; pending submits,
-broadcast and confirmed wait, in-doubt/manual-review wait, and failed/cancelled
-fail the item (`gateway.rs:189-239`). The wallet-status writer
-enumeration is: insertion as pending;
-`mark_operation_in_doubt`; `mark_withdrawal_broadcast`;
-`mark_operation_failed`; `apply_sync_update`; and the manual retry/cancel SQL
-writers that reset only safe pending/failed work to pending or set it cancelled
-(`wallet.rs:61-218`; `manual_ops.rs:495-583`). Only
-`apply_sync_update` can write `Completed`. It is called for backend updates and
-chain evidence (`funds_admin.rs:74-88,101-133`), but the concrete
-`GatewaydFundsWallet::sync_operations` returns an empty vector
-(`wallet.rs:211-227`), so normal gateway-funding terminality comes from
-the chain-evidence call. These are useful source-wallet terminal
-prerequisites. They still do not say that gatewayd's
-target Fedimint client claimed that output. This target-side claim is therefore
-independent of the existing unrelated-Bitcoin-transaction settlement claim:
-even granting that the operation's exact persisted output settled correctly,
-the target completion guard can consume somebody else's target credit.
-
-### L5 — the completion inequality admits an ordinary counterexample (`code`, `test`, axiom A1-A3) — fails
-
-`complete_if_gateway_funded` reads the current aggregate `Bnow`, computes
-`Binitial + item.committed_amount`, and completes on `Bnow >=` that sum
-(`gateway.rs:261-310`). There is no critical section spanning the
-baseline, other deposits, and this read; no per-address/outpoint query; and no
-subtraction or claim of balance delta among items.
-
-The unit test
-`completed_wallet_operation_persists_gateway_completion_evidence` is
-fake-backed. It marks a wallet operation completed, independently calls
-`FakeGateway::set_balance`, and observes completion
-(`gateway.rs:436-510,753-835`). It accurately pins the local
-aggregate-inequality behavior but cannot establish real gateway provenance.
-The live tests launch pinned gatewayd/Fedimint and verify one operation's txid,
-terminal status, aggregate-driven item completion, and restart durability
-(`integration_live_liquidity.rs:480-527,936-995`). They exercise only one
-gateway item and never introduce a same-federation competing credit or assert an
-address/outpoint-to-Fedimint-claim identity, so their test rung does not catch
-this counterexample.
-
-Concrete execution, requiring neither false wallet settlement nor a dishonest
-service:
-
-1. With honest target aggregate balance `B`, two distinct valid requests create
-   same-federation gateway items `I` and `J`, each for amount `A` (or let `J`'s
-   amount be at least `I`'s). Capacity covers both. One or successive allocation
-   ticks persist `B` as each item's baseline, obtain their distinct target
-   deposit addresses, create their distinct persisted wallet operations, and
-   honestly submit each operation.
-2. Both own Bitcoin outputs settle and both persisted wallet operations honestly
-   reach `completed`. This deliberately grants the full wallet-settlement
-   premise. Due to ordinary gateway/Fedimint watcher and state-machine delay,
-   only `J`'s deposit has yet been claimed into the gateway client's aggregate;
-   `I`'s confirmed deposit remains uncredited. Gatewayd truthfully reports
-   `B + A` (net amounts can be chosen so the observed increase meets `I`'s
-   committed threshold).
-3. When the worker processes `I`, `B + A >= B + A`. It skips recheck, re-reads
-   `I`'s completed wallet row, and commits `I` as completed with `I`'s operation
-   id/txid beside the balance caused by `J`. The durable bad predicate now
-   holds. `I`'s own target credit may arrive later, but no code repairs or
-   reattributes the already completed row.
-4. A crash before step 2 merely preserves the baselines, operations, and active
-   items. Startup recovery loads/counts pending/running items and active wallet
-   operations without modifying their evidence, then respawns the independent
-   wallet and allocation tasks (`recovery.rs:289-321,417-470`;
-   `daemon.rs:394-412`). The same schedule resumes. A crash after step 3
-   preserves the false completion; completed items are excluded from both
-   `active_gateway_items` and startup active-item loading. Thus restart neither
-   prevents nor heals the violation.
-
-An ordinary operator or third party depositing to another address owned by the
-same gateway/Fedimint client after `I`'s baseline supplies the same aggregate
-delta. That variant is not needed for falsification and does not involve the
-provider wallet, but enumerating it shows the flaw is aggregate attribution,
-not merely cross-item ordering.
+The federation balance has one use in the completion path.
+`complete_if_gateway_funded` reads it only after the claim guard has passed,
+records it as a `GatewayObservation` row, and stores it in
+`GatewayCompletionEvidence.observed_gateway_balance`. No allocation step
+persists a balance baseline and no code path compares a balance against one,
+so a raised aggregate is evidence of nothing on its own and cannot satisfy a
+completion condition. A gateway that reports no balance for the target
+federation leaves the item running rather than recording a substitute value.
 
 ## Residual windows
 
+- **Settlement-by-address txid provenance.** `claim_chain_evidence`
+  (`wallet.rs`) is a second production writer of the funding operation's
+  `txid` and `tx_vout`: it settles an operation lacking a txid from the first
+  confirmed output paying the operation's persisted address and amount, and
+  the guard then matches that output exactly. A deposit to
+  that address from outside the provider wallet therefore completes the item
+  on a txid the provider wallet never broadcast. This satisfies the claim's
+  attribution definition — the credit derives from the item's own persisted
+  operation and address — and the address is persisted only in FLIP's
+  `step_json` and gatewayd's database, never in a requester- or Admin-facing
+  response, so the modeled adversary cannot target it. A deployment that
+  leaks allocation addresses to third parties widens this window. It is wider
+  on walletv2 for a structural reason: `WalletClientModule::receive` returns
+  the address of the highest existing valid index rather than allocating a
+  fresh one, so one address serves every item of that federation and stays
+  payable. Attribution still holds, because the guard matches the outpoint and
+  not the address, but an address collision between two items is ordinary
+  there rather than exceptional.
+- **Operator-asserted settlement.** A manual review resolved as `Completed`
+  writes the operator's txid and leaves `tx_vout` unset
+  ([CLAIM-unrelated-manual-review-transaction-completes-operation](../CLAIM-unrelated-manual-review-transaction-completes-operation.md)),
+  so for that operation the guard has no output index to match and accepts
+  any claimed output of the asserted transaction. The operator's action is
+  trusted in this claim's adversary model, and the unset `tx_vout` is the
+  durable marker that FLIP did not verify the output.
 - **Dishonest inputs and privileged corruption.** Malicious Admin behavior,
-  direct database mutation, malicious configuration, forged gateway/Fedimint or
-  chain-observer responses, and out-of-band provider-wallet activity are outside
-  the claim's adversary model. None is used by the counterexample.
-- **Pre-completion delay.** Dependency unavailability, an absent federation in
-  `gateway_info`, a balance below threshold, and non-completed wallet states
-  leave the item running. These executions do not satisfy the bad durable
-  predicate and do not repair the in-model execution that does.
-- **Later balance loss or delayed own credit.** The claim is about the identity
-  of the increase at the completed write, not durable maintenance of liquidity
-  or eventual arrival of the item's own deposit. Later target changes are
-  outside that temporal predicate; completion is already false when written.
+  direct database mutation, malicious configuration, and forged
+  gateway/Fedimint or chain-observer responses remain outside the claim's
+  adversary model. A forged `deposit-confirmed` log entry is a forged backend
+  response and outside A2.
+- **Liveness.** A claimed deposit whose log entry falls outside the bounded
+  payment-log page delays completion rather than falsifying it; the
+  payment-log read is newest-first and the page far exceeds the concurrent
+  item ceiling.
 
 ## Weakest links
 
-1. **A2/A3 (axiom):** honest dependencies may expose two independently settled
-   deposits at different times, and FLIP may observe between them. This is the
-   ordinary asynchronous process model; removing it would require an external
-   atomic-ordering guarantee absent from the pinned APIs.
-2. **L2 (`code`, `enum`):** the external semantic hinge is that
-   `FederationInfo.balance_msat` is the primary-module aggregate. It must be
-   rechecked when the Fedimint flake pin or Cargo patching changes.
-3. **L3/L5 (`schema`, `code`):** no per-federation serialization or durable
-   address/output claim exists, and completion compares only two aggregate
-   samples. These are local, line-level facts.
-4. **L1 (`type`):** evidence types preserve identifiers but cannot express
-   target claim identity; compiling them is not an attribution proof.
-5. **L5 (`test`):** a fake-backed unit test pins the vulnerable mechanism and
-   real live tests cover only the non-competing happy path. No named test rejects
-   the counterexample.
+1. **L2 (`code`, pinned source)** — the semantic hinge is that each module's
+   claim events name the claimed deposit's outpoint and are emitted per claim,
+   and that a walletv2 receive is settled by its `Success` update. A third
+   wallet module, or a renamed event kind or payload field, produces an empty
+   read rather than a compile error. Recheck when the Fedimint flake pin or
+   Cargo patching changes.
+2. **L1 (`enum`)** — a new gateway completion writer requires regenerating
+   this argument.
+3. **L3 (`test`)** — the counterexample pairings are pinned by unit tests
+   against a fake gateway; a live-test variant under
+   `integration_live_liquidity` would strengthen them.

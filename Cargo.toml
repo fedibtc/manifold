@@ -167,6 +167,7 @@ fedimint-connectors = { version = "0.11.2", default-features = false }
 fedimint-core = { version = "0.11.2", default-features = false }
 fedimint-db-locked = { version = "0.11.2", default-features = false }
 fedimint-derive-secret = { version = "0.11.2", default-features = false }
+fedimint-eventlog = { version = "0.11.2", default-features = false }
 fedimint-gateway-client = { version = "0.11.2", default-features = false }
 fedimint-gateway-common = { version = "0.11.2", default-features = false }
 fedimint-ln-client = { version = "0.11.2", default-features = false }

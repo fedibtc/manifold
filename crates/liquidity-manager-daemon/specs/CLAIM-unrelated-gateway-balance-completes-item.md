@@ -11,7 +11,7 @@ increased the same gateway/federation balance.
 
 The mechanically enumerable domains are: (G1) every production writer of a
 completed gateway item and every constructor/field of its completion evidence;
-(G2) every writer of `GatewayAllocationStep.initial_gateway_balance`; (G3)
+(G2) every production reader of the gateway's claimed-deposit evidence; (G3)
 every production gateway federation-balance reader; (G4) every production
 gateway deposit-address allocation and recheck call; (G5) every wallet status
 writer by which gateway completion becomes eligible; and (G6) schema keys and
@@ -55,11 +55,7 @@ nanosecond component, so a surviving counter is narrower than a reset one.
 
 ## Status
 
-Falsified: An honestly settled operation for item `I` can be
-paired with an aggregate gateway/Fedimint balance increase caused by concurrent
-same-federation item `J` (or an ordinary independent target deposit), after
-which the sole gateway completion writer durably records `I` completed without
-address/output-to-target-claim evidence.
+Unverified.
 
 ## Assumptions
 
