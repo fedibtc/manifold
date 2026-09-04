@@ -70,15 +70,17 @@ complete code set to be validated exactly as for `StartDkg`, followed by
 `AlreadyConfigured` repairs the formed record and returns `Running` without
 starting a second ceremony. Running, `DataLoss`, and decommissioned seats refuse
 restart before the child is touched. Restart never removes the final directory.
-There is no standalone FI cancellation verb; only operator decommission
-releases a seat.
+There is no standalone FI cancellation verb. Operator decommission is the only
+release path in production; development and staging also let the seat's own FI
+request that same terminal decommission
+([SPEC-fi-rpc](./SPEC-fi-rpc.md)).
 
 ## Structural destruction invariant
 
 The final `seats/{seat_no}/data` directory exists iff fedimintd has atomically
 installed a complete configuration. Formation and restart may discard
 only staging directories. **No FMan path removes a final seat data
-directory.** Decommission is an operator's decision about capacity, not about
+directory.** Decommission is a decision about capacity, not about
 the guardian material a federation may still depend on, so it retains that
 directory along with the durable seat, payment evidence, and DKG history.
 Removing guardian data stays a separate, deliberate operator step.

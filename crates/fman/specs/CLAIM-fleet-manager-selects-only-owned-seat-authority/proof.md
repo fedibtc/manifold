@@ -7,7 +7,11 @@ service has twelve verbs; SQLite admission uses `admit_seat` rather than the
 described accepted-quote index and allocation lock; and the
 `ecash_claims` worker replaces the named settlement and refund tasks. That
 worker also supplies the claim's current
-[counterexample](falsification-claim-worker-seat-id.md). Regenerate the route,
+[counterexample](falsification-claim-worker-seat-id.md). The roster has since gained a thirteenth signed
+verb, the environment-gated FI `DecommissionSeat`, which is also the first FI
+verb to reach a decommission (through `Fleet::decommission`, after
+`Fleet::authorize`), so S1's no-operator-verb scan wording no longer matches the
+source. Regenerate the route,
 writer, admission, replay, and continuation enumerations before relying on this
 argument.
 

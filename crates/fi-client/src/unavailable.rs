@@ -282,6 +282,13 @@ impl FleetManagerService for UnavailableFleetManagerClient {
     ) -> FmResult<GetFedimintStatsResponse> {
         Err(unavailable())
     }
+
+    async fn decommission_seat(
+        &self,
+        _request: SignedRequest<DecommissionSeatRequest>,
+    ) -> FmResult<DecommissionSeatResponse> {
+        Err(unavailable())
+    }
 }
 
 /// Consensus reader that performs no federation query.

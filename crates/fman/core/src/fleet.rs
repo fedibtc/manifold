@@ -906,6 +906,15 @@ impl Fleet {
         let seat = self
             .seat_by_id(seat_id)
             .ok_or_else(|| anyhow!("unknown seat"))?;
+        self.decommission(&seat).await
+    }
+
+    /// Decommission a seat the caller already resolved and authorized.
+    ///
+    /// The FI-facing release verb needs the same effect as the operator verb
+    /// above but must reach it through `authorize`, so seat selection stays
+    /// owner-bound (`CLAIM-fleet-manager-selects-only-owned-seat-authority`).
+    pub(crate) async fn decommission(&self, seat: &Seat) -> anyhow::Result<bool> {
         let decommissioned = seat.decommission().await?;
         if decommissioned {
             // Hint a republish so the document carries the tombstone promptly:

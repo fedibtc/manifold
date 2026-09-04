@@ -3,6 +3,7 @@
 #![allow(async_fn_in_trait)]
 
 mod db;
+mod decommission;
 mod discovery;
 mod error;
 mod formation;
@@ -25,6 +26,7 @@ use nostr_sdk::PublicKey;
 use stability_pool_common::Account;
 use tokio::sync::{Mutex, watch};
 
+pub use decommission::DecommissionOutcome;
 pub use discovery::{
     AdvertisementRejection, EligibleFmanCandidate, FMAN_ADVERTISEMENT_MAX_AGE,
     FMAN_ADVERTISEMENT_MAX_HOLDER_AUTHORIZATIONS, FMAN_DISCOVERY_TIMEOUT,
