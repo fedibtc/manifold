@@ -30,10 +30,10 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 
 use crate::{
-    CreateSeatRequest, CreateSeatResponse, FiId, FiSignature, GetDkgCodeRequest,
-    GetFedimintStatsRequest, GetInviteCodeRequest, GetPeerAttestationRequest, GetQuoteResponse,
-    GetStatusRequest, ManagerSignature, ProposeFormationMetaRequest, RegisterGatewayRequest,
-    RestartDkgRequest, SetMetaFieldRequest, StartDkgRequest, Timestamp,
+    CreateSeatRequest, CreateSeatResponse, DecommissionSeatRequest, FiId, FiSignature,
+    GetDkgCodeRequest, GetFedimintStatsRequest, GetInviteCodeRequest, GetPeerAttestationRequest,
+    GetQuoteResponse, GetStatusRequest, ManagerSignature, ProposeFormationMetaRequest,
+    RegisterGatewayRequest, RestartDkgRequest, SetMetaFieldRequest, StartDkgRequest, Timestamp,
 };
 
 /// Domain separator for FI-signed requests. `v1` versions the signing
@@ -133,6 +133,7 @@ fi_signed_requests! {
     ProposeFormationMetaRequest => "propose_formation_meta",
     RegisterGatewayRequest => "register_gateway",
     GetFedimintStatsRequest => "get_fedimint_stats",
+    DecommissionSeatRequest => "decommission_seat",
 }
 
 /// Seat-scoped grants. `CreateSeatRequest` is deliberately absent: it
@@ -158,6 +159,7 @@ seat_scoped_fi_requests! {
     ProposeFormationMetaRequest,
     RegisterGatewayRequest,
     GetFedimintStatsRequest,
+    DecommissionSeatRequest,
 }
 
 /// One entry per FMan-signed commitment response; same roster trick as

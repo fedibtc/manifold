@@ -132,6 +132,21 @@ struct MetadataConsensusJson<'a> {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
+struct DecommissionJson<'a> {
+    decommissioned: &'a [u16],
+    already_decommissioned: &'a [u16],
+    refused: Vec<RefusedSeatJson<'a>>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RefusedSeatJson<'a> {
+    index: u16,
+    reason: &'a str,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 struct GuardianFeeConsensusJson {
     send_ppm: u32,
     consensus_reached: bool,
@@ -631,6 +646,43 @@ impl<'a> CliOutput<'a> {
                 self.stdout,
                 "consensus metadata {field} reached threshold consensus: {value}"
             )?;
+        }
+        Ok(())
+    }
+
+    /// Writes the per-seat result of a testing-only seat decommission.
+    pub(crate) fn decommission(
+        &mut self,
+        outcome: &fi_client::DecommissionOutcome,
+        format: OutputFormat,
+    ) -> anyhow::Result<()> {
+        if format == OutputFormat::Json {
+            serde_json::to_writer(
+                &mut self.stdout,
+                &DecommissionJson {
+                    decommissioned: &outcome.decommissioned,
+                    already_decommissioned: &outcome.already_decommissioned,
+                    refused: outcome
+                        .refused
+                        .iter()
+                        .map(|(index, reason)| RefusedSeatJson {
+                            index: *index,
+                            reason,
+                        })
+                        .collect(),
+                },
+            )?;
+            writeln!(self.stdout)?;
+        } else {
+            writeln!(
+                self.stdout,
+                "decommissioned {} seat(s), {} already decommissioned",
+                outcome.decommissioned.len(),
+                outcome.already_decommissioned.len()
+            )?;
+            for (index, reason) in &outcome.refused {
+                writeln!(self.stdout, "seat {index} NOT decommissioned: {reason}")?;
+            }
         }
         Ok(())
     }

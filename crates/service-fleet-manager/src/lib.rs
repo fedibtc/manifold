@@ -17,6 +17,7 @@ pub const FEDIMINTD_VERSION_0_1: &str = "0.11.2+fedi";
 pub const FEDERATION_SIZES_0_1: [u16; 14] = [7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20];
 
 mod availability;
+mod decommission;
 mod dkg;
 mod error;
 mod fman_name;
@@ -30,6 +31,7 @@ mod telemetry;
 mod types;
 
 pub use availability::{GetAvailabilityRequest, GetAvailabilityResponse};
+pub use decommission::{DecommissionSeatRequest, DecommissionSeatResponse};
 pub use dkg::{
     DKG_NAME_MAX_BYTES, DkgCompletionCallback, DkgCompletionCallbackInput, GetDkgCodeRequest,
     GetDkgCodeResponse, InvalidDkgCompletionCallback, InvalidDkgDisplayName, RestartDkgRequest,

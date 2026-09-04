@@ -113,7 +113,14 @@ in-flight ceremony.
 Restart discards only the replaced child's staging state and never removes the
 final data directory. Running, `DataLoss`, and
 decommissioned seats refuse it. Standalone cancellation is deliberately absent;
-operator `Decommission` is the only release path. The lifecycle status set is
+operator `Decommission` is the only release path in production. Development and
+staging additionally accept an FI-signed `DecommissionSeat`, which resolves the
+seat through the same ownership-checked path as every other seat-scoped verb and
+then performs exactly the operator decommission. It is terminal and idempotent,
+reporting whether the seat was already decommissioned, and is refused as
+`UnsupportedVerb` in any other environment. It exists only to churn test
+federations
+([ARCH-fleet-manager-product-boundary](./ARCH-fleet-manager-product-boundary.md)). The lifecycle status set is
 `New`, `DkgInProcess`, `Running` (with the durable invite), `DataLoss`,
 and `Decommissioned`. `GetStatus` reads a watchdog-maintained health
 snapshot plus an inline final-directory stat and never contacts the child.
