@@ -13,7 +13,7 @@ export const OfferSummary = ({ priceMsat }: OfferSummaryProps) => (
       <span className={styles.price}>{describeOffer(priceMsat)}</span>
 
       <Link to="/offer" className={styles.editLink}>
-        Change price
+        Change price and seats
       </Link>
     </div>
   </SectionCard>

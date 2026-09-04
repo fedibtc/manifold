@@ -1,5 +1,4 @@
 import { type FormEvent, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
 import { useOffer } from '@/shared/api/hooks/use-offer/useOffer';
 import { useSetPrice } from '@/shared/api/hooks/use-set-price/useSetPrice';
 import {
@@ -24,10 +23,10 @@ export interface OfferForm {
 }
 
 export const useOfferForm = (): OfferForm => {
-  const navigate = useNavigate();
   const offer = useOffer();
   const setPrice = useSetPrice();
   const [priceSats, setPriceSats] = useState('');
+  const [hasEdited, setHasEdited] = useState(false);
   const [validationError, setValidationError] = useState<string | null>(null);
   // Guarded setState during render (not an effect) — the compiler forbids setState
   // inside useEffect, so this is the sanctioned "adjusting state on data change" shape.
@@ -43,6 +42,7 @@ export const useOfferForm = (): OfferForm => {
 
   const onPriceChange = (value: string) => {
     setPriceSats(value);
+    setHasEdited(true);
     setValidationError(null);
   };
 
@@ -52,7 +52,8 @@ export const useOfferForm = (): OfferForm => {
   // operator is overwriting a value they were shown. A `stale` surface still
   // holds that value, so a failed *background* refresh must not take the Save
   // control away — only a surface that has never been answered does.
-  const canSubmit = disposition.kind === 'content' || disposition.kind === 'stale';
+  const hasOffer = disposition.kind === 'content' || disposition.kind === 'stale';
+  const canSubmit = hasOffer && hasEdited;
 
   const onSubmit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -65,7 +66,7 @@ export const useOfferForm = (): OfferForm => {
       return;
     }
     setValidationError(null);
-    setPrice.mutate(parsed.priceMsat, { onSuccess: () => navigate('/') });
+    setPrice.mutate(parsed.priceMsat, { onSuccess: () => setHasEdited(false) });
   };
 
   return {

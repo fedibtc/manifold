@@ -183,13 +183,28 @@ describe('useOfferForm', () => {
     expect(result.current.error).toBe(null);
   });
 
-  it('should allow submission once the offer loads successfully', () => {
+  it('should allow submission after the offer loads and the operator edits it', () => {
     mockOffer(50_000_000);
     mockSetPrice();
 
     const { result } = renderHook(() => useOfferForm(), { wrapper });
 
+    expect(result.current.canSubmit).toBe(false);
+    act(() => result.current.onPriceChange('12000'));
     expect(result.current.canSubmit).toBe(true);
+  });
+
+  it('should mark the price saved after a successful write', () => {
+    mockOffer(50_000_000);
+    mockSetPrice();
+
+    const { result } = renderHook(() => useOfferForm(), { wrapper });
+    act(() => result.current.onPriceChange('12000'));
+    act(() => result.current.onSubmit(submit()));
+    const options = mutate.mock.calls[0][1] as { onSuccess: () => void };
+    act(() => options.onSuccess());
+
+    expect(result.current.canSubmit).toBe(false);
   });
 
   it('should not mutate when submit is called directly while the offer query has failed', () => {
@@ -210,7 +225,7 @@ describe('useOfferForm', () => {
     mockSetPrice();
 
     const { result } = renderHook(() => useOfferForm(), { wrapper });
-
+    act(() => result.current.onPriceChange('12000'));
     expect(result.current.canSubmit).toBe(true);
     expect(result.current.disposition).toEqual({ kind: 'stale', updatedAtMs: ANSWERED_AT_MS });
   });

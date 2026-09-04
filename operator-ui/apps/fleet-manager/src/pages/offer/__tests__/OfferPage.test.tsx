@@ -3,6 +3,11 @@ import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom';
 import { afterEach, vi } from 'vitest';
 import * as adminCallModule from '@/shared/api/adminCall';
+
+vi.mock('@/features/offer/components/seat-capacity-form/SeatCapacityForm', () => ({
+  SeatCapacityForm: () => <div>Seat capacity editor</div>
+}));
+
 import { OfferPage } from '../OfferPage';
 
 const renderPage = () => {
@@ -34,6 +39,7 @@ it('should seed the price field from the stored offer', async () => {
   renderPage();
 
   await waitFor(() => expect(priceField().value).toBe('50000'));
+  screen.getByText('Seat capacity editor');
 });
 
 it('should write the entered price as millisatoshis', async () => {
@@ -102,11 +108,12 @@ it('should keep the form usable under a staleness marker when a refresh fails', 
   const client = renderPage();
 
   await waitFor(() => expect(priceField().value).toBe('50000'));
+  fireEvent.change(priceField(), { target: { value: '12000' } });
   await act(async () => {
     await client.refetchQueries();
   });
 
   await screen.findByText('Showing last-known data');
-  expect(priceField().value).toBe('50000');
+  expect(priceField().value).toBe('12000');
   expect(screen.getByRole('button', { name: 'Save' })).not.toBeDisabled();
 });

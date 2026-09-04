@@ -32,6 +32,8 @@ describe('OfferSummary', () => {
   it('should link to the offer page', () => {
     renderSummary(50_000_000);
 
-    expect(screen.getByRole('link', { name: 'Change price' }).getAttribute('href')).toBe('/offer');
+    expect(screen.getByRole('link', { name: 'Change price and seats' }).getAttribute('href')).toBe(
+      '/offer'
+    );
   });
 });
