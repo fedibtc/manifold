@@ -2,8 +2,9 @@
 //!
 //! This synchronous leaf crate assigns no consumer-specific meaning to its
 //! relay routing. Production carries individually held PeerBadge issuer keys,
-//! a setup-payment publisher, and a Guardian Verification Fee account. See
-//! `specs/SPEC-manifold-environment.md` and [`SECURITY.md`](../SECURITY.md).
+//! their signed public authorities, a setup-payment publisher, and a Guardian
+//! Verification Fee account. See `specs/SPEC-manifold-environment.md` and
+//! [`SECURITY.md`](../SECURITY.md).
 
 #[cfg(test)]
 mod tests;
@@ -30,7 +31,7 @@ const TRUSTED_PEER_BADGE_TRUST_LEVEL: u64 = 9;
 /// Bump this after profiles are released whenever a public deployment mapping
 /// changes so independently released components can expose and compare what
 /// they use.
-pub const MANIFOLD_ENVIRONMENT_PROFILE_REVISION: u32 = 8;
+pub const MANIFOLD_ENVIRONMENT_PROFILE_REVISION: u32 = 9;
 
 ////////////////////////////////////////////////////////////////////////////////
 // !!! SECURITY BLOCKER: THESE ARE DELIBERATELY UNSAFE TEST-ONLY ROOT KEYS !!!
@@ -114,6 +115,24 @@ const PRODUCTION_ISSUERS: &[&str] = &[
     "f6c7bc122e74acef6101d2e343a7e68a0de3d9dc9f357c79276743b86ffdb283",
     // npub1jm4nvzweed7q0k5ztep607nnul5qyryen3w7qzenxdrkckxcgrjq2d9xz9
     "96eb3609d9cb7c07da825e43a7fa73e7e8020c999c5de00b3333476c58d840e4",
+    // npub1auj9edrs2cfnuk2u64xkdh5tmkl8rw59swkzcthdu78e2xvpulmqe86t0t
+    "ef245cb47056133e595cd54d66de8bddbe71ba8583ac2c2eede78f951981e7f6",
+    // npub1c08msdcfzpv3gq0nryma5z0lahqw6nlkfer8w2a8c03xw7z2fsdqrvynla
+    "c3cfb8370910591401f31937da09ffedc0ed4ff64e46772ba7c3e267784a4c1a",
+    // npub124rwnjk2dw9ywndfm2ren70clxyg3qqcksjzn6lqph2tnnf0dgcsk67pr9
+    "5546e9caca6b8a474da9da8799f9f8f988888018b42429ebe00dd4b9cd2f6a31",
+];
+
+/// Identity-signed public authorities in the same order as `PRODUCTION_ISSUERS`.
+const PRODUCTION_ISSUER_AUTHORITIES: &[&str] = &[
+    include_str!("../fixtures/production-issuer-authority-ac9647df.json"),
+    include_str!("../fixtures/production-issuer-authority-db37f7c6.json"),
+    include_str!("../fixtures/production-issuer-authority-8cdf45bc.json"),
+    include_str!("../fixtures/production-issuer-authority-f6c7bc12.json"),
+    include_str!("../fixtures/production-issuer-authority-96eb3609.json"),
+    include_str!("../fixtures/production-issuer-authority-ef245cb4.json"),
+    include_str!("../fixtures/production-issuer-authority-c3cfb837.json"),
+    include_str!("../fixtures/production-issuer-authority-5546e9ca.json"),
 ];
 
 /// Deployment environment selecting one canonical Manifold profile.
@@ -400,14 +419,14 @@ impl ManifoldEnvironmentProfile {
     /// rotate a pinned issuer's trust nor deny verification. The documents
     /// are plain signed public material: pinning them adds no runtime
     /// signing, secret handling, or randomness to verifiers. Production pins
-    /// none yet; its authorities stay relay-fetched until issuer-supplied
-    /// documents enter through the release process (`SECURITY.md`).
+    /// the issuer-supplied public documents admitted by the release process
+    /// (`SECURITY.md`).
     #[must_use]
     pub fn pinned_issuer_authorities(&self) -> &'static [&'static str] {
         match self.environment {
             ManifoldEnvironment::Development => &[DEVELOPMENT_ISSUER_AUTHORITY_JSON],
             ManifoldEnvironment::Staging => &[STAGING_ISSUER_AUTHORITY_JSON],
-            ManifoldEnvironment::Production => &[],
+            ManifoldEnvironment::Production => PRODUCTION_ISSUER_AUTHORITIES,
         }
     }
 

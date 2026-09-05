@@ -10,7 +10,7 @@ Production-capable programs must select `ManifoldEnvironment` explicitly.
 Development-only tools may explicitly default their own CLI boundary to
 development. Development and staging currently share relay endpoints, so
 environment identity must never be inferred from a relay URL.
-Any relay, issuer-identity, PeerBadge minimum-trust-level,
+Any relay, issuer-identity, issuer-authority, PeerBadge minimum-trust-level,
 setup-payment-publisher, Guardian Verification Fee account, Bitcoin-network,
 or default-Esplora
 mapping change must bump the public profile revision and be rolled out across
@@ -54,9 +54,17 @@ adding a root, the release owner must obtain independent confirmation that the
 key is authorized and that its custodian possesses the corresponding private
 key. The internal custodian record, custody and recovery details, and incident
 contacts must remain outside this public repository. Before rollout, release
-owners must also verify that every retained root has a valid current authority
-on every canonical production authority relay and complete supported
-revocation locations.
+owners must also confirm that every retained custodian recognizes the exact
+authority committed for its root and can issue with its stated issuance key.
+Each authority proof must verify and every listed revocation location must be
+complete and available.
+
+The public authority document is release-pinned. Reinstalling an issuer app
+with only the identity secret can generate a different issuance key while
+keeping the same identity. Replacing the pinned authority with that document
+makes every badge signed by the previous issuance key unverifiable. Recover
+the complete old issuer secret when possible; otherwise coordinate reissuance
+before rolling out the replacement.
 
 Loss, suspected compromise, or custodian offboarding triggers an emergency
 profile revision removing that root and a tracked rollout to every FI, FLIP,
@@ -71,8 +79,8 @@ credentials with the complete issuer secret committed in this profile —
 identity and PBRSA issuance key — and publishes the profile's committed
 authority document verbatim, so every run, on any machine, distributes the
 one canonical authority that verifiers pin; it verifies the committed
-identity against this profile's roots and refuses Production, which commits
-neither secret nor document. (Before 2026-08-18 each run minted a per-machine
+identity against this profile's roots and refuses Production, which commits no
+issuer secret and only signed public authority documents. (Before 2026-08-18 each run minted a per-machine
 issuance key, which let two runs silently rotate the shared staging
 authority; fedibtc/manifold#401.) Material from this command is test trust,
 not an approximation of deployment-owned production credentials. It issues
@@ -97,7 +105,8 @@ revalidation.
 
 The crate must remain browser/WASM-safe and must not depend on an async
 runtime, network client, credential implementation, storage, or private-key
-material. Adding further trust roots or publisher identities, overrides outside
-the Development profile, implicit defaults, or relay roles requires renewed
-security review. Development overrides remain centralized in this crate so
-deployed profiles cannot acquire a consumer-specific bypass.
+material. Adding or replacing production trust roots or authorities, adding
+publisher identities, overrides outside the Development profile, implicit
+defaults, or relay roles requires renewed security review. Development
+overrides remain centralized in this crate so deployed profiles cannot acquire
+a consumer-specific bypass.

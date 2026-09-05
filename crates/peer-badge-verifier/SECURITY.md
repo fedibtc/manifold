@@ -6,14 +6,13 @@ badge. The verifier receives untrusted holder-authorization envelopes and
 untrusted Nostr events, performs network lookups, and returns trusted typed
 facts only after complete cryptographic and schema admission.
 
-The environment crate supplies public routing, issuer-identity data, and the
-minimum accepted PeerBadge trust level.
-Issuer identity public keys are the only static cryptographic trust roots.
-This verifier additionally interprets the environment's canonical relays as
-authority relays trusted to return the current addressable issuer-authority
-event without rollback. Authority and revocation events remain untrusted
-content and must pass local event, author, role, signature, proof, digest, and
-schema checks.
+The environment crate supplies public routing, issuer identity and authority
+data, and the minimum accepted PeerBadge trust level. Issuer identity public
+keys are the trust roots, and canonical profiles additionally pin each root's
+signed authority. An explicit test configuration without a pinned authority
+uses its explicitly supplied authority relays to resolve it. Authority and revocation
+events remain untrusted content and must pass local event, author, role,
+signature, proof, digest, and schema checks.
 
 Trust-level policy is evaluated only after the credential and holder
 authorization authenticate and the PeerBadge schema parses. Every canonical
@@ -29,26 +28,25 @@ query completion, not operator honesty. A compromised or mistakenly selected
 revocation relay can conceal a revocation until the issuer replaces that
 location in a newly signed authority.
 
-Every verification fetches revocation state afresh, and authority state
-afresh for issuers without a profile-pinned authority. Pinned placeholder
-issuers (development and staging) derive their authority from the
-environment's committed authority document at construction and never read kind-37703, so
-an overwritten or hostile authority event cannot rotate their trust or deny
-verification
+Every verification fetches revocation state afresh, and authority state afresh
+for issuers without a profile-pinned authority. Every canonical issuer derives
+its authority from the environment's committed authority document at
+construction and never reads kind-37703, so an overwritten or hostile
+authority event cannot rotate its trust or deny verification
 ([SPEC-peer-badge-verifier](./specs/SPEC-peer-badge-verifier.md)). There is no cache, persisted high-water
 mark, or stale fallback. Every configured authority relay (when fetched) and
 supported Nostr revocation location must complete with EOSE; timeout,
 disconnect, closed subscription, notification failure, or candidate/byte-bound
 exhaustion fails closed. Any valid matching revocation rejects the badge.
 
-**Relay visibility:** authority replacement and revocation publication are not
-instantaneously or atomically visible. Each relevant completed relay read
-defines the state observed by that verification; concurrent or unpropagated
-updates can affect a later fresh verification. Each later call refetches
-revocation state — and authority state for unpinned issuers — with no
-persistent local authority or revocation cache. Under the documented honest-relay assumptions, an update
-visible in its relevant fresh read must be applied. Callers needing stronger
-synchronization need another mechanism.
+**Relay visibility:** revocation publication is not instantaneously or
+atomically visible. Each completed relay read defines the state observed by
+that verification; concurrent or unpropagated updates can affect a later fresh
+verification. Each later call refetches revocation state — and authority state
+for unpinned test issuers — with no persistent local cache. Under the
+documented honest-relay assumptions, an update visible in its relevant fresh
+read must be applied. Canonical authority replacement instead requires a
+coordinated profile release.
 
 Authority relay configuration, authority-listed revocation locations, event
 count, event size, and relay-I/O deadline are bounded. Dropping verification
@@ -73,18 +71,19 @@ deployment-owned keys. Production has no placeholder root: its roots are the
 profile's issuer identities, personal keys held individually by their owners,
 and verifier construction fails closed if that list is ever empty.
 
-A rooted identity controls the current issuance key and revocation locations.
-Compromise of that identity cannot be contained by credential revocation or
-relay freshness: the root must be removed from the environment profile and the
-new revision deployed to every relying consumer. A production release must
-therefore preflight current authority and revocation completeness for every
-retained root on every canonical authority relay.
+A rooted identity signs its issuance key and revocation locations, while the
+environment profile fixes which signed authority a release accepts. Compromise
+of that identity cannot be contained by credential revocation or relay
+freshness: the root must be removed from the environment profile and the new
+revision deployed to every relying consumer. A production release must
+therefore confirm the exact pinned authority with every retained issuer and
+preflight every listed revocation location.
 The `test-support` feature exposes explicit issuer-root, relay, and minimum
 trust-level injection for defe-backed component tests. Those verifiers carry
 `ExplicitTestConfiguration` provenance rather than impersonating a canonical
 profile. Production artifacts must not enable this feature or accept that
 provenance at a composition boundary.
-Replacing roots, changing relay-currentness assumptions, changing issuer
-delegation of revocation relay trust, adding caches, changing retry/fallback
-behavior, or consuming the verifier from a new network-facing path requires
-renewed security review.
+Replacing roots or pinned authorities, changing relay-currentness assumptions,
+changing issuer delegation of revocation relay trust, adding caches, changing
+retry/fallback behavior, or consuming the verifier from a new network-facing
+path requires renewed security review.

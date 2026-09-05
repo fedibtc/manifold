@@ -1,6 +1,9 @@
 This project uses the Linked Specs convention; consult the `linked-specs`
 skill before working with specs or governed code.
 
+Read [`SECURITY.md`](SECURITY.md) before changing project-wide trust or
+production security boundaries.
+
 Before adding, removing, or changing a tracing event marked
 `safe_to_share = true`, consult the `safe-to-share-tracing` skill.
 

@@ -420,9 +420,9 @@ impl PeerBadgeVerifier {
     /// Resolve the issuer's authority, fetch fresh revocation state, and
     /// authenticate an envelope.
     ///
-    /// A pinned issuer (development/staging committed authority) resolves to
-    /// its construction-time authority with no kind-37703 lookup; an unpinned
-    /// issuer's authority is fetched fresh. Every invocation fetches
+    /// A pinned canonical issuer resolves to its construction-time authority
+    /// with no kind-37703 lookup; an unpinned issuer's authority is fetched
+    /// fresh. Every invocation fetches
     /// revocation state afresh via sequential bounded relay I/O under one
     /// absolute deadline and never returns cached or stale trust state — a
     /// pinned authority is configuration, not cache.
@@ -460,11 +460,10 @@ impl PeerBadgeVerifier {
             return Err(PeerBadgeVerificationError::UntrustedIssuer { issuer: issuer.0 });
         }
 
-        // A pinned issuer is verified against the authority derived from the
-        // environment's committed secret: no kind-37703 lookup happens, so a
-        // replaceable-event overwrite can neither rotate its trust nor deny
-        // verification. Unpinned issuers (production) keep the fetch-fresh
-        // rule.
+        // A pinned issuer is verified against the profile's signed public
+        // authority: no kind-37703 lookup happens, so a replaceable-event
+        // overwrite can neither rotate its trust nor deny verification.
+        // Issuers without a committed authority keep the fetch-fresh rule.
         let authority = match self.inner.pinned_authorities.get(&issuer.0) {
             Some(pinned) => pinned.clone(),
             None => {
@@ -608,11 +607,9 @@ impl PeerBadgeEventSource for NostrPeerBadgeClient {
 ///
 /// The document is public signed material: admitting it involves no secret
 /// handling, signing, or randomness, so this path stays portable everywhere
-/// the verifier compiles (including wasm). Its revocation locations are the
-/// environment's canonical relays, so revocation stays enforced — and stays
-/// updatable by publishing kind-37704 revocations to those relays — while the
-/// issuance key becomes a function of the repository instead of the newest
-/// kind-37703 event.
+/// the verifier compiles (including wasm). Its signed revocation locations
+/// govern fresh kind-37704 lookups, while the issuance key becomes a function
+/// of the repository instead of the newest kind-37703 event.
 fn pin_committed_authority(
     document: &str,
     issuer_roots: &PeerBadgeIssuerRoots,
