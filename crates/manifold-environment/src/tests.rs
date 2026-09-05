@@ -175,6 +175,9 @@ fn production_pins_its_issuer_identities() {
             "npub13n05t087zy939r6ulu64kfxtsh65neuaapu65d5324c0m7d4pvpqx4psp0",
             "npub17mrmcy3wwjkw7cgp6t358flx3gx78kwunu6hc7f8vapmsmlak2ps06v0cw",
             "npub1jm4nvzweed7q0k5ztep607nnul5qyryen3w7qzenxdrkckxcgrjq2d9xz9",
+            "npub1auj9edrs2cfnuk2u64xkdh5tmkl8rw59swkzcthdu78e2xvpulmqe86t0t",
+            "npub1c08msdcfzpv3gq0nryma5z0lahqw6nlkfer8w2a8c03xw7z2fsdqrvynla",
+            "npub124rwnjk2dw9ywndfm2ren70clxyg3qqcksjzn6lqph2tnnf0dgcsk67pr9",
         ]
     );
 
@@ -311,7 +314,7 @@ fn environment_aliases_round_trip_to_canonical_names() {
                 .profile_with_env(|_| None)
                 .unwrap()
                 .profile_revision(),
-            8
+            9
         );
     }
     assert!("nightly".parse::<ManifoldEnvironment>().is_err());
@@ -423,10 +426,40 @@ fn committed_issuer_material_is_one_agreeing_authority() {
 }
 
 #[test]
-fn production_commits_no_issuer_material() {
+fn production_pins_each_public_authority_without_committing_secrets() {
+    use fedi_credential_sdk_protocol::IssuerAuthority;
+
     let profile = ManifoldEnvironment::Production
         .profile_with_env(|_| None)
         .unwrap();
     assert_eq!(profile.test_issuer_secret_keys(), None);
-    assert!(profile.pinned_issuer_authorities().is_empty());
+
+    let authorities = profile.pinned_issuer_authorities();
+    assert_eq!(
+        authorities.len(),
+        profile.peer_badge_issuer_identities().len(),
+        "production must pin one authority per issuer root",
+    );
+    for (document, expected_issuer) in authorities
+        .iter()
+        .zip(profile.peer_badge_issuer_identities())
+    {
+        let authority: IssuerAuthority =
+            serde_json::from_str(document).expect("production authority document parses");
+        let metadata = authority
+            .verify()
+            .expect("production authority document verifies");
+        assert_eq!(
+            &metadata.issuer_id_pubkey.0, expected_issuer,
+            "production authority order must match the issuer roster",
+        );
+        assert_eq!(
+            metadata
+                .revocation
+                .iter()
+                .map(|location| (location.protocol.as_str(), location.location.as_str()))
+                .collect::<Vec<_>>(),
+            &[("nostr", "wss://relay.dev.fedibtc.com")],
+        );
+    }
 }
