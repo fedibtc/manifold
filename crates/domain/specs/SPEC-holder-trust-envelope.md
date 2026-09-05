@@ -17,8 +17,8 @@ against a caller-supplied credential-SDK verification context and the generic,
 validated relying-party `PeerBadgeTrustPolicy`. `crates/peer-badge-verifier`
 owns the shared FI, FLIP, push-gateway guardian-telemetry, and cloud FMan
 telemetry collector verifier that
-fetches current authority and revocation state, runs the complete envelope
-algorithm, and applies that policy
+uses the selected authority and current revocation state, runs the complete
+envelope algorithm, and applies that policy
 ([SPEC-peer-badge-verifier](../../peer-badge-verifier/specs/SPEC-peer-badge-verifier.md)).
 The `HolderAuthorization`, `SignedCredential`, and `IssuerAuthority` types and
 their canonical serialization, digests, and proofs are owned by

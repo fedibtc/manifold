@@ -459,8 +459,9 @@ individually; such an entry cannot hide a valid exact target.
 Production-capable FI, FMan, FLIP, push-gateway telemetry, and cloud FMan
 telemetry collector processes must
 select their Manifold environment explicitly. The shared environment profile
-provides typed public issuer identities, the minimum accepted PeerBadge trust
-level, the setup-payment publisher key, and Nostr relay routing;
+provides typed public issuer identities, their signed public authorities, the
+minimum accepted PeerBadge trust level, the setup-payment publisher key, and
+Nostr relay routing;
 FMan resolves its relay and publisher from that profile with no CLI override.
 Development-only environment-variable overrides are resolved inside the
 `manifold-environment` crate and refused outside the Development profile, so
@@ -472,13 +473,11 @@ a restart as Staging or Production. The binding and durable DKG completion
 callback storage rewrite the pre-deployment initial migration; preceding
 experimental data roots intentionally fail migration checksum validation and
 must be recreated rather than being silently assigned an environment or partly
-upgraded for callbacks. Identical relay
-URLs do not give every consumer identical relay semantics: the PeerBadge
-verifier uses them for complete fresh authority lookup of unpinned
-(production) issuers and for revocation reads — development and staging
-issuer authorities are pinned from committed documents and never looked up —
-while FMan uses them
-for active publication and operator-triggered Holder-authorization enrollment.
+upgraded for callbacks. Identical relay URLs do not give every consumer
+identical relay semantics: canonical PeerBadge authorities are pinned from the
+profile and their signed locations govern fresh revocation reads, while FMan
+uses the profile relays for active publication and operator-triggered
+Holder-authorization enrollment.
 Enrolled complete authorization events are retained in the FMan database and
 reverified at startup; failed or empty relay answers never empty the cached set. This cache
 is carriage, not credential validity: relying FIs still apply current issuer
@@ -486,21 +485,24 @@ policy and revocation checks.
 Development and staging issuer identities are known-secret placeholders and
 must never secure real trust decisions. Production carries only non-placeholder
 issuer identity roots, each a personal key held individually by its custodian.
-Each root is independently sufficient to authenticate an issuer authority,
-including its choice of issuance key and revocation locations. Compromise of
-any one root can therefore authorize arbitrary PeerBadge issuance until a
-profile revision removing it reaches every FI, FLIP, push-gateway telemetry,
-and cloud FMan telemetry collector consumer.
+The profile pins one identity-signed public authority per root, fixing its
+issuance key and revocation locations for that release. Compromise of a pinned
+issuance key permits arbitrary PeerBadge issuance until an authority-changing
+profile revision reaches every relying consumer. Compromise of an identity root
+also permits forged revocations and requires removing that root.
 
-Adding a production root requires out-of-band authorization and possession
-verification plus an internal custodian record; names and private operational
-records do not belong in this public repository. Loss, suspected compromise,
-or custodian offboarding requires removing the public root, bumping the profile
-revision, and tracking a coordinated rollout to every relying consumer. An
+Adding a production root or replacing its authority requires out-of-band
+authorization and possession verification plus an internal custodian record;
+names and private operational records do not belong in this public repository.
+Every such change bumps the profile revision and rolls out to every relying
+consumer. Replacing an issuance key makes badges signed by the old key
+unverifiable; restore the complete old issuer secret when possible, otherwise
+coordinate reissuance. Loss, suspected identity compromise, or custodian
+offboarding requires removing the public root through the same rollout. An
 empty root set fails verifier construction. The canonical mapping and rollout
 contract are defined by
 [`SPEC-manifold-environment`](crates/manifold-environment/specs/SPEC-manifold-environment.md).
-Production pins its setup-payment publisher and Guardian Verification Fee
+Production also pins its setup-payment publisher and Guardian Verification Fee
 account in that profile.
 
 Each relying path applies the same profile-owned minimum PeerBadge trust level

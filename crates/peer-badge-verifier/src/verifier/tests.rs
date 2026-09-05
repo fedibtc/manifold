@@ -775,17 +775,22 @@ fn tampered_committed_authority_is_rejected() {
 }
 
 #[test]
-fn development_profile_pins_its_committed_issuer() {
-    let verifier =
-        PeerBadgeVerifier::try_from_profile(&ManifoldEnvironment::Development.profile().unwrap())
-            .expect("development verifier constructs");
-    assert_eq!(verifier.inner.pinned_authorities.len(), 1);
-    let identity = verifier
-        .inner
-        .pinned_authorities
-        .keys()
-        .next()
-        .copied()
-        .expect("one pinned identity");
-    assert!(verifier.inner.issuer_roots.contains(&identity));
+fn every_canonical_profile_pins_each_configured_issuer() {
+    for environment in [
+        ManifoldEnvironment::Development,
+        ManifoldEnvironment::Staging,
+        ManifoldEnvironment::Production,
+    ] {
+        let profile = environment.profile().unwrap();
+        let verifier = PeerBadgeVerifier::try_from_profile(&profile)
+            .unwrap_or_else(|error| panic!("{environment} verifier must construct: {error}"));
+        assert_eq!(
+            verifier.inner.pinned_authorities.len(),
+            profile.peer_badge_issuer_identities().len(),
+            "{environment} must pin one authority per issuer root",
+        );
+        for issuer in profile.peer_badge_issuer_identities() {
+            assert!(verifier.inner.pinned_authorities.contains_key(issuer));
+        }
+    }
 }

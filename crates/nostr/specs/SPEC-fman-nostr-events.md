@@ -183,17 +183,14 @@ returned subject to the event author before producing a trust conclusion.
 ## Attester events (37703, 37704)
 
 `37703` is the addressable distribution event for canonical
-`fedi-credential-sdk-protocol::IssuerAuthority` content. For issuers without a
-profile-pinned authority (production), the shared verifier fetches it afresh
-from every canonical environment relay and rejects it unless the event author
-equals `issuer.issuer_id_pubkey`, `IssuerAuthority::verify()` succeeds, and
-the issuer is trusted by local policy. For pinned placeholder issuers
-(development and staging) the verifier pins the environment's committed
-authority document and performs no 37703 lookup; the test issuer publishes
-that committed document verbatim, and the event is discovery only — no
-consumer may treat the newest 37703 event as a trust root for a pinned
-issuer, because the identity secret is public and the event is writable by
-anyone
+`fedi-credential-sdk-protocol::IssuerAuthority` content. Every canonical
+profile pins its committed authority documents, so the shared verifier performs
+no 37703 lookup for those issuers. The event is discovery only: no consumer may
+treat the newest 37703 event as a replacement for a profile-pinned authority.
+For an explicit test issuer without a pinned authority, the verifier fetches
+37703 afresh from every configured authority relay and rejects it unless the
+event author equals `issuer.issuer_id_pubkey`, `IssuerAuthority::verify()`
+succeeds, and the issuer is trusted by local policy
 ([SPEC-peer-badge-verifier](../../peer-badge-verifier/specs/SPEC-peer-badge-verifier.md)). `37704` carries a
 canonical `SignedRevocation` authored by the issuer identity key. The shared
 verifier queries every Nostr location listed in
