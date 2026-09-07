@@ -24,7 +24,6 @@ use crate::{
     store::Store,
 };
 
-const MAX_JOURNALS_PER_TARGET: usize = 32;
 const MAX_SELECTOR_BYTES: usize = 512;
 const MAX_BATCHES_PER_TARGET: usize = 40;
 const MAX_TARGET_ELAPSED: Duration = Duration::from_secs(30);
@@ -359,7 +358,7 @@ impl JournalPoller {
         let listing = tokio::time::timeout_at(deadline, session.list())
             .await
             .map_err(|_| PollError::Transient)??;
-        if listing.journals.len() > MAX_JOURNALS_PER_TARGET {
+        if listing.journals.len() > usize::from(self.catalog.store().max_journals_per_target()) {
             return Err(PollError::Transient);
         }
         let journals = listing.journals;

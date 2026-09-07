@@ -59,6 +59,7 @@ pub async fn registration_router_for_test(
         SecretCipher::new(&[7; 32]),
         "explicit-test".into(),
         120,
+        32,
     )
     .await?;
     let state = AppState {
@@ -127,6 +128,7 @@ pub async fn serve(args: Args) -> Result<(), Box<dyn Error>> {
     let crate::config::RuntimeConfig {
         environment,
         metrics: metrics_runtime,
+        max_journals_per_target,
         log_cadence,
         log_concurrency,
         log_quota_bytes,
@@ -156,6 +158,7 @@ pub async fn serve(args: Args) -> Result<(), Box<dyn Error>> {
         SecretCipher::new(&key),
         args.key_id.clone(),
         args.lease_seconds,
+        max_journals_per_target,
     )
     .await?;
     let policy = MetricsPolicy;
@@ -813,6 +816,7 @@ mod tests {
             SecretCipher::new(&[7; 32]),
             "test".into(),
             lease_seconds,
+            32,
         )
         .await
         .unwrap();
