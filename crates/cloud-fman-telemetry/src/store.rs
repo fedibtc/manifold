@@ -114,6 +114,7 @@ pub(crate) struct Store {
     key_id: String,
     trust_profile: String,
     lease_seconds: i64,
+    max_journals_per_target: u16,
     data_dir: PathBuf,
     #[cfg(test)]
     commit_hook: Option<std::sync::Arc<TestCommitHook>>,
@@ -147,6 +148,10 @@ fn wait_test_hook(hook: &Option<std::sync::Arc<TestCommitHook>>) {
 }
 
 impl Store {
+    pub(crate) fn max_journals_per_target(&self) -> u16 {
+        self.max_journals_per_target
+    }
+
     #[cfg(test)]
     pub(crate) fn with_commit_hook(mut self, hook: std::sync::Arc<TestCommitHook>) -> Self {
         self.commit_hook = Some(hook);
@@ -192,6 +197,7 @@ impl Store {
         cipher: SecretCipher,
         key_id: String,
         lease_seconds: i64,
+        max_journals_per_target: u16,
     ) -> Result<Self, StoreError> {
         let options = SqliteConnectOptions::new()
             .filename(path)
@@ -271,6 +277,7 @@ impl Store {
             key_id,
             trust_profile: trust_profile.to_owned(),
             lease_seconds,
+            max_journals_per_target,
             data_dir,
             #[cfg(test)]
             commit_hook: None,
@@ -1471,7 +1478,7 @@ impl Store {
             .bind(target.target_id())
             .fetch_one(&mut *transaction)
             .await?
-                >= MAX_JOURNAL_STREAMS_PER_TARGET
+                >= i64::from(self.max_journals_per_target)
             {
                 return Err(StoreError::Saturated);
             }
@@ -1784,7 +1791,6 @@ pub(crate) enum StoreError {
 }
 
 const MAX_TARGETS: i64 = 4096;
-const MAX_JOURNAL_STREAMS_PER_TARGET: i64 = 32;
 const KEY_SENTINEL: &[u8] = b"cloud-fman-telemetry-key-sentinel-v1";
 const TARGET_SECRET_FORMAT: i64 = 2;
 
@@ -1883,6 +1889,7 @@ mod tests {
             SecretCipher::new(&[7; 32]),
             "test".into(),
             120,
+            32,
         )
         .await
         .unwrap()
@@ -2069,6 +2076,7 @@ mod tests {
                 SecretCipher::new(&[8; 32]),
                 "replacement".into(),
                 120,
+                32,
             )
             .await,
             Err(StoreError::KeyMismatch)
@@ -2093,6 +2101,7 @@ mod tests {
             SecretCipher::new(&[7; 32]),
             "test".into(),
             120,
+            32,
         )
         .await
         .unwrap();
@@ -2105,6 +2114,7 @@ mod tests {
                 SecretCipher::new(&[7; 32]),
                 "test".into(),
                 120,
+                32,
             )
             .await,
             Err(StoreError::EnvironmentMismatch)
@@ -2116,6 +2126,7 @@ mod tests {
                 SecretCipher::new(&[8; 32]),
                 "test".into(),
                 120,
+                32,
             )
             .await,
             Err(StoreError::KeyMismatch)
@@ -2266,6 +2277,7 @@ mod tests {
                 SecretCipher::new(&[7; 32]),
                 "test".into(),
                 120,
+                32,
             )
             .await,
             Err(StoreError::UnsupportedSecretFormat)
@@ -2859,6 +2871,7 @@ mod tests {
             SecretCipher::new(&[7; 32]),
             "test".into(),
             3600,
+            32,
         )
         .await
         .unwrap();
@@ -2887,6 +2900,7 @@ mod tests {
             SecretCipher::new(&[7; 32]),
             "test".into(),
             3600,
+            32,
         )
         .await
         .unwrap();
@@ -2927,6 +2941,7 @@ mod tests {
             SecretCipher::new(&[7; 32]),
             "test".into(),
             3600,
+            32,
         )
         .await
         .unwrap();
@@ -2946,6 +2961,7 @@ mod tests {
             SecretCipher::new(&[7; 32]),
             "test".into(),
             3600,
+            32,
         )
         .await
         .unwrap();
@@ -2963,6 +2979,7 @@ mod tests {
             SecretCipher::new(&[7; 32]),
             "test".into(),
             3600,
+            32,
         )
         .await
         .unwrap();
@@ -2998,6 +3015,7 @@ mod tests {
             SecretCipher::new(&[7; 32]),
             "test".into(),
             3600,
+            32,
         )
         .await
         .unwrap();

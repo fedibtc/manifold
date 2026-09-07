@@ -12,6 +12,8 @@ pub(crate) struct RuntimeConfig {
     pub(crate) environment: ManifoldEnvironment,
     /// Validated sparse-metrics settings.
     pub(crate) metrics: MetricsRuntimeConfig,
+    /// Includes the FMan journal and retained/decommissioned seat journals.
+    pub(crate) max_journals_per_target: u16,
     /// Safe-journal interval.
     pub(crate) log_cadence: std::time::Duration,
     /// Maximum concurrent journal target work.
@@ -209,9 +211,16 @@ impl Args {
         {
             return Err("invalid key id, lease, or safe-journal bounds".into());
         }
+        let environment =
+            ManifoldEnvironment::from_str(&self.environment).map_err(|_| "invalid environment")?;
         Ok(RuntimeConfig {
-            environment: ManifoldEnvironment::from_str(&self.environment)
-                .map_err(|_| "invalid environment")?,
+            environment,
+            // Repeated staging ceremonies retain many decommissioned seats.
+            max_journals_per_target: if environment == ManifoldEnvironment::Staging {
+                1_000
+            } else {
+                32
+            },
             metrics: MetricsRuntimeConfig {
                 cadence: std::time::Duration::from_secs(self.metrics_poll_seconds),
                 concurrency: metrics_concurrency,
