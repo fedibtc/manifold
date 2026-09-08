@@ -254,7 +254,7 @@ const MNEMONIC =
 // string*, so the wire value is JSON nested in JSON.
 const REMITTANCE_ACCOUNT =
   '{"acc_type":"BtcDepositor","pub_keys":["034f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa"],"threshold":1}';
-const RECIPIENTS = '{"version":1,"recipients":[{"account_id":"fixture","weight":1}]}';
+const RECIPIENTS = `{"version":1,"recipients":[{"account":${REMITTANCE_ACCOUNT},"weight":1}]}`;
 const PLAN = { InfiniteBestEffort: { price_msats: 50_000_000 } };
 const CREATED_AT_MS = 1_753_500_000_000;
 
@@ -497,7 +497,7 @@ const readGuardianFee = {
   share_matches_policy: true,
   send_ppm: 1_000,
   our_weight: 1,
-  total_weight: 4
+  total_weight: 1
 };
 
 // The three distinct failures/successes: no derivable account, an account whose
@@ -562,7 +562,7 @@ const fmanGuardianFeesMirror = {
     recipients: RECIPIENTS,
     share_matches_policy: true,
     our_weight: 1,
-    total_weight: 4
+    total_weight: 1
   },
   remittances: [
     {

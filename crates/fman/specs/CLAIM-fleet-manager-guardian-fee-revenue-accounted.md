@@ -73,10 +73,10 @@ Falsified by three independent current-source counterexamples:
   `fedi:guardian_fee_send_ppm` and
   `fedi:guardian_fee_remittance_account` together, retains its generic
   210,000-ppm compatibility ceiling, and accepts the strict version-1 weighted
-  list. Each v1 entry contains a validated
-  single-sig `BtcDepositor` `account`, its matching `account_id`, and positive
-  `weight`; ids are unique and strictly sorted, total weight does not overflow,
-  the list contains 1--32 entries, and unknown fields/versions are refused.
+  list. Each v1 entry contains a validated single-sig `BtcDepositor` `account`
+  and positive `weight`; derived account ids are unique and strictly sorted,
+  total weight does not overflow, and the list contains 1--32 entries. Unknown
+  list fields and versions are refused; unknown recipient fields are ignored.
 - **A4 pinned client semantics:** stability-pool, mint, and native Lightning
   clients enforce authenticated ownership, consensus, and their documented
   operation-log/state-machine contracts. A successful payout start commits its
