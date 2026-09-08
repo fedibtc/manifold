@@ -1,10 +1,10 @@
+use fedi_decentralized_manifold_environment::ManifoldEnvironment;
+use nostr_sdk::EventBuilder;
 use peerbadge_protocol::{
     Credential, CredentialDigest, CredentialProof, HolderAuthorization,
     HolderAuthorizationStatement, HolderId, IssuerId, ProtocolV1, SchnorrSignatureProof,
     SubjectPubkey, Timestamp,
 };
-use fedi_decentralized_manifold_environment::ManifoldEnvironment;
-use nostr_sdk::EventBuilder;
 
 use fedi_decentralized_service_fleet_manager::Plan;
 use fman_core::directory::AdvertisementSnapshot;

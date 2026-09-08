@@ -6,10 +6,6 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use peerbadge_protocol::{
-    CredentialDigest, CredentialsError, HolderId, IssuerAuthority, IssuerId, SignedRevocation,
-    SubjectPubkey, VerificationContext,
-};
 use fedi_decentralized_domain::{
     HolderAuthorizationEnvelope, PeerBadgeTrustPolicy, PeerBadgeTrustPolicyConfigError,
     PeerBadgeTrustPolicyError, TrustScoreBadgeV1, TrustScoreSchemaError,
@@ -23,6 +19,10 @@ use fedi_decentralized_nostr::attester::{
 use fedi_decentralized_nostr_clients::{NostrClientError, NostrPeerBadgeClient};
 use fedimint_core::runtime::Instant;
 use nostr_sdk::{Event, EventId, Kind, PublicKey, RelayUrl, TagKind};
+use peerbadge_protocol::{
+    CredentialDigest, CredentialsError, HolderId, IssuerAuthority, IssuerId, SignedRevocation,
+    SubjectPubkey, VerificationContext,
+};
 
 const PEER_BADGE_VERIFICATION_TIMEOUT: Duration = Duration::from_secs(10);
 const MAX_AUTHORITY_RELAYS: usize = 4;

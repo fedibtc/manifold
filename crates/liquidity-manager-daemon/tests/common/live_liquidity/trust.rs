@@ -15,7 +15,6 @@ use std::str::FromStr;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::Context;
-use peerbadge_protocol::{HolderContext, IssuerAuthority, IssuerContext};
 use fedi_decentralized_liquidity_manager_daemon::{FederationPreview, PreviewPeer, trust_fixtures};
 use fedi_decentralized_service_liquidity_manager::{
     AttestationInstallRequest, BitcoinNetwork, FederationId, FmanEndorsement, FmanPeerAttestation,
@@ -25,6 +24,7 @@ use fedi_decentralized_service_liquidity_manager::{
 };
 use nostr_sdk::Keys;
 use nostr_sdk::secp256k1::Message;
+use peerbadge_protocol::{HolderContext, IssuerAuthority, IssuerContext};
 use reqwest::Client;
 
 use crate::common::credentials;
@@ -380,12 +380,12 @@ pub async fn publish_revocation(
     trust: &LiveTrust,
     credential: &peerbadge_protocol::SignedCredential,
 ) -> anyhow::Result<()> {
-    use peerbadge_protocol::CredentialDigest;
     use fedi_decentralized_liquidity_manager_daemon::revocation::credential_digest_wire_string;
     use fedi_decentralized_nostr::attester::{
         CREDENTIAL_REVOCATION_EVENT_KIND, CREDENTIAL_REVOCATION_HASHTAG,
         credential_revocation_d_tag,
     };
+    use peerbadge_protocol::CredentialDigest;
 
     let revocation = trust.issuer.revoke_credential(credential)?;
     let digest = credential_digest_wire_string(&CredentialDigest(credential.credential.digest()?));

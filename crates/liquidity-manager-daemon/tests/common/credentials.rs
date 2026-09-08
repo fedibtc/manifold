@@ -1,11 +1,11 @@
 //! Credential SDK fixtures used only by external integration-test crates.
 
+use fedi_decentralized_manifold_environment::ManifoldEnvironment;
+use fedi_decentralized_service_liquidity_manager::{AttestationPayload, Pubkey};
 use peerbadge_protocol::{
     HolderAuthorization, HolderAuthorizationRequest, HolderContext, IssuerAuthority, IssuerContext,
     IssuerSecretKeys, PendingIssuance, SignedCredential, SubjectPubkey,
 };
-use fedi_decentralized_manifold_environment::ManifoldEnvironment;
-use fedi_decentralized_service_liquidity_manager::{AttestationPayload, Pubkey};
 use serde::Serialize;
 use serde_json::json;
 

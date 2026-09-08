@@ -1,16 +1,16 @@
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{LazyLock, Mutex};
 
-use peerbadge_protocol::{
-    HolderAuthorizationRequest, HolderContext, IssuerContext, IssuerSecretKeys, PendingIssuance,
-    RevocationLocation,
-};
 use fedi_decentralized_domain::{HolderAuthorizationEnvelope, TRUST_SCORE_SCHEMA_V1};
 #[cfg(feature = "test-support")]
 use fedi_decentralized_domain::{TRUST_SCORE_LEVEL_MAX, TRUST_SCORE_LEVEL_MIN};
 use fedi_decentralized_manifold_environment::ManifoldEnvironment;
 use fedi_decentralized_nostr::attester::{CREDENTIAL_REVOCATION_HASHTAG, ISSUER_AUTHORITY_HASHTAG};
 use nostr_sdk::{EventBuilder, Keys, Tag, Timestamp};
+use peerbadge_protocol::{
+    HolderAuthorizationRequest, HolderContext, IssuerContext, IssuerSecretKeys, PendingIssuance,
+    RevocationLocation,
+};
 use serde_json::json;
 
 use super::*;

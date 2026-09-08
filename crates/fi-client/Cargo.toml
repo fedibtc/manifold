@@ -36,6 +36,6 @@ tracing = "0.1"
 [dev-dependencies]
 bitcoin = { version = "0.32.6", features = ["serde"] }
 blind-rsa-signatures = "0.17"
-peerbadge-protocol.workspace = true
 fedi-decentralized-manifold-environment = { path = "../manifold-environment" }
+peerbadge-protocol.workspace = true
 tokio = { workspace = true, features = ["macros", "rt", "test-util"] }

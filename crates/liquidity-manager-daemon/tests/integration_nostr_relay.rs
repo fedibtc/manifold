@@ -15,15 +15,15 @@ fn init_logging() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn fetches_signed_revocation_from_real_nostr_relay() -> anyhow::Result<()> {
-    use peerbadge_protocol::{
-        CredentialDigest, HolderContext, PendingIssuance, RevocationLocation, VerificationContext,
-    };
     use fedi_decentralized_liquidity_manager_daemon::revocation::{
         NostrRevocationFetcher, RevocationFetcher, RevocationLookup, credential_digest_wire_string,
     };
     use fedi_decentralized_nostr::attester::{
         CREDENTIAL_REVOCATION_EVENT_KIND, CREDENTIAL_REVOCATION_HASHTAG,
         credential_revocation_d_tag,
+    };
+    use peerbadge_protocol::{
+        CredentialDigest, HolderContext, PendingIssuance, RevocationLocation, VerificationContext,
     };
 
     init_logging();
@@ -104,15 +104,15 @@ async fn fetches_signed_revocation_from_real_nostr_relay() -> anyhow::Result<()>
 /// other credential in the batch.
 #[tokio::test(flavor = "multi_thread")]
 async fn one_batched_lookup_returns_revocations_for_every_digest() -> anyhow::Result<()> {
-    use peerbadge_protocol::{
-        CredentialDigest, HolderContext, PendingIssuance, RevocationLocation,
-    };
     use fedi_decentralized_liquidity_manager_daemon::revocation::{
         NostrRevocationFetcher, RevocationFetcher, RevocationLookup, credential_digest_wire_string,
     };
     use fedi_decentralized_nostr::attester::{
         CREDENTIAL_REVOCATION_EVENT_KIND, CREDENTIAL_REVOCATION_HASHTAG,
         credential_revocation_d_tag,
+    };
+    use peerbadge_protocol::{
+        CredentialDigest, HolderContext, PendingIssuance, RevocationLocation,
     };
 
     init_logging();
@@ -317,7 +317,6 @@ async fn withdrawal_stops_a_real_relay_from_serving_the_advertisement() -> anyho
 /// index and an FMan-targeted publication would leak into a FLIP.
 #[tokio::test(flavor = "multi_thread")]
 async fn enrols_a_holder_authorization_from_a_real_nostr_relay() -> anyhow::Result<()> {
-    use peerbadge_protocol::HolderContext;
     use fedi_decentralized_liquidity_manager_daemon::Database;
     use fedi_decentralized_liquidity_manager_daemon::holder_authorization::{
         NostrHolderAuthorizationFetcher, provider_trust_envelopes, refresh,
@@ -326,6 +325,7 @@ async fn enrols_a_holder_authorization_from_a_real_nostr_relay() -> anyhow::Resu
         FLIP_AUTHORIZATION_HASHTAG, HOLDER_AUTHORIZATION_EVENT_KIND, flip_authorization_d_tag,
     };
     use fedi_decentralized_service_liquidity_manager::{Pubkey, Url};
+    use peerbadge_protocol::HolderContext;
 
     init_logging();
     let relay = NostrRelayFixture::start().await?;
