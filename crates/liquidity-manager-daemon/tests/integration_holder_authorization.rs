@@ -12,8 +12,8 @@ mod test_support;
 use std::time::Duration;
 
 use common::nostr_relay::NostrRelayFixture;
-use peerbadge_protocol::HolderContext;
 use fedi_decentralized_service_liquidity_manager::Pubkey;
+use peerbadge_protocol::HolderContext;
 use reqwest::Client;
 use serde_json::{Value, json};
 use test_support::{ADMIN_TOKEN, DaemonProcess, TestDataDir, TestPorts, wait_for_admin_ready};

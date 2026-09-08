@@ -1,6 +1,5 @@
 use std::sync::Arc;
 
-use peerbadge_protocol::HolderContext;
 use fedi_decentralized_service_liquidity_manager::{
     AcceptedAttesterPolicy, AdvertisementConfig, AttestationSummary, BitcoinNetwork,
     CapacityConfig, CapacityMode, ChainObserverBackendView, ChainObserverConfigView, DurationSecs,
@@ -11,6 +10,7 @@ use fedi_decentralized_service_liquidity_manager::{
     WithdrawAdvertisementResponse,
 };
 use nostr_sdk::Keys;
+use peerbadge_protocol::HolderContext;
 
 use super::*;
 use crate::daemon::DaemonPhase;

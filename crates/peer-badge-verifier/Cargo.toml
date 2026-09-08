@@ -10,13 +10,13 @@ test-support = []
 
 [dependencies]
 async-trait.workspace = true
-peerbadge-protocol.workspace = true
 fedi-decentralized-domain = { path = "../domain" }
 fedi-decentralized-manifold-environment = { path = "../manifold-environment" }
 fedi-decentralized-nostr = { path = "../nostr" }
 fedi-decentralized-nostr-clients = { path = "../nostr-clients" }
 fedimint-core.workspace = true
 nostr-sdk = "0.44"
+peerbadge-protocol.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 

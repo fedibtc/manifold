@@ -516,13 +516,13 @@ fn test_data_dir(name: &str) -> PathBuf {
 /// The containing module is compiled only under `cfg(test)`, so the hardcoded
 /// test issuer keys stay out of shipped binaries.
 pub(crate) mod credentials {
-    use peerbadge_protocol::{
-        HolderAuthorization, HolderAuthorizationRequest, HolderContext, IssuerAuthority,
-        IssuerContext, IssuerSecretKeys, PendingIssuance, SignedCredential, SubjectPubkey,
-    };
     use fedi_decentralized_service_liquidity_manager::{
         AttestationPayload, HolderAuthorization as ServiceHolderAuthorization, Pubkey,
         SignedCredential as ServiceCredential,
+    };
+    use peerbadge_protocol::{
+        HolderAuthorization, HolderAuthorizationRequest, HolderContext, IssuerAuthority,
+        IssuerContext, IssuerSecretKeys, PendingIssuance, SignedCredential, SubjectPubkey,
     };
     use serde::Serialize;
     use serde_json::json;

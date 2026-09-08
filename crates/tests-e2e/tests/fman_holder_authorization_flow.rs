@@ -8,11 +8,6 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use defe_api::{ResourceDescriptor, SharingMode};
 use defe_client::AsyncDefeClient;
-use peerbadge_protocol::{
-    HolderAuthorization, HolderAuthorizationRequest, HolderContext, IssuerContext,
-    IssuerSecretKeys, PendingIssuance, RevocationLocation, SignedCredential, SubjectPubkey,
-    VerificationContext,
-};
 use fedi_decentralized_domain::HolderAuthorizationEnvelope;
 use fedi_decentralized_nostr::attester::{
     ISSUER_AUTHORITY_D_TAG, ISSUER_AUTHORITY_EVENT_KIND, ISSUER_AUTHORITY_HASHTAG,
@@ -38,6 +33,11 @@ use nostr_sdk::{
     Event, EventBuilder, Filter, Keys as NostrKeys, Kind, PublicKey as NostrPublicKey,
     SecretKey as NostrSecretKey, Tag,
     secp256k1::{Message, Secp256k1, SecretKey, schnorr::Signature},
+};
+use peerbadge_protocol::{
+    HolderAuthorization, HolderAuthorizationRequest, HolderContext, IssuerContext,
+    IssuerSecretKeys, PendingIssuance, RevocationLocation, SignedCredential, SubjectPubkey,
+    VerificationContext,
 };
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};

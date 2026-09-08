@@ -7,10 +7,6 @@ use axum::{
 use base64::{Engine as _, engine::general_purpose};
 use defe_api::{ResourceDescriptor, SharingMode};
 use defe_client::AsyncDefeClient;
-use peerbadge_protocol::{
-    HolderAuthorizationRequest, HolderContext, IssuerContext, IssuerSecretKeys, PendingIssuance,
-    RevocationLocation, SubjectPubkey,
-};
 use fedi_decentralized_cloud_fman_telemetry::registration_router_for_test;
 use fedi_decentralized_domain::{HolderAuthorizationEnvelope, ProtocolV1};
 use fedi_decentralized_nostr::attester::{
@@ -24,6 +20,10 @@ use fedi_decentralized_service_fleet_manager::{
 };
 use fedi_iroh_rpc::iroh::SecretKey as IrohSecretKey;
 use nostr_sdk::{EventBuilder, Keys, Kind, Tag, Timestamp};
+use peerbadge_protocol::{
+    HolderAuthorizationRequest, HolderContext, IssuerContext, IssuerSecretKeys, PendingIssuance,
+    RevocationLocation, SubjectPubkey,
+};
 use serde_json::json;
 use sha2::{Digest as _, Sha256};
 use tower::ServiceExt as _;

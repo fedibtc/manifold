@@ -1,6 +1,5 @@
 use std::path::PathBuf;
 
-use peerbadge_protocol::{HolderContext, SignedCredential as SdkSignedCredential};
 use fedi_decentralized_service_liquidity_manager::{
     AcceptedAttesterPolicy, BitcoinNetwork, FederationId, FederationLiquidityDetails,
     FederationName, FleetSeat, FleetSeatId, FmanEndorsement, FmanPeerAttestation,
@@ -10,6 +9,7 @@ use fedi_decentralized_service_liquidity_manager::{
 };
 use nostr_sdk::Keys;
 use nostr_sdk::secp256k1::Message;
+use peerbadge_protocol::{HolderContext, SignedCredential as SdkSignedCredential};
 
 use super::*;
 use crate::attestation_store;
@@ -95,10 +95,7 @@ fn envelope_for(
     issuer: &peerbadge_protocol::IssuerContext,
     authority: &peerbadge_protocol::IssuerAuthority,
     fman: &Fman,
-) -> anyhow::Result<(
-    peerbadge_protocol::HolderAuthorization,
-    SdkSignedCredential,
-)> {
+) -> anyhow::Result<(peerbadge_protocol::HolderAuthorization, SdkSignedCredential)> {
     let holder = HolderContext::generate();
     let credential = issue_credential_for_holder(issuer, authority, &holder)?;
     let authorization =
@@ -351,10 +348,7 @@ impl Harness {
     fn trust_envelope_for(
         &self,
         fman: &Fman,
-    ) -> anyhow::Result<(
-        peerbadge_protocol::HolderAuthorization,
-        SdkSignedCredential,
-    )> {
+    ) -> anyhow::Result<(peerbadge_protocol::HolderAuthorization, SdkSignedCredential)> {
         envelope_for(&self.issuer, &self.authority, fman)
     }
 
@@ -1231,12 +1225,13 @@ async fn required_revocation_lookup_failure_is_unavailable() -> anyhow::Result<(
 #[tokio::test]
 async fn no_nostr_endorsement_authority_is_unavailable() -> anyhow::Result<()> {
     let harness = Harness::new("endorsement-no-nostr", 1, 1, &[&[0]]).await?;
-    let authority = harness.issuer.issuer_authority(vec![
-        peerbadge_protocol::RevocationLocation {
-            protocol: "https".to_owned(),
-            location: "https://attester.example/revocations".to_owned(),
-        },
-    ])?;
+    let authority =
+        harness
+            .issuer
+            .issuer_authority(vec![peerbadge_protocol::RevocationLocation {
+                protocol: "https".to_owned(),
+                location: "https://attester.example/revocations".to_owned(),
+            }])?;
     attestation_store::install(
         &harness.database,
         fedi_decentralized_service_liquidity_manager::AttestationInstallRequest {
@@ -1260,11 +1255,10 @@ async fn no_nostr_endorsement_authority_is_unavailable() -> anyhow::Result<()> {
 async fn no_nostr_advertisement_authority_is_unavailable() -> anyhow::Result<()> {
     let harness = Harness::new("advertisement-no-nostr", 1, 1, &[&[0]]).await?;
     let issuer = test_foreign_issuer_context();
-    let authority =
-        issuer.issuer_authority(vec![peerbadge_protocol::RevocationLocation {
-            protocol: "https".to_owned(),
-            location: "https://attester.example/revocations".to_owned(),
-        }])?;
+    let authority = issuer.issuer_authority(vec![peerbadge_protocol::RevocationLocation {
+        protocol: "https".to_owned(),
+        location: "https://attester.example/revocations".to_owned(),
+    }])?;
     let issuer_hex = authority.issuer.issuer_id_pubkey.0.to_string();
     attestation_store::install(
         &harness.database,
@@ -1344,13 +1338,12 @@ async fn a_badge_with_the_wrong_schema_rejects_invalid_credentials() -> anyhow::
         "schema": "fedi-other-schema-v1.0",
         "trust_level": 7,
     });
-    let (issuance_request, pending) =
-        peerbadge_protocol::PendingIssuance::create_request(
-            &harness.authority.issuer.issuance_key,
-            harness.authority.issuer.issuer_id_pubkey.clone(),
-            info.clone(),
-            serde_json::json!(holder.public_key().to_string()),
-        )?;
+    let (issuance_request, pending) = peerbadge_protocol::PendingIssuance::create_request(
+        &harness.authority.issuer.issuance_key,
+        harness.authority.issuer.issuer_id_pubkey.clone(),
+        info.clone(),
+        serde_json::json!(holder.public_key().to_string()),
+    )?;
     let issuance_response = harness.issuer.issue_credential(info, &issuance_request)?;
     let bad_credential =
         pending.finalize(&harness.authority.issuer.issuance_key, &issuance_response)?;

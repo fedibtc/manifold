@@ -1,5 +1,5 @@
 [workspace]
-exclude = [".nix-deps/peerbadge-sdk", ".nix-deps/fedimint"]
+exclude = [".nix-deps/fedimint", ".nix-deps/peerbadge-sdk"]
 members = [
   "crates/bounded-rolling-file",
   "crates/cloud-fman-telemetry",

@@ -10,9 +10,9 @@
 #[cfg(test)]
 mod tests;
 
-use peerbadge_protocol::SchnorrSignatureProof;
 use fedi_decentralized_domain::{HolderAuthorizationEnvelope, ProtocolV1};
 use fedi_decentralized_service_fleet_manager::{FedimintdVersion, Plan};
+use peerbadge_protocol::SchnorrSignatureProof;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 

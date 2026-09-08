@@ -1,5 +1,5 @@
-use peerbadge_protocol::HolderContext;
 use fedi_decentralized_service_liquidity_manager::RevocationLocation;
+use peerbadge_protocol::HolderContext;
 
 use super::test_fakes::FakeRevocationFetcher;
 use super::*;
@@ -275,12 +275,11 @@ async fn digests_from_different_issuers_are_fetched_separately() -> anyhow::Resu
     // revocations live somewhere else entirely and cannot ride along.
     let fixture = stage_fixture(vec!["wss://relay-a.example"])?;
     let foreign_issuer = test_foreign_issuer_context();
-    let foreign_authority = foreign_issuer.issuer_authority(vec![
-        peerbadge_protocol::RevocationLocation {
+    let foreign_authority =
+        foreign_issuer.issuer_authority(vec![peerbadge_protocol::RevocationLocation {
             protocol: "nostr".to_owned(),
             location: "wss://relay-foreign.example".to_owned(),
-        },
-    ])?;
+        }])?;
     let foreign_holder = HolderContext::generate();
     let foreign_credential =
         issue_credential_with(&foreign_issuer, &foreign_authority, &foreign_holder)?;
@@ -357,12 +356,11 @@ async fn one_failing_issuer_does_not_mark_another_issuers_digests_unavailable() 
     // still set the stage-wide `unavailable` flag.
     let fixture = stage_fixture(vec!["wss://relay-a.example"])?;
     let foreign_issuer = test_foreign_issuer_context();
-    let foreign_authority = foreign_issuer.issuer_authority(vec![
-        peerbadge_protocol::RevocationLocation {
+    let foreign_authority =
+        foreign_issuer.issuer_authority(vec![peerbadge_protocol::RevocationLocation {
             protocol: "nostr".to_owned(),
             location: "wss://relay-dead.example".to_owned(),
-        },
-    ])?;
+        }])?;
     let foreign_holder = HolderContext::generate();
     let foreign_credential =
         issue_credential_with(&foreign_issuer, &foreign_authority, &foreign_holder)?;

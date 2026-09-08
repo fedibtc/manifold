@@ -744,15 +744,15 @@ mod tests {
     use super::*;
     use base64::{Engine as _, engine::general_purpose};
     use blind_rsa_signatures::Signature as PbrsaSignature;
+    use fedi_decentralized_domain::{HolderAuthorizationEnvelope, SchnorrSignatureProof};
+    use fedi_decentralized_manifold_environment::ManifoldEnvironment;
+    use fedi_decentralized_service_fleet_manager::TelemetryCapability;
+    use nostr::{EventBuilder, Keys, Kind, Tag, Timestamp, secp256k1::Message};
     use peerbadge_protocol::{
         Credential, CredentialDigest, CredentialProof, HolderAuthorization,
         HolderAuthorizationStatement, HolderId, IssuerId, SignedCredential, SubjectPubkey,
         Timestamp as CredentialTimestamp,
     };
-    use fedi_decentralized_domain::{HolderAuthorizationEnvelope, SchnorrSignatureProof};
-    use fedi_decentralized_manifold_environment::ManifoldEnvironment;
-    use fedi_decentralized_service_fleet_manager::TelemetryCapability;
-    use nostr::{EventBuilder, Keys, Kind, Tag, Timestamp, secp256k1::Message};
     use sha2::{Digest as _, Sha256};
     use tower::ServiceExt as _;
 
