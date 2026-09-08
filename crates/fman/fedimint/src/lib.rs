@@ -225,6 +225,8 @@ pub struct Wallet {
     /// Serializes payout starts per wallet scope so v1 invoice replay checks
     /// cannot race another FMan payout start.
     payout_locks: Mutex<BTreeMap<ClientScope, Arc<Mutex<()>>>>,
+    /// Serializes guardian-fee collections per seat-scoped wallet.
+    collection_locks: Mutex<BTreeMap<ClientScope, Arc<Mutex<()>>>>,
     /// Process-lifetime fence for client opens. Once an open starts,
     /// cancellation or failure requires process restart before retry so a
     /// dependency task left behind cannot race a second database opener.
@@ -315,6 +317,7 @@ impl Wallet {
             federations: Arc::new(RwLock::new(BTreeMap::new())),
             join_locks: Mutex::new(BTreeMap::new()),
             payout_locks: Mutex::new(BTreeMap::new()),
+            collection_locks: Mutex::new(BTreeMap::new()),
             open_attempted: Mutex::new(HashSet::new()),
         })
     }
@@ -645,6 +648,18 @@ impl Wallet {
                 .clone()
         };
         payout_lock.lock_owned().await
+    }
+
+    /// Exclude concurrent collection snapshots in one guardian wallet scope.
+    async fn collection_exclusion(&self, scope: ClientScope) -> tokio::sync::OwnedMutexGuard<()> {
+        let collection_lock = {
+            let mut locks = self.collection_locks.lock().await;
+            locks
+                .entry(scope)
+                .or_insert_with(|| Arc::new(Mutex::new(())))
+                .clone()
+        };
+        collection_lock.lock_owned().await
     }
 
     /// Receive an OOB ecash token: validate it belongs to `federation_id`,

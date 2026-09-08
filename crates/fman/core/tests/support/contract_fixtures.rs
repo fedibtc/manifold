@@ -74,6 +74,7 @@ pub const FIXTURE_NAMES: &[&str] = &[
     "fman_decommission_seat",
     "fman_reenroll_telemetry",
     "fman_guardian_fees",
+    "fman_guardian_fees_policy_error",
     "fman_collect_guardian_fees",
     "fman_collect_guardian_fees_incomplete_idle",
     "fman_collect_guardian_fees_incomplete",
@@ -106,6 +107,10 @@ pub fn fixture_json() -> Vec<(&'static str, String)> {
         ("fman_decommission_seat", decommission_seat_fixture()),
         ("fman_reenroll_telemetry", reenroll_telemetry_fixture()),
         ("fman_guardian_fees", guardian_fees_fixture()),
+        (
+            "fman_guardian_fees_policy_error",
+            guardian_fees_policy_error_fixture(),
+        ),
         (
             "fman_collect_guardian_fees",
             collect_guardian_fees_fixture(),
@@ -670,6 +675,14 @@ pub fn reenroll_telemetry_fixture() -> Value {
 /// Both remittance shapes: a breakdown that opened, and one whose sealed
 /// paperwork did not — the amount is reported either way.
 pub fn guardian_fees_fixture() -> Value {
+    guardian_fees_fixture_with_policy(Ok(&fee_policy()))
+}
+
+pub fn guardian_fees_policy_error_fixture() -> Value {
+    guardian_fees_fixture_with_policy(Err("live consensus metadata is malformed".to_owned()))
+}
+
+fn guardian_fees_fixture_with_policy(policy: Result<&FeePolicy, String>) -> Value {
     admin::guardian_fees_json(
         &seat_id(),
         &FederationFeeStatus {
@@ -693,7 +706,7 @@ pub fn guardian_fees_fixture() -> Value {
         // lifetime total is not a sum of the window, and a fixture where the
         // two agreed would let a consumer that totals the window pass.
         41_500_000,
-        &fee_policy(),
+        policy,
         vec![
             Remittance {
                 amount: Amount::from_msats(1_200_000),
@@ -728,6 +741,7 @@ pub fn guardian_fees_fixture() -> Value {
 pub fn collect_guardian_fees_fixture() -> Value {
     admin::collect_guardian_fees_json(Collected::Complete {
         claimed: Amount::from_msats(1_750_000),
+        recorded_claimed: Amount::from_msats(2_250_000),
         awaiting_cycle: Amount::from_msats(500_000),
     })
 }
@@ -735,6 +749,7 @@ pub fn collect_guardian_fees_fixture() -> Value {
 pub fn collect_guardian_fees_incomplete_fixture() -> Value {
     admin::collect_guardian_fees_json(Collected::Incomplete {
         confirmed_claimed: Amount::from_msats(1_750_000),
+        recorded_claimed: Amount::from_msats(2_250_000),
         observed_awaiting_cycle: None,
         failure: CollectionFailure {
             phase: CollectionFailurePhase::Unlock,
@@ -746,6 +761,7 @@ pub fn collect_guardian_fees_incomplete_fixture() -> Value {
 pub fn collect_guardian_fees_incomplete_idle_fixture() -> Value {
     admin::collect_guardian_fees_json(Collected::Incomplete {
         confirmed_claimed: Amount::ZERO,
+        recorded_claimed: Amount::from_msats(500_000),
         observed_awaiting_cycle: Some(Amount::from_msats(500_000)),
         failure: CollectionFailure {
             phase: CollectionFailurePhase::IdleClaim,
@@ -757,6 +773,7 @@ pub fn collect_guardian_fees_incomplete_idle_fixture() -> Value {
 pub fn collect_guardian_fees_incomplete_refresh_fixture() -> Value {
     admin::collect_guardian_fees_json(Collected::Incomplete {
         confirmed_claimed: Amount::from_msats(1_750_000),
+        recorded_claimed: Amount::from_msats(2_250_000),
         observed_awaiting_cycle: None,
         failure: CollectionFailure {
             phase: CollectionFailurePhase::BalanceRefresh,

@@ -561,6 +561,9 @@ pub enum Collected {
     Complete {
         /// Now ordinary ecash in the guardian-fee client.
         claimed: Amount,
+        /// Sum of collection successes durably recorded by Fleet Manager.
+        /// This preserves response-lost progress without calling it newly claimed.
+        recorded_claimed: Amount,
         /// Still in the pool and collectable after a cycle turnover.
         awaiting_cycle: Amount,
     },
@@ -568,6 +571,8 @@ pub enum Collected {
     Incomplete {
         /// Amount terminally confirmed as ordinary ecash during this attempt.
         confirmed_claimed: Amount,
+        /// Sum of collection successes durably recorded by Fleet Manager.
+        recorded_claimed: Amount,
         /// Current staged plus locked balance, if a post-failure read succeeded.
         observed_awaiting_cycle: Option<Amount>,
         /// The phase that prevented the attempt from completing.
@@ -591,6 +596,8 @@ pub enum CollectionFailurePhase {
     IdleClaim,
     /// Requesting release of staged and locked stability-pool balance.
     Unlock,
+    /// Persisting Fleet Manager's receipt for a terminal native success.
+    Receipt,
     /// Reading the balance after collection operations.
     BalanceRefresh,
 }

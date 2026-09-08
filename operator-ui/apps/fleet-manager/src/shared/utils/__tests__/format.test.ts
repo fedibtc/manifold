@@ -17,6 +17,10 @@ it('should still render a genuine zero balance as zero', () => {
   expect(formatSats(0)).toBe('0 sats');
 });
 
+it('should preserve exact wire amounts beyond JavaScript safe integers', () => {
+  expect(formatSats('18446744073709551615')).toBe('18,446,744,073,709,551 sats');
+});
+
 it('should format a millisecond timestamp as an ISO date', () => {
   expect(formatDate(1_753_000_000_000)).toBe('2025-07-20');
 });

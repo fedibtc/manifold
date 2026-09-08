@@ -937,8 +937,8 @@ async fn exercise_guardian_fee_wallet(fleet_manager_bin: &Path, temp: &Path) -> 
     )
     .await?;
     anyhow::ensure!(
-        collected["claimed_msat"].as_u64() == Some(0)
-            && collected["awaiting_cycle_msat"].as_u64() == Some(0),
+        json_decimal_u64(&collected["claimed_msat"]) == Some(0)
+            && json_decimal_u64(&collected["awaiting_cycle_msat"]) == Some(0),
         "collecting a fresh guardian account must be a successful no-op: {collected}"
     );
     Ok(())
@@ -1140,7 +1140,7 @@ async fn exercise_real_guardian_fee_remittance_and_payout_recovery(
     )
     .await?;
     anyhow::ensure!(
-        collected["claimed_msat"].as_u64().unwrap_or_default() >= PAYOUT_MSAT,
+        json_decimal_u64(&collected["claimed_msat"]).unwrap_or_default() >= PAYOUT_MSAT,
         "collection must turn real remittance into sweepable ecash: {collected}"
     );
 
@@ -1358,6 +1358,10 @@ async fn exercise_real_guardian_fee_remittance_and_payout_recovery(
     register_gateway_with_every_guardian(state_dir, restarted_locator.as_deref()).await?;
     defe.release(gateway_lease.handle_id).await?;
     Ok(())
+}
+
+fn json_decimal_u64(value: &serde_json::Value) -> Option<u64> {
+    value.as_str()?.parse().ok()
 }
 
 async fn exercise_guardian_telemetry(
