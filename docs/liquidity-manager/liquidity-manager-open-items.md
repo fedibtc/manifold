@@ -5,11 +5,11 @@ implementation gaps, and cross-component items.
 
 This document tracks no history. An item is deleted when it lands, not archived
 here. It also carries **no verdicts, dates, rulings, or record tallies**: those
-live in the records under
-[`claims/`](../../crates/liquidity-manager-daemon/claims/) and
-[`specs/`](../../crates/liquidity-manager-daemon/specs/ARCH-liquidity-manager.md),
-and a copy of them here drifts out of agreement with the records within days.
-Cite a record; do not transcribe it.
+live in the `CLAIM-*` records and
+[`ARCH-liquidity-manager`](../../crates/liquidity-manager-daemon/specs/ARCH-liquidity-manager.md)
+under [`specs/`](../../crates/liquidity-manager-daemon/specs/), and a copy of
+them here drifts out of agreement with the records within days. Cite a record;
+do not transcribe it.
 
 ## Spec open items
 
@@ -44,8 +44,8 @@ byte layout and domain tags remain unpinned.
   the authenticated Iroh transport actor.
   [`SPEC-flip-rpc`](../../crates/liquidity-manager-daemon/specs/SPEC-flip-rpc.md)
   records the divergence in its `Status`.
-- Add Phase 11B negative fixtures for provider and requester binding failures.
-  They depend on that final policy.
+- Add negative fixtures for provider and requester binding failures. They
+  depend on that final policy.
 
 ## Implementation gaps
 
@@ -67,9 +67,9 @@ value moves outward: a lost id followed by a resubmit is a double send.
 endorsed federation whose stability pool rejects provision, and so lock
 FLIP-funded e-cash. What that FI cannot do is consume provider capacity
 permanently. Two records point here for this statement:
-[`failed-stability-allocation-strands-ecash`](../../crates/liquidity-manager-daemon/claims/failed-stability-allocation-strands-ecash.md)
+[`failed-stability-allocation-strands-ecash`](../../crates/liquidity-manager-daemon/specs/CLAIM-failed-stability-allocation-strands-ecash.md)
 and
-[`stability-deposit-rejection-releases-capacity`](../../crates/liquidity-manager-daemon/claims/stability-deposit-rejection-releases-capacity.md).
+[`stability-deposit-rejection-releases-capacity`](../../crates/liquidity-manager-daemon/specs/CLAIM-stability-deposit-rejection-releases-capacity.md).
 
 **Open work: rehearse the runbook against a live deployment.** Accepting a
 manual route means the manual route must work, and it has never been exercised.
@@ -106,7 +106,7 @@ targets that serve their config and then stop answering fill the budget
 permanently**, after which FLIP opens no further target client. Installed clients
 keep working. Recovery is a restart; nothing in the Admin surface reclaims a
 pending open. Filed as
-[`pending-open-budget-wedges-target-clients`](../../crates/liquidity-manager-daemon/claims/found-bugs/pending-open-budget-wedges-target-clients.md).
+[`pending-open-budget-wedges-target-clients`](../../crates/liquidity-manager-daemon/specs/CLAIM-pending-open-budget-wedges-target-clients.md).
 
 The fault is reported and attributable: a pending open past five minutes logs
 once at `warn` with its federation id and age, and a capacity refusal names every
@@ -222,8 +222,7 @@ Every periodic worker runs through `run_interval_task` in `lib.rs`, which builds
 a `tokio::time::interval`. That fires immediately and then holds an exact fixed
 period. A fleet restarted together keeps hitting shared relays and dependencies
 in recurring bursts, and the four workers inside one daemon tick in step with
-each other. Reported by the FLIP underwriting review
-([#334](https://github.com/fedibtc/manifold/pull/334)).
+each other.
 
 This looks like a one-function change and is not. Three things decide it.
 
@@ -237,15 +236,15 @@ This looks like a one-function change and is not. Three things decide it.
 - **Whether within-daemon de-phasing is worth doing on its own.** An offset
   derived from the worker name needs no identity, no dependency, and no
   migration, and is unconditionally safe. It stops the four workers in one daemon
-  ticking together, and does nothing for the fleet case the finding describes.
-- **Placement.** The finding asks for the first pass to stay immediate and the
-  schedule to shift afterwards. Sleeping inside the `select!` arm makes shutdown
-  unresponsive for the length of the offset; avoiding that means restructuring
-  the loop around `interval_at`. Four production workers run through this path,
-  and a mistake there is a worker that stops ticking or stops answering shutdown.
+  ticking together, and does nothing for the fleet case.
+- **Placement.** The first pass must stay immediate and the schedule must shift
+  afterwards. Sleeping inside the `select!` arm makes shutdown unresponsive for
+  the length of the offset; avoiding that means restructuring the loop around
+  `interval_at`. Four production workers run through this path, and a mistake
+  there is a worker that stops ticking or stops answering shutdown.
 
-Randomized failure backoff is part of the same finding and is a separate, larger
-change.
+Randomized failure backoff is the same problem on the retry path, and is a
+separate, larger change.
 
 ## Upstream dependency gaps
 

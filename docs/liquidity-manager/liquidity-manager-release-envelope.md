@@ -70,11 +70,11 @@ endpoint the target federation advertises.
 
 | Worker | Interval | Source |
 |---|---|---|
-| Gateway allocation | 10 s | `gateway.rs` — **derived** |
+| Gateway allocation | 10 s | `gateway_allocation.rs` — **derived** |
 | Stability-pool allocation | 10 s | `stability_allocation.rs` — **derived** |
-| Gateway observation | 30 s | `gateway.rs` — **derived** |
+| Gateway observation | 30 s | `gateway_allocation.rs` — **derived** |
 | Wallet operation sync | 30 s | `funds_admin.rs` — **derived** |
-| Advertisement reconcile | 60 s | `advertisement.rs` — **derived** |
+| Advertisement reconcile | 60 s default, set by `republish_interval` | `advertisement.rs` — **derived** |
 
 ## Allocation deadlines — **proposed**
 
@@ -95,7 +95,11 @@ federation is not a missed deadline but an unmet precondition.
 non-secret failure reason reachable through the Admin API. `action_required` is
 the honest outcome for work that needs an operator, and the recovery surfaces
 for it are `retry_funding_step`, `cancel_allocation`, `inspect_target_client`,
-`bind_target_deposit`, `abandon_target_client_value`, and `resolve_manual_review`.
+`bind_target_deposit`, `abandon_target_client_value`, `resolve_manual_review`,
+and `complete_review_without_evidence`. A `completed` review resolution requires
+chain evidence of the operation's exact destination and amount;
+`complete_review_without_evidence` is the route for an outcome established out
+of band, and it records that no evidence existed.
 
 An in-doubt wallet send escalates to manual review after 21 600 s (6 hours) by
 default (`in_doubt_review_after_secs` — **derived**), which is the mechanism
@@ -120,7 +124,7 @@ return is the external world: the gateway wallet, the chain, and target
 federations kept moving. An allocation committed after the archive was taken is
 gone from FLIP's records while its funding send may have happened. That
 reconciliation is not automated and is the residual under
-[`wallet-budget-overcommit`](../../crates/liquidity-manager-daemon/claims/wallet-budget-overcommit.md).
+[`wallet-budget-overcommit`](../../crates/liquidity-manager-daemon/specs/CLAIM-wallet-budget-overcommit.md).
 
 ## Excluded from this envelope
 
