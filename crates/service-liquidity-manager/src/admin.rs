@@ -162,6 +162,17 @@ pub enum HealthComponent {
     /// failing every pass becomes visible without reading logs.
     #[strum(serialize = "background_workers")]
     BackgroundWorkers,
+
+    /// Pool of Fedimint clients FLIP holds open against target federations.
+    ///
+    /// A target that serves its configuration and then stops answering leaves
+    /// an open that nothing can cancel, holding a slot in a budget separate
+    /// from the client ceiling. Enough of them and FLIP opens no further target
+    /// client until it restarts, while every client already installed keeps
+    /// working — so nothing else in this response turns red. This is how that
+    /// state is visible without matching log text.
+    #[strum(serialize = "target_client_pool")]
+    TargetClientPool,
 }
 
 /// Health status.

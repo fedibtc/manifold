@@ -27,7 +27,8 @@ export type HealthComponentName =
   | 'public_liquidity_api'
   | 'gateway'
   | 'chain_observer'
-  | 'background_workers';
+  | 'background_workers'
+  | 'target_client_pool';
 
 // A single monitored subsystem (daemon, wallet, gateway, chain observer, …).
 export interface HealthComponent {

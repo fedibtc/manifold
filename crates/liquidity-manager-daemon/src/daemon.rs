@@ -377,6 +377,55 @@ impl DaemonContext {
     }
 
     /// Summarizes periodic-worker outcomes as one health component.
+    /// Standing occupancy of the target-client pool.
+    ///
+    /// Warning once the pending-open budget is full, because FLIP starts no
+    /// further open there; unhealthy once every occupant has also passed the
+    /// stuck threshold, which is the state only a restart clears.
+    async fn target_client_pool_health_component(&self, observed_at: Timestamp) -> ComponentHealth {
+        let occupancy = self.target_fedimint_clients.occupancy().await;
+        let pending = occupancy.pending_opens();
+        let status = if occupancy.is_wedged() {
+            HealthStatus::Unhealthy
+        } else if pending >= occupancy.pending_open_budget {
+            HealthStatus::Warning
+        } else {
+            HealthStatus::Healthy
+        };
+        // Oldest first, and capped: the budget is small, but the detail is a
+        // health field rather than a log line and should not grow without a
+        // bound if that ever changes.
+        let oldest: Vec<String> = occupancy
+            .pending_open_ages
+            .iter()
+            .take(occupancy.pending_open_budget)
+            .map(|(federation_id, age)| format!("{federation_id} ({}s)", age.as_secs()))
+            .collect();
+        let mut detail = format!(
+            "clients={}/{}, pending_opens={}/{}, stuck={} (over {}s)",
+            occupancy.installed,
+            occupancy.max_installed,
+            pending,
+            occupancy.pending_open_budget,
+            occupancy.stuck_opens(),
+            occupancy.stuck_after.as_secs()
+        );
+        if !oldest.is_empty() {
+            detail.push_str(&format!("; oldest: {}", oldest.join(", ")));
+        }
+        if occupancy.is_wedged() {
+            detail.push_str(
+                "; no further target client opens until restart — nothing reclaims a pending slot",
+            );
+        }
+        ComponentHealth {
+            component: HealthComponent::TargetClientPool,
+            status,
+            detail: Some(detail),
+            observed_at,
+        }
+    }
+
     async fn worker_health_component(&self, observed_at: Timestamp) -> ComponentHealth {
         let workers = self.worker_health.read().await.clone();
         if workers.is_empty() {
@@ -495,6 +544,7 @@ impl DaemonContext {
         ];
         components.extend(dependency_components);
         components.push(self.worker_health_component(observed_at).await);
+        components.push(self.target_client_pool_health_component(observed_at).await);
         components.push(advertisement::relay_health_component(self, observed_at).await);
         let overall_status = if components
             .iter()

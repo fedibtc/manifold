@@ -151,6 +151,55 @@ const MAX_PENDING_OPENS: usize = 4;
 /// in seconds.
 const STUCK_OPEN_REPORT_AFTER: std::time::Duration = std::time::Duration::from_secs(300);
 
+/// What the target-client pool is holding, at one instant.
+///
+/// A stuck open cannot be cancelled — see [`STUCK_OPEN_REPORT_AFTER`] — so
+/// reporting is the whole remedy FLIP has. The warn line names one open as it
+/// passes the threshold; this names the standing state, so an operator can
+/// alert on pool occupancy without matching log text.
+pub(crate) struct TargetClientPoolOccupancy {
+    /// Clients currently held open.
+    pub(crate) installed: usize,
+
+    /// Ceiling on `installed`, from `--max-open-target-clients`.
+    pub(crate) max_installed: usize,
+
+    /// Ceiling on concurrent opens, separate from the client ceiling.
+    pub(crate) pending_open_budget: usize,
+
+    /// Age past which a pending open is reported as stuck.
+    pub(crate) stuck_after: std::time::Duration,
+
+    /// Every pending open with its age, oldest first.
+    pub(crate) pending_open_ages: Vec<(String, std::time::Duration)>,
+}
+
+impl TargetClientPoolOccupancy {
+    /// Opens in flight.
+    pub(crate) fn pending_opens(&self) -> usize {
+        self.pending_open_ages.len()
+    }
+
+    /// Pending opens that have passed the reporting threshold.
+    pub(crate) fn stuck_opens(&self) -> usize {
+        self.pending_open_ages
+            .iter()
+            .filter(|(_, age)| *age >= self.stuck_after)
+            .count()
+    }
+
+    /// True when the budget is full and every occupant is stuck.
+    ///
+    /// This is the wedge: nothing reclaims a pending slot, so no further target
+    /// client opens until the process restarts. A full budget on its own is not
+    /// it — four opens that started a moment ago are a busy pool, and they
+    /// finish.
+    pub(crate) fn is_wedged(&self) -> bool {
+        self.pending_opens() >= self.pending_open_budget
+            && self.stuck_opens() == self.pending_opens()
+    }
+}
+
 /// What [`TargetFedimintClients::open_slot`] found under one guard.
 enum OpenSlot {
     /// A client was already installed; no open is needed.
@@ -810,6 +859,23 @@ impl TargetFedimintClients {
     #[cfg(test)]
     pub(crate) async fn pending_open_count(&self) -> usize {
         self.inner.lock().await.opens.len()
+    }
+
+    /// What the pool is holding, for the health surface.
+    ///
+    /// Taken under one lock so the counts and the ages describe the same
+    /// instant. A caller that read them separately could report a full budget
+    /// beside the ages of a different set of opens.
+    pub(crate) async fn occupancy(&self) -> TargetClientPoolOccupancy {
+        let now = std::time::Instant::now();
+        let inner = self.inner.lock().await;
+        TargetClientPoolOccupancy {
+            installed: inner.clients.len(),
+            max_installed: self.max_open.get(),
+            pending_open_budget: MAX_PENDING_OPENS,
+            stuck_after: STUCK_OPEN_REPORT_AFTER,
+            pending_open_ages: inner.pending_open_ages(now),
+        }
     }
 
     /// Sequence of the open in flight for `federation_id`, if any.
