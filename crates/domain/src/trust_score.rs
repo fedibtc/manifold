@@ -11,14 +11,14 @@
 #[cfg(test)]
 mod tests;
 
-use fedi_credential_sdk_protocol::{
+use peerbadge_protocol::{
     CredentialsError, HolderAuthorization, SignedCredential, VerificationContext,
 };
 use serde::{Deserialize, Serialize};
 
 use crate::{Pubkey, Timestamp};
 
-pub use fedi_credential_sdk_schemas::{
+pub use peerbadge_schemas::{
     TRUST_SCORE_LEVEL_MAX, TRUST_SCORE_LEVEL_MIN, TRUST_SCORE_SCHEMA_V1, TrustScoreBadgeV1,
     TrustScoreSchemaError, parse_trust_score_badge_v1, trust_score_blind_msg_v1,
     trust_score_info_v1,

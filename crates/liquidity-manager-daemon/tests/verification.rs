@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use fedi_credential_sdk_protocol::{HolderContext, SignedCredential as SdkSignedCredential};
+use peerbadge_protocol::{HolderContext, SignedCredential as SdkSignedCredential};
 use fedi_decentralized_service_liquidity_manager::{
     AcceptedAttesterPolicy, BitcoinNetwork, FederationId, FederationLiquidityDetails,
     FederationName, FleetSeat, FleetSeatId, FmanEndorsement, FmanPeerAttestation,
@@ -92,11 +92,11 @@ fn attestation_for(
 
 /// Issue a badge to `fman` and bind it with a holder authorization.
 fn envelope_for(
-    issuer: &fedi_credential_sdk_protocol::IssuerContext,
-    authority: &fedi_credential_sdk_protocol::IssuerAuthority,
+    issuer: &peerbadge_protocol::IssuerContext,
+    authority: &peerbadge_protocol::IssuerAuthority,
     fman: &Fman,
 ) -> anyhow::Result<(
-    fedi_credential_sdk_protocol::HolderAuthorization,
+    peerbadge_protocol::HolderAuthorization,
     SdkSignedCredential,
 )> {
     let holder = HolderContext::generate();
@@ -135,8 +135,8 @@ fn material_for(
 
 /// A complete, valid endorsement: seat attestation plus trust envelope.
 fn endorsement_for(
-    issuer: &fedi_credential_sdk_protocol::IssuerContext,
-    authority: &fedi_credential_sdk_protocol::IssuerAuthority,
+    issuer: &peerbadge_protocol::IssuerContext,
+    authority: &peerbadge_protocol::IssuerAuthority,
     preview: &FederationPreview,
     fman: &Fman,
     peer_id: &str,
@@ -155,8 +155,8 @@ fn endorsement_for(
 
 struct Harness {
     database: Database,
-    issuer: fedi_credential_sdk_protocol::IssuerContext,
-    authority: fedi_credential_sdk_protocol::IssuerAuthority,
+    issuer: peerbadge_protocol::IssuerContext,
+    authority: peerbadge_protocol::IssuerAuthority,
     attester_hex: String,
     preview: FederationPreview,
     fmans: Vec<Fman>,
@@ -352,7 +352,7 @@ impl Harness {
         &self,
         fman: &Fman,
     ) -> anyhow::Result<(
-        fedi_credential_sdk_protocol::HolderAuthorization,
+        peerbadge_protocol::HolderAuthorization,
         SdkSignedCredential,
     )> {
         envelope_for(&self.issuer, &self.authority, fman)
@@ -1232,7 +1232,7 @@ async fn required_revocation_lookup_failure_is_unavailable() -> anyhow::Result<(
 async fn no_nostr_endorsement_authority_is_unavailable() -> anyhow::Result<()> {
     let harness = Harness::new("endorsement-no-nostr", 1, 1, &[&[0]]).await?;
     let authority = harness.issuer.issuer_authority(vec![
-        fedi_credential_sdk_protocol::RevocationLocation {
+        peerbadge_protocol::RevocationLocation {
             protocol: "https".to_owned(),
             location: "https://attester.example/revocations".to_owned(),
         },
@@ -1261,7 +1261,7 @@ async fn no_nostr_advertisement_authority_is_unavailable() -> anyhow::Result<()>
     let harness = Harness::new("advertisement-no-nostr", 1, 1, &[&[0]]).await?;
     let issuer = test_foreign_issuer_context();
     let authority =
-        issuer.issuer_authority(vec![fedi_credential_sdk_protocol::RevocationLocation {
+        issuer.issuer_authority(vec![peerbadge_protocol::RevocationLocation {
             protocol: "https".to_owned(),
             location: "https://attester.example/revocations".to_owned(),
         }])?;
@@ -1345,7 +1345,7 @@ async fn a_badge_with_the_wrong_schema_rejects_invalid_credentials() -> anyhow::
         "trust_level": 7,
     });
     let (issuance_request, pending) =
-        fedi_credential_sdk_protocol::PendingIssuance::create_request(
+        peerbadge_protocol::PendingIssuance::create_request(
             &harness.authority.issuer.issuance_key,
             harness.authority.issuer.issuer_id_pubkey.clone(),
             info.clone(),

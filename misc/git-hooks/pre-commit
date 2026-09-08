@@ -76,7 +76,7 @@ export -f check_ast_grep
 function check_cargo_lock() {
     set -euo pipefail
 
-    # Cargo resolves fedimint/credential-sdk through .nix-deps
+    # Cargo resolves fedimint/peerbadge-sdk through .nix-deps
     # symlinks that the dev shell creates; (re)link them so this
     # check doesn't fail deep inside cargo when they are missing.
     if command -v link-external-deps >/dev/null 2>&1; then

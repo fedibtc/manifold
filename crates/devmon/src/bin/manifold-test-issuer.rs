@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use anyhow::{Context as _, ensure};
 use clap::Parser;
-use fedi_credential_sdk_protocol::{
+use peerbadge_protocol::{
     HolderAuthorizationRequest, HolderContext, IssuerAuthority, IssuerContext, IssuerSecretKeys,
     PendingIssuance,
 };
@@ -109,7 +109,7 @@ async fn main() -> anyhow::Result<()> {
             relay_urls
                 .iter()
                 .map(
-                    |location| fedi_credential_sdk_protocol::RevocationLocation {
+                    |location| peerbadge_protocol::RevocationLocation {
                         protocol: NOSTR_REVOCATION_LOCATION_PROTOCOL.to_owned(),
                         location: location.clone(),
                     },
@@ -143,7 +143,7 @@ async fn main() -> anyhow::Result<()> {
     let holder = HolderContext::generate();
     let holder_pubkey = holder.public_key().to_string();
     let credential_info =
-        fedi_credential_sdk_schemas::trust_score_info_v1(profile.minimum_peer_badge_trust_level())?;
+        peerbadge_schemas::trust_score_info_v1(profile.minimum_peer_badge_trust_level())?;
     let (issuance_request, pending) = PendingIssuance::create_request(
         &issuer_metadata.issuance_key,
         issuer_metadata.issuer_id_pubkey.clone(),

@@ -8,7 +8,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use defe_api::{ResourceDescriptor, SharingMode};
 use defe_client::AsyncDefeClient;
-use fedi_credential_sdk_protocol::{
+use peerbadge_protocol::{
     HolderAuthorization, HolderAuthorizationRequest, HolderContext, IssuerContext,
     IssuerSecretKeys, PendingIssuance, RevocationLocation, SignedCredential, SubjectPubkey,
     VerificationContext,
@@ -329,7 +329,7 @@ async fn holder_trust_badge_to_concrete_fi_selection_flow() {
         .to_string();
     let first_endpoint_id = IrohSecretKey::from_bytes(&[43; 32]).public();
     let advertisement_payload = AdvertisementPayload {
-        version: fedi_credential_sdk_protocol::ProtocolV1,
+        version: peerbadge_protocol::ProtocolV1,
         fman_id_pubkey: fman_pubkey_string.clone(),
         service_pubkey: first_service_pubkey,
         issued_at,
@@ -479,7 +479,7 @@ async fn holder_trust_badge_to_concrete_fi_selection_flow() {
         let endpoint_id = IrohSecretKey::from_bytes(&[50 + index; 32]).public();
         let service_key = SecretKey::from_slice(&[70 + index; 32]).expect("test key is valid");
         let payload = AdvertisementPayload {
-            version: fedi_credential_sdk_protocol::ProtocolV1,
+            version: peerbadge_protocol::ProtocolV1,
             fman_id_pubkey: fman_pubkey.to_string(),
             service_pubkey: service_key
                 .x_only_public_key(&Secp256k1::new())

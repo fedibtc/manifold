@@ -7,7 +7,7 @@ use axum::{
 use base64::{Engine as _, engine::general_purpose};
 use defe_api::{ResourceDescriptor, SharingMode};
 use defe_client::AsyncDefeClient;
-use fedi_credential_sdk_protocol::{
+use peerbadge_protocol::{
     HolderAuthorizationRequest, HolderContext, IssuerContext, IssuerSecretKeys, PendingIssuance,
     RevocationLocation, SubjectPubkey,
 };

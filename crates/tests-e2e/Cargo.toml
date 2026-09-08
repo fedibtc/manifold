@@ -18,7 +18,7 @@ fedi-decentralized-nostr-clients = { path = "../nostr-clients" }
 anyhow = "1"
 axum = "0.8.4"
 base64 = "0.22"
-fedi-credential-sdk-protocol.workspace = true
+peerbadge-protocol.workspace = true
 fedi-decentralized-cloud-fman-telemetry = { path = "../cloud-fman-telemetry", features = [
   "test-support",
 ] }

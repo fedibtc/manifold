@@ -17,8 +17,8 @@
       inputs.nixpkgs.follows = "nixpkgs";
       inputs.flake-utils.follows = "flake-utils";
     };
-    credential-sdk-src = {
-      url = "github:fedibtc/credential-sdk";
+    peerbadge-sdk-src = {
+      url = "github:fedibtc/peerbadge-sdk";
       flake = false;
     };
     fedimint.url = "github:fedibtc/fedimint/v0.11.2-fedi2";
@@ -42,7 +42,7 @@
       flakebox,
       dpc-public-skills,
       selfci,
-      credential-sdk-src,
+      peerbadge-sdk-src,
       fedimint,
       fedi,
     }:
@@ -177,7 +177,7 @@
             trap - EXIT HUP INT TERM
           }
 
-          link_dependency credential-sdk ${credential-sdk-src}
+          link_dependency peerbadge-sdk ${peerbadge-sdk-src}
           link_dependency fedimint ${fedimintPatched}
         '';
 
@@ -196,7 +196,7 @@
             # with instructions instead of a cargo path error.
             cargo.pre-commit.cargo-lock.enable = false;
             git.pre-commit.hooks.cargo_lock = ''
-              # Cargo resolves fedimint/credential-sdk through .nix-deps
+              # Cargo resolves fedimint/peerbadge-sdk through .nix-deps
               # symlinks that the dev shell creates; (re)link them so this
               # check doesn't fail deep inside cargo when they are missing.
               if command -v link-external-deps >/dev/null 2>&1; then

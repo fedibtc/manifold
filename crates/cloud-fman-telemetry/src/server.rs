@@ -741,7 +741,7 @@ mod tests {
     use super::*;
     use base64::{Engine as _, engine::general_purpose};
     use blind_rsa_signatures::Signature as PbrsaSignature;
-    use fedi_credential_sdk_protocol::{
+    use peerbadge_protocol::{
         Credential, CredentialDigest, CredentialProof, HolderAuthorization,
         HolderAuthorizationStatement, HolderId, IssuerId, SignedCredential, SubjectPubkey,
         Timestamp as CredentialTimestamp,

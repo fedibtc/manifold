@@ -1,4 +1,4 @@
-use fedi_credential_sdk_protocol::{
+use peerbadge_protocol::{
     Credential, CredentialDigest, CredentialProof, HolderAuthorization,
     HolderAuthorizationStatement, HolderId, IssuerId, ProtocolV1 as SdkProtocolV1,
     SignedCredential, SubjectPubkey, Timestamp as SdkTimestamp,

@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use anyhow::{Context as _, Result, ensure};
 use defe_client::{BitcoindInfo, FlipInfo, GatewaydInfo};
-use fedi_credential_sdk_protocol::{
+use peerbadge_protocol::{
     HolderAuthorizationRequest, HolderContext, IssuerAuthority, IssuerContext, IssuerSecretKeys,
     PendingIssuance, RevocationLocation, SubjectPubkey,
 };

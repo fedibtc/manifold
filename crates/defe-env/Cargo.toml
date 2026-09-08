@@ -10,7 +10,7 @@ publish = false
 anyhow = "1"
 defe-client = { path = "../defe-client" }
 defe-portalloc = { path = "../defe-portalloc" }
-fedi-credential-sdk-protocol.workspace = true
+peerbadge-protocol.workspace = true
 fedi-decentralized-manifold-environment = { path = "../manifold-environment" }
 fedi-decentralized-nostr = { path = "../nostr" }
 fedi-decentralized-service-liquidity-manager = { path = "../service-liquidity-manager" }

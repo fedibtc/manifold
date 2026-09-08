@@ -3,7 +3,7 @@
 use std::sync::LazyLock;
 
 use super::*;
-use fedi_credential_sdk_protocol::{
+use peerbadge_protocol::{
     HolderAuthorizationRequest, HolderContext, IssuerContext, IssuerSecretKeys, PendingIssuance,
 };
 use nostr::{

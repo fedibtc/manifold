@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use fedi_credential_sdk_protocol::HolderContext;
+use peerbadge_protocol::HolderContext;
 use fedi_decentralized_service_liquidity_manager::{
     AcceptedAttesterPolicy, AdvertisementConfig, AttestationSummary, BitcoinNetwork,
     CapacityConfig, CapacityMode, ChainObserverBackendView, ChainObserverConfigView, DurationSecs,

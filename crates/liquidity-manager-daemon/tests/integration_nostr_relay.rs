@@ -15,7 +15,7 @@ fn init_logging() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn fetches_signed_revocation_from_real_nostr_relay() -> anyhow::Result<()> {
-    use fedi_credential_sdk_protocol::{
+    use peerbadge_protocol::{
         CredentialDigest, HolderContext, PendingIssuance, RevocationLocation, VerificationContext,
     };
     use fedi_decentralized_liquidity_manager_daemon::revocation::{
@@ -89,7 +89,7 @@ async fn fetches_signed_revocation_from_real_nostr_relay() -> anyhow::Result<()>
         .expect_err("revoked credential fails verification");
     assert!(matches!(
         error,
-        fedi_credential_sdk_protocol::CredentialsError::CredentialRevoked
+        peerbadge_protocol::CredentialsError::CredentialRevoked
     ));
     relay.close().await?;
     Ok(())
@@ -104,7 +104,7 @@ async fn fetches_signed_revocation_from_real_nostr_relay() -> anyhow::Result<()>
 /// other credential in the batch.
 #[tokio::test(flavor = "multi_thread")]
 async fn one_batched_lookup_returns_revocations_for_every_digest() -> anyhow::Result<()> {
-    use fedi_credential_sdk_protocol::{
+    use peerbadge_protocol::{
         CredentialDigest, HolderContext, PendingIssuance, RevocationLocation,
     };
     use fedi_decentralized_liquidity_manager_daemon::revocation::{
@@ -317,7 +317,7 @@ async fn withdrawal_stops_a_real_relay_from_serving_the_advertisement() -> anyho
 /// index and an FMan-targeted publication would leak into a FLIP.
 #[tokio::test(flavor = "multi_thread")]
 async fn enrols_a_holder_authorization_from_a_real_nostr_relay() -> anyhow::Result<()> {
-    use fedi_credential_sdk_protocol::HolderContext;
+    use peerbadge_protocol::HolderContext;
     use fedi_decentralized_liquidity_manager_daemon::Database;
     use fedi_decentralized_liquidity_manager_daemon::holder_authorization::{
         NostrHolderAuthorizationFetcher, provider_trust_envelopes, refresh,
