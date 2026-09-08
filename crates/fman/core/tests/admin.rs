@@ -1,6 +1,9 @@
 use axum::body::{Body, to_bytes};
 use axum::http::{Request, header};
+use bitcoin::secp256k1::{PublicKey, SECP256K1, SecretKey};
 use fedi_decentralized_service_fleet_manager::{FiId, Plan, QuoteId};
+use fedimint_core::Amount;
+use stability_pool_client::common::{Account, AccountType};
 use tempfile::TempDir;
 use tower::ServiceExt as _;
 
@@ -57,6 +60,41 @@ fn guardian_fee_collection_json_preserves_complete_shape_and_structures_incomple
                 "operation_submitted": true,
                 "error": "guardian-fee unlock was submitted but did not complete; refresh status before retrying",
             },
+        })
+    );
+}
+
+#[test]
+fn guardian_fees_json_keeps_policy_read_failures_inside_the_policy_projection() {
+    let account_id = Account::single(
+        PublicKey::from_secret_key(
+            SECP256K1,
+            &SecretKey::from_slice(&[0x11; 32]).expect("fixed scalar is valid"),
+        ),
+        AccountType::BtcDepositor,
+    )
+    .id();
+    let value = guardian_fees_json(
+        &SeatId::from(QuoteId([7; 32])),
+        &FederationFeeStatus {
+            federation_id: fedimint_core::config::FederationId::dummy(),
+            account_id,
+            staged: Amount::ZERO,
+            locked: Amount::ZERO,
+            idle: Amount::ZERO,
+            history_count: 0,
+        },
+        "remittance-account".to_owned(),
+        crate::payout_wire::WalletDrainStatusWire::unavailable(),
+        0,
+        Err(anyhow::anyhow!("malformed live guardian-fee metadata")),
+        vec![],
+    );
+
+    assert_eq!(
+        value["policy"],
+        serde_json::json!({
+            "policy_error": "malformed live guardian-fee metadata",
         })
     );
 }

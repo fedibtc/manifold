@@ -2023,39 +2023,44 @@ impl SeatLoop {
         fields: &BTreeMap<String, serde_json::Value>,
         config: &ClientConfig,
         guardian_verification_fee_account: Option<&Account>,
-    ) -> Result<(), SeatVerbError> {
+    ) -> Result<bool, SeatVerbError> {
         let send_ppm = fields.get(crate::guardian_fee::SEND_PPM_META_KEY);
         let recipients = fields.get(crate::guardian_fee::REMITTANCE_ACCOUNT_META_KEY);
         let (Some(send_ppm), Some(recipients)) = (send_ppm, recipients) else {
-            return if send_ppm.is_none() && recipients.is_none() {
-                Ok(())
-            } else {
-                Err(SeatVerbError::MetaValueInvalid)
-            };
+            return Ok(send_ppm.is_none() && recipients.is_none());
         };
-        let send_ppm = send_ppm
+        let Some(send_ppm) = send_ppm
             .as_str()
             .and_then(|value| value.parse::<u64>().ok())
-            .ok_or(SeatVerbError::MetaValueInvalid)?;
-        let recipients = recipients.as_str().ok_or(SeatVerbError::MetaValueInvalid)?;
-        let guardian_verification_fee_account =
-            guardian_verification_fee_account.ok_or(SeatVerbError::MetaValueInvalid)?;
+        else {
+            return Ok(false);
+        };
+        let Some(recipients) = recipients.as_str() else {
+            return Ok(false);
+        };
+        let Some(guardian_verification_fee_account) = guardian_verification_fee_account else {
+            return Ok(false);
+        };
         let federation = derive_federation_seats(config)?;
-        let directory_value = fields
+        let Some(directory_value) = fields
             .get(FMAN_SEAT_BINDINGS_META_FIELD_KEY)
             .and_then(serde_json::Value::as_str)
-            .ok_or(SeatVerbError::MetaValueInvalid)?;
-        let bindings = FmanSeatBindings::parse_canonical(directory_value)
+        else {
+            return Ok(false);
+        };
+        let Ok(bindings) = FmanSeatBindings::parse_canonical(directory_value)
             .and_then(|bindings| bindings.verify_for_federation(&federation))
-            .map_err(|_| SeatVerbError::MetaValueInvalid)?;
+        else {
+            return Ok(false);
+        };
         let guardians = guardian_fee_bindings(&bindings);
-        crate::guardian_fee::validate_canonical_proposal_value(
+        Ok(crate::guardian_fee::validate_live_fee_policy_split(
             send_ppm,
             recipients,
             &guardians,
             guardian_verification_fee_account,
         )
-        .map_err(|_| SeatVerbError::MetaValueInvalid)
+        .is_ok())
     }
 
     async fn submit_admitted_meta_target(
@@ -2154,23 +2159,13 @@ impl SeatLoop {
     ) -> Result<FeePolicy, SeatVerbError> {
         let (client, config) = self.running_client_config().await?;
         let (_, fields) = consensus_meta_fields(&client, &config).await?;
-        let live_policy_matches = self
-            .validate_live_guardian_fee_policy(&fields, &config, guardian_verification_fee_account)
-            .is_ok();
-        // Non-string values are skipped rather than failing the read: the
-        // payer reads the fee keys as strings, so a non-string fee value is
-        // not honoured anyway, and an unrelated foreign key must not make
-        // this FMan's own policy unreadable.
-        let meta = fields
-            .into_iter()
-            .filter_map(|(key, value)| match value {
-                serde_json::Value::String(value) => Some((key, value)),
-                _ => None,
-            })
-            .collect();
-        let mut policy = crate::guardian_fee::fee_policy_from_meta(&meta, our_account_id);
-        policy.live_policy_matches = live_policy_matches;
-        Ok(policy)
+        let live_policy_matches = self.validate_live_guardian_fee_policy(
+            &fields,
+            &config,
+            guardian_verification_fee_account,
+        )?;
+        crate::guardian_fee::fee_policy_from_meta(&fields, our_account_id, live_policy_matches)
+            .map_err(SeatVerbError::internal)
     }
 
     /// The seat's final client config, refusing the pre-consensus phases the

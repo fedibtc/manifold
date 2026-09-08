@@ -2367,6 +2367,31 @@ async fn live_structural_policy_excluding_our_account_reports_no_matching_share(
 }
 
 #[tokio::test]
+async fn malformed_live_fee_metadata_reports_a_policy_error() {
+    let temp = TempDir::new().unwrap();
+    let config = config(&temp, 1, 30_974).await;
+    let fleet = open_fleet(config, Arc::new(NoWallet)).await.unwrap();
+    let (_, seat_id) = create_free_seat(&fleet, 70).await;
+    let malformed = serde_json::to_vec(&std::collections::BTreeMap::from([(
+        crate::guardian_fee::SEND_PPM_META_KEY,
+        serde_json::json!(5_000),
+    )]))
+    .unwrap();
+    let _fake = fleet
+        .form_fake_child(&seat_id, running_federation(0, Some(malformed)))
+        .await;
+
+    let guardian_fee = crate::admin::read_seat_guardian_fee(&fleet, &seat_id).await;
+    assert!(
+        guardian_fee["policy_error"]
+            .as_str()
+            .is_some_and(|error| error.contains("metadata values must be strings"))
+    );
+    assert!(guardian_fee.get("share_matches_policy").is_none());
+    fleet.shutdown().await;
+}
+
+#[tokio::test]
 async fn meta_write_refuses_a_stale_base_without_submitting() {
     let temp = TempDir::new().unwrap();
     let config = config(&temp, 1, 30_975).await;

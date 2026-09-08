@@ -36,6 +36,7 @@ import fmanCollectGuardianFeesIncompleteIdleJson from '../../fixtures/fman_colle
 import fmanCollectGuardianFeesIncompleteRefreshJson from '../../fixtures/fman_collect_guardian_fees_incomplete_refresh.json';
 import fmanDecommissionSeatJson from '../../fixtures/fman_decommission_seat.json';
 import fmanGuardianFeesJson from '../../fixtures/fman_guardian_fees.json';
+import fmanGuardianFeesPolicyErrorJson from '../../fixtures/fman_guardian_fees_policy_error.json';
 import fmanHolderAuthorizationRefreshJson from '../../fixtures/fman_holder_authorization_refresh.json';
 import fmanMnemonicJson from '../../fixtures/fman_mnemonic.json';
 import fmanOnboardAsNewJson from '../../fixtures/fman_onboard_as_new.json';
@@ -583,6 +584,11 @@ const fmanGuardianFeesMirror = {
   ]
 } satisfies GuardianFeesResponse;
 
+const fmanGuardianFeesPolicyErrorMirror = {
+  ...fmanGuardianFeesMirror,
+  policy: { policy_error: 'malformed live guardian-fee metadata' }
+} satisfies GuardianFeesResponse;
+
 const fmanCollectGuardianFeesMirror = {
   claimed_msat: 1_750_000,
   awaiting_cycle_msat: 500_000
@@ -733,6 +739,10 @@ describe('committed FMan fixtures match their type-checked mirrors', () => {
 
   it('should keep fman_guardian_fees.json equal to the typed mirror', () => {
     expect(fmanGuardianFeesJson).toEqual(fmanGuardianFeesMirror);
+  });
+
+  it('should keep malformed guardian-fee policy reporting equal to the typed mirror', () => {
+    expect(fmanGuardianFeesPolicyErrorJson).toEqual(fmanGuardianFeesPolicyErrorMirror);
   });
 
   it('should keep fman_collect_guardian_fees.json equal to the typed mirror', () => {

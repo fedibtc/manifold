@@ -148,22 +148,20 @@ pub(crate) const MAX_RECIPIENTS: usize = MAX_GUARDIAN_FEE_RECIPIENTS;
 
 /// What one guarded federation's metadata currently promises this FMan.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct FeePolicy {
-    /// Both keys present, so payers will charge and remit. When false, no
-    /// revenue is accruing regardless of federation activity.
-    pub configured: bool,
-    pub send_ppm: Option<u64>,
-    /// The raw recipient value, kept so an operator can see exactly what the
-    /// federation carries even when this FMan cannot make sense of it.
-    pub recipients: Option<String>,
-    /// This FMan's weight in the recipient list, and the total across all
-    /// recipients. `None` when the value does not name this FMan, does not
-    /// parse, or names it in a shape this version does not understand — all of
-    /// which mean the same thing operationally: no share is provably ours.
-    pub our_share: Option<(u64, u64)>,
-    /// Whether the complete live policy has the canonical split implied by
-    /// the current live directory and deployment account.
-    pub live_policy_matches: bool,
+pub enum FeePolicy {
+    /// Neither fee key exists, so payers charge and remit nothing.
+    Unset,
+    /// Both fee keys form a payer-valid policy.
+    Configured {
+        send_ppm: u64,
+        /// The raw canonical recipient value shown to operators.
+        recipients: String,
+        /// This FMan's weight and the total weight, if the list names it.
+        our_share: Option<(u64, u64)>,
+        /// Whether the complete live policy has the canonical split implied
+        /// by the current live directory and deployment account.
+        live_policy_matches: bool,
+    },
 }
 
 impl FeePolicy {
@@ -173,11 +171,17 @@ impl FeePolicy {
     /// exists, the live policy must be structurally canonical and this
     /// mnemonic-derived guardian account must appear at its compiled weight.
     pub fn share_matches_policy(&self) -> bool {
-        !self.configured
-            || (self.live_policy_matches
-                && self
-                    .our_share
-                    .is_some_and(|(weight, _)| weight == GUARDIAN_RECIPIENT_WEIGHT))
+        match self {
+            Self::Unset => true,
+            Self::Configured {
+                our_share,
+                live_policy_matches,
+                ..
+            } => {
+                *live_policy_matches
+                    && our_share.is_some_and(|(weight, _)| weight == GUARDIAN_RECIPIENT_WEIGHT)
+            }
+        }
     }
 }
 
@@ -202,6 +206,10 @@ struct RecipientEntry {
 /// Why a guardian-fee metadata value is one the payer will not honour.
 #[derive(Debug, thiserror::Error)]
 pub enum FeePolicyError {
+    #[error("guardian-fee metadata values must be strings")]
+    NonStringValue,
+    #[error("guardian-fee rate is not an unsigned integer")]
+    InvalidSendPpm,
     #[error("guardian-fee rate and recipient list must be present together")]
     Incomplete,
     #[error("guardian-fee rate exceeds the payer cap of {MAX_SEND_PPM} ppm")]
@@ -244,29 +252,34 @@ pub fn validate_fee_policy(
 /// The caller supplies the map from the meta module; this deliberately does
 /// not obtain it through a client, so policy reads can use the guardian's own
 /// consensus connection rather than a wallet client.
-pub fn fee_policy_from_meta(meta: &BTreeMap<String, String>, ours: AccountId) -> FeePolicy {
-    let send_ppm = meta
-        .get(SEND_PPM_META_KEY)
-        .and_then(|value| value.parse::<u64>().ok());
-    let recipients = meta.get(REMITTANCE_ACCOUNT_META_KEY).cloned();
-    let valid = validate_fee_policy(send_ppm, recipients.as_deref()).is_ok();
-    let live_policy_matches = recipients.is_none() && send_ppm.is_none();
-    let our_share = valid
-        .then(|| {
-            recipients
-                .as_deref()
-                .and_then(|value| our_share_of(value, ours))
+pub fn fee_policy_from_meta(
+    meta: &BTreeMap<String, serde_json::Value>,
+    ours: AccountId,
+    live_policy_matches: bool,
+) -> Result<FeePolicy, FeePolicyError> {
+    let string_value = |key| match meta.get(key) {
+        None => Ok(None),
+        Some(serde_json::Value::String(value)) => Ok(Some(value.clone())),
+        Some(_) => Err(FeePolicyError::NonStringValue),
+    };
+    let send_ppm = string_value(SEND_PPM_META_KEY)?
+        .map(|value| {
+            value
+                .parse::<u64>()
+                .map_err(|_| FeePolicyError::InvalidSendPpm)
         })
-        .flatten();
-    FeePolicy {
-        configured: valid && send_ppm.is_some() && recipients.is_some(),
-        send_ppm,
-        recipients,
-        our_share,
-        // The seat read path replaces this with a check against its live
-        // federation config, current directory, and deployment account.
-        // This parser alone cannot establish those inputs.
-        live_policy_matches,
+        .transpose()?;
+    let recipients = string_value(REMITTANCE_ACCOUNT_META_KEY)?;
+    validate_fee_policy(send_ppm, recipients.as_deref())?;
+    match (send_ppm, recipients) {
+        (None, None) => Ok(FeePolicy::Unset),
+        (Some(send_ppm), Some(recipients)) => Ok(FeePolicy::Configured {
+            our_share: our_share_of(&recipients, ours),
+            send_ppm,
+            recipients,
+            live_policy_matches,
+        }),
+        _ => unreachable!("fee policy validation accepts only complete or absent values"),
     }
 }
 
@@ -391,7 +404,7 @@ pub(crate) fn canonical_formation_proposal(
 /// Check whether a configured live policy has the canonical split implied by
 /// the current consensus directory. This supports operator reporting; generic
 /// metadata maintenance deliberately carries unrelated fields unchanged.
-pub fn validate_canonical_proposal_value(
+pub fn validate_live_fee_policy_split(
     send_ppm: u64,
     value: &str,
     guardians: &[Account],

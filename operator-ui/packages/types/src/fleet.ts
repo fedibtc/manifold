@@ -189,6 +189,8 @@ export interface FeePolicy {
   total_weight: number | null;
 }
 
+export type FeePolicyRead = FeePolicy | { policy_error: string };
+
 export interface RemittanceBreakdownItem {
   module: string;
   direction: string;
@@ -371,7 +373,7 @@ export interface GuardianFeesResponse {
   // "earned, all time"; totalling `remittances` gives the newest `limit`
   // entries and nothing older.
   lifetime_remitted_msat: number;
-  policy: FeePolicy;
+  policy: FeePolicyRead;
   remittances: Remittance[];
 }
 export interface CompleteGuardianFeeCollection {
