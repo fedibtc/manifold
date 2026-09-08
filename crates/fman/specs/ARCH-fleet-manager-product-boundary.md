@@ -18,6 +18,14 @@ signed seat commitment is evidence of what was bought, not an enforcement
 mechanism. Operators must price the open-ended disk and availability obligation
 into the one-time charge.
 
+Development and staging deployments alone also answer an FI-signed
+`DecommissionSeat`, so testing can churn federations without an operator in the
+loop. It is the operator decommission's exact effect with an ownership check in
+front, gated on the deployment's Manifold environment, and forfeits the seat
+without refund. Production refuses the verb, so the asymmetric bargain above is
+unchanged wherever it is a bargain
+([SPEC-fi-rpc](./SPEC-fi-rpc.md)).
+
 ## Simpler mechanisms
 
 - **Stateless quotes.** [SPEC-locked-payment](./SPEC-locked-payment.md) creates a

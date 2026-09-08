@@ -104,3 +104,12 @@ fn sparse_metrics_cadence_is_only_fifteen_or_thirty_minutes() {
     rapid_retry.metrics_poll_seconds = 60;
     assert!(rapid_retry.validate().is_err());
 }
+
+#[test]
+fn retained_journal_limit_is_higher_only_in_staging() {
+    for (environment, expected) in [("development", 32), ("production", 32), ("staging", 1_000)] {
+        let mut args = args();
+        args.environment = environment.into();
+        assert_eq!(args.validate().unwrap().max_journals_per_target, expected);
+    }
+}

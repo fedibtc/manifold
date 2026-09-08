@@ -137,6 +137,7 @@ async fn authenticated_production_client_discovers_and_scrapes_a_seat() {
         crate::cipher::SecretCipher::new(&[3; 32]),
         "test-key".to_owned(),
         3600,
+        32,
     )
     .await
     .unwrap();
@@ -257,6 +258,7 @@ async fn registered_test_store(
         crate::cipher::SecretCipher::new(&[3; 32]),
         "test-key".to_owned(),
         3600,
+        32,
     )
     .await
     .unwrap();
@@ -324,6 +326,7 @@ async fn shutdown_drains_reservation_commit_before_reopen() {
         crate::cipher::SecretCipher::new(&[3; 32]),
         "test-key".to_owned(),
         3600,
+        32,
     )
     .await
     .unwrap();
@@ -358,6 +361,7 @@ async fn shutdown_drains_snapshot_commit_before_reopen() {
         crate::cipher::SecretCipher::new(&[3; 32]),
         "test-key".to_owned(),
         3600,
+        32,
     )
     .await
     .unwrap();
@@ -436,6 +440,7 @@ async fn fatal_sibling_does_not_cancel_snapshot_commit() {
         crate::cipher::SecretCipher::new(&[3; 32]),
         "test-key".to_owned(),
         3600,
+        32,
     )
     .await
     .unwrap();
@@ -513,6 +518,7 @@ async fn fatal_sibling_does_not_cancel_attempt_reservation() {
         crate::cipher::SecretCipher::new(&[3; 32]),
         "test-key".to_owned(),
         3600,
+        32,
     )
     .await
     .unwrap();

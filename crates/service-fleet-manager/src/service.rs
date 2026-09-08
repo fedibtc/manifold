@@ -4,11 +4,12 @@ use fedi_iroh_rpc::service;
 
 use crate::status::{GetFedimintStatsRequest, GetFedimintStatsResponse};
 use crate::{
-    CreateSeatRequest, CreateSeatResponse, FleetManagerError, GetAvailabilityRequest,
-    GetAvailabilityResponse, GetDkgCodeRequest, GetDkgCodeResponse, GetFmanTrustMaterialRequest,
-    GetFmanTrustMaterialResponse, GetInviteCodeRequest, GetInviteCodeResponse,
-    GetPeerAttestationRequest, GetPeerAttestationResponse, GetQuoteRequest, GetQuoteResponse,
-    GetStatusRequest, GetStatusResponse, ProposeFormationMetaRequest, ProposeFormationMetaResponse,
+    CreateSeatRequest, CreateSeatResponse, DecommissionSeatRequest, DecommissionSeatResponse,
+    FleetManagerError, GetAvailabilityRequest, GetAvailabilityResponse, GetDkgCodeRequest,
+    GetDkgCodeResponse, GetFmanTrustMaterialRequest, GetFmanTrustMaterialResponse,
+    GetInviteCodeRequest, GetInviteCodeResponse, GetPeerAttestationRequest,
+    GetPeerAttestationResponse, GetQuoteRequest, GetQuoteResponse, GetStatusRequest,
+    GetStatusResponse, ProposeFormationMetaRequest, ProposeFormationMetaResponse,
     RegisterGatewayRequest, RegisterGatewayResponse, RestartDkgRequest, RestartDkgResponse,
     SetMetaFieldRequest, SetMetaFieldResponse, SignedRequest, SignedResponse, StartDkgRequest,
     StartDkgResponse,
@@ -114,6 +115,16 @@ pub trait FleetManagerService {
         &self,
         request: SignedRequest<GetFedimintStatsRequest>,
     ) -> FmResult<GetFedimintStatsResponse>;
+
+    /// Decommission the caller's own seat (development and staging only).
+    ///
+    /// Terminal and idempotent, with exactly the effect of an operator
+    /// decommission. Production daemons refuse it with `UnsupportedVerb`; see
+    /// [`crate::DecommissionSeatRequest`] for why it exists at all.
+    async fn decommission_seat(
+        &self,
+        request: SignedRequest<DecommissionSeatRequest>,
+    ) -> FmResult<DecommissionSeatResponse>;
 }
 
 #[cfg(test)]

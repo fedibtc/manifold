@@ -1292,6 +1292,17 @@ impl FleetManagerService for TestFman {
         }
     }
 
+    async fn decommission_seat(
+        &self,
+        _request: SignedRequest<fedi_decentralized_service_fleet_manager::DecommissionSeatRequest>,
+    ) -> FmResult<fedi_decentralized_service_fleet_manager::DecommissionSeatResponse> {
+        Ok(
+            fedi_decentralized_service_fleet_manager::DecommissionSeatResponse {
+                already_decommissioned: false,
+            },
+        )
+    }
+
     async fn restart_dkg(
         &self,
         _request: SignedRequest<RestartDkgRequest>,

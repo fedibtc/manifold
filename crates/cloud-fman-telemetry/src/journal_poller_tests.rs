@@ -26,6 +26,7 @@ use crate::{
 };
 
 struct FakeSource {
+    journal_count: usize,
     incarnation: SafeEventJournalIncarnation,
     responses: Arc<tokio::sync::Mutex<VecDeque<FetchSafeEventJournalResponse>>>,
     connections: Arc<AtomicUsize>,
@@ -36,6 +37,7 @@ struct FakeSource {
 }
 
 struct FakeSession {
+    journal_count: usize,
     incarnation: SafeEventJournalIncarnation,
     responses: Arc<tokio::sync::Mutex<VecDeque<FetchSafeEventJournalResponse>>>,
     fetches: Arc<AtomicUsize>,
@@ -313,6 +315,7 @@ impl JournalSource for FakeSource {
             clock.0.store(*value, Ordering::SeqCst);
         }
         Ok(Box::new(FakeSession {
+            journal_count: self.journal_count,
             incarnation: self.incarnation.clone(),
             responses: self.responses.clone(),
             fetches: self.fetches.clone(),
@@ -326,10 +329,18 @@ impl JournalSource for FakeSource {
 impl JournalSession for FakeSession {
     async fn list(&mut self) -> Result<ListSafeEventJournalsResponse, PollError> {
         Ok(ListSafeEventJournalsResponse {
-            journals: vec![SafeEventJournalInfo {
-                journal: SafeEventJournal::Fman,
-                incarnation: self.incarnation.clone(),
-            }],
+            journals: (0..self.journal_count)
+                .map(|index| SafeEventJournalInfo {
+                    journal: if index == 0 {
+                        SafeEventJournal::Fman
+                    } else {
+                        SafeEventJournal::Seat {
+                            seat_id: SeatId::new(format!("{index:064x}")).unwrap(),
+                        }
+                    },
+                    incarnation: self.incarnation.clone(),
+                })
+                .collect(),
         })
     }
 
@@ -362,6 +373,7 @@ async fn store(directory: &tempfile::TempDir) -> Store {
         SecretCipher::new(&[7; 32]),
         "test".into(),
         200_000,
+        32,
     )
     .await
     .unwrap();
@@ -432,6 +444,7 @@ fn poller(
         store,
         archive,
         Arc::new(FakeSource {
+            journal_count: 1,
             incarnation: incarnation(),
             responses: Arc::new(tokio::sync::Mutex::new(responses)),
             connections: connections.clone(),
@@ -456,6 +469,7 @@ fn clocked_poller(
 ) -> (JournalPoller, Arc<AtomicUsize>) {
     let fetches = Arc::new(AtomicUsize::new(0));
     let source = FakeSource {
+        journal_count: 1,
         incarnation: incarnation(),
         responses: Arc::new(tokio::sync::Mutex::new(responses)),
         connections: Arc::new(AtomicUsize::new(0)),
@@ -1119,6 +1133,7 @@ async fn retention_prunes_once_per_cutoff_day_and_retries_on_day_advance() {
         SecretCipher::new(&[7; 32]),
         "test".into(),
         3600,
+        32,
     )
     .await
     .unwrap();
@@ -1178,4 +1193,83 @@ async fn retention_prunes_once_per_cutoff_day_and_retries_on_day_advance() {
         old.exists(),
         "returning to the cutoff high-water must not repeat its scan"
     );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn journal_listing_and_persisted_streams_share_the_configured_limit() {
+    for (limit, listed, accepted) in [
+        (32u16, 32, true),
+        (32, 33, false),
+        (1_000, 1_000, true),
+        (1_000, 1_001, false),
+    ] {
+        let directory = tempfile::tempdir().unwrap();
+        let initial = store(&directory).await;
+        drop(initial);
+        let store = Store::open(
+            &directory.path().join("state.sqlite"),
+            "development",
+            SecretCipher::new(&[7; 32]),
+            "test".into(),
+            200_000,
+            limit,
+        )
+        .await
+        .unwrap();
+        let timestamp = now().unwrap();
+        let target = store
+            .active_collection_targets(timestamp)
+            .await
+            .unwrap()
+            .pop()
+            .unwrap();
+        let work = store
+            .begin_collection_work(&target, timestamp)
+            .await
+            .unwrap()
+            .unwrap();
+        for index in 0..=limit {
+            let journal = if index == 0 {
+                SafeEventJournal::Fman
+            } else {
+                SafeEventJournal::Seat {
+                    seat_id: SeatId::new(format!("{index:064x}")).unwrap(),
+                }
+            };
+            let result = store
+                .open_journal_stream(&work, &journal, &incarnation(), timestamp)
+                .await;
+            if index < limit {
+                assert!(
+                    result.unwrap().is_some(),
+                    "stream {index} must fit limit {limit}"
+                );
+            } else {
+                assert!(matches!(result, Err(crate::store::StoreError::Saturated)));
+            }
+        }
+        let fetches = Arc::new(AtomicUsize::new(0));
+        let poller = JournalPoller::with_source(
+            store,
+            JournalArchive::open(directory.path(), 1024 * 1024).unwrap(),
+            Arc::new(FakeSource {
+                journal_count: listed,
+                incarnation: incarnation(),
+                responses: Arc::new(tokio::sync::Mutex::new(responses(MAX_BATCHES_PER_TARGET))),
+                connections: Arc::new(AtomicUsize::new(0)),
+                fetches: fetches.clone(),
+                stale_store: None,
+                connect_clock: None,
+                fetch_clock: None,
+            }),
+            NonZeroUsize::new(1).unwrap(),
+            NonZeroU16::new(30).unwrap(),
+        );
+        let (_shutdown, receiver) = tokio::sync::watch::channel(false);
+        poller.poll_once(receiver).await.unwrap();
+        assert_eq!(
+            fetches.load(Ordering::SeqCst),
+            if accepted { MAX_BATCHES_PER_TARGET } else { 0 }
+        );
+    }
 }

@@ -118,6 +118,12 @@ impl FleetManagerService for TestFleetManager {
     ) -> FmResult<GetFmanTrustMaterialResponse> {
         unsupported()
     }
+    async fn decommission_seat(
+        &self,
+        _: SignedRequest<crate::DecommissionSeatRequest>,
+    ) -> FmResult<crate::DecommissionSeatResponse> {
+        unsupported()
+    }
     async fn set_meta_field(
         &self,
         _: SignedRequest<SetMetaFieldRequest>,

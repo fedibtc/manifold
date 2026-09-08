@@ -468,6 +468,16 @@ Post-output abandon remains deferred. Once output generation is armed, funds
 may be locked to quote-bound nonces; safe teardown needs recovery and refund
 handling before any state can be destroyed.
 
+`decommission_seats` is a testing-only developer command sitting outside all of
+that, not a second abandon. It reads the recorded formation, asks every FMan
+that accepted a seat to decommission it in one pass, and reports per seat
+whether the FMan decommissioned it, had already done so, or refused. It takes
+no driver lease and writes nothing, so durable FI state is unchanged and a
+decommissioned federation still reads as `Formed`; abandon or a fresh formation
+is still what returns the FI to `Idle`. Seats are forfeited, never refunded,
+and only development and staging FMans accept the underlying verb
+([SPEC-fi-rpc](../../fman/specs/SPEC-fi-rpc.md)).
+
 The library returns run futures instead of spawning tasks; dropping one
 cancels local work only, and reopening the same database, identity, and wallet
 then calling the continuation API is the supported resume. A process-local

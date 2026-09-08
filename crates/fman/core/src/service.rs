@@ -17,19 +17,20 @@ use fedi_decentralized_domain::{
     FmanPeerAttestationStatement, FmanTrustMaterial, HolderAuthorizationEnvelope, ProtocolV1,
     Pubkey, SchnorrSignatureProof, Url,
 };
+use fedi_decentralized_manifold_environment::ManifoldEnvironment;
 use fedi_decentralized_service_fleet_manager::{
-    CreateSeatOutcome, CreateSeatRequest, CreateSeatResponse, DkgStatusInfo, EndedReason,
-    EndedStatusInfo, FEDERATION_SIZES_0_1, FEDIMINTD_VERSION_0_1, FederationSize,
-    FederationStatusInfo, FedimintdVersion, FiSignedRequest, FleetManagerError,
-    FleetManagerService, FmResult, GetAvailabilityRequest, GetAvailabilityResponse,
-    GetDkgCodeRequest, GetDkgCodeResponse, GetFedimintStatsRequest, GetFedimintStatsResponse,
-    GetFmanTrustMaterialRequest, GetFmanTrustMaterialResponse, GetInviteCodeRequest,
-    GetInviteCodeResponse, GetPeerAttestationRequest, GetPeerAttestationResponse, GetStatusRequest,
-    GetStatusResponse, GuardianFeeAccount, Plan, ProposeFormationMetaRequest,
-    ProposeFormationMetaResponse, QuoteTerms, RegisterGatewayRequest, RegisterGatewayResponse,
-    RestartDkgRequest, RestartDkgResponse, ServiceStatus, SetMetaFieldRequest,
-    SetMetaFieldResponse, SignedRequest, SignedResponse, StartDkgRequest, StartDkgResponse,
-    StatusDetail, Timestamp, VerifiedFiRequest,
+    CreateSeatOutcome, CreateSeatRequest, CreateSeatResponse, DecommissionSeatRequest,
+    DecommissionSeatResponse, DkgStatusInfo, EndedReason, EndedStatusInfo, FEDERATION_SIZES_0_1,
+    FEDIMINTD_VERSION_0_1, FederationSize, FederationStatusInfo, FedimintdVersion, FiSignedRequest,
+    FleetManagerError, FleetManagerService, FmResult, GetAvailabilityRequest,
+    GetAvailabilityResponse, GetDkgCodeRequest, GetDkgCodeResponse, GetFedimintStatsRequest,
+    GetFedimintStatsResponse, GetFmanTrustMaterialRequest, GetFmanTrustMaterialResponse,
+    GetInviteCodeRequest, GetInviteCodeResponse, GetPeerAttestationRequest,
+    GetPeerAttestationResponse, GetStatusRequest, GetStatusResponse, GuardianFeeAccount, Plan,
+    ProposeFormationMetaRequest, ProposeFormationMetaResponse, QuoteTerms, RegisterGatewayRequest,
+    RegisterGatewayResponse, RestartDkgRequest, RestartDkgResponse, ServiceStatus,
+    SetMetaFieldRequest, SetMetaFieldResponse, SignedRequest, SignedResponse, StartDkgRequest,
+    StartDkgResponse, StatusDetail, Timestamp, VerifiedFiRequest,
 };
 use fedimint_core::util::SafeUrl;
 use secp256k1::Keypair;
@@ -45,9 +46,10 @@ use crate::wallet::{LockedPaymentPrepareError, Msats};
 ///
 /// Seat access discipline: every verb naming an existing seat resolves it
 /// through `Fleet::authorize` — the fleet's only crate-visible seat getter —
-/// as its first fleet call, and no verb here calls an operator verb
-/// (decommission, listing, shutdown). This file is the entire FI surface;
-/// keep it scannable for those two facts.
+/// as its first fleet call, and the only verb here with an operator-shaped
+/// effect is `decommission_seat` — the FI's own seat release, refused outside
+/// development and staging. No verb reaches listing or shutdown. This file is
+/// the entire FI surface; keep it scannable for those facts.
 #[derive(Clone)]
 pub struct FleetManagerRpc {
     fleet: Arc<Fleet>,
@@ -850,6 +852,42 @@ impl FleetManagerService for FleetManagerRpc {
             .authorize(&request)
             .map_err(|err| map_seat_error("get_fedimint_stats", err))?;
         unsupported("GetFedimintStats")
+    }
+
+    /// Decommission the caller's own seat, outside production only.
+    ///
+    /// This is the one FI verb with an operator-shaped effect, so it is fenced
+    /// twice: `authorize` first, so only the seat's owner can name it, and the
+    /// deployment environment second, so a production FMan answers
+    /// `UnsupportedVerb` no matter who asks. It exists to churn staging
+    /// federations without an operator in the loop
+    /// ([`ARCH-fleet-manager-product-boundary`](../../specs/ARCH-fleet-manager-product-boundary.md)).
+    async fn decommission_seat(
+        &self,
+        request: SignedRequest<DecommissionSeatRequest>,
+    ) -> FmResult<DecommissionSeatResponse> {
+        trace_formation_rpc("decommission_seat", async {
+            let request = self.validate(request)?;
+            let seat = self
+                .fleet
+                .authorize(&request)
+                .map_err(|err| map_seat_error("decommission_seat", err))?;
+            if !matches!(
+                self.fleet.config().manifold_environment,
+                ManifoldEnvironment::Development | ManifoldEnvironment::Staging
+            ) {
+                return unsupported("DecommissionSeat");
+            }
+            let decommissioned = self
+                .fleet
+                .decommission(&seat)
+                .await
+                .map_err(|err| internal_chain("decommission_seat", &err))?;
+            Ok(DecommissionSeatResponse {
+                already_decommissioned: !decommissioned,
+            })
+        })
+        .await
     }
 
     /// Serve this FMan's current signed trust material.
