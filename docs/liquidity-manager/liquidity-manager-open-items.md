@@ -208,32 +208,24 @@ Adding the types is the concrete first step.
 Note that the `operator-ui` toolchain (`pnpm`, `node_modules`) is not installed
 in every development environment.
 
-### Periodic workers have no per-instance phase offset
+### Periodic workers have no fleet-wide phase offset
 
-Every periodic worker runs through `run_interval_task` in `lib.rs`, which builds
-a `tokio::time::interval`. That fires immediately and then holds an exact fixed
-period. A fleet restarted together keeps hitting shared relays and dependencies
-in recurring bursts, and the four workers inside one daemon tick in step with
-each other.
+`run_interval_task` in `lib.rs` gives each worker a phase offset derived from
+its name, so the four workers inside one daemon no longer tick together. The
+first pass stays immediate and the schedule shifts once afterwards.
 
-This looks like a one-function change and is not. Three things decide it.
+That offset is identical across a fleet, because the worker name is. A fleet
+restarted together still hits shared relays and dependencies in recurring
+bursts.
 
-- **Where the per-instance seed comes from.** The crate has no `rand` dependency,
-  `daemon_metadata` carries no instance id, and the data directory path is
-  typically identical across containerised deployments. The only distinct value
-  available is the provider pubkey through `identity::find_provider_identity`,
-  which is absent early in startup, so the offset needs a lazy computation with a
-  fallback and would not upgrade after an operator installs an identity without a
-  restart. The alternative is a new `daemon_metadata` instance-id row.
-- **Whether within-daemon de-phasing is worth doing on its own.** An offset
-  derived from the worker name needs no identity, no dependency, and no
-  migration, and is unconditionally safe. It stops the four workers in one daemon
-  ticking together, and does nothing for the fleet case.
-- **Placement.** The first pass must stay immediate and the schedule must shift
-  afterwards. Sleeping inside the `select!` arm makes shutdown unresponsive for
-  the length of the offset; avoiding that means restructuring the loop around
-  `interval_at`. Four production workers run through this path, and a mistake
-  there is a worker that stops ticking or stops answering shutdown.
+Closing that needs a per-instance value FLIP does not have where the offset is
+computed. The crate has no `rand` dependency, `daemon_metadata` carries no
+instance id, and the data directory path is typically identical across
+containerised deployments. The only distinct value available is the provider
+pubkey through `identity::find_provider_identity`, which is absent early in
+startup, so a per-instance offset needs a lazy computation with a fallback and
+would not upgrade after an operator installs an identity without a restart. The
+alternative is a new `daemon_metadata` instance-id row.
 
 Randomized failure backoff is the same problem on the retry path, and is a
 separate, larger change.

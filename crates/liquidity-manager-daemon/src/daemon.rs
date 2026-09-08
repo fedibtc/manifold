@@ -95,6 +95,9 @@ const WORKER_UNHEALTHY_AFTER_FAILURES: u32 = 5;
 /// appear in the health detail an operator reads. Adding a variant out of order
 /// would silently reorder that line.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, strum::Display)]
+// Test-only, so the phase-offset tests cover every worker rather than a list
+// that a new variant would quietly fall out of.
+#[cfg_attr(test, derive(strum::EnumIter))]
 pub enum Worker {
     #[strum(serialize = "advertisement_publisher")]
     AdvertisementPublisher,
