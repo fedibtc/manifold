@@ -374,6 +374,9 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
                     anyhow::anyhow!("--first-port-base leaves no room for a seat's port block")
                 })?,
                 setup_payments_configured: manifold_environment.setup_payment_publisher().is_some(),
+                guardian_verification_fee_account: manifold_environment
+                    .guardian_verification_fee_account()
+                    .cloned(),
                 respawn: RespawnPolicy::default(),
                 backup_scan_interval: fman_core::backup_worker::DEFAULT_SCAN_INTERVAL,
                 push_gateway_origin,
@@ -435,9 +438,6 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         keys.public_key(),
     )
     .await?;
-    let guardian_verification_fee_account = manifold_environment
-        .guardian_verification_fee_account()
-        .cloned();
     let nostr = fman_nostr::FleetManagerNostr::new(
         keys,
         setup_payment_publisher,
@@ -447,11 +447,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     );
     // Construct the RPC only after the Nostr policy watch exists, so policy is
     // ordinary constructor-owned state rather than a late-bound service mode.
-    let rpc = FleetManagerRpc::new(
-        fleet.clone(),
-        guardian_verification_fee_account,
-        nostr.subscribe_setup_payment_federations(),
-    );
+    let rpc = FleetManagerRpc::new(fleet.clone(), nostr.subscribe_setup_payment_federations());
     let server = FleetManagerServiceServer::new(rpc.clone());
     let telemetry = GuardianTelemetryApiServer::new(GuardianTelemetryRpc::new(fleet.clone())?);
     let router = Router::builder(endpoint)

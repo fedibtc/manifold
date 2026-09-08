@@ -54,9 +54,6 @@ use crate::wallet::{LockedPaymentPrepareError, Msats};
 pub struct FleetManagerRpc {
     fleet: Arc<Fleet>,
     signing_key: Keypair,
-    /// Deployment-pinned Guardian Verification Fee account.
-    /// The fee-proposal path fails closed if this is absent.
-    guardian_verification_fee_account: Option<Account>,
     /// The FMan's public service identity, which signs peer attestations.
     ///
     /// Deliberately the *same* key `fman-nostr` signs kind-37701
@@ -107,7 +104,6 @@ impl FleetManagerRpc {
     /// Build the service with its deployment policy inputs.
     pub fn new(
         fleet: Arc<Fleet>,
-        guardian_verification_fee_account: Option<Account>,
         setup_payment_policy: tokio::sync::watch::Receiver<Option<AdmittedSetupPaymentFederations>>,
     ) -> Self {
         let signing_key = fleet.identity().derive_service_signing_key();
@@ -123,7 +119,6 @@ impl FleetManagerRpc {
         Self {
             fleet,
             signing_key,
-            guardian_verification_fee_account,
             attestation_keys,
             trust_material: Arc::new(OnceLock::new()),
             setup_payment_policy,
@@ -776,7 +771,6 @@ impl FleetManagerService for FleetManagerRpc {
                 request.key.clone(),
                 request.value.clone(),
                 self.min_guardian_fee_ppm(),
-                self.guardian_verification_fee_account.clone(),
             )
             .await
             .map_err(|err| map_seat_error("set_meta_field", err))?;
@@ -798,6 +792,8 @@ impl FleetManagerService for FleetManagerRpc {
             seat.reject_decommissioned()
                 .map_err(|err| map_seat_error("propose_formation_meta", err))?;
             let guardian_verification_fee_account = self
+                .fleet
+                .config()
                 .guardian_verification_fee_account
                 .clone()
                 .ok_or(FleetManagerError::GuardianVerificationFeeAccountUnavailable)?;

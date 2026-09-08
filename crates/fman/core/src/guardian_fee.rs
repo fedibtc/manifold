@@ -161,20 +161,23 @@ pub struct FeePolicy {
     /// parse, or names it in a shape this version does not understand — all of
     /// which mean the same thing operationally: no share is provably ours.
     pub our_share: Option<(u64, u64)>,
+    /// Whether the complete live policy has the canonical split implied by
+    /// the current live directory and deployment account.
+    pub live_policy_matches: bool,
 }
 
 impl FeePolicy {
     /// Whether the live metadata leaves this guardian's compiled share intact.
     ///
-    /// No recipient policy is acceptable: guardian fees are optional. Once a
-    /// recipient value exists, however, malformed metadata, omission of this
-    /// guardian, and any weight other than the fixed guardian weight are all a
-    /// policy violation rather than merely "not currently paying us".
+    /// No fee policy is acceptable: guardian fees are optional. Once one
+    /// exists, the live policy must be structurally canonical and this
+    /// mnemonic-derived guardian account must appear at its compiled weight.
     pub fn share_matches_policy(&self) -> bool {
-        self.recipients.is_none()
-            || self
-                .our_share
-                .is_some_and(|(ours, _)| ours == GUARDIAN_RECIPIENT_WEIGHT)
+        !self.configured
+            || (self.live_policy_matches
+                && self
+                    .our_share
+                    .is_some_and(|(weight, _)| weight == GUARDIAN_RECIPIENT_WEIGHT))
     }
 }
 
@@ -247,6 +250,7 @@ pub fn fee_policy_from_meta(meta: &BTreeMap<String, String>, ours: AccountId) ->
         .and_then(|value| value.parse::<u64>().ok());
     let recipients = meta.get(REMITTANCE_ACCOUNT_META_KEY).cloned();
     let valid = validate_fee_policy(send_ppm, recipients.as_deref()).is_ok();
+    let live_policy_matches = recipients.is_none() && send_ppm.is_none();
     let our_share = valid
         .then(|| {
             recipients
@@ -259,6 +263,10 @@ pub fn fee_policy_from_meta(meta: &BTreeMap<String, String>, ours: AccountId) ->
         send_ppm,
         recipients,
         our_share,
+        // The seat read path replaces this with a check against its live
+        // federation config, current directory, and deployment account.
+        // This parser alone cannot establish those inputs.
+        live_policy_matches,
     }
 }
 
@@ -284,10 +292,11 @@ pub fn canonical_proposal(
     guardians: &[Account],
     guardian_verification_fee_account: &Account,
 ) -> Result<String, FeePolicyError> {
-    // `None`: this function is also the carry-forward and revalidation path for
-    // a fee policy the federation already adopted, so it must not apply the
-    // published minimum. See `prevalidate_guardian_fee_proposal`.
-    prevalidate_guardian_fee_proposal(send_ppm, None, recipients)?;
+    // Existing policies may predate the current published floor, so canonical
+    // shape validation applies only the payer's fixed ceiling.
+    prevalidate_guardian_fee_rate(send_ppm, 0)?;
+    let value = canonical_guardian_fee_recipient_list(recipients)
+        .map_err(|_| FeePolicyError::InvalidRecipients)?;
     let expected_normal = guardians.len().saturating_add(2);
     if guardians.is_empty()
         || guardians
@@ -300,10 +309,9 @@ pub fn canonical_proposal(
         });
     }
 
-    let parsed = validated_recipient_entries(recipients)?;
-    let guardian_verification_fee_entries = parsed
+    let guardian_verification_fee_entries = recipients
         .iter()
-        .filter(|recipient| recipient.account == *guardian_verification_fee_account)
+        .filter(|recipient| recipient.account.as_account() == guardian_verification_fee_account)
         .collect::<Vec<_>>();
     if !matches!(
         guardian_verification_fee_entries.as_slice(),
@@ -315,20 +323,20 @@ pub fn canonical_proposal(
         });
     }
 
-    let fi_only = parsed
+    let fi_only = recipients
         .iter()
         .filter(|recipient| {
-            recipient.account != *guardian_verification_fee_account
-                && !guardians.contains(&recipient.account)
+            recipient.account.as_account() != guardian_verification_fee_account
+                && !guardians.contains(recipient.account.as_account())
                 && recipient.weight == FI_RECIPIENT_WEIGHT
         })
         .count();
     let guardian_weights = guardians
         .iter()
         .map(|guardian| {
-            parsed
+            recipients
                 .iter()
-                .find(|recipient| recipient.account == *guardian)
+                .find(|recipient| recipient.account.as_account() == guardian)
                 .map(|recipient| recipient.weight)
         })
         .collect::<Option<Vec<_>>>();
@@ -344,8 +352,6 @@ pub fn canonical_proposal(
         });
     }
 
-    let value = canonical_recipient_list(recipients)?;
-    validate_fee_policy(Some(send_ppm), Some(&value))?;
     Ok(value)
 }
 
@@ -382,12 +388,9 @@ pub(crate) fn canonical_formation_proposal(
     )
 }
 
-/// Revalidate a fee policy already carried by the whole consensus metadata
-/// object before this guardian votes for an unrelated field update.
-///
-/// The meta module adopts one whole object. Without this check, a generic
-/// maintenance vote could copy forward fee keys a hostile threshold installed
-/// and thereby vote for a payer-valid but policy-invalid recipient split.
+/// Check whether a configured live policy has the canonical split implied by
+/// the current consensus directory. This supports operator reporting; generic
+/// metadata maintenance deliberately carries unrelated fields unchanged.
 pub fn validate_canonical_proposal_value(
     send_ppm: u64,
     value: &str,
@@ -421,20 +424,8 @@ pub fn validate_canonical_proposal_value(
 /// Bound and type-check the FI-controlled portion of a fee proposal without
 /// consulting a child process or federation config.
 ///
-/// The consensus-directory-derived recipient set and complete split are
-/// checked later by [`canonical_proposal`], once the live config is available.
-///
-/// `min_send_ppm` is the published floor, and is `Some` only on the
-/// **new-proposal** path. It is deliberately not a property of a fee value in
-/// general: [`canonical_proposal`] runs through here again when a guardian
-/// merely carries an already-adopted fee policy forward as part of an
-/// unrelated meta write, and when the read path reports what a federation
-/// currently pays. Enforcing the floor there would make a federation that
-/// agreed a lower rate before the floor was raised unmaintainable (a rename or
-/// icon change would fail) and would report a paying federation as
-/// fee-unconfigured, which
-/// [REQ-guardian-fee-remittance](../../../../specs/REQ-guardian-fee-remittance.md)
-/// forbids. The floor gates what an FI may newly ask for, nothing else.
+/// The published floor gates only a newly requested rate. Existing lower rates
+/// remain reportable and are carried unchanged by unrelated maintenance.
 pub(crate) fn prevalidate_guardian_fee_rate(
     send_ppm: u64,
     minimum: u64,
@@ -446,36 +437,6 @@ pub(crate) fn prevalidate_guardian_fee_rate(
         return Err(FeePolicyError::SendPpmTooLow { minimum });
     }
     Ok(())
-}
-
-pub(crate) fn prevalidate_guardian_fee_proposal(
-    send_ppm: u64,
-    min_send_ppm: Option<u64>,
-    recipients: &[GuardianFeeRecipient],
-) -> Result<(), FeePolicyError> {
-    if send_ppm > MAX_SEND_PPM {
-        return Err(FeePolicyError::SendPpmTooHigh);
-    }
-    if let Some(minimum) = min_send_ppm
-        && send_ppm < minimum
-    {
-        return Err(FeePolicyError::SendPpmTooLow { minimum });
-    }
-    canonical_guardian_fee_recipient_list(recipients)
-        .map(|_| ())
-        .map_err(|_| FeePolicyError::InvalidRecipients)
-}
-
-/// Format the FI's recipient entries into the payer's current versioned form.
-///
-/// The value is canonical before it reaches the meta-map canonicalizer so a
-/// guardian never votes for a value that is semantically right but incapable
-/// of threshold adoption because another serializer laid it out differently.
-fn canonical_recipient_list(recipients: &[GuardianFeeRecipient]) -> Result<String, FeePolicyError> {
-    let value = canonical_guardian_fee_recipient_list(recipients)
-        .map_err(|_| FeePolicyError::InvalidRecipients)?;
-    parse_recipients(&value).ok_or(FeePolicyError::InvalidRecipients)?;
-    Ok(value)
 }
 
 /// Parse a recipient value exactly as the payer does for the properties this
@@ -496,21 +457,6 @@ fn parse_recipients(value: &str) -> Option<Vec<RecipientEntry>> {
         account_id: single.id().to_string(),
         weight: 1,
     }])
-}
-
-fn validated_recipient_entries(
-    recipients: &[GuardianFeeRecipient],
-) -> Result<Vec<RecipientEntry>, FeePolicyError> {
-    let entries = recipients
-        .iter()
-        .map(|recipient| RecipientEntry {
-            account: recipient.account.as_account().clone(),
-            account_id: recipient.account_id.clone(),
-            weight: recipient.weight,
-        })
-        .collect::<Vec<_>>();
-    validate_parsed_entries(&entries).ok_or(FeePolicyError::InvalidRecipients)?;
-    Ok(entries)
 }
 
 /// Validate the version-1 weighted recipient wire.

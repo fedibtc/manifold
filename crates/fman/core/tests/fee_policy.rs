@@ -151,6 +151,7 @@ fn policy_reader_derives_a_view_from_the_consensus_meta_map() {
             send_ppm: Some(1_000),
             recipients: Some(recipients),
             our_share: Some((3, 4)),
+            live_policy_matches: false,
         }
     );
 }
@@ -176,12 +177,13 @@ fn overflowing_weights_are_not_a_share() {
 }
 
 #[test]
-fn share_policy_accepts_unset_and_requires_our_exact_guardian_weight() {
+fn share_policy_requires_the_live_split_and_our_compiled_weight() {
     let unset = FeePolicy {
         configured: false,
         send_ppm: None,
         recipients: None,
         our_share: None,
+        live_policy_matches: true,
     };
     assert!(unset.share_matches_policy());
 
@@ -190,12 +192,13 @@ fn share_policy_accepts_unset_and_requires_our_exact_guardian_weight() {
         send_ppm: Some(1_000),
         recipients: Some(String::new()),
         our_share: Some((GUARDIAN_RECIPIENT_WEIGHT, 7)),
+        live_policy_matches: true,
     };
     assert!(expected.share_matches_policy());
 
     assert!(
         !FeePolicy {
-            our_share: Some((GUARDIAN_RECIPIENT_WEIGHT + 1, 8)),
+            live_policy_matches: false,
             ..expected.clone()
         }
         .share_matches_policy()
@@ -203,6 +206,7 @@ fn share_policy_accepts_unset_and_requires_our_exact_guardian_weight() {
     assert!(
         !FeePolicy {
             our_share: None,
+            live_policy_matches: true,
             ..expected
         }
         .share_matches_policy()
@@ -359,21 +363,21 @@ fn the_published_minimum_gates_new_proposals_only() {
     let minimum = fedi_decentralized_domain::DEFAULT_SETUP_PAYMENT_MIN_FEE_PPM;
 
     // At the floor, and anywhere above it, is a proposal this FMan will vote for.
-    assert!(prevalidate_guardian_fee_proposal(minimum, Some(minimum), &recipients).is_ok());
-    assert!(prevalidate_guardian_fee_proposal(minimum + 1, Some(minimum), &recipients).is_ok());
-    assert!(prevalidate_guardian_fee_proposal(MAX_SEND_PPM, Some(minimum), &recipients).is_ok());
+    assert!(prevalidate_guardian_fee_rate(minimum, minimum).is_ok());
+    assert!(prevalidate_guardian_fee_rate(minimum + 1, minimum).is_ok());
+    assert!(prevalidate_guardian_fee_rate(MAX_SEND_PPM, minimum).is_ok());
 
     // Below it — including zero — a proposal is refused.
     for send_ppm in [0, 1, minimum - 1] {
         assert!(matches!(
-            prevalidate_guardian_fee_proposal(send_ppm, Some(minimum), &recipients),
+            prevalidate_guardian_fee_rate(send_ppm, minimum),
             Err(FeePolicyError::SendPpmTooLow { minimum: reported }) if reported == minimum
         ));
     }
 
     // Both bounds still apply together: the ceiling is checked first.
     assert!(matches!(
-        prevalidate_guardian_fee_proposal(MAX_SEND_PPM + 1, Some(minimum), &recipients),
+        prevalidate_guardian_fee_rate(MAX_SEND_PPM + 1, minimum),
         Err(FeePolicyError::SendPpmTooHigh)
     ));
 
@@ -381,7 +385,6 @@ fn the_published_minimum_gates_new_proposals_only() {
     // the floor was raised stays a valid canonical value. Without this, an
     // unrelated meta write on such a federation could not be voted for at all.
     for send_ppm in [0, 1, minimum - 1] {
-        assert!(prevalidate_guardian_fee_proposal(send_ppm, None, &recipients).is_ok());
         let value = canonical_proposal(
             send_ppm,
             &recipients,

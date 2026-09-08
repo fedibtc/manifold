@@ -3,7 +3,7 @@ use fedi_decentralized_service_fleet_manager::{
     GetDkgCodeRequest, GetFedimintStatsRequest, GetInviteCodeRequest, GetPeerAttestationRequest,
     GetQuoteRequest, GetQuoteResponse, GetStatusRequest, GuardianFeeAccount, MetaConsensusBase,
     MetaFieldKey, MetaFieldValue, OfferEpoch, Plan, ProposeFormationMetaRequest, RefusalReason,
-    RegisterGatewayRequest, RestartDkgRequest, SetMetaFieldRequest, StartDkgRequest,
+    RegisterGatewayRequest, RestartDkgRequest, SeatId, SetMetaFieldRequest, StartDkgRequest,
 };
 use tempfile::TempDir;
 
@@ -17,6 +17,13 @@ use crate::wallet::NoWallet;
 use fedi_decentralized_service_fleet_manager::DkgCompletionCallbackInput;
 
 async fn rpc(temp: &TempDir) -> FleetManagerRpc {
+    rpc_with_guardian_verification_fee_account(temp, None).await
+}
+
+async fn rpc_with_guardian_verification_fee_account(
+    temp: &TempDir,
+    guardian_verification_fee_account: Option<Account>,
+) -> FleetManagerRpc {
     // A fleet opens against an identity onboarding already chose; nothing
     // mints one on open.
     let db = crate::db::Db::open(temp.path()).await.unwrap();
@@ -33,6 +40,7 @@ async fn rpc(temp: &TempDir) -> FleetManagerRpc {
                 fedi_decentralized_manifold_environment::ManifoldEnvironment::Development,
             first_port_base: PortBase::new(30_000).unwrap(),
             setup_payments_configured: true,
+            guardian_verification_fee_account,
             respawn: RespawnPolicy::default(),
             // Tests hold the relay down and watch the retry land; a
             // production cadence would only make them slow.
@@ -57,7 +65,7 @@ async fn rpc(temp: &TempDir) -> FleetManagerRpc {
     .await
     .unwrap();
     fleet.set_offered_price(Some(TEST_PRICE)).await.unwrap();
-    FleetManagerRpc::new(Arc::new(fleet), None, tokio::sync::watch::channel(None).1)
+    FleetManagerRpc::new(Arc::new(fleet), tokio::sync::watch::channel(None).1)
 }
 
 /// The offer these tests quote against: priced at zero, so a quote needs no
@@ -68,6 +76,49 @@ fn test_plan() -> Plan {
     Plan::InfiniteBestEffort {
         price_msats: TEST_PRICE.0,
     }
+}
+
+async fn rpc_with_owned_seat(
+    temp: &TempDir,
+    guardian_verification_fee_account: Option<Account>,
+) -> (FleetManagerRpc, Keypair, FiId, SeatId) {
+    let rpc =
+        rpc_with_guardian_verification_fee_account(temp, guardian_verification_fee_account).await;
+    let owner_key = Keypair::new(secp256k1::SECP256K1, &mut rand::thread_rng());
+    let owner_id = FiId(owner_key.x_only_public_key().0);
+    let quote = rpc
+        .get_quote(GetQuoteRequest {
+            fi_id: owner_id,
+            fedimintd_version: supported_fedimintd_version(),
+            federation_size: FederationSize(7),
+            plan: test_plan(),
+            payment_federation_id: None,
+            refund_issuance: None,
+        })
+        .await
+        .unwrap();
+    let created = rpc
+        .create_seat(
+            SignedRequest::create(
+                &fedi_decentralized_service_fleet_manager::CreateSeatRequest {
+                    ts: now(),
+                    fi_id: owner_id,
+                    quote,
+                    payment_signatures: Vec::new(),
+                },
+                &owner_key,
+            )
+            .unwrap(),
+        )
+        .await
+        .unwrap()
+        .verify(&rpc.signing_key.x_only_public_key().0)
+        .unwrap()
+        .into_inner();
+    let CreateSeatOutcome::Accepted { seat_id, .. } = created.outcome else {
+        panic!("free seat was refused")
+    };
+    (rpc, owner_key, owner_id, seat_id)
 }
 
 #[tokio::test]
@@ -385,41 +436,7 @@ async fn create_seat_rejects_a_signed_incoherent_quote() {
 #[tokio::test]
 async fn wrong_owner_precedes_policy_and_unsupported_results() {
     let temp = TempDir::new().unwrap();
-    let rpc = rpc(&temp).await;
-    let victim_key = Keypair::new(secp256k1::SECP256K1, &mut rand::thread_rng());
-    let victim_id = FiId(victim_key.x_only_public_key().0);
-    let quote = rpc
-        .get_quote(GetQuoteRequest {
-            fi_id: victim_id,
-            fedimintd_version: supported_fedimintd_version(),
-            federation_size: FederationSize(7),
-            plan: test_plan(),
-            payment_federation_id: None,
-            refund_issuance: None,
-        })
-        .await
-        .unwrap();
-    let created = rpc
-        .create_seat(
-            SignedRequest::create(
-                &fedi_decentralized_service_fleet_manager::CreateSeatRequest {
-                    ts: now(),
-                    fi_id: victim_id,
-                    quote,
-                    payment_signatures: Vec::new(),
-                },
-                &victim_key,
-            )
-            .unwrap(),
-        )
-        .await
-        .unwrap()
-        .verify(&rpc.signing_key.x_only_public_key().0)
-        .unwrap()
-        .into_inner();
-    let CreateSeatOutcome::Accepted { seat_id, .. } = created.outcome else {
-        panic!("free seat was refused")
-    };
+    let (rpc, victim_key, victim_id, seat_id) = rpc_with_owned_seat(&temp, None).await;
 
     let attacker_key = Keypair::new(secp256k1::SECP256K1, &mut rand::thread_rng());
     let attacker_id = FiId(attacker_key.x_only_public_key().0);
@@ -612,12 +629,28 @@ async fn wrong_owner_precedes_policy_and_unsupported_results() {
         ),
         stability_pool_client::common::AccountType::BtcDepositor,
     );
-    let mut configured_rpc = rpc.clone();
-    configured_rpc.guardian_verification_fee_account = Some(configured_account);
+    let configured_temp = TempDir::new().unwrap();
+    let (configured_rpc, configured_owner_key, configured_owner_id, configured_seat_id) =
+        rpc_with_owned_seat(&configured_temp, Some(configured_account)).await;
+    let configured_owner_account = configured_rpc
+        .fleet
+        .guardian_fee_account_descriptor(&configured_seat_id);
+    let mismatched_formation_request = ProposeFormationMetaRequest {
+        ts: now(),
+        fi_id: configured_owner_id,
+        seat_id: configured_seat_id,
+        expected_base: MetaConsensusBase::Absent,
+        seat_bindings: vec![],
+        fi_fee_account: GuardianFeeAccount::try_from(configured_owner_account.clone()).unwrap(),
+        guardian_verification_fee_account: GuardianFeeAccount::try_from(configured_owner_account)
+            .unwrap(),
+        send_ppm: 5_000,
+    };
     assert_eq!(
         configured_rpc
             .propose_formation_meta(
-                SignedRequest::create(&production_formation_request, &victim_key).unwrap(),
+                SignedRequest::create(&mismatched_formation_request, &configured_owner_key)
+                    .unwrap(),
             )
             .await
             .unwrap_err(),
