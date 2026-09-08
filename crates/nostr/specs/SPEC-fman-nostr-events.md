@@ -183,7 +183,7 @@ returned subject to the event author before producing a trust conclusion.
 ## Attester events (37703, 37704)
 
 `37703` is the addressable distribution event for canonical
-`fedi-credential-sdk-protocol::IssuerAuthority` content. For issuers without a
+`peerbadge-protocol::IssuerAuthority` content. For issuers without a
 profile-pinned authority (production), the shared verifier fetches it afresh
 from every canonical environment relay and rejects it unless the event author
 equals `issuer.issuer_id_pubkey`, `IssuerAuthority::verify()` succeeds, and

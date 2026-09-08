@@ -28,12 +28,12 @@ All source inputs used by the development shell are public. The `github:`
 fetcher uses the GitHub API, not `ssh-agent`, and needs no repository access
 token for these inputs.
 
-To update the credential SDK intentionally, update its Nix input first, then
+To update the PeerBadge SDK intentionally, update its Nix input first, then
 refresh the Rust dependency graph in a new dev shell:
 
 ```bash
-nix flake update credential-sdk-src
-nix develop --command cargo update -p fedi-credential-sdk-protocol
+nix flake update peerbadge-sdk-src
+nix develop --command cargo update -p peerbadge-protocol
 nix develop --command cargo metadata --locked
 ```
 

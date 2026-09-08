@@ -11,7 +11,7 @@ artifact can own them coherently.
 
 The `fedi-trust-score-v1.0` schema definition (issuance constructors,
 verifier-side parser, and golden vectors) is owned by
-`fedi-credential-sdk-schemas` in the credential-sdk repository; this crate's
+`peerbadge-schemas` in the peerbadge-sdk repository; this crate's
 `trust_score` module re-exports it and owns both the pure envelope helper
 against a caller-supplied credential-SDK verification context and the generic,
 validated relying-party `PeerBadgeTrustPolicy`. `crates/peer-badge-verifier`
@@ -22,7 +22,7 @@ algorithm, and applies that policy
 ([SPEC-peer-badge-verifier](../../peer-badge-verifier/specs/SPEC-peer-badge-verifier.md)).
 The `HolderAuthorization`, `SignedCredential`, and `IssuerAuthority` types and
 their canonical serialization, digests, and proofs are owned by
-`fedi-credential-sdk-protocol`. This is a cross-program contract shared with
+`peerbadge-protocol`. This is a cross-program contract shared with
 programs outside this repository (the Fedi app/SDK and Issuer tooling);
 byte-level changes must be coordinated with them, not made unilaterally.
 

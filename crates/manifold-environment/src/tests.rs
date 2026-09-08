@@ -325,7 +325,7 @@ fn environment_aliases_round_trip_to_canonical_names() {
 /// document) and verifiers (pinning the document) on one canonical authority.
 #[test]
 fn committed_issuer_material_is_one_agreeing_authority() {
-    use fedi_credential_sdk_protocol::{
+    use peerbadge_protocol::{
         HolderAuthorizationRequest, HolderContext, IssuerAuthority, IssuerContext,
         IssuerSecretKeys, PendingIssuance, SubjectPubkey, VerificationContext,
     };
@@ -383,10 +383,8 @@ fn committed_issuer_material_is_one_agreeing_authority() {
         // verify against the pinned document, proving secret and document
         // carry the same issuance key.
         let holder = HolderContext::generate();
-        let info = fedi_credential_sdk_schemas::trust_score_info_v1(
-            profile.minimum_peer_badge_trust_level(),
-        )
-        .expect("trust score info");
+        let info = peerbadge_schemas::trust_score_info_v1(profile.minimum_peer_badge_trust_level())
+            .expect("trust score info");
         let (request, pending) = PendingIssuance::create_request(
             &issuer_metadata.issuance_key,
             issuer_metadata.issuer_id_pubkey.clone(),

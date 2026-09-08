@@ -249,8 +249,8 @@ pub(crate) fn fixed_test_keys(tag: u8) -> Keys {
 
 /// The trust-envelope pair enrolled by [`enroll_provider_trust_envelope`].
 pub(crate) struct InstalledProviderEnvelope {
-    pub authorization: fedi_credential_sdk_protocol::HolderAuthorization,
-    pub credential: fedi_credential_sdk_protocol::SignedCredential,
+    pub authorization: peerbadge_protocol::HolderAuthorization,
+    pub credential: peerbadge_protocol::SignedCredential,
 }
 
 /// Relay URL the static enrollment fetcher answers for.
@@ -304,7 +304,7 @@ pub(crate) async fn enroll_provider_trust_envelope(
     let issuer = credentials::test_issuer_context();
     let authority =
         credentials::test_issuer_authority(&issuer, credentials::UNIT_TEST_ISSUER_RELAY)?;
-    let holder = fedi_credential_sdk_protocol::HolderContext::generate();
+    let holder = peerbadge_protocol::HolderContext::generate();
     let credential = credentials::issue_credential_for_holder(&issuer, &authority, &holder)?;
     let authorization =
         credentials::holder_authorization_for_provider(&holder, &credential, provider_pubkey)?;
@@ -516,13 +516,13 @@ fn test_data_dir(name: &str) -> PathBuf {
 /// The containing module is compiled only under `cfg(test)`, so the hardcoded
 /// test issuer keys stay out of shipped binaries.
 pub(crate) mod credentials {
-    use fedi_credential_sdk_protocol::{
-        HolderAuthorization, HolderAuthorizationRequest, HolderContext, IssuerAuthority,
-        IssuerContext, IssuerSecretKeys, PendingIssuance, SignedCredential, SubjectPubkey,
-    };
     use fedi_decentralized_service_liquidity_manager::{
         AttestationPayload, HolderAuthorization as ServiceHolderAuthorization, Pubkey,
         SignedCredential as ServiceCredential,
+    };
+    use peerbadge_protocol::{
+        HolderAuthorization, HolderAuthorizationRequest, HolderContext, IssuerAuthority,
+        IssuerContext, IssuerSecretKeys, PendingIssuance, SignedCredential, SubjectPubkey,
     };
     use serde::Serialize;
     use serde_json::json;
@@ -549,7 +549,7 @@ pub(crate) mod credentials {
         revocation_relay_url: &str,
     ) -> anyhow::Result<IssuerAuthority> {
         Ok(
-            issuer.issuer_authority(vec![fedi_credential_sdk_protocol::RevocationLocation {
+            issuer.issuer_authority(vec![peerbadge_protocol::RevocationLocation {
                 protocol: "nostr".to_owned(),
                 location: revocation_relay_url.to_owned(),
             }])?,

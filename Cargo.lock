@@ -1893,7 +1893,6 @@ dependencies = [
  "anyhow",
  "defe-client",
  "defe-portalloc",
- "fedi-credential-sdk-protocol",
  "fedi-decentralized-manifold-environment",
  "fedi-decentralized-nostr",
  "fedi-decentralized-service-liquidity-manager",
@@ -1902,6 +1901,7 @@ dependencies = [
  "iroh-base 0.35.0",
  "libc",
  "nostr-sdk",
+ "peerbadge-protocol",
  "reqwest 0.12.28",
  "serde",
  "serde_json",
@@ -2086,13 +2086,13 @@ dependencies = [
  "anyhow",
  "axum 0.8.9",
  "clap",
- "fedi-credential-sdk-protocol",
- "fedi-credential-sdk-schemas",
  "fedi-decentralized-manifold-environment",
  "fedi-decentralized-nostr",
  "fedi-decentralized-nostr-clients",
  "futures",
  "nostr-sdk",
+ "peerbadge-protocol",
+ "peerbadge-schemas",
  "rustls",
  "serde",
  "serde_json",
@@ -2451,33 +2451,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9f1f227452a390804cdb637b74a86990f2a7d7ba4b7d5693aac9b4dd6defd8d6"
 
 [[package]]
-name = "fedi-credential-sdk-protocol"
-version = "0.0.5"
-dependencies = [
- "blind-rsa-signatures",
- "hex",
- "nostr",
- "serde",
- "serde_json",
- "serde_json_canonicalizer",
- "serde_with",
- "sha2 0.10.9",
- "thiserror 2.0.18",
- "tracing",
-]
-
-[[package]]
-name = "fedi-credential-sdk-schemas"
-version = "0.0.5"
-dependencies = [
- "fedi-credential-sdk-protocol",
- "nostr",
- "serde",
- "serde_json",
- "thiserror 2.0.18",
-]
-
-[[package]]
 name = "fedi-decentralized-cloud-fman-telemetry"
 version = "0.1.0"
 dependencies = [
@@ -2490,7 +2463,6 @@ dependencies = [
  "defe-api",
  "defe-client",
  "defe-portalloc",
- "fedi-credential-sdk-protocol",
  "fedi-decentralized-domain",
  "fedi-decentralized-guardian-metrics-policy",
  "fedi-decentralized-manifold-environment",
@@ -2507,6 +2479,7 @@ dependencies = [
  "libc",
  "nostr",
  "nostr-sdk",
+ "peerbadge-protocol",
  "prometheus-parse",
  "rand 0.8.6",
  "rustls",
@@ -2530,11 +2503,11 @@ name = "fedi-decentralized-domain"
 version = "0.1.0"
 dependencies = [
  "bitcoin",
- "fedi-credential-sdk-protocol",
- "fedi-credential-sdk-schemas",
  "fedimint-core",
  "hex",
  "nostr",
+ "peerbadge-protocol",
+ "peerbadge-schemas",
  "semver",
  "serde",
  "serde_json",
@@ -2586,7 +2559,6 @@ dependencies = [
  "constant_time_eq",
  "defe-client",
  "defe-portalloc",
- "fedi-credential-sdk-protocol",
  "fedi-decentralized-federation-preview",
  "fedi-decentralized-manifold-environment",
  "fedi-decentralized-nostr",
@@ -2616,6 +2588,7 @@ dependencies = [
  "iroh-base 0.35.0",
  "nostr-sdk",
  "operator-ui-static",
+ "peerbadge-protocol",
  "reqwest 0.12.28",
  "rust-embed",
  "rustls",
@@ -2643,9 +2616,9 @@ name = "fedi-decentralized-manifold-environment"
 version = "0.1.0"
 dependencies = [
  "bitcoin",
- "fedi-credential-sdk-protocol",
- "fedi-credential-sdk-schemas",
  "nostr",
+ "peerbadge-protocol",
+ "peerbadge-schemas",
  "serde_json",
  "stability-pool-common",
  "url",
@@ -2656,10 +2629,10 @@ name = "fedi-decentralized-nostr"
 version = "0.1.0"
 dependencies = [
  "blind-rsa-signatures",
- "fedi-credential-sdk-protocol",
  "fedi-decentralized-domain",
  "fedi-decentralized-service-fleet-manager",
  "nostr",
+ "peerbadge-protocol",
  "serde",
  "serde_json",
  "serde_json_canonicalizer",
@@ -2686,13 +2659,13 @@ name = "fedi-decentralized-peer-badge-verifier"
 version = "0.1.0"
 dependencies = [
  "async-trait",
- "fedi-credential-sdk-protocol",
  "fedi-decentralized-domain",
  "fedi-decentralized-manifold-environment",
  "fedi-decentralized-nostr",
  "fedi-decentralized-nostr-clients",
  "fedimint-core",
  "nostr-sdk",
+ "peerbadge-protocol",
  "serde_json",
  "thiserror 2.0.18",
  "tokio",
@@ -2784,12 +2757,12 @@ dependencies = [
  "bitcoin",
  "blind-rsa-signatures",
  "ciborium",
- "fedi-credential-sdk-protocol",
  "fedi-decentralized-services",
  "fedi-iroh-rpc",
  "hex",
  "iroh 1.0.0",
  "nostr",
+ "peerbadge-protocol",
  "petname",
  "secp256k1 0.30.0",
  "semver",
@@ -2811,9 +2784,9 @@ name = "fedi-decentralized-service-liquidity-manager"
 version = "0.1.0"
 dependencies = [
  "ciborium",
- "fedi-credential-sdk-protocol",
  "fedi-decentralized-services",
  "fedi-iroh-rpc",
+ "peerbadge-protocol",
  "serde",
  "serde_json",
  "serde_json_canonicalizer",
@@ -4068,7 +4041,6 @@ version = "0.1.0"
 dependencies = [
  "bitcoin",
  "blind-rsa-signatures",
- "fedi-credential-sdk-protocol",
  "fedi-decentralized-domain",
  "fedi-decentralized-manifold-environment",
  "fedi-decentralized-nostr",
@@ -4082,6 +4054,7 @@ dependencies = [
  "hex",
  "iroh-base 0.35.0",
  "nostr-sdk",
+ "peerbadge-protocol",
  "rand 0.8.6",
  "secp256k1 0.30.0",
  "serde",
@@ -4328,7 +4301,6 @@ dependencies = [
  "blind-rsa-signatures",
  "chacha20poly1305",
  "ciborium",
- "fedi-credential-sdk-protocol",
  "fedi-decentralized-domain",
  "fedi-decentralized-manifold-environment",
  "fedi-decentralized-nostr",
@@ -4338,6 +4310,7 @@ dependencies = [
  "hex",
  "hmac",
  "nostr-sdk",
+ "peerbadge-protocol",
  "secp256k1 0.30.0",
  "serde",
  "serde_json",
@@ -7740,6 +7713,33 @@ dependencies = [
 ]
 
 [[package]]
+name = "peerbadge-protocol"
+version = "0.1.0"
+dependencies = [
+ "blind-rsa-signatures",
+ "hex",
+ "nostr",
+ "serde",
+ "serde_json",
+ "serde_json_canonicalizer",
+ "serde_with",
+ "sha2 0.10.9",
+ "thiserror 2.0.18",
+ "tracing",
+]
+
+[[package]]
+name = "peerbadge-schemas"
+version = "0.1.0"
+dependencies = [
+ "nostr",
+ "peerbadge-protocol",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "pem"
 version = "3.0.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -10235,7 +10235,6 @@ dependencies = [
  "defe-api",
  "defe-client",
  "defe-portalloc",
- "fedi-credential-sdk-protocol",
  "fedi-decentralized-cloud-fman-telemetry",
  "fedi-decentralized-domain",
  "fedi-decentralized-manifold-environment",
@@ -10255,6 +10254,7 @@ dependencies = [
  "libc",
  "lnurl-rs",
  "nostr-sdk",
+ "peerbadge-protocol",
  "secp256k1 0.30.0",
  "serde_json",
  "serde_json_canonicalizer",
