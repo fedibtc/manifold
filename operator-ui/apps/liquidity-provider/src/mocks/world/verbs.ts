@@ -19,6 +19,8 @@ import type {
   BackupManifest,
   CancelAllocationRequest,
   CancelAllocationResponse,
+  CompleteReviewWithoutEvidenceRequest,
+  CompleteReviewWithoutEvidenceResponse,
   CreateBackupResponse,
   CreateDepositAddressResponse,
   GetAdminAllocationRequest,
@@ -446,11 +448,74 @@ const resolveManualReview: Verb = (payload) => {
       message: 'txid is only accepted with completed'
     } satisfies ServiceErrorLike;
   }
-  summary.status = request.resolution === 'completed' ? 'completed' : 'failed';
+  // Supplying a transaction is not the same as proving it. The daemon reads the
+  // chain and refuses a `completed` it cannot back with evidence of this
+  // operation's exact destination and amount. An operation under review is one
+  // the daemon could not confirm, so the mock refuses here for every one of
+  // them and names the verb that does complete on an assertion.
+  if (request.resolution === 'completed') {
+    const body: ResolveManualReviewResponse = {
+      status: 'rejected',
+      operation: null,
+      detail:
+        'no chain evidence for this operation. A completed resolution requires chain evidence ' +
+        "of this operation's exact destination and amount. If you have established the outcome " +
+        'out of band, use complete_review_without_evidence, which records that no evidence ' +
+        'existed.'
+    };
+    return body;
+  }
+  summary.status = 'failed';
   const body: ResolveManualReviewResponse = {
     status: 'accepted',
     operation: null,
     detail: `manual review resolved as ${request.resolution}`
+  };
+  return body;
+};
+
+// The exit the refusal above points at. Completes on the operator's assertion
+// and requires the reason, because the audit row is the only record that the
+// completion was asserted rather than verified.
+const completeReviewWithoutEvidence: Verb = (payload) => {
+  const request = (payload ?? {}) as CompleteReviewWithoutEvidenceRequest;
+  const state = getState();
+  const summary = state.walletOperations.find((row) => row.operation_id === request.operation_id);
+  if (!summary) {
+    const body: CompleteReviewWithoutEvidenceResponse = {
+      status: 'not_found',
+      detail: 'wallet operation not found'
+    };
+    return body;
+  }
+  if (summary.status !== 'manual_review_required') {
+    const body: CompleteReviewWithoutEvidenceResponse = {
+      status: 'rejected',
+      detail: `wallet operation is in state ${summary.status} and is not under manual review`
+    };
+    return body;
+  }
+  if (!request.txid?.trim()) {
+    const body: CompleteReviewWithoutEvidenceResponse = {
+      status: 'rejected',
+      detail: 'completing a reviewed send requires the transaction the operator asserts settled it'
+    };
+    return body;
+  }
+  if (!request.reason?.trim()) {
+    const body: CompleteReviewWithoutEvidenceResponse = {
+      status: 'rejected',
+      detail: 'completing a reviewed send without evidence requires an operator reason'
+    };
+    return body;
+  }
+  summary.status = 'completed';
+  const body: CompleteReviewWithoutEvidenceResponse = {
+    status: 'accepted',
+    detail:
+      `operator completed this send without chain evidence, asserting transaction ` +
+      `${request.txid.trim()}; FLIP did not verify that it pays this operation. ` +
+      `Reason: ${request.reason.trim()}`
   };
   return body;
 };
@@ -727,6 +792,7 @@ export const verbs: Record<string, Verb> = {
   list_wallet_operations: listWalletOperations,
   get_wallet_operation: getWalletOperation,
   resolve_manual_review: resolveManualReview,
+  complete_review_without_evidence: completeReviewWithoutEvidence,
   create_deposit_address: createDepositAddress,
   request_withdrawal: requestWithdrawal,
   republish_advertisement: republishAdvertisement,
@@ -757,6 +823,7 @@ export const MUTATING_VERBS: ReadonlySet<string> = new Set([
   'refresh_relays',
   'retry_funding_step',
   'resolve_manual_review',
+  'complete_review_without_evidence',
   'cancel_allocation',
   'attestation_install',
   'attestation_remove',

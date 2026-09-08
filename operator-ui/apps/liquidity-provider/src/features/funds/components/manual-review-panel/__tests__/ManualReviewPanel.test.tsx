@@ -104,6 +104,106 @@ describe('ManualReviewPanel', () => {
     await waitFor(() => expect(onClose).toHaveBeenCalled());
   });
 
+  // The route out for a send whose outcome was established off chain. Without
+  // it the daemon refuses the `completed` arm and the operator has nothing left
+  // to click, which is what left money frozen inside the product.
+  it('should complete without evidence through its own verb, not resolve_manual_review', async () => {
+    const adminCall = mockAdminCall();
+    const onClose = vi.fn();
+
+    renderPanel(onClose);
+    await screen.findByText('tb1qdestination');
+
+    fireEvent.change(screen.getByLabelText('Outcome'), {
+      target: { value: 'completed_without_evidence' }
+    });
+    fireEvent.change(screen.getByLabelText('Transaction id'), { target: { value: 'deadbeef' } });
+    fireEvent.change(screen.getByLabelText('Reason'), {
+      target: { value: 'gateway operator confirmed by phone' }
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Complete without evidence' }));
+
+    await waitFor(() =>
+      expect(adminCall).toHaveBeenCalledWith('complete_review_without_evidence', {
+        operation_id: 'wop-frozen',
+        txid: 'deadbeef',
+        reason: 'gateway operator confirmed by phone'
+      })
+    );
+    expect(adminCall).not.toHaveBeenCalledWith('resolve_manual_review', expect.anything());
+    await waitFor(() => expect(onClose).toHaveBeenCalled());
+  });
+
+  // The daemon requires the reason, because the audit row is the only record
+  // that the completion was asserted rather than verified.
+  it('should require a reason before completing without evidence', async () => {
+    const adminCall = mockAdminCall();
+
+    renderPanel();
+    await screen.findByText('tb1qdestination');
+
+    fireEvent.change(screen.getByLabelText('Outcome'), {
+      target: { value: 'completed_without_evidence' }
+    });
+    fireEvent.change(screen.getByLabelText('Transaction id'), { target: { value: 'deadbeef' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Complete without evidence' }));
+
+    expect(
+      screen.getByText('Required: record how you established this send settled.')
+    ).toBeTruthy();
+    expect(adminCall).not.toHaveBeenCalledWith(
+      'complete_review_without_evidence',
+      expect.anything()
+    );
+  });
+
+  // An unverified completion must not be reachable by mistake, so the screen
+  // says what FLIP is not doing before the operator commits.
+  it('should warn that FLIP does not verify an asserted completion', async () => {
+    mockAdminCall();
+
+    renderPanel();
+    await screen.findByText('tb1qdestination');
+
+    expect(screen.queryByText('FLIP will not verify this')).toBeNull();
+
+    fireEvent.change(screen.getByLabelText('Outcome'), {
+      target: { value: 'completed_without_evidence' }
+    });
+
+    expect(screen.getByText('FLIP will not verify this')).toBeTruthy();
+  });
+
+  // The daemon declines by answering with a status, not by failing the call,
+  // so a rejection that never reached the screen would read as success.
+  it('should surface a declined completion instead of closing', async () => {
+    const onClose = vi.fn();
+    vi.spyOn(adminCallModule, 'adminCall').mockImplementation(async (method: string) => {
+      if (method === 'get_wallet_operation') return frozenOperation as never;
+      return {
+        status: 'rejected',
+        detail: 'wallet operation wop-frozen is in state completed and is not under manual review'
+      } as never;
+    });
+
+    renderPanel(onClose);
+    await screen.findByText('tb1qdestination');
+
+    fireEvent.change(screen.getByLabelText('Outcome'), {
+      target: { value: 'completed_without_evidence' }
+    });
+    fireEvent.change(screen.getByLabelText('Transaction id'), { target: { value: 'deadbeef' } });
+    fireEvent.change(screen.getByLabelText('Reason'), { target: { value: 'asserted by ops' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Complete without evidence' }));
+
+    expect(
+      await screen.findByText(
+        'wallet operation wop-frozen is in state completed and is not under manual review'
+      )
+    ).toBeTruthy();
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
   // `failed` and `safe_to_retry` assert no send happened, so the daemon rejects
   // a txid supplied with either. The field is not even offered for them.
   it('should not offer a transaction id for the resolutions that assert no send', async () => {
