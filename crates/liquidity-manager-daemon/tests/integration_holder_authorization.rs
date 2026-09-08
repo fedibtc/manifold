@@ -12,7 +12,7 @@ mod test_support;
 use std::time::Duration;
 
 use common::nostr_relay::NostrRelayFixture;
-use fedi_credential_sdk_protocol::HolderContext;
+use peerbadge_protocol::HolderContext;
 use fedi_decentralized_service_liquidity_manager::Pubkey;
 use reqwest::Client;
 use serde_json::{Value, json};
@@ -206,8 +206,8 @@ async fn refresh(client: &Client, admin_url: &str) -> anyhow::Result<Value> {
 async fn publish_authorization(
     relay_url: &str,
     holder: &HolderContext,
-    authorization: &fedi_credential_sdk_protocol::HolderAuthorization,
-    credential: &fedi_credential_sdk_protocol::SignedCredential,
+    authorization: &peerbadge_protocol::HolderAuthorization,
+    credential: &peerbadge_protocol::SignedCredential,
     provider_pubkey: &Pubkey,
 ) -> anyhow::Result<()> {
     use fedi_decentralized_nostr::flip::{

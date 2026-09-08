@@ -6,8 +6,8 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-fedi-credential-sdk-protocol.workspace = true
-fedi-credential-sdk-schemas.workspace = true
+peerbadge-protocol.workspace = true
+peerbadge-schemas.workspace = true
 fedimint-core.workspace = true
 hex = "0.4"
 nostr = "0.44"

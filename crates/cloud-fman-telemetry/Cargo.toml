@@ -53,7 +53,7 @@ blind-rsa-signatures = "0.17"
 defe-api = { path = "../defe-api" }
 defe-client = { path = "../defe-client" }
 defe-portalloc = { path = "../defe-portalloc" }
-fedi-credential-sdk-protocol.workspace = true
+peerbadge-protocol.workspace = true
 fedi-decentralized-nostr = { path = "../nostr" }
 libc = "0.2"
 nostr-sdk = "0.44"

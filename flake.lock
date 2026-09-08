@@ -626,22 +626,6 @@
         "type": "github"
       }
     },
-    "credential-sdk-src": {
-      "flake": false,
-      "locked": {
-        "lastModified": 1786414554,
-        "narHash": "sha256-EPQsUfytUfzzXrPgHsS9R+QElNf/tjUP6+6Ob1foNgA=",
-        "owner": "fedibtc",
-        "repo": "credential-sdk",
-        "rev": "3be33fc6d8c5b40073934bad2cbe649d1646e440",
-        "type": "github"
-      },
-      "original": {
-        "owner": "fedibtc",
-        "repo": "credential-sdk",
-        "type": "github"
-      }
-    },
     "devshell": {
       "inputs": {
         "nixpkgs": [
@@ -2165,15 +2149,31 @@
         "type": "github"
       }
     },
+    "peerbadge-sdk-src": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1788528334,
+        "narHash": "sha256-jXxNn8LYzcb7pQ0bDBIg6bJ568jjAtj8ESBPuLhwHSc=",
+        "owner": "fedibtc",
+        "repo": "peerbadge-sdk",
+        "rev": "ad6e954301f6684dcef14b070332d7171b61a408",
+        "type": "github"
+      },
+      "original": {
+        "owner": "fedibtc",
+        "repo": "peerbadge-sdk",
+        "type": "github"
+      }
+    },
     "root": {
       "inputs": {
-        "credential-sdk-src": "credential-sdk-src",
         "dpc-public-skills": "dpc-public-skills",
         "fedi": "fedi",
         "fedimint": "fedimint",
         "flake-utils": "flake-utils_19",
         "flakebox": "flakebox_7",
         "nixpkgs": "nixpkgs_9",
+        "peerbadge-sdk-src": "peerbadge-sdk-src",
         "selfci": "selfci"
       }
     },

@@ -25,7 +25,7 @@ follow-ups remain. None blocks MVP.
   shared decision and renumbers with it.
 - Cross-language conformance and test vectors for the adopted schema and
   publication profile. Tracked with the signing item below.
-- Whether `fedi-credential-sdk-protocol::Revocation` grows optional reason or
+- Whether `peerbadge-protocol::Revocation` grows optional reason or
   status fields. This bullet is the only trace of the question left in the tree.
   The SDK owner must either record the decision or record that the question is
   open, because the tree cannot answer it.

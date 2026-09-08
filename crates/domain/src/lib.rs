@@ -23,7 +23,7 @@ pub use federation_config::{
     FederationSeats, consensus_threshold, federation_config_hash, federation_id, federation_seats,
     parse_protocol_peer_id, protocol_peer_id,
 };
-pub use fedi_credential_sdk_protocol::{ProtocolV1, SchnorrSignatureProof};
+pub use peerbadge_protocol::{ProtocolV1, SchnorrSignatureProof};
 pub use fman_federation_directory::{
     FMAN_API_URL_MAX_BYTES, FMAN_API_URLS_MAX_COUNT, FMAN_API_URLS_MAX_VALUE_BYTES,
     FMAN_API_URLS_META_FIELD_KEY, FMAN_HOLDER_AUTHORIZATION_MAX_FUTURE_SKEW_SECS,

@@ -13,7 +13,7 @@ mod types;
 
 pub use admin::*;
 pub use canonical::*;
-pub use fedi_credential_sdk_protocol::{
+pub use peerbadge_protocol::{
     CredentialDigest, CredentialsError, HolderAuthorization, HolderAuthorizationStatement,
     HolderId, IssuerAuthority, ProtocolV1, RevocationLocation, SchnorrSignatureProof,
     SignedCredential, SignedRevocation, SubjectPubkey, VerificationContext,

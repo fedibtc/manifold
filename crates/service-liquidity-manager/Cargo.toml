@@ -7,7 +7,7 @@ repository.workspace = true
 
 [dependencies]
 ciborium = { workspace = true }
-fedi-credential-sdk-protocol.workspace = true
+peerbadge-protocol.workspace = true
 fedi-decentralized-services = { path = "../services" }
 fedi-iroh-rpc = { path = "../fedi-iroh-rpc" }
 serde = { workspace = true }

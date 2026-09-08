@@ -1,4 +1,4 @@
-use fedi_credential_sdk_protocol::HolderContext;
+use peerbadge_protocol::HolderContext;
 use fedi_decentralized_service_liquidity_manager::RevocationLocation;
 
 use super::test_fakes::FakeRevocationFetcher;
@@ -8,10 +8,10 @@ use crate::test_support::credentials::{
 };
 
 struct StageFixture {
-    issuer: fedi_credential_sdk_protocol::IssuerContext,
-    authority: fedi_credential_sdk_protocol::IssuerAuthority,
+    issuer: peerbadge_protocol::IssuerContext,
+    authority: peerbadge_protocol::IssuerAuthority,
     service_authority: IssuerAuthority,
-    credential: fedi_credential_sdk_protocol::SignedCredential,
+    credential: peerbadge_protocol::SignedCredential,
     service_credential: fedi_decentralized_service_liquidity_manager::SignedCredential,
     issuer_pubkey_hex: String,
     digest: CredentialDigest,
@@ -31,7 +31,7 @@ fn stage_fixture(relays: Vec<&str>) -> anyhow::Result<StageFixture> {
     let authority = issuer.issuer_authority(
         relays
             .into_iter()
-            .map(|relay| fedi_credential_sdk_protocol::RevocationLocation {
+            .map(|relay| peerbadge_protocol::RevocationLocation {
                 protocol: "nostr".to_owned(),
                 location: relay.to_owned(),
             })
@@ -276,7 +276,7 @@ async fn digests_from_different_issuers_are_fetched_separately() -> anyhow::Resu
     let fixture = stage_fixture(vec!["wss://relay-a.example"])?;
     let foreign_issuer = test_foreign_issuer_context();
     let foreign_authority = foreign_issuer.issuer_authority(vec![
-        fedi_credential_sdk_protocol::RevocationLocation {
+        peerbadge_protocol::RevocationLocation {
             protocol: "nostr".to_owned(),
             location: "wss://relay-foreign.example".to_owned(),
         },
@@ -358,7 +358,7 @@ async fn one_failing_issuer_does_not_mark_another_issuers_digests_unavailable() 
     let fixture = stage_fixture(vec!["wss://relay-a.example"])?;
     let foreign_issuer = test_foreign_issuer_context();
     let foreign_authority = foreign_issuer.issuer_authority(vec![
-        fedi_credential_sdk_protocol::RevocationLocation {
+        peerbadge_protocol::RevocationLocation {
             protocol: "nostr".to_owned(),
             location: "wss://relay-dead.example".to_owned(),
         },
@@ -398,15 +398,15 @@ async fn one_failing_issuer_does_not_mark_another_issuers_digests_unavailable() 
 }
 
 fn issue_credential_with(
-    issuer: &fedi_credential_sdk_protocol::IssuerContext,
-    authority: &fedi_credential_sdk_protocol::IssuerAuthority,
+    issuer: &peerbadge_protocol::IssuerContext,
+    authority: &peerbadge_protocol::IssuerAuthority,
     holder: &HolderContext,
-) -> anyhow::Result<fedi_credential_sdk_protocol::SignedCredential> {
+) -> anyhow::Result<peerbadge_protocol::SignedCredential> {
     let info = serde_json::json!({
         "schema": "fedi-trust-score-v1.0",
         "trust_level": 5,
     });
-    let (request, pending) = fedi_credential_sdk_protocol::PendingIssuance::create_request(
+    let (request, pending) = peerbadge_protocol::PendingIssuance::create_request(
         &authority.issuer.issuance_key,
         authority.issuer.issuer_id_pubkey.clone(),
         info.clone(),

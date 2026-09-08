@@ -2,7 +2,7 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use fedi_credential_sdk_protocol::HolderContext;
+use peerbadge_protocol::HolderContext;
 
 use super::*;
 use crate::test_support::credentials::{
@@ -283,8 +283,8 @@ async fn rejects_content_carrying_an_unsupported_wire_version() -> anyhow::Resul
 
 fn holder_signed_event(
     holder: &HolderContext,
-    authorization: &fedi_credential_sdk_protocol::HolderAuthorization,
-    credential: &fedi_credential_sdk_protocol::SignedCredential,
+    authorization: &peerbadge_protocol::HolderAuthorization,
+    credential: &peerbadge_protocol::SignedCredential,
 ) -> anyhow::Result<Event> {
     let content = serde_json_canonicalizer::to_string(&serde_json::json!({
         "version": 1,

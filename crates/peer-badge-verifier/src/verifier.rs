@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use fedi_credential_sdk_protocol::{
+use peerbadge_protocol::{
     CredentialDigest, CredentialsError, HolderId, IssuerAuthority, IssuerId, SignedRevocation,
     SubjectPubkey, VerificationContext,
 };

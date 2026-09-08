@@ -11,8 +11,8 @@ default-run = "devmon"
 anyhow = "1.0.103"
 axum = "0.8.9"
 clap = { version = "4.6.1", features = ["derive"] }
-fedi-credential-sdk-protocol.workspace = true
-fedi-credential-sdk-schemas.workspace = true
+peerbadge-protocol.workspace = true
+peerbadge-schemas.workspace = true
 fedi-decentralized-manifold-environment = { path = "../manifold-environment" }
 fedi-decentralized-nostr = { version = "0.1.0", path = "../nostr" }
 fedi-decentralized-nostr-clients = { path = "../nostr-clients" }

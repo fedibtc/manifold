@@ -6,7 +6,7 @@
 //! deliberately does not run in this pipeline; the selection-walk tests in
 //! `tests/selection.rs` pin the lazy verification order.
 
-use fedi_credential_sdk_protocol::{
+use peerbadge_protocol::{
     Credential, CredentialDigest, CredentialProof, HolderAuthorization,
     HolderAuthorizationStatement, HolderId, IssuerId, ProtocolV1, SchnorrSignatureProof,
     SignedCredential, SubjectPubkey, Timestamp as SdkTimestamp,

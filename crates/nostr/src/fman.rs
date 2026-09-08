@@ -10,7 +10,7 @@
 #[cfg(test)]
 mod tests;
 
-use fedi_credential_sdk_protocol::SchnorrSignatureProof;
+use peerbadge_protocol::SchnorrSignatureProof;
 use fedi_decentralized_domain::{HolderAuthorizationEnvelope, ProtocolV1};
 use fedi_decentralized_service_fleet_manager::{FedimintdVersion, Plan};
 use serde::{Deserialize, Serialize};

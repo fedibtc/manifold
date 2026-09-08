@@ -1,5 +1,5 @@
 [workspace]
-exclude = [".nix-deps/credential-sdk", ".nix-deps/fedimint"]
+exclude = [".nix-deps/peerbadge-sdk", ".nix-deps/fedimint"]
 members = [
   "crates/bounded-rolling-file",
   "crates/cloud-fman-telemetry",
@@ -147,8 +147,8 @@ debug = false
 async-trait = "0.1"
 ciborium = "0.2"
 clap = { version = "4.5.40", features = ["derive", "env"] }
-fedi-credential-sdk-protocol = { path = ".nix-deps/credential-sdk/crates/protocol" }
-fedi-credential-sdk-schemas = { path = ".nix-deps/credential-sdk/crates/schemas" }
+peerbadge-protocol = { path = ".nix-deps/peerbadge-sdk/crates/protocol" }
+peerbadge-schemas = { path = ".nix-deps/peerbadge-sdk/crates/schemas" }
 # Fedimint crates are version-only (source-neutral): the pinned Fedi release is
 # declared once via the `fedimint` flake input, and `[patch.crates-io]` routes
 # every crate to the Nix-provided `.nix-deps/fedimint` source. Members reference
