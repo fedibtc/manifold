@@ -3220,6 +3220,10 @@ async fn restored_backup_reconciles_to_usable_authority_and_hydrates_liquidity()
     let restored_formation_id = imported.formation_id.clone();
     let restored_generation = imported.snapshot_generation;
     assert!(
+        !imported.backup_eligible,
+        "restored snapshot is not backup-eligible before reconciliation"
+    );
+    assert!(
         restored.inner.store.backup_payload().await.is_err(),
         "an imported snapshot is not backup-eligible before authority reconciliation",
     );
@@ -3232,6 +3236,10 @@ async fn restored_backup_reconciles_to_usable_authority_and_hydrates_liquidity()
         panic!("reconciled restored status");
     };
     assert_eq!(reconciled.freshness, FormationFreshness::Fresh);
+    assert!(
+        reconciled.backup_eligible,
+        "reconciliation must publish backup_eligible on the live status"
+    );
     assert_eq!(reconciled.phase, FormationPhase::Formed);
     assert_eq!(reconciled.formation_id, restored_formation_id);
     let republished = restored.inner.store.backup_payload().await.unwrap();
