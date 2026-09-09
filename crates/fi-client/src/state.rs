@@ -726,6 +726,10 @@ pub struct RestoredFormationSnapshot {
     pub seats: Vec<RestoredSeat>,
     pub phase: FormationPhase,
     pub freshness: FormationFreshness,
+    /// Whether this device has reconciled the restored backup against the
+    /// Fleet Managers at least once. False until the first successful
+    /// reconciliation; persisted.
+    pub backup_eligible: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]

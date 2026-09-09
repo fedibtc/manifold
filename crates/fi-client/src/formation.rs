@@ -3946,6 +3946,7 @@ where
         let mut status = self.inner.store.load_status(fi_id).await?;
         if let FiStatus::Restored(snapshot) = &mut status {
             snapshot.freshness = FormationFreshness::Fresh;
+            snapshot.backup_eligible = true;
         }
         self.inner.progress.send_replace(status);
         Ok(())
