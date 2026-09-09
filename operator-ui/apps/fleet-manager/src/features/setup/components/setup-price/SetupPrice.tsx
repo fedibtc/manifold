@@ -96,7 +96,13 @@ export const SetupPrice = ({ onDone }: SetupPriceProps) => {
           className={styles.input}
           value={priceSats}
           onChange={handlePriceChange}
+          aria-describedby="setup-price-sats-hint"
         />
+
+        <em id="setup-price-sats-hint" className={styles.hint}>
+          We suggest the equivalent of $2–$3. A lower price fills your seats sooner.
+        </em>
+
         {error ? <span className={styles.error}>{error}</span> : null}
 
         <div className={styles.actions}>

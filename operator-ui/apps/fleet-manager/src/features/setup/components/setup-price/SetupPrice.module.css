@@ -26,6 +26,10 @@
   @apply uInputXs;
 }
 
+.hint {
+  @apply uFieldHint;
+}
+
 .error {
   @apply uFieldError;
 }
