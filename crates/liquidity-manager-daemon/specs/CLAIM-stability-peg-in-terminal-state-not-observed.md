@@ -65,8 +65,8 @@ Unverified.
   `.nix-deps/fedimint`; root workspace dependencies request Fedimint 0.11.2,
   the daemon inherits them with `{ workspace = true }`, and root `[patch]`
   entries select that Nix-provided source pinned by `flake.lock` to
-  `fedibtc/fedimint@a6fa6d83f4bea26d4f51cbf26d305d0b64727e00` (original ref
-  `v0.11.2-fedi2`). The update from fedi18 leaves the wallet-client and
+  `fedibtc/fedimint@332efe1f664d36bcbbbfb089031d600c5f3e5585` (original ref
+  `v0.11.2-fedi4`). The update from fedi18 leaves the wallet-client and
   operation-outcome paths used by this claim unchanged. The downstream stability client is pinned
   in the daemon manifest and `Cargo.lock` to
   `fedixyz/fedi@2f35ea4e3b2516d35b8ed315455718cd3b336758`. Downstream deposit

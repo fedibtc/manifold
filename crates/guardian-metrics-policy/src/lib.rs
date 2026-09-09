@@ -297,7 +297,7 @@ impl MetricsPolicy {
 
 #[doc(hidden)]
 pub fn checked_source_manifest_matches_policy() -> bool {
-    let manifest = include_str!("../../../docs/telemetry/fedimint-metrics-v0.11.2-fedi2.tsv")
+    let manifest = include_str!("../../../docs/telemetry/fedimint-metrics-v0.11.2-fedi4.tsv")
         .lines()
         .filter_map(|line| {
             let mut fields = line.split('\t');
