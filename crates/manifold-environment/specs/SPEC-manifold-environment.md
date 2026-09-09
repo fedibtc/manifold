@@ -28,15 +28,15 @@ Each value resolves to a `ManifoldEnvironmentProfile` containing:
 - an optional typed public default Esplora URL; and
 - for development and staging only, the committed complete `IssuerSecretKeys`
   JSON of the environment's placeholder issuer (`test_issuer_secret_keys()`;
-  `None` for production) together with the identity-signed `IssuerAuthority`
-  document derived from it (`pinned_issuer_authorities()`; empty for
-  production).
+  `None` for production); and
+- one identity-signed public `IssuerAuthority` document per configured issuer
+  (`pinned_issuer_authorities()`).
 
-The profile exposes `profile_revision()`, currently `8`. Every change to an
-environment's relay, issuer-identity, committed issuer secret, PeerBadge
-minimum trust level, setup-payment-publisher, Guardian Verification Fee account,
-Bitcoin-network, or default-Esplora mapping must increment the shared
-revision.
+The profile exposes `profile_revision()`, currently `9`. Every change to an
+environment's relay, issuer identity or authority, committed issuer secret,
+PeerBadge minimum trust level, setup-payment publisher, Guardian Verification
+Fee account, Bitcoin network, or default Esplora mapping must increment the
+shared revision.
 Operators must roll out such a change across
 independently released FI, FMan, FLIP, push-gateway telemetry, and cloud FMan
 telemetry collector components as one coordinated deployment and use the revision in diagnostics to identify a
@@ -59,8 +59,10 @@ The staging secret fixture must be the
 deployment's previously canonical key file — copied, never regenerated — or
 credentials issued before the fixture landed stop verifying; no in-repo test
 can enforce that against the deployment, so fixture replacement is a
-review-time obligation. Production commits no issuer secret and no authority
-document.
+review-time obligation. Production commits no issuer secret. It pins one
+issuer-supplied signed public authority per configured identity, so relying
+components do not accept a relay event as an issuance-key or revocation-route
+replacement.
 
 Development forms regtest federations and has no public default chain backend.
 Staging forms Mutinynet federations: Fedimint receives the generic `signet`
@@ -75,12 +77,16 @@ operator override.
 Production carries personal PeerBadge issuer keys, each secret held
 individually by its owner rather than by the deployment. They are listed in
 trust-roster order and stored as x-only hex alongside the `npub` encoding of
-each key. Production must never receive a generated or known-secret
-placeholder. `PeerBadgeVerifier` construction still fails closed when an
-environment's issuer list is empty, so removing the last production
-issuer disables production verification rather than widening trust. Changing
-the production roster is a profile-revision change shipped in a coordinated
-component release, never a runtime or operator-supplied value.
+each key. The matching public authority documents are stored in the same order
+and fix each issuer's issuance key and revocation locations for the release.
+Production must never receive a generated or known-secret placeholder.
+`PeerBadgeVerifier` construction still fails closed when an environment's
+issuer list is empty, so removing the last production issuer disables
+production verification rather than widening trust. Changing the production
+roster or an authority is a profile-revision change shipped in a coordinated
+component release, never a runtime or operator-supplied value. Replacing an
+authority changes the issuance key accepted for that issuer and makes badges
+signed by the previous issuance key unverifiable in the new release.
 
 Every environment requires an authenticated `fedi-trust-score-v1.0`
 PeerBadge trust level of at least `9`, admitting the schema range `9..=12` as
@@ -129,9 +135,11 @@ and staging carry distinct unsafe known-test accounts. Production pins its
 deployment-owned account.
 
 The canonical relay list does not itself define consumer policy. PeerBadge
-verification interprets it as its issuer-authority lookup set; FMan uses it
-for advertisement, HolderAuthorization discovery, and setup-payment
-publication refresh (currently through the first listed relay).
+verification uses it only when resolving an unpinned authority; canonical
+profiles pin every authority and take revocation routing from those signed
+documents. FMan uses the canonical relays for advertisement,
+HolderAuthorization discovery, and setup-payment publication refresh
+(currently through the first listed relay).
 
 Tests pin parsing/display aliases, exact relay ordering, development/staging
 sharing, the minimum PeerBadge trust level, distinct test issuer identities,

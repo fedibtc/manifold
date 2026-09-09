@@ -31,8 +31,8 @@ The verifier's validated static configuration contains exactly:
 - a schema-valid minimum PeerBadge trust level;
 - a non-empty ordered set of issuer-authority relay URLs; and
 - one **pinned authority** per committed authority document the profile
-  carries (development and staging today; production pins none), admitted at
-  construction.
+  carries, admitted at construction. Every canonical profile carries one
+  document per configured issuer.
 
 Issuer identity keys are cryptographic trust roots in every environment. For
 an issuer with a pinned authority, the issuance key and revocation locations
@@ -40,10 +40,10 @@ are additionally fixed at construction: the verifier parses the committed,
 identity-signed `IssuerAuthority` document, verifies its proof, enforces the
 revocation-location bound, and rejects construction when its identity is not
 a configured root. Admitting the document involves no secret handling,
-signing, or randomness. For every other issuer — production — issuance keys
+signing, or randomness. For an issuer without a pinned document, issuance keys
 and revocation locations come from a freshly fetched, identity-signed
-`IssuerAuthority`; they are never pinned by the consuming application or
-persisted by the verifier.
+`IssuerAuthority`; this path remains available to explicit test configurations,
+but canonical profiles do not use it.
 
 `ManifoldEnvironmentProfile` supplies typed issuer identities, canonical relay
 routing, the schema-valid minimum trust level, and the committed authority
@@ -53,7 +53,8 @@ marked known-secret placeholders; their complete secrets and the authority
 documents signed with them are deliberately committed, and a
 manifold-environment unit test enforces that each document, the committed
 secret, and the canonical relays agree. Production supplies issuer-controlled
-keys and commits neither secrets nor documents;
+identity keys and issuer-supplied signed public authority documents, but no
+issuer secrets;
 `PeerBadgeVerifier::try_from_profile` returns a typed
 configuration error for any environment whose issuer list is empty or whose
 committed document fails to parse, verify, respect bounds, or match a
@@ -61,17 +62,18 @@ configured root.
 
 ## Authority and revocation visibility
 
-Authority replacements and revocations are not instantaneously or atomically
-visible. Each completed relay read defines the state observed by that
-verification. A concurrent or unpropagated publication affects that call only
-when its response includes it; a later fresh verification may observe it
-instead.
+Revocations, and authority replacements for unpinned issuers, are not
+instantaneously or atomically visible. Each completed relay read defines the
+state observed by that verification. A concurrent or unpropagated publication
+affects that call only when its response includes it; a later fresh verification
+may observe it instead.
 
 Under the relay assumptions below, a visible newer admitted authority
 supersedes an older authority, and a visible matching valid revocation rejects
 the credential. The verifier refetches revocation state on every call and
 refetches authority state for unpinned issuers. It has no local authority or
-revocation cache, high-water mark, or stale fallback. Consumers that need
+revocation cache, high-water mark, or stale fallback. Canonical authorities
+change only through a coordinated profile revision. Consumers that need
 stronger synchronization need a separate mechanism.
 
 ## Shared construction boundary
@@ -168,10 +170,11 @@ An incomplete result fails verification; it is never evidence that no newer
 authority or revocation exists. This deliberately favors omission resistance
 over availability.
 
-Configured authority relays are deployment trust configuration. They are
-assumed to answer with the authority replacement visible to the relevant fresh
-read and not roll an issuer back to an older authority after a component
-restart. The verifier therefore does not persist historical authority state.
+For an unpinned issuer, configured authority relays are trust configuration.
+They are assumed to answer with the authority replacement visible to the
+relevant fresh read and not roll an issuer back to an older authority after a
+component restart. The verifier therefore does not persist historical
+authority state.
 
 This currentness assumption does not make relay event content
 cryptographically trusted. Every returned event and embedded signed object
@@ -184,10 +187,10 @@ contract.
 An authenticated authority delegates negative-state completeness trust to
 every Nostr revocation relay it names. Each such relay operator must honestly
 retain and return the issuer's revocations visible to the relevant fresh read;
-EOSE proves completion of the response, not operator honesty. This trust
-follows the current signed authority so the issuer can replace a revocation
-location without coordinated component releases. A compromised or mistakenly
-chosen delegated relay can conceal a revocation until the issuer replaces it.
+EOSE proves completion of the response, not operator honesty. A compromised or
+mistakenly chosen delegated relay can conceal a revocation until the issuer
+replaces it. For a canonical pinned issuer, replacing the authority or its
+revocation locations requires a coordinated profile revision.
 
 ## Intentional omissions and change constraints
 

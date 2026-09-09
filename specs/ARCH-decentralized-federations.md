@@ -53,12 +53,13 @@ operators (Holders), operators sign `HolderAuthorization`s binding a
 component's pubkey to a credential, and components embed those in signed
 Nostr advertisements. `crates/manifold-environment` owns the shared deployment
 identity, relay routing, issuer-identity data, and minimum PeerBadge trust
-level. FI, FLIP, push-gateway guardian telemetry, and the cloud FMan telemetry
-collector use the cloneable verifier
-in `crates/peer-badge-verifier`; deployments pin only
-issuer identity roots, while each verification fetches and admits the current
-identity-signed authority and current revocation state without durable caching,
-then applies the environment's minimum to the authenticated badge.
+level. Its canonical profiles also pin one identity-signed public authority per
+issuer. FI, FLIP, push-gateway guardian telemetry, and the cloud FMan telemetry
+collector use the cloneable verifier in `crates/peer-badge-verifier`; each
+verification uses the profile-pinned authority, fetches current revocation
+state without durable caching, then applies the environment's minimum to the
+authenticated badge. Authority replacement requires a coordinated profile
+revision and invalidates badges signed by the previous issuance key.
 FLIP's request-carried FMan trust pipeline applies the same shared domain
 policy after its direct envelope verification.
 FMan carries its own HolderAuthorization but does not judge its own badge
