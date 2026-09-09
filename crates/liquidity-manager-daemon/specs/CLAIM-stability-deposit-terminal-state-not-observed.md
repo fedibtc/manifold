@@ -78,8 +78,8 @@ Unverified.
   `2f35ea4e3b2516d35b8ed315455718cd3b336758`. The Nix `fedi` input selects the
   same revision for the stability-enabled test server. Workspace patches source
   Fedimint 0.11.2 from `.nix-deps/fedimint`; `flake.nix` names
-  `v0.11.2-fedi2` and `flake.lock` fixes it at
-  `a6fa6d83f4bea26d4f51cbf26d305d0b64727e00`. The update from fedi18 leaves
+  `v0.11.2-fedi4` and `flake.lock` fixes it at
+  `332efe1f664d36bcbbbfb089031d600c5f3e5585`. The update from fedi18 leaves
   the client transaction, outcome-cache, and operation-log sources used by
   this claim unchanged. Those
   immutable sources are in Scope, rather than assumed library contracts.

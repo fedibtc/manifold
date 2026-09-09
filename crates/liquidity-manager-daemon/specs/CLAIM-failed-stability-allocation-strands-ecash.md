@@ -68,8 +68,8 @@ Unverified.
   secret to use an external client are excluded.  A host may remove a
   crash-left daemon lock so restart is possible.
 - **A3 — pinned sources.** `flake.nix`, `flake.lock`, the root workspace
-  dependencies, and Cargo patches select Fedimint tag `v0.11.2-fedi2`, exact
-  revision `a6fa6d83f4bea26d4f51cbf26d305d0b64727e00`. The update from fedi18
+  dependencies, and Cargo patches select Fedimint tag `v0.11.2-fedi4`, exact
+  revision `332efe1f664d36bcbbbfb089031d600c5f3e5585`. The update from fedi18
   leaves the Fedimint client transaction, mint input/refund, and operation-log
   sources used by this claim unchanged. The daemon manifest and
   `Cargo.lock` select `stability-pool-client` 0.3.0 and common at Fedi

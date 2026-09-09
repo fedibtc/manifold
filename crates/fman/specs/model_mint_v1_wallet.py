@@ -2,8 +2,8 @@
 """Model the pinned Fedimint mint-v1 finalizer used by paid-seat claims.
 
 This is an executable transcription of the fee and note-shaping paths in
-Fedimint release v0.11.2-fedi2 (commit
-a6fa6d83f4bea26d4f51cbf26d305d0b64727e00):
+Fedimint release v0.11.2-fedi4 (commit
+332efe1f664d36bcbbbfb089031d600c5f3e5585):
 
 * ``FeeConsensus`` in ``modules/fedimint-mint-common/src/config.rs``;
 * ``consolidate_notes`` and ``represent_amount`` in
