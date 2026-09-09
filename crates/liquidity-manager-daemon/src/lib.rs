@@ -117,6 +117,35 @@ use crate::wallet::domain_network_to_bitcoin;
 ///
 /// A new worker whose terminal write cannot be re-derived from a repeatable
 /// read belongs in the second group.
+/// A stable per-worker fraction of `period`, so the workers in one daemon do
+/// not tick together.
+///
+/// Derived from the worker name and nothing else. That makes it identical
+/// across a fleet, which is deliberate: this de-phases the workers *within* a
+/// daemon, and does nothing for a fleet restarted together. Doing that needs a
+/// per-instance value FLIP does not have at this point in startup — the data
+/// directory is typically identical across containerised deployments, and the
+/// provider identity is not installed yet — so it is a separate change with a
+/// separate decision behind it, tracked in the FLIP open items.
+///
+/// Kept under one period so a worker's first scheduled pass never slips past
+/// the cadence its caller asked for.
+fn worker_phase_offset(worker: Worker, period: Duration) -> Duration {
+    use std::hash::{Hash, Hasher};
+
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    worker.to_string().hash(&mut hasher);
+    // Spread over the period rather than over a fixed span: the periods here
+    // differ by an order of magnitude, and a spread wider than the period
+    // would delay the fast workers by whole cycles.
+    //
+    // The shift takes the 53 bits an f64 represents exactly, so the division
+    // lands in [0, 1) without rounding to 1.0 and the offset stays under one
+    // period.
+    let fraction = (hasher.finish() >> 11) as f64 / (1u64 << 53) as f64;
+    period.mul_f64(fraction)
+}
+
 pub(crate) async fn run_interval_task<T, F, Fut>(
     context: DaemonContext,
     worker: Worker,
@@ -139,10 +168,24 @@ where
     // logged once rather than once per pass. Health already carries the
     // standing state; the log carries the change to it.
     let mut last_failure: Option<String> = None;
+    // `interval` fires immediately and then holds an exact fixed period, so
+    // every worker in one daemon ticks together for as long as the process
+    // lives. Four workers hitting SQLite, the gateway, and the relays in one
+    // burst is worse than the same work spread across the period, and it stays
+    // that way because nothing ever perturbs the phase.
+    //
+    // The first pass stays immediate — startup work should not wait — and the
+    // schedule shifts once afterwards. `reset_after` is what keeps that a
+    // schedule change rather than a sleep: sleeping inside the `select!` arm
+    // would make shutdown unresponsive for the length of the offset.
+    let mut pending_offset = Some(worker_phase_offset(worker, period));
     loop {
         tokio::select! {
             _ = context.shutdown.cancelled() => return Ok(()),
             _ = interval.tick() => {
+                if let Some(offset) = pending_offset.take() {
+                    interval.reset_after(period + offset);
+                }
                 // One pass is the unit a backup's quiescence barrier holds
                 // still: a pass reads an item from SQLite, acts on a Fedimint
                 // client, and writes the result back, so it is what can leave
@@ -245,4 +288,67 @@ pub(crate) fn permission_denied(message: impl Into<String>) -> ServiceError {
 
 pub(crate) fn unavailable(error: impl std::fmt::Display) -> ServiceError {
     ServiceError::with_code(ServiceErrorCode::Unavailable, error.to_string())
+}
+
+#[cfg(test)]
+mod phase_offset_tests {
+    use super::*;
+    use strum::IntoEnumIterator;
+
+    /// The offset stays inside one period.
+    ///
+    /// It is added to a whole period before the next tick, so an offset that
+    /// could reach or exceed the period would push a worker's cadence past what
+    /// its caller asked for — a 10 s worker running every 20 s.
+    #[test]
+    fn an_offset_is_under_one_period() {
+        for worker in Worker::iter() {
+            for period in [
+                Duration::from_millis(100),
+                Duration::from_secs(10),
+                Duration::from_secs(30),
+                Duration::from_secs(60),
+            ] {
+                let offset = worker_phase_offset(worker, period);
+                assert!(
+                    offset < period,
+                    "{worker} offset {offset:?} is not under period {period:?}"
+                );
+            }
+        }
+    }
+
+    /// Workers sharing a period land on different phases.
+    ///
+    /// This is the whole point: `GatewayAllocation` and `StabilityPoolAllocation`
+    /// both run every 10 s, and both hitting SQLite and their dependencies in
+    /// the same instant is the burst being spread.
+    #[test]
+    fn workers_sharing_a_period_do_not_share_a_phase() {
+        let period = Duration::from_secs(10);
+        let offsets: Vec<Duration> = Worker::iter()
+            .map(|worker| worker_phase_offset(worker, period))
+            .collect();
+        let mut distinct = offsets.clone();
+        distinct.sort();
+        distinct.dedup();
+        assert_eq!(
+            distinct.len(),
+            offsets.len(),
+            "two workers share a phase: {offsets:?}"
+        );
+    }
+
+    /// The offset is a function of the worker name, so a restart puts a worker
+    /// back on the phase it had. Nothing here reads a clock or a random source.
+    #[test]
+    fn an_offset_is_stable_across_calls() {
+        let period = Duration::from_secs(30);
+        for worker in Worker::iter() {
+            assert_eq!(
+                worker_phase_offset(worker, period),
+                worker_phase_offset(worker, period)
+            );
+        }
+    }
 }
