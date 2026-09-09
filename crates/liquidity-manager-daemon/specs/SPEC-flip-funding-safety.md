@@ -147,6 +147,17 @@ notes without restoring its log. A gateway that was rebuilt, rolled back,
 replaced, or restored therefore cannot attest to a deposit it really did claim,
 and the evidence never arrives however long the item waits.
 
+A settled send whose claim stays unreported past
+`funding_policy.gateway_claim_review_after_secs`, measured from the funding
+operation's last update, escalates the item to `action_required`. The threshold
+governs only when to stop waiting: a claim the gateway reports later still
+completes the item, exactly as settlement evidence still wins after the
+wallet-side review threshold has passed. A threshold of zero disables
+escalation. Escalation exists for the reason the wallet-side escalation does —
+past this point the item can neither complete nor be cancelled nor be retried,
+so without it nothing would ever move it.
+
+Escalation alone does not release the item: `action_required` still reserves.
 When the gateway will never attest, the operator may abandon the item, with a
 required reason. That fails it and releases its reservation, and records that
 the value is at the gateway and recovering it happens outside FLIP. Abandoning

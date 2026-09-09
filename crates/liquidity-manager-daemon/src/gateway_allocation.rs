@@ -11,7 +11,7 @@
 
 use fedi_decentralized_service_liquidity_manager::{
     CompletionEvidence, GatewayCompletionEvidence, LiquidityFailureCode, Sats, ServiceResult,
-    SetupConfigView, WalletOperationId, WalletOperationStatus,
+    SetupConfigView, WalletOperation, WalletOperationId, WalletOperationStatus,
 };
 
 use crate::DaemonContext;
@@ -336,7 +336,16 @@ async fn complete_if_gateway_funded(
     // federation-wide balance inequality is not, because a concurrent item or
     // an independent deposit raises the same aggregate.
     let Some(funding_txid) = operation.txid.as_deref() else {
-        recheck_gateway_deposit(setup, gateway, &item).await?;
+        recheck_or_escalate(
+            database,
+            setup,
+            gateway,
+            &item,
+            &operation,
+            "the funding send settled without recording a transaction id, so no \
+             gateway claim can ever be attributed to this item",
+        )
+        .await?;
         return Ok(false);
     };
     let claims = match gateway.deposit_claims(&item.target.federation_id.0).await {
@@ -351,6 +360,18 @@ async fn complete_if_gateway_funded(
                 %error,
                 "gateway could not report its claimed deposits"
             );
+            // A gateway that has answered nothing for longer than the review
+            // threshold is not going to start. Escalating hands the item to an
+            // operator instead of retrying this read for the life of the
+            // process.
+            escalate_if_review_due(
+                database,
+                setup,
+                &item,
+                &operation,
+                "the gateway cannot report its claimed deposits",
+            )
+            .await?;
             return Ok(false);
         }
     };
@@ -366,7 +387,15 @@ async fn complete_if_gateway_funded(
             && claim.amount.0 >= item.committed_amount.0
     });
     if !claimed {
-        recheck_gateway_deposit(setup, gateway, &item).await?;
+        recheck_or_escalate(
+            database,
+            setup,
+            gateway,
+            &item,
+            &operation,
+            "the gateway does not report claiming the deposit this item funded",
+        )
+        .await?;
         return Ok(false);
     }
     // Completion evidence records what the gateway reported for the funded
@@ -377,7 +406,16 @@ async fn complete_if_gateway_funded(
         .await
         .map_err(unavailable)?
     else {
-        recheck_gateway_deposit(setup, gateway, &item).await?;
+        recheck_or_escalate(
+            database,
+            setup,
+            gateway,
+            &item,
+            &operation,
+            "the gateway does not report the funded federation, so there is no \
+             balance to record as completion evidence",
+        )
+        .await?;
         return Ok(false);
     };
     allocation_store::upsert_gateway_observation(
@@ -410,6 +448,78 @@ async fn complete_if_gateway_funded(
             withdrawal_txid: operation.txid,
             wallet_operation_id: Some(operation_id),
         }),
+    )
+    .await?;
+    Ok(true)
+}
+
+/// Rechecks the deposit address, or escalates the item once the funding send
+/// has gone unattested for longer than the operator's review threshold.
+///
+/// A gateway item completes only against the gateway's own payment log, and that
+/// log is local to the gateway: rebuilding, replacing, or restoring one loses
+/// the claim it already made, and rejoining the federation with the same
+/// mnemonic recovers notes but not the log. Once the send has settled, both
+/// operator exits are shut — `cancel_allocation` refuses a `completed` wallet
+/// operation and `retry_funding_step` refuses it too — so an item left `running`
+/// here holds provider capacity for the life of the installation.
+///
+/// This is the gateway counterpart of the wallet-side
+/// `in_doubt` -> `manual_review_required` escalation, and exists for the reason
+/// stated there: evidence still missing after this long is not going to resolve
+/// itself, and only an operator can decide what happened.
+async fn recheck_or_escalate(
+    database: &Database,
+    setup: &SetupConfigView,
+    gateway: &impl GatewayClient,
+    item: &GatewayAllocationItem,
+    operation: &WalletOperation,
+    reason: &str,
+) -> ServiceResult<()> {
+    if escalate_if_review_due(database, setup, item, operation, reason).await? {
+        return Ok(());
+    }
+    recheck_gateway_deposit(setup, gateway, item).await
+}
+
+/// Escalates a settled-but-unattested gateway item to `action_required`, and
+/// reports whether it did.
+///
+/// The age is measured from the funding operation's last update, which for a
+/// settled send is when it reached `completed`; terminal wallet states are
+/// monotonic, so that timestamp stops moving and the age keeps growing. A
+/// threshold of zero disables escalation.
+///
+/// `require_item_action` only moves a `pending` or `running` item, so calling
+/// this every pass is safe: the first one transitions the item and logs, and
+/// the rest change nothing. The worker stops selecting the item afterwards
+/// because `action_required` is not an active status.
+async fn escalate_if_review_due(
+    database: &Database,
+    setup: &SetupConfigView,
+    item: &GatewayAllocationItem,
+    operation: &WalletOperation,
+    reason: &str,
+) -> ServiceResult<bool> {
+    let threshold = setup.funding_policy.gateway_claim_review_after_secs;
+    if threshold == 0 {
+        return Ok(false);
+    }
+    let unattested_for = now_timestamp().0.saturating_sub(operation.updated_at.0);
+    if unattested_for < threshold {
+        return Ok(false);
+    }
+    allocation_store::require_item_action(
+        database,
+        &item.federation_id,
+        &item.item_id,
+        LiquidityFailureCode::GatewayAttachFailed,
+        format!(
+            "the funding send settled {unattested_for}s ago and {reason}. The sats \
+             reached the gateway; FLIP cannot attribute them and will not send \
+             again. Resolve with abandon_gateway_item once you have confirmed \
+             where they are."
+        ),
     )
     .await?;
     Ok(true)

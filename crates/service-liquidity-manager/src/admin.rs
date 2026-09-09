@@ -485,6 +485,20 @@ pub struct FundingPolicyConfig {
     /// cancellation both.
     #[serde(default = "default_in_doubt_review_after_secs")]
     pub in_doubt_review_after_secs: u64,
+
+    /// How long a gateway item may hold a settled funding send whose deposit
+    /// the gateway never reports claiming, before it is escalated to
+    /// `action_required`.
+    ///
+    /// Measured from the funding operation's last update, which for a settled
+    /// send is when it reached `completed`. Completion needs the gateway's own
+    /// payment log to name the funded output, and that log is local to the
+    /// gateway: a rebuilt, replaced, or re-synced gateway does not have it, and
+    /// no client-side recovery restores it. Without a threshold such an item
+    /// stays `running` forever, holding provider capacity, while `cancel` and
+    /// `retry` both refuse it for having already sent the money.
+    #[serde(default = "default_gateway_claim_review_after_secs")]
+    pub gateway_claim_review_after_secs: u64,
 }
 
 /// Conservative default review threshold: long enough that an honestly
@@ -494,6 +508,14 @@ const DEFAULT_IN_DOUBT_REVIEW_AFTER_SECS: u64 = 21_600;
 
 fn default_in_doubt_review_after_secs() -> u64 {
     DEFAULT_IN_DOUBT_REVIEW_AFTER_SECS
+}
+
+/// Same conservatism as the wallet threshold, and deliberately the same value:
+/// both answer "the evidence has had every reasonable chance to appear".
+const DEFAULT_GATEWAY_CLAIM_REVIEW_AFTER_SECS: u64 = 21_600;
+
+fn default_gateway_claim_review_after_secs() -> u64 {
+    DEFAULT_GATEWAY_CLAIM_REVIEW_AFTER_SECS
 }
 
 impl FundingPolicyConfig {
@@ -511,6 +533,7 @@ impl FundingPolicyConfig {
             confirmations,
             stability_pool_min_fee_rate_ppb: 0,
             in_doubt_review_after_secs: DEFAULT_IN_DOUBT_REVIEW_AFTER_SECS,
+            gateway_claim_review_after_secs: DEFAULT_GATEWAY_CLAIM_REVIEW_AFTER_SECS,
         }
     }
 }
