@@ -156,8 +156,8 @@ and happens before teardown.
 
 Both paths also refuse an archive whose secret records cannot be decrypted with
 the key the daemon will use. That happens when the backup was written under a
-different `FLIP_SECRET_STORE_KEY`; without the check the restore would land and
-the daemon would come up unable to read any secret, including the admin token,
+different `FLIP_SECRET_KEY`; without the check the restore would land and the
+daemon would come up unable to read any secret, including the admin token,
 locking you out of the API.
 
 **A restore also restores the admin token.** It is stored with the other
@@ -169,10 +169,10 @@ afterwards using it.
 ### Locked out of the Admin API
 
 A rotated admin token replaces the bootstrap token outright. If the secret
-store becomes unreadable — a bad disk, or a `FLIP_SECRET_STORE_KEY` that does
-not match the stored records — the daemon cannot read that token and answers
-every authenticated route with 500 rather than falling back, so that breaking
-storage is not a way to re-enable a credential you retired. Unauthenticated
+store becomes unreadable — a bad disk, or a `FLIP_SECRET_KEY` that does not
+match the stored records — the daemon cannot read that token and answers every
+authenticated route with 500 rather than falling back, so that breaking storage
+is not a way to re-enable a credential you retired. Unauthenticated
 `GET /health` keeps working.
 
 To get back in, restart with the break-glass flag, which accepts the bootstrap

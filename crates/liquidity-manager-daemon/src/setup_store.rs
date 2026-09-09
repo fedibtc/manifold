@@ -777,7 +777,7 @@ pub(crate) async fn ensure_secret_records_decryptable(
     Err(failed_precondition(format!(
         "secret records cannot be decrypted with this daemon's secret-store key: {}. \
          The archive was written under a different key; restore it with that key \
-         (--secret-store-key / FLIP_SECRET_STORE_KEY) or from a host that has it.",
+         (--secret-store-key / FLIP_SECRET_KEY) or from a host that has it.",
         unreadable.join(", ")
     )))
 }
