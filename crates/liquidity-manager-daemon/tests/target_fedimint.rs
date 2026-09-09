@@ -103,6 +103,59 @@ fn the_capacity_report_names_occupants_oldest_first() {
     );
 }
 
+/// Occupancy separates a busy pool from a wedged one.
+///
+/// A full pending budget on its own is four opens that started a moment ago
+/// and will finish. The wedge is a full budget where every occupant has also
+/// passed the reporting threshold: nothing reclaims a pending slot, so no
+/// further target client opens until the process restarts. Reporting both as
+/// the same state would either cry wolf on a busy pool or say nothing about
+/// the one an operator has to restart.
+#[test]
+fn occupancy_separates_a_busy_pool_from_a_wedged_one() {
+    let stuck = STUCK_OPEN_REPORT_AFTER + std::time::Duration::from_secs(1);
+    let fresh = std::time::Duration::from_secs(1);
+
+    let occupancy = |ages: Vec<(&str, std::time::Duration)>| TargetClientPoolOccupancy {
+        installed: 0,
+        max_installed: 8,
+        pending_open_budget: MAX_PENDING_OPENS,
+        stuck_after: STUCK_OPEN_REPORT_AFTER,
+        pending_open_ages: ages
+            .into_iter()
+            .map(|(id, age)| (id.to_owned(), age))
+            .collect(),
+    };
+
+    let busy = occupancy((0..MAX_PENDING_OPENS).map(|_| ("f", fresh)).collect());
+    assert_eq!(busy.pending_opens(), MAX_PENDING_OPENS);
+    assert_eq!(busy.stuck_opens(), 0);
+    assert!(
+        !busy.is_wedged(),
+        "a full budget of young opens is not wedged"
+    );
+
+    let mut mixed: Vec<(&str, std::time::Duration)> =
+        (0..MAX_PENDING_OPENS - 1).map(|_| ("f", stuck)).collect();
+    mixed.push(("f", fresh));
+    let mixed = occupancy(mixed);
+    assert_eq!(mixed.stuck_opens(), MAX_PENDING_OPENS - 1);
+    assert!(
+        !mixed.is_wedged(),
+        "one open that can still finish is not the wedge"
+    );
+
+    let wedged = occupancy((0..MAX_PENDING_OPENS).map(|_| ("f", stuck)).collect());
+    assert_eq!(wedged.stuck_opens(), MAX_PENDING_OPENS);
+    assert!(wedged.is_wedged());
+
+    // Below budget, every open stuck: still not the wedge, because a slot is
+    // free and the next target that answers opens through it.
+    let partial = occupancy(vec![("f", stuck)]);
+    assert_eq!(partial.stuck_opens(), 1);
+    assert!(!partial.is_wedged());
+}
+
 /// Pending opens are bounded, and bounded separately.
 ///
 /// The concern is unchanged from when opens shared the client ceiling: if

@@ -109,17 +109,18 @@ pending open. Filed as
 [`pending-open-budget-wedges-target-clients`](../../crates/liquidity-manager-daemon/specs/CLAIM-pending-open-budget-wedges-target-clients.md).
 
 The fault is reported and attributable: a pending open past five minutes logs
-once at `warn` with its federation id and age, and a capacity refusal names every
-occupying federation oldest first.
+once at `warn` with its federation id and age, a capacity refusal names every
+occupying federation oldest first, and the `target_client_pool` health component
+carries the standing occupancy — installed clients against their ceiling,
+pending opens against their budget, how many have passed the stuck threshold,
+and the oldest occupants by age. It warns on a full budget and goes unhealthy
+only on the wedge, meaning a full budget whose every occupant is stuck, which is
+the state a restart is the sole exit from.
 
-Two things remain open.
-
-- **The real fix is a pinned-Fedimint change** bounding api-version negotiation.
-  It closes the original unbounded wait as well.
-- **These are log lines, not a metric.** FLIP has no admin verb or gauge exposing
-  pool occupancy, so an operator alert has to come from log matching. Worth
-  adding when FLIP gains a metrics surface; not worth inventing one for this
-  alone.
+**The real fix is still a pinned-Fedimint change** bounding api-version
+negotiation. It closes the original unbounded wait as well. Until then an
+operator alerts on the health component and restarts; nothing in the Admin
+surface reclaims a pending slot.
 
 ### Backup archives are not authenticated
 
