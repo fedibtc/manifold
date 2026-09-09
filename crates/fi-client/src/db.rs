@@ -1629,6 +1629,7 @@ impl FiStore {
                     .collect(),
                 phase: FormationPhase::Formed,
                 freshness: FormationFreshness::Unsynced,
+                backup_eligible: restored.backup_eligible,
             }));
         };
         validate_schema_and_owner(&stored, fi_id)?;

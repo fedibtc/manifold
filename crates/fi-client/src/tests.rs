@@ -3116,6 +3116,52 @@ async fn encrypted_backup_restore_imports_unsynced_lean_state_and_blocks_create(
 }
 
 #[tokio::test]
+async fn restored_snapshot_reports_backup_eligible_after_reconcile() {
+    let (source, _, _, _) = formed_client_for_liquidity().await;
+    let keys = crate::backup::FiBackupKeys::derive(&source.inner.ports.identity.scoped_root());
+    let encrypted = keys
+        .seal(&source.inner.store.backup_payload().await.unwrap().payload)
+        .unwrap();
+    let database = MemDatabase::new().into_database();
+    let (payments, _) = TestPayments::new();
+    let restored = open_client(
+        database,
+        payments,
+        Arc::new(FmanState::default()),
+        FmanConfig::given_away(),
+    )
+    .await;
+    let payload = keys.open(&encrypted).unwrap();
+    let fi_id = restored.inner.ports.identity.public_key().unwrap();
+    let status = restored
+        .inner
+        .store
+        .restore_backup_payload(fi_id, payload)
+        .await
+        .unwrap();
+    restored.inner.progress.send_replace(status);
+
+    let FiRecovery::Restored(snapshot) = restored.inner.store.load_recovery(fi_id).await.unwrap()
+    else {
+        panic!("expected restored recovery");
+    };
+    assert!(!snapshot.backup_eligible);
+
+    restored
+        .inner
+        .store
+        .reconcile_restored_backup(fi_id, None)
+        .await
+        .unwrap();
+
+    let FiRecovery::Restored(snapshot) = restored.inner.store.load_recovery(fi_id).await.unwrap()
+    else {
+        panic!("expected restored recovery");
+    };
+    assert!(snapshot.backup_eligible);
+}
+
+#[tokio::test]
 async fn restored_backup_reconciles_to_usable_authority_and_hydrates_liquidity() {
     let (source, formation_id, fman_state, connector) = formed_client_for_liquidity().await;
     connector.0.fail_next_connect.store(true, Ordering::SeqCst);

@@ -82,6 +82,7 @@ fn restored_text_status_reports_current_freshness() {
             seats: Vec::new(),
             phase: fi_client::FormationPhase::Formed,
             freshness,
+            backup_eligible: false,
         });
         let (stdout, stderr) = capture(|output| output.snapshot(&status, OutputFormat::Human));
         assert_eq!(stdout, format!("invite\nrecovery state: {expected}\n"));
