@@ -140,19 +140,53 @@ fn policy_reader_derives_a_view_from_the_consensus_meta_map() {
     let (ours, peer) = (account(0x11), account(0x22));
     let recipients = list(&[(&ours, 3), (&peer, 1)]);
     let meta = std::collections::BTreeMap::from([
-        (SEND_PPM_META_KEY.to_owned(), "1000".to_owned()),
-        (REMITTANCE_ACCOUNT_META_KEY.to_owned(), recipients.clone()),
+        (SEND_PPM_META_KEY.to_owned(), "1000".into()),
+        (
+            REMITTANCE_ACCOUNT_META_KEY.to_owned(),
+            recipients.clone().into(),
+        ),
     ]);
 
     assert_eq!(
-        fee_policy_from_meta(&meta, ours.id()),
-        FeePolicy {
-            configured: true,
-            send_ppm: Some(1_000),
-            recipients: Some(recipients),
+        fee_policy_from_meta(&meta, ours.id(), false).unwrap(),
+        FeePolicy::Configured {
+            send_ppm: 1_000,
+            recipients,
             our_share: Some((3, 4)),
+            live_policy_matches: false,
         }
     );
+}
+
+#[test]
+fn policy_reader_distinguishes_unset_from_malformed_fee_metadata() {
+    let ours = account(0x11);
+    assert_eq!(
+        fee_policy_from_meta(&std::collections::BTreeMap::new(), ours.id(), true).unwrap(),
+        FeePolicy::Unset
+    );
+    assert!(matches!(
+        fee_policy_from_meta(
+            &std::collections::BTreeMap::from([(
+                SEND_PPM_META_KEY.to_owned(),
+                serde_json::Value::String("bad".to_owned()),
+            )]),
+            ours.id(),
+            false,
+        ),
+        Err(FeePolicyError::InvalidSendPpm)
+    ));
+    assert!(matches!(
+        fee_policy_from_meta(
+            &std::collections::BTreeMap::from([(
+                SEND_PPM_META_KEY.to_owned(),
+                serde_json::json!(1000),
+            )]),
+            ours.id(),
+            false,
+        ),
+        Err(FeePolicyError::NonStringValue)
+    ));
 }
 
 /// A list longer than the payer honours is refused there, so this end must not
@@ -176,34 +210,33 @@ fn overflowing_weights_are_not_a_share() {
 }
 
 #[test]
-fn share_policy_accepts_unset_and_requires_our_exact_guardian_weight() {
-    let unset = FeePolicy {
-        configured: false,
-        send_ppm: None,
-        recipients: None,
-        our_share: None,
-    };
+fn share_policy_requires_the_live_split_and_our_compiled_weight() {
+    let unset = FeePolicy::Unset;
     assert!(unset.share_matches_policy());
 
-    let expected = FeePolicy {
-        configured: true,
-        send_ppm: Some(1_000),
-        recipients: Some(String::new()),
+    let expected = FeePolicy::Configured {
+        send_ppm: 1_000,
+        recipients: String::new(),
         our_share: Some((GUARDIAN_RECIPIENT_WEIGHT, 7)),
+        live_policy_matches: true,
     };
     assert!(expected.share_matches_policy());
 
     assert!(
-        !FeePolicy {
-            our_share: Some((GUARDIAN_RECIPIENT_WEIGHT + 1, 8)),
-            ..expected.clone()
+        !FeePolicy::Configured {
+            send_ppm: 1_000,
+            recipients: String::new(),
+            our_share: Some((GUARDIAN_RECIPIENT_WEIGHT, 7)),
+            live_policy_matches: false,
         }
         .share_matches_policy()
     );
     assert!(
-        !FeePolicy {
+        !FeePolicy::Configured {
+            send_ppm: 1_000,
+            recipients: String::new(),
             our_share: None,
-            ..expected
+            live_policy_matches: true,
         }
         .share_matches_policy()
     );
@@ -359,21 +392,21 @@ fn the_published_minimum_gates_new_proposals_only() {
     let minimum = fedi_decentralized_domain::DEFAULT_SETUP_PAYMENT_MIN_FEE_PPM;
 
     // At the floor, and anywhere above it, is a proposal this FMan will vote for.
-    assert!(prevalidate_guardian_fee_proposal(minimum, Some(minimum), &recipients).is_ok());
-    assert!(prevalidate_guardian_fee_proposal(minimum + 1, Some(minimum), &recipients).is_ok());
-    assert!(prevalidate_guardian_fee_proposal(MAX_SEND_PPM, Some(minimum), &recipients).is_ok());
+    assert!(prevalidate_guardian_fee_rate(minimum, minimum).is_ok());
+    assert!(prevalidate_guardian_fee_rate(minimum + 1, minimum).is_ok());
+    assert!(prevalidate_guardian_fee_rate(MAX_SEND_PPM, minimum).is_ok());
 
     // Below it — including zero — a proposal is refused.
     for send_ppm in [0, 1, minimum - 1] {
         assert!(matches!(
-            prevalidate_guardian_fee_proposal(send_ppm, Some(minimum), &recipients),
+            prevalidate_guardian_fee_rate(send_ppm, minimum),
             Err(FeePolicyError::SendPpmTooLow { minimum: reported }) if reported == minimum
         ));
     }
 
     // Both bounds still apply together: the ceiling is checked first.
     assert!(matches!(
-        prevalidate_guardian_fee_proposal(MAX_SEND_PPM + 1, Some(minimum), &recipients),
+        prevalidate_guardian_fee_rate(MAX_SEND_PPM + 1, minimum),
         Err(FeePolicyError::SendPpmTooHigh)
     ));
 
@@ -381,7 +414,6 @@ fn the_published_minimum_gates_new_proposals_only() {
     // the floor was raised stays a valid canonical value. Without this, an
     // unrelated meta write on such a federation could not be voted for at all.
     for send_ppm in [0, 1, minimum - 1] {
-        assert!(prevalidate_guardian_fee_proposal(send_ppm, None, &recipients).is_ok());
         let value = canonical_proposal(
             send_ppm,
             &recipients,
@@ -389,22 +421,24 @@ fn the_published_minimum_gates_new_proposals_only() {
             &guardian_verification_fee_account,
         )
         .expect("a sub-minimum rate is still a canonical fee policy");
-        validate_canonical_proposal_value(
+        validate_live_fee_policy_split(
             send_ppm,
             &value,
             &guardians,
             &guardian_verification_fee_account,
         )
         .expect("revalidating a carried sub-minimum policy must not apply the floor");
-        assert!(
+        assert!(matches!(
             fee_policy_from_meta(
                 &std::collections::BTreeMap::from([
-                    (SEND_PPM_META_KEY.to_owned(), send_ppm.to_string()),
-                    (REMITTANCE_ACCOUNT_META_KEY.to_owned(), value),
+                    (SEND_PPM_META_KEY.to_owned(), send_ppm.to_string().into()),
+                    (REMITTANCE_ACCOUNT_META_KEY.to_owned(), value.into()),
                 ]),
                 ours.id(),
+                false,
             )
-            .configured
-        );
+            .unwrap(),
+            FeePolicy::Configured { .. }
+        ));
     }
 }

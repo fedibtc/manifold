@@ -245,10 +245,12 @@ the fleet.
   It also projects the federation's current guardian-fee metadata as `policy`:
   `configured`, `send_ppm`, the raw `recipients` value, and this FMan's own
   entry in it as `our_weight` out of `total_weight`.
-  `share_matches_policy` summarizes policy integrity: no recipient value is
-  acceptable because guardian fees are optional, but if one exists this FMan
-  must appear at exactly the compiled guardian weight. A malformed value, an
-  omission, or any other weight reports `false`.
+  `share_matches_policy` summarizes policy integrity: an unset policy is
+  acceptable because guardian fees are optional, but a configured policy must
+  have the complete canonical split implied by the live directory and include
+  this FMan at exactly the compiled guardian weight. Malformed fee metadata is
+  reported as `policy.policy_error` without failing the verb; an omission or
+  wrong weight reports `false`.
   The share is read through the seat's `fedimintd` from the meta module's
   consensus value only; config metadata is never consulted. A recipient list
   the payer refuses (an unknown version, a zero or overflowing weight, or more

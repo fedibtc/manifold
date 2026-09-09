@@ -479,7 +479,7 @@ pub(crate) async fn dispatch(
         }
         AdminRequest::GuardianFees { seat_id, limit } => {
             let status = fleet.guardian_fee_status(&seat_id).await?;
-            let policy = fleet.guardian_fee_policy(&seat_id).await?;
+            let policy = fleet.guardian_fee_policy(&seat_id).await;
             let remittances = fleet
                 .guardian_fee_remittances(&seat_id, limit.unwrap_or(20))
                 .await?;
@@ -490,7 +490,7 @@ pub(crate) async fn dispatch(
                 fleet.guardian_fee_account(&seat_id)?,
                 wallet,
                 fleet.guardian_fee_total_remitted(&seat_id).await?.msats,
-                &policy,
+                policy,
                 remittances,
             ))
         }
@@ -600,9 +600,31 @@ pub fn guardian_fees_json(
     remittance_account: String,
     wallet: crate::payout_wire::WalletDrainStatusWire,
     lifetime_remitted_msat: u64,
-    policy: &FeePolicy,
+    policy: anyhow::Result<FeePolicy>,
     remittances: Vec<Remittance>,
 ) -> Value {
+    let policy = match policy {
+        Ok(policy) => {
+            let (configured, send_ppm, recipients, our_share) = match &policy {
+                FeePolicy::Unset => (false, None, None, None),
+                FeePolicy::Configured {
+                    send_ppm,
+                    recipients,
+                    our_share,
+                    ..
+                } => (true, Some(*send_ppm), Some(recipients), *our_share),
+            };
+            json!({
+                "configured": configured,
+                "send_ppm": send_ppm,
+                "recipients": recipients,
+                "share_matches_policy": policy.share_matches_policy(),
+                "our_weight": our_share.map(|(ours, _)| ours),
+                "total_weight": our_share.map(|(_, total)| total),
+            })
+        }
+        Err(error) => json!({ "policy_error": format!("{error:#}") }),
+    };
     json!({
         "seat_id": seat_id,
         "federation_id": status.federation_id.to_string(),
@@ -613,14 +635,7 @@ pub fn guardian_fees_json(
         "idle_msat": status.idle.msats,
         "wallet": wallet,
         "lifetime_remitted_msat": lifetime_remitted_msat,
-        "policy": {
-            "configured": policy.configured,
-            "send_ppm": policy.send_ppm,
-            "recipients": policy.recipients,
-            "share_matches_policy": policy.share_matches_policy(),
-            "our_weight": policy.our_share.map(|(ours, _)| ours),
-            "total_weight": policy.our_share.map(|(_, total)| total),
-        },
+        "policy": policy,
         "remittances": remittances.into_iter().map(remittance_json).collect::<Vec<_>>(),
     })
 }
@@ -763,10 +778,18 @@ pub fn seat_guardian_fee_json(
     let mut value = json!({ "remittance_account": remittance_account });
     match policy {
         Ok(policy) => {
+            let (send_ppm, our_share) = match &policy {
+                FeePolicy::Unset => (None, None),
+                FeePolicy::Configured {
+                    send_ppm,
+                    our_share,
+                    ..
+                } => (Some(*send_ppm), *our_share),
+            };
             value["share_matches_policy"] = json!(policy.share_matches_policy());
-            value["send_ppm"] = json!(policy.send_ppm);
-            value["our_weight"] = json!(policy.our_share.map(|(ours, _)| ours));
-            value["total_weight"] = json!(policy.our_share.map(|(_, total)| total));
+            value["send_ppm"] = json!(send_ppm);
+            value["our_weight"] = json!(our_share.map(|(ours, _)| ours));
+            value["total_weight"] = json!(our_share.map(|(_, total)| total));
         }
         // Before DKG there is no federation to carry metadata, and an
         // unreadable value is not the same fact as an exclusion.

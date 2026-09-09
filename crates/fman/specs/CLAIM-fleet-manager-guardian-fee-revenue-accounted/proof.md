@@ -48,12 +48,10 @@ the remote LNURL service or changes the current DKG wire format.
    endpoint proofs and requires the local peer entry to name this FMan identity.
    Consensus metadata does not retain those proofs. After a hostile threshold
    installs an internally matching directory and payer-valid recipient vector,
-   `validate_carried_guardian_fee_policy` reruns only
-   `FmanSeatBindings::verify_for_federation` and split validation. Those checks
-   verify each attestation under its claimed FMan key but do not repeat endpoint
-   proof or local identity/account binding. An unrelated generic field update can
-   therefore carry the hostile object into this guardian's vote, contrary to the
-   claim's explicit no-copy promise. See
+   field-local maintenance deliberately preserves those unrelated consensus
+   bytes without historically re-authenticating them. An unrelated generic
+   field update can therefore carry the hostile object into this guardian's
+   vote, contrary to the claim's explicit no-copy promise. See
    [falsification-hostile-directory-copy-forward.md](falsification-hostile-directory-copy-forward.md).
 
 3. **LNURL payee substitution (`code`).** The payout job immutably binds the
@@ -91,12 +89,11 @@ Any one witness falsifies this conjunctive claim.
    `.meta_submit` call below an occurrence-bound target pin, but two semantic
    admission paths. Formation independently verifies endpoint proofs and builds
    all three formation fields before entering the shared target. Generic
-   maintenance reads the whole object and runs
-   `validate_carried_guardian_fee_policy` before entering the target. Partial fee
-   keys, invalid parser shapes, noncanonical/incorrect role splits against an
-   honest directory, stale bases, and absent production Guardian Verification
-   Fee accounts fail closed.
-   The hostile-directory witness identifies the missing generic recheck.
+   maintenance validates only the requested field and preserves every other
+   field from the exact observed occurrence before entering the target. Direct
+   directory and recipient writes, stale bases, and absent production Guardian
+   Verification Fee accounts fail closed. The hostile-directory witness is the
+   deliberate consequence of field-local carry-forward.
 
 4. **Current reporting separates parser validity and policy match (`code`,
    `test`).** `fee_policy_from_meta` derives `configured` and `our_share` only
