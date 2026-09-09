@@ -7,12 +7,13 @@
 //! cannot obtain it.
 
 use fedi_decentralized_service_liquidity_manager::{
-    AllocationStatus, CancelAllocationRequest, CancelAllocationResponse,
-    CompleteReviewWithoutEvidenceRequest, CompleteReviewWithoutEvidenceResponse, FederationId,
-    ItemAllocationStatus, ItemId, ManualOperationStatus, ManualReviewResolution, Pubkey,
+    AbandonGatewayItemRequest, AbandonGatewayItemResponse, AllocationStatus,
+    CancelAllocationRequest, CancelAllocationResponse, CompleteReviewWithoutEvidenceRequest,
+    CompleteReviewWithoutEvidenceResponse, FederationId, ItemAllocationStatus, ItemId,
+    LiquidityFailure, LiquidityFailureCode, ManualOperationStatus, ManualReviewResolution, Pubkey,
     ReleaseFederationAllocationRequest, ReleaseFederationAllocationResponse,
     ResolveManualReviewRequest, ResolveManualReviewResponse, RetryFundingStepRequest,
-    RetryFundingStepResponse, ServiceResult, WalletOperationId, WalletOperationStatus,
+    RetryFundingStepResponse, Sats, ServiceResult, WalletOperationId, WalletOperationStatus,
 };
 use sqlx::Row;
 use sqlx::sqlite::SqliteRow;
@@ -36,6 +37,214 @@ pub(crate) async fn cancel_allocation(
     request: CancelAllocationRequest,
 ) -> ServiceResult<CancelAllocationResponse> {
     cancel_allocation_with_database(&context.database, request).await
+}
+
+/// Gives up on a gateway item whose funded deposit the gateway cannot attest to.
+///
+/// The gateway sibling of `abandon_target_client_value`, and it exists for the
+/// dead end that verb's own doc describes: once the funding send has settled,
+/// `cancel_allocation` refuses the item because its wallet operation is
+/// `completed`, `retry_funding_step` refuses it for the same reason, and
+/// `release_federation_allocation` refuses because the item still holds. The
+/// item can then only leave `running` by completing, and completion needs the
+/// gateway's payment log to name the funded output.
+///
+/// That log is the fragile part. It lives in the gateway's own database, is not
+/// replicated, and `connect-fed --recover` rebuilds a client's notes from the
+/// federation without rebuilding its log. A gateway that was wiped, rolled back,
+/// replaced, or restored therefore cannot attest to a deposit it really did
+/// claim, and no amount of waiting changes that.
+///
+/// Abandoning moves no money and recovers none. The sats are at the gateway;
+/// getting them back is a gateway peg-out and is not this.
+pub(crate) async fn abandon_gateway_item(
+    context: &DaemonContext,
+    request: AbandonGatewayItemRequest,
+) -> ServiceResult<AbandonGatewayItemResponse> {
+    abandon_gateway_item_with_database(&context.database, request).await
+}
+
+pub(crate) async fn abandon_gateway_item_with_database(
+    database: &Database,
+    request: AbandonGatewayItemRequest,
+) -> ServiceResult<AbandonGatewayItemResponse> {
+    let reason = request.reason.trim();
+    if reason.is_empty() {
+        return abandon_gateway_audited(
+            database,
+            &request,
+            ManualOperationStatus::Rejected,
+            None,
+            "abandoning a gateway item requires an operator reason",
+        )
+        .await;
+    }
+
+    let Some(item) = allocation_store::gateway_item(database, &request.federation_id).await? else {
+        return abandon_gateway_audited(
+            database,
+            &request,
+            ManualOperationStatus::NotFound,
+            None,
+            "no gateway allocation item for this federation",
+        )
+        .await;
+    };
+
+    if item.status != ItemAllocationStatus::ActionRequired {
+        return abandon_gateway_audited(
+            database,
+            &request,
+            ManualOperationStatus::Rejected,
+            None,
+            format!(
+                "allocation item is {} and is not awaiting operator action",
+                item.status
+            ),
+        )
+        .await;
+    }
+
+    // The gateway analogue of the peg-in-claimed guard: only a settled send has
+    // put value beyond FLIP's reach. Before that the ordinary verbs still work,
+    // and abandoning would write off funding that was never sent.
+    let mut tx = database.begin_write().await.map_err(internal_error)?;
+    let operation = match item.step.wallet_operation_id.as_deref() {
+        Some(operation_id) => {
+            load_operation_tx(&mut tx, &WalletOperationId(operation_id.to_owned())).await?
+        }
+        None => None,
+    };
+    let Some(operation) = operation else {
+        tx.commit().await.map_err(internal_error)?;
+        return abandon_gateway_audited(
+            database,
+            &request,
+            ManualOperationStatus::Rejected,
+            None,
+            "this item records no funding wallet operation, so nothing has reached \
+             the gateway; resolve it with cancel_allocation instead",
+        )
+        .await;
+    };
+    if operation.status != WalletOperationStatus::Completed {
+        let detail = format!(
+            "the funding wallet operation is {} rather than completed, so no value \
+             has reached the gateway for this item; resolve it with \
+             retry_funding_step or cancel_allocation instead",
+            operation.status
+        );
+        tx.commit().await.map_err(internal_error)?;
+        return abandon_gateway_audited(
+            database,
+            &request,
+            ManualOperationStatus::Rejected,
+            None,
+            detail,
+        )
+        .await;
+    }
+
+    let abandoned_amount = Some(item.committed_amount);
+    let detail = format!(
+        "operator abandoned {} sats delivered to the gateway; the value is at the \
+         gateway and recovering it happens outside FLIP. Reason: {}",
+        item.committed_amount.0, reason
+    );
+
+    // Guarded on the status the caller checked. `set_item_failure` cannot be
+    // reused: it deliberately refuses to move an `action_required` item, which
+    // is the whole state this operation exists to resolve.
+    let result = sqlx::query(
+        "UPDATE allocation_items \
+         SET status = ?, failure_json = ?, updated_at = unixepoch() \
+         WHERE item_id = ? AND status = ?",
+    )
+    .bind(ItemAllocationStatus::Failed.to_string())
+    .bind(
+        serde_json::to_string(&LiquidityFailure {
+            code: LiquidityFailureCode::GatewayAttachFailed,
+            reason: Some(detail.clone()),
+        })
+        .map_err(internal_error)?,
+    )
+    .bind(&item.item_id.0)
+    .bind(ItemAllocationStatus::ActionRequired.to_string())
+    .execute(&mut *tx)
+    .await
+    .map_err(internal_error)?;
+    if result.rows_affected() != 1 {
+        return Err(crate::failed_precondition(
+            "allocation item changed status while it was being abandoned",
+        ));
+    }
+    let detail_json = serde_json::json!({
+        "federation_id": request.federation_id,
+        "reason": request.reason,
+        "abandoned_amount": abandoned_amount,
+        "outcome": ManualOperationStatus::Accepted.to_string(),
+        "detail": detail,
+    });
+    sqlx::query(
+        "INSERT INTO audit_log (action, detail_json, created_at) VALUES (?, ?, unixepoch())",
+    )
+    .bind("abandon_gateway_item")
+    .bind(detail_json.to_string())
+    .execute(&mut *tx)
+    .await
+    .map_err(internal_error)?;
+    tx.commit().await.map_err(internal_error)?;
+    // Warned rather than noted: this is an operator action that ends FLIP's
+    // accounting for value that really moved, and no later pass revisits it.
+    tracing::warn!(
+        federation_id = %request.federation_id.0,
+        item_id = %item.item_id.0,
+        abandoned_sats = item.committed_amount.0,
+        reason = %reason,
+        "operator abandoned a gateway item; its value is no longer tracked by FLIP"
+    );
+
+    Ok(AbandonGatewayItemResponse {
+        status: ManualOperationStatus::Accepted,
+        abandoned_amount,
+        detail: Some(detail),
+    })
+}
+
+async fn abandon_gateway_audited(
+    database: &Database,
+    request: &AbandonGatewayItemRequest,
+    outcome: ManualOperationStatus,
+    abandoned_amount: Option<Sats>,
+    detail: impl Into<String>,
+) -> ServiceResult<AbandonGatewayItemResponse> {
+    let detail = detail.into();
+    let detail_json = serde_json::json!({
+        "federation_id": request.federation_id,
+        "reason": request.reason,
+        "abandoned_amount": abandoned_amount,
+        "outcome": outcome.to_string(),
+        "detail": detail,
+    });
+    sqlx::query(
+        "INSERT INTO audit_log (action, detail_json, created_at) VALUES (?, ?, unixepoch())",
+    )
+    .bind("abandon_gateway_item")
+    .bind(detail_json.to_string())
+    .execute(database.pool())
+    .await
+    .map_err(internal_error)?;
+    tracing::info!(
+        federation_id = %request.federation_id.0,
+        outcome = %outcome,
+        %detail,
+        "abandon_gateway_item recorded"
+    );
+    Ok(AbandonGatewayItemResponse {
+        status: outcome,
+        abandoned_amount,
+        detail: Some(detail),
+    })
 }
 
 /// Releases a federation's allocation binding when it is idle but wedged.

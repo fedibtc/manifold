@@ -1987,6 +1987,46 @@ pub struct AbandonTargetClientValueResponse {
     pub detail: Option<String>,
 }
 
+/// Give up on a gateway item whose funded deposit the gateway cannot attest to.
+///
+/// The gateway sibling of `abandon_target_client_value`, for the same shape of
+/// dead end. A gateway item completes only when the gateway's payment log names
+/// the output the funding send paid. That log lives in the gateway's own
+/// database, is not replicated, and is not rebuilt by rejoining a federation
+/// with the same mnemonic — so a gateway that was wiped, replaced, or restored
+/// can no longer attest to a deposit it really did claim.
+///
+/// Once the send has settled, `cancel_allocation` refuses the item for having a
+/// `completed` wallet operation and `retry_funding_step` refuses it for the same
+/// reason, so nothing moves it and it holds provider capacity forever. This
+/// releases that capacity and records that the sats are at the gateway.
+///
+/// It moves no money and recovers none. Returning gateway value to the provider
+/// wallet is a gateway peg-out and is not this.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct AbandonGatewayItemRequest {
+    /// Federation whose gateway item to give up on.
+    pub federation_id: FederationId,
+
+    /// Operator's reason. Required: this writes off FLIP's ability to account
+    /// for funds it already sent, and the audit log should say why.
+    pub reason: String,
+}
+
+/// Gateway abandonment response.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct AbandonGatewayItemResponse {
+    /// Manual operation status.
+    pub status: ManualOperationStatus,
+
+    /// Value the funding send delivered to the gateway, when the item's
+    /// operation recorded one.
+    pub abandoned_amount: Option<Sats>,
+
+    /// Optional detail.
+    pub detail: Option<String>,
+}
+
 /// Complete a reviewed wallet send that FLIP cannot verify against the chain.
 ///
 /// `resolve_manual_review` requires exact-output chain evidence for a `completed`

@@ -134,6 +134,28 @@ client and the ordinary operations still apply.
 Abandoning moves no money and recovers none. Returning target-client value to
 the provider wallet is a peg-out and is not part of this contract.
 
+## Gateway attribution
+
+A gateway item completes only against the gateway's own payment log: the log
+must name the transaction and output the item's funding send paid, for at least
+the committed amount. A federation-wide balance increase is not attribution,
+because a concurrent item or an independent deposit raises the same aggregate.
+
+That log is local to the gateway. It is not replicated, no federation holds a
+copy, and rejoining a federation with the same mnemonic restores a client's
+notes without restoring its log. A gateway that was rebuilt, rolled back,
+replaced, or restored therefore cannot attest to a deposit it really did claim,
+and the evidence never arrives however long the item waits.
+
+When the gateway will never attest, the operator may abandon the item, with a
+required reason. That fails it and releases its reservation, and records that
+the value is at the gateway and recovering it happens outside FLIP. Abandoning
+is refused unless the item is `action_required` and its funding operation is
+`completed` — before that the value has not reached the gateway and the ordinary
+verbs still apply. Abandoning moves no money and recovers none; returning
+gateway value to the provider wallet is a gateway peg-out and is not part of
+this contract.
+
 ## State monotonicity and reservation
 
 Terminal item and wallet states are monotonic: delayed worker, sync, step, or
@@ -159,3 +181,8 @@ cancels pending/running/action-required items and pending or failed wallet
 operations before broadcast, and rejects when an active item has an operation
 in any of those non-cancellable states. Operator cancellation is allowed only
 before irreversible submission; a cancelled wallet operation is terminal.
+`abandon_gateway_item` is the terminal escape for what that rejection leaves
+behind, guarded as the gateway-attribution section above states, and it is the
+gateway counterpart of `abandon_target_client_value`: both write off delivered
+value rather than recover it, both require a reason, and both refuse until the
+value has actually left.

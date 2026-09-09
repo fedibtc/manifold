@@ -687,6 +687,31 @@ pub(crate) async fn stability_pool_item(
     row.as_ref().map(stability_pool_item_from_row).transpose()
 }
 
+/// Loads one federation's gateway item whatever status it is in.
+///
+/// The gateway counterpart of [`stability_pool_item`], and it exists for the
+/// same reason: the active-item query excludes `action_required`, which is the
+/// status operator reconciliation works on.
+pub(crate) async fn gateway_item(
+    database: &Database,
+    federation_id: &FederationId,
+) -> ServiceResult<Option<GatewayAllocationItem>> {
+    let row = sqlx::query(
+        "SELECT i.item_id, i.status AS item_status, i.committed_amount_sats, \
+                i.reserved_amount_sats, i.item_json, i.step_json, \
+                a.federation_id, a.target_json \
+         FROM allocation_items i \
+         JOIN allocations a ON a.federation_id = i.federation_id \
+         WHERE i.federation_id = ? AND i.source_type = ?",
+    )
+    .bind(&federation_id.0)
+    .bind(SourceType::Gateway.to_string())
+    .fetch_optional(database.pool())
+    .await
+    .map_err(internal_error)?;
+    row.as_ref().map(gateway_item_from_row).transpose()
+}
+
 async fn active_item_rows(
     database: &Database,
     source_type: SourceType,

@@ -3,11 +3,12 @@
 use fedi_iroh_rpc::service;
 
 use crate::{
-    AbandonTargetClientValueRequest, AbandonTargetClientValueResponse, ApplySetupConfigRequest,
-    ApplySetupConfigResponse, AttestationInstallRequest, AttestationInstallResponse,
-    AttestationListRequest, AttestationListResponse, AttestationRemoveRequest,
-    AttestationRemoveResponse, BindTargetDepositRequest, BindTargetDepositResponse,
-    CancelAllocationRequest, CancelAllocationResponse, CompleteReviewWithoutEvidenceRequest,
+    AbandonGatewayItemRequest, AbandonGatewayItemResponse, AbandonTargetClientValueRequest,
+    AbandonTargetClientValueResponse, ApplySetupConfigRequest, ApplySetupConfigResponse,
+    AttestationInstallRequest, AttestationInstallResponse, AttestationListRequest,
+    AttestationListResponse, AttestationRemoveRequest, AttestationRemoveResponse,
+    BindTargetDepositRequest, BindTargetDepositResponse, CancelAllocationRequest,
+    CancelAllocationResponse, CompleteReviewWithoutEvidenceRequest,
     CompleteReviewWithoutEvidenceResponse, CreateBackupRequest, CreateBackupResponse,
     CreateDepositAddressRequest, CreateDepositAddressResponse, GetAdminAllocationRequest,
     GetAdminAllocationResponse, GetAdvertisementStateRequest, GetAdvertisementStateResponse,
@@ -293,6 +294,13 @@ pub trait OperatorAdminApi {
         &self,
         request: AbandonTargetClientValueRequest,
     ) -> ServiceResult<AbandonTargetClientValueResponse>;
+
+    /// Give up on a gateway item whose funded deposit the gateway cannot attest
+    /// to, because its payment log no longer holds the claim.
+    async fn abandon_gateway_item(
+        &self,
+        request: AbandonGatewayItemRequest,
+    ) -> ServiceResult<AbandonGatewayItemResponse>;
 
     /// Release a federation's allocation binding when it is idle but wedged, so
     /// the federation can be requested again.
