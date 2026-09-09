@@ -165,23 +165,14 @@ integration is what is missing.
 ### Admin verbs the operator dashboard does not reach
 
 The dashboard covers most of the Admin API, including `retry_funding_step` and
-`cancel_allocation`, so an operator works from it rather than from `curl`. Three
+`cancel_allocation`, so an operator works from it rather than from `curl`. Two
 groups do not reach it. Regenerate the sets from
 `crates/liquidity-manager-daemon/src/admin.rs` against `operator-ui`
 rather than trusting the lists below.
 
-**One screen has a dead path, and this is the one that strands money.**
-`ManualReviewPanel` documents itself as "the only exit from manual review, inside
-the product", and its `completed` outcome now fails: the daemon refuses a
-`completed` resolution that lacks chain evidence and directs the operator to
-`complete_review_without_evidence`. `packages/types` carries that verb's request
-and response types; no hook or screen calls it. An operator meeting a reviewed
-send with no chain evidence has no route out inside the product.
-
-**Four verbs have types and no screen** — `get_verification_summary`,
-`get_holder_authorization_state`, `refresh_holder_authorizations`, and
-`complete_review_without_evidence` above. The first two are pure views. Building
-the screen is what is left.
+**Three verbs have types and no screen** — `get_verification_summary`,
+`get_holder_authorization_state`, and `refresh_holder_authorizations`. All three
+are pure views. Building the screen is what is left.
 
 - `get_verification_summary` returns the per-federation trust verification
   summary that decided admission. It reads beside the allocation detail view, and
