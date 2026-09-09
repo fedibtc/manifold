@@ -16,7 +16,7 @@
     "remittance_account": "{\"acc_type\":\"BtcDepositor\",\"pub_keys\":[\"034f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa\"],\"threshold\":1}",
     "send_ppm": 1000,
     "share_matches_policy": true,
-    "total_weight": 4
+    "total_weight": 1
   },
   "payment_claim": {
     "at_ms": 1753600000000,

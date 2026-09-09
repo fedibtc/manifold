@@ -65,19 +65,19 @@ fn canonical_weighted_recipient_vectors_are_stable() {
     let expected = [
         (
             7,
-            "090e4fb9be3eb36b6c28fb03f87632f422b8400e10a3813fa1a762d8c84020e2",
+            "c87c676ba26dd04a2d5d2bc71909529643d19f01c9c8a20b450dd2d3a35e48de",
         ),
         (
             10,
-            "19e15c457a7b022bea5b4cde2768c2734fdf491660be75c84b84e7270317ba68",
+            "545d596eb3d422ed4b843c32047ee5268047dc79a73a703a17aae98e48450cea",
         ),
         (
             13,
-            "9e111a41b2939368c0cb97faf9bb97eadd829aff127f60a43d331b08881535fd",
+            "322b1d6998e4d4d376cc0eb60966adf09c31eb76ad987fee68878710a2ab7860",
         ),
         (
             20,
-            "1d57a306dd1ddf21ffd939849a47fc2abea9a87906a877c33f7bdfee3462397e",
+            "fd9581a6447c03401dfff3f91644d8cec6c72abc59051b2b3ee4933437452a00",
         ),
     ];
     let actual = expected
@@ -103,6 +103,18 @@ fn canonical_weighted_recipient_vectors_are_stable() {
             .into_iter()
             .map(|(count, digest)| (count, digest.to_owned()))
             .collect::<Vec<_>>(),
+    );
+}
+
+#[test]
+fn weighted_recipient_entries_contain_only_the_account_and_weight() {
+    let value = canonical_guardian_fee_recipient_list(&manifold_4_1_1(1)).unwrap();
+    let value: serde_json::Value = serde_json::from_str(&value).unwrap();
+    let entry = &value["recipients"][0];
+
+    assert_eq!(
+        entry.as_object().unwrap().keys().collect::<Vec<_>>(),
+        ["account", "weight"]
     );
 }
 
@@ -165,14 +177,7 @@ fn semantic_account_rejects_wrong_type_and_multisig() {
 }
 
 #[test]
-fn repeated_account_id_weight_and_canonical_order_are_enforced() {
-    let mut recipients = manifold_4_1_1(7);
-    recipients[0].account_id = recipients[1].account_id.clone();
-    assert_eq!(
-        canonical_guardian_fee_recipient_list(&recipients),
-        Err(GuardianFeeRecipientListError::AccountIdMismatch),
-    );
-
+fn weight_and_canonical_order_are_enforced() {
     let mut recipients = manifold_4_1_1(7);
     recipients.swap(0, 1);
     assert_eq!(

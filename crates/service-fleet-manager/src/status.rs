@@ -344,17 +344,11 @@ pub struct GuardianFeeAccountError;
 
 /// One recipient of the federation's guardian-fee remittances.
 ///
-/// The full account and repeated `account_id` exactly match the versioned
-/// metadata contract. The repetition is validated rather than trusted. The
-/// FMan chooses the metadata version; it is not FI-selectable.
+/// The FMan chooses the metadata version; it is not FI-selectable.
 #[derive(serde::Deserialize, serde::Serialize, Clone, Debug, Eq, PartialEq)]
-#[serde(deny_unknown_fields)]
 pub struct GuardianFeeRecipient {
     /// Complete validated account descriptor.
     pub account: GuardianFeeAccount,
-
-    /// Stability-pool `BtcDepositor` account identifier.
-    pub account_id: String,
 
     /// This account's share of guardian-fee remittances.
     pub weight: u64,
@@ -364,11 +358,7 @@ impl GuardianFeeRecipient {
     /// Construct the only self-consistent wire entry for an account.
     #[must_use]
     pub fn new(account: GuardianFeeAccount, weight: u64) -> Self {
-        Self {
-            account_id: account.account_id(),
-            account,
-            weight,
-        }
+        Self { account, weight }
     }
 }
 
@@ -403,8 +393,6 @@ pub enum GuardianFeeRecipientListError {
     InvalidCount,
     #[error("guardian-fee recipient account exceeds the canonical byte cap")]
     AccountTooLarge,
-    #[error("guardian-fee recipient account id does not match its full account")]
-    AccountIdMismatch,
     #[error("guardian-fee recipient weight must be positive and the total must not overflow")]
     InvalidWeight,
     #[error("guardian-fee recipients must be unique and strictly sorted by account id")]
@@ -431,9 +419,6 @@ pub fn canonical_guardian_fee_recipient_list(
             return Err(GuardianFeeRecipientListError::AccountTooLarge);
         }
         let id = recipient.account.as_account().id();
-        if recipient.account_id != id.to_string() {
-            return Err(GuardianFeeRecipientListError::AccountIdMismatch);
-        }
         if previous.as_ref().is_some_and(|previous| previous >= &id) {
             return Err(GuardianFeeRecipientListError::NotCanonical);
         }

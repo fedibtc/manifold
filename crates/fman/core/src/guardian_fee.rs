@@ -185,9 +185,8 @@ impl FeePolicy {
     }
 }
 
-/// The payer's versioned recipient list. This mirrors the complete strict
-/// entry shape because reporting a locally accepted share from bytes the payer
-/// rejects would hide stopped revenue.
+/// The payer's versioned recipient list. The outer envelope is strict, while
+/// recipient entries ignore unknown fields just as the payer does.
 #[derive(serde::Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 struct RecipientList {
@@ -196,10 +195,8 @@ struct RecipientList {
 }
 
 #[derive(serde::Deserialize, serde::Serialize)]
-#[serde(deny_unknown_fields)]
 struct RecipientEntry {
     account: Account,
-    account_id: String,
     weight: u64,
 }
 
@@ -417,7 +414,6 @@ pub fn validate_live_fee_policy_split(
             Ok(GuardianFeeRecipient {
                 account: GuardianFeeAccount::try_from(entry.account)
                     .map_err(|_| FeePolicyError::InvalidRecipients)?,
-                account_id: entry.account_id,
                 weight: entry.weight,
             })
         })
@@ -466,8 +462,7 @@ fn parse_recipients(value: &str) -> Option<Vec<RecipientEntry>> {
     // A single account represents the whole share without an explicit weight.
     let single = serde_json::from_str::<Account>(value).ok()?;
     Some(vec![RecipientEntry {
-        account: single.clone(),
-        account_id: single.id().to_string(),
+        account: single,
         weight: 1,
     }])
 }
@@ -483,7 +478,6 @@ fn validate_parsed_entries(entries: &[RecipientEntry]) -> Option<()> {
         if entry.weight == 0
             || entry.account.acc_type() != AccountType::BtcDepositor
             || entry.account.as_single().is_none()
-            || entry.account_id != entry.account.id().to_string()
         {
             return None;
         }

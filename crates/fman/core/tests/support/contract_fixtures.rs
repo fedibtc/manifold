@@ -203,9 +203,11 @@ fn plan() -> Plan {
 fn fee_policy() -> FeePolicy {
     FeePolicy::Configured {
         send_ppm: 1_000,
-        recipients: r#"{"version":1,"recipients":[{"account_id":"fixture","weight":1}]}"#
-            .to_owned(),
-        our_share: Some((1, 4)),
+        recipients: format!(
+            r#"{{"version":1,"recipients":[{{"account":{},"weight":1}}]}}"#,
+            remittance_account()
+        ),
+        our_share: Some((1, 1)),
         live_policy_matches: true,
     }
 }

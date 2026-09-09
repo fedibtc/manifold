@@ -6351,14 +6351,16 @@ async fn formed_fi_proposes_and_confirms_the_fixed_4_1_1_policy() {
     );
     let fi = entries
         .iter()
-        .find(|entry| entry["account_id"] == fi_account.id().to_string())
+        .find(|entry| entry["account"] == serde_json::to_value(&fi_account).unwrap())
         .expect("FI role account is present");
     assert_eq!(fi["weight"], 4);
     assert_eq!(fi["account"], serde_json::to_value(&fi_account).unwrap());
     let guardian_verification_fee_account = guardian_fee_account(31);
     let guardian_verification_fee = entries
         .iter()
-        .find(|entry| entry["account_id"] == guardian_verification_fee_account.id().to_string())
+        .find(|entry| {
+            entry["account"] == serde_json::to_value(&guardian_verification_fee_account).unwrap()
+        })
         .expect("Guardian Verification Fee account is present");
     assert_eq!(guardian_verification_fee["weight"], 1);
 }
@@ -7193,8 +7195,14 @@ async fn interrupted_formation_replays_its_persisted_fee_target() {
         .expect("replayed fee target")
         .1
         .clone();
-    assert!(recipients.contains(&guardian_fee_account(30).id().to_string()));
-    assert!(!recipients.contains(&guardian_fee_account(29).id().to_string()));
+    let recipients: serde_json::Value = serde_json::from_str(&recipients).unwrap();
+    let recipients = recipients["recipients"].as_array().unwrap();
+    assert!(recipients.iter().any(|entry| {
+        entry["account"] == serde_json::to_value(guardian_fee_account(30)).unwrap()
+    }));
+    assert!(!recipients.iter().any(|entry| {
+        entry["account"] == serde_json::to_value(guardian_fee_account(29)).unwrap()
+    }));
 }
 
 #[tokio::test]

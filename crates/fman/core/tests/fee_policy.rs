@@ -16,17 +16,12 @@ fn account(byte: u8) -> Account {
     Account::single(key, AccountType::BtcDepositor)
 }
 
-fn id(account: &Account) -> String {
-    account.id().to_string()
-}
-
 fn list(entries: &[(&Account, u64)]) -> String {
     let recipients: Vec<_> = entries
         .iter()
         .map(|(account, weight)| {
             serde_json::json!({
                 "account": account,
-                "account_id": id(account),
                 "weight": weight,
             })
         })
@@ -64,11 +59,9 @@ fn the_single_account_form_reads_as_one_whole_share() {
 #[test]
 fn values_the_payer_refuses_are_not_a_share() {
     let ours = account(0x11);
-    let our_id = id(&ours);
-
     let future_version = serde_json::json!({
         "version": 2,
-        "recipients": [{ "account": ours, "account_id": our_id, "weight": 1 }],
+        "recipients": [{ "account": ours, "weight": 1 }],
     })
     .to_string();
     assert_eq!(our_share_of(&future_version, ours.id()), None);
@@ -85,8 +78,6 @@ fn values_the_payer_refuses_are_not_a_share() {
 #[test]
 fn validation_matches_the_payers_complete_policy() {
     let (ours, peer) = (account(0x11), account(0x22));
-    let our_id = id(&ours);
-
     assert_eq!(
         validate_fee_policy(Some(MAX_SEND_PPM + 1), Some(&list(&[(&ours, 1)])))
             .unwrap_err()
@@ -107,7 +98,7 @@ fn validation_matches_the_payers_complete_policy() {
             Some(
                 &serde_json::json!({
                     "version": 2,
-                    "recipients": [{ "account_id": our_id, "weight": 1 }],
+                    "recipients": [{ "account": ours, "weight": 1 }],
                 })
                 .to_string()
             )
@@ -133,6 +124,23 @@ fn validation_matches_the_payers_complete_policy() {
         validate_fee_policy(Some(1), Some(&list(&[(&ours, u64::MAX), (&peer, 2)]))),
         Err(FeePolicyError::InvalidRecipients)
     ));
+}
+
+#[test]
+fn payer_ignored_recipient_fields_do_not_make_a_policy_unreadable() {
+    let ours = account(0x11);
+    let value = serde_json::json!({
+        "version": 1,
+        "recipients": [{
+            "account": ours,
+            "account_id": "obsolete-and-wrong",
+            "future_field": true,
+            "weight": 1,
+        }],
+    })
+    .to_string();
+
+    assert_eq!(our_share_of(&value, ours.id()), Some((1, 1)));
 }
 
 #[test]
