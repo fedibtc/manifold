@@ -19,7 +19,11 @@ gateway, chain observer, or target federation's consensus responses.
 
 ## Status
 
-Unverified.
+Falsified: a txid-less `in_doubt` funding operation can claim an ordinary
+third-party output paying its exact persisted address and amount; the gateway can
+claim that output and FLIP can complete the item although no provider-wallet
+value funded it
+([evidence](CLAIM-allocation-completion-has-attributable-provider-outflow/falsification-third-party-output.md)).
 
 ## Assumptions
 
