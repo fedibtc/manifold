@@ -73,7 +73,7 @@ the documented recovery objective.
   learn whether the allocation exists
   ([claim](CLAIM-allocation-existence-probe.md)).
 - [CLAIM-liquidity-manager-managed-funds-not-lost](CLAIM-liquidity-manager-managed-funds-not-lost.md).
-- [CLAIM-allocation-completion-has-attributable-provider-outflow](CLAIM-allocation-completion-has-attributable-provider-outflow.md).
+- [CLAIM-allocation-completion-has-item-specific-settlement](CLAIM-allocation-completion-has-item-specific-settlement.md).
 - Fair worker execution eventually observes an upstream terminal
   `deposit_to_provide` result for an active stability-pool item
   ([claim](CLAIM-stability-deposit-terminal-state-not-observed.md)).
