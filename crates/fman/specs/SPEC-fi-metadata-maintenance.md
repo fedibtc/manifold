@@ -21,7 +21,7 @@ MVP's generic keys are:
 | `federation_name` | Wallet name | At most 65,536 authenticated-input bytes; Guardianito rules trim for validation, require 3–30 bytes, and reject control, bidirectional-control, and zero-width characters plus the case-insensitive `payment request rejected` substring. The original value is submitted. |
 | `fedi:federation_icon_url` | Wallet icon | At most 65,536 bytes; trimmed nonempty HTTP(S), at most 2,048 bytes, public host, and no controls. The original URL string is submitted. |
 | `fedi:welcome_message` | Wallet description | At most 65,536 bytes; trimmed nonempty value at most 500 bytes with control, bidirectional-control, and zero-width characters refused. |
-| `fedi:tos_url` | Terms document | Exactly `https://public.qgcut.org/OG_Federation_ToS.pdf`. |
+| `fedi:tos_url` | Terms document | Caller-supplied URL, with the same HTTP(S), public-host, length, and control-character checks as the icon URL. The original string is submitted. |
 | `fedi:guardian_fee_send_ppm` | Post-formation fee rate | Canonical decimal in the payer range and at or above the currently published floor. |
 
 Empty values do not clear fields and unknown keys fail closed. The formation
@@ -29,6 +29,9 @@ trust directory and guardian-fee recipient list are formation-owned fixed
 fields and are explicitly rejected through `SetMetaField`. Formation installs
 both alongside the initial rate through `ProposeFormationMeta`; see
 [SPEC-guardian-fee-policy](./SPEC-guardian-fee-policy.md).
+
+Fedi supplies the URL for both ready-made and custom terms. Manifold has no
+default terms URL and does not fetch or approve document content.
 
 ## Whole-object merge safety
 
@@ -88,7 +91,7 @@ the guardian remains outside the current maintenance implementation.
   already exists, distinct from stale base or target conflict.
 - Generic keys over 128 bytes, unknown keys, and oversized values are rejected
   before child access. Attacker-controlled key bytes are not logged.
-- The icon host check rejects literal/private and obviously local names but does
+- The icon and terms host check rejects literal/private and obviously local names but does
   not resolve DNS; consumers must enforce fetch-time network policy.
 - Maintenance failures are distinct from formation failures. Intrinsic policy
   refusals are terminal; stale bases, temporary seat failures, transport,

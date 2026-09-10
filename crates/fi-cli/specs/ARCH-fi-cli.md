@@ -158,11 +158,12 @@ signatures, ecash, or refund secrets in FI state.
 ## Post-formation maintenance
 
 `maintenance set-name`, `set-icon-url`, `set-welcome-message`, and
-`set-terms-of-service` expose the four semantic metadata mutations currently
-supported by `fi-client`. The value-bearing commands construct the library's
-shared Guardianito-compatible types before opening identity, durable FI state,
+`set-terms-of-service --value URL` expose the four semantic metadata mutations currently
+supported by `fi-client`. The commands construct the library's
+shared validated types before opening identity, durable FI state,
 the consensus reader, or Iroh transport. The CLI accepts no arbitrary metadata
-key, clear operation, uploaded icon bytes, or alternative ToS URL.
+key, clear operation, or uploaded icon bytes. Terms URLs are supplied by the
+caller for both ready-made and custom documents.
 
 `create` requires `--fi-spv2-account-file PATH` for the test FI account that
 formation installs at weight four; `resume` and `authorize-payments` accept the

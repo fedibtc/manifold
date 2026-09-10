@@ -78,9 +78,10 @@ fn public_variants_map_exactly_and_invalid_values_exist_before_driver_work() {
             "Hello members",
         ),
         (
-            FederationMetadataUpdate::TermsOfService,
+            FederationMetadataUpdate::terms_of_service_url("  https://example.com/custom-terms  ")
+                .unwrap(),
             TERMS_OF_SERVICE_URL_META_FIELD_KEY,
-            GUARDIANITO_TERMS_OF_SERVICE_URL,
+            "  https://example.com/custom-terms  ",
         ),
     ] {
         let (actual_key, actual_value) = update.into_field();
@@ -216,7 +217,7 @@ async fn gateway_registration_fans_out_and_accepts_a_threshold_live_federation()
 }
 
 #[tokio::test]
-async fn preserves_unrelated_fields_and_waits_for_consensus() {
+async fn terms_url_preserves_unrelated_fields_and_waits_for_consensus() {
     let database = MemDatabase::new().into_database();
     let (payments, _) = TestPayments::new();
     let fman_state = Arc::new(FmanState::default());
@@ -252,7 +253,8 @@ async fn preserves_unrelated_fields_and_waits_for_consensus() {
         .expect("formation published metadata");
     client
         .update_federation_metadata(
-            FederationMetadataUpdate::name("New Federation").unwrap(),
+            FederationMetadataUpdate::terms_of_service_url("https://example.com/custom-terms")
+                .unwrap(),
             maintenance_options(),
         )
         .await
@@ -264,18 +266,15 @@ async fn preserves_unrelated_fields_and_waits_for_consensus() {
         .expect("test lock")
         .clone()
         .expect("maintenance published metadata");
-    let before: BTreeMap<String, serde_json::Value> =
+    let mut expected: BTreeMap<String, serde_json::Value> =
         serde_json::from_slice(&before).expect("prior metadata parses");
     let after: BTreeMap<String, serde_json::Value> =
         serde_json::from_slice(&after).expect("updated metadata parses");
-    assert_eq!(
-        after.get(fedi_decentralized_domain::FMAN_SEAT_BINDINGS_META_FIELD_KEY),
-        before.get(fedi_decentralized_domain::FMAN_SEAT_BINDINGS_META_FIELD_KEY)
+    expected.insert(
+        TERMS_OF_SERVICE_URL_META_FIELD_KEY.to_owned(),
+        serde_json::Value::String("https://example.com/custom-terms".to_owned()),
     );
-    assert_eq!(
-        after.get(FEDERATION_NAME_META_FIELD_KEY),
-        Some(&serde_json::Value::String("New Federation".to_owned()))
-    );
+    assert_eq!(after, expected);
     assert_eq!(
         fman_state.meta_submissions.lock().expect("test lock").len(),
         usize::from(MIN_FEDERATION_SIZE)

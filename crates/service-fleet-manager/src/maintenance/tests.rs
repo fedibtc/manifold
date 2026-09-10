@@ -16,10 +16,6 @@ fn welcome(
     FederationMetadataWelcomeMessage::try_from(value.to_owned())
 }
 
-fn icon(value: &str) -> Result<FederationMetadataIconUrl, InvalidFederationMetadataValue> {
-    FederationMetadataIconUrl::try_from(value.to_owned())
-}
-
 #[test]
 fn name_constructor_pins_every_guardianito_boundary_and_error_class() {
     for length in [3, FEDERATION_METADATA_NAME_MAX_BYTES] {
@@ -103,23 +99,42 @@ fn welcome_constructor_pins_500_byte_boundary_controls_and_raw_cap() {
 }
 
 #[test]
-fn icon_constructor_pins_2048_byte_boundary_and_http_scheme_policy() {
-    let icon = |length: usize| {
+fn url_constructors_share_validation() {
+    let icon = FederationMetadataUpdate::icon_url as fn(String) -> _;
+    let terms = FederationMetadataUpdate::terms_of_service_url as fn(String) -> _;
+    check_url_boundaries("federation icon URL", icon);
+    check_url_boundaries("terms URL", terms);
+    check_url_hosts(icon);
+    check_url_hosts(terms);
+}
+
+fn check_url_boundaries(
+    field: &'static str,
+    constructor: fn(String) -> Result<FederationMetadataUpdate, InvalidFederationMetadataValue>,
+) {
+    let url = |length: usize| {
         const PREFIX: &str = "https://example.com/";
         format!("{PREFIX}{}", "a".repeat(length - PREFIX.len()))
     };
-    assert!(FederationMetadataUpdate::icon_url("http://example.com/icon.png").is_ok());
-    assert!(FederationMetadataUpdate::icon_url("https://example.com/icon.png").is_ok());
-    assert!(
-        FederationMetadataUpdate::icon_url(icon(FEDERATION_METADATA_ICON_URL_MAX_BYTES)).is_ok()
+    assert!(constructor("http://example.com/icon.png".to_owned()).is_ok());
+    assert!(constructor("https://example.com/icon.png".to_owned()).is_ok());
+    assert!(constructor(url(FEDERATION_METADATA_ICON_URL_MAX_BYTES)).is_ok());
+    assert!(constructor(" ".to_owned()).is_err());
+    let padded = format!(
+        "{}https://example.com",
+        " ".repeat(FEDERATION_METADATA_RAW_MAX_BYTES - 19)
+    );
+    assert_eq!(
+        constructor(padded.clone()).unwrap().into_field().1.0,
+        padded
     );
     assert!(matches!(
-        FederationMetadataUpdate::icon_url(icon(FEDERATION_METADATA_ICON_URL_MAX_BYTES + 1)),
+        constructor(url(FEDERATION_METADATA_ICON_URL_MAX_BYTES + 1)),
         Err(InvalidFederationMetadataValue::InvalidTrimmedLength {
-            field: "federation icon URL",
+            field: actual,
             min_bytes: 1,
             max_bytes: FEDERATION_METADATA_ICON_URL_MAX_BYTES,
-        })
+        }) if actual == field
     ));
     for invalid in [
         "ftp://example.com/icon.png",
@@ -129,22 +144,22 @@ fn icon_constructor_pins_2048_byte_boundary_and_http_scheme_policy() {
         "not a URL",
     ] {
         assert!(matches!(
-            FederationMetadataUpdate::icon_url(invalid),
-            Err(InvalidFederationMetadataValue::InvalidIconUrl)
+            constructor(invalid.to_owned()),
+            Err(InvalidFederationMetadataValue::InvalidUrl { .. })
         ));
     }
     assert!(matches!(
-        FederationMetadataUpdate::icon_url("https://example.com/a\nb"),
+        constructor("https://example.com/a\nb".to_owned()),
         Err(InvalidFederationMetadataValue::ControlCharacter {
-            field: "federation icon URL"
-        })
+            field: actual
+        }) if actual == field
     ));
     assert!(matches!(
-        FederationMetadataUpdate::icon_url("a".repeat(FEDERATION_METADATA_RAW_MAX_BYTES + 1)),
+        constructor("a".repeat(FEDERATION_METADATA_RAW_MAX_BYTES + 1)),
         Err(InvalidFederationMetadataValue::RawTooLarge {
-            field: "federation icon URL",
+            field: actual,
             max_bytes: FEDERATION_METADATA_RAW_MAX_BYTES,
-        })
+        }) if actual == field
     ));
 }
 
@@ -167,9 +182,10 @@ fn typed_updates_preserve_raw_values_and_pin_exact_keys_and_terms() {
             "  Welcome  ",
         ),
         (
-            FederationMetadataUpdate::TermsOfService,
+            FederationMetadataUpdate::terms_of_service_url("  https://example.com/custom-terms  ")
+                .unwrap(),
             TERMS_OF_SERVICE_URL_META_FIELD_KEY,
-            GUARDIANITO_TERMS_OF_SERVICE_URL,
+            "  https://example.com/custom-terms  ",
         ),
     ] {
         let (actual_key, actual_value) = update.into_field();
@@ -217,8 +233,9 @@ fn invisible_and_direction_control_characters_are_refused() {
     }
 }
 
-#[test]
-fn icon_url_hosts_must_be_public() {
+fn check_url_hosts(
+    constructor: fn(String) -> Result<FederationMetadataUpdate, InvalidFederationMetadataValue>,
+) {
     for internal in [
         // Loopback.
         "http://localhost/icon.png",
@@ -240,8 +257,8 @@ fn icon_url_hosts_must_be_public() {
     ] {
         assert!(
             matches!(
-                icon(internal),
-                Err(InvalidFederationMetadataValue::NonPublicIconHost { .. })
+                constructor(internal.to_owned()),
+                Err(InvalidFederationMetadataValue::NonPublicUrlHost { .. })
             ),
             "accepted an internal icon host: {internal}"
         );
@@ -253,7 +270,7 @@ fn icon_url_hosts_must_be_public() {
         "https://172.32.0.1/icon.png",
     ] {
         assert!(
-            icon(public).is_ok(),
+            constructor(public.to_owned()).is_ok(),
             "rejected a public icon host: {public}"
         );
     }

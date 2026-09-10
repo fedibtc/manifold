@@ -517,15 +517,15 @@ before probing fedimintd; refusal logs contain only the bounded reason and key
 length, never attacker-controlled key bytes — the sanitization is structural,
 in that the logging path is handed only the key length. Seat-binding validation
 likewise reports a fixed reason for a non-canonical peer id rather than retaining
-the rejected id for later formatting. Name, icon URL, and
+the rejected id for later formatting. Name, icon URL, terms URL, and
 welcome message each have a 65,536-byte raw resource cap, followed by trimmed
-semantic maxima of 30, 2,048, and 500 bytes respectively; guardians submit the
+semantic maxima of 30, 2,048, 2,048, and 500 bytes respectively; guardians submit the
 accepted original string. Name and welcome message also reject bidirectional
 control and zero-width characters; homoglyph spoofing within accepted scripts
-remains possible. The icon URL must name a public host — loopback, link-local,
+remains possible. Icon and terms URLs must name a public host — loopback, link-local,
 and RFC-1918 addresses, `localhost` names, and bare undotted hostnames are
-refused — but DNS is not resolved, and consumers fetching icon URLs still need
-their own fetch-time policy. The fixed ToS value must match exactly. The
+refused — but DNS is not resolved, and consumers fetching these URLs still need
+their own fetch-time policy. The
 seat-binding directory has a 65,536-byte raw and canonical cap, and each
 guardian votes only for a directory whose entry for its own seat carries its
 own attestation key, refusing when it cannot derive its own peer id: an

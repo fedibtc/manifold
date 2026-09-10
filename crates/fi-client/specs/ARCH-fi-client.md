@@ -517,7 +517,7 @@ authentication is
 
 `update_federation_metadata` exposes only the FMan's compiled MVP policy as
 fallibly constructed semantic values: display name, HTTP(S) icon URL, welcome
-message/description, and Guardianito's fixed terms document. The shared types
+message/description, and a caller-supplied public HTTP(S) terms URL. The shared types
 apply Guardianito's trim-for-validation/raw-for-submission rules and the
 65,536-byte absolute raw resource cap before lease, signing, connection, or
 network effects; every FMan repeats the same authoritative validation. The API
@@ -526,6 +526,21 @@ the FMan allowlist. The operation requires
 the durable FI formation to be `Formed`, reconstructs every FI-owned seat from
 that record, and shares the formation driver's process guard, database lease,
 deadline, connector, identity, and real consensus-reader capabilities.
+
+Fedi constructs `FederationMetadataUpdate::terms_of_service_url(url)` and passes
+it to `FiClient::update_federation_metadata(update, options)`, with checked
+`MaintenanceRunOptions`, for both ready-made and custom terms. The URL is stored
+as `fedi:tos_url`; the result confirms fresh consensus adoption. A restored FI
+must first resume/reconcile to `Formed`.
+
+Consumers must rebuild for the value-bearing `TermsOfService` variant and the
+removal of `GUARDIANITO_TERMS_OF_SERVICE_URL`. URL errors now use `InvalidUrl`
+and `NonPublicUrlHost`, each carrying the field name. The signed `SetMetaField`
+wire format and stored metadata format are unchanged; existing terms values
+need no migration. Upgrade all participating FMans before enabling caller-chosen
+URLs: older validators reject them, and a policy refusal can terminate the FI
+operation even when other guardians could form a threshold. There is no
+capability negotiation or fallback URL.
 
 The complete consensus metadata object has a separate inclusive 1,048,576-byte
 ceiling. The driver checks it immediately after every live read and returns a

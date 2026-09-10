@@ -32,8 +32,8 @@ pub const FEDERATION_METADATA_RAW_MAX_BYTES: usize = 65_536;
 /// bounds pre-hash, parse, clone, canonicalization, and guardian fan-out work
 /// while leaving room for every currently supported bounded field.
 pub const FEDERATION_METADATA_OBJECT_MAX_BYTES: usize = 1_048_576;
-/// The only terms document Guardianito currently auto-approves.
-pub const GUARDIANITO_TERMS_OF_SERVICE_URL: &str = "https://public.qgcut.org/OG_Federation_ToS.pdf";
+/// Terms URLs use the same length limit as icon URLs.
+pub const FEDERATION_METADATA_TERMS_URL_MAX_BYTES: usize = FEDERATION_METADATA_ICON_URL_MAX_BYTES;
 
 /// Why a typed federation-metadata value could not be constructed.
 #[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
@@ -75,13 +75,17 @@ pub enum InvalidFederationMetadataValue {
     /// The display name contains Guardianito's refused phrase.
     #[error("federation name contains a refused phrase")]
     RefusedNamePhrase,
-    /// The icon is not an HTTP(S) URL.
-    #[error("federation icon URL must be an HTTP(S) URL")]
-    InvalidIconUrl,
-    /// The icon URL names a host that is not publicly resolvable, which would
-    /// turn every wallet rendering the icon into an SSRF/probing client.
-    #[error("federation icon URL {reason}")]
-    NonPublicIconHost {
+    /// The value is not an HTTP(S) URL.
+    #[error("{field} must be an HTTP(S) URL")]
+    InvalidUrl {
+        /// Human-readable metadata field.
+        field: &'static str,
+    },
+    /// The URL names a local host that wallets should not fetch.
+    #[error("{field} {reason}")]
+    NonPublicUrlHost {
+        /// Human-readable metadata field.
+        field: &'static str,
         /// Why the host cannot be fetched from the public internet.
         reason: &'static str,
     },
@@ -129,9 +133,15 @@ semantic_string!(
     /// The original UTF-8 string is limited to 65,536 bytes. Validation trims
     /// surrounding whitespace, then requires 1 through 2,048 bytes, rejects
     /// NUL and control characters, and requires an HTTP(S) URL whose host is
-    /// publicly resolvable ([`validate_public_icon_host`]). The original
+    /// publicly resolvable ([`validate_public_url_host`]). The original
     /// untrimmed bytes are retained and submitted to federation consensus.
     FederationMetadataIconUrl
+);
+semantic_string!(
+    /// A caller-supplied terms URL, checked like an icon URL.
+    ///
+    /// Validation trims whitespace; consensus keeps the original string.
+    FederationMetadataTermsUrl
 );
 semantic_string!(
     /// A Guardianito-compatible welcome message used by Fedi as description.
@@ -166,19 +176,35 @@ impl TryFrom<String> for FederationMetadataIconUrl {
     type Error = InvalidFederationMetadataValue;
 
     fn try_from(value: String) -> Result<Self, Self::Error> {
-        let trimmed = validate_trimmed(
+        validate_url(
             "federation icon URL",
             &value,
-            1,
             FEDERATION_METADATA_ICON_URL_MAX_BYTES,
         )?;
-        match Url::parse(trimmed) {
-            Ok(url) if matches!(url.scheme(), "http" | "https") => {
-                validate_public_icon_host(&url)?;
-                Ok(Self(value))
-            }
-            _ => Err(InvalidFederationMetadataValue::InvalidIconUrl),
+        Ok(Self(value))
+    }
+}
+
+impl TryFrom<String> for FederationMetadataTermsUrl {
+    type Error = InvalidFederationMetadataValue;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        validate_url("terms URL", &value, FEDERATION_METADATA_TERMS_URL_MAX_BYTES)?;
+        Ok(Self(value))
+    }
+}
+
+fn validate_url(
+    field: &'static str,
+    value: &str,
+    max_bytes: usize,
+) -> Result<(), InvalidFederationMetadataValue> {
+    let trimmed = validate_trimmed(field, value, 1, max_bytes)?;
+    match Url::parse(trimmed) {
+        Ok(url) if matches!(url.scheme(), "http" | "https") => {
+            validate_public_url_host(field, &url)
         }
+        _ => Err(InvalidFederationMetadataValue::InvalidUrl { field }),
     }
 }
 
@@ -199,9 +225,8 @@ impl TryFrom<String> for FederationMetadataWelcomeMessage {
 
 /// One post-formation metadata mutation supported by Manifold MVP.
 ///
-/// Construction of each value-bearing variant applies the exact shared
-/// Guardianito-compatible semantic and raw-resource rules. The FMan repeats
-/// the same validation before casting its guardian vote.
+/// Each value is validated before construction. The FMan repeats the same
+/// validation before casting its guardian vote.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum FederationMetadataUpdate {
     /// Change the federation display name.
@@ -210,8 +235,8 @@ pub enum FederationMetadataUpdate {
     IconUrl(FederationMetadataIconUrl),
     /// Change the welcome message, reused by Fedi as the description.
     WelcomeMessage(FederationMetadataWelcomeMessage),
-    /// Install Guardianito's fixed, automatically approved terms document.
-    TermsOfService,
+    /// Set the public HTTP(S) URL of the terms document.
+    TermsOfService(FederationMetadataTermsUrl),
 }
 
 impl FederationMetadataUpdate {
@@ -236,6 +261,15 @@ impl FederationMetadataUpdate {
         ))
     }
 
+    /// Construct a validated terms URL mutation for ready-made or custom terms.
+    pub fn terms_of_service_url(
+        value: impl Into<String>,
+    ) -> Result<Self, InvalidFederationMetadataValue> {
+        Ok(Self::TermsOfService(FederationMetadataTermsUrl::try_from(
+            value.into(),
+        )?))
+    }
+
     /// Return the exact protocol field selected by this typed mutation.
     #[must_use]
     pub fn into_field(self) -> (MetaFieldKey, MetaFieldValue) {
@@ -252,9 +286,9 @@ impl FederationMetadataUpdate {
                 MetaFieldKey(WELCOME_MESSAGE_META_FIELD_KEY.to_owned()),
                 MetaFieldValue(value.into_inner()),
             ),
-            Self::TermsOfService => (
+            Self::TermsOfService(value) => (
                 MetaFieldKey(TERMS_OF_SERVICE_URL_META_FIELD_KEY.to_owned()),
-                MetaFieldValue(GUARDIANITO_TERMS_OF_SERVICE_URL.to_owned()),
+                MetaFieldValue(value.into_inner()),
             ),
         }
     }
@@ -321,20 +355,23 @@ fn refused_invisible_char(ch: char) -> Option<&'static str> {
     }
 }
 
-/// Require the icon URL host to name something publicly resolvable.
+/// Reject literal local addresses and obviously local hostnames.
 ///
 /// Wallets fetch this URL, so a host inside a viewer's own network turns the
-/// federation icon into an SSRF/probing vector against whoever renders it.
+/// URL into an SSRF/probing vector against whoever opens it.
 /// Rejected here: loopback, link-local, and RFC-1918 addresses (including
 /// their IPv4-mapped IPv6 spellings), `localhost` and its subdomains, and
 /// bare undotted hostnames, which only resolve inside some local network.
-fn validate_public_icon_host(url: &Url) -> Result<(), InvalidFederationMetadataValue> {
-    let non_public = |reason| InvalidFederationMetadataValue::NonPublicIconHost { reason };
+fn validate_public_url_host(
+    field: &'static str,
+    url: &Url,
+) -> Result<(), InvalidFederationMetadataValue> {
+    let non_public = |reason| InvalidFederationMetadataValue::NonPublicUrlHost { field, reason };
     match url.host() {
-        Some(url::Host::Ipv4(ip)) => validate_public_icon_ipv4(ip),
+        Some(url::Host::Ipv4(ip)) => validate_public_url_ipv4(field, ip),
         Some(url::Host::Ipv6(ip)) => {
             if let Some(mapped) = ip.to_ipv4_mapped() {
-                return validate_public_icon_ipv4(mapped);
+                return validate_public_url_ipv4(field, mapped);
             }
             if ip.is_loopback() {
                 return Err(non_public("host is a loopback IPv6 address"));
@@ -360,8 +397,11 @@ fn validate_public_icon_host(url: &Url) -> Result<(), InvalidFederationMetadataV
     }
 }
 
-fn validate_public_icon_ipv4(ip: std::net::Ipv4Addr) -> Result<(), InvalidFederationMetadataValue> {
-    let non_public = |reason| InvalidFederationMetadataValue::NonPublicIconHost { reason };
+fn validate_public_url_ipv4(
+    field: &'static str,
+    ip: std::net::Ipv4Addr,
+) -> Result<(), InvalidFederationMetadataValue> {
+    let non_public = |reason| InvalidFederationMetadataValue::NonPublicUrlHost { field, reason };
     if ip.is_loopback() {
         return Err(non_public("host is a loopback IPv4 address"));
     }
