@@ -384,11 +384,22 @@ pub enum FormationPhase {
     PreparingDkg,
     /// DKG has started.
     DkgUnderway,
+    /// Every guardian is running and the common invite is saved.
+    DkgComplete,
     /// Every guardian is running; the FMan seat-binding directory is being
     /// written to consensus metadata and read back.
     PublishingSeatBindings,
-    /// Federation is running and joinable.
+    /// The guardian directory and initial fees are confirmed in consensus.
     Formed,
+}
+
+impl FormationPhase {
+    pub(crate) fn dkg_complete(self) -> bool {
+        matches!(
+            self,
+            Self::DkgComplete | Self::PublishingSeatBindings | Self::Formed
+        )
+    }
 }
 
 /// Whether displayed state has been reconciled with its authoritative service.

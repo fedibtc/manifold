@@ -154,8 +154,8 @@ Cross-component durability verification is recorded in
 
 Formation storage schema 11 owns this callback lifecycle and the selected
 Fedimint DKG identity. Older pre-production records fail closed and require reset.
-FI retains the bearer across every pre-`Formed` crash, then clears it in
-the same transaction that records the terminal invite because every FMan has
+FI retains the bearer across every pre-`DkgComplete` crash, then clears it in
+the same transaction that records the DKG invite because every FMan has
 already accepted durable retry ownership.
 
 Whether a formation pays at all is decided by configuration, not by the
@@ -385,14 +385,15 @@ the stored signed directory and compiled split before voting.
 The engine exposes `FiStatus::Idle` or one active formation that always
 carries its formation id and fully resolved persisted intent. Aggregate phases
 are `Preparing`, `AwaitingPaymentReadiness`, `AcquiringSeats`, `PreparingDkg`,
-`DkgUnderway`, `PublishingSeatBindings`, `Formed`; status is published through a
-watch channel
-independently of the future driving the run. Durable phases advance atomically
-with their required recovery facts: `Formed` requires every accepted seat's
-quote, signed guardian-fee account, and bare upstream guardian setup code plus
-the common invite,
-and inconsistent storage fails
-closed before the library publishes status. The seat/fee-account pairing is
+`DkgUnderway`, `DkgComplete`, `PublishingSeatBindings`, `Formed`; status is
+published through a watch channel independently of the future driving the run. Durable phases advance atomically
+with their required recovery facts: `DkgComplete` saves every accepted seat's
+quote, signed guardian-fee account, guardian setup code, and the common invite.
+`PublishingSeatBindings` saves the exact directory and initial fee target before
+submission; `Formed` records its confirmation in consensus. Reopening preserves
+these phases, and later checks keep `Formed` visible with freshness and errors
+reported separately. Inconsistent storage fails closed before status is published.
+The seat/fee-account pairing is
 validated on load, so formation records persisted before signed fee-account
 acceptance existed fail closed and must be reset rather than migrated, per
 this pre-launch namespace's schema policy. Payment readiness and
@@ -452,7 +453,7 @@ replacement approval swaps a row's exposed identity together with its
 admission.
 
 While the formation is value-safe — before wallet output generation was
-durably armed and before `Formed` — `abandon_formation`
+durably armed and before `DkgComplete` — `abandon_formation`
 wipes the durable formation state back to `Idle` under the run guard. Any exact
 pre-output wallet reservation is first reconstructed
 by a recover-existing-only id probe and explicitly released. Authoritative
