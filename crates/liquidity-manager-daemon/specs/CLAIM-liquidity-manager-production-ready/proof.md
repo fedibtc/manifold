@@ -55,10 +55,12 @@ restore, and semantic authorization.
    [CLAIM-liquidity-manager-managed-funds-not-lost](../CLAIM-liquidity-manager-managed-funds-not-lost.md)
    supplies operational custody, exact effect/target authority, and money-effect
    retry safety without asserting stability investment performance.
-   [CLAIM-allocation-completion-has-attributable-provider-outflow](../CLAIM-allocation-completion-has-attributable-provider-outflow.md)
-   supplies the source-specific binding between reported completion and exact
-   wallet outflow. The durable-transition premise extends idempotency to
-   allocation-state, target-client, and recovery transitions.
+   [CLAIM-allocation-completion-has-item-specific-settlement](../CLAIM-allocation-completion-has-item-specific-settlement.md)
+   supplies the source-specific binding between reported completion and the
+   exact contribution delivered to the intended target. It deliberately does
+   not require that contribution to debit FLIP's provider wallet. The
+   durable-transition premise extends idempotency to allocation-state,
+   target-client, and recovery transitions.
 3. **`claim + assumption` — supported allocation progress.** The two terminal-
    observation premises and the one-target fairness premise prevent one
    stability operation or target from hiding terminal progress or blocking the
