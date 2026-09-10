@@ -98,7 +98,7 @@ proof re-derivation over the extended envelope.
   strict PeerBadge selection at or above the environment minimum,
   registry-backed Pay-and-create, exact aggregate
   reservation, proven-safe subset replacement,
-  and typed post-formation name/icon-URL/welcome-message/fixed-terms maintenance
+  and typed post-formation name/icon-URL/welcome-message/terms-URL maintenance
   are included. Maintenance requires a genuine threshold consensus reader and
   threshold-live guardians before the caller's deadline unless the requested
   value is already adopted. Liquidity attachment is included as a separate

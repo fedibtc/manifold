@@ -21,7 +21,7 @@ fn compiled_dispatch_accepts_every_served_key_through_wire_wrappers() {
         (WELCOME_MESSAGE_META_FIELD_KEY, "Welcome!"),
         (
             TERMS_OF_SERVICE_URL_META_FIELD_KEY,
-            GUARDIANITO_TERMS_OF_SERVICE_URL,
+            "https://example.com/custom-terms",
         ),
     ] {
         assert!(
@@ -48,10 +48,7 @@ fn compiled_dispatch_refuses_unknown_and_semantically_invalid_values() {
         (FEDERATION_NAME_META_FIELD_KEY, "ab"),
         (FEDERATION_ICON_URL_META_FIELD_KEY, "ftp://example.com/icon"),
         (WELCOME_MESSAGE_META_FIELD_KEY, "   "),
-        (
-            TERMS_OF_SERVICE_URL_META_FIELD_KEY,
-            "https://example.com/tos",
-        ),
+        (TERMS_OF_SERVICE_URL_META_FIELD_KEY, "file:///tmp/tos"),
     ] {
         assert!(matches!(
             validate_meta_field(
@@ -97,6 +94,10 @@ fn absolute_raw_caps_preserve_guardianito_padding_but_bound_resources() {
             FEDERATION_ICON_URL_META_FIELD_KEY,
             format!(" {} ", "https://example.com/"),
         ),
+        (
+            TERMS_OF_SERVICE_URL_META_FIELD_KEY,
+            "  http://example.com/terms  ".to_owned(),
+        ),
     ] {
         assert!(
             validate_meta_field(&MetaFieldKey(key.to_owned()), &MetaFieldValue(value),).is_ok(),
@@ -115,6 +116,10 @@ fn absolute_raw_caps_preserve_guardianito_padding_but_bound_resources() {
         ),
         (
             FEDERATION_ICON_URL_META_FIELD_KEY,
+            " ".repeat(FEDERATION_METADATA_RAW_MAX_BYTES + 1),
+        ),
+        (
+            TERMS_OF_SERVICE_URL_META_FIELD_KEY,
             " ".repeat(FEDERATION_METADATA_RAW_MAX_BYTES + 1),
         ),
     ] {
@@ -171,9 +176,12 @@ fn invisible_and_direction_control_characters_are_refused() {
 }
 
 #[test]
-fn icon_url_hosts_must_be_public() {
-    let icon = FederationIconUrlValidator;
+fn url_hosts_must_be_public() {
+    check_url_hosts(&FederationIconUrlValidator);
+    check_url_hosts(&TermsOfServiceUrlValidator);
+}
 
+fn check_url_hosts(validator: &dyn MetaFieldValidator) {
     for internal in [
         // Loopback.
         "http://localhost/icon.png",
@@ -195,7 +203,7 @@ fn icon_url_hosts_must_be_public() {
     ] {
         assert!(
             matches!(
-                icon.validate(internal),
+                validator.validate(internal),
                 Err(MetaFieldError::InvalidValue(_))
             ),
             "accepted an internal icon host: {internal}"
@@ -208,7 +216,7 @@ fn icon_url_hosts_must_be_public() {
         "https://172.32.0.1/icon.png",
     ] {
         assert!(
-            icon.validate(public).is_ok(),
+            validator.validate(public).is_ok(),
             "rejected a public icon host: {public}"
         );
     }

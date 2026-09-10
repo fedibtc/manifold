@@ -157,8 +157,8 @@ enum MaintenanceCommand {
     SetIconUrl(MetadataValueArgs),
     /// Set the Guardianito-compatible welcome message/description.
     SetWelcomeMessage(MetadataValueArgs),
-    /// Install Guardianito's fixed terms-of-service document.
-    SetTermsOfService,
+    /// Set the public HTTP(S) URL of the terms-of-service document.
+    SetTermsOfService(MetadataValueArgs),
     /// Change the rate of the canonical fee policy installed at formation.
     ConfigureGuardianFees(ConfigureGuardianFeesArgs),
 }
@@ -273,9 +273,10 @@ impl MaintenanceArgs {
                 FederationMetadataUpdate::welcome_message(args.value.clone())
                     .context("validate federation metadata welcome message")?,
             ),
-            MaintenanceCommand::SetTermsOfService => {
-                metadata(FederationMetadataUpdate::TermsOfService)
-            }
+            MaintenanceCommand::SetTermsOfService(args) => metadata(
+                FederationMetadataUpdate::terms_of_service_url(args.value.clone())
+                    .context("validate federation metadata terms URL")?,
+            ),
             MaintenanceCommand::ConfigureGuardianFees(args) => {
                 ensure!(
                     args.send_ppm <= fi_client::MAX_GUARDIAN_FEE_PPM,
@@ -3367,6 +3368,40 @@ mod tests {
                 fi_client::MAX_GUARDIAN_FEE_PPM
             )
         );
+    }
+
+    #[test]
+    fn terms_url_is_required_and_validated_before_opening_resources() {
+        let command = [
+            "fi-cli",
+            "--manifold-environment",
+            "staging",
+            "maintenance",
+            "set-terms-of-service",
+        ];
+        assert!(AppArgs::try_parse_from(command).is_err());
+        for url in [
+            "https://example.com/custom-terms",
+            "http://example.com/ready-made",
+            "http://localhost/terms",
+            "",
+        ] {
+            let args =
+                AppArgs::try_parse_from(command.into_iter().chain(["--value", url])).unwrap();
+            let Command::Maintenance(maintenance) = args.command else {
+                panic!("expected maintenance")
+            };
+            let result = maintenance.preflight();
+            if url.contains("example.com") {
+                let MaintenancePreflight::Metadata { field, value, .. } = result.unwrap() else {
+                    panic!("expected metadata")
+                };
+                assert_eq!(field, "fedi:tos_url");
+                assert_eq!(value, url);
+            } else {
+                assert!(result.is_err());
+            }
+        }
     }
 
     #[test]

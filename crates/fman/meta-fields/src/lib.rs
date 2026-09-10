@@ -9,16 +9,16 @@
 //! to serve it; there is no runtime allowlist to widen.
 //!
 //! The narrow maintenance keys served here mirror Guardianito's existing
-//! automatic-approval behavior. `fedi:fman_api_urls`, privacy-policy keys, and
-//! the formation-owned seat directory and guardian-fee remittance value are
+//! automatic-approval behavior, with caller-supplied terms URLs. The directory,
+//! privacy-policy keys, and formation-owned guardian-fee remittance value are
 //! deliberately absent. The guardian-fee rate is the only fee field served
 //! here after formation.
 
 use fedi_decentralized_service_fleet_manager::{
     FEDERATION_ICON_URL_META_FIELD_KEY, FEDERATION_METADATA_RAW_MAX_BYTES,
     FEDERATION_NAME_META_FIELD_KEY, FederationMetadataIconUrl, FederationMetadataName,
-    FederationMetadataWelcomeMessage, GUARDIAN_FEE_SEND_PPM_META_FIELD_KEY,
-    GUARDIANITO_TERMS_OF_SERVICE_URL, MetaFieldKey, MetaFieldValue,
+    FederationMetadataTermsUrl, FederationMetadataWelcomeMessage,
+    GUARDIAN_FEE_SEND_PPM_META_FIELD_KEY, MetaFieldKey, MetaFieldValue,
     TERMS_OF_SERVICE_URL_META_FIELD_KEY, WELCOME_MESSAGE_META_FIELD_KEY,
 };
 
@@ -158,8 +158,7 @@ impl MetaFieldValidator for FederationIconUrlValidator {
     }
 }
 
-/// Product/legal direction is still open; MVP deliberately mirrors the only
-/// value Guardianito auto-approves instead of inventing a configurable policy.
+/// Apply the same terms URL validation as the FI caller.
 struct TermsOfServiceUrlValidator;
 
 impl MetaFieldValidator for TermsOfServiceUrlValidator {
@@ -168,15 +167,13 @@ impl MetaFieldValidator for TermsOfServiceUrlValidator {
     }
 
     fn raw_value_max_bytes(&self) -> usize {
-        GUARDIANITO_TERMS_OF_SERVICE_URL.len()
+        FEDERATION_METADATA_RAW_MAX_BYTES
     }
 
     fn validate(&self, value: &str) -> Result<(), MetaFieldError> {
-        if value == GUARDIANITO_TERMS_OF_SERVICE_URL {
-            Ok(())
-        } else {
-            invalid("terms URL is not the Guardianito-approved fixed value")
-        }
+        FederationMetadataTermsUrl::try_from(value.to_owned())
+            .map(|_| ())
+            .map_err(|error| MetaFieldError::InvalidValue(error.to_string()))
     }
 }
 

@@ -57,9 +57,9 @@ pub use locked_payment::{
 pub use maintenance::{
     FEDERATION_METADATA_ICON_URL_MAX_BYTES, FEDERATION_METADATA_NAME_MAX_BYTES,
     FEDERATION_METADATA_OBJECT_MAX_BYTES, FEDERATION_METADATA_RAW_MAX_BYTES,
-    FEDERATION_METADATA_WELCOME_MESSAGE_MAX_BYTES, FederationMetadataIconUrl,
-    FederationMetadataName, FederationMetadataUpdate, FederationMetadataWelcomeMessage,
-    GUARDIANITO_TERMS_OF_SERVICE_URL, InvalidFederationMetadataValue,
+    FEDERATION_METADATA_TERMS_URL_MAX_BYTES, FEDERATION_METADATA_WELCOME_MESSAGE_MAX_BYTES,
+    FederationMetadataIconUrl, FederationMetadataName, FederationMetadataTermsUrl,
+    FederationMetadataUpdate, FederationMetadataWelcomeMessage, InvalidFederationMetadataValue,
 };
 pub use service::{
     FleetManagerService, FleetManagerServiceClient, FleetManagerServiceClientTransport,
