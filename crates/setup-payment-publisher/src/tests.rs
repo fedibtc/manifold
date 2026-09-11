@@ -117,6 +117,28 @@ fn manifest_rejects_only_the_injected_unknown_field() {
 }
 
 #[test]
+fn publisher_rejects_duplicate_known_fields() {
+    let temp = TempDir::new().unwrap();
+    let duplicate = POLICY_FIXTURE.replacen("{", "{\"version\":1,", 1);
+    let path = write_policy(&temp, &duplicate);
+    assert!(read_content(&path).is_err());
+}
+
+#[test]
+fn new_policies_require_terms_but_old_receipts_still_restore() {
+    let mut content = valid_content();
+    content.verified_guardian_tos_url = None;
+    assert!(validate_content_for_publication(&content, true).is_err());
+    let old_event = signed_event(&content, 1_700_000_000);
+    let restored = restore_durably_admitted_setup_payment_federations_event(
+        &old_event,
+        test_keys().public_key(),
+    )
+    .unwrap();
+    assert_eq!(restored.event(), &old_event);
+}
+
+#[test]
 fn empty_stop_set_requires_explicit_acknowledgement() {
     let content = valid_content();
     assert!(validate_content_for_publication(&content, false).is_err());

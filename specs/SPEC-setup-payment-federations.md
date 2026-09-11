@@ -46,7 +46,7 @@ The version-1 event has:
   tags: [
     ["d", "setup-payment-federations"]
   ],
-  content: "{\"version\":1,\"fman_version\":\"0.2.0\",\"federations\":[\"<public Fedimint invite>\"],\"telemetry_registration_url\":\"https://telemetry.example/v1/telemetry/registrations\",\"min_fee_ppm\":1500}"
+  content: "{\"version\":1,\"fman_version\":\"0.2.0\",\"federations\":[\"<public Fedimint invite>\"],\"telemetry_registration_url\":\"https://telemetry.example/v1/telemetry/registrations\",\"min_fee_ppm\":1500,\"verified_guardian_tos_url\":\"https://fedi.example/verified-guardian-terms\"}"
 }
 ```
 
@@ -65,8 +65,10 @@ serialization, semantic validation, kind, and `d`-tag construction to the
 shared Nostr event builder. It does not mirror content fields as CLI flags.
 Consequently a rebuilt publisher consumes additions to the shared wire type
 without a second producer field list; its complete-policy serialization fixture
-fails when a required field or serialized default changes. An older binary
-rejects fields it does not understand rather than signing unknown policy.
+fails when a required field or serialized default changes. The publisher rejects
+unknown input fields so typos cannot disappear before signing. New publications
+must include `verified_guardian_tos_url`; previous
+receipts and keyless republishing may still omit it.
 
 Publishing requires an independently supplied expected public key and reads
 the matching secret only from a file or non-terminal standard input. The
@@ -104,19 +106,29 @@ replacement ordering as the new shared high-water mark.
 
 ## Content and admission
 
-`content` is strict JSON with exactly:
+`content` is JSON with these known fields:
 
 - integer literal `version: 1`;
 - `fman_version`, the latest supported Fleet Manager release as a SemVer
   string;
 - `federations`, an unordered array of public Fedimint invite strings;
 - `telemetry_registration_url`, an absolute HTTPS URL with a host and no
-  username, password, query, or fragment; and
+  username, password, query, or fragment;
 - `min_fee_ppm`, the smallest guardian fee rate an FI may propose, in ppm. The
-  only optional field: absent means 1,500 (0.15%). It bounds *new* proposals
+  field is optional: absent means 1,500 (0.15%). It bounds *new* proposals
   only — each FMan refuses one below it, while a rate a federation already
   adopted stays valid to carry forward and still reports as configured
-  ([REQ-guardian-fee-remittance](./REQ-guardian-fee-remittance.md)).
+  ([REQ-guardian-fee-remittance](./REQ-guardian-fee-remittance.md)); and
+- `verified_guardian_tos_url`, a credential-free HTTPS URL with a host pointing
+  to the verified guardian terms covering telemetry collection. Readers accept
+  its absence or null in older policies. It is a reference, not a record of
+  acceptance or an onboarding acceptance requirement.
+
+Readers ignore unknown fields within version 1 and still validate known fields.
+They authenticate and retain the complete signed event, including unknown
+fields. Additions that require older clients to enforce new behavior need a
+new policy version. Roll out tolerant FI and FMan readers before publishing
+additional fields: existing strict binaries still reject them.
 
 The telemetry URL is required in version 1. It is a policy locator, not a
 bearer capability. The event deliberately does not publish FMan Iroh endpoint
@@ -137,7 +149,7 @@ Admission performs all of these checks before the set influences policy:
 2. verify the event ID and signature;
 3. require the configured publisher key, kind `37707`, and exact `d` tag;
 4. reject `created_at` more than 86,400 seconds ahead of the consumer clock;
-5. reject malformed JSON, unknown or duplicate object fields, schema versions
+5. reject malformed JSON, duplicate known fields, schema versions
    other than 1, and an invalid `fman_version` SemVer;
 6. reject more than 16 invites or an invite larger than 16 KiB;
 7. parse every invite with the supported Fedimint parser and derive its
@@ -148,6 +160,8 @@ Admission performs all of these checks before the set influences policy:
     contains a query or fragment;
 11. reject a `min_fee_ppm` above the payer's 210,000-ppm send-rate ceiling,
     which would leave no proposable rate.
+12. reject a present, non-null guardian terms URL that is not credential-free
+    HTTPS with a host.
 
 Array position carries no preference or fallback meaning. A consumer uses the
 derived federation ID as the member identity and the signed invite as its join

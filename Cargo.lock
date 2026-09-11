@@ -9421,6 +9421,7 @@ dependencies = [
  "fedimint-core",
  "nostr-sdk",
  "rustls",
+ "serde",
  "serde_json",
  "tempfile",
  "tokio",

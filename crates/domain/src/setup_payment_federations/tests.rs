@@ -48,6 +48,7 @@ fn content_with_min_fee_ppm(invites: Vec<String>, min_fee_ppm: u64) -> Vec<u8> {
             "https://push.fedi.example/v1/telemetry/registrations".to_owned()
         ),
         min_fee_ppm,
+        verified_guardian_tos_url: None,
     })
     .expect("test content serializes")
 }
@@ -125,6 +126,7 @@ fn admits_only_credential_free_https_telemetry_registration_urls() {
             federations: Vec::new(),
             telemetry_registration_url: Url(invalid.to_owned()),
             min_fee_ppm: DEFAULT_SETUP_PAYMENT_MIN_FEE_PPM,
+            verified_guardian_tos_url: None,
         })
         .unwrap();
         assert_eq!(
@@ -269,7 +271,56 @@ fn accepts_exact_content_and_entry_bounds() {
 }
 
 #[test]
-fn rejects_oversized_malformed_unknown_and_duplicate_fields() {
+fn ignores_future_fields_without_changing_known_policy() {
+    let original = content(vec![]);
+    let mut extended: serde_json::Value = serde_json::from_slice(&original).unwrap();
+    extended["future_field"] = serde_json::json!({"nested": [true, 42]});
+    assert_eq!(
+        AdmittedSetupPaymentFederations::parse(&original).unwrap(),
+        AdmittedSetupPaymentFederations::parse(&serde_json::to_vec(&extended).unwrap()).unwrap()
+    );
+    extended["version"] = serde_json::json!(2);
+    assert!(
+        AdmittedSetupPaymentFederations::parse(&serde_json::to_vec(&extended).unwrap()).is_err()
+    );
+}
+
+#[test]
+fn guardian_terms_are_optional_but_validated_when_present() {
+    let original = content(vec![]);
+    assert!(
+        AdmittedSetupPaymentFederations::parse(&original)
+            .unwrap()
+            .verified_guardian_tos_url()
+            .is_none()
+    );
+    let mut value: serde_json::Value = serde_json::from_slice(&original).unwrap();
+    let terms = "https://fedi.example/guardian-terms?v=1#telemetry";
+    value["verified_guardian_tos_url"] = serde_json::json!(terms);
+    let admitted =
+        AdmittedSetupPaymentFederations::parse(&serde_json::to_vec(&value).unwrap()).unwrap();
+    assert_eq!(
+        admitted.verified_guardian_tos_url(),
+        Some(&Url(terms.to_owned()))
+    );
+    for invalid in [
+        "http://fedi.example/terms",
+        "https://user:pass@fedi.example/terms",
+        "not-a-url",
+    ] {
+        value["verified_guardian_tos_url"] = serde_json::json!(invalid);
+        assert_eq!(
+            AdmittedSetupPaymentFederations::parse(&serde_json::to_vec(&value).unwrap())
+                .unwrap_err(),
+            SetupPaymentFederationsContentError::InvalidGuardianTosUrl
+        );
+    }
+    value["verified_guardian_tos_url"] = serde_json::json!(42);
+    assert!(AdmittedSetupPaymentFederations::parse(&serde_json::to_vec(&value).unwrap()).is_err());
+}
+
+#[test]
+fn rejects_oversized_malformed_and_duplicate_known_fields() {
     assert_eq!(
         AdmittedSetupPaymentFederations::parse(&vec![
             b' ';
@@ -280,7 +331,6 @@ fn rejects_oversized_malformed_unknown_and_duplicate_fields() {
         SetupPaymentFederationsContentError::ContentTooLarge
     );
     for malformed in [
-        br#"{"version":1,"fman_version":"0.1.0","federations":[],"telemetry_registration_url":"https://push.fedi.example/v1/telemetry/registrations","extra":true}"#.as_slice(),
         br#"{"version":1,"version":1,"fman_version":"0.1.0","federations":[],"telemetry_registration_url":"https://push.fedi.example/v1/telemetry/registrations"}"#.as_slice(),
         br#"{"version":2,"fman_version":"0.1.0","federations":[],"telemetry_registration_url":"https://push.fedi.example/v1/telemetry/registrations"}"#.as_slice(),
         br#"{"version":1,"fman_version":"0.1.0","federations":"not-an-array","telemetry_registration_url":"https://push.fedi.example/v1/telemetry/registrations"}"#.as_slice(),

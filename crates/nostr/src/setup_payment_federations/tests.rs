@@ -25,6 +25,7 @@ fn content(invites: &[&str]) -> String {
             "https://push.fedi.example/v1/telemetry/registrations".to_owned()
         ),
         min_fee_ppm: DEFAULT_SETUP_PAYMENT_MIN_FEE_PPM,
+        verified_guardian_tos_url: None,
     })
     .expect("test content serializes")
 }
@@ -84,6 +85,41 @@ fn complete_signed_event_wire_fixture_is_stable() {
         None,
     )
     .expect("fixed event is admitted");
+}
+
+#[test]
+fn signed_future_fields_survive_admission_and_restore() {
+    let keys = Keys::generate();
+    let mut value: serde_json::Value = serde_json::from_str(&content(&[])).unwrap();
+    value["future_field"] = serde_json::json!({"nested": true});
+    let mut event = EventBuilder::new(Kind::from(37_707), value.to_string())
+        .tag(Tag::identifier("setup-payment-federations"))
+        .custom_created_at(Timestamp::from_secs(1_000))
+        .sign_with_keys(&keys)
+        .unwrap();
+    let admitted = admit_setup_payment_federations_event(
+        &event,
+        keys.public_key(),
+        Timestamp::from_secs(1_000),
+        None,
+    )
+    .unwrap();
+    let restored = restore_durably_admitted_setup_payment_federations_event(
+        admitted.event(),
+        keys.public_key(),
+    )
+    .unwrap();
+    assert_eq!(restored.event(), &event);
+    event.content = event.content.replace("true", "false");
+    assert!(
+        admit_setup_payment_federations_event(
+            &event,
+            keys.public_key(),
+            Timestamp::from_secs(1_000),
+            None,
+        )
+        .is_err()
+    );
 }
 
 #[test]

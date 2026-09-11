@@ -239,6 +239,10 @@ fn validate_content_for_publication(
     allow_empty_stop_set: bool,
 ) -> anyhow::Result<()> {
     ensure!(
+        content.verified_guardian_tos_url.is_some(),
+        "new policies require verified_guardian_tos_url"
+    );
+    ensure!(
         allow_empty_stop_set || !content.federations.is_empty(),
         "empty federation set stops all new paid setup; pass --allow-empty-stop-set to acknowledge"
     );
@@ -248,13 +252,25 @@ fn validate_content_for_publication(
 }
 
 fn read_content(path: &Path) -> anyhow::Result<SetupPaymentFederationsContent> {
+    // Readers allow future fields, but a publisher typo must not disappear
+    // before signing. Flattening keeps the shared type as the field list.
+    #[derive(serde::Deserialize)]
+    struct PolicyInput {
+        #[serde(flatten)]
+        content: SetupPaymentFederationsContent,
+        #[serde(flatten)]
+        extra: std::collections::BTreeMap<String, serde::de::IgnoredAny>,
+    }
+
     let bytes = read_file_bounded(
         path,
         SETUP_PAYMENT_FEDERATIONS_MAX_CONTENT_BYTES,
         "policy content",
     )?;
-    serde_json::from_slice(&bytes)
-        .with_context(|| format!("parse policy content {}", path.display()))
+    let input: PolicyInput = serde_json::from_slice(&bytes)
+        .with_context(|| format!("parse policy content {}", path.display()))?;
+    ensure!(input.extra.is_empty(), "policy contains unknown fields");
+    Ok(input.content)
 }
 
 fn read_secret_key(path: Option<&Path>) -> anyhow::Result<Zeroizing<String>> {

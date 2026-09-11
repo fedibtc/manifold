@@ -81,7 +81,6 @@ impl<'de> serde::Deserialize<'de> for FmanVersion {
 
 /// Version-1 Nostr content published by the setup-payment federation authority.
 #[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct SetupPaymentFederationsContent {
     /// Wire-format version.
     pub version: ProtocolV1,
@@ -98,11 +97,14 @@ pub struct SetupPaymentFederationsContent {
     /// appear on Nostr.
     pub telemetry_registration_url: Url,
 
+    /// Guardian terms covering telemetry collection. Older policies omit this
+    /// link; carrying it does not record or require acceptance.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verified_guardian_tos_url: Option<Url>,
+
     /// Smallest guardian fee rate, in parts per million, that a guardian will
     /// accept in a fee proposal. Optional on the wire: an event omitting it
-    /// carries [`DEFAULT_SETUP_PAYMENT_MIN_FEE_PPM`], which is what keeps
-    /// `deny_unknown_fields` from being the only compatibility direction —
-    /// older publications stay admissible, newer ones do not.
+    /// carries [`DEFAULT_SETUP_PAYMENT_MIN_FEE_PPM`].
     #[serde(default = "default_min_fee_ppm")]
     pub min_fee_ppm: u64,
 }
@@ -116,6 +118,7 @@ pub struct AdmittedSetupPaymentFederations {
     /// Unique invites keyed by their canonical derived federation IDs.
     federations: BTreeMap<FederationId, InviteCode>,
     telemetry_registration_url: Url,
+    verified_guardian_tos_url: Option<Url>,
     min_fee_ppm: u64,
 }
 
@@ -156,6 +159,18 @@ impl AdmittedSetupPaymentFederations {
             return Err(SetupPaymentFederationsContentError::InvalidTelemetryRegistrationUrl);
         }
 
+        if let Some(terms) = &content.verified_guardian_tos_url {
+            let terms = url::Url::parse(&terms.0)
+                .map_err(|_| SetupPaymentFederationsContentError::InvalidGuardianTosUrl)?;
+            if terms.scheme() != "https"
+                || !terms.has_host()
+                || !terms.username().is_empty()
+                || terms.password().is_some()
+            {
+                return Err(SetupPaymentFederationsContentError::InvalidGuardianTosUrl);
+            }
+        }
+
         let fman_version = content.fman_version;
         let mut federations = BTreeMap::new();
         for invite_code in content.federations {
@@ -181,6 +196,7 @@ impl AdmittedSetupPaymentFederations {
             fman_version,
             federations,
             telemetry_registration_url: content.telemetry_registration_url,
+            verified_guardian_tos_url: content.verified_guardian_tos_url,
             min_fee_ppm: content.min_fee_ppm,
         })
     }
@@ -220,6 +236,12 @@ impl AdmittedSetupPaymentFederations {
         &self.telemetry_registration_url
     }
 
+    /// Return the guardian terms link, if the publication includes one.
+    #[must_use]
+    pub fn verified_guardian_tos_url(&self) -> Option<&Url> {
+        self.verified_guardian_tos_url.as_ref()
+    }
+
     /// Return the smallest guardian fee rate a proposal may carry, in ppm.
     ///
     /// Never zero unless Fedi published zero: an event that omits the field
@@ -236,7 +258,7 @@ pub enum SetupPaymentFederationsContentError {
     /// Event content exceeds the pre-parse byte limit.
     ContentTooLarge,
 
-    /// JSON is invalid or does not match the strict version-1 shape.
+    /// JSON is invalid or its known fields do not match the version-1 shape.
     MalformedContent,
 
     /// The publication contains more than the allowed number of entries.
@@ -258,6 +280,9 @@ pub enum SetupPaymentFederationsContentError {
     /// query or fragment so NIP-98 can bind one unambiguous request target.
     InvalidTelemetryRegistrationUrl,
 
+    /// Guardian terms must use a credential-free HTTPS URL with a host.
+    InvalidGuardianTosUrl,
+
     /// The published minimum fee rate exceeds the payer's own send-rate
     /// ceiling, so no rate would satisfy both bounds.
     MinFeePpmTooHigh,
@@ -277,6 +302,9 @@ impl core::fmt::Display for SetupPaymentFederationsContentError {
             }
             Self::InvalidTelemetryRegistrationUrl => {
                 "setup-payment federation set contains an invalid telemetry registration URL"
+            }
+            Self::InvalidGuardianTosUrl => {
+                "setup-payment federation set contains an invalid guardian terms URL"
             }
             Self::MinFeePpmTooHigh => {
                 "setup-payment federation set sets a minimum guardian fee rate above the payer cap"
