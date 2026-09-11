@@ -38,6 +38,10 @@ supported format baseline and its versioning and migration policy before
 crossing that boundary; do not apply this pre-production exception to later
 format changes.
 
+The first production FMan release must preserve operator data across updates.
+Its source commit establishes the baseline described in
+[`production-releases.md`](packages/fleet-manager/production-releases.md).
+
 ## Tools
 
 ### `defe` test runner

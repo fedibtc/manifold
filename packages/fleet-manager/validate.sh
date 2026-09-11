@@ -28,6 +28,29 @@ PATH="$tmp_dir:$PATH" \
   FLEET_MANAGER_BITCOIND_PASSWORD=-leading-hyphen-password \
   packages/fleet-manager/entrypoint.sh
 grep -Fx -- '--bitcoind-password=-leading-hyphen-password' "$capture"
+grep -Fx -- '--push-gateway-origin' "$capture"
+
+# Production without notifications still starts with its local Bitcoin node.
+env -u FLEET_MANAGER_PUSH_GATEWAY_ORIGIN \
+  PATH="$tmp_dir:$PATH" FLEET_MANAGER_CAPTURED_ARGV="$capture" \
+  FLEET_MANAGER_MANIFOLD_ENVIRONMENT=production \
+  FLEET_MANAGER_BITCOIND_URL=http://bitcoin:8332 \
+  FLEET_MANAGER_BITCOIND_USERNAME=operator \
+  FLEET_MANAGER_BITCOIND_PASSWORD=test-password \
+  packages/fleet-manager/entrypoint.sh
+grep -Fx -- 'production' "$capture"
+if grep -q -- '--push-gateway-origin' "$capture"; then
+  echo 'Absent push gateway must not be passed to the daemon' >&2
+  exit 1
+fi
+if env -u FLEET_MANAGER_BITCOIND_URL \
+  PATH="$tmp_dir:$PATH" FLEET_MANAGER_CAPTURED_ARGV="$capture" \
+  FLEET_MANAGER_MANIFOLD_ENVIRONMENT=production \
+  packages/fleet-manager/entrypoint.sh 2>"$tmp_dir/error"; then
+  echo 'Production must refuse a missing Bitcoin Core connection' >&2
+  exit 1
+fi
+grep -q 'FLEET_MANAGER_BITCOIND_URL' "$tmp_dir/error"
 # The daemon requires the `serve` subcommand; the entrypoint must invoke it.
 grep -q 'fleet-manager serve' packages/fleet-manager/entrypoint.sh
 
@@ -39,7 +62,9 @@ grep -q 'fleet-manager-oci-image' flake.nix
 grep -q 'fleetManagerContainerImage' flake.nix
 grep -q 'fleet-manager-container-load' flake.nix
 
-if command -v nix >/dev/null 2>&1; then
+if [ "${1:-}" = --runtime-only ]; then
+  exit 0
+elif command -v nix >/dev/null 2>&1; then
   system=$(nix eval --raw --impure --expr builtins.currentSystem)
   # Enforce the CLI contract the image entrypoint depends on (the `serve`
   # subcommand and its flags), the fedimint release-identity synchronization,
