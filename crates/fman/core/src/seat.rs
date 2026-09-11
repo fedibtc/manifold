@@ -474,8 +474,9 @@ pub struct SeatFederationBinding {
 impl Seat {
     /// Bring a durably created seat to life: install the runtime mirror and
     /// spawn the supervised fedimintd (unless decommissioned). Shared by the
-    /// startup rebuild and fresh creation. Registry publication uses an exclusive map
-    /// entry so concurrent durable replays can start at most one runtime.
+    /// startup rebuild and fresh creation. Registry publication uses an
+    /// exclusive map entry so concurrent durable replays can start at most
+    /// one runtime.
     pub(crate) fn start(durable: SeatDurableState, runtime: SeatRuntimeDependencies) -> Arc<Self> {
         let SeatDurableState {
             facts,
@@ -1340,6 +1341,7 @@ impl SeatLoop {
                 self.facts.seat_id.clone(),
                 self.facts.seat_no,
                 self.ports,
+                &self.keys.api_auth,
             )
             .await
             .map_err(anyhow::Error::new)?;
@@ -1915,7 +1917,8 @@ impl SeatLoop {
     /// value only once `NumPeers::threshold()` guardians have submitted
     /// byte-identical bytes, so the FI learns the write landed by reading
     /// consensus back, never from this response
-    /// ([`SPEC-federation-trust-directory`](../../../domain/specs/SPEC-federation-trust-directory.md)).
+    /// ([`SPEC-federation-trust-directory`](../../../domain/specs/
+    /// SPEC-federation-trust-directory.md)).
     ///
     /// The write is a read-modify-write over the whole meta object. The signed
     /// request commits to the exact value the FI read, so a different field
@@ -2236,6 +2239,9 @@ impl SeatLoop {
             disable_base_fees: None,
             enabled_modules,
             federation_size,
+            network: self.process.bitcoin_network,
+            fedimint_version: fedi_decentralized_service_fleet_manager::FEDIMINTD_VERSION_0_1
+                .to_owned(),
         };
         Ok(GuardianCode(base32::encode_prefixed(
             FEDIMINT_PREFIX,
@@ -2255,12 +2261,12 @@ fn guardian_fee_bindings(bindings: &[VerifiedSeatBinding]) -> Vec<Account> {
 /// This guardian's own peer id, from the invite code its own fedimintd hands
 /// out.
 ///
-/// The invite code is the only trustworthy source: `ServerConfig::get_invite_code`
-/// builds the code around `self.local.identity`, so the code a guardian's own
-/// fedimintd hands out names *that* guardian's peer. There is no consensus
-/// endpoint for a guardian's own id, and matching on the display name would
-/// bind the answer to a value the operator chose rather than one consensus
-/// enforces.
+/// The invite code is the only trustworthy source:
+/// `ServerConfig::get_invite_code` builds the code around
+/// `self.local.identity`, so the code a guardian's own fedimintd hands out
+/// names *that* guardian's peer. There is no consensus endpoint for a
+/// guardian's own id, and matching on the display name would bind the answer to
+/// a value the operator chose rather than one consensus enforces.
 async fn own_peer_id(client: &FedimintApi) -> Result<PeerId, SeatVerbError> {
     let code = client
         .invite_code()

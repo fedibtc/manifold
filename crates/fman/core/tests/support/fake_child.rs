@@ -1,6 +1,5 @@
-//! One process-boundary fake for a seat child: driven control plus its real WebSocket API.
-
-use super::*;
+//! One process-boundary fake for a seat child: driven control plus its real
+//! WebSocket API.
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
@@ -10,6 +9,8 @@ use jsonrpsee_server::types::{ErrorObjectOwned, Params};
 use jsonrpsee_server::{RpcModule, Server, ServerHandle};
 use serde_json::{Value, json};
 use tokio::sync::Notify;
+
+use super::*;
 
 /// The meta module's instance id in [`FakeApiState::client_config`].
 ///

@@ -1,0 +1,184 @@
+--- a/crates/modules/stability-pool/server/src/api.rs
++++ b/crates/modules/stability-pool/server/src/api.rs
+@@ -4,9 +4,9 @@
+ use fedimint_core::Amount;
+ use fedimint_core::db::{DatabaseTransaction, IDatabaseTransactionOpsCoreTyped};
+ use fedimint_core::module::{
+-    ApiEndpoint, ApiEndpointContext, ApiError, ApiVersion, ModuleConsensusVersion, api_endpoint,
++    ApiEndpoint, ApiEndpointContext, ApiError, ApiVersion, ModuleConsensusVersion,
++    admin_api_endpoint, public_api_endpoint,
+ };
+-use fedimint_core::net::auth::check_auth;
+ use futures::{StreamExt, stream};
+ use stability_pool_common::endpoint_constants::{
+     ACTIVATE_CONSENSUS_VERSION_VOTING_ENDPOINT, MODULE_CONSENSUS_VERSION_ENDPOINT,
+@@ -26,7 +26,7 @@
+ 
+ pub fn endpoints() -> Vec<ApiEndpoint<StabilityPool>> {
+     vec![
+-        api_endpoint! {
++        public_api_endpoint! {
+             "account_history",
+             ApiVersion::new(0, 0),
+             async |_module: &StabilityPool, context, request: AccountHistoryRequest| -> Vec<AccountHistoryItem> {
+@@ -36,7 +36,7 @@
+                 Ok(get_account_history_items(&mut context.db().begin_transaction_nc().await, request.account_id, request.range.start..request.range.end).await)
+             }
+         },
+-        api_endpoint! {
++        public_api_endpoint! {
+             MODULE_CONSENSUS_VERSION_ENDPOINT,
+             ApiVersion::new(0, 1),
+             async |module: &StabilityPool, context, _request: ()| -> ModuleConsensusVersion {
+@@ -45,18 +45,17 @@
+                 Ok(module.consensus_module_consensus_version(&mut dbtx).await)
+             }
+         },
+-        api_endpoint! {
++        public_api_endpoint! {
+             SUPPORTED_MODULE_CONSENSUS_VERSION_ENDPOINT,
+             ApiVersion::new(0, 1),
+             async |_module: &StabilityPool, _context, _request: ()| -> ModuleConsensusVersion {
+                 Ok(CONSENSUS_VERSION)
+             }
+         },
+-        api_endpoint! {
++        admin_api_endpoint! {
+             ACTIVATE_CONSENSUS_VERSION_VOTING_ENDPOINT,
+             ApiVersion::new(0, 1),
+             async |_module: &StabilityPool, context, _request: ()| -> () {
+-                check_auth(context)?;
+                 let db = context.db();
+                 let mut dbtx = db.begin_transaction().await;
+                 dbtx.to_ref()
+@@ -66,35 +65,35 @@
+                 Ok(())
+             }
+         },
+-        api_endpoint! {
++        public_api_endpoint! {
+             "sync",
+             ApiVersion::new(0, 0),
+             async |_module: &StabilityPool, context, request: AccountId| -> SyncResponse {
+                 sync(&mut context.db().begin_transaction_nc().await, request).await
+             }
+         },
+-        api_endpoint! {
++        public_api_endpoint! {
+             "active_deposits",
+             ApiVersion::new(0, 0),
+             async |_module: &StabilityPool, context, request: AccountId| -> ActiveDeposits {
+                 active_deposits(&mut context.db().begin_transaction_nc().await, request).await
+             }
+         },
+-        api_endpoint! {
++        public_api_endpoint! {
+             "unlock_request_status",
+             ApiVersion::new(0, 0),
+             async |module: &StabilityPool, context, request: AccountId| -> UnlockRequestStatus {
+                 Ok(unlock_request_status(context, request, module).await?)
+             }
+         },
+-        api_endpoint! {
++        public_api_endpoint! {
+             "liquidity_stats",
+             ApiVersion::new(0, 0),
+             async |_module: &StabilityPool, context, _request: ()| -> LiquidityStats {
+                 Ok(liquidity_stats(&mut context.db().begin_transaction_nc().await).await?)
+             }
+         },
+-        api_endpoint! {
++        public_api_endpoint! {
+             "average_fee_rate",
+             ApiVersion::new(0, 0),
+             async |_module: &StabilityPool, context, request: u64| -> FeeRate {
+--- a/crates/modules/stability-pool/server/src/lib.rs
++++ b/crates/modules/stability-pool/server/src/lib.rs
+@@ -40,9 +40,8 @@
+ use fedimint_core::envs::is_running_in_test_env;
+ use fedimint_core::module::audit::Audit;
+ use fedimint_core::module::{
+-    Amounts, ApiEndpoint, ApiRequestErased, CORE_CONSENSUS_VERSION, CoreConsensusVersion,
+-    InputMeta, ModuleConsensusVersion, ModuleInit, SupportedModuleApiVersions,
+-    TransactionItemAmounts,
++    Amounts, ApiEndpoint, ApiRequestErased, CoreConsensusVersion, InputMeta,
++    ModuleConsensusVersion, ModuleInit, TransactionItemAmounts,
+ };
+ use fedimint_core::task::{MaybeSend, MaybeSync, TaskGroup, sleep};
+ use fedimint_core::{Amount, InPoint, NumPeersExt, OutPoint, PeerId, TransactionId};
+@@ -99,15 +98,6 @@
+ 
+     fn versions(&self, _core: CoreConsensusVersion) -> &[ModuleConsensusVersion] {
+         &[CONSENSUS_VERSION]
+-    }
+-
+-    fn supported_api_versions(&self) -> SupportedModuleApiVersions {
+-        SupportedModuleApiVersions::from_raw(
+-            (CORE_CONSENSUS_VERSION.major, CORE_CONSENSUS_VERSION.minor),
+-            (CONSENSUS_VERSION.major, CONSENSUS_VERSION.minor),
+-            // Server minor is the maximum supported minor within major 0.
+-            &[(0, 1)],
+-        )
+     }
+ 
+     async fn init(&self, args: &ServerModuleInitArgs<Self>) -> anyhow::Result<Self::Module> {
+--- a/crates/modules/stability-pool/client/src/lib.rs
++++ b/crates/modules/stability-pool/client/src/lib.rs
+@@ -857,7 +857,7 @@
+ 
+         let client_ctx = self.client_ctx.clone();
+         Ok(
+-            self.client_ctx.outcome_or_updates(operation, operation_id, move || {
++            self.client_ctx.outcome_or_updates(&operation, operation_id, |state| matches!(state, StabilityPoolDepositOperationState::Success | StabilityPoolDepositOperationState::TxRejected(_) | StabilityPoolDepositOperationState::PrimaryOutputError(_)), move || {
+                 stream! {
+                     yield StabilityPoolDepositOperationState::Initiated;
+ 
+@@ -931,9 +931,17 @@
+         };
+ 
+         let client_ctx = self.client_ctx.clone();
+-        Ok(self
+-            .client_ctx
+-            .outcome_or_updates(operation, operation_id, move || {
++        Ok(self.client_ctx.outcome_or_updates(
++            &operation,
++            operation_id,
++            |state| {
++                matches!(
++                    state,
++                    StabilityPoolTransferOperationState::Success
++                        | StabilityPoolTransferOperationState::TxRejected(_)
++                )
++            },
++            move || {
+                 stream! {
+                     yield StabilityPoolTransferOperationState::Initiated;
+ 
+@@ -943,7 +951,8 @@
+                         Err(e) => yield StabilityPoolTransferOperationState::TxRejected(e),
+                     }
+                 }
+-            }))
++            },
++        ))
+     }
+ 
+     pub async fn withdraw(
+@@ -1022,7 +1031,7 @@
+ 
+         Ok(self
+             .client_ctx
+-            .outcome_or_updates(operation, operation_id, move || {
++            .outcome_or_updates(&operation, operation_id, |state| matches!(state, StabilityPoolWithdrawalOperationState::Success(_) | StabilityPoolWithdrawalOperationState::UnlockTxRejected(_) | StabilityPoolWithdrawalOperationState::UnlockProcessingError(_) | StabilityPoolWithdrawalOperationState::WithdrawalTxRejected(_) | StabilityPoolWithdrawalOperationState::PrimaryOutputError(_)), move || {
+                 stream! {
+                     match next_withdrawal_state(&mut operation_stream).await {
+                         StabilityPoolWithdrawalState::Created => {
+@@ -1140,7 +1149,7 @@
+ 
+         let client_ctx = self.client_ctx.clone();
+         Ok(
+-            self.client_ctx.outcome_or_updates(operation, operation_id, move || {
++            self.client_ctx.outcome_or_updates(&operation, operation_id, |state| matches!(state, StabilityPoolWithdrawalOperationState::Success(_) | StabilityPoolWithdrawalOperationState::UnlockTxRejected(_) | StabilityPoolWithdrawalOperationState::UnlockProcessingError(_) | StabilityPoolWithdrawalOperationState::WithdrawalTxRejected(_) | StabilityPoolWithdrawalOperationState::PrimaryOutputError(_)), move || {
+                 stream! {
+                     yield StabilityPoolWithdrawalOperationState::WithdrawalInitiated(amount);
+ 

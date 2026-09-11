@@ -4,6 +4,7 @@ use fedi_decentralized_service_fleet_manager::{
     GuardianFeeAccount, GuardianFeeRecipient, InviteCode, ManagerSignature, MetaConsensusBase,
     MetaFieldKey, MetaFieldValue, OfferEpoch, SeatHealth, ServiceStatus,
 };
+use fedimint_server::config::driven::{ChildMessage, ChildState, PROTOCOL_VERSION};
 use stability_pool_client::common::Account;
 use tempfile::TempDir;
 use tokio::sync::Notify;
@@ -19,7 +20,6 @@ use crate::seat_process::fake::{
 use crate::seat_process::{BitcoindConfig, seat_data_dir};
 use crate::wallet::NoWallet;
 use crate::wallet::testutil::GatedRefundWallet;
-use fedimint_server::config::driven::{ChildMessage, ChildState, PROTOCOL_VERSION};
 
 fn owned_seat(fleet: &Fleet, fi_id: &FiId, seat_id: &SeatId) -> Result<Arc<Seat>, SeatVerbError> {
     let seat = fleet
@@ -583,6 +583,9 @@ fn endpoint_setup(index: usize) -> fedimint_core::setup_code::PeerSetupCode {
         disable_base_fees: None,
         enabled_modules: None,
         federation_size: None,
+        network: bitcoin::Network::Regtest,
+        fedimint_version: fedi_decentralized_service_fleet_manager::FEDIMINTD_VERSION_0_1
+            .to_owned(),
     }
 }
 
@@ -3433,7 +3436,8 @@ async fn write_guardian_config_files(config: &FleetConfig, seat_no: crate::facts
 /// Run the ceremony for real against a fake in setup mode (it reaches
 /// consensus on `start_dkg`). The archive's publication is gated on the
 /// durable formed record, so a test that wants a guardian-carrying document
-/// must complete a real session, not just fake an API already serving consensus.
+/// must complete a real session, not just fake an API already serving
+/// consensus.
 async fn run_test_dkg(fleet: &Fleet, fi_id: &FiId, seat_id: &SeatId) -> FakeSeatChildHandle {
     let _ = fi_id;
     fleet
