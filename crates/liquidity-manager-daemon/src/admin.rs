@@ -16,11 +16,12 @@ use axum::routing::{any, get, post};
 use axum::{Json, Router};
 use constant_time_eq::constant_time_eq;
 use fedi_decentralized_service_liquidity_manager::{
-    AbandonTargetClientValueRequest, AbandonTargetClientValueResponse, ApplySetupConfigRequest,
-    ApplySetupConfigResponse, AttestationInstallRequest, AttestationInstallResponse,
-    AttestationListRequest, AttestationListResponse, AttestationRemoveRequest,
-    AttestationRemoveResponse, BindTargetDepositRequest, BindTargetDepositResponse,
-    CancelAllocationRequest, CancelAllocationResponse, CompleteReviewWithoutEvidenceRequest,
+    AbandonGatewayItemRequest, AbandonGatewayItemResponse, AbandonTargetClientValueRequest,
+    AbandonTargetClientValueResponse, ApplySetupConfigRequest, ApplySetupConfigResponse,
+    AttestationInstallRequest, AttestationInstallResponse, AttestationListRequest,
+    AttestationListResponse, AttestationRemoveRequest, AttestationRemoveResponse,
+    BindTargetDepositRequest, BindTargetDepositResponse, CancelAllocationRequest,
+    CancelAllocationResponse, CompleteReviewWithoutEvidenceRequest,
     CompleteReviewWithoutEvidenceResponse, ComponentHealth, CreateBackupRequest,
     CreateBackupResponse, CreateDepositAddressRequest, CreateDepositAddressResponse,
     GetAdminAllocationRequest, GetAdminAllocationResponse, GetAdvertisementStateRequest,
@@ -422,6 +423,16 @@ impl OperatorAdminApi for DaemonContext {
         target_recovery::abandon_target_client_value(&self.database, request).await
     }
 
+    async fn abandon_gateway_item(
+        &self,
+        request: AbandonGatewayItemRequest,
+    ) -> ServiceResult<AbandonGatewayItemResponse> {
+        // No gateway is reached: the gateway is precisely what cannot answer,
+        // so this records a decision about an item and stays available when the
+        // gateway does not.
+        manual_ops::abandon_gateway_item(self, request).await
+    }
+
     async fn bind_target_deposit(
         &self,
         request: BindTargetDepositRequest,
@@ -569,6 +580,7 @@ pub(crate) fn app(context: DaemonShell) -> Router {
             "/admin/v1/abandon_target_client_value",
             post(abandon_target_client_value),
         )
+        .route("/admin/v1/abandon_gateway_item", post(abandon_gateway_item))
         .route(
             "/admin/v1/release_federation_allocation",
             post(release_federation_allocation),
@@ -1049,6 +1061,13 @@ async fn abandon_target_client_value(
     Json(request): Json<AbandonTargetClientValueRequest>,
 ) -> Response {
     service_response(context.abandon_target_client_value(request).await)
+}
+
+async fn abandon_gateway_item(
+    Live(context): Live,
+    Json(request): Json<AbandonGatewayItemRequest>,
+) -> Response {
+    service_response(context.abandon_gateway_item(request).await)
 }
 
 async fn release_federation_allocation(

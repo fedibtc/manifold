@@ -1035,3 +1035,235 @@ impl GatewayClient for FakeGateway {
         Ok(self.inner.lock().await.deposit_claims.clone())
     }
 }
+
+/// A settled funding send whose claim the gateway never reports leaves the item
+/// with no route to a terminal state: completion needs the gateway's payment
+/// log, `cancel_allocation` refuses a `completed` wallet operation, and so does
+/// `retry_funding_step`. Escalation is what stops it polling forever and hands
+/// it to an operator, exactly as the wallet side escalates `in_doubt`.
+#[tokio::test]
+async fn unattested_gateway_claim_escalates_for_operator_action() -> anyhow::Result<()> {
+    let database = Database::connect(test_sqlite_path("gateway-claim-escalates")).await?;
+    let mut setup = test_setup_config();
+    setup.funding_policy.gateway_claim_review_after_secs = 3_600;
+    let (federation_id, item_id) = seed_gateway_allocation(&database, &setup, Sats(25_000)).await?;
+    let wallet = TestFundsWallet::new(setup.network, Sats(100_000), regtest_address());
+    let gateway = FakeGateway::new(setup.network, regtest_address());
+
+    process_gateway_allocations_with(
+        &database,
+        &setup,
+        &wallet,
+        &gateway,
+        crate::endpoint_policy::EndpointPolicy::AllowPrivate,
+    )
+    .await?;
+    let operation =
+        wallet_operation_for_item(&database, WalletOperationType::GatewayFunding, &item_id)
+            .await?
+            .expect("wallet operation exists");
+    apply_sync_update(
+        &database,
+        &WalletOperationSync {
+            operation_id: operation.operation_id.clone(),
+            status: SyncedWalletStatus::Completed,
+            txid: Some("txid-1".to_owned()),
+            confirmation_count: Some(1),
+            amount: None,
+            detail: None,
+        },
+    )
+    .await?;
+
+    // The control. The gateway attests to nothing, but the send settled just
+    // now, so the item is still the worker's to finish.
+    process_gateway_allocations_with(
+        &database,
+        &setup,
+        &wallet,
+        &gateway,
+        crate::endpoint_policy::EndpointPolicy::AllowPrivate,
+    )
+    .await?;
+    let status = load_allocation_status_by_federation(&database, &federation_id)
+        .await?
+        .expect("allocation status exists");
+    assert_eq!(
+        status.item_statuses[0].status,
+        ItemAllocationStatus::Running,
+        "an item inside the review threshold keeps waiting for the gateway"
+    );
+
+    backdate_operation(&database, &operation.operation_id.0, 3_601).await?;
+    process_gateway_allocations_with(
+        &database,
+        &setup,
+        &wallet,
+        &gateway,
+        crate::endpoint_policy::EndpointPolicy::AllowPrivate,
+    )
+    .await?;
+    let status = load_allocation_status_by_federation(&database, &federation_id)
+        .await?
+        .expect("allocation status exists");
+    assert_eq!(
+        status.item_statuses[0].status,
+        ItemAllocationStatus::ActionRequired,
+        "past the threshold the item becomes an operator's"
+    );
+    assert_eq!(
+        status.item_statuses[0]
+            .failure
+            .as_ref()
+            .expect("escalation records a failure")
+            .code,
+        LiquidityFailureCode::GatewayAttachFailed
+    );
+
+    // The worker does not select `action_required` items, so a later pass
+    // neither reopens the item nor re-escalates it.
+    process_gateway_allocations_with(
+        &database,
+        &setup,
+        &wallet,
+        &gateway,
+        crate::endpoint_policy::EndpointPolicy::AllowPrivate,
+    )
+    .await?;
+    let status = load_allocation_status_by_federation(&database, &federation_id)
+        .await?
+        .expect("allocation status exists");
+    assert_eq!(
+        status.item_statuses[0].status,
+        ItemAllocationStatus::ActionRequired
+    );
+    Ok(())
+}
+
+/// Escalation must never outrun the evidence. A gateway that reports the claim
+/// completes the item however long the send took to settle.
+#[tokio::test]
+async fn a_late_gateway_claim_still_completes_the_item() -> anyhow::Result<()> {
+    let database = Database::connect(test_sqlite_path("gateway-claim-late")).await?;
+    let mut setup = test_setup_config();
+    setup.funding_policy.gateway_claim_review_after_secs = 3_600;
+    let (federation_id, item_id) = seed_gateway_allocation(&database, &setup, Sats(25_000)).await?;
+    let wallet = TestFundsWallet::new(setup.network, Sats(100_000), regtest_address());
+    let gateway = FakeGateway::new(setup.network, regtest_address());
+
+    process_gateway_allocations_with(
+        &database,
+        &setup,
+        &wallet,
+        &gateway,
+        crate::endpoint_policy::EndpointPolicy::AllowPrivate,
+    )
+    .await?;
+    let operation =
+        wallet_operation_for_item(&database, WalletOperationType::GatewayFunding, &item_id)
+            .await?
+            .expect("wallet operation exists");
+    apply_sync_update(
+        &database,
+        &WalletOperationSync {
+            operation_id: operation.operation_id.clone(),
+            status: SyncedWalletStatus::Completed,
+            txid: Some("txid-1".to_owned()),
+            confirmation_count: Some(1),
+            amount: None,
+            detail: None,
+        },
+    )
+    .await?;
+    backdate_operation(&database, &operation.operation_id.0, 3_601).await?;
+
+    gateway.set_balance("federation-1", Sats(25_000)).await;
+    gateway.claim_deposit("txid-1", 0, Sats(25_000)).await;
+    process_gateway_allocations_with(
+        &database,
+        &setup,
+        &wallet,
+        &gateway,
+        crate::endpoint_policy::EndpointPolicy::AllowPrivate,
+    )
+    .await?;
+    let status = load_allocation_status_by_federation(&database, &federation_id)
+        .await?
+        .expect("allocation status exists");
+    assert_eq!(
+        status.item_statuses[0].status,
+        ItemAllocationStatus::Completed,
+        "evidence still wins after the threshold has passed"
+    );
+    Ok(())
+}
+
+/// A zero threshold turns escalation off, for an operator who would rather the
+/// item keep polling than land in their queue.
+#[tokio::test]
+async fn a_zero_review_threshold_disables_gateway_escalation() -> anyhow::Result<()> {
+    let database = Database::connect(test_sqlite_path("gateway-claim-no-escalate")).await?;
+    let mut setup = test_setup_config();
+    setup.funding_policy.gateway_claim_review_after_secs = 0;
+    let (federation_id, item_id) = seed_gateway_allocation(&database, &setup, Sats(25_000)).await?;
+    let wallet = TestFundsWallet::new(setup.network, Sats(100_000), regtest_address());
+    let gateway = FakeGateway::new(setup.network, regtest_address());
+
+    process_gateway_allocations_with(
+        &database,
+        &setup,
+        &wallet,
+        &gateway,
+        crate::endpoint_policy::EndpointPolicy::AllowPrivate,
+    )
+    .await?;
+    let operation =
+        wallet_operation_for_item(&database, WalletOperationType::GatewayFunding, &item_id)
+            .await?
+            .expect("wallet operation exists");
+    apply_sync_update(
+        &database,
+        &WalletOperationSync {
+            operation_id: operation.operation_id.clone(),
+            status: SyncedWalletStatus::Completed,
+            txid: Some("txid-1".to_owned()),
+            confirmation_count: Some(1),
+            amount: None,
+            detail: None,
+        },
+    )
+    .await?;
+    backdate_operation(&database, &operation.operation_id.0, 1_000_000).await?;
+
+    process_gateway_allocations_with(
+        &database,
+        &setup,
+        &wallet,
+        &gateway,
+        crate::endpoint_policy::EndpointPolicy::AllowPrivate,
+    )
+    .await?;
+    let status = load_allocation_status_by_federation(&database, &federation_id)
+        .await?
+        .expect("allocation status exists");
+    assert_eq!(
+        status.item_statuses[0].status,
+        ItemAllocationStatus::Running
+    );
+    Ok(())
+}
+
+/// Ages a settled operation so the review threshold is reached without the test
+/// waiting for it.
+async fn backdate_operation(
+    database: &Database,
+    operation_id: &str,
+    seconds: i64,
+) -> anyhow::Result<()> {
+    sqlx::query("UPDATE wallet_operations SET updated_at = updated_at - ? WHERE operation_id = ?")
+        .bind(seconds)
+        .bind(operation_id)
+        .execute(database.pool())
+        .await?;
+    Ok(())
+}
