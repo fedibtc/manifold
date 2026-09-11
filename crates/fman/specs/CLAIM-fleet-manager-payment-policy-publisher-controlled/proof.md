@@ -131,7 +131,8 @@ before constructing the opaque admitted value:
 4. requires kind 37707;
 5. requires exactly one two-element `d` tag equal to
    `setup-payment-federations`;
-6. strictly decodes the version-1 JSON shape, rejects unknown/duplicate fields,
+6. decodes known version-1 JSON fields, ignores unknown fields, rejects
+   duplicate known fields,
    more than 16 entries, empty/invalid invites, and invites over 16 KiB;
 7. uses the Fedimint parser to reject every invite carrying an API bearer
    secret and derives its canonical federation ID; and
@@ -154,7 +155,8 @@ check to that already-admitted high-water mark.
 `rejects_duplicate_derived_federation_id`,
 `rejects_invalid_and_oversized_invites`,
 `rejects_secret_bearing_invite`, and
-`rejects_oversized_malformed_unknown_and_duplicate_fields` pin content
+`rejects_oversized_malformed_and_duplicate_known_fields` and
+`ignores_future_fields_without_changing_known_policy` pin content
 admission. A1, A3, and A6 supply the external meanings.
 
 `fman_nostr::verify_candidate` is not a second payment-policy path: it is

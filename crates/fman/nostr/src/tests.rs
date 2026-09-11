@@ -229,7 +229,7 @@ fn setup_payment_admission_retains_only_the_highest_admitted_event() {
             fedi_decentralized_nostr::setup_payment_federations::
                 SETUP_PAYMENT_FEDERATIONS_EVENT_KIND,
         ),
-        r#"{"version":1,"fman_version":"0.1.0","federations":[],"telemetry_registration_url":"https://push.fedi.example/v1/telemetry/registrations"}"#,
+        r#"{"version":1,"fman_version":"0.1.0","federations":[],"telemetry_registration_url":"https://push.fedi.example/v1/telemetry/registrations","verified_guardian_tos_url":"https://fedi.example/verified-guardian-terms"}"#,
     )
     .tag(nostr_sdk::Tag::identifier(
         fedi_decentralized_nostr::setup_payment_federations::SETUP_PAYMENT_FEDERATIONS_D_TAG,

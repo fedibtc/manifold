@@ -14,7 +14,7 @@ async fn invalid_newer_addressable_event_cannot_suppress_older_candidate() {
         .expect("newer test event signs");
     let older_valid_candidate = EventBuilder::new(
         Kind::Custom(37_707),
-        r#"{"version":1,"fman_version":"0.1.0","federations":[],"telemetry_registration_url":"https://push.fedi.example/v1/telemetry/registrations"}"#,
+        r#"{"version":1,"fman_version":"0.1.0","federations":[],"telemetry_registration_url":"https://push.fedi.example/v1/telemetry/registrations","verified_guardian_tos_url":"https://fedi.example/verified-guardian-terms"}"#,
     )
     .tag(Tag::identifier("setup-payment-federations"))
     .custom_created_at(nostr_sdk::Timestamp::from_secs(1))
