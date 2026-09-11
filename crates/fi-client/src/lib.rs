@@ -403,14 +403,12 @@ where
     /// Inspect [`FormationFreshness`] through status observation when presenting
     /// persisted state before that reconciliation completes.
     ///
-    /// That reconciliation is not read-only. Before republishing `Formed`,
-    /// resume passes through [`FormationPhase::PublishingSeatBindings`]: it
-    /// submits the FMan seat-binding directory to every seat and reads the
-    /// value back from consensus, so a formation whose publish was interrupted
-    /// completes here rather than at a second DKG. The submitted bytes are the
-    /// ones persisted on the first attempt, so repeated resumes replay one
-    /// identical value and consensus can converge on it. Resume reaches
-    /// `Formed` only once the readback equals what was written.
+    /// After [`FormationPhase::DkgComplete`], resume finishes directory and
+    /// initial fee publication without repeating DKG. The exact target is saved
+    /// with [`FormationPhase::PublishingSeatBindings`] before submission, and
+    /// `Formed` is saved only after consensus confirms it. Reopening preserves
+    /// these checkpoints. Once confirmed, later checks keep `Formed` visible;
+    /// freshness and errors report the result separately.
     ///
     /// The returned [`std::future::Future`] owns no background task. Dropping it
     /// cancels local work, but completed durable checkpoints remain recoverable:

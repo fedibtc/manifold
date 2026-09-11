@@ -27,9 +27,8 @@ pub enum AbandonUnavailableReason {
     /// survives quote or authorization replacement, and teardown now requires
     /// exact payment recovery.
     PaymentOutputsStarted,
-    /// The federation already formed; the durable record now holds the
-    /// invite deliverable.
-    AlreadyFormed,
+    /// DKG finished; the saved invite and guardian state must be retained.
+    DkgComplete,
 }
 
 impl std::fmt::Display for AbandonUnavailableReason {
@@ -38,7 +37,7 @@ impl std::fmt::Display for AbandonUnavailableReason {
             Self::PaymentOutputsStarted => {
                 "payment output generation started; exact recovery must finish before teardown"
             }
-            Self::AlreadyFormed => "the federation is already formed",
+            Self::DkgComplete => "federation key generation is complete",
         })
     }
 }

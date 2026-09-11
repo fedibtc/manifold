@@ -682,10 +682,10 @@ where
     /// This has the same cancellation, payment-readiness, and explicit payment
     /// authorization behavior as [`Self::create_with_pinned_fmans`]. FI
     /// persists the callback before quotes, payments, seat creation, or DKG,
-    /// retains it through every pre-`Formed` recovery, and sends the same value
+    /// retains it through every pre-`DkgComplete` recovery, and sends the same value
     /// to every guardian. Public formation
     /// snapshots never expose the bearer. FI clears its copy atomically with the
-    /// `Formed` checkpoint after every FMan has accepted durable retry ownership.
+    /// `DkgComplete` checkpoint after every FMan has accepted durable retry ownership.
     #[cfg(any(test, feature = "dev-pinned-formation"))]
     pub async fn create_with_pinned_fmans_and_callback(
         &self,
@@ -738,9 +738,9 @@ where
     /// DKG completion callback before quotes, payments, or remote seat work.
     ///
     /// FI persists the callback before any remote work, retains it through
-    /// every pre-`Formed` recovery, sends the same value to every guardian,
+    /// every pre-`DkgComplete` recovery, sends the same value to every guardian,
     /// never exposes the bearer in public formation snapshots, and clears its
-    /// copy atomically with the `Formed` checkpoint once every FMan has accepted
+    /// copy atomically with the `DkgComplete` checkpoint once every FMan has accepted
     /// durable retry ownership.
     pub async fn pay_and_create_with_callback(
         &self,
@@ -1180,7 +1180,7 @@ where
     /// Abandon the active formation while it is still value-safe.
     ///
     /// Abandoning is allowed until wallet output generation is durably armed
-    /// and before the federation is `Formed`. Commercial quote authorization
+    /// and before `DkgComplete`. Commercial quote authorization
     /// alone does not close this window. Zero-price seats a Fleet Manager
     /// already accepted server-side are **forfeited**, not released: abandon
     /// wipes the FI's durable formation state back to [`FiStatus::Idle`]
@@ -1374,9 +1374,9 @@ where
                 crate::AbandonUnavailableReason::PaymentOutputsStarted,
             ));
         }
-        if recovery.snapshot.phase == FormationPhase::Formed {
+        if recovery.snapshot.phase.dkg_complete() {
             return Err(FiError::AbandonUnavailable(
-                crate::AbandonUnavailableReason::AlreadyFormed,
+                crate::AbandonUnavailableReason::DkgComplete,
             ));
         }
 
@@ -1524,8 +1524,8 @@ where
         fi_id: FiId,
         run: DriverRun<'_>,
     ) -> FiResult<()> {
-        if recovery.snapshot.phase == FormationPhase::Formed {
-            return self.reconcile_formed(recovery, fi_id, run).await;
+        if recovery.snapshot.phase.dkg_complete() {
+            return self.resume_after_dkg(recovery, fi_id, run).await;
         }
 
         // A wallet commit may have succeeded immediately before the FI-side
@@ -3059,13 +3059,13 @@ where
         let invite = self.fetch_agreed_invite(sessions, fi_id, run).await?;
         recovery.snapshot.invite_code = Some(invite.clone());
         recovery.snapshot.action_required = None;
-        // The federation is formed before its directory exists: record that
-        // first, so a directory publish interrupted below resumes through
-        // `reconcile_formed` instead of re-running DKG.
+        // Save DKG before publication so an interrupted run never repeats it.
         self.inner
             .store
-            .record_formed(&formation_id, invite.clone())
+            .record_dkg_complete(&formation_id, invite.clone())
             .await?;
+        recovery.snapshot.phase = FormationPhase::DkgComplete;
+        self.publish_snapshot(recovery.snapshot.clone());
         self.publish_seat_bindings(sessions, recovery, fi_id, &invite, run)
             .await?;
         recovery.snapshot.phase = FormationPhase::Formed;
@@ -3756,7 +3756,10 @@ where
                     running += 1;
                 }
             }
-            recovery.snapshot.freshness = FormationFreshness::Fresh;
+            // A completed formation stays unsynced until its full recheck succeeds.
+            if recovery.snapshot.phase != FormationPhase::Formed {
+                recovery.snapshot.freshness = FormationFreshness::Fresh;
+            }
             self.publish_snapshot(recovery.snapshot.clone());
             if running == sessions.len() {
                 return Ok(());
@@ -3765,7 +3768,7 @@ where
         }
     }
 
-    async fn reconcile_formed(
+    async fn resume_after_dkg(
         &self,
         recovery: &mut ActiveFormationRecovery,
         fi_id: FiId,
@@ -3990,8 +3993,7 @@ where
         invite: &InviteCode,
         run: DriverRun<'_>,
     ) -> FiResult<()> {
-        recovery.snapshot.phase = FormationPhase::PublishingSeatBindings;
-        self.publish_snapshot(recovery.snapshot.clone());
+        let confirmed = recovery.snapshot.phase == FormationPhase::Formed;
 
         // A new target must be validated against the final config before it is
         // durable: recovery replays its exact bytes and cannot repair an
@@ -4013,7 +4015,7 @@ where
         } else {
             None
         };
-        let mut target = match recovery.formation_meta_target.clone() {
+        let target = match recovery.formation_meta_target.clone() {
             Some(target) => target,
             None => {
                 let (bindings, binding_entries) = self
@@ -4064,7 +4066,6 @@ where
                     guardian_verification_fee_account,
                     send_ppm,
                     recipients,
-                    confirmed: false,
                 };
                 run.call("recording the formation metadata target", || {
                     Ok(self.inner.store.record_formation_meta_target(
@@ -4078,6 +4079,10 @@ where
             }
         };
 
+        if !confirmed {
+            recovery.snapshot.phase = FormationPhase::PublishingSeatBindings;
+            self.publish_snapshot(recovery.snapshot.clone());
+        }
         let mut pending_error = None;
 
         loop {
@@ -4104,8 +4109,8 @@ where
                 )?;
             let exact_matches = immutable_matches
                 && guardian_fee_rate_matches(snapshot.meta_value.as_deref(), target.send_ppm)?;
-            if (target.confirmed && immutable_matches) || exact_matches {
-                if !target.confirmed {
+            if (confirmed && immutable_matches) || exact_matches {
+                if !confirmed {
                     run.call("confirming formation metadata consensus", || {
                         Ok(self
                             .inner
@@ -4113,12 +4118,10 @@ where
                             .confirm_formation_meta_target(&recovery.snapshot.formation_id))
                     })
                     .await??;
-                    target.confirmed = true;
-                    recovery.formation_meta_target = Some(target.clone());
                 }
                 return Ok(());
             }
-            if target.confirmed {
+            if confirmed {
                 return Err(FiError::InvalidFleetManagers(
                     "formed federation changed its immutable directory or fee recipients"
                         .to_owned(),

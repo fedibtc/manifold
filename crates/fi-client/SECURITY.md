@@ -306,8 +306,8 @@ quote/effect, authorize paid output before the aggregate tombstone, or record an
 accepted selected seat without pre-effect authorization fail closed.
 
 Commercial authorization is not the money boundary. `abandon_formation` may
-wipe state while `payment_outputs_started` is false and formation is not
-`Formed`; selected-flow reauthorization errors must do so before returning.
+wipe state while `payment_outputs_started` is false and DKG is not complete;
+selected-flow reauthorization errors must do so before returning.
 If a crash interrupts that cleanup, the durable selected discriminator and
 preview deadline prevent legacy authorization or stale cap reuse on resume.
 Once the output tombstone is true,
@@ -349,7 +349,7 @@ push-gateway callback URL. The callback URL is a bearer capability and its
 stable idempotency key can identify one formation operation. Neither is
 projected in public status or `Debug`, but database files and backups containing
 them remain sensitive. Schema 11 preserves the callback through every
-pre-`Formed` recovery and atomically clears it with the `Formed` checkpoint,
+pre-`DkgComplete` recovery and atomically clears it with that checkpoint,
 after every FMan has durably assumed retry ownership. Older pre-production
 schemas fail closed and require reset.
 Logical clearing does not erase old pages or backups. FI storage must never
@@ -372,7 +372,7 @@ sanitized. Never add `Debug`, serialization, metrics, or error formatting that
 can expose secret keys, refund context, bearer notes, or raw payment evidence.
 
 Guardian-fee arrangement accepts no recipient account in its operation input.
-Only after loading a durable `Formed` record does `fi-client` parse the exact
+Only after saving `DkgComplete` does `fi-client` parse the exact
 Fedimint federation id from the persisted invite and pass it to the
 consumer-provided `FiFeeAccountProvider`. Production implementations must
 resolve the already joined client for that id and return its own SPv2

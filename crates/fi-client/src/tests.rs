@@ -4469,7 +4469,7 @@ async fn inconsistent_formed_storage_is_rejected_before_status_publication() {
 }
 
 #[tokio::test]
-async fn record_formed_rejects_incomplete_seats_without_changing_recovery_state() {
+async fn record_dkg_complete_rejects_incomplete_seats_without_changing_recovery_state() {
     let database = MemDatabase::new().into_database();
     let (payments, _) = TestPayments::new();
     let fman_state = Arc::new(FmanState::default());
@@ -4489,7 +4489,7 @@ async fn record_formed_rejects_incomplete_seats_without_changing_recovery_state(
         client
             .inner
             .store
-            .record_formed(&formation_id, test_invite(0))
+            .record_dkg_complete(&formation_id, test_invite(0))
             .await,
         Err(FiError::Storage(_))
     ));
@@ -7062,6 +7062,174 @@ async fn consensus_carrying_a_different_directory_never_completes_formation() {
 }
 
 #[tokio::test]
+async fn unfinished_setup_reopens_at_its_checkpoint_without_repeating_dkg() {
+    for phase in [
+        FormationPhase::DkgComplete,
+        FormationPhase::PublishingSeatBindings,
+    ] {
+        let database = MemDatabase::new().into_database();
+        let (payments, payment_state) = TestPayments::new();
+        let state = Arc::new(FmanState::default());
+        let reader = TestConsensusReader::new(state.clone());
+        if phase == FormationPhase::DkgComplete {
+            reader.fail_next(usize::MAX);
+        } else {
+            reader.force_value("{}");
+        }
+        let client = open_client_with_reader(
+            database.clone(),
+            payments.clone(),
+            state.clone(),
+            FmanConfig::given_away(),
+            reader,
+        )
+        .await;
+        assert!(matches!(
+            client
+                .create_with_pinned_fmans(intent(), locators(), options())
+                .await,
+            Err(FiError::Timeout(_))
+        ));
+        assert_eq!(formation(&client.status()).phase, phase);
+        drop(client);
+
+        let reopened =
+            open_client(database, payments, state.clone(), FmanConfig::given_away()).await;
+        assert_eq!(formation(&reopened.status()).phase, phase);
+        assert!(matches!(
+            reopened.abandon_formation(options()).await,
+            Err(FiError::AbandonUnavailable(
+                AbandonUnavailableReason::DkgComplete
+            ))
+        ));
+        assert!(matches!(
+            reopened.update_federation_metadata(
+                FederationMetadataUpdate::name("Unfinished").unwrap(), MaintenanceRunOptions::default(),
+            ).await,
+            Err(FiError::MaintenanceWrongState { phase: actual }) if actual == phase
+        ));
+        assert!(reopened.inner.store.backup_payload().await.is_err());
+        let starts = state.start_callbacks.lock().unwrap().len();
+        let seats = state.create_calls.load(Ordering::SeqCst);
+        // Let the fake consensus adopt the submitted directory on the next read.
+        *state.meta_consensus_raw.lock().unwrap() = None;
+        reopened.resume().await.unwrap();
+        assert_eq!(formation(&reopened.status()).phase, FormationPhase::Formed);
+        assert_eq!(state.start_callbacks.lock().unwrap().len(), starts);
+        assert_eq!(state.create_calls.load(Ordering::SeqCst), seats);
+        assert_eq!(payment_state.create_calls.load(Ordering::SeqCst), 0);
+    }
+}
+
+#[tokio::test]
+async fn completed_setup_stays_formed_through_rechecks_and_cancellation() {
+    let database = MemDatabase::new().into_database();
+    let (payments, _) = TestPayments::new();
+    let state = Arc::new(FmanState::default());
+    let client = open_client(
+        database.clone(),
+        payments.clone(),
+        state.clone(),
+        FmanConfig::given_away(),
+    )
+    .await;
+    client
+        .create_with_pinned_fmans(intent(), locators(), options())
+        .await
+        .unwrap();
+    drop(client);
+
+    let reader = TestConsensusReader::new(state.clone());
+    reader.fail_next(usize::MAX);
+    let client = open_client_with_reader(
+        database.clone(),
+        payments.clone(),
+        state.clone(),
+        FmanConfig::given_away(),
+        reader.clone(),
+    )
+    .await;
+    // Cancel after the first failed consensus read, while resume waits to retry.
+    tokio::time::timeout(Duration::from_secs(2), async {
+        tokio::select! {
+            result = client.resume() => panic!("recheck unexpectedly finished: {result:?}"),
+            () = async {
+                while reader.failures.load(Ordering::SeqCst) == usize::MAX {
+                    tokio::task::yield_now().await;
+                }
+            } => {}
+        }
+    })
+    .await
+    .unwrap();
+    let status = client.status();
+    assert_eq!(formation(&status).phase, FormationPhase::Formed);
+    assert_eq!(formation(&status).freshness, FormationFreshness::Unsynced);
+    assert_eq!(formation(&status).last_error, None);
+    drop(client);
+    // Let the cancelled driver's lease cleanup finish before reopening.
+    tokio::task::yield_now().await;
+
+    for fail in [false, true] {
+        let reader = TestConsensusReader::new(state.clone());
+        // Yield during readback so the observer sees the phase while checking.
+        reader.fail_next(1);
+        if fail {
+            reader.adopt(b"{}".to_vec());
+            reader.force_value("{}");
+        }
+        let client = open_client_with_reader(
+            database.clone(),
+            payments.clone(),
+            state.clone(),
+            FmanConfig::given_away(),
+            reader,
+        )
+        .await;
+        assert_eq!(formation(&client.status()).phase, FormationPhase::Formed);
+        assert_eq!(
+            formation(&client.status()).freshness,
+            FormationFreshness::Unsynced
+        );
+        let mut observed = client.observe();
+        let result = {
+            let operation = client.resume();
+            tokio::pin!(operation);
+            loop {
+                tokio::select! {
+                    biased;
+                    changed = observed.changed() => {
+                        changed.unwrap();
+                        assert_eq!(formation(&observed.borrow_and_update()).phase, FormationPhase::Formed);
+                    }
+                    result = &mut operation => break result,
+                }
+            }
+        };
+        assert_eq!(result.is_err(), fail);
+        let status = client.status();
+        let snapshot = formation(&status);
+        assert_eq!(snapshot.phase, FormationPhase::Formed);
+        assert_eq!(snapshot.last_error.is_some(), fail);
+        assert_eq!(
+            snapshot.freshness,
+            if fail {
+                FormationFreshness::Unsynced
+            } else {
+                FormationFreshness::Fresh
+            }
+        );
+        let saved = client
+            .inner
+            .store
+            .load_status(TestIdentity::fi_id())
+            .await
+            .unwrap();
+        assert_eq!(formation(&saved).phase, FormationPhase::Formed);
+    }
+}
+
+#[tokio::test]
 async fn an_fman_claiming_a_foreign_peer_is_not_pinned_for_recovery() {
     // The FI must reject the invalid directory before persisting its target:
     // recovery replays target bytes exactly and cannot repair a foreign peer
@@ -8100,7 +8268,7 @@ async fn abandon_after_formed_is_a_typed_error() {
     assert!(
         matches!(
             error,
-            FiError::AbandonUnavailable(AbandonUnavailableReason::AlreadyFormed)
+            FiError::AbandonUnavailable(AbandonUnavailableReason::DkgComplete)
         ),
         "{error}"
     );

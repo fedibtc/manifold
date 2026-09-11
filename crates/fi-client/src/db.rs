@@ -506,7 +506,18 @@ enum StoredFormationPhase {
     Initialized,
     SeatsPartiallyCreated,
     SeatsCreated,
+    DkgComplete,
+    PublishingSeatBindings,
     Formed,
+}
+
+impl StoredFormationPhase {
+    fn dkg_complete(self) -> bool {
+        matches!(
+            self,
+            Self::DkgComplete | Self::PublishingSeatBindings | Self::Formed
+        )
+    }
 }
 
 macro_rules! json_database_value {
@@ -633,7 +644,7 @@ pub(crate) struct ActiveFormationRecovery {
     pub(crate) payment_outputs_started: bool,
     /// Entry-point discriminator and selected payer.
     pub(crate) creation_mode: FormationCreationMode,
-    /// Exact formation metadata target and its readback checkpoint.
+    /// Exact formation metadata target saved before publication.
     pub(crate) formation_meta_target: Option<FormationMetaTarget>,
     /// Bearer callback handed to every FMan only at `StartDkg`.
     pub(crate) dkg_completion_callback: Option<DkgCompletionCallback>,
@@ -641,6 +652,7 @@ pub(crate) struct ActiveFormationRecovery {
 
 /// Complete semantic target replayed until formation metadata is confirmed.
 #[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct FormationMetaTarget {
     /// FI's canonical prediction, used only for consensus readback.
     pub(crate) seat_bindings: String,
@@ -650,7 +662,6 @@ pub(crate) struct FormationMetaTarget {
     pub(crate) guardian_verification_fee_account: GuardianFeeAccount,
     pub(crate) send_ppm: u64,
     pub(crate) recipients: String,
-    pub(crate) confirmed: bool,
 }
 
 /// One validated row supplied to atomic formation initialization.
@@ -851,12 +862,7 @@ impl FiStore {
         let (federation_invite, seats, restored_baseline) = if let Some(formation) =
             dbtx.get_value(&ActiveFormationKey).await
         {
-            if formation.phase != StoredFormationPhase::Formed
-                || !formation
-                    .formation_meta_target
-                    .as_ref()
-                    .is_some_and(|target| target.confirmed)
-            {
+            if formation.phase != StoredFormationPhase::Formed {
                 return Err(formed_backup_required());
             }
             let federation_invite = formation
@@ -1541,6 +1547,7 @@ impl FiStore {
             .expect("test formation exists");
         formation.phase = StoredFormationPhase::SeatsCreated;
         formation.invite_code = None;
+        formation.formation_meta_target = None;
         let key = SeatKey {
             formation_id: formation.formation_id.0.clone(),
             index: 0,
@@ -1559,11 +1566,7 @@ impl FiStore {
             .get_value(&ActiveFormationKey)
             .await
             .expect("test formation exists");
-        formation
-            .formation_meta_target
-            .as_mut()
-            .expect("test metadata target")
-            .confirmed = false;
+        formation.phase = StoredFormationPhase::PublishingSeatBindings;
         dbtx.insert_entry(&ActiveFormationKey, &formation).await;
         dbtx.commit_tx().await;
     }
@@ -1655,7 +1658,7 @@ impl FiStore {
 
         let mut recoveries = Vec::with_capacity(seats.len());
         for seat in seats {
-            let phase = if stored.phase == StoredFormationPhase::Formed {
+            let phase = if stored.phase.dkg_complete() {
                 SeatPhase::Running
             } else if seat.guardian_code.is_some() {
                 SeatPhase::GuardianCodeReady
@@ -2049,8 +2052,8 @@ impl FiStore {
             .map_err(map_formation_tx_error)
     }
 
-    /// Mark formation complete without rewriting any seat row.
-    pub(crate) async fn record_formed(
+    /// Save completed DKG and its invite without rewriting any seat row.
+    pub(crate) async fn record_dkg_complete(
         &self,
         formation_id: &FormationId,
         invite_code: InviteCode,
@@ -2088,12 +2091,11 @@ impl FiStore {
                             }
                             seats.push(seat);
                         }
-                        formation.phase = StoredFormationPhase::Formed;
+                        formation.phase = StoredFormationPhase::DkgComplete;
                         formation.invite_code = Some(invite_code);
                         // Every FMan now owns durable delivery retry. Drop the
-                        // FI-side bearer atomically with the terminal formation
-                        // checkpoint while preserving it across all pre-Formed
-                        // crashes and resumes.
+                        // FI-side bearer with the DKG checkpoint, retaining it
+                        // through every earlier crash and resume.
                         formation.dkg_completion_callback.clear();
                         validate_formation_progress(&formation, &seats)?;
                         dbtx.insert_entry(&ActiveFormationKey, &formation).await;
@@ -2127,6 +2129,7 @@ impl FiStore {
                                 )
                             })?;
                         validate_active_formation(&formation, &formation_id)?;
+                        formation.phase = StoredFormationPhase::PublishingSeatBindings;
                         formation.formation_meta_target = Some(target);
                         dbtx.insert_entry(&ActiveFormationKey, &formation).await;
                         Ok(())
@@ -2156,15 +2159,12 @@ impl FiStore {
                                 )
                             })?;
                         validate_active_formation(&formation, &formation_id)?;
-                        formation
-                            .formation_meta_target
-                            .as_mut()
-                            .ok_or_else(|| {
-                                FiError::Storage(
-                                    "cannot confirm missing formation metadata".to_owned(),
-                                )
-                            })?
-                            .confirmed = true;
+                        if formation.phase != StoredFormationPhase::PublishingSeatBindings {
+                            return Err(FiError::Storage(
+                                "cannot complete formation before publishing metadata".to_owned(),
+                            ));
+                        }
+                        formation.phase = StoredFormationPhase::Formed;
                         dbtx.insert_entry(&ActiveFormationKey, &formation).await;
                         Ok(())
                     })
@@ -2837,7 +2837,7 @@ impl FiStore {
     ///
     /// Value safety is re-validated inside the transaction: wallet output
     /// generation must not have been durably armed and the formation must not
-    /// be `Formed`. Commercial authorization alone does not close the window.
+    /// have completed DKG. Commercial authorization alone does not close the window.
     /// Free seats accepted server-side are forfeited, not released; the
     /// authenticated setup-payment policy retention is deliberately kept.
     async fn abandon_formation(
@@ -2874,9 +2874,9 @@ impl FiStore {
                 crate::AbandonUnavailableReason::PaymentOutputsStarted,
             ));
         }
-        if formation.phase == StoredFormationPhase::Formed {
+        if formation.phase.dkg_complete() {
             return Err(FiError::AbandonUnavailable(
-                crate::AbandonUnavailableReason::AlreadyFormed,
+                crate::AbandonUnavailableReason::DkgComplete,
             ));
         }
         for index in 0..formation.seat_count {
@@ -3878,7 +3878,10 @@ fn validate_formation_progress(formation: &StoredFormation, seats: &[StoredSeat]
     let phase_matches = match formation.phase {
         StoredFormationPhase::Initialized => created == 0,
         StoredFormationPhase::SeatsPartiallyCreated => 0 < created && created < seat_count,
-        StoredFormationPhase::SeatsCreated | StoredFormationPhase::Formed => created == seat_count,
+        StoredFormationPhase::SeatsCreated
+        | StoredFormationPhase::DkgComplete
+        | StoredFormationPhase::PublishingSeatBindings
+        | StoredFormationPhase::Formed => created == seat_count,
     };
     if !phase_matches {
         return Err(FiError::Storage(
@@ -3886,7 +3889,16 @@ fn validate_formation_progress(formation: &StoredFormation, seats: &[StoredSeat]
         ));
     }
 
-    if formation.phase == StoredFormationPhase::Formed {
+    let needs_target = matches!(
+        formation.phase,
+        StoredFormationPhase::PublishingSeatBindings | StoredFormationPhase::Formed
+    );
+    if needs_target != formation.formation_meta_target.is_some() {
+        return Err(FiError::Storage(
+            "persisted formation phase disagrees with its metadata target".to_owned(),
+        ));
+    }
+    if formation.phase.dkg_complete() {
         if formation.invite_code.is_none() {
             return Err(FiError::Storage(
                 "persisted formed FI formation lacks its invite code".to_owned(),
@@ -3961,7 +3973,7 @@ fn public_phase(
     recoveries: &[SeatRecovery],
     payment_required: bool,
 ) -> FormationPhase {
-    if payment_required && stored != StoredFormationPhase::Formed {
+    if payment_required && !stored.dkg_complete() {
         return FormationPhase::AwaitingPaymentReadiness;
     }
     match stored {
@@ -3977,6 +3989,8 @@ fn public_phase(
         }
         StoredFormationPhase::SeatsPartiallyCreated => FormationPhase::AcquiringSeats,
         StoredFormationPhase::SeatsCreated => FormationPhase::PreparingDkg,
+        StoredFormationPhase::DkgComplete => FormationPhase::DkgComplete,
+        StoredFormationPhase::PublishingSeatBindings => FormationPhase::PublishingSeatBindings,
         StoredFormationPhase::Formed => FormationPhase::Formed,
     }
 }
