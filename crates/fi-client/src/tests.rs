@@ -2083,6 +2083,7 @@ fn setup_payment_event(created_at: u64, invites: &[&str]) -> Event {
             "version": 1,
             "fman_version": "0.1.0",
             "federations": invites,
+            "verified_guardian_tos_url": "https://fedi.example/verified-guardian-terms",
             "telemetry_registration_url":
                 "https://push.fedi.example/v1/telemetry/registrations",
         })
@@ -2101,6 +2102,7 @@ fn setup_payment_event_with_min_fee_ppm(
             "version": 1,
             "fman_version": "0.1.0",
             "federations": invites,
+            "verified_guardian_tos_url": "https://fedi.example/verified-guardian-terms",
             "telemetry_registration_url":
                 "https://push.fedi.example/v1/telemetry/registrations",
             "min_fee_ppm": min_fee_ppm,

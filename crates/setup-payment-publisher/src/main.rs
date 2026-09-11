@@ -239,10 +239,6 @@ fn validate_content_for_publication(
     allow_empty_stop_set: bool,
 ) -> anyhow::Result<()> {
     ensure!(
-        content.verified_guardian_tos_url.is_some(),
-        "new policies require verified_guardian_tos_url"
-    );
-    ensure!(
         allow_empty_stop_set || !content.federations.is_empty(),
         "empty federation set stops all new paid setup; pass --allow-empty-stop-set to acknowledge"
     );

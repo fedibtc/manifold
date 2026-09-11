@@ -11,7 +11,7 @@ use nostr::{EventBuilder, EventId, Keys, SECP256K1, Tag, Tags};
 use super::*;
 
 const VALID_INVITE: &str = "fed11qgqpu8rhwden5te0vejkg6tdd9h8gepwd4cxcumxv4jzuen0duhsqqfqh6nl7sgk72caxfx8khtfnn8y436q3nhyrkev3qp8ugdhdllnh86qmp42pm";
-const SIGNED_EVENT_FIXTURE: &str = r#"{"id":"ee7d6ff74b9a89b0fe488a3aa124a24b00a799002fee31d85c71597c95eb5de4","pubkey":"79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798","created_at":1700000000,"kind":37707,"tags":[["d","setup-payment-federations"]],"content":"{\"version\":1,\"fman_version\":\"0.1.0\",\"federations\":[],\"telemetry_registration_url\":\"https://push.fedi.example/v1/telemetry/registrations\"}","sig":"975a7d6cf9a4fda41c460eb01d6365effd076290b68f3dd197a19c7dc89383d2d37cf607e64e0b58688f054f9008896e0550a9b84137e7a81581c1ac0a9de5a0"}"#;
+const SIGNED_EVENT_FIXTURE: &str = r#"{"id":"384be0644736761d498ca2d6bc433190385bc2ea2d44ca22ce878e653b351bb3","pubkey":"79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798","created_at":1700000000,"kind":37707,"tags":[["d","setup-payment-federations"]],"content":"{\"version\":1,\"fman_version\":\"0.1.0\",\"federations\":[],\"telemetry_registration_url\":\"https://push.fedi.example/v1/telemetry/registrations\",\"verified_guardian_tos_url\":\"https://fedi.example/verified-guardian-terms\"}","sig":"a0449426c5e5c2ea5efe8e9490efe8f2e3cff13288a94d9295883505361b10f84cf1987875bcd112da054a28544dae395f0685cde051fe26e0dbd7c5c2ac8c54"}"#;
 
 fn content(invites: &[&str]) -> String {
     serde_json::to_string(&SetupPaymentFederationsContent {
@@ -25,7 +25,7 @@ fn content(invites: &[&str]) -> String {
             "https://push.fedi.example/v1/telemetry/registrations".to_owned()
         ),
         min_fee_ppm: DEFAULT_SETUP_PAYMENT_MIN_FEE_PPM,
-        verified_guardian_tos_url: None,
+        verified_guardian_tos_url: Url("https://fedi.example/verified-guardian-terms".to_owned()),
     })
     .expect("test content serializes")
 }
@@ -46,7 +46,7 @@ fn deterministic_event() -> Event {
     let created_at = Timestamp::from_secs(1_700_000_000);
     let kind = Kind::from(37_707);
     let tags = vec![Tag::identifier("setup-payment-federations")];
-    let content = r#"{"version":1,"fman_version":"0.1.0","federations":[],"telemetry_registration_url":"https://push.fedi.example/v1/telemetry/registrations"}"#;
+    let content = r#"{"version":1,"fman_version":"0.1.0","federations":[],"telemetry_registration_url":"https://push.fedi.example/v1/telemetry/registrations","verified_guardian_tos_url":"https://fedi.example/verified-guardian-terms"}"#;
     let id = EventId::new(
         &keys.public_key(),
         &created_at,

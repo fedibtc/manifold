@@ -97,10 +97,9 @@ pub struct SetupPaymentFederationsContent {
     /// appear on Nostr.
     pub telemetry_registration_url: Url,
 
-    /// Guardian terms covering telemetry collection. Older policies omit this
-    /// link; carrying it does not record or require acceptance.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub verified_guardian_tos_url: Option<Url>,
+    /// Guardian terms covering telemetry collection. Carrying this link does
+    /// not record or require acceptance.
+    pub verified_guardian_tos_url: Url,
 
     /// Smallest guardian fee rate, in parts per million, that a guardian will
     /// accept in a fee proposal. Optional on the wire: an event omitting it
@@ -118,7 +117,7 @@ pub struct AdmittedSetupPaymentFederations {
     /// Unique invites keyed by their canonical derived federation IDs.
     federations: BTreeMap<FederationId, InviteCode>,
     telemetry_registration_url: Url,
-    verified_guardian_tos_url: Option<Url>,
+    verified_guardian_tos_url: Url,
     min_fee_ppm: u64,
 }
 
@@ -159,16 +158,14 @@ impl AdmittedSetupPaymentFederations {
             return Err(SetupPaymentFederationsContentError::InvalidTelemetryRegistrationUrl);
         }
 
-        if let Some(terms) = &content.verified_guardian_tos_url {
-            let terms = url::Url::parse(&terms.0)
-                .map_err(|_| SetupPaymentFederationsContentError::InvalidGuardianTosUrl)?;
-            if terms.scheme() != "https"
-                || !terms.has_host()
-                || !terms.username().is_empty()
-                || terms.password().is_some()
-            {
-                return Err(SetupPaymentFederationsContentError::InvalidGuardianTosUrl);
-            }
+        let terms = url::Url::parse(&content.verified_guardian_tos_url.0)
+            .map_err(|_| SetupPaymentFederationsContentError::InvalidGuardianTosUrl)?;
+        if terms.scheme() != "https"
+            || !terms.has_host()
+            || !terms.username().is_empty()
+            || terms.password().is_some()
+        {
+            return Err(SetupPaymentFederationsContentError::InvalidGuardianTosUrl);
         }
 
         let fman_version = content.fman_version;
@@ -236,10 +233,10 @@ impl AdmittedSetupPaymentFederations {
         &self.telemetry_registration_url
     }
 
-    /// Return the guardian terms link, if the publication includes one.
+    /// Return the authenticated guardian terms link.
     #[must_use]
-    pub fn verified_guardian_tos_url(&self) -> Option<&Url> {
-        self.verified_guardian_tos_url.as_ref()
+    pub fn verified_guardian_tos_url(&self) -> &Url {
+        &self.verified_guardian_tos_url
     }
 
     /// Return the smallest guardian fee rate a proposal may carry, in ppm.

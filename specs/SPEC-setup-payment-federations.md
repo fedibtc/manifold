@@ -67,8 +67,8 @@ Consequently a rebuilt publisher consumes additions to the shared wire type
 without a second producer field list; its complete-policy serialization fixture
 fails when a required field or serialized default changes. The publisher rejects
 unknown input fields so typos cannot disappear before signing. New publications
-must include `verified_guardian_tos_url`; previous
-receipts and keyless republishing may still omit it.
+and readers require `verified_guardian_tos_url`, including when restoring
+previous receipts or republishing saved events.
 
 Publishing requires an independently supplied expected public key and reads
 the matching secret only from a file or non-terminal standard input. The
@@ -120,15 +120,17 @@ replacement ordering as the new shared high-water mark.
   adopted stays valid to carry forward and still reports as configured
   ([REQ-guardian-fee-remittance](./REQ-guardian-fee-remittance.md)); and
 - `verified_guardian_tos_url`, a credential-free HTTPS URL with a host pointing
-  to the verified guardian terms covering telemetry collection. Readers accept
-  its absence or null in older policies. It is a reference, not a record of
-  acceptance or an onboarding acceptance requirement.
+  to the verified guardian terms covering telemetry collection. Missing or null
+  is invalid. It is a reference, not a record of acceptance or an onboarding
+  acceptance requirement.
 
 Readers ignore unknown fields within version 1 and still validate known fields.
 They authenticate and retain the complete signed event, including unknown
 fields. Additions that require older clients to enforce new behavior need a
 new policy version. Roll out tolerant FI and FMan readers before publishing
-additional fields: existing strict binaries still reject them.
+additional fields: existing strict binaries still reject them. Making the terms
+URL required is a pre-production format change: staging policies and stored
+receipts without it must be replaced during rollout.
 
 The telemetry URL is required in version 1. It is a policy locator, not a
 bearer capability. The event deliberately does not publish FMan Iroh endpoint
@@ -160,8 +162,7 @@ Admission performs all of these checks before the set influences policy:
     contains a query or fragment;
 11. reject a `min_fee_ppm` above the payer's 210,000-ppm send-rate ceiling,
     which would leave no proposable rate.
-12. reject a present, non-null guardian terms URL that is not credential-free
-    HTTPS with a host.
+12. require a guardian terms URL using credential-free HTTPS with a host.
 
 Array position carries no preference or fallback meaning. A consumer uses the
 derived federation ID as the member identity and the signed invite as its join

@@ -36,6 +36,7 @@ fn admitted_set(indices: &[usize]) -> AdmittedSetupPaymentFederations {
         "version": 1,
         "fman_version": "0.1.0",
         "federations": invites,
+        "verified_guardian_tos_url": "https://fedi.example/verified-guardian-terms",
         "telemetry_registration_url": "https://push.fedi.example/v1/telemetry/registrations",
     });
     AdmittedSetupPaymentFederations::parse(content.to_string().as_bytes())

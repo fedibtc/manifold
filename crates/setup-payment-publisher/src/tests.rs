@@ -125,17 +125,28 @@ fn publisher_rejects_duplicate_known_fields() {
 }
 
 #[test]
-fn new_policies_require_terms_but_old_receipts_still_restore() {
-    let mut content = valid_content();
-    content.verified_guardian_tos_url = None;
-    assert!(validate_content_for_publication(&content, true).is_err());
-    let old_event = signed_event(&content, 1_700_000_000);
-    let restored = restore_durably_admitted_setup_payment_federations_event(
-        &old_event,
-        test_keys().public_key(),
-    )
-    .unwrap();
-    assert_eq!(restored.event(), &old_event);
+fn policies_and_saved_receipts_require_guardian_terms() {
+    let temp = TempDir::new().unwrap();
+    let mut content: serde_json::Value = serde_json::from_str(POLICY_FIXTURE).unwrap();
+    content
+        .as_object_mut()
+        .unwrap()
+        .remove("verified_guardian_tos_url");
+    for policy in [content.clone(), {
+        content["verified_guardian_tos_url"] = serde_json::Value::Null;
+        content
+    }] {
+        let raw = policy.to_string();
+        assert!(read_content(&write_policy(&temp, &raw)).is_err());
+        let event = signed_opaque_event(&raw, 1_700_000_000);
+        assert!(
+            restore_durably_admitted_setup_payment_federations_event(
+                &event,
+                test_keys().public_key(),
+            )
+            .is_err()
+        );
+    }
 }
 
 #[test]

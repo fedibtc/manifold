@@ -51,11 +51,11 @@ nix run .#setup-payment-publisher -- republish \
 The JSON file is the shared wire object, not a tool-specific schema. Rebuild
 after protocol changes; the golden serialization test forces additions or
 serialized defaults to be reflected in operator policy files, while old
-binaries reject fields they do not know. New publications also require
+binaries reject fields they do not know. Publications and readers require
 `verified_guardian_tos_url`, a credential-free HTTPS link to the verified
-guardian terms covering telemetry collection. Older receipts remain usable
-without the link. Deploy FI and FMan readers that tolerate additional fields
-before publishing it; older strict readers reject the updated policy.
+guardian terms covering telemetry collection. Policies and saved receipts
+without the link are rejected. Replace staging policy and saved state during
+rollout; existing strict readers reject the added field.
 
 ## Testing
 

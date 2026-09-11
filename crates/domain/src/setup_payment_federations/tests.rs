@@ -48,7 +48,7 @@ fn content_with_min_fee_ppm(invites: Vec<String>, min_fee_ppm: u64) -> Vec<u8> {
             "https://push.fedi.example/v1/telemetry/registrations".to_owned()
         ),
         min_fee_ppm,
-        verified_guardian_tos_url: None,
+        verified_guardian_tos_url: Url("https://fedi.example/verified-guardian-terms".to_owned()),
     })
     .expect("test content serializes")
 }
@@ -61,7 +61,7 @@ fn wire_shape_includes_fman_version_and_invite_array() {
     assert_eq!(
         String::from_utf8(encoded).expect("JSON is UTF-8"),
         format!(
-            r#"{{"version":1,"fman_version":"0.1.0","federations":["{invite}"],"telemetry_registration_url":"https://push.fedi.example/v1/telemetry/registrations","min_fee_ppm":1500}}"#
+            r#"{{"version":1,"fman_version":"0.1.0","federations":["{invite}"],"telemetry_registration_url":"https://push.fedi.example/v1/telemetry/registrations","verified_guardian_tos_url":"https://fedi.example/verified-guardian-terms","min_fee_ppm":1500}}"#
         )
     );
 }
@@ -69,10 +69,9 @@ fn wire_shape_includes_fman_version_and_invite_array() {
 #[test]
 fn omitted_min_fee_ppm_defaults_to_the_published_floor() {
     let invite = invite("https://one.example/");
-    // Exactly what Fedi publishes today, with no `min_fee_ppm` at all: an
-    // un-upgraded publication must still carry the 0.15% floor, not zero.
+    // Omitting the fee still means the 0.15% floor, not zero.
     let raw = format!(
-        r#"{{"version":1,"fman_version":"0.1.0","federations":["{invite}"],"telemetry_registration_url":"https://push.fedi.example/v1/telemetry/registrations"}}"#
+        r#"{{"version":1,"fman_version":"0.1.0","federations":["{invite}"],"telemetry_registration_url":"https://push.fedi.example/v1/telemetry/registrations","verified_guardian_tos_url":"https://fedi.example/verified-guardian-terms"}}"#
     );
 
     let admitted = AdmittedSetupPaymentFederations::parse(raw.as_bytes())
@@ -126,7 +125,9 @@ fn admits_only_credential_free_https_telemetry_registration_urls() {
             federations: Vec::new(),
             telemetry_registration_url: Url(invalid.to_owned()),
             min_fee_ppm: DEFAULT_SETUP_PAYMENT_MIN_FEE_PPM,
-            verified_guardian_tos_url: None,
+            verified_guardian_tos_url: Url(
+                "https://fedi.example/verified-guardian-terms".to_owned()
+            ),
         })
         .unwrap();
         assert_eq!(
@@ -286,23 +287,14 @@ fn ignores_future_fields_without_changing_known_policy() {
 }
 
 #[test]
-fn guardian_terms_are_optional_but_validated_when_present() {
+fn guardian_terms_are_required_and_validated() {
     let original = content(vec![]);
-    assert!(
-        AdmittedSetupPaymentFederations::parse(&original)
-            .unwrap()
-            .verified_guardian_tos_url()
-            .is_none()
-    );
     let mut value: serde_json::Value = serde_json::from_slice(&original).unwrap();
     let terms = "https://fedi.example/guardian-terms?v=1#telemetry";
     value["verified_guardian_tos_url"] = serde_json::json!(terms);
     let admitted =
         AdmittedSetupPaymentFederations::parse(&serde_json::to_vec(&value).unwrap()).unwrap();
-    assert_eq!(
-        admitted.verified_guardian_tos_url(),
-        Some(&Url(terms.to_owned()))
-    );
+    assert_eq!(admitted.verified_guardian_tos_url(), &Url(terms.to_owned()));
     for invalid in [
         "http://fedi.example/terms",
         "https://user:pass@fedi.example/terms",
@@ -315,7 +307,16 @@ fn guardian_terms_are_optional_but_validated_when_present() {
             SetupPaymentFederationsContentError::InvalidGuardianTosUrl
         );
     }
-    value["verified_guardian_tos_url"] = serde_json::json!(42);
+    for invalid in [serde_json::json!(42), serde_json::Value::Null] {
+        value["verified_guardian_tos_url"] = invalid;
+        assert!(
+            AdmittedSetupPaymentFederations::parse(&serde_json::to_vec(&value).unwrap()).is_err()
+        );
+    }
+    value
+        .as_object_mut()
+        .unwrap()
+        .remove("verified_guardian_tos_url");
     assert!(AdmittedSetupPaymentFederations::parse(&serde_json::to_vec(&value).unwrap()).is_err());
 }
 
@@ -331,12 +332,12 @@ fn rejects_oversized_malformed_and_duplicate_known_fields() {
         SetupPaymentFederationsContentError::ContentTooLarge
     );
     for malformed in [
-        br#"{"version":1,"version":1,"fman_version":"0.1.0","federations":[],"telemetry_registration_url":"https://push.fedi.example/v1/telemetry/registrations"}"#.as_slice(),
-        br#"{"version":2,"fman_version":"0.1.0","federations":[],"telemetry_registration_url":"https://push.fedi.example/v1/telemetry/registrations"}"#.as_slice(),
-        br#"{"version":1,"fman_version":"0.1.0","federations":"not-an-array","telemetry_registration_url":"https://push.fedi.example/v1/telemetry/registrations"}"#.as_slice(),
+        br#"{"version":1,"version":1,"fman_version":"0.1.0","federations":[],"telemetry_registration_url":"https://push.fedi.example/v1/telemetry/registrations","verified_guardian_tos_url":"https://fedi.example/verified-guardian-terms"}"#.as_slice(),
+        br#"{"version":2,"fman_version":"0.1.0","federations":[],"telemetry_registration_url":"https://push.fedi.example/v1/telemetry/registrations","verified_guardian_tos_url":"https://fedi.example/verified-guardian-terms"}"#.as_slice(),
+        br#"{"version":1,"fman_version":"0.1.0","federations":"not-an-array","telemetry_registration_url":"https://push.fedi.example/v1/telemetry/registrations","verified_guardian_tos_url":"https://fedi.example/verified-guardian-terms"}"#.as_slice(),
         br#"{"version":1,"fman_version":"0.1.0","federations":[]}"#.as_slice(),
-        br#"{"version":1,"federations":[],"telemetry_registration_url":"https://push.fedi.example/v1/telemetry/registrations"}"#.as_slice(),
-        br#"{"version":1,"fman_version":"latest","federations":[],"telemetry_registration_url":"https://push.fedi.example/v1/telemetry/registrations"}"#.as_slice(),
+        br#"{"version":1,"federations":[],"telemetry_registration_url":"https://push.fedi.example/v1/telemetry/registrations","verified_guardian_tos_url":"https://fedi.example/verified-guardian-terms"}"#.as_slice(),
+        br#"{"version":1,"fman_version":"latest","federations":[],"telemetry_registration_url":"https://push.fedi.example/v1/telemetry/registrations","verified_guardian_tos_url":"https://fedi.example/verified-guardian-terms"}"#.as_slice(),
     ] {
         assert_eq!(
             AdmittedSetupPaymentFederations::parse(malformed)

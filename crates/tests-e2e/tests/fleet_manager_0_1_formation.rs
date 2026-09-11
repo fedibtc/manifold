@@ -2988,6 +2988,7 @@ async fn run_paid_formation() -> anyhow::Result<()> {
                 "version": 1,
                 "fman_version": "0.1.0",
                 "federations": [payment_invite],
+                "verified_guardian_tos_url": "https://fedi.example/verified-guardian-terms",
                 "telemetry_registration_url": TELEMETRY_REGISTRATION_URL,
             })
             .to_string(),
@@ -3167,6 +3168,7 @@ async fn run_paid_formation() -> anyhow::Result<()> {
             "version": 1,
             "fman_version": "0.1.0",
             "federations": [payment_invite],
+            "verified_guardian_tos_url": "https://fedi.example/verified-guardian-terms",
             "telemetry_registration_url": TELEMETRY_REGISTRATION_URL,
         })
         .to_string(),
