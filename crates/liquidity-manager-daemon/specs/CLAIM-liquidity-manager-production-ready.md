@@ -2,8 +2,10 @@
 
 Within its documented single-process, single-gateway production envelope, FLIP
 can accept and complete supported gateway and stability-pool allocations
-unattended while preserving admission authorization, provider-wallet value,
-item-specific settlement attribution, crash and retry idempotency,
+unattended while preserving admission authorization and preventing operational
+loss of technically authorized funds under its management across the supported
+funds lifecycle, with item-specific settlement attribution, crash and retry
+idempotency,
 recoverability, failure visibility, secret confinement, and the canonical
 service-adapter wire and signing contract. Durable allocation state grows by at
 most one `allocations` row per admitted federation, and each admission spends a
@@ -31,10 +33,6 @@ Under the release's dependency-availability preconditions and workload limits,
 accepted supported allocations reach completion or an actionable terminal state
 within their documented deadline, and restart or restore recovers service within
 the documented recovery objective.
-
-## Status
-
-Unverified.
 
 ## Assumptions
 
@@ -74,40 +72,8 @@ Unverified.
 - A caller without an allocation's requester key and details commitment cannot
   learn whether the allocation exists
   ([claim](CLAIM-allocation-existence-probe.md)).
-- [CLAIM-fresh-request-id-repeated-funding](CLAIM-fresh-request-id-repeated-funding.md).
-- An allocation item completes only when its fulfilled amount is attributable
-  to FLIP-caused provider-wallet outflow for that item's persisted target
-  ([claim](CLAIM-allocation-completion-has-attributable-provider-outflow.md)).
-- One operator withdrawal intent causes at most one wallet send and one settled
-  payment
-  ([claim](CLAIM-duplicate-operator-withdrawal.md)).
-- [CLAIM-duplicate-stability-deposit](CLAIM-duplicate-stability-deposit.md).
-- FLIP does not admit a new request against capacity from a possibly debited
-  wallet send until a durable observation is known to include that debit
-  ([claim](CLAIM-fi-stale-capacity-reuse.md)).
-- At every commit that adds or reactivates a wallet liability, active allocation
-  reservations, operator withdrawals, possibly spent uncovered sends, and the
-  fee reserve do not exceed known spendable balance, and active allocation
-  reservations do not exceed the configured allocation cap
-  ([claim](CLAIM-wallet-budget-overcommit.md)).
-- After an item or wallet operation becomes terminal, stale work cannot perform
-  another irreversible effect or overwrite its terminal evidence
-  ([claim](CLAIM-post-cancellation-effect.md)).
-- Before accepting a nonzero stability-pool allocation, FLIP verifies that the
-  authenticated target configuration has a usable stability-pool module
-  ([claim](CLAIM-accepted-stability-allocation-requires-target-module.md)).
-- A stability-pool allocation accepted for one configuration cannot cause
-  provider-wallet outflow through a different configuration
-  ([claim](CLAIM-stability-worker-config-revision-fence.md)).
-- No automatic path can strand a stability-pool item's claimed ecash in the
-  target client. Only a deliberate, authenticated operator action can, and it
-  records the abandoned amount and the operator's reason durably
-  ([claim](CLAIM-failed-stability-allocation-strands-ecash.md)).
-- If a claimed stability-pool deposit is rejected, an Admin operation fails the
-  item, releases the provider capacity its reservation held, and durably records
-  the amount left behind in the target client. Recovering that value is outside
-  FLIP
-  ([claim](CLAIM-stability-deposit-rejection-releases-capacity.md)).
+- [CLAIM-liquidity-manager-managed-funds-not-lost](CLAIM-liquidity-manager-managed-funds-not-lost.md).
+- [CLAIM-allocation-completion-has-attributable-provider-outflow](CLAIM-allocation-completion-has-attributable-provider-outflow.md).
 - Fair worker execution eventually observes an upstream terminal
   `deposit_to_provide` result for an active stability-pool item
   ([claim](CLAIM-stability-deposit-terminal-state-not-observed.md)).
@@ -140,18 +106,6 @@ Unverified.
   Admin token, gateway credential, provider identity, wallet material, and
   allocation secrets to the authorized local storage, operator, and protocol
   recipients defined by the supported deployment.
-- Each supported provider-wallet effect, including gateway funding, has one
-  durably reconciled semantic operation: retries cannot duplicate its
-  irreversible debit; its persisted authorized target, amount, and fees remain
-  within its durable reservation; every authorized but unreconciled operation
-  keeps that full reservation active and charged against known spendable balance
-  and the configured allocation cap until durable evidence proves no effect or a
-  known balance observation includes the debit; no operation can perform an
-  effect after releasing that reservation; for each allocation item or operator
-  withdrawal intent, aggregate irreversible debits and fees across all semantic
-  operations and effects do not exceed its durable authorized reservation, and
-  no distinct operation can reuse consumed reservation authority; and its
-  evidence permits recovery or reconciliation at every crash point.
 - Within the stated workload limits and dependency-availability preconditions,
   every conforming valid supported gateway and stability-pool allocation can be
   admitted and has an operator-free execution that completes successfully.
@@ -175,10 +129,9 @@ Unverified.
   documented restore procedure with the protected durable backup, capacity,
   credentials, and dependencies available restores the supported service within
   the documented recovery objective.
+- Every supported allocation-state, wallet-operation, target-client, and
+  recovery transition has one durable semantic identity and remains idempotent
+  across concurrent delivery, retry, crash, restart, and restore.
 - Every admitted valid, unrevoked endorsement authorizes the exact requester
   signing key bound to the authenticated transport actor, its federation, and
   its semantic liquidity intent.
-- Every provider-wallet operation, effect, and durable settlement evidence is
-  bound to the exact allocation item or operator intent whose durable reservation
-  authorized it and can satisfy only that owner. One effect and its evidence
-  cannot count its value or fees more than once.

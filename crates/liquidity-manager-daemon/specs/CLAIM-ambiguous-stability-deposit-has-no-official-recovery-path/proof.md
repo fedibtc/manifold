@@ -1,34 +1,22 @@
-# Current counterexample and work
+# Current argument
 
-## Failure
+## Argument
 
-A crash can occur after FLIP durably records a stability item as `submitting`
-and the target client accepts `deposit_to_provide`, but before FLIP records the
-returned operation id. On restart FLIP correctly refuses to guess whether it
-submitted and moves the item to `action_required`, preventing a duplicate
-deposit.
+New submissions commit a caller-owned operation id and immutable tuple before the
+external call, so restart can query and resume the same operation. For legacy or
+unbound `action_required` state, authenticated inspection can locate candidate
+operations and `bind_target_deposit` validates and records one before resuming.
+The former lost-return-id counterexample is obsolete.
 
-The official retry and cancel paths cannot resolve this item when its attached
-provider-wallet funding operation is already completed. FLIP has no workflow to
-identify the unrecorded target-client operation, resume it, or sweep the
-associated e-cash.
+## Unresolved proof obligations
 
-## Practical impact
+The record does not precisely define every “ambiguous” state or whether preventing
+new ambiguity satisfies its universal wording. Existing ids cannot be replaced,
+and the documented external runbook recovers mint ecash but not value already in
+the stability pool. The available interfaces have not been shown sufficient for
+every conflicting, legacy, or already-pooled case.
 
-The provider can have target-client value or a stability deposit whose status is
-unknown to FLIP while the allocation remains reserved and requires out-of-band
-storage/client intervention. This is operationally stranded value, not a claim
-that the e-cash is cryptographically unrecoverable.
+## Weakest links
 
-## Current exposure
-
-The schedule requires only an ordinary hard crash in the cross-store window.
-The fail-closed `action_required` behavior prevents a guessed duplicate deposit
-but exposes the unresolved recovery requirement.
-
-## Recommended fix
-
-Provide an operator-authorized reconciliation workflow that discovers and
-binds the target-client operation to the item, then either resumes verified
-progress or safely recovers the target-client value. Do not restore automatic
-submission from aggregate balances or an absent operation id.
+A precise ambiguity domain and an exhaustive mapping from each state to a
+value-preserving official recovery path are still needed.

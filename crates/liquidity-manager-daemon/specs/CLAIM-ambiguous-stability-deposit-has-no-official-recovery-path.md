@@ -4,10 +4,7 @@ Every ambiguous stability deposit has an official recovery path that preserves p
 
 ## Status
 
-Falsified: a crash after the target accepts `deposit_to_provide` but before FLIP
-records its operation id moves the item to `action_required`; that state prevents
-guessing and duplicate submission but has no official value-preserving
-resolution path.
+Unverified.
 
 ## Assumptions
 
