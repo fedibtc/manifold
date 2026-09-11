@@ -11,11 +11,11 @@ Fleet Manager daemon described by
 
 Real, shipping packages live outside this repo and pin the published GHCR
 images: [manifold-umbrel-store](https://github.com/fedibtc/manifold-umbrel-store)
-(Umbrel, staging) and
+(Umbrel) and
 [manifold-fman-startos](https://github.com/fedibtc/manifold-fman-startos)
-(StartOS 0.4, staging). This directory keeps only what the image itself
-carries — the entrypoint and its contract below — plus the operator
-deployment checklist.
+(StartOS 0.4). Production packages are updated manually in those repositories;
+see [production-releases.md](./production-releases.md). This directory owns
+the image entrypoint and operator deployment contract.
 
 The [secure-deployment checklist](./secure-deployment.md) is the authoritative
 operator contract for FMan's external production envelope. Nothing here
@@ -45,7 +45,7 @@ The image runs:
 fleet-manager serve \
   --data-dir $FLEET_MANAGER_DATA_DIR \
   --manifold-environment $FLEET_MANAGER_MANIFOLD_ENVIRONMENT \
-  --push-gateway-origin $FLEET_MANAGER_PUSH_GATEWAY_ORIGIN \
+  [--push-gateway-origin $FLEET_MANAGER_PUSH_GATEWAY_ORIGIN] \
   --bitcoind-url $FLEET_MANAGER_BITCOIND_URL \
   --bitcoind-username $FLEET_MANAGER_BITCOIND_USERNAME \
   --bitcoind-password=$FLEET_MANAGER_BITCOIND_PASSWORD \
@@ -60,14 +60,13 @@ Seat capacity and price are configured durably during browser or admin-socket on
 FLIP deployment (`development`, `staging`, or `production`).
 The profile supplies the Bitcoin network; this production package supplies an
 operator-owned Bitcoin Core backend instead of any profile Esplora default.
-`FLEET_MANAGER_PUSH_GATEWAY_ORIGIN` is also required by every production
-package path and must be the real public HTTPS origin of the deployed gateway.
-The package intentionally has no fake/localhost default. The daemon validates
-every callback bearer against this origin before any network request. Package
-startup fails when the variable is absent. A directly invoked daemon may omit
-the option to keep callback-free service available; it rejects new callbacks,
-and callback work restored under a changed origin becomes `operator_blocked`
-until the matching origin is restored.
+`FLEET_MANAGER_PUSH_GATEWAY_ORIGIN` is optional, including in production.
+When set, it must be the real public HTTPS origin of the deployed gateway.
+Without it, FMan runs but rejects requests for DKG completion callbacks.
+Callback work restored under an absent or changed origin becomes
+`operator_blocked` until the matching origin is restored. Telemetry collection
+is independent: FMan registers with the collector named in the authenticated
+setup-payment policy once it has its Holder authorization.
 
 The last three arguments are the operator dashboard and HTTP admin API
 ([`SPEC-operator-http`](../../crates/fman/specs/SPEC-operator-http.md)). The Nix

@@ -4,7 +4,10 @@ set -euo pipefail
 : "${FLEET_MANAGER_DATA_DIR:=/data}"
 
 : "${FLEET_MANAGER_MANIFOLD_ENVIRONMENT:?set FLEET_MANAGER_MANIFOLD_ENVIRONMENT to the deployment trust environment}"
-: "${FLEET_MANAGER_PUSH_GATEWAY_ORIGIN:?set FLEET_MANAGER_PUSH_GATEWAY_ORIGIN to the deployed HTTPS push-gateway origin}"
+gateway=()
+if [ -n "${FLEET_MANAGER_PUSH_GATEWAY_ORIGIN:-}" ]; then
+  gateway+=(--push-gateway-origin "$FLEET_MANAGER_PUSH_GATEWAY_ORIGIN")
+fi
 
 # Platform packages must provide these from their Bitcoin Core dependency.
 : "${FLEET_MANAGER_BITCOIND_URL:?set FLEET_MANAGER_BITCOIND_URL from platform bitcoind RPC}"
@@ -40,7 +43,7 @@ fi
 exec fleet-manager serve \
   --data-dir "${FLEET_MANAGER_DATA_DIR}" \
   --manifold-environment "${FLEET_MANAGER_MANIFOLD_ENVIRONMENT}" \
-  --push-gateway-origin "${FLEET_MANAGER_PUSH_GATEWAY_ORIGIN}" \
+  ${gateway[@]+"${gateway[@]}"} \
   --bitcoind-url "${FLEET_MANAGER_BITCOIND_URL}" \
   --bitcoind-username "${FLEET_MANAGER_BITCOIND_USERNAME}" \
   --bitcoind-password="${FLEET_MANAGER_BITCOIND_PASSWORD}" \

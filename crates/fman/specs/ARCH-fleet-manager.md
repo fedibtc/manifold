@@ -332,9 +332,9 @@ callback-bearing `StartDkg` requests before mutation. Production accepts HTTPS o
 into a loopback HTTP origin with `--allow-insecure-push-gateway-origin`
 (`FLEET_MANAGER_ALLOW_INSECURE_PUSH_GATEWAY_ORIGIN`); that escape hatch is
 rejected for every other Manifold environment.
-The Umbrel and StartOS production packages require the real
-`FLEET_MANAGER_PUSH_GATEWAY_ORIGIN` at startup and deliberately provide no fake
-default.
+The Umbrel and StartOS production packages may omit
+`FLEET_MANAGER_PUSH_GATEWAY_ORIGIN` while push notifications are deferred.
+This does not disable telemetry registration or collection.
 
 ## State ownership
 
