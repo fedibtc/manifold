@@ -500,7 +500,7 @@ async fn spawn_child(
     // with port-derived keys. Those keys are publicly derivable, so harness
     // children keep the old loopback binds: their discovery records then
     // carry only loopback and relay addresses, and the harness dials
-    // loopback routes via FM_IROH_CONNECT_OVERRIDES.
+    // loopback routes via FM_IROH_CONNECT_OVERRIDES_PLAIN.
     let local_e2e = std::env::var_os("FMAN_E2E_LOCAL_IROH").is_some();
     let iroh_bind_ip = if local_e2e { "127.0.0.1" } else { "0.0.0.0" };
     #[cfg(not(test))]
@@ -593,8 +593,8 @@ async fn spawn_child(
     if std::env::var_os("DEV_DEFE_SOCKET_PATH").is_some() {
         command.env("FM_IN_DEVIMINT", "1");
     }
-    if local_e2e && let Some(value) = std::env::var_os("FM_IROH_CONNECT_OVERRIDES") {
-        command.env("FM_IROH_CONNECT_OVERRIDES", value);
+    if local_e2e && let Some(value) = std::env::var_os("FM_IROH_CONNECT_OVERRIDES_PLAIN") {
+        command.env("FM_IROH_CONNECT_OVERRIDES_PLAIN", value);
     }
 
     // "FMan exit kills its fedimintd children" (ARCH-fleet-manager)

@@ -34,8 +34,7 @@ use fedi_iroh_rpc::iroh::{Endpoint, endpoint::presets};
 use fedimint_derive_secret::{ChildId, DerivableSecret};
 use fman_fedimint::{Wallet as FmanWallet, WalletSecret};
 use futures_util::future::join_all;
-use iroh_base_035::ticket::NodeTicket;
-use iroh_base_035::{NodeAddr, NodeId, SecretKey};
+use iroh_base_035::{NodeId, SecretKey};
 use nostr_sdk::{EventBuilder, Keys as NostrKeys, Kind, Tag};
 use sha2::{Digest as _, Sha256};
 use tokio::io::{AsyncBufReadExt as _, AsyncReadExt as _, AsyncWriteExt as _, BufReader};
@@ -1670,7 +1669,7 @@ async fn configure_guardian_fees(
         .arg("--send-ppm")
         .arg(send_ppm.to_string())
         .env("FMAN_E2E_LOCAL_IROH", "1")
-        .env("FM_IROH_CONNECT_OVERRIDES", iroh_overrides);
+        .env("FM_IROH_CONNECT_OVERRIDES_PLAIN", iroh_overrides);
     let output = run_expect_success(
         command,
         "fi-cli guardian-fee maintenance",
@@ -1981,7 +1980,7 @@ async fn update_federation_name(
         .arg("--value")
         .arg(name)
         .env("FMAN_E2E_LOCAL_IROH", "1")
-        .env("FM_IROH_CONNECT_OVERRIDES", iroh_overrides);
+        .env("FM_IROH_CONNECT_OVERRIDES_PLAIN", iroh_overrides);
     let output = run_expect_success(
         command,
         "fi-cli metadata maintenance after child replacement",
@@ -2022,7 +2021,7 @@ async fn form_federation_in_state(
         .arg("--poll-timeout-secs")
         .arg("120")
         .env("FMAN_E2E_LOCAL_IROH", "1")
-        .env("FM_IROH_CONNECT_OVERRIDES", iroh_overrides);
+        .env("FM_IROH_CONNECT_OVERRIDES_PLAIN", iroh_overrides);
     for locator in locators {
         create.arg("--locator").arg(locator);
     }
@@ -2155,7 +2154,7 @@ async fn run_fi_crash_recovery() -> anyhow::Result<()> {
         .arg("--completion-callback-idempotency-key")
         .arg("fi-crash-recovery")
         .env("FMAN_E2E_LOCAL_IROH", "1")
-        .env("FM_IROH_CONNECT_OVERRIDES", &iroh_overrides)
+        .env("FM_IROH_CONNECT_OVERRIDES_PLAIN", &iroh_overrides)
         .env(
             fedi_decentralized_manifold_environment::DEV_NOSTR_RELAYS_ENV,
             &nostr_relay.url,
@@ -2235,7 +2234,7 @@ async fn run_fi_crash_recovery() -> anyhow::Result<()> {
         .arg("--fi-spv2-account-file")
         .arg(&fi_fee_account_file)
         .env("FMAN_E2E_LOCAL_IROH", "1")
-        .env("FM_IROH_CONNECT_OVERRIDES", &iroh_overrides)
+        .env("FM_IROH_CONNECT_OVERRIDES_PLAIN", &iroh_overrides)
         .env(
             fedi_decentralized_manifold_environment::DEV_NOSTR_RELAYS_ENV,
             &nostr_relay.url,
@@ -3140,7 +3139,7 @@ async fn run_paid_formation() -> anyhow::Result<()> {
             "--ignored",
             "--nocapture",
         ])
-        .env("FM_IROH_CONNECT_OVERRIDES", &iroh_overrides)
+        .env("FM_IROH_CONNECT_OVERRIDES_PLAIN", &iroh_overrides)
         .env(REPLAY_INVITE_ENV, &payment_invite)
         .env(REPLAY_TOKEN_FILE_ENV, &replay_token_file)
         .env(
@@ -3227,7 +3226,7 @@ async fn run_paid_formation() -> anyhow::Result<()> {
         .arg("accounting")
         .arg("--payment-federation-id")
         .arg(&payment_federation_id)
-        .env("FM_IROH_CONNECT_OVERRIDES", &iroh_overrides);
+        .env("FM_IROH_CONNECT_OVERRIDES_PLAIN", &iroh_overrides);
     let accounting: serde_json::Value = serde_json::from_str(
         &run_expect_success(
             accounting_command,
@@ -3524,7 +3523,7 @@ async fn run_fi_payment_wallet(
         .arg(wallet_secret_file)
         .args(args)
         .env("FMAN_E2E_LOCAL_IROH", "1")
-        .env("FM_IROH_CONNECT_OVERRIDES", iroh_overrides)
+        .env("FM_IROH_CONNECT_OVERRIDES_PLAIN", iroh_overrides)
         .stderr(Stdio::piped());
     let output = run_expect_success(
         command,
@@ -3773,7 +3772,7 @@ fn spawn_fleet_manager(
         .stderr(Stdio::inherit())
         .kill_on_drop(true);
     if let Some(overrides) = iroh_overrides {
-        command.env("FM_IROH_CONNECT_OVERRIDES", overrides);
+        command.env("FM_IROH_CONNECT_OVERRIDES_PLAIN", overrides);
     }
     if let Some(nostr) = nostr {
         command
@@ -3875,7 +3874,7 @@ async fn run_fi_cli(
         command.arg("--locator").arg(locator);
     }
     if let Some(overrides) = iroh_overrides {
-        command.env("FM_IROH_CONNECT_OVERRIDES", overrides);
+        command.env("FM_IROH_CONNECT_OVERRIDES_PLAIN", overrides);
     }
     if let Some(relay) = invocation.nostr_relay {
         command.env(
@@ -3933,7 +3932,7 @@ async fn run_fi_cli(
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped());
             if let Some(overrides) = iroh_overrides {
-                resume.env("FM_IROH_CONNECT_OVERRIDES", overrides);
+                resume.env("FM_IROH_CONNECT_OVERRIDES_PLAIN", overrides);
             }
             if let Some(relay) = invocation.nostr_relay {
                 resume.env(
@@ -4048,7 +4047,7 @@ fn validate_json_payment_stderr(
     Ok(())
 }
 
-/// Give the v0.11 client direct localhost routes to the freshly-created
+/// Give the Fedimint client direct localhost routes to the freshly-created
 /// federation. Its invite contains only bare iroh node IDs, for which public
 /// discovery is intentionally unavailable in this local test.
 fn local_iroh_overrides_for_grid(
@@ -4063,11 +4062,7 @@ fn local_iroh_overrides_for_grid(
             for (port, role) in [(base, b"p2p".as_slice()), (base + 1, b"api".as_slice())] {
                 let secret = SecretKey::from_bytes(&e2e_iroh_key(port, role));
                 let node_id: NodeId = secret.public();
-                let ticket =
-                    NodeTicket::new(NodeAddr::new(node_id).with_direct_addresses([
-                        std::net::SocketAddr::from(([127, 0, 0, 1], port)),
-                    ]));
-                overrides.push(format!("{node_id}={ticket}"));
+                overrides.push(format!("{node_id}=127.0.0.1:{port}"));
             }
         }
     }
@@ -4308,7 +4303,7 @@ impl FedimintCli<'_> {
             .arg("--data-dir")
             .arg(&self.data_dir)
             .args(args)
-            .env("FM_IROH_CONNECT_OVERRIDES", self.iroh_overrides)
+            .env("FM_IROH_CONNECT_OVERRIDES_PLAIN", self.iroh_overrides)
             .stderr(Stdio::piped());
         if std::env::var_os("DEV_DEFE_SOCKET_PATH").is_some() {
             command.env("FM_IN_DEVIMINT", "1");

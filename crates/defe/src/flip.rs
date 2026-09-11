@@ -135,7 +135,7 @@ impl FlipDriver {
                 )
                 .env("FM_IN_DEVIMINT", "1");
         if let Some(overrides) = &stable.iroh_connect_overrides {
-            config = config.env("FM_IROH_CONNECT_OVERRIDES", overrides);
+            config = config.env("FM_IROH_CONNECT_OVERRIDES_PLAIN", overrides);
         }
         if let Some(relay_url) = &stable.holder_authorization_relay_url {
             config = config.env("MANIFOLD_DEV_NOSTR_RELAYS", relay_url);
