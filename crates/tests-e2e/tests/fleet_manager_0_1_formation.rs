@@ -4216,12 +4216,25 @@ async fn complete_onboarding_stages(
             Duration::from_secs(30),
         )
         .await?;
-        fleet_manager_admin(
-            fleet_manager_bin,
-            data_dir,
-            &["refresh-holder-authorizations"],
-        )
-        .await?;
+        // A refresh RPC can succeed while reporting a relay error or no
+        // authorization yet. Wait for the durable wizard stage, not merely
+        // a successful command, before attempting the initial offer.
+        tokio::time::timeout(LOCATOR_TIMEOUT, async {
+            loop {
+                let status = fleet_manager_admin(
+                    fleet_manager_bin,
+                    data_dir,
+                    &["refresh-holder-authorizations"],
+                )
+                .await?;
+                if status["stage"] == "initial_offer" {
+                    return Ok::<_, anyhow::Error>(());
+                }
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+        })
+        .await
+        .context("wait for Holder authorization before configuring initial offer")??;
     }
     let max_seats = max_seats.to_string();
     // Offer free seats right at onboarding so the daemon is accepting seats
