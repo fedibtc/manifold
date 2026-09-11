@@ -911,16 +911,15 @@
       "locked": {
         "lastModified": 1789111198,
         "narHash": "sha256-LhwrjL5Ylhw4NdqJC5rJYRq3KrjNGvd4C9DToSA3Ncg=",
-        "ref": "master",
+        "owner": "fedibtc",
+        "repo": "fedimint",
         "rev": "75250fe93e7aa341f8416094a2eb5a6497cf4670",
-        "revCount": 13348,
-        "type": "git",
-        "url": "file:///home/maan2003/src/manifold/target/fedimint-012-forwardport"
+        "type": "github"
       },
       "original": {
         "owner": "fedibtc",
-        "ref": "v0.12.0-fedi1",
         "repo": "fedimint",
+        "rev": "75250fe93e7aa341f8416094a2eb5a6497cf4670",
         "type": "github"
       }
     },

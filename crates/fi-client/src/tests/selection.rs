@@ -430,8 +430,8 @@ async fn replacement_preview_for_version(
     let request = FmanSelectionRequest::new(
         FederationSize(MIN_FEDERATION_SIZE),
         FedimintdVersionRange::new(
-            "0.11.1".parse().expect("range minimum parses"),
-            "0.11.3".parse().expect("range maximum parses"),
+            "0.12.0".parse().expect("range minimum parses"),
+            "0.12.3".parse().expect("range maximum parses"),
         )
         .expect("replacement range is ordered"),
         PlanPreference::InfiniteBestEffort,
@@ -471,7 +471,7 @@ async fn replacement_preview_accepts_patch_skew_in_the_selected_dkg_identity() {
         requirements,
         BTreeSet::new(),
         AD_PRICE_MSATS,
-        "0.11.2+fedi",
+        "0.12.2+fedi",
         NOW,
     )
     .await;

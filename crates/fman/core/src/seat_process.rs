@@ -22,9 +22,11 @@
 //! seat keys are port-derived and publicly derivable — keeps all four ports
 //! on loopback. The public transport is iroh with
 //! deterministic per-seat keys (ARCH-fleet-manager-identity). The
-//! seat's `api_auth` is never in env or argv — it travels only through the
-//! private driven-DKG socket; when Bitcoin Core is selected its RPC credentials
-//! are the only secret handed to the child. Esplora configuration is public.
+//! seat's `api_auth` is supplied through upstream `FM_PASSWORD_API` and
+//! `FM_PASSWORD_UI` environment settings on every spawn, never through argv.
+//! The same secret travels through the private driven-DKG socket to encrypt
+//! guardian configuration. Bitcoin Core RPC credentials also use the child
+//! environment; Esplora configuration is public.
 //!
 //! Guarantees the rest of the daemon relies on:
 //! - **Daemon exit kills the child, even on SIGKILL** (kill-on-drop plus a
@@ -528,7 +530,7 @@ async fn spawn_child(
         .arg(format!("127.0.0.1:{}", ports.ui()))
         .arg("--bind-metrics")
         .arg(format!("127.0.0.1:{}", ports.metrics()))
-        .arg("--enable-iroh")
+        .arg("--enable-iroh=true")
         .env(SAFE_EVENT_DIR_ENV, safe_event_dir(config, seat_no))
         .env(
             FM_IROH_DNS_ENV,

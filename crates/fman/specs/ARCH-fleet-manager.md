@@ -412,8 +412,10 @@ Six kinds of state, six owners:
   already served to every iroh dialer, with admin verbs gated by the seat's
   `api_auth`. The public transport is iroh. The daemon owns the child's
   environment and startup contract:
-  nothing from the operator's shell can alter fedimintd behavior, and no
-  secrets travel via env or argv (test-enforced).
+  nothing from the operator's shell can alter fedimintd behavior. FMan supplies
+  the derived seat password through upstream UI/API password environment
+  settings, and Bitcoin Core credentials through its RPC environment settings;
+  secrets never travel via argv.
 - The host is assumed single-tenant: local processes are inside the trust
   boundary (pre-DKG fedimintd exposes no network API; its inherited socket is private to FMan
   until the daemon sets local params).

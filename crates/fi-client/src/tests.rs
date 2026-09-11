@@ -2178,8 +2178,8 @@ fn compatible_selection_approval(max_total_msats: u64) -> FmanSelectionApproval 
     approval.request = FmanSelectionRequest::new(
         FederationSize(MIN_FEDERATION_SIZE),
         FedimintdVersionRange::new(
-            "0.11.1".parse().expect("range minimum parses"),
-            "0.11.3".parse().expect("range maximum parses"),
+            "0.12.0".parse().expect("range minimum parses"),
+            "0.12.3".parse().expect("range maximum parses"),
         )
         .expect("test range is ordered"),
         PlanPreference::InfiniteBestEffort,
@@ -8304,8 +8304,8 @@ fn compatible_intent() -> FormationIntent {
         FederationSize(MIN_FEDERATION_SIZE),
         PlanPreference::InfiniteBestEffort,
         FedimintdVersionRange::new(
-            "0.11.1".parse().expect("range minimum parses"),
-            "0.11.3".parse().expect("range maximum parses"),
+            "0.12.0".parse().expect("range minimum parses"),
+            "0.12.3".parse().expect("range maximum parses"),
         )
         .expect("test range is ordered"),
     )
@@ -8365,7 +8365,7 @@ fn fedimintd_range_and_dkg_identity_enforce_separate_boundaries() {
 
 #[test]
 fn resolved_intent_requires_an_allowed_fedi_dkg_identity() {
-    for version in ["0.11.2", "0.11.2+acme", "0.12.0+fedi"] {
+    for version in ["0.12.2", "0.12.2+acme", "0.13.0+fedi"] {
         assert!(
             compatible_intent()
                 .resolve_for_dkg(
@@ -8600,7 +8600,7 @@ async fn selected_formation_persists_and_enforces_its_compatible_release() {
     let database = MemDatabase::new().into_database();
     let (payments, _) = TestPayments::new();
     let fman_state = Arc::new(FmanState::default());
-    set_fman_version(&fman_state, 0, "0.11.1+fedi");
+    set_fman_version(&fman_state, 0, "0.12.1+fedi");
     let client = open_client(database, payments, fman_state.clone(), FmanConfig::paid()).await;
     let cap = PAYMENT_AMOUNT_MSATS * u64::from(MIN_FEDERATION_SIZE);
 
@@ -8626,7 +8626,7 @@ async fn selected_formation_persists_and_enforces_its_compatible_release() {
             .fedimintd_versions
             .maximum_exclusive()
             .to_string(),
-        "0.11.3"
+        "0.12.3"
     );
     assert!(
         fman_state
@@ -8634,7 +8634,7 @@ async fn selected_formation_persists_and_enforces_its_compatible_release() {
             .lock()
             .expect("test lock")
             .iter()
-            .any(|record| record.fedimintd_version.to_string() == "0.11.1+fedi"),
+            .any(|record| record.fedimintd_version.to_string() == "0.12.1+fedi"),
         "same-minor patch drift is used for the exact quote",
     );
 }
@@ -8643,7 +8643,7 @@ async fn selected_formation_persists_and_enforces_its_compatible_release() {
 async fn selected_fman_minor_drift_requires_fresh_selection_before_payment() {
     let (payments, payment_state) = TestPayments::new();
     let fman_state = Arc::new(FmanState::default());
-    set_fman_version(&fman_state, 0, "0.12.0+fedi");
+    set_fman_version(&fman_state, 0, "0.13.0+fedi");
     let client = open_client(
         MemDatabase::new().into_database(),
         payments,
@@ -8719,7 +8719,7 @@ async fn reopen_preserves_the_selected_dkg_identity_and_accepts_patch_skew() {
         .await
         .unwrap();
     drop(client);
-    set_fman_version(&fman_state, 0, "0.11.2+fedi");
+    set_fman_version(&fman_state, 0, "0.12.2+fedi");
 
     let reopened = open_client(database, payments, fman_state, FmanConfig::paid()).await;
     let persisted = formation(&reopened.status()).clone();
@@ -8733,7 +8733,7 @@ async fn reopen_preserves_the_selected_dkg_identity_and_accepts_patch_skew() {
             .fedimintd_versions
             .maximum_exclusive()
             .to_string(),
-        "0.11.3"
+        "0.12.3"
     );
     reopened
         .resume()
@@ -8759,7 +8759,7 @@ async fn persisted_formation_rejects_a_cross_minor_replacement() {
             &fman_keys(20),
             &discovery::issuer_keys(0),
             PAYMENT_AMOUNT_MSATS,
-            "0.12.0+fedi",
+            "0.13.0+fedi",
             manager_key(20).x_only_public_key().0,
             test_now_secs(),
         ),

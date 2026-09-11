@@ -21,7 +21,7 @@
       url = "github:fedibtc/credential-sdk";
       flake = false;
     };
-    fedimint.url = "github:fedibtc/fedimint/v0.12.0-fedi1";
+    fedimint.url = "github:fedibtc/fedimint/75250fe93e7aa341f8416094a2eb5a6497cf4670";
     # SP-enabled fedimintd for the live stability-pool E2E. The stability-pool
     # server module lives only in the fedixyz/fedi monorepo; its `fedi-fedimintd`
     # package bundles it (enabled at runtime by FEDI_STABILITY_POOL_V2_MODULE_ENABLE).
@@ -1274,7 +1274,7 @@
               touch "$out"
             '';
 
-        # Anti-drift: bind the Fedimint release tag in flake.nix to its resolved
+        # Anti-drift: bind the Fedimint source pin in flake.nix to its resolved
         # revision in flake.lock, the separate FEDIMINTD_VERSION_0_1 DKG
         # identity, the package README, and the OCI label.
         fleetManagerReleaseSync = pkgs.runCommand "fleet-manager-release-sync" { } ''
@@ -1286,7 +1286,7 @@
               || { echo "release drift: $1 does not contain '$2' (release $release)" >&2; exit 1; }
           }
 
-          check ${./flake.nix} "fedibtc/fedimint/v0.12.0-fedi1"
+          check ${./flake.nix} "fedibtc/fedimint/${fedimintSourceRev}"
           check ${./flake.lock} '"rev": "${fedimintSourceRev}"'
           check ${./crates/service-fleet-manager/src/lib.rs} "FEDIMINTD_VERSION_0_1: &str = \"${fedimintdDkgVersion}\""
           check ${./crates/fman/bin/build.rs} "FEDIMINT_SOURCE_REV: &str = \"${fedimintSourceRev}\""
@@ -1336,7 +1336,7 @@
               require_exact revision "${fedimintSourceRev}"
               grep -q -- "\"rev\": \"${fedimintSourceRev}\"" ${./flake.lock}
               grep -q -- "\"rev\": \"${stabilityPoolSourceRev}\"" ${./flake.lock}
-              grep -q -- "fedibtc/fedimint/v${fedimintdRelease}" ${./flake.nix}
+              grep -q -- "fedibtc/fedimint/${fedimintSourceRev}" ${./flake.nix}
               grep -q -- "fedixyz/fedi/${stabilityPoolSourceRev}" ${./flake.nix}
               grep -q -- $'producer\tfedimint\tfedibtc/fedimint\tv${fedimintdRelease}\t${fedimintSourceRev}' "$manifest"
               grep -q -- $'producer\tstability_pool\tfedixyz/fedi\t${stabilityPoolSourceRev}\t${stabilityPoolSourceRev}' "$manifest"

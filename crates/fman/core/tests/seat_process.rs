@@ -98,7 +98,7 @@ async fn child_receives_configured_relay_and_auth_environment() {
 
     assert_eq!(tokio::fs::read_to_string(env_path).await.unwrap(), relay);
     let args = tokio::fs::read_to_string(args_path).await.unwrap();
-    assert!(args.lines().any(|arg| arg == "--enable-iroh"));
+    assert!(args.lines().any(|arg| arg == "--enable-iroh=true"));
     assert!(!args.contains("test-seat-password"));
     assert_eq!(
         tokio::fs::read_to_string(auth_path).await.unwrap(),
