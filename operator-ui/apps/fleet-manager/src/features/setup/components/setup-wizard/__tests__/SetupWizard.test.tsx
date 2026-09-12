@@ -69,7 +69,7 @@ describe('SetupWizard', () => {
     await screen.findByText(PHRASE);
     fireEvent.click(screen.getByRole('button', { name: "I've written it down — continue" }));
 
-    await screen.findByRole('heading', { name: 'Get this fleet authorized' });
+    await screen.findByRole('heading', { name: 'Get your fleet approved' });
     await screen.findByRole('heading', { name: 'Set your price' }, { timeout: 5000 });
   });
 
@@ -84,7 +84,7 @@ describe('SetupWizard', () => {
     fireEvent.click(screen.getByRole('button', { name: "I've written it down — continue" }));
     // The authorization step continues on its own once the relay reports an
     // observed authorization, so there is no click here — only the wait.
-    await screen.findByRole('heading', { name: 'Get this fleet authorized' });
+    await screen.findByRole('heading', { name: 'Get your fleet approved' });
     await screen.findByRole('heading', { name: 'Set your price' }, { timeout: 5000 });
 
     fireEvent.click(screen.getByRole('button', { name: 'Finish setup' }));
@@ -117,7 +117,7 @@ describe('SetupWizard', () => {
     await screen.findByRole('heading', { name: 'Recovery finished' });
     fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
 
-    await screen.findByRole('heading', { name: 'Get this fleet authorized' });
+    await screen.findByRole('heading', { name: 'Get your fleet approved' });
   });
 
   it('should not use cached authorization data from an earlier identity', async () => {
@@ -154,7 +154,7 @@ describe('SetupWizard', () => {
     await screen.findByRole('heading', { name: 'Recovery finished' });
     fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
 
-    await screen.findByRole('heading', { name: 'Get this fleet authorized' });
-    await waitFor(() => expect(screen.getByText(/no authorization for this fleet/i)).toBeTruthy());
+    await screen.findByRole('heading', { name: 'Get your fleet approved' });
+    await waitFor(() => expect(screen.getByText(/Not approved yet/i)).toBeTruthy());
   });
 });

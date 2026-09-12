@@ -2,7 +2,7 @@ import { expect, test } from '@playwright/test';
 import { signIn } from './support/auth';
 import { resetScenario } from './support/mock';
 
-const NAV_LABELS = ['Overview', 'Authorization', 'Seats', 'Wallet', 'Backup'];
+const NAV_LABELS = ['Overview', 'Authorization', 'Seats', 'Payouts', 'Backup'];
 const RETIRED_NAV_LABELS = ['Plans', 'Identity'];
 
 test('should reach the fleet overview after signing in', async ({ page }) => {

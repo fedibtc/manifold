@@ -68,23 +68,23 @@ it('should tell the operator the phrase can be revealed again', async () => {
   fireEvent.click(screen.getByRole('button', { name: 'Reveal phrase' }));
 
   await waitFor(() => screen.getByText('abandon abandon about'));
-  screen.getByText(/come back and reveal it again/i);
+  screen.getByText(/reveal it again later/i);
 });
 
-it('should say before revealing that leaving the page hides the phrase', () => {
+it('should warn before revealing that the phrase goes on screen', () => {
   renderPage();
 
-  screen.getByText(/leaving the page hides it again/i);
+  screen.getByText(/make sure no one can see your screen/i);
 });
 
-it('should say the twelve words are a complete backup, restorable only at setup', async () => {
+it('should say the 12 words are a complete backup, restorable only at setup', async () => {
   vi.spyOn(adminCallModule, 'adminCall').mockResolvedValue({ mnemonic: 'abandon abandon about' });
   renderPage();
 
   fireEvent.click(screen.getByRole('button', { name: 'Reveal phrase' }));
 
-  await screen.findByText(/twelve words are a complete backup/i);
-  screen.getByText(/only during that host's setup/i);
+  await screen.findByText(/12 words are your complete backup/i);
+  screen.getByText(/only during setup of the new server/i);
 });
 
 it('should keep no copy of the phrase once the screen has gone', async () => {

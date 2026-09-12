@@ -120,11 +120,11 @@ it('should list a non-receivable federation as an attention item', async () => {
   });
   renderPage();
 
-  await waitFor(() => screen.getByText('Payment federation not receiving'));
+  await waitFor(() => screen.getByText('Payment federation not accepting payments'));
   screen.getByRole('link', { name: 'Review' });
 });
 
-it('should signpost an unobserved authorization to the Authorization screen', async () => {
+it('should signpost an unapproved fleet to the Authorization screen', async () => {
   vi.spyOn(adminCallModule, 'adminCall').mockImplementation((request) => {
     if (request === 'ListSeats') return Promise.resolve({ seats: [] });
     if (request === 'ListPaymentFederations') {
@@ -149,7 +149,7 @@ it('should signpost an unobserved authorization to the Authorization screen', as
   });
   renderPage();
 
-  await waitFor(() => screen.getByText('No holder has authorized this fleet'));
+  await waitFor(() => screen.getByText('Your fleet is not approved yet'));
   expect(screen.getByRole('link', { name: 'Review' }).getAttribute('href')).toBe('/authorization');
 });
 
@@ -305,7 +305,7 @@ it('should show an em dash, not zero, when every fee lookup failed', async () =>
   mockAdminCallWithFees(() => Promise.reject(new AdminApiError('no fee account')));
   renderPage();
 
-  await waitFor(() => screen.getByText(/Fee revenue could not be read for 1 seat/));
+  await waitFor(() => screen.getByText(/Earnings from 1 seat\(s\) couldn't be retrieved yet/));
 
   expect(screen.getAllByText('—').length).toBeGreaterThan(0);
   expect(screen.queryByText('0 sats')).not.toBeInTheDocument();
@@ -459,6 +459,6 @@ it('should render the signed-off earnings presentation unchanged once populated'
   await waitFor(() => screen.getByText('Advertised and healthy'));
   screen.getByText('12 sats');
   expect(screen.getAllByText('50,000 sats').length).toBeGreaterThan(0);
-  screen.getByText('gross');
-  screen.getByText('accepted payment claims');
+  screen.getByText('*Network fees apply');
+  screen.getByText(/A seat sale is counted once the buyer's payment has completed/);
 });

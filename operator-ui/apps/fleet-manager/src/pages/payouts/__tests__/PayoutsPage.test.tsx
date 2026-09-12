@@ -51,6 +51,8 @@ const renderPage = (destination: string | null) => {
   );
 };
 
+const withdrawButtons = () => screen.queryAllByRole('button', { name: 'Withdraw' });
+
 afterEach(() => {
   vi.restoreAllMocks();
 });
@@ -60,42 +62,42 @@ describe('PayoutsPage', () => {
     renderPage('operator@example.com');
 
     expect(screen.getByText('Loading…')).toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: 'Sweep' })).toBeNull();
+    expect(withdrawButtons()).toHaveLength(0);
   });
 
   // The two revenue sources are shaped differently and are kept apart, so the
   // screen cannot read as one uniform "withdraw everything" list.
-  it('should keep setup-payment revenue and guardian-fee revenue in separate sections', async () => {
+  it('should keep seat-sale revenue and guardian-fee revenue in separate sections', async () => {
     renderPage('operator@example.com');
 
     await waitFor(() =>
-      expect(screen.getByRole('heading', { name: 'Setup-payment revenue' })).toBeInTheDocument()
+      expect(screen.getByRole('heading', { name: 'Seat sales' })).toBeInTheDocument()
     );
-    expect(screen.getByRole('heading', { name: 'Guardian-fee revenue' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Guardian fees' })).toBeInTheDocument();
   });
 
-  it('should state that a sweep takes no amount and no gateway', async () => {
+  it('should state that a withdrawal takes no amount and no gateway', async () => {
     renderPage('operator@example.com');
 
     await waitFor(() =>
-      expect(
-        screen.getByText(/There is no amount to enter and no gateway to pick/)
-      ).toBeInTheDocument()
+      expect(screen.getByText(/no amount to enter, nothing to configure/)).toBeInTheDocument()
     );
   });
 
-  it('should gate both sweeps while no payout destination is stored', async () => {
+  // Both sections withdraw to the same address, so both are gated by the same
+  // missing destination. Collecting is not: it moves fees inside the fleet.
+  it('should gate both withdrawals while no payout destination is stored', async () => {
     renderPage(null);
 
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Sweep' })).toBeDisabled());
-    expect(screen.getByRole('button', { name: '2. Send to destination' })).toBeDisabled();
-    expect(screen.getByRole('button', { name: '1. Collect out of the pool' })).toBeEnabled();
+    await waitFor(() => expect(withdrawButtons()).toHaveLength(2));
+    for (const button of withdrawButtons()) expect(button).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Collect fees' })).toBeEnabled();
   });
 
-  it('should offer both sweeps once a destination is stored', async () => {
+  it('should offer both withdrawals once a destination is stored', async () => {
     renderPage('operator@example.com');
 
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Sweep' })).toBeEnabled());
-    expect(screen.getByRole('button', { name: '2. Send to destination' })).toBeEnabled();
+    await waitFor(() => expect(withdrawButtons()).toHaveLength(2));
+    for (const button of withdrawButtons()) expect(button).toBeEnabled();
   });
 });

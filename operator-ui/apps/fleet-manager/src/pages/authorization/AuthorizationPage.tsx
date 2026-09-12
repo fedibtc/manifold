@@ -23,8 +23,8 @@ export const AuthorizationPage = () => {
       <h1 className={styles.heading}>Authorization</h1>
 
       <p className={styles.intro}>
-        Until a holder has authorized this fleet manager, initiators have no way to evaluate it.
-        This page stays available for as long as the fleet runs.
+        Your fleet needs to be approved before others can discover and use it. Scan the code below
+        with the Holder app to approve it.
       </p>
 
       <AuthorizationPanel
@@ -33,10 +33,9 @@ export const AuthorizationPage = () => {
         error={onboarding.error}
       />
       {holders.length > 0 ? (
-        <SectionCard title="Observed holders">
+        <SectionCard title="Approved by">
           <p className={styles.holdersHint}>
-            Shown as an npub, so this can be compared against the identity key a holder application
-            displays.
+            Compare this ID with the one shown in the Holder app to confirm it matches.
           </p>
 
           <ul className={styles.holdersList}>{holders.map(renderHolder)}</ul>

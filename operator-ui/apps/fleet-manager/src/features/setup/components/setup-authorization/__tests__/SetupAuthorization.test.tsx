@@ -55,10 +55,10 @@ describe('SetupAuthorization', () => {
     await screen.findByText(MOCK_SERVICE_NOSTR_PUBKEY);
   });
 
-  it('should say it is waiting while no authorization has been observed', async () => {
+  it('should say it is waiting while no approval has been observed', async () => {
     renderAuthorization();
 
-    await screen.findByText(/no authorization for this fleet/i);
+    await screen.findByText(/Not approved yet/i);
     expect((screen.getByRole('button', { name: 'Continue' }) as HTMLButtonElement).disabled).toBe(
       true
     );
@@ -95,9 +95,7 @@ describe('SetupAuthorization', () => {
     renderAuthorization();
 
     fireEvent.click(screen.getByRole('button', { name: 'Check now' }));
-    await vi.waitFor(() =>
-      expect(screen.getByText(/no authorization for this fleet/i)).toBeTruthy()
-    );
+    await vi.waitFor(() => expect(screen.getByText(/Not approved yet/i)).toBeTruthy());
   });
 
   it('should continue on its own once the authorization is observed', async () => {
@@ -105,7 +103,7 @@ describe('SetupAuthorization', () => {
     try {
       const { onSettled } = renderAuthorization(vi.fn(), observed);
 
-      await vi.waitFor(() => expect(screen.getByRole('status').textContent).toMatch(/observed/i));
+      await vi.waitFor(() => expect(screen.getByRole('status').textContent).toMatch(/approved/i));
       expect(screen.queryByRole('button', { name: 'Skip for now' })).toBeNull();
       expect(onSettled).not.toHaveBeenCalled();
 

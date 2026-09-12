@@ -45,18 +45,18 @@ it('should show the truncated derived service pubkey', async () => {
   await waitFor(() => screen.getByText(/02aabbccdd…/));
 });
 
-it('should say the phrase is the whole backup', async () => {
+it('should say the phrase is the entire backup', async () => {
   vi.spyOn(adminCallModule, 'adminCall').mockResolvedValue(onboarding('02aabbccddeeff00'));
   renderPage();
 
-  await waitFor(() => screen.getByText(/recovery phrase is the whole backup/i));
+  await waitFor(() => screen.getByText(/recovery phrase is your entire backup/i));
 });
 
-it('should say recovery only happens during setup, and offer no restore action', async () => {
+it('should say restoring only happens during setup, and offer no restore action', async () => {
   vi.spyOn(adminCallModule, 'adminCall').mockResolvedValue(onboarding('02aabbccddeeff00'));
   renderPage();
 
-  await waitFor(() => screen.getByText(/Recovery happens only while setting up a host/i));
+  await waitFor(() => screen.getByText(/only restore while setting up a new server/i));
   expect(screen.queryByRole('button', { name: /restore/i })).toBeNull();
 });
 
@@ -75,8 +75,18 @@ it('should state that the browser did not keep the recovery phrase', async () =>
   vi.spyOn(adminCallModule, 'adminCall').mockResolvedValue(onboarding('02aabbccddeeff00'));
   renderPage();
 
-  await screen.findByText(/did not save your recovery phrase/i);
+  await screen.findByText(/don't store your recovery phrase/i);
   expect(screen.getByRole('link', { name: 'Reveal recovery phrase' })).toBeTruthy();
+});
+
+// The reveal link is the last thing an operator reads before the words are on
+// screen, so what the phrase controls belongs beside it rather than only behind
+// it.
+it('should warn beside the reveal link that the phrase controls the funds', async () => {
+  vi.spyOn(adminCallModule, 'adminCall').mockResolvedValue(onboarding('02aabbccddeeff00'));
+  renderPage();
+
+  await screen.findByText(/Anyone with this phrase controls your funds/i);
 });
 
 it('should show a loading state instead of a dash while the query is pending', () => {

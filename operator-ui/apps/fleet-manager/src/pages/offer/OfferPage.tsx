@@ -16,7 +16,7 @@ export const OfferPage = () => {
   return (
     <div className={styles.root}>
       <div className={styles.head}>
-        <h1 className={styles.heading}>Your offer</h1>
+        <h1 className={styles.heading}>Seat price</h1>
 
         <p className={styles.intro}>
           One price is the whole offer. It is the gross amount a federation initiator pays for a

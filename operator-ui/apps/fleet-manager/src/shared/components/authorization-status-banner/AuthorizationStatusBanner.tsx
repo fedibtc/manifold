@@ -13,22 +13,25 @@ interface AuthorizationStatusBannerProps {
 // together would produce a sentence that is true of one and false of another.
 export const AuthorizationStatusBanner = ({ nostr }: AuthorizationStatusBannerProps) => {
   if (nostr.state === 'checking') {
-    return <Banner variant="info">Reading the relay for the first time since startup.</Banner>;
+    return <Banner variant="info">Checking whether your fleet has been approved…</Banner>;
   }
 
+  // What an unapproved fleet loses is the operator's first question, and it is
+  // not cosmetic: the daemon blocks on onboarding before it opens the seat
+  // runtime, the iroh endpoint or the advertiser (crates/fman/bin/src/main.rs).
   if (nostr.state === 'not_observed') {
     return (
-      <Banner variant="info">
-        No authorization for this fleet was on the relay when it was last read (
-        {formatCheckedAt(nostr.checked_at)}).
+      <Banner variant="info" title="Not approved yet">
+        Until your fleet is approved it is not advertised and cannot sell seats. Last checked{' '}
+        {formatCheckedAt(nostr.checked_at)}.
       </Banner>
     );
   }
 
   if (nostr.state === 'relay_error') {
     return (
-      <Banner variant="warn">
-        The relay could not be read, so nothing is known about this fleet's authorization:{' '}
+      <Banner variant="warn" title="Approval could not be checked">
+        Your fleet may or may not be approved — this is a connection problem, not a refusal:{' '}
         {nostr.error}
       </Banner>
     );
@@ -39,11 +42,11 @@ export const AuthorizationStatusBanner = ({ nostr }: AuthorizationStatusBannerPr
   // authorizations are re-verified before reuse — but it was not confirmed
   // against the relay during this run.
   return (
-    <Banner variant="success">
-      Authorization observed. This fleet can be evaluated.{' '}
+    <Banner variant="success" title="Approved">
+      Your fleet is now available to others.{' '}
       {nostr.checked_at === null
-        ? 'Confirmed from the stored record; the relay has not been read since startup.'
-        : `Confirmed against the relay at ${formatCheckedAt(nostr.checked_at)}.`}
+        ? 'Confirmed from the stored record; not re-checked since startup.'
+        : `Confirmed at ${formatCheckedAt(nostr.checked_at)}.`}
     </Banner>
   );
 };
