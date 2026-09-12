@@ -104,10 +104,15 @@ describe('AuthorizationPanel', () => {
     });
   });
 
-  it('should not claim a holder app can scan and finish the flow', () => {
+  // The operator scans this themselves in the Holder app. The hint has to name
+  // what the value is and what to do with it, and it may not call a fleet-wide
+  // key a "guardian ID" — a guardian is one seat and a fleet hosts many.
+  it('should tell the operator what the key is and how to present it', () => {
     render(<AuthorizationPanel data={waiting} isLoading={false} error={null} />);
 
-    expect(screen.queryByText(/scans this with their app/i)).toBeNull();
+    expect(screen.getByText(/your fleet manager ID/i)).toBeTruthy();
+    expect(screen.getByText(/scan it with the Holder app/i)).toBeTruthy();
+    expect(screen.queryByText(/guardian ID/i)).toBeNull();
   });
 
   it('should show a loading state instead of waiting text before the first response', () => {
@@ -134,15 +139,15 @@ describe('AuthorizationPanel', () => {
     render(<AuthorizationPanel data={observed} isLoading={false} error={new NetworkError()} />);
 
     expect(screen.getByText(MOCK_SERVICE_NOSTR_PUBKEY)).toBeTruthy();
-    expect(screen.getByText(/authorization observed/i)).toBeTruthy();
+    expect(screen.getByText(/Approved/i)).toBeTruthy();
     expect(screen.getByText(/could not be refreshed/i)).toBeTruthy();
   });
 
   // The daemon now separates a completed read from no read, so the panel states
   // the result of the read instead of hedging about what it might still be doing.
-  it('should report a completed read that found no authorization', () => {
+  it('should report a completed read that found no approval', () => {
     render(<AuthorizationPanel data={waiting} isLoading={false} error={null} />);
 
-    expect(screen.getByText(/no authorization for this fleet/i)).toBeTruthy();
+    expect(screen.getByText(/Not approved yet/i)).toBeTruthy();
   });
 });

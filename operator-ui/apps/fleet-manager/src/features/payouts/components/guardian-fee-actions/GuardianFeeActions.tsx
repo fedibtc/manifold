@@ -25,10 +25,15 @@ const readSendBlock = (
   hasDestination: boolean,
   collectedEcashMsat: number | null
 ): string | null => {
-  if (!hasDestination) return 'Set a payout destination first.';
-  if (collectedEcashMsat === 0) return 'Nothing collected yet. Collect first.';
+  if (!hasDestination) return 'Add a payout address first.';
+  if (collectedEcashMsat === 0) return 'Nothing collected yet. Collect fees first.';
   return null;
 };
+
+// Shown whether or not the step is available: the two-step shape is the part
+// operators ask about, and a hint that appears only on the blocked path would
+// explain it exactly when it no longer matters.
+const COLLECT_HINT = 'Moves your fees from the shared pool into your wallet.';
 
 /**
  * Guardian-fee money-out, which takes two steps and must look like two steps:
@@ -69,8 +74,10 @@ export const GuardianFeeActions = ({
           describedBy={collectBlock ? collectNoteId : undefined}
           onClick={handleCollect}
         >
-          1. Collect out of the pool
+          Collect fees
         </Button>
+
+        <span className={styles.note}>{COLLECT_HINT}</span>
 
         {collectBlock && (
           <span id={collectNoteId} className={styles.note}>
@@ -97,7 +104,7 @@ export const GuardianFeeActions = ({
           describedBy={sendBlock ? sendNoteId : undefined}
           onClick={handleSend}
         >
-          2. Send to destination
+          Withdraw
         </Button>
 
         {sendBlock && (

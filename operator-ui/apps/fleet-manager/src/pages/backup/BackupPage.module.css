@@ -41,3 +41,7 @@
 .phraseLink {
   @apply uPrimaryButtonFit;
 }
+
+.safetyNote {
+  @apply text-sm font-medium text-status-failed;
+}

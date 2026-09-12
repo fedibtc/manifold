@@ -52,7 +52,7 @@ it('should point the empty state at the offer route the router actually serves',
   renderPage();
 
   await waitFor(() => screen.getByText(/no seats yet/i));
-  expect(screen.getByRole('link', { name: 'Your offer' }).getAttribute('href')).toBe('/offer');
+  expect(screen.getByRole('link', { name: 'Seat price' }).getAttribute('href')).toBe('/offer');
 });
 
 it('should list every seat with a link to its detail page', async () => {

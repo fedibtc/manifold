@@ -11,5 +11,5 @@
 }
 
 .caveats {
-  @apply uMutedSm;
+  @apply uMutedSm list-disc space-y-1 pl-5;
 }

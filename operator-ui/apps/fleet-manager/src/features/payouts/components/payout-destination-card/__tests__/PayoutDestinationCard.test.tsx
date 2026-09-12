@@ -71,19 +71,20 @@ describe('PayoutDestinationCard', () => {
   });
 
   // The ordering the daemon enforces has to be readable off the screen rather
-  // than discovered through a refusal.
-  it('should warn that sweeps refuse while no destination is stored', () => {
+  // than discovered through a refusal. The banner names the action it unblocks,
+  // and says which step still works without it.
+  it('should warn that withdrawals need a destination before one is stored', () => {
     renderCard(null);
 
-    expect(screen.getByText('No payout destination')).toBeInTheDocument();
-    expect(screen.getByText(/Sweeps are refused until one is set/)).toBeInTheDocument();
+    expect(screen.getByText('Add a payout address to withdraw')).toBeInTheDocument();
+    expect(screen.getByText(/You can still collect guardian fees below/)).toBeInTheDocument();
   });
 
   it('should name the destination revenue leaves to', () => {
     renderCard('operator@example.com');
 
     expect(screen.getByText('operator@example.com')).toBeInTheDocument();
-    expect(screen.queryByText('No payout destination')).toBeNull();
+    expect(screen.queryByText('Add a payout address to withdraw')).toBeNull();
   });
 
   it('should report a refused write instead of showing it as stored', async () => {

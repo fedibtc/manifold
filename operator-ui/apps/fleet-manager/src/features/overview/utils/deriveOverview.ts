@@ -40,9 +40,11 @@ export const deriveOverview = ({
     .filter((federation) => federation.accepted && !federation.receivable)
     .map((federation) => ({
       key: federation.federation_id,
-      title: 'Payment federation not receiving',
+      title: 'Payment federation not accepting payments',
       detail: federation.federation_id,
-      path: '/wallet'
+      // Payouts, not a read-only balance screen: this row is only worth opening
+      // if the operator can act on the money stranded there.
+      path: '/payouts'
     }));
 
   // A paid offer with nowhere to receive payment advertises seats nobody can
@@ -70,8 +72,9 @@ export const deriveOverview = ({
   if (nostrState === 'not_observed') {
     attention.push({
       key: 'authorization-not-observed',
-      title: 'No holder has authorized this fleet',
-      detail: 'Initiators cannot evaluate the fleet until one does. Open Authorization to check.',
+      title: 'Your fleet is not approved yet',
+      detail:
+        'Until it is approved it is not advertised and cannot sell seats. Open Authorization to check.',
       path: '/authorization'
     });
   }
@@ -83,8 +86,8 @@ export const deriveOverview = ({
   if (nostrState === 'relay_error') {
     attention.push({
       key: 'authorization-relay-error',
-      title: 'The relay could not be read',
-      detail: 'The fleet may or may not be authorized. Open Authorization for the failure.',
+      title: 'Approval could not be checked',
+      detail: 'Your fleet may or may not be approved. Open Authorization for the failure.',
       path: '/authorization'
     });
   }

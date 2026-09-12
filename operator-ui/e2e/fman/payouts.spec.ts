@@ -1,6 +1,14 @@
-import { expect, test } from '@playwright/test';
+import { expect, type Page, test } from '@playwright/test';
 import { signIn } from './support/auth';
 import { resetScenario } from './support/mock';
+
+// Both revenue sections end in a button called "Withdraw", so every assertion
+// about one of them says which section it means.
+const section = (page: Page, title: string) =>
+  page.locator('section').filter({ has: page.getByRole('heading', { name: title, exact: true }) });
+
+const withdraw = (page: Page, title: string) =>
+  section(page, title).getByRole('button', { name: 'Withdraw' });
 
 // The tracer for money-out. It walks the ordering the daemon enforces — no sweep
 // answers until a payout destination is stored — and then both revenue paths,
@@ -11,24 +19,26 @@ import { resetScenario } from './support/mock';
 // spec that would assert the balance changed AT the daemon is still open, and is
 // blocked on the FMan live e2e tier (W0.2).
 
-test('should refuse a sweep until a payout destination is stored, then sweep', async ({ page }) => {
+test('should refuse a withdrawal until a payout address is stored, then withdraw', async ({
+  page
+}) => {
   await resetScenario(page, 'payouts-unset');
 
   await page.goto('/payouts');
   await signIn(page);
 
   await expect(page.getByRole('heading', { name: 'Payouts', level: 1 })).toBeVisible();
-  await expect(page.getByText('No payout destination')).toBeVisible();
-  await expect(page.getByRole('button', { name: 'Sweep' })).toBeDisabled();
-  await expect(page.getByText('Set a payout destination first.').first()).toBeVisible();
+  await expect(page.getByText('Add a payout address to withdraw')).toBeVisible();
+  await expect(withdraw(page, 'Seat sales')).toBeDisabled();
+  await expect(page.getByText('Add a payout address first.').first()).toBeVisible();
 
   await page.getByLabel('Lightning address or LNURL-pay').fill('operator@example.com');
   await page.getByRole('button', { name: 'Save destination' }).click();
 
-  await expect(page.getByText('No payout destination')).toBeHidden();
-  await expect(page.getByRole('button', { name: 'Sweep' })).toBeEnabled();
+  await expect(page.getByText('Add a payout address to withdraw')).toBeHidden();
+  await expect(withdraw(page, 'Seat sales')).toBeEnabled();
 
-  await page.getByRole('button', { name: 'Sweep' }).click();
+  await withdraw(page, 'Seat sales').click();
 
   await expect(page.getByText('Sent 150,000 sats.')).toBeVisible();
   await expect(page.getByRole('button', { name: 'Copy operation ID' })).toBeVisible();
@@ -43,7 +53,7 @@ test('should report what a collection claimed and what is still locked', async (
   await page.goto('/payouts');
   await signIn(page);
 
-  await page.getByRole('button', { name: '1. Collect out of the pool' }).click();
+  await page.getByRole('button', { name: 'Collect fees' }).click();
 
   await expect(page.getByText(/Claimed 13,000 sats/)).toBeVisible();
   await expect(
@@ -57,13 +67,13 @@ test('should send collected guardian fees only after a destination exists', asyn
   await page.goto('/payouts');
   await signIn(page);
 
-  await expect(page.getByRole('button', { name: '2. Send to destination' })).toBeDisabled();
+  await expect(withdraw(page, 'Guardian fees')).toBeDisabled();
 
-  await page.getByRole('button', { name: '1. Collect out of the pool' }).click();
+  await page.getByRole('button', { name: 'Collect fees' }).click();
   await page.getByLabel('Lightning address or LNURL-pay').fill('operator@example.com');
   await page.getByRole('button', { name: 'Save destination' }).click();
 
-  await page.getByRole('button', { name: '2. Send to destination' }).click();
+  await withdraw(page, 'Guardian fees').click();
 
   await expect(page.getByText('Sent 13,000 sats.')).toBeVisible();
 });
@@ -77,8 +87,8 @@ test('should offer no amount field and no gateway picker', async ({ page }) => {
   await page.goto('/payouts');
   await signIn(page);
 
-  await expect(page.getByRole('button', { name: 'Sweep' }).first()).toBeEnabled();
+  await expect(withdraw(page, 'Seat sales').first()).toBeEnabled();
   await expect(page.getByLabel(/amount/i)).toHaveCount(0);
   await expect(page.getByRole('combobox')).toHaveCount(0);
-  await expect(page.getByText(/There is no amount to enter and no gateway to pick/)).toBeVisible();
+  await expect(page.getByText(/no amount to enter, nothing to configure/)).toBeVisible();
 });

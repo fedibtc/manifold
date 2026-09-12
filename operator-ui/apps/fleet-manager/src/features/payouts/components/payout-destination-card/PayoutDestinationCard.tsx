@@ -20,9 +20,8 @@ export const PayoutDestinationCard = ({ destination }: PayoutDestinationCardProp
     <SectionCard title="Payout destination">
       <div className={styles.root}>
         {destination === null ? (
-          <Banner variant="warn" title="No payout destination">
-            Sweeps are refused until one is set. Collecting guardian fees out of the pool still
-            works — that moves money inside the fleet, not out of it.
+          <Banner variant="warn" title="Add a payout address to withdraw">
+            You can still collect guardian fees below — that step doesn't need one.
           </Banner>
         ) : (
           <p className={styles.current}>
@@ -37,7 +36,7 @@ export const PayoutDestinationCard = ({ destination }: PayoutDestinationCardProp
             onChange={form.onChange}
             disabled={form.isPending}
             placeholder="operator@example.com"
-            hint="The daemon pays this over LNURL. A bolt11 invoice is not accepted — it is single-use, and every sweep reuses this destination."
+            hint="Enter a reusable Lightning address (like operator@example.com). One-time invoices won't work — this address gets used for every withdrawal."
             error={form.error ?? undefined}
           />
 
