@@ -139,7 +139,7 @@ describe('AuthorizationPanel', () => {
     render(<AuthorizationPanel data={observed} isLoading={false} error={new NetworkError()} />);
 
     expect(screen.getByText(MOCK_SERVICE_NOSTR_PUBKEY)).toBeTruthy();
-    expect(screen.getByText(/Approved/i)).toBeTruthy();
+    expect(screen.getByText('Approved')).toBeTruthy();
     expect(screen.getByText(/could not be refreshed/i)).toBeTruthy();
   });
 

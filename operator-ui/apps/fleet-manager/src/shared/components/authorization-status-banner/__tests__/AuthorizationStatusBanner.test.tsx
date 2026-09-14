@@ -41,7 +41,7 @@ describe('AuthorizationStatusBanner', () => {
       />
     );
 
-    expect(screen.getByText(/Approved/i)).toBeTruthy();
+    expect(screen.getByText('Approved')).toBeTruthy();
     expect(screen.getByText(/Confirmed at/i)).toBeTruthy();
   });
 

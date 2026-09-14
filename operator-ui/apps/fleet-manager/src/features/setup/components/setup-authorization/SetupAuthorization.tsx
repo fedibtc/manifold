@@ -23,6 +23,12 @@ export const SetupAuthorization = ({ onSettled }: SetupAuthorizationProps) => {
     onSettled();
   };
 
+  // Only true while the fleet is unapproved. Once a holder signs, the step
+  // settles and Continue is enabled, so stating it then contradicts the screen.
+  const consequence = authorized
+    ? null
+    : ' Until it is approved your fleet is not advertised and cannot sell seats — setup cannot continue past this step.';
+
   // Relay reconciliation is explicit: setup performs no background refreshes.
   const handleCheckNow = () => {
     void onboarding.refetch();
@@ -51,8 +57,7 @@ export const SetupAuthorization = ({ onSettled }: SetupAuthorizationProps) => {
             unapproved therefore have to be stated here. */}
         <p className={styles.intro}>
           Your fleet needs to be approved before others can discover and use it. Scan the code below
-          with the Holder app. Until it is approved your fleet is not advertised and cannot sell
-          seats — setup cannot continue past this step.
+          with the Holder app.{consequence}
         </p>
       </div>
 

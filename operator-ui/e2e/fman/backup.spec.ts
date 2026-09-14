@@ -13,13 +13,15 @@ test('should present the derived service keys with a phrase-reveal action', asyn
   await expect(page.getByRole('link', { name: 'Reveal recovery phrase' })).toBeVisible();
 });
 
-test('should say the phrase is the entire backup and offer no restore action', async ({ page }) => {
+test('should say the phrase is the one thing to keep and offer no restore action', async ({
+  page
+}) => {
   await resetScenario(page, 'seats-mixed');
 
   await page.goto('/backup');
   await signIn(page);
 
-  await expect(page.getByText(/recovery phrase is your entire backup/)).toBeVisible();
+  await expect(page.getByText(/the one thing you must keep/)).toBeVisible();
   await expect(page.getByText(/only restore while setting up a new server/)).toBeVisible();
   await expect(page.getByRole('button', { name: /restore/i })).toHaveCount(0);
 });

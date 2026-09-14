@@ -305,7 +305,7 @@ it('should show an em dash, not zero, when every fee lookup failed', async () =>
   mockAdminCallWithFees(() => Promise.reject(new AdminApiError('no fee account')));
   renderPage();
 
-  await waitFor(() => screen.getByText(/Earnings from 1 seat\(s\) couldn't be retrieved yet/));
+  await waitFor(() => screen.getByText(/Guardian fees for 1 seat\(s\) couldn't be read/));
 
   expect(screen.getAllByText('—').length).toBeGreaterThan(0);
   expect(screen.queryByText('0 sats')).not.toBeInTheDocument();
@@ -313,7 +313,7 @@ it('should show an em dash, not zero, when every fee lookup failed', async () =>
 
 it('should show an em dash, not a partial sum, when one federation balance is unreadable', async () => {
   // The daemon reports unreadable available ecash as null in the wallet projection.
-  // Adding that in as a zero would state a fleet balance under "Wallet balance" that the
+  // Adding that in as a zero would state a fleet balance under "Held in federations" that the
   // fleet cannot vouch for — and the Wallet screen would show a different figure
   // for the same wallets.
   vi.spyOn(adminCallModule, 'adminCall').mockImplementation((request) => {

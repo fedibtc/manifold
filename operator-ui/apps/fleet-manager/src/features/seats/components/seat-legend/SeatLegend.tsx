@@ -57,6 +57,11 @@ const ENTRIES: LegendEntry[] = [
         (health) => `${describeSeatHealth(health).label} — ${HEALTH_MEANING[health]}`
       )
     )
+  },
+  {
+    term: '—',
+    description:
+      'Shown under Phase and Health when a seat is decommissioned, or when the fleet has no report for it yet.'
   }
 ];
 

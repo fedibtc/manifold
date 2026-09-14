@@ -38,7 +38,7 @@ export const OverviewPage = () => {
   });
   const unreadableFees =
     earnings.unreadableFeeSeatCount > 0
-      ? `Earnings from ${earnings.unreadableFeeSeatCount} seat(s) couldn't be retrieved yet and aren't included above.`
+      ? `Guardian fees for ${earnings.unreadableFeeSeatCount} seat(s) couldn't be read and aren't included above.`
       : null;
 
   return (
@@ -49,7 +49,7 @@ export const OverviewPage = () => {
         <Banner variant={toneVariant[model.tone]}>{model.headline}</Banner>
 
         <div className={styles.tileGrid}>
-          <StatCard label="Wallet balance" value={formatSats(earnings.balanceMsat)} />
+          <StatCard label="Held in federations" value={formatSats(earnings.balanceMsat)} />
 
           <StatCard
             label="Earned, all time"
@@ -57,9 +57,9 @@ export const OverviewPage = () => {
             hint="*Network fees apply"
           />
 
-          <StatCard label="Seat sales" value={formatSats(earnings.seatSalesMsat)} />
+          <StatCard label="Seat sales, all time" value={formatSats(earnings.seatSalesMsat)} />
 
-          <StatCard label="Guardian fees" value={formatSats(earnings.guardianFeesMsat)} />
+          <StatCard label="Guardian fees, all time" value={formatSats(earnings.guardianFeesMsat)} />
         </div>
 
         <OfferSummary priceMsat={readOfferPriceMsat(plans)} />

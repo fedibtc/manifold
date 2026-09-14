@@ -42,8 +42,9 @@ const planPriceMsat = (plan: SeatSummary['plan']): number =>
 const dayOf = (atMs: number | null): string | null =>
   atMs === null ? null : new Date(atMs).toISOString().slice(0, 10);
 
-// A seat counts as sold at the moment its payment claim was accepted. That is an
-// accepted claim, not a settlement — the caveat the Overview states on screen.
+// `success` is the terminal result of fedimint's receive state machine
+// (crates/fman/core/src/wallet.rs), so a seat counts as sold once the buyer's
+// payment has been received — not merely claimed.
 const seatSales = (seats: SeatSummary[]): EarningEvent[] =>
   seats
     .filter((seat) => seat.payment_claim.state === 'success')
@@ -110,7 +111,7 @@ const bucketByDay = (events: EarningEvent[]): EarningsDay[] => {
 /**
  * Both revenue streams on one timeline: seats sold, and guardian fees remitted
  * by the federations this fleet guards. Every figure is gross — the daemon
- * reports what it was paid, before mint and Lightning fees.
+ * reports what it was paid, before network fees.
  *
  * The two money totals come from unwindowed sources, deliberately: seat sales
  * from the whole seat list, guardian fees from the daemon's lifetime scalar.

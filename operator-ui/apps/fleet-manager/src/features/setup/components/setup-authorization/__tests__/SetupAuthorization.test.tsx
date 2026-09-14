@@ -64,6 +64,16 @@ describe('SetupAuthorization', () => {
     );
   });
 
+  // The paragraph used to render in both states, so an approved operator read
+  // "setup cannot continue past this step" beside an enabled Continue button.
+  it('should drop the blocked-setup sentence once the fleet is approved', async () => {
+    renderAuthorization(vi.fn(), observed);
+
+    await screen.findByText(/Approved\. Continuing to the price step/i);
+    expect(screen.queryByText(/setup cannot continue past this step/i)).toBeNull();
+    expect(screen.getByRole('button', { name: 'Continue now' })).toBeTruthy();
+  });
+
   // Fake timers never advance here, so no automatic tick can stand in for the
   // click: the calls after it are the ones the operator asked for.
   it('should force an immediate poll when the operator checks now', async () => {

@@ -43,7 +43,7 @@ export const AuthorizationStatusBanner = ({ nostr }: AuthorizationStatusBannerPr
   // against the relay during this run.
   return (
     <Banner variant="success" title="Approved">
-      Your fleet is now available to others.{' '}
+      Your fleet is approved. It is advertised once setup is complete.{' '}
       {nostr.checked_at === null
         ? 'Confirmed from the stored record; not re-checked since startup.'
         : `Confirmed at ${formatCheckedAt(nostr.checked_at)}.`}

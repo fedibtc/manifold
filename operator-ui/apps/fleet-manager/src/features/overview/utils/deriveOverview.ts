@@ -42,8 +42,8 @@ export const deriveOverview = ({
       key: federation.federation_id,
       title: 'Payment federation not accepting payments',
       detail: federation.federation_id,
-      // Payouts, not a read-only balance screen: this row is only worth opening
-      // if the operator can act on the money stranded there.
+      // No screen can make a federation receivable again, so this points at the
+      // only screen that lists it and offers an action on it.
       path: '/payouts'
     }));
 

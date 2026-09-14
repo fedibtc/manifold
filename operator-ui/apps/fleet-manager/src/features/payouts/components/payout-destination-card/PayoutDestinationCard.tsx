@@ -17,7 +17,7 @@ export const PayoutDestinationCard = ({ destination }: PayoutDestinationCardProp
   const form = usePayoutDestinationForm(destination);
 
   return (
-    <SectionCard title="Payout destination">
+    <SectionCard title="Payout address">
       <div className={styles.root}>
         {destination === null ? (
           <Banner variant="warn" title="Add a payout address to withdraw">
@@ -42,7 +42,7 @@ export const PayoutDestinationCard = ({ destination }: PayoutDestinationCardProp
 
           <div className={styles.actions}>
             <Button type="submit" disabled={!form.canSave} loading={form.isPending}>
-              Save destination
+              Save address
             </Button>
 
             {destination !== null && (

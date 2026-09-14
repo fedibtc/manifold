@@ -73,6 +73,17 @@ describe('AuthorizationPage', () => {
     await screen.findByText('not-a-key');
   });
 
+  // The intro used to ask for a scan in both states, contradicting the
+  // "Approved" banner rendered directly below it.
+  it('should stop asking for a scan once the fleet is approved', async () => {
+    vi.spyOn(adminCallModule, 'adminCall').mockResolvedValue(observed);
+    renderPage();
+
+    await screen.findByText('Approved');
+    expect(screen.queryByText(/Scan the code below with the Holder app to approve it/i)).toBeNull();
+    expect(screen.getByText(/Your fleet is approved\. The code below/i)).toBeTruthy();
+  });
+
   it('should offer nothing to check once the fleet is approved', async () => {
     vi.spyOn(adminCallModule, 'adminCall').mockResolvedValue(observed);
     renderPage();

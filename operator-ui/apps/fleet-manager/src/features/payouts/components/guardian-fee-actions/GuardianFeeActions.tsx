@@ -33,7 +33,7 @@ const readSendBlock = (
 // Shown whether or not the step is available: the two-step shape is the part
 // operators ask about, and a hint that appears only on the blocked path would
 // explain it exactly when it no longer matters.
-const COLLECT_HINT = 'Moves your fees from the shared pool into your wallet.';
+const COLLECT_HINT = 'Moves your fees out of the shared pool so they can be withdrawn.';
 
 /**
  * Guardian-fee money-out, which takes two steps and must look like two steps:

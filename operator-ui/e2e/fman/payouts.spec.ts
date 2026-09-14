@@ -33,7 +33,7 @@ test('should refuse a withdrawal until a payout address is stored, then withdraw
   await expect(page.getByText('Add a payout address first.').first()).toBeVisible();
 
   await page.getByLabel('Lightning address or LNURL-pay').fill('operator@example.com');
-  await page.getByRole('button', { name: 'Save destination' }).click();
+  await page.getByRole('button', { name: 'Save address' }).click();
 
   await expect(page.getByText('Add a payout address to withdraw')).toBeHidden();
   await expect(withdraw(page, 'Seat sales')).toBeEnabled();
@@ -71,7 +71,7 @@ test('should send collected guardian fees only after a destination exists', asyn
 
   await page.getByRole('button', { name: 'Collect fees' }).click();
   await page.getByLabel('Lightning address or LNURL-pay').fill('operator@example.com');
-  await page.getByRole('button', { name: 'Save destination' }).click();
+  await page.getByRole('button', { name: 'Save address' }).click();
 
   await withdraw(page, 'Guardian fees').click();
 

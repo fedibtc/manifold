@@ -19,8 +19,8 @@ export const OfferPage = () => {
         <h1 className={styles.heading}>Seat price</h1>
 
         <p className={styles.intro}>
-          One price is the whole offer. It is the gross amount a federation initiator pays for a
-          seat, before mint and Lightning fees.
+          One price is the whole offer. It is what a federation initiator pays for a seat. Network
+          fees apply.
         </p>
       </div>
 

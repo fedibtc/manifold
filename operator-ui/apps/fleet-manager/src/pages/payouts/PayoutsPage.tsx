@@ -37,8 +37,8 @@ export const PayoutsPage = () => {
         <h1 className={styles.heading}>Payouts</h1>
 
         <p className={styles.intro}>
-          Withdraw your earnings to your Lightning address. The system automatically sends as much
-          as it can and picks the best route — no amount to enter, nothing to configure.
+          Withdraw your earnings to your Lightning address. The system sends as much as it can and
+          chooses the route automatically — no amount to enter, nothing to configure.
         </p>
       </div>
 

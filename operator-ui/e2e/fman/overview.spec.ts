@@ -20,10 +20,10 @@ test('should lead with the money: balance and both revenue streams', async ({ pa
   await page.goto('/');
   await signIn(page);
 
-  await expect(page.getByText('Wallet balance')).toBeVisible();
+  await expect(page.getByText('Held in federations')).toBeVisible();
   await expect(page.getByText('162,000 sats')).toBeVisible();
-  await expect(page.getByText('Seat sales', { exact: true })).toBeVisible();
-  await expect(page.getByText('Guardian fees', { exact: true })).toBeVisible();
+  await expect(page.getByText('Seat sales, all time')).toBeVisible();
+  await expect(page.getByText('Guardian fees, all time')).toBeVisible();
 });
 
 test('should bucket earnings by day, showing seat sales and guardian fees together', async ({

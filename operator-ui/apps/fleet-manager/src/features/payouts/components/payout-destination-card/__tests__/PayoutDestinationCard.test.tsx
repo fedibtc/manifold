@@ -14,7 +14,7 @@ const renderCard = (destination: string | null) => {
 };
 
 const field = () => screen.getByLabelText('Lightning address or LNURL-pay');
-const saveButton = () => screen.getByRole('button', { name: 'Save destination' });
+const saveButton = () => screen.getByRole('button', { name: 'Save address' });
 
 afterEach(() => {
   vi.restoreAllMocks();

@@ -19,6 +19,14 @@ describe('SeatLegend', () => {
     expect(health).toContain('Failed');
   });
 
+  // The table prints "—" in two different situations and the legend explained
+  // neither, while also using "Created" for a phase and for a timestamp column.
+  it('should explain the dash the table shows for a seat with no phase', () => {
+    render(<SeatLegend />);
+
+    expect(screen.getByText(/when a seat is decommissioned/i)).toBeInTheDocument();
+  });
+
   it('should enumerate every formation phase a seat can report', () => {
     render(<SeatLegend />);
 

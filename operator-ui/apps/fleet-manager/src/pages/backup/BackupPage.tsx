@@ -20,8 +20,8 @@ export const BackupPage = () => {
   const backup = identity ? (
     <>
       <p className={styles.intro}>
-        Your 12-word recovery phrase is your entire backup. It's all you need to restore this fleet
-        — everything else can be recreated from it.
+        Your 12-word recovery phrase is the one thing you must keep. It restores this fleet's
+        identity and its funds — your seat records restore from your fleet's relay.
       </p>
 
       {/* "Would equivocate" was the old wording. Equivocation is the mechanism;
@@ -58,7 +58,7 @@ export const BackupPage = () => {
         </div>
 
         <div className={styles.kvRow}>
-          <dt className={styles.kvLabel}>Service Nostr pubkey</dt>
+          <dt className={styles.kvLabel}>Fleet manager ID</dt>
 
           <dd className={styles.idRow}>
             <span className={styles.kvValue}>
@@ -66,7 +66,7 @@ export const BackupPage = () => {
             </span>
 
             {isTruncated(identity.service_nostr_pubkey, 10, 10) && (
-              <CopyButton value={identity.service_nostr_pubkey} label="Copy service Nostr pubkey" />
+              <CopyButton value={identity.service_nostr_pubkey} label="Copy fleet manager ID" />
             )}
           </dd>
         </div>
