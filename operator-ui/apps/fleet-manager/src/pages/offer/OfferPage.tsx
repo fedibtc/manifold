@@ -40,6 +40,8 @@ export const OfferPage = () => {
           <input
             id="price-sats"
             className={styles.input}
+            inputMode="numeric"
+            autoComplete="off"
             value={priceSats}
             onChange={handlePriceChange}
             aria-describedby="price-sats-hint"

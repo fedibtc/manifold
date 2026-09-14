@@ -4,6 +4,8 @@ import { useConfigureInitialOffer } from '@/features/setup/api/hooks/use-configu
 import { useOnboarding } from '@/shared/api/hooks/use-onboarding/useOnboarding';
 import { describeActionError } from '@/shared/utils/describeActionError';
 import { parsePriceField } from '@/shared/utils/offerPrice';
+import { MAX_SEAT_LIMIT } from '@/shared/utils/seatLimit';
+import { parseWholeNumberInput } from '@/shared/utils/wholeNumberInput';
 import styles from './SetupPrice.module.css';
 
 interface SetupPriceProps {
@@ -43,14 +45,14 @@ export const SetupPrice = ({ onDone }: SetupPriceProps) => {
       setValidationError(parsed.error);
       return;
     }
-    const parsedMaxSeats = Number(maxSeats);
-    if (!Number.isInteger(parsedMaxSeats) || parsedMaxSeats < 0 || parsedMaxSeats > 4_294_967_295) {
-      setValidationError('Maximum seats must be a whole number from 0 to 4294967295.');
+    const parsedMaxSeats = parseWholeNumberInput(maxSeats, { max: MAX_SEAT_LIMIT });
+    if (!parsedMaxSeats.ok) {
+      setValidationError(`Maximum seats must be a whole number from 0 to ${MAX_SEAT_LIMIT}.`);
       return;
     }
     setValidationError(null);
     configureOffer.mutate(
-      { maxSeats: parsedMaxSeats, priceMsat: parsed.priceMsat },
+      { maxSeats: parsedMaxSeats.value, priceMsat: parsed.priceMsat },
       { onSuccess: onDone }
     );
   };
@@ -83,6 +85,7 @@ export const SetupPrice = ({ onDone }: SetupPriceProps) => {
           id="setup-max-seats"
           className={styles.input}
           inputMode="numeric"
+          autoComplete="off"
           value={maxSeats}
           onChange={handleMaxSeatsChange}
         />
@@ -94,6 +97,8 @@ export const SetupPrice = ({ onDone }: SetupPriceProps) => {
         <input
           id="setup-price-sats"
           className={styles.input}
+          inputMode="numeric"
+          autoComplete="off"
           value={priceSats}
           onChange={handlePriceChange}
           aria-describedby="setup-price-sats-hint"

@@ -1,4 +1,5 @@
 import type { Plan } from '@operator-ui/types';
+import { parseWholeNumberInput, type WholeNumberRejection } from '@/shared/utils/wholeNumberInput';
 
 const MSATS_PER_SAT = 1000;
 
@@ -17,25 +18,34 @@ export const formatPriceField = (priceMsat: number | null): string =>
 
 export type ParsedPrice = { ok: true; priceMsat: number | null } | { ok: false; error: string };
 
+const PRICE_REJECTIONS: Record<Exclude<WholeNumberRejection, 'blank'>, string> = {
+  'not-a-number': 'Enter a whole number of sats.',
+  fractional: 'Sats cannot be fractional.',
+  negative: 'A price cannot be negative.',
+  'too-large': 'That price is too large.'
+};
+
 /**
  * One field carries all three offer states, because the wire has exactly three:
  * blank is `null` (not selling), `0` is a free seat that is still advertised,
- * and anything else is the price the initiator pays.
+ * and anything else is the price the initiator pays. A grouped price reads as
+ * the number it shows, so the form `describeOffer` prints can be typed back.
  */
 export const parsePriceField = (input: string): ParsedPrice => {
-  const trimmed = input.trim();
-  if (trimmed === '') return { ok: true, priceMsat: null };
-
-  const sats = Number(trimmed);
-  if (!Number.isFinite(sats)) return { ok: false, error: 'Enter a whole number of sats.' };
-  if (!Number.isInteger(sats)) return { ok: false, error: 'Sats cannot be fractional.' };
-  if (sats < 0) return { ok: false, error: 'A price cannot be negative.' };
+  const parsed = parseWholeNumberInput(input);
+  if (!parsed.ok) {
+    return parsed.reason === 'blank'
+      ? { ok: true, priceMsat: null }
+      : { ok: false, error: PRICE_REJECTIONS[parsed.reason] };
+  }
 
   // The conversion is where precision is lost, so the bound is checked after it.
   // A msat value past Number.MAX_SAFE_INTEGER does not survive JSON: the daemon
   // would store a number the operator never typed.
-  const priceMsat = sats * MSATS_PER_SAT;
-  if (!Number.isSafeInteger(priceMsat)) return { ok: false, error: 'That price is too large.' };
+  const priceMsat = parsed.value * MSATS_PER_SAT;
+  if (!Number.isSafeInteger(priceMsat)) {
+    return { ok: false, error: PRICE_REJECTIONS['too-large'] };
+  }
 
   return { ok: true, priceMsat };
 };

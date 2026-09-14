@@ -49,6 +49,30 @@ it('should reject a non-numeric price', () => {
   });
 });
 
+// The offer summary prints prices grouped ("2,587 sats per seat"), so the field
+// has to read that form back. Browser autofill can carry it in as well.
+it.each([
+  ['2,587', 2_587_000],
+  ['1,000,000', 1_000_000_000],
+  [' 2 587 ', 2_587_000],
+  ['2\u202F587', 2_587_000]
+])('should read the grouped price %j', (input, expected) => {
+  expect(parsePriceField(input)).toEqual({ ok: true, priceMsat: expected });
+});
+
+it.each([
+  '2,58',
+  '0x10',
+  '1e3',
+  '+5'
+])('should reject %j as not a whole number of sats', (input) => {
+  expect(parsePriceField(input)).toEqual({ ok: false, error: 'Enter a whole number of sats.' });
+});
+
+it('should parse a field holding only invisible characters as not selling', () => {
+  expect(parsePriceField('\u200B')).toEqual({ ok: true, priceMsat: null });
+});
+
 it('should reject a fractional price', () => {
   expect(parsePriceField('12.5')).toEqual({ ok: false, error: 'Sats cannot be fractional.' });
 });

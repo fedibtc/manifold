@@ -53,7 +53,8 @@ afterEach(() => {
   seatsUnavailable = false;
 });
 
-it.each(['', '-1', '2.5', '4294967296'])('should reject invalid capacity %j', (value) => {
+// `1e3` is a valid float, so a number field passes it through to the validator.
+it.each(['', '-1', '2.5', '4294967296', '1e3'])('should reject invalid capacity %j', (value) => {
   expect(parseSeatCapacity(value)).toEqual({
     ok: false,
     error: 'Enter a whole number from 0 to 4294967295.'
