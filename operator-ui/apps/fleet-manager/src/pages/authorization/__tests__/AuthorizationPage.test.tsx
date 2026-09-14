@@ -100,9 +100,9 @@ describe('AuthorizationPage', () => {
     expect(screen.getByRole('heading', { name: 'Terms of service' })).toBeTruthy();
     expect(
       screen
-        .getByRole('link', { name: /public\.qgcut\.org\/Fedi-verified_Guardian_ToS\.pdf/ })
+        .getByRole('link', { name: /public\.qgcut\.org\/Fedi-verified_Guardian_ToS\.html/ })
         .getAttribute('href')
-    ).toBe('https://public.qgcut.org/Fedi-verified_Guardian_ToS.pdf');
+    ).toBe('https://public.qgcut.org/Fedi-verified_Guardian_ToS.html');
     expect(screen.queryByText(/accepted/i)).toBeNull();
   });
 

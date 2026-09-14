@@ -4,7 +4,7 @@ const TERMS_TITLE = 'Fedi-Verified Guardian Terms of Service';
 // Split so a narrow screen breaks the address after the host, not mid-word. The
 // break point also splits the computed link name, so the label states it whole.
 const TERMS_ORIGIN = 'https://public.qgcut.org/';
-const TERMS_FILE = 'Fedi-verified_Guardian_ToS.pdf';
+const TERMS_FILE = 'Fedi-verified_Guardian_ToS.html';
 const TERMS_URL = `${TERMS_ORIGIN}${TERMS_FILE}`;
 const TERMS_LINK_LABEL = `${TERMS_URL} (opens in a new tab)`;
 
@@ -36,7 +36,7 @@ export const GuardianTerms = () => (
     <div className={styles.body}>
       <p className={styles.title}>{TERMS_TITLE}</p>
 
-      <p className={styles.party}>Between you and Fedi, Inc. · PDF</p>
+      <p className={styles.party}>Between you and Fedi, Inc.</p>
 
       <a
         className={styles.link}

@@ -8,7 +8,7 @@ describe('SetupTerms', () => {
 
     expect(screen.getByRole('heading', { name: 'Accept the terms of service' })).toBeTruthy();
     expect(
-      screen.getByRole('link', { name: /public\.qgcut\.org\/Fedi-verified_Guardian_ToS\.pdf/ })
+      screen.getByRole('link', { name: /public\.qgcut\.org\/Fedi-verified_Guardian_ToS\.html/ })
     ).toBeTruthy();
   });
 
