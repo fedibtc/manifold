@@ -462,7 +462,7 @@ export type ScenarioName = keyof typeof builders;
 const notes: Record<ScenarioName, ScenarioNote> = {
   'fresh-fleet': {
     desc: 'Default. Onboarded and authorized, but nothing sold yet: no seats, no payment federations, no price.',
-    affects: ['overview', 'seats', 'wallet', 'offer']
+    affects: ['overview', 'seats', 'offer']
   },
   'not-onboarded': {
     desc: 'Host has never been onboarded. Only the onboarding verbs answer; everything else refuses.',
@@ -493,11 +493,11 @@ const notes: Record<ScenarioName, ScenarioNote> = {
     // Every route inside the shell, because the takeover is mounted in AppShell
     // rather than on a page. `setup` is deliberately absent: setup sits above
     // the shell, and this scenario is onboarded, so the wizard never renders.
-    affects: ['overview', 'authorization', 'seats', 'seat-detail', 'wallet', 'offer', 'backup']
+    affects: ['overview', 'authorization', 'seats', 'seat-detail', 'payouts', 'offer', 'backup']
   },
   'seats-empty': {
     desc: 'Still no seats, but one receivable federation at a zero balance and a price set.',
-    affects: ['seats', 'wallet']
+    affects: ['seats', 'payouts']
   },
   'seats-mixed': {
     desc: 'Four seats: running, DKG in progress, created, decommissioned. The two pre-formation seats have no fee account yet.',
@@ -509,7 +509,7 @@ const notes: Record<ScenarioName, ScenarioNote> = {
   },
   'wallet-not-receivable': {
     desc: 'Payment federation cannot receive.',
-    affects: ['wallet', 'overview']
+    affects: ['payouts', 'overview']
   },
   'offer-without-payments': {
     desc: 'A paid offer with no payment federation — nothing can ever be bought.',
@@ -521,7 +521,7 @@ const notes: Record<ScenarioName, ScenarioNote> = {
   },
   earnings: {
     desc: 'Two paid running seats with guardian-fee remittances across several days, one already-spent claim, and a wallet-only leftover federation.',
-    affects: ['overview', 'wallet', 'seat-detail', 'payouts']
+    affects: ['overview', 'seat-detail', 'payouts']
   }
 };
 

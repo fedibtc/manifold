@@ -61,7 +61,7 @@ export const GuardianFeeTable = ({ rows, hasDestination }: GuardianFeeTableProps
   ];
 
   return (
-    <SectionCard title="Guardian-fee revenue" frame="table">
+    <SectionCard title="Guardian fees" frame="table">
       <DataTable columns={columns} rows={rows} rowKey={seatRowKey} />
     </SectionCard>
   );

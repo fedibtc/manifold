@@ -45,7 +45,7 @@ describe('AuthorizationPage', () => {
     renderPage();
 
     await screen.findByText(MOCK_SERVICE_NOSTR_PUBKEY);
-    expect(screen.getByText(/no authorization for this fleet/i)).toBeTruthy();
+    expect(screen.getByText(/Not approved yet/i)).toBeTruthy();
   });
 
   // The daemon reports hex; a holder application shows the npub. The operator
@@ -55,7 +55,7 @@ describe('AuthorizationPage', () => {
     renderPage();
 
     await screen.findByText('npub1cswcupa4j23k78gvjnjcx7mz4uqet5l8c69jfg8huxw48jqzk6jqgqdz8m');
-    expect(screen.getByText(/authorization observed/i)).toBeTruthy();
+    expect(screen.getByText('Approved')).toBeTruthy();
   });
 
   it('should fall back to the reported value when a holder key does not encode', async () => {
@@ -73,11 +73,22 @@ describe('AuthorizationPage', () => {
     await screen.findByText('not-a-key');
   });
 
-  it('should offer nothing to check once an authorization is observed', async () => {
+  // The intro used to ask for a scan in both states, contradicting the
+  // "Approved" banner rendered directly below it.
+  it('should stop asking for a scan once the fleet is approved', async () => {
     vi.spyOn(adminCallModule, 'adminCall').mockResolvedValue(observed);
     renderPage();
 
-    await screen.findByText(/authorization observed/i);
+    await screen.findByText('Approved');
+    expect(screen.queryByText(/Scan the code below with the Holder app to approve it/i)).toBeNull();
+    expect(screen.getByText(/Your fleet is approved\. The code below/i)).toBeTruthy();
+  });
+
+  it('should offer nothing to check once the fleet is approved', async () => {
+    vi.spyOn(adminCallModule, 'adminCall').mockResolvedValue(observed);
+    renderPage();
+
+    await screen.findByText('Approved');
     expect(screen.queryByRole('button', { name: 'Check now' })).toBeNull();
   });
 

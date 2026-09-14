@@ -5,3 +5,7 @@
 .idRow {
   @apply uCopyRow;
 }
+
+.empty {
+  @apply uMutedSm;
+}

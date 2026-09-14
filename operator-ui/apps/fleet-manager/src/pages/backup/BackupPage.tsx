@@ -20,14 +20,17 @@ export const BackupPage = () => {
   const backup = identity ? (
     <>
       <p className={styles.intro}>
-        The 12-word recovery phrase is the whole backup. Every key below is derived (HKDF) from it,
-        and this fleet's seat records are published to the relay it advertises on — so a recovery
-        needs the phrase and nothing else.
+        Your 12-word recovery phrase is the one thing you must keep. It restores this fleet's
+        identity and its funds — your seat records restore from your fleet's relay.
       </p>
 
+      {/* "Would equivocate" was the old wording. Equivocation is the mechanism;
+          losing the seats' funds is the consequence, and that is the part an
+          operator needs before they copy a phrase onto a second box. */}
       <Banner variant="warn">
-        Recovery happens only while setting up a host. There is no restore action here: a running
-        fleet is already set up, and two hosts sharing one guardian identity would equivocate.
+        You can only restore while setting up a new server — there's no restore button here because
+        this fleet is already running. Never run two servers from the same recovery phrase: they
+        will conflict, and that can lose funds.
       </Banner>
 
       <dl className={styles.kv}>
@@ -55,7 +58,7 @@ export const BackupPage = () => {
         </div>
 
         <div className={styles.kvRow}>
-          <dt className={styles.kvLabel}>Service Nostr pubkey</dt>
+          <dt className={styles.kvLabel}>Fleet manager ID</dt>
 
           <dd className={styles.idRow}>
             <span className={styles.kvValue}>
@@ -63,7 +66,7 @@ export const BackupPage = () => {
             </span>
 
             {isTruncated(identity.service_nostr_pubkey, 10, 10) && (
-              <CopyButton value={identity.service_nostr_pubkey} label="Copy service Nostr pubkey" />
+              <CopyButton value={identity.service_nostr_pubkey} label="Copy fleet manager ID" />
             )}
           </dd>
         </div>
@@ -74,13 +77,17 @@ export const BackupPage = () => {
           without claiming the operator ever wrote it down. BE-FMAN-SETUP-002
           owns the state that would let the UI know. */}
       <p className={styles.reloadNote}>
-        This dashboard did not save your recovery phrase, and it cannot tell whether you wrote it
-        down. If setup was interrupted, reveal it here and record it now.
+        We don't store your recovery phrase and can't check whether you've saved it. If you haven't
+        written it down yet, do it now — without it, you can't recover this fleet.
       </p>
 
       <Link to="/backup/phrase" className={styles.phraseLink}>
         Reveal recovery phrase
       </Link>
+
+      <p className={styles.safetyNote}>
+        Anyone with this phrase controls your funds — never share it or store it digitally.
+      </p>
     </>
   ) : null;
 

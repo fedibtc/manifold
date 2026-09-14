@@ -56,10 +56,12 @@ export const AuthorizationPanel = ({ data, isLoading, error }: AuthorizationPane
           `buildAuthorizationRequest` may never gain a field — an added `type` or
           `version` would be rejected outright, so BE-FMAN-AUTH-002 has to be
           agreed on both sides at once. */}
+      {/* Deliberately not "guardian ID": a guardian is one fedimintd seat and a
+          fleet hosts many, so naming the fleet-wide key after a single guardian
+          would be wrong. */}
       <p className={styles.hint}>
-        This is the fleet manager's service Nostr public key, as the daemon reports it. A holder
-        signs an authorization over this key. Scan the code with the holder application, or copy the
-        request and paste it in.
+        This is your fleet manager ID. Scan it with the Holder app, or copy the request and paste it
+        there.
       </p>
 
       <AuthorizationStatusBanner nostr={data.nostr} />

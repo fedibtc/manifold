@@ -24,22 +24,21 @@ export const BackupPhrasePage = () => {
         <h1 className={styles.heading}>Recovery phrase</h1>
 
         <Banner variant="error">
-          This is the entire fleet's identity — anyone who has it owns the fleet. Never store it
-          digitally or share it; write it down now.
+          Anyone who has these 12 words controls this fleet and its funds. Write them down on paper
+          — never store them digitally or share them.
         </Banner>
 
         <div className={styles.phraseBox}>{showMnemonic.data.mnemonic}</div>
 
         <p className={styles.backupNote}>
-          These twelve words are a complete backup. Restoring them onto a new host recovers this
-          fleet's seats — but only during that host's setup, and only once the guardians running
-          here are permanently offline.
+          These 12 words are your complete backup. You can use them to restore this fleet on a new
+          server — but only during setup of the new server, and only after this one is permanently
+          shut down.
         </p>
 
         <p className={styles.backupNote}>
-          Leaving this page hides the phrase. You can come back and reveal it again, so a missed
-          word is not lost — but each reveal is another chance for someone to read it over your
-          shoulder.
+          The phrase is hidden when you leave this page. You can reveal it again later if needed —
+          just make sure you're somewhere private each time.
         </p>
 
         <Link to="/backup" className={styles.done}>
@@ -54,8 +53,8 @@ export const BackupPhrasePage = () => {
       <h1 className={styles.heading}>Reveal recovery phrase</h1>
 
       <p className={styles.intro}>
-        This fetches and displays the fleet's 12-word root mnemonic. Nothing is fetched until you
-        confirm, and leaving the page hides it again. Reveal it only where nobody can read it.
+        Your 12-word recovery phrase will be shown on screen. Make sure no one can see your screen
+        before continuing.
       </p>
 
       <div className={styles.actions}>

@@ -30,7 +30,7 @@ describe('PaymentSweepTable', () => {
       { ...federations[0], federation_id: 'fed1bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb' }
     ]);
 
-    expect(screen.getAllByRole('button', { name: 'Sweep' })).toHaveLength(2);
+    expect(screen.getAllByRole('button', { name: 'Withdraw' })).toHaveLength(2);
   });
 
   it('should show the balance a sweep would move', () => {
@@ -50,6 +50,26 @@ describe('PaymentSweepTable', () => {
   it('should gate every row when no payout destination is stored', () => {
     renderTable(federations, false);
 
-    expect(screen.getByRole('button', { name: 'Sweep' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Withdraw' })).toBeDisabled();
+  });
+
+  // Carried over from the Wallet screen this table replaced. A stranded balance
+  // raises one question — why is it stranded — and these are the two answers.
+  it('should mark a federation that has stopped accepting payments', () => {
+    renderTable([{ ...federations[0], receivable: false }]);
+
+    expect(screen.getByText('Not accepting payments')).toBeInTheDocument();
+  });
+
+  it('should mark a federation the fleet no longer belongs to', () => {
+    renderTable([{ ...federations[0], accepted: false }]);
+
+    expect(screen.getByText('Former member')).toBeInTheDocument();
+  });
+
+  it('should mark a federation that is accepting payments', () => {
+    renderTable(federations);
+
+    expect(screen.getByText('Accepting payments')).toBeInTheDocument();
   });
 });

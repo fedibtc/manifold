@@ -1,0 +1,15 @@
+.root {
+  @apply uStack3;
+}
+
+.entry {
+  @apply uStack1;
+}
+
+.term {
+  @apply uLabel;
+}
+
+.description {
+  @apply uMutedSm;
+}

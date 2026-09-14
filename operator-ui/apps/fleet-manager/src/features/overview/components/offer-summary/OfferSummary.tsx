@@ -8,7 +8,7 @@ interface OfferSummaryProps {
 }
 
 export const OfferSummary = ({ priceMsat }: OfferSummaryProps) => (
-  <SectionCard title="Your offer">
+  <SectionCard title="Seat price">
     <div className={styles.root}>
       <span className={styles.price}>{describeOffer(priceMsat)}</span>
 

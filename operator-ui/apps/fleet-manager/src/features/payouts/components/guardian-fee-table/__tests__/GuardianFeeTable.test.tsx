@@ -58,7 +58,7 @@ describe('GuardianFeeTable', () => {
   it('should offer both steps per seat', () => {
     renderTable(rows);
 
-    expect(screen.getByRole('button', { name: '1. Collect out of the pool' })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: '2. Send to destination' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Collect fees' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Withdraw' })).toBeInTheDocument();
   });
 });

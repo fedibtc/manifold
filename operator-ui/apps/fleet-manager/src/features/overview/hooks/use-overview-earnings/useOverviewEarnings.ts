@@ -42,8 +42,8 @@ export const useOverviewEarnings = (): OverviewEarnings => {
   const allFeesUnreadable = feeQueries.length > 0 && unreadableFeeSeatCount === feeQueries.length;
   const feesUnknown = feesPending || allFeesUnreadable;
 
-  // Shared with the Wallet screen, so the two money screens state the same total
-  // for the same wallets — including when one of them could not be read.
+  // One reader for the fleet-wide balance, so the Overview card and the Payouts
+  // table cannot disagree — including when one of the wallets could not be read.
   const federations = paymentFederations.data?.federations;
   const balanceMsat = federations ? readTotalBalanceMsat(federations) : null;
 

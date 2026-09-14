@@ -28,8 +28,8 @@ const renderActions = ({
   );
 };
 
-const collectButton = () => screen.getByRole('button', { name: '1. Collect out of the pool' });
-const sendButton = () => screen.getByRole('button', { name: '2. Send to destination' });
+const collectButton = () => screen.getByRole('button', { name: 'Collect fees' });
+const sendButton = () => screen.getByRole('button', { name: 'Withdraw' });
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -131,7 +131,7 @@ describe('GuardianFeeActions', () => {
     renderActions({ hasDestination: false });
 
     expect(sendButton()).toBeDisabled();
-    expect(screen.getByText('Set a payout destination first.')).toBeInTheDocument();
+    expect(screen.getByText('Add a payout address first.')).toBeInTheDocument();
   });
 
   // Collecting moves money out of the pool into the fleet's own ecash. Nothing
@@ -147,7 +147,7 @@ describe('GuardianFeeActions', () => {
     renderActions({ collectedEcashMsat: 0 });
 
     expect(sendButton()).toBeDisabled();
-    expect(screen.getByText('Nothing collected yet. Collect first.')).toBeInTheDocument();
+    expect(screen.getByText('Nothing collected yet. Collect fees first.')).toBeInTheDocument();
   });
 
   it('should block collecting when the pool is known to hold nothing', () => {

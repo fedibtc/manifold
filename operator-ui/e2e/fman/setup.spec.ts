@@ -34,7 +34,7 @@ test('should take a new fleet from the doors through to a priced offer', async (
   await expect(page.getByText('abandon abandon abandon')).toBeVisible();
   await page.getByRole('button', { name: "I've written it down — continue" }).click();
 
-  await expect(page.getByRole('heading', { name: 'Get this fleet authorized' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Get your fleet approved' })).toBeVisible();
   await page.getByRole('button', { name: 'Check now' }).click();
   await page.getByRole('button', { name: 'Continue now' }).click();
 
@@ -76,7 +76,7 @@ test('should hold setup at the authorization step until one is observed', async 
   await page.getByRole('button', { name: 'Reveal phrase' }).click();
   await page.getByRole('button', { name: "I've written it down — continue" }).click();
 
-  await expect(page.getByText(/No authorization for this fleet/i)).toBeVisible();
+  await expect(page.getByText(/Not approved yet/i)).toBeVisible();
   await expect(page.getByRole('button', { name: 'Continue', exact: true })).toBeDisabled();
 });
 
@@ -116,7 +116,7 @@ test('should recover a fleet and stop at the authorization step while it waits',
 
   await page.getByRole('button', { name: 'Continue' }).click();
 
-  await expect(page.getByRole('heading', { name: 'Get this fleet authorized' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Get your fleet approved' })).toBeVisible();
 });
 
 test('should not offer setup to a fleet that is already running', async ({ page }) => {
