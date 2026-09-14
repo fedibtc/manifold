@@ -10,7 +10,7 @@
   @apply uIntro;
 }
 
-.holdersHint {
+.hint {
   @apply uMutedText mb-3;
 }
 

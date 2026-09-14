@@ -92,6 +92,20 @@ describe('AuthorizationPage', () => {
     expect(screen.queryByRole('button', { name: 'Check now' })).toBeNull();
   });
 
+  it('should link the guardian terms of service without an acceptance date', async () => {
+    vi.spyOn(adminCallModule, 'adminCall').mockResolvedValue(observed);
+    renderPage();
+
+    await screen.findByText('Approved');
+    expect(screen.getByRole('heading', { name: 'Terms of service' })).toBeTruthy();
+    expect(
+      screen
+        .getByRole('link', { name: /public\.qgcut\.org\/Fedi-verified_Guardian_ToS\.pdf/ })
+        .getAttribute('href')
+    ).toBe('https://public.qgcut.org/Fedi-verified_Guardian_ToS.pdf');
+    expect(screen.queryByText(/accepted/i)).toBeNull();
+  });
+
   it('should offer no way to skip or continue', async () => {
     vi.spyOn(adminCallModule, 'adminCall').mockResolvedValue(waiting);
     renderPage();

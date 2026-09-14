@@ -53,6 +53,18 @@ it('should leave the surface to the pathname once the wizard goes away', async (
   expect(gateSurface.getSnapshot()).toBeNull();
 });
 
+it('should reopen an approved but unpriced fleet on the terms, not the price', async () => {
+  vi.spyOn(adminCallModule, 'adminCall').mockResolvedValue({
+    stage: 'initial_offer',
+    runtime: 'starting'
+  });
+  renderGate();
+
+  await screen.findByRole('heading', { name: 'Accept the terms of service' });
+
+  expect(screen.queryByRole('heading', { name: 'Set your price' })).toBeNull();
+});
+
 it('should keep its surface through the StrictMode double invoke', async () => {
   stubNotOnboarded();
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });

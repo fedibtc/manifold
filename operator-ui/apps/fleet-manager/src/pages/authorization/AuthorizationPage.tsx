@@ -1,6 +1,7 @@
 import { SectionCard } from '@operator-ui/common-ui';
 import { useOnboarding } from '@/shared/api/hooks/use-onboarding/useOnboarding';
 import { AuthorizationPanel } from '@/shared/components/authorization-panel/AuthorizationPanel';
+import { GuardianTerms } from '@/shared/components/guardian-terms/GuardianTerms';
 import { toNpub } from '@/shared/utils/npub';
 import styles from './AuthorizationPage.module.css';
 
@@ -36,13 +37,24 @@ export const AuthorizationPage = () => {
       />
       {holders.length > 0 ? (
         <SectionCard title="Approved by">
-          <p className={styles.holdersHint}>
+          <p className={styles.hint}>
             Compare these with the approver shown in the Holder app to confirm they match.
           </p>
 
           <ul className={styles.holdersList}>{holders.map(renderHolder)}</ul>
         </SectionCard>
       ) : null}
+      {/* No acceptance date: the daemon keeps no record of when, or whether, the
+          terms were accepted, and a fleet onboarded before the terms step never
+          saw it. */}
+      <SectionCard title="Terms of service">
+        <p className={styles.hint}>
+          These terms cover Fedi verification and the telemetry your fleet shares with Fedi. Updates
+          are posted at the same address.
+        </p>
+
+        <GuardianTerms />
+      </SectionCard>
     </div>
   );
 };

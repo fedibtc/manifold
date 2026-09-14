@@ -38,6 +38,9 @@ test('should take a new fleet from the doors through to a priced offer', async (
   await page.getByRole('button', { name: 'Check now' }).click();
   await page.getByRole('button', { name: 'Continue now' }).click();
 
+  await expect(page.getByRole('heading', { name: 'Accept the terms of service' })).toBeVisible();
+  await page.getByRole('button', { name: 'Accept and continue' }).click();
+
   await expect(page.getByRole('heading', { name: 'Set your price' })).toBeVisible();
   // The capacity field seeds from the daemon's RAM-derived recommendation; the
   // operator overrides it, and the override is what must land in the offer.

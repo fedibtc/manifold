@@ -69,7 +69,7 @@ export const SetupAuthorization = ({ onSettled }: SetupAuthorizationProps) => {
       {authorized ? (
         <p className={styles.statusLine} role="status">
           <span className={styles.spinner} aria-hidden="true" />
-          Approved. Continuing to the price step…
+          Approved. Continuing to the terms step…
         </p>
       ) : null}
 
