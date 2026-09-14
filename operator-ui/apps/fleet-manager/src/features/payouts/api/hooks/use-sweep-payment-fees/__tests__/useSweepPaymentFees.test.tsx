@@ -2,6 +2,8 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act, renderHook, waitFor } from '@testing-library/react';
 import type { ReactNode } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { PAYOUT_DESTINATION_KEY } from '@/features/payouts/api/hooks/use-payout-destination/usePayoutDestination';
+import { useSetPayoutDestination } from '@/features/payouts/api/hooks/use-set-payout-destination/useSetPayoutDestination';
 import * as adminCallModule from '@/shared/api/adminCall';
 import { useSweepPaymentFees } from '../useSweepPaymentFees';
 
@@ -70,5 +72,38 @@ describe('useSweepPaymentFees', () => {
     });
     expect(ids[0]).toBe(ids[1]);
     expect(ids[2]).not.toBe(ids[1]);
+  });
+
+  // The daemon keeps a request id's first destination (SPEC-admin-socket), so a
+  // retry under the old id after a new destination is saved would go to the old one.
+  it('should use a new id for a retry after the operator saves another destination', async () => {
+    const adminCall = vi
+      .spyOn(adminCallModule, 'adminCall')
+      .mockRejectedValueOnce(new Error('lnurl lookup failed'))
+      .mockResolvedValueOnce({ destination: 'fixed@example.com' })
+      .mockResolvedValueOnce(job);
+    const client = new QueryClient();
+    client.setQueryData(PAYOUT_DESTINATION_KEY, { destination: 'typo@exmple.com' });
+    const clientWrapper = ({ children }: { children: ReactNode }) => (
+      <QueryClientProvider client={client}>{children}</QueryClientProvider>
+    );
+    const { result } = renderHook(
+      () => ({ sweep: useSweepPaymentFees('fed1aaa'), save: useSetPayoutDestination() }),
+      { wrapper: clientWrapper }
+    );
+
+    await expect(result.current.sweep.mutateAsync()).rejects.toThrow('lnurl lookup failed');
+    await act(async () => {
+      await result.current.save.mutateAsync('fixed@example.com');
+    });
+    await act(async () => {
+      await result.current.sweep.mutateAsync();
+    });
+
+    const [[first], , [retry]] = adminCall.mock.calls;
+    expect(retry).toEqual({
+      SweepPaymentFees: { federation_id: 'fed1aaa', request_id: expect.any(String) }
+    });
+    expect(retry).not.toEqual(first);
   });
 });
