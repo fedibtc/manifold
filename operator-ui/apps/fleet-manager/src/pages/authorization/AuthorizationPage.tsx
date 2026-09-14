@@ -17,15 +17,17 @@ export const AuthorizationPage = () => {
   const nostr = onboarding.data?.nostr;
   const authorized = nostr?.state === 'authorization_observed';
   const holders = authorized ? nostr.holders : [];
+  // An approved fleet is not waiting for a scan, so asking for one states
+  // something the rest of the screen contradicts.
+  const intro = authorized
+    ? 'Your fleet is approved. The code below is your fleet manager ID.'
+    : 'Your fleet needs to be approved before others can discover and use it. Scan the code below with the Holder app to approve it.';
 
   return (
     <div className={styles.root}>
       <h1 className={styles.heading}>Authorization</h1>
 
-      <p className={styles.intro}>
-        Until a holder has authorized this fleet manager, initiators have no way to evaluate it.
-        This page stays available for as long as the fleet runs.
-      </p>
+      <p className={styles.intro}>{intro}</p>
 
       <AuthorizationPanel
         data={onboarding.data}
@@ -33,10 +35,9 @@ export const AuthorizationPage = () => {
         error={onboarding.error}
       />
       {holders.length > 0 ? (
-        <SectionCard title="Observed holders">
+        <SectionCard title="Approved by">
           <p className={styles.holdersHint}>
-            Shown as an npub, so this can be compared against the identity key a holder application
-            displays.
+            Compare these with the approver shown in the Holder app to confirm they match.
           </p>
 
           <ul className={styles.holdersList}>{holders.map(renderHolder)}</ul>

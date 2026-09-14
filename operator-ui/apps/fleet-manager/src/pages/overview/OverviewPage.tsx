@@ -38,8 +38,8 @@ export const OverviewPage = () => {
   });
   const unreadableFees =
     earnings.unreadableFeeSeatCount > 0
-      ? ` Fee revenue could not be read for ${earnings.unreadableFeeSeatCount} seat(s), so none is counted for them.`
-      : '';
+      ? `Guardian fees for ${earnings.unreadableFeeSeatCount} seat(s) couldn't be read and aren't included above.`
+      : null;
 
   return (
     <div className={styles.root}>
@@ -49,17 +49,17 @@ export const OverviewPage = () => {
         <Banner variant={toneVariant[model.tone]}>{model.headline}</Banner>
 
         <div className={styles.tileGrid}>
-          <StatCard label="Wallet balance" value={formatSats(earnings.balanceMsat)} />
+          <StatCard label="Held in federations" value={formatSats(earnings.balanceMsat)} />
 
           <StatCard
             label="Earned, all time"
             value={formatSats(earnings.totalMsat)}
-            hint="Gross, before fees"
+            hint="*Network fees apply"
           />
 
-          <StatCard label="Seat sales" value={formatSats(earnings.seatSalesMsat)} />
+          <StatCard label="Seat sales, all time" value={formatSats(earnings.seatSalesMsat)} />
 
-          <StatCard label="Guardian fees" value={formatSats(earnings.guardianFeesMsat)} />
+          <StatCard label="Guardian fees, all time" value={formatSats(earnings.guardianFeesMsat)} />
         </div>
 
         <OfferSummary priceMsat={readOfferPriceMsat(plans)} />
@@ -68,11 +68,18 @@ export const OverviewPage = () => {
 
         <EarningsTimeline days={earnings.days} />
 
-        <p className={styles.caveats}>
-          Every figure here is <strong>gross</strong> — what the fleet was paid, before the mint and
-          Lightning fees taken on the way. Seat sales count <strong>accepted payment claims</strong>
-          , which is not the same as a settled payment.{unreadableFees}
-        </p>
+        <ul className={styles.caveats}>
+          <li>Amounts shown are what buyers paid. Network fees apply.</li>
+
+          <li>A seat sale is counted once the buyer's payment has completed.</li>
+
+          {/* The price is frozen on the seat at quote time and the seats table
+              is immutable, so a sale can differ from the price above without
+              either figure being wrong. */}
+          <li>Each sale is counted at the price it sold for, not your current seat price.</li>
+
+          {unreadableFees && <li>{unreadableFees}</li>}
+        </ul>
       </QuerySurface>
     </div>
   );

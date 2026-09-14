@@ -20,10 +20,10 @@ test('should lead with the money: balance and both revenue streams', async ({ pa
   await page.goto('/');
   await signIn(page);
 
-  await expect(page.getByText('Wallet balance')).toBeVisible();
+  await expect(page.getByText('Held in federations')).toBeVisible();
   await expect(page.getByText('162,000 sats')).toBeVisible();
-  await expect(page.getByText('Seat sales', { exact: true })).toBeVisible();
-  await expect(page.getByText('Guardian fees', { exact: true })).toBeVisible();
+  await expect(page.getByText('Seat sales, all time')).toBeVisible();
+  await expect(page.getByText('Guardian fees, all time')).toBeVisible();
 });
 
 test('should bucket earnings by day, showing seat sales and guardian fees together', async ({
@@ -39,14 +39,18 @@ test('should bucket earnings by day, showing seat sales and guardian fees togeth
   await expect(page.getByText('Guardian fee').first()).toBeVisible();
 });
 
-test('should state the gross and accepted-claim caveats on screen', async ({ page }) => {
+test('should state the network-fee and completed-payment caveats on screen', async ({ page }) => {
   await resetScenario(page, 'earnings');
 
   await page.goto('/');
   await signIn(page);
 
-  await expect(page.getByText(/before the mint and Lightning fees/)).toBeVisible();
-  await expect(page.getByText(/accepted payment claims/)).toBeVisible();
+  await expect(
+    page.getByText(/Amounts shown are what buyers paid. Network fees apply./)
+  ).toBeVisible();
+  await expect(
+    page.getByText(/A seat sale is counted once the buyer's payment has completed/)
+  ).toBeVisible();
 });
 
 test('should invite the operator to earn when nothing has landed yet', async ({ page }) => {
@@ -66,9 +70,9 @@ test('should flag a non-receivable payment federation as needing attention', asy
 
   await expect(page.getByText('Needs your attention')).toBeVisible();
   await expect(page.getByRole('heading', { name: 'Needs attention', level: 2 })).toBeVisible();
-  await expect(page.getByText('Payment federation not receiving')).toBeVisible();
+  await expect(page.getByText('Payment federation not accepting payments')).toBeVisible();
   await expect(page.getByRole('link', { name: 'Review' }).first()).toHaveAttribute(
     'href',
-    '/wallet'
+    '/payouts'
   );
 });

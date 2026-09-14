@@ -43,7 +43,7 @@ const columns: Column<SeatRow>[] = [
     )
   },
   { key: 'plan', header: 'Plan', render: (row) => describePlan(row.seat.plan) },
-  { key: 'created', header: 'Created', render: (row) => formatDate(row.seat.created_at_ms) },
+  { key: 'created', header: 'Sold', render: (row) => formatDate(row.seat.created_at_ms) },
   {
     key: 'phase',
     header: 'Phase',

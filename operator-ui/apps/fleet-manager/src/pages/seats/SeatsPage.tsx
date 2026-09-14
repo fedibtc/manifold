@@ -1,4 +1,5 @@
 import { Link } from 'react-router-dom';
+import { SeatLegend } from '@/features/seats/components/seat-legend/SeatLegend';
 import { SeatTable } from '@/features/seats/components/seat-table/SeatTable';
 import { useSeatRows } from '@/features/seats/hooks/use-seat-rows/useSeatRows';
 import { QuerySurface } from '@/shared/components/query-surface/QuerySurface';
@@ -10,7 +11,7 @@ export const SeatsPage = () => {
   const fleet = isEmpty ? (
     <p className={styles.empty}>
       No seats yet. Seats are created by Federation Initiators after they pay for a plan — there is
-      no "create seat" action on this dashboard. See <Link to="/offer">Your offer</Link> for the
+      no "create seat" action on this dashboard. See <Link to="/offer">Seat price</Link> for the
       current price.
     </p>
   ) : (
@@ -20,6 +21,8 @@ export const SeatsPage = () => {
       </p>
 
       <SeatTable rows={rows} />
+
+      <SeatLegend />
     </>
   );
 

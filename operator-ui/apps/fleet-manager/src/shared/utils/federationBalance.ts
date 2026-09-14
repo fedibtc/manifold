@@ -10,8 +10,8 @@ import type { PaymentFederation } from '@operator-ui/types';
  * silently drops an unread wallet is not a total: it goes unknown instead, and
  * the money screens render that as "—".
  *
- * Every screen showing a fleet-wide balance reads it from here, so the Wallet and
- * the Overview cannot disagree about the same money.
+ * Every screen showing a fleet-wide balance reads it from here, so the Overview
+ * and Payouts cannot disagree about the same money.
  */
 export const readTotalBalanceMsat = (federations: PaymentFederation[]): number | null =>
   federations.some((federation) => federation.wallet.available_ecash_msat === null)
