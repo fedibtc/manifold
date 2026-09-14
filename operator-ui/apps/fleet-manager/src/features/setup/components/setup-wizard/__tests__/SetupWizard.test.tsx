@@ -58,7 +58,7 @@ describe('SetupWizard', () => {
     expect(screen.getByRole('heading', { name: 'Set up your fleet manager' })).toBeTruthy();
   });
 
-  it('should walk a new fleet from the doors to the price step', async () => {
+  it('should walk a new fleet from the doors through the terms to the price step', async () => {
     stubDaemon(true);
     renderWizard();
 
@@ -70,7 +70,12 @@ describe('SetupWizard', () => {
     fireEvent.click(screen.getByRole('button', { name: "I've written it down — continue" }));
 
     await screen.findByRole('heading', { name: 'Get your fleet approved' });
-    await screen.findByRole('heading', { name: 'Set your price' }, { timeout: 5000 });
+    await screen.findByRole('heading', { name: 'Accept the terms of service' }, { timeout: 5000 });
+    expect(screen.queryByRole('heading', { name: 'Set your price' })).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Accept and continue' }));
+
+    await screen.findByRole('heading', { name: 'Set your price' });
   });
 
   it('should complete setup once the price is stored', async () => {
@@ -85,7 +90,9 @@ describe('SetupWizard', () => {
     // The authorization step continues on its own once the relay reports an
     // observed authorization, so there is no click here — only the wait.
     await screen.findByRole('heading', { name: 'Get your fleet approved' });
-    await screen.findByRole('heading', { name: 'Set your price' }, { timeout: 5000 });
+    await screen.findByRole('heading', { name: 'Accept the terms of service' }, { timeout: 5000 });
+    fireEvent.click(screen.getByRole('button', { name: 'Accept and continue' }));
+    await screen.findByRole('heading', { name: 'Set your price' });
 
     fireEvent.click(screen.getByRole('button', { name: 'Finish setup' }));
 

@@ -1,0 +1,35 @@
+.root {
+  @apply flex items-start gap-3.5;
+}
+
+.documentTile {
+  @apply grid h-12 w-10 flex-none place-items-center rounded-md border border-gray-200 text-gray-500;
+}
+
+.documentIcon {
+  @apply h-5 w-5;
+}
+
+.body {
+  @apply min-w-0 flex-1;
+}
+
+.title {
+  @apply text-base font-semibold tracking-tight text-ink;
+}
+
+.party {
+  @apply mt-0.5 text-xs font-normal text-gray-500;
+}
+
+.link {
+  @apply mt-2.5 flex items-center gap-1.5 hover:opacity-80;
+}
+
+.url {
+  @apply min-w-0 break-words font-mono text-sm font-normal text-ink underline decoration-gray-400 underline-offset-2;
+}
+
+.externalIcon {
+  @apply h-3.5 w-3.5 flex-none text-gray-500;
+}
