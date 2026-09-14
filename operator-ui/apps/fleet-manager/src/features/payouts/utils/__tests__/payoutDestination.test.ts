@@ -25,7 +25,9 @@ it.each([
   [
     'an LNURL',
     'lnurl1dp68gurn8ghj7um9wfmxjcm99e3k7mf0v9cxj0m385ekvcenxc6r2c35xvukxefcv5mkvv34x5ekzd3ev56nyd3hxqurzepexejxxepnxscrvwfnv9nxzcn9xq6xyefhvgcxxcmyxymnserxfq5fns'
-  ]
+  ],
+  // The daemon's bech32 decoder accepts either checksum.
+  ['an LNURL with a bech32m checksum', 'lnurl1dp68gurn8ghj7um9wfmxjcm99e3k7mf0v9cxj0m385cswffw95']
 ])('should accept %s', (_case, destination) => {
   expect(isPayoutDestinationFormat(destination)).toBe(true);
 });
@@ -40,7 +42,13 @@ it.each([
   ['a bolt11 invoice', 'lnbc2500u1pvjluezpp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyq'],
   ['an on-chain address', 'bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq'],
   ['an LNURL prefix alone', 'lnurl'],
-  ['an LNURL with a character bech32 does not use', 'lnurl1dp68gurn8ghj7b']
+  ['an LNURL with a character bech32 does not use', 'lnurl1dp68gurn8ghj7b'],
+  ['an LNURL too short to hold a checksum', 'lnurl1qq'],
+  [
+    'an LNURL with one character mistyped',
+    'lnurl1dp68gurn8ghj7um9wfmxjcm99e3k7mf0v9cxj0m385ekvcenxc6r2c35xvukxefcv5mkvv34x5ekzd3ev56nyd3hxqurzepexejxxepnxscrvwfnv9nxzcn9xq6xyefhvgcxxcmyxymnserxfq5fnq'
+  ],
+  ['an LNURL that does not decode to text', 'lnurl1lll06eh0tcp']
 ])('should refuse %s', (_case, destination) => {
   expect(isPayoutDestinationFormat(destination)).toBe(false);
 });

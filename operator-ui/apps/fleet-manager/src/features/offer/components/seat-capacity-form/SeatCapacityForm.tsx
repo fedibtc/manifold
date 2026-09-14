@@ -92,8 +92,6 @@ export const SeatCapacityForm = () => {
         <form className={styles.form} onSubmit={handleSubmit}>
           <TextInput
             label="Maximum active seats"
-            type="number"
-            min={activeSeats ?? 0}
             hint={hint}
             value={maxSeats}
             onChange={handleChange}

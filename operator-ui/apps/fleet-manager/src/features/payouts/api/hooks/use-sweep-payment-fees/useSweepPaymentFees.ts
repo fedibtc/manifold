@@ -1,8 +1,8 @@
-import { newIdempotencyKey } from '@operator-ui/common-ui';
 import type { PayoutDestinationResponse, SweepPaymentFeesResponse } from '@operator-ui/types';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { useRef } from 'react';
 import { PAYOUT_DESTINATION_KEY } from '@/features/payouts/api/hooks/use-payout-destination/usePayoutDestination';
+import { type SweepRequest, sweepRequestFor } from '@/features/payouts/utils/sweepRequest';
 import { adminCall } from '@/shared/api/adminCall';
 import { PAYMENT_FEDERATIONS_KEY } from '@/shared/api/hooks/use-payment-federations/usePaymentFederations';
 
@@ -12,19 +12,13 @@ import { PAYMENT_FEDERATIONS_KEY } from '@/shared/api/hooks/use-payment-federati
 // amount can fail on mint and routing fees.
 export const useSweepPaymentFees = (federationId: string) => {
   const queryClient = useQueryClient();
-  // A failed sweep retries under its request id, because a lost response may hide a
-  // started payment. The daemon keeps the id's first destination
-  // (crates/fman/specs/SPEC-admin-socket.md), so a new destination takes a new id.
-  const pendingRequest = useRef<{ destination: string | null; id: string } | null>(null);
+  const pendingRequest = useRef<SweepRequest | null>(null);
 
   return useMutation({
     mutationFn: () => {
       const destination =
-        queryClient.getQueryData<PayoutDestinationResponse>(PAYOUT_DESTINATION_KEY)?.destination ??
-        null;
-      if (pendingRequest.current?.destination !== destination) {
-        pendingRequest.current = { destination, id: newIdempotencyKey() };
-      }
+        queryClient.getQueryData<PayoutDestinationResponse>(PAYOUT_DESTINATION_KEY)?.destination;
+      pendingRequest.current = sweepRequestFor(pendingRequest.current, destination);
       return adminCall<SweepPaymentFeesResponse>({
         SweepPaymentFees: { federation_id: federationId, request_id: pendingRequest.current.id }
       });
