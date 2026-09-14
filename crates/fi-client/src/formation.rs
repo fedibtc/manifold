@@ -437,7 +437,6 @@ pub(crate) struct PostFormedSeat {
 pub(crate) struct PostFormedAuthority {
     pub(crate) formation_id: FormationId,
     pub(crate) invite_code: InviteCode,
-    pub(crate) federation_name: Option<crate::FederationName>,
     pub(crate) seats: Vec<PostFormedSeat>,
 }
 
@@ -3901,7 +3900,7 @@ where
                     "restored federation seat-binding directory is invalid: {error}"
                 ))
             })?;
-        let federation_name = restored_federation_name(&consensus.meta_value)?;
+        let federation_name = federation_name(&consensus)?;
         let validation_name = federation_name
             .clone()
             .or_else(|| {
@@ -3936,15 +3935,9 @@ where
             context.matches_commitment(commitment)?;
         }
 
-        let persisted_federation_name = federation_name.or_else(|| {
-            payload
-                .liquidity
-                .as_ref()
-                .map(|value| value.federation_details.federation_name.clone())
-        });
         self.inner
             .store
-            .reconcile_restored_backup(fi_id, persisted_federation_name)
+            .reconcile_restored_backup(fi_id, federation_name)
             .await?;
         let mut status = self.inner.store.load_status(fi_id).await?;
         if let FiStatus::Restored(snapshot) = &mut status {
@@ -4480,7 +4473,6 @@ where
                 Ok(PostFormedAuthority {
                     formation_id: recovery.snapshot.formation_id,
                     invite_code,
-                    federation_name: Some(recovery.snapshot.intent.federation_name),
                     seats,
                 })
             }
@@ -4507,7 +4499,6 @@ where
                 Ok(PostFormedAuthority {
                     formation_id,
                     invite_code: snapshot.federation_invite,
-                    federation_name: snapshot.federation_name,
                     seats,
                 })
             }
@@ -4536,23 +4527,29 @@ where
     }
 }
 
-fn restored_federation_name(
-    meta_value: &Option<Vec<u8>>,
+/// A rename overrides the original name in the client config.
+pub(crate) fn federation_name(
+    consensus: &FederationConsensusSnapshot,
 ) -> FiResult<Option<crate::FederationName>> {
-    let Some(bytes) = meta_value else {
-        return Ok(None);
-    };
-    let fields: BTreeMap<String, serde_json::Value> =
-        serde_json::from_slice(bytes).map_err(|error| {
-            FiError::InvalidFleetManagers(format!(
-                "restored federation metadata is invalid: {error}"
-            ))
-        })?;
+    let fields = consensus
+        .meta_value
+        .as_deref()
+        .map(serde_json::from_slice::<BTreeMap<String, serde_json::Value>>)
+        .transpose()
+        .map_err(|error| {
+            FiError::InvalidFleetManagers(format!("federation metadata is invalid: {error}"))
+        })?
+        .unwrap_or_default();
     match fields.get(FEDERATION_NAME_META_FIELD_KEY) {
-        None => Ok(None),
+        None => Ok(consensus
+            .config
+            .global
+            .meta
+            .get(FEDERATION_NAME_META_FIELD_KEY)
+            .map(|name| crate::FederationName(name.clone()))),
         Some(serde_json::Value::String(value)) => Ok(Some(crate::FederationName(value.clone()))),
         Some(_) => Err(FiError::InvalidFleetManagers(
-            "restored federation name metadata is not a string".to_owned(),
+            "federation name metadata is not a string".to_owned(),
         )),
     }
 }
