@@ -41,7 +41,7 @@ use nostr_sdk::{Event, EventId, Kind, PublicKey, TagKind};
 use secp256k1::{XOnlyPublicKey, schnorr::Signature};
 use serde::Serialize;
 
-use crate::formation::DriverRun;
+use crate::formation::{DriverRun, federation_name};
 use crate::ports::FiIdentityExt as _;
 use crate::{
     FederationConsensusReader, FiClient, FiError, FiIdentity, FiPayments, FiResult,
@@ -50,8 +50,8 @@ use crate::{
 };
 
 use fedi_decentralized_service_fleet_manager::{
-    FEDERATION_NAME_META_FIELD_KEY, FleetManagerService, GetFmanTrustMaterialRequest,
-    GetFmanTrustMaterialResponse, Timestamp as FmanTimestamp,
+    FleetManagerService, GetFmanTrustMaterialRequest, GetFmanTrustMaterialResponse,
+    Timestamp as FmanTimestamp,
 };
 
 /// End-to-end deadline for one provider enumeration and trust walk.
@@ -1120,27 +1120,11 @@ where
             })
             .collect::<FiResult<Vec<_>>>()?;
         Ok(FormedLiquidityContext {
-            // A federation only gains a `federation_name` meta field when
-            // someone renames it, so a restore that rederives the name from the
-            // meta module finds nothing for a service that has never been
-            // renamed. The name it was formed with lives in the signed client
-            // config, which is where the consumer reads it from too.
-            federation_name: authority
-                .federation_name
-                .or_else(|| {
-                    consensus
-                        .config
-                        .global
-                        .meta
-                        .get(FEDERATION_NAME_META_FIELD_KEY)
-                        .map(|name| crate::FederationName(name.clone()))
-                })
-                .ok_or_else(|| {
-                    FiError::Liquidity(
-                        "restored federation has no display name for a new liquidity request"
-                            .to_owned(),
-                    )
-                })?,
+            federation_name: federation_name(&consensus)?.ok_or_else(|| {
+                FiError::Liquidity(
+                    "federation has no display name for a new liquidity request".to_owned(),
+                )
+            })?,
             invite_code,
             network: consensus.network,
             federation,

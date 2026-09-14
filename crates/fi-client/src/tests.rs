@@ -1662,6 +1662,10 @@ fn unsupported() -> FleetManagerError {
 fn test_federation_config() -> fedimint_core::config::ClientConfig {
     let mut config =
         fedi_decentralized_domain::test_support::test_config(usize::from(MIN_FEDERATION_SIZE));
+    config.global.meta.insert(
+        FEDERATION_NAME_META_FIELD_KEY.to_owned(),
+        "Test Federation".to_owned(),
+    );
     for (peer, endpoint) in &mut config.global.api_endpoints {
         let byte = u8::try_from(peer.to_usize() + 1).expect("small test peer");
         let api_pk = iroh_base_035::SecretKey::from_bytes(&[byte; 32]).public();
@@ -3159,6 +3163,81 @@ async fn restored_snapshot_reports_backup_eligible_after_reconcile() {
         panic!("expected restored recovery");
     };
     assert!(snapshot.backup_eligible);
+}
+
+#[tokio::test]
+async fn restored_federation_name_uses_consensus_without_a_liquidity_backup() {
+    let (source, _, state, _) = formed_client_for_liquidity().await;
+    let payload = source.inner.store.backup_payload().await.unwrap().payload;
+    assert!(payload.liquidity.is_none());
+    for name in ["Test Federation", "Renamed Federation"] {
+        if name == "Renamed Federation" {
+            source
+                .update_federation_metadata(
+                    FederationMetadataUpdate::name(name).unwrap(),
+                    MaintenanceRunOptions::default(),
+                )
+                .await
+                .unwrap();
+        }
+        let (payments, _) = TestPayments::new();
+        let restored = open_client(
+            MemDatabase::new().into_database(),
+            payments,
+            state.clone(),
+            FmanConfig::given_away(),
+        )
+        .await;
+        let fi_id = restored.inner.ports.identity.public_key().unwrap();
+        let status = restored
+            .inner
+            .store
+            .restore_backup_payload(fi_id, payload.clone())
+            .await
+            .unwrap();
+        restored.inner.progress.send_replace(status);
+        restored.resume().await.unwrap();
+        let FiStatus::Restored(snapshot) = restored.status() else {
+            panic!("restored status");
+        };
+        assert_eq!(
+            snapshot.federation_name,
+            Some(FederationName(name.to_owned()))
+        );
+    }
+}
+
+#[test]
+fn federation_name_uses_config_only_when_metadata_name_is_absent() {
+    for (meta, expected) in [
+        (None, "Test Federation"),
+        (Some("{}"), "Test Federation"),
+        (Some(r#"{"federation_name":"Renamed"}"#), "Renamed"),
+    ] {
+        let snapshot = FederationConsensusSnapshot {
+            config: test_federation_config(),
+            meta_value: meta.map(|value| value.as_bytes().to_vec()),
+            meta_revision: meta.map(|_| 0),
+            network: fedi_decentralized_domain::BitcoinNetwork::Regtest,
+        };
+        assert_eq!(
+            crate::formation::federation_name(&snapshot).unwrap(),
+            Some(FederationName(expected.to_owned()))
+        );
+        let mut missing = snapshot;
+        missing.config.global.meta.clear();
+        missing.meta_value = None;
+        assert_eq!(crate::formation::federation_name(&missing).unwrap(), None);
+        for invalid in [
+            "{",
+            r#"{"federation_name":42}"#,
+            r#"{"federation_name":null}"#,
+        ] {
+            missing.config = test_federation_config();
+            missing.meta_value = Some(invalid.as_bytes().to_vec());
+            assert!(crate::formation::federation_name(&missing).is_err());
+        }
+    }
 }
 
 #[tokio::test]
@@ -12300,6 +12379,13 @@ async fn completed_gateway_recovery_uses_durable_evidence_before_provider_connec
 #[tokio::test]
 async fn liquidity_recovery_replays_the_exact_commitment_only_after_not_found() {
     let (client, formation_id, _fman_state, connector) = formed_client_for_liquidity().await;
+    client
+        .update_federation_metadata(
+            FederationMetadataUpdate::name("First rename").unwrap(),
+            MaintenanceRunOptions::default(),
+        )
+        .await
+        .unwrap();
     connector
         .0
         .fail_first_before_allocation
@@ -12323,6 +12409,13 @@ async fn liquidity_recovery_replays_the_exact_commitment_only_after_not_found() 
         .operations
         .pop()
         .expect("one prepared operation");
+    client
+        .update_federation_metadata(
+            FederationMetadataUpdate::name("Second rename").unwrap(),
+            MaintenanceRunOptions::default(),
+        )
+        .await
+        .unwrap();
     let recovered = client
         .resume_liquidity_for_test(&prepared.operation_id, &connector, &TestLiquidityVerifier)
         .await
@@ -12334,6 +12427,10 @@ async fn liquidity_recovery_replays_the_exact_commitment_only_after_not_found() 
     );
     let requests = connector.0.requests.lock().expect("test lock");
     assert_eq!(requests.len(), 2);
+    assert_eq!(
+        requests[0].payload.federation_details.federation_name.0,
+        "First rename"
+    );
     assert_eq!(
         liquidity_api::request_liquidity_details_hash_for_request(&requests[0].payload)
             .expect("first request hashes"),
