@@ -98,6 +98,9 @@ pub const PUBLIC_LIQUIDITY_API_ALPN: &[u8] = b"fedi/flip/public-liquidity/1";
 
 /// Current Public Liquidity API protocol version, spoken by every public
 /// verb and advertised in `api_versions`.
+///
+/// Compatibility changes are governed by `GATE-production-compatibility`
+/// (`../../../specs/GATE-production-compatibility.md`).
 pub const PUBLIC_LIQUIDITY_PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion(1);
 
 /// Domain separator for FLIP provider advertisement signatures.

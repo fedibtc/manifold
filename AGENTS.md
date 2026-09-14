@@ -24,23 +24,12 @@ Other:
 
 - **DKG** - Distributed Key Generation; Fedimint/federation setup ceremony.
 
-## Pre-production persisted formats
+## Production compatibility
 
-Manifold has not been released into a production-like environment. Until the
-first deployment whose persisted state operators expect to preserve or roll
-back, or until maintainers explicitly declare persisted-format compatibility,
-persisted database and backup formats may keep fixed placeholder versions and
-change incompatibly. Reviews must not require migrations, backward
-compatibility, or rollback compatibility during this period.
-
-This exception ends at the first of those two boundaries. Establish the
-supported format baseline and its versioning and migration policy before
-crossing that boundary; do not apply this pre-production exception to later
-format changes.
-
-The first production FMan release must preserve operator data across updates.
-Its source commit establishes the baseline described in
-[`production-releases.md`](packages/fleet-manager/production-releases.md).
+Production API and persisted-format changes are governed by
+[`GATE-production-compatibility`](specs/GATE-production-compatibility.md).
+Consult it before changing interfaces used across deployments, persistence
+schemas, serialized state, or backup formats.
 
 ## Tools
 

@@ -34,6 +34,8 @@ use crate::{
     ResolvedFormationIntent, SeatPaymentRequirement, SeatPhase, SeatProgress,
 };
 
+// Persisted-format changes are governed by GATE-production-compatibility
+// (../../../specs/GATE-production-compatibility.md).
 const STORAGE_SCHEMA_VERSION: u16 = 11;
 // Keep this fixed when advancing the schema written by current code.
 const RESET_BEFORE_SCHEMA_VERSION: u16 = 11;
