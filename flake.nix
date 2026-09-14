@@ -21,7 +21,7 @@
       url = "github:fedibtc/credential-sdk";
       flake = false;
     };
-    fedimint.url = "github:fedibtc/fedimint/75250fe93e7aa341f8416094a2eb5a6497cf4670";
+    fedimint.url = "github:fedibtc/fedimint/7834e897ff2d0d3b4948168a3aefe25badfbc5a1";
     # SP-enabled fedimintd for the live stability-pool E2E. The stability-pool
     # server module lives only in the fedixyz/fedi monorepo; its `fedi-fedimintd`
     # package bundles it (enabled at runtime by FEDI_STABILITY_POOL_V2_MODULE_ENABLE).
