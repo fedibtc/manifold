@@ -1,10 +1,10 @@
-use fedi_credential_sdk_protocol::{
+use fedi_decentralized_manifold_environment::ManifoldEnvironment;
+use nostr_sdk::EventBuilder;
+use peerbadge_protocol::{
     Credential, CredentialDigest, CredentialProof, HolderAuthorization,
     HolderAuthorizationStatement, HolderId, IssuerId, ProtocolV1, SchnorrSignatureProof,
     SubjectPubkey, Timestamp,
 };
-use fedi_decentralized_manifold_environment::ManifoldEnvironment;
-use nostr_sdk::EventBuilder;
 
 use fedi_decentralized_service_fleet_manager::Plan;
 use fman_core::directory::AdvertisementSnapshot;
@@ -40,7 +40,7 @@ fn authorization_event_at(holder: &Keys, subject: nostr_sdk::PublicKey, issued_a
             authorization: statement,
             proof: SchnorrSignatureProof { signature },
         },
-        "signed_credential": fedi_credential_sdk_protocol::SignedCredential {
+        "signed_credential": peerbadge_protocol::SignedCredential {
             version: ProtocolV1,
             credential,
             proof: CredentialProof {

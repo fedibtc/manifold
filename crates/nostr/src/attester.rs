@@ -26,7 +26,7 @@ pub const NOSTR_REVOCATION_LOCATION_PROTOCOL: &str = "nostr";
 /// Issuer credential-revocation event kind.
 ///
 /// Addressable, provisional kind used by issuers to publish
-/// `fedi-credential-sdk-protocol::SignedRevocation` documents. Verifiers fetch
+/// `peerbadge-protocol::SignedRevocation` documents. Verifiers fetch
 /// these from every relay location listed in the authenticated
 /// `IssuerAuthority.issuer.revocation` entries and must verify the signed
 /// content. The authority delegates negative-state completeness trust to those

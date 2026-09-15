@@ -1,11 +1,11 @@
 //! Credential SDK fixtures used only by external integration-test crates.
 
-use fedi_credential_sdk_protocol::{
+use fedi_decentralized_manifold_environment::ManifoldEnvironment;
+use fedi_decentralized_service_liquidity_manager::{AttestationPayload, Pubkey};
+use peerbadge_protocol::{
     HolderAuthorization, HolderAuthorizationRequest, HolderContext, IssuerAuthority, IssuerContext,
     IssuerSecretKeys, PendingIssuance, SignedCredential, SubjectPubkey,
 };
-use fedi_decentralized_manifold_environment::ManifoldEnvironment;
-use fedi_decentralized_service_liquidity_manager::{AttestationPayload, Pubkey};
 use serde::Serialize;
 use serde_json::json;
 
@@ -24,7 +24,7 @@ pub fn test_issuer_authority(
     revocation_relay_url: &str,
 ) -> anyhow::Result<IssuerAuthority> {
     Ok(
-        issuer.issuer_authority(vec![fedi_credential_sdk_protocol::RevocationLocation {
+        issuer.issuer_authority(vec![peerbadge_protocol::RevocationLocation {
             protocol: "nostr".to_owned(),
             location: revocation_relay_url.to_owned(),
         }])?,

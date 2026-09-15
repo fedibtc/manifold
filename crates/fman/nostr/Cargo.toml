@@ -30,5 +30,5 @@ tracing = "0.1"
 
 [dev-dependencies]
 blind-rsa-signatures = "0.17"
-fedi-credential-sdk-protocol.workspace = true
+peerbadge-protocol.workspace = true
 tokio = { workspace = true, features = ["macros", "rt"] }

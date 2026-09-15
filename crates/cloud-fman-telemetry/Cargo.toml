@@ -53,10 +53,10 @@ blind-rsa-signatures = "0.17"
 defe-api = { path = "../defe-api" }
 defe-client = { path = "../defe-client" }
 defe-portalloc = { path = "../defe-portalloc" }
-fedi-credential-sdk-protocol.workspace = true
 fedi-decentralized-nostr = { path = "../nostr" }
 libc = "0.2"
 nostr-sdk = "0.44"
+peerbadge-protocol.workspace = true
 prometheus-parse = "0.2"
 tempfile = "3.20.0"
 tokio = { version = "1.45.1", features = ["io-util", "process", "time"] }

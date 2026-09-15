@@ -13,11 +13,6 @@ mod types;
 
 pub use admin::*;
 pub use canonical::*;
-pub use fedi_credential_sdk_protocol::{
-    CredentialDigest, CredentialsError, HolderAuthorization, HolderAuthorizationStatement,
-    HolderId, IssuerAuthority, ProtocolV1, RevocationLocation, SchnorrSignatureProof,
-    SignedCredential, SignedRevocation, SubjectPubkey, VerificationContext,
-};
 pub use fedi_decentralized_services::domain::{
     BitcoinNetwork, CanonicalPayload, FMAN_API_URLS_META_FIELD_KEY,
     FMAN_PEER_ATTESTATION_SIGNATURE_DOMAIN_SEPARATOR, FMAN_SEAT_BINDINGS_META_FIELD_KEY,
@@ -33,6 +28,11 @@ pub use fedi_decentralized_services::domain::{
     federation_seats, parse_trust_score_badge_v1, verify_holder_trust_envelope,
 };
 pub use fedi_decentralized_services::{ServiceError, ServiceErrorCode, ServiceResult};
+pub use peerbadge_protocol::{
+    CredentialDigest, CredentialsError, HolderAuthorization, HolderAuthorizationStatement,
+    HolderId, IssuerAuthority, ProtocolV1, RevocationLocation, SchnorrSignatureProof,
+    SignedCredential, SignedRevocation, SubjectPubkey, VerificationContext,
+};
 pub use public::*;
 pub use service::{
     OperatorAdminApi, PublicLiquidityApi, PublicLiquidityApiClient, PublicLiquidityApiServer,
