@@ -161,21 +161,17 @@ impl FleetManagerRpc {
         })
     }
 
-    fn validate_completion_callback(
+    fn prepare_completion_callback(
         &self,
-        callback: &fedi_decentralized_service_fleet_manager::DkgCompletionCallback,
-    ) -> FmResult<ValidatedDkgCompletionCallback> {
-        let origin = self
-            .fleet
-            .config()
-            .push_gateway_origin
-            .as_ref()
-            .ok_or_else(|| {
-                FleetManagerError::InvalidDkgInput(
-                    "DKG completion callbacks are not configured on this Fleet Manager".to_owned(),
-                )
-            })?;
-        origin.validate(callback).map_err(|error| {
+        callback: Option<&fedi_decentralized_service_fleet_manager::DkgCompletionCallback>,
+    ) -> FmResult<Option<ValidatedDkgCompletionCallback>> {
+        let Some(callback) = callback else {
+            return Ok(None);
+        };
+        let Some(origin) = self.fleet.config().push_gateway_origin.as_ref() else {
+            return Ok(None);
+        };
+        origin.validate(callback).map(Some).map_err(|error| {
             FleetManagerError::InvalidDkgInput(format!("invalid DKG completion callback: {error}"))
         })
     }
@@ -591,11 +587,8 @@ impl FleetManagerService for FleetManagerRpc {
                 .map_err(|err| map_seat_error("start_dkg", err))?;
             seat.reject_decommissioned()
                 .map_err(|err| map_seat_error("start_dkg", err))?;
-            let callback = request
-                .completion_callback
-                .as_ref()
-                .map(|callback| self.validate_completion_callback(callback))
-                .transpose()?;
+            let callback =
+                self.prepare_completion_callback(request.completion_callback.as_ref())?;
             seat.start_dkg(&request.guardian_codes, callback)
                 .await
                 .map_err(|err| map_seat_error("start_dkg", err))?;

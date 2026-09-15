@@ -684,7 +684,8 @@ where
     /// retains it through every pre-`DkgComplete` recovery, and sends the same value
     /// to every guardian. Public formation
     /// snapshots never expose the bearer. FI clears its copy atomically with the
-    /// `DkgComplete` checkpoint after every FMan has accepted durable retry ownership.
+    /// `DkgComplete` checkpoint; callback delivery is best effort, and an FMan
+    /// without delivery configured may proceed without accepting the callback.
     #[cfg(any(test, feature = "dev-pinned-formation"))]
     pub async fn create_with_pinned_fmans_and_callback(
         &self,
@@ -739,8 +740,9 @@ where
     /// FI persists the callback before any remote work, retains it through
     /// every pre-`DkgComplete` recovery, sends the same value to every guardian,
     /// never exposes the bearer in public formation snapshots, and clears its
-    /// copy atomically with the `DkgComplete` checkpoint once every FMan has accepted
-    /// durable retry ownership.
+    /// copy atomically with the `DkgComplete` checkpoint. Configured FMans have
+    /// accepted durable retry ownership by then; FMans without callback delivery
+    /// configured may have proceeded callback-free.
     pub async fn pay_and_create_with_callback(
         &self,
         intent: FormationIntent,
