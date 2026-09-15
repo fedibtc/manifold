@@ -1,6 +1,7 @@
 use fedi_decentralized_service_liquidity_manager::{
-    FederationId, ItemAllocationStatus, ReleaseFederationAllocationRequest, Sats, SourceType,
-    WalletOperationStatus, WalletOperationType,
+    AbandonGatewayItemRequest, FederationId, ItemAllocationStatus,
+    ReleaseFederationAllocationRequest, Sats, SourceType, WalletOperationStatus,
+    WalletOperationType,
 };
 
 use super::*;
@@ -1348,4 +1349,267 @@ async fn audit_count(database: &Database, action: &str, outcome: &str) -> anyhow
         .fetch_one(database.pool())
         .await?,
     )
+}
+
+/// The gateway item's only completion evidence is the gateway's payment log,
+/// which no client-side recovery rebuilds. Once the funding send has settled,
+/// `cancel_allocation` and `retry_funding_step` both refuse the item, so
+/// without this verb it holds provider capacity forever.
+#[tokio::test]
+async fn abandon_gateway_item_fails_the_item_and_releases_its_reservation() -> anyhow::Result<()> {
+    let database = Database::connect(test_sqlite_path("abandon-gw-accept")).await?;
+    let ids =
+        seed_gateway_item_awaiting_action(&database, WalletOperationStatus::Completed).await?;
+
+    assert_eq!(
+        reserved_gateway_amount(&database).await?,
+        10_000,
+        "an action-required item still reserves capacity"
+    );
+
+    let response = abandon_gateway_item_with_database(
+        &database,
+        AbandonGatewayItemRequest {
+            federation_id: ids.federation_id.clone(),
+            reason: "the gateway cannot attest to this deposit and never will".to_owned(),
+        },
+    )
+    .await?;
+
+    assert_eq!(response.status, ManualOperationStatus::Accepted);
+    assert_eq!(response.abandoned_amount, Some(Sats(10_000)));
+    let item = allocation_store::gateway_item(&database, &ids.federation_id)
+        .await?
+        .expect("seeded item");
+    assert_eq!(item.status, ItemAllocationStatus::Failed);
+    assert_eq!(
+        reserved_gateway_amount(&database).await?,
+        0,
+        "abandoning releases the capacity the wedged item held"
+    );
+    assert_eq!(
+        audit_count(&database, "abandon_gateway_item", "accepted").await?,
+        1
+    );
+    Ok(())
+}
+
+/// The gateway analogue of the peg-in-claimed guard. Before the send settles
+/// the value has not left FLIP's reach and the ordinary verbs still resolve the
+/// item, so abandoning would write off funding that was never delivered.
+#[tokio::test]
+async fn abandon_gateway_item_refuses_before_the_funding_send_settles() -> anyhow::Result<()> {
+    for status in [
+        WalletOperationStatus::Pending,
+        WalletOperationStatus::Broadcast,
+        WalletOperationStatus::Failed,
+    ] {
+        let database =
+            Database::connect(test_sqlite_path(&format!("abandon-gw-unsettled-{status}"))).await?;
+        let ids = seed_gateway_item_awaiting_action(&database, status).await?;
+
+        let response = abandon_gateway_item_with_database(
+            &database,
+            AbandonGatewayItemRequest {
+                federation_id: ids.federation_id.clone(),
+                reason: "operator reason".to_owned(),
+            },
+        )
+        .await?;
+
+        assert_eq!(
+            response.status,
+            ManualOperationStatus::Rejected,
+            "a {status} operation has delivered nothing to abandon"
+        );
+        let item = allocation_store::gateway_item(&database, &ids.federation_id)
+            .await?
+            .expect("seeded item");
+        assert_eq!(
+            item.status,
+            ItemAllocationStatus::ActionRequired,
+            "a refused abandon leaves the item where it was"
+        );
+        assert_eq!(
+            audit_count(&database, "abandon_gateway_item", "rejected").await?,
+            1
+        );
+    }
+    Ok(())
+}
+
+/// Writing off delivered value is the one thing the audit log must always be
+/// able to explain, so the reason is required rather than optional.
+#[tokio::test]
+async fn abandon_gateway_item_requires_an_operator_reason() -> anyhow::Result<()> {
+    let database = Database::connect(test_sqlite_path("abandon-gw-reason")).await?;
+    let ids =
+        seed_gateway_item_awaiting_action(&database, WalletOperationStatus::Completed).await?;
+
+    let response = abandon_gateway_item_with_database(
+        &database,
+        AbandonGatewayItemRequest {
+            federation_id: ids.federation_id.clone(),
+            reason: "   ".to_owned(),
+        },
+    )
+    .await?;
+
+    assert_eq!(response.status, ManualOperationStatus::Rejected);
+    let item = allocation_store::gateway_item(&database, &ids.federation_id)
+        .await?
+        .expect("seeded item");
+    assert_eq!(item.status, ItemAllocationStatus::ActionRequired);
+    assert_eq!(
+        audit_count(&database, "abandon_gateway_item", "rejected").await?,
+        1
+    );
+    Ok(())
+}
+
+/// `action_required` is the state operator reconciliation works on, and the
+/// escalation in `gateway_allocation` is what puts a wedged item there. A
+/// `running` item is still the worker's, and the worker may yet complete it.
+#[tokio::test]
+async fn abandon_gateway_item_refuses_an_item_the_worker_still_owns() -> anyhow::Result<()> {
+    let database = Database::connect(test_sqlite_path("abandon-gw-running")).await?;
+    let federation_id = FederationId("federation-1".to_owned());
+    AllocationSeed {
+        federation_id: federation_id.clone(),
+        items: vec![ItemSeed {
+            status: ItemAllocationStatus::Running,
+            step_json: Some(gateway_step_json("wallet-op-1")),
+            ..ItemSeed::default()
+        }],
+        ..AllocationSeed::default()
+    }
+    .insert(&database)
+    .await?;
+
+    let response = abandon_gateway_item_with_database(
+        &database,
+        AbandonGatewayItemRequest {
+            federation_id: federation_id.clone(),
+            reason: "operator reason".to_owned(),
+        },
+    )
+    .await?;
+
+    assert_eq!(response.status, ManualOperationStatus::Rejected);
+    let item = allocation_store::gateway_item(&database, &federation_id)
+        .await?
+        .expect("seeded item");
+    assert_eq!(item.status, ItemAllocationStatus::Running);
+    Ok(())
+}
+
+/// An item with no funding operation recorded never sent anything, whatever its
+/// status says, so `cancel_allocation` remains the right verb for it.
+#[tokio::test]
+async fn abandon_gateway_item_refuses_an_item_with_no_funding_operation() -> anyhow::Result<()> {
+    let database = Database::connect(test_sqlite_path("abandon-gw-no-op")).await?;
+    let federation_id = FederationId("federation-1".to_owned());
+    AllocationSeed {
+        federation_id: federation_id.clone(),
+        items: vec![ItemSeed {
+            status: ItemAllocationStatus::ActionRequired,
+            failure_json: Some(
+                r#"{"code":"gateway_attach_failed","reason":"seeded failure"}"#.to_owned(),
+            ),
+            ..ItemSeed::default()
+        }],
+        ..AllocationSeed::default()
+    }
+    .insert(&database)
+    .await?;
+
+    let response = abandon_gateway_item_with_database(
+        &database,
+        AbandonGatewayItemRequest {
+            federation_id: federation_id.clone(),
+            reason: "operator reason".to_owned(),
+        },
+    )
+    .await?;
+
+    assert_eq!(response.status, ManualOperationStatus::Rejected);
+    let item = allocation_store::gateway_item(&database, &federation_id)
+        .await?
+        .expect("seeded item");
+    assert_eq!(item.status, ItemAllocationStatus::ActionRequired);
+    Ok(())
+}
+
+/// A federation with no gateway item at all is reported, not silently accepted.
+#[tokio::test]
+async fn abandon_gateway_item_reports_a_missing_item() -> anyhow::Result<()> {
+    let database = Database::connect(test_sqlite_path("abandon-gw-missing")).await?;
+
+    let response = abandon_gateway_item_with_database(
+        &database,
+        AbandonGatewayItemRequest {
+            federation_id: FederationId("federation-unknown".to_owned()),
+            reason: "operator reason".to_owned(),
+        },
+    )
+    .await?;
+
+    assert_eq!(response.status, ManualOperationStatus::NotFound);
+    assert_eq!(
+        audit_count(&database, "abandon_gateway_item", "not_found").await?,
+        1
+    );
+    Ok(())
+}
+
+fn gateway_step_json(operation_id: &str) -> String {
+    format!(
+        r#"{{"gateway_connected":true,"deposit_address":"bcrt1q7sl62f7m9h8cwrphaxl28f4u6dktkcczwz8cks","wallet_operation_id":"{operation_id}"}}"#
+    )
+}
+
+async fn seed_gateway_item_awaiting_action(
+    database: &Database,
+    operation_status: WalletOperationStatus,
+) -> anyhow::Result<SeedIds> {
+    let federation_id = FederationId("federation-1".to_owned());
+    let operation_id = WalletOperationId("wallet-op-1".to_owned());
+    AllocationSeed {
+        federation_id: federation_id.clone(),
+        items: vec![ItemSeed {
+            status: ItemAllocationStatus::ActionRequired,
+            step_json: Some(gateway_step_json(&operation_id.0)),
+            failure_json: Some(
+                r#"{"code":"gateway_attach_failed","reason":"seeded failure"}"#.to_owned(),
+            ),
+            ..ItemSeed::default()
+        }],
+        ..AllocationSeed::default()
+    }
+    .insert(database)
+    .await?;
+    let item_id = allocation_store::item_id(&federation_id, SourceType::Gateway);
+    seed_wallet_operation(
+        database,
+        &federation_id,
+        &item_id,
+        &operation_id,
+        operation_status,
+        Some("0000000000000000000000000000000000000000000000000000000000000001"),
+    )
+    .await?;
+    Ok(SeedIds {
+        item_id,
+        federation_id,
+    })
+}
+
+async fn reserved_gateway_amount(database: &Database) -> anyhow::Result<i64> {
+    Ok(sqlx::query_scalar::<_, Option<i64>>(
+        "SELECT SUM(reserved_amount_sats) FROM allocation_items \
+         WHERE status IN ('pending', 'running', 'action_required')",
+    )
+    .fetch_one(database.pool())
+    .await?
+    .unwrap_or_default())
 }
