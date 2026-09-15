@@ -4,6 +4,13 @@ For one authenticated FI key and one semantic liquidity intent, FLIP accepts
 and creates at most one independent allocation, including when the operator
 uses the documented live restore operation.
 
+## Status
+
+Falsified: after an accepted allocation is cancelled before funding and released
+through the official Admin operation, replaying the same signed semantic request
+creates another independent allocation
+([evidence](CLAIM-fresh-request-id-repeated-funding/falsification-release-erases-identity.md)).
+
 ## Assumptions
 
 - SQLite commits, checkpoints, close/reopen, filesystem moves, and the

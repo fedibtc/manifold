@@ -12,10 +12,6 @@ The supported topology has one singleton daemon and one sequential stability
 worker. The adversary controls every public request and operator-API field, but
 cannot modify SQLite, the target-client database, or process memory directly.
 
-## Status
-
-Unverified.
-
 ## Assumptions
 
 - **A1 store semantics:** committed SQLite and Fedimint client transactions are

@@ -23,10 +23,6 @@ a malicious gatewayd that creates multiple payments for one invocation, and an
 operator deliberately creating two different economic intent keys are not in
 the quantified execution.
 
-## Status
-
-Unverified.
-
 ## Assumptions
 
 - **A1 — transport/authentication.** Axum and Serde deliver each well-formed,
