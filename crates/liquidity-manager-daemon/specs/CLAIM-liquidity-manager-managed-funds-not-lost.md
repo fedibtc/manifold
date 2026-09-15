@@ -32,7 +32,6 @@ product-risk, and dependency properties rather than operational-custody results.
   credentials and durable item-specific evidence for the supported recovery or
   reconciliation path; only the documented authenticated audited abandonment
   may deliberately relinquish FLIP's management authority.
-- [CLAIM-allocation-completion-has-attributable-provider-outflow](CLAIM-allocation-completion-has-attributable-provider-outflow.md).
 - [CLAIM-duplicate-operator-withdrawal](CLAIM-duplicate-operator-withdrawal.md).
 - [CLAIM-duplicate-stability-deposit](CLAIM-duplicate-stability-deposit.md).
 - [CLAIM-manual-safe-to-retry-duplicates-provider-send](CLAIM-manual-safe-to-retry-duplicates-provider-send.md).

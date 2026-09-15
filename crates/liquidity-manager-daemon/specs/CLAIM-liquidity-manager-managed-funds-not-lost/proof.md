@@ -32,11 +32,11 @@ key possession alone does not establish legal ownership or actual redeemability.
 The immediate assumptions are listed in
 [the claim record](../CLAIM-liquidity-manager-managed-funds-not-lost.md). The
 first three premises define semantic authority, bind every actual effect to it,
-and preserve technical recovery authority. Linked claims cover completion
-attribution, duplicate effects, ambiguous-send retry, budget conservation,
-stale work, correct stability targets, automatic write-off, ambiguous stability
-recovery, and common-point backup. The final premise protects the credentials
-and stores needed to exercise those paths.
+and preserve technical recovery authority. Linked claims cover duplicate
+effects, ambiguous-send retry, budget conservation, stale work, correct
+stability targets, automatic write-off, ambiguous stability recovery, and
+common-point backup. The final premise protects the credentials and stores
+needed to exercise those paths.
 
 ## Argument
 
@@ -46,11 +46,10 @@ and stores needed to exercise those paths.
    duplicate-stability-deposit, and manual-retry claims prevent direct,
    automatic, and manual retry paths from turning one authority into duplicate
    effects.
-2. **`claim` — completed debits and aggregate liabilities remain attributable.**
-   The completion-attribution claim binds completed value to the exact persisted
-   target. The stale-capacity and wallet-budget claims keep active and possibly
-   spent authority charged against known spendable value. The post-cancellation
-   claim prevents released or terminal authority from enabling a later effect.
+2. **`claim` — aggregate liabilities remain attributable.** The stale-capacity
+   and wallet-budget claims keep active and possibly spent authority charged
+   against known spendable value. The post-cancellation claim prevents released
+   or terminal authority from enabling a later effect.
 3. **`claim` — stability funding uses the authorized target configuration.** The
    accepted-module and config-revision claims require the funded address to come
    from the authenticated accepted configuration with a usable stability module.
