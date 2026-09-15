@@ -7,14 +7,16 @@ This is a compositional proof of
 It establishes only the local implication from its immediate assumptions. It
 covers FLIP-triggered custody transitions and durable recovery authority, not
 legal ownership, investment performance, purchasing power, or dependency
-solvency.
+solvency. It does not establish target-side receipt for an effect that has not
+completed.
 
 ## Model and quantifiers
 
 For each durable semantic intent `i`, let `A(i)` be the source, target,
 principal, fee, and reservation fixed by its configured or authenticated
 operational authority. A managed effect is safe when it belongs to exactly one
-`i`, uses those exact fields, and aggregate effects do not exceed `A(i)`.
+`i`, is directed using those exact source and target fields, and aggregate
+effects do not exceed `A(i)`.
 `NotLost` means every supported execution maintains:
 
 1. **authority conservation:** FLIP causes no effect outside a safe effect or the
@@ -50,9 +52,11 @@ needed to exercise those paths.
    and wallet-budget claims keep active and possibly spent authority charged
    against known spendable value. The post-cancellation claim prevents released
    or terminal authority from enabling a later effect.
-3. **`claim` — stability funding uses the authorized target configuration.** The
-   accepted-module and config-revision claims require the funded address to come
-   from the authenticated accepted configuration with a usable stability module.
+3. **`claim` — stability funding is directed by the authorized target
+   configuration.** The accepted-module and config-revision claims require the
+   funded address to come from the authenticated accepted configuration with a
+   usable stability module. They do not establish target-side receipt before an
+   effect completes.
 4. **`assumption + claim` — interruptions retain technical custody.** The
    automatic-transition premise retains credentials and item-specific evidence.
    The no-automatic-stranding and ambiguous-deposit claims supply the supported

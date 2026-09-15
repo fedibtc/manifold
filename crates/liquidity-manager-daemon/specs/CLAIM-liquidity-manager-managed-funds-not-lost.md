@@ -5,8 +5,8 @@ operational custody failure while moving them among its configured funding
 wallet, attributable gateway credit, FLIP-managed target-client ecash, and
 FLIP-managed authority over stability-pool positions. Every FLIP-triggered
 principal or fee debit is authorized by the configured or authenticated
-operational authority, reaches the exact authorized target, and stays within its
-durable bound; retries cannot duplicate it; automatic
+operational authority, is directed to the exact authorized target, and stays
+within its durable bound; retries cannot duplicate it; automatic
 terminal and accounting transitions retain the credentials and item-specific
 evidence needed for supported recovery or reconciliation after cancellation,
 crash, restart, or restore.

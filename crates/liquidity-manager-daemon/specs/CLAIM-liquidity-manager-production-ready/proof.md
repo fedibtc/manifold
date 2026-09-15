@@ -53,8 +53,9 @@ restore, and semantic authorization.
    accidentally asserted away.
 2. **`claim + assumption` — managed funds, attribution, and idempotency.**
    [CLAIM-liquidity-manager-managed-funds-not-lost](../CLAIM-liquidity-manager-managed-funds-not-lost.md)
-   supplies operational custody, exact effect/target authority, and money-effect
-   retry safety without asserting stability investment performance.
+   supplies operational custody, exact authorized effect targeting, and
+   money-effect retry safety without asserting target-side receipt for an
+   incomplete effect or stability investment performance.
    [CLAIM-allocation-completion-has-item-specific-settlement](../CLAIM-allocation-completion-has-item-specific-settlement.md)
    supplies the source-specific binding between reported completion and the
    exact contribution delivered to the intended target. It deliberately does
