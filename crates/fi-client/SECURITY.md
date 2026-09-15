@@ -351,8 +351,8 @@ projected in public status or `Debug`, but database files and backups containing
 them remain sensitive. Schema 11 preserves the callback through every
 pre-`DkgComplete` recovery and atomically clears it with that checkpoint,
 after configured FMans have durably assumed retry ownership; an FMan without
-callback delivery configured may have proceeded callback-free. Older
-pre-production schemas fail closed and require reset.
+callback delivery configured may have proceeded callback-free. Older schemas
+from before the production compatibility baseline fail closed and require reset.
 Logical clearing does not erase old pages or backups. FI storage must never
 contain raw bearer ecash, payment signatures, identity secret material, or
 wallet-private refund secrets.
