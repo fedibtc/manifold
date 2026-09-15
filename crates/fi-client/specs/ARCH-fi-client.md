@@ -145,7 +145,8 @@ or DKG and sends the same callback and idempotency key to every FMan in the
 signed `StartDkg` wave. The ordinary entry point leaves the optional
 callback absent. An ordinary resume repeats the idempotent `StartDkg` wave
 with the same durable guardian codes; each FMan retains the first start
-choice.
+callback it accepts for delivery, while an FMan without callback delivery
+configured discards it and proceeds callback-free.
 Callback state is deliberately absent from `FormationSnapshot`: a push is
 non-authoritative transport, while the durable formation driver remains the
 only source of lifecycle progress after the app resumes.
@@ -155,8 +156,10 @@ Cross-component durability verification is recorded in
 Formation storage schema 11 owns this callback lifecycle and the selected
 Fedimint DKG identity. Older pre-production records fail closed and require reset.
 FI retains the bearer across every pre-`DkgComplete` crash, then clears it in
-the same transaction that records the DKG invite because every FMan has
-already accepted durable retry ownership.
+the same transaction that records the DKG invite. Callback delivery remains
+best effort: configured FMans have accepted durable retry ownership by then,
+while FMans without callback delivery configured completed DKG without taking
+ownership.
 
 Whether a formation pays at all is decided by configuration, not by the
 formation intent: an FI opened without a deployment-pinned setup-payment
