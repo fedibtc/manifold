@@ -532,6 +532,19 @@ pub(crate) mod credentials {
             .expect("fixed test issuer secret keys import")
     }
 
+    /// A distinct accepted-attester identity, for tests needing several.
+    ///
+    /// Reuses the fixture issuance keypair and varies only the issuer identity
+    /// key. Generating a fresh issuance keypair costs tens of seconds, well past
+    /// the per-test timeout. Indices start at 1 and stay clear of the primary
+    /// issuer and of `test_foreign_issuer_context`.
+    pub(crate) fn test_additional_issuer_context(index: u8) -> IssuerContext {
+        assert!(index > 0, "index 0 is the primary test issuer");
+        let mut keys = test_issuer_secret_keys();
+        keys.issuer_id_secret_key = format!("{:064x}", 0x10 + u32::from(index));
+        IssuerContext::import_secret_key(&keys).expect("fixed additional test issuer keys import")
+    }
+
     pub(crate) fn test_foreign_issuer_context() -> IssuerContext {
         let mut keys = test_issuer_secret_keys();
         keys.issuer_id_secret_key =
