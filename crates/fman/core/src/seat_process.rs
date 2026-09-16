@@ -511,8 +511,8 @@ async fn spawn_child(
     let mut command = Command::new(&program);
     #[cfg(not(test))]
     command.as_std_mut().arg0(bundled_fedimintd::ARGV0);
-    configure_child_environment(&mut command, config, seat_no, local_e2e);
     command
+        .env_clear()
         .arg("--data-dir")
         .arg(&data_dir)
         .arg("--bitcoin-network")
@@ -529,6 +529,11 @@ async fn spawn_child(
         .arg("--bind-metrics")
         .arg(format!("127.0.0.1:{}", ports.metrics()))
         .arg("--enable-iroh")
+        .env(SAFE_EVENT_DIR_ENV, safe_event_dir(config, seat_no))
+        .env(
+            FM_IROH_DNS_ENV,
+            config.iroh_dns.clone().to_unsafe().as_str(),
+        )
         .kill_on_drop(true)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -546,6 +551,12 @@ async fn spawn_child(
     command
         .stdin(Stdio::from(std::os::fd::OwnedFd::from(child)))
         .env("FM_DKG_CTRL", "1");
+    if local_e2e {
+        // The bundled child deliberately starts from an empty environment.
+        // Forward only the explicit harness marker so its module registry can
+        // select hermetic test dependencies too.
+        command.env("FMAN_E2E_LOCAL_IROH", "1");
+    }
     parent
         .set_nonblocking(true)
         .map_err(|source| SeatProcessError::Spawn {
@@ -553,6 +564,43 @@ async fn spawn_child(
             source,
         })?;
     let control = Some(parent);
+    match &config.bitcoin_backend {
+        BitcoinBackend::Esplora(url) => {
+            command.env("FM_ESPLORA_URL", url.as_str());
+        }
+        BitcoinBackend::Bitcoind {
+            primary: bitcoind,
+            esplora_fallback,
+        } => {
+            command
+                .env("FM_BITCOIND_URL", &bitcoind.url)
+                .env("FM_BITCOIND_USERNAME", &bitcoind.username)
+                .env("FM_BITCOIND_PASSWORD", &bitcoind.password);
+            if let Some(url) = esplora_fallback {
+                command.env("FM_ESPLORA_URL", url.as_str());
+            }
+        }
+    }
+    // Do not let the daemon's development/package environment silently change
+    // fedimintd's transport auth, module config, chain-backend wiring, or metrics.
+    // FMan owns every `FM_*` contract var and passes only the intended values
+    // above. Keep a tiny non-FM pass-through set for diagnostics and for local
+    // Nix-built fedimintd binaries that need a dynamic library path.
+    for key in ["LD_LIBRARY_PATH", "RUST_BACKTRACE", "RUST_LOG"] {
+        if let Some(value) = std::env::var_os(key) {
+            command.env(key, value);
+        }
+    }
+    // A defe-managed FMan gives its fedimintd children Fedimint's own
+    // test-environment switch (second-scale instead of minute-scale polling).
+    // Derive it from defe rather than accepting an ambient FM_* override.
+    if std::env::var_os("DEV_DEFE_SOCKET_PATH").is_some() {
+        command.env("FM_IN_DEVIMINT", "1");
+    }
+    if local_e2e && let Some(value) = std::env::var_os("FM_IROH_CONNECT_OVERRIDES") {
+        command.env("FM_IROH_CONNECT_OVERRIDES", value);
+    }
+
     // "FMan exit kills its fedimintd children" (ARCH-fleet-manager)
     // must hold even
     // when the FMan is SIGKILLed and never runs its drops — otherwise every
@@ -617,64 +665,6 @@ async fn spawn_child(
             source,
         })?;
     Ok((child, stdout_pump, stderr_pump, control))
-}
-
-/// Replace the ambient process environment with FMan-owned child settings.
-fn configure_child_environment(
-    command: &mut Command,
-    config: &SeatProcessConfig,
-    seat_no: SeatNo,
-    local_e2e: bool,
-) {
-    command
-        .env_clear()
-        .env(SAFE_EVENT_DIR_ENV, safe_event_dir(config, seat_no))
-        .env(
-            FM_IROH_DNS_ENV,
-            config.iroh_dns.clone().to_unsafe().as_str(),
-        );
-    if local_e2e {
-        // The bundled child deliberately starts from an empty environment.
-        // Forward only the explicit harness marker so its module registry can
-        // select hermetic test dependencies too.
-        command.env("FMAN_E2E_LOCAL_IROH", "1");
-    }
-    match &config.bitcoin_backend {
-        BitcoinBackend::Esplora(url) => {
-            command.env("FM_ESPLORA_URL", url.as_str());
-        }
-        BitcoinBackend::Bitcoind {
-            primary: bitcoind,
-            esplora_fallback,
-        } => {
-            command
-                .env("FM_BITCOIND_URL", &bitcoind.url)
-                .env("FM_BITCOIND_USERNAME", &bitcoind.username)
-                .env("FM_BITCOIND_PASSWORD", &bitcoind.password);
-            if let Some(url) = esplora_fallback {
-                command.env("FM_ESPLORA_URL", url.as_str());
-            }
-        }
-    }
-    // Do not let the daemon's development/package environment silently change
-    // fedimintd's transport auth, module config, chain-backend wiring, or metrics.
-    // FMan owns every `FM_*` contract var and passes only the intended values
-    // above. Keep a tiny non-FM pass-through set for diagnostics and for local
-    // Nix-built fedimintd binaries that need a dynamic library path.
-    for key in ["LD_LIBRARY_PATH", "RUST_BACKTRACE", "RUST_LOG"] {
-        if let Some(value) = std::env::var_os(key) {
-            command.env(key, value);
-        }
-    }
-    // A defe-managed FMan gives its fedimintd children Fedimint's own
-    // test-environment switch (second-scale instead of minute-scale polling).
-    // Derive it from defe rather than accepting an ambient FM_* override.
-    if std::env::var_os("DEV_DEFE_SOCKET_PATH").is_some() {
-        command.env("FM_IN_DEVIMINT", "1");
-    }
-    if local_e2e && let Some(value) = std::env::var_os("FM_IROH_CONNECT_OVERRIDES") {
-        command.env("FM_IROH_CONNECT_OVERRIDES", value);
-    }
 }
 
 fn e2e_iroh_key(port: u16, role: &[u8]) -> [u8; 32] {

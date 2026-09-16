@@ -79,9 +79,9 @@ Unverified.
   same revision for the stability-enabled test server. Workspace patches source
   Fedimint 0.11.2 from `.nix-deps/fedimint`; `flake.nix` names
   `v0.11.2-fedi4` and `flake.lock` fixes it at
-  `6b23752fbd8d21a875da9c7970d284411692c040`. The update from fedi18 and the
-  hybrid-backend safety backports leave the client transaction, outcome-cache,
-  and operation-log sources used by this claim unchanged. Those
+  `332efe1f664d36bcbbbfb089031d600c5f3e5585`. The update from fedi18 leaves
+  the client transaction, outcome-cache, and operation-log sources used by
+  this claim unchanged. Those
   immutable sources are in Scope, rather than assumed library contracts.
 - **A4 — fair successful polling.** For the liveness counterexample, the daemon
   can run forever and the scheduler eventually starts every ten-second tick.

@@ -140,40 +140,6 @@ async fn bitcoind_child_receives_esplora_fallback_with_core_credentials() {
     );
 }
 
-#[test]
-fn core_only_child_environment_discards_ambient_esplora() {
-    let temp = tempfile::tempdir().unwrap();
-    let config = SeatProcessConfig {
-        data_root: temp.path().to_owned(),
-        fedimintd: temp.path().join("fedimintd"),
-        bitcoin_network: bitcoin::Network::Regtest,
-        bitcoin_backend: BitcoinBackend::Bitcoind {
-            primary: BitcoindConfig {
-                url: "http://127.0.0.1:18443".to_owned(),
-                username: "operator".to_owned(),
-                password: "secret".to_owned(),
-            },
-            esplora_fallback: None,
-        },
-        iroh_dns: "https://pkarr.example.test/iroh".parse().unwrap(),
-    };
-    let mut command = Command::new(&config.fedimintd);
-    command.env("FM_ESPLORA_URL", "https://ambient.example.test/api");
-
-    configure_child_environment(&mut command, &config, SeatNo(0), false);
-
-    assert!(
-        command
-            .as_std()
-            .get_envs()
-            .all(|(key, _)| key != std::ffi::OsStr::new("FM_ESPLORA_URL"))
-    );
-    assert!(command.as_std().get_envs().any(|(key, value)| {
-        key == std::ffi::OsStr::new("FM_BITCOIND_URL")
-            && value == Some(std::ffi::OsStr::new("http://127.0.0.1:18443"))
-    }));
-}
-
 /// The iroh-carrying ports (p2p, api) must bind all interfaces — fedimintd
 /// places its iroh UDP sockets at those addresses, and loopback there forces
 /// relay-only peering — while ui and metrics stay private to the host.

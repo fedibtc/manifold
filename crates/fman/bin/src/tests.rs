@@ -71,15 +71,15 @@ fn explicit_esplora_url_configures_bitcoind_fallback() {
         "--data-dir",
         "/tmp/fman",
         "--manifold-environment",
-        "staging",
+        "production",
         "--bitcoind-url",
-        "http://127.0.0.1:38332",
+        "http://127.0.0.1:8332",
         "--bitcoind-username",
         "operator",
         "--bitcoind-password",
         "secret",
         "--esplora-url",
-        "https://signet.example.test/api",
+        "https://bitcoin.example.test/api",
     ])
     .unwrap();
     let Args::Serve(args) = args;
@@ -94,38 +94,28 @@ fn explicit_esplora_url_configures_bitcoind_fallback() {
     };
     assert_eq!(
         esplora_fallback.as_ref().map(|url| url.as_str()),
-        Some("https://signet.example.test/api")
+        Some("https://bitcoin.example.test/api")
     );
 }
 
 #[test]
-fn bitcoind_without_an_available_esplora_remains_supported() {
-    let args = Args::try_parse_from([
+fn esplora_fallback_requires_bitcoind() {
+    let error = Args::try_parse_from([
         "fleet-manager",
         "serve",
         "--data-dir",
         "/tmp/fman",
         "--manifold-environment",
-        "development",
-        "--bitcoind-url",
-        "http://127.0.0.1:18443",
-        "--bitcoind-username",
-        "operator",
-        "--bitcoind-password",
-        "secret",
+        "production",
+        "--esplora-url",
+        "https://bitcoin.example.test/api",
     ])
-    .unwrap();
-    let Args::Serve(args) = args;
-    let profile = args.manifold_environment.profile().unwrap();
-
-    let process = seat_process_config(&args, &profile).unwrap();
-    let BitcoinBackend::Bitcoind {
-        esplora_fallback, ..
-    } = process.bitcoin_backend
-    else {
-        panic!("configured bitcoind must select the bitcoind backend");
-    };
-    assert_eq!(esplora_fallback, None);
+    .err()
+    .expect("fallback without Core must be rejected");
+    assert_eq!(
+        error.kind(),
+        clap::error::ErrorKind::MissingRequiredArgument
+    );
 }
 
 #[test]

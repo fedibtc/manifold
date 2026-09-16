@@ -26,9 +26,9 @@ Unverified.
 - **A3 pinned client contract:** Fedi revision
   `2f35ea4e3b2516d35b8ed315455718cd3b336758` accepts a caller operation ID.
   Its client resolves against separately pinned Fedimint `v0.11.2-fedi4`
-  (`6b23752fbd8d21a875da9c7970d284411692c040`). The update from fedi18 and the
-  hybrid-backend safety backports leave the transaction-finalization and
-  operation-log sources used by this claim unchanged.
+  (`332efe1f664d36bcbbbfb089031d600c5f3e5585`). The update from fedi18
+  leaves the transaction-finalization and operation-log sources used by this
+  claim unchanged.
   `finalize_and_submit_transaction_dbtx` rejects an existing ID, writes transaction
   submission state machines and the global operation-log entry in one database
   transaction, and performs no federation network submission before that
