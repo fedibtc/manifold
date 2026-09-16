@@ -201,6 +201,10 @@ pub enum CapacityMode {
 }
 
 /// Provider policy verification requirement.
+///
+/// Requirements are evaluated over the identities trusted by *any* accepted
+/// attester: the accepted attesters are pooled into one trusted set rather than
+/// judged one at a time. See `SPEC-flip-federation-trust`.
 #[derive(
     Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, strum::Display, Serialize, Deserialize,
 )]
@@ -226,9 +230,14 @@ pub enum VerificationRequirement {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct AcceptedAttesterPolicy {
     /// Trusted attester public key.
+    ///
+    /// Naming an attester here admits the operators it vouches for into the
+    /// pooled trusted set. It does not scope `verification_requirement` to this
+    /// attester alone.
     pub attester_pubkey: Pubkey,
 
-    /// Requirement this attester policy must satisfy.
+    /// Requirement the pooled trusted set must satisfy for this entry to admit
+    /// the federation.
     pub verification_requirement: VerificationRequirement,
 }
 
@@ -236,6 +245,10 @@ pub struct AcceptedAttesterPolicy {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ProviderPolicy {
     /// Attester policies accepted by this provider.
+    ///
+    /// The attesters named here are pooled: an operator counts as trusted when
+    /// any one of them vouches for it. The federation is eligible when at least
+    /// one entry's requirement holds over that pooled set.
     pub accepted_attester_policies: Vec<AcceptedAttesterPolicy>,
 
     /// Bitcoin networks supported by this provider.
