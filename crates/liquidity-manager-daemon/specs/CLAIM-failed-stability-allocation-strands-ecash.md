@@ -69,9 +69,10 @@ Unverified.
   crash-left daemon lock so restart is possible.
 - **A3 — pinned sources.** `flake.nix`, `flake.lock`, the root workspace
   dependencies, and Cargo patches select Fedimint tag `v0.11.2-fedi4`, exact
-  revision `332efe1f664d36bcbbbfb089031d600c5f3e5585`. The update from fedi18
-  leaves the Fedimint client transaction, mint input/refund, and operation-log
-  sources used by this claim unchanged. The daemon manifest and
+  revision `6b23752fbd8d21a875da9c7970d284411692c040`. The update from fedi18 and
+  the hybrid-backend safety backports leave the Fedimint client transaction,
+  mint input/refund, and operation-log sources used by this claim unchanged.
+  The daemon manifest and
   `Cargo.lock` select `stability-pool-client` 0.3.0 and common at Fedi
   revision `2f35ea4e3b2516d35b8ed315455718cd3b336758`.  Those sources, rather
   than similarly numbered crates.io code, define the external semantics below.
