@@ -44,8 +44,8 @@ export const AuthorizationPage = () => {
       <SectionCard title="Update authorization">
         <p className={styles.hint}>
           To renew or replace your authorization, scan the fleet manager ID with the Holder app and
-          authorize it again. Then fetch the new authorization here. Your existing authorization
-          is retained if the check fails or finds nothing new.
+          authorize it again. Then fetch the new authorization here. Your existing authorization is
+          retained if the check fails or finds nothing new.
         </p>
 
         <Button variant="secondary" loading={refresh.isFetching} onClick={handleFetchAuthorization}>
