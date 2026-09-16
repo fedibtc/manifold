@@ -9,11 +9,14 @@ fn process(temp: &TempDir) -> SeatProcessConfig {
         fedimintd: temp.path().join("fedimintd"),
         bitcoin_network: bitcoin::Network::Regtest,
         iroh_dns: "https://dns.iroh.link/pkarr".parse().unwrap(),
-        bitcoin_backend: crate::seat_process::BitcoinBackend::Bitcoind(BitcoindConfig {
-            url: "http://127.0.0.1:18443".to_owned(),
-            username: "user".to_owned(),
-            password: "pass".to_owned(),
-        }),
+        bitcoin_backend: crate::seat_process::BitcoinBackend::Bitcoind {
+            primary: BitcoindConfig {
+                url: "http://127.0.0.1:18443".to_owned(),
+                username: "user".to_owned(),
+                password: "pass".to_owned(),
+            },
+            esplora_fallback: None,
+        },
     }
 }
 

@@ -32,6 +32,103 @@ fn bitcoind_password_starting_with_hyphen_is_an_option_value() {
 }
 
 #[test]
+fn bitcoind_does_not_implicitly_use_the_environment_esplora() {
+    let args = Args::try_parse_from([
+        "fleet-manager",
+        "serve",
+        "--data-dir",
+        "/tmp/fman",
+        "--manifold-environment",
+        "staging",
+        "--bitcoind-url",
+        "http://127.0.0.1:38332",
+        "--bitcoind-username",
+        "operator",
+        "--bitcoind-password",
+        "secret",
+    ])
+    .unwrap();
+    let Args::Serve(args) = args;
+    let profile = args.manifold_environment.profile().unwrap();
+
+    let process = seat_process_config(&args, &profile).unwrap();
+    let BitcoinBackend::Bitcoind {
+        primary,
+        esplora_fallback,
+    } = process.bitcoin_backend
+    else {
+        panic!("configured bitcoind must remain the primary backend");
+    };
+    assert_eq!(primary.url, "http://127.0.0.1:38332");
+    assert_eq!(esplora_fallback, None);
+}
+
+#[test]
+fn explicit_esplora_url_configures_bitcoind_fallback() {
+    let args = Args::try_parse_from([
+        "fleet-manager",
+        "serve",
+        "--data-dir",
+        "/tmp/fman",
+        "--manifold-environment",
+        "staging",
+        "--bitcoind-url",
+        "http://127.0.0.1:38332",
+        "--bitcoind-username",
+        "operator",
+        "--bitcoind-password",
+        "secret",
+        "--esplora-url",
+        "https://signet.example.test/api",
+    ])
+    .unwrap();
+    let Args::Serve(args) = args;
+    let profile = args.manifold_environment.profile().unwrap();
+
+    let process = seat_process_config(&args, &profile).unwrap();
+    let BitcoinBackend::Bitcoind {
+        esplora_fallback, ..
+    } = process.bitcoin_backend
+    else {
+        panic!("configured bitcoind must remain the primary backend");
+    };
+    assert_eq!(
+        esplora_fallback.as_ref().map(|url| url.as_str()),
+        Some("https://signet.example.test/api")
+    );
+}
+
+#[test]
+fn bitcoind_without_an_available_esplora_remains_supported() {
+    let args = Args::try_parse_from([
+        "fleet-manager",
+        "serve",
+        "--data-dir",
+        "/tmp/fman",
+        "--manifold-environment",
+        "development",
+        "--bitcoind-url",
+        "http://127.0.0.1:18443",
+        "--bitcoind-username",
+        "operator",
+        "--bitcoind-password",
+        "secret",
+    ])
+    .unwrap();
+    let Args::Serve(args) = args;
+    let profile = args.manifold_environment.profile().unwrap();
+
+    let process = seat_process_config(&args, &profile).unwrap();
+    let BitcoinBackend::Bitcoind {
+        esplora_fallback, ..
+    } = process.bitcoin_backend
+    else {
+        panic!("configured bitcoind must select the bitcoind backend");
+    };
+    assert_eq!(esplora_fallback, None);
+}
+
+#[test]
 fn manifold_profile_generates_expected_spv2_consensus_config() {
     let modules = manifold_modules();
     let kind = stability_pool_server::common::KIND;

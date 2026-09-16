@@ -104,6 +104,23 @@ This accepted lack of sandboxing is defense in depth only: it does not weaken
 the required operator custody, data-root, admin-socket, credential, backup, or
 network boundaries.
 
+An FMan operator may explicitly give the bundled child both Bitcoin Core and
+an Esplora endpoint. Core remains primary, but any Core RPC error can move that
+request to Esplora, exposing failed requests, transaction contents, and timing
+to that service. Configure only an operator-approved endpoint serving the same
+Bitcoin network. The Esplora service is a trusted chain source in this design;
+a deployment enabling fallback must pin a backend that validates available
+identities at startup and requires a recovered Core to match the process
+identity before use. Requested-hash and merkle-root validation remain required
+defense in depth. Backend selection must use the trusted Esplora source while
+Core is behind or still syncing.
+
+Transaction broadcast remains Core-first and reaches Esplora only when Core
+returns an error. Guardians redundantly broadcast the same transaction, and the
+deployment assumes at least one guardian's Core has working Bitcoin peers; this
+fallback is not a dual-broadcast guarantee. Re-review this boundary whenever
+the Fedimint pin or fallback endpoint changes.
+
 FLIP treats every federation endpoint in an FI-supplied invite as an outbound
 network capability. The default `GlobalOnly` policy accepts only canonical
 `iroh://<node-id>` guardian endpoints and rejects every `ws`/`wss` endpoint

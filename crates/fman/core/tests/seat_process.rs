@@ -97,6 +97,83 @@ async fn child_receives_configured_iroh_dns_relay() {
     assert!(args.lines().any(|arg| arg == "--enable-iroh"));
 }
 
+#[tokio::test]
+async fn bitcoind_child_receives_esplora_fallback_with_core_credentials() {
+    let temp = tempfile::tempdir().unwrap();
+    let env_path = temp.path().join("bitcoin-env");
+    let fedimintd = fake::write_fake_fedimintd(
+        temp.path(),
+        &format!(
+            "printf '%s\\n' \"$FM_BITCOIND_URL\" \"$FM_BITCOIND_USERNAME\" \"$FM_BITCOIND_PASSWORD\" \"$FM_ESPLORA_URL\" > '{}'",
+            env_path.display()
+        ),
+    )
+    .await;
+    let config = SeatProcessConfig {
+        data_root: temp.path().to_owned(),
+        fedimintd,
+        bitcoin_network: bitcoin::Network::Signet,
+        bitcoin_backend: BitcoinBackend::Bitcoind {
+            primary: BitcoindConfig {
+                url: "http://127.0.0.1:38332".to_owned(),
+                username: "operator".to_owned(),
+                password: "secret".to_owned(),
+            },
+            esplora_fallback: Some("https://signet.example.test/api".parse().unwrap()),
+        },
+        iroh_dns: "https://pkarr.example.test/iroh".parse().unwrap(),
+    };
+
+    let mut child = SeatProcess::start(
+        &config,
+        SeatId::new("00".repeat(32)).unwrap(),
+        SeatNo(0),
+        SeatPorts::from_base(crate::facts::PortBase::new(31_000).unwrap()),
+    )
+    .await
+    .unwrap();
+    child.wait().await.unwrap();
+
+    assert_eq!(
+        tokio::fs::read_to_string(env_path).await.unwrap(),
+        "http://127.0.0.1:38332\noperator\nsecret\nhttps://signet.example.test/api\n"
+    );
+}
+
+#[test]
+fn core_only_child_environment_discards_ambient_esplora() {
+    let temp = tempfile::tempdir().unwrap();
+    let config = SeatProcessConfig {
+        data_root: temp.path().to_owned(),
+        fedimintd: temp.path().join("fedimintd"),
+        bitcoin_network: bitcoin::Network::Regtest,
+        bitcoin_backend: BitcoinBackend::Bitcoind {
+            primary: BitcoindConfig {
+                url: "http://127.0.0.1:18443".to_owned(),
+                username: "operator".to_owned(),
+                password: "secret".to_owned(),
+            },
+            esplora_fallback: None,
+        },
+        iroh_dns: "https://pkarr.example.test/iroh".parse().unwrap(),
+    };
+    let mut command = Command::new(&config.fedimintd);
+    command.env("FM_ESPLORA_URL", "https://ambient.example.test/api");
+
+    configure_child_environment(&mut command, &config, SeatNo(0), false);
+
+    assert!(
+        command
+            .as_std()
+            .get_envs()
+            .all(|(key, _)| key != std::ffi::OsStr::new("FM_ESPLORA_URL"))
+    );
+    assert!(command.as_std().get_envs().any(|(key, value)| {
+        key == std::ffi::OsStr::new("FM_BITCOIND_URL")
+            && value == Some(std::ffi::OsStr::new("http://127.0.0.1:18443"))
+    }));
+}
+
 /// The iroh-carrying ports (p2p, api) must bind all interfaces — fedimintd
 /// places its iroh UDP sockets at those addresses, and loopback there forces
 /// relay-only peering — while ui and metrics stay private to the host.

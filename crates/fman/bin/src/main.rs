@@ -92,6 +92,13 @@ struct ServeArgs {
     /// boundaries*).
     #[arg(long, requires = "bitcoind_url")]
     bitcoind_password: Option<String>,
+    /// Esplora HTTP base URL. With Bitcoin Core configured, fedimintd uses Core
+    /// first and falls back to this explicitly selected endpoint on an RPC
+    /// error. Without Core, the selected environment's public default is used
+    /// when this option is omitted. A Core fallback must be operator-approved,
+    /// serve the same network, and satisfy the trust requirements in SECURITY.md.
+    #[arg(long)]
+    esplora_url: Option<SafeUrl>,
     /// First seat port block on the `base + 4k` grid. The grid is
     /// per-host: multiple FMans sharing a host (the E2E harness) must be
     /// given disjoint grids.
@@ -174,25 +181,26 @@ fn seat_process_config(
     args: &ServeArgs,
     manifold_environment: &ManifoldEnvironmentProfile,
 ) -> anyhow::Result<SeatProcessConfig> {
+    let explicit_esplora_url = args.esplora_url.clone().map(SafeUrl::to_unsafe);
     let bitcoin_backend = match (
         &args.bitcoind_url,
         &args.bitcoind_username,
         &args.bitcoind_password,
     ) {
-        (Some(url), Some(username), Some(password)) => {
-            BitcoinBackend::Bitcoind(BitcoindConfig {
+        (Some(url), Some(username), Some(password)) => BitcoinBackend::Bitcoind {
+            primary: BitcoindConfig {
                 url: url.clone(),
                 username: username.clone(),
                 password: password.clone(),
-            })
-        }
+            },
+            esplora_fallback: explicit_esplora_url,
+        },
         (None, None, None) => BitcoinBackend::Esplora(
-            manifold_environment
-                .default_esplora_url()
-                .cloned()
+            explicit_esplora_url
+                .or_else(|| manifold_environment.default_esplora_url().cloned())
                 .ok_or_else(|| {
                     anyhow::anyhow!(
-                        "the {} Manifold environment has no default Esplora backend; supply --bitcoind-url, --bitcoind-username, and --bitcoind-password",
+                        "the {} Manifold environment has no default Esplora backend; supply --esplora-url or --bitcoind-url, --bitcoind-username, and --bitcoind-password",
                         manifold_environment.environment()
                     )
                 })?,
@@ -299,7 +307,14 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         bitcoin_network = %process.bitcoin_network,
         bitcoin_backend = match &process.bitcoin_backend {
             BitcoinBackend::Esplora(_) => "esplora",
-            BitcoinBackend::Bitcoind(_) => "bitcoind",
+            BitcoinBackend::Bitcoind {
+                esplora_fallback: Some(_),
+                ..
+            } => "bitcoind-with-esplora-fallback",
+            BitcoinBackend::Bitcoind {
+                esplora_fallback: None,
+                ..
+            } => "bitcoind",
         },
         "selected Bitcoin chain backend"
     );
