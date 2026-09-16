@@ -234,19 +234,7 @@ impl OperatorPhase {
                 fleet,
                 directory,
                 authorizations,
-            } => {
-                let request = if matches!(request, AdminRequest::RefreshHolderAuthorizations) {
-                    authorizations.refresh().await?;
-                    AdminRequest::Onboarding
-                } else {
-                    request
-                };
-                // Sampled once per request: the answer is what the directory
-                // runtime had last published when the operator asked, never a
-                // value it goes on to fetch.
-                let directory = directory.borrow().clone();
-                dispatch(&fleet, &directory, request).await
-            }
+            } => dispatch(&fleet, &directory, authorizations.as_ref(), request).await,
         }
     }
 
@@ -430,7 +418,8 @@ where
 /// daemon answers with rather than by a second description of it.
 pub(crate) async fn dispatch(
     fleet: &Fleet,
-    directory: &DirectoryPresence,
+    directory: &tokio::sync::watch::Receiver<DirectoryPresence>,
+    authorizations: &dyn crate::directory::HolderAuthorizationRefresher,
     request: AdminRequest,
 ) -> anyhow::Result<Value> {
     match request {
@@ -521,15 +510,10 @@ pub(crate) async fn dispatch(
         } => Ok(serde_json::to_value(
             fleet.payout_guardian_fees(&seat_id, &request_id).await?,
         )?),
-        AdminRequest::Onboarding => Ok(onboarding_json(
-            &fleet.identity().derive_service_pubkey().to_string(),
-            directory,
-            &env!("CARGO_PKG_VERSION")
-                .parse::<FmanVersion>()
-                .expect("workspace package version is valid SemVer"),
-        )),
+        AdminRequest::Onboarding => Ok(fleet_status_json(fleet, &directory.borrow())),
         AdminRequest::RefreshHolderAuthorizations => {
-            Err(crate::restore::RestoreError::AlreadyOnboarded.into())
+            authorizations.refresh().await?;
+            Ok(fleet_status_json(fleet, &directory.borrow()))
         }
         AdminRequest::ConfigureInitialOffer { .. } => {
             Err(crate::restore::RestoreError::AlreadyOnboarded.into())
@@ -544,6 +528,18 @@ pub(crate) async fn dispatch(
             Err(crate::restore::RestoreError::AlreadyOnboarded.into())
         }
     }
+}
+
+// The legacy Onboarding wire response also carries a running fleet's status;
+// projecting it does not perform or resume the setup workflow.
+fn fleet_status_json(fleet: &Fleet, directory: &DirectoryPresence) -> Value {
+    onboarding_json(
+        &fleet.identity().derive_service_pubkey().to_string(),
+        directory,
+        &env!("CARGO_PKG_VERSION")
+            .parse::<FmanVersion>()
+            .expect("workspace package version is valid SemVer"),
+    )
 }
 
 /// `ShowPlans` and `SetPrice` answer the same view, so a write needs no
