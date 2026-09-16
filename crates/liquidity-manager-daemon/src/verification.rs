@@ -700,15 +700,24 @@ impl VerificationPipeline {
         }
 
         // 7. Evaluate accepted attester policies over distinct identities.
+        //
+        // The accepted attesters are pooled: an identity counts as trusted when
+        // any accepted attester vouches for it. `trusted` only ever holds
+        // accepted, installed issuers, so its union is exactly that set.
+        //
+        // Pooling is what keeps FLIP reachable for the federations the FI
+        // actually builds. The FI admits a seat on a badge from any configured
+        // trusted issuer root and then fills seats round-robin across issuer
+        // buckets to spread operators across regions, so a healthy federation
+        // normally carries several issuers and no single one covers every seat.
+        // Judging each attester alone would reject a federation precisely for
+        // having the operator diversity the FI is built to produce.
+        let pooled: BTreeSet<&String> = trusted.values().flatten().collect();
+        let trusted_operators = operators
+            .iter()
+            .filter(|identity| pooled.contains(*identity))
+            .count();
         for policy in &config.policy.accepted_attester_policies {
-            let trusted_for_attester = trusted
-                .get(policy.attester_pubkey.0.as_str())
-                .cloned()
-                .unwrap_or_default();
-            let trusted_operators = operators
-                .iter()
-                .filter(|identity| trusted_for_attester.contains(*identity))
-                .count();
             let satisfied = match policy.verification_requirement {
                 VerificationRequirement::AllTrusted => trusted_operators == operators.len(),
                 VerificationRequirement::ConsensusMajorityTrusted => {
