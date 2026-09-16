@@ -90,12 +90,13 @@ describe('AuthorizationPage', () => {
 
     await screen.findByText('Approved');
     expect(call).not.toHaveBeenCalledWith('RefreshHolderAuthorizations');
+    expect(screen.queryByRole('button', { name: 'Check now' })).toBeNull();
 
     call.mockResolvedValue({
       ...observed,
       nostr: { ...observed.nostr, holders: ['replacement-holder'] }
     });
-    fireEvent.click(screen.getByRole('button', { name: 'Check now' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Fetch new authorization' }));
 
     await screen.findByText('replacement-holder');
     expect(call).toHaveBeenCalledWith('RefreshHolderAuthorizations');
@@ -107,7 +108,7 @@ describe('AuthorizationPage', () => {
 
     await screen.findByText('Approved');
     call.mockRejectedValue(new Error('Relay unavailable'));
-    fireEvent.click(screen.getByRole('button', { name: 'Check now' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Fetch new authorization' }));
 
     await waitFor(() => expect(screen.getByText(/Relay unavailable/)).toBeTruthy());
     expect(screen.getByText('Approved')).toBeTruthy();

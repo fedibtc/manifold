@@ -17,7 +17,7 @@ const renderHolder = (holder: string) => (
 export const AuthorizationPage = () => {
   const onboarding = useOnboarding();
   const refresh = useAuthorizationWatch();
-  const handleCheckNow = () => {
+  const handleFetchAuthorization = () => {
     void refresh.refetch();
   };
   const nostr = onboarding.data?.nostr;
@@ -44,12 +44,12 @@ export const AuthorizationPage = () => {
       <SectionCard title="Update authorization">
         <p className={styles.hint}>
           To renew or replace your authorization, scan the fleet manager ID with the Holder app and
-          authorize it again. Then check for the new authorization here. Your existing authorization
+          authorize it again. Then fetch the new authorization here. Your existing authorization
           is retained if the check fails or finds nothing new.
         </p>
 
-        <Button variant="secondary" loading={refresh.isFetching} onClick={handleCheckNow}>
-          Check now
+        <Button variant="secondary" loading={refresh.isFetching} onClick={handleFetchAuthorization}>
+          Fetch new authorization
         </Button>
       </SectionCard>
       {holders.length > 0 ? (
