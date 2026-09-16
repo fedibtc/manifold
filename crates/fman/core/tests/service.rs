@@ -1,17 +1,19 @@
 use fedi_decentralized_service_fleet_manager::{
     CreateSeatOutcome, DkgCompletionCallback, FederationName, FederationSize, FiId, GatewayApiUrl,
     GetDkgCodeRequest, GetFedimintStatsRequest, GetInviteCodeRequest, GetPeerAttestationRequest,
-    GetQuoteRequest, GetQuoteResponse, GetStatusRequest, GuardianFeeAccount, MetaConsensusBase,
-    MetaFieldKey, MetaFieldValue, OfferEpoch, Plan, ProposeFormationMetaRequest, RefusalReason,
-    RegisterGatewayRequest, RestartDkgRequest, SeatId, SetMetaFieldRequest, StartDkgRequest,
+    GetQuoteRequest, GetQuoteResponse, GetStatusRequest, GuardianCode, GuardianFeeAccount,
+    MetaConsensusBase, MetaFieldKey, MetaFieldValue, OfferEpoch, Plan, ProposeFormationMetaRequest,
+    RefusalReason, RegisterGatewayRequest, RestartDkgRequest, SeatId, SetMetaFieldRequest,
+    StartDkgRequest,
 };
 use tempfile::TempDir;
 
 use super::*;
 use crate::facts::PortBase;
 use crate::fleet::FleetConfig;
+use crate::push_callback::{PushGatewayOrigin, PushGatewayOriginPolicy};
 use crate::seat_process::SeatProcessSpawner;
-use crate::seat_process::fake::{block_forever, write_fake_fedimintd};
+use crate::seat_process::fake::{FakeApiState, block_forever, write_fake_fedimintd};
 use crate::seat_process::{BitcoindConfig, RespawnPolicy, SeatProcessConfig};
 use crate::wallet::NoWallet;
 use fedi_decentralized_service_fleet_manager::DkgCompletionCallbackInput;
@@ -23,6 +25,14 @@ async fn rpc(temp: &TempDir) -> FleetManagerRpc {
 async fn rpc_with_guardian_verification_fee_account(
     temp: &TempDir,
     guardian_verification_fee_account: Option<Account>,
+) -> FleetManagerRpc {
+    rpc_with_config(temp, guardian_verification_fee_account, None).await
+}
+
+async fn rpc_with_config(
+    temp: &TempDir,
+    guardian_verification_fee_account: Option<Account>,
+    push_gateway_origin: Option<PushGatewayOrigin>,
 ) -> FleetManagerRpc {
     // A fleet opens against an identity onboarding already chose; nothing
     // mints one on open.
@@ -45,7 +55,7 @@ async fn rpc_with_guardian_verification_fee_account(
             // Tests hold the relay down and watch the retry land; a
             // production cadence would only make them slow.
             backup_scan_interval: std::time::Duration::from_millis(10),
-            push_gateway_origin: None,
+            push_gateway_origin,
             push_callback_retry_interval: std::time::Duration::from_millis(10),
             completion_callback_invoker: Arc::new(crate::push_callback::TestCallbackInvoker),
             process: SeatProcessConfig {
@@ -82,8 +92,15 @@ async fn rpc_with_owned_seat(
     temp: &TempDir,
     guardian_verification_fee_account: Option<Account>,
 ) -> (FleetManagerRpc, Keypair, FiId, SeatId) {
-    let rpc =
-        rpc_with_guardian_verification_fee_account(temp, guardian_verification_fee_account).await;
+    rpc_with_owned_seat_and_origin(temp, guardian_verification_fee_account, None).await
+}
+
+async fn rpc_with_owned_seat_and_origin(
+    temp: &TempDir,
+    guardian_verification_fee_account: Option<Account>,
+    push_gateway_origin: Option<PushGatewayOrigin>,
+) -> (FleetManagerRpc, Keypair, FiId, SeatId) {
+    let rpc = rpc_with_config(temp, guardian_verification_fee_account, push_gateway_origin).await;
     let owner_key = Keypair::new(secp256k1::SECP256K1, &mut rand::thread_rng());
     let owner_id = FiId(owner_key.x_only_public_key().0);
     let quote = rpc
@@ -119,6 +136,139 @@ async fn rpc_with_owned_seat(
         panic!("free seat was refused")
     };
     (rpc, owner_key, owner_id, seat_id)
+}
+
+fn endpoint_setup(index: usize) -> fedimint_core::setup_code::PeerSetupCode {
+    use fedimint_core::setup_code::{PeerEndpoints, PeerSetupCode};
+
+    let index = u8::try_from(index).expect("test endpoint index fits u8");
+    PeerSetupCode {
+        name: format!("guardian-{index:02}"),
+        endpoints: PeerEndpoints::Iroh {
+            api_pk: iroh_base_035::SecretKey::from_bytes(&[0x60 + index; 32]).public(),
+            p2p_pk: iroh_base_035::SecretKey::from_bytes(&[0x70 + index; 32]).public(),
+        },
+        federation_name: None,
+        disable_base_fees: None,
+        enabled_modules: None,
+        federation_size: None,
+        fedimint_version: "0.12.0".to_owned(),
+        network: bitcoin::Network::Regtest,
+    }
+}
+
+fn bare_dkg_code(setup: fedimint_core::setup_code::PeerSetupCode) -> GuardianCode {
+    use fedimint_core::base32::{self, FEDIMINT_PREFIX};
+
+    GuardianCode(base32::encode_prefixed(FEDIMINT_PREFIX, &setup))
+}
+
+async fn valid_dkg_codes(
+    rpc: &FleetManagerRpc,
+    owner_key: &Keypair,
+    owner_id: FiId,
+    seat_id: &SeatId,
+) -> Vec<GuardianCode> {
+    rpc.fleet
+        .config()
+        .process_spawner
+        .fake()
+        .configure(seat_id, FakeApiState::default())
+        .await;
+    let own_code = rpc
+        .get_dkg_code(
+            SignedRequest::create(
+                &GetDkgCodeRequest {
+                    ts: now(),
+                    fi_id: owner_id,
+                    seat_id: seat_id.clone(),
+                    federation_name: None,
+                },
+                owner_key,
+            )
+            .unwrap(),
+        )
+        .await
+        .unwrap()
+        .guardian_code;
+    let mut codes = vec![own_code];
+    codes.extend((1..7).map(|index| bare_dkg_code(endpoint_setup(index))));
+    codes
+}
+
+#[tokio::test]
+async fn start_dkg_ignores_callback_when_no_push_gateway_is_configured() {
+    let temp = TempDir::new().unwrap();
+    let (rpc, owner_key, owner_id, seat_id) = rpc_with_owned_seat(&temp, None).await;
+    let guardian_codes = valid_dkg_codes(&rpc, &owner_key, owner_id, &seat_id).await;
+    let callback = DkgCompletionCallback::new(DkgCompletionCallbackInput {
+        callback_url: "https://push.example/hooks/id/secret".to_owned(),
+        idempotency_key: "formation-dkg-complete".to_owned(),
+    })
+    .unwrap();
+
+    rpc.start_dkg(
+        SignedRequest::create(
+            &StartDkgRequest {
+                ts: now(),
+                fi_id: owner_id,
+                seat_id: seat_id.clone(),
+                guardian_codes,
+                completion_callback: Some(callback),
+            },
+            &owner_key,
+        )
+        .unwrap(),
+    )
+    .await
+    .unwrap();
+
+    let row = sqlx::query_as::<_, (Option<String>, String)>(
+        "SELECT completion_callback, completion_callback_status \
+         FROM completion_callbacks WHERE quote_id = ?",
+    )
+    .bind(seat_id.as_bytes().as_slice())
+    .fetch_one(&rpc.fleet.database_pool())
+    .await
+    .unwrap();
+    assert_eq!(row, (None, "not_configured".to_owned()));
+    rpc.fleet.shutdown().await;
+}
+
+#[tokio::test]
+async fn start_dkg_rejects_off_origin_callback_when_gateway_is_configured() {
+    let temp = TempDir::new().unwrap();
+    let origin =
+        PushGatewayOrigin::parse("https://push.example/", PushGatewayOriginPolicy::HttpsOnly)
+            .unwrap();
+    let (rpc, owner_key, owner_id, seat_id) =
+        rpc_with_owned_seat_and_origin(&temp, None, Some(origin)).await;
+    let guardian_codes = valid_dkg_codes(&rpc, &owner_key, owner_id, &seat_id).await;
+    let callback = DkgCompletionCallback::new(DkgCompletionCallbackInput {
+        callback_url: "https://attacker.example/hooks/id/secret".to_owned(),
+        idempotency_key: "formation-dkg-complete".to_owned(),
+    })
+    .unwrap();
+
+    let error = rpc
+        .start_dkg(
+            SignedRequest::create(
+                &StartDkgRequest {
+                    ts: now(),
+                    fi_id: owner_id,
+                    seat_id,
+                    guardian_codes,
+                    completion_callback: Some(callback),
+                },
+                &owner_key,
+            )
+            .unwrap(),
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(error, FleetManagerError::InvalidDkgInput(message)
+            if message.starts_with("invalid DKG completion callback:")));
+    rpc.fleet.shutdown().await;
 }
 
 #[tokio::test]
@@ -515,25 +665,6 @@ async fn wrong_owner_precedes_policy_and_unsupported_results() {
     };
     assert!(matches!(
         rpc.get_dkg_code(SignedRequest::create(&invalid_name, &victim_key).unwrap())
-            .await,
-        Err(FleetManagerError::InvalidDkgInput(_))
-    ));
-
-    let callback_start = StartDkgRequest {
-        ts: now(),
-        fi_id: victim_id,
-        seat_id: seat_id.clone(),
-        guardian_codes: Vec::new(),
-        completion_callback: Some(
-            DkgCompletionCallback::new(DkgCompletionCallbackInput {
-                callback_url: "https://attacker.example/hooks/id/secret".to_owned(),
-                idempotency_key: "formation-dkg-complete".to_owned(),
-            })
-            .unwrap(),
-        ),
-    };
-    assert!(matches!(
-        rpc.start_dkg(SignedRequest::create(&callback_start, &victim_key).unwrap())
             .await,
         Err(FleetManagerError::InvalidDkgInput(_))
     ));

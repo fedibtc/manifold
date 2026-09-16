@@ -6,11 +6,6 @@
 //! deliberately does not run in this pipeline; the selection-walk tests in
 //! `tests/selection.rs` pin the lazy verification order.
 
-use fedi_credential_sdk_protocol::{
-    Credential, CredentialDigest, CredentialProof, HolderAuthorization,
-    HolderAuthorizationStatement, HolderId, IssuerId, ProtocolV1, SchnorrSignatureProof,
-    SignedCredential, SubjectPubkey, Timestamp as SdkTimestamp,
-};
 use fedi_decentralized_domain::HolderAuthorizationEnvelope;
 use fedi_decentralized_nostr::fman::{
     AdvertisementPayload, ApiEndpoint, Availability, FMAN_ADVERTISEMENT_D_TAG,
@@ -19,6 +14,11 @@ use fedi_decentralized_nostr::fman::{
 };
 use fedi_decentralized_nostr_clients::FMAN_ADVERTISEMENTS_CANDIDATE_LIMIT;
 use fedimint_core::runtime::Instant;
+use peerbadge_protocol::{
+    Credential, CredentialDigest, CredentialProof, HolderAuthorization,
+    HolderAuthorizationStatement, HolderId, IssuerId, ProtocolV1, SchnorrSignatureProof,
+    SignedCredential, SubjectPubkey, Timestamp as SdkTimestamp,
+};
 
 use super::*;
 use crate::discovery::discover_fman_candidates_with;

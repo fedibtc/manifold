@@ -91,17 +91,19 @@ reads it, never relational habit:
   payload that fails to parse when loaded is a loud `CorruptRow` error, never
   a silent default.
 
-Migrations are embedded in the binary and run at open. This pre-launch callback
+Migrations are embedded in the binary and run at open. The earlier callback
 change intentionally retains the repository's earlier in-place rewrite of
 `0001_initial.sql`; SQLx checksum validation therefore refuses any data root
 that applied the old checksum before running later migrations. There is no
-supported in-place upgrade for such a pre-launch database. An operator must
+supported in-place upgrade for such a database from before the production
+compatibility baseline. An operator must
 stop the old binary and preserve the complete data root, withdraw/export any
 value using that old binary, then start with a new data root and re-onboard or
 restore through the supported backup flow. Never delete only the SQLite file
 beside live seat directories, and never reset a paid database before funds are
-withdrawn. This reset contract is acceptable only because no production FMan
-profile has launched; a post-launch schema change must be append-only.
+withdrawn. That historical reset exception is closed; subsequent changes are
+governed by
+[`GATE-production-compatibility`](../../../specs/GATE-production-compatibility.md).
 
 ## Durability policy
 

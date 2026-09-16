@@ -2,12 +2,22 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act, renderHook, waitFor } from '@testing-library/react';
 import type { ReactNode } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { PAYOUT_DESTINATION_KEY } from '@/features/payouts/api/hooks/use-payout-destination/usePayoutDestination';
+import { useSetPayoutDestination } from '@/features/payouts/api/hooks/use-set-payout-destination/useSetPayoutDestination';
 import * as adminCallModule from '@/shared/api/adminCall';
 import { useSweepGuardianFees } from '../useSweepGuardianFees';
 
-const wrapper = ({ children }: { children: ReactNode }) => {
+const wrapperFor =
+  (client: QueryClient) =>
+  ({ children }: { children: ReactNode }) => (
+    <QueryClientProvider client={client}>{children}</QueryClientProvider>
+  );
+
+// The Payouts page shows a sweep only once the destination read has answered.
+const clientWithDestination = (destination: string | null) => {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  return <QueryClientProvider client={client}>{children}</QueryClientProvider>;
+  client.setQueryData(PAYOUT_DESTINATION_KEY, { destination });
+  return client;
 };
 
 afterEach(() => {
@@ -29,6 +39,7 @@ describe('useSweepGuardianFees', () => {
   };
   it('should sweep one seat with no amount and no gateway', async () => {
     const adminCall = vi.spyOn(adminCallModule, 'adminCall').mockResolvedValue(job);
+    const wrapper = wrapperFor(clientWithDestination('operator@example.com'));
 
     const { result } = renderHook(() => useSweepGuardianFees('seat-01'), { wrapper });
     result.current.mutate();
@@ -41,6 +52,7 @@ describe('useSweepGuardianFees', () => {
 
   it('should answer with the settled operation and amount', async () => {
     vi.spyOn(adminCallModule, 'adminCall').mockResolvedValue(job);
+    const wrapper = wrapperFor(clientWithDestination('operator@example.com'));
 
     const { result } = renderHook(() => useSweepGuardianFees('seat-01'), { wrapper });
     result.current.mutate();
@@ -54,6 +66,7 @@ describe('useSweepGuardianFees', () => {
       .spyOn(adminCallModule, 'adminCall')
       .mockRejectedValueOnce(new Error('lost response'))
       .mockResolvedValue(job);
+    const wrapper = wrapperFor(clientWithDestination('operator@example.com'));
     const { result } = renderHook(() => useSweepGuardianFees('seat-01'), { wrapper });
 
     await expect(result.current.mutateAsync()).rejects.toThrow('lost response');
@@ -72,5 +85,56 @@ describe('useSweepGuardianFees', () => {
     });
     expect(ids[0]).toBe(ids[1]);
     expect(ids[2]).not.toBe(ids[1]);
+  });
+
+  // The daemon keeps a request id's first destination (SPEC-admin-socket), so a
+  // retry under the old id after a new destination is saved would go to the old one.
+  it('should use a new id for a retry after the operator saves another destination', async () => {
+    const adminCall = vi
+      .spyOn(adminCallModule, 'adminCall')
+      .mockRejectedValueOnce(new Error('lnurl lookup failed'))
+      .mockResolvedValueOnce({ destination: 'fixed@example.com' })
+      .mockResolvedValueOnce(job);
+    const wrapper = wrapperFor(clientWithDestination('typo@exmple.com'));
+    const { result } = renderHook(
+      () => ({ sweep: useSweepGuardianFees('seat-01'), save: useSetPayoutDestination() }),
+      { wrapper }
+    );
+
+    await expect(result.current.sweep.mutateAsync()).rejects.toThrow('lnurl lookup failed');
+    await act(async () => {
+      await result.current.save.mutateAsync('fixed@example.com');
+    });
+    await act(async () => {
+      await result.current.sweep.mutateAsync();
+    });
+
+    const [[first], , [retry]] = adminCall.mock.calls;
+    expect(retry).toEqual({
+      SweepGuardianFees: { seat_id: 'seat-01', request_id: expect.any(String) }
+    });
+    expect(retry).not.toEqual(first);
+  });
+
+  // An unread destination is not a change: reading it later must not turn a retry
+  // after a lost response into a second payout.
+  it('should keep the id when the first try went out before the destination was read', async () => {
+    const adminCall = vi
+      .spyOn(adminCallModule, 'adminCall')
+      .mockRejectedValueOnce(new Error('lost response'))
+      .mockResolvedValue(job);
+    const client = new QueryClient();
+    const { result } = renderHook(() => useSweepGuardianFees('seat-01'), {
+      wrapper: wrapperFor(client)
+    });
+
+    await expect(result.current.mutateAsync()).rejects.toThrow('lost response');
+    client.setQueryData(PAYOUT_DESTINATION_KEY, { destination: 'operator@example.com' });
+    await act(async () => {
+      await result.current.mutateAsync();
+    });
+
+    const [[first], [retry]] = adminCall.mock.calls;
+    expect(retry).toEqual(first);
   });
 });

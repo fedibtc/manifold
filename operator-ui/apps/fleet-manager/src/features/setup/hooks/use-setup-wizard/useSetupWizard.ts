@@ -1,8 +1,8 @@
 import { useState } from 'react';
 
-export type SetupStep = 'doors' | 'phrase' | 'restore' | 'authorization' | 'price';
+export type SetupStep = 'doors' | 'phrase' | 'restore' | 'authorization' | 'terms' | 'price';
 
-export const SETUP_STEP_LABELS = ['Start', 'Recovery phrase', 'Authorization', 'Price'];
+export const SETUP_STEP_LABELS = ['Start', 'Recovery phrase', 'Authorization', 'Terms', 'Price'];
 
 // Which labelled step each screen sits under. The restore fork shares step 1 with
 // the new-fleet phrase screen: both are "the phrase", read one way or written the
@@ -12,7 +12,8 @@ const stepIndexes: Record<SetupStep, number> = {
   phrase: 1,
   restore: 1,
   authorization: 2,
-  price: 3
+  terms: 3,
+  price: 4
 };
 
 export interface SetupWizard {
@@ -28,6 +29,7 @@ export interface SetupWizard {
    *  authorization exists, so there is no value here worth branching on. */
   onRestored: () => void;
   onAuthorizationSettled: () => void;
+  onTermsAccepted: () => void;
 }
 
 export const useSetupWizard = (initialStep: SetupStep): SetupWizard => {
@@ -43,6 +45,7 @@ export const useSetupWizard = (initialStep: SetupStep): SetupWizard => {
     onBackToDoors: () => setStep('doors'),
     onPhraseSaved: () => setStep('authorization'),
     onRestored: () => setStep('authorization'),
-    onAuthorizationSettled: () => setStep('price')
+    onAuthorizationSettled: () => setStep('terms'),
+    onTermsAccepted: () => setStep('price')
   };
 };

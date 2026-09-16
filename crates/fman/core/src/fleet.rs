@@ -70,7 +70,7 @@ pub struct FleetConfig {
     /// ([`crate::backup_worker::DEFAULT_SCAN_INTERVAL`]).
     pub backup_scan_interval: Duration,
     /// Exact public push-gateway origin accepted for FI callback capabilities.
-    /// `None` keeps ordinary FMan operation available but rejects callbacks.
+    /// `None` keeps ordinary FMan operation available and ignores callbacks.
     pub push_gateway_origin: Option<PushGatewayOrigin>,
     /// Probe/retry cadence while one DKG completion callback is pending.
     pub push_callback_retry_interval: Duration,

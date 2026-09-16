@@ -4,10 +4,6 @@ use std::time::Duration;
 
 use anyhow::{Context as _, ensure};
 use clap::Parser;
-use fedi_credential_sdk_protocol::{
-    HolderAuthorizationRequest, HolderContext, IssuerAuthority, IssuerContext, IssuerSecretKeys,
-    PendingIssuance,
-};
 use fedi_decentralized_manifold_environment::ManifoldEnvironment;
 use fedi_decentralized_nostr::attester::{
     ISSUER_AUTHORITY_D_TAG, ISSUER_AUTHORITY_EVENT_KIND, ISSUER_AUTHORITY_HASHTAG,
@@ -18,6 +14,10 @@ use fedi_decentralized_nostr_clients::{
     PublishFmanAuthorizationRequest,
 };
 use nostr_sdk::{EventBuilder, Keys, Kind, SecretKey, Tag};
+use peerbadge_protocol::{
+    HolderAuthorizationRequest, HolderContext, IssuerAuthority, IssuerContext, IssuerSecretKeys,
+    PendingIssuance,
+};
 use serde_json::json;
 
 const TRUST_BADGE_SCHEMA: &str = "fedi-trust-score-v1.0";
@@ -108,12 +108,10 @@ async fn main() -> anyhow::Result<()> {
         let minted = issuer.issuer_authority(
             relay_urls
                 .iter()
-                .map(
-                    |location| fedi_credential_sdk_protocol::RevocationLocation {
-                        protocol: NOSTR_REVOCATION_LOCATION_PROTOCOL.to_owned(),
-                        location: location.clone(),
-                    },
-                )
+                .map(|location| peerbadge_protocol::RevocationLocation {
+                    protocol: NOSTR_REVOCATION_LOCATION_PROTOCOL.to_owned(),
+                    location: location.clone(),
+                })
                 .collect(),
         )?;
         println!("{}", serde_json::to_string(&minted)?);
@@ -143,7 +141,7 @@ async fn main() -> anyhow::Result<()> {
     let holder = HolderContext::generate();
     let holder_pubkey = holder.public_key().to_string();
     let credential_info =
-        fedi_credential_sdk_schemas::trust_score_info_v1(profile.minimum_peer_badge_trust_level())?;
+        peerbadge_schemas::trust_score_info_v1(profile.minimum_peer_badge_trust_level())?;
     let (issuance_request, pending) = PendingIssuance::create_request(
         &issuer_metadata.issuance_key,
         issuer_metadata.issuer_id_pubkey.clone(),

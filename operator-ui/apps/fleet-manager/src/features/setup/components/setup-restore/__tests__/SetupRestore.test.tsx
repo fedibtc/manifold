@@ -64,6 +64,35 @@ describe('SetupRestore', () => {
     );
   });
 
+  // The daemon matches BIP-39 words exactly, and the wordlist is lowercase.
+  it('should send a capitalised, one-word-per-line phrase in the form the daemon matches', async () => {
+    const adminCallSpy = vi.spyOn(adminCallModule, 'adminCall').mockResolvedValue(restored);
+    renderRestore();
+
+    fireEvent.change(screen.getByLabelText('Recovery phrase'), {
+      target: {
+        value: 'Abandon\nABANDON\nABANDON\nABANDON\nABANDON\nABANDON\nABANDON\nABANDON\nABOUT\n'
+      }
+    });
+    fireEvent.click(acknowledgement());
+    fireEvent.click(submitButton());
+
+    await waitFor(() =>
+      expect(adminCallSpy).toHaveBeenCalledWith({
+        OnboardFromBackup: { mnemonic: PHRASE, acknowledge_original_host_is_gone: true }
+      })
+    );
+  });
+
+  it('should block submitting a phrase made only of invisible characters', () => {
+    renderRestore();
+
+    fireEvent.change(screen.getByLabelText('Recovery phrase'), { target: { value: '\u200B\n' } });
+    fireEvent.click(acknowledgement());
+
+    expect(submitButton().disabled).toBe(true);
+  });
+
   it('should warn that two hosts on one identity equivocate', () => {
     renderRestore();
 

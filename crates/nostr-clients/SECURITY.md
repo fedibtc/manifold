@@ -37,7 +37,7 @@ Callers must verify every fetched event before use:
 - the Nostr event signature and expected author;
 - kind, `d`, `p`, `t`, issuer, credential, and schema tags against event content;
 - canonical payload signatures where the protocol defines them;
-- `fedi-credential-sdk-protocol` credential and holder-authorization proofs;
+- `peerbadge-protocol` credential and holder-authorization proofs;
 - revocation state and local issuer trust policy.
 
 FI common-set lookup pins the publisher, kind, and addressable-event identifier

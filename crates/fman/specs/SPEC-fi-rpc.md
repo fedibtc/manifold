@@ -128,15 +128,16 @@ snapshot plus an inline final-directory stat and never contacts the child.
 while the child is unavailable. A formed child's `Hello` is the sole repair
 path for a missing record; no FI read fetches or records an invite.
 
-When present, `DkgCompletionCallback` is atomically installed in the dedicated
-`completion_callbacks` row only after the seat has proved its existing child is
-an idle `NeedsParams` child, and before the child request. The first `StartDkg`
-choice is retained for the formation; `RestartDkg` carries no callback and
-leaves it unchanged. The
-callback URL is a bearer push-gateway hook and
-the idempotency key is stable for formation. FMan accepts it only when the URL
-is an exact `/hooks/{hook_id}/{hook_secret}` path under its configured gateway
-origin. Delivery begins only after the formed record exists. Existing bounded
+When a push gateway origin is configured, FMan accepts
+`DkgCompletionCallback` only when its bearer URL is an exact
+`/hooks/{hook_id}/{hook_secret}` path under that origin. It atomically installs
+an accepted callback in the dedicated `completion_callbacks` row only after the
+seat has proved its existing child is an idle `NeedsParams` child, and before
+the child request. The first accepted `StartDkg` callback is retained for the
+formation; `RestartDkg` carries no callback and leaves it unchanged. The
+idempotency key is stable for formation. Without a configured origin, FMan
+discards the callback and records the formation as callback-free rather than
+refusing it. Delivery begins only after the formed record exists. Existing bounded
 retry, operator-blocked, terminalization, idempotency, and bearer-clearing
 semantics are unchanged. Delivery is owned by one fleet-wide relational worker:
 it selects only callback rows with a formed row and no decommission row. The

@@ -44,9 +44,11 @@ export const SetupGate = () => {
     void onboarding.refetch();
   };
 
+  // `initial_offer` reopens on the terms, not the price: the daemon keeps no
+  // record of the acceptance, so a reload asks again rather than assuming it.
   const initialStep =
     onboarding.data?.stage === 'initial_offer'
-      ? 'price'
+      ? 'terms'
       : onboarding.data?.stage === 'holder_authorization'
         ? 'authorization'
         : 'doors';

@@ -69,7 +69,7 @@ describe('SetupAuthorization', () => {
   it('should drop the blocked-setup sentence once the fleet is approved', async () => {
     renderAuthorization(vi.fn(), observed);
 
-    await screen.findByText(/Approved\. Continuing to the price step/i);
+    await screen.findByText(/Approved\. Continuing to the terms step/i);
     expect(screen.queryByText(/setup cannot continue past this step/i)).toBeNull();
     expect(screen.getByRole('button', { name: 'Continue now' })).toBeTruthy();
   });

@@ -6,9 +6,9 @@ import { useSetCapacity } from '@/shared/api/hooks/use-set-capacity/useSetCapaci
 import { QuerySurface } from '@/shared/components/query-surface/QuerySurface';
 import { useQueryDisposition } from '@/shared/query/use-query-disposition/useQueryDisposition';
 import { describeActionError } from '@/shared/utils/describeActionError';
+import { MAX_SEAT_LIMIT } from '@/shared/utils/seatLimit';
+import { parseWholeNumberInput } from '@/shared/utils/wholeNumberInput';
 import styles from './SeatCapacityForm.module.css';
-
-const MAX_SEATS = 4_294_967_295;
 
 /**
  * `activeSeats` is the floor `Db::set_max_seats` enforces, counted the same way
@@ -18,10 +18,11 @@ const MAX_SEATS = 4_294_967_295;
  * read and the write, can still cross this floor after it passes here.
  */
 export const parseSeatCapacity = (value: string, activeSeats: number | null = null) => {
-  const maxSeats = Number(value.trim());
-  if (!value.trim() || !Number.isInteger(maxSeats) || maxSeats < 0 || maxSeats > MAX_SEATS) {
-    return { ok: false as const, error: `Enter a whole number from 0 to ${MAX_SEATS}.` };
+  const parsed = parseWholeNumberInput(value, { max: MAX_SEAT_LIMIT });
+  if (!parsed.ok) {
+    return { ok: false as const, error: `Enter a whole number from 0 to ${MAX_SEAT_LIMIT}.` };
   }
+  const maxSeats = parsed.value;
   if (activeSeats !== null && maxSeats < activeSeats) {
     return {
       ok: false as const,
@@ -91,8 +92,6 @@ export const SeatCapacityForm = () => {
         <form className={styles.form} onSubmit={handleSubmit}>
           <TextInput
             label="Maximum active seats"
-            type="number"
-            min={activeSeats ?? 0}
             hint={hint}
             value={maxSeats}
             onChange={handleChange}

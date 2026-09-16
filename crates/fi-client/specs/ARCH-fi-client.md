@@ -50,7 +50,9 @@ schema 11 also persists the selected major/minor/vendor DKG identity beside
 the selected-vs-pinned mode, durable verifier provenance, selected preview
 deadline, exact aggregate reservation identity, commercial-history tombstone,
 and wallet-output tombstone. Every older record must be
-reset rather than migrated in this pre-launch namespace.
+reset rather than migrated because it predates the production compatibility
+baseline. Subsequent schema changes are governed by
+[`GATE-production-compatibility`](../../../specs/GATE-production-compatibility.md).
 
 The cap changes only payment-readiness behavior, and it is **one-shot**: it
 is the consumer's approval of the initial aggregate only. In the product path
@@ -145,7 +147,8 @@ or DKG and sends the same callback and idempotency key to every FMan in the
 signed `StartDkg` wave. The ordinary entry point leaves the optional
 callback absent. An ordinary resume repeats the idempotent `StartDkg` wave
 with the same durable guardian codes; each FMan retains the first start
-choice.
+callback it accepts for delivery, while an FMan without callback delivery
+configured discards it and proceeds callback-free.
 Callback state is deliberately absent from `FormationSnapshot`: a push is
 non-authoritative transport, while the durable formation driver remains the
 only source of lifecycle progress after the app resumes.
@@ -153,10 +156,13 @@ Cross-component durability verification is recorded in
 [`crates/fman/testing.md`](../../fman/testing.md).
 
 Formation storage schema 11 owns this callback lifecycle and the selected
-Fedimint DKG identity. Older pre-production records fail closed and require reset.
+Fedimint DKG identity. Older records from before the production compatibility
+baseline fail closed and require reset.
 FI retains the bearer across every pre-`DkgComplete` crash, then clears it in
-the same transaction that records the DKG invite because every FMan has
-already accepted durable retry ownership.
+the same transaction that records the DKG invite. Callback delivery remains
+best effort: configured FMans have accepted durable retry ownership by then,
+while FMans without callback delivery configured completed DKG without taking
+ownership.
 
 Whether a formation pays at all is decided by configuration, not by the
 formation intent: an FI opened without a deployment-pinned setup-payment
@@ -395,8 +401,8 @@ these phases, and later checks keep `Formed` visible with freshness and errors
 reported separately. Inconsistent storage fails closed before status is published.
 The seat/fee-account pairing is
 validated on load, so formation records persisted before signed fee-account
-acceptance existed fail closed and must be reset rather than migrated, per
-this pre-launch namespace's schema policy. Payment readiness and
+acceptance existed fail closed and must be reset rather than migrated because
+they predate the production compatibility baseline. Payment readiness and
 authorization are aggregate formation state — one authorization covers the
 complete verified quote set. Immediately before funding, the FI refreshes every
 unpaid paid quote as one barrier and carries the authorization forward only

@@ -170,7 +170,9 @@ alone is not an SSRF defense: the daemon must match the parsed URL's origin to
 its explicit deployment configuration, require the exact public hook path,
 reject credentials, query, fragment and redirects, and permit HTTP only for an
 explicitly enabled development loopback origin. Never log or format the
-callback URL or its idempotency key. SQLite/WAL files and backups containing
+callback URL or its idempotency key. An FMan with no configured callback origin
+must discard the callback without parsing, persisting, or invoking it and allow
+the signed DKG request to proceed. SQLite/WAL files and backups containing
 pending callbacks are bearer-capability material. Delivery or a definitive
 terminal outcome atomically clears the live plaintext bearer while retaining a
 one-way, non-authorizing commitment and sanitized outcome. The commitment

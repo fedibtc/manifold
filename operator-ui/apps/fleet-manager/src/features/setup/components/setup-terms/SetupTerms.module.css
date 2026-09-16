@@ -1,0 +1,29 @@
+.root {
+  @apply uStack4;
+}
+
+.head {
+  @apply uPageHead;
+}
+
+.heading {
+  @apply uPageHeading;
+}
+
+.intro {
+  @apply uIntro;
+}
+
+.document {
+  @apply uBorderedPanel;
+}
+
+.actions {
+  @apply uFormActions items-center;
+}
+
+/* Narrow enough to sit beside the button on a wide screen, as the mockup does;
+   the actions row wraps it below on a phone. */
+.consent {
+  @apply uMutedSm max-w-sm;
+}

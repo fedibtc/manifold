@@ -4,6 +4,7 @@ import { SetupDoors } from '@/features/setup/components/setup-doors/SetupDoors';
 import { SetupPhrase } from '@/features/setup/components/setup-phrase/SetupPhrase';
 import { SetupPrice } from '@/features/setup/components/setup-price/SetupPrice';
 import { SetupRestore } from '@/features/setup/components/setup-restore/SetupRestore';
+import { SetupTerms } from '@/features/setup/components/setup-terms/SetupTerms';
 import {
   SETUP_STEP_LABELS,
   useSetupWizard
@@ -12,7 +13,7 @@ import styles from './SetupWizard.module.css';
 
 interface SetupWizardProps {
   onComplete: () => void;
-  initialStep: 'doors' | 'authorization' | 'price';
+  initialStep: 'doors' | 'authorization' | 'terms';
 }
 
 export const SetupWizard = ({ onComplete, initialStep }: SetupWizardProps) => {
@@ -36,6 +37,7 @@ export const SetupWizard = ({ onComplete, initialStep }: SetupWizardProps) => {
         {wizard.step === 'authorization' && (
           <SetupAuthorization onSettled={wizard.onAuthorizationSettled} />
         )}
+        {wizard.step === 'terms' && <SetupTerms onAccepted={wizard.onTermsAccepted} />}
         {wizard.step === 'price' && <SetupPrice onDone={onComplete} />}
       </div>
     </div>

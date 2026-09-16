@@ -35,6 +35,22 @@ describe('useAuthPrompt', () => {
     expect(result.current.error).toBeNull();
   });
 
+  // The daemon compares the password byte for byte, and a space can be part of
+  // it. Trimming here would lock out an operator whose password has one.
+  it('should send the password exactly as typed, spaces included', async () => {
+    const authenticateSpy = vi
+      .spyOn(authenticateModule, 'authenticate')
+      .mockResolvedValue(undefined);
+    const { result } = renderHook(() => useAuthPrompt(), { wrapper });
+
+    act(() => result.current.onPasswordChange(changeEvent(' pass word ')));
+    await act(async () => {
+      await result.current.onSubmit(submitEvent);
+    });
+
+    expect(authenticateSpy).toHaveBeenCalledWith(' pass word ');
+  });
+
   it('should surface an inline error on a wrong password', async () => {
     vi.spyOn(authenticateModule, 'authenticate').mockRejectedValue(new InvalidPasswordError());
     const { result } = renderHook(() => useAuthPrompt(), { wrapper });

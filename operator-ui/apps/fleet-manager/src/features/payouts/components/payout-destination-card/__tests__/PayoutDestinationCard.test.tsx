@@ -64,6 +64,67 @@ describe('PayoutDestinationCard', () => {
     expect(saveButton()).toBeDisabled();
   });
 
+  it('should refuse to save a destination made only of invisible characters', () => {
+    renderCard(null);
+
+    fireEvent.change(field(), { target: { value: '\u200B' } });
+
+    expect(saveButton()).toBeDisabled();
+  });
+
+  it('should store the destination without the spaces and capitals a paste can carry', async () => {
+    const adminCall = vi
+      .spyOn(adminCallModule, 'adminCall')
+      .mockResolvedValue({ destination: 'operator@example.com' });
+    renderCard(null);
+
+    fireEvent.change(field(), { target: { value: ' Operator@Example.com\n' } });
+    fireEvent.click(saveButton());
+
+    await waitFor(() =>
+      expect(adminCall).toHaveBeenCalledWith({
+        SetPayoutDestination: { destination: 'operator@example.com' }
+      })
+    );
+  });
+
+  it('should show the stored destination in the field once the save is accepted', async () => {
+    vi.spyOn(adminCallModule, 'adminCall').mockResolvedValue({
+      destination: 'operator@example.com'
+    });
+    renderCard(null);
+
+    fireEvent.change(field(), { target: { value: ' LIGHTNING:Operator@Example.com ' } });
+    fireEvent.click(saveButton());
+
+    await waitFor(() => expect(field()).toHaveValue('operator@example.com'));
+  });
+
+  // The daemon parses the destination only when a payout starts, so a value
+  // that can never be paid would otherwise be stored without a word.
+  it('should refuse a destination that is not a Lightning address or LNURL', () => {
+    const adminCall = vi.spyOn(adminCallModule, 'adminCall');
+    renderCard(null);
+
+    fireEvent.change(field(), { target: { value: 'hello' } });
+    fireEvent.click(saveButton());
+
+    expect(
+      screen.getByText('Enter a Lightning address (name@example.com) or an LNURL (lnurl1…).')
+    ).toBeInTheDocument();
+    expect(adminCall).not.toHaveBeenCalled();
+  });
+
+  it('should drop the format message once the operator edits the field', () => {
+    renderCard(null);
+
+    fireEvent.change(field(), { target: { value: 'hello' } });
+    fireEvent.click(saveButton());
+    fireEvent.change(field(), { target: { value: 'hello@example.com' } });
+
+    expect(screen.queryByText(/Enter a Lightning address/)).toBeNull();
+  });
+
   it('should offer no clear control when there is nothing stored', () => {
     renderCard(null);
 

@@ -5,6 +5,7 @@ import { useOnboardFromBackup } from '@/features/setup/api/hooks/use-onboard-fro
 import { SetupRestoreFailed } from '@/features/setup/components/setup-restore-failed/SetupRestoreFailed';
 import { SetupRestoreSuccess } from '@/features/setup/components/setup-restore-success/SetupRestoreSuccess';
 import { SetupRestoreUnknown } from '@/features/setup/components/setup-restore-unknown/SetupRestoreUnknown';
+import { normalizeRecoveryPhrase } from '@/features/setup/utils/recoveryPhrase';
 import {
   classifyRestoreError,
   type RestoreViewState
@@ -31,6 +32,8 @@ export const SetupRestore = ({ onRestored, onCancel }: SetupRestoreProps) => {
   const [isChecking, setIsChecking] = useState(false);
   const [identityConfirmed, setIdentityConfirmed] = useState(false);
 
+  const phraseToRestore = normalizeRecoveryPhrase(mnemonic);
+
   const handleMnemonicChange = (event: FormEvent<HTMLTextAreaElement>) => {
     setMnemonic(event.currentTarget.value);
   };
@@ -38,7 +41,7 @@ export const SetupRestore = ({ onRestored, onCancel }: SetupRestoreProps) => {
   const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     restore.mutate(
-      { mnemonic: mnemonic.trim(), acknowledgeOriginalHostIsGone: acknowledged },
+      { mnemonic: phraseToRestore, acknowledgeOriginalHostIsGone: acknowledged },
       {
         onSuccess: (response) => {
           setView({ type: 'success', result: { seats: response.seats, formed: response.formed } });
@@ -136,7 +139,7 @@ export const SetupRestore = ({ onRestored, onCancel }: SetupRestoreProps) => {
     }
   };
 
-  const canSubmit = mnemonic.trim().length > 0 && acknowledged && !restore.isPending;
+  const canSubmit = phraseToRestore !== '' && acknowledged && !restore.isPending;
 
   if (view.type === 'success') {
     return <SetupRestoreSuccess result={view.result} onContinue={onRestored} />;

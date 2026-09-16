@@ -41,7 +41,7 @@ use nostr_sdk::{Event, EventId, Kind, PublicKey, TagKind};
 use secp256k1::{XOnlyPublicKey, schnorr::Signature};
 use serde::Serialize;
 
-use crate::formation::DriverRun;
+use crate::formation::{DriverRun, federation_name};
 use crate::ports::FiIdentityExt as _;
 use crate::{
     FederationConsensusReader, FiClient, FiError, FiIdentity, FiPayments, FiResult,
@@ -1120,10 +1120,9 @@ where
             })
             .collect::<FiResult<Vec<_>>>()?;
         Ok(FormedLiquidityContext {
-            federation_name: authority.federation_name.ok_or_else(|| {
+            federation_name: federation_name(&consensus)?.ok_or_else(|| {
                 FiError::Liquidity(
-                    "restored federation has no consensus display name for a new liquidity request"
-                        .to_owned(),
+                    "federation has no display name for a new liquidity request".to_owned(),
                 )
             })?,
             invite_code,

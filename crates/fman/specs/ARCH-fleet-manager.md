@@ -327,8 +327,8 @@ The focused verification split is recorded in
 
 Operators configure the sole accepted gateway origin with
 `--push-gateway-origin` (`FLEET_MANAGER_PUSH_GATEWAY_ORIGIN`). Omitting it keeps
-ordinary direct-daemon service available but rejects callback-bearing
-callback-bearing `StartDkg` requests before mutation. Production accepts HTTPS only. Development may opt
+ordinary direct-daemon service available: FMan discards any supplied callback
+and proceeds with `StartDkg` callback-free. Production accepts HTTPS only. Development may opt
 into a loopback HTTP origin with `--allow-insecure-push-gateway-origin`
 (`FLEET_MANAGER_ALLOW_INSECURE_PUSH_GATEWAY_ORIGIN`); that escape hatch is
 rejected for every other Manifold environment.
