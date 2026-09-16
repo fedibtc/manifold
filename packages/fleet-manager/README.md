@@ -29,7 +29,7 @@ the optimized image is first built in the trusted publish workflow.
 The bundled `fedimintd` is compiled into the daemon binary from the `fedimint`
 flake input pinned in
 [`flake.nix`](../../flake.nix) — currently the immutable Fedi fork commit
-[`75250fe93e7aa341f8416094a2eb5a6497cf4670`](https://github.com/fedibtc/fedimint/commit/75250fe93e7aa341f8416094a2eb5a6497cf4670),
+[`7834e897ff2d0d3b4948168a3aefe25badfbc5a1`](https://github.com/fedibtc/fedimint/commit/7834e897ff2d0d3b4948168a3aefe25badfbc5a1),
 published on `rho/fedimint-012`. The intended tag `v0.12.0-fedi1` has not
 been published. Its image
 `org.fedi.fedimintd.release` label is `0.12.0-fedi1`, while the typed DKG
