@@ -7,15 +7,8 @@
 //! ([SPEC-advertisement](../../specs/SPEC-advertisement.md),
 //! [SPEC-fman-nostr-events](../../../nostr/specs/SPEC-fman-nostr-events.md)).
 //!
-//! Nothing here is a trait. A trait would be a hole — something the daemon
-//! needs *done* by a crate it cannot name — and none of this is that. What
-//! the runtime reads out of the daemon it calls directly
-//! ([`crate::fleet::FleetNostrHost`],
-//! [`crate::fleet::FleetSetupPaymentPolicyStore`]), because it depends on this
-//! crate. What the daemon reads back is not behavior but the runtime's latest
-//! observation, so it travels as a value on a [`tokio::sync::watch`] channel:
-//! the admin socket borrows the last one published and cannot block on a relay
-//! even in principle.
+//! Status reads borrow the runtime's latest watch value without relay I/O.
+//! Explicit authorization refreshes invoke the runtime capability instead.
 
 use fedi_decentralized_domain::FmanVersion;
 use fedi_decentralized_service_fleet_manager::Plan;
@@ -92,4 +85,11 @@ pub struct DirectoryPresence {
     /// Latest FMan release in the last authenticated setup-payment
     /// publication, or `None` before one has been admitted.
     pub latest_fman_version: Option<FmanVersion>,
+}
+
+/// Operator-triggered reconciliation of durable Holder authorization and its
+/// live public projection. Implemented by the Nostr runtime.
+#[async_trait::async_trait]
+pub trait HolderAuthorizationRefresher: Send + Sync {
+    async fn refresh(&self) -> anyhow::Result<()>;
 }

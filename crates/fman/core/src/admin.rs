@@ -180,6 +180,7 @@ pub(crate) enum Phase {
     Fleet {
         fleet: Arc<Fleet>,
         directory: tokio::sync::watch::Receiver<DirectoryPresence>,
+        authorizations: Arc<dyn crate::directory::HolderAuthorizationRefresher>,
     },
 }
 
@@ -201,10 +202,12 @@ impl OperatorPhase {
     pub fn fleet(
         fleet: Arc<Fleet>,
         directory: tokio::sync::watch::Receiver<DirectoryPresence>,
+        authorizations: Arc<dyn crate::directory::HolderAuthorizationRefresher>,
     ) -> Self {
         Self(Arc::new(std::sync::Mutex::new(Phase::Fleet {
             fleet,
             directory,
+            authorizations,
         })))
     }
 
@@ -213,8 +216,13 @@ impl OperatorPhase {
         &self,
         fleet: Arc<Fleet>,
         directory: tokio::sync::watch::Receiver<DirectoryPresence>,
+        authorizations: Arc<dyn crate::directory::HolderAuthorizationRefresher>,
     ) {
-        *self.0.lock().expect("a phase writer panicked") = Phase::Fleet { fleet, directory };
+        *self.0.lock().expect("a phase writer panicked") = Phase::Fleet {
+            fleet,
+            directory,
+            authorizations,
+        };
     }
 
     /// Answer one operator request from the phase current when it arrived.
@@ -222,7 +230,17 @@ impl OperatorPhase {
     pub(crate) async fn answer(&self, request: AdminRequest) -> anyhow::Result<Value> {
         match self.sample() {
             Phase::Onboarding(onboarding) => onboarding.answer(request).await,
-            Phase::Fleet { fleet, directory } => {
+            Phase::Fleet {
+                fleet,
+                directory,
+                authorizations,
+            } => {
+                let request = if matches!(request, AdminRequest::RefreshHolderAuthorizations) {
+                    authorizations.refresh().await?;
+                    AdminRequest::Onboarding
+                } else {
+                    request
+                };
                 // Sampled once per request: the answer is what the directory
                 // runtime had last published when the operator asked, never a
                 // value it goes on to fetch.
@@ -946,4 +964,4 @@ pub async fn request(
 
 #[cfg(test)]
 #[path = "../tests/admin.rs"]
-mod tests;
+pub(crate) mod tests;

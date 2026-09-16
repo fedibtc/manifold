@@ -62,6 +62,8 @@ const LOCAL_E2E_SETUP_PAYMENT_POLL_INTERVAL: Duration = Duration::from_secs(15);
 /// enough headroom for a relay serving stale duplicates alongside it.
 const SETUP_PAYMENT_FETCH_LIMIT: u16 = 64;
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
+/// Leave room for durable publication within the operator UI's 15-second request budget.
+const AUTHORIZATION_REFRESH_TIMEOUT: Duration = Duration::from_secs(12);
 
 /// One bounded, operator-driven Holder enrollment read usable before a Fleet
 /// is opened.
@@ -234,6 +236,8 @@ struct Inner {
     holder_authorizations: watch::Sender<Vec<HolderAuthorizationEnvelope>>,
     setup_payment_federations: watch::Sender<Option<AdmittedSetupPaymentFederations>>,
     started: AtomicBool,
+    authorization_store: Arc<FleetHolderAuthorizationStore>,
+    authorization_refresh: tokio::sync::Mutex<()>,
 }
 
 impl FleetManagerNostr {
@@ -251,6 +255,7 @@ impl FleetManagerNostr {
         retained_holder_authorizations: Vec<HolderAuthorizationEnvelope>,
         retained_setup_payment_federations: Option<AdmittedSetupPaymentFederations>,
         manifold_environment: ManifoldEnvironmentProfile,
+        authorization_store: Arc<FleetHolderAuthorizationStore>,
     ) -> Self {
         let latest_fman_version = retained_setup_payment_federations
             .as_ref()
@@ -273,6 +278,8 @@ impl FleetManagerNostr {
                 holder_authorizations,
                 setup_payment_federations,
                 started: AtomicBool::new(false),
+                authorization_store,
+                authorization_refresh: tokio::sync::Mutex::new(()),
             }),
         }
     }
@@ -300,10 +307,11 @@ impl FleetManagerNostr {
 
     /// The durably enrolled Holder authorizations retained by this FMan.
     ///
-    /// These are the same envelopes the advertisement loop embeds. The runtime
-    /// refreshes once at startup; the operator UI explicitly drives later
-    /// refreshes. Relying verifiers still run fresh issuer-policy and revocation
-    /// checks, so retention cannot turn a revoked badge into a passing one.
+    /// These are the same envelopes the advertisement loop embeds. Startup
+    /// revalidates retained events; the operator UI explicitly drives relay
+    /// refreshes. Relying verifiers still run fresh issuer-policy and
+    /// revocation checks, so retention cannot turn a revoked badge into a
+    /// passing one.
     ///
     /// Empty when no authorization is durably retained.
     pub fn holder_authorizations(&self) -> Vec<HolderAuthorizationEnvelope> {
@@ -317,7 +325,63 @@ impl FleetManagerNostr {
     }
 }
 
+#[async_trait::async_trait]
+impl fman_core::directory::HolderAuthorizationRefresher for FleetManagerNostr {
+    async fn refresh(&self) -> anyhow::Result<()> {
+        let inner = self.inner.clone();
+        // Own commit-through-publication independently of the requesting
+        // transport: disconnecting must not leave live authority behind SQLite.
+        tokio::spawn(async move {
+            let _refresh = inner
+                .authorization_refresh
+                .try_lock()
+                .context("an authorization refresh is already in progress")?;
+            let fetched = tokio::time::timeout(AUTHORIZATION_REFRESH_TIMEOUT, async {
+                let nostr = NostrRelayClient::connect_pool(
+                    inner.manifold_environment.nostr_relays().as_urls(),
+                    inner.keys.clone(),
+                    REQUEST_TIMEOUT,
+                )
+                .await
+                .context("connect to the configured Nostr relays")?;
+                fetch_holder_authorizations(&inner.keys, &nostr).await
+            })
+            .await
+            .context("authorization refresh timed out")??;
+            inner.retain_authorizations(fetched).await
+        })
+        .await?
+    }
+}
+
 impl Inner {
+    async fn retain_authorizations(
+        &self,
+        fetched: Vec<VerifiedHolderAuthorizationEvent>,
+    ) -> anyhow::Result<()> {
+        let rows = fetched
+            .into_iter()
+            .map(|candidate| {
+                (
+                    candidate.credential_digest,
+                    candidate.authorization_issued_at,
+                    candidate.event.as_json(),
+                )
+            })
+            .collect::<Vec<_>>();
+        self.authorization_store
+            .merge(&rows, holder_authorization_max_issued_at(now_secs())?)
+            .await?;
+        let retained =
+            load_retained_holder_authorizations(&self.authorization_store, self.keys.public_key())
+                .await?;
+        let status = observed_status(&retained, Some(now_secs()));
+        self.holder_authorizations.send_replace(retained);
+        self.presence
+            .send_modify(|presence| presence.onboarding = status);
+        Ok(())
+    }
+
     async fn run(
         self: Arc<Self>,
         host: Arc<FleetNostrHost>,

@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { MOCK_HOLDER_PUBKEY, MOCK_SERVICE_NOSTR_PUBKEY } from '@/mocks/world/keys';
@@ -84,12 +84,33 @@ describe('AuthorizationPage', () => {
     expect(screen.getByText(/Your fleet is approved\. The code below/i)).toBeTruthy();
   });
 
-  it('should offer nothing to check once the fleet is approved', async () => {
-    vi.spyOn(adminCallModule, 'adminCall').mockResolvedValue(observed);
+  it('should refresh authorization after approval without fetching relays on mount', async () => {
+    const call = vi.spyOn(adminCallModule, 'adminCall').mockResolvedValue(observed);
     renderPage();
 
     await screen.findByText('Approved');
-    expect(screen.queryByRole('button', { name: 'Check now' })).toBeNull();
+    expect(call).not.toHaveBeenCalledWith('RefreshHolderAuthorizations');
+
+    call.mockResolvedValue({
+      ...observed,
+      nostr: { ...observed.nostr, holders: ['replacement-holder'] }
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Check now' }));
+
+    await screen.findByText('replacement-holder');
+    expect(call).toHaveBeenCalledWith('RefreshHolderAuthorizations');
+  });
+
+  it('should retain approval and report a failed replacement check', async () => {
+    const call = vi.spyOn(adminCallModule, 'adminCall').mockResolvedValue(observed);
+    renderPage();
+
+    await screen.findByText('Approved');
+    call.mockRejectedValue(new Error('Relay unavailable'));
+    fireEvent.click(screen.getByRole('button', { name: 'Check now' }));
+
+    await waitFor(() => expect(screen.getByText(/Relay unavailable/)).toBeTruthy());
+    expect(screen.getByText('Approved')).toBeTruthy();
   });
 
   it('should link the guardian terms of service without an acceptance date', async () => {

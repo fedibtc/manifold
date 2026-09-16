@@ -66,8 +66,8 @@ to *know* from a runtime is a value, and travels as one: the operator socket
 reads `directory::DirectoryPresence` off a `watch` channel the runtime
 publishes, which is why it cannot block on a relay even in principle. The
 operator's explicit Holder-enrollment refresh travels in the other direction
-through a runtime-supplied callback: the admin operation schedules work and
-returns rather than holding its local connection across relay I/O.
+through a runtime-supplied capability: the explicit admin operation awaits one
+bounded relay reconciliation, while ordinary status reads remain local.
 
 ## Module responsibilities
 

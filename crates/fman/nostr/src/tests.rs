@@ -194,7 +194,91 @@ async fn built_payload_advertises_the_service_pubkey() {
 }
 
 #[tokio::test]
+async fn renewed_authorization_updates_durable_and_live_state_without_rollback() {
+    let temp = tempfile::TempDir::new().unwrap();
+    let db = fman_core::db::Db::open(temp.path()).await.unwrap();
+    db.install_identity(&RootMnemonic::generate().unwrap())
+        .await
+        .unwrap();
+    let keys = Keys::generate();
+    let holder = Keys::generate();
+    let store = Arc::new(FleetHolderAuthorizationStore::new(db));
+    let service = FleetManagerNostr::new(
+        keys.clone(),
+        None,
+        Vec::new(),
+        None,
+        ManifoldEnvironment::Development.profile().unwrap(),
+        store.clone(),
+    );
+    let original = authorization_event_at(&holder, keys.public_key(), 100);
+    let mut content: HolderAuthorizationEventContent =
+        serde_json::from_str(&original.content).unwrap();
+    let authorization = &mut content.authorization.holder_authorization;
+    authorization.authorization.issued_at = Timestamp(200);
+    authorization.proof.signature =
+        holder.sign_schnorr(&nostr_sdk::secp256k1::Message::from_digest(
+            authorization.authorization.digest().unwrap().into(),
+        ));
+    let renewed = EventBuilder::new(original.kind, serde_json::to_string(&content).unwrap())
+        .sign_with_keys(&holder)
+        .unwrap();
+    let mut changes = service.inner.holder_authorizations.subscribe();
+    for (event, expected_time) in [(original.clone(), 100), (renewed, 200), (original, 200)] {
+        service
+            .inner
+            .retain_authorizations(vec![
+                verified_holder_authorization_event(event, &keys.public_key(), now_secs()).unwrap(),
+            ])
+            .await
+            .unwrap();
+        assert!(changes.has_changed().unwrap());
+        changes.borrow_and_update();
+        let live = service.holder_authorizations();
+        assert_eq!(live.len(), 1);
+        assert_eq!(
+            live[0].holder_authorization.authorization.issued_at.0,
+            expected_time
+        );
+        let retained = load_retained_holder_authorizations(&store, keys.public_key())
+            .await
+            .unwrap();
+        assert_eq!(
+            serde_json::to_value(live).unwrap(),
+            serde_json::to_value(retained).unwrap()
+        );
+    }
+    let _in_progress = service.inner.authorization_refresh.lock().await;
+    let error = fman_core::directory::HolderAuthorizationRefresher::refresh(&service)
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("already in progress"));
+    service
+        .inner
+        .retain_authorizations(Vec::new())
+        .await
+        .unwrap();
+    assert_eq!(
+        service.holder_authorizations()[0]
+            .holder_authorization
+            .authorization
+            .issued_at
+            .0,
+        200
+    );
+    assert!(matches!(
+        service.presence().borrow().onboarding,
+        OnboardingStatus::AuthorizationObserved {
+            authorizations: 1,
+            ..
+        }
+    ));
+}
+
+#[tokio::test]
 async fn service_exposes_onboarding_info_and_status_watcher() {
+    let temp = tempfile::TempDir::new().unwrap();
+    let db = fman_core::db::Db::open(temp.path()).await.unwrap();
     let keys = Keys::generate();
     let service = FleetManagerNostr::new(
         keys.clone(),
@@ -202,6 +286,7 @@ async fn service_exposes_onboarding_info_and_status_watcher() {
         Vec::new(),
         None,
         ManifoldEnvironment::Development.profile().unwrap(),
+        Arc::new(FleetHolderAuthorizationStore::new(db)),
     );
 
     assert_eq!(
