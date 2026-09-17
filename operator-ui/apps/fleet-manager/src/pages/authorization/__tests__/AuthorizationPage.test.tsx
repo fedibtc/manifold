@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { MOCK_HOLDER_PUBKEY, MOCK_SERVICE_NOSTR_PUBKEY } from '@/mocks/world/keys';
@@ -100,6 +100,34 @@ describe('AuthorizationPage', () => {
 
     await screen.findByText('replacement-holder');
     expect(call).toHaveBeenCalledWith('RefreshHolderAuthorizations');
+  });
+
+  it('should show the fetch as busy and prevent a second click until it finishes', async () => {
+    const call = vi.spyOn(adminCallModule, 'adminCall').mockResolvedValue(observed);
+    renderPage();
+    await screen.findByText('Approved');
+
+    let finishFetch!: (value: typeof observed) => void;
+    call.mockReturnValueOnce(
+      new Promise((resolve) => {
+        finishFetch = resolve;
+      })
+    );
+    const button = screen.getByRole('button', { name: 'Fetch new authorization' });
+    fireEvent.click(button);
+
+    await waitFor(() => expect(button).toBeDisabled());
+    expect(button.getAttribute('aria-busy')).toBe('true');
+    fireEvent.click(button);
+    expect(
+      call.mock.calls.filter(([request]) => request === 'RefreshHolderAuthorizations')
+    ).toHaveLength(1);
+
+    await act(async () => {
+      finishFetch(observed);
+    });
+    await waitFor(() => expect(button).toBeEnabled());
+    expect(button.getAttribute('aria-busy')).toBe('false');
   });
 
   it('should retain approval and report a failed replacement check', async () => {

@@ -67,10 +67,11 @@ The commitment-signing pubkey inside the signed payload is what binds the dialin
 
 ## Holder-authorization enrollment
 
-The operator's `Check now` action invokes a bounded query of at most
-64 kind-37705 candidate events indexed to the FMan's own Nostr pubkey during
-setup or when renewing authorization after setup. Relay tags are discovery hints only. Before
-retaining a candidate, the daemon verifies the Nostr event signature, parses
+The operator explicitly requests a bounded query of at most 64 kind-37705
+candidate events indexed to the FMan's own Nostr pubkey: `Check now` during
+setup, or `Fetch new authorization` when renewing authorization afterward.
+Relay tags are discovery hints only. Before retaining a candidate, the daemon
+verifies the Nostr event signature, parses
 its versioned content, requires the content holder id and authorization
 statement holder id to equal the event author, verifies the holder's SDK
 authorization proof, requires the authorization subject to equal this FMan's

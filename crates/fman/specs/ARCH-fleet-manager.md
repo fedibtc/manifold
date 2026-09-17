@@ -62,9 +62,9 @@ runtime depends on `core` and calls `FleetNostrHost` and
 that its other implementors are all test doubles.
 
 A hole is also specifically something the daemon needs *done*. What it needs
-to *know* from a runtime is a value, and travels as one: the operator socket
-reads `directory::DirectoryPresence` off a `watch` channel the runtime
-publishes, which is why it cannot block on a relay even in principle. The
+to *know* from a runtime is a value, and travels as one: ordinary operator
+status reads sample `directory::DirectoryPresence` off the runtime's `watch`
+channel without waiting on a relay. The
 operator's explicit Holder-enrollment refresh travels in the other direction
 through a runtime-supplied capability: the explicit admin operation awaits one
 bounded relay reconciliation, while ordinary status reads remain local.
