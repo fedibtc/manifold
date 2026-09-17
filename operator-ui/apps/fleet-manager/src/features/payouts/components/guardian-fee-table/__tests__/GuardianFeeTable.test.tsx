@@ -61,4 +61,57 @@ describe('GuardianFeeTable', () => {
     expect(screen.getByRole('button', { name: 'Collect fees' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Withdraw' })).toBeInTheDocument();
   });
+
+  // Two money tables sit on this screen. Without a line saying which is which,
+  // the seat-sales table above was read as this one.
+  it('should say what this revenue is and that it arrives in batches', () => {
+    renderTable(rows);
+
+    expect(
+      screen.getByText(
+        'Ongoing fees from payments in federations you guard. They arrive in batches, not one payment at a time.'
+      )
+    ).toBeInTheDocument();
+  });
+
+  // Column headers over an empty body read as a broken table, not as "nothing
+  // has happened yet".
+  it('should explain an empty table instead of showing bare headers', () => {
+    renderTable([]);
+
+    expect(
+      screen.getByText(
+        'No guardian fees yet. They appear once a federation you guard is running and its members start sending payments.'
+      )
+    ).toBeInTheDocument();
+    expect(screen.queryByText('In the pool')).toBeNull();
+  });
+
+  it('should answer why the figures are zero when every pool is empty', () => {
+    renderTable([{ seatId: 'seat-earning-01', collectableMsat: 0, collectedEcashMsat: 0 }]);
+
+    expect(screen.getByText('Why is this 0?')).toBeInTheDocument();
+  });
+
+  it('should not answer that question when a pool holds something', () => {
+    renderTable(rows);
+
+    expect(screen.queryByText('Why is this 0?')).toBeNull();
+  });
+
+  // Unknown is not zero, and the batching answer would be a guess about a pool
+  // the daemon never reported.
+  it('should not answer that question for an unread fee account', () => {
+    renderTable([{ seatId: 'seat-earning-01', collectableMsat: null, collectedEcashMsat: null }]);
+
+    expect(screen.queryByText('Why is this 0?')).toBeNull();
+  });
+
+  // With no seats there is no zero on screen to explain; the empty state is the
+  // answer.
+  it('should not answer that question when there are no seats at all', () => {
+    renderTable([]);
+
+    expect(screen.queryByText('Why is this 0?')).toBeNull();
+  });
 });

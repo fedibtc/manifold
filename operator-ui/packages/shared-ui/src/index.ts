@@ -9,6 +9,7 @@ export { KeyValueEditor } from './components/key-value-editor/KeyValueEditor';
 export { PageShell } from './components/page-shell/PageShell';
 export { QuerySurface } from './components/query-surface/QuerySurface';
 export { SectionCard } from './components/section-card/SectionCard';
+export { SectionDescription } from './components/section-description/SectionDescription';
 export { SelectField } from './components/select-field/SelectField';
 export { StaleDataBanner } from './components/stale-data-banner/StaleDataBanner';
 export { StatCard } from './components/stat-card/StatCard';

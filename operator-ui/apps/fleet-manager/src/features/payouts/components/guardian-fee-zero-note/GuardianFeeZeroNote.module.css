@@ -1,0 +1,11 @@
+.root {
+  @apply border-t border-muted px-4 py-3;
+}
+
+.summary {
+  @apply cursor-pointer text-sm font-medium text-ink;
+}
+
+.body {
+  @apply uMutedSm mt-2 max-w-prose;
+}
