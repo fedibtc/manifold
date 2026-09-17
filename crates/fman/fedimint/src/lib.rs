@@ -1202,6 +1202,10 @@ fn validate_payment_config(config: &fedimint_core::config::ClientConfig) -> anyh
     Ok(())
 }
 
+pub(crate) fn floor_to_whole_sats(msats: u64) -> u64 {
+    msats - msats % 1_000
+}
+
 fn cap_to_maximum(sendable_msat: u64, max_sendable_msat: u64) -> (u64, Option<DestinationCap>) {
     let amount = sendable_msat.min(max_sendable_msat);
     let capped = (amount < sendable_msat).then(|| DestinationCap {
@@ -1229,7 +1233,8 @@ async fn lnurl_pay(
     else {
         anyhow::bail!("destination is not an LNURL-pay endpoint");
     };
-    let (amount, capped) = cap_to_maximum(sendable_msat, pay.max_sendable);
+    let (capped_amount, capped) = cap_to_maximum(sendable_msat, pay.max_sendable);
+    let amount = floor_to_whole_sats(capped_amount);
     anyhow::ensure!(
         amount >= pay.min_sendable,
         "balance cannot cover the destination's minimum payment and fees"

@@ -127,7 +127,8 @@ the fleet.
   The wallet projection keeps monetary meanings separate:
   `available_ecash_msat` is only notes currently available to a new
   transaction; `economically_sweepable_recipient_msat` is a point-in-time
-  fee-aware maximum for one currently usable gateway;
+  fee-aware maximum for one currently usable gateway, floored to whole
+  satoshis because a sweep sends a whole-satoshi amount;
   `encumbered_outgoing_msat` is payout contract or refund value known not
   currently available as ecash (null when cached state cannot establish that
   amount); and `outgoing` contains the native operation id, rail,
@@ -156,8 +157,11 @@ the fleet.
   Fedimint client's native, persisted Lightning
   operation to send as much of that federation's balance as can economically
   fund the recipient amount, gateway fee, federation Lightning output fee,
-  and mint input fees. It accepts no amount: uneconomical notes and rounding
-  residue remain rather than making a best-effort sweep fail. Gateway
+  and mint input fees. It accepts no amount: uneconomical notes, sub-satoshi
+  residue, and rounding residue remain rather than making a best-effort
+  sweep fail. The amount sent is floored to whole satoshis, because an
+  LNURL service backed by a whole-satoshi ledger refuses anything else and
+  a sub-satoshi remainder is not enforceable on chain. Gateway
   selection is automatic: Lightning v2's own selection supplies its vetted
   route; when v2 is unavailable the v1 path prefers the federation metadata's
   currently available `vetted_gateways` and falls back to another available
