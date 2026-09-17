@@ -1,4 +1,5 @@
 import {
+  Chip,
   type Column,
   CopyButton,
   DataTable,
@@ -20,7 +21,8 @@ interface GuardianFeeTableProps {
 
 const seatRowKey = (row: GuardianFeeRow) => row.seatId;
 
-const isPoolEmpty = (row: GuardianFeeRow) => row.collectableMsat === 0;
+const isEmptyWhileEarning = (row: GuardianFeeRow) =>
+  row.collectableMsat === 0 && row.collectedEcashMsat === 0 && row.earning === true;
 
 /**
  * Guardian-fee revenue, which is per seat and leaves in two steps. The two
@@ -28,7 +30,7 @@ const isPoolEmpty = (row: GuardianFeeRow) => row.collectableMsat === 0;
  * collected into ecash. A sweep can only send the second.
  */
 export const GuardianFeeTable = ({ rows, hasDestination }: GuardianFeeTableProps) => {
-  const everyPoolEmpty = rows.length > 0 && rows.every(isPoolEmpty);
+  const everySeatEmptyWhileEarning = rows.length > 0 && rows.every(isEmptyWhileEarning);
   const columns: Column<GuardianFeeRow>[] = [
     {
       key: 'seat',
@@ -38,6 +40,8 @@ export const GuardianFeeTable = ({ rows, hasDestination }: GuardianFeeTableProps
           <span className={styles.mono}>{truncateMiddle(row.seatId, 8, 8)}</span>
 
           {isTruncated(row.seatId, 8, 8) && <CopyButton value={row.seatId} label="Copy seat ID" />}
+
+          {row.earning === false && <Chip tone="warn">Fees stopped</Chip>}
         </span>
       )
     },
@@ -83,7 +87,7 @@ export const GuardianFeeTable = ({ rows, hasDestination }: GuardianFeeTableProps
         <DataTable columns={columns} rows={rows} rowKey={seatRowKey} />
       )}
 
-      {everyPoolEmpty && <GuardianFeeZeroNote />}
+      {everySeatEmptyWhileEarning && <GuardianFeeZeroNote />}
     </SectionCard>
   );
 };
