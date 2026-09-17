@@ -57,6 +57,163 @@ async fn lnurl_body_cap_accepts_exact_chunked_boundary_and_rejects_next_byte() {
     assert!(error.to_string().contains("exceeds 65536 bytes"));
 }
 
+/// Serve an LNURL-pay response whose callback is `callback_url`.
+async fn serve_pay_response(callback_url: &str) -> String {
+    serve_chunked_body(
+        serde_json::json!({
+            "callback": callback_url,
+            "maxSendable": 100_000,
+            "minSendable": 1_000,
+            "tag": "payRequest",
+            "metadata": "[[\"text/plain\",\"payout\"]]",
+        })
+        .to_string()
+        .into_bytes(),
+    )
+    .await
+}
+
+fn lnurl_destination(url: String) -> String {
+    LnUrl::from_url(url).encode()
+}
+
+#[tokio::test]
+async fn lnurl_callback_refusal_reports_the_service_reason() {
+    let callback_url = serve_chunked_body(
+        br#"{"status":"ERROR","reason":"amount must be a whole number of sats"}"#.to_vec(),
+    )
+    .await;
+    let destination = lnurl_destination(serve_pay_response(&callback_url).await);
+
+    let error = lnurl_pay(&destination, |maximum| maximum)
+        .await
+        .unwrap_err();
+
+    let message = format!("{error:#}");
+    assert!(
+        message.contains("amount must be a whole number of sats"),
+        "{message}"
+    );
+    assert!(!message.contains("missing field"), "{message}");
+}
+
+#[tokio::test]
+async fn lnurl_first_response_refusal_reports_the_service_reason() {
+    let destination = lnurl_destination(
+        serve_chunked_body(br#"{"status":"ERROR","reason":"unknown recipient"}"#.to_vec()).await,
+    );
+
+    let error = lnurl_pay(&destination, |maximum| maximum)
+        .await
+        .unwrap_err();
+
+    assert!(
+        format!("{error:#}").contains("unknown recipient"),
+        "{error:#}"
+    );
+}
+
+#[tokio::test]
+async fn lnurl_refusal_reason_is_bounded() {
+    let reason = "e".repeat(MAX_LNURL_REASON_CHARS * 2);
+    let callback_url = serve_chunked_body(
+        serde_json::json!({ "status": "ERROR", "reason": reason })
+            .to_string()
+            .into_bytes(),
+    )
+    .await;
+    let destination = lnurl_destination(serve_pay_response(&callback_url).await);
+
+    let error = lnurl_pay(&destination, |maximum| maximum)
+        .await
+        .unwrap_err();
+
+    let message = format!("{error:#}");
+    assert!(
+        message.contains(&format!("{}…", "e".repeat(MAX_LNURL_REASON_CHARS))),
+        "{message}"
+    );
+    assert!(
+        !message.contains(&"e".repeat(MAX_LNURL_REASON_CHARS + 1)),
+        "{message}"
+    );
+}
+
+/// A reason short enough to repeat whole must not look truncated.
+#[tokio::test]
+async fn lnurl_reason_within_the_bound_is_not_marked_truncated() {
+    let callback_url =
+        serve_chunked_body(br#"{"status":"ERROR","reason":"recipient offline"}"#.to_vec()).await;
+    let destination = lnurl_destination(serve_pay_response(&callback_url).await);
+
+    let error = lnurl_pay(&destination, |maximum| maximum)
+        .await
+        .unwrap_err();
+
+    let message = format!("{error:#}");
+    assert!(message.contains("recipient offline"), "{message}");
+    assert!(!message.contains('…'), "{message}");
+}
+
+/// LUD-06 specifies an uppercase status, but services are not reliably
+/// compliant; a lowercase refusal is still a refusal.
+#[tokio::test]
+async fn lnurl_lowercase_error_status_is_still_a_refusal() {
+    let callback_url =
+        serve_chunked_body(br#"{"status":"error","reason":"over daily limit"}"#.to_vec()).await;
+    let destination = lnurl_destination(serve_pay_response(&callback_url).await);
+
+    let error = lnurl_pay(&destination, |maximum| maximum)
+        .await
+        .unwrap_err();
+
+    let message = format!("{error:#}");
+    assert!(message.contains("over daily limit"), "{message}");
+    assert!(!message.contains("missing field"), "{message}");
+}
+
+/// A refusal carrying no `reason` must still read as a refusal rather than as
+/// a malformed invoice.
+#[tokio::test]
+async fn lnurl_error_without_a_reason_is_still_a_refusal() {
+    let callback_url = serve_chunked_body(br#"{"status":"ERROR"}"#.to_vec()).await;
+    let destination = lnurl_destination(serve_pay_response(&callback_url).await);
+
+    let error = lnurl_pay(&destination, |maximum| maximum)
+        .await
+        .unwrap_err();
+
+    let message = format!("{error:#}");
+    assert!(message.contains("refused the request"), "{message}");
+    assert!(message.contains(UNSTATED_LNURL_REASON), "{message}");
+    assert!(!message.contains("missing field"), "{message}");
+}
+
+/// A successful pay response must not be mistaken for a refusal.
+#[tokio::test]
+async fn lnurl_non_error_status_is_not_a_refusal() {
+    assert_eq!(lnurl_error_reason(br#"{"status":"OK"}"#), None);
+    assert_eq!(lnurl_error_reason(br#"{"pr":"lnbc1"}"#), None);
+    assert_eq!(lnurl_error_reason(b"not json at all"), None);
+}
+
+/// A callback body that is neither an invoice nor an LNURL error must not
+/// surface a bare serde message.
+#[tokio::test]
+async fn lnurl_unparsable_callback_reports_context() {
+    let callback_url = serve_chunked_body(br#"{"unexpected":"shape"}"#.to_vec()).await;
+    let destination = lnurl_destination(serve_pay_response(&callback_url).await);
+
+    let error = lnurl_pay(&destination, |maximum| maximum)
+        .await
+        .unwrap_err();
+
+    assert!(
+        format!("{error:#}").contains("LNURL callback returned no usable invoice"),
+        "{error:#}"
+    );
+}
+
 #[tokio::test]
 async fn canceled_wallet_client_open_is_fenced_until_restart() {
     for scope in [payment(1), guardian(1, 1)] {
