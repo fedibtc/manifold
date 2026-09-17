@@ -20,8 +20,6 @@ interface GuardianFeeTableProps {
 
 const seatRowKey = (row: GuardianFeeRow) => row.seatId;
 
-// An unread account is `null`, which is not a zero: only a pool the daemon
-// answered for can be said to hold nothing.
 const isPoolEmpty = (row: GuardianFeeRow) => row.collectableMsat === 0;
 
 /**

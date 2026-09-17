@@ -51,13 +51,9 @@
   .uActionOutcome {
     @apply uStack1 text-sm text-ink;
   }
-  /* A section description inside a table frame. It sits above the head row, so
-     it carries the cell padding itself and a rule to part it from the table. */
   .uTableIntro {
     @apply border-b border-muted px-4 py-3;
   }
-  /* The sentence a table frame shows instead of head-only columns when it has
-     no rows. Padded like a cell so it sits inside the frame, not on its edge. */
   .uTableEmpty {
     @apply uMutedSm px-4 py-3;
   }

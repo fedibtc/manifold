@@ -22,8 +22,6 @@ describe('GuardianFeeZeroNote', () => {
     expect(screen.getByText(/Nothing is lost while it waits/)).toBeInTheDocument();
   });
 
-  // A rate is per federation and the remittance minimum is the payer's, so a
-  // figure here would be a guess the operator cannot check.
   it('should quote no rate, amount or deadline', () => {
     render(<GuardianFeeZeroNote />);
 

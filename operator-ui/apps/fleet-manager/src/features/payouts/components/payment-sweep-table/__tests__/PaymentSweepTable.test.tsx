@@ -73,8 +73,6 @@ describe('PaymentSweepTable', () => {
     expect(screen.getByText('Accepting payments')).toBeInTheDocument();
   });
 
-  // The federation column made this table look like the guardian-fee table
-  // below it, which is the other money on this screen and a different kind.
   it('should say that this revenue is the one-time seat payment', () => {
     renderTable(federations);
 
