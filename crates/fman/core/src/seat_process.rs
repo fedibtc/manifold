@@ -632,7 +632,7 @@ async fn spawn_child(
             })?;
     #[cfg(not(target_os = "linux"))]
     let mut child = command.spawn().map_err(|source| SeatProcessError::Spawn {
-        path: program,
+        path: program.clone(),
         source,
     })?;
     let stdout = child
