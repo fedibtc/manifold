@@ -5,6 +5,7 @@ import {
   DataTable,
   isTruncated,
   SectionCard,
+  SectionDescription,
   truncateMiddle
 } from '@operator-ui/common-ui';
 import type { PaymentFederation } from '@operator-ui/types';
@@ -77,6 +78,12 @@ export const PaymentSweepTable = ({ federations, hasDestination }: PaymentSweepT
 
   return (
     <SectionCard title="Seat sales" frame="table">
+      <div className={styles.intro}>
+        <SectionDescription>
+          One-time payments for seats, listed by the federation the payment came through.
+        </SectionDescription>
+      </div>
+
       {federations.length === 0 ? (
         <p className={styles.empty}>No payment federations accepted yet.</p>
       ) : (

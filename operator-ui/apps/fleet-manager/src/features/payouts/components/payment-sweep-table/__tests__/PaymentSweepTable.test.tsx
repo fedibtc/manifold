@@ -72,4 +72,14 @@ describe('PaymentSweepTable', () => {
 
     expect(screen.getByText('Accepting payments')).toBeInTheDocument();
   });
+
+  it('should say that this revenue is the one-time seat payment', () => {
+    renderTable(federations);
+
+    expect(
+      screen.getByText(
+        'One-time payments for seats, listed by the federation the payment came through.'
+      )
+    ).toBeInTheDocument();
+  });
 });

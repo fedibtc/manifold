@@ -7,3 +7,11 @@
 .idRow {
   @apply uCopyRow whitespace-nowrap;
 }
+
+.intro {
+  @apply uTableIntro;
+}
+
+.empty {
+  @apply uTableEmpty;
+}

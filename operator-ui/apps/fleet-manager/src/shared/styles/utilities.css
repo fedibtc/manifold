@@ -51,4 +51,10 @@
   .uActionOutcome {
     @apply uStack1 text-sm text-ink;
   }
+  .uTableIntro {
+    @apply border-b border-muted px-4 py-3;
+  }
+  .uTableEmpty {
+    @apply uMutedSm px-4 py-3;
+  }
 }
