@@ -45,6 +45,7 @@ mod payout_worker;
 pub mod setup_payment_policy;
 mod wallet_drain;
 
+pub(crate) use payout_job::DestinationCap;
 pub(crate) use payout_native::{await_payout, payout_for_request, payout_status, start_payout};
 
 pub use fman_core::db::WalletOrigin;
@@ -1201,10 +1202,19 @@ fn validate_payment_config(config: &fedimint_core::config::ClientConfig) -> anyh
     Ok(())
 }
 
+fn cap_to_maximum(sendable_msat: u64, max_sendable_msat: u64) -> (u64, Option<DestinationCap>) {
+    let amount = sendable_msat.min(max_sendable_msat);
+    let capped = (amount < sendable_msat).then(|| DestinationCap {
+        maximum_msat: max_sendable_msat,
+        remaining_msat: sendable_msat - amount,
+    });
+    (amount, capped)
+}
+
 async fn lnurl_pay(
     destination: &str,
-    choose_amount: impl FnOnce(u64) -> u64,
-) -> anyhow::Result<(Bolt11Invoice, u64)> {
+    sendable_msat: u64,
+) -> anyhow::Result<(Bolt11Invoice, u64, Option<DestinationCap>)> {
     let lnurl = if destination.contains('@') {
         LightningAddress::from_str(destination)
             .context("invalid Lightning Address")?
@@ -1219,7 +1229,7 @@ async fn lnurl_pay(
     else {
         anyhow::bail!("destination is not an LNURL-pay endpoint");
     };
-    let amount = choose_amount(pay.max_sendable);
+    let (amount, capped) = cap_to_maximum(sendable_msat, pay.max_sendable);
     anyhow::ensure!(
         amount >= pay.min_sendable,
         "balance cannot cover the destination's minimum payment and fees"
@@ -1232,7 +1242,7 @@ async fn lnurl_pay(
         invoice.amount_milli_satoshis() == Some(amount),
         "LNURL endpoint returned an invoice for the wrong amount"
     );
-    Ok((invoice, amount))
+    Ok((invoice, amount, capped))
 }
 
 /// Longest refusal reason repeated back from an LNURL service.

@@ -20,6 +20,7 @@ fn job() -> PayoutJob {
         operation: Some(PayoutJobOperation {
             operation_id: operation_id(),
             amount_msat: 250_000,
+            capped: None,
             committed_at_ms: 1_753_600_002_000,
         }),
         created_at_ms: 1_753_600_001_000,

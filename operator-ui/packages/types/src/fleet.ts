@@ -313,9 +313,14 @@ export type PayoutScope =
       seat_id: SeatId;
       invite_code: string;
     };
+export interface DestinationCap {
+  maximum_msat: number;
+  remaining_msat: number;
+}
 export interface PayoutJobOperation {
   operation_id: string;
   amount_msat: number;
+  capped: DestinationCap | null;
   committed_at_ms: number;
 }
 export interface PayoutJob {

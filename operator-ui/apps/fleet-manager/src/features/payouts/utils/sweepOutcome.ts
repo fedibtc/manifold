@@ -2,10 +2,15 @@ import type { CollectGuardianFeesResponse, PayoutJob } from '@operator-ui/types'
 import { formatSats } from '@/shared/utils/format';
 
 /** What a settled sweep moved. Both sweep verbs answer in this shape. */
-export const describePayout = (payout: PayoutJob): string =>
-  payout.operation === null
-    ? 'Payout request is pending.'
-    : `Sent ${formatSats(payout.operation.amount_msat)}.`;
+export const describePayout = (payout: PayoutJob): string => {
+  if (payout.operation === null) return 'Payout request is pending.';
+
+  const sent = `Sent ${formatSats(payout.operation.amount_msat)}.`;
+  const { capped } = payout.operation;
+  if (!capped) return sent;
+
+  return `${sent} Your Lightning address accepts at most ${formatSats(capped.maximum_msat)} per payment. ${formatSats(capped.remaining_msat)} are still here — press Withdraw again to send the rest.`;
+};
 
 /**
  * What a collection took, what it could not, and whether it finished.

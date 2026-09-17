@@ -249,6 +249,7 @@ pub(crate) async fn payout_for_request(
             operation_id: PayoutOperationId::parse(&key.operation_id.fmt_full().to_string())
                 .expect("Fedimint formats a canonical operation id"),
             amount_msat,
+            capped: None,
         });
     }
     Ok(found)

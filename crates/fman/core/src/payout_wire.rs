@@ -17,10 +17,17 @@ pub enum PayoutScopeWire {
     },
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize)]
+pub struct DestinationCapWire {
+    pub maximum_msat: u64,
+    pub remaining_msat: u64,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, serde::Serialize)]
 pub struct PayoutJobOperationWire {
     pub operation_id: String,
     pub amount_msat: u64,
+    pub capped: Option<DestinationCapWire>,
     pub committed_at_ms: u64,
 }
 

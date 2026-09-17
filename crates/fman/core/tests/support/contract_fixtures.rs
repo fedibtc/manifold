@@ -38,7 +38,7 @@ use fman_core::guardian_fee::{
 };
 use fman_core::onboarding;
 use fman_core::payout_wire::{
-    DrainStateWire, OutgoingOperationWire, OutgoingRailWire, OutgoingStateWire,
+    DestinationCapWire, DrainStateWire, OutgoingOperationWire, OutgoingRailWire, OutgoingStateWire,
     PayoutJobOperationWire, PayoutJobStatusWire, PayoutJobWire, PayoutScopeWire,
     WalletDrainStatusWire,
 };
@@ -66,6 +66,7 @@ pub const FIXTURE_NAMES: &[&str] = &[
     "fman_payment_federations",
     "fman_payout_destination",
     "fman_payout_job",
+    "fman_payout_job_capped",
     "fman_payout_job_status",
     "fman_seats",
     "fman_seat_reports",
@@ -99,6 +100,7 @@ pub fn fixture_json() -> Vec<(&'static str, String)> {
         ("fman_payment_federations", payment_federations_fixture()),
         ("fman_payout_destination", payout_destination_fixture()),
         ("fman_payout_job", payout_job_fixture()),
+        ("fman_payout_job_capped", payout_job_capped_fixture()),
         ("fman_payout_job_status", payout_job_status_fixture()),
         ("fman_seats", seats_fixture()),
         ("fman_seat_reports", seat_reports_fixture()),
@@ -478,6 +480,7 @@ pub fn payout_job() -> PayoutJobWire {
         operation: Some(PayoutJobOperationWire {
             operation_id: "0f7c1b9a3e5d4c2b8a6f0e1d2c3b4a5960718293a4b5c6d7e8f90a1b2c3d4e5f".into(),
             amount_msat: 250_000,
+            capped: None,
             committed_at_ms: 1_753_600_002_000,
         }),
         created_at_ms: 1_753_600_001_000,
@@ -485,6 +488,17 @@ pub fn payout_job() -> PayoutJobWire {
 }
 pub fn payout_job_fixture() -> Value {
     serde_json::to_value(payout_job()).unwrap()
+}
+pub fn payout_job_capped_fixture() -> Value {
+    let mut job = payout_job();
+    job.operation = job.operation.map(|operation| PayoutJobOperationWire {
+        capped: Some(DestinationCapWire {
+            maximum_msat: 250_000,
+            remaining_msat: 12_345_000,
+        }),
+        ..operation
+    });
+    serde_json::to_value(job).unwrap()
 }
 pub fn payout_job_status_fixture() -> Value {
     serde_json::to_value(PayoutJobStatusWire {

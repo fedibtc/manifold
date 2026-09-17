@@ -10,6 +10,13 @@ pub use fman_core::wallet::PayoutRequestId;
 pub struct Payout {
     pub operation_id: PayoutOperationId,
     pub amount_msat: u64,
+    pub capped: Option<DestinationCap>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize)]
+pub struct DestinationCap {
+    pub maximum_msat: u64,
+    pub remaining_msat: u64,
 }
 
 /// The exact wallet scope a payout job owns.
@@ -55,6 +62,7 @@ pub struct PayoutJobOperation {
     pub operation_id: PayoutOperationId,
     /// Amount requested by the destination invoice.
     pub amount_msat: u64,
+    pub capped: Option<DestinationCap>,
     /// Time at which FMan linked the native operation to the job.
     pub committed_at_ms: u64,
 }
@@ -104,6 +112,12 @@ impl PayoutJob {
                 fman_core::payout_wire::PayoutJobOperationWire {
                     operation_id: operation.operation_id.to_string(),
                     amount_msat: operation.amount_msat,
+                    capped: operation.capped.map(|cap| {
+                        fman_core::payout_wire::DestinationCapWire {
+                            maximum_msat: cap.maximum_msat,
+                            remaining_msat: cap.remaining_msat,
+                        }
+                    }),
                     committed_at_ms: operation.committed_at_ms,
                 }
             }),

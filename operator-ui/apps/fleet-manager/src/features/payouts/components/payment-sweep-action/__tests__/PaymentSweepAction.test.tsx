@@ -29,7 +29,12 @@ const payoutJob = {
   request_id: 'request-1',
   scope: { kind: 'payment_federation', federation_id: FEDERATION_ID },
   destination: 'operator@example.com',
-  operation: { operation_id: 'op-payment-1', amount_msat: 250_000_000, committed_at_ms: 2 },
+  operation: {
+    operation_id: 'op-payment-1',
+    amount_msat: 250_000_000,
+    capped: null,
+    committed_at_ms: 2
+  },
   created_at_ms: 1
 };
 

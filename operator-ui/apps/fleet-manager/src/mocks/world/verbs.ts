@@ -175,6 +175,7 @@ const sweepPaymentFees: Verb<'SweepPaymentFees'> = ({ federation_id, request_id 
     operation: {
       operation_id: `op_${federation_id.slice(4, 12)}_${swept}`,
       amount_msat: swept,
+      capped: null,
       committed_at_ms: now
     },
     created_at_ms: now
@@ -209,6 +210,7 @@ const sweepGuardianFees: Verb<'SweepGuardianFees'> = ({ seat_id, request_id }) =
     operation: {
       operation_id: `op_fees_${seat_id.slice(0, 8)}_${swept}`,
       amount_msat: swept,
+      capped: null,
       committed_at_ms: now
     },
     created_at_ms: now
