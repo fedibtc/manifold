@@ -1,7 +1,7 @@
 //! Domain types and data shapes for decentralized federation.
 //!
 //! Several wrappers here are still provisional protocol placeholders. They are
-//! expected to move toward credential-SDK types and canonical binary
+//! expected to move toward PeerBadge SDK types and canonical binary
 //! representations as the cross-component contracts settle.
 
 mod federation_config;

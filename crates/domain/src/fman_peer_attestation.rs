@@ -45,7 +45,7 @@ pub struct SeatEndpointProof {
 
 /// FMan-signed claim binding one FMan identity to one concrete Fedimint peer.
 ///
-/// This follows the credential SDK signed-object convention used by
+/// This follows the PeerBadge SDK signed-object convention used by
 /// `HolderAuthorization`: a protocol version marker, a named statement object,
 /// and a Schnorr proof over a type-tagged, versioned canonical statement
 /// payload. The signature domain is

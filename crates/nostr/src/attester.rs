@@ -41,7 +41,7 @@ pub const CREDENTIAL_REVOCATION_D_TAG_PREFIX: &str = "credential-revocation";
 
 /// Build the `d` tag value for an attester credential revocation event.
 ///
-/// `credential_digest` is the credential-SDK `CredentialDigest` wire form: the
+/// `credential_digest` is the PeerBadge SDK `CredentialDigest` wire form: the
 /// base64url-unpadded SHA-256 digest string produced by `Credential::digest()`
 /// serde serialization. Publishers and fetchers must use this same encoding or
 /// addressable replacement/filtering diverges across components.

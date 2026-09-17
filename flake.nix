@@ -1729,7 +1729,7 @@
         # second origin and no reverse proxy to keep in step.
         #
         # Unlike the daemon closures this derivation carries no private
-        # credential SDK -- `src` is the JavaScript workspace alone -- so
+        # PeerBadge SDK -- `src` is the JavaScript workspace alone -- so
         # SECURITY.md's prohibition on pushing to the public Cachix does not
         # apply to it.
         # Include the lockfile digest in the fixed-output derivation name. Nix

@@ -511,7 +511,7 @@ fn test_data_dir(name: &str) -> PathBuf {
         .join(format!("{name}-{}-{nanos}-{sequence}", std::process::id()))
 }
 
-/// Credential SDK fixtures for crate unit tests.
+/// PeerBadge SDK fixtures for crate unit tests.
 ///
 /// The containing module is compiled only under `cfg(test)`, so the hardcoded
 /// test issuer keys stay out of shipped binaries.
@@ -621,7 +621,7 @@ pub(crate) mod credentials {
         Ok(AttestationPayload(serde_json::to_vec(value)?))
     }
 
-    /// Nostr keys for a Holder, matching its credential-SDK identity.
+    /// Nostr keys for a Holder, matching its PeerBadge SDK identity.
     ///
     /// The kind-37705 admission checks bind the signed statement's holder to
     /// the event author, so a test that signs with an unrelated key is testing
