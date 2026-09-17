@@ -1214,6 +1214,9 @@ async fn lnurl_pay(
     };
     let client = lnurl::Builder::default().timeout(30).build_async()?;
     let pay_response = bounded_lnurl_get(&client, &lnurl.url, None).await?;
+    if let Some(reason) = lnurl_error_reason(&pay_response) {
+        anyhow::bail!("LNURL endpoint refused the request: {reason}");
+    }
     let LnUrlResponse::LnUrlPayResponse(pay) =
         lnurl::decode_ln_url_response(std::str::from_utf8(&pay_response)?)?
     else {
@@ -1225,13 +1228,37 @@ async fn lnurl_pay(
         "balance cannot cover the destination's minimum payment and fees"
     );
     let response = bounded_lnurl_get(&client, &pay.callback, Some(amount)).await?;
-    let response: lnurl::pay::LnURLPayInvoice = serde_json::from_slice(&response)?;
+    if let Some(reason) = lnurl_error_reason(&response) {
+        anyhow::bail!("LNURL endpoint refused the payment: {reason}");
+    }
+    let response: lnurl::pay::LnURLPayInvoice =
+        serde_json::from_slice(&response).context("LNURL callback returned no usable invoice")?;
     let invoice = Bolt11Invoice::from_str(response.invoice()).context("invalid LNURL invoice")?;
     anyhow::ensure!(
         invoice.amount_milli_satoshis() == Some(amount),
         "LNURL endpoint returned an invoice for the wrong amount"
     );
     Ok((invoice, amount))
+}
+
+/// Longest refusal reason repeated back from an LNURL service.
+const MAX_LNURL_REASON_CHARS: usize = 200;
+
+/// The service's stated reason, when this body is an LNURL error response.
+///
+/// A service refuses with HTTP 200 and `{"status":"ERROR","reason":…}`, so
+/// [`bounded_lnurl_get`]'s status check cannot catch it. Without this the body
+/// reaches a typed parse sharing no field with it and the reason is lost: the
+/// callback fails as ``missing field `pr` `` and the first response as
+/// `InvalidResponse`. The reason is remote text, so only a bounded prefix is
+/// repeated.
+fn lnurl_error_reason(body: &[u8]) -> Option<String> {
+    match serde_json::from_slice::<lnurl::api::Response>(body) {
+        Ok(lnurl::api::Response::Error { reason }) => {
+            Some(reason.chars().take(MAX_LNURL_REASON_CHARS).collect())
+        }
+        _ => None,
+    }
 }
 
 /// Fetch one LNURL response without retaining more than the compatibility cap.
