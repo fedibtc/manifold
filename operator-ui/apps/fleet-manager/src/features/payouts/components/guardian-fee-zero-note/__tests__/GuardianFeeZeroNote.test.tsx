@@ -25,6 +25,17 @@ describe('GuardianFeeZeroNote', () => {
   it('should quote no rate, amount or deadline', () => {
     render(<GuardianFeeZeroNote />);
 
-    expect(screen.getByText(/Members pay a small fee/).textContent).not.toMatch(/\d/);
+    expect(screen.getByText(/Members pay a small fee/).textContent).not.toMatch(
+      /\d|\b(few|several|minutes?|hours?|days?|weeks?|months?)\b/i
+    );
+  });
+
+  it('should tie the payout to each share and to how much members send', () => {
+    render(<GuardianFeeZeroNote />);
+
+    const answer = screen.getByText(/Members pay a small fee/).textContent;
+    expect(answer).toMatch(/pays your share when that share reaches/);
+    expect(answer).toMatch(/depends on how much members send/);
+    expect(answer).not.toMatch(/every recipient/);
   });
 });

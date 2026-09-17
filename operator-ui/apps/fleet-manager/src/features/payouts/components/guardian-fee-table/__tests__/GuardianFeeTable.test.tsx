@@ -5,8 +5,20 @@ import type { GuardianFeeRow } from '@/features/payouts/hooks/use-guardian-fee-r
 import { GuardianFeeTable } from '../GuardianFeeTable';
 
 const rows: GuardianFeeRow[] = [
-  { seatId: 'seat-earning-01', collectableMsat: 16_000_000, collectedEcashMsat: 8_000_000 }
+  {
+    seatId: 'seat-earning-01',
+    collectableMsat: 16_000_000,
+    collectedEcashMsat: 8_000_000,
+    earning: true
+  }
 ];
+
+const emptyRow: GuardianFeeRow = {
+  seatId: 'seat-earning-01',
+  collectableMsat: 0,
+  collectedEcashMsat: 0,
+  earning: true
+};
 
 const renderTable = (guardianFeeRows: GuardianFeeRow[], hasDestination = true) => {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -35,7 +47,7 @@ describe('GuardianFeeTable', () => {
   // row far wider than the two amount columns it exists to label.
   it('should middle-truncate a full-length seat id and offer it whole to the clipboard', () => {
     const seatId = 'a'.repeat(32) + 'b'.repeat(32);
-    renderTable([{ seatId, collectableMsat: 0, collectedEcashMsat: 0 }]);
+    renderTable([{ ...emptyRow, seatId }]);
 
     expect(screen.getByText('aaaaaaaa…bbbbbbbb')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Copy seat ID' })).toBeInTheDocument();
@@ -48,7 +60,7 @@ describe('GuardianFeeTable', () => {
   });
 
   it('should render an unread fee account as unknown rather than as zero', () => {
-    renderTable([{ seatId: 'seat-earning-01', collectableMsat: null, collectedEcashMsat: null }]);
+    renderTable([{ ...emptyRow, collectableMsat: null, collectedEcashMsat: null, earning: null }]);
 
     expect(screen.getAllByText('—')).toHaveLength(2);
   });
@@ -84,7 +96,7 @@ describe('GuardianFeeTable', () => {
   });
 
   it('should answer why the figures are zero when every pool is empty', () => {
-    renderTable([{ seatId: 'seat-earning-01', collectableMsat: 0, collectedEcashMsat: 0 }]);
+    renderTable([emptyRow]);
 
     expect(screen.getByText('Why is this 0?')).toBeInTheDocument();
   });
@@ -96,9 +108,33 @@ describe('GuardianFeeTable', () => {
   });
 
   it('should not answer that question for an unread fee account', () => {
-    renderTable([{ seatId: 'seat-earning-01', collectableMsat: null, collectedEcashMsat: null }]);
+    renderTable([{ ...emptyRow, collectableMsat: null, collectedEcashMsat: null, earning: null }]);
 
     expect(screen.queryByText('Why is this 0?')).toBeNull();
+  });
+
+  it('should not answer that question when collected fees are ready to send', () => {
+    renderTable([{ ...emptyRow, collectedEcashMsat: 8_000_000 }]);
+
+    expect(screen.queryByText('Why is this 0?')).toBeNull();
+  });
+
+  it('should not answer that question when a seat has stopped earning fees', () => {
+    renderTable([emptyRow, { ...emptyRow, seatId: 'seat-stopped-01', earning: false }]);
+
+    expect(screen.queryByText('Why is this 0?')).toBeNull();
+  });
+
+  it('should mark a seat whose federation has stopped charging guardian fees', () => {
+    renderTable([emptyRow, { ...emptyRow, seatId: 'seat-stopped-01', earning: false }]);
+
+    expect(screen.getAllByText('Fees stopped')).toHaveLength(1);
+  });
+
+  it('should not mark a seat whose fee policy could not be read', () => {
+    renderTable([{ ...emptyRow, earning: null }]);
+
+    expect(screen.queryByText('Fees stopped')).toBeNull();
   });
 
   it('should not answer that question when there are no seats at all', () => {

@@ -1,3 +1,4 @@
+import type { FeePolicyRead } from '@operator-ui/types';
 import { useGuardianFees } from '@/shared/api/hooks/use-guardian-fees/useGuardianFees';
 import { useSeats } from '@/shared/api/hooks/use-seats/useSeats';
 
@@ -9,7 +10,15 @@ export interface GuardianFeeRow {
   /** Already collected out of the pool and sitting as ordinary ecash, which is
    *  the only money a guardian-fee sweep can send. `null` reads as unknown. */
   collectedEcashMsat: number | null;
+  /** False when the federation charges a rate of zero or has no fee policy, so
+   *  nothing new accrues. `null` when the policy has not been read. */
+  earning: boolean | null;
 }
+
+const isEarning = (policy: FeePolicyRead): boolean | null => {
+  if ('policy_error' in policy) return null;
+  return policy.configured && (policy.send_ppm ?? 0) > 0;
+};
 
 /**
  * One row per live seat, because guardian-fee revenue is per seat and there is
@@ -31,7 +40,8 @@ export const useGuardianFeeRows = (): GuardianFeeRow[] => {
     return {
       seatId: seat.seat_id,
       collectableMsat: fees ? fees.collectable_msat : null,
-      collectedEcashMsat: fees ? fees.wallet.available_ecash_msat : null
+      collectedEcashMsat: fees ? fees.wallet.available_ecash_msat : null,
+      earning: fees ? isEarning(fees.policy) : null
     };
   });
 };

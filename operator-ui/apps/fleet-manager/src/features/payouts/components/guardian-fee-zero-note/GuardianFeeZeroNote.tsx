@@ -1,7 +1,7 @@
 import styles from './GuardianFeeZeroNote.module.css';
 
 const ZERO_EXPLANATION =
-  "Members pay a small fee when they send. Receiving and deposits are free. Fees build up in members' apps first. They're paid out together once every recipient's share is large enough, which can take a few days. Nothing is lost while it waits.";
+  "Members pay a small fee when they send. Receiving and deposits are free. Fees build up in members' apps first. An app pays your share when that share reaches the federation's minimum deposit. The time this takes depends on how much members send. Nothing is lost while it waits.";
 
 export const GuardianFeeZeroNote = () => (
   <details className={styles.root}>

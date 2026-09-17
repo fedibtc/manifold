@@ -35,7 +35,8 @@ const world = (destination: string | null) => (request: unknown) => {
   if (request === 'ListSeats') return Promise.resolve({ seats: [seatRow] });
   return Promise.resolve({
     collectable_msat: 16_000_000,
-    wallet: walletStatus(8_000_000)
+    wallet: walletStatus(8_000_000),
+    policy: { configured: true, send_ppm: 1_000 }
   });
 };
 
