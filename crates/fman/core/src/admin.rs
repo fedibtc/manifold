@@ -180,6 +180,7 @@ pub(crate) enum Phase {
     Fleet {
         fleet: Arc<Fleet>,
         directory: tokio::sync::watch::Receiver<DirectoryPresence>,
+        authorizations: Arc<dyn crate::directory::HolderAuthorizationRefresher>,
     },
 }
 
@@ -201,10 +202,12 @@ impl OperatorPhase {
     pub fn fleet(
         fleet: Arc<Fleet>,
         directory: tokio::sync::watch::Receiver<DirectoryPresence>,
+        authorizations: Arc<dyn crate::directory::HolderAuthorizationRefresher>,
     ) -> Self {
         Self(Arc::new(std::sync::Mutex::new(Phase::Fleet {
             fleet,
             directory,
+            authorizations,
         })))
     }
 
@@ -213,8 +216,13 @@ impl OperatorPhase {
         &self,
         fleet: Arc<Fleet>,
         directory: tokio::sync::watch::Receiver<DirectoryPresence>,
+        authorizations: Arc<dyn crate::directory::HolderAuthorizationRefresher>,
     ) {
-        *self.0.lock().expect("a phase writer panicked") = Phase::Fleet { fleet, directory };
+        *self.0.lock().expect("a phase writer panicked") = Phase::Fleet {
+            fleet,
+            directory,
+            authorizations,
+        };
     }
 
     /// Answer one operator request from the phase current when it arrived.
@@ -222,13 +230,11 @@ impl OperatorPhase {
     pub(crate) async fn answer(&self, request: AdminRequest) -> anyhow::Result<Value> {
         match self.sample() {
             Phase::Onboarding(onboarding) => onboarding.answer(request).await,
-            Phase::Fleet { fleet, directory } => {
-                // Sampled once per request: the answer is what the directory
-                // runtime had last published when the operator asked, never a
-                // value it goes on to fetch.
-                let directory = directory.borrow().clone();
-                dispatch(&fleet, &directory, request).await
-            }
+            Phase::Fleet {
+                fleet,
+                directory,
+                authorizations,
+            } => dispatch(&fleet, &directory, authorizations.as_ref(), request).await,
         }
     }
 
@@ -412,7 +418,8 @@ where
 /// daemon answers with rather than by a second description of it.
 pub(crate) async fn dispatch(
     fleet: &Fleet,
-    directory: &DirectoryPresence,
+    directory: &tokio::sync::watch::Receiver<DirectoryPresence>,
+    authorizations: &dyn crate::directory::HolderAuthorizationRefresher,
     request: AdminRequest,
 ) -> anyhow::Result<Value> {
     match request {
@@ -503,15 +510,10 @@ pub(crate) async fn dispatch(
         } => Ok(serde_json::to_value(
             fleet.payout_guardian_fees(&seat_id, &request_id).await?,
         )?),
-        AdminRequest::Onboarding => Ok(onboarding_json(
-            &fleet.identity().derive_service_pubkey().to_string(),
-            directory,
-            &env!("CARGO_PKG_VERSION")
-                .parse::<FmanVersion>()
-                .expect("workspace package version is valid SemVer"),
-        )),
+        AdminRequest::Onboarding => Ok(fleet_status_json(fleet, &directory.borrow())),
         AdminRequest::RefreshHolderAuthorizations => {
-            Err(crate::restore::RestoreError::AlreadyOnboarded.into())
+            authorizations.refresh().await?;
+            Ok(fleet_status_json(fleet, &directory.borrow()))
         }
         AdminRequest::ConfigureInitialOffer { .. } => {
             Err(crate::restore::RestoreError::AlreadyOnboarded.into())
@@ -526,6 +528,18 @@ pub(crate) async fn dispatch(
             Err(crate::restore::RestoreError::AlreadyOnboarded.into())
         }
     }
+}
+
+// The legacy Onboarding wire response also carries a running fleet's status;
+// projecting it does not perform or resume the setup workflow.
+fn fleet_status_json(fleet: &Fleet, directory: &DirectoryPresence) -> Value {
+    onboarding_json(
+        &fleet.identity().derive_service_pubkey().to_string(),
+        directory,
+        &env!("CARGO_PKG_VERSION")
+            .parse::<FmanVersion>()
+            .expect("workspace package version is valid SemVer"),
+    )
 }
 
 /// `ShowPlans` and `SetPrice` answer the same view, so a write needs no
@@ -946,4 +960,4 @@ pub async fn request(
 
 #[cfg(test)]
 #[path = "../tests/admin.rs"]
-mod tests;
+pub(crate) mod tests;

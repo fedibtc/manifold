@@ -297,7 +297,8 @@ const refreshHolderAuthorizations: Verb<'RefreshHolderAuthorizations'> = () => {
       ...state.onboarding,
       // A relay that is down stays down across reads; the scenario says so.
       nostr:
-        state.onboarding.nostr.state === 'relay_error'
+        state.onboarding.nostr.state === 'relay_error' ||
+        state.onboarding.nostr.state === 'authorization_observed'
           ? state.onboarding.nostr
           : { state: 'not_observed', checked_at: REFRESH_READ_AT }
     };
@@ -548,10 +549,8 @@ const stageRefusal = (method: AdminRequestName): AdminResult<unknown> | null => 
   if (runtime === 'starting' && method !== 'Onboarding' && !isOnboardingVerb(method)) {
     return startingRefusal();
   }
-  // The fleet dispatcher answers these two setup questions with the same
-  // refusal the onboard verbs get: they were settled before the fleet existed
-  // (admin.rs's RefreshHolderAuthorizations / ConfigureInitialOffer arms).
-  if (method === 'RefreshHolderAuthorizations' || method === 'ConfigureInitialOffer') {
+  // Initial offer setup is settled; authorization can be refreshed again.
+  if (method === 'ConfigureInitialOffer') {
     return {
       Err: {
         kind: 'already_onboarded',

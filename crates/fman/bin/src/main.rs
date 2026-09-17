@@ -456,6 +456,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         retained_holder_authorizations,
         retained_setup_payment_federations,
         manifold_environment,
+        holder_authorization_store,
     );
     // Construct the RPC only after the Nostr policy watch exists, so policy is
     // ordinary constructor-owned state rather than a late-bound service mode.
@@ -506,7 +507,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         fleet.wallet().clone(),
         nostr.subscribe_setup_payment_federations(),
     );
-    phase.open_fleet(fleet.clone(), nostr.presence());
+    phase.open_fleet(fleet.clone(), nostr.presence(), Arc::new(nostr.clone()));
 
     // The connection card an FI needs to reach this FMan: printed to stdout
     // behind the prefix the e2e harnesses read. They are the only consumers,

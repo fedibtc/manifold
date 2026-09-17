@@ -67,10 +67,11 @@ The commitment-signing pubkey inside the signed payload is what binds the dialin
 
 ## Holder-authorization enrollment
 
-The operator's `Check now` action invokes a bounded query of at most
-64 kind-37705 candidate events indexed to the FMan's own Nostr pubkey while it
-waits for setup to complete. Relay tags are discovery hints only. Before
-retaining a candidate, the daemon verifies the Nostr event signature, parses
+The operator explicitly requests a bounded query of at most 64 kind-37705
+candidate events indexed to the FMan's own Nostr pubkey: `Check now` during
+setup, or `Fetch new authorization` when renewing authorization afterward.
+Relay tags are discovery hints only. Before retaining a candidate, the daemon
+verifies the Nostr event signature, parses
 its versioned content, requires the content holder id and authorization
 statement holder id to equal the event author, verifies the holder's SDK
 authorization proof, requires the authorization subject to equal this FMan's
@@ -91,8 +92,10 @@ response to attacker-controlled churn. Because the daemon has no trusted-holder
 allowlist, arbitrary signers may fill this one service-wide set and deny later
 new digests; the operator enrollment flow must not treat first admission as
 issuer trust. Startup removes legacy rows beyond the aggregate or receiver-time
-bounds before reuse. Once the UI observes enrollment it stops requesting
-refreshes, and ordinary advertisement publication performs no
+bounds before reuse. The UI never polls for enrollment; after setup the operator
+can explicitly check for renewed or replacement authorization. Refreshes update
+the live authorization set and trigger republication, while ordinary advertisement
+publication performs no
 Holder-authorization relay query. A relying consumer still performs fresh
 issuer-policy, credential, and revocation verification; durable carriage is not
 a claim that the backing credential remains valid.

@@ -177,7 +177,7 @@ describe('staged onboarding dispatch', () => {
     expect(refused.Err.message).toBe('cannot set max seats to 1; 2 seats are active');
   });
 
-  it('should refuse the settled setup verbs on a running fleet', () => {
+  it('should allow authorization refresh but refuse initial offer setup on a running fleet', () => {
     resetState('fresh-fleet');
 
     const alreadyOnboarded = {
@@ -187,7 +187,11 @@ describe('staged onboarding dispatch', () => {
       }
     };
 
-    expect(dispatch('RefreshHolderAuthorizations')).toEqual(alreadyOnboarded);
+    const refreshed = dispatch('RefreshHolderAuthorizations') as { Ok: Record<string, unknown> };
+    expect(refreshed.Ok.nostr).toMatchObject({ state: 'authorization_observed' });
+    getState().relayAuthorization = 'absent';
+    const emptyRefresh = dispatch('RefreshHolderAuthorizations') as { Ok: Record<string, unknown> };
+    expect(emptyRefresh.Ok.nostr).toEqual(refreshed.Ok.nostr);
     expect(dispatch({ ConfigureInitialOffer: { max_seats: 3, price_msats: 50_000_000 } })).toEqual(
       alreadyOnboarded
     );

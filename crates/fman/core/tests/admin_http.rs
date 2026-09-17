@@ -205,7 +205,16 @@ async fn the_operator_listener_serves_a_data_root_with_no_identity_and_survives_
         .expect("startup observes that the browser settled onboarding")
         .unwrap();
     let fleet = opened_fleet(&temp, db).await;
-    phase.open_fleet(fleet.clone(), directory(&fleet));
+    let (presence_tx, presence) = tokio::sync::watch::channel(directory(&fleet).borrow().clone());
+    phase.open_fleet(
+        fleet.clone(),
+        presence,
+        Arc::new(crate::admin::tests::RefreshAuthorizations(presence_tx)),
+    );
+    let refreshed = post_admin(addr, &AdminRequest::RefreshHolderAuthorizations)
+        .await
+        .unwrap();
+    assert_eq!(refreshed["nostr"]["state"], "authorization_observed");
 
     // Same address, no rebind, and now the full surface.
     assert_eq!(

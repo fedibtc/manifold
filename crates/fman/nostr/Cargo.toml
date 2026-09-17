@@ -31,4 +31,5 @@ tracing = "0.1"
 [dev-dependencies]
 blind-rsa-signatures = "0.17"
 peerbadge-protocol.workspace = true
+tempfile = "3"
 tokio = { workspace = true, features = ["macros", "rt"] }

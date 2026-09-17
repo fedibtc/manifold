@@ -1,4 +1,5 @@
-import { SectionCard } from '@operator-ui/common-ui';
+import { Button, SectionCard } from '@operator-ui/common-ui';
+import { useAuthorizationWatch } from '@/shared/api/hooks/use-authorization-watch/useAuthorizationWatch';
 import { useOnboarding } from '@/shared/api/hooks/use-onboarding/useOnboarding';
 import { AuthorizationPanel } from '@/shared/components/authorization-panel/AuthorizationPanel';
 import { GuardianTerms } from '@/shared/components/guardian-terms/GuardianTerms';
@@ -15,6 +16,10 @@ const renderHolder = (holder: string) => (
 
 export const AuthorizationPage = () => {
   const onboarding = useOnboarding();
+  const refresh = useAuthorizationWatch();
+  const handleFetchAuthorization = () => {
+    void refresh.refetch();
+  };
   const nostr = onboarding.data?.nostr;
   const authorized = nostr?.state === 'authorization_observed';
   const holders = authorized ? nostr.holders : [];
@@ -33,8 +38,20 @@ export const AuthorizationPage = () => {
       <AuthorizationPanel
         data={onboarding.data}
         isLoading={onboarding.isLoading}
-        error={onboarding.error}
+        error={refresh.error ?? onboarding.error}
       />
+
+      <SectionCard title="Update authorization">
+        <p className={styles.hint}>
+          To renew or replace your authorization, scan the fleet manager ID with the Holder app and
+          authorize it again. Then fetch the new authorization here. Your existing authorization is
+          retained if the check fails or finds nothing new.
+        </p>
+
+        <Button variant="secondary" loading={refresh.isFetching} onClick={handleFetchAuthorization}>
+          Fetch new authorization
+        </Button>
+      </SectionCard>
       {holders.length > 0 ? (
         <SectionCard title="Approved by">
           <p className={styles.hint}>

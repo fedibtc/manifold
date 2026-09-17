@@ -296,11 +296,16 @@ the fleet.
   setup-payment publication (or null before one is admitted), and whether
   SemVer ordering requires an update. Consumers decide how to present that
   information; the daemon does not stop its guardian children.
-- `RefreshHolderAuthorizations` is available only during the onboarding
-  Holder-authorization stage. It awaits one bounded Nostr reconciliation and
+- `RefreshHolderAuthorizations` is available during the onboarding
+  Holder-authorization stage and after the fleet opens. It awaits one bounded Nostr reconciliation and
   returns the resulting onboarding projection. Verified events merge into
   durable enrollment state; failures and empty answers retain the last accepted
-  state. There is no post-fleet manual refresh operation.
+  state. Post-fleet refreshes update the live trust material and wake advertisement
+  publication only after durable merge and revalidation. A failed post-fleet
+  refresh returns an operation error without clearing the current authorization.
+  A concurrent refresh is refused rather than queued; relay work has a total
+  deadline below the browser request timeout. Request cancellation does not interrupt
+  durable merge through live publication. Ordinary status reads do not fetch relays.
 - `ShowMnemonic` returns the root mnemonic phrase as `mnemonic`, for the
   operator's recovery material (the full backup also requires the FMan
   database and each running seat's non-derivable fedimintd state,
