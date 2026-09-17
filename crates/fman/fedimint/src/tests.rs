@@ -184,7 +184,7 @@ async fn lnurl_error_without_a_reason_is_still_a_refusal() {
         .unwrap_err();
 
     let message = format!("{error:#}");
-    assert!(message.contains("refused the payment"), "{message}");
+    assert!(message.contains("refused the request"), "{message}");
     assert!(message.contains(UNSTATED_LNURL_REASON), "{message}");
     assert!(!message.contains("missing field"), "{message}");
 }

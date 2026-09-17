@@ -1214,9 +1214,6 @@ async fn lnurl_pay(
     };
     let client = lnurl::Builder::default().timeout(30).build_async()?;
     let pay_response = bounded_lnurl_get(&client, &lnurl.url, None).await?;
-    if let Some(reason) = lnurl_error_reason(&pay_response) {
-        anyhow::bail!("LNURL endpoint refused the request: {reason}");
-    }
     let LnUrlResponse::LnUrlPayResponse(pay) =
         lnurl::decode_ln_url_response(std::str::from_utf8(&pay_response)?)?
     else {
@@ -1228,9 +1225,6 @@ async fn lnurl_pay(
         "balance cannot cover the destination's minimum payment and fees"
     );
     let response = bounded_lnurl_get(&client, &pay.callback, Some(amount)).await?;
-    if let Some(reason) = lnurl_error_reason(&response) {
-        anyhow::bail!("LNURL endpoint refused the payment: {reason}");
-    }
     let response: lnurl::pay::LnURLPayInvoice =
         serde_json::from_slice(&response).context("LNURL callback returned no usable invoice")?;
     let invoice = Bolt11Invoice::from_str(response.invoice()).context("invalid LNURL invoice")?;
@@ -1248,10 +1242,8 @@ const UNSTATED_LNURL_REASON: &str = "no reason given";
 
 /// The service's stated reason, when this body is an LNURL error response.
 ///
-/// A refusal arrives as HTTP 200, so [`bounded_lnurl_get`]'s status check
-/// cannot catch it, and the body then parses as neither a pay response nor an
-/// invoice. Recognized from `status` alone, so a service that lowercases it or
-/// omits `reason` still reads as a refusal. The reason is remote text, so an
+/// Recognized from `status` alone, so a service that lowercases it or omits
+/// `reason` still reads as a refusal. The reason is remote text, so an
 /// over-long one is truncated with an ellipsis.
 fn lnurl_error_reason(body: &[u8]) -> Option<String> {
     let body: serde_json::Value = serde_json::from_slice(body).ok()?;
@@ -1269,6 +1261,10 @@ fn lnurl_error_reason(body: &[u8]) -> Option<String> {
 }
 
 /// Fetch one LNURL response without retaining more than the compatibility cap.
+///
+/// A refusal arrives as HTTP 200, so `error_for_status` cannot catch it and the
+/// body would otherwise reach a typed parse sharing no field with it. Refusing
+/// here keeps that out of every caller.
 async fn bounded_lnurl_get(
     client: &lnurl::AsyncClient,
     url: &str,
@@ -1298,6 +1294,9 @@ async fn bounded_lnurl_get(
             "LNURL response exceeds {MAX_LNURL_RESPONSE_BYTES} bytes"
         );
         body.extend_from_slice(&chunk);
+    }
+    if let Some(reason) = lnurl_error_reason(&body) {
+        anyhow::bail!("LNURL endpoint refused the request: {reason}");
     }
     Ok(body)
 }
