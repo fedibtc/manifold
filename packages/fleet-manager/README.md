@@ -49,6 +49,7 @@ fleet-manager serve \
   --bitcoind-url $FLEET_MANAGER_BITCOIND_URL \
   --bitcoind-username $FLEET_MANAGER_BITCOIND_USERNAME \
   --bitcoind-password=$FLEET_MANAGER_BITCOIND_PASSWORD \
+  [--esplora-url $FLEET_MANAGER_ESPLORA_URL] \
   [--admin-http-bind $FLEET_MANAGER_ADMIN_HTTP_BIND \
    --admin-http-auth $FLEET_MANAGER_ADMIN_HTTP_AUTH \
    --admin-http-password-file $FLEET_MANAGER_ADMIN_HTTP_PASSWORD_FILE]
@@ -60,6 +61,9 @@ Seat capacity and price are configured durably during browser or admin-socket on
 FLIP deployment (`development`, `staging`, or `production`).
 The profile supplies the Bitcoin network; this production package supplies an
 operator-owned Bitcoin Core backend instead of any profile Esplora default.
+`FLEET_MANAGER_ESPLORA_URL` optionally supplies a trusted, same-network Esplora
+fallback for Core RPC errors, including requests for blocks Core has pruned.
+It requires the Core settings above; the image supplies no default endpoint.
 `FLEET_MANAGER_PUSH_GATEWAY_ORIGIN` is optional, including in production.
 When set, it must be the real public HTTPS origin of the deployed gateway.
 Without it, FMan runs but rejects requests for DKG completion callbacks.
