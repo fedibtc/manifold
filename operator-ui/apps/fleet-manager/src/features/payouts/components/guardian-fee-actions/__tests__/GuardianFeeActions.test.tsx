@@ -93,7 +93,12 @@ describe('GuardianFeeActions', () => {
         invite_code: 'invite'
       },
       destination: 'operator@example.com',
-      operation: { operation_id: 'op-fees-1', amount_msat: 8_000_000, committed_at_ms: 2 },
+      operation: {
+        operation_id: 'op-fees-1',
+        amount_msat: 8_000_000,
+        capped: null,
+        committed_at_ms: 2
+      },
       created_at_ms: 1
     });
     renderActions();
@@ -117,7 +122,12 @@ describe('GuardianFeeActions', () => {
         invite_code: 'invite'
       },
       destination: 'operator@example.com',
-      operation: { operation_id: 'op-fees-1', amount_msat: 8_000_000, committed_at_ms: 2 },
+      operation: {
+        operation_id: 'op-fees-1',
+        amount_msat: 8_000_000,
+        capped: null,
+        committed_at_ms: 2
+      },
       created_at_ms: 1
     });
     renderActions();

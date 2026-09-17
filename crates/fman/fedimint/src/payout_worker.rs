@@ -219,6 +219,7 @@ mod tests {
                     &"ab".repeat(32),
                 )?,
                 amount_msat: 42,
+                capped: None,
             };
             self.payouts
                 .lock()

@@ -85,9 +85,7 @@ async fn lnurl_callback_refusal_reports_the_service_reason() {
     .await;
     let destination = lnurl_destination(serve_pay_response(&callback_url).await);
 
-    let error = lnurl_pay(&destination, |maximum| maximum)
-        .await
-        .unwrap_err();
+    let error = lnurl_pay(&destination, u64::MAX).await.unwrap_err();
 
     let message = format!("{error:#}");
     assert!(
@@ -103,9 +101,7 @@ async fn lnurl_first_response_refusal_reports_the_service_reason() {
         serve_chunked_body(br#"{"status":"ERROR","reason":"unknown recipient"}"#.to_vec()).await,
     );
 
-    let error = lnurl_pay(&destination, |maximum| maximum)
-        .await
-        .unwrap_err();
+    let error = lnurl_pay(&destination, u64::MAX).await.unwrap_err();
 
     assert!(
         format!("{error:#}").contains("unknown recipient"),
@@ -124,9 +120,7 @@ async fn lnurl_refusal_reason_is_bounded() {
     .await;
     let destination = lnurl_destination(serve_pay_response(&callback_url).await);
 
-    let error = lnurl_pay(&destination, |maximum| maximum)
-        .await
-        .unwrap_err();
+    let error = lnurl_pay(&destination, u64::MAX).await.unwrap_err();
 
     let message = format!("{error:#}");
     assert!(
@@ -146,9 +140,7 @@ async fn lnurl_reason_within_the_bound_is_not_marked_truncated() {
         serve_chunked_body(br#"{"status":"ERROR","reason":"recipient offline"}"#.to_vec()).await;
     let destination = lnurl_destination(serve_pay_response(&callback_url).await);
 
-    let error = lnurl_pay(&destination, |maximum| maximum)
-        .await
-        .unwrap_err();
+    let error = lnurl_pay(&destination, u64::MAX).await.unwrap_err();
 
     let message = format!("{error:#}");
     assert!(message.contains("recipient offline"), "{message}");
@@ -163,9 +155,7 @@ async fn lnurl_lowercase_error_status_is_still_a_refusal() {
         serve_chunked_body(br#"{"status":"error","reason":"over daily limit"}"#.to_vec()).await;
     let destination = lnurl_destination(serve_pay_response(&callback_url).await);
 
-    let error = lnurl_pay(&destination, |maximum| maximum)
-        .await
-        .unwrap_err();
+    let error = lnurl_pay(&destination, u64::MAX).await.unwrap_err();
 
     let message = format!("{error:#}");
     assert!(message.contains("over daily limit"), "{message}");
@@ -179,9 +169,7 @@ async fn lnurl_error_without_a_reason_is_still_a_refusal() {
     let callback_url = serve_chunked_body(br#"{"status":"ERROR"}"#.to_vec()).await;
     let destination = lnurl_destination(serve_pay_response(&callback_url).await);
 
-    let error = lnurl_pay(&destination, |maximum| maximum)
-        .await
-        .unwrap_err();
+    let error = lnurl_pay(&destination, u64::MAX).await.unwrap_err();
 
     let message = format!("{error:#}");
     assert!(message.contains("refused the request"), "{message}");
@@ -204,13 +192,88 @@ async fn lnurl_unparsable_callback_reports_context() {
     let callback_url = serve_chunked_body(br#"{"unexpected":"shape"}"#.to_vec()).await;
     let destination = lnurl_destination(serve_pay_response(&callback_url).await);
 
-    let error = lnurl_pay(&destination, |maximum| maximum)
-        .await
-        .unwrap_err();
+    let error = lnurl_pay(&destination, u64::MAX).await.unwrap_err();
 
     assert!(
         format!("{error:#}").contains("LNURL callback returned no usable invoice"),
         "{error:#}"
+    );
+}
+
+async fn serve_invoice_callback(amount_msat: u64) -> String {
+    use bitcoin::secp256k1::{SECP256K1, SecretKey};
+    use lightning_invoice::{Currency, InvoiceBuilder, PaymentSecret};
+
+    let invoice = InvoiceBuilder::new(Currency::Regtest)
+        .description(String::new())
+        .payment_hash(sha256::Hash::hash(&[1; 32]))
+        .current_timestamp()
+        .min_final_cltv_expiry_delta(0)
+        .payment_secret(PaymentSecret([2; 32]))
+        .amount_milli_satoshis(amount_msat)
+        .build_signed(|message| {
+            SECP256K1.sign_ecdsa_recoverable(message, &SecretKey::from_slice(&[3; 32]).unwrap())
+        })
+        .unwrap();
+    serve_chunked_body(
+        serde_json::json!({ "pr": invoice.to_string() })
+            .to_string()
+            .into_bytes(),
+    )
+    .await
+}
+
+#[tokio::test]
+async fn lnurl_pay_reports_the_maximum_that_bound_a_partial_sweep() {
+    let callback_url = serve_invoice_callback(100_000).await;
+    let destination = lnurl_destination(serve_pay_response(&callback_url).await);
+
+    let (_, amount, capped) = lnurl_pay(&destination, 150_000).await.unwrap();
+
+    assert_eq!(amount, 100_000);
+    assert_eq!(
+        capped,
+        Some(DestinationCap {
+            maximum_msat: 100_000,
+            remaining_msat: 50_000,
+        })
+    );
+}
+
+#[tokio::test]
+async fn lnurl_pay_reports_no_cap_when_the_whole_balance_fits() {
+    let callback_url = serve_invoice_callback(50_000).await;
+    let destination = lnurl_destination(serve_pay_response(&callback_url).await);
+
+    let (_, amount, capped) = lnurl_pay(&destination, 50_000).await.unwrap();
+
+    assert_eq!(amount, 50_000);
+    assert_eq!(capped, None);
+}
+
+#[test]
+fn cap_detection_binds_only_above_the_maximum() {
+    assert_eq!(cap_to_maximum(999, 1_000), (999, None));
+    assert_eq!(cap_to_maximum(1_000, 1_000), (1_000, None));
+    assert_eq!(
+        cap_to_maximum(1_001, 1_000),
+        (
+            1_000,
+            Some(DestinationCap {
+                maximum_msat: 1_000,
+                remaining_msat: 1,
+            })
+        )
+    );
+    assert_eq!(
+        cap_to_maximum(1_000, 0),
+        (
+            0,
+            Some(DestinationCap {
+                maximum_msat: 0,
+                remaining_msat: 1_000,
+            })
+        )
     );
 }
 

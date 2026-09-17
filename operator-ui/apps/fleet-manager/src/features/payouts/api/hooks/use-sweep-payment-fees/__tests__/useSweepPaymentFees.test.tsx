@@ -29,7 +29,7 @@ describe('useSweepPaymentFees', () => {
     request_id: 'request-1',
     scope: { kind: 'payment_federation' as const, federation_id: 'fed1aaa' },
     destination: 'operator@example.com',
-    operation: { operation_id: 'op-1', amount_msat: 250_000_000, committed_at_ms: 2 },
+    operation: { operation_id: 'op-1', amount_msat: 250_000_000, capped: null, committed_at_ms: 2 },
     created_at_ms: 1
   };
   // The request carries the federation and a retry-stable request id: no amount, because a

@@ -46,6 +46,7 @@ import fmanOnboardingJson from '../../fixtures/fman_onboarding.json';
 import fmanPaymentFederationsJson from '../../fixtures/fman_payment_federations.json';
 import fmanPayoutDestinationJson from '../../fixtures/fman_payout_destination.json';
 import fmanPayoutJobJson from '../../fixtures/fman_payout_job.json';
+import fmanPayoutJobCappedJson from '../../fixtures/fman_payout_job_capped.json';
 import fmanPayoutJobStatusJson from '../../fixtures/fman_payout_job_status.json';
 import fmanPlansJson from '../../fixtures/fman_plans.json';
 import fmanReenrollTelemetryJson from '../../fixtures/fman_reenroll_telemetry.json';
@@ -388,11 +389,20 @@ const fmanPayoutJobMirror = {
   destination: 'operator@example.com',
   operation: {
     amount_msat: 250_000,
+    capped: null,
     committed_at_ms: 1_753_600_002_000,
     operation_id: '0f7c1b9a3e5d4c2b8a6f0e1d2c3b4a5960718293a4b5c6d7e8f90a1b2c3d4e5f'
   },
   request_id: 'fixture-payout-request',
   scope: { federation_id: 'fed1fixturepayment', kind: 'payment_federation' }
+} satisfies PayoutJob;
+
+const fmanPayoutJobCappedMirror = {
+  ...fmanPayoutJobMirror,
+  operation: {
+    ...fmanPayoutJobMirror.operation,
+    capped: { maximum_msat: 250_000, remaining_msat: 12_345_000 }
+  }
 } satisfies PayoutJob;
 
 const fmanPayoutJobStatusMirror = {
@@ -710,6 +720,7 @@ describe('committed FMan fixtures match their type-checked mirrors', () => {
 
   it('should keep fman payout job fixtures equal to the typed mirrors', () => {
     expect(fmanPayoutJobJson).toEqual(fmanPayoutJobMirror);
+    expect(fmanPayoutJobCappedJson).toEqual(fmanPayoutJobCappedMirror);
     expect(fmanPayoutJobStatusJson).toEqual(fmanPayoutJobStatusMirror);
   });
 
