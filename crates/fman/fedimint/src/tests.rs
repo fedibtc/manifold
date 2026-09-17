@@ -130,13 +130,71 @@ async fn lnurl_refusal_reason_is_bounded() {
 
     let message = format!("{error:#}");
     assert!(
-        message.contains(&"e".repeat(MAX_LNURL_REASON_CHARS)),
+        message.contains(&format!("{}…", "e".repeat(MAX_LNURL_REASON_CHARS))),
         "{message}"
     );
     assert!(
         !message.contains(&"e".repeat(MAX_LNURL_REASON_CHARS + 1)),
         "{message}"
     );
+}
+
+/// A reason short enough to repeat whole must not look truncated.
+#[tokio::test]
+async fn lnurl_reason_within_the_bound_is_not_marked_truncated() {
+    let callback_url =
+        serve_chunked_body(br#"{"status":"ERROR","reason":"recipient offline"}"#.to_vec()).await;
+    let destination = lnurl_destination(serve_pay_response(&callback_url).await);
+
+    let error = lnurl_pay(&destination, |maximum| maximum)
+        .await
+        .unwrap_err();
+
+    let message = format!("{error:#}");
+    assert!(message.contains("recipient offline"), "{message}");
+    assert!(!message.contains('…'), "{message}");
+}
+
+/// LUD-06 specifies an uppercase status, but services are not reliably
+/// compliant; a lowercase refusal is still a refusal.
+#[tokio::test]
+async fn lnurl_lowercase_error_status_is_still_a_refusal() {
+    let callback_url =
+        serve_chunked_body(br#"{"status":"error","reason":"over daily limit"}"#.to_vec()).await;
+    let destination = lnurl_destination(serve_pay_response(&callback_url).await);
+
+    let error = lnurl_pay(&destination, |maximum| maximum)
+        .await
+        .unwrap_err();
+
+    let message = format!("{error:#}");
+    assert!(message.contains("over daily limit"), "{message}");
+    assert!(!message.contains("missing field"), "{message}");
+}
+
+/// A refusal carrying no `reason` must still read as a refusal rather than as
+/// a malformed invoice.
+#[tokio::test]
+async fn lnurl_error_without_a_reason_is_still_a_refusal() {
+    let callback_url = serve_chunked_body(br#"{"status":"ERROR"}"#.to_vec()).await;
+    let destination = lnurl_destination(serve_pay_response(&callback_url).await);
+
+    let error = lnurl_pay(&destination, |maximum| maximum)
+        .await
+        .unwrap_err();
+
+    let message = format!("{error:#}");
+    assert!(message.contains("refused the payment"), "{message}");
+    assert!(message.contains(UNSTATED_LNURL_REASON), "{message}");
+    assert!(!message.contains("missing field"), "{message}");
+}
+
+/// A successful pay response must not be mistaken for a refusal.
+#[tokio::test]
+async fn lnurl_non_error_status_is_not_a_refusal() {
+    assert_eq!(lnurl_error_reason(br#"{"status":"OK"}"#), None);
+    assert_eq!(lnurl_error_reason(br#"{"pr":"lnbc1"}"#), None);
+    assert_eq!(lnurl_error_reason(b"not json at all"), None);
 }
 
 /// A callback body that is neither an invoice nor an LNURL error must not

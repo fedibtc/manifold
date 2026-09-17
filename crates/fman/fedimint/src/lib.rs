@@ -1243,22 +1243,29 @@ async fn lnurl_pay(
 
 /// Longest refusal reason repeated back from an LNURL service.
 const MAX_LNURL_REASON_CHARS: usize = 200;
+/// Stands in when a service refuses without saying why.
+const UNSTATED_LNURL_REASON: &str = "no reason given";
 
 /// The service's stated reason, when this body is an LNURL error response.
 ///
-/// A service refuses with HTTP 200 and `{"status":"ERROR","reason":…}`, so
-/// [`bounded_lnurl_get`]'s status check cannot catch it. Without this the body
-/// reaches a typed parse sharing no field with it and the reason is lost: the
-/// callback fails as ``missing field `pr` `` and the first response as
-/// `InvalidResponse`. The reason is remote text, so only a bounded prefix is
-/// repeated.
+/// A refusal arrives as HTTP 200, so [`bounded_lnurl_get`]'s status check
+/// cannot catch it, and the body then parses as neither a pay response nor an
+/// invoice. Recognized from `status` alone, so a service that lowercases it or
+/// omits `reason` still reads as a refusal. The reason is remote text, so an
+/// over-long one is truncated with an ellipsis.
 fn lnurl_error_reason(body: &[u8]) -> Option<String> {
-    match serde_json::from_slice::<lnurl::api::Response>(body) {
-        Ok(lnurl::api::Response::Error { reason }) => {
-            Some(reason.chars().take(MAX_LNURL_REASON_CHARS).collect())
-        }
-        _ => None,
+    let body: serde_json::Value = serde_json::from_slice(body).ok()?;
+    if !body.get("status")?.as_str()?.eq_ignore_ascii_case("ERROR") {
+        return None;
     }
+    let Some(reason) = body.get("reason").and_then(serde_json::Value::as_str) else {
+        return Some(UNSTATED_LNURL_REASON.to_owned());
+    };
+    let mut bounded: String = reason.chars().take(MAX_LNURL_REASON_CHARS).collect();
+    if reason.chars().nth(MAX_LNURL_REASON_CHARS).is_some() {
+        bounded.push('…');
+    }
+    Some(bounded)
 }
 
 /// Fetch one LNURL response without retaining more than the compatibility cap.
