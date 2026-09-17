@@ -59,11 +59,19 @@ async fn lnurl_body_cap_accepts_exact_chunked_boundary_and_rejects_next_byte() {
 
 /// Serve an LNURL-pay response whose callback is `callback_url`.
 async fn serve_pay_response(callback_url: &str) -> String {
+    serve_pay_response_with_bounds(callback_url, 1_000, 100_000).await
+}
+
+async fn serve_pay_response_with_bounds(
+    callback_url: &str,
+    min_sendable: u64,
+    max_sendable: u64,
+) -> String {
     serve_chunked_body(
         serde_json::json!({
             "callback": callback_url,
-            "maxSendable": 100_000,
-            "minSendable": 1_000,
+            "maxSendable": max_sendable,
+            "minSendable": min_sendable,
             "tag": "payRequest",
             "metadata": "[[\"text/plain\",\"payout\"]]",
         })
@@ -249,6 +257,58 @@ async fn lnurl_pay_reports_no_cap_when_the_whole_balance_fits() {
 
     assert_eq!(amount, 50_000);
     assert_eq!(capped, None);
+}
+
+#[test]
+fn whole_sat_flooring_drops_only_the_sub_sat_remainder() {
+    assert_eq!(floor_to_whole_sats(0), 0);
+    assert_eq!(floor_to_whole_sats(999), 0);
+    assert_eq!(floor_to_whole_sats(1_000), 1_000);
+    assert_eq!(floor_to_whole_sats(3_333_123), 3_333_000);
+    assert_eq!(floor_to_whole_sats(3_333_999), 3_333_000);
+}
+
+#[tokio::test]
+async fn lnurl_pay_requests_a_whole_sat_amount() {
+    let callback_url = serve_invoice_callback(9_000).await;
+    let destination = lnurl_destination(serve_pay_response(&callback_url).await);
+
+    let (_, amount, capped) = lnurl_pay(&destination, 9_941).await.unwrap();
+
+    assert_eq!(amount, 9_000);
+    assert_eq!(capped, None);
+}
+
+#[tokio::test]
+async fn lnurl_pay_floors_the_amount_the_maximum_capped_it_to() {
+    let callback_url = serve_invoice_callback(99_000).await;
+    let destination =
+        lnurl_destination(serve_pay_response_with_bounds(&callback_url, 1_000, 99_500).await);
+
+    let (_, amount, capped) = lnurl_pay(&destination, 150_000).await.unwrap();
+
+    assert_eq!(amount, 99_000);
+    assert_eq!(
+        capped,
+        Some(DestinationCap {
+            maximum_msat: 99_500,
+            remaining_msat: 50_500,
+        })
+    );
+}
+
+#[tokio::test]
+async fn lnurl_pay_refuses_a_balance_that_floors_below_the_minimum() {
+    let callback_url = serve_invoice_callback(1_000).await;
+    let destination =
+        lnurl_destination(serve_pay_response_with_bounds(&callback_url, 1_500, 100_000).await);
+
+    let error = lnurl_pay(&destination, 1_999).await.unwrap_err();
+
+    assert!(
+        format!("{error:#}").contains("minimum payment"),
+        "{error:#}"
+    );
 }
 
 #[test]
