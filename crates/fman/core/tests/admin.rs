@@ -208,13 +208,14 @@ async fn admin_socket_round_trips_operator_verbs() {
                     fedimintd: fedimintd_path,
                     bitcoin_network: bitcoin::Network::Regtest,
                     iroh_dns: "https://dns.iroh.link/pkarr".parse().unwrap(),
-                    bitcoin_backend: crate::seat_process::BitcoinBackend::Bitcoind(
-                        BitcoindConfig {
+                    bitcoin_backend: crate::seat_process::BitcoinBackend::Bitcoind {
+                        primary: BitcoindConfig {
                             url: "http://127.0.0.1:18443".to_owned(),
                             username: "user".to_owned(),
                             password: "pass".to_owned(),
                         },
-                    ),
+                        esplora_fallback: None,
+                    },
                 },
             },
             Arc::new(crate::wallet::NoWallet),

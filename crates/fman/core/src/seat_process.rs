@@ -111,13 +111,18 @@ pub struct SeatProcessConfig {
     pub iroh_dns: SafeUrl,
 }
 
-/// The one chain-data backend supplied to a seat's bundled `fedimintd`.
+/// Chain-data backends supplied to a seat's bundled `fedimintd`.
 #[derive(Clone)]
 pub enum BitcoinBackend {
     /// Public HTTP Esplora API.
     Esplora(url::Url),
-    /// Operator-owned Bitcoin Core JSON-RPC.
-    Bitcoind(BitcoindConfig),
+    /// Operator-owned Bitcoin Core JSON-RPC, optionally with Esplora fallback.
+    Bitcoind {
+        /// Primary Bitcoin Core JSON-RPC connection.
+        primary: BitcoindConfig,
+        /// Esplora endpoint tried by fedimintd after a Core RPC error.
+        esplora_fallback: Option<url::Url>,
+    },
 }
 
 // No `Debug`: `password` is a credential and must never be formatted.
@@ -563,11 +568,17 @@ async fn spawn_child(
         BitcoinBackend::Esplora(url) => {
             command.env("FM_ESPLORA_URL", url.as_str());
         }
-        BitcoinBackend::Bitcoind(bitcoind) => {
+        BitcoinBackend::Bitcoind {
+            primary: bitcoind,
+            esplora_fallback,
+        } => {
             command
                 .env("FM_BITCOIND_URL", &bitcoind.url)
                 .env("FM_BITCOIND_USERNAME", &bitcoind.username)
                 .env("FM_BITCOIND_PASSWORD", &bitcoind.password);
+            if let Some(url) = esplora_fallback {
+                command.env("FM_ESPLORA_URL", url.as_str());
+            }
         }
     }
     // Do not let the daemon's development/package environment silently change

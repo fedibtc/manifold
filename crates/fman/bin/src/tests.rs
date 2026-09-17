@@ -32,6 +32,93 @@ fn bitcoind_password_starting_with_hyphen_is_an_option_value() {
 }
 
 #[test]
+fn bitcoind_does_not_implicitly_use_the_environment_esplora() {
+    let args = Args::try_parse_from([
+        "fleet-manager",
+        "serve",
+        "--data-dir",
+        "/tmp/fman",
+        "--manifold-environment",
+        "staging",
+        "--bitcoind-url",
+        "http://127.0.0.1:38332",
+        "--bitcoind-username",
+        "operator",
+        "--bitcoind-password",
+        "secret",
+    ])
+    .unwrap();
+    let Args::Serve(args) = args;
+    let profile = args.manifold_environment.profile().unwrap();
+
+    let process = seat_process_config(&args, &profile).unwrap();
+    let BitcoinBackend::Bitcoind {
+        primary,
+        esplora_fallback,
+    } = process.bitcoin_backend
+    else {
+        panic!("configured bitcoind must remain the primary backend");
+    };
+    assert_eq!(primary.url, "http://127.0.0.1:38332");
+    assert_eq!(esplora_fallback, None);
+}
+
+#[test]
+fn explicit_esplora_url_configures_bitcoind_fallback() {
+    let args = Args::try_parse_from([
+        "fleet-manager",
+        "serve",
+        "--data-dir",
+        "/tmp/fman",
+        "--manifold-environment",
+        "production",
+        "--bitcoind-url",
+        "http://127.0.0.1:8332",
+        "--bitcoind-username",
+        "operator",
+        "--bitcoind-password",
+        "secret",
+        "--esplora-url",
+        "https://bitcoin.example.test/api",
+    ])
+    .unwrap();
+    let Args::Serve(args) = args;
+    let profile = args.manifold_environment.profile().unwrap();
+
+    let process = seat_process_config(&args, &profile).unwrap();
+    let BitcoinBackend::Bitcoind {
+        esplora_fallback, ..
+    } = process.bitcoin_backend
+    else {
+        panic!("configured bitcoind must remain the primary backend");
+    };
+    assert_eq!(
+        esplora_fallback.as_ref().map(|url| url.as_str()),
+        Some("https://bitcoin.example.test/api")
+    );
+}
+
+#[test]
+fn esplora_fallback_requires_bitcoind() {
+    let error = Args::try_parse_from([
+        "fleet-manager",
+        "serve",
+        "--data-dir",
+        "/tmp/fman",
+        "--manifold-environment",
+        "production",
+        "--esplora-url",
+        "https://bitcoin.example.test/api",
+    ])
+    .err()
+    .expect("fallback without Core must be rejected");
+    assert_eq!(
+        error.kind(),
+        clap::error::ErrorKind::MissingRequiredArgument
+    );
+}
+
+#[test]
 fn manifold_profile_generates_expected_spv2_consensus_config() {
     let modules = manifold_modules();
     let kind = stability_pool_server::common::KIND;

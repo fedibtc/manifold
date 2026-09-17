@@ -104,6 +104,14 @@ This accepted lack of sandboxing is defense in depth only: it does not weaken
 the required operator custody, data-root, admin-socket, credential, backup, or
 network boundaries.
 
+FMan can pass an explicit Esplora URL alongside Bitcoin Core so the bundled
+fedimintd can fetch blocks that Core has pruned. The existing backend also
+falls back on other Core RPC errors, including transaction broadcast failures.
+Use only an operator-approved, trusted endpoint serving the same Bitcoin
+network; it can observe fallback requests, transaction contents, and timing.
+FMan does not add a public fallback by default. Re-review this boundary when
+the Fedimint pin or fallback endpoint changes.
+
 FLIP treats every federation endpoint in an FI-supplied invite as an outbound
 network capability. The default `GlobalOnly` policy accepts only canonical
 `iroh://<node-id>` guardian endpoints and rejects every `ws`/`wss` endpoint

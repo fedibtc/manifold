@@ -259,13 +259,16 @@ direction is strictly bottom-up; each layer only knows the ones below it.
   `fedimintd`.
 
 The resolved `ManifoldEnvironmentProfile` is the sole source of a seat's
-Bitcoin network. The binary selects one chain-data backend: complete
-operator-supplied Bitcoin Core credentials replace the profile's public
-default Esplora route, but cannot replace its network. Staging therefore forms
-Mutinynet (`signet`) seats against its profile-owned Esplora default without
-Bitcoin Core configuration; Development and Production have no public default
-and require Bitcoin Core. The process spawner clears the child environment and
-passes only the selected backend's variables.
+Bitcoin network. Without Bitcoin Core configuration, the binary uses the
+profile's public default Esplora backend. Staging therefore forms Mutinynet
+(`signet`) seats against that default; Development and Production have no
+public default and require operator-supplied Core credentials. An optional
+explicit Esplora URL alongside Core enables the bundled fedimintd's existing
+fallback on RPC errors, including requests for pruned blocks. The endpoint
+must be trusted and serve the same network. Core never implicitly uses the
+profile's public Esplora default. The spawner clears the child environment and
+passes only the configured backend variables; see [SECURITY.md](../../../SECURITY.md)
+for fallback trust and privacy requirements.
 
 ## Concurrency model
 

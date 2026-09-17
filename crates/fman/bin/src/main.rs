@@ -92,6 +92,10 @@ struct ServeArgs {
     /// boundaries*).
     #[arg(long, requires = "bitcoind_url")]
     bitcoind_password: Option<String>,
+    /// Trusted, same-network Esplora URL used when Bitcoin Core RPC fails,
+    /// including requests for blocks the node has pruned.
+    #[arg(long, requires = "bitcoind_url")]
+    esplora_url: Option<SafeUrl>,
     /// First seat port block on the `base + 4k` grid. The grid is
     /// per-host: multiple FMans sharing a host (the E2E harness) must be
     /// given disjoint grids.
@@ -179,13 +183,14 @@ fn seat_process_config(
         &args.bitcoind_username,
         &args.bitcoind_password,
     ) {
-        (Some(url), Some(username), Some(password)) => {
-            BitcoinBackend::Bitcoind(BitcoindConfig {
+        (Some(url), Some(username), Some(password)) => BitcoinBackend::Bitcoind {
+            primary: BitcoindConfig {
                 url: url.clone(),
                 username: username.clone(),
                 password: password.clone(),
-            })
-        }
+            },
+            esplora_fallback: args.esplora_url.clone().map(SafeUrl::to_unsafe),
+        },
         (None, None, None) => BitcoinBackend::Esplora(
             manifold_environment
                 .default_esplora_url()
@@ -299,7 +304,14 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         bitcoin_network = %process.bitcoin_network,
         bitcoin_backend = match &process.bitcoin_backend {
             BitcoinBackend::Esplora(_) => "esplora",
-            BitcoinBackend::Bitcoind(_) => "bitcoind",
+            BitcoinBackend::Bitcoind {
+                esplora_fallback: Some(_),
+                ..
+            } => "bitcoind-with-esplora-fallback",
+            BitcoinBackend::Bitcoind {
+                esplora_fallback: None,
+                ..
+            } => "bitcoind",
         },
         "selected Bitcoin chain backend"
     );
