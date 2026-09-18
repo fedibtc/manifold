@@ -23,6 +23,12 @@ fn deposit_address() -> Address<NetworkUnchecked> {
         .expect("valid test address")
 }
 
+/// Reduces one self-contained log, as a reader that starts at the newest
+/// entry and never needs a second page would.
+fn deposit_claims_from_log(entries: &[PersistedLogEntry]) -> Vec<GatewayDepositClaim> {
+    DepositClaimReader::default().read_page(entries)
+}
+
 /// Builds the log entry gatewayd would return for one logged event.
 fn log_entry<E: Event>(id: u64, event: &E) -> PersistedLogEntry {
     serde_json::from_value(serde_json::json!({
@@ -180,5 +186,112 @@ fn both_module_versions_reduce_to_the_same_claim_shape() {
             .map(|claim| (claim.out_idx, claim.amount))
             .collect::<Vec<_>>(),
         vec![(1, Sats(24_500)), (0, Sats(10_000))]
+    );
+}
+
+/// The walk recedes one position past the oldest entry it has read, and stops
+/// only when a page reaches the start of the log.
+#[test]
+fn a_page_ends_the_walk_only_at_the_start_of_the_log() {
+    let success = receive_update(operation_id(1), ReceivePaymentStatus::Success);
+
+    assert_eq!(
+        page_before(&[]),
+        None,
+        "an empty page has nothing behind it"
+    );
+    assert_eq!(
+        page_before(&[log_entry(5, &success), log_entry(4, &success)]),
+        Some(EventLogId::LOG_START.saturating_add(3)),
+        "the next read ends just before the oldest entry of this page"
+    );
+    assert_eq!(
+        page_before(&[log_entry(0, &success)]),
+        None,
+        "a page holding the first log position has nothing behind it"
+    );
+}
+
+/// A walletv2 claim can straddle a page boundary.
+///
+/// The federation's acceptance is logged after the receive it accepts, so a
+/// backwards walk reads the update on one page and the receive on the next.
+/// The reader carries the accepted operation ids forward, so the older page
+/// still resolves into a claim.
+#[test]
+fn a_receive_resolves_against_an_acceptance_read_on_an_earlier_page() {
+    let operation = operation_id(1);
+    let outpoint = OutPoint {
+        txid: txid(),
+        vout: 2,
+    };
+    let newer_page = vec![log_entry(
+        2,
+        &receive_update(operation, ReceivePaymentStatus::Success),
+    )];
+    let older_page = vec![log_entry(1, &receive(operation, Some(outpoint)))];
+
+    assert_eq!(
+        deposit_claims_from_log(&older_page),
+        vec![],
+        "read on its own the receive has no acceptance to resolve against"
+    );
+
+    let mut reader = DepositClaimReader::default();
+    assert_eq!(reader.read_page(&newer_page), vec![]);
+    assert_eq!(
+        reader.read_page(&older_page),
+        vec![GatewayDepositClaim {
+            txid: TXID.to_owned(),
+            out_idx: 2,
+            amount: Sats(24_500),
+        }]
+    );
+}
+
+/// One transaction can pay two items' deposit addresses, so the output index
+/// is what tells the two apart.
+#[test]
+fn a_query_matches_the_one_output_its_item_funded() {
+    let claim = GatewayDepositClaim {
+        txid: TXID.to_owned(),
+        out_idx: 1,
+        amount: Sats(25_000),
+    };
+
+    assert!(
+        DepositClaimQuery {
+            txid: TXID,
+            out_idx: Some(1),
+            min_amount: Sats(25_000),
+        }
+        .matches(&claim)
+    );
+    assert!(
+        !DepositClaimQuery {
+            txid: TXID,
+            out_idx: Some(0),
+            min_amount: Sats(25_000),
+        }
+        .matches(&claim),
+        "a sibling output of the same transaction funded a different item"
+    );
+    assert!(
+        DepositClaimQuery {
+            txid: TXID,
+            out_idx: None,
+            min_amount: Sats(25_000),
+        }
+        .matches(&claim),
+        "with no verified output index the txid is the whole attribution"
+    );
+    assert!(
+        !DepositClaimQuery {
+            txid: TXID,
+            out_idx: Some(1),
+            min_amount: Sats(25_001),
+        }
+        .matches(&claim),
+        "a credit short of the committed amount does not cover the item"
     );
 }

@@ -19,7 +19,7 @@ use crate::allocation_funding;
 use crate::allocation_store::{self, GatewayAllocationItem, GatewayObservation};
 use crate::daemon::Worker;
 use crate::database::Database;
-use crate::gateway::{ConfiguredGatewayClient, GatewayClient, GatewaySnapshot};
+use crate::gateway::{ConfiguredGatewayClient, DepositClaimQuery, GatewayClient, GatewaySnapshot};
 use crate::setup_store::{self};
 use crate::wallet::{FundsWallet, GatewaydFundsWallet, get_wallet_operation};
 use crate::{now_timestamp, run_interval_task, unavailable, validate_deposit_address};
@@ -339,8 +339,19 @@ async fn complete_if_gateway_funded(
         recheck_gateway_deposit(setup, gateway, &item).await?;
         return Ok(false);
     };
-    let claims = match gateway.deposit_claims(&item.target.federation_id.0).await {
-        Ok(claims) => claims,
+    // Chain observation settles allocation funding sends and records the
+    // output index it verified there, which is what separates two items paid
+    // by one transaction.
+    let query = DepositClaimQuery {
+        txid: funding_txid,
+        out_idx: operation.tx_vout,
+        min_amount: item.committed_amount,
+    };
+    let claim = match gateway
+        .find_deposit_claim(&item.target.federation_id.0, &query)
+        .await
+    {
+        Ok(claim) => claim,
         // A gateway that cannot answer for this federation leaves the item
         // running until it can. Every other item of the pass is independent
         // of this one, so one unanswered read must not end their turn.
@@ -354,18 +365,7 @@ async fn complete_if_gateway_funded(
             return Ok(false);
         }
     };
-    // One transaction can pay two items' deposit addresses in separate
-    // outputs, so a txid alone does not name the output this item funded.
-    // Chain observation settles allocation funding sends and records the
-    // output index it verified there; a manual review resolved by an operator
-    // leaves `tx_vout` unset, and the asserted txid is then the whole of the
-    // attribution that exists.
-    let claimed = claims.iter().any(|claim| {
-        claim.txid == funding_txid
-            && operation.tx_vout.is_none_or(|vout| claim.out_idx == vout)
-            && claim.amount.0 >= item.committed_amount.0
-    });
-    if !claimed {
+    if claim.is_none() {
         recheck_gateway_deposit(setup, gateway, &item).await?;
         return Ok(false);
     }
