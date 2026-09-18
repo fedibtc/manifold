@@ -34,7 +34,8 @@ use fedi_iroh_rpc::iroh::{Endpoint, endpoint::presets};
 use fedimint_derive_secret::{ChildId, DerivableSecret};
 use fman_fedimint::{Wallet as FmanWallet, WalletSecret};
 use futures_util::future::join_all;
-use iroh_base_035::{NodeId, SecretKey};
+use iroh_base_035::ticket::NodeTicket;
+use iroh_base_035::{NodeAddr, NodeId, SecretKey};
 use nostr_sdk::{EventBuilder, Keys as NostrKeys, Kind, Tag};
 use sha2::{Digest as _, Sha256};
 use tokio::io::{AsyncBufReadExt as _, AsyncReadExt as _, AsyncWriteExt as _, BufReader};
@@ -422,7 +423,7 @@ async fn run_formed_fleet_restore() -> anyhow::Result<()> {
     offer_free_seats(&fleet_manager_bin, &temp, GUARDIAN_COUNT).await?;
     let state_dir = temp.join("fi-state");
     let invite =
-        form_federation_in_state(&fi_cli_bin, &state_dir, &locators, &iroh_overrides).await?;
+        form_federation_in_state(&fi_cli_bin, &state_dir, &locators, &iroh_overrides, None).await?;
 
     let original_dir = temp.join("fman-0");
     let original_identity =
@@ -612,7 +613,7 @@ async fn run_real_seat_lifecycle() -> anyhow::Result<()> {
     )
     .await;
     offer_free_seats(&fleet_manager_bin, &temp, GUARDIAN_COUNT).await?;
-    form_federation_in_state(&fi_cli_bin, &state_dir, &locators, &iroh_overrides).await?;
+    form_federation_in_state(&fi_cli_bin, &state_dir, &locators, &iroh_overrides, None).await?;
 
     let seats = fleet_manager_admin(&fleet_manager_bin, &data_dir, &["seats", "list"]).await?;
     let seat_id = seats["seats"][0]["seat_id"]
@@ -777,14 +778,43 @@ async fn fman_remits_collects_and_recovers_guardian_fee_payout_under_defe() {
         eprintln!("skipping FMan post-formation E2E; set {OPT_IN_ENV}=1 to run");
         return;
     }
-    tokio::time::timeout(POST_FORMATION_TIMEOUT, run_real_post_formation_operations())
-        .await
-        .expect("FMan post-formation E2E timed out")
-        .expect("FMan post-formation E2E failed");
+    tokio::time::timeout(
+        POST_FORMATION_TIMEOUT,
+        run_real_post_formation_operations(None),
+    )
+    .await
+    .expect("FMan post-formation E2E timed out")
+    .expect("FMan post-formation E2E failed");
 }
 
-async fn run_real_post_formation_operations() -> anyhow::Result<()> {
-    let fleet_manager_bin = locate_binary(FLEET_MANAGER_BIN_ENV, "fleet-manager")?;
+/// Like Fedimint's upgrade-tests: create real state with the old executable,
+/// replace binaries without replacing data, then exercise the same operations.
+#[cfg(target_os = "linux")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "requires explicit old/new release binaries and isolated defe resources"]
+async fn fman_upgrades_existing_guardians_wallet_and_pending_payout_under_defe() {
+    let old = env::var_os("FMAN_UPGRADE_FROM_BIN")
+        .map(PathBuf::from)
+        .expect("FMAN_UPGRADE_FROM_BIN must name the previous production fleet-manager");
+    let new = locate_binary(FLEET_MANAGER_BIN_ENV, "fleet-manager").unwrap();
+    assert_ne!(
+        Sha256::digest(std::fs::read(&old).expect("read previous release")),
+        Sha256::digest(std::fs::read(&new).expect("read candidate release")),
+        "upgrade qualification must run different old and new executables"
+    );
+    tokio::time::timeout(
+        Duration::from_secs(900),
+        run_real_post_formation_operations(Some(&old)),
+    )
+    .await
+    .expect("FMan production upgrade timed out")
+    .expect("FMan production upgrade failed");
+}
+
+async fn run_real_post_formation_operations(upgrade_from: Option<&Path>) -> anyhow::Result<()> {
+    let candidate_bin = locate_binary(FLEET_MANAGER_BIN_ENV, "fleet-manager")?;
+    let fleet_manager_bin = upgrade_from.unwrap_or(&candidate_bin);
+    let upgrade_to = upgrade_from.map(|_| candidate_bin.as_path());
     let fi_cli_bin = locate_binary(FI_CLI_BIN_ENV, "fi-cli")?;
     let bitcoin_cli_bin = locate_binary(BITCOIN_CLI_BIN_ENV, "bitcoin-cli")?;
     let gateway_cli_bin = locate_binary(GATEWAY_CLI_BIN_ENV, "gateway-cli")?;
@@ -839,7 +869,7 @@ async fn run_real_post_formation_operations() -> anyhow::Result<()> {
     }
     let iroh_overrides = local_iroh_overrides_for_grid(56_000, 1, GUARDIAN_COUNT);
     let (mut daemons, locators) = start_daemons(
-        &fleet_manager_bin,
+        fleet_manager_bin,
         &temp,
         bitcoind,
         1,
@@ -854,9 +884,15 @@ async fn run_real_post_formation_operations() -> anyhow::Result<()> {
         None,
     )
     .await;
-    offer_free_seats(&fleet_manager_bin, &temp, GUARDIAN_COUNT).await?;
-    let invite =
-        form_federation_in_state(&fi_cli_bin, &state_dir, &locators, &iroh_overrides).await?;
+    offer_free_seats(fleet_manager_bin, &temp, GUARDIAN_COUNT).await?;
+    let invite = form_federation_in_state(
+        &fi_cli_bin,
+        &state_dir,
+        &locators,
+        &iroh_overrides,
+        upgrade_from.map(|_| ("0.11.2+fedi", "0.11.3+fedi")),
+    )
+    .await?;
 
     configure_guardian_fees(&fi_cli_bin, &state_dir, &iroh_overrides, 5_000).await?;
     // A generic metadata write after fee adoption must validate and carry the
@@ -868,13 +904,15 @@ async fn run_real_post_formation_operations() -> anyhow::Result<()> {
         "post-formation-e2e",
     )
     .await?;
-    assert_guardian_fee_policy(&fleet_manager_bin, &temp, 5_000).await?;
-    exercise_guardian_fee_wallet(&fleet_manager_bin, &temp).await?;
-    exercise_guardian_telemetry(&fleet_manager_bin, &temp, &locators[0]).await?;
+    assert_guardian_fee_policy(fleet_manager_bin, &temp, 5_000).await?;
+    exercise_guardian_fee_wallet(fleet_manager_bin, &temp).await?;
+    if upgrade_to.is_none() {
+        exercise_guardian_telemetry(fleet_manager_bin, &temp, &locators[0]).await?;
+    }
     exercise_real_guardian_fee_remittance_and_payout_recovery(
         &mut defe,
         bitcoind,
-        &fleet_manager_bin,
+        fleet_manager_bin,
         &fi_cli_bin,
         &gateway_cli_bin,
         &bitcoin_cli,
@@ -884,6 +922,7 @@ async fn run_real_post_formation_operations() -> anyhow::Result<()> {
         &iroh_overrides,
         &invite,
         &mut daemons,
+        upgrade_to,
     )
     .await?;
 
@@ -962,6 +1001,7 @@ async fn exercise_real_guardian_fee_remittance_and_payout_recovery(
     iroh_overrides: &str,
     invite: &str,
     daemons: &mut Vec<Child>,
+    upgrade_to: Option<&Path>,
 ) -> anyhow::Result<()> {
     const REMITTANCE_MSAT: u64 = 200_000;
     const PAYOUT_MSAT: u64 = 50_000;
@@ -1191,9 +1231,18 @@ async fn exercise_real_guardian_fee_remittance_and_payout_recovery(
         &["payout", "set", lnurl.destination()],
     )
     .await?;
+    let mut upgrade_identities = Vec::new();
+    if upgrade_to.is_some() {
+        for index in 0..GUARDIAN_COUNT {
+            let dir = temp.join(format!("fman-{index}"));
+            let identity = fleet_manager_admin(fleet_manager_bin, &dir, &["show-mnemonic"]).await?;
+            let seats = fleet_manager_admin(fleet_manager_bin, &dir, &["seats", "list"]).await?;
+            upgrade_identities.push((identity, seats));
+        }
+    }
     let request_id = "guardian-fee-payout-restart-e2e";
     #[cfg(target_os = "linux")]
-    let (expected_operation_id, restarted_locator) = {
+    let (expected_operation_id, restarted_locators) = {
         let sweep_fleet_manager_bin = fleet_manager_bin.to_owned();
         let sweep_dir = fman0_dir.clone();
         let sweep_seat_id = seat_id.clone();
@@ -1235,23 +1284,73 @@ async fn exercise_real_guardian_fee_remittance_and_payout_recovery(
         );
         std::fs::remove_file(fman0_dir.join(PAYOUT_CRASH_SEAM_ENABLE))?;
         std::fs::remove_file(crash_seam)?;
-        let mut restarted = spawn_fleet_manager(
-            fleet_manager_bin,
-            &fman0_dir,
-            &bitcoind.rpc_url,
-            &bitcoind.rpc_username,
-            &bitcoind.rpc_password,
-            56_000,
-            Some(iroh_overrides),
-            None,
-            None,
-        )?;
-        let locator = read_locator(&mut restarted, 0).await?;
-        daemons.insert(0, restarted);
-        (None::<String>, Some(locator))
+        if let Some(candidate) = upgrade_to {
+            // Stop the other old guardians before switching the whole federation,
+            // just as devimint restart_all_with_bin does. Never re-onboard.
+            shutdown_daemons(std::mem::take(daemons)).await?;
+            let mut restarted_locators = Vec::new();
+            for (index, (old_identity, old_seats)) in upgrade_identities.iter().enumerate() {
+                let dir = temp.join(format!("fman-{index}"));
+                let mut daemon = spawn_fleet_manager(
+                    candidate,
+                    &dir,
+                    &bitcoind.rpc_url,
+                    &bitcoind.rpc_username,
+                    &bitcoind.rpc_password,
+                    56_000 + u16::try_from(index)? * 100,
+                    Some(iroh_overrides),
+                    None,
+                    None,
+                )?;
+                let locator = read_locator(&mut daemon, index).await?;
+                restarted_locators.push(locator);
+                daemons.push(daemon);
+                let identity = fleet_manager_admin(candidate, &dir, &["show-mnemonic"]).await?;
+                anyhow::ensure!(
+                    identity == *old_identity,
+                    "upgrade changed FMan {index} identity"
+                );
+                let seats = fleet_manager_admin(candidate, &dir, &["seats", "list"]).await?;
+                let before = old_seats["seats"].as_array().context("old release seats")?;
+                let after = seats["seats"].as_array().context("upgraded seats")?;
+                anyhow::ensure!(
+                    before.len() == 1 && after.len() == 1,
+                    "upgrade changed FMan {index} seat count"
+                );
+                for field in [
+                    "seat_id",
+                    "fi_id",
+                    "plan",
+                    "created_at_ms",
+                    "decommissioned",
+                    "payment_claim",
+                ] {
+                    anyhow::ensure!(
+                        before[0].get(field).is_some() && before[0][field] == after[0][field],
+                        "upgrade changed FMan {index} seat field {field}"
+                    );
+                }
+            }
+            (None::<String>, restarted_locators)
+        } else {
+            let mut restarted = spawn_fleet_manager(
+                fleet_manager_bin,
+                &fman0_dir,
+                &bitcoind.rpc_url,
+                &bitcoind.rpc_username,
+                &bitcoind.rpc_password,
+                56_000,
+                Some(iroh_overrides),
+                None,
+                None,
+            )?;
+            let locator = read_locator(&mut restarted, 0).await?;
+            daemons.insert(0, restarted);
+            (None::<String>, vec![locator])
+        }
     };
     #[cfg(not(target_os = "linux"))]
-    let (expected_operation_id, restarted_locator) = {
+    let (expected_operation_id, restarted_locators) = {
         let started = fleet_manager_admin(
             fleet_manager_bin,
             &fman0_dir,
@@ -1271,9 +1370,10 @@ async fn exercise_real_guardian_fee_remittance_and_payout_recovery(
                     .context("payout start commits a native operation")?
                     .to_owned(),
             ),
-            None,
+            Vec::new(),
         )
     };
+    let fleet_manager_bin = upgrade_to.unwrap_or(fleet_manager_bin);
     let terminal = fleet_manager_admin_with_timeout(
         fleet_manager_bin,
         &fman0_dir,
@@ -1352,10 +1452,54 @@ async fn exercise_real_guardian_fee_remittance_and_payout_recovery(
     })
     .await
     .map_err(|_| anyhow::anyhow!("restarted guardian did not become healthy"))??;
+    if upgrade_to.is_some() {
+        for (index, (_, old_seats)) in upgrade_identities.iter().enumerate() {
+            let dir = temp.join(format!("fman-{index}"));
+            let seat = old_seats["seats"][0]["seat_id"]
+                .as_str()
+                .context("old release seat id")?;
+            tokio::time::timeout(Duration::from_secs(60), async {
+                loop {
+                    let status =
+                        fleet_manager_admin(fleet_manager_bin, &dir, &["seats", "status", seat])
+                            .await?;
+                    if status["report"]["phase"] == "running"
+                        && status["report"]["health"] == "healthy"
+                    {
+                        return Ok::<_, anyhow::Error>(());
+                    }
+                    tokio::time::sleep(Duration::from_millis(250)).await;
+                }
+            })
+            .await
+            .context("upgraded guardian did not recover consensus")??;
+        }
+        assert_guardian_fee_policy(fleet_manager_bin, temp, 5_000).await?;
+        let status = fleet_manager_admin(
+            fleet_manager_bin,
+            &fman0_dir,
+            &["guardian-fees", "show", &seat_id, "--limit", "1"],
+        )
+        .await?;
+        anyhow::ensure!(
+            status["remittance_account"] == empty["remittance_account"]
+                && status["lifetime_remitted_msat"] == remitted["lifetime_remitted_msat"],
+            "upgrade lost the fee wallet identity or remittance history"
+        );
+        exercise_guardian_telemetry(
+            fleet_manager_bin,
+            temp,
+            restarted_locators
+                .first()
+                .map(String::as_str)
+                .context("upgraded FMan locator")?,
+        )
+        .await?;
+    }
     // Retain the pre-existing signed FMan gateway-registration coverage only
     // after the real payout has finished: its deliberately unreachable
     // fixture URL is itself the consensus LNv2 gateway setting.
-    register_gateway_with_every_guardian(state_dir, restarted_locator.as_deref()).await?;
+    register_gateway_with_every_guardian(state_dir, &restarted_locators).await?;
     defe.release(gateway_lease.handle_id).await?;
     Ok(())
 }
@@ -1730,7 +1874,7 @@ async fn assert_guardian_fee_policy(
 
 async fn register_gateway_with_every_guardian(
     state_dir: &Path,
-    replacement_fman0_locator: Option<&str>,
+    replacement_locators: &[String],
 ) -> anyhow::Result<()> {
     let status = fi_status(&locate_binary(FI_CLI_BIN_ENV, "fi-cli")?, state_dir).await?;
     let seats = status["formation"]["seats"]
@@ -1758,13 +1902,10 @@ async fn register_gateway_with_every_guardian(
         .context("bind gateway-registration FI endpoint")?;
 
     for (index, seat) in seats.iter().enumerate() {
-        let locator: Locator = if index == 0 {
-            replacement_fman0_locator
-                .map(serde_json::from_str)
-                .transpose()?
-                .unwrap_or(serde_json::from_value(seat["locator"].clone())?)
-        } else {
-            serde_json::from_value(seat["locator"].clone())?
+        // Restarted FMans advertise fresh ephemeral transport addresses.
+        let locator: Locator = match replacement_locators.get(index) {
+            Some(locator) => serde_json::from_str(locator)?,
+            None => serde_json::from_value(seat["locator"].clone())?,
         };
         let seat_id = SeatId::new(
             seat["seat_id"]
@@ -2002,6 +2143,7 @@ async fn form_federation_in_state(
     state_dir: &Path,
     locators: &[String],
     iroh_overrides: &str,
+    version_range: Option<(&str, &str)>,
 ) -> anyhow::Result<String> {
     let mut init = Command::new(fi_cli_bin);
     init.arg("--state-dir").arg(state_dir).arg("init");
@@ -2022,6 +2164,14 @@ async fn form_federation_in_state(
         .arg("120")
         .env("FMAN_E2E_LOCAL_IROH", "1")
         .env("FM_IROH_CONNECT_OVERRIDES_PLAIN", iroh_overrides);
+    if let Some((minimum, maximum)) = version_range {
+        create.args([
+            "--fedimintd-version-minimum",
+            minimum,
+            "--fedimintd-version-maximum-exclusive",
+            maximum,
+        ]);
+    }
     for locator in locators {
         create.arg("--locator").arg(locator);
     }
@@ -3772,7 +3922,23 @@ fn spawn_fleet_manager(
         .stderr(Stdio::inherit())
         .kill_on_drop(true);
     if let Some(overrides) = iroh_overrides {
-        command.env("FM_IROH_CONNECT_OVERRIDES_PLAIN", overrides);
+        // 0.11 uses NodeTickets; 0.12 accepts plain socket addresses.
+        // Both point at the same isolated local guardian identities.
+        let legacy_overrides = overrides
+            .split(',')
+            .map(|entry| {
+                let (node, address) = entry.split_once('=').expect("local override pair");
+                let ticket = NodeTicket::new(
+                    NodeAddr::new(node.parse().expect("local node id"))
+                        .with_direct_addresses([address.parse().expect("local socket address")]),
+                );
+                format!("{node}={ticket}")
+            })
+            .collect::<Vec<_>>()
+            .join(",");
+        command
+            .env("FM_IROH_CONNECT_OVERRIDES_PLAIN", overrides)
+            .env("FM_IROH_CONNECT_OVERRIDES", legacy_overrides);
     }
     if let Some(nostr) = nostr {
         command
