@@ -653,14 +653,17 @@ async fn repeat_fast_path_is_bound_to_the_original_requester() -> anyhow::Result
         withdrawal_txid: Some("victim-withdrawal-txid".to_owned()),
         wallet_operation_id: None,
     });
-    allocation_store::complete_item(
-        &context.database,
-        federation_id,
-        &allocation_store::item_id(federation_id, SourceType::Gateway),
-        Sats(5_000),
-        evidence.clone(),
-    )
-    .await?;
+    assert!(
+        allocation_store::complete_item(
+            &context.database,
+            federation_id,
+            &allocation_store::item_id(federation_id, SourceType::Gateway),
+            Sats(5_000),
+            evidence.clone(),
+        )
+        .await?,
+        "the seeded item must complete for this test to exercise a completed allocation"
+    );
 
     // The original requester's repeat still gets the current status,
     // evidence included.
@@ -866,22 +869,25 @@ async fn an_allocation_that_delivered_value_is_not_taken_over() -> anyhow::Resul
     context.request_liquidity(first.clone()).await?;
     let federation_id = &first.payload.federation_details.federation_id;
 
-    allocation_store::complete_item(
-        &context.database,
-        federation_id,
-        &allocation_store::item_id(federation_id, SourceType::Gateway),
-        Sats(5_000),
-        CompletionEvidence::Gateway(GatewayCompletionEvidence {
-            gateway_id: GatewayId("gateway-1".to_owned()),
-            gateway_api: GatewayApiUrl::try_from("https://gateway.example").unwrap(),
-            fulfilled_amount: Sats(5_000),
-            observed_gateway_balance: Sats(5_000),
-            observed_at: now_timestamp(),
-            withdrawal_txid: Some("takeover-fulfilled-txid".to_owned()),
-            wallet_operation_id: None,
-        }),
-    )
-    .await?;
+    assert!(
+        allocation_store::complete_item(
+            &context.database,
+            federation_id,
+            &allocation_store::item_id(federation_id, SourceType::Gateway),
+            Sats(5_000),
+            CompletionEvidence::Gateway(GatewayCompletionEvidence {
+                gateway_id: GatewayId("gateway-1".to_owned()),
+                gateway_api: GatewayApiUrl::try_from("https://gateway.example").unwrap(),
+                fulfilled_amount: Sats(5_000),
+                observed_gateway_balance: Sats(5_000),
+                observed_at: now_timestamp(),
+                withdrawal_txid: Some("takeover-fulfilled-txid".to_owned()),
+                wallet_operation_id: None,
+            }),
+        )
+        .await?,
+        "the seeded item must complete for this test to exercise a completed allocation"
+    );
 
     let mut second = test_request(
         &provider_pubkey,

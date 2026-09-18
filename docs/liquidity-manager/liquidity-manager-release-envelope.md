@@ -96,7 +96,10 @@ non-secret failure reason reachable through the Admin API. `action_required` is
 the honest outcome for work that needs an operator, and the recovery surfaces
 for it are `retry_funding_step`, `cancel_allocation`, `inspect_target_client`,
 `bind_target_deposit`, `abandon_target_client_value`, `resolve_manual_review`,
-and `complete_review_without_evidence`. A `completed` review resolution requires
+and `complete_review_without_evidence`. `abandon_gateway_item` is the one
+recovery surface that does not act on `action_required`: a gateway item whose
+attribution is overdue stays active and keeps reconciling, so the operator acts
+on an item FLIP is still working on rather than one it has handed over. A `completed` review resolution requires
 chain evidence of the operation's exact destination and amount;
 `complete_review_without_evidence` is the route for an outcome established out
 of band, and it records that no evidence existed.
@@ -104,6 +107,13 @@ of band, and it records that no evidence existed.
 An in-doubt wallet send escalates to manual review after 21 600 s (6 hours) by
 default (`in_doubt_review_after_secs` — **derived**), which is the mechanism
 that keeps a send from sitting unresolved past the gateway deadline.
+
+A gateway item whose settled funding the gateway has not reported claiming has
+its wait raised for the operator after the same 21 600 s by default
+(`gateway_claim_review_after_secs` — **derived**). That threshold reports a
+delay; it does not end one. The item stays active and keeps reconciling, so a
+claim the gateway reports later still completes it, and no deadline in this
+envelope is met by giving up on an item.
 
 ## Recovery objective — **proposed**
 

@@ -10,8 +10,8 @@
 //! [`crate::stability_pool`]/[`crate::stability_allocation`].
 
 use fedi_decentralized_service_liquidity_manager::{
-    CompletionEvidence, GatewayCompletionEvidence, LiquidityFailureCode, Sats, ServiceResult,
-    SetupConfigView, WalletOperationId, WalletOperationStatus,
+    CompletionEvidence, GatewayCompletionEvidence, LiquidityFailureCode, Sats, ServiceErrorCode,
+    ServiceResult, SetupConfigView, WalletOperation, WalletOperationId, WalletOperationStatus,
 };
 
 use crate::DaemonContext;
@@ -19,7 +19,7 @@ use crate::allocation_funding;
 use crate::allocation_store::{self, GatewayAllocationItem, GatewayObservation};
 use crate::daemon::Worker;
 use crate::database::Database;
-use crate::gateway::{ConfiguredGatewayClient, GatewayClient, GatewaySnapshot};
+use crate::gateway::{ConfiguredGatewayClient, DepositClaimQuery, GatewayClient, GatewaySnapshot};
 use crate::setup_store::{self};
 use crate::wallet::{FundsWallet, GatewaydFundsWallet, get_wallet_operation};
 use crate::{now_timestamp, run_interval_task, unavailable, validate_deposit_address};
@@ -62,7 +62,9 @@ pub(crate) async fn process_gateway_allocations(context: &DaemonContext) -> Serv
 
 async fn observe_configured_gateway(context: &DaemonContext) -> ServiceResult<()> {
     let (setup, _wallet, gateway) = configured_gateway_dependencies(context).await?;
-    let snapshot = gateway.gateway_info().await.map_err(unavailable)?;
+    let Some(snapshot) = read_gateway_snapshot(&context.database, &setup, &gateway).await? else {
+        return Ok(());
+    };
     persist_gateway_snapshot(&context.database, &setup, &snapshot).await
 }
 
@@ -74,13 +76,76 @@ pub(crate) async fn process_gateway_allocations_with(
     endpoint_policy: crate::endpoint_policy::EndpointPolicy,
 ) -> ServiceResult<usize> {
     let items = allocation_store::active_gateway_items(database).await?;
+    if items.is_empty() {
+        return Ok(0);
+    }
+    // One gateway serves every item, so it is asked once a pass and its answer
+    // decides the whole pass. A gateway that cannot answer, or that has not
+    // caught up with the chain, has said nothing about any item: it reports no
+    // claim it has not yet read, so acting on that silence would read an outage
+    // as evidence.
+    let Some(snapshot) = read_gateway_snapshot(database, setup, gateway).await? else {
+        return Ok(0);
+    };
+    if !snapshot.synced_to_chain {
+        note_gateway_cannot_answer(database, setup, "gatewayd has not caught up with the chain")
+            .await?;
+        return Ok(0);
+    }
+    persist_gateway_snapshot(database, setup, &snapshot).await?;
+
     let mut advanced = 0;
     for item in items {
-        if process_gateway_item(database, setup, wallet, gateway, endpoint_policy, item).await? {
-            advanced += 1;
+        let item_id = item.item_id.clone();
+        match process_gateway_item(
+            database,
+            setup,
+            wallet,
+            gateway,
+            endpoint_policy,
+            &snapshot,
+            item,
+        )
+        .await
+        {
+            Ok(true) => advanced += 1,
+            Ok(false) => {}
+            // Items are independent, and a dependency that failed one of them
+            // may well answer the next. Ending the pass here would make one
+            // item's unlucky moment everybody else's outage.
+            Err(error) if error.code() == ServiceErrorCode::Unavailable => {
+                tracing::warn!(
+                    item_id = %item_id.0,
+                    %error,
+                    "a dependency could not answer for this gateway item"
+                );
+            }
+            Err(error) => return Err(error),
         }
     }
     Ok(advanced)
+}
+
+/// Reads the gateway, recording an outage rather than failing the caller.
+///
+/// `None` means the gateway did not answer. The outage is durable and dated,
+/// so its length is readable rather than inferred from how long the log has
+/// been repeating itself.
+async fn read_gateway_snapshot(
+    database: &Database,
+    setup: &SetupConfigView,
+    gateway: &impl GatewayClient,
+) -> ServiceResult<Option<GatewaySnapshot>> {
+    match gateway.gateway_info().await {
+        Ok(snapshot) => {
+            note_gateway_answers(database, setup).await?;
+            Ok(Some(snapshot))
+        }
+        Err(error) => {
+            note_gateway_cannot_answer(database, setup, &error.to_string()).await?;
+            Ok(None)
+        }
+    }
 }
 
 async fn process_gateway_item(
@@ -89,13 +154,16 @@ async fn process_gateway_item(
     wallet: &impl FundsWallet,
     gateway: &impl GatewayClient,
     endpoint_policy: crate::endpoint_policy::EndpointPolicy,
+    snapshot: &GatewaySnapshot,
     mut item: GatewayAllocationItem,
 ) -> ServiceResult<bool> {
     if !allocation_store::mark_item_running(database, &item.federation_id, &item.item_id).await? {
         return Ok(false);
     }
 
-    let snapshot = gateway.gateway_info().await.map_err(unavailable)?;
+    // A configured gateway on the wrong network is a settled fact about the
+    // deployment, not a dependency having a bad moment, so it stops the item
+    // rather than making it wait.
     if snapshot.network != setup.network {
         allocation_store::require_item_action(
             database,
@@ -110,10 +178,6 @@ async fn process_gateway_item(
         .await?;
         return Ok(true);
     }
-    if !snapshot.synced_to_chain {
-        return Ok(false);
-    }
-    persist_gateway_snapshot(database, setup, &snapshot).await?;
 
     let mut advanced = false;
     let observed_federation = snapshot
@@ -336,11 +400,31 @@ async fn complete_if_gateway_funded(
     // federation-wide balance inequality is not, because a concurrent item or
     // an independent deposit raises the same aggregate.
     let Some(funding_txid) = operation.txid.as_deref() else {
-        recheck_gateway_deposit(setup, gateway, &item).await?;
+        recheck_and_note_delay(
+            database,
+            setup,
+            gateway,
+            &item,
+            &operation,
+            "the settled funding send records no transaction id, so no gateway claim \
+             can name the output it paid",
+        )
+        .await?;
         return Ok(false);
     };
-    let claims = match gateway.deposit_claims(&item.target.federation_id.0).await {
-        Ok(claims) => claims,
+    // Chain observation settles allocation funding sends and records the
+    // output index it verified there, which is what separates two items paid
+    // by one transaction.
+    let query = DepositClaimQuery {
+        txid: funding_txid,
+        out_idx: operation.tx_vout,
+        min_amount: item.committed_amount,
+    };
+    let claim = match gateway
+        .find_deposit_claim(&item.target.federation_id.0, &query)
+        .await
+    {
+        Ok(claim) => claim,
         // A gateway that cannot answer for this federation leaves the item
         // running until it can. Every other item of the pass is independent
         // of this one, so one unanswered read must not end their turn.
@@ -354,19 +438,16 @@ async fn complete_if_gateway_funded(
             return Ok(false);
         }
     };
-    // One transaction can pay two items' deposit addresses in separate
-    // outputs, so a txid alone does not name the output this item funded.
-    // Chain observation settles allocation funding sends and records the
-    // output index it verified there; a manual review resolved by an operator
-    // leaves `tx_vout` unset, and the asserted txid is then the whole of the
-    // attribution that exists.
-    let claimed = claims.iter().any(|claim| {
-        claim.txid == funding_txid
-            && operation.tx_vout.is_none_or(|vout| claim.out_idx == vout)
-            && claim.amount.0 >= item.committed_amount.0
-    });
-    if !claimed {
-        recheck_gateway_deposit(setup, gateway, &item).await?;
+    if claim.is_none() {
+        recheck_and_note_delay(
+            database,
+            setup,
+            gateway,
+            &item,
+            &operation,
+            "the gateway does not report claiming the deposit this item funded",
+        )
+        .await?;
         return Ok(false);
     }
     // Completion evidence records what the gateway reported for the funded
@@ -377,7 +458,16 @@ async fn complete_if_gateway_funded(
         .await
         .map_err(unavailable)?
     else {
-        recheck_gateway_deposit(setup, gateway, &item).await?;
+        recheck_and_note_delay(
+            database,
+            setup,
+            gateway,
+            &item,
+            &operation,
+            "the gateway does not report the funded federation, so there is no balance \
+             to record as completion evidence",
+        )
+        .await?;
         return Ok(false);
     };
     allocation_store::upsert_gateway_observation(
@@ -411,8 +501,75 @@ async fn complete_if_gateway_funded(
             wallet_operation_id: Some(operation_id),
         }),
     )
-    .await?;
-    Ok(true)
+    .await
+}
+
+/// Rechecks the deposit address, and raises a long wait for an operator.
+///
+/// Both halves apply on every pass where the gateway has not yet attributed
+/// the item's funding output. The recheck asks the gateway to look at the
+/// address again; the notice tells an operator that the looking has gone on
+/// long enough to be worth their attention.
+async fn recheck_and_note_delay(
+    database: &Database,
+    setup: &SetupConfigView,
+    gateway: &impl GatewayClient,
+    item: &GatewayAllocationItem,
+    operation: &WalletOperation,
+    detail: &str,
+) -> ServiceResult<()> {
+    note_attribution_delay(database, setup, item, operation, detail).await?;
+    recheck_gateway_deposit(setup, gateway, item).await
+}
+
+/// Records that the gateway's attribution for this item is overdue.
+///
+/// The age is measured from the funding operation's last update, which for a
+/// settled send is when it reached `completed`. Terminal wallet states are
+/// monotonic, so that timestamp stops moving and the age only grows.
+///
+/// Passing the threshold says a human should look, not that the money is gone.
+/// Missing confirmation does not establish whether the gateway received the
+/// deposit: the gateway may be offline, resyncing, or behind on its log. So the
+/// marker rides in the item step and the item keeps its active status, which is
+/// what lets the next pass read the gateway's log again and complete the item
+/// from evidence that arrives afterwards, with no operator action at all.
+///
+/// The marker is written once. A worker that keeps finding the same wait calls
+/// this every pass, so an unguarded event would repeat one fact for as long as
+/// the condition lasted.
+async fn note_attribution_delay(
+    database: &Database,
+    setup: &SetupConfigView,
+    item: &GatewayAllocationItem,
+    operation: &WalletOperation,
+    detail: &str,
+) -> ServiceResult<()> {
+    if item.step.attribution_overdue_since.is_some() {
+        return Ok(());
+    }
+    let threshold = setup.funding_policy.gateway_claim_review_after_secs;
+    if threshold == 0 {
+        return Ok(());
+    }
+    let now = now_timestamp();
+    let unattributed_for = now.0.saturating_sub(operation.updated_at.0);
+    if unattributed_for < threshold {
+        return Ok(());
+    }
+
+    let mut step = item.step.clone();
+    step.attribution_overdue_since = Some(now);
+    allocation_store::update_item_step(database, &item.item_id, &step).await?;
+    tracing::warn!(
+        federation_id = %item.target.federation_id.0,
+        item_id = %item.item_id.0,
+        unattributed_for_secs = unattributed_for,
+        detail,
+        "gateway funding deposit is still unattributed; the item stays active and \
+         keeps reconciling"
+    );
+    Ok(())
 }
 
 async fn recheck_gateway_deposit(
@@ -427,6 +584,68 @@ async fn recheck_gateway_deposit(
         .recheck_deposit_address(&item.target.federation_id.0, address, setup.network)
         .await
         .map_err(unavailable)
+}
+
+/// The status the gateway row carries while the gateway cannot answer.
+///
+/// Every successful observation overwrites the row with gatewayd's own state
+/// string, so this value is never one of those and its presence means the last
+/// thing FLIP learned was that the gateway was not answering.
+const GATEWAY_UNAVAILABLE_STATUS: &str = "unavailable";
+
+/// Records that the gateway cannot answer, dating the outage from its start.
+///
+/// Written once per outage. While the gateway answers, the row's `observed_at`
+/// means "last seen"; while it does not, the row is left alone so the same
+/// field means "unavailable since". Repeating the write each pass would keep
+/// resetting that to now and hide exactly the thing worth knowing, which is
+/// how long this has been going on.
+async fn note_gateway_cannot_answer(
+    database: &Database,
+    setup: &SetupConfigView,
+    detail: &str,
+) -> ServiceResult<()> {
+    let recorded = allocation_store::gateway_observation(database, &setup.gateway.gateway_id)
+        .await?
+        .is_some_and(|observation| observation.status == GATEWAY_UNAVAILABLE_STATUS);
+    if recorded {
+        return Ok(());
+    }
+    allocation_store::upsert_gateway_observation(
+        database,
+        &GatewayObservation {
+            gateway_id: setup.gateway.gateway_id.clone(),
+            federation_id: None,
+            status: GATEWAY_UNAVAILABLE_STATUS.to_owned(),
+            observed_balance: None,
+            observed_at: now_timestamp(),
+        },
+    )
+    .await?;
+    tracing::warn!(
+        gateway_id = %setup.gateway.gateway_id.0,
+        detail,
+        "gateway cannot answer; its allocation items wait rather than fail"
+    );
+    Ok(())
+}
+
+/// Reports the end of an outage, once, with how long it lasted.
+async fn note_gateway_answers(database: &Database, setup: &SetupConfigView) -> ServiceResult<()> {
+    let Some(previous) =
+        allocation_store::gateway_observation(database, &setup.gateway.gateway_id).await?
+    else {
+        return Ok(());
+    };
+    if previous.status != GATEWAY_UNAVAILABLE_STATUS {
+        return Ok(());
+    }
+    tracing::info!(
+        gateway_id = %setup.gateway.gateway_id.0,
+        unavailable_for_secs = now_timestamp().0.saturating_sub(previous.observed_at.0),
+        "gateway answers again"
+    );
+    Ok(())
 }
 
 async fn persist_gateway_snapshot(
