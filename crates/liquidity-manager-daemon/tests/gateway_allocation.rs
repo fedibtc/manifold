@@ -17,7 +17,9 @@ use tokio::sync::Mutex;
 
 use super::*;
 use crate::allocation_store::load_allocation_status_by_federation;
-use crate::gateway::{GatewayDepositClaim, GatewayFederationSnapshot, GatewaySnapshot};
+use crate::gateway::{
+    DepositClaimQuery, GatewayDepositClaim, GatewayFederationSnapshot, GatewaySnapshot,
+};
 use crate::manual_ops::{
     cancel_allocation_with_database, resolve_manual_review_with_database_for_test,
 };
@@ -1028,10 +1030,18 @@ impl GatewayClient for FakeGateway {
         Ok(())
     }
 
-    async fn deposit_claims(
+    async fn find_deposit_claim(
         &self,
         _federation_id: &str,
-    ) -> anyhow::Result<Vec<GatewayDepositClaim>> {
-        Ok(self.inner.lock().await.deposit_claims.clone())
+        query: &DepositClaimQuery<'_>,
+    ) -> anyhow::Result<Option<GatewayDepositClaim>> {
+        Ok(self
+            .inner
+            .lock()
+            .await
+            .deposit_claims
+            .iter()
+            .find(|claim| query.matches(claim))
+            .cloned())
     }
 }
