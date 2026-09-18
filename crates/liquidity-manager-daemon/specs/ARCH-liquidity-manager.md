@@ -116,8 +116,10 @@ the daemon must not duplicate them.
   ([SPEC-flip-admin-api](./SPEC-flip-admin-api.md)).
 - `admin_token` — the persisted, encrypted Admin API bearer token that takes
   over from the boot bootstrap token.
-- `manual_ops` — the guarded `retry_funding_step` / `cancel_allocation`
-  remediation surface.
+- `manual_ops` — the guarded operator remediation surface: `retry_funding_step`,
+  `cancel_allocation`, `release_federation_allocation`, the manual-review
+  resolutions, and `abandon_gateway_item` for delivered funding the gateway
+  cannot attribute.
 - `backup` — data-directory tar.gz backup, staging and validation of an archive
   before it is applied, the data-dir swap with its retained previous state and
   rollback, and the restore-only boot mode.
