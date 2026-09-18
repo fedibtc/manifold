@@ -591,7 +591,7 @@ async fn cancelled_wallet_operation_marks_gateway_item_failed() -> anyhow::Resul
         status.item_statuses[0]
             .failure
             .as_ref()
-            .map(|failure| failure.code),
+            .map(|failure| failure.code.clone()),
         Some(LiquidityFailureCode::WithdrawFailed)
     );
     Ok(())
@@ -655,7 +655,7 @@ async fn a_withdrawal_refused_at_prepare_sends_nothing_and_fails_the_item() -> a
         status.item_statuses[0]
             .failure
             .as_ref()
-            .map(|failure| failure.code),
+            .map(|failure| failure.code.clone()),
         Some(LiquidityFailureCode::WithdrawFailed)
     );
     Ok(())
@@ -695,7 +695,7 @@ async fn wrong_network_gateway_deposit_address_fails_before_withdrawal() -> anyh
         status.item_statuses[0]
             .failure
             .as_ref()
-            .map(|failure| failure.code),
+            .map(|failure| failure.code.clone()),
         Some(LiquidityFailureCode::GatewayAttachFailed)
     );
     Ok(())
@@ -748,7 +748,7 @@ async fn a_non_global_invite_endpoint_is_refused_before_the_gateway_dials() -> a
         status.item_statuses[0]
             .failure
             .as_ref()
-            .map(|failure| failure.code),
+            .map(|failure| failure.code.clone()),
         Some(LiquidityFailureCode::GatewayAttachFailed)
     );
     Ok(())
