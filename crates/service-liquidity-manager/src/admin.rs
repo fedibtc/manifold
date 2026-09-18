@@ -2012,6 +2012,50 @@ pub struct AbandonTargetClientValueResponse {
     pub detail: Option<String>,
 }
 
+/// Write off a gateway item whose delivered funding the gateway cannot
+/// attribute.
+///
+/// The gateway sibling of `abandon_target_client_value`, for the same dead end.
+/// A gateway item completes only when the gateway's payment log names the
+/// output its funding send paid. That log lives in the gateway's own database
+/// and is not replicated, so a gateway that was wiped, rolled back, replaced,
+/// or restored cannot attest to a deposit it really did claim. Once the send
+/// has settled, `cancel_allocation` and `retry_funding_step` both refuse the
+/// item for having already sent the money, so nothing else moves it and it
+/// reserves provider capacity indefinitely.
+///
+/// This is a last resort, not a timeout. FLIP keeps reconciling such an item
+/// for as long as it exists, and a claim the gateway reports at any point
+/// completes it with no operator action. The verb is admitted only for an item
+/// FLIP has itself recorded as overdue, so the operator is deciding about a
+/// wait FLIP already reported rather than pre-empting one.
+///
+/// It moves no money and recovers none. The value is at the gateway; getting it
+/// back is a gateway peg-out and is not this.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct AbandonGatewayItemRequest {
+    /// Federation whose gateway item to write off.
+    pub federation_id: FederationId,
+
+    /// Operator's reason. Required: this writes off FLIP's ability to account
+    /// for funds it already sent, and the audit log should say why.
+    pub reason: String,
+}
+
+/// Gateway abandonment response.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct AbandonGatewayItemResponse {
+    /// Manual operation status.
+    pub status: ManualOperationStatus,
+
+    /// Value the funding send delivered to the gateway, when the item's
+    /// operation recorded one.
+    pub abandoned_amount: Option<Sats>,
+
+    /// Optional detail.
+    pub detail: Option<String>,
+}
+
 /// Complete a reviewed wallet send that FLIP cannot verify against the chain.
 ///
 /// `resolve_manual_review` requires exact-output chain evidence for a `completed`
