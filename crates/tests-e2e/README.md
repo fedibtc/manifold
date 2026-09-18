@@ -157,3 +157,31 @@ authorization, an unsupported federation size, and a cheapest advertisement
 that reuses another FMan's badge. Discovery reports the three static admission
 failures; lazy badge verification rejects the stolen badge for subject mismatch
 and still selects exactly the seven valid operators.
+
+
+## FMan release upgrade qualification
+
+Following Fedimint's binary-path upgrade tests, the ignored
+`fman_upgrades_existing_guardians_wallet_and_pending_payout_under_defe` test
+creates a seven-guardian federation with the old FMan executable, funds and
+collects a real guardian-fee remittance, interrupts an outgoing payout after
+its native commit, and replaces all seven executables without replacing their
+data directories. It checks durable identity and seat records, payout recovery
+and replay without a second invoice, all guardians returning healthy, and
+preserved fee policy/account/history. These are release binaries with isolated
+development/regtest resources, not production data or platform-device tests.
+
+Run the last production 0.1.1 image against the proposed 0.1.2 image:
+
+```bash
+nix develop --command scripts/test-fman-upgrade.sh \
+  d87b6dd2d984b3f15bc214718debfcc9648654d8 \
+  395e3b6ab673b51f00a949644d641f6697ebdb13
+```
+
+The script reads public images, extracts their actual native executables, and
+runs the existing Defe harness locally. It needs Linux, Docker, and executable
+Nix runtime dependencies; it does not deploy or publish anything. The old
+formation uses the 0.11 guardian range. This expensive qualification is separate
+from routine SelfCI. A failed run is not upgrade approval; retain its test data
+and logs to diagnose the unsupported transition.
