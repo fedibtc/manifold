@@ -51,6 +51,7 @@ export type LiquidityFailureCode =
   | 'withdraw_failed'
   | 'stability_pool_failed'
   | 'internal_error'
+  | 'gateway_attribution_abandoned'
   | (string & Record<never, never>);
 
 export interface LiquidityFailure {

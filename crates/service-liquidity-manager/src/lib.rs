@@ -652,6 +652,10 @@ mod tests {
                 "stability_pool_failed",
             ),
             (LiquidityFailureCode::InternalError, "internal_error"),
+            (
+                LiquidityFailureCode::GatewayAttributionAbandoned,
+                "gateway_attribution_abandoned",
+            ),
         ];
 
         for (code, wire) in codes {
