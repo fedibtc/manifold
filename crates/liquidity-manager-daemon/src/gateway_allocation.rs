@@ -10,8 +10,8 @@
 //! [`crate::stability_pool`]/[`crate::stability_allocation`].
 
 use fedi_decentralized_service_liquidity_manager::{
-    CompletionEvidence, GatewayCompletionEvidence, LiquidityFailureCode, Sats, ServiceResult,
-    SetupConfigView, WalletOperation, WalletOperationId, WalletOperationStatus,
+    CompletionEvidence, GatewayCompletionEvidence, LiquidityFailureCode, Sats, ServiceErrorCode,
+    ServiceResult, SetupConfigView, WalletOperation, WalletOperationId, WalletOperationStatus,
 };
 
 use crate::DaemonContext;
@@ -62,7 +62,9 @@ pub(crate) async fn process_gateway_allocations(context: &DaemonContext) -> Serv
 
 async fn observe_configured_gateway(context: &DaemonContext) -> ServiceResult<()> {
     let (setup, _wallet, gateway) = configured_gateway_dependencies(context).await?;
-    let snapshot = gateway.gateway_info().await.map_err(unavailable)?;
+    let Some(snapshot) = read_gateway_snapshot(&context.database, &setup, &gateway).await? else {
+        return Ok(());
+    };
     persist_gateway_snapshot(&context.database, &setup, &snapshot).await
 }
 
@@ -74,13 +76,76 @@ pub(crate) async fn process_gateway_allocations_with(
     endpoint_policy: crate::endpoint_policy::EndpointPolicy,
 ) -> ServiceResult<usize> {
     let items = allocation_store::active_gateway_items(database).await?;
+    if items.is_empty() {
+        return Ok(0);
+    }
+    // One gateway serves every item, so it is asked once a pass and its answer
+    // decides the whole pass. A gateway that cannot answer, or that has not
+    // caught up with the chain, has said nothing about any item: it reports no
+    // claim it has not yet read, so acting on that silence would read an outage
+    // as evidence.
+    let Some(snapshot) = read_gateway_snapshot(database, setup, gateway).await? else {
+        return Ok(0);
+    };
+    if !snapshot.synced_to_chain {
+        note_gateway_cannot_answer(database, setup, "gatewayd has not caught up with the chain")
+            .await?;
+        return Ok(0);
+    }
+    persist_gateway_snapshot(database, setup, &snapshot).await?;
+
     let mut advanced = 0;
     for item in items {
-        if process_gateway_item(database, setup, wallet, gateway, endpoint_policy, item).await? {
-            advanced += 1;
+        let item_id = item.item_id.clone();
+        match process_gateway_item(
+            database,
+            setup,
+            wallet,
+            gateway,
+            endpoint_policy,
+            &snapshot,
+            item,
+        )
+        .await
+        {
+            Ok(true) => advanced += 1,
+            Ok(false) => {}
+            // Items are independent, and a dependency that failed one of them
+            // may well answer the next. Ending the pass here would make one
+            // item's unlucky moment everybody else's outage.
+            Err(error) if error.code() == ServiceErrorCode::Unavailable => {
+                tracing::warn!(
+                    item_id = %item_id.0,
+                    %error,
+                    "a dependency could not answer for this gateway item"
+                );
+            }
+            Err(error) => return Err(error),
         }
     }
     Ok(advanced)
+}
+
+/// Reads the gateway, recording an outage rather than failing the caller.
+///
+/// `None` means the gateway did not answer. The outage is durable and dated,
+/// so its length is readable rather than inferred from how long the log has
+/// been repeating itself.
+async fn read_gateway_snapshot(
+    database: &Database,
+    setup: &SetupConfigView,
+    gateway: &impl GatewayClient,
+) -> ServiceResult<Option<GatewaySnapshot>> {
+    match gateway.gateway_info().await {
+        Ok(snapshot) => {
+            note_gateway_answers(database, setup).await?;
+            Ok(Some(snapshot))
+        }
+        Err(error) => {
+            note_gateway_cannot_answer(database, setup, &error.to_string()).await?;
+            Ok(None)
+        }
+    }
 }
 
 async fn process_gateway_item(
@@ -89,13 +154,16 @@ async fn process_gateway_item(
     wallet: &impl FundsWallet,
     gateway: &impl GatewayClient,
     endpoint_policy: crate::endpoint_policy::EndpointPolicy,
+    snapshot: &GatewaySnapshot,
     mut item: GatewayAllocationItem,
 ) -> ServiceResult<bool> {
     if !allocation_store::mark_item_running(database, &item.federation_id, &item.item_id).await? {
         return Ok(false);
     }
 
-    let snapshot = gateway.gateway_info().await.map_err(unavailable)?;
+    // A configured gateway on the wrong network is a settled fact about the
+    // deployment, not a dependency having a bad moment, so it stops the item
+    // rather than making it wait.
     if snapshot.network != setup.network {
         allocation_store::require_item_action(
             database,
@@ -110,10 +178,6 @@ async fn process_gateway_item(
         .await?;
         return Ok(true);
     }
-    if !snapshot.synced_to_chain {
-        return Ok(false);
-    }
-    persist_gateway_snapshot(database, setup, &snapshot).await?;
 
     let mut advanced = false;
     let observed_federation = snapshot
@@ -520,6 +584,68 @@ async fn recheck_gateway_deposit(
         .recheck_deposit_address(&item.target.federation_id.0, address, setup.network)
         .await
         .map_err(unavailable)
+}
+
+/// The status the gateway row carries while the gateway cannot answer.
+///
+/// Every successful observation overwrites the row with gatewayd's own state
+/// string, so this value is never one of those and its presence means the last
+/// thing FLIP learned was that the gateway was not answering.
+const GATEWAY_UNAVAILABLE_STATUS: &str = "unavailable";
+
+/// Records that the gateway cannot answer, dating the outage from its start.
+///
+/// Written once per outage. While the gateway answers, the row's `observed_at`
+/// means "last seen"; while it does not, the row is left alone so the same
+/// field means "unavailable since". Repeating the write each pass would keep
+/// resetting that to now and hide exactly the thing worth knowing, which is
+/// how long this has been going on.
+async fn note_gateway_cannot_answer(
+    database: &Database,
+    setup: &SetupConfigView,
+    detail: &str,
+) -> ServiceResult<()> {
+    let recorded = allocation_store::gateway_observation(database, &setup.gateway.gateway_id)
+        .await?
+        .is_some_and(|observation| observation.status == GATEWAY_UNAVAILABLE_STATUS);
+    if recorded {
+        return Ok(());
+    }
+    allocation_store::upsert_gateway_observation(
+        database,
+        &GatewayObservation {
+            gateway_id: setup.gateway.gateway_id.clone(),
+            federation_id: None,
+            status: GATEWAY_UNAVAILABLE_STATUS.to_owned(),
+            observed_balance: None,
+            observed_at: now_timestamp(),
+        },
+    )
+    .await?;
+    tracing::warn!(
+        gateway_id = %setup.gateway.gateway_id.0,
+        detail,
+        "gateway cannot answer; its allocation items wait rather than fail"
+    );
+    Ok(())
+}
+
+/// Reports the end of an outage, once, with how long it lasted.
+async fn note_gateway_answers(database: &Database, setup: &SetupConfigView) -> ServiceResult<()> {
+    let Some(previous) =
+        allocation_store::gateway_observation(database, &setup.gateway.gateway_id).await?
+    else {
+        return Ok(());
+    };
+    if previous.status != GATEWAY_UNAVAILABLE_STATUS {
+        return Ok(());
+    }
+    tracing::info!(
+        gateway_id = %setup.gateway.gateway_id.0,
+        unavailable_for_secs = now_timestamp().0.saturating_sub(previous.observed_at.0),
+        "gateway answers again"
+    );
+    Ok(())
 }
 
 async fn persist_gateway_snapshot(
