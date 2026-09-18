@@ -485,6 +485,22 @@ pub struct FundingPolicyConfig {
     /// cancellation both.
     #[serde(default = "default_in_doubt_review_after_secs")]
     pub in_doubt_review_after_secs: u64,
+
+    /// How long a gateway item may hold a settled funding send the gateway has
+    /// not reported claiming before the delay is raised for an operator.
+    ///
+    /// Measured from the funding operation's last update, which for a settled
+    /// send is when it reached `completed`. Completion needs the gateway's own
+    /// payment log to name the funded output, so a gateway that is offline,
+    /// resyncing, or behind on its log has not yet said anything either way.
+    ///
+    /// Passing the threshold means the wait deserves attention, not that the
+    /// funds are lost and not that the item is finished with: the item stays
+    /// active and keeps reconciling, so a claim the gateway reports later still
+    /// completes it without an operator touching anything. Zero stops the delay
+    /// being raised at all.
+    #[serde(default = "default_gateway_claim_review_after_secs")]
+    pub gateway_claim_review_after_secs: u64,
 }
 
 /// Conservative default review threshold: long enough that an honestly
@@ -494,6 +510,14 @@ const DEFAULT_IN_DOUBT_REVIEW_AFTER_SECS: u64 = 21_600;
 
 fn default_in_doubt_review_after_secs() -> u64 {
     DEFAULT_IN_DOUBT_REVIEW_AFTER_SECS
+}
+
+/// Gateway attribution gets the wallet threshold, because both answer the same
+/// question: how long is long enough for honest evidence to have appeared.
+const DEFAULT_GATEWAY_CLAIM_REVIEW_AFTER_SECS: u64 = DEFAULT_IN_DOUBT_REVIEW_AFTER_SECS;
+
+fn default_gateway_claim_review_after_secs() -> u64 {
+    DEFAULT_GATEWAY_CLAIM_REVIEW_AFTER_SECS
 }
 
 impl FundingPolicyConfig {
@@ -511,6 +535,7 @@ impl FundingPolicyConfig {
             confirmations,
             stability_pool_min_fee_rate_ppb: 0,
             in_doubt_review_after_secs: DEFAULT_IN_DOUBT_REVIEW_AFTER_SECS,
+            gateway_claim_review_after_secs: DEFAULT_GATEWAY_CLAIM_REVIEW_AFTER_SECS,
         }
     }
 }

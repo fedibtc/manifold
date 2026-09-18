@@ -25,7 +25,8 @@ const readyView: SetupConfigView = {
     fee_reserve: 100_000,
     confirmations: 3,
     stability_pool_min_fee_rate_ppb: 0,
-    in_doubt_review_after_secs: 21600
+    in_doubt_review_after_secs: 21600,
+    gateway_claim_review_after_secs: 21600
   },
   replenishment: { warning_threshold: 500_000, critical_threshold: 100_000 },
   advertised_endpoint: {
