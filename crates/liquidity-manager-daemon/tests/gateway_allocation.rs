@@ -17,7 +17,8 @@ use tokio::sync::Mutex;
 
 use super::*;
 use crate::allocation_store::{
-    GatewayAllocationStep, active_gateway_items, load_allocation_status_by_federation,
+    GatewayAllocationStep, active_gateway_items, gateway_observation,
+    load_allocation_status_by_federation,
 };
 use crate::gateway::{
     DepositClaimQuery, GatewayDepositClaim, GatewayFederationSnapshot, GatewaySnapshot,
@@ -912,6 +913,146 @@ async fn a_zero_review_threshold_raises_no_delay() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// A gateway that cannot answer has said nothing about any item.
+///
+/// The outage is recorded once, dated from when it began, and no item is
+/// touched by it. In particular it is not attribution: a gateway that is down
+/// reports no claim, and reading that silence as "the deposit never arrived"
+/// would turn every outage into a permanent verdict. When the gateway answers
+/// again the item completes from the evidence it then reports.
+#[tokio::test]
+async fn an_unreachable_gateway_is_recorded_once_and_convicts_no_item() -> anyhow::Result<()> {
+    let database = Database::connect(test_sqlite_path("gateway-unreachable")).await?;
+    let setup = test_setup_config();
+    let (federation_id, item_id) = seed_gateway_allocation(&database, &setup, Sats(25_000)).await?;
+    let wallet = TestFundsWallet::new(setup.network, Sats(100_000), regtest_address());
+    let gateway = FakeGateway::new(setup.network, regtest_address());
+    gateway.set_connect_balance(Sats(40_000)).await;
+
+    run_gateway_pass(&database, &setup, &wallet, &gateway).await?;
+    let operation =
+        wallet_operation_for_item(&database, WalletOperationType::GatewayFunding, &item_id)
+            .await?
+            .expect("wallet operation exists");
+    settle_funding_send(&database, &operation.operation_id.0, "txid-1").await?;
+    // Long enough that attribution would count as overdue if anything had
+    // actually reported on it.
+    backdate_operation_update(
+        &database,
+        &operation.operation_id.0,
+        setup.funding_policy.gateway_claim_review_after_secs + 60,
+    )
+    .await?;
+
+    gateway.set_unreachable(true).await;
+    assert_eq!(
+        process_gateway_allocations_with(
+            &database,
+            &setup,
+            &wallet,
+            &gateway,
+            crate::endpoint_policy::EndpointPolicy::AllowPrivate,
+        )
+        .await?,
+        0,
+        "an outage advances nothing"
+    );
+
+    let outage = gateway_observation(&database, &setup.gateway.gateway_id)
+        .await?
+        .expect("the outage is recorded");
+    assert_eq!(outage.status, "unavailable");
+    assert_eq!(
+        sole_item_status(&database, &federation_id).await?,
+        ItemAllocationStatus::Running
+    );
+    assert_eq!(
+        sole_gateway_step(&database)
+            .await?
+            .attribution_overdue_since,
+        None,
+        "an outage is not the gateway reporting that it has no such claim"
+    );
+
+    // A second pass leaves the recorded start alone, so the row keeps saying
+    // how long this has been going on.
+    run_gateway_pass(&database, &setup, &wallet, &gateway).await?;
+    assert_eq!(
+        gateway_observation(&database, &setup.gateway.gateway_id)
+            .await?
+            .expect("the outage is still recorded")
+            .observed_at,
+        outage.observed_at
+    );
+
+    gateway.set_unreachable(false).await;
+    gateway.set_balance("federation-1", Sats(65_000)).await;
+    gateway.claim_deposit("txid-1", 0, Sats(25_000)).await;
+    run_gateway_pass(&database, &setup, &wallet, &gateway).await?;
+    assert_eq!(
+        sole_item_status(&database, &federation_id).await?,
+        ItemAllocationStatus::Completed,
+        "the item completes from evidence the recovered gateway reports"
+    );
+    Ok(())
+}
+
+/// A gateway behind on the chain is in the same position as one that is down:
+/// it has not read the deposits it is being asked about.
+#[tokio::test]
+async fn an_unsynced_gateway_advances_nothing_and_convicts_no_item() -> anyhow::Result<()> {
+    let database = Database::connect(test_sqlite_path("gateway-unsynced")).await?;
+    let setup = test_setup_config();
+    let (federation_id, item_id) = seed_gateway_allocation(&database, &setup, Sats(25_000)).await?;
+    let wallet = TestFundsWallet::new(setup.network, Sats(100_000), regtest_address());
+    let gateway = FakeGateway::new(setup.network, regtest_address());
+    gateway.set_connect_balance(Sats(40_000)).await;
+
+    run_gateway_pass(&database, &setup, &wallet, &gateway).await?;
+    let operation =
+        wallet_operation_for_item(&database, WalletOperationType::GatewayFunding, &item_id)
+            .await?
+            .expect("wallet operation exists");
+    settle_funding_send(&database, &operation.operation_id.0, "txid-1").await?;
+    backdate_operation_update(
+        &database,
+        &operation.operation_id.0,
+        setup.funding_policy.gateway_claim_review_after_secs + 60,
+    )
+    .await?;
+
+    gateway.set_synced_to_chain(false).await;
+    assert_eq!(
+        process_gateway_allocations_with(
+            &database,
+            &setup,
+            &wallet,
+            &gateway,
+            crate::endpoint_policy::EndpointPolicy::AllowPrivate,
+        )
+        .await?,
+        0
+    );
+    assert_eq!(
+        gateway_observation(&database, &setup.gateway.gateway_id)
+            .await?
+            .expect("the condition is recorded")
+            .status,
+        "unavailable"
+    );
+    assert_eq!(
+        sole_item_status(&database, &federation_id).await?,
+        ItemAllocationStatus::Running
+    );
+    assert_eq!(
+        sole_gateway_step(&database)
+            .await?
+            .attribution_overdue_since,
+        None
+    );
+    Ok(())
+}
+
 async fn run_gateway_pass(
     database: &Database,
     setup: &SetupConfigView,
@@ -1090,6 +1231,7 @@ struct FakeGatewayState {
     connect_error: Option<String>,
     connect_attempts: usize,
     deposit_claims: Vec<GatewayDepositClaim>,
+    unreachable: bool,
 }
 
 impl FakeGateway {
@@ -1104,6 +1246,7 @@ impl FakeGateway {
                 connect_error: None,
                 connect_attempts: 0,
                 deposit_claims: Vec::new(),
+                unreachable: false,
             })),
         }
     }
@@ -1122,6 +1265,16 @@ impl FakeGateway {
     /// necessarily zero.
     async fn set_connect_balance(&self, balance: Sats) {
         self.inner.lock().await.connect_balance = balance;
+    }
+
+    /// Makes every read fail, as a stopped or unroutable gatewayd does.
+    async fn set_unreachable(&self, unreachable: bool) {
+        self.inner.lock().await.unreachable = unreachable;
+    }
+
+    /// Reports whether gatewayd has caught up with the chain.
+    async fn set_synced_to_chain(&self, synced: bool) {
+        self.inner.lock().await.synced_to_chain = synced;
     }
 
     /// Makes the attach fail with the kind of detail a real dial produces.
@@ -1151,6 +1304,9 @@ impl FakeGateway {
 impl GatewayClient for FakeGateway {
     async fn gateway_info(&self) -> anyhow::Result<GatewaySnapshot> {
         let state = self.inner.lock().await;
+        if state.unreachable {
+            anyhow::bail!("connection refused");
+        }
         Ok(GatewaySnapshot {
             state: "running".to_owned(),
             network: state.network,

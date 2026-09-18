@@ -967,6 +967,25 @@ pub(crate) async fn cancel_item_tx(
     Ok(())
 }
 
+/// The gateway-level observation row, if one has been written.
+///
+/// Keyed without a federation, so it is the row describing the gateway itself
+/// rather than one of its federations.
+pub(crate) async fn gateway_observation(
+    database: &Database,
+    gateway_id: &GatewayId,
+) -> ServiceResult<Option<GatewayObservation>> {
+    let row =
+        sqlx::query("SELECT observation_json FROM gateway_observations WHERE observation_key = ?")
+            .bind(format!("gateway:{}", gateway_id.0))
+            .fetch_optional(database.pool())
+            .await
+            .map_err(internal_error)?;
+    row.map(|row| serde_json::from_str(&row.get::<String, _>("observation_json")))
+        .transpose()
+        .map_err(internal_error)
+}
+
 pub(crate) async fn upsert_gateway_observation(
     database: &Database,
     observation: &GatewayObservation,
