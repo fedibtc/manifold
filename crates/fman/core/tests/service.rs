@@ -155,6 +155,8 @@ fn endpoint_setup(index: usize) -> fedimint_core::setup_code::PeerSetupCode {
         disable_base_fees: None,
         enabled_modules: None,
         federation_size: None,
+        fedimint_version: "0.12.0".to_owned(),
+        network: bitcoin::Network::Regtest,
     }
 }
 

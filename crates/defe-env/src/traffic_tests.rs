@@ -76,7 +76,7 @@ async fn connection_mode_passes_invite_routes_and_user_count_to_tool() {
     let record = temp.path().join("record");
     std::fs::write(
         &tool,
-        "#!/bin/sh\nprintf '%s\\n' \"$FM_IROH_CONNECT_OVERRIDES\" \"$@\" >\"$(dirname \"$0\")/record\"\nsleep 1\n",
+        "#!/bin/sh\nprintf '%s\\n' \"$FM_IROH_CONNECT_OVERRIDES_PLAIN\" \"$@\" >\"$(dirname \"$0\")/record\"\nsleep 1\n",
     )
     .unwrap();
     std::fs::set_permissions(&tool, std::fs::Permissions::from_mode(0o700)).unwrap();

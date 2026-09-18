@@ -297,7 +297,7 @@ impl MetricsPolicy {
 
 #[doc(hidden)]
 pub fn checked_source_manifest_matches_policy() -> bool {
-    let manifest = include_str!("../../../docs/telemetry/fedimint-metrics-v0.11.2-fedi4.tsv")
+    let manifest = include_str!("../../../docs/telemetry/fedimint-metrics-v0.12.0-fedi1.tsv")
         .lines()
         .filter_map(|line| {
             let mut fields = line.split('\t');
@@ -381,6 +381,7 @@ const DENIED_COUNTERS: &[&str] = &[
     "client_api_requests_total",
     "connector_connection_attempts_total",
     "iroh_api_connection_idle_timeout_total",
+    "iroh_api_request_response_code_total",
     "ln_rpc_requests_total",
 ];
 
