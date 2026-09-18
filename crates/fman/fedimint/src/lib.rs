@@ -1243,10 +1243,15 @@ async fn lnurl_pay(
     let response: lnurl::pay::LnURLPayInvoice =
         serde_json::from_slice(&response).context("LNURL callback returned no usable invoice")?;
     let invoice = Bolt11Invoice::from_str(response.invoice()).context("invalid LNURL invoice")?;
-    anyhow::ensure!(
-        invoice.amount_milli_satoshis() == Some(amount),
-        "LNURL endpoint returned an invoice for the wrong amount"
-    );
+    match invoice.amount_milli_satoshis() {
+        Some(invoiced) => anyhow::ensure!(
+            invoiced == amount,
+            "LNURL endpoint returned an invoice for {invoiced} msat, but {amount} msat was requested"
+        ),
+        None => anyhow::bail!(
+            "LNURL endpoint returned an invoice with no amount, but {amount} msat was requested"
+        ),
+    }
     Ok((invoice, amount, capped))
 }
 
