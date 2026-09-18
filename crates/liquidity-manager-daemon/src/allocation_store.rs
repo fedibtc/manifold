@@ -906,7 +906,7 @@ async fn set_item_failure(
         tracing::warn!(
             item_id = %item_id.0,
             %status,
-            %code,
+            code = %failure.code,
             %reason,
             "allocation item stopped"
         );
