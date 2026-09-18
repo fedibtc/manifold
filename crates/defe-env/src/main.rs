@@ -17,7 +17,7 @@ use defe_client::{
     AsyncDefeClient, FlipRequest, FmanInfo, FmanRequest, GatewaydInfo, GatewaydRequest,
     ResourceDescriptor, SharingMode,
 };
-use iroh_base_035::{NodeAddr, NodeId, SecretKey, ticket::NodeTicket};
+use iroh_base_035::{NodeId, SecretKey};
 use serde::Serialize;
 use sha2::{Digest as _, Sha256};
 use tokio::io::AsyncReadExt as _;
@@ -919,7 +919,7 @@ async fn form_federation(
         .arg("--poll-timeout-secs")
         .arg("120")
         .env("FMAN_E2E_LOCAL_IROH", "1")
-        .env("FM_IROH_CONNECT_OVERRIDES", routes);
+        .env("FM_IROH_CONNECT_OVERRIDES_PLAIN", routes);
     for fman in fmans {
         command.arg("--locator").arg(&fman.locator);
     }
@@ -1080,7 +1080,7 @@ fn write_tools(
     write_wrapper(
         &locked_fi_cli,
         &format!(
-            "#!/bin/sh\nFMAN_E2E_LOCAL_IROH=1 FM_IROH_CONNECT_OVERRIDES={} exec {} --internal-with-lock --lock {} -- {} \"$@\"\n",
+            "#!/bin/sh\nFMAN_E2E_LOCAL_IROH=1 FM_IROH_CONNECT_OVERRIDES_PLAIN={} exec {} --internal-with-lock --lock {} -- {} \"$@\"\n",
             shell_escape(OsStr::new(routes)),
             shell_escape(defe_env.as_os_str()),
             shell_escape(args.root.join("fi-cli.lock").as_os_str()),
@@ -1447,11 +1447,7 @@ fn local_iroh_overrides(first_port_base: u16) -> String {
         for (port, role) in [(base, b"p2p".as_slice()), (base + 1, b"api".as_slice())] {
             let secret = SecretKey::from_bytes(&iroh_key(port, role));
             let node_id: NodeId = secret.public();
-            let ticket = NodeTicket::new(
-                NodeAddr::new(node_id)
-                    .with_direct_addresses([std::net::SocketAddr::from(([127, 0, 0, 1], port))]),
-            );
-            overrides.push(format!("{node_id}={ticket}"));
+            overrides.push(format!("{node_id}=127.0.0.1:{port}"));
         }
     }
     overrides.join(",")
@@ -1947,7 +1943,7 @@ mod tests {
         let recorder = root.join("record command");
         std::fs::write(
             &recorder,
-            "#!/bin/sh\nprintf 'args' >>\"$RECORD\"\nprevious=\nfailed=0\nfor arg in \"$@\"; do printf '[%s]' \"$arg\" >>\"$RECORD\"; [ \"$previous $arg\" = 'guardian-fees collect' ] && failed=1; previous=$arg; done\nprintf ' env=[%s][%s]\\n' \"${FMAN_E2E_LOCAL_IROH-}\" \"${FM_IROH_CONNECT_OVERRIDES-}\" >>\"$RECORD\"\nif [ \"$failed\" -eq 1 ]; then exit 23; fi\nexit 0\n",
+            "#!/bin/sh\nprintf 'args' >>\"$RECORD\"\nprevious=\nfailed=0\nfor arg in \"$@\"; do printf '[%s]' \"$arg\" >>\"$RECORD\"; [ \"$previous $arg\" = 'guardian-fees collect' ] && failed=1; previous=$arg; done\nprintf ' env=[%s][%s]\\n' \"${FMAN_E2E_LOCAL_IROH-}\" \"${FM_IROH_CONNECT_OVERRIDES_PLAIN-}\" >>\"$RECORD\"\nif [ \"$failed\" -eq 1 ]; then exit 23; fi\nexit 0\n",
         )
         .unwrap();
         std::fs::set_permissions(&recorder, std::fs::Permissions::from_mode(0o700)).unwrap();

@@ -45,7 +45,7 @@ pub(crate) async fn run(raw_args: &[OsString]) -> Result<()> {
                 command
                     .args(["--users", &users.to_string(), "test-download"])
                     .args(["--invite-code", invite.trim()])
-                    .env("FM_IROH_CONNECT_OVERRIDES", routes.trim())
+                    .env("FM_IROH_CONNECT_OVERRIDES_PLAIN", routes.trim())
                     .kill_on_drop(true);
                 let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
                 let timeout = remaining.saturating_add(Duration::from_secs(30));

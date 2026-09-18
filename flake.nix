@@ -21,7 +21,7 @@
       url = "github:fedibtc/peerbadge-sdk";
       flake = false;
     };
-    fedimint.url = "github:fedibtc/fedimint/v0.11.2-fedi4";
+    fedimint.url = "github:fedibtc/fedimint/v0.12.0-fedi4";
     # SP-enabled fedimintd for the live stability-pool E2E. The stability-pool
     # server module lives only in the fedixyz/fedi monorepo; its `fedi-fedimintd`
     # package bundles it (enabled at runtime by FEDI_STABILITY_POOL_V2_MODULE_ENABLE).
@@ -149,6 +149,11 @@
           src = fedimint;
           patches = [ ./patches/fedimint-redact-lightning-payment-logs.patch ];
         };
+        fediPatched = pkgs.applyPatches {
+          name = "fedi-stability-pool-fedimint-012";
+          src = fedi;
+          patches = [ ./patches/fedi-stability-pool-fedimint-012.patch ];
+        };
         linkExternalDeps = pkgs.writeShellScriptBin "link-external-deps" ''
           set -eu
 
@@ -179,6 +184,7 @@
 
           link_dependency peerbadge-sdk ${peerbadge-sdk-src}
           link_dependency fedimint ${fedimintPatched}
+          link_dependency fedi ${fediPatched}
         '';
 
         flakeboxLib = flakebox.lib.mkLib pkgs {
@@ -231,7 +237,7 @@
           "crates"
           # The cloud telemetry policy checks its reviewed source manifest from
           # Rust tests, so it must be present in the filtered Nix build source.
-          "docs/telemetry/fedimint-metrics-v0.11.2-fedi4.tsv"
+          "docs/telemetry/fedimint-metrics-v0.12.0-fedi4.tsv"
           # Same arrangement for the captured guardian response those tests
           # replay through the shipped policy. The manifest above records what
           # the pinned source registers; this records what a running producer
@@ -1088,12 +1094,12 @@
         # `fleetManagerReleaseSync` binds this to the Fedimint source revision,
         # the package README, and the OCI label. DKG uses a separate typed
         # major/minor/vendor identity, independent of the fork tag revision.
-        fedimintdRelease = "0.11.2-fedi4";
-        fedimintdDkgVersion = "0.11.2+fedi";
+        fedimintdRelease = "0.12.0-fedi4";
+        fedimintdDkgVersion = "0.12.0+fedi";
         # `fedimintd` exports this upstream package version in `app_start_ts`.
         # It deliberately differs from the Fedi release tag above.
-        fedimintdMetricVersion = "0.11.2";
-        fedimintSourceRev = "332efe1f664d36bcbbbfb089031d600c5f3e5585";
+        fedimintdMetricVersion = "0.12.0";
+        fedimintSourceRev = "0fb0eb2ef0dde5c3ed4635c9a0d418b41ea705f3";
         stabilityPoolSourceRev = "2f35ea4e3b2516d35b8ed315455718cd3b336758";
 
         # Nextest, CLI checks, and OCI runtime-contract checks all stay on the
@@ -1268,7 +1274,7 @@
               touch "$out"
             '';
 
-        # Anti-drift: bind the Fedimint release tag in flake.nix to its resolved
+        # Anti-drift: bind the Fedimint source pin in flake.nix to its resolved
         # revision in flake.lock, the separate FEDIMINTD_VERSION_0_1 DKG
         # identity, the package README, and the OCI label.
         fleetManagerReleaseSync = pkgs.runCommand "fleet-manager-release-sync" { } ''
@@ -1280,7 +1286,8 @@
               || { echo "release drift: $1 does not contain '$2' (release $release)" >&2; exit 1; }
           }
 
-          check ${./flake.nix} "fedibtc/fedimint/v0.11.2-fedi4"
+          check ${./flake.nix} "fedibtc/fedimint/$tag"
+          check ${./flake.lock} '"ref": "v${fedimintdRelease}"'
           check ${./flake.lock} '"rev": "${fedimintSourceRev}"'
           check ${./crates/service-fleet-manager/src/lib.rs} "FEDIMINTD_VERSION_0_1: &str = \"${fedimintdDkgVersion}\""
           check ${./crates/fman/bin/build.rs} "FEDIMINT_SOURCE_REV: &str = \"${fedimintSourceRev}\""
@@ -1308,10 +1315,10 @@
             ''
               set -euo pipefail
 
-              manifest=${./docs/telemetry/fedimint-metrics-v0.11.2-fedi4.tsv}
+              manifest=${./docs/telemetry/fedimint-metrics-v0.12.0-fedi4.tsv}
               privacy_inventory=${./docs/telemetry/metrics-privacy-inventory.md}
               source=${fedimint.outPath}
-              stability_pool_source=${fedi.outPath}
+              stability_pool_source=${fediPatched}
 
               field() {
                 ${pkgs.gawk}/bin/awk -F '\t' -v key="$1" '$1 == key { print $2 }' "$manifest"
@@ -1341,7 +1348,6 @@
                 echo "crate manifests must inherit Fedi dependencies from the workspace" >&2
                 exit 1
               fi
-              grep -Fq -- "source = \"git+https://github.com/fedixyz/fedi?rev=${stabilityPoolSourceRev}#${stabilityPoolSourceRev}\"" ${./Cargo.lock}
               test -d "$stability_pool_source/crates/modules/stability-pool/server"
               source_metric_version=$(
                 ${pkgs.gawk}/bin/awk '
@@ -1374,9 +1380,7 @@
               with open(sys.argv[2], "rb") as lock_file:
                   cargo_lock = tomllib.load(lock_file)
               revision = sys.argv[3]
-              expected_source = (
-                  f"git+https://github.com/fedixyz/fedi?rev={revision}#{revision}"
-              )
+              expected_source = None  # Nix-patched, pinned path packages
               expected_dependency_source = (
                   f"git+https://github.com/fedixyz/fedi?rev={revision}"
               )

@@ -1340,6 +1340,7 @@ impl SeatLoop {
                 self.facts.seat_id.clone(),
                 self.facts.seat_no,
                 self.ports,
+                &self.keys.api_auth,
             )
             .await
             .map_err(anyhow::Error::new)?;
@@ -2236,6 +2237,9 @@ impl SeatLoop {
             disable_base_fees: None,
             enabled_modules,
             federation_size,
+            network: self.process.bitcoin_network,
+            fedimint_version: fedi_decentralized_service_fleet_manager::FEDIMINTD_VERSION_0_1
+                .to_owned(),
         };
         Ok(GuardianCode(base32::encode_prefixed(
             FEDIMINT_PREFIX,

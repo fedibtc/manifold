@@ -75,6 +75,7 @@ impl FedimintFixture {
             locate_binary("FLIP_E2E_FEDIMINTD_BIN", "fedimintd")?
         };
         let fedimint_cli = locate_binary("FLIP_E2E_FEDIMINT_CLI_BIN", "fedimint-cli")?;
+        let admin_password = "targetpassword";
         let mut command = Command::new(fedimintd);
         command
             .arg("--api-url")
@@ -83,6 +84,8 @@ impl FedimintFixture {
             .arg(&p2p_url)
             .env("RUST_LOG", "info")
             .env("FM_REL_NOTES_ACK", "0_4_xyz")
+            .env("FM_PASSWORD_API", admin_password)
+            .env("FM_PASSWORD_UI", admin_password)
             .env("FM_DEFAULT_BITCOIN_RPC_KIND", "bitcoind")
             .env(
                 "FM_DEFAULT_BITCOIN_RPC_URL",
@@ -129,8 +132,8 @@ impl FedimintFixture {
         this.process
             .wait_for_log("Setup UI running at", Duration::from_secs(300))
             .await?;
-        this.set_local_params("target-federation", "guardian1", "targetpassword")?;
-        this.start_dkg("targetpassword")?;
+        this.set_local_params("target-federation", "guardian1", admin_password)?;
+        this.start_dkg(admin_password)?;
         this.process
             .wait_for_log("Starting Consensus Engine", Duration::from_secs(300))
             .await?;

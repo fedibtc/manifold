@@ -2993,7 +2993,9 @@ async fn wait_for_active_wallet_operations(
     admin_url: &str,
     federation_id: &str,
 ) -> anyhow::Result<()> {
-    for _ in 0..120 {
+    // Gateway registration and funding can exceed 12 seconds on shared runners.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+    while tokio::time::Instant::now() < deadline {
         let allocation = get_admin_allocation(http, admin_url, federation_id).await?;
         let operations = allocation["allocation"]["wallet_operations"]
             .as_array()
