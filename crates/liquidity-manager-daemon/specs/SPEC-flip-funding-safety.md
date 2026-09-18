@@ -134,6 +134,29 @@ client and the ordinary operations still apply.
 Abandoning moves no money and recovers none. Returning target-client value to
 the provider wallet is a peg-out and is not part of this contract.
 
+## Gateway attribution
+
+A gateway item completes only against the configured gateway's own claim of the
+output its funding send paid. The gateway's payment log is the sole evidence,
+and it is local to that gateway: no federation holds a copy and rejoining a
+federation does not rebuild it. The whole log is searched, so the absence of a
+claim is a fact about the gateway rather than about how far back the search
+reached.
+
+That evidence source is also the one that can go quiet. A gateway that cannot
+answer, or that has not caught up with the chain, has reported nothing about
+any item: it is recorded as one dated outage and no item is advanced or
+convicted by it. Silence from a dependency is never read as evidence about a
+deposit.
+
+When the gateway does answer and still names no claim for the funded output,
+the wait is ordinary until it passes `funding_policy.gateway_claim_review_after_secs`,
+measured from the funding operation's last update. Past that the item is
+recorded as overdue for the operator. The threshold governs only when a wait
+becomes worth reporting: the item keeps its active status and keeps being
+reconciled, and a claim the gateway reports afterwards completes it with no
+operator action. Zero disables the report.
+
 ## State monotonicity and reservation
 
 Terminal item and wallet states are monotonic: delayed worker, sync, step, or
@@ -159,3 +182,15 @@ cancels pending/running/action-required items and pending or failed wallet
 operations before broadcast, and rejects when an active item has an operation
 in any of those non-cancellable states. Operator cancellation is allowed only
 before irreversible submission; a cancelled wallet operation is terminal.
+
+`abandon_gateway_item` is the gateway counterpart of
+`abandon_target_client_value`, for the dead end a settled funding send creates:
+retry and cancellation both refuse the item for having already sent the value,
+so nothing else moves it and it reserves capacity indefinitely. It requires an
+operator reason, a funding operation that has reached `completed`, and an item
+FLIP has itself recorded as overdue, so an operator decides about a reported
+wait rather than pre-empting one. It writes the item `failed` under its own
+failure code, distinct from a pre-funding attach failure because the two call
+for opposite remediation, and commits that status with its audit entry. It
+releases an accounting reservation and moves no money: the value is at the
+gateway, and recovering it is a gateway peg-out outside this contract.
