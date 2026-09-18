@@ -450,6 +450,19 @@ pub(crate) struct GatewayAllocationStep {
     pub gateway_connected: bool,
     pub deposit_address: Option<String>,
     pub wallet_operation_id: Option<String>,
+    /// When the gateway's attribution for this item first counted as overdue,
+    /// if it has.
+    ///
+    /// Set once the funding send has been settled longer than
+    /// `funding_policy.gateway_claim_review_after_secs` with no gateway claim
+    /// naming its output. It marks a wait worth an operator's attention and
+    /// nothing more: the item stays active, so the next pass reads the
+    /// gateway's log again and a claim reported later still completes it.
+    ///
+    /// Absent on every item written before the field existed, which reads as
+    /// "not overdue" and is corrected by the first pass that finds otherwise.
+    #[serde(default)]
+    pub attribution_overdue_since: Option<Timestamp>,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]

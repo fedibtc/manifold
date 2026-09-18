@@ -11,7 +11,7 @@
 
 use fedi_decentralized_service_liquidity_manager::{
     CompletionEvidence, GatewayCompletionEvidence, LiquidityFailureCode, Sats, ServiceResult,
-    SetupConfigView, WalletOperationId, WalletOperationStatus,
+    SetupConfigView, WalletOperation, WalletOperationId, WalletOperationStatus,
 };
 
 use crate::DaemonContext;
@@ -336,7 +336,16 @@ async fn complete_if_gateway_funded(
     // federation-wide balance inequality is not, because a concurrent item or
     // an independent deposit raises the same aggregate.
     let Some(funding_txid) = operation.txid.as_deref() else {
-        recheck_gateway_deposit(setup, gateway, &item).await?;
+        recheck_and_note_delay(
+            database,
+            setup,
+            gateway,
+            &item,
+            &operation,
+            "the settled funding send records no transaction id, so no gateway claim \
+             can name the output it paid",
+        )
+        .await?;
         return Ok(false);
     };
     // Chain observation settles allocation funding sends and records the
@@ -366,7 +375,15 @@ async fn complete_if_gateway_funded(
         }
     };
     if claim.is_none() {
-        recheck_gateway_deposit(setup, gateway, &item).await?;
+        recheck_and_note_delay(
+            database,
+            setup,
+            gateway,
+            &item,
+            &operation,
+            "the gateway does not report claiming the deposit this item funded",
+        )
+        .await?;
         return Ok(false);
     }
     // Completion evidence records what the gateway reported for the funded
@@ -377,7 +394,16 @@ async fn complete_if_gateway_funded(
         .await
         .map_err(unavailable)?
     else {
-        recheck_gateway_deposit(setup, gateway, &item).await?;
+        recheck_and_note_delay(
+            database,
+            setup,
+            gateway,
+            &item,
+            &operation,
+            "the gateway does not report the funded federation, so there is no balance \
+             to record as completion evidence",
+        )
+        .await?;
         return Ok(false);
     };
     allocation_store::upsert_gateway_observation(
@@ -412,6 +438,74 @@ async fn complete_if_gateway_funded(
         }),
     )
     .await
+}
+
+/// Rechecks the deposit address, and raises a long wait for an operator.
+///
+/// Both halves apply on every pass where the gateway has not yet attributed
+/// the item's funding output. The recheck asks the gateway to look at the
+/// address again; the notice tells an operator that the looking has gone on
+/// long enough to be worth their attention.
+async fn recheck_and_note_delay(
+    database: &Database,
+    setup: &SetupConfigView,
+    gateway: &impl GatewayClient,
+    item: &GatewayAllocationItem,
+    operation: &WalletOperation,
+    detail: &str,
+) -> ServiceResult<()> {
+    note_attribution_delay(database, setup, item, operation, detail).await?;
+    recheck_gateway_deposit(setup, gateway, item).await
+}
+
+/// Records that the gateway's attribution for this item is overdue.
+///
+/// The age is measured from the funding operation's last update, which for a
+/// settled send is when it reached `completed`. Terminal wallet states are
+/// monotonic, so that timestamp stops moving and the age only grows.
+///
+/// Passing the threshold says a human should look, not that the money is gone.
+/// Missing confirmation does not establish whether the gateway received the
+/// deposit: the gateway may be offline, resyncing, or behind on its log. So the
+/// marker rides in the item step and the item keeps its active status, which is
+/// what lets the next pass read the gateway's log again and complete the item
+/// from evidence that arrives afterwards, with no operator action at all.
+///
+/// The marker is written once. A worker that keeps finding the same wait calls
+/// this every pass, so an unguarded event would repeat one fact for as long as
+/// the condition lasted.
+async fn note_attribution_delay(
+    database: &Database,
+    setup: &SetupConfigView,
+    item: &GatewayAllocationItem,
+    operation: &WalletOperation,
+    detail: &str,
+) -> ServiceResult<()> {
+    if item.step.attribution_overdue_since.is_some() {
+        return Ok(());
+    }
+    let threshold = setup.funding_policy.gateway_claim_review_after_secs;
+    if threshold == 0 {
+        return Ok(());
+    }
+    let now = now_timestamp();
+    let unattributed_for = now.0.saturating_sub(operation.updated_at.0);
+    if unattributed_for < threshold {
+        return Ok(());
+    }
+
+    let mut step = item.step.clone();
+    step.attribution_overdue_since = Some(now);
+    allocation_store::update_item_step(database, &item.item_id, &step).await?;
+    tracing::warn!(
+        federation_id = %item.target.federation_id.0,
+        item_id = %item.item_id.0,
+        unattributed_for_secs = unattributed_for,
+        detail,
+        "gateway funding deposit is still unattributed; the item stays active and \
+         keeps reconciling"
+    );
+    Ok(())
 }
 
 async fn recheck_gateway_deposit(
