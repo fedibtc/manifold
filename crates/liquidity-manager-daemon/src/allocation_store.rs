@@ -793,16 +793,23 @@ pub(crate) async fn compare_and_set_item_step<S: Serialize>(
     Ok(result.rows_affected() == 1)
 }
 
+/// Marks an item completed, and reports whether this call is what moved it.
+///
+/// The update is fenced on the pending and running statuses the caller
+/// observed, so a cancel or a failure another writer committed in between
+/// leaves the row alone. A `false` return means the row did not move and
+/// nothing completed: the caller holds a stale view and must not report
+/// progress or log an outcome it did not produce.
 pub(crate) async fn complete_item(
     database: &Database,
     federation_id: &FederationId,
     item_id: &ItemId,
     fulfilled_amount: Sats,
     evidence: CompletionEvidence,
-) -> ServiceResult<()> {
+) -> ServiceResult<bool> {
     let completion_evidence_json = serde_json::to_string(&evidence).map_err(internal_error)?;
     let mut tx = database.begin_write().await.map_err(internal_error)?;
-    sqlx::query(
+    let result = sqlx::query(
         "UPDATE allocation_items \
          SET status = ?, fulfilled_amount_sats = ?, completion_evidence_json = ?, updated_at = unixepoch() \
          WHERE item_id = ? AND status IN (?, ?)",
@@ -817,13 +824,16 @@ pub(crate) async fn complete_item(
     .await
     .map_err(internal_error)?;
     tx.commit().await.map_err(internal_error)?;
+    if result.rows_affected() != 1 {
+        return Ok(false);
+    }
     tracing::info!(
         federation_id = %federation_id.0,
         item_id = %item_id.0,
         fulfilled_sats = fulfilled_amount.0,
         "allocation item completed"
     );
-    Ok(())
+    Ok(true)
 }
 
 pub(crate) async fn fail_item(

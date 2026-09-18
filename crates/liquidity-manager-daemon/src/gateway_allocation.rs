@@ -411,8 +411,7 @@ async fn complete_if_gateway_funded(
             wallet_operation_id: Some(operation_id),
         }),
     )
-    .await?;
-    Ok(true)
+    .await
 }
 
 async fn recheck_gateway_deposit(
