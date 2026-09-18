@@ -2871,8 +2871,8 @@ async fn fund_gateway_wallet(
     .await
 }
 
-/// Tops the provider wallet up by `btc` and waits until gatewayd reports at
-/// least `min_spendable_sats` spendable.
+/// Tops the provider wallet up by `btc` and waits until FLIP reports at least
+/// `min_available_sats` available for a new allocation.
 ///
 /// The amount is a parameter because a capacity test has to fund a wallet that
 /// cannot cover everything it will be asked for, which the suite's usual whole
@@ -2882,7 +2882,7 @@ async fn fund_gateway_wallet_amount(
     admin_url: &str,
     bitcoin: &BitcoinFixture,
     btc: f64,
-    min_spendable_sats: u64,
+    min_available_sats: u64,
 ) -> anyhow::Result<()> {
     let deposit = admin_post(
         http,
@@ -2896,7 +2896,7 @@ async fn fund_gateway_wallet_amount(
         .context("create_deposit_address returned address")?;
     bitcoin.send_to_address(address, btc).await?;
     mine_and_sync(bitcoin, FEDIMINT_FINALITY_BLOCKS).await?;
-    wait_for_spendable_funds(http, admin_url, bitcoin, min_spendable_sats).await?;
+    wait_for_available_funds(http, admin_url, bitcoin, min_available_sats).await?;
     Ok(())
 }
 
@@ -3174,6 +3174,54 @@ async fn wait_for_spendable_funds(
         tokio::time::sleep(POLL_INTERVAL).await;
     }
     anyhow::bail!("gateway wallet did not report at least {min_sats} spendable sats")
+}
+
+async fn wait_for_available_funds(
+    http: &Client,
+    admin_url: &str,
+    bitcoin: &BitcoinFixture,
+    min_sats: u64,
+) -> anyhow::Result<Value> {
+    for _ in 0..60 {
+        let funds = admin_post(http, admin_url, "get_funds", &json!({})).await?;
+        if reports_available_funds(&funds, min_sats) {
+            return Ok(funds);
+        }
+        mine_and_sync(bitcoin, 1).await?;
+        tokio::time::sleep(POLL_INTERVAL).await;
+    }
+    anyhow::bail!("FLIP did not report at least {min_sats} available sats")
+}
+
+fn reports_available_funds(funds: &Value, min_sats: u64) -> bool {
+    funds["balance"]["available_balance"]
+        .as_u64()
+        .is_some_and(|available| available >= min_sats)
+}
+
+#[test]
+fn available_funds_predicate_ignores_stale_spendable_balance() {
+    let stale = json!({
+        "balance": {
+            "spendable": 1_500_000,
+            "available_balance": 100_000,
+        }
+    });
+    assert!(!reports_available_funds(
+        &stale,
+        GATEWAY_AMOUNT + GATEWAY_FEE_RESERVE
+    ));
+
+    let topped_up = json!({
+        "balance": {
+            "spendable": 101_500_000,
+            "available_balance": 100_100_000,
+        }
+    });
+    assert!(reports_available_funds(
+        &topped_up,
+        GATEWAY_AMOUNT + GATEWAY_FEE_RESERVE
+    ));
 }
 
 async fn mine_and_sync(bitcoin: &BitcoinFixture, blocks: u32) -> anyhow::Result<()> {
