@@ -633,6 +633,16 @@ pub enum LiquidityFailureCode {
     /// Internal provider error.
     InternalError,
 
+    /// Operator wrote off an item whose delivered funding the gateway cannot
+    /// attribute.
+    ///
+    /// Distinct from [`Self::GatewayAttachFailed`], which reports a gateway
+    /// that could not be attached before any value was sent. This one reports
+    /// value that reached the gateway and an accounting reservation released
+    /// without it: the two call for opposite remediation, so they must not
+    /// share a code.
+    GatewayAttributionAbandoned,
+
     /// A failure code this build does not know.
     ///
     /// Kept rather than refused, and it round-trips unchanged. The code rides
@@ -654,6 +664,7 @@ impl LiquidityFailureCode {
             Self::WithdrawFailed => "withdraw_failed",
             Self::StabilityPoolFailed => "stability_pool_failed",
             Self::InternalError => "internal_error",
+            Self::GatewayAttributionAbandoned => "gateway_attribution_abandoned",
             Self::Unknown(code) => code,
         }
     }
@@ -675,6 +686,7 @@ impl From<String> for LiquidityFailureCode {
             "withdraw_failed" => Self::WithdrawFailed,
             "stability_pool_failed" => Self::StabilityPoolFailed,
             "internal_error" => Self::InternalError,
+            "gateway_attribution_abandoned" => Self::GatewayAttributionAbandoned,
             _ => Self::Unknown(code),
         }
     }

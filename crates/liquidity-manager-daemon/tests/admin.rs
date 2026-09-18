@@ -326,6 +326,12 @@ async fn phase10_manual_operation_routes_return_not_found_dtos() -> anyhow::Resu
             "/admin/v1/release_federation_allocation",
             r#"{"federation_id":"federation-1","reason":"binding wedged"}"#,
         ),
+        // Reaches no gateway, deliberately: the gateway is precisely what
+        // cannot answer when an operator needs this.
+        (
+            "/admin/v1/abandon_gateway_item",
+            r#"{"federation_id":"federation-1","reason":"gateway database replaced"}"#,
+        ),
     ];
 
     for (uri, body) in routes {
