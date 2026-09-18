@@ -186,7 +186,7 @@ are pure views. Building the screen is what is left.
   `refresh_holder_authorizations` re-reads the relay and returns the same state,
   so it is the button beside that view.
 
-**Six verbs appear nowhere in `operator-ui`**, not in a feature and not in
+**Seven verbs appear nowhere in `operator-ui`**, not in a feature and not in
 `packages/types`. That last part is worth stating plainly, because `operator-ui`
 describes `packages/types` as mirroring the Rust admin surface verb for verb.
 Adding the types is the concrete first step.
@@ -199,6 +199,12 @@ Adding the types is the concrete first step.
   item and writes off FLIP's ability to manage funds it already sent, so it wants
   a confirmation step and the abandoned amount shown before the operator commits,
   not a button beside the others
+- `abandon_gateway_item` — the gateway counterpart, and it wants the same care
+  for the same reason. It is reached from a gateway item whose attribution FLIP
+  has recorded as overdue past `funding_policy.gateway_claim_review_after_secs`.
+  That item is still active and still reconciling, so the screen has to show it
+  as a delay under way rather than a finished outcome, and has to make clear
+  that abandoning gives up evidence that may still arrive
 - `install_provider_identity`, `reopen_federation_client`, `rotate_admin_token` —
   whether these belong in a browser has not been recorded either way. A decision
   to keep credential and runtime-surgery operations out of a browser is
