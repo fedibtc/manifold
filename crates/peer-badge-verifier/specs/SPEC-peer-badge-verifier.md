@@ -120,7 +120,7 @@ afresh:
    incomplete lookup, local truncation, excessive location count, or malformed
    matching revocation candidate fails closed. A valid issuer-signed
    revocation for the digest rejects the credential.
-4. Install the admitted authority into a new credential-SDK
+4. Install the admitted authority into a new PeerBadge SDK
    `VerificationContext` and verify the complete `SignedCredential` plus
    `HolderAuthorization` at the requested time. This covers issuance proof,
    credential digest binding, holder signature, holder/blind-subject binding,
@@ -203,7 +203,7 @@ omission-resistance, and delegated-trust consequences.
 
 ## Verification coverage
 
-Focused verifier tests use real credential-SDK issuance and signatures with
+Focused verifier tests use real PeerBadge SDK issuance and signatures with
 fixed test-only issuer keys. They prove typed success, behavioral authority
 and revocation changes between calls, invalid-newest-authority rejection,
 pre-network rejection of untrusted issuers, resource bounds, fail-closed

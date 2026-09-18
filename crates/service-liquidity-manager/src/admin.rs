@@ -721,7 +721,7 @@ pub struct GetHolderAuthorizationStateRequest;
 /// What the operator console needs to run the enrollment flow.
 ///
 /// The console builds the authorization request it shows a Holder — the
-/// credential SDK's `HolderAuthorizationRequest`, carrying `subject_pubkey`
+/// PeerBadge SDK's `HolderAuthorizationRequest`, carrying `subject_pubkey`
 /// alone — from `provider_pubkey`, then watches `status` for the Holder's
 /// publication arriving. Both are read from local state; neither costs a relay
 /// round trip.
