@@ -309,6 +309,17 @@
               cargoExtraArgs = "-p defe";
             };
 
+            manifoldTestIssuer = craneLib.buildPackage {
+              cargoArtifacts = workspaceDeps;
+              cargoExtraArgs = "-p devmon --bin manifold-test-issuer";
+            };
+
+            fiCli = craneLib.buildPackage {
+              cargoArtifacts = workspaceDeps;
+              cargoExtraArgs = "-p fi-cli --bin fi-cli";
+              env.FEDIMINT_BUILD_FORCE_GIT_HASH = fedimintSourceRev;
+            };
+
             pushGateway = craneLib.buildPackage {
               cargoArtifacts = workspaceDeps;
               cargoExtraArgs = "-p fedi-decentralized-push-gateway";
@@ -1809,6 +1820,9 @@
           push-gateway = multiBuild.pushGateway;
           fleet-manager = multiBuild.fleetManager;
           fman-cli = multiBuild.fleetManager;
+          defe = multiBuild.defe;
+          manifold-test-issuer = multiBuild.manifoldTestIssuer;
+          fi-cli = multiBuild.fiCli;
           setup-payment-publisher = multiBuild.setupPaymentPublisher;
           # The flake-pinned fedimint binaries, re-exposed so E2E runs can point
           # FMAN_E2E_FEDIMINTD_BIN / FMAN_E2E_FEDIMINT_CLI_BIN at the exact build
