@@ -263,7 +263,10 @@ it('should refetch onboarding on retry', () => {
 // fetch and the gate flapped until the browser's connection pool jammed.
 it('should stay out of booting once the daemon has answered, even if the query returns to pending', () => {
   arrangeQuery({
-    error: new AdminApiError('this Fleet Manager has not been onboarded yet', 'not_onboarded'),
+    error: new AdminApiError(
+      'this Manifold Fedimint Guardian has not been set up yet',
+      'not_onboarded'
+    ),
     isError: true
   });
 

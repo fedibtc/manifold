@@ -113,7 +113,7 @@ async fn a_second_database_open_on_the_same_data_root_is_refused() {
     assert!(
         error
             .to_string()
-            .contains("another Fleet Manager instance already runs"),
+            .contains("another Manifold Fedimint Guardian instance already runs"),
         "unexpected second-open error: {error:#}"
     );
 }

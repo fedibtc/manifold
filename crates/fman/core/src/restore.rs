@@ -50,7 +50,7 @@ use crate::seat_process::{SeatProcessConfig, seat_data_dir, seat_dir};
 /// is gone.
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum RestoreError {
-    #[error("this Fleet Manager has already been onboarded; a host is set up once")]
+    #[error("this Manifold Fedimint Guardian has already been set up; a host is set up once")]
     AlreadyOnboarded,
     // The phrase itself never reaches this message, here or anywhere else
     // (SECURITY.md).

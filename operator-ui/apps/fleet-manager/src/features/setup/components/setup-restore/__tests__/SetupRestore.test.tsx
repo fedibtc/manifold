@@ -206,7 +206,7 @@ describe('SetupRestore', () => {
       .mockRejectedValueOnce(new NetworkError())
       .mockRejectedValue(
         new AdminApiError(
-          'this Fleet Manager has not been onboarded yet: run `admin onboard new` or `admin onboard restore`',
+          'this Manifold Fedimint Guardian has not been set up yet: run `admin onboard new` or `admin onboard restore`',
           'not_onboarded'
         )
       );
@@ -282,7 +282,7 @@ describe('SetupRestore', () => {
       .mockRejectedValueOnce(new NetworkError())
       .mockRejectedValue(
         new AdminApiError(
-          'this Fleet Manager has not been onboarded yet: run `admin onboard new` or `admin onboard restore`',
+          'this Manifold Fedimint Guardian has not been set up yet: run `admin onboard new` or `admin onboard restore`',
           'not_onboarded'
         )
       );
