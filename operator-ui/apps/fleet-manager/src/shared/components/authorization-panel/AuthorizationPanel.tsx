@@ -60,8 +60,8 @@ export const AuthorizationPanel = ({ data, isLoading, error }: AuthorizationPane
           fleet hosts many, so naming the fleet-wide key after a single guardian
           would be wrong. */}
       <p className={styles.hint}>
-        This is your fleet manager ID. Scan it with the Holder app, or copy the request and paste it
-        there.
+        This is your Manifold Fedimint Guardian ID. Scan it with the Holder app, or copy the request
+        and paste it there.
       </p>
 
       <AuthorizationStatusBanner nostr={data.nostr} />

@@ -30,12 +30,14 @@ export const SeatDetailCard = ({ seat }: SeatDetailCardProps) => {
   return (
     <dl className={styles.kv}>
       <div className={styles.kvRow}>
-        <dt className={styles.kvLabel}>FI</dt>
+        <dt className={styles.kvLabel}>Ambassador</dt>
 
         <dd className={styles.idRow}>
           <span className={styles.kvValueMono}>{truncateMiddle(seat.fi_id, 8, 8)}</span>
 
-          {isTruncated(seat.fi_id, 8, 8) && <CopyButton value={seat.fi_id} label="Copy FI ID" />}
+          {isTruncated(seat.fi_id, 8, 8) && (
+            <CopyButton value={seat.fi_id} label="Copy Ambassador ID" />
+          )}
         </dd>
       </div>
 

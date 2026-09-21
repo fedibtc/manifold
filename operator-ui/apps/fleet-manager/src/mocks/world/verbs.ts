@@ -365,7 +365,7 @@ const onboardAsNew: Verb<'OnboardAsNew'> = ({ if_needed }) => {
     if (if_needed) return { onboarded: 'already' };
     throw new RefusalWithReason(
       'already_onboarded',
-      'this Fleet Manager has already been onboarded; a host is set up once'
+      'this Manifold Fedimint Guardian has already been set up; a host is set up once'
     );
   }
   state.onboarded = true;
@@ -390,7 +390,7 @@ const onboardFromBackup: Verb<'OnboardFromBackup'> = ({
   if (getState().onboarded) {
     throw new RefusalWithReason(
       'already_onboarded',
-      'this Fleet Manager has already been onboarded; a host is set up once'
+      'this Manifold Fedimint Guardian has already been set up; a host is set up once'
     );
   }
   if (!acknowledge_original_host_is_gone) {
@@ -523,7 +523,7 @@ const notOnboardedRefusal = (): AdminResult<unknown> => ({
   Err: {
     kind: 'not_onboarded',
     message:
-      'this Fleet Manager has not been onboarded yet: run `admin onboard new` or `admin onboard restore`'
+      'this Manifold Fedimint Guardian has not been set up yet: run `admin onboard new` or `admin onboard restore`'
   }
 });
 
@@ -535,7 +535,7 @@ const startingRefusal = (): AdminResult<unknown> => ({
   Err: {
     kind: 'other',
     message:
-      'this Fleet Manager has completed onboarding and is starting; its fleet is not open yet'
+      'this Manifold Fedimint Guardian has completed setup and is starting; its guardians are not open yet'
   }
 });
 
@@ -556,7 +556,7 @@ const stageRefusal = (method: AdminRequestName): AdminResult<unknown> | null => 
     return {
       Err: {
         kind: 'already_onboarded',
-        message: 'this Fleet Manager has already been onboarded; a host is set up once'
+        message: 'this Manifold Fedimint Guardian has already been set up; a host is set up once'
       }
     };
   }

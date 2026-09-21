@@ -21,6 +21,6 @@ test('@live should sign in against the real operator API and show an empty fleet
   // A freshly provisioned manager owns no seats, so the real empty state renders
   // from real backend data rather than a fixture.
   await expect(
-    page.getByText('No seats yet. Seats are created by Federation Initiators')
+    page.getByText('No seats yet. Seats are created by Federation Ambassadors')
   ).toBeVisible();
 });

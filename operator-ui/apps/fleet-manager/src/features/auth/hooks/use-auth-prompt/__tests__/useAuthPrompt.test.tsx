@@ -73,7 +73,7 @@ describe('useAuthPrompt', () => {
       await result.current.onSubmit(submitEvent);
     });
 
-    expect(result.current.error).toMatch(/can't reach the fleet manager/i);
+    expect(result.current.error).toMatch(/can't reach Manifold Fedimint Guardian/i);
     expect(result.current.error).not.toMatch(/incorrect password/i);
   });
 
@@ -90,7 +90,7 @@ describe('useAuthPrompt', () => {
     });
 
     expect(result.current.error).toBe(
-      'The fleet manager failed while signing in (HTTP 500). That is a fault in the service, not a wrong password. Check the service, then try again.'
+      'Manifold Fedimint Guardian failed while signing in (HTTP 500). That is a fault in the service, not a wrong password. Check the service, then try again.'
     );
   });
 });

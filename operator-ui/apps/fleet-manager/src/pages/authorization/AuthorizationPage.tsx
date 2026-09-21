@@ -26,8 +26,8 @@ export const AuthorizationPage = () => {
   // An approved fleet is not waiting for a scan, so asking for one states
   // something the rest of the screen contradicts.
   const intro = authorized
-    ? 'Your fleet is approved. The code below is your fleet manager ID.'
-    : 'Your fleet needs to be approved before others can discover and use it. Scan the code below with the Holder app to approve it.';
+    ? 'This host is approved. The code below is your Manifold Fedimint Guardian ID.'
+    : 'This host needs to be approved before Federation Ambassadors can discover and use it. Scan the code below with the Holder app to approve it.';
 
   return (
     <div className={styles.root}>
@@ -43,9 +43,9 @@ export const AuthorizationPage = () => {
 
       <SectionCard title="Update authorization">
         <p className={styles.hint}>
-          To renew or replace your authorization, scan the fleet manager ID with the Holder app and
-          authorize it again. Then fetch the new authorization here. Your existing authorization is
-          retained if the check fails or finds nothing new.
+          To renew or replace your authorization, scan the Manifold Fedimint Guardian ID with the
+          Holder app and authorize it again. Then fetch the new authorization here. Your existing
+          authorization is retained if the check fails or finds nothing new.
         </p>
 
         <Button variant="secondary" loading={refresh.isFetching} onClick={handleFetchAuthorization}>

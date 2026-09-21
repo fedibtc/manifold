@@ -15,16 +15,16 @@ export const describeActionError = (error: unknown): string => {
     return 'Your session expired. Sign in again.';
   }
   if (error instanceof AccessDeniedError) {
-    return 'The fleet manager refused this request. Your session is valid; this account is not allowed to make it.';
+    return 'Manifold Fedimint Guardian refused this request. Your session is valid; this account is not allowed to make it.';
   }
   if (error instanceof AdminApiError) {
     return error.message;
   }
   if (isDaemonUnreachable(error)) {
-    return "Can't reach the fleet manager. Try again once it's back online.";
+    return "Can't reach Manifold Fedimint Guardian. Try again once it's back online.";
   }
   if (error instanceof HttpStatusError) {
-    return `The fleet manager refused the request (HTTP ${error.status}).`;
+    return `Manifold Fedimint Guardian refused the request (HTTP ${error.status}).`;
   }
   if (error instanceof Error) {
     return error.message;

@@ -17,8 +17,7 @@ const renderRestore = (onRestored = vi.fn(), onCancel = vi.fn()) => {
   return { onRestored, onCancel, client };
 };
 
-const submitButton = () =>
-  screen.getByRole('button', { name: 'Recover this fleet' }) as HTMLButtonElement;
+const submitButton = () => screen.getByRole('button', { name: 'Recover' }) as HTMLButtonElement;
 
 const acknowledgement = () => screen.getByLabelText(/permanently offline/i) as HTMLInputElement;
 
@@ -207,7 +206,7 @@ describe('SetupRestore', () => {
       .mockRejectedValueOnce(new NetworkError())
       .mockRejectedValue(
         new AdminApiError(
-          'this Fleet Manager has not been onboarded yet: run `admin onboard new` or `admin onboard restore`',
+          'this Manifold Fedimint Guardian has not been set up yet: run `admin onboard new` or `admin onboard restore`',
           'not_onboarded'
         )
       );
@@ -283,7 +282,7 @@ describe('SetupRestore', () => {
       .mockRejectedValueOnce(new NetworkError())
       .mockRejectedValue(
         new AdminApiError(
-          'this Fleet Manager has not been onboarded yet: run `admin onboard new` or `admin onboard restore`',
+          'this Manifold Fedimint Guardian has not been set up yet: run `admin onboard new` or `admin onboard restore`',
           'not_onboarded'
         )
       );

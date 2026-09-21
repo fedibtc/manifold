@@ -40,7 +40,7 @@ pub trait HolderAuthorizationFetcher: Send + Sync {
 }
 
 #[derive(Debug, thiserror::Error)]
-#[error("this Fleet Manager has not completed onboarding")]
+#[error("this Manifold Fedimint Guardian has not completed setup")]
 pub struct NotOnboarded;
 
 pub(crate) async fn onboard_as_new(db: &Db) -> anyhow::Result<RootMnemonic> {
@@ -356,7 +356,7 @@ fn already_completed(request: &AdminRequest) -> anyhow::Result<Value> {
             Err(RestoreError::AlreadyOnboarded.into())
         }
         _ => Err(anyhow::anyhow!(
-            "this Fleet Manager has completed onboarding and is starting; its fleet is not open yet"
+            "this Manifold Fedimint Guardian has completed setup and is starting; its guardians are not open yet"
         )),
     }
 }

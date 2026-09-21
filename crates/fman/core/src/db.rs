@@ -824,7 +824,7 @@ async fn lock_data_root(data_root: &Path) -> anyhow::Result<std::fs::File> {
         }
     }
     Err(anyhow::anyhow!(
-        "another Fleet Manager instance already runs on {}",
+        "another Manifold Fedimint Guardian instance already runs on {}",
         data_root.display(),
     ))
 }

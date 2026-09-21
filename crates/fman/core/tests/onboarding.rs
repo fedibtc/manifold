@@ -119,7 +119,7 @@ async fn a_second_onboarding_cannot_replace_the_first() {
         .await
         .unwrap_err();
     assert!(
-        refused.message.contains("already been onboarded"),
+        refused.message.contains("already been set up"),
         "{refused:?}"
     );
     assert_eq!(

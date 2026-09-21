@@ -105,14 +105,16 @@ describe('AuthorizationPanel', () => {
   });
 
   // The operator scans this themselves in the Holder app. The hint has to name
-  // what the value is and what to do with it, and it may not call a fleet-wide
-  // key a "guardian ID" — a guardian is one seat and a fleet hosts many.
+  // what the value is and what to do with it, and it may not call a host-wide
+  // key a bare "guardian ID" — a guardian is one seat and a host runs many.
+  // "Manifold Fedimint Guardian ID" is the product name, not the role, so it is
+  // the one spelling that may precede "Guardian ID".
   it('should tell the operator what the key is and how to present it', () => {
     render(<AuthorizationPanel data={waiting} isLoading={false} error={null} />);
 
-    expect(screen.getByText(/your fleet manager ID/i)).toBeTruthy();
+    expect(screen.getByText(/your Manifold Fedimint Guardian ID/i)).toBeTruthy();
     expect(screen.getByText(/scan it with the Holder app/i)).toBeTruthy();
-    expect(screen.queryByText(/guardian ID/i)).toBeNull();
+    expect(screen.queryByText(/(?<!Manifold Fedimint )guardian ID/i)).toBeNull();
   });
 
   it('should show a loading state instead of waiting text before the first response', () => {

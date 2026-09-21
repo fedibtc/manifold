@@ -18,23 +18,24 @@ export const SetupDoors = ({ onNewFleet, onRestore }: SetupDoorsProps) => {
   return (
     <div className={styles.root}>
       <div className={styles.head}>
-        <h1 className={styles.heading}>Set up your fleet manager</h1>
+        <h1 className={styles.heading}>Set up Manifold Fedimint Guardian</h1>
 
         <p className={styles.intro}>
-          This host has no identity yet. A fleet manager is set up once — choose which one this is.
+          This host has no identity yet. Manifold Fedimint Guardian is set up once — choose which
+          one this is.
         </p>
       </div>
 
       <div className={styles.doors}>
         <section className={styles.door}>
-          <h2 className={styles.doorTitle}>Start a new fleet</h2>
+          <h2 className={styles.doorTitle}>Start fresh</h2>
 
           <p className={styles.doorBody}>
             Generates a fresh recovery phrase and starts with no seats. This is the usual choice.
           </p>
 
           <Button onClick={handleNewFleet} loading={onboardAsNew.isPending}>
-            Start a new fleet
+            Start fresh
           </Button>
         </section>
 
@@ -42,8 +43,8 @@ export const SetupDoors = ({ onNewFleet, onRestore }: SetupDoorsProps) => {
           <h2 className={styles.doorTitle}>Recover from your phrase</h2>
 
           <p className={styles.doorBody}>
-            Rebuilds a fleet manager whose original host is gone, from the twelve words you wrote
-            down. Its seats come back with it.
+            Rebuilds a Manifold Fedimint Guardian whose original host is gone, from the twelve words
+            you wrote down. Its seats come back with it.
           </p>
 
           <Button variant="secondary" onClick={onRestore}>

@@ -6,7 +6,7 @@ describe('SeatLegend', () => {
   it('should explain what the FI column is for', () => {
     render(<SeatLegend />);
 
-    expect(screen.getByText(/Federation Initiator who bought the seat/i)).toBeInTheDocument();
+    expect(screen.getByText(/Federation Ambassador who bought the seat/i)).toBeInTheDocument();
   });
 
   it('should enumerate every health a seat can report', () => {

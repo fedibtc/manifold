@@ -66,8 +66,8 @@ export const SetupPrice = ({ onDone }: SetupPriceProps) => {
         <h1 className={styles.heading}>Set your price</h1>
 
         <p className={styles.intro}>
-          One price is the whole offer: the gross amount an initiator pays for a seat, before mint
-          and Lightning fees.
+          One price is the whole offer: the gross amount a Federation Ambassador pays for a seat,
+          before mint and Lightning fees.
         </p>
       </div>
 

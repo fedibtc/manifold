@@ -35,7 +35,7 @@ const renderShellAt = (path: string) =>
 it('should render the brand and every nav item', () => {
   renderShellAt('/');
 
-  screen.getByText('FMan');
+  screen.getByText('Manifold Fedimint Guardian');
   screen.getByText('blissful-chiffchaff');
   for (const item of NAV_ITEMS) {
     screen.getByRole('link', { name: item.label });

@@ -81,7 +81,7 @@ describe('AuthorizationPage', () => {
 
     await screen.findByText('Approved');
     expect(screen.queryByText(/Scan the code below with the Holder app to approve it/i)).toBeNull();
-    expect(screen.getByText(/Your fleet is approved\. The code below/i)).toBeTruthy();
+    expect(screen.getByText(/This host is approved\. The code below/i)).toBeTruthy();
   });
 
   it('should refresh authorization after approval without fetching relays on mount', async () => {

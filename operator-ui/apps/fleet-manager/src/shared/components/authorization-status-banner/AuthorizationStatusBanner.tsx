@@ -13,7 +13,7 @@ interface AuthorizationStatusBannerProps {
 // together would produce a sentence that is true of one and false of another.
 export const AuthorizationStatusBanner = ({ nostr }: AuthorizationStatusBannerProps) => {
   if (nostr.state === 'checking') {
-    return <Banner variant="info">Checking whether your fleet has been approved…</Banner>;
+    return <Banner variant="info">Checking whether this host has been approved…</Banner>;
   }
 
   // What an unapproved fleet loses is the operator's first question, and it is
@@ -22,7 +22,7 @@ export const AuthorizationStatusBanner = ({ nostr }: AuthorizationStatusBannerPr
   if (nostr.state === 'not_observed') {
     return (
       <Banner variant="info" title="Not approved yet">
-        Until your fleet is approved it is not advertised and cannot sell seats. Last checked{' '}
+        Until this host is approved it is not advertised and cannot sell seats. Last checked{' '}
         {formatCheckedAt(nostr.checked_at)}.
       </Banner>
     );
@@ -31,7 +31,7 @@ export const AuthorizationStatusBanner = ({ nostr }: AuthorizationStatusBannerPr
   if (nostr.state === 'relay_error') {
     return (
       <Banner variant="warn" title="Approval could not be checked">
-        Your fleet may or may not be approved — this is a connection problem, not a refusal:{' '}
+        This host may or may not be approved — this is a connection problem, not a refusal:{' '}
         {nostr.error}
       </Banner>
     );
@@ -43,7 +43,7 @@ export const AuthorizationStatusBanner = ({ nostr }: AuthorizationStatusBannerPr
   // against the relay during this run.
   return (
     <Banner variant="success" title="Approved">
-      Your fleet is approved. It is advertised once setup is complete.{' '}
+      This host is approved. It is advertised once setup is complete.{' '}
       {nostr.checked_at === null
         ? 'Confirmed from the stored record; not re-checked since startup.'
         : `Confirmed at ${formatCheckedAt(nostr.checked_at)}.`}

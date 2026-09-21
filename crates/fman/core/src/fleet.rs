@@ -381,7 +381,7 @@ impl Fleet {
             .await?;
         anyhow::ensure!(
             db.onboarding_stage().await? == crate::db::OnboardingStage::Complete,
-            "this Fleet Manager has not completed onboarding"
+            "this Manifold Fedimint Guardian has not completed setup"
         );
         // A fleet is opened against an identity that already exists. Acquiring
         // one is onboarding's job ([`crate::onboarding`]), and it happens
@@ -390,7 +390,7 @@ impl Fleet {
         let identity = Arc::new(
             db.load_identity()
                 .await?
-                .ok_or_else(|| anyhow!("this Fleet Manager has not been onboarded"))?,
+                .ok_or_else(|| anyhow!("this Manifold Fedimint Guardian has not been set up"))?,
         );
         let telemetry_generation = db.telemetry_capability_generation().await?;
         let wallet = wallet(&identity).await?;

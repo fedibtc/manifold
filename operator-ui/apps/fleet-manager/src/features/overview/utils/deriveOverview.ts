@@ -72,7 +72,7 @@ export const deriveOverview = ({
   if (nostrState === 'not_observed') {
     attention.push({
       key: 'authorization-not-observed',
-      title: 'Your fleet is not approved yet',
+      title: 'This host is not approved yet',
       detail:
         'Until it is approved it is not advertised and cannot sell seats. Open Authorization to check.',
       path: '/authorization'
@@ -87,7 +87,7 @@ export const deriveOverview = ({
     attention.push({
       key: 'authorization-relay-error',
       title: 'Approval could not be checked',
-      detail: 'Your fleet may or may not be approved. Open Authorization for the failure.',
+      detail: 'This host may or may not be approved. Open Authorization for the failure.',
       path: '/authorization'
     });
   }
