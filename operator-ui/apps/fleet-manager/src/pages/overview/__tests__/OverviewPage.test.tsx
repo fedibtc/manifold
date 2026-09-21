@@ -149,7 +149,7 @@ it('should signpost an unapproved fleet to the Authorization screen', async () =
   });
   renderPage();
 
-  await waitFor(() => screen.getByText('Your fleet is not approved yet'));
+  await waitFor(() => screen.getByText('This host is not approved yet'));
   expect(screen.getByRole('link', { name: 'Review' }).getAttribute('href')).toBe('/authorization');
 });
 

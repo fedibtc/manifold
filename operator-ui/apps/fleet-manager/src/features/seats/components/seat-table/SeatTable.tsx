@@ -31,13 +31,13 @@ const columns: Column<SeatRow>[] = [
   },
   {
     key: 'fi',
-    header: 'FI',
+    header: 'Ambassador',
     render: (row) => (
       <span className={styles.idRow}>
         <span className={styles.mono}>{truncateMiddle(row.seat.fi_id, 8, 8)}</span>
 
         {isTruncated(row.seat.fi_id, 8, 8) && (
-          <CopyButton value={row.seat.fi_id} label="Copy FI ID" />
+          <CopyButton value={row.seat.fi_id} label="Copy Ambassador ID" />
         )}
       </span>
     )

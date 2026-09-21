@@ -8,7 +8,7 @@ describe('AuthorizationStatusBanner', () => {
   it('should say the check is still running while the first read is outstanding', () => {
     render(<AuthorizationStatusBanner nostr={{ state: 'checking' }} />);
 
-    expect(screen.getByText(/checking whether your fleet has been approved/i)).toBeTruthy();
+    expect(screen.getByText(/checking whether this host has been approved/i)).toBeTruthy();
   });
 
   // The daemon separates a completed read from no read. Saying "not approved"

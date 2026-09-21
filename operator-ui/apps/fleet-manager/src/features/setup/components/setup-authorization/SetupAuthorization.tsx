@@ -27,7 +27,7 @@ export const SetupAuthorization = ({ onSettled }: SetupAuthorizationProps) => {
   // settles and Continue is enabled, so stating it then contradicts the screen.
   const consequence = authorized
     ? null
-    : ' Until it is approved your fleet is not advertised and cannot sell seats — setup cannot continue past this step.';
+    : ' Until it is approved this host is not advertised and cannot sell seats — setup cannot continue past this step.';
 
   // Relay reconciliation is explicit: setup performs no background refreshes.
   const handleCheckNow = () => {
@@ -49,15 +49,15 @@ export const SetupAuthorization = ({ onSettled }: SetupAuthorizationProps) => {
   return (
     <div className={styles.root}>
       <div className={styles.head}>
-        <h1 className={styles.heading}>Get your fleet approved</h1>
+        <h1 className={styles.heading}>Get approved</h1>
 
         {/* This, not the standalone Authorization page, is what an unapproved
             operator actually sees: SetupGate holds the whole app here until the
             daemon reports onboarding complete. The consequences of staying
             unapproved therefore have to be stated here. */}
         <p className={styles.intro}>
-          Your fleet needs to be approved before others can discover and use it. Scan the code below
-          with the Holder app.{consequence}
+          This host needs to be approved before Federation Ambassadors can discover and use it. Scan
+          the code below with the Holder app.{consequence}
         </p>
       </div>
 

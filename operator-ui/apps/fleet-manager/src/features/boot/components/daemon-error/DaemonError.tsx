@@ -17,16 +17,16 @@ interface DaemonErrorProps {
 // answered 403 is running, and its seats with it.
 const COPY: Record<DaemonFailureKind, { title: string; intro: string; help: string }> = {
   unreachable: {
-    title: "Can't reach the fleet manager",
+    title: "Can't reach Manifold Fedimint Guardian",
     intro:
       "The dashboard is fine, but the daemon behind it isn't answering. Your guardians are supervised by this daemon and are down too while it's unreachable — this is a connection problem, not data loss.",
     help: 'Still failing? Check that the fleet-manager service is running, then retry. It reconnects automatically as soon as the daemon is back.'
   },
   refused: {
-    title: 'The fleet manager refused this dashboard',
+    title: 'Manifold Fedimint Guardian refused this dashboard',
     intro:
       'The daemon is running and answered, but it will not serve this dashboard: it refused the request even though the session is valid. Nothing has been lost, and signing in again will not change the answer.',
-    help: 'Ask whoever operates this fleet manager to grant this account access, then retry.'
+    help: 'Ask whoever operates this Manifold Fedimint Guardian to grant this account access, then retry.'
   }
 };
 

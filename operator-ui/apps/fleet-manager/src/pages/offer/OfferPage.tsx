@@ -19,7 +19,7 @@ export const OfferPage = () => {
         <h1 className={styles.heading}>Seat price</h1>
 
         <p className={styles.intro}>
-          One price is the whole offer. It is what a federation initiator pays for a seat. Network
+          One price is the whole offer. It is what a Federation Ambassador pays for a seat. Network
           fees apply.
         </p>
       </div>
@@ -28,8 +28,8 @@ export const OfferPage = () => {
 
       <QuerySurface disposition={disposition} onRetry={retry}>
         <Banner variant="info">
-          Leave the field blank to stop selling seats. A price of 0 keeps the fleet advertised and
-          gives seats away free.
+          Leave the field blank to stop selling seats. A price of zero keeps this host advertised
+          and gives seats away free.
         </Banner>
 
         <form className={styles.form} onSubmit={onSubmit}>

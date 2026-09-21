@@ -24,16 +24,16 @@ export const BackupPhrasePage = () => {
         <h1 className={styles.heading}>Recovery phrase</h1>
 
         <Banner variant="error">
-          Anyone who has these 12 words controls this fleet and its funds. Write them down on paper
-          — never store them digitally or share them.
+          Anyone who has these 12 words controls your guardians and their funds. Write them down on
+          paper — never store them digitally or share them.
         </Banner>
 
         <div className={styles.phraseBox}>{showMnemonic.data.mnemonic}</div>
 
         <p className={styles.backupNote}>
-          These 12 words are your complete backup. You can use them to restore this fleet on a new
-          server — but only during setup of the new server, and only after this one is permanently
-          shut down.
+          These 12 words are your complete backup. You can use them to restore your guardians on a
+          new server — but only during setup of the new server, and only after this one is
+          permanently shut down.
         </p>
 
         <p className={styles.backupNote}>

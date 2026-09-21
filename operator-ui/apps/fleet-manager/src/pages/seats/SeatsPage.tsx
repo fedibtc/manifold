@@ -10,7 +10,7 @@ export const SeatsPage = () => {
 
   const fleet = isEmpty ? (
     <p className={styles.empty}>
-      No seats yet. Seats are created by Federation Initiators after they pay for a plan — there is
+      No seats yet. Seats are created by Federation Ambassadors after they pay for a plan — there is
       no "create seat" action on this dashboard. See <Link to="/offer">Seat price</Link> for the
       current price.
     </p>

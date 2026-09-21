@@ -16,7 +16,7 @@ const HEALTH_ORDER: SeatHealth[] = ['healthy', 'unavailable', 'failed'];
 const HEALTH_MEANING: Record<SeatHealth, string> = {
   healthy: 'serving normally',
   unavailable: 'temporarily not serving; expected to recover on its own',
-  failed: 'the fleet gave up restarting it — this one needs you'
+  failed: 'this host gave up restarting it — this one needs you'
 };
 
 const PHASE_ORDER: SeatPhase['phase'][] = ['created', 'dkg_in_progress', 'running', 'data_loss'];
@@ -36,9 +36,9 @@ const ENTRIES: LegendEntry[] = [
     description: "This seat's ID. Open it for the invite code and its guardian fee account."
   },
   {
-    term: 'FI',
+    term: 'Ambassador',
     description:
-      'The Federation Initiator who bought the seat, shown as their public key. It is here so you can match a seat to a buyer — nothing on this dashboard acts on it.'
+      'The Federation Ambassador who bought the seat, shown as their public key. It is here so you can match a seat to a buyer — nothing on this dashboard acts on it.'
   },
   {
     term: 'Plan',
@@ -61,7 +61,7 @@ const ENTRIES: LegendEntry[] = [
   {
     term: '—',
     description:
-      'Shown under Phase and Health when a seat is decommissioned, or when the fleet has no report for it yet.'
+      'Shown under Phase and Health when a seat is decommissioned, or when this host has no report for it yet.'
   }
 ];
 

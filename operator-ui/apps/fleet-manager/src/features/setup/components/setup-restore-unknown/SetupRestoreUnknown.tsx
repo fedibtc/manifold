@@ -26,8 +26,8 @@ export const SetupRestoreUnknown = ({
       <h1 className={styles.heading}>Recovery result unknown</h1>
 
       <p className={styles.intro}>
-        The connection dropped before the fleet manager answered, so we do not know whether the
-        recovery finished. A second attempt could not be undone, so this screen checks instead.
+        The connection dropped before Manifold Fedimint Guardian answered, so we do not know whether
+        the recovery finished. A second attempt could not be undone, so this screen checks instead.
       </p>
     </div>
 

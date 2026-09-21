@@ -38,7 +38,7 @@ it('should name the setup wizard, which has no route of its own', async () => {
   stubNotOnboarded();
   renderGate();
 
-  await screen.findByRole('heading', { name: 'Set up your fleet manager' });
+  await screen.findByRole('heading', { name: 'Set up Manifold Fedimint Guardian' });
 
   expect(gateSurface.getSnapshot()).toBe('setup');
 });
@@ -47,7 +47,7 @@ it('should leave the surface to the pathname once the wizard goes away', async (
   stubNotOnboarded();
   const { unmount } = renderGate();
 
-  await screen.findByRole('heading', { name: 'Set up your fleet manager' });
+  await screen.findByRole('heading', { name: 'Set up Manifold Fedimint Guardian' });
   unmount();
 
   expect(gateSurface.getSnapshot()).toBeNull();
@@ -70,7 +70,7 @@ it('should keep its surface through the StrictMode double invoke', async () => {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   render(<StrictMode>{gateTree(client)}</StrictMode>);
 
-  await screen.findByRole('heading', { name: 'Set up your fleet manager' });
+  await screen.findByRole('heading', { name: 'Set up Manifold Fedimint Guardian' });
 
   expect(gateSurface.getSnapshot()).toBe('setup');
 });

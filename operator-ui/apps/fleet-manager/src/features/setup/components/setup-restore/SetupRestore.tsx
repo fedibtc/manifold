@@ -209,7 +209,7 @@ export const SetupRestore = ({ onRestored, onCancel }: SetupRestoreProps) => {
           </Button>
 
           <Button type="submit" disabled={!canSubmit} loading={restore.isPending}>
-            Recover this fleet
+            Recover
           </Button>
         </div>
       </form>

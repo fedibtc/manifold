@@ -6,7 +6,7 @@ import { resetScenario } from './support/mock';
 // it does not block the dashboard, it does not survive a dismissal, and it does
 // not outlive the session it was dismissed in.
 
-const TAKEOVER_HEADING = 'Update this Fleet Manager';
+const TAKEOVER_HEADING = 'Update Manifold Fedimint Guardian';
 const DISMISS_LABEL = 'Continue to the dashboard';
 
 test('should take the screen over when the daemon reports a newer release', async ({ page }) => {

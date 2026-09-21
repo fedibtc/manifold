@@ -17,8 +17,7 @@ const renderRestore = (onRestored = vi.fn(), onCancel = vi.fn()) => {
   return { onRestored, onCancel, client };
 };
 
-const submitButton = () =>
-  screen.getByRole('button', { name: 'Recover this fleet' }) as HTMLButtonElement;
+const submitButton = () => screen.getByRole('button', { name: 'Recover' }) as HTMLButtonElement;
 
 const acknowledgement = () => screen.getByLabelText(/permanently offline/i) as HTMLInputElement;
 

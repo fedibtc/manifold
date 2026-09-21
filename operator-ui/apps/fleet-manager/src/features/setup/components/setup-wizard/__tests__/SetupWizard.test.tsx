@@ -55,21 +55,21 @@ describe('SetupWizard', () => {
     stubDaemon(false);
     renderWizard();
 
-    expect(screen.getByRole('heading', { name: 'Set up your fleet manager' })).toBeTruthy();
+    expect(screen.getByRole('heading', { name: 'Set up Manifold Fedimint Guardian' })).toBeTruthy();
   });
 
   it('should walk a new fleet from the doors through the terms to the price step', async () => {
     stubDaemon(true);
     renderWizard();
 
-    fireEvent.click(screen.getByRole('button', { name: 'Start a new fleet' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Start fresh' }));
     await screen.findByRole('heading', { name: 'Record your recovery phrase' });
 
     fireEvent.click(screen.getByRole('button', { name: 'Reveal phrase' }));
     await screen.findByText(PHRASE);
     fireEvent.click(screen.getByRole('button', { name: "I've written it down — continue" }));
 
-    await screen.findByRole('heading', { name: 'Get your fleet approved' });
+    await screen.findByRole('heading', { name: 'Get approved' });
     await screen.findByRole('heading', { name: 'Accept the terms of service' }, { timeout: 5000 });
     expect(screen.queryByRole('heading', { name: 'Set your price' })).toBeNull();
 
@@ -82,14 +82,14 @@ describe('SetupWizard', () => {
     stubDaemon(true);
     const { onComplete } = renderWizard();
 
-    fireEvent.click(screen.getByRole('button', { name: 'Start a new fleet' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Start fresh' }));
     await screen.findByRole('heading', { name: 'Record your recovery phrase' });
     fireEvent.click(screen.getByRole('button', { name: 'Reveal phrase' }));
     await screen.findByText(PHRASE);
     fireEvent.click(screen.getByRole('button', { name: "I've written it down — continue" }));
     // The authorization step continues on its own once the relay reports an
     // observed authorization, so there is no click here — only the wait.
-    await screen.findByRole('heading', { name: 'Get your fleet approved' });
+    await screen.findByRole('heading', { name: 'Get approved' });
     await screen.findByRole('heading', { name: 'Accept the terms of service' }, { timeout: 5000 });
     fireEvent.click(screen.getByRole('button', { name: 'Accept and continue' }));
     await screen.findByRole('heading', { name: 'Set your price' });
@@ -119,12 +119,12 @@ describe('SetupWizard', () => {
 
     fireEvent.change(screen.getByLabelText('Recovery phrase'), { target: { value: PHRASE } });
     fireEvent.click(screen.getByLabelText(/permanently offline/i));
-    fireEvent.click(screen.getByRole('button', { name: 'Recover this fleet' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Recover' }));
 
     await screen.findByRole('heading', { name: 'Recovery finished' });
     fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
 
-    await screen.findByRole('heading', { name: 'Get your fleet approved' });
+    await screen.findByRole('heading', { name: 'Get approved' });
   });
 
   it('should not use cached authorization data from an earlier identity', async () => {
@@ -156,12 +156,12 @@ describe('SetupWizard', () => {
 
     fireEvent.change(screen.getByLabelText('Recovery phrase'), { target: { value: PHRASE } });
     fireEvent.click(screen.getByLabelText(/permanently offline/i));
-    fireEvent.click(screen.getByRole('button', { name: 'Recover this fleet' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Recover' }));
 
     await screen.findByRole('heading', { name: 'Recovery finished' });
     fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
 
-    await screen.findByRole('heading', { name: 'Get your fleet approved' });
+    await screen.findByRole('heading', { name: 'Get approved' });
     await waitFor(() => expect(screen.getByText(/Not approved yet/i)).toBeTruthy());
   });
 });

@@ -20,8 +20,8 @@ export const BackupPage = () => {
   const backup = identity ? (
     <>
       <p className={styles.intro}>
-        Your 12-word recovery phrase is the one thing you must keep. It restores this fleet's
-        identity and its funds — your seat records restore from your fleet's relay.
+        Your 12-word recovery phrase is the one thing you must keep. It restores this host's
+        identity and its funds — your seat records restore from your relay.
       </p>
 
       {/* "Would equivocate" was the old wording. Equivocation is the mechanism;
@@ -29,7 +29,7 @@ export const BackupPage = () => {
           operator needs before they copy a phrase onto a second box. */}
       <Banner variant="warn">
         You can only restore while setting up a new server — there's no restore button here because
-        this fleet is already running. Never run two servers from the same recovery phrase: they
+        this server is already running. Never run two servers from the same recovery phrase: they
         will conflict, and that can lose funds.
       </Banner>
 
@@ -38,7 +38,7 @@ export const BackupPage = () => {
             two-word name is how an operator recognises their own FMan, so it
             belongs beside the keys it is derived from. */}
         <div className={styles.kvRow}>
-          <dt className={styles.kvLabel}>FMan name</dt>
+          <dt className={styles.kvLabel}>Host name</dt>
 
           <dd className={styles.nameValue}>{identity.fman_name}</dd>
         </div>
@@ -58,7 +58,7 @@ export const BackupPage = () => {
         </div>
 
         <div className={styles.kvRow}>
-          <dt className={styles.kvLabel}>Fleet manager ID</dt>
+          <dt className={styles.kvLabel}>Manifold Fedimint Guardian ID</dt>
 
           <dd className={styles.idRow}>
             <span className={styles.kvValue}>
@@ -66,7 +66,10 @@ export const BackupPage = () => {
             </span>
 
             {isTruncated(identity.service_nostr_pubkey, 10, 10) && (
-              <CopyButton value={identity.service_nostr_pubkey} label="Copy fleet manager ID" />
+              <CopyButton
+                value={identity.service_nostr_pubkey}
+                label="Copy Manifold Fedimint Guardian ID"
+              />
             )}
           </dd>
         </div>
@@ -78,7 +81,7 @@ export const BackupPage = () => {
           owns the state that would let the UI know. */}
       <p className={styles.reloadNote}>
         We don't store your recovery phrase and can't check whether you've saved it. If you haven't
-        written it down yet, do it now — without it, you can't recover this fleet.
+        written it down yet, do it now — without it, you can't recover this host.
       </p>
 
       <Link to="/backup/phrase" className={styles.phraseLink}>

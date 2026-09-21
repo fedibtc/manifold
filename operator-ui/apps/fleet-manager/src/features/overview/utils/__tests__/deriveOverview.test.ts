@@ -90,7 +90,7 @@ it('should raise an attention item when no approval has been observed', () => {
   const model = deriveOverview({ nostrState: 'not_observed' });
 
   const item = model.attention.find((entry) => entry.key === 'authorization-not-observed');
-  expect(item?.title).toBe('Your fleet is not approved yet');
+  expect(item?.title).toBe('This host is not approved yet');
   expect(item?.path).toBe('/authorization');
 });
 
