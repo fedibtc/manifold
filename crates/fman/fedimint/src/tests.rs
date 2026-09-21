@@ -264,14 +264,14 @@ async fn lnurl_pay_reports_no_cap_when_the_whole_balance_fits() {
 
 #[tokio::test]
 async fn lnurl_amount_mismatch_names_both_amounts() {
-    let callback_url = serve_invoice_callback(Some(9_000)).await;
+    let callback_url = serve_invoice_callback(Some(8_000)).await;
     let destination = lnurl_destination(serve_pay_response(&callback_url).await);
 
     let error = lnurl_pay(&destination, 9_941).await.unwrap_err();
 
     let message = format!("{error:#}");
+    assert!(message.contains("8000 msat"), "{message}");
     assert!(message.contains("9000 msat"), "{message}");
-    assert!(message.contains("9941 msat"), "{message}");
 }
 
 #[tokio::test]
@@ -283,7 +283,7 @@ async fn lnurl_amountless_invoice_is_reported_as_such() {
 
     let message = format!("{error:#}");
     assert!(message.contains("no amount"), "{message}");
-    assert!(message.contains("9941 msat"), "{message}");
+    assert!(message.contains("9000 msat"), "{message}");
 }
 
 #[test]
@@ -297,7 +297,7 @@ fn whole_sat_flooring_drops_only_the_sub_sat_remainder() {
 
 #[tokio::test]
 async fn lnurl_pay_requests_a_whole_sat_amount() {
-    let callback_url = serve_invoice_callback(9_000).await;
+    let callback_url = serve_invoice_callback(Some(9_000)).await;
     let destination = lnurl_destination(serve_pay_response(&callback_url).await);
 
     let (_, amount, capped) = lnurl_pay(&destination, 9_941).await.unwrap();
@@ -308,7 +308,7 @@ async fn lnurl_pay_requests_a_whole_sat_amount() {
 
 #[tokio::test]
 async fn lnurl_pay_floors_the_amount_the_maximum_capped_it_to() {
-    let callback_url = serve_invoice_callback(99_000).await;
+    let callback_url = serve_invoice_callback(Some(99_000)).await;
     let destination =
         lnurl_destination(serve_pay_response_with_bounds(&callback_url, 1_000, 99_500).await);
 
@@ -326,7 +326,7 @@ async fn lnurl_pay_floors_the_amount_the_maximum_capped_it_to() {
 
 #[tokio::test]
 async fn lnurl_pay_refuses_a_balance_that_floors_below_the_minimum() {
-    let callback_url = serve_invoice_callback(1_000).await;
+    let callback_url = serve_invoice_callback(Some(1_000)).await;
     let destination =
         lnurl_destination(serve_pay_response_with_bounds(&callback_url, 1_500, 100_000).await);
 
