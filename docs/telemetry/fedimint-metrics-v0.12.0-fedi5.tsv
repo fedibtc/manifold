@@ -12,11 +12,11 @@
 # they do not link into the FMan runtime image. Any unaccounted same-source
 # Cargo.lock edge fails the check rather than silently evading this boundary.
 release_tag	0.12.0-fedi5
-producer	fedimint	fedibtc/fedimint	v0.12.0-fedi5	20e09cff9a381a80ff6104c78408cdabc56b5718
+producer	fedimint	fedibtc/fedimint	v0.12.0-fedi5	3c8425a40c6b4517d73477c5d31744a4afa7ab15
 producer	stability_pool	fedixyz/fedi	2f35ea4e3b2516d35b8ed315455718cd3b336758	2f35ea4e3b2516d35b8ed315455718cd3b336758
 package	stability_pool	stability-pool-common	crates/modules/stability-pool/common
 package	stability_pool	stability-pool-server	crates/modules/stability-pool/server
-revision	20e09cff9a381a80ff6104c78408cdabc56b5718
+revision	3c8425a40c6b4517d73477c5d31744a4afa7ab15
 metric_version	0.12.0
 metric	admit	app_start_ts	fedimint
 metric	admit	backup_counts	fedimint
