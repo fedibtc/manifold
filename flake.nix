@@ -147,7 +147,10 @@
         fedimintPatched = pkgs.applyPatches {
           name = "fedimint-redacted-lightning-payment-logs";
           src = fedimint;
-          patches = [ ./patches/fedimint-redact-lightning-payment-logs.patch ];
+          patches = [
+            ./patches/fedimint-redact-lightning-payment-logs.patch
+            ./patches/fedimint-reconnect-cancellation.patch
+          ];
         };
         fediPatched = pkgs.applyPatches {
           name = "fedi-stability-pool-fedimint-012";
