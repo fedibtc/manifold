@@ -1,4 +1,4 @@
-//! Credential SDK fixtures used only by external integration-test crates.
+//! PeerBadge SDK fixtures used only by external integration-test crates.
 
 use fedi_decentralized_manifold_environment::ManifoldEnvironment;
 use fedi_decentralized_service_liquidity_manager::{AttestationPayload, Pubkey};

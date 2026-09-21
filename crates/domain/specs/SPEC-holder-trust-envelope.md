@@ -2,7 +2,7 @@
 
 ## Record justification
 
-The envelope and badge schema bind the external credential SDK, FCS/Attester
+The envelope and badge schema bind the external PeerBadge SDK, FCS/Attester
 issuance, the Holder miniapp, the FMan and FLIP advertisers, and FI/FLIP
 selection plus the push-gateway guardian-telemetry and cloud FMan telemetry
 collector verifiers,
@@ -13,7 +13,7 @@ The `fedi-trust-score-v1.0` schema definition (issuance constructors,
 verifier-side parser, and golden vectors) is owned by
 `peerbadge-schemas` in the peerbadge-sdk repository; this crate's
 `trust_score` module re-exports it and owns both the pure envelope helper
-against a caller-supplied credential-SDK verification context and the generic,
+against a caller-supplied PeerBadge SDK verification context and the generic,
 validated relying-party `PeerBadgeTrustPolicy`. `crates/peer-badge-verifier`
 owns the shared FI, FLIP, push-gateway guardian-telemetry, and cloud FMan
 telemetry collector verifier that

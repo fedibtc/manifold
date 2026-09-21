@@ -4,7 +4,7 @@ This repository is experimental infrastructure for decentralized federation comp
 
 ## Nix source inputs and public binary caches
 
-The default development shell's credential SDK, Fedi, and Fedimint source
+The default development shell's PeerBadge SDK, Fedi, and Fedimint source
 inputs are public and pinned in the lockfiles. Neither local builds nor CI need
 a cross-repository GitHub token to fetch them.
 
