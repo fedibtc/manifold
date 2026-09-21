@@ -208,17 +208,20 @@ async fn lnurl_unparsable_callback_reports_context() {
     );
 }
 
-async fn serve_invoice_callback(amount_msat: u64) -> String {
+async fn serve_invoice_callback(amount_msat: Option<u64>) -> String {
     use bitcoin::secp256k1::{SECP256K1, SecretKey};
     use lightning_invoice::{Currency, InvoiceBuilder, PaymentSecret};
 
-    let invoice = InvoiceBuilder::new(Currency::Regtest)
+    let mut builder = InvoiceBuilder::new(Currency::Regtest)
         .description(String::new())
         .payment_hash(sha256::Hash::hash(&[1; 32]))
         .current_timestamp()
         .min_final_cltv_expiry_delta(0)
-        .payment_secret(PaymentSecret([2; 32]))
-        .amount_milli_satoshis(amount_msat)
+        .payment_secret(PaymentSecret([2; 32]));
+    if let Some(amount_msat) = amount_msat {
+        builder = builder.amount_milli_satoshis(amount_msat);
+    }
+    let invoice = builder
         .build_signed(|message| {
             SECP256K1.sign_ecdsa_recoverable(message, &SecretKey::from_slice(&[3; 32]).unwrap())
         })
@@ -233,7 +236,7 @@ async fn serve_invoice_callback(amount_msat: u64) -> String {
 
 #[tokio::test]
 async fn lnurl_pay_reports_the_maximum_that_bound_a_partial_sweep() {
-    let callback_url = serve_invoice_callback(100_000).await;
+    let callback_url = serve_invoice_callback(Some(100_000)).await;
     let destination = lnurl_destination(serve_pay_response(&callback_url).await);
 
     let (_, amount, capped) = lnurl_pay(&destination, 150_000).await.unwrap();
@@ -250,13 +253,37 @@ async fn lnurl_pay_reports_the_maximum_that_bound_a_partial_sweep() {
 
 #[tokio::test]
 async fn lnurl_pay_reports_no_cap_when_the_whole_balance_fits() {
-    let callback_url = serve_invoice_callback(50_000).await;
+    let callback_url = serve_invoice_callback(Some(50_000)).await;
     let destination = lnurl_destination(serve_pay_response(&callback_url).await);
 
     let (_, amount, capped) = lnurl_pay(&destination, 50_000).await.unwrap();
 
     assert_eq!(amount, 50_000);
     assert_eq!(capped, None);
+}
+
+#[tokio::test]
+async fn lnurl_amount_mismatch_names_both_amounts() {
+    let callback_url = serve_invoice_callback(Some(9_000)).await;
+    let destination = lnurl_destination(serve_pay_response(&callback_url).await);
+
+    let error = lnurl_pay(&destination, 9_941).await.unwrap_err();
+
+    let message = format!("{error:#}");
+    assert!(message.contains("9000 msat"), "{message}");
+    assert!(message.contains("9941 msat"), "{message}");
+}
+
+#[tokio::test]
+async fn lnurl_amountless_invoice_is_reported_as_such() {
+    let callback_url = serve_invoice_callback(None).await;
+    let destination = lnurl_destination(serve_pay_response(&callback_url).await);
+
+    let error = lnurl_pay(&destination, 9_941).await.unwrap_err();
+
+    let message = format!("{error:#}");
+    assert!(message.contains("no amount"), "{message}");
+    assert!(message.contains("9941 msat"), "{message}");
 }
 
 #[test]
