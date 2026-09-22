@@ -78,6 +78,27 @@ pub(crate) async fn abandon_gateway_item_with_database(
         .await;
     };
 
+    // Abandonment releases a reservation, so it applies only to an item still
+    // holding one. A terminal item holds nothing: it has already completed,
+    // failed, or been cancelled, and rewriting it would replace a settled
+    // outcome with a write-off that did not happen. The overdue marker is no
+    // help here — completion does not clear it, so a completed item still
+    // carries the marker it was completing under.
+    if !allocation_store::RESERVING_ITEM_STATUSES.contains(&item.status) {
+        return abandon_gateway_audited(
+            database,
+            &request,
+            ManualOperationStatus::Rejected,
+            None,
+            format!(
+                "allocation item is {} and holds no reservation to release, so there \
+                 is nothing to write off",
+                item.status
+            ),
+        )
+        .await;
+    }
+
     // FLIP records an item as overdue only once its funding has gone
     // unattributed past the operator's own review threshold, and it keeps
     // reconciling it afterwards. Requiring the marker keeps this verb to items
@@ -143,30 +164,41 @@ pub(crate) async fn abandon_gateway_item_with_database(
         item.committed_amount.0
     );
 
-    // Guarded on the status the caller read, and written here rather than
-    // through `fail_item` so the audit row commits with it. `failed` leaves the
-    // statuses that reserve capacity, which is what releases the reservation.
-    let result = sqlx::query(
-        "UPDATE allocation_items \
-         SET status = ?, failure_json = ?, updated_at = unixepoch() \
-         WHERE item_id = ? AND status = ?",
-    )
-    .bind(ItemAllocationStatus::Failed.to_string())
-    .bind(
+    // Written here rather than through `fail_item` so the audit row commits
+    // with it. `failed` is outside the statuses that reserve capacity, which is
+    // what releases the reservation.
+    //
+    // The statement carries the reserving-status restriction itself rather than
+    // binding whichever status was read. Binding the read status would fence a
+    // concurrent change but admit any starting state the checks above let
+    // through, so the two would have to agree forever; naming the set here
+    // leaves one place to be wrong.
+    let mut builder = sqlx::QueryBuilder::new("UPDATE allocation_items SET status = ");
+    builder.push_bind(ItemAllocationStatus::Failed.to_string());
+    builder.push(", failure_json = ");
+    builder.push_bind(
         serde_json::to_string(&LiquidityFailure {
             code: LiquidityFailureCode::GatewayAttributionAbandoned,
             reason: Some(detail.clone()),
         })
         .map_err(internal_error)?,
-    )
-    .bind(&item.item_id.0)
-    .bind(item.status.to_string())
-    .execute(&mut *tx)
-    .await
-    .map_err(internal_error)?;
+    );
+    builder.push(", updated_at = unixepoch() WHERE item_id = ");
+    builder.push_bind(item.item_id.0.clone());
+    builder.push(" AND ");
+    crate::database::push_in_list(
+        &mut builder,
+        "status",
+        &allocation_store::RESERVING_ITEM_STATUSES,
+    );
+    let result = builder
+        .build()
+        .execute(&mut *tx)
+        .await
+        .map_err(internal_error)?;
     if result.rows_affected() != 1 {
         return Err(crate::failed_precondition(
-            "allocation item changed status while it was being abandoned",
+            "allocation item stopped holding a reservation while it was being abandoned",
         ));
     }
     let detail_json = serde_json::json!({
