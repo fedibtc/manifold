@@ -35,8 +35,18 @@ describe('CollectFeesConfirm', () => {
   it('should warn that a mint fee is taken without promising a figure', () => {
     renderConfirm();
 
-    expect(screen.getByText(/mint fee for every note/)).toBeInTheDocument();
+    expect(screen.getByText(/fee for every note/)).toBeInTheDocument();
     expect(screen.getByText(/approximately 0.1 sat each/)).toBeInTheDocument();
+  });
+
+  // "a little less" is true at a few hundred sats and badly wrong at twenty,
+  // where roughly twenty notes at 0.1 sat each take about a tenth of the
+  // collection. The unqualified claim is the one that holds at every amount.
+  it('should not soften how much a collection loses', () => {
+    renderConfirm({ collectableMsat: 20_000 });
+
+    expect(screen.queryByText(/a little less/)).not.toBeInTheDocument();
+    expect(screen.getByText(/receive less than the pool shows/)).toBeInTheDocument();
   });
 
   it('should confirm the collection when the operator accepts', () => {

@@ -50,9 +50,9 @@ export const CollectFeesConfirm = ({
         </h2>
 
         <p id={bodyId} className={styles.body}>
-          Minting the ecash costs a mint fee for every note it creates — approximately 0.1 sat each
-          — so you will receive a little less than the pool shows. A small collection loses
-          proportionally more of itself, so letting the pool grow keeps more of it.
+          Minting the ecash costs a fee for every note it creates, approximately 0.1 sat each. You
+          will receive less than the pool shows. A small collection loses proportionally more of
+          itself, so letting the pool grow keeps more of it.
         </p>
 
         <div className={styles.actions}>

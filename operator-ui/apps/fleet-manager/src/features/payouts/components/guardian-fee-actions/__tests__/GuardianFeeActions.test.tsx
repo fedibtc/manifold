@@ -176,7 +176,7 @@ describe('GuardianFeeActions', () => {
 
   // The mint charges per ecash note, so a small collection gives back visibly
   // less than the pool showed. Above the threshold the click still goes
-  // straight through — a confirmation on every collection would be noise.
+  // straight through, because a confirmation on every collection would be noise.
   it('should collect a pool above the threshold in one click', async () => {
     const adminCall = vi
       .spyOn(adminCallModule, 'adminCall')
