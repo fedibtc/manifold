@@ -1179,6 +1179,87 @@ async fn abandoning_a_reported_item_releases_its_reservation() -> anyhow::Result
         active_gateway_items(&database).await?.is_empty(),
         "a failed item no longer reserves capacity"
     );
+
+    // The item now holds no reservation, so there is nothing left to write
+    // off. A repeat must not record a second write-off of the same value.
+    let repeat = abandon_gateway_item_with_database(
+        &database,
+        AbandonGatewayItemRequest {
+            federation_id: federation_id.clone(),
+            reason: "same operator, second attempt".to_owned(),
+        },
+    )
+    .await?;
+    assert_eq!(repeat.status, ManualOperationStatus::Rejected);
+    assert_eq!(
+        sole_item_status(&database, &federation_id).await?,
+        ItemAllocationStatus::Failed
+    );
+    Ok(())
+}
+
+/// A late claim completes an overdue item, and completion is final.
+///
+/// Completion does not clear the overdue marker, so the item still carries the
+/// evidence that it was once overdue. Abandonment must not read that marker as
+/// permission to rewrite a settled outcome: the value is accounted for, the
+/// reservation is already released, and a write-off here would replace a real
+/// completion with one that never happened.
+#[tokio::test]
+async fn abandoning_an_item_that_completed_after_going_overdue_is_refused() -> anyhow::Result<()> {
+    let database = Database::connect(test_sqlite_path("gateway-abandon-completed")).await?;
+    let setup = test_setup_config();
+    let (federation_id, item_id) = seed_gateway_allocation(&database, &setup, Sats(25_000)).await?;
+    let wallet = TestFundsWallet::new(setup.network, Sats(100_000), regtest_address());
+    let gateway = FakeGateway::new(setup.network, regtest_address());
+    gateway.set_connect_balance(Sats(40_000)).await;
+
+    run_gateway_pass(&database, &setup, &wallet, &gateway).await?;
+    let operation =
+        wallet_operation_for_item(&database, WalletOperationType::GatewayFunding, &item_id)
+            .await?
+            .expect("wallet operation exists");
+    settle_funding_send(&database, &operation.operation_id.0, "txid-1").await?;
+    backdate_operation_update(
+        &database,
+        &operation.operation_id.0,
+        setup.funding_policy.gateway_claim_review_after_secs + 60,
+    )
+    .await?;
+    run_gateway_pass(&database, &setup, &wallet, &gateway).await?;
+
+    // The gateway reports the claim after the wait was raised, so the item
+    // completes on its own.
+    gateway.set_balance("federation-1", Sats(65_000)).await;
+    gateway.claim_deposit("txid-1", 0, Sats(25_000)).await;
+    run_gateway_pass(&database, &setup, &wallet, &gateway).await?;
+    assert_eq!(
+        sole_item_status(&database, &federation_id).await?,
+        ItemAllocationStatus::Completed
+    );
+
+    let response = abandon_gateway_item_with_database(
+        &database,
+        AbandonGatewayItemRequest {
+            federation_id: federation_id.clone(),
+            reason: "operator acting on a stale dashboard".to_owned(),
+        },
+    )
+    .await?;
+
+    assert_eq!(response.status, ManualOperationStatus::Rejected);
+    let status = load_allocation_status_by_federation(&database, &federation_id)
+        .await?
+        .expect("allocation status exists");
+    assert_eq!(
+        status.item_statuses[0].status,
+        ItemAllocationStatus::Completed,
+        "a completed item keeps its outcome"
+    );
+    assert!(
+        status.item_statuses[0].failure.is_none(),
+        "a completed item records no write-off"
+    );
     Ok(())
 }
 
