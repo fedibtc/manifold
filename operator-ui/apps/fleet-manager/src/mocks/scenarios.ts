@@ -381,6 +381,37 @@ const builders = {
     price: SEAT_PRICE_MSAT,
     onboarding: authorized
   }),
+  'fees-dust': () => ({
+    ...base(),
+    seats: [
+      seat({
+        seat_id: 'seat-earning-01',
+        report: {
+          state: 'active',
+          health: 'healthy',
+          phase: 'running',
+          invite_code: 'fed1earning0000000000000000000000000000000000000000000000000000'
+        },
+        fees: fees({
+          staged_msat: 60_000,
+          locked_msat: 20_000,
+          idle_msat: 13_000,
+          collected_ecash_msat: 0,
+          lifetime_remitted_msat: 93_000
+        })
+      })
+    ],
+    paymentFederations: [
+      {
+        federation_id: FEDERATION_A,
+        accepted: true,
+        receivable: true,
+        wallet: walletStatus(150_000_000)
+      }
+    ],
+    price: SEAT_PRICE_MSAT,
+    onboarding: authorized
+  }),
   earnings: () => ({
     ...base(),
     seats: [
@@ -517,6 +548,10 @@ const notes: Record<ScenarioName, ScenarioNote> = {
   },
   'payouts-unset': {
     desc: 'Revenue on both sides and no payout destination stored: one federation holding a balance, one seat with fees in the pool and no collected ecash. Every sweep refuses until a destination is saved.',
+    affects: ['payouts']
+  },
+  'fees-dust': {
+    desc: 'One seat holding 93 sats in the pool. Below the threshold where the mint fee is a visible slice of a collection, so collecting asks for confirmation first.',
     affects: ['payouts']
   },
   earnings: {
