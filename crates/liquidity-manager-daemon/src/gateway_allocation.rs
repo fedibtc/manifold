@@ -62,10 +62,22 @@ pub(crate) async fn process_gateway_allocations(context: &DaemonContext) -> Serv
 
 async fn observe_configured_gateway(context: &DaemonContext) -> ServiceResult<()> {
     let (setup, _wallet, gateway) = configured_gateway_dependencies(context).await?;
-    let Some(snapshot) = read_gateway_snapshot(&context.database, &setup, &gateway).await? else {
+    observe_configured_gateway_with(&context.database, &setup, &gateway).await
+}
+
+pub(crate) async fn observe_configured_gateway_with(
+    database: &Database,
+    setup: &SetupConfigView,
+    gateway: &impl GatewayClient,
+) -> ServiceResult<()> {
+    // Both workers read the gateway the same way, so neither can overwrite an
+    // outage the other recorded. Persisting an unsynced snapshot here would
+    // replace the outage row and its start time with a live-looking state, and
+    // the next allocation pass would open a second outage for the same one.
+    let Some(snapshot) = read_usable_gateway_snapshot(database, setup, gateway).await? else {
         return Ok(());
     };
-    persist_gateway_snapshot(&context.database, &setup, &snapshot).await
+    persist_gateway_snapshot(database, setup, &snapshot).await
 }
 
 pub(crate) async fn process_gateway_allocations_with(
@@ -84,14 +96,9 @@ pub(crate) async fn process_gateway_allocations_with(
     // caught up with the chain, has said nothing about any item: it reports no
     // claim it has not yet read, so acting on that silence would read an outage
     // as evidence.
-    let Some(snapshot) = read_gateway_snapshot(database, setup, gateway).await? else {
+    let Some(snapshot) = read_usable_gateway_snapshot(database, setup, gateway).await? else {
         return Ok(0);
     };
-    if !snapshot.synced_to_chain {
-        note_gateway_cannot_answer(database, setup, "gatewayd has not caught up with the chain")
-            .await?;
-        return Ok(0);
-    }
     persist_gateway_snapshot(database, setup, &snapshot).await?;
 
     let mut advanced = 0;
@@ -126,20 +133,35 @@ pub(crate) async fn process_gateway_allocations_with(
     Ok(advanced)
 }
 
-/// Reads the gateway, recording an outage rather than failing the caller.
+/// Reads the gateway and reports it only when it can actually answer for an
+/// item, recording an outage rather than failing the caller.
 ///
-/// `None` means the gateway did not answer. The outage is durable and dated,
-/// so its length is readable rather than inferred from how long the log has
-/// been repeating itself.
-async fn read_gateway_snapshot(
+/// `None` covers both ways the gateway has nothing to say: it did not answer,
+/// or it answered without having caught up with the chain, so it has not read
+/// the deposits it would be asked about. Treating those alike is what keeps one
+/// outage one outage — an unsynced gateway is not a recovery, and reporting it
+/// as one would restart the clock every pass.
+///
+/// The outage is durable and dated, so its length is readable rather than
+/// inferred from how long the log has been repeating itself.
+async fn read_usable_gateway_snapshot(
     database: &Database,
     setup: &SetupConfigView,
     gateway: &impl GatewayClient,
 ) -> ServiceResult<Option<GatewaySnapshot>> {
     match gateway.gateway_info().await {
-        Ok(snapshot) => {
+        Ok(snapshot) if snapshot.synced_to_chain => {
             note_gateway_answers(database, setup).await?;
             Ok(Some(snapshot))
+        }
+        Ok(_) => {
+            note_gateway_cannot_answer(
+                database,
+                setup,
+                "gatewayd has not caught up with the chain",
+            )
+            .await?;
+            Ok(None)
         }
         Err(error) => {
             note_gateway_cannot_answer(database, setup, &error.to_string()).await?;

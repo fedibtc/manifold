@@ -1055,6 +1055,71 @@ async fn an_unsynced_gateway_advances_nothing_and_convicts_no_item() -> anyhow::
     Ok(())
 }
 
+/// One resync is one outage, however many passes run during it.
+///
+/// Two workers read the same gateway on different schedules. If either records
+/// a gateway that answers but has not caught up as usable, it overwrites the
+/// outage row and its start time, and the next pass opens a fresh outage for
+/// the same interruption. The operator then cannot tell how long the gateway
+/// has been out, which is the one thing the record exists to say.
+#[tokio::test]
+async fn one_resync_stays_one_outage_across_both_workers() -> anyhow::Result<()> {
+    let database = Database::connect(test_sqlite_path("gateway-resync-one-outage")).await?;
+    let setup = test_setup_config();
+    let (_federation_id, _item_id) =
+        seed_gateway_allocation(&database, &setup, Sats(25_000)).await?;
+    let wallet = TestFundsWallet::new(setup.network, Sats(100_000), regtest_address());
+    let gateway = FakeGateway::new(setup.network, regtest_address());
+    gateway.set_connect_balance(Sats(40_000)).await;
+    gateway.set_balance("federation-1", Sats(40_000)).await;
+
+    gateway.set_synced_to_chain(false).await;
+    run_gateway_pass(&database, &setup, &wallet, &gateway).await?;
+    let began = gateway_observation(&database, &setup.gateway.gateway_id)
+        .await?
+        .expect("the outage is recorded");
+    assert_eq!(began.status, "unavailable");
+
+    // The observation worker sees the same unsynced gateway. It must leave the
+    // outage alone rather than record a live-looking state over it.
+    observe_configured_gateway_with(&database, &setup, &gateway).await?;
+    run_gateway_pass(&database, &setup, &wallet, &gateway).await?;
+    observe_configured_gateway_with(&database, &setup, &gateway).await?;
+
+    let during = gateway_observation(&database, &setup.gateway.gateway_id)
+        .await?
+        .expect("the outage is still recorded");
+    assert_eq!(during.status, "unavailable");
+    assert_eq!(
+        during.observed_at, began.observed_at,
+        "the outage keeps the time it began, so its length stays readable"
+    );
+
+    // Catching up is the recovery, and only then does the row follow the
+    // gateway's own state again.
+    gateway.set_synced_to_chain(true).await;
+    observe_configured_gateway_with(&database, &setup, &gateway).await?;
+    let recovered = gateway_observation(&database, &setup.gateway.gateway_id)
+        .await?
+        .expect("the gateway is observed");
+    assert_ne!(
+        recovered.status, "unavailable",
+        "a caught-up gateway is recorded by its own state"
+    );
+    assert!(
+        !active_gateway_items(&database).await?.is_empty(),
+        "the item waited through the resync rather than being convicted by it"
+    );
+    assert!(
+        sole_gateway_step(&database)
+            .await?
+            .attribution_overdue_since
+            .is_none(),
+        "a resync is not the gateway reporting that it has no such claim"
+    );
+    Ok(())
+}
+
 /// Abandonment is the operator's decision about a wait FLIP reported, so it is
 /// admitted only once FLIP has recorded the item as overdue.
 ///
