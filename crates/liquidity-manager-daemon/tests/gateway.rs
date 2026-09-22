@@ -189,8 +189,11 @@ fn both_module_versions_reduce_to_the_same_claim_shape() {
     );
 }
 
-/// The walk recedes one position past the oldest entry it has read, and stops
-/// only when a page reaches the start of the log.
+/// The walk resumes at the oldest entry it has read, and stops only when a
+/// page reaches the start of the log.
+///
+/// A read never returns the entry at the position it is given, so resuming at
+/// this page's oldest entry excludes that entry and admits the one below it.
 #[test]
 fn a_page_ends_the_walk_only_at_the_start_of_the_log() {
     let success = receive_update(operation_id(1), ReceivePaymentStatus::Success);
@@ -202,14 +205,84 @@ fn a_page_ends_the_walk_only_at_the_start_of_the_log() {
     );
     assert_eq!(
         page_before(&[log_entry(5, &success), log_entry(4, &success)]),
-        Some(EventLogId::LOG_START.saturating_add(3)),
-        "the next read ends just before the oldest entry of this page"
+        Some(EventLogId::LOG_START.saturating_add(4)),
+        "the next read ends at the oldest entry of this page, not below it"
     );
     assert_eq!(
         page_before(&[log_entry(0, &success)]),
         None,
         "a page holding the first log position has nothing behind it"
     );
+}
+
+/// The walk inspects the entry that sits between two pages.
+///
+/// A gateway serves a page from a raw window ending just below the position it
+/// is given, so the position itself is never returned. A walk that resumed one
+/// position lower than the oldest entry it read would step over exactly one
+/// entry at every page boundary, and a claim there would be invisible however
+/// long the search ran.
+#[tokio::test]
+async fn a_claim_between_two_pages_is_found() -> anyhow::Result<()> {
+    const PAGE: usize = 2;
+    // Ids 0..=5, each a claim of its own transaction. With a two-entry page the
+    // first read returns 5 and 4, so id 3 is the entry the next read must not
+    // skip over.
+    let log: Vec<PersistedLogEntry> = (0..=5u64)
+        .map(|id| {
+            log_entry(
+                id,
+                &DepositConfirmed {
+                    txid: Txid::from_str(&numbered_txid(id)).expect("valid test txid"),
+                    out_idx: 0,
+                    amount: Amount::from_sats(25_000),
+                },
+            )
+        })
+        .collect();
+
+    for target in 0..=5u64 {
+        let wanted = numbered_txid(target);
+        let query = DepositClaimQuery {
+            txid: &wanted,
+            out_idx: Some(0),
+            min_amount: Sats(25_000),
+        };
+        let found = find_claim_in_log(&query, |end_position| {
+            let page = serve_page(&log, end_position, PAGE);
+            async move { Ok(page) }
+        })
+        .await?;
+
+        assert_eq!(
+            found.map(|claim| claim.txid),
+            Some(wanted),
+            "a claim at log position {target} must be reachable"
+        );
+    }
+    Ok(())
+}
+
+/// Serves one page the way the pinned gateway does: newest-first, from a raw
+/// window that ends just below `end_position`, so that position is excluded.
+fn serve_page(
+    log: &[PersistedLogEntry],
+    end_position: Option<EventLogId>,
+    page_size: usize,
+) -> Vec<PersistedLogEntry> {
+    let mut page: Vec<PersistedLogEntry> = log
+        .iter()
+        .filter(|entry| end_position.is_none_or(|end| entry.id() < end))
+        .cloned()
+        .collect();
+    page.sort_by_key(|entry| std::cmp::Reverse(entry.id()));
+    page.truncate(page_size);
+    page
+}
+
+/// A distinct transaction id per log position.
+fn numbered_txid(id: u64) -> String {
+    format!("{:064x}", id + 1)
 }
 
 /// A walletv2 claim can straddle a page boundary.

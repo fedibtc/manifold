@@ -13,6 +13,7 @@
 //! the worker that reads `setup_store` back.
 
 use std::collections::BTreeSet;
+use std::future::Future;
 
 use async_trait::async_trait;
 use bitcoin::Address;
@@ -316,12 +317,7 @@ impl GatewayClient for ConfiguredGatewayClient {
         query: &DepositClaimQuery<'_>,
     ) -> anyhow::Result<Option<GatewayDepositClaim>> {
         let federation_id = federation_id.parse::<FederationId>()?;
-        let mut reader = DepositClaimReader::default();
-        // `None` starts at the newest log position; each later read ends just
-        // before the oldest entry the previous one returned, so the walk
-        // strictly recedes and finishes at the start of the log.
-        let mut end_position = None;
-        loop {
+        find_claim_in_log(query, |end_position| async move {
             let response = payment_log(
                 &self.api,
                 &self.base_url,
@@ -333,26 +329,55 @@ impl GatewayClient for ConfiguredGatewayClient {
                 },
             )
             .await?;
-            let page = response.0;
-            if let Some(claim) = reader
-                .read_page(&page)
-                .into_iter()
-                .find(|claim| query.matches(claim))
-            {
-                return Ok(Some(claim));
-            }
-            match page_before(&page) {
-                Some(position) => end_position = Some(position),
-                None => return Ok(None),
-            }
+            Ok(response.0)
+        })
+        .await
+    }
+}
+
+/// Walks a payment log newest-first until a claim satisfies the query.
+///
+/// `fetch_page` reads one page of claim events ending just below the position
+/// it is given, newest-first; `None` starts at the newest entry. The search
+/// stops at the first match, so a deposit claimed recently costs one page
+/// whatever the log holds behind it.
+async fn find_claim_in_log<F, Fut>(
+    query: &DepositClaimQuery<'_>,
+    mut fetch_page: F,
+) -> anyhow::Result<Option<GatewayDepositClaim>>
+where
+    F: FnMut(Option<EventLogId>) -> Fut,
+    Fut: Future<Output = anyhow::Result<Vec<PersistedLogEntry>>>,
+{
+    let mut reader = DepositClaimReader::default();
+    let mut end_position = None;
+    loop {
+        let page = fetch_page(end_position).await?;
+        if let Some(claim) = reader
+            .read_page(&page)
+            .into_iter()
+            .find(|claim| query.matches(claim))
+        {
+            return Ok(Some(claim));
+        }
+        match page_before(&page) {
+            Some(position) => end_position = Some(position),
+            None => return Ok(None),
         }
     }
 }
 
-/// The inclusive end position of the page preceding this one, or `None` when
-/// this page is empty or already reaches the start of the log.
+/// The end position for the page preceding this one, or `None` when this page
+/// is empty or already reaches the start of the log.
+///
+/// A payment-log read never returns the entry at the position it is given: the
+/// raw window the gateway scans for it ends just below that position. The next
+/// read therefore ends at this page's oldest entry, which excludes that entry —
+/// already read — and admits every entry older than it. Stepping one further
+/// back would step over the entry between the two pages.
 fn page_before(page: &[PersistedLogEntry]) -> Option<EventLogId> {
-    page.last()?.id().checked_sub(1)
+    let oldest = page.last()?.id();
+    (oldest != EventLogId::LOG_START).then_some(oldest)
 }
 
 /// Reduces a gateway's payment log to the deposits its federation client
