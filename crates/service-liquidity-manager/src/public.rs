@@ -639,8 +639,16 @@ pub enum LiquidityFailureCode {
     /// Distinct from [`Self::GatewayAttachFailed`], which reports a gateway
     /// that could not be attached before any value was sent. This one reports
     /// value that reached the gateway and an accounting reservation released
-    /// without it: the two call for opposite remediation, so they must not
+    /// without it: the two call for opposite remediation, so they should not
     /// share a code.
+    ///
+    /// **Reserved, and not yet written.** A reader that does not know a code
+    /// refuses the whole allocation item carrying it, and readers gain that
+    /// tolerance only by shipping [`Self::Unknown`], which no already-installed
+    /// build has. Defining the code here is what teaches this and every later
+    /// build to accept it; `abandon_gateway_item` keeps writing
+    /// [`Self::GatewayAttachFailed`] until tolerant readers are the ones in the
+    /// field, and switches to this code then.
     GatewayAttributionAbandoned,
 
     /// A failure code this build does not know.

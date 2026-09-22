@@ -160,9 +160,14 @@ pub(crate) trait GatewayClient: Send + Sync {
     /// if its payment log holds one.
     ///
     /// An aggregate balance read cannot establish attribution, so completion
-    /// asks for this instead. The whole log is searched, so `None` means the
-    /// gateway has not claimed that output rather than that the search gave
-    /// up short of it.
+    /// asks for this instead.
+    ///
+    /// The search asks for the whole log rather than a bounded recent window,
+    /// so `None` is not limited by how far back the caller was willing to look.
+    /// It still reports what the gateway returned rather than what the gateway
+    /// holds: a payment-log read can omit the oldest part of the log, so a
+    /// claim old enough to fall there stays unreported however long the search
+    /// runs.
     async fn find_deposit_claim(
         &self,
         federation_id: &str,

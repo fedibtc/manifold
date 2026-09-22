@@ -1232,13 +1232,22 @@ async fn abandoning_a_reported_item_releases_its_reservation() -> anyhow::Result
         .await?
         .expect("allocation status exists");
     assert_eq!(status.item_statuses[0].status, ItemAllocationStatus::Failed);
-    assert_eq!(
-        status.item_statuses[0]
-            .failure
-            .as_ref()
-            .map(|failure| failure.code.clone()),
-        Some(LiquidityFailureCode::GatewayAttributionAbandoned),
-        "a written-off delivery is not a failed attach"
+    // The write-off carries a code every already-installed app can read. A
+    // reader that meets a code it does not know refuses the whole item, so the
+    // reserved `GatewayAttributionAbandoned` waits until tolerant builds are
+    // the ones in the field. Until then the operator's reason carries the
+    // distinction.
+    let failure = status.item_statuses[0]
+        .failure
+        .as_ref()
+        .expect("the write-off is recorded");
+    assert_eq!(failure.code, LiquidityFailureCode::GatewayAttachFailed);
+    assert!(
+        failure
+            .reason
+            .as_deref()
+            .is_some_and(|reason| reason.contains("wrote off")),
+        "the reason says a delivery was written off, not that an attach failed"
     );
     assert!(
         active_gateway_items(&database).await?.is_empty(),

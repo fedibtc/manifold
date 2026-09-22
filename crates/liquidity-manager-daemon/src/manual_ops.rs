@@ -163,6 +163,15 @@ pub(crate) async fn abandon_gateway_item_with_database(
          gateway and recovering it happens outside FLIP. Reason: {reason}",
         item.committed_amount.0
     );
+    // A write-off and a failed attach want opposite remediation, so
+    // `LiquidityFailureCode::GatewayAttributionAbandoned` exists to tell them
+    // apart. Writing it is what has to wait: the code travels to apps inside
+    // `get_allocation_status`, an app that does not know a code refuses the
+    // whole item carrying it, and an app only learns to keep an unfamiliar one
+    // by shipping a build that has this enum. Emitting the new code now would
+    // break every app already installed. The distinction lives in the detail
+    // below until tolerant builds are the ones in the field.
+    let code = LiquidityFailureCode::GatewayAttachFailed;
 
     // Written here rather than through `fail_item` so the audit row commits
     // with it. `failed` is outside the statuses that reserve capacity, which is
@@ -178,7 +187,7 @@ pub(crate) async fn abandon_gateway_item_with_database(
     builder.push(", failure_json = ");
     builder.push_bind(
         serde_json::to_string(&LiquidityFailure {
-            code: LiquidityFailureCode::GatewayAttributionAbandoned,
+            code,
             reason: Some(detail.clone()),
         })
         .map_err(internal_error)?,
