@@ -3596,6 +3596,7 @@ dependencies = [
  "fedimint-logging",
  "fedimint-metrics",
  "fedimint-server-core",
+ "tokio",
  "tracing",
 ]
 
