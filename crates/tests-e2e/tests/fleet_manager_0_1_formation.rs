@@ -1578,7 +1578,7 @@ async fn exercise_guardian_telemetry(
         metrics_body.lines().any(|line| {
             line.starts_with("fm_app_start_ts{")
                 && line.contains("version=\"0.12.0\"")
-                && line.contains("version_hash=\"c64017bd7c403d2f81dd29e1d2032a753f99150a\"")
+                && line.contains("version_hash=\"ef0bd1c0283fda517c2e49c19aeea19448069058\"")
         }),
         "the exact bundled 0.12 guardian must expose its release marker"
     );
@@ -3453,7 +3453,7 @@ async fn run_paid_formation() -> anyhow::Result<()> {
     // its background claim, so wait for the real wallet credit.
     let fman0_dir = temp.join("fman-0");
     let balance_msat = wait_for_fman_balance(&fleet_manager_bin, &fman0_dir).await?;
-    // The mint charges a base fee of 100 msat per transaction input and
+    // The mint charges a base fee of 10 msat per transaction input and
     // output, so reissuing the note credits somewhat less than its face
     // value; half the price is a generous fee allowance.
     anyhow::ensure!(
