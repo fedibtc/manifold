@@ -236,6 +236,27 @@ alternative is a new `daemon_metadata` instance-id row.
 Randomized failure backoff is the same problem on the retry path, and is a
 separate, larger change.
 
+### A gateway write-off cannot yet carry its own failure code
+
+`LiquidityFailureCode::GatewayAttributionAbandoned` is defined but never
+written. `abandon_gateway_item` records `GatewayAttachFailed` instead, which
+conflates a write-off of delivered value with a gateway that could not be
+attached before any value was sent — the two want opposite remediation.
+
+The code travels to apps inside `get_allocation_status`, and an app that meets
+a failure code it does not know refuses the whole allocation item rather than
+that one field. An app gains tolerance only by shipping a build whose
+`LiquidityFailureCode` carries the `Unknown` arm, so emitting the new code
+reaches installed apps as a broken status read, not as an unfamiliar label.
+
+Switch the writer once builds carrying that tolerance are the ones in the
+field. Nothing else has to change: the code, its wire string, and the readers'
+tolerance are already in place, and the operator reason already states what
+happened. The alternative, if the wait is unacceptable, is negotiated
+per-version response shaping, which the public API has the structure for
+(`client_supported_versions` and `api_version`) but no implementation of — the
+daemon serves one version and shapes nothing by it.
+
 ## Upstream dependency gaps
 
 ### A pin bump can silently reinstate a repaired defect
@@ -247,3 +268,21 @@ pooled-address reuse is **one character, no compile error, no failing test**, an
 it reinstates the defect. The per-item budget ruling rests on that repair, so
 treat a pin bump touching that allocation as touching
 `stability-deposit-terminal-state-not-observed` too.
+
+### A payment-log read can omit the oldest part of the log
+
+`handle_payment_log_msg` scans the gateway's event log in raw batches, stepping
+its cursor back a batch at a time, and stops when that cursor reaches the first
+log position. It tests the cursor *after* moving it and *before* reading, so the
+batch below the last one it read is never scanned: ending a read at position
+15 000 scans down to 5 000 and stops, leaving everything below 5 000 unread.
+
+FLIP's own paging walks until a page reaches the first log position, so it asks
+for the whole log. The dependency does not always deliver it. A claim old
+enough to sit in the omitted region is therefore invisible, and no amount of
+paging by FLIP reaches it.
+
+This bounds what an empty result means: it says the gateway reported no
+matching claim, not that no claim exists. `SPEC-flip-funding-safety` states the
+contract that way deliberately. A targeted lookup by transaction id, or an
+upstream fix to the loop's termination test, would remove the gap.
