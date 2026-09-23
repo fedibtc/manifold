@@ -372,6 +372,13 @@ impl ManifoldEnvironmentProfile {
         &self.nostr_relays
     }
 
+    /// Complete relay reads required to report that no FI backup was found.
+    /// A development relay override uses the same majority rule.
+    #[must_use]
+    pub fn fi_backup_empty_read_quorum(&self) -> usize {
+        self.nostr_relays.as_urls().len() / 2 + 1
+    }
+
     /// Return environment-configured PeerBadge issuer identities.
     ///
     /// Every environment returns a non-empty set: development and staging

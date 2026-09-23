@@ -3067,6 +3067,148 @@ async fn backup_payload_is_lean_stable_and_requires_confirmed_formed_metadata() 
     assert!(client.inner.store.backup_payload().await.is_err());
 }
 
+async fn open_with_backup_recovery_hint(
+    database: fedimint_core::db::Database,
+    hint: BackupRecoveryHint,
+) -> TestClient {
+    let (payments, _) = TestPayments::new();
+    let state = Arc::new(FmanState::default());
+    FiClient::open_with_manifold_profile(
+        database,
+        TestIdentity,
+        payments,
+        TestRegistry::default(),
+        TestConnector {
+            state: state.clone(),
+            config: FmanConfig::given_away(),
+        },
+        test_peer_badge_verifier(),
+        TestConsensusReader::new(state),
+        TestFiFeeAccountProvider::default(),
+        ManifoldEnvironment::Staging.profile().unwrap(),
+        hint,
+    )
+    .await
+    .unwrap()
+}
+
+#[tokio::test]
+async fn automatic_backup_recovery_claims_mutations_before_open_returns() {
+    let database = MemDatabase::new().into_database();
+    let fresh = open_with_backup_recovery_hint(database.clone(), BackupRecoveryHint::Skip).await;
+    assert_eq!(fresh.status(), FiStatus::Idle);
+    drop(fresh);
+
+    let restored =
+        open_with_backup_recovery_hint(database.clone(), BackupRecoveryHint::RestoredMnemonic)
+            .await;
+    assert_eq!(restored.status(), FiStatus::Recovery { last_error: None });
+    assert!(
+        restored.inner.run_guard.try_lock().is_err(),
+        "lookup holds the FI mutation guard before open returns"
+    );
+    drop(restored);
+
+    let store = crate::db::FiStore::new(database.clone());
+    store
+        .complete_empty_recovery(&crate::db::RecoveryCompletedKey::new(
+            ManifoldEnvironment::Staging,
+        ))
+        .await
+        .unwrap();
+    let checked =
+        open_with_backup_recovery_hint(database, BackupRecoveryHint::RestoredMnemonic).await;
+    assert_eq!(checked.status(), FiStatus::Idle);
+    assert!(checked.inner.run_guard.try_lock().is_ok());
+}
+
+#[tokio::test]
+async fn backup_recovery_publishes_ready_only_after_releasing_the_guard() {
+    let database = MemDatabase::new().into_database();
+    let store = crate::db::FiStore::new(database.clone());
+    store
+        .complete_empty_recovery(&crate::db::RecoveryCompletedKey::new(
+            ManifoldEnvironment::Staging,
+        ))
+        .await
+        .unwrap();
+    let (payments, _) = TestPayments::new();
+    let client = open_client(
+        database,
+        payments,
+        Arc::new(FmanState::default()),
+        FmanConfig::given_away(),
+    )
+    .await;
+    let guard = client.inner.run_guard.clone().try_lock_owned().unwrap();
+    client
+        .inner
+        .progress
+        .send_replace(FiStatus::Recovery { last_error: None });
+    let mut status = client.observe();
+    crate::backup_worker::spawn_recovery(
+        &client.inner.backup_tasks,
+        crate::backup_worker::RecoveryWorker {
+            store: client.inner.store.clone(),
+            root: client.inner.ports.identity.scoped_root(),
+            fi_id: TestIdentity::fi_id(),
+            profile: ManifoldEnvironment::Staging.profile().unwrap(),
+            progress: client.inner.progress.clone(),
+        },
+        guard,
+    );
+    tokio::time::timeout(std::time::Duration::from_secs(2), status.changed())
+        .await
+        .expect("completed check publishes a ready status")
+        .unwrap();
+    assert_eq!(client.status(), FiStatus::Idle);
+    assert!(
+        client.inner.run_guard.try_lock().is_ok(),
+        "ready status never precedes release of the mutation guard"
+    );
+}
+
+#[tokio::test]
+async fn empty_backup_recovery_completion_survives_reopen_and_is_environment_scoped() {
+    let database = MemDatabase::new().into_database();
+    let store = crate::db::FiStore::new(database.clone());
+    let completed = crate::db::RecoveryCompletedKey::new(ManifoldEnvironment::Production);
+    let different_environment = crate::db::RecoveryCompletedKey::new(ManifoldEnvironment::Staging);
+    assert!(!store.recovery_completed(&completed).await);
+    store.complete_empty_recovery(&completed).await.unwrap();
+    let reopened = crate::db::FiStore::new(database.clone());
+    assert!(reopened.recovery_completed(&completed).await);
+    assert!(!reopened.recovery_completed(&different_environment).await);
+    assert!(matches!(
+        reopened.load_status(TestIdentity::fi_id()).await.unwrap(),
+        FiStatus::Idle
+    ));
+    let (payments, _) = TestPayments::new();
+    let client = open_client(
+        database,
+        payments,
+        Arc::new(FmanState::default()),
+        FmanConfig::given_away(),
+    )
+    .await;
+    let profile = ManifoldEnvironment::Production.profile().unwrap();
+    assert_eq!(client.status(), FiStatus::Idle);
+    assert_eq!(
+        crate::backup_worker::restore_from_relays(
+            &client.inner.store,
+            &client.inner.ports.identity.scoped_root(),
+            TestIdentity::fi_id(),
+            profile.nostr_relays().as_urls(),
+            profile.fi_backup_empty_read_quorum(),
+            &completed,
+        )
+        .await
+        .unwrap(),
+        crate::backup_worker::BackupRestoreOutcome::NoBackup,
+        "a completed empty check returns without contacting relays"
+    );
+}
+
 #[tokio::test]
 async fn encrypted_backup_restore_imports_unsynced_lean_state_and_blocks_create() {
     let (source, _, _, _) = formed_client_for_liquidity().await;
@@ -3097,15 +3239,46 @@ async fn encrypted_backup_restore_imports_unsynced_lean_state_and_blocks_create(
     let status = restored
         .inner
         .store
-        .restore_backup_payload(fi_id, payload)
+        .restore_backup_payload_with_completion(
+            fi_id,
+            payload,
+            Some(&crate::db::RecoveryCompletedKey::new(
+                ManifoldEnvironment::Production,
+            )),
+        )
         .await
         .unwrap();
     restored.inner.progress.send_replace(status);
+    assert!(
+        restored
+            .inner
+            .store
+            .recovery_completed(&crate::db::RecoveryCompletedKey::new(
+                ManifoldEnvironment::Production
+            ))
+            .await,
+        "the authenticated import and completion record commit together"
+    );
     let FiStatus::Restored(snapshot) = restored.status() else {
         panic!("restored status");
     };
     assert_eq!(snapshot.freshness, FormationFreshness::Unsynced);
     assert_eq!(snapshot.snapshot_generation, 4);
+    let profile = ManifoldEnvironment::Production.profile().unwrap();
+    assert_eq!(
+        crate::backup_worker::restore_from_relays(
+            &restored.inner.store,
+            &restored.inner.ports.identity.scoped_root(),
+            fi_id,
+            profile.nostr_relays().as_urls(),
+            profile.fi_backup_empty_read_quorum(),
+            &crate::db::RecoveryCompletedKey::new(ManifoldEnvironment::Production),
+        )
+        .await
+        .unwrap(),
+        crate::backup_worker::BackupRestoreOutcome::Restored,
+        "the committed import completes recovery without a second relay read"
+    );
     assert_eq!(snapshot.seats.len(), usize::from(MIN_FEDERATION_SIZE));
     assert!(
         restored
@@ -3113,6 +3286,55 @@ async fn encrypted_backup_restore_imports_unsynced_lean_state_and_blocks_create(
             .await
             .is_err()
     );
+}
+
+#[tokio::test]
+async fn backup_import_keeps_cached_policy_and_waits_only_for_live_lease() {
+    let (source, _, _, _) = formed_client_for_liquidity().await;
+    let payload = source.inner.store.backup_payload().await.unwrap().payload;
+    let database = MemDatabase::new().into_database();
+    let clock = Arc::new(AtomicU64::new(100));
+    let store = db::FiStore::new_with_lease_clock(database.clone(), {
+        let clock = clock.clone();
+        Arc::new(move || clock.load(Ordering::SeqCst))
+    });
+    let cached = setup_payment_event(test_now_secs(), &[PAYMENT_INVITE]);
+    store
+        .store_setup_payment_federations_event(cached.clone())
+        .await
+        .unwrap();
+    let lease = store
+        .acquire_driver_lease(Duration::from_secs(30), Duration::from_secs(5))
+        .await
+        .unwrap();
+    let key = db::RecoveryCompletedKey::new(ManifoldEnvironment::Staging);
+    assert!(matches!(
+        store
+            .restore_backup_payload_with_completion(
+                TestIdentity::fi_id(),
+                payload.clone(),
+                Some(&key)
+            )
+            .await,
+        Err(FiError::Storage(_))
+    ));
+    assert!(!store.recovery_completed(&key).await);
+    clock.store(106, Ordering::SeqCst);
+    let status = store
+        .restore_backup_payload_with_completion(TestIdentity::fi_id(), payload, Some(&key))
+        .await
+        .unwrap();
+    assert!(matches!(status, FiStatus::Restored(_)));
+    assert!(store.recovery_completed(&key).await);
+    assert_eq!(
+        store
+            .load_setup_payment_federations_event()
+            .await
+            .unwrap()
+            .id,
+        cached.id
+    );
+    drop(lease);
 }
 
 #[tokio::test]
@@ -3695,7 +3917,7 @@ async fn open_client_with_store_and_registry(
                 fi_fee_account_provider: Arc::new(TestFiFeeAccountProvider::default()),
             },
             progress,
-            run_guard: tokio::sync::Mutex::new(()),
+            run_guard: Arc::new(tokio::sync::Mutex::new(())),
             peer_badge_verifier: test_peer_badge_verifier(),
             setup_payment_publisher: Some(setup_payment_keys().public_key()),
             guardian_verification_fee_account: Some(guardian_fee_account(31)),
@@ -3707,7 +3929,9 @@ async fn open_client_with_store_and_registry(
 fn formation(status: &FiStatus) -> &FormationSnapshot {
     match status {
         FiStatus::Formation(snapshot) => snapshot,
-        FiStatus::Idle | FiStatus::Restored(_) => panic!("expected active formation"),
+        FiStatus::Idle | FiStatus::Recovery { .. } | FiStatus::Restored(_) => {
+            panic!("expected active formation")
+        }
     }
 }
 

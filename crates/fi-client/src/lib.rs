@@ -106,8 +106,15 @@ pub use unavailable::{
     UnavailableFleetManagerConnector, UnavailablePayments, UnavailableRegistry,
 };
 
-use crate::db::FiStore;
+use crate::db::{FiStore, RecoveryCompletedKey};
 use crate::ports::{FiClientPorts, FiIdentityExt as _};
+
+/// Whether this opening is a restored mnemonic whose FI backup needs checking.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum BackupRecoveryHint {
+    Skip,
+    RestoredMnemonic,
+}
 
 /// Stateful Federation Initiator client.
 pub struct FiClient<I, P, N, F, C> {
@@ -118,7 +125,7 @@ struct FiClientInner<I, P, N, F, C> {
     store: FiStore,
     ports: FiClientPorts<I, P, N, F, C>,
     progress: watch::Sender<FiStatus>,
-    run_guard: Mutex<()>,
+    run_guard: Arc<Mutex<()>>,
     peer_badge_verifier: PeerBadgeVerifier,
     setup_payment_publisher: Option<PublicKey>,
     guardian_verification_fee_account: Option<Account>,
@@ -257,6 +264,7 @@ where
         consensus_reader: C,
         fi_fee_account_provider: impl FiFeeAccountProvider,
         profile: ManifoldEnvironmentProfile,
+        recovery_hint: BackupRecoveryHint,
     ) -> FiResult<Self> {
         let setup_payment_publisher = profile.setup_payment_publisher().copied();
         let guardian_verification_fee_account =
@@ -277,6 +285,41 @@ where
             guardian_verification_fee_account,
         )
         .await?;
+        if recovery_hint == BackupRecoveryHint::RestoredMnemonic
+            && matches!(client.status(), FiStatus::Idle)
+            && !client
+                .inner
+                .store
+                .recovery_completed(&RecoveryCompletedKey::new(profile.environment()))
+                .await
+        {
+            let guard = client
+                .inner
+                .run_guard
+                .clone()
+                .try_lock_owned()
+                .expect("the newly opened FI client has no active operation");
+            client
+                .inner
+                .progress
+                .send_replace(FiStatus::Recovery { last_error: None });
+            backup_worker::spawn_recovery(
+                &client.inner.backup_tasks,
+                backup_worker::RecoveryWorker {
+                    store: client.inner.store.clone(),
+                    root: client.inner.ports.identity.scoped_root(),
+                    fi_id: client
+                        .inner
+                        .ports
+                        .identity
+                        .public_key()
+                        .map_err(FiError::Identity)?,
+                    profile,
+                    progress: client.inner.progress.clone(),
+                },
+                guard,
+            );
+        }
         backup_worker::spawn_workers(
             &client.inner.backup_tasks,
             client.inner.store.clone(),
@@ -304,7 +347,7 @@ where
                 store,
                 ports,
                 progress,
-                run_guard: Mutex::new(()),
+                run_guard: Arc::new(Mutex::new(())),
                 peer_badge_verifier,
                 setup_payment_publisher,
                 guardian_verification_fee_account,
@@ -323,30 +366,6 @@ where
     #[must_use]
     pub fn status(&self) -> FiStatus {
         self.inner.progress.borrow().clone()
-    }
-
-    /// Query every relay in the supplied canonical profile and restore the
-    /// highest authenticated snapshot generation, ignoring bad candidates.
-    pub async fn restore_from_manifold_profile(
-        &self,
-        profile: &ManifoldEnvironmentProfile,
-    ) -> FiResult<()> {
-        let _run = self.inner.run_guard.try_lock().map_err(|_| FiError::Busy)?;
-        let fi_id = self
-            .inner
-            .ports
-            .identity
-            .public_key()
-            .map_err(FiError::Identity)?;
-        let status = backup_worker::restore_from_relays(
-            &self.inner.store,
-            &self.inner.ports.identity.scoped_root(),
-            fi_id,
-            profile.nostr_relays().as_urls(),
-        )
-        .await?;
-        self.inner.progress.send_replace(status);
-        Ok(())
     }
 
     /// Legacy registry-backed creation entry point.

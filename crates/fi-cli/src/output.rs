@@ -213,6 +213,12 @@ impl<'a> CliOutput<'a> {
         } else {
             match snapshot {
                 FiStatus::Idle => writeln!(self.stdout, "FI state: idle")?,
+                FiStatus::Recovery { last_error } => {
+                    writeln!(self.stdout, "FI state: checking backup")?;
+                    if let Some(error) = last_error {
+                        writeln!(self.stdout, "last error: {error:?}")?;
+                    }
+                }
                 FiStatus::Formation(snapshot) => {
                     if let Some(invite_code) = &snapshot.invite_code {
                         writeln!(self.stdout, "{}", invite_code.0)?;
