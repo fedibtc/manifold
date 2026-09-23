@@ -24,11 +24,12 @@ use fedi_decentralized_nostr::setup_payment_federations::{
 use fedi_decentralized_nostr_clients::NostrRelayClient;
 use fedi_decentralized_service_fleet_manager::{
     FLEET_MANAGER_ALPN, FetchSafeEventJournalRequest, FetchSafeEventJournalResponse, FiId,
-    FleetManagerError, FleetManagerServiceClient, GUARDIAN_TELEMETRY_ALPN, GatewayApiUrl,
-    GuardianTelemetryApi as _, GuardianTelemetryApiClient, ListGuardianTelemetrySeatsRequest,
-    ListSafeEventJournalsRequest, Locator, RegisterGatewayRequest, RegisterGatewayResponse,
-    SafeEventJournal, ScrapeGuardianMetricsRequest, SeatId, ServiceErrorCode, SignedRequest,
-    TelemetryCapability, Timestamp,
+    FleetManagerError, FleetManagerService as _, FleetManagerServiceClient,
+    GUARDIAN_TELEMETRY_ALPN, GatewayApiUrl, GetAvailabilityRequest, GuardianTelemetryApi as _,
+    GuardianTelemetryApiClient, ListGuardianTelemetrySeatsRequest, ListSafeEventJournalsRequest,
+    Locator, RegisterGatewayRequest, RegisterGatewayResponse, SafeEventJournal,
+    ScrapeGuardianMetricsRequest, SeatId, ServiceErrorCode, SignedRequest, TelemetryCapability,
+    Timestamp,
 };
 use fedi_iroh_rpc::iroh::{Endpoint, endpoint::presets};
 use fedimint_derive_secret::{ChildId, DerivableSecret};
@@ -43,6 +44,7 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::process::{Child, Command};
 
 const OPT_IN_ENV: &str = "FMAN_E2E";
+const DUPLICATE_RESTORE_OPT_IN_ENV: &str = "FMAN_DUPLICATE_RESTORE_E2E";
 const FLEET_MANAGER_BIN_ENV: &str = "FMAN_E2E_FLEET_MANAGER_BIN";
 const FMAN_CLI_BIN_ENV: &str = "FMAN_E2E_FMAN_CLI_BIN";
 const FI_CLI_BIN_ENV: &str = "FMAN_E2E_FI_CLI_BIN";
@@ -77,6 +79,9 @@ const POST_FORMATION_TIMEOUT: Duration = Duration::from_secs(600);
 /// Formation, confirmed Nostr archive publication, mnemonic restore, and
 /// restored guardian catch-up against the six surviving peers.
 const FLEET_RESTORE_TIMEOUT: Duration = Duration::from_secs(420);
+/// Formation, three real deposits, live duplicate restore, and post-retirement
+/// convergence. This is a manually opted-in resilience experiment, not a release gate.
+const DUPLICATE_RESTORE_TIMEOUT: Duration = Duration::from_secs(900);
 /// Mining the initial 101 regtest blocks can be slow in network-isolated Nix
 /// builders once all seven guardian processes are running.
 const BITCOIN_CLI_TIMEOUT: Duration = Duration::from_secs(60);
@@ -538,6 +543,578 @@ async fn run_formed_fleet_restore() -> anyhow::Result<()> {
     defe.release(bitcoind_lease.handle_id).await?;
     std::fs::remove_dir_all(&temp).context("remove restore E2E tempdir")?;
     Ok(())
+}
+
+/// Deliberately violate the restore operator acknowledgement in a bounded local
+/// experiment: restore one live FMan identity onto a fresh data root, observe
+/// both managers and guardian copies, then stop the original and verify that the
+/// restored instance continues alone.
+///
+/// This is not a supported deployment topology or a release gate. It exists to
+/// record what the actual backup/restore and management paths do when the human
+/// single-owner constraint is broken.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn duplicate_live_fman_restore_then_retire_original_under_defe() {
+    if env::var_os(DUPLICATE_RESTORE_OPT_IN_ENV).is_none() {
+        eprintln!(
+            "skipping duplicate-live-FMan experiment; set {DUPLICATE_RESTORE_OPT_IN_ENV}=1 to run"
+        );
+        return;
+    }
+    if !cfg!(target_os = "linux") {
+        eprintln!(
+            "skipping duplicate-live-FMan experiment; child ownership checks need Linux /proc"
+        );
+        return;
+    }
+
+    tokio::time::timeout(DUPLICATE_RESTORE_TIMEOUT, run_duplicate_live_fman_restore())
+        .await
+        .expect("duplicate-live-FMan experiment timed out")
+        .expect("duplicate-live-FMan experiment failed");
+}
+
+async fn run_duplicate_live_fman_restore() -> anyhow::Result<()> {
+    const ORIGINAL_PORT_BASE: u16 = 52_000;
+    const RESTORED_PORT_BASE: u16 = 59_000;
+
+    let fleet_manager_bin = locate_binary(FLEET_MANAGER_BIN_ENV, "fleet-manager")?;
+    let fi_cli_bin = locate_binary(FI_CLI_BIN_ENV, "fi-cli")?;
+    let fedimint_cli_bin = locate_binary(FEDIMINT_CLI_BIN_ENV, "fedimint-cli")?;
+    let bitcoin_cli_bin = locate_binary(BITCOIN_CLI_BIN_ENV, "bitcoin-cli")?;
+    let mut defe = AsyncDefeClient::connect_from_env()
+        .await
+        .context("connect to defe from env")?;
+    let bitcoind_lease = defe
+        .request_bitcoind(SharingMode::Exclusive)
+        .await
+        .context("allocate real regtest bitcoind through defe")?;
+    let ResourceDescriptor::Bitcoind(bitcoind) = &bitcoind_lease.descriptor else {
+        anyhow::bail!("expected bitcoind descriptor");
+    };
+    let nostr_relay_lease = defe
+        .request_nostr_relay(SharingMode::Exclusive)
+        .await
+        .context("allocate exclusive Nostr relay through defe")?;
+    let ResourceDescriptor::NostrRelay(nostr_relay) = &nostr_relay_lease.descriptor else {
+        anyhow::bail!("expected Nostr relay descriptor");
+    };
+    let setup_payment_publisher =
+        NostrKeys::parse("0000000000000000000000000000000000000000000000000000000000000001")?
+            .public_key()
+            .to_string();
+    let nostr = NostrEnv {
+        relay_urls: &nostr_relay.url,
+        holder_relay_url: &nostr_relay.url,
+        setup_payment_publisher: &setup_payment_publisher,
+    };
+
+    let temp = fman_e2e_temp_dir()?;
+    eprintln!(
+        "duplicate-live-FMan experiment data dir: {}",
+        temp.display()
+    );
+    let bitcoin_cli = BitcoinCli::new(&bitcoin_cli_bin, bitcoind)?;
+    bitcoin_cli
+        .run(None, &["createwallet", "duplicate-fman-miner"])
+        .await?;
+    let miner_address = bitcoin_cli
+        .run(Some("duplicate-fman-miner"), &["getnewaddress"])
+        .await?
+        .trim()
+        .to_owned();
+    bitcoin_cli
+        .run(None, &["generatetoaddress", "101", &miner_address])
+        .await?;
+
+    let iroh_overrides = local_iroh_overrides_for_grid(ORIGINAL_PORT_BASE, 1, GUARDIAN_COUNT);
+    let (mut daemons, locators) = start_daemons(
+        &fleet_manager_bin,
+        &temp,
+        bitcoind,
+        1,
+        ORIGINAL_PORT_BASE,
+        Some(&iroh_overrides),
+        GUARDIAN_COUNT,
+        Some(nostr),
+        None,
+    )
+    .await;
+    offer_free_seats(&fleet_manager_bin, &temp, GUARDIAN_COUNT).await?;
+    let state_dir = temp.join("fi-state");
+    let invite =
+        form_federation_in_state(&fi_cli_bin, &state_dir, &locators, &iroh_overrides, None).await?;
+    let client = FedimintCli {
+        bin: &fedimint_cli_bin,
+        data_dir: temp.join("duplicate-restore-client"),
+        iroh_overrides: &iroh_overrides,
+    };
+    client
+        .run(
+            &["join-federation", invite.trim()],
+            FEDIMINT_CLI_JOIN_TIMEOUT,
+        )
+        .await?;
+    let baseline_balance = walletv2_deposit(
+        &client,
+        &bitcoin_cli,
+        &miner_address,
+        "duplicate-fman-miner",
+    )
+    .await
+    .context("baseline deposit before backup")?;
+
+    let original_dir = temp.join("fman-0");
+    let original_identity =
+        fleet_manager_admin(&fleet_manager_bin, &original_dir, &["onboarding"]).await?;
+    let (seat_id, mnemonic) = wait_for_confirmed_guardian_backup(
+        &fleet_manager_bin,
+        &original_dir,
+        Duration::from_secs(60),
+    )
+    .await?;
+    let identity = fman_core::identity::RootMnemonic::parse(&mnemonic)?;
+    let capability = identity.derive_telemetry_capability(0);
+    let original_locator: Locator = serde_json::from_str(&locators[0])?;
+    let original_fman_pid = daemons[0]
+        .id()
+        .context("original FMan exited before duplicate restore")?;
+    let original_guardian_pid = find_direct_child_named(original_fman_pid, "fedimintd")?;
+    let original_guardian =
+        ExactProcess::open_direct_child(original_fman_pid, original_guardian_pid, "fedimintd")?;
+    wait_for_fman_seat_healthy(&fleet_manager_bin, &original_dir, &seat_id).await?;
+    assert_fman_rpc_available(&original_locator).await?;
+
+    let restored_dir = temp.join("duplicate-restored-fman-0");
+    let mnemonic_file = temp.join("duplicate-restore-mnemonic");
+    write_sensitive_file(&mnemonic_file, &mnemonic)?;
+    let mut restored = spawn_fleet_manager(
+        &fleet_manager_bin,
+        &restored_dir,
+        &bitcoind.rpc_url,
+        &bitcoind.rpc_username,
+        &bitcoind.rpc_password,
+        RESTORED_PORT_BASE,
+        Some(&iroh_overrides),
+        Some(nostr),
+        None,
+    )?;
+    let mnemonic_file_arg = mnemonic_file.display().to_string();
+    // The production command deliberately requires this human assertion. This
+    // experiment supplies it while the original is still live in order to
+    // observe the unsupported topology; the restore implementation itself has
+    // no distributed identity lock and performs no action against the old host.
+    let restored_answer = retry_fleet_manager_admin(
+        &fleet_manager_bin,
+        &restored_dir,
+        &[
+            "onboard",
+            "restore",
+            "--mnemonic-file",
+            &mnemonic_file_arg,
+            "--acknowledge-original-host-is-gone",
+        ],
+    )
+    .await?;
+    anyhow::ensure!(
+        restored_answer["onboarded"] == "restored"
+            && restored_answer["seats"].as_u64() == Some(1)
+            && restored_answer["formed"].as_u64() == Some(1),
+        "live duplicate restore did not recover the complete formed fleet: {restored_answer}"
+    );
+    complete_onboarding_stages(&fleet_manager_bin, &restored_dir, 1, nostr).await?;
+    let restored_locator: Locator = serde_json::from_str(&read_locator(&mut restored, 7).await?)?;
+    wait_for_fman_seat_healthy(&fleet_manager_bin, &restored_dir, &seat_id).await?;
+    assert_fman_rpc_available(&restored_locator).await?;
+
+    let restored_identity =
+        fleet_manager_admin(&fleet_manager_bin, &restored_dir, &["onboarding"]).await?;
+    anyhow::ensure!(
+        restored_identity["service_pubkey"] == original_identity["service_pubkey"]
+            && restored_identity["service_nostr_pubkey"]
+                == original_identity["service_nostr_pubkey"]
+            && restored_locator.service_pubkey == original_locator.service_pubkey
+            && restored_locator.endpoint_addr.id == original_locator.endpoint_addr.id
+            && restored_locator.endpoint_addr != original_locator.endpoint_addr,
+        "restored FMan must share cryptographic identity but have distinct live routing: \
+         original_identity={original_identity}, restored_identity={restored_identity}, \
+         original_locator={original_locator:?}, restored_locator={restored_locator:?}"
+    );
+    let restored_fman_pid = restored
+        .id()
+        .context("restored FMan exited after onboarding")?;
+    let restored_guardian_pid = find_direct_child_named(restored_fman_pid, "fedimintd")?;
+    let restored_guardian =
+        ExactProcess::open_direct_child(restored_fman_pid, restored_guardian_pid, "fedimintd")?;
+    anyhow::ensure!(
+        restored_guardian_pid != original_guardian_pid,
+        "each FMan must own a distinct guardian OS process"
+    );
+    assert_single_shared_fman_advertisement(
+        &nostr_relay.url,
+        original_identity["service_nostr_pubkey"]
+            .as_str()
+            .context("onboarding reports the service Nostr pubkey")?,
+        &original_locator.endpoint_addr.id.to_string(),
+    )
+    .await?;
+
+    let original_progress =
+        guardian_consensus_progress(&original_locator, &seat_id, capability.clone()).await?;
+    let restored_progress =
+        guardian_consensus_progress(&restored_locator, &seat_id, capability.clone()).await?;
+    let overlap_balance = walletv2_deposit(
+        &client,
+        &bitcoin_cli,
+        &miner_address,
+        "duplicate-fman-miner",
+    )
+    .await
+    .context("deposit while both FMan instances are live")?;
+    anyhow::ensure!(
+        overlap_balance > baseline_balance,
+        "overlap deposit did not increase client balance"
+    );
+    wait_for_both_guardian_copies_to_advance(
+        &original_locator,
+        &restored_locator,
+        &seat_id,
+        capability.clone(),
+        original_progress,
+        restored_progress,
+    )
+    .await?;
+    anyhow::ensure!(
+        !original_guardian.has_exited()? && !restored_guardian.has_exited()?,
+        "one of the two observed guardian processes exited during the overlap"
+    );
+    wait_for_fman_seat_healthy(&fleet_manager_bin, &original_dir, &seat_id).await?;
+    wait_for_fman_seat_healthy(&fleet_manager_bin, &restored_dir, &seat_id).await?;
+
+    // "Retire" only the original runtime. Do not decommission the shared seat,
+    // delete its data, rotate the mnemonic, or publish a tombstone that would
+    // also apply to the restored identity.
+    // Re-pin the current child immediately before shutdown: supervision may
+    // legitimately have replaced the process observed earlier in the overlap.
+    let retiring_guardian_pid = find_direct_child_named(original_fman_pid, "fedimintd")?;
+    let retiring_guardian =
+        ExactProcess::open_direct_child(original_fman_pid, retiring_guardian_pid, "fedimintd")?;
+    let original = daemons.remove(0);
+    shutdown_daemons(vec![original]).await?;
+    retiring_guardian.wait_for_exit(Duration::from_secs(5))?;
+    let post_retirement_progress =
+        guardian_consensus_progress(&restored_locator, &seat_id, capability.clone()).await?;
+    let final_balance = walletv2_deposit(
+        &client,
+        &bitcoin_cli,
+        &miner_address,
+        "duplicate-fman-miner",
+    )
+    .await
+    .context("deposit after retiring the original FMan")?;
+    anyhow::ensure!(
+        final_balance > overlap_balance,
+        "post-retirement deposit did not increase client balance"
+    );
+    wait_for_guardian_copy_to_advance(
+        &restored_locator,
+        &seat_id,
+        capability,
+        post_retirement_progress,
+    )
+    .await?;
+    wait_for_fman_seat_healthy(&fleet_manager_bin, &restored_dir, &seat_id).await?;
+    assert_fman_rpc_available(&restored_locator).await?;
+    tokio::time::sleep(Duration::from_secs(5)).await;
+    wait_for_fman_seat_healthy(&fleet_manager_bin, &restored_dir, &seat_id).await?;
+
+    eprintln!(
+        "duplicate-live-FMan experiment passed: baseline={baseline_balance}msat, \
+         overlap={overlap_balance}msat, restored-alone={final_balance}msat; \
+         original guardian pid={original_guardian_pid}, restored guardian pid={restored_guardian_pid}"
+    );
+    daemons.push(restored);
+    shutdown_daemons(daemons).await?;
+    defe.release(nostr_relay_lease.handle_id).await?;
+    defe.release(bitcoind_lease.handle_id).await?;
+    std::fs::remove_dir_all(&temp).context("remove duplicate-live-FMan experiment tempdir")?;
+    Ok(())
+}
+
+#[derive(Clone, Copy, Debug)]
+struct GuardianConsensusProgress {
+    sessions: u64,
+    processed_items: u64,
+}
+
+async fn wait_for_confirmed_guardian_backup(
+    fleet_manager_bin: &Path,
+    data_dir: &Path,
+    timeout: Duration,
+) -> anyhow::Result<(String, String)> {
+    tokio::time::timeout(timeout, async {
+        loop {
+            let seats =
+                fleet_manager_admin(fleet_manager_bin, data_dir, &["seats", "list"]).await?;
+            if seats["backup_scan"]["pending_seats"].as_u64() == Some(0)
+                && seats["seats"][0]["backup"]["archive_confirmed"].as_bool() == Some(true)
+            {
+                let seat_id = seats["seats"][0]["seat_id"]
+                    .as_str()
+                    .context("formed seat listing carries its id")?
+                    .to_owned();
+                let mnemonic = fleet_manager_admin(fleet_manager_bin, data_dir, &["show-mnemonic"])
+                    .await?["mnemonic"]
+                    .as_str()
+                    .context("show-mnemonic returns the root phrase")?
+                    .to_owned();
+                return Ok::<_, anyhow::Error>((seat_id, mnemonic));
+            }
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+    })
+    .await
+    .map_err(|_| anyhow::anyhow!("formed guardian archive was not confirmed on Nostr"))?
+}
+
+async fn wait_for_fman_seat_healthy(
+    fleet_manager_bin: &Path,
+    data_dir: &Path,
+    seat_id: &str,
+) -> anyhow::Result<()> {
+    tokio::time::timeout(Duration::from_secs(120), async {
+        loop {
+            let status =
+                fleet_manager_admin(fleet_manager_bin, data_dir, &["seats", "status", seat_id])
+                    .await?;
+            if status["report"]["phase"] == "running"
+                && status["report"]["health"] == "healthy"
+                && status["guardian_fee"].get("error").is_none()
+            {
+                return Ok::<_, anyhow::Error>(());
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+    })
+    .await
+    .map_err(|_| anyhow::anyhow!("FMan seat {seat_id} did not become healthy"))?
+}
+
+async fn assert_fman_rpc_available(locator: &Locator) -> anyhow::Result<()> {
+    let endpoint = Endpoint::bind(presets::N0DisableRelay).await?;
+    let connection = endpoint
+        .connect(locator.endpoint_addr.clone(), FLEET_MANAGER_ALPN)
+        .await?;
+    let response = FleetManagerServiceClient::new(connection)
+        .get_availability(GetAvailabilityRequest)
+        .await?;
+    anyhow::ensure!(
+        response.federation_sizes.iter().any(|size| size.0 == 7),
+        "FMan RPC did not advertise the supported seven-guardian size"
+    );
+    endpoint.close().await;
+    Ok(())
+}
+
+async fn assert_single_shared_fman_advertisement(
+    relay_url: &str,
+    service_nostr_pubkey: &str,
+    shared_endpoint_id: &str,
+) -> anyhow::Result<()> {
+    let observer =
+        NostrRelayClient::connect(relay_url, NostrKeys::generate(), Duration::from_secs(5)).await?;
+    let author = nostr_sdk::PublicKey::parse(service_nostr_pubkey)?;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    loop {
+        let events = observer
+            .fetch_events_capped(
+                nostr_sdk::Filter::new()
+                    .kind(Kind::Custom(FMAN_ADVERTISEMENT_EVENT_KIND))
+                    .author(author),
+                Duration::from_secs(5),
+                8,
+            )
+            .await?;
+        if let Some(event) = events.first() {
+            anyhow::ensure!(
+                events.len() == 1,
+                "addressable FMan identity produced more than one current advertisement"
+            );
+            let document: serde_json::Value = serde_json::from_str(&event.content)?;
+            let expected = format!("iroh://{shared_endpoint_id}");
+            anyhow::ensure!(
+                document["payload"]["api_endpoints"][0]["url"] == expected,
+                "shared FMan advertisement did not retain the shared endpoint identity: {document}"
+            );
+            return Ok(());
+        }
+        anyhow::ensure!(
+            tokio::time::Instant::now() < deadline,
+            "shared FMan advertisement did not reach the relay"
+        );
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+}
+
+async fn walletv2_deposit(
+    client: &FedimintCli<'_>,
+    bitcoin_cli: &BitcoinCli<'_>,
+    miner_address: &str,
+    bitcoin_wallet: &str,
+) -> anyhow::Result<u64> {
+    tokio::time::timeout(Duration::from_secs(120), async {
+        loop {
+            let count = client
+                .run_json(
+                    &["module", "walletv2", "info", "block-count"],
+                    FEDIMINT_CLI_WALLETV2_TIMEOUT,
+                )
+                .await?;
+            if count.as_u64().is_some_and(|count| count >= 1) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_secs(1)).await;
+        }
+        Ok::<_, anyhow::Error>(())
+    })
+    .await
+    .map_err(|_| anyhow::anyhow!("WalletV2 did not observe its first consensus block"))??;
+    let before = client.run_json(&["info"], Duration::from_secs(10)).await?["total_amount_msat"]
+        .as_u64()
+        .context("fedimint-cli info reports total_amount_msat")?;
+    let address = client
+        .run_json(
+            &["module", "walletv2", "receive"],
+            FEDIMINT_CLI_WALLETV2_TIMEOUT,
+        )
+        .await?
+        .as_str()
+        .context("walletv2 receive returns an address")?
+        .to_owned();
+    bitcoin_cli
+        .run(Some(bitcoin_wallet), &["sendtoaddress", &address, "0.001"])
+        .await?;
+    bitcoin_cli
+        .run(None, &["generatetoaddress", "7", miner_address])
+        .await?;
+    client
+        .run(&["dev", "wait", "90"], Duration::from_secs(100))
+        .await?;
+    let after = client.run_json(&["info"], Duration::from_secs(10)).await?["total_amount_msat"]
+        .as_u64()
+        .context("fedimint-cli info reports total_amount_msat")?;
+    anyhow::ensure!(
+        after > before,
+        "WalletV2 deposit did not increase balance: before={before}, after={after}"
+    );
+    Ok(after)
+}
+
+async fn guardian_consensus_progress(
+    locator: &Locator,
+    seat_id: &str,
+    capability: TelemetryCapability,
+) -> anyhow::Result<GuardianConsensusProgress> {
+    let endpoint = Endpoint::bind(presets::N0DisableRelay).await?;
+    let connection = endpoint
+        .connect(locator.endpoint_addr.clone(), GUARDIAN_TELEMETRY_ALPN)
+        .await?;
+    let metrics = GuardianTelemetryApiClient::new(connection)
+        .scrape_guardian_metrics(ScrapeGuardianMetricsRequest {
+            seat_id: SeatId::new(seat_id.to_owned())?,
+            capability,
+        })
+        .await?;
+    endpoint.close().await;
+    let body = std::str::from_utf8(&metrics.body)?;
+    Ok(GuardianConsensusProgress {
+        sessions: prometheus_metric_sum(body, "fm_consensus_session_count")?,
+        processed_items: prometheus_metric_sum(body, "fm_consensus_items_processed_total")?,
+    })
+}
+
+fn prometheus_metric_sum(body: &str, family: &str) -> anyhow::Result<u64> {
+    let mut found = false;
+    let mut total = 0_u64;
+    for line in body.lines().filter(|line| {
+        line.starts_with(family)
+            && line
+                .as_bytes()
+                .get(family.len())
+                .is_some_and(|byte| matches!(byte, b'{' | b' '))
+    }) {
+        let value = line
+            .split_whitespace()
+            .last()
+            .context("Prometheus sample carries a value")?
+            .parse::<f64>()?;
+        anyhow::ensure!(
+            value.is_finite() && value >= 0.0 && value.fract() == 0.0,
+            "Prometheus counter {family} was not a non-negative integer: {value}"
+        );
+        total = total
+            .checked_add(value as u64)
+            .context("Prometheus counter sum overflow")?;
+        found = true;
+    }
+    anyhow::ensure!(found, "metrics did not contain {family}");
+    Ok(total)
+}
+
+async fn wait_for_both_guardian_copies_to_advance(
+    original: &Locator,
+    restored: &Locator,
+    seat_id: &str,
+    capability: TelemetryCapability,
+    original_before: GuardianConsensusProgress,
+    restored_before: GuardianConsensusProgress,
+) -> anyhow::Result<()> {
+    tokio::time::timeout(Duration::from_secs(120), async {
+        loop {
+            let original_after =
+                guardian_consensus_progress(original, seat_id, capability.clone()).await?;
+            let restored_after =
+                guardian_consensus_progress(restored, seat_id, capability.clone()).await?;
+            if original_after.sessions > original_before.sessions
+                && original_after.processed_items > original_before.processed_items
+                && restored_after.sessions > restored_before.sessions
+                && restored_after.processed_items > restored_before.processed_items
+            {
+                eprintln!(
+                    "both guardian copies advanced during overlap: original {original_before:?} -> \
+                     {original_after:?}; restored {restored_before:?} -> {restored_after:?}"
+                );
+                return Ok::<_, anyhow::Error>(());
+            }
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+    })
+    .await
+    .map_err(|_| {
+        anyhow::anyhow!("both duplicate guardian copies did not process a fresh session")
+    })?
+}
+
+async fn wait_for_guardian_copy_to_advance(
+    locator: &Locator,
+    seat_id: &str,
+    capability: TelemetryCapability,
+    before: GuardianConsensusProgress,
+) -> anyhow::Result<()> {
+    tokio::time::timeout(Duration::from_secs(120), async {
+        loop {
+            let after = guardian_consensus_progress(locator, seat_id, capability.clone()).await?;
+            if after.sessions > before.sessions && after.processed_items > before.processed_items {
+                eprintln!("restored guardian advanced alone: {before:?} -> {after:?}");
+                return Ok::<_, anyhow::Error>(());
+            }
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+    })
+    .await
+    .map_err(|_| {
+        anyhow::anyhow!("restored guardian did not process a fresh post-retirement session")
+    })?
 }
 
 /// Exercise the adverse formed-seat lifecycle against the shipped process
@@ -2685,6 +3262,82 @@ impl ExactProcess {
     #[cfg(not(target_os = "linux"))]
     fn signal(&self, _signal: i32) -> anyhow::Result<()> {
         anyhow::bail!("pidfd fault injection requires Linux")
+    }
+
+    #[cfg(target_os = "linux")]
+    fn has_exited(&self) -> anyhow::Result<bool> {
+        let mut pollfd = libc::pollfd {
+            fd: self.pidfd.as_raw_fd(),
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        // SAFETY: poll receives one valid pollfd and a zero timeout; it neither
+        // retains the pointer nor transfers ownership of the descriptor.
+        let ready = unsafe { libc::poll(&mut pollfd, 1, 0) };
+        anyhow::ensure!(
+            ready >= 0,
+            "poll pidfd for {}: {}",
+            self.pid,
+            std::io::Error::last_os_error()
+        );
+        Ok(ready == 1)
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    fn has_exited(&self) -> anyhow::Result<bool> {
+        anyhow::bail!("pidfd exit observation requires Linux")
+    }
+
+    #[cfg(target_os = "linux")]
+    fn wait_for_exit(&self, timeout: Duration) -> anyhow::Result<()> {
+        let deadline = std::time::Instant::now() + timeout;
+        loop {
+            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+            let timeout_ms = remaining
+                .as_millis()
+                .max(1)
+                .min(i32::MAX as u128)
+                .try_into()
+                .expect("bounded poll timeout fits i32");
+            let mut pollfd = libc::pollfd {
+                fd: self.pidfd.as_raw_fd(),
+                events: libc::POLLIN,
+                revents: 0,
+            };
+            // SAFETY: poll receives one valid pollfd and a bounded timeout; it
+            // neither retains the pointer nor transfers descriptor ownership.
+            let ready = unsafe { libc::poll(&mut pollfd, 1, timeout_ms) };
+            if ready == 1 {
+                return Ok(());
+            }
+            if ready < 0
+                && std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted
+            {
+                anyhow::ensure!(
+                    std::time::Instant::now() < deadline,
+                    "pinned process {} did not exit within {} seconds",
+                    self.pid,
+                    timeout.as_secs()
+                );
+                continue;
+            }
+            anyhow::ensure!(
+                ready >= 0,
+                "poll pidfd for {}: {}",
+                self.pid,
+                std::io::Error::last_os_error()
+            );
+            anyhow::bail!(
+                "pinned process {} did not exit within {} seconds",
+                self.pid,
+                timeout.as_secs()
+            );
+        }
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    fn wait_for_exit(&self, _timeout: Duration) -> anyhow::Result<()> {
+        anyhow::bail!("pidfd exit observation requires Linux")
     }
 }
 
