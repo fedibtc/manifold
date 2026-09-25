@@ -301,6 +301,9 @@ pub struct FmanSelectionRequest {
     federation_size: FederationSize,
     fedimintd_versions: FedimintdVersionRange,
     plan: PlanPreference,
+    /// Opt-in restriction to seats vouched for by exactly this PeerBadge
+    /// Holder. `None` is the product default: any trusted Holder may seat.
+    required_holder: Option<PublicKey>,
 }
 
 /// Read-only verified-selection capability.
@@ -384,7 +387,29 @@ impl FmanSelectionRequest {
             federation_size,
             fedimintd_versions,
             plan,
+            required_holder: None,
         })
+    }
+
+    /// Restrict selection to FMans whose verified PeerBadge is held by
+    /// `holder`.
+    ///
+    /// This is a testing aid for operators who run every guardian of a
+    /// federation under one PeerBadge: it deliberately gives up the operator
+    /// distribution the round-robin walk otherwise produces. It only narrows
+    /// the pool; every seat still passes full badge, subject, issuer,
+    /// service-key, and live-availability checks.
+    #[must_use]
+    pub fn with_required_holder(mut self, holder: PublicKey) -> Self {
+        self.required_holder = Some(holder);
+        self
+    }
+
+    /// PeerBadge Holder every selected seat must be vouched for by, if the
+    /// request is restricted to one.
+    #[must_use]
+    pub fn required_holder(&self) -> Option<PublicKey> {
+        self.required_holder
     }
 
     /// Requested guardian count.
@@ -1206,7 +1231,9 @@ pub(crate) async fn select_fman_seats(
     'walk: while seats.len() < needed && queues.iter().any(|queue| !queue.is_empty()) {
         for queue in &mut queues {
             while let Some(candidate) = queue.pop_front() {
-                match verify_bound_badge(verifier, &candidate, deadline).await {
+                match verify_bound_badge(verifier, &candidate, request.required_holder, deadline)
+                    .await
+                {
                     Ok(badge) => {
                         if let Some(selected_fman) = selected_service_pubkeys
                             .get(&candidate.locator.service_pubkey)
@@ -1298,9 +1325,15 @@ pub(crate) async fn select_fman_seats(
 /// candidate, the reported reason is the first failure in examination
 /// order, except that a verified-but-issuer-mismatched badge is decisive
 /// and overrides earlier failures.
+///
+/// With a `required_holder`, an envelope claiming any other Holder is skipped
+/// before verification, so a restricted walk costs no relay round trips for
+/// other operators' candidates; the verified Holder is checked again after
+/// verification.
 async fn verify_bound_badge(
     verifier: &impl SelectionBadgeVerifier,
     candidate: &EligibleFmanCandidate,
+    required_holder: Option<PublicKey>,
     deadline: Instant,
 ) -> Result<VerifiedBadgeFacts, AdvertisementRejection> {
     let mut first_failure = None;
@@ -1309,12 +1342,23 @@ async fn verify_bound_badge(
         .iter()
         .take(FMAN_ADVERTISEMENT_MAX_HOLDER_AUTHORIZATIONS)
     {
+        let claimed_holder = envelope
+            .holder_authorization
+            .authorization
+            .holder_id_pubkey
+            .0;
+        if required_holder.is_some_and(|required| required != claimed_holder) {
+            first_failure.get_or_insert(AdvertisementRejection::RequiredHolderMismatch);
+            continue;
+        }
         if Instant::now() >= deadline {
             return Err(AdvertisementRejection::DeadlineExpired);
         }
         match verifier.verify_badge(envelope).await {
             Ok(facts) => {
-                if facts.subject != candidate.fman_id {
+                if required_holder.is_some_and(|required| required != facts.holder) {
+                    first_failure.get_or_insert(AdvertisementRejection::RequiredHolderMismatch);
+                } else if facts.subject != candidate.fman_id {
                     first_failure.get_or_insert(AdvertisementRejection::SubjectMismatch);
                 } else if facts.issuer != candidate.claimed_issuer {
                     // A verified, author-bound badge under a different issuer

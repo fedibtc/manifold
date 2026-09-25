@@ -94,6 +94,17 @@ each commitment-signing `service_pubkey`; another author with that key is
 rejected as `DuplicateServicePubkey`. There is no FI-owned, pinned, or BYO
 exception in the product path.
 
+A consumer may opt a request into one required PeerBadge Holder
+(`FmanSelectionRequest::with_required_holder`), for an operator testing a
+federation made only of guardians under their own badge. The restriction only
+narrows the pool: an envelope claiming another Holder is skipped before
+verification, a verified Holder is checked again, and a candidate with no
+matching envelope is rejected as `RequiredHolderMismatch` without keeping its
+bucket's turn. Every other check above still applies. It deliberately forgoes
+the operator distribution the round-robin produces, so consumers must not
+enable it by default. Replacement previews build their own unrestricted
+request.
+
 Badge verification is deferred from discovery to the ranked walk. For each
 reached candidate it examines at most four
 (`FMAN_ADVERTISEMENT_MAX_HOLDER_AUTHORIZATIONS`) envelopes and seats the first

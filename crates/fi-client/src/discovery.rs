@@ -308,6 +308,10 @@ pub enum AdvertisementRejection {
     /// claimed bucketing issuer.
     ClaimedIssuerMismatch,
 
+    /// The selection request is restricted to one PeerBadge Holder and no
+    /// examined envelope of this advertisement is held by it.
+    RequiredHolderMismatch,
+
     /// This verified FMan author advertises a commitment-signing service key
     /// already owned by an earlier selected FMan.
     DuplicateServicePubkey {
@@ -391,6 +395,7 @@ impl AdvertisementRejection {
             Self::BadgeRejected(_) => "badge_rejected",
             Self::SubjectMismatch => "subject_mismatch",
             Self::ClaimedIssuerMismatch => "claimed_issuer_mismatch",
+            Self::RequiredHolderMismatch => "required_holder_mismatch",
             Self::DuplicateServicePubkey { .. } => "duplicate_service_pubkey",
             Self::DeadlineExpired => "deadline_expired",
             Self::ProbeFailed { .. } => "probe_failed",

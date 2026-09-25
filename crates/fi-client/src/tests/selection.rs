@@ -1227,6 +1227,129 @@ async fn preview_estimate_overflow_is_a_typed_selection_error() {
 }
 
 #[tokio::test]
+async fn required_holder_seats_only_that_holders_candidates_across_buckets() {
+    // Another operator's cheaper candidates, in the required Holder's own
+    // issuer bucket and in a second issuer's bucket, must neither seat nor
+    // cost a verifier round trip; the restricted walk fills every seat from
+    // the required Holder even though round-robin would otherwise spread it.
+    let issuer_a = issuer_keys(1);
+    let issuer_b = issuer_keys(2);
+    let required = holder_keys();
+    let other = Keys::parse(&format!("{:064x}", 0x2002)).expect("test holder key parses");
+    let ad = |fman: &Keys, holder: &Keys, issuer: &Keys, price_msats: u64| {
+        ad_event(
+            fman,
+            priced_payload(
+                fman,
+                vec![envelope_with_issuer(holder, fman.public_key(), issuer)],
+                price_msats,
+                1,
+            ),
+        )
+    };
+    let ours = [fman_keys(1), fman_keys(2), fman_keys(3)];
+    let theirs_same_issuer = fman_keys(4);
+    let theirs_other_issuer = fman_keys(5);
+    let events = vec![
+        ad(&ours[0], &required, &issuer_a, 2_000),
+        ad(&ours[1], &required, &issuer_a, 2_000),
+        ad(&ours[2], &required, &issuer_a, 2_000),
+        ad(&theirs_same_issuer, &other, &issuer_a, 0),
+        ad(&theirs_other_issuer, &other, &issuer_b, 0),
+    ];
+
+    let verifier = StubBadgeVerifier::default();
+    let mut rejected = Vec::new();
+    let seats = select_fman_seats(
+        &verifier,
+        &AdOnlySelection,
+        &preview_request(MIN_FEDERATION_SIZE).with_required_holder(required.public_key()),
+        &fedimintd_version().dkg_version(),
+        eligible(events).await,
+        FederationSize(3),
+        BTreeMap::new(),
+        generous_deadline(),
+        &mut rejected,
+    )
+    .await;
+
+    let selected = seats
+        .iter()
+        .map(|seat| seat.candidate().fman_id())
+        .collect::<BTreeSet<_>>();
+    assert_eq!(
+        selected,
+        ours.iter().map(Keys::public_key).collect::<BTreeSet<_>>()
+    );
+    assert!(
+        seats
+            .iter()
+            .all(|seat| seat.candidate().badge().holder() == required.public_key())
+    );
+    let rejected_authors = rejected
+        .iter()
+        .map(|rejection| {
+            assert!(
+                matches!(
+                    rejection.reason,
+                    AdvertisementRejection::RequiredHolderMismatch
+                ),
+                "{rejection:?}"
+            );
+            rejection.author
+        })
+        .collect::<BTreeSet<_>>();
+    assert_eq!(
+        rejected_authors,
+        BTreeSet::from([
+            theirs_same_issuer.public_key(),
+            theirs_other_issuer.public_key()
+        ])
+    );
+    assert!(
+        !verifier
+            .attempted_subjects
+            .lock()
+            .expect("test lock")
+            .iter()
+            .any(|subject| *subject == theirs_same_issuer.public_key()
+                || *subject == theirs_other_issuer.public_key()),
+        "other Holders' envelopes are skipped before verification",
+    );
+}
+
+#[tokio::test]
+async fn unrestricted_request_seats_any_holder() {
+    // The default request keeps the product behavior: the cheaper candidate
+    // of another Holder seats first.
+    let required = holder_keys();
+    let other = Keys::parse(&format!("{:064x}", 0x2002)).expect("test holder key parses");
+    let ours = fman_keys(1);
+    let theirs = fman_keys(2);
+    let events = vec![
+        ad_event(
+            &ours,
+            priced_payload(
+                &ours,
+                vec![envelope(&required, ours.public_key())],
+                2_000,
+                1,
+            ),
+        ),
+        ad_event(
+            &theirs,
+            priced_payload(&theirs, vec![envelope(&other, theirs.public_key())], 0, 1),
+        ),
+    ];
+
+    let verifier = StubBadgeVerifier::default();
+    let (seats, rejected) = select(events, &verifier, 1).await;
+    assert!(rejected.is_empty(), "{rejected:?}");
+    assert_eq!(seats.len(), 1);
+    assert_eq!(seats[0].candidate().fman_id(), theirs.public_key());
+}
+
+#[tokio::test]
 async fn buckets_fill_round_robin_across_claimed_issuers() {
     // Two issuers with two candidates each; three seats must take two
     // regions' cheapest before any region's second candidate.
