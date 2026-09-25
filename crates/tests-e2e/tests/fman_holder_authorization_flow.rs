@@ -463,9 +463,23 @@ async fn holder_trust_badge_to_concrete_fi_selection_flow() {
         "embedded trust badge carries the expected trust level"
     );
 
-    // Publish six more current, dialable advertisements so the public FI
-    // selection request can fill the minimum seven-seat product federation.
+    // Each additional guardian needs its own badge holder so FI can fill
+    // the minimum seven-seat federation without reusing a holder.
     for index in 1_u8..7 {
+        let holder = HolderContext::generate();
+        let (request, pending) = PendingIssuance::create_request(
+            &issuer_metadata.issuance_key,
+            issuer_metadata.issuer_id_pubkey.clone(),
+            trust_badge.credential.info.clone(),
+            json!(holder.public_key().to_string()),
+        )
+        .expect("new holder creates blind issuance request");
+        let response = issuer
+            .issue_credential(pending.info.clone(), &request)
+            .expect("issuer signs new holder's badge");
+        let trust_badge = pending
+            .finalize(&issuer_metadata.issuance_key, &response)
+            .expect("new holder finalizes badge");
         let fman_keys = NostrKeys::generate();
         let fman_pubkey = fman_keys.public_key();
         let authorization = holder
@@ -475,7 +489,7 @@ async fn holder_trust_badge_to_concrete_fi_selection_flow() {
                 },
                 &trust_badge,
             )
-            .expect("holder authorizes another FMan");
+            .expect("new holder authorizes its FMan");
         let endpoint_id = IrohSecretKey::from_bytes(&[50 + index; 32]).public();
         let service_key = SecretKey::from_slice(&[70 + index; 32]).expect("test key is valid");
         let payload = AdvertisementPayload {
@@ -500,7 +514,7 @@ async fn holder_trust_badge_to_concrete_fi_selection_flow() {
             }],
             holder_authorizations: vec![HolderAuthorizationEnvelope {
                 holder_authorization: authorization,
-                signed_credential: trust_badge.clone(),
+                signed_credential: trust_badge,
             }],
         };
         let document = sign_advertisement(payload, &fman_keys).expect("sign typed advertisement");
