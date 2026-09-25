@@ -174,6 +174,59 @@ describe('GuardianFeeActions', () => {
     expect(sendButton()).toBeEnabled();
   });
 
+  // The mint charges per ecash note, so a small collection gives back visibly
+  // less than the pool showed. Above the threshold the click still goes
+  // straight through, because a confirmation on every collection would be noise.
+  it('should collect a pool above the threshold in one click', async () => {
+    const adminCall = vi
+      .spyOn(adminCallModule, 'adminCall')
+      .mockResolvedValue({ claimed_msat: 13_000_000, awaiting_cycle_msat: 3_000_000 });
+    renderActions({ collectableMsat: 1_000_000 });
+
+    fireEvent.click(collectButton());
+
+    await waitFor(() => expect(adminCall).toHaveBeenCalled());
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+  });
+
+  it('should ask before collecting a pool below the threshold', () => {
+    const adminCall = vi.spyOn(adminCallModule, 'adminCall').mockResolvedValue({});
+    renderActions({ collectableMsat: 93_000 });
+
+    fireEvent.click(collectButton());
+
+    expect(screen.getByRole('dialog')).toHaveAccessibleName('Collect 93 sats now?');
+    expect(adminCall).not.toHaveBeenCalled();
+  });
+
+  it('should collect once the operator confirms a small pool', async () => {
+    const adminCall = vi
+      .spyOn(adminCallModule, 'adminCall')
+      .mockResolvedValue({ claimed_msat: 80_000, awaiting_cycle_msat: 13_000 });
+    renderActions({ collectableMsat: 93_000 });
+
+    fireEvent.click(collectButton());
+    fireEvent.click(screen.getByRole('button', { name: 'Collect anyway' }));
+
+    await waitFor(() =>
+      expect(adminCall).toHaveBeenCalledWith({
+        CollectGuardianFees: { seat_id: 'seat-earning-01' }
+      })
+    );
+    await waitFor(() => expect(collectButton()).toBeInTheDocument());
+  });
+
+  it('should collect nothing when the operator cancels a small pool', () => {
+    const adminCall = vi.spyOn(adminCallModule, 'adminCall').mockResolvedValue({});
+    renderActions({ collectableMsat: 93_000 });
+
+    fireEvent.click(collectButton());
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+
+    expect(adminCall).not.toHaveBeenCalled();
+    expect(collectButton()).toHaveFocus();
+  });
+
   it('should report a refused collection', async () => {
     vi.spyOn(adminCallModule, 'adminCall').mockRejectedValue(
       new Error('seat has no federation yet')

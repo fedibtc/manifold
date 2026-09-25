@@ -92,3 +92,23 @@ test('should offer no amount field and no gateway picker', async ({ page }) => {
   await expect(page.getByRole('combobox')).toHaveCount(0);
   await expect(page.getByText(/no amount to enter, nothing to configure/)).toBeVisible();
 });
+
+// The mint charges per ecash note, so a 93 sat collection gives back visibly
+// less than the pool showed. The operator hears that before the click, not
+// after it.
+test('should warn about mint fees before collecting a dust-sized pool', async ({ page }) => {
+  await resetScenario(page, 'fees-dust');
+
+  await page.goto('/payouts');
+  await signIn(page);
+
+  await page.getByRole('button', { name: 'Collect fees' }).click();
+
+  const confirm = page.getByRole('dialog', { name: 'Collect 93 sats now?' });
+  await expect(confirm).toBeVisible();
+  await expect(confirm.getByText(/approximately 0.1 sat each/)).toBeVisible();
+
+  await confirm.getByRole('button', { name: 'Collect anyway' }).click();
+
+  await expect(page.getByText(/Claimed 73 sats/)).toBeVisible();
+});
