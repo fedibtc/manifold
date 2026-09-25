@@ -2168,6 +2168,7 @@ fn selection_approval(max_total_msats: u64) -> FmanSelectionApproval {
             .enumerate()
             .map(|(index, locator)| crate::selection::ApprovedFmanSeat {
                 fman_id: test_fman_id(index),
+                holder: test_fman_id(index),
                 locator,
             })
             .collect(),
@@ -2404,6 +2405,7 @@ fn selected_initial_seat(index: u16, valid_until: u64) -> crate::db::InitialSeat
         usize::from(index),
         locator(usize::from(index)),
         crate::db::FmanAdmission::fresh_peer_badge(
+            test_fman_id(usize::from(index)),
             test_fman_id(usize::from(index)),
             test_peer_badge_verifier().provenance().into(),
             Timestamp(valid_until),
@@ -5204,6 +5206,28 @@ async fn current_storage_requires_selected_mode_and_output_tombstone_fields() {
             "schema 11 must reject a missing {field}"
         );
     }
+}
+
+#[test]
+fn older_saved_admissions_without_badge_holders_still_decode() {
+    let admission = crate::db::FmanAdmission::fresh_peer_badge(
+        test_fman_id(0),
+        test_fman_id(1),
+        test_peer_badge_verifier().provenance().into(),
+        Timestamp(123),
+    );
+    let mut stored = serde_json::to_value(&admission).unwrap();
+    stored["peer_badge"]
+        .as_object_mut()
+        .unwrap()
+        .remove("holder");
+    let legacy: crate::db::FmanAdmission = serde_json::from_value(stored).unwrap();
+    assert_eq!(legacy.holder(), None);
+    assert_eq!(legacy.fman_id(), admission.fman_id());
+    assert_eq!(
+        legacy.requires_effect_authorization(),
+        admission.requires_effect_authorization()
+    );
 }
 
 #[tokio::test]
@@ -9159,6 +9183,7 @@ async fn persist_provisional_replacement_for_test(
                 locator(replacement_index),
                 crate::db::FmanAdmission::fresh_peer_badge(
                     test_fman_id(replacement_index),
+                    test_fman_id(replacement_index),
                     test_peer_badge_verifier().provenance().into(),
                     valid_until,
                 ),
@@ -9607,24 +9632,34 @@ async fn selected_refusal_changes_only_the_proven_unsecured_guardian() {
         .keys()
         .next()
         .expect("one accepted sibling remains");
-    let colliding_approval = FmanReplacementApproval {
+    let mut colliding_approval = FmanReplacementApproval {
         requirements: requirements.clone(),
         verifier_provenance: test_peer_badge_verifier().provenance(),
         seats: vec![crate::selection::ApprovedFmanSeat {
             fman_id: test_fman_id(usize::from(MAX_FEDERATION_SIZE)),
+            holder: test_fman_id(usize::from(MAX_FEDERATION_SIZE)),
             locator: reopened.seats[usize::from(retained_index)].locator.clone(),
         }],
         max_total_msats: PAYMENT_AMOUNT_MSATS,
         valid_until: Timestamp(test_now_secs() + 120),
     };
     let error = client
-        .apply_fman_replacements(colliding_approval, options())
+        .apply_fman_replacements(colliding_approval.clone(), options())
         .await
         .expect_err("a distinct author cannot reuse a retained signing authority");
     assert!(
         matches!(&error, FiError::InvalidFleetManagers(message)
             if message.contains("service signing key")),
         "unexpected collision error: {error:?}",
+    );
+    colliding_approval.seats[0].locator = locator(usize::from(MAX_FEDERATION_SIZE));
+    colliding_approval.seats[0].holder = test_fman_id(usize::from(retained_index));
+    let error = client
+        .apply_fman_replacements(colliding_approval, options())
+        .await
+        .expect_err("a new service key cannot reuse a retained badge holder after restart");
+    assert!(
+        matches!(error, FiError::InvalidFleetManagers(message) if message.contains("badge holder"))
     );
     assert_eq!(
         formation(&client.status()).action_required,
@@ -9639,6 +9674,7 @@ async fn selected_refusal_changes_only_the_proven_unsecured_guardian() {
         verifier_provenance: test_peer_badge_verifier().provenance(),
         seats: vec![crate::selection::ApprovedFmanSeat {
             fman_id: test_fman_id(usize::from(MAX_FEDERATION_SIZE)),
+            holder: test_fman_id(usize::from(MAX_FEDERATION_SIZE)),
             locator: locator(usize::from(MAX_FEDERATION_SIZE)),
         }],
         // Model an advertisement below the eventual real quote so the test
@@ -9760,6 +9796,7 @@ async fn selected_paid_replacement_reopens_after_authorized_output_without_new_s
         verifier_provenance: test_peer_badge_verifier().provenance(),
         seats: vec![crate::selection::ApprovedFmanSeat {
             fman_id: test_fman_id(usize::from(MAX_FEDERATION_SIZE)),
+            holder: test_fman_id(usize::from(MAX_FEDERATION_SIZE)),
             locator: locator(usize::from(MAX_FEDERATION_SIZE)),
         }],
         max_total_msats: PAYMENT_AMOUNT_MSATS,

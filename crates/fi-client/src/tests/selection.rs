@@ -235,6 +235,7 @@ async fn select(
         candidates,
         FederationSize(seats),
         BTreeMap::new(),
+        BTreeSet::new(),
         generous_deadline(),
         &mut rejected,
     )
@@ -259,6 +260,7 @@ async fn select_probed(
         candidates,
         FederationSize(seats),
         BTreeMap::new(),
+        BTreeSet::new(),
         generous_deadline(),
         &mut rejected,
     )
@@ -309,6 +311,7 @@ async fn replacement_preview_excludes_every_persisted_sibling_locator() {
         requirements.clone(),
         BTreeSet::from([excluded_service_key]),
         BTreeMap::new(),
+        BTreeSet::new(),
         generous_deadline(),
         NOW,
         || NOW,
@@ -370,6 +373,7 @@ async fn replacement_preview_skips_a_retained_service_key_and_continues_the_buck
         requirements,
         BTreeSet::new(),
         BTreeMap::from([(retained_service_pubkey, retained_fman)]),
+        BTreeSet::new(),
         generous_deadline(),
         NOW,
         || NOW,
@@ -448,6 +452,7 @@ async fn replacement_preview_for_version(
         requirements,
         excluded,
         BTreeMap::new(),
+        BTreeSet::new(),
         generous_deadline(),
         NOW,
         || completed_at,
@@ -645,11 +650,7 @@ fn issuer_ad(fman: &Keys, issuer: &Keys, price_msats: u64, slots: u32) -> Event 
         fman,
         priced_payload(
             fman,
-            vec![envelope_with_issuer(
-                &holder_keys(),
-                fman.public_key(),
-                issuer,
-            )],
+            vec![envelope_with_issuer(fman, fman.public_key(), issuer)],
             price_msats,
             slots,
         ),
@@ -692,11 +693,7 @@ pub(super) fn issuer_ad_for_version_and_service_key_at(
 ) -> Event {
     let mut payload = priced_payload(
         fman,
-        vec![envelope_with_issuer(
-            &holder_keys(),
-            fman.public_key(),
-            issuer,
-        )],
+        vec![envelope_with_issuer(fman, fman.public_key(), issuer)],
         price_msats,
         1,
     );
@@ -716,11 +713,7 @@ fn issuer_ad_with_service_pubkey(
 ) -> Event {
     let mut payload = priced_payload(
         fman,
-        vec![envelope_with_issuer(
-            &holder_keys(),
-            fman.public_key(),
-            issuer,
-        )],
+        vec![envelope_with_issuer(fman, fman.public_key(), issuer)],
         price_msats,
         slots,
     );
@@ -850,10 +843,7 @@ async fn walk_seats_verified_candidates_and_projects_badge_facts() {
     assert_eq!(seat.advertised_price_msats(), AD_PRICE_MSATS);
     assert_eq!(seat.provenance(), SeatProvenance::FediAttested);
     assert_eq!(seat.candidate().badge().subject(), fman.public_key());
-    assert_eq!(
-        seat.candidate().badge().holder(),
-        holder_keys().public_key()
-    );
+    assert_eq!(seat.candidate().badge().holder(), fman.public_key());
     assert_eq!(
         seat.candidate().badge().issuer(),
         issuer_keys(0).public_key()
@@ -1270,6 +1260,65 @@ async fn buckets_fill_round_robin_across_claimed_issuers() {
         3,
         "only walked candidates cost verifier round trips",
     );
+}
+
+#[tokio::test]
+async fn one_holder_cannot_fill_multiple_seats_even_across_issuers() {
+    for retained in [false, true] {
+        let holder = holder_keys();
+        let mut events = (1..=10)
+            .map(|index| {
+                let fman = fman_keys(index);
+                ad_event(
+                    &fman,
+                    priced_payload(
+                        &fman,
+                        vec![envelope_with_issuer(
+                            &holder,
+                            fman.public_key(),
+                            &issuer_keys(index % 2),
+                        )],
+                        0,
+                        1,
+                    ),
+                )
+            })
+            .collect::<Vec<_>>();
+        let fallback = fman_keys(11);
+        events.push(issuer_ad(&fallback, &issuer_keys(0), 1, 1));
+        let prober = StubProber::default();
+        let mut rejected = Vec::new();
+        let seats = select_fman_seats(
+            &StubBadgeVerifier::default(),
+            &prober,
+            &preview_request(MIN_FEDERATION_SIZE),
+            &fedimintd_version().dkg_version(),
+            eligible(events).await,
+            FederationSize(3),
+            BTreeMap::new(),
+            if retained {
+                BTreeSet::from([holder.public_key()])
+            } else {
+                BTreeSet::new()
+            },
+            generous_deadline(),
+            &mut rejected,
+        )
+        .await;
+        assert_eq!(seats.len(), if retained { 1 } else { 2 });
+        assert!(
+            seats
+                .iter()
+                .any(|seat| seat.candidate().fman_id() == fallback.public_key())
+        );
+        assert_eq!(prober.dialed().len(), seats.len());
+        assert_eq!(rejected.len(), if retained { 10 } else { 9 });
+        assert!(
+            rejected
+                .iter()
+                .all(|entry| matches!(entry.reason, AdvertisementRejection::DuplicateBadgeHolder))
+        );
+    }
 }
 
 #[tokio::test]
@@ -1819,6 +1868,7 @@ async fn hung_probe_at_the_walk_deadline_is_deadline_expired() {
         candidates,
         FederationSize(1),
         BTreeMap::new(),
+        BTreeSet::new(),
         deadline,
         &mut rejected,
     )
@@ -1893,6 +1943,7 @@ async fn deadline_expiry_stops_the_walk_with_a_typed_rejection() {
         candidates,
         FederationSize(1),
         BTreeMap::new(),
+        BTreeSet::new(),
         // Already-expired deadline: the walk must not verify anything.
         Instant::now(),
         &mut rejected,

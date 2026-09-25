@@ -235,7 +235,10 @@ seat: after badge verification, a later verified author sharing a selected
 key receives a typed rejection and its bucket continues to its next candidate.
 Replacement walks begin with retained siblings' keys already occupied, and the
 same final-set uniqueness is checked atomically when the approved rows are
-applied. Each reached, verified, non-duplicate candidate is then probed live
+applied. The same rule applies to verified badge holders, which are saved with
+new seats and checked again on recovery. Older saved seats without holder
+identities keep their existing behavior without a holder-uniqueness guarantee.
+Each reached, verified, non-duplicate candidate is then probed live
 over the consumer's FMan connector with the same availability predicate
 quoting applies; a probe failure or incompatible live response is a typed
 rejection, the bucket continues, and a stale advertisement is rejected before
