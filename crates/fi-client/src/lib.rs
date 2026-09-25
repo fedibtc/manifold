@@ -398,8 +398,10 @@ where
     /// authorization.
     ///
     /// A stored [`FormationPhase::Formed`] state is also not treated as proof of
-    /// current remote state: resume reconnects to the Fleet Managers, reconciles
-    /// their status and common invite, and rejects a changed federation identity.
+    /// current remote state: resume reads fresh federation consensus and verifies
+    /// the saved identity, directory, and fee recipients. Manager availability
+    /// does not gate this recheck. Restored backups likewise verify their saved
+    /// seats against the signed consensus directory without contacting managers.
     /// Inspect [`FormationFreshness`] through status observation when presenting
     /// persisted state before that reconciliation completes.
     ///

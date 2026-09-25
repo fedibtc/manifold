@@ -3780,18 +3780,30 @@ where
         fi_id: FiId,
         run: DriverRun<'_>,
     ) -> FiResult<()> {
-        let sessions = self.formed_sessions(recovery, run).await?;
-        self.poll_until_running(&sessions, recovery, fi_id, run)
-            .await?;
-        let invite = self.fetch_agreed_invite(&sessions, fi_id, run).await?;
-        let stored = recovery.snapshot.invite_code.as_ref().ok_or_else(|| {
+        let stored = recovery.snapshot.invite_code.clone().ok_or_else(|| {
             FiError::Storage("formed FI record contains no persisted invite".to_owned())
         })?;
-        if invite_federation_id(stored)? != invite_federation_id(&invite)? {
-            return Err(FiError::InvalidFleetManagers(
-                "formed federation identity changed during reconciliation".to_owned(),
-            ));
-        }
+        let (sessions, invite) = if recovery.snapshot.phase == FormationPhase::Formed {
+            // Consensus already confirmed formation. Recheck that proof without
+            // requiring every manager to be online again.
+            if recovery.formation_meta_target.is_none() {
+                return Err(FiError::Storage(
+                    "formed FI record has no metadata target".to_owned(),
+                ));
+            }
+            (Vec::new(), stored)
+        } else {
+            let sessions = self.formed_sessions(recovery, run).await?;
+            self.poll_until_running(&sessions, recovery, fi_id, run)
+                .await?;
+            let invite = self.fetch_agreed_invite(&sessions, fi_id, run).await?;
+            if invite_federation_id(&stored)? != invite_federation_id(&invite)? {
+                return Err(FiError::InvalidFleetManagers(
+                    "formed federation identity changed during reconciliation".to_owned(),
+                ));
+            }
+            (sessions, invite)
+        };
         self.publish_seat_bindings(&sessions, recovery, fi_id, &invite, run)
             .await?;
         recovery.snapshot.phase = FormationPhase::Formed;
@@ -3813,68 +3825,6 @@ where
                 "restored FI backup contains no seats".to_owned(),
             ));
         }
-        let mut sessions = Vec::with_capacity(payload.seats.len());
-        for (position, seat) in payload.seats.iter().enumerate() {
-            let client = run
-                .call("reconnecting to restored Fleet Manager", || {
-                    Ok(self.inner.ports.fman_connector.connect(&seat.locator))
-                })
-                .await?
-                .map_err(|error| fman_error(position, error.to_string()))?;
-            sessions.push(SeatSession {
-                index: u16::try_from(position)
-                    .map_err(|_| FiError::Storage("restored FI seat index overflow".to_owned()))?,
-                client,
-                seat_id: seat.seat_id.clone(),
-            });
-        }
-
-        loop {
-            ensure_time_remaining(
-                run.deadline,
-                "waiting for every restored FMan to report running",
-            )?;
-            let mut pending = FuturesUnordered::new();
-            for (position, session) in sessions.iter().enumerate() {
-                pending.push(async move {
-                    let request = GetStatusRequest {
-                        ts: Timestamp(now_secs()?),
-                        fi_id,
-                        seat_id: session.seat_id.clone(),
-                    };
-                    let request = run
-                        .construct("signing restored GetStatus request", || self.sign(&request))
-                        .await?;
-                    let response = run
-                        .call("checking restored Fleet Manager status", || {
-                            Ok(session.client.get_status(request))
-                        })
-                        .await?
-                        .map_err(|error| fman_error(position, error.to_string()))?;
-                    Ok::<_, FiError>(response)
-                });
-            }
-            let mut running = 0;
-            while let Some(response) = pending.next().await {
-                let response = response?;
-                if response.status == ServiceStatus::Running
-                    && response.seat_health == Some(SeatHealth::Healthy)
-                {
-                    running += 1;
-                }
-            }
-            if running == sessions.len() {
-                break;
-            }
-            sleep_for_retry(run.deadline, run.options.poll_interval).await?;
-        }
-
-        let invite = self.fetch_agreed_invite(&sessions, fi_id, run).await?;
-        if invite_federation_id(&invite)? != invite_federation_id(&snapshot.federation_invite)? {
-            return Err(FiError::InvalidFleetManagers(
-                "restored Fleet Managers reported a different federation identity".to_owned(),
-            ));
-        }
         let consensus = run
             .call("reading restored federation consensus", || {
                 Ok(self
@@ -3889,6 +3839,7 @@ where
                     "reading restored federation consensus failed: {error}"
                 ))
             })?;
+        verify_consensus_identity(&consensus, &snapshot.federation_invite)?;
         let federation = federation_seats(&consensus.config).map_err(|error| {
             FiError::InvalidFleetManagers(format!(
                 "restored federation config is not usable: {error}"
@@ -4096,6 +4047,9 @@ where
                 sleep_for_retry(run.deadline, run.options.poll_interval).await?;
                 continue;
             };
+            if confirmed {
+                verify_consensus_identity(&snapshot, invite)?;
+            }
             validate_consensus_metadata_size(snapshot.meta_value.as_deref()).map_err(|error| {
                 FiError::InvalidFleetManagers(format!(
                     "consensus metadata is {} bytes; formation permits at most {} bytes",
@@ -4532,6 +4486,18 @@ where
         })
         .map_err(|error| FiError::Identity(error.to_string()))
     }
+}
+
+fn verify_consensus_identity(
+    snapshot: &FederationConsensusSnapshot,
+    invite: &InviteCode,
+) -> FiResult<()> {
+    if snapshot.config.calculate_federation_id() != invite_federation_id(invite)? {
+        return Err(FiError::InvalidFleetManagers(
+            "consensus federation identity differs from the saved invite".to_owned(),
+        ));
+    }
+    Ok(())
 }
 
 /// A rename overrides the original name in the client config.

@@ -2059,9 +2059,13 @@ fn test_invite_for_federation(index: usize, federation: u8) -> InviteCode {
         FedimintInviteCode::new(
             SafeUrl::parse(&format!("https://guardian-{index}.example/")).expect("valid test URL"),
             PeerId::from(u16::try_from(index).expect("test index fits peer id")),
-            format!("{federation:064x}")
-                .parse()
-                .expect("valid test federation id"),
+            if federation == 0 {
+                test_federation_config().calculate_federation_id()
+            } else {
+                format!("{federation:064x}")
+                    .parse()
+                    .expect("valid test federation id")
+            },
             None,
         )
         .to_string(),
@@ -3245,7 +3249,6 @@ fn federation_name_uses_config_only_when_metadata_name_is_absent() {
 #[tokio::test]
 async fn restored_backup_reconciles_to_usable_authority_and_hydrates_liquidity() {
     let (source, formation_id, fman_state, connector) = formed_client_for_liquidity().await;
-    connector.0.fail_next_connect.store(true, Ordering::SeqCst);
     let provider = liquidity_api::Pubkey(liquidity_provider_keys().public_key().to_string());
     source
         .start_liquidity_for_test(
@@ -3256,14 +3259,14 @@ async fn restored_backup_reconciles_to_usable_authority_and_hydrates_liquidity()
             &TestLiquidityVerifier,
         )
         .await
-        .expect_err("provider connection fails after persisting the commitment");
+        .expect("provider accepts an allocation that is still pending");
     let source_operation = source
         .list_liquidity_operations(None, 10)
         .await
         .unwrap()
         .operations
         .pop()
-        .expect("source prepared operation");
+        .expect("source accepted operation");
     let keys = crate::backup::FiBackupKeys::derive(&source.inner.ports.identity.scoped_root());
     let encrypted = keys
         .seal(&source.inner.store.backup_payload().await.unwrap().payload)
@@ -3309,10 +3312,14 @@ async fn restored_backup_reconciles_to_usable_authority_and_hydrates_liquidity()
         "an imported snapshot is not backup-eligible before authority reconciliation",
     );
 
+    let connect_calls = fman_state.connect_calls.load(Ordering::SeqCst);
+    fman_state
+        .connect_failures_remaining
+        .store(usize::MAX, Ordering::SeqCst);
     restored
         .resume()
         .await
-        .expect("authenticate restored seats and federation consensus");
+        .expect("verify restored seats through consensus while managers are unreachable");
     let FiStatus::Restored(reconciled) = restored.status() else {
         panic!("reconciled restored status");
     };
@@ -3349,10 +3356,13 @@ async fn restored_backup_reconciles_to_usable_authority_and_hydrates_liquidity()
         .await
         .expect("restored authority can resume the exact pending request");
     assert_eq!(resumed.phase, LiquidityOperationPhase::Accepted);
+    assert_eq!(
+        fman_state.connect_calls.load(Ordering::SeqCst),
+        connect_calls
+    );
+    assert_eq!(connector.0.requests.lock().expect("test lock").len(), 1);
 
-    fman_state
-        .connect_failures_remaining
-        .store(1, Ordering::SeqCst);
+    restored.inner.ports.consensus_reader.fail_next(1);
     restored
         .resume()
         .await
@@ -3369,6 +3379,70 @@ async fn restored_backup_reconciles_to_usable_authority_and_hydrates_liquidity()
             .is_none(),
         "post-formed mutations remain gated after failed reconciliation",
     );
+}
+
+#[tokio::test]
+async fn restored_recovery_rejects_unverified_consensus_and_changed_seats() {
+    for fault in ["identity", "directory", "seat", "unreachable"] {
+        let (source, _, state, _) = formed_client_for_liquidity().await;
+        let mut payload = source.inner.store.backup_payload().await.unwrap().payload;
+        let mut reader = TestConsensusReader::new(state.clone());
+        match fault {
+            "identity" => {
+                reader
+                    .config
+                    .global
+                    .api_endpoints
+                    .remove(&fedimint_core::PeerId::from(0));
+            }
+            "directory" => {
+                reader.adopt(b"{}".to_vec());
+                reader.force_value("{}");
+            }
+            "seat" => payload.seats[0].fman_identity = fman_keys(20).public_key(),
+            "unreachable" => reader.fail_next(1),
+            _ => unreachable!(),
+        }
+        let (payments, _) = TestPayments::new();
+        let restored = open_client_with_reader(
+            MemDatabase::new().into_database(),
+            payments,
+            state.clone(),
+            FmanConfig::given_away(),
+            reader,
+        )
+        .await;
+        let status = restored
+            .inner
+            .store
+            .restore_backup_payload(TestIdentity::fi_id(), payload)
+            .await
+            .unwrap();
+        restored.inner.progress.send_replace(status);
+        let calls = state.connect_calls.load(Ordering::SeqCst);
+        let error = restored.resume().await.expect_err(fault);
+        if fault == "identity" {
+            assert!(
+                error
+                    .to_string()
+                    .contains("identity differs from the saved invite")
+            );
+        }
+        let FiStatus::Restored(snapshot) = restored.status() else {
+            panic!("expected restored status");
+        };
+        assert_eq!(snapshot.phase, FormationPhase::Formed);
+        assert_eq!(snapshot.freshness, FormationFreshness::Unsynced);
+        assert!(!snapshot.backup_eligible);
+        assert!(
+            restored
+                .current_liquidity_operation()
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(state.connect_calls.load(Ordering::SeqCst), calls);
+    }
 }
 
 #[tokio::test]
@@ -4431,6 +4505,10 @@ async fn default_name_final_status_and_formed_reconciliation_are_typed() {
     let create_calls = fman_state.create_calls.load(Ordering::SeqCst);
     let status_calls = fman_state.status_calls.load(Ordering::SeqCst);
     let invite_calls = fman_state.invite_calls.load(Ordering::SeqCst);
+    let connect_calls = fman_state.connect_calls.load(Ordering::SeqCst);
+    fman_state
+        .connect_failures_remaining
+        .store(usize::MAX, Ordering::SeqCst);
     let reopened = open_client(
         database,
         payments,
@@ -4458,13 +4536,11 @@ async fn default_name_final_status_and_formed_reconciliation_are_typed() {
     assert_eq!(reconciled.intent.federation_name, generated_name);
     assert_eq!(fman_state.quote_calls.load(Ordering::SeqCst), quote_calls);
     assert_eq!(fman_state.create_calls.load(Ordering::SeqCst), create_calls);
+    assert_eq!(fman_state.status_calls.load(Ordering::SeqCst), status_calls);
+    assert_eq!(fman_state.invite_calls.load(Ordering::SeqCst), invite_calls);
     assert_eq!(
-        fman_state.status_calls.load(Ordering::SeqCst),
-        status_calls + usize::from(MIN_FEDERATION_SIZE)
-    );
-    assert_eq!(
-        fman_state.invite_calls.load(Ordering::SeqCst),
-        invite_calls + usize::from(MIN_FEDERATION_SIZE)
+        fman_state.connect_calls.load(Ordering::SeqCst),
+        connect_calls
     );
 }
 
@@ -7273,11 +7349,19 @@ async fn completed_setup_stays_formed_through_rechecks_and_cancellation() {
     // Let the cancelled driver's lease cleanup finish before reopening.
     tokio::task::yield_now().await;
 
-    for fail in [false, true] {
-        let reader = TestConsensusReader::new(state.clone());
+    for fault in ["none", "identity", "directory"] {
+        let fail = fault != "none";
+        let mut reader = TestConsensusReader::new(state.clone());
         // Yield during readback so the observer sees the phase while checking.
         reader.fail_next(1);
-        if fail {
+        if fault == "identity" {
+            reader
+                .config
+                .global
+                .api_endpoints
+                .remove(&fedimint_core::PeerId::from(0));
+        }
+        if fault == "directory" {
             reader.adopt(b"{}".to_vec());
             reader.force_value("{}");
         }
