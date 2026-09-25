@@ -209,7 +209,7 @@ where
         run: DriverRun<'_>,
     ) -> FiResult<()> {
         let authority = self.maintenance_authority(fi_id).await?;
-        let invite = authority.invite_code.clone();
+        let invite = self.consensus_invite(&authority.invite_code).await;
         let snapshot = self
             .read_metadata_consensus(&invite, run)
             .await?
@@ -400,7 +400,7 @@ where
         run: DriverRun<'_>,
     ) -> FiResult<()> {
         let authority = self.maintenance_authority(fi_id).await?;
-        let invite = authority.invite_code.clone();
+        let invite = self.consensus_invite(&authority.invite_code).await;
         let all_indices = authority
             .seats
             .iter()

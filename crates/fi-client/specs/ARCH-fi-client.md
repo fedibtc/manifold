@@ -383,6 +383,15 @@ checkpoints their exact readback. An interrupted proposal replays the persisted
 target without re-resolving accounts or policy. Once confirmed, formed-state
 reconciliation requires the immutable directory and recipients to remain exact,
 accepts later rate changes, and needs no formation account provider.
+On restart, both a local `Formed` record and a restored backup start unsynced.
+Fresh threshold consensus must match the saved federation identity and verified
+directory before either becomes fresh; restored seats and any saved liquidity
+commitment must also match. This check needs no live Fleet Manager and does not
+repeat initial formation's all-seat health and invite checks.
+If the saved invite is unreachable, recovery tries alternative invites from
+the saved managers without waiting for every manager. It verifies the same
+federation and remembers multiple guardian addresses in memory for later
+liquidity and gateway reads. Backups and committed request bytes are unchanged.
 
 After `Formed`, `propose_guardian_fees` changes only the rate through the generic
 metadata verb. It does not resolve or resend recipient accounts. Directory and

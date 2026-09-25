@@ -416,6 +416,19 @@ new durable sequence state in MVP.
 
 ## Cancellation and replay
 
+Rechecking an already formed federation uses fresh threshold consensus, not
+Fleet Manager liveness. Verify the saved invite's federation identity and the
+complete signed directory; local formations also require their saved directory
+and fee recipients to remain exact. Restored backups must match every saved seat
+and any liquidity commitment before exposing fresh authority. Initial formation
+still requires every manager's health and agreed invite.
+If the saved invite cannot reach consensus, recovery may ask the saved managers
+for alternative invites. They are dialing hints only: reject a different
+federation id and apply the same consensus and directory checks. Retain a
+multi-guardian read invite in memory after verification, never a cached
+consensus result. The original invite, backup, and signed liquidity commitment
+remain unchanged; liquidity and gateway verification use the read invite.
+
 Dropping a driving future cannot undo a wallet transaction or remote request
 already accepted. Every await between a durable write and its response is a
 possible interruption point. Reopen and `resume` must be sufficient after any

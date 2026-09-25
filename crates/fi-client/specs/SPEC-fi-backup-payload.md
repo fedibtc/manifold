@@ -45,12 +45,15 @@ blocks an FI operation. Fedi enforces one active writer.
 Restore queries every configured relay, ignores invalid, foreign,
 undecryptable, or unsupported candidates, and selects the authenticated
 payload with the highest snapshot generation. It imports local recovery state
-as `Unsynced`; existing reconciliation gates mutations until authoritative
-services confirm it. Reconciliation signs status and invite requests for every
-stored seat through its exact stored locator, requires every seat to be healthy
-and running and to report one federation matching the backed-up invite, then
-verifies every stored FMan identity and seat id against the fresh federation
-consensus seat-binding directory. Import derives a stable local formation handle
+as `Unsynced`; reconciliation gates mutations until fresh guardian consensus
+confirms the saved federation identity and complete signed seat-binding directory.
+It checks the saved FMan identities and any liquidity commitment against that
+directory. If the saved invite cannot reach consensus, recovery signs invite
+requests through the saved manager locators and tries alternatives for the same
+federation without requiring every manager online or every seat healthy.
+Verified guardian addresses are remembered only in memory for subsequent reads;
+the backup and signed liquidity commitment remain unchanged.
+Import derives a stable local formation handle
 without reconstructing omitted formation transcript rows. Only after
 reconciliation does FI expose fresh post-formed authority and hydrate the
 optional liquidity commitment under its recomputed operation id and payload

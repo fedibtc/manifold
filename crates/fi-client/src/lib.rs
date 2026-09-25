@@ -119,6 +119,8 @@ struct FiClientInner<I, P, N, F, C> {
     ports: FiClientPorts<I, P, N, F, C>,
     progress: watch::Sender<FiStatus>,
     run_guard: Mutex<()>,
+    // Connection hints only; consensus is still read and verified each time.
+    read_invite: Mutex<Option<(InviteCode, InviteCode)>>,
     peer_badge_verifier: PeerBadgeVerifier,
     setup_payment_publisher: Option<PublicKey>,
     guardian_verification_fee_account: Option<Account>,
@@ -305,6 +307,7 @@ where
                 ports,
                 progress,
                 run_guard: Mutex::new(()),
+                read_invite: Mutex::new(None),
                 peer_badge_verifier,
                 setup_payment_publisher,
                 guardian_verification_fee_account,
@@ -398,8 +401,11 @@ where
     /// authorization.
     ///
     /// A stored [`FormationPhase::Formed`] state is also not treated as proof of
-    /// current remote state: resume reconnects to the Fleet Managers, reconciles
-    /// their status and common invite, and rejects a changed federation identity.
+    /// current remote state: resume reads fresh federation consensus and verifies
+    /// the saved identity, directory, and fee recipients. Restored backups likewise
+    /// verify their saved seats against the signed consensus directory. Neither
+    /// path requires every manager online; if the saved invite is unreachable,
+    /// recovery asks saved managers for alternative invites to the same federation.
     /// Inspect [`FormationFreshness`] through status observation when presenting
     /// persisted state before that reconciliation completes.
     ///
