@@ -388,6 +388,10 @@ Fresh threshold consensus must match the saved federation identity and verified
 directory before either becomes fresh; restored seats and any saved liquidity
 commitment must also match. This check needs no live Fleet Manager and does not
 repeat initial formation's all-seat health and invite checks.
+If the saved invite is unreachable, recovery tries alternative invites from
+the saved managers without waiting for every manager. It verifies the same
+federation and remembers multiple guardian addresses in memory for later
+liquidity and gateway reads. Backups and committed request bytes are unchanged.
 
 After `Formed`, `propose_guardian_fees` changes only the rate through the generic
 metadata verb. It does not resolve or resend recipient accounts. Directory and

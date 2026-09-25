@@ -1081,12 +1081,13 @@ where
             ));
         }
         let invite_code = authority.invite_code.clone();
+        let read_invite = self.consensus_invite(&invite_code).await;
         let consensus = timeout(
             FI_LIQUIDITY_RPC_TIMEOUT,
             self.inner
                 .ports
                 .consensus_reader
-                .read_consensus(&invite_code),
+                .read_consensus(&read_invite),
         )
         .await
         .map_err(|_| FiError::Timeout("reading liquidity federation consensus".to_owned()))?

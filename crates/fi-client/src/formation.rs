@@ -3825,14 +3825,8 @@ where
                 "restored FI backup contains no seats".to_owned(),
             ));
         }
-        let consensus = run
-            .call("reading restored federation consensus", || {
-                Ok(self
-                    .inner
-                    .ports
-                    .consensus_reader
-                    .read_consensus(&snapshot.federation_invite))
-            })
+        let consensus = self
+            .read_recovery_consensus(&snapshot.federation_invite, run)
             .await?
             .map_err(|error| {
                 FiError::InvalidFleetManagers(format!(
@@ -3893,6 +3887,8 @@ where
             context.matches_commitment(commitment)?;
         }
 
+        self.remember_read_invite(&snapshot.federation_invite, &consensus)
+            .await?;
         self.inner
             .store
             .reconcile_restored_backup(fi_id, federation_name)
@@ -4038,11 +4034,14 @@ where
 
         loop {
             ensure_time_remaining(run.deadline, "reading the formation metadata base")?;
-            let snapshot = run
-                .call("reading the formation metadata base", || {
+            let snapshot = if confirmed {
+                self.read_recovery_consensus(invite, run).await?
+            } else {
+                run.call("reading the formation metadata base", || {
                     Ok(self.inner.ports.consensus_reader.read_consensus(invite))
                 })
-                .await?;
+                .await?
+            };
             let Ok(snapshot) = snapshot else {
                 sleep_for_retry(run.deadline, run.options.poll_interval).await?;
                 continue;
@@ -4073,6 +4072,7 @@ where
                     })
                     .await??;
                 }
+                self.remember_read_invite(invite, &snapshot).await?;
                 return Ok(());
             }
             if confirmed {
@@ -4337,6 +4337,109 @@ where
                 ))
             })?;
         Ok(true)
+    }
+
+    pub(crate) async fn consensus_invite(&self, saved: &InviteCode) -> InviteCode {
+        self.inner
+            .read_invite
+            .lock()
+            .await
+            .as_ref()
+            .filter(|(original, _)| original == saved)
+            .map(|(_, invite)| invite.clone())
+            .unwrap_or_else(|| saved.clone())
+    }
+
+    async fn remember_read_invite(
+        &self,
+        saved: &InviteCode,
+        snapshot: &FederationConsensusSnapshot,
+    ) -> FiResult<()> {
+        verify_consensus_identity(snapshot, saved)?;
+        let peers = snapshot
+            .config
+            .global
+            .api_endpoints
+            .iter()
+            .map(|(peer, endpoint)| (*peer, endpoint.url.clone()))
+            .collect();
+        let parsed = FedimintInviteCode::from_str(&saved.0)
+            .map_err(|error| FiError::InvalidIntent(error.to_string()))?;
+        let invite =
+            FedimintInviteCode::from_map(&peers, parsed.federation_id(), parsed.api_secret());
+        *self.inner.read_invite.lock().await =
+            Some((saved.clone(), InviteCode(invite.to_string())));
+        Ok(())
+    }
+
+    async fn read_recovery_consensus(
+        &self,
+        saved: &InviteCode,
+        run: DriverRun<'_>,
+    ) -> FiResult<Result<FederationConsensusSnapshot, crate::FederationConsensusError>> {
+        let invite = self.consensus_invite(saved).await;
+        let first = run
+            .call("reading federation recovery consensus", || {
+                Ok(self.inner.ports.consensus_reader.read_consensus(&invite))
+            })
+            .await;
+        match &first {
+            Ok(Ok(_)) => return first,
+            Err(error) if !matches!(error, FiError::Timeout(_)) => return first,
+            _ => {}
+        }
+
+        // A manager supplies another way to dial, never a trust verdict.
+        // Race the saved managers so one unavailable manager cannot hold up the rest.
+        let fi_id = self.fi_id()?;
+        let authority = self.post_formed_authority(fi_id).await?;
+        let expected = invite_federation_id(saved)?;
+        let mut pending = FuturesUnordered::new();
+        for seat in &authority.seats {
+            pending.push(async move {
+                let client = run
+                    .call("connecting for a recovery invite", || {
+                        Ok(self.inner.ports.fman_connector.connect(&seat.locator))
+                    })
+                    .await?
+                    .map_err(|error| fman_error(usize::from(seat.index), error.to_string()))?;
+                let request = run
+                    .construct("signing a recovery invite request", || {
+                        self.sign(&GetInviteCodeRequest {
+                            ts: Timestamp(now_secs()?),
+                            fi_id,
+                            seat_id: seat.seat_id.clone(),
+                        })
+                    })
+                    .await?;
+                let invite = run
+                    .call("fetching a recovery invite", || {
+                        Ok(client.get_invite_code(request))
+                    })
+                    .await?
+                    .map_err(|error| fman_error(usize::from(seat.index), error.to_string()))?
+                    .invite_code;
+                if invite_federation_id(&invite)? != expected {
+                    return Err(FiError::InvalidFleetManagers(
+                        "recovery invite names another federation".to_owned(),
+                    ));
+                }
+                let snapshot = run
+                    .call("reading alternate recovery consensus", || {
+                        Ok(self.inner.ports.consensus_reader.read_consensus(&invite))
+                    })
+                    .await?
+                    .map_err(|error| FiError::InvalidFleetManagers(error.to_string()))?;
+                verify_consensus_identity(&snapshot, saved)?;
+                Ok::<_, FiError>(snapshot)
+            });
+        }
+        while let Some(result) = pending.next().await {
+            if let Ok(snapshot) = result {
+                return Ok(Ok(snapshot));
+            }
+        }
+        first
     }
 
     async fn fetch_agreed_invite(

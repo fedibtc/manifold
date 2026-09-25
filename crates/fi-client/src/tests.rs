@@ -1770,6 +1770,7 @@ struct TestConsensusReader {
     state: Arc<FmanState>,
     config: fedimint_core::config::ClientConfig,
     failures: Arc<AtomicUsize>,
+    offline_peers: Arc<Mutex<BTreeSet<PeerId>>>,
     forced_value: Arc<Mutex<Option<String>>>,
     advance_meta_after_next_read: Arc<Mutex<Option<Vec<u8>>>>,
     reads_before_meta_advance: Arc<AtomicUsize>,
@@ -1782,11 +1783,23 @@ impl TestConsensusReader {
             state,
             config: test_federation_config(),
             failures: Arc::new(AtomicUsize::new(0)),
+            offline_peers: Arc::new(Mutex::new(BTreeSet::new())),
             forced_value: Arc::new(Mutex::new(None)),
             advance_meta_after_next_read: Arc::new(Mutex::new(None)),
             reads_before_meta_advance: Arc::new(AtomicUsize::new(0)),
             revision_bump_after_next_read: Arc::new(AtomicU64::new(0)),
         }
+    }
+
+    fn check_invite(&self, invite: &InviteCode) -> Result<(), FederationConsensusError> {
+        let peers = invite.0.parse::<FedimintInviteCode>().unwrap().peers();
+        let offline = self.offline_peers.lock().expect("test lock");
+        if peers.keys().all(|peer| offline.contains(peer)) {
+            return Err(FederationConsensusError::new(
+                "invite guardians are unreachable",
+            ));
+        }
+        Ok(())
     }
 
     /// Report `value` as consensus regardless of what any seat accepted.
@@ -1893,8 +1906,9 @@ impl TestConsensusReader {
 impl FederationConsensusReader for TestConsensusReader {
     async fn read_consensus(
         &self,
-        _invite_code: &InviteCode,
+        invite_code: &InviteCode,
     ) -> Result<FederationConsensusSnapshot, FederationConsensusError> {
+        self.check_invite(invite_code)?;
         if self
             .failures
             .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |left| {
@@ -2005,8 +2019,9 @@ impl FederationConsensusReader for TestConsensusReader {
 
     async fn read_lnv2_gateways(
         &self,
-        _invite_code: &InviteCode,
+        invite_code: &InviteCode,
     ) -> Result<Vec<GatewayApiUrl>, FederationConsensusError> {
+        self.check_invite(invite_code)?;
         self.state
             .gateway_registrations
             .lock()
@@ -3279,12 +3294,13 @@ async fn restored_backup_reconciles_to_usable_authority_and_hydrates_liquidity()
         .expect("test lock")
         .push(liquidity_provider_event());
     let (payments, _) = TestPayments::new();
+    let database = MemDatabase::new().into_database();
     let restored = open_client_with_registry(
-        MemDatabase::new().into_database(),
-        payments,
+        database.clone(),
+        payments.clone(),
         fman_state.clone(),
         FmanConfig::given_away(),
-        registry,
+        registry.clone(),
     )
     .await;
     let payload = keys.open(&encrypted).unwrap();
@@ -3330,6 +3346,10 @@ async fn restored_backup_reconciles_to_usable_authority_and_hydrates_liquidity()
     );
     assert_eq!(reconciled.phase, FormationPhase::Formed);
     assert_eq!(reconciled.formation_id, restored_formation_id);
+    assert_eq!(
+        fman_state.connect_calls.load(Ordering::SeqCst),
+        connect_calls
+    );
     let republished = restored.inner.store.backup_payload().await.unwrap();
     assert_eq!(republished.payload.snapshot_generation, restored_generation);
     assert_eq!(
@@ -3340,6 +3360,40 @@ async fn restored_backup_reconciles_to_usable_authority_and_hydrates_liquidity()
         "the restored writer can publish its current lean authority",
     );
 
+    drop(restored);
+    let restored = open_client_with_registry(
+        database,
+        payments,
+        fman_state.clone(),
+        FmanConfig::given_away(),
+        registry,
+    )
+    .await;
+    restored
+        .inner
+        .ports
+        .consensus_reader
+        .offline_peers
+        .lock()
+        .unwrap()
+        .insert(PeerId::from(0));
+    fman_state
+        .connect_failures_remaining
+        .store(0, Ordering::SeqCst);
+    // One hanging manager must not delay another manager's working invite.
+    let next = fman_state
+        .connect_attempts
+        .lock()
+        .unwrap()
+        .get(&0)
+        .copied()
+        .unwrap_or(0)
+        + 1;
+    *fman_state.hang_connect_on_attempt.lock().unwrap() = Some((0, next));
+    tokio::time::timeout(Duration::from_secs(2), restored.resume())
+        .await
+        .unwrap()
+        .unwrap();
     let hydrated = restored
         .current_liquidity_operation()
         .await
@@ -3351,17 +3405,23 @@ async fn restored_backup_reconciles_to_usable_authority_and_hydrates_liquidity()
         source_operation.details_payload_hash
     );
     assert_eq!(hydrated.endpoint_hint, None);
+    {
+        let mut allocations = connector.0.allocations.lock().unwrap();
+        complete_gateway_allocation(
+            allocations.get_mut(&hydrated.details_payload_hash).unwrap(),
+            GatewayApiUrl::try_from("https://gateway.example/").unwrap(),
+        );
+    }
     let resumed = restored
         .resume_liquidity_for_test(&hydrated.operation_id, &connector, &TestLiquidityVerifier)
         .await
-        .expect("restored authority can resume the exact pending request");
+        .expect("restored authority resumes and verifies the same request through other guardians");
     assert_eq!(resumed.phase, LiquidityOperationPhase::Accepted);
-    assert_eq!(
-        fman_state.connect_calls.load(Ordering::SeqCst),
-        connect_calls
-    );
-    assert_eq!(connector.0.requests.lock().expect("test lock").len(), 1);
-
+    assert!(resumed.gateway_view_verified);
+    assert_eq!(connector.0.requests.lock().unwrap().len(), 1);
+    fman_state
+        .connect_failures_remaining
+        .store(usize::MAX, Ordering::SeqCst);
     restored.inner.ports.consensus_reader.fail_next(1);
     restored
         .resume()
@@ -3383,7 +3443,13 @@ async fn restored_backup_reconciles_to_usable_authority_and_hydrates_liquidity()
 
 #[tokio::test]
 async fn restored_recovery_rejects_unverified_consensus_and_changed_seats() {
-    for fault in ["identity", "directory", "seat", "unreachable"] {
+    for fault in [
+        "identity",
+        "directory",
+        "seat",
+        "unreachable",
+        "alternate_identity",
+    ] {
         let (source, _, state, _) = formed_client_for_liquidity().await;
         let mut payload = source.inner.store.backup_payload().await.unwrap().payload;
         let mut reader = TestConsensusReader::new(state.clone());
@@ -3400,7 +3466,15 @@ async fn restored_recovery_rejects_unverified_consensus_and_changed_seats() {
                 reader.force_value("{}");
             }
             "seat" => payload.seats[0].fman_identity = fman_keys(20).public_key(),
-            "unreachable" => reader.fail_next(1),
+            "unreachable" => reader.fail_next(usize::MAX),
+            "alternate_identity" => {
+                reader
+                    .offline_peers
+                    .lock()
+                    .unwrap()
+                    .extend((0..MIN_FEDERATION_SIZE - 1).map(PeerId::from));
+                state.disagreeing_invite.store(true, Ordering::SeqCst);
+            }
             _ => unreachable!(),
         }
         let (payments, _) = TestPayments::new();
@@ -3441,7 +3515,9 @@ async fn restored_recovery_rejects_unverified_consensus_and_changed_seats() {
                 .unwrap()
                 .is_none()
         );
-        assert_eq!(state.connect_calls.load(Ordering::SeqCst), calls);
+        if !matches!(fault, "unreachable" | "alternate_identity") {
+            assert_eq!(state.connect_calls.load(Ordering::SeqCst), calls);
+        }
     }
 }
 
@@ -3837,6 +3913,7 @@ async fn open_client_with_store_and_registry(
     let (progress, _) = tokio::sync::watch::channel(status);
     FiClient {
         inner: Arc::new(FiClientInner {
+            read_invite: tokio::sync::Mutex::new(None),
             store,
             ports: FiClientPorts {
                 identity: TestIdentity,
