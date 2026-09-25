@@ -824,6 +824,7 @@ where
                     seat.locator,
                     FmanAdmission::fresh_peer_badge(
                         seat.fman_id,
+                        seat.holder,
                         verifier_provenance,
                         approval_valid_until,
                     ),
@@ -887,10 +888,12 @@ where
             .map(|seat| seat.index)
             .collect::<BTreeSet<_>>();
         let mut retained_service_pubkeys = BTreeMap::new();
+        let mut retained_holders = BTreeSet::new();
         for seat in &recovery.seats {
             if replacement_indices.contains(&seat.progress.index) {
                 continue;
             }
+            retained_holders.extend(seat.admission.holder());
             let fman_id = seat.admission.fman_id().ok_or_else(|| {
                 FiError::Storage("selected formation contains a pinned FMan admission".to_owned())
             })?;
@@ -920,6 +923,7 @@ where
             requirements,
             excluded,
             retained_service_pubkeys,
+            retained_holders,
             deadline,
             now,
             || fedimint_core::time::duration_since_epoch().as_secs(),
@@ -1021,6 +1025,7 @@ where
                         seat.locator,
                         FmanAdmission::fresh_peer_badge(
                             seat.fman_id,
+                            seat.holder,
                             verifier_provenance,
                             valid_until,
                         ),

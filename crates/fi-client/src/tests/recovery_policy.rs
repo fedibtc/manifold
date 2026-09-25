@@ -1024,6 +1024,7 @@ async fn terminal_paid_member_waits_for_held_siblings_before_clearing_aggregate(
                 verifier_provenance: test_peer_badge_verifier().provenance(),
                 seats: vec![crate::selection::ApprovedFmanSeat {
                     fman_id: test_fman_id(usize::from(MAX_FEDERATION_SIZE)),
+                    holder: test_fman_id(usize::from(MAX_FEDERATION_SIZE)),
                     locator: locator(usize::from(MAX_FEDERATION_SIZE)),
                 }],
                 max_total_msats: PAYMENT_AMOUNT_MSATS,
@@ -1103,10 +1104,12 @@ async fn mixed_replacement_wave_survives_paid_result_loss_and_preview_expiry() {
         seats: vec![
             crate::selection::ApprovedFmanSeat {
                 fman_id: test_fman_id(paid_replacement),
+                holder: test_fman_id(paid_replacement),
                 locator: locator(paid_replacement),
             },
             crate::selection::ApprovedFmanSeat {
                 fman_id: test_fman_id(free_replacement),
+                holder: test_fman_id(free_replacement),
                 locator: locator(free_replacement),
             },
         ],

@@ -174,6 +174,10 @@ Replacement preview seeds this verified walk with every retained sibling's
 service key, and replacement apply revalidates the complete final key set in
 the same database transaction that changes the rows. A distinct advertised
 author therefore cannot reintroduce a retained signing authority.
+Verified badge holders also occupy at most one seat, even across issuers and
+service keys. FI saves each selected holder for replacement checks and recovery.
+Only successfully seated candidates reserve a holder. Older saved seats lacking
+holder identities retain their existing behavior without this guarantee.
 Because the claimed price and claimed issuer are both publisher-
 controlled and rank the deterministic walk, a spam campaign can
 deliberately claim the cheapest prices in every bucket and thereby sit

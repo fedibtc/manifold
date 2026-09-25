@@ -129,7 +129,7 @@ pub(crate) fn payload(
 }
 
 pub(crate) fn self_authorized_payload(fman: &Keys) -> AdvertisementPayload {
-    payload(fman, vec![envelope(&holder_keys(), fman.public_key())])
+    payload(fman, vec![envelope(fman, fman.public_key())])
 }
 
 pub(crate) fn ad_event_at(fman: &Keys, payload: AdvertisementPayload, created_at: u64) -> Event {

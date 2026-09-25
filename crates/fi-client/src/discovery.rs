@@ -316,6 +316,9 @@ pub enum AdvertisementRejection {
         selected_fman: PublicKey,
     },
 
+    /// This verified badge holder already has a selected guardian.
+    DuplicateBadgeHolder,
+
     /// The run deadline expired before this advertisement was processed.
     DeadlineExpired,
 
@@ -392,6 +395,7 @@ impl AdvertisementRejection {
             Self::SubjectMismatch => "subject_mismatch",
             Self::ClaimedIssuerMismatch => "claimed_issuer_mismatch",
             Self::DuplicateServicePubkey { .. } => "duplicate_service_pubkey",
+            Self::DuplicateBadgeHolder => "duplicate_badge_holder",
             Self::DeadlineExpired => "deadline_expired",
             Self::ProbeFailed { .. } => "probe_failed",
             Self::LiveNotAcceptingSeats => "live_not_accepting_seats",
