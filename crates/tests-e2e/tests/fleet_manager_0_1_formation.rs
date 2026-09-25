@@ -563,6 +563,7 @@ async fn fman_recovers_a_real_child_and_terminalizes_data_loss_under_defe() {
 async fn run_real_seat_lifecycle() -> anyhow::Result<()> {
     let fleet_manager_bin = locate_binary(FLEET_MANAGER_BIN_ENV, "fleet-manager")?;
     let fi_cli_bin = locate_binary(FI_CLI_BIN_ENV, "fi-cli")?;
+    let fedimint_cli_bin = locate_binary(FEDIMINT_CLI_BIN_ENV, "fedimint-cli")?;
     let mut defe = AsyncDefeClient::connect_from_env()
         .await
         .context("connect to defe from env")?;
@@ -613,7 +614,19 @@ async fn run_real_seat_lifecycle() -> anyhow::Result<()> {
     )
     .await;
     offer_free_seats(&fleet_manager_bin, &temp, GUARDIAN_COUNT).await?;
-    form_federation_in_state(&fi_cli_bin, &state_dir, &locators, &iroh_overrides, None).await?;
+    let invite =
+        form_federation_in_state(&fi_cli_bin, &state_dir, &locators, &iroh_overrides, None).await?;
+    let consensus_client = FedimintCli {
+        bin: &fedimint_cli_bin,
+        data_dir: temp.join("seat-lifecycle-consensus-client"),
+        iroh_overrides: &iroh_overrides,
+    };
+    consensus_client
+        .run(
+            &["join-federation", invite.trim()],
+            FEDIMINT_CLI_JOIN_TIMEOUT,
+        )
+        .await?;
 
     let seats = fleet_manager_admin(&fleet_manager_bin, &data_dir, &["seats", "list"]).await?;
     let seat_id = seats["seats"][0]["seat_id"]
@@ -666,6 +679,8 @@ async fn run_real_seat_lifecycle() -> anyhow::Result<()> {
     .map_err(|_| {
         anyhow::anyhow!("replacement fedimintd did not serve a healthy guardian-fee policy read")
     })??;
+    let session_after_replacement = fedimint_session_count(&consensus_client).await?;
+    wait_for_fedimint_session_advance(&consensus_client, session_after_replacement).await?;
     update_federation_name(
         &fi_cli_bin,
         &state_dir,
@@ -2097,6 +2112,50 @@ async fn fund_gateway_federation_wallet(
     .await
     .map_err(|_| anyhow::anyhow!("gateway did not claim its federation pegin"))??;
     Ok(())
+}
+
+async fn fedimint_session_count(fedimint_cli: &FedimintCli<'_>) -> anyhow::Result<u64> {
+    let output = fedimint_cli
+        .run_json(&["dev", "session-count"], FEDIMINT_CLI_META_TIMEOUT)
+        .await?;
+    output["count"]
+        .as_u64()
+        .with_context(|| format!("fedimint-cli session count response carries a count: {output}"))
+}
+
+/// Do not submit the post-restart metadata vote merely because the replacement
+/// child answers local APIs. A successful meta `submit` only stores that
+/// guardian's desired value; a later consensus session proposes and adopts it.
+/// Requiring one federation session after replacement health establishes
+/// federation progress instead of conflating a global stall with metadata
+/// convergence.
+async fn wait_for_fedimint_session_advance(
+    fedimint_cli: &FedimintCli<'_>,
+    previous: u64,
+) -> anyhow::Result<()> {
+    let mut last_observation = format!("session count remained at {previous}");
+    tokio::time::timeout(FEDIMINT_META_CONSENSUS_TIMEOUT, async {
+        loop {
+            match fedimint_session_count(fedimint_cli).await {
+                Ok(current) if current > previous => return Ok(()),
+                Ok(current) => {
+                    last_observation = format!("session count remained at {current}");
+                }
+                Err(error) => {
+                    last_observation = format!("session count read failed: {error:#}");
+                }
+            }
+            tokio::time::sleep(Duration::from_secs(1)).await;
+        }
+    })
+    .await
+    .map_err(|_| {
+        anyhow::anyhow!(
+            "replacement guardian became locally healthy but federation consensus did not advance \
+             within {}s; last observation: {last_observation}",
+            FEDIMINT_META_CONSENSUS_TIMEOUT.as_secs()
+        )
+    })?
 }
 
 async fn update_federation_name(
