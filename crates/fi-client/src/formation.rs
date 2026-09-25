@@ -3783,28 +3783,25 @@ where
         let stored = recovery.snapshot.invite_code.clone().ok_or_else(|| {
             FiError::Storage("formed FI record contains no persisted invite".to_owned())
         })?;
-        let (sessions, invite) = if recovery.snapshot.phase == FormationPhase::Formed {
+        let (manager_connections, invite) = if recovery.snapshot.phase == FormationPhase::Formed {
             // Consensus already confirmed formation. Recheck that proof without
             // requiring every manager to be online again.
-            if recovery.formation_meta_target.is_none() {
-                return Err(FiError::Storage(
-                    "formed FI record has no metadata target".to_owned(),
-                ));
-            }
             (Vec::new(), stored)
         } else {
-            let sessions = self.formed_sessions(recovery, run).await?;
-            self.poll_until_running(&sessions, recovery, fi_id, run)
+            let manager_connections = self.formed_sessions(recovery, run).await?;
+            self.poll_until_running(&manager_connections, recovery, fi_id, run)
                 .await?;
-            let invite = self.fetch_agreed_invite(&sessions, fi_id, run).await?;
+            let invite = self
+                .fetch_agreed_invite(&manager_connections, fi_id, run)
+                .await?;
             if invite_federation_id(&stored)? != invite_federation_id(&invite)? {
                 return Err(FiError::InvalidFleetManagers(
                     "formed federation identity changed during reconciliation".to_owned(),
                 ));
             }
-            (sessions, invite)
+            (manager_connections, invite)
         };
-        self.publish_seat_bindings(&sessions, recovery, fi_id, &invite, run)
+        self.publish_seat_bindings(&manager_connections, recovery, fi_id, &invite, run)
             .await?;
         recovery.snapshot.phase = FormationPhase::Formed;
         recovery.snapshot.freshness = FormationFreshness::Fresh;
@@ -4339,6 +4336,9 @@ where
         Ok(true)
     }
 
+    /// Choose remembered guardian addresses for this saved invite, if available.
+    /// Otherwise return the saved invite. Only connection information is reused;
+    /// callers must still read fresh consensus.
     pub(crate) async fn consensus_invite(&self, saved: &InviteCode) -> InviteCode {
         self.inner
             .read_invite
@@ -4350,6 +4350,10 @@ where
             .unwrap_or_else(|| saved.clone())
     }
 
+    /// Remember several guardian addresses from a verified consensus snapshot.
+    /// Call after verifying the directory and saved authority. This checks the
+    /// federation identity again before storing the connection hint in memory;
+    /// the saved invite, backups, and signed liquidity request stay unchanged.
     async fn remember_read_invite(
         &self,
         saved: &InviteCode,
@@ -4372,6 +4376,11 @@ where
         Ok(())
     }
 
+    /// Read fresh consensus, trying saved managers' invites if the first read fails.
+    /// Alternative invites and returned configurations must name the saved
+    /// federation. Calls share the driver deadlines, and remaining attempts are
+    /// dropped once one succeeds. The caller must still verify the directory and
+    /// saved authority before marking recovery fresh.
     async fn read_recovery_consensus(
         &self,
         saved: &InviteCode,
@@ -4591,6 +4600,8 @@ where
     }
 }
 
+/// Reject a configuration whose federation id differs from the saved invite.
+/// This checks identity only; the caller verifies the guardian directory separately.
 fn verify_consensus_identity(
     snapshot: &FederationConsensusSnapshot,
     invite: &InviteCode,
