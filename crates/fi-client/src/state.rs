@@ -716,7 +716,12 @@ pub struct FormationSnapshot {
 #[derive(Clone, Debug, Default, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum FiStatus {
-    /// No durable formation exists.
+    /// A restored mnemonic needs a backup check before FI operations may run.
+    /// A failed read is retryable; the worker remains active.
+    Recovery {
+        last_error: Option<crate::FiErrorCode>,
+    },
+    /// No durable formation exists and FI operations may run.
     #[default]
     Idle,
     /// One active or completed formation exists.

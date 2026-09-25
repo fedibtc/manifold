@@ -32,6 +32,10 @@ Each value resolves to a `ManifoldEnvironmentProfile` containing:
 - one identity-signed public `IssuerAuthority` document per configured issuer
   (`pinned_issuer_authorities()`).
 
+The profile derives the FI empty-backup read quorum as a strict majority of
+its canonical relay URLs (one of one in staging, two of three in production);
+development relay overrides follow the same rule.
+
 The profile exposes `profile_revision()`, currently `9`. Every change to an
 environment's relay, issuer identity or authority, committed issuer secret,
 PeerBadge minimum trust level, setup-payment publisher, Guardian Verification

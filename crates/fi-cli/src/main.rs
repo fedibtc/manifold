@@ -1745,6 +1745,7 @@ async fn open_client_with_fee_account_provider(
             CliConsensusReader::new().await?,
             fi_fee_account_provider,
             profile,
+            fi_client::BackupRecoveryHint::Skip,
         )
         .await
         .context("open FI client"),

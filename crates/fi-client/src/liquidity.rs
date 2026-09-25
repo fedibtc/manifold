@@ -924,7 +924,9 @@ where
             {
                 snapshot.formation_id
             }
-            crate::FiStatus::Idle | crate::FiStatus::Restored(_) => return Ok(None),
+            crate::FiStatus::Idle
+            | crate::FiStatus::Recovery { .. }
+            | crate::FiStatus::Restored(_) => return Ok(None),
         };
         self.find_live_liquidity_operation(|operation| operation.formation_id == formation_id)
             .await

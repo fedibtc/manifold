@@ -57,6 +57,7 @@ enum FiDbPrefix {
     BackupGeneration = 0x05,
     BackupRelayConfirmation = 0x06,
     RestoredBackup = 0x07,
+    RecoveryCompleted = 0x08,
 }
 
 #[derive(Debug, Decodable, Encodable)]
@@ -75,6 +76,28 @@ impl_db_record!(
     key = BackupRelayConfirmationKey,
     value = BackupRelayConfirmation,
     db_prefix = FiDbPrefix::BackupRelayConfirmation
+);
+
+#[derive(Debug, Decodable, Encodable)]
+pub(crate) struct RecoveryCompletedKey {
+    environment: u8,
+}
+
+impl RecoveryCompletedKey {
+    pub(crate) fn new(environment: ManifoldEnvironment) -> Self {
+        let environment = match environment {
+            ManifoldEnvironment::Development => 0,
+            ManifoldEnvironment::Staging => 1,
+            ManifoldEnvironment::Production => 2,
+        };
+        Self { environment }
+    }
+}
+
+impl_db_record!(
+    key = RecoveryCompletedKey,
+    value = (),
+    db_prefix = FiDbPrefix::RecoveryCompleted
 );
 
 #[derive(Debug, Decodable, Encodable)]
@@ -978,10 +1001,37 @@ impl FiStore {
         })
     }
 
+    pub(crate) async fn recovery_completed(&self, key: &RecoveryCompletedKey) -> bool {
+        self.database
+            .begin_transaction_nc()
+            .await
+            .get_value(key)
+            .await
+            .is_some()
+    }
+
+    pub(crate) async fn complete_empty_recovery(&self, key: &RecoveryCompletedKey) -> FiResult<()> {
+        let mut dbtx = self.database.begin_transaction().await;
+        dbtx.insert_entry(key, &()).await;
+        dbtx.commit_tx_result().await.map_err(|_| {
+            FiError::Storage("committing completed FI backup lookup failed".to_owned())
+        })
+    }
+
     pub(crate) async fn restore_backup_payload(
         &self,
         fi_id: FiId,
         payload: crate::backup::FiBackupPayload,
+    ) -> FiResult<FiStatus> {
+        self.restore_backup_payload_with_completion(fi_id, payload, None)
+            .await
+    }
+
+    pub(crate) async fn restore_backup_payload_with_completion(
+        &self,
+        fi_id: FiId,
+        payload: crate::backup::FiBackupPayload,
+        recovery: Option<&RecoveryCompletedKey>,
     ) -> FiResult<FiStatus> {
         if let Some(commitment) = &payload.liquidity {
             if commitment.requester_pubkey.0 != fi_id.0.to_string() {
@@ -1001,10 +1051,12 @@ impl FiStore {
         let formation_id =
             crate::formation::restored_formation_id(fi_id, &payload.federation_invite)?;
         let mut dbtx = self.database.begin_transaction().await;
+        let lease = dbtx.get_value(&DriverLeaseKey).await;
         if dbtx.get_value(&ActiveFormationKey).await.is_some()
             || dbtx.get_value(&RestoredBackupKey).await.is_some()
-            || dbtx.get_value(&SetupPaymentFederationsKey).await.is_some()
-            || dbtx.get_value(&DriverLeaseKey).await.is_some()
+            || lease
+                .as_ref()
+                .is_some_and(|lease| lease.expires_at > (self.lease_clock)())
             || dbtx
                 .find_by_prefix(&LiquidityOperationKeyPrefix)
                 .await
@@ -1015,6 +1067,11 @@ impl FiStore {
             return Err(FiError::Storage(
                 "FI restore requires an empty database namespace".to_owned(),
             ));
+        }
+        // An expired driver lease is not a formation. Keep independently
+        // authenticated setup-payment policy; its publisher is revalidated on use.
+        if lease.is_some() {
+            dbtx.remove_entry(&DriverLeaseKey).await;
         }
         dbtx.insert_entry(
             &RestoredBackupKey,
@@ -1027,6 +1084,9 @@ impl FiStore {
             },
         )
         .await;
+        if let Some(recovery) = recovery {
+            dbtx.insert_entry(recovery, &()).await;
+        }
         dbtx.commit_tx_result().await.map_err(|_| {
             FiError::Storage("committing authenticated FI restore failed".to_owned())
         })?;

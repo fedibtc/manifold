@@ -42,11 +42,22 @@ publishes a freshly resealed replacement when its relay's confirmation reaches
 15 days old, without advancing the snapshot generation. Publication never
 blocks an FI operation. Fedi enforces one active writer.
 
-Restore queries every configured relay, ignores invalid, foreign,
-undecryptable, or unsupported candidates, and selects the authenticated
-payload with the highest snapshot generation. It imports local recovery state
-as `Unsynced`; existing reconciliation gates mutations until authoritative
-services confirm it. Reconciliation signs status and invite requests for every
+Restore queries every configured relay through its bounded deadline, ignores
+invalid, foreign, undecryptable, or unsupported candidates, and selects the
+authenticated payload with the highest snapshot generation among completed
+reads. When no authenticated payload is found, a strict majority of canonical
+relays must complete their queries before FI reports no backup; fewer complete
+reads report an incomplete lookup for retry. This is an availability policy,
+not proof that the remaining relays hold no backup. FI records a successful
+restored-or-empty lookup in its own FI database by Manifold environment.
+An authenticated import and its completion record commit in one transaction; an incomplete read commits neither. Reopening the same FI
+database skips a completed lookup; a fresh database or a different environment
+checks again. When opened with a restored-mnemonic hint, `fi-client` starts the
+lookup and retries failures in its own task group while holding its mutation
+guard. New-seed openings skip recovery. A restored payload imports local
+recovery state as `Unsynced`; existing reconciliation gates mutations until
+authoritative services confirm it. Reconciliation signs status and invite
+requests for every
 stored seat through its exact stored locator, requires every seat to be healthy
 and running and to report one federation matching the backed-up invite, then
 verifies every stored FMan identity and seat id against the fresh federation
