@@ -494,7 +494,14 @@ impl Db {
             active,
             next_no,
         );
-        assert!(slots > 0, "current-epoch live quote must have capacity");
+        if slots == 0 {
+            sqlx::query("UPDATE offer_state SET offer_epoch = ? WHERE id = 1")
+                .bind(super::fresh_offer_epoch().as_bytes().as_slice())
+                .execute(&mut *tx)
+                .await?;
+            tx.commit().await?;
+            return Ok(SeatAdmissionResult::OfferChanged);
+        }
 
         let created_at_ms = now_ms();
         let plan = serde_json_canonicalizer::to_string(&new_seat.plan)

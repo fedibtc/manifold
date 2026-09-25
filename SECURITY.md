@@ -639,10 +639,9 @@ seat's `api_auth`. This is the same logical API already reachable worldwide
 over the seat's iroh API endpoint and is accepted; nothing FMan-side requires
 inbound reachability (relays remain the fallback). Deployments that cannot
 firewall the seat grid expose plaintext HTTP/WS and QUIC pre-auth parsing
-directly to their network. Containerized packages must publish the seat grid
-as UDP only and leave the TCP listener unpublished. Re-check this boundary
-whenever the fedimint pin changes what listens at `--bind-api`/`--bind-p2p`
-or the API-secret/transport policy changes.
+directly to their network. Re-check this boundary whenever the fedimint pin
+changes what listens at `--bind-api`/`--bind-p2p` or the API-secret/transport
+policy changes.
 
 
 ## FLIP backup archive integrity

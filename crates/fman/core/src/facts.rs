@@ -34,6 +34,16 @@ impl SeatNo {
         let offset = u16::try_from(self.0).ok()?.checked_mul(SeatPorts::BLOCK)?;
         PortBase::new(first.get().checked_add(offset)?)
     }
+
+    /// The port block for a newly admitted seat, if it stays below Linux's
+    /// default ephemeral port range.
+    ///
+    /// Existing durable seats deliberately use [`Self::port_base`] directly so
+    /// an upgrade never relocates their listeners.
+    pub(crate) fn admission_port_base(self, first: PortBase) -> Option<PortBase> {
+        self.port_base(first)
+            .filter(|base| base.last() < LINUX_DEFAULT_EPHEMERAL_PORT_START)
+    }
 }
 
 /// Durable callback delivery state. Bearer material is deliberately absent.
@@ -227,6 +237,11 @@ impl PortBase {
         self.0
     }
 
+    /// The final port in this seat's contiguous block.
+    pub(crate) fn last(self) -> u16 {
+        self.0 + (SeatPorts::BLOCK - 1)
+    }
+
     /// The following non-overlapping block, or `None` when the lifetime port
     /// grid is exhausted.
     pub fn next_block(self) -> Option<Self> {
@@ -240,6 +255,13 @@ impl PortBase {
         remaining_ports / u32::from(SeatPorts::BLOCK)
     }
 }
+
+/// First port in Linux's default automatic local-port allocation range.
+///
+/// FMan keeps new seat blocks below this boundary. Operators using a customized
+/// kernel range must still reserve or otherwise separate the configured seat
+/// grid in the effective network namespace.
+pub(crate) const LINUX_DEFAULT_EPHEMERAL_PORT_START: u16 = 32_768;
 
 #[cfg(test)]
 #[path = "../tests/facts.rs"]

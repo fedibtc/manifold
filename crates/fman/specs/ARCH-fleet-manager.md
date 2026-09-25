@@ -291,7 +291,10 @@ matching recorded code without probing. Admission resolves durable replay and
 already-stale requests from one SQLite read snapshot. Potential acceptance then
 rechecks both facts in an immediate write transaction shared with settings
 writers, and checks the smaller of the remaining live-seat slots and the
-never-reused port grid at that writer boundary. `GetQuote` instead reads
+never-reused port grid at that writer boundary. New allocation stops after the
+last complete block ending at port 32767, before Linux's default ephemeral
+range; startup still restores older seats at their original derived ports.
+`GetQuote` instead reads
 capacity, epoch, plans, and
 the accepted setup-payment membership in one SQLite snapshot. Settings changes
 compare, write, and replace the epoch in one immediate transaction; the Nostr

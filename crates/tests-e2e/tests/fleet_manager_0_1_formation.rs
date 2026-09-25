@@ -177,13 +177,14 @@ async fn run_fleet_manager_formation() -> anyhow::Result<()> {
 
     let temp = fman_e2e_temp_dir()?;
     eprintln!("Fleet Manager E2E data dir: {}", temp.display());
-    let iroh_overrides = local_iroh_overrides_for_grid(30_000, 1, GUARDIAN_COUNT);
+    let first_port_base = allocate_fman_port_grid(GUARDIAN_COUNT);
+    let iroh_overrides = local_iroh_overrides_for_grid(first_port_base, 1, GUARDIAN_COUNT);
     let (daemons, locators) = start_daemons(
         &fleet_manager_bin,
         &temp,
         bitcoind,
         1,
-        30_000,
+        first_port_base,
         Some(&iroh_overrides),
         GUARDIAN_COUNT,
         Some(NostrEnv {
@@ -298,13 +299,13 @@ async fn run_multi_relay_liveness() -> anyhow::Result<()> {
 
     let temp = fman_e2e_temp_dir()?;
     eprintln!("FMan multi-relay liveness data dir: {}", temp.display());
+    let first_port_base = allocate_fman_port_grid(1);
     let (daemons, _locators) = start_daemons(
         &fleet_manager_bin,
         &temp,
         bitcoind,
         1,
-        // Every test picks a distinct per-host seat-port base.
-        58_000,
+        first_port_base,
         None,
         1,
         Some(NostrEnv {
@@ -407,13 +408,14 @@ async fn run_formed_fleet_restore() -> anyhow::Result<()> {
 
     let temp = fman_e2e_temp_dir()?;
     eprintln!("formed-fleet restore E2E data dir: {}", temp.display());
-    let iroh_overrides = local_iroh_overrides_for_grid(54_000, 1, GUARDIAN_COUNT);
+    let first_port_base = allocate_fman_port_grid(GUARDIAN_COUNT);
+    let iroh_overrides = local_iroh_overrides_for_grid(first_port_base, 1, GUARDIAN_COUNT);
     let (mut daemons, locators) = start_daemons(
         &fleet_manager_bin,
         &temp,
         bitcoind,
         1,
-        54_000,
+        first_port_base,
         Some(&iroh_overrides),
         GUARDIAN_COUNT,
         Some(nostr),
@@ -467,7 +469,7 @@ async fn run_formed_fleet_restore() -> anyhow::Result<()> {
         &bitcoind.rpc_url,
         &bitcoind.rpc_username,
         &bitcoind.rpc_password,
-        54_000,
+        first_port_base,
         Some(&iroh_overrides),
         Some(nostr),
         None,
@@ -595,13 +597,14 @@ async fn run_real_seat_lifecycle() -> anyhow::Result<()> {
     let temp = fman_e2e_temp_dir()?;
     let data_dir = temp.join("fman-0");
     let state_dir = temp.join("fi-state");
-    let iroh_overrides = local_iroh_overrides_for_grid(50_000, 1, GUARDIAN_COUNT);
+    let first_port_base = allocate_fman_port_grid(GUARDIAN_COUNT);
+    let iroh_overrides = local_iroh_overrides_for_grid(first_port_base, 1, GUARDIAN_COUNT);
     let (mut daemons, locators) = start_daemons(
         &fleet_manager_bin,
         &temp,
         bitcoind,
         1,
-        50_000,
+        first_port_base,
         Some(&iroh_overrides),
         GUARDIAN_COUNT,
         Some(NostrEnv {
@@ -684,7 +687,7 @@ async fn run_real_seat_lifecycle() -> anyhow::Result<()> {
         &bitcoind.rpc_url,
         &bitcoind.rpc_username,
         &bitcoind.rpc_password,
-        50_000,
+        first_port_base,
         Some(&iroh_overrides),
         None,
         None,
@@ -739,7 +742,7 @@ async fn run_real_seat_lifecycle() -> anyhow::Result<()> {
         &bitcoind.rpc_url,
         &bitcoind.rpc_username,
         &bitcoind.rpc_password,
-        50_000,
+        first_port_base,
         Some(&iroh_overrides),
         None,
         None,
@@ -867,13 +870,14 @@ async fn run_real_post_formation_operations(upgrade_from: Option<&Path>) -> anyh
         std::fs::create_dir_all(&fman0)?;
         std::fs::write(fman0.join(PAYOUT_CRASH_SEAM_ENABLE), b"enabled\n")?;
     }
-    let iroh_overrides = local_iroh_overrides_for_grid(56_000, 1, GUARDIAN_COUNT);
+    let first_port_base = allocate_fman_port_grid(GUARDIAN_COUNT);
+    let iroh_overrides = local_iroh_overrides_for_grid(first_port_base, 1, GUARDIAN_COUNT);
     let (mut daemons, locators) = start_daemons(
         fleet_manager_bin,
         &temp,
         bitcoind,
         1,
-        56_000,
+        first_port_base,
         Some(&iroh_overrides),
         GUARDIAN_COUNT,
         Some(NostrEnv {
@@ -921,6 +925,7 @@ async fn run_real_post_formation_operations(upgrade_from: Option<&Path>) -> anyh
         &state_dir,
         &iroh_overrides,
         &invite,
+        first_port_base,
         &mut daemons,
         upgrade_to,
     )
@@ -1000,6 +1005,7 @@ async fn exercise_real_guardian_fee_remittance_and_payout_recovery(
     state_dir: &Path,
     iroh_overrides: &str,
     invite: &str,
+    first_port_base: u16,
     daemons: &mut Vec<Child>,
     upgrade_to: Option<&Path>,
 ) -> anyhow::Result<()> {
@@ -1297,7 +1303,7 @@ async fn exercise_real_guardian_fee_remittance_and_payout_recovery(
                     &bitcoind.rpc_url,
                     &bitcoind.rpc_username,
                     &bitcoind.rpc_password,
-                    56_000 + u16::try_from(index)? * 100,
+                    first_port_base + u16::try_from(index)? * 100,
                     Some(iroh_overrides),
                     None,
                     None,
@@ -1339,7 +1345,7 @@ async fn exercise_real_guardian_fee_remittance_and_payout_recovery(
                 &bitcoind.rpc_url,
                 &bitcoind.rpc_username,
                 &bitcoind.rpc_password,
-                56_000,
+                first_port_base,
                 Some(iroh_overrides),
                 None,
                 None,
@@ -2258,13 +2264,14 @@ async fn run_fi_crash_recovery() -> anyhow::Result<()> {
 
     let callback_server = CallbackServer::start().await?;
     let temp = fman_e2e_temp_dir()?;
-    let iroh_overrides = local_iroh_overrides_for_grid(40_000, 1, GUARDIAN_COUNT);
+    let first_port_base = allocate_fman_port_grid(GUARDIAN_COUNT);
+    let iroh_overrides = local_iroh_overrides_for_grid(first_port_base, 1, GUARDIAN_COUNT);
     let (mut daemons, locators) = start_daemons(
         &fleet_manager_bin,
         &temp,
         bitcoind,
         1,
-        40_000,
+        first_port_base,
         Some(&iroh_overrides),
         GUARDIAN_COUNT,
         Some(NostrEnv {
@@ -2426,7 +2433,7 @@ async fn run_fi_crash_recovery() -> anyhow::Result<()> {
         &bitcoind.rpc_url,
         &bitcoind.rpc_username,
         &bitcoind.rpc_password,
-        40_000,
+        first_port_base,
         Some(&iroh_overrides),
         None,
         Some(callback_server.origin()),
@@ -3081,14 +3088,14 @@ async fn run_paid_formation() -> anyhow::Result<()> {
         .await?;
 
     // max-seats 2: seat 1 forms the payment federation, seat 2 the paid one.
-    // A port grid disjoint from the free test's, in case both run at once.
-    let iroh_overrides = local_iroh_overrides_for_grid(32_000, 2, PAID_GUARDIAN_COUNT);
+    let first_port_base = allocate_fman_port_grid(PAID_GUARDIAN_COUNT);
+    let iroh_overrides = local_iroh_overrides_for_grid(first_port_base, 2, PAID_GUARDIAN_COUNT);
     let (daemons, locators) = start_daemons(
         &fleet_manager_bin,
         &temp,
         bitcoind,
         2,
-        32_000,
+        first_port_base,
         Some(&iroh_overrides),
         PAID_GUARDIAN_COUNT,
         Some(NostrEnv {
@@ -3766,6 +3773,23 @@ impl Drop for LnurlPayServer {
     fn drop(&mut self) {
         self.task.abort();
     }
+}
+
+/// Reserve one disjoint 100-port test grid per Fleet Manager below Linux's
+/// default ephemeral range.
+fn allocate_fman_port_grid(guardian_count: usize) -> u16 {
+    let range_size = u16::try_from(guardian_count)
+        .expect("guardian count fits u16")
+        .checked_mul(100)
+        .expect("Fleet Manager test grid fits u16");
+    let first = defe_portalloc::port_alloc(range_size).expect("reserve Fleet Manager test grid");
+    assert!(
+        first
+            .checked_add(range_size)
+            .is_some_and(|end| end <= 32_768),
+        "defe-portalloc must keep the Fleet Manager test grid below Linux's default ephemeral range"
+    );
+    first
 }
 
 /// Spawn `guardian_count` daemons and collect their locators.

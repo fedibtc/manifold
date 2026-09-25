@@ -722,8 +722,9 @@ async fn accepted_replay_repairs_a_missing_runtime_registry_entry() {
 #[tokio::test]
 async fn availability_is_bounded_by_the_remaining_lifetime_port_grid() {
     let temp = TempDir::new().unwrap();
-    // Exactly two complete four-port blocks remain: 65528 and 65532.
-    let fleet = open_fleet(config(&temp, 3, 65_528).await, Arc::new(NoWallet))
+    // Exactly two complete four-port blocks remain before Linux's default
+    // ephemeral range: 32760 and 32764.
+    let fleet = open_fleet(config(&temp, 3, 32_760).await, Arc::new(NoWallet))
         .await
         .unwrap();
     assert_eq!(fleet.available_slots().await, 2);
@@ -759,6 +760,74 @@ async fn availability_is_bounded_by_the_remaining_lifetime_port_grid() {
         .await
         .unwrap();
     assert_eq!(refusal, raw_commitment(vec![33], 33));
+    fleet.shutdown().await;
+}
+
+#[tokio::test]
+async fn existing_seat_above_the_admission_bound_keeps_its_restart_port() {
+    let temp = TempDir::new().unwrap();
+    let config = config(&temp, 1, 32_768).await;
+    let db = Db::open(&config.process.data_root).await.unwrap();
+    db.bind_manifold_environment(config.manifold_environment)
+        .await
+        .unwrap();
+    crate::test_support::insert_test_seat(
+        &db,
+        NewSeat {
+            seat_id: SeatId::from(QuoteId([81; 32])),
+            fi_id: FiId(test_key("grandfathered")),
+            plan: Plan::InfiniteBestEffort { price_msats: 0 },
+            federation_size: FederationSize(7),
+            payment: None,
+        },
+    )
+    .await;
+    drop(db);
+
+    let fleet = open_fleet(config, Arc::new(NoWallet)).await.unwrap();
+    assert_eq!(fleet.available_slots().await, 0);
+    let seat = fleet.db.list_seats().await.unwrap().pop().unwrap();
+    assert_eq!(
+        seat.facts
+            .seat_no
+            .port_base(fleet.config.first_port_base)
+            .unwrap()
+            .get(),
+        32_768
+    );
+    assert_eq!(fleet.seat_summaries().await.unwrap().len(), 1);
+    fleet.shutdown().await;
+}
+
+#[tokio::test]
+async fn custom_base_in_the_default_ephemeral_range_has_no_new_capacity() {
+    let temp = TempDir::new().unwrap();
+    let fleet = open_fleet(config(&temp, 1, 32_768).await, Arc::new(NoWallet))
+        .await
+        .unwrap();
+
+    assert_eq!(fleet.available_slots().await, 0);
+    assert!(fleet.quote_offer().await.is_none());
+    let refused_epoch = fleet.db.offer_epoch().await.unwrap();
+    let refusal = fleet
+        .create_seat(
+            input(refused_epoch, 82, far_future(), 0, 0),
+            commitment(82),
+            |reason, refund| {
+                assert_eq!(reason, RefusalReason::OfferChanged);
+                assert!(refund.is_none());
+                Ok(raw_commitment(vec![82], 82))
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(refusal, raw_commitment(vec![82], 82));
+    assert!(fleet.db.list_seats().await.unwrap().is_empty());
+    assert_ne!(
+        fleet.db.offer_epoch().await.unwrap(),
+        refused_epoch,
+        "admission-policy invalidation must become durable before refusal"
+    );
     fleet.shutdown().await;
 }
 

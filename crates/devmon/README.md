@@ -33,16 +33,6 @@ The relay is set from the page: type a URL into the header field and hit watch. 
 cargo run -p devmon -- --relay ws://127.0.0.1:8880 --port 7777
 ```
 
-## Viewing it over SSH
-
-The dashboard binds `127.0.0.1` only. Forward the port with an explicit IPv4 target so `localhost` does not resolve to IPv6 `::1` on the remote host, which surfaces as `connect failed: Connection refused`:
-
-```bash
-ssh -L 7777:127.0.0.1:7777 <devbox>
-```
-
-Then open `http://localhost:7777` locally. The FMan roster refreshes on a short poll and is the reliable "is it alive" signal over a tunnel. The event feed rides a long-lived Server-Sent Events stream, which an intermediate HTTP proxy may buffer.
-
 ## Panels
 
 - **FMan roster**, one card per FMan, derived entirely from its advertisements: whether it is accepting seats, offered plans, Iroh endpoint, embedded holder-authorization count, and whether the advertisement has expired. Because kind 37701 is addressable, each FMan has exactly one current advertisement, and a republish replaces the previous one.

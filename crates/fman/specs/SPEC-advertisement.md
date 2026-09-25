@@ -111,8 +111,9 @@ by the FI verification rules in
 The advertisement carries neither an availability boolean nor a count. Its
 existence means the publication cycle observed that the FMan was accepting
 seats: it had physical capacity after live seats — bounded by both the
-operator's seat limit and the remaining lifetime port grid — and the operator
-had configured an offer. Setup-payment membership and opening a retained
+operator's seat limit and the remaining lifetime port grid through port 32767
+for new admissions — and the operator had configured an offer. Setup-payment
+membership and opening a retained
 payment-federation client in the current daemon process are not advertisement
 gates; RPC remains authoritative. A seat offered at zero settles against
 nothing, which is the deployment bootstrap where the first federation's

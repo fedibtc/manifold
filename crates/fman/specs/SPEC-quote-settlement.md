@@ -28,9 +28,10 @@ computable from the quote alone.
 
 One random 32-byte value standing for both the FMan's capacity and the terms it
 sells on. A quote whose epoch differs from the current epoch is refused,
-permanently. Two things replace it with fresh randomness, each in the
+permanently. Three things replace it with fresh randomness, each in the
 transaction of the write that motivates it: the acceptance that takes the last
-free slot, and a change to `QuoteSettings`.
+free slot, a change to `QuoteSettings`, and a current-epoch request that an
+upgrade's tighter admission policy can no longer accept.
 
 `QuoteSettings` holds the operator-controlled inputs to quoting and nothing else.
 Quote composition takes one and has no other route to operator state, so this
@@ -51,13 +52,15 @@ allocate a second quote-derived seat.
 
 ## What `create_seat` writes
 
-Only acceptances write, and each writes once. A replay of a settled quote
-re-signs its acceptance; a stale-epoch quote is refused, writing nothing and
-starting nothing. One read snapshot can resolve either outcome without waiting
-for the writer. A request that is absent and current then enters one immediate
-SQLite write transaction, rechecks replay and epoch, checks capacity and the
-lifetime port cursor, inserts the seat, and replaces the epoch with fresh
-randomness if that insert consumed the last slot.
+Acceptances write once. A replay of a settled quote re-signs its acceptance; a
+stale-epoch quote is refused, writing nothing and starting nothing. One read
+snapshot can resolve either outcome without waiting for the writer. A request
+that is absent and current then enters one immediate SQLite write transaction,
+rechecks replay and epoch, and checks capacity and the lifetime port cursor. It
+normally inserts the seat and replaces the epoch with fresh randomness if that
+insert consumed the last slot. If an upgrade tightened admission policy and the
+current quote no longer has capacity, it instead replaces the epoch before
+returning the refusal, making that refusal permanent without inserting a seat.
 
 SQLite's writer reservation guards the admission decision, port cursor, and
 insert against every settings or admission writer. Acceptance signing occurs
@@ -109,11 +112,15 @@ FMan's root mnemonic.
    full FMan.
 2. **The seat insert and epoch replacement are one transaction.** A crash
    between them leaves zero slots with a still-current epoch.
-3. **An epoch replacement is durable before any refusal that depends on it.** Both
-   replacements satisfy this structurally, by committing in an earlier request's
-   transaction than any refusal they enable.
-4. **A current-epoch quote is guaranteed a slot**, so the capacity check
-   inside the lock is a fail-closed assertion, not a branch.
+3. **An epoch replacement is durable before any refusal that depends on it.**
+   Settings and last-slot replacements commit in an earlier request's
+   transaction than any refusal they enable. If an upgrade tightens admission
+   policy, the writer transaction replaces the still-current epoch before it
+   returns the newly required refusal.
+4. **A current-epoch quote is guaranteed a slot under the admission policy that
+   issued it.** The capacity check inside the lock normally follows from that
+   invariant. A newly tightened policy is the exceptional zero-capacity branch,
+   and it first makes the quote permanently stale as required by invariant 3.
 
 ## Consequences for the claim records
 

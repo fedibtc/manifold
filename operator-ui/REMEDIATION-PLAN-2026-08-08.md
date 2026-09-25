@@ -934,12 +934,10 @@ restore as streaming upload with explicit limits.
 ### D3: OCI image bind topology
 
 **Question:** the image definition sets `FLIP_ADMIN_BIND_ADDRESS=0.0.0.0`
-(`flake.nix:545-551`) — necessary for Docker port-publishing to work at all,
-but it means one careless `-p 8173:8173` exposes bearer-token plaintext admin.
-Decide the supported topology (loopback-published ports as the documented
-default? daemon-side bind validation with an explicit override? reverse-proxy
-TLS?), then document it in `SECURITY.md` (currently silent on FLIP network
-posture).
+(`flake.nix:545-551`), so a deployment that makes the listener externally
+reachable exposes bearer-token plaintext admin. Decide the supported topology
+(daemon-side bind validation with an explicit override? reverse-proxy TLS?),
+then document it in `SECURITY.md` (currently silent on FLIP network posture).
 **Unblocks:** closing the network-locality P2 properly instead of a config
 whack-a-mole.
 

@@ -728,7 +728,7 @@ pub(super) fn available_slots(
     let port_slots = (0..seat_slots)
         .take_while(|offset| {
             crate::facts::SeatNo(next_no.saturating_add(*offset))
-                .port_base(first_port_base)
+                .admission_port_base(first_port_base)
                 .is_some()
         })
         .count() as u32;

@@ -16,11 +16,13 @@ Refusals have no database row. They are permanent because they compare only a
 durable random offer epoch. Every quote-invalidating transaction replaces that
 32-byte epoch with fresh randomness before it commits: the acceptance that uses
 the last slot replaces it with its seat insert, and a changed `QuoteSettings`
-value replaces it with its write. Thus a refused quote's signed epoch cannot
-equal a later epoch except with the negligible collision probability of a
-256-bit random value; a restored installation with a fresh epoch likewise
-refuses every quote from its former incarnation. `CreateSeat` writes only on
-acceptance.
+value replaces it with its write. When an upgrade tightens admission policy, a
+current-epoch request that no longer has capacity replaces the epoch in its
+writer transaction before returning a refusal. Thus a refused quote's signed
+epoch cannot equal a later epoch except with the negligible collision
+probability of a 256-bit random value; a restored installation with a fresh
+epoch likewise refuses every quote from its former incarnation. `CreateSeat`
+writes only on acceptance or to durably invalidate an epoch before refusal.
 
 The epoch is a fixed 32-byte SQLite BLOB: it is an opaque equality token, not
 a number or a text identifier.

@@ -96,7 +96,8 @@ struct ServeArgs {
     /// including requests for blocks the node has pruned.
     #[arg(long, requires = "bitcoind_url")]
     esplora_url: Option<SafeUrl>,
-    /// First seat port block on the `base + 4k` grid. The grid is
+    /// First seat port block on the `base + 4k` grid. New allocations stop
+    /// before Linux's default ephemeral range at port 32768. The grid is
     /// per-host: multiple FMans sharing a host (the E2E harness) must be
     /// given disjoint grids.
     #[arg(long, default_value_t = 30_000)]

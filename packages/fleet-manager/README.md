@@ -86,22 +86,21 @@ starting a daemon with no dashboard.
 No package performs a runtime `fedimintd --version` probe or downloads a binary:
 a seat's `fedimintd` is this very binary, spawned under a `fedimintd` argv[0].
 
-## Seat iroh reachability
+## Seat network surfaces
 
 Each seat's `fedimintd` places its iroh UDP sockets at the seat's p2p and api
-ports (the daemon binds those two on all interfaces; ui and metrics stay
-loopback-only). Containerized packages should publish the seat port grid as
-**UDP** so iroh can hole-punch direct peer paths instead of falling back to
-public relays. Only UDP is published: in iroh mode fedimintd binds no TCP
-listener at the p2p port, and the api port's plaintext WebSocket client API
-(the same public API already served over iroh; admin verbs gated by the
-seat's api auth) is deliberately left unpublished. The grid is 4 ports per seat
-from `--first-port-base` (default 30000), and seat ordinals are
-lifetime-monotonic — a decommissioned seat's ordinal is never reused — so a
-fixed mapping such as 30000-30031 covers the first 8 seats a host ever
-creates, not 8 concurrent seats. A seat allocated beyond the published range
-still works but falls back to relays; extend the mapping (a package update)
-to restore direct paths for later ordinals.
+ports. The daemon binds those two ports on all interfaces so iroh can discover
+direct peer paths; ui and metrics stay loopback-only. FMan does not require
+inbound reachability: public relays remain available when peers cannot establish
+a direct path.
+
+The default seat grid begins at port 30000. New admissions use complete
+four-port blocks only through port 32767, below Linux's default ephemeral port
+range. Existing seats keep their prior derived ports across upgrades; FMan does
+not silently relocate them. This bound does not protect existing allocations,
+custom kernel ephemeral ranges, manual listener conflicts, or a deployment that
+changes `--first-port-base` across restarts. Operators with customized networking
+must keep the seat grid separate in the effective network namespace.
 
 ## Focused validation
 
