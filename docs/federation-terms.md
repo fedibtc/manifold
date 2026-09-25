@@ -6,18 +6,18 @@ THE FEDERATION ALLOWS YOU TO HOLD AND TRANSFER BITCOIN THROUGH A FEDERATED WALLE
 
 THESE TERMS OF SERVICE, RULES, DISCLAIMERS, REGULATORY INFORMATION, AND ANY OTHER DOCUMENTS EXPRESSLY INCORPORATED BY REFERENCE (THESE "TERMS"), ARE AN AGREEMENT ENTERED INTO BY AND BETWEEN:
 
-* THE PERSON OR ENTITY THAT INITIATED THIS FEDERATION AND CHOOSES TO ADOPT THESE TERMS (THE "FEDERATION FOUNDER", "FOUNDER", "WE", "OUR" OR "US"), AND
+* THE PERSON OR ENTITY THAT INITIATED THIS FEDERATION AND CHOOSES TO ADOPT THESE TERMS (THE "FEDERATION AMBASSADOR", "AMBASSADOR", "WE", "OUR" OR "US"), AND
 * ANY USERS, VISITORS, AND OTHERS WHO ACCESS THE FEDERATION ("YOU," "YOUR," OR "USER").
 
 THESE TERMS DESCRIBE YOUR RIGHTS AND RESPONSIBILITIES AS A USER, AND GOVERN YOUR ACCESS TO AND USE OF THE FEDERATION (COLLECTIVELY, THE "SERVICE"). BY ACCESSING OR USING THE SERVICE, YOU REPRESENT THAT YOU HAVE READ, UNDERSTOOD, AND AGREE TO BE BOUND BY THESE TERMS. IF YOU DO NOT AGREE TO THESE TERMS, YOU MAY NOT ACCESS OR USE THE SERVICE.
 
-THESE TERMS ARE OPTIONAL TERMS ADOPTED BY THE FOUNDER FOR THIS FEDERATION. FEDI, INC. MAY MAKE A SAMPLE FORM OF THESE TERMS AVAILABLE FOR USE BY FEDERATION FOUNDERS, BUT FEDI, INC. IS NOT A PARTY TO THESE TERMS AND DOES NOT ASSUME THE FOUNDER'S OBLIGATIONS UNDER THEM.
+THESE TERMS ARE OPTIONAL TERMS ADOPTED BY THE AMBASSADOR FOR THIS FEDERATION. FEDI, INC. MAY MAKE A SAMPLE FORM OF THESE TERMS AVAILABLE FOR USE BY FEDERATION AMBASSADORS, BUT FEDI, INC. IS NOT A PARTY TO THESE TERMS AND DOES NOT ASSUME THE AMBASSADOR'S OBLIGATIONS UNDER THEM.
 
 THIS FEDERATION DOES NOT HAVE A FIXED END DATE. ITS CONTINUED OPERATION DEPENDS ON A SUFFICIENT NUMBER OF GUARDIANS AND OTHER INDEPENDENT INFRASTRUCTURE PROVIDERS REMAINING AVAILABLE. IF A SUFFICIENT NUMBER BECOME UNAVAILABLE, THE FEDERATION MAY BE INTERRUPTED OR CEASE TO FUNCTION AND YOUR BITCOIN MAY BECOME TEMPORARILY OR PERMANENTLY INACCESSIBLE.
 
-UNAVAILABILITY, INTERRUPTION OR FAILURE OF THE FEDERATION DOES NOT, BY ITSELF, TRANSFER OWNERSHIP OF YOUR BITCOIN TO THE FOUNDER, ANY GUARDIAN OR FEDI, INC. NO PERSON GUARANTEES THAT AN UNAVAILABLE GUARDIAN CAN BE REPLACED, THAT THE FEDERATION CAN BE RECONFIGURED, OR THAT VALUE CAN ALWAYS BE RECOVERED OR REDEEMED.
+UNAVAILABILITY, INTERRUPTION OR FAILURE OF THE FEDERATION DOES NOT, BY ITSELF, TRANSFER OWNERSHIP OF YOUR BITCOIN TO THE AMBASSADOR, ANY GUARDIAN OR FEDI, INC. NO PERSON GUARANTEES THAT AN UNAVAILABLE GUARDIAN CAN BE REPLACED, THAT THE FEDERATION CAN BE RECONFIGURED, OR THAT VALUE CAN ALWAYS BE RECOVERED OR REDEEMED.
 
-WHERE THE FOUNDER BECOMES AWARE IN ADVANCE OF A PLANNED MATERIAL CHANGE OR DISCONTINUATION THAT MAY AFFECT ACCESS TO THE FEDERATION, THE FOUNDER WILL USE REASONABLE EFFORTS TO PROVIDE NOTICE IF AND TO THE EXTENT REASONABLY PRACTICABLE.
+WHERE THE AMBASSADOR BECOMES AWARE IN ADVANCE OF A PLANNED MATERIAL CHANGE OR DISCONTINUATION THAT MAY AFFECT ACCESS TO THE FEDERATION, THE AMBASSADOR WILL USE REASONABLE EFFORTS TO PROVIDE NOTICE IF AND TO THE EXTENT REASONABLY PRACTICABLE.
 
 NOTICE MAY BE PROVIDED THROUGH IN-APP ANNOUNCEMENTS, BANNER OR BROADCAST MESSAGES, THE LOCATION WHERE THESE TERMS ARE PUBLISHED, OR OTHER REASONABLE MEANS THEN AVAILABLE. NO PARTICULAR NOTICE PERIOD IS GUARANTEED UNLESS EXPRESSLY STATED OTHERWISE.
 
@@ -51,7 +51,7 @@ By accessing and using the Service, you represent that: (a) you understand the i
 
 ## 4. Fees.
 
-Transactions or other activity through the Federation may be subject to fees disclosed through the applicable app, federation configuration or transaction flow. Fees may be allocated or shared among the Founder, Guardians, Fedi, Inc. or a verification service, liquidity providers, or other service providers, as applicable. Separate Fedi App fees, Bitcoin network fees, Lightning routing fees, liquidity costs and other third-party charges may also apply. Fee amounts and allocations may change in accordance with the applicable federation or software process. Receipt of a fee or fee share does not make any recipient the custodian, operator, agent, fiduciary or guarantor of the Federation.
+Transactions or other activity through the Federation may be subject to fees disclosed through the applicable app, federation configuration or transaction flow. Fees may be allocated or shared among the Ambassador, Guardians, Fedi, Inc. or a verification service, liquidity providers, or other service providers, as applicable. Separate Fedi App fees, Bitcoin network fees, Lightning routing fees, liquidity costs and other third-party charges may also apply. Fee amounts and allocations may change in accordance with the applicable federation or software process. Receipt of a fee or fee share does not make any recipient the custodian, operator, agent, fiduciary or guarantor of the Federation.
 
 ## 5. No Professional Advice.
 
@@ -227,13 +227,13 @@ You agree to defend, indemnify and hold harmless us and the Protected Parties fr
 
 ### Governing Law.
 
-These Terms shall be governed by and construed in accordance with the laws of the jurisdiction identified by the Federation Founder (the "Governing Jurisdiction"), without regard to its conflict-of-laws principles, except to the extent mandatory law applicable to you provides otherwise.
+These Terms shall be governed by and construed in accordance with the laws of the jurisdiction identified by the Federation Ambassador (the "Governing Jurisdiction"), without regard to its conflict-of-laws principles, except to the extent mandatory law applicable to you provides otherwise.
 
 ### Dispute Resolution.
 
 To the fullest extent permitted by applicable law, any dispute, controversy or claim arising out of or in connection with these Terms, the Federation or your participation in the Federation, including any dispute regarding the interpretation, existence, validity, enforceability, performance, breach or termination of these Terms, shall be exclusively and finally resolved by arbitration in accordance with the Rules of Arbitration of the International Chamber of Commerce (the "ICC Rules"), which rules are deemed incorporated by reference. This provision also applies to a claim against a Protected Party arising out of or relating to these Terms, the Federation or your participation in the Federation.
 
-The seat of arbitration shall be the city and jurisdiction identified by the Federation Founder when adopting these Terms (the "Arbitration Seat"). The language of the arbitration shall be English. The arbitral tribunal shall consist of one (1) arbitrator.
+The seat of arbitration shall be the city and jurisdiction identified by the Federation Ambassador when adopting these Terms (the "Arbitration Seat"). The language of the arbitration shall be English. The arbitral tribunal shall consist of one (1) arbitrator.
 
 The arbitral award shall be final and binding on the parties and may be recognized and enforced in any court of competent jurisdiction. To the fullest extent permitted by applicable law, the parties waive any right to appeal or seek substantive judicial review of the award, except for rights of challenge, set-aside or review that cannot lawfully be waived.
 
@@ -241,11 +241,11 @@ Nothing in this section prevents a party or Protected Party from seeking tempora
 
 ### Individual Claims; Class, Representative Action and Jury Trial Waiver.
 
-TO THE FULLEST EXTENT PERMITTED BY APPLICABLE LAW, ALL DISPUTES AND CLAIMS SUBJECT TO THE FOREGOING DISPUTE-RESOLUTION PROVISION MUST BE BROUGHT AND RESOLVED SOLELY ON AN INDIVIDUAL BASIS. NO USER MAY BRING OR PARTICIPATE IN ANY CLASS, COLLECTIVE, CONSOLIDATED, REPRESENTATIVE, PRIVATE ATTORNEY GENERAL OR SIMILAR PROCEEDING AGAINST THE FEDERATION FOUNDER OR ANY PROTECTED PARTY. THE ARBITRATOR SHALL HAVE NO AUTHORITY TO CONSOLIDATE THE CLAIMS OF DIFFERENT USERS OR TO PRESIDE OVER ANY CLASS, COLLECTIVE OR REPRESENTATIVE PROCEEDING WITHOUT THE WRITTEN CONSENT OF ALL AFFECTED PARTIES. TO THE FULLEST EXTENT PERMITTED BY APPLICABLE LAW, IF A DISPUTE PROCEEDS IN COURT RATHER THAN ARBITRATION, YOU AND WE EACH WAIVE ANY RIGHT TO A TRIAL BY JURY.
+TO THE FULLEST EXTENT PERMITTED BY APPLICABLE LAW, ALL DISPUTES AND CLAIMS SUBJECT TO THE FOREGOING DISPUTE-RESOLUTION PROVISION MUST BE BROUGHT AND RESOLVED SOLELY ON AN INDIVIDUAL BASIS. NO USER MAY BRING OR PARTICIPATE IN ANY CLASS, COLLECTIVE, CONSOLIDATED, REPRESENTATIVE, PRIVATE ATTORNEY GENERAL OR SIMILAR PROCEEDING AGAINST THE FEDERATION AMBASSADOR OR ANY PROTECTED PARTY. THE ARBITRATOR SHALL HAVE NO AUTHORITY TO CONSOLIDATE THE CLAIMS OF DIFFERENT USERS OR TO PRESIDE OVER ANY CLASS, COLLECTIVE OR REPRESENTATIVE PROCEEDING WITHOUT THE WRITTEN CONSENT OF ALL AFFECTED PARTIES. TO THE FULLEST EXTENT PERMITTED BY APPLICABLE LAW, IF A DISPUTE PROCEEDS IN COURT RATHER THAN ARBITRATION, YOU AND WE EACH WAIVE ANY RIGHT TO A TRIAL BY JURY.
 
 ## 22. Miscellaneous.
 
-Assignment - These Terms, and any rights and licenses granted hereunder, may not be transferred or assigned by you without our prior express written consent, but may be assigned by us without restriction. Any attempted transfer or assignment in violation of this provision will be null and void. Except for the Protected Parties as expressly provided below, nothing in these Terms is intended to confer on any other person or entity any legal or equitable right, benefit or remedy. Each Protected Party is an intended third-party beneficiary of the No Warranty, Digital Assets Legal Status, Federated Custody and Operational Risk, Availability of the Services, Third-Party Services and Providers, Disclaimer, Limitation of Liability, Indemnity, Governing Law and Dispute Resolution, and Individual Claims; Class, Representative Action and Jury Trial Waiver provisions and may enforce those protections directly. A Protected Party does not assume any obligation under these Terms merely because it receives the benefit of a protective provision. Nothing in these Terms creates an agency, partnership, joint venture, fiduciary, employment or custodial relationship between the Founder and any Protected Party or between you and any Protected Party.
+Assignment - These Terms, and any rights and licenses granted hereunder, may not be transferred or assigned by you without our prior express written consent, but may be assigned by us without restriction. Any attempted transfer or assignment in violation of this provision will be null and void. Except for the Protected Parties as expressly provided below, nothing in these Terms is intended to confer on any other person or entity any legal or equitable right, benefit or remedy. Each Protected Party is an intended third-party beneficiary of the No Warranty, Digital Assets Legal Status, Federated Custody and Operational Risk, Availability of the Services, Third-Party Services and Providers, Disclaimer, Limitation of Liability, Indemnity, Governing Law and Dispute Resolution, and Individual Claims; Class, Representative Action and Jury Trial Waiver provisions and may enforce those protections directly. A Protected Party does not assume any obligation under these Terms merely because it receives the benefit of a protective provision. Nothing in these Terms creates an agency, partnership, joint venture, fiduciary, employment or custodial relationship between the Ambassador and any Protected Party or between you and any Protected Party.
 
 Notification Procedures and Changes to these Terms - We may provide notices through in-app notifications, email, written notice, the location where these Terms are published, or other reasonable means then available. These Terms may be modified from time to time by updating the document at the location referenced by the Federation, and the referenced location may itself change. Where a change is material and it is reasonably practicable to provide additional notice, we will use reasonable efforts to do so through an available channel. Your continued use of the Service after a change takes effect constitutes acceptance of the revised Terms, subject to applicable law. If you do not agree to the revised Terms, stop using the Service.
 
@@ -257,4 +257,4 @@ No Waiver - No waiver of any term of these Terms will be deemed a further or con
 
 ---
 
-*Last Modified: 11 September 2026*
+*Last Modified: 23 September 2026*
