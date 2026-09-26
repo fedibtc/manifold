@@ -5,21 +5,28 @@ use async_trait::async_trait;
 use bitcoin::secp256k1::{Secp256k1, SecretKey};
 use bitcoin::{Address, CompressedPublicKey, Network};
 use fedi_decentralized_service_liquidity_manager::{
-    AdvertisementConfig, AllocationItemTarget, AttestationSummary, BitcoinNetwork,
-    CancelAllocationRequest, CapacityConfig, CapacityMode, ChainObserverBackendView,
-    ChainObserverConfigView, DurationSecs, FederationId, FundingPolicyConfig, GatewayApiUrl,
-    GatewayConfigView, GatewayId, GatewayName, ItemAllocationStatus, ItemId, LiquidityFailureCode,
-    ManualOperationStatus, ManualReviewResolution, ProviderPolicy, ReplenishmentConfig,
-    ResolveManualReviewRequest, RpcEndpointAddress, RpcEndpointConfig, RpcEndpointId,
-    RpcProtocolName, RpcTransport, SourceType, Url, WalletOperationType,
+    AbandonGatewayItemRequest, AdvertisementConfig, AllocationItemTarget, AttestationSummary,
+    BitcoinNetwork, CancelAllocationRequest, CapacityConfig, CapacityMode,
+    ChainObserverBackendView, ChainObserverConfigView, DurationSecs, FederationId,
+    FundingPolicyConfig, GatewayApiUrl, GatewayConfigView, GatewayId, GatewayName,
+    ItemAllocationStatus, ItemId, LiquidityFailureCode, ManualOperationStatus,
+    ManualReviewResolution, ProviderPolicy, ReplenishmentConfig, ResolveManualReviewRequest,
+    RpcEndpointAddress, RpcEndpointConfig, RpcEndpointId, RpcProtocolName, RpcTransport,
+    SourceType, Url, WalletOperationType,
 };
 use tokio::sync::Mutex;
 
 use super::*;
-use crate::allocation_store::load_allocation_status_by_federation;
-use crate::gateway::{GatewayDepositClaim, GatewayFederationSnapshot, GatewaySnapshot};
+use crate::allocation_store::{
+    GatewayAllocationStep, active_gateway_items, gateway_observation,
+    load_allocation_status_by_federation,
+};
+use crate::gateway::{
+    DepositClaimQuery, GatewayDepositClaim, GatewayFederationSnapshot, GatewaySnapshot,
+};
 use crate::manual_ops::{
-    cancel_allocation_with_database, resolve_manual_review_with_database_for_test,
+    abandon_gateway_item_with_database, cancel_allocation_with_database,
+    resolve_manual_review_with_database_for_test,
 };
 use crate::test_support::{AllocationSeed, ItemSeed, test_sqlite_path};
 use crate::wallet::{SyncedWalletStatus, TestFundsWallet, WalletOperationSync};
@@ -589,7 +596,7 @@ async fn cancelled_wallet_operation_marks_gateway_item_failed() -> anyhow::Resul
         status.item_statuses[0]
             .failure
             .as_ref()
-            .map(|failure| failure.code),
+            .map(|failure| failure.code.clone()),
         Some(LiquidityFailureCode::WithdrawFailed)
     );
     Ok(())
@@ -653,7 +660,7 @@ async fn a_withdrawal_refused_at_prepare_sends_nothing_and_fails_the_item() -> a
         status.item_statuses[0]
             .failure
             .as_ref()
-            .map(|failure| failure.code),
+            .map(|failure| failure.code.clone()),
         Some(LiquidityFailureCode::WithdrawFailed)
     );
     Ok(())
@@ -693,7 +700,7 @@ async fn wrong_network_gateway_deposit_address_fails_before_withdrawal() -> anyh
         status.item_statuses[0]
             .failure
             .as_ref()
-            .map(|failure| failure.code),
+            .map(|failure| failure.code.clone()),
         Some(LiquidityFailureCode::GatewayAttachFailed)
     );
     Ok(())
@@ -746,7 +753,7 @@ async fn a_non_global_invite_endpoint_is_refused_before_the_gateway_dials() -> a
         status.item_statuses[0]
             .failure
             .as_ref()
-            .map(|failure| failure.code),
+            .map(|failure| failure.code.clone()),
         Some(LiquidityFailureCode::GatewayAttachFailed)
     );
     Ok(())
@@ -806,6 +813,600 @@ async fn an_attach_failure_does_not_report_the_dial_outcome() -> anyhow::Result<
         );
     }
     Ok(())
+}
+
+/// A wait long enough to deserve attention is recorded, and the item keeps
+/// reconciling.
+///
+/// Missing confirmation does not establish that the deposit was lost: the
+/// gateway may have been offline, resyncing, or behind on its log. So passing
+/// the threshold raises the delay for an operator and changes nothing else.
+/// The item stays active, the next pass reads the gateway's log again, and a
+/// claim the gateway reports afterwards completes the item with no operator
+/// action at all.
+#[tokio::test]
+async fn a_long_unattributed_wait_is_raised_without_stopping_reconciliation() -> anyhow::Result<()>
+{
+    let database = Database::connect(test_sqlite_path("gateway-attribution-delay")).await?;
+    let setup = test_setup_config();
+    let (federation_id, item_id) = seed_gateway_allocation(&database, &setup, Sats(25_000)).await?;
+    let wallet = TestFundsWallet::new(setup.network, Sats(100_000), regtest_address());
+    let gateway = FakeGateway::new(setup.network, regtest_address());
+    gateway.set_connect_balance(Sats(40_000)).await;
+
+    run_gateway_pass(&database, &setup, &wallet, &gateway).await?;
+    let operation =
+        wallet_operation_for_item(&database, WalletOperationType::GatewayFunding, &item_id)
+            .await?
+            .expect("wallet operation exists");
+    settle_funding_send(&database, &operation.operation_id.0, "txid-1").await?;
+
+    // The gateway has claimed nothing, but the send settled moments ago.
+    run_gateway_pass(&database, &setup, &wallet, &gateway).await?;
+    assert_eq!(
+        sole_gateway_step(&database)
+            .await?
+            .attribution_overdue_since,
+        None,
+        "a wait shorter than the threshold is an ordinary wait"
+    );
+
+    backdate_operation_update(
+        &database,
+        &operation.operation_id.0,
+        setup.funding_policy.gateway_claim_review_after_secs + 60,
+    )
+    .await?;
+    run_gateway_pass(&database, &setup, &wallet, &gateway).await?;
+
+    assert!(
+        sole_gateway_step(&database)
+            .await?
+            .attribution_overdue_since
+            .is_some(),
+        "a wait past the threshold is recorded for an operator"
+    );
+    assert_eq!(
+        sole_item_status(&database, &federation_id).await?,
+        ItemAllocationStatus::Running,
+        "the item stays active so the worker keeps reading the gateway's log"
+    );
+
+    // Evidence that arrives after the threshold still completes the item.
+    gateway.set_balance("federation-1", Sats(65_000)).await;
+    gateway.claim_deposit("txid-1", 0, Sats(25_000)).await;
+    run_gateway_pass(&database, &setup, &wallet, &gateway).await?;
+
+    assert_eq!(
+        sole_item_status(&database, &federation_id).await?,
+        ItemAllocationStatus::Completed,
+        "a claim reported after the threshold completes the item unaided"
+    );
+    Ok(())
+}
+
+/// Zero turns the notice off, and nothing else changes.
+#[tokio::test]
+async fn a_zero_review_threshold_raises_no_delay() -> anyhow::Result<()> {
+    let database = Database::connect(test_sqlite_path("gateway-attribution-off")).await?;
+    let mut setup = test_setup_config();
+    setup.funding_policy.gateway_claim_review_after_secs = 0;
+    let (_federation_id, item_id) =
+        seed_gateway_allocation(&database, &setup, Sats(25_000)).await?;
+    let wallet = TestFundsWallet::new(setup.network, Sats(100_000), regtest_address());
+    let gateway = FakeGateway::new(setup.network, regtest_address());
+    gateway.set_connect_balance(Sats(40_000)).await;
+
+    run_gateway_pass(&database, &setup, &wallet, &gateway).await?;
+    let operation =
+        wallet_operation_for_item(&database, WalletOperationType::GatewayFunding, &item_id)
+            .await?
+            .expect("wallet operation exists");
+    settle_funding_send(&database, &operation.operation_id.0, "txid-1").await?;
+    backdate_operation_update(&database, &operation.operation_id.0, 1_000_000).await?;
+    run_gateway_pass(&database, &setup, &wallet, &gateway).await?;
+
+    assert_eq!(
+        sole_gateway_step(&database)
+            .await?
+            .attribution_overdue_since,
+        None
+    );
+    Ok(())
+}
+
+/// A gateway that cannot answer has said nothing about any item.
+///
+/// The outage is recorded once, dated from when it began, and no item is
+/// touched by it. In particular it is not attribution: a gateway that is down
+/// reports no claim, and reading that silence as "the deposit never arrived"
+/// would turn every outage into a permanent verdict. When the gateway answers
+/// again the item completes from the evidence it then reports.
+#[tokio::test]
+async fn an_unreachable_gateway_is_recorded_once_and_convicts_no_item() -> anyhow::Result<()> {
+    let database = Database::connect(test_sqlite_path("gateway-unreachable")).await?;
+    let setup = test_setup_config();
+    let (federation_id, item_id) = seed_gateway_allocation(&database, &setup, Sats(25_000)).await?;
+    let wallet = TestFundsWallet::new(setup.network, Sats(100_000), regtest_address());
+    let gateway = FakeGateway::new(setup.network, regtest_address());
+    gateway.set_connect_balance(Sats(40_000)).await;
+
+    run_gateway_pass(&database, &setup, &wallet, &gateway).await?;
+    let operation =
+        wallet_operation_for_item(&database, WalletOperationType::GatewayFunding, &item_id)
+            .await?
+            .expect("wallet operation exists");
+    settle_funding_send(&database, &operation.operation_id.0, "txid-1").await?;
+    // Long enough that attribution would count as overdue if anything had
+    // actually reported on it.
+    backdate_operation_update(
+        &database,
+        &operation.operation_id.0,
+        setup.funding_policy.gateway_claim_review_after_secs + 60,
+    )
+    .await?;
+
+    gateway.set_unreachable(true).await;
+    assert_eq!(
+        process_gateway_allocations_with(
+            &database,
+            &setup,
+            &wallet,
+            &gateway,
+            crate::endpoint_policy::EndpointPolicy::AllowPrivate,
+        )
+        .await?,
+        0,
+        "an outage advances nothing"
+    );
+
+    let outage = gateway_observation(&database, &setup.gateway.gateway_id)
+        .await?
+        .expect("the outage is recorded");
+    assert_eq!(outage.status, "unavailable");
+    assert_eq!(
+        sole_item_status(&database, &federation_id).await?,
+        ItemAllocationStatus::Running
+    );
+    assert_eq!(
+        sole_gateway_step(&database)
+            .await?
+            .attribution_overdue_since,
+        None,
+        "an outage is not the gateway reporting that it has no such claim"
+    );
+
+    // A second pass leaves the recorded start alone, so the row keeps saying
+    // how long this has been going on.
+    run_gateway_pass(&database, &setup, &wallet, &gateway).await?;
+    assert_eq!(
+        gateway_observation(&database, &setup.gateway.gateway_id)
+            .await?
+            .expect("the outage is still recorded")
+            .observed_at,
+        outage.observed_at
+    );
+
+    gateway.set_unreachable(false).await;
+    gateway.set_balance("federation-1", Sats(65_000)).await;
+    gateway.claim_deposit("txid-1", 0, Sats(25_000)).await;
+    run_gateway_pass(&database, &setup, &wallet, &gateway).await?;
+    assert_eq!(
+        sole_item_status(&database, &federation_id).await?,
+        ItemAllocationStatus::Completed,
+        "the item completes from evidence the recovered gateway reports"
+    );
+    Ok(())
+}
+
+/// A gateway behind on the chain is in the same position as one that is down:
+/// it has not read the deposits it is being asked about.
+#[tokio::test]
+async fn an_unsynced_gateway_advances_nothing_and_convicts_no_item() -> anyhow::Result<()> {
+    let database = Database::connect(test_sqlite_path("gateway-unsynced")).await?;
+    let setup = test_setup_config();
+    let (federation_id, item_id) = seed_gateway_allocation(&database, &setup, Sats(25_000)).await?;
+    let wallet = TestFundsWallet::new(setup.network, Sats(100_000), regtest_address());
+    let gateway = FakeGateway::new(setup.network, regtest_address());
+    gateway.set_connect_balance(Sats(40_000)).await;
+
+    run_gateway_pass(&database, &setup, &wallet, &gateway).await?;
+    let operation =
+        wallet_operation_for_item(&database, WalletOperationType::GatewayFunding, &item_id)
+            .await?
+            .expect("wallet operation exists");
+    settle_funding_send(&database, &operation.operation_id.0, "txid-1").await?;
+    backdate_operation_update(
+        &database,
+        &operation.operation_id.0,
+        setup.funding_policy.gateway_claim_review_after_secs + 60,
+    )
+    .await?;
+
+    gateway.set_synced_to_chain(false).await;
+    assert_eq!(
+        process_gateway_allocations_with(
+            &database,
+            &setup,
+            &wallet,
+            &gateway,
+            crate::endpoint_policy::EndpointPolicy::AllowPrivate,
+        )
+        .await?,
+        0
+    );
+    assert_eq!(
+        gateway_observation(&database, &setup.gateway.gateway_id)
+            .await?
+            .expect("the condition is recorded")
+            .status,
+        "unavailable"
+    );
+    assert_eq!(
+        sole_item_status(&database, &federation_id).await?,
+        ItemAllocationStatus::Running
+    );
+    assert_eq!(
+        sole_gateway_step(&database)
+            .await?
+            .attribution_overdue_since,
+        None
+    );
+    Ok(())
+}
+
+/// One resync is one outage, however many passes run during it.
+///
+/// Two workers read the same gateway on different schedules. If either records
+/// a gateway that answers but has not caught up as usable, it overwrites the
+/// outage row and its start time, and the next pass opens a fresh outage for
+/// the same interruption. The operator then cannot tell how long the gateway
+/// has been out, which is the one thing the record exists to say.
+#[tokio::test]
+async fn one_resync_stays_one_outage_across_both_workers() -> anyhow::Result<()> {
+    let database = Database::connect(test_sqlite_path("gateway-resync-one-outage")).await?;
+    let setup = test_setup_config();
+    let (_federation_id, _item_id) =
+        seed_gateway_allocation(&database, &setup, Sats(25_000)).await?;
+    let wallet = TestFundsWallet::new(setup.network, Sats(100_000), regtest_address());
+    let gateway = FakeGateway::new(setup.network, regtest_address());
+    gateway.set_connect_balance(Sats(40_000)).await;
+    gateway.set_balance("federation-1", Sats(40_000)).await;
+
+    gateway.set_synced_to_chain(false).await;
+    run_gateway_pass(&database, &setup, &wallet, &gateway).await?;
+    let began = gateway_observation(&database, &setup.gateway.gateway_id)
+        .await?
+        .expect("the outage is recorded");
+    assert_eq!(began.status, "unavailable");
+
+    // The observation worker sees the same unsynced gateway. It must leave the
+    // outage alone rather than record a live-looking state over it.
+    observe_configured_gateway_with(&database, &setup, &gateway).await?;
+    run_gateway_pass(&database, &setup, &wallet, &gateway).await?;
+    observe_configured_gateway_with(&database, &setup, &gateway).await?;
+
+    let during = gateway_observation(&database, &setup.gateway.gateway_id)
+        .await?
+        .expect("the outage is still recorded");
+    assert_eq!(during.status, "unavailable");
+    assert_eq!(
+        during.observed_at, began.observed_at,
+        "the outage keeps the time it began, so its length stays readable"
+    );
+
+    // Catching up is the recovery, and only then does the row follow the
+    // gateway's own state again.
+    gateway.set_synced_to_chain(true).await;
+    observe_configured_gateway_with(&database, &setup, &gateway).await?;
+    let recovered = gateway_observation(&database, &setup.gateway.gateway_id)
+        .await?
+        .expect("the gateway is observed");
+    assert_ne!(
+        recovered.status, "unavailable",
+        "a caught-up gateway is recorded by its own state"
+    );
+    assert!(
+        !active_gateway_items(&database).await?.is_empty(),
+        "the item waited through the resync rather than being convicted by it"
+    );
+    assert!(
+        sole_gateway_step(&database)
+            .await?
+            .attribution_overdue_since
+            .is_none(),
+        "a resync is not the gateway reporting that it has no such claim"
+    );
+    Ok(())
+}
+
+/// Abandonment is the operator's decision about a wait FLIP reported, so it is
+/// admitted only once FLIP has recorded the item as overdue.
+///
+/// An item still inside the review threshold is simply in progress. Writing it
+/// off there would give up on funding the gateway may be about to attribute.
+#[tokio::test]
+async fn abandoning_an_item_flip_has_not_reported_is_refused() -> anyhow::Result<()> {
+    let database = Database::connect(test_sqlite_path("gateway-abandon-early")).await?;
+    let setup = test_setup_config();
+    let (federation_id, item_id) = seed_gateway_allocation(&database, &setup, Sats(25_000)).await?;
+    let wallet = TestFundsWallet::new(setup.network, Sats(100_000), regtest_address());
+    let gateway = FakeGateway::new(setup.network, regtest_address());
+    gateway.set_connect_balance(Sats(40_000)).await;
+
+    run_gateway_pass(&database, &setup, &wallet, &gateway).await?;
+    let operation =
+        wallet_operation_for_item(&database, WalletOperationType::GatewayFunding, &item_id)
+            .await?
+            .expect("wallet operation exists");
+    settle_funding_send(&database, &operation.operation_id.0, "txid-1").await?;
+    run_gateway_pass(&database, &setup, &wallet, &gateway).await?;
+
+    let response = abandon_gateway_item_with_database(
+        &database,
+        AbandonGatewayItemRequest {
+            federation_id: federation_id.clone(),
+            reason: "gateway database replaced".to_owned(),
+        },
+    )
+    .await?;
+
+    assert_eq!(response.status, ManualOperationStatus::Rejected);
+    assert_eq!(
+        sole_item_status(&database, &federation_id).await?,
+        ItemAllocationStatus::Running
+    );
+    Ok(())
+}
+
+/// Writing off delivered funds needs a reason on the record.
+#[tokio::test]
+async fn abandoning_without_a_reason_is_refused() -> anyhow::Result<()> {
+    let database = Database::connect(test_sqlite_path("gateway-abandon-no-reason")).await?;
+    let setup = test_setup_config();
+    let (federation_id, _item_id) =
+        seed_gateway_allocation(&database, &setup, Sats(25_000)).await?;
+
+    let response = abandon_gateway_item_with_database(
+        &database,
+        AbandonGatewayItemRequest {
+            federation_id,
+            reason: "   ".to_owned(),
+        },
+    )
+    .await?;
+
+    assert_eq!(response.status, ManualOperationStatus::Rejected);
+    Ok(())
+}
+
+/// Once FLIP has reported the wait, the operator can write the item off, and
+/// the reservation it held is released.
+///
+/// The failure code is its own, not the one a gateway that could not be
+/// attached before any value was sent carries: value reached the gateway here,
+/// and the two situations call for opposite remediation.
+#[tokio::test]
+async fn abandoning_a_reported_item_releases_its_reservation() -> anyhow::Result<()> {
+    let database = Database::connect(test_sqlite_path("gateway-abandon-reported")).await?;
+    let setup = test_setup_config();
+    let (federation_id, item_id) = seed_gateway_allocation(&database, &setup, Sats(25_000)).await?;
+    let wallet = TestFundsWallet::new(setup.network, Sats(100_000), regtest_address());
+    let gateway = FakeGateway::new(setup.network, regtest_address());
+    gateway.set_connect_balance(Sats(40_000)).await;
+
+    run_gateway_pass(&database, &setup, &wallet, &gateway).await?;
+    let operation =
+        wallet_operation_for_item(&database, WalletOperationType::GatewayFunding, &item_id)
+            .await?
+            .expect("wallet operation exists");
+    settle_funding_send(&database, &operation.operation_id.0, "txid-1").await?;
+    backdate_operation_update(
+        &database,
+        &operation.operation_id.0,
+        setup.funding_policy.gateway_claim_review_after_secs + 60,
+    )
+    .await?;
+    run_gateway_pass(&database, &setup, &wallet, &gateway).await?;
+    assert!(
+        sole_gateway_step(&database)
+            .await?
+            .attribution_overdue_since
+            .is_some(),
+        "the wait is reported before the operator decides anything"
+    );
+
+    let response = abandon_gateway_item_with_database(
+        &database,
+        AbandonGatewayItemRequest {
+            federation_id: federation_id.clone(),
+            reason: "gateway database replaced; deposit confirmed on chain".to_owned(),
+        },
+    )
+    .await?;
+
+    assert_eq!(response.status, ManualOperationStatus::Accepted);
+    assert_eq!(response.abandoned_amount, Some(Sats(25_000)));
+
+    let status = load_allocation_status_by_federation(&database, &federation_id)
+        .await?
+        .expect("allocation status exists");
+    assert_eq!(status.item_statuses[0].status, ItemAllocationStatus::Failed);
+    // The write-off carries a code every already-installed app can read. A
+    // reader that meets a code it does not know refuses the whole item, so the
+    // reserved `GatewayAttributionAbandoned` waits until tolerant builds are
+    // the ones in the field. Until then the operator's reason carries the
+    // distinction.
+    let failure = status.item_statuses[0]
+        .failure
+        .as_ref()
+        .expect("the write-off is recorded");
+    assert_eq!(failure.code, LiquidityFailureCode::GatewayAttachFailed);
+    assert!(
+        failure
+            .reason
+            .as_deref()
+            .is_some_and(|reason| reason.contains("wrote off")),
+        "the reason says a delivery was written off, not that an attach failed"
+    );
+    assert!(
+        active_gateway_items(&database).await?.is_empty(),
+        "a failed item no longer reserves capacity"
+    );
+
+    // The item now holds no reservation, so there is nothing left to write
+    // off. A repeat must not record a second write-off of the same value.
+    let repeat = abandon_gateway_item_with_database(
+        &database,
+        AbandonGatewayItemRequest {
+            federation_id: federation_id.clone(),
+            reason: "same operator, second attempt".to_owned(),
+        },
+    )
+    .await?;
+    assert_eq!(repeat.status, ManualOperationStatus::Rejected);
+    assert_eq!(
+        sole_item_status(&database, &federation_id).await?,
+        ItemAllocationStatus::Failed
+    );
+    Ok(())
+}
+
+/// A late claim completes an overdue item, and completion is final.
+///
+/// Completion does not clear the overdue marker, so the item still carries the
+/// evidence that it was once overdue. Abandonment must not read that marker as
+/// permission to rewrite a settled outcome: the value is accounted for, the
+/// reservation is already released, and a write-off here would replace a real
+/// completion with one that never happened.
+#[tokio::test]
+async fn abandoning_an_item_that_completed_after_going_overdue_is_refused() -> anyhow::Result<()> {
+    let database = Database::connect(test_sqlite_path("gateway-abandon-completed")).await?;
+    let setup = test_setup_config();
+    let (federation_id, item_id) = seed_gateway_allocation(&database, &setup, Sats(25_000)).await?;
+    let wallet = TestFundsWallet::new(setup.network, Sats(100_000), regtest_address());
+    let gateway = FakeGateway::new(setup.network, regtest_address());
+    gateway.set_connect_balance(Sats(40_000)).await;
+
+    run_gateway_pass(&database, &setup, &wallet, &gateway).await?;
+    let operation =
+        wallet_operation_for_item(&database, WalletOperationType::GatewayFunding, &item_id)
+            .await?
+            .expect("wallet operation exists");
+    settle_funding_send(&database, &operation.operation_id.0, "txid-1").await?;
+    backdate_operation_update(
+        &database,
+        &operation.operation_id.0,
+        setup.funding_policy.gateway_claim_review_after_secs + 60,
+    )
+    .await?;
+    run_gateway_pass(&database, &setup, &wallet, &gateway).await?;
+
+    // The gateway reports the claim after the wait was raised, so the item
+    // completes on its own.
+    gateway.set_balance("federation-1", Sats(65_000)).await;
+    gateway.claim_deposit("txid-1", 0, Sats(25_000)).await;
+    run_gateway_pass(&database, &setup, &wallet, &gateway).await?;
+    assert_eq!(
+        sole_item_status(&database, &federation_id).await?,
+        ItemAllocationStatus::Completed
+    );
+
+    let response = abandon_gateway_item_with_database(
+        &database,
+        AbandonGatewayItemRequest {
+            federation_id: federation_id.clone(),
+            reason: "operator acting on a stale dashboard".to_owned(),
+        },
+    )
+    .await?;
+
+    assert_eq!(response.status, ManualOperationStatus::Rejected);
+    let status = load_allocation_status_by_federation(&database, &federation_id)
+        .await?
+        .expect("allocation status exists");
+    assert_eq!(
+        status.item_statuses[0].status,
+        ItemAllocationStatus::Completed,
+        "a completed item keeps its outcome"
+    );
+    assert!(
+        status.item_statuses[0].failure.is_none(),
+        "a completed item records no write-off"
+    );
+    Ok(())
+}
+
+async fn run_gateway_pass(
+    database: &Database,
+    setup: &SetupConfigView,
+    wallet: &TestFundsWallet,
+    gateway: &FakeGateway,
+) -> anyhow::Result<()> {
+    process_gateway_allocations_with(
+        database,
+        setup,
+        wallet,
+        gateway,
+        crate::endpoint_policy::EndpointPolicy::AllowPrivate,
+    )
+    .await?;
+    Ok(())
+}
+
+async fn settle_funding_send(
+    database: &Database,
+    operation_id: &str,
+    txid: &str,
+) -> anyhow::Result<()> {
+    apply_sync_update(
+        database,
+        &WalletOperationSync {
+            operation_id: WalletOperationId(operation_id.to_owned()),
+            status: SyncedWalletStatus::Completed,
+            txid: Some(txid.to_owned()),
+            confirmation_count: Some(1),
+            amount: None,
+            detail: None,
+        },
+    )
+    .await?;
+    Ok(())
+}
+
+/// Ages the operation the way waiting would, without making the test wait.
+async fn backdate_operation_update(
+    database: &Database,
+    operation_id: &str,
+    seconds: u64,
+) -> anyhow::Result<()> {
+    sqlx::query("UPDATE wallet_operations SET updated_at = unixepoch() - ? WHERE operation_id = ?")
+        .bind(i64::try_from(seconds)?)
+        .bind(operation_id)
+        .execute(database.pool())
+        .await?;
+    Ok(())
+}
+
+async fn sole_gateway_step(database: &Database) -> anyhow::Result<GatewayAllocationStep> {
+    let items = active_gateway_items(database).await?;
+    let [item] = items.as_slice() else {
+        anyhow::bail!("expected exactly one active gateway item");
+    };
+    Ok(item.step.clone())
+}
+
+async fn sole_item_status(
+    database: &Database,
+    federation_id: &FederationId,
+) -> anyhow::Result<ItemAllocationStatus> {
+    let status = load_allocation_status_by_federation(database, federation_id)
+        .await?
+        .expect("allocation status exists");
+    let [item] = status.item_statuses.as_slice() else {
+        anyhow::bail!("expected exactly one seeded item");
+    };
+    Ok(item.status)
 }
 
 async fn seed_gateway_allocation(
@@ -914,6 +1515,7 @@ struct FakeGatewayState {
     connect_error: Option<String>,
     connect_attempts: usize,
     deposit_claims: Vec<GatewayDepositClaim>,
+    unreachable: bool,
 }
 
 impl FakeGateway {
@@ -928,6 +1530,7 @@ impl FakeGateway {
                 connect_error: None,
                 connect_attempts: 0,
                 deposit_claims: Vec::new(),
+                unreachable: false,
             })),
         }
     }
@@ -946,6 +1549,16 @@ impl FakeGateway {
     /// necessarily zero.
     async fn set_connect_balance(&self, balance: Sats) {
         self.inner.lock().await.connect_balance = balance;
+    }
+
+    /// Makes every read fail, as a stopped or unroutable gatewayd does.
+    async fn set_unreachable(&self, unreachable: bool) {
+        self.inner.lock().await.unreachable = unreachable;
+    }
+
+    /// Reports whether gatewayd has caught up with the chain.
+    async fn set_synced_to_chain(&self, synced: bool) {
+        self.inner.lock().await.synced_to_chain = synced;
     }
 
     /// Makes the attach fail with the kind of detail a real dial produces.
@@ -975,6 +1588,9 @@ impl FakeGateway {
 impl GatewayClient for FakeGateway {
     async fn gateway_info(&self) -> anyhow::Result<GatewaySnapshot> {
         let state = self.inner.lock().await;
+        if state.unreachable {
+            anyhow::bail!("connection refused");
+        }
         Ok(GatewaySnapshot {
             state: "running".to_owned(),
             network: state.network,
@@ -1028,10 +1644,18 @@ impl GatewayClient for FakeGateway {
         Ok(())
     }
 
-    async fn deposit_claims(
+    async fn find_deposit_claim(
         &self,
         _federation_id: &str,
-    ) -> anyhow::Result<Vec<GatewayDepositClaim>> {
-        Ok(self.inner.lock().await.deposit_claims.clone())
+        query: &DepositClaimQuery<'_>,
+    ) -> anyhow::Result<Option<GatewayDepositClaim>> {
+        Ok(self
+            .inner
+            .lock()
+            .await
+            .deposit_claims
+            .iter()
+            .find(|claim| query.matches(claim))
+            .cloned())
     }
 }

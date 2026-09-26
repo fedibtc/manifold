@@ -13,6 +13,7 @@
 //! the worker that reads `setup_store` back.
 
 use std::collections::BTreeSet;
+use std::future::Future;
 
 use async_trait::async_trait;
 use bitcoin::Address;
@@ -24,7 +25,7 @@ use fedimint_connectors::ConnectorRegistry;
 use fedimint_core::config::FederationId;
 use fedimint_core::core::OperationId;
 use fedimint_core::util::SafeUrl;
-use fedimint_eventlog::{Event, EventKind, PersistedLogEntry};
+use fedimint_eventlog::{Event, EventKind, EventLogId, PersistedLogEntry};
 use fedimint_gateway_client::payment_log;
 use fedimint_gateway_common::{
     ConnectFedPayload, DepositAddressPayload, DepositAddressRecheckPayload, GatewayInfo,
@@ -38,11 +39,10 @@ use fedimint_walletv2_client::events::{
 
 use crate::wallet::{bitcoin_network_to_domain, domain_network_to_bitcoin};
 
-/// Upper bound on claim events read per completion check. The log is read
-/// newest-first and each item matches its own output, so a page larger than
-/// the concurrent-item ceiling adds matches, not correctness. A claim older
-/// than the page delays that item's completion until a shorter log or a
-/// larger page reaches it.
+/// Claim events requested per payment-log read.
+///
+/// The search walks the log a page at a time, so this sets the cost of one
+/// round trip rather than how far back a claim can be found.
 const PAYMENT_LOG_PAGE_SIZE: usize = 1000;
 
 /// Event kinds a gateway's federation client logs when it claims a deposit.
@@ -92,6 +92,35 @@ pub(crate) struct GatewayDepositClaim {
     pub amount: Sats,
 }
 
+/// The deposit output one allocation item's funding operation paid.
+///
+/// Completion needs an item-output-to-claim identity, so the worker names the
+/// output it is looking for rather than reading the gateway's claims in bulk
+/// and choosing afterwards.
+pub(crate) struct DepositClaimQuery<'a> {
+    /// Transaction the item's funding operation recorded.
+    pub txid: &'a str,
+    /// Output index chain observation verified, when it verified one. A
+    /// manual review an operator resolved leaves it unset, and the txid is
+    /// then the whole of the attribution that exists.
+    pub out_idx: Option<u32>,
+    /// Least amount the federation must have credited for the deposit to
+    /// cover the item.
+    pub min_amount: Sats,
+}
+
+impl DepositClaimQuery<'_> {
+    /// Whether one claim names the output this query identifies.
+    ///
+    /// One transaction can pay two items' deposit addresses in separate
+    /// outputs, so a txid alone does not name the output an item funded.
+    pub(crate) fn matches(&self, claim: &GatewayDepositClaim) -> bool {
+        claim.txid == self.txid
+            && self.out_idx.is_none_or(|out_idx| claim.out_idx == out_idx)
+            && claim.amount.0 >= self.min_amount.0
+    }
+}
+
 #[async_trait]
 pub(crate) trait GatewayClient: Send + Sync {
     async fn gateway_info(&self) -> anyhow::Result<GatewaySnapshot>;
@@ -127,12 +156,23 @@ pub(crate) trait GatewayClient: Send + Sync {
             .map(|federation| federation.balance))
     }
 
-    /// Deposits the gateway's Fedimint client has observed and claimed for
-    /// this federation. The completion guard matches one of these against the
-    /// output the item's own funding operation paid; an aggregate balance
-    /// read cannot.
-    async fn deposit_claims(&self, federation_id: &str)
-    -> anyhow::Result<Vec<GatewayDepositClaim>>;
+    /// The gateway Fedimint client's claim of the deposit this query names,
+    /// if its payment log holds one.
+    ///
+    /// An aggregate balance read cannot establish attribution, so completion
+    /// asks for this instead.
+    ///
+    /// The search asks for the whole log rather than a bounded recent window,
+    /// so `None` is not limited by how far back the caller was willing to look.
+    /// It still reports what the gateway returned rather than what the gateway
+    /// holds: a payment-log read can omit the oldest part of the log, so a
+    /// claim old enough to fall there stays unreported however long the search
+    /// runs.
+    async fn find_deposit_claim(
+        &self,
+        federation_id: &str,
+        query: &DepositClaimQuery<'_>,
+    ) -> anyhow::Result<Option<GatewayDepositClaim>>;
 }
 
 /// What a gateway reports about itself, read before any config names it.
@@ -276,75 +316,137 @@ impl GatewayClient for ConfiguredGatewayClient {
         Ok(())
     }
 
-    async fn deposit_claims(
+    async fn find_deposit_claim(
         &self,
         federation_id: &str,
-    ) -> anyhow::Result<Vec<GatewayDepositClaim>> {
+        query: &DepositClaimQuery<'_>,
+    ) -> anyhow::Result<Option<GatewayDepositClaim>> {
         let federation_id = federation_id.parse::<FederationId>()?;
-        let response = payment_log(
-            &self.api,
-            &self.base_url,
-            PaymentLogPayload {
-                // `None` starts at the newest log position and the read walks
-                // backwards from there, up to the page size.
-                end_position: None,
-                pagination_size: PAYMENT_LOG_PAGE_SIZE,
-                federation_id,
-                event_kinds: claim_event_kinds(),
-            },
-        )
-        .await?;
-        Ok(deposit_claims_from_log(&response.0))
+        find_claim_in_log(query, |end_position| async move {
+            let response = payment_log(
+                &self.api,
+                &self.base_url,
+                PaymentLogPayload {
+                    end_position,
+                    pagination_size: PAYMENT_LOG_PAGE_SIZE,
+                    federation_id,
+                    event_kinds: claim_event_kinds(),
+                },
+            )
+            .await?;
+            Ok(response.0)
+        })
+        .await
     }
 }
 
+/// Walks a payment log newest-first until a claim satisfies the query.
+///
+/// `fetch_page` reads one page of claim events ending just below the position
+/// it is given, newest-first; `None` starts at the newest entry. The search
+/// stops at the first match, so a deposit claimed recently costs one page
+/// whatever the log holds behind it.
+async fn find_claim_in_log<F, Fut>(
+    query: &DepositClaimQuery<'_>,
+    mut fetch_page: F,
+) -> anyhow::Result<Option<GatewayDepositClaim>>
+where
+    F: FnMut(Option<EventLogId>) -> Fut,
+    Fut: Future<Output = anyhow::Result<Vec<PersistedLogEntry>>>,
+{
+    let mut reader = DepositClaimReader::default();
+    let mut end_position = None;
+    loop {
+        let page = fetch_page(end_position).await?;
+        if let Some(claim) = reader
+            .read_page(&page)
+            .into_iter()
+            .find(|claim| query.matches(claim))
+        {
+            return Ok(Some(claim));
+        }
+        match page_before(&page) {
+            Some(position) => end_position = Some(position),
+            None => return Ok(None),
+        }
+    }
+}
+
+/// The end position for the page preceding this one, or `None` when this page
+/// is empty or already reaches the start of the log.
+///
+/// A payment-log read never returns the entry at the position it is given: the
+/// raw window the gateway scans for it ends just below that position. The next
+/// read therefore ends at this page's oldest entry, which excludes that entry —
+/// already read — and admits every entry older than it. Stepping one further
+/// back would step over the entry between the two pages.
+fn page_before(page: &[PersistedLogEntry]) -> Option<EventLogId> {
+    let oldest = page.last()?.id();
+    (oldest != EventLogId::LOG_START).then_some(oldest)
+}
+
 /// Reduces a gateway's payment log to the deposits its federation client
-/// claimed, whichever wallet module served the federation.
+/// claimed, whichever wallet module served the federation, while the log is
+/// read newest-first one page at a time.
 ///
 /// A walletv2 receive is admitted only when the federation accepted the
 /// claiming transaction: [`ReceivePaymentEvent`] alone records an attempt, and
 /// its `Aborted` counterpart records one that failed. The credited amount is
 /// the output value less the module's receive fee, which is the ecash the
 /// client issued itself for that deposit.
-fn deposit_claims_from_log(entries: &[PersistedLogEntry]) -> Vec<GatewayDepositClaim> {
-    let accepted: BTreeSet<OperationId> = entries
-        .iter()
-        .filter(|entry| entry.as_raw().kind == ReceivePaymentUpdateEvent::KIND)
-        .filter_map(|entry| entry.as_raw().to_event::<ReceivePaymentUpdateEvent>())
-        .filter(|update| matches!(update.status, ReceivePaymentStatus::Success))
-        .map(|update| update.operation_id)
-        .collect();
+///
+/// The accepting update is logged after the receive it accepts, so a
+/// backwards walk meets the update first. Accepted operation ids therefore
+/// carry from page to page, and a receive a page boundary separates from its
+/// update still resolves.
+#[derive(Default)]
+struct DepositClaimReader {
+    accepted: BTreeSet<OperationId>,
+}
 
-    entries
-        .iter()
-        .filter_map(|entry| {
-            let raw = entry.as_raw();
-            if raw.kind == DepositConfirmed::KIND {
-                let event = raw.to_event::<DepositConfirmed>()?;
-                return Some(GatewayDepositClaim {
-                    txid: event.txid.to_string(),
-                    out_idx: event.out_idx,
-                    amount: Sats(event.amount.msats / 1000),
-                });
-            }
-            if raw.kind == ReceivePaymentEvent::KIND {
-                let event = raw.to_event::<ReceivePaymentEvent>()?;
-                if !accepted.contains(&event.operation_id) {
-                    return None;
+impl DepositClaimReader {
+    fn read_page(&mut self, entries: &[PersistedLogEntry]) -> Vec<GatewayDepositClaim> {
+        self.accepted.extend(
+            entries
+                .iter()
+                .filter(|entry| entry.as_raw().kind == ReceivePaymentUpdateEvent::KIND)
+                .filter_map(|entry| entry.as_raw().to_event::<ReceivePaymentUpdateEvent>())
+                .filter(|update| matches!(update.status, ReceivePaymentStatus::Success))
+                .map(|update| update.operation_id),
+        );
+        let accepted = &self.accepted;
+
+        entries
+            .iter()
+            .filter_map(|entry| {
+                let raw = entry.as_raw();
+                if raw.kind == DepositConfirmed::KIND {
+                    let event = raw.to_event::<DepositConfirmed>()?;
+                    return Some(GatewayDepositClaim {
+                        txid: event.txid.to_string(),
+                        out_idx: event.out_idx,
+                        amount: Sats(event.amount.msats / 1000),
+                    });
                 }
-                // A receive the federation has not yet assigned an outpoint
-                // names no output, so it attributes nothing.
-                let outpoint = event.outpoint?;
-                let credited = event.value.checked_sub(event.fee)?;
-                return Some(GatewayDepositClaim {
-                    txid: outpoint.txid.to_string(),
-                    out_idx: outpoint.vout,
-                    amount: Sats(credited.to_sat()),
-                });
-            }
-            None
-        })
-        .collect()
+                if raw.kind == ReceivePaymentEvent::KIND {
+                    let event = raw.to_event::<ReceivePaymentEvent>()?;
+                    if !accepted.contains(&event.operation_id) {
+                        return None;
+                    }
+                    // A receive the federation has not yet assigned an outpoint
+                    // names no output, so it attributes nothing.
+                    let outpoint = event.outpoint?;
+                    let credited = event.value.checked_sub(event.fee)?;
+                    return Some(GatewayDepositClaim {
+                        txid: outpoint.txid.to_string(),
+                        out_idx: outpoint.vout,
+                        amount: Sats(credited.to_sat()),
+                    });
+                }
+                None
+            })
+            .collect()
+    }
 }
 
 fn gateway_snapshot_from_info(info: GatewayInfo) -> anyhow::Result<GatewaySnapshot> {
