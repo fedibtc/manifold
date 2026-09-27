@@ -2,6 +2,7 @@ mod callback;
 mod discovery;
 mod maintenance;
 mod recovery_policy;
+mod restart_dkg;
 mod selection;
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
@@ -767,6 +768,8 @@ struct FmanState {
     status_calls: AtomicUsize,
     dkg_code_calls: AtomicUsize,
     restart_calls: AtomicUsize,
+    restart_codes: Mutex<Vec<Vec<GuardianCode>>>,
+    restart_finished_indices: Mutex<HashSet<usize>>,
     report_dkg_already_started: AtomicBool,
     start_callbacks: Mutex<Vec<Option<DkgCompletionCallback>>>,
     invite_calls: AtomicUsize,
@@ -1282,9 +1285,33 @@ impl FleetManagerService for TestFman {
 
     async fn restart_dkg(
         &self,
-        _request: SignedRequest<RestartDkgRequest>,
+        request: SignedRequest<RestartDkgRequest>,
     ) -> FmResult<RestartDkgResponse> {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("test clock follows Unix epoch")
+            .as_secs();
+        let request = request
+            .verify(Timestamp(now))
+            .expect("test FI request verifies")
+            .into_inner();
         self.state.restart_calls.fetch_add(1, Ordering::SeqCst);
+        self.state
+            .restart_codes
+            .lock()
+            .expect("test lock")
+            .push(request.guardian_codes);
+        if self
+            .state
+            .restart_finished_indices
+            .lock()
+            .expect("test lock")
+            .contains(&self.index)
+        {
+            return Err(FleetManagerError::WrongState {
+                status: ServiceStatus::Running,
+            });
+        }
         Ok(RestartDkgResponse {
             status: ServiceStatus::DkgInProcess,
         })

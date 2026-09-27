@@ -524,7 +524,14 @@ persisting the deliverable). Every ordinary resume repeats the idempotent
 fresh ceremony while an existing `DkgInProcess` ceremony keeps being polled.
 Resume never selects the destructive `RestartDkg`: replacing a stuck ceremony
 is an explicit, user-authorized action, and ordinary resume must not infer
-that intent. Wire types,
+that intent. `restart_dkg` is that action. It accepts only a formation waiting
+on DKG with a guardian code on every seat, and sends each seat one signed
+`RestartDkg` carrying the same codes `StartDkg` used. Like
+`decommission_seats`, it takes no driver lease and writes nothing, so a resume
+that is already polling keeps polling and observes the new ceremony. It
+reports per seat whether the FMan started a new ceremony, had already finished
+the previous one, or refused. A seat that finished first is the completion
+race the FMan spec leaves to the FI. Wire types,
 envelopes, and the service trait come
 from `crates/service-fleet-manager` and must not be duplicated here; the
 FI-facing verb contract is

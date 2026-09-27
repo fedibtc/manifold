@@ -13,6 +13,7 @@ mod guardian_fee_ppm;
 mod liquidity;
 mod maintenance;
 mod ports;
+mod restart_dkg;
 mod selection;
 mod setup_payment_federations;
 mod state;
@@ -80,6 +81,7 @@ pub use ports::{
     LiquidityProviderConnectorError, PaymentReservationRecovery, PreparedSeatPayment,
     SeatPaymentRecovery, SettledSeatRefund,
 };
+pub use restart_dkg::RestartDkgOutcome;
 pub use selection::{
     FMAN_SELECTION_PREVIEW_VALIDITY, FMAN_SELECTION_PROBE_TIMEOUT, FmanReplacementApproval,
     FmanReplacementPreview, FmanSelectionApproval, FmanSelectionPreview, FmanSelectionQuery,
