@@ -1,4 +1,4 @@
-//! L7 daemon: CLI args → open the fleet → serve the iroh RPC and the local
+//! L7 daemon: CLI args → onboard → check for a duplicate → open the fleet → serve the iroh RPC and the local
 //! admin socket.
 //!
 //! This binary is also the `fedimintd` its seats run
@@ -8,6 +8,7 @@
 //! stops every seat process before the runtime exits; Linux children also
 //! receive a parent-death signal if the FMan is hard-killed.
 
+mod duplicate_instance;
 #[cfg(feature = "embedded-operator-ui")]
 mod operator_ui;
 mod push_callback;
@@ -351,8 +352,8 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         manifold_environment.setup_payment_publisher().is_some(),
     );
     let phase = admin::OperatorPhase::onboarding(onboarding.clone());
-    let _admin = admin::serve(&phase, &admin::socket_path(&args.data_dir))?;
-    let _admin_http = match operator_http {
+    let admin_task = admin::serve(&phase, &admin::socket_path(&args.data_dir))?;
+    let admin_http_task = match operator_http {
         Some((bind, auth)) => {
             let (bound, task) =
                 admin_http::serve(with_operator_ui(admin_http::router(&phase, auth)), bind).await?;
@@ -375,6 +376,40 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         );
     }
     onboarding.completed().await?;
+
+    // One check after onboarding (including restore) but before the wallet,
+    // seats, and persistent-key endpoint can start. E2E uses isolated explicit
+    // routes, so it skips production discovery and its startup delay.
+    let local_e2e = std::env::var_os("FMAN_E2E_LOCAL_IROH").is_some();
+    // Reuse this registration through fleet startup; dropping a polled signal
+    // future here could swallow a stop request before the fleet starts serving.
+    let mut shutdown = Box::pin(shutdown_signal());
+    if duplicate_instance::should_probe(local_e2e) {
+        let target = db
+            .load_identity()
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("completed onboarding has no fleet identity"))?
+            .derive_iroh_secret_key()
+            .public();
+        let outcome = duplicate_instance::probe(
+            target.into(),
+            duplicate_instance::PROBE_BUDGET,
+            shutdown.as_mut(),
+        )
+        .await?;
+        // Retain the DB lock on a duplicate; the old instance disappearing
+        // cannot resume startup and the fleet remains unopened.
+        if !duplicate_instance::allow_activation(
+            outcome,
+            admin_task,
+            admin_http_task,
+            shutdown.as_mut(),
+        )
+        .await?
+        {
+            return Ok(());
+        }
+    }
 
     let wallet_origin = db.wallet_origin().await?;
     let fleet = Arc::new(
@@ -432,7 +467,6 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         None => None,
     };
     // The network-isolated formation harness supplies explicit loopback routes.
-    let local_e2e = std::env::var_os("FMAN_E2E_LOCAL_IROH").is_some();
     let endpoint_builder = if local_e2e {
         Endpoint::builder(presets::N0DisableRelay)
     } else {
@@ -521,7 +555,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         "Fleet Manager serving FI and capability-scoped telemetry Iroh RPC; press Ctrl-C to stop"
     );
 
-    shutdown_signal().await?;
+    shutdown.await?;
     telemetry_registration.shutdown().await;
     router.shutdown().await?;
     // Stop and join every wallet-join task before shutting down the fleet.
