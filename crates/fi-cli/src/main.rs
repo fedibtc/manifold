@@ -126,6 +126,12 @@ enum Command {
     /// Development and staging FMans alone accept the request, seats are
     /// forfeited rather than refunded, and local FI state is left untouched.
     Decommission,
+    /// Ask every FMan to replace this formation's DKG ceremony with a fresh
+    /// one.
+    ///
+    /// Only for a formation waiting on DKG. Every guardian's in-flight
+    /// ceremony is discarded, and local FI state is left untouched.
+    RestartDkg,
 }
 
 #[derive(Debug, ClapArgs)]
@@ -1348,6 +1354,26 @@ async fn run(
             endpoint.close().await;
             output.decommission(&result.context("decommission seats")?, format)?;
         }
+        Command::RestartDkg => {
+            let endpoint = bind_iroh_endpoint().await?;
+            let identity = CliIdentity::load_or_create(&args.state_dir, false)?;
+            let client = open_client(
+                &args.state_dir,
+                identity,
+                CliPayments::unavailable(),
+                &setup_payment,
+                None,
+                CliFmanConnector::new(endpoint.clone()),
+                peer_badge_verifier
+                    .clone()
+                    .expect("restart-dkg constructs a PeerBadge verifier"),
+                profile.clone(),
+            )
+            .await?;
+            let result = client.restart_dkg().await;
+            endpoint.close().await;
+            output.restart_dkg(&result.context("restart DKG")?, format)?;
+        }
         Command::PaymentWallet(payment_wallet) => {
             let PaymentWalletPreflight {
                 federation_id,
@@ -2064,7 +2090,8 @@ impl WalletRootSecret {
             | Command::Preview(_)
             | Command::Maintenance(_)
             | Command::Liquidity(_)
-            | Command::Decommission => {
+            | Command::Decommission
+            | Command::RestartDkg => {
                 return Ok(None);
             }
         };

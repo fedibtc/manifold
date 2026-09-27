@@ -140,6 +140,14 @@ struct DecommissionJson<'a> {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
+struct RestartDkgJson<'a> {
+    restarted: &'a [u16],
+    already_running: &'a [u16],
+    refused: Vec<RefusedSeatJson<'a>>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 struct RefusedSeatJson<'a> {
     index: u16,
     reason: &'a str,
@@ -690,6 +698,43 @@ impl<'a> CliOutput<'a> {
             )?;
             for (index, reason) in &outcome.refused {
                 writeln!(self.stdout, "seat {index} NOT decommissioned: {reason}")?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Writes the per-seat result of a DKG restart.
+    pub(crate) fn restart_dkg(
+        &mut self,
+        outcome: &fi_client::RestartDkgOutcome,
+        format: OutputFormat,
+    ) -> anyhow::Result<()> {
+        if format == OutputFormat::Json {
+            serde_json::to_writer(
+                &mut self.stdout,
+                &RestartDkgJson {
+                    restarted: &outcome.restarted,
+                    already_running: &outcome.already_running,
+                    refused: outcome
+                        .refused
+                        .iter()
+                        .map(|(index, reason)| RefusedSeatJson {
+                            index: *index,
+                            reason,
+                        })
+                        .collect(),
+                },
+            )?;
+            writeln!(self.stdout)?;
+        } else {
+            writeln!(
+                self.stdout,
+                "restarted DKG on {} seat(s), {} already running",
+                outcome.restarted.len(),
+                outcome.already_running.len()
+            )?;
+            for (index, reason) in &outcome.refused {
+                writeln!(self.stdout, "seat {index} NOT restarted: {reason}")?;
             }
         }
         Ok(())
