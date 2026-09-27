@@ -55,7 +55,7 @@ pub use fedi_decentralized_service_liquidity_manager::{
 };
 pub use fedimint_core::config::FederationId as FedimintFederationId;
 pub use formation::{
-    FormationRunOptions, FormationRunOptionsConfig, FormationTimingField,
+    DkgRestartResult, FormationRunOptions, FormationRunOptionsConfig, FormationTimingField,
     InvalidFormationRunOptions,
 };
 pub use guardian_fee_ppm::{GuardianFeePpm, InvalidGuardianFeePpm};

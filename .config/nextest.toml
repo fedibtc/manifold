@@ -1,6 +1,11 @@
 [profile.default]
 slow-timeout = { period = "40s", terminate-after = 1 }
 
+# The restart test first waits out ordinary resume's ten-minute deadline.
+[[profile.default.overrides]]
+filter = 'test(=fi_client_restarts_interrupted_message_exchange_under_defe)'
+slow-timeout = { period = "930s", terminate-after = 1 }
+
 # The paid formation owns an explicit ten-minute protocol deadline.
 [[profile.default.overrides]]
 filter = 'binary(fleet_manager_0_1_formation)'

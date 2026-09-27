@@ -1,0 +1,22 @@
+--- a/fedimint-server/src/config/dkg_g1.rs
++++ b/fedimint-server/src/config/dkg_g1.rs
+@@ -169,6 +169,19 @@
+                 _ => bail!("Received unexpected message during DKG G1: {message:?}"),
+             };
+ 
++            // The local formation test kills one child after a real DKG message.
++            if std::env::var_os("FMAN_E2E_LOCAL_IROH").is_some()
++                && let Some(path) = std::env::var_os("FMAN_E2E_DKG_PAUSE")
++            {
++                let path = std::path::PathBuf::from(path);
++                if path.exists() {
++                    std::fs::write(path.with_extension("received"), b"G1 message received")?;
++                    while path.exists() {
++                        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
++                    }
++                }
++            }
++
+             match dkg.step(peer, message)? {
+                 DkgStepG1::Broadcast(message) => {
+                     connections.send(Recipient::Everyone, P2PMessage::DkgG1(message));

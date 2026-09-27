@@ -563,6 +563,8 @@ async fn spawn_child(
         // Forward only the explicit harness marker so its module registry can
         // select hermetic test dependencies too.
         command.env("FMAN_E2E_LOCAL_IROH", "1");
+        // A per-seat marker lets the real-process test stop inside message exchange.
+        command.env("FMAN_E2E_DKG_PAUSE", data_dir.with_extension("pause-dkg"));
     }
     parent
         .set_nonblocking(true)

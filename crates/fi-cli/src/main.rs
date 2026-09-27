@@ -105,6 +105,8 @@ enum Command {
     Create(Box<CreateArgs>),
     /// Resume the active durable formation.
     Resume(ResumeArgs),
+    /// Explicitly replace unfinished DKG ceremonies (best effort, no retries).
+    RestartDkg(ResumeArgs),
     /// Explicitly authorize the exact parked aggregate payment requirements.
     AuthorizePayments(Box<AuthorizePaymentsArgs>),
     /// Print the latest durable/observed formation state.
@@ -979,6 +981,7 @@ async fn run(
         .then(|| PeerBadgeVerifier::try_from_profile(&profile))
         .transpose()
         .context("construct PeerBadge verifier for Manifold environment")?;
+    let restart_dkg = matches!(&args.command, Command::RestartDkg(_));
     match args.command {
         Command::Init => {
             let identity = CliIdentity::load_or_create(&args.state_dir, true)?;
@@ -1168,7 +1171,7 @@ async fn run(
             endpoint.close().await;
             result?;
         }
-        Command::Resume(resume) => {
+        Command::Resume(resume) | Command::RestartDkg(resume) => {
             let identity = CliIdentity::load_or_create(&args.state_dir, false)?;
             let endpoint = if std::env::var_os("FMAN_E2E_LOCAL_IROH").is_some() {
                 Endpoint::bind(presets::N0DisableRelay).await?
@@ -1190,6 +1193,31 @@ async fn run(
                 CliFiFeeAccountProvider::from_file(resume.fi_spv2_account_file.as_deref())?,
             )
             .await?;
+            if restart_dkg {
+                let results = client.restart_dkg(FormationRunOptions::default()).await;
+                endpoint.close().await;
+                let results = results?;
+                let output: Vec<_> = results
+                    .iter()
+                    .map(|item| {
+                        let result = item
+                            .result
+                            .as_ref()
+                            .map(ToString::to_string)
+                            .map_err(ToString::to_string);
+                        serde_json::json!({ "index": item.index, "result": result })
+                    })
+                    .collect();
+                println!("{}", serde_json::to_string(&output)?);
+                anyhow::ensure!(
+                    results
+                        .iter()
+                        .all(|item| matches!(item.result,
+                        Ok(fedi_decentralized_service_fleet_manager::ServiceStatus::DkgInProcess))),
+                    "not every guardian acknowledged a fresh DKG ceremony"
+                );
+                return Ok(());
+            }
             let result = client.resume().await;
             output.snapshot(&client.status(), format)?;
             endpoint.close().await;
@@ -2055,7 +2083,7 @@ impl WalletRootSecret {
     fn read_for(args: &AppArgs) -> anyhow::Result<Option<Self>> {
         let explicit_path = match &args.command {
             Command::Create(args) => args.wallet_secret_file.as_ref(),
-            Command::Resume(args) => args.wallet_secret_file.as_ref(),
+            Command::Resume(args) | Command::RestartDkg(args) => args.wallet_secret_file.as_ref(),
             Command::AuthorizePayments(args) => args.resume.wallet_secret_file.as_ref(),
             Command::PaymentWallet(args) => args.wallet_secret_file.as_ref(),
             Command::Init
