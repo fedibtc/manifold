@@ -104,7 +104,13 @@ enum Command {
     /// Validate intent and start formation when capabilities are connected.
     Create(Box<CreateArgs>),
     /// Resume the active durable formation.
-    Resume(ResumeArgs),
+    Resume {
+        #[command(flatten)]
+        args: ResumeArgs,
+        /// Maximum duration of this resume attempt; defaults to ten minutes.
+        #[arg(long)]
+        run_timeout_secs: Option<u64>,
+    },
     /// Explicitly replace unfinished DKG ceremonies (best effort, no retries).
     RestartDkg(ResumeArgs),
     /// Explicitly authorize the exact parked aggregate payment requirements.
@@ -971,6 +977,16 @@ async fn run(
     maintenance_preflight: Option<MaintenancePreflight>,
 ) -> anyhow::Result<()> {
     let mut output = CliOutput::stdio();
+    let resume_options = match &args.command {
+        Command::Resume {
+            run_timeout_secs: Some(seconds),
+            ..
+        } => FormationRunOptions::new(fi_client::FormationRunOptionsConfig {
+            run_timeout: Duration::from_secs(*seconds),
+            ..Default::default()
+        })?,
+        _ => FormationRunOptions::default(),
+    };
     let format = OutputFormat::from_json_flag(args.json);
     let setup_payment = CliSetupPayment::load(&args)?;
     let profile = args
@@ -1171,7 +1187,7 @@ async fn run(
             endpoint.close().await;
             result?;
         }
-        Command::Resume(resume) | Command::RestartDkg(resume) => {
+        Command::Resume { args: resume, .. } | Command::RestartDkg(resume) => {
             let identity = CliIdentity::load_or_create(&args.state_dir, false)?;
             let endpoint = if std::env::var_os("FMAN_E2E_LOCAL_IROH").is_some() {
                 Endpoint::bind(presets::N0DisableRelay).await?
@@ -1218,7 +1234,7 @@ async fn run(
                 );
                 return Ok(());
             }
-            let result = client.resume().await;
+            let result = client.resume_with_options(resume_options).await;
             output.snapshot(&client.status(), format)?;
             endpoint.close().await;
             result?;
@@ -2083,7 +2099,9 @@ impl WalletRootSecret {
     fn read_for(args: &AppArgs) -> anyhow::Result<Option<Self>> {
         let explicit_path = match &args.command {
             Command::Create(args) => args.wallet_secret_file.as_ref(),
-            Command::Resume(args) | Command::RestartDkg(args) => args.wallet_secret_file.as_ref(),
+            Command::Resume { args, .. } | Command::RestartDkg(args) => {
+                args.wallet_secret_file.as_ref()
+            }
             Command::AuthorizePayments(args) => args.resume.wallet_secret_file.as_ref(),
             Command::PaymentWallet(args) => args.wallet_secret_file.as_ref(),
             Command::Init

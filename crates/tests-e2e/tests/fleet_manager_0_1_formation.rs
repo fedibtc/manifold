@@ -2230,8 +2230,7 @@ async fn fi_client_restarts_interrupted_message_exchange_under_defe() {
     if env::var_os(OPT_IN_ENV).is_none() || !cfg!(target_os = "linux") {
         return;
     }
-    // Ordinary resume uses its real ten-minute deadline before we intervene.
-    tokio::time::timeout(Duration::from_secs(900), run_fi_crash_recovery(true))
+    tokio::time::timeout(FORMATION_TIMEOUT, run_fi_crash_recovery(true))
         .await
         .expect("explicit DKG restart E2E timed out")
         .expect("explicit DKG restart E2E failed");
@@ -2271,10 +2270,12 @@ async fn run_fi_crash_recovery(during_exchange: bool) -> anyhow::Result<()> {
     let callback_server = CallbackServer::start().await?;
     let temp = fman_e2e_temp_dir()?;
     let port_base = if during_exchange { 42_000 } else { 40_000 };
-    let pause = temp.join("fman-0/seats/0/data.pause-dkg");
+    let pause = |index| temp.join(format!("fman-{index}/seats/0/data.pause-dkg"));
     if during_exchange {
-        std::fs::create_dir_all(pause.parent().unwrap())?;
-        std::fs::write(&pause, b"")?;
+        for index in 0..GUARDIAN_COUNT {
+            std::fs::create_dir_all(pause(index).parent().unwrap())?;
+            std::fs::write(pause(index), b"")?;
+        }
     }
     let iroh_overrides = local_iroh_overrides_for_grid(port_base, 1, GUARDIAN_COUNT);
     let (mut daemons, locators) = start_daemons(
@@ -2338,11 +2339,15 @@ async fn run_fi_crash_recovery(during_exchange: bool) -> anyhow::Result<()> {
     let fi_pid = fi.id().context("newly spawned fi-cli has a process id")?;
     let fi_process = ExactProcess::open_direct_child(std::process::id(), fi_pid, "fi-cli")?;
 
-    tokio::time::timeout(Duration::from_secs(30), async {
+    let victim = tokio::time::timeout(Duration::from_secs(30), async {
         loop {
             if during_exchange {
-                if pause.with_extension("received").exists() {
-                    return Ok(());
+                // Peer 0 actively reconnects after restart; other peers may
+                // wait for the old connection's idle timeout before dialing.
+                if let Some(index) = (0..GUARDIAN_COUNT)
+                    .find(|&index| pause(index).with_extension("received").exists())
+                {
+                    return Ok(index);
                 }
                 tokio::time::sleep(Duration::from_millis(10)).await;
                 continue;
@@ -2355,7 +2360,7 @@ async fn run_fi_crash_recovery(during_exchange: bool) -> anyhow::Result<()> {
                 )?;
             }
             if all_started {
-                return Ok::<_, anyhow::Error>(());
+                return Ok::<_, anyhow::Error>(0);
             }
             tokio::time::sleep(Duration::from_millis(25)).await;
         }
@@ -2363,7 +2368,13 @@ async fn run_fi_crash_recovery(during_exchange: bool) -> anyhow::Result<()> {
     .await
     .map_err(|_| anyhow::anyhow!("timed out waiting for three guardians to start DKG"))??;
     let mut victims = Vec::new();
-    for index in 0usize..if during_exchange { 1 } else { 3 } {
+    for index in (0..GUARDIAN_COUNT).filter(|&index| {
+        if during_exchange {
+            index == victim
+        } else {
+            index < 3
+        }
+    }) {
         let fman_pid = daemons[index]
             .id()
             .context("Fleet Manager exited before DKG fault injection")?;
@@ -2380,9 +2391,11 @@ async fn run_fi_crash_recovery(during_exchange: bool) -> anyhow::Result<()> {
     }
 
     if during_exchange {
-        std::fs::remove_file(&pause)?;
+        for index in 0..GUARDIAN_COUNT {
+            std::fs::remove_file(pause(index))?;
+        }
         anyhow::ensure!(
-            !temp.join("fman-0/seats/0/data").exists(),
+            !temp.join(format!("fman-{victim}/seats/0/data")).exists(),
             "victim must not have completed DKG"
         );
     } else {
@@ -2432,12 +2445,11 @@ async fn run_fi_crash_recovery(during_exchange: bool) -> anyhow::Result<()> {
         resume
     };
     if during_exchange {
-        eprintln!(
-            "resuming after loss of a received G1 message; waiting for the normal FI deadline"
-        );
+        eprintln!("resuming after loss of a received G1 message with a ten-second deadline");
         let mut ordinary_resume = command("resume");
+        ordinary_resume.args(["--run-timeout-secs", "10"]);
         let failed = tokio::time::timeout(
-            Duration::from_secs(610),
+            Duration::from_secs(20),
             ordinary_resume.kill_on_drop(true).output(),
         )
         .await??;
@@ -2448,7 +2460,7 @@ async fn run_fi_crash_recovery(during_exchange: bool) -> anyhow::Result<()> {
         );
         anyhow::ensure!(
             journal_message_count(
-                &temp.join("fman-0/safe-events/fman"),
+                &temp.join(format!("fman-{victim}/safe-events/fman")),
                 "driven DKG start was observed"
             )? >= 2,
             "resume must have started the replacement child"
@@ -2480,7 +2492,7 @@ async fn run_fi_crash_recovery(during_exchange: bool) -> anyhow::Result<()> {
         let journal = temp.join(format!("fman-{index}/safe-events/fman"));
         let starts = journal_message_count(&journal, "driven DKG start was observed")?;
         let minimum_starts = if during_exchange {
-            if index == 0 { 3 } else { 2 }
+            if index == victim { 3 } else { 2 }
         } else if index < 3 {
             2
         } else {
