@@ -3,7 +3,7 @@ slow-timeout = { period = "40s", terminate-after = 1 }
 
 # Leave time to clean up if the message-exchange test reaches its own deadline.
 [[profile.default.overrides]]
-filter = 'test(=fi_client_restarts_interrupted_message_exchange_under_defe)'
+filter = 'test(=restart_dkg::fi_client_restarts_interrupted_message_exchange_under_defe)'
 slow-timeout = { period = "210s", terminate-after = 1 }
 
 # The paid formation owns an explicit ten-minute protocol deadline.

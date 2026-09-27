@@ -42,6 +42,9 @@ use tokio::io::{AsyncBufReadExt as _, AsyncReadExt as _, AsyncWriteExt as _, Buf
 use tokio::net::{TcpListener, TcpStream};
 use tokio::process::{Child, Command};
 
+#[path = "fleet_manager_0_1_formation/restart_dkg.rs"]
+mod restart_dkg;
+
 const OPT_IN_ENV: &str = "FMAN_E2E";
 const FLEET_MANAGER_BIN_ENV: &str = "FMAN_E2E_FLEET_MANAGER_BIN";
 const FMAN_CLI_BIN_ENV: &str = "FMAN_E2E_FMAN_CLI_BIN";
@@ -2219,24 +2222,13 @@ async fn fi_client_resumes_real_dkg_after_sigkill_under_defe() {
         return;
     }
 
-    tokio::time::timeout(FI_CRASH_RECOVERY_TIMEOUT, run_fi_crash_recovery(false))
+    tokio::time::timeout(FI_CRASH_RECOVERY_TIMEOUT, run_fi_crash_recovery())
         .await
         .expect("fi-client crash-recovery E2E timed out")
         .expect("fi-client crash-recovery E2E failed");
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn fi_client_restarts_interrupted_message_exchange_under_defe() {
-    if env::var_os(OPT_IN_ENV).is_none() || !cfg!(target_os = "linux") {
-        return;
-    }
-    tokio::time::timeout(FORMATION_TIMEOUT, run_fi_crash_recovery(true))
-        .await
-        .expect("explicit DKG restart E2E timed out")
-        .expect("explicit DKG restart E2E failed");
-}
-
-async fn run_fi_crash_recovery(during_exchange: bool) -> anyhow::Result<()> {
+async fn run_fi_crash_recovery() -> anyhow::Result<()> {
     let fleet_manager_bin = locate_binary(FLEET_MANAGER_BIN_ENV, "fleet-manager")?;
     let fi_cli_bin = locate_binary(FI_CLI_BIN_ENV, "fi-cli")?;
     let mut defe = AsyncDefeClient::connect_from_env()
@@ -2269,21 +2261,13 @@ async fn run_fi_crash_recovery(during_exchange: bool) -> anyhow::Result<()> {
 
     let callback_server = CallbackServer::start().await?;
     let temp = fman_e2e_temp_dir()?;
-    let port_base = if during_exchange { 42_000 } else { 40_000 };
-    let pause = |index| temp.join(format!("fman-{index}/seats/0/data.pause-dkg"));
-    if during_exchange {
-        for index in 0..GUARDIAN_COUNT {
-            std::fs::create_dir_all(pause(index).parent().unwrap())?;
-            std::fs::write(pause(index), b"")?;
-        }
-    }
-    let iroh_overrides = local_iroh_overrides_for_grid(port_base, 1, GUARDIAN_COUNT);
+    let iroh_overrides = local_iroh_overrides_for_grid(40_000, 1, GUARDIAN_COUNT);
     let (mut daemons, locators) = start_daemons(
         &fleet_manager_bin,
         &temp,
         bitcoind,
         1,
-        port_base,
+        40_000,
         Some(&iroh_overrides),
         GUARDIAN_COUNT,
         Some(NostrEnv {
@@ -2339,19 +2323,8 @@ async fn run_fi_crash_recovery(during_exchange: bool) -> anyhow::Result<()> {
     let fi_pid = fi.id().context("newly spawned fi-cli has a process id")?;
     let fi_process = ExactProcess::open_direct_child(std::process::id(), fi_pid, "fi-cli")?;
 
-    let victim = tokio::time::timeout(Duration::from_secs(30), async {
+    tokio::time::timeout(Duration::from_secs(30), async {
         loop {
-            if during_exchange {
-                // Peer 0 actively reconnects after restart; other peers may
-                // wait for the old connection's idle timeout before dialing.
-                if let Some(index) = (0..GUARDIAN_COUNT)
-                    .find(|&index| pause(index).with_extension("received").exists())
-                {
-                    return Ok(index);
-                }
-                tokio::time::sleep(Duration::from_millis(10)).await;
-                continue;
-            }
             let mut all_started = true;
             for index in 0usize..3 {
                 all_started &= journal_contains(
@@ -2360,7 +2333,7 @@ async fn run_fi_crash_recovery(during_exchange: bool) -> anyhow::Result<()> {
                 )?;
             }
             if all_started {
-                return Ok::<_, anyhow::Error>(0);
+                return Ok::<_, anyhow::Error>(());
             }
             tokio::time::sleep(Duration::from_millis(25)).await;
         }
@@ -2368,13 +2341,7 @@ async fn run_fi_crash_recovery(during_exchange: bool) -> anyhow::Result<()> {
     .await
     .map_err(|_| anyhow::anyhow!("timed out waiting for three guardians to start DKG"))??;
     let mut victims = Vec::new();
-    for index in (0..GUARDIAN_COUNT).filter(|&index| {
-        if during_exchange {
-            index == victim
-        } else {
-            index < 3
-        }
-    }) {
+    for index in 0usize..3 {
         let fman_pid = daemons[index]
             .id()
             .context("Fleet Manager exited before DKG fault injection")?;
@@ -2390,24 +2357,10 @@ async fn run_fi_crash_recovery(during_exchange: bool) -> anyhow::Result<()> {
         eprintln!("killed fedimintd {fedimintd_pid} for guardian {index}");
     }
 
-    if during_exchange {
-        for index in 0..GUARDIAN_COUNT {
-            std::fs::remove_file(pause(index))?;
-        }
-        anyhow::ensure!(
-            !temp.join(format!("fman-{victim}/seats/0/data")).exists(),
-            "victim must not have completed DKG"
-        );
-    } else {
-        fi_process.signal(libc::SIGKILL)?;
-    }
+    fi_process.signal(libc::SIGKILL)?;
     let status = fi.wait().await.context("reap killed fi-cli")?;
     anyhow::ensure!(
-        if during_exchange {
-            !status.success()
-        } else {
-            status.signal() == Some(libc::SIGKILL)
-        },
+        status.signal() == Some(libc::SIGKILL),
         "interrupted fi-cli exited unexpectedly with {status}"
     );
 
@@ -2424,64 +2377,22 @@ async fn run_fi_crash_recovery(during_exchange: bool) -> anyhow::Result<()> {
 
     // The killed invocation cannot release its lease. The kill follows lease
     // acquisition, so waiting from here covers the full 15s + 60s horizon.
-    if !during_exchange {
-        tokio::time::sleep(Duration::from_secs(76)).await;
-    }
-    let command = |verb: &str| {
-        let mut resume = Command::new(&fi_cli_bin);
-        resume
-            .arg("--state-dir")
-            .arg(&state_dir)
-            .arg("--json")
-            .arg(verb)
-            .arg("--fi-spv2-account-file")
-            .arg(&fi_fee_account_file)
-            .env("FMAN_E2E_LOCAL_IROH", "1")
-            .env("FM_IROH_CONNECT_OVERRIDES_PLAIN", &iroh_overrides)
-            .env(
-                fedi_decentralized_manifold_environment::DEV_NOSTR_RELAYS_ENV,
-                &nostr_relay.url,
-            );
-        resume
-    };
-    if during_exchange {
-        eprintln!("resuming after loss of a received G1 message with a ten-second deadline");
-        let mut ordinary_resume = command("resume");
-        ordinary_resume.args(["--run-timeout-secs", "10"]);
-        let failed = tokio::time::timeout(
-            Duration::from_secs(20),
-            ordinary_resume.kill_on_drop(true).output(),
-        )
-        .await??;
-        let error = String::from_utf8_lossy(&failed.stderr);
-        anyhow::ensure!(
-            !failed.status.success() && error.contains("formation timed out"),
-            "ordinary resume must time out on the broken ceremony: {error}"
+    tokio::time::sleep(Duration::from_secs(76)).await;
+    let mut resume = Command::new(&fi_cli_bin);
+    resume
+        .arg("--state-dir")
+        .arg(&state_dir)
+        .arg("--json")
+        .arg("resume")
+        .arg("--fi-spv2-account-file")
+        .arg(&fi_fee_account_file)
+        .env("FMAN_E2E_LOCAL_IROH", "1")
+        .env("FM_IROH_CONNECT_OVERRIDES_PLAIN", &iroh_overrides)
+        .env(
+            fedi_decentralized_manifold_environment::DEV_NOSTR_RELAYS_ENV,
+            &nostr_relay.url,
         );
-        anyhow::ensure!(
-            journal_message_count(
-                &temp.join(format!("fman-{victim}/safe-events/fman")),
-                "driven DKG start was observed"
-            )? >= 2,
-            "resume must have started the replacement child"
-        );
-        anyhow::ensure!(
-            (0..GUARDIAN_COUNT).any(|index| journal_contains(
-                &temp.join(format!("fman-{index}/seats/0/safe-events")),
-                "Config generation failed"
-            )
-            .unwrap_or(false)),
-            "require a protocol failure, not just a timeout"
-        );
-        run_expect_success(
-            command("restart-dkg"),
-            "fi-cli restart-dkg",
-            Duration::from_secs(60),
-        )
-        .await?;
-    }
-    let resumed =
-        run_expect_success(command("resume"), "fi-cli resume", Duration::from_secs(90)).await?;
+    let resumed = run_expect_success(resume, "fi-cli resume", Duration::from_secs(90)).await?;
     let resumed: serde_json::Value = serde_json::from_str(resumed.trim())?;
     anyhow::ensure!(
         resumed["formation"]["phase"] == "formed"
@@ -2491,13 +2402,7 @@ async fn run_fi_crash_recovery(during_exchange: bool) -> anyhow::Result<()> {
     for index in 0..GUARDIAN_COUNT {
         let journal = temp.join(format!("fman-{index}/safe-events/fman"));
         let starts = journal_message_count(&journal, "driven DKG start was observed")?;
-        let minimum_starts = if during_exchange {
-            if index == victim { 3 } else { 2 }
-        } else if index < 3 {
-            2
-        } else {
-            1
-        };
+        let minimum_starts = if index < 3 { 2 } else { 1 };
         anyhow::ensure!(
             starts >= minimum_starts,
             "guardian {index} observed only {starts} DKG start wave(s), expected at least {minimum_starts}"
@@ -2524,7 +2429,7 @@ async fn run_fi_crash_recovery(during_exchange: bool) -> anyhow::Result<()> {
         &bitcoind.rpc_url,
         &bitcoind.rpc_username,
         &bitcoind.rpc_password,
-        port_base,
+        40_000,
         Some(&iroh_overrides),
         None,
         Some(callback_server.origin()),
