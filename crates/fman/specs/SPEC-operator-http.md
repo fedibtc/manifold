@@ -35,6 +35,10 @@ listener, so the daemon owns compression for its own assets.
 dispatcher; HTTP is not a second set of operator semantics. Every response uses
 `Cache-Control: no-store`, because responses may contain the mnemonic and
 operator financial details. Request and response bodies must not be logged.
+The Overview self-check invokes the same protected operation only on an
+operator click; it previews a fixed-vocabulary report and copies that preview
+without uploading it. The report excludes addresses, identifiers, credentials,
+balances, and logs, but intentionally discloses coarse health and applicability.
 
 ## The onboarding phase
 

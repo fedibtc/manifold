@@ -210,6 +210,7 @@ async fn the_operator_listener_serves_a_data_root_with_no_identity_and_survives_
         fleet.clone(),
         presence,
         Arc::new(crate::admin::tests::RefreshAuthorizations(presence_tx)),
+        crate::self_check::SelfCheck::test_new(),
     );
     let refreshed = post_admin(addr, &AdminRequest::RefreshHolderAuthorizations)
         .await

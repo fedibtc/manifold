@@ -54,6 +54,7 @@ import fmanSeatGuardianFeesJson from '../../fixtures/fman_seat_guardian_fees.jso
 import fmanSeatReportsJson from '../../fixtures/fman_seat_reports.json';
 import fmanSeatStatusJson from '../../fixtures/fman_seat_status.json';
 import fmanSeatsJson from '../../fixtures/fman_seats.json';
+import fmanSelfCheckJson from '../../fixtures/fman_self_check.json';
 import fundsJson from '../../fixtures/funds.json';
 import healthJson from '../../fixtures/health.json';
 import pagingJson from '../../fixtures/paging.json';
@@ -84,6 +85,7 @@ import type {
   SeatGuardianFee,
   SeatReport,
   SeatStatusResponse,
+  SelfCheckResponse,
   ShowMnemonicResponse,
   ShowPlansResponse
 } from '../index';
@@ -263,6 +265,7 @@ const CREATED_AT_MS = 1_753_500_000_000;
 // from the Rust inventory fails to compile, and one present in Rust but missing
 // here fails the equality assertion below.
 const adminRequestsMirror = {
+  RunSelfCheck: 'RunSelfCheck',
   ShowPlans: 'ShowPlans',
   SetPrice: { SetPrice: { price_msats: 50_000_000 } },
   ShowCapacity: 'ShowCapacity',
@@ -694,6 +697,25 @@ describe('committed fixtures match their type-checked mirrors', () => {
 });
 
 describe('committed FMan fixtures match their type-checked mirrors', () => {
+  it('keeps the closed self-check response fixture typed', () => {
+    const mirror = {
+      state: 'completed',
+      report: {
+        schema_version: 1,
+        checks: [
+          { check_id: 'discovery_dns', status: 'pass', reason_code: 'reached' },
+          { check_id: 'discovery_https', status: 'warning', reason_code: 'http_service' },
+          { check_id: 'fman_relay', status: 'pass', reason_code: 'connected' },
+          { check_id: 'bitcoin_dns', status: 'not_applicable', reason_code: 'numeric_host' },
+          { check_id: 'bitcoin_primary', status: 'warning', reason_code: 'synchronizing' },
+          { check_id: 'bitcoin_fallback', status: 'not_applicable', reason_code: 'not_configured' },
+          { check_id: 'guardian_health', status: 'warning', reason_code: 'cached_unavailable' },
+          { check_id: 'directory_observation', status: 'unknown', reason_code: 'checking' }
+        ]
+      }
+    } satisfies SelfCheckResponse;
+    expect(fmanSelfCheckJson).toEqual(mirror);
+  });
   it('should keep fman_admin_requests.json equal to the typed mirror', () => {
     expect(adminRequestsJson).toEqual(adminRequestsMirror);
   });

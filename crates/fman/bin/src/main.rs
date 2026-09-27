@@ -11,6 +11,7 @@
 #[cfg(feature = "embedded-operator-ui")]
 mod operator_ui;
 mod push_callback;
+mod self_check;
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -395,7 +396,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
                 push_callback_retry_interval: DEFAULT_PUSH_CALLBACK_RETRY_INTERVAL,
                 completion_callback_invoker: Arc::new(PushGatewayCallbackInvoker::new()),
                 process_spawner: SeatProcessSpawner::Bundled,
-                process,
+                process: process.clone(),
             },
             async |identity| {
                 let wallet = fman_fedimint::Wallet::open_guarding(
@@ -507,7 +508,15 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         fleet.wallet().clone(),
         nostr.subscribe_setup_payment_federations(),
     );
-    phase.open_fleet(fleet.clone(), nostr.presence(), Arc::new(nostr.clone()));
+    let self_check = Arc::new(fman_core::self_check::SelfCheck::new(Arc::new(
+        self_check::DaemonConnectivityChecks::new(&process, router.endpoint().clone(), local_e2e),
+    )));
+    phase.open_fleet(
+        fleet.clone(),
+        nostr.presence(),
+        Arc::new(nostr.clone()),
+        self_check.clone(),
+    );
 
     // The connection card an FI needs to reach this FMan: printed to stdout
     // behind the prefix the e2e harnesses read. They are the only consumers,
@@ -522,6 +531,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     );
 
     shutdown_signal().await?;
+    self_check.shutdown().await;
     telemetry_registration.shutdown().await;
     router.shutdown().await?;
     // Stop and join every wallet-join task before shutting down the fleet.

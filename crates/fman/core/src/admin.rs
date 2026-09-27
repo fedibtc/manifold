@@ -44,6 +44,8 @@ pub fn socket_path(data_root: &Path) -> PathBuf {
 /// onto these.
 #[derive(serde::Serialize, serde::Deserialize, ts_rs::TS)]
 pub enum AdminRequest {
+    /// Run bounded diagnostics against configured dependencies and cached state.
+    RunSelfCheck,
     /// The current offer.
     ShowPlans,
     /// Replace the offer: the price seats are sold at, or none to stop
@@ -181,6 +183,7 @@ pub(crate) enum Phase {
         fleet: Arc<Fleet>,
         directory: tokio::sync::watch::Receiver<DirectoryPresence>,
         authorizations: Arc<dyn crate::directory::HolderAuthorizationRefresher>,
+        self_check: Arc<crate::self_check::SelfCheck>,
     },
 }
 
@@ -203,11 +206,13 @@ impl OperatorPhase {
         fleet: Arc<Fleet>,
         directory: tokio::sync::watch::Receiver<DirectoryPresence>,
         authorizations: Arc<dyn crate::directory::HolderAuthorizationRefresher>,
+        self_check: Arc<crate::self_check::SelfCheck>,
     ) -> Self {
         Self(Arc::new(std::sync::Mutex::new(Phase::Fleet {
             fleet,
             directory,
             authorizations,
+            self_check,
         })))
     }
 
@@ -217,11 +222,13 @@ impl OperatorPhase {
         fleet: Arc<Fleet>,
         directory: tokio::sync::watch::Receiver<DirectoryPresence>,
         authorizations: Arc<dyn crate::directory::HolderAuthorizationRefresher>,
+        self_check: Arc<crate::self_check::SelfCheck>,
     ) {
         *self.0.lock().expect("a phase writer panicked") = Phase::Fleet {
             fleet,
             directory,
             authorizations,
+            self_check,
         };
     }
 
@@ -234,7 +241,17 @@ impl OperatorPhase {
                 fleet,
                 directory,
                 authorizations,
-            } => dispatch(&fleet, &directory, authorizations.as_ref(), request).await,
+                self_check,
+            } => {
+                dispatch(
+                    &fleet,
+                    &directory,
+                    authorizations.as_ref(),
+                    &self_check,
+                    request,
+                )
+                .await
+            }
         }
     }
 
@@ -420,9 +437,19 @@ pub(crate) async fn dispatch(
     fleet: &Fleet,
     directory: &tokio::sync::watch::Receiver<DirectoryPresence>,
     authorizations: &dyn crate::directory::HolderAuthorizationRefresher,
+    self_check: &crate::self_check::SelfCheck,
     request: AdminRequest,
 ) -> anyhow::Result<Value> {
     match request {
+        AdminRequest::RunSelfCheck => {
+            let directory = crate::self_check::directory_check(&directory.borrow().onboarding);
+            Ok(serde_json::to_value(
+                self_check
+                    .run(fleet.cached_guardian_health(), directory)
+                    .await,
+            )
+            .expect("closed self-check report serializes"))
+        }
         AdminRequest::ShowPlans => Ok(plans_json(fleet.offered_plans().await)),
         AdminRequest::SetPrice { price_msats } => {
             fleet.set_offered_price(price_msats.map(Msats)).await?;

@@ -14,6 +14,30 @@ test('should report an advertised, healthy fleet when every federation is receiv
   await expect(page.getByText('Advertised and healthy')).toBeVisible();
 });
 
+test('should run the self-check on click and keep clipboard failures local', async ({ page }) => {
+  await resetScenario(page, 'fresh-fleet');
+  await page.addInitScript(() => {
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: {
+        writeText: async () => {
+          throw new Error('private-host secret');
+        }
+      }
+    });
+  });
+  await page.goto('/');
+  await signIn(page);
+
+  const preview = page.getByLabel('Report preview');
+  await expect(preview).toHaveCount(0);
+  await page.getByRole('button', { name: 'Run self-check' }).click();
+  await expect(preview).toContainText('FMan self-check');
+  await page.getByRole('button', { name: 'Copy report' }).click();
+  await expect(page.getByText('Select and copy the report manually.').first()).toBeVisible();
+  await expect(preview).not.toContainText('private-host');
+});
+
 test('should lead with the money: balance and both revenue streams', async ({ page }) => {
   await resetScenario(page, 'earnings');
 

@@ -91,6 +91,19 @@ be used only with test accounts and test funds.
 
 ## Sensitive data
 
+### Fleet Manager operator self-check
+
+The authenticated operator's explicit self-check contacts only configured
+guardian-discovery and Bitcoin dependencies, samples the running FMan relay,
+and reads cached guardian/directory observations. It does not initiate child
+probes, upload a report, or persist the result. Its shareable response is a
+closed set of generic outcome codes; it excludes endpoints, identities, raw
+errors, credentials, logs, and balances. Outcomes still disclose coarse
+health and which checks apply. HTTP checks are skipped when daemon proxy
+configuration might differ from the child's cleared environment; ordinary
+no-proxy checks explicitly disable proxy inheritance. Do not treat a passing
+daemon-side sample as end-to-end guardian health or storage integrity.
+
 ### Fleet Manager bundled guardian process
 
 FMan links and directly spawns its pinned `fedimintd` as the guardian process.

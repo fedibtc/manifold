@@ -1,0 +1,48 @@
+{
+  "report": {
+    "checks": [
+      {
+        "check_id": "discovery_dns",
+        "reason_code": "reached",
+        "status": "pass"
+      },
+      {
+        "check_id": "discovery_https",
+        "reason_code": "http_service",
+        "status": "warning"
+      },
+      {
+        "check_id": "fman_relay",
+        "reason_code": "connected",
+        "status": "pass"
+      },
+      {
+        "check_id": "bitcoin_dns",
+        "reason_code": "numeric_host",
+        "status": "not_applicable"
+      },
+      {
+        "check_id": "bitcoin_primary",
+        "reason_code": "synchronizing",
+        "status": "warning"
+      },
+      {
+        "check_id": "bitcoin_fallback",
+        "reason_code": "not_configured",
+        "status": "not_applicable"
+      },
+      {
+        "check_id": "guardian_health",
+        "reason_code": "cached_unavailable",
+        "status": "warning"
+      },
+      {
+        "check_id": "directory_observation",
+        "reason_code": "checking",
+        "status": "unknown"
+      }
+    ],
+    "schema_version": 1
+  },
+  "state": "completed"
+}

@@ -25,3 +25,11 @@ fn the_committed_typescript_union_matches_this_build() {
         "the committed TypeScript AdminRequest union is stale — run `just gen-contract-fixtures`"
     );
 }
+
+#[test]
+fn the_committed_self_check_types_match_this_build() {
+    assert_eq!(
+        std::fs::read_to_string(generator::self_check_path()).unwrap(),
+        generator::self_check_generated(),
+    );
+}

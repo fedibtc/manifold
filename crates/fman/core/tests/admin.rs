@@ -252,6 +252,7 @@ async fn admin_socket_round_trips_operator_verbs() {
         fleet.clone(),
         presence,
         Arc::new(RefreshAuthorizations(presence_tx.clone())),
+        crate::self_check::SelfCheck::test_new(),
     );
     let server = serve(&phase, &path).unwrap();
 
@@ -413,6 +414,7 @@ async fn admin_socket_round_trips_operator_verbs() {
             fleet,
             presence_tx.subscribe(),
             Arc::new(RefreshAuthorizations(presence_tx.clone())),
+            crate::self_check::SelfCheck::test_new(),
         ),
         crate::admin_http::AdminHttpAuth::TrustedProxy,
     )

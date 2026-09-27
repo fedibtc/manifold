@@ -334,6 +334,35 @@ pub enum TelemetryAccessError {
 }
 
 impl Fleet {
+    /// Aggregate cached formed guardian observations without identities or I/O.
+    pub fn cached_guardian_health(&self) -> crate::self_check::Check {
+        use crate::self_check::{Check, CheckId, CheckStatus, ReasonCode};
+        let seats = self.seats.read().expect("seat registry lock");
+        let mut any = false;
+        let mut unavailable = false;
+        for seat in seats.values() {
+            match seat.cached_self_check_health() {
+                Some(fedi_decentralized_service_fleet_manager::SeatHealth::Healthy) => any = true,
+                Some(
+                    fedi_decentralized_service_fleet_manager::SeatHealth::Unavailable
+                    | fedi_decentralized_service_fleet_manager::SeatHealth::Failed,
+                ) => {
+                    any = true;
+                    unavailable = true;
+                }
+                None => {}
+            }
+        }
+        let (status, reason) = if unavailable {
+            (CheckStatus::Warning, ReasonCode::CachedUnavailable)
+        } else if any {
+            (CheckStatus::Pass, ReasonCode::CachedHealthy)
+        } else {
+            (CheckStatus::NotApplicable, ReasonCode::NoFormedSeats)
+        };
+        Check::new(CheckId::GuardianHealth, status, reason)
+    }
+
     /// Open the store, rebuild the in-memory registry from it, and respawn
     /// every created seat's child. Ordinary ceremony phase is rederived by
     /// probing whenever a verb needs it. Completion callbacks are the explicit

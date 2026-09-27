@@ -556,6 +556,11 @@ impl Seat {
         self.state.borrow().decommissioned_at_ms.is_some()
     }
 
+    /// Read only cached formed-seat health, without inspecting filesystem or child.
+    pub(crate) fn cached_self_check_health(&self) -> Option<SeatHealth> {
+        self.state.borrow().cached_self_check_health()
+    }
+
     /// A decommissioned seat refuses mutation. Used by RPC callers as a fast
     /// precheck; the closed command channel is the terminal backstop.
     pub(crate) fn reject_decommissioned(&self) -> Result<(), SeatVerbError> {
@@ -815,6 +820,10 @@ impl Seat {
 }
 
 impl SeatRuntimeFacts {
+    fn cached_self_check_health(&self) -> Option<SeatHealth> {
+        (self.decommissioned_at_ms.is_none() && self.formed_invite.is_some())
+            .then(|| self.health.clone())
+    }
     fn unformed_status(&self) -> ServiceStatus {
         match self.process_slot {
             ProcessSlotPhase::DkgAcknowledged => ServiceStatus::DkgInProcess,

@@ -48,6 +48,7 @@
   },
   "ReenrollTelemetry": "ReenrollTelemetry",
   "RefreshHolderAuthorizations": "RefreshHolderAuthorizations",
+  "RunSelfCheck": "RunSelfCheck",
   "SeatStatus": {
     "SeatStatus": {
       "seat_id": "0707070707070707070707070707070707070707070707070707070707070707"

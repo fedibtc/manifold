@@ -34,6 +34,7 @@ pub mod remittance_metadata;
 pub mod restore;
 pub mod seat;
 pub mod seat_process;
+pub mod self_check;
 pub mod service;
 pub mod wallet;
 

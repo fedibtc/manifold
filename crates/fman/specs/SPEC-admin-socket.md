@@ -99,6 +99,11 @@ the fleet.
 
 ## Operations
 
+- `RunSelfCheck` has no caller-selected target. On an open fleet it samples
+  configured dependencies and cached observations under one daemon-wide
+  admission and deadline, returning only fixed result codes. Busy, cooldown,
+  and shutdown have fixed non-error outcomes. It neither triggers child probes
+  nor changes settings or persists a report; onboarding refuses it.
 - `ShowPlans` returns the current complete plan list.
 - `ShowCapacity` returns the durable maximum and currently available slots.
 - `SetCapacity` replaces the durable maximum. It is refused below the number

@@ -21,6 +21,7 @@
 
 import type { FederationId } from './funds';
 import type { AdminRequest as GeneratedAdminRequest } from './generated/adminRequest';
+import type { SelfCheckResponse } from './generated/selfCheck';
 
 // Federation invite code (serde(transparent) string).
 type InviteCode = string;
@@ -440,6 +441,7 @@ export type AdminRequestPayload<N extends AdminRequestName> = N extends UnitRequ
  *  `AdminResponsesCoverEveryVerb` below, so a verb added in Rust cannot arrive
  *  here without an answer type. */
 export interface AdminResponseByName {
+  RunSelfCheck: SelfCheckResponse;
   ShowPlans: ShowPlansResponse;
   SetPrice: SetPriceResponse;
   ShowCapacity: ShowCapacityResponse;

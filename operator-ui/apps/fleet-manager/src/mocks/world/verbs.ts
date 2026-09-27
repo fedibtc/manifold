@@ -431,6 +431,22 @@ const fleetHandlers: VerbTable<Exclude<AdminRequestName, OnboardingVerbName>> = 
   DecommissionSeat: decommissionSeat,
   ReenrollTelemetry: reenrollTelemetry,
   ShowPlans: showPlans,
+  RunSelfCheck: () => ({
+    state: 'completed',
+    report: {
+      schema_version: 1,
+      checks: [
+        { check_id: 'discovery_dns', status: 'pass', reason_code: 'reached' },
+        { check_id: 'discovery_https', status: 'pass', reason_code: 'reached' },
+        { check_id: 'fman_relay', status: 'pass', reason_code: 'connected' },
+        { check_id: 'bitcoin_dns', status: 'not_applicable', reason_code: 'numeric_host' },
+        { check_id: 'bitcoin_primary', status: 'pass', reason_code: 'reached' },
+        { check_id: 'bitcoin_fallback', status: 'not_applicable', reason_code: 'not_configured' },
+        { check_id: 'guardian_health', status: 'not_applicable', reason_code: 'no_formed_seats' },
+        { check_id: 'directory_observation', status: 'unknown', reason_code: 'checking' }
+      ]
+    }
+  }),
   SetPrice: setPrice,
   ShowCapacity: showCapacity,
   SetCapacity: setCapacity,

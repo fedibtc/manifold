@@ -4,6 +4,7 @@ import { EarningsTimeline } from '@/features/overview/components/earnings-timeli
 import { OfferSummary } from '@/features/overview/components/offer-summary/OfferSummary';
 import { useOverviewEarnings } from '@/features/overview/hooks/use-overview-earnings/useOverviewEarnings';
 import { deriveOverview } from '@/features/overview/utils/deriveOverview';
+import { SelfCheckCard } from '@/features/self-check/SelfCheckCard';
 import { useOffer } from '@/shared/api/hooks/use-offer/useOffer';
 import { useOnboarding } from '@/shared/api/hooks/use-onboarding/useOnboarding';
 import { usePaymentFederations } from '@/shared/api/hooks/use-payment-federations/usePaymentFederations';
@@ -81,6 +82,8 @@ export const OverviewPage = () => {
           {unreadableFees && <li>{unreadableFees}</li>}
         </ul>
       </QuerySurface>
+
+      <SelfCheckCard />
     </div>
   );
 };

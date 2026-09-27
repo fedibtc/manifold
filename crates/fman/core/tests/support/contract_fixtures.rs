@@ -86,6 +86,7 @@ pub const FIXTURE_NAMES: &[&str] = &[
     "fman_onboard_as_new",
     "fman_onboard_as_new_already",
     "fman_onboard_from_backup",
+    "fman_self_check",
 ];
 
 /// Pretty-printed JSON for every fixture, paired with its file stem. Every
@@ -140,6 +141,30 @@ pub fn fixture_json() -> Vec<(&'static str, String)> {
         (
             "fman_onboard_from_backup",
             onboarding::onboarded_restored_json(2, 1),
+        ),
+        (
+            "fman_self_check",
+            serde_json::to_value(fman_core::self_check::SelfCheckResponse::Completed {
+                report: fman_core::self_check::SelfCheckReport {
+                    schema_version: 1,
+                    checks: {
+                        use fman_core::self_check::{
+                            Check, CheckId as I, CheckStatus as S, ReasonCode as R,
+                        };
+                        [
+                            Check::new(I::DiscoveryDns, S::Pass, R::Reached),
+                            Check::new(I::DiscoveryHttps, S::Warning, R::HttpService),
+                            Check::new(I::FmanRelay, S::Pass, R::Connected),
+                            Check::new(I::BitcoinDns, S::NotApplicable, R::NumericHost),
+                            Check::new(I::BitcoinPrimary, S::Warning, R::Synchronizing),
+                            Check::new(I::BitcoinFallback, S::NotApplicable, R::NotConfigured),
+                            Check::new(I::GuardianHealth, S::Warning, R::CachedUnavailable),
+                            Check::new(I::DirectoryObservation, S::Unknown, R::Checking),
+                        ]
+                    },
+                },
+            })
+            .expect("closed report serializes"),
         ),
     ];
     pairs
@@ -294,7 +319,7 @@ fn kind_after(kind: AdminErrorKind) -> Option<AdminErrorKind> {
 /// threaded into the walk — which is what puts it in the fixture set. A
 /// hand-kept list would keep passing while silently missing the new verb.
 pub fn request_fixtures() -> Vec<AdminRequest> {
-    let mut all = vec![AdminRequest::ShowPlans];
+    let mut all = vec![AdminRequest::RunSelfCheck];
     while let Some(next) = after(all.last().expect("seeded with the first variant")) {
         assert!(
             all.len() < 100,
@@ -310,6 +335,7 @@ pub fn request_fixtures() -> Vec<AdminRequest> {
 fn after(request: &AdminRequest) -> Option<AdminRequest> {
     let seat_id = seat_id();
     Some(match request {
+        AdminRequest::RunSelfCheck => AdminRequest::ShowPlans,
         AdminRequest::ShowPlans => AdminRequest::SetPrice {
             price_msats: Some(50_000_000),
         },
@@ -370,6 +396,7 @@ fn after(request: &AdminRequest) -> Option<AdminRequest> {
 pub fn request_name(request: &AdminRequest) -> &'static str {
     match request {
         AdminRequest::ShowPlans => "ShowPlans",
+        AdminRequest::RunSelfCheck => "RunSelfCheck",
         AdminRequest::SetPrice { .. } => "SetPrice",
         AdminRequest::ShowCapacity => "ShowCapacity",
         AdminRequest::SetCapacity { .. } => "SetCapacity",
