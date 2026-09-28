@@ -2,7 +2,7 @@ import { expect, test } from '@playwright/test';
 import { signIn } from './support/auth';
 import { resetScenario } from './support/mock';
 
-const NAV_LABELS = ['Overview', 'Authorization', 'Seats', 'Payouts', 'Backup'];
+const NAV_LABELS = ['Overview', 'Authorization', 'Seats', 'Payouts', 'Backup', 'Health'];
 const RETIRED_NAV_LABELS = ['Plans', 'Identity'];
 
 test('should reach the fleet overview after signing in', async ({ page }) => {
@@ -19,6 +19,9 @@ test('should reach the fleet overview after signing in', async ({ page }) => {
       page.getByRole('navigation', { name: 'Sections' }).getByRole('link', { name: label })
     ).toBeVisible();
   }
+  await expect(page.getByRole('navigation', { name: 'Sections' }).getByRole('link')).toHaveText(
+    NAV_LABELS
+  );
 
   for (const label of RETIRED_NAV_LABELS) {
     await expect(
