@@ -426,6 +426,17 @@ pub(crate) struct SeatSession<C> {
     pub(crate) seat_id: SeatId,
 }
 
+/// One guardian's reply to an explicit restart. An error does not prove that
+/// its old ceremony survived: the request or acknowledgement may have been lost.
+#[derive(Debug)]
+pub struct DkgRestartResult {
+    /// Index in the saved formation's guardian set.
+    pub index: u16,
+    /// `DkgInProcess` acknowledges a new ceremony; `Running` means completion
+    /// won the race. Errors may follow a partial change on the guardian.
+    pub result: FiResult<ServiceStatus>,
+}
+
 #[derive(Clone)]
 pub(crate) struct PostFormedSeat {
     pub(crate) index: u16,
@@ -1268,6 +1279,113 @@ where
         );
         let value = MetaFieldValue(send_ppm.value().to_string());
         let result = self.update_meta_field_pinned(key, value, fi_id, run).await;
+        finish_driver_run(result, self.inner.store.release_driver_lease(lease).await)
+    }
+
+    /// Explicitly replace every unfinished guardian ceremony, without paying
+    /// again. All status checks finish before any restart is sent. Guardians
+    /// can still finish or disappear afterward, so this is a best-effort wave.
+    ///
+    /// No request is retried. Cancellation or a missing reply leaves the
+    /// outcome unknown; another restart requires a new user decision. Call
+    /// `resume` afterward to observe formation and finish its publication.
+    pub async fn restart_dkg(
+        &self,
+        options: FormationRunOptions,
+    ) -> FiResult<Vec<DkgRestartResult>> {
+        let _guard = self.inner.run_guard.try_lock().map_err(|_| FiError::Busy)?;
+        options.validate_for_start(&self.inner.store)?;
+        let fi_id = self.fi_id()?;
+        let (deadline, lease) = start_driver_run(&self.inner.store, options).await?;
+        let run = DriverRun::new(options, deadline, &lease);
+        let result = async {
+            let mut recovery = self.active_recovery(fi_id).await?;
+            if recovery.snapshot.phase.dkg_complete() || recovery.snapshot.action_required.is_some()
+            {
+                return Err(FiError::InvalidIntent(
+                    "formation cannot restart DKG in its current state".into(),
+                ));
+            }
+            let codes = recovery
+                .seats
+                .iter()
+                .map(|seat| {
+                    seat.progress.guardian_code.clone().ok_or_else(|| {
+                        FiError::InvalidIntent("restart requires every saved guardian code".into())
+                    })
+                })
+                .collect::<FiResult<Vec<_>>>()?;
+            let sessions = self.seat_sessions(&recovery, run).await?;
+            let mut checks = FuturesUnordered::new();
+            for session in &sessions {
+                checks.push(async {
+                    let request = self.sign(&GetStatusRequest {
+                        ts: Timestamp(now_secs()?),
+                        fi_id,
+                        seat_id: session.seat_id.clone(),
+                    })?;
+                    let response = run
+                        .call("checking guardian before restart", || {
+                            Ok(session.client.get_status(request))
+                        })
+                        .await?
+                        .map_err(|error| {
+                            fman_error(usize::from(session.index), error.to_string())
+                        })?;
+                    if !matches!(
+                        response.status,
+                        ServiceStatus::New | ServiceStatus::DkgInProcess
+                    ) {
+                        return Err(fman_error(
+                            usize::from(session.index),
+                            format!("cannot restart guardian in {}", response.status),
+                        ));
+                    }
+                    Ok(())
+                });
+            }
+            while let Some(check) = checks.next().await {
+                check?;
+            }
+            drop(checks);
+            recovery.snapshot.freshness = FormationFreshness::Unsynced;
+            self.publish_snapshot(recovery.snapshot.clone());
+            let mut pending = FuturesUnordered::new();
+            for session in &sessions {
+                let codes = &codes;
+                pending.push(async move {
+                    let result = async {
+                        let request = self.sign(&RestartDkgRequest {
+                            ts: Timestamp(now_secs()?),
+                            fi_id,
+                            seat_id: session.seat_id.clone(),
+                            guardian_codes: codes.clone(),
+                        })?;
+                        let response = run
+                            .call("restarting guardian DKG", || {
+                                Ok(session.client.restart_dkg(request))
+                            })
+                            .await?
+                            .map_err(|error| {
+                                fman_error(usize::from(session.index), error.to_string())
+                            })?;
+                        Ok(response.status)
+                    }
+                    .await;
+                    DkgRestartResult {
+                        index: session.index,
+                        result,
+                    }
+                });
+            }
+            let mut results = Vec::new();
+            while let Some(result) = pending.next().await {
+                results.push(result);
+            }
+            results.sort_by_key(|result| result.index);
+            Ok(results)
+        }
+        .await;
         finish_driver_run(result, self.inner.store.release_driver_lease(lease).await)
     }
 
@@ -3788,7 +3906,7 @@ where
             // requiring every manager to be online again.
             (Vec::new(), stored)
         } else {
-            let manager_connections = self.formed_sessions(recovery, run).await?;
+            let manager_connections = self.seat_sessions(recovery, run).await?;
             self.poll_until_running(&manager_connections, recovery, fi_id, run)
                 .await?;
             let invite = self
@@ -3899,7 +4017,7 @@ where
         Ok(())
     }
 
-    async fn formed_sessions(
+    async fn seat_sessions(
         &self,
         recovery: &ActiveFormationRecovery,
         run: DriverRun<'_>,
@@ -3907,10 +4025,10 @@ where
         let mut sessions = Vec::with_capacity(recovery.seats.len());
         for (position, seat) in recovery.seats.iter().enumerate() {
             let seat_id = seat.progress.seat_id.clone().ok_or_else(|| {
-                FiError::Storage(format!("formed FI seat row {position} has no seat id"))
+                FiError::Storage(format!("FI seat row {position} has no seat id"))
             })?;
             let client = run
-                .call("reconnecting to formed Fleet Manager", || {
+                .call("reconnecting to Fleet Manager", || {
                     Ok(self
                         .inner
                         .ports

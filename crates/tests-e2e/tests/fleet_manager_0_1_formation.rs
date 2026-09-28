@@ -42,6 +42,9 @@ use tokio::io::{AsyncBufReadExt as _, AsyncReadExt as _, AsyncWriteExt as _, Buf
 use tokio::net::{TcpListener, TcpStream};
 use tokio::process::{Child, Command};
 
+#[path = "fleet_manager_0_1_formation/restart_dkg.rs"]
+mod restart_dkg;
+
 const OPT_IN_ENV: &str = "FMAN_E2E";
 const FLEET_MANAGER_BIN_ENV: &str = "FMAN_E2E_FLEET_MANAGER_BIN";
 const FMAN_CLI_BIN_ENV: &str = "FMAN_E2E_FMAN_CLI_BIN";

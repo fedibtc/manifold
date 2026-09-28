@@ -104,7 +104,15 @@ enum Command {
     /// Validate intent and start formation when capabilities are connected.
     Create(Box<CreateArgs>),
     /// Resume the active durable formation.
-    Resume(ResumeArgs),
+    Resume {
+        #[command(flatten)]
+        args: ResumeArgs,
+        /// Maximum duration of this resume attempt; defaults to ten minutes.
+        #[arg(long)]
+        run_timeout_secs: Option<u64>,
+    },
+    /// Explicitly replace unfinished DKG ceremonies (best effort, no retries).
+    RestartDkg(ResumeArgs),
     /// Explicitly authorize the exact parked aggregate payment requirements.
     AuthorizePayments(Box<AuthorizePaymentsArgs>),
     /// Print the latest durable/observed formation state.
@@ -969,6 +977,16 @@ async fn run(
     maintenance_preflight: Option<MaintenancePreflight>,
 ) -> anyhow::Result<()> {
     let mut output = CliOutput::stdio();
+    let resume_options = match &args.command {
+        Command::Resume {
+            run_timeout_secs: Some(seconds),
+            ..
+        } => FormationRunOptions::new(fi_client::FormationRunOptionsConfig {
+            run_timeout: Duration::from_secs(*seconds),
+            ..Default::default()
+        })?,
+        _ => FormationRunOptions::default(),
+    };
     let format = OutputFormat::from_json_flag(args.json);
     let setup_payment = CliSetupPayment::load(&args)?;
     let profile = args
@@ -979,6 +997,26 @@ async fn run(
         .then(|| PeerBadgeVerifier::try_from_profile(&profile))
         .transpose()
         .context("construct PeerBadge verifier for Manifold environment")?;
+    let open_existing = async |resume: &ResumeArgs, wallet_secret: Option<WalletRootSecret>| {
+        let identity = CliIdentity::load_or_create(&args.state_dir, false)?;
+        let endpoint = bind_iroh_endpoint().await?;
+        let live_registry = connect_environment_registry(args.manifold_environment).await?;
+        let client = open_client_with_fee_account_provider(
+            &args.state_dir,
+            identity,
+            CliPayments::open_for_resume(resume, wallet_secret).await?,
+            &setup_payment,
+            Some(live_registry),
+            CliFmanConnector::new(endpoint.clone()),
+            peer_badge_verifier
+                .clone()
+                .expect("commands other than discover construct a PeerBadge verifier"),
+            profile.clone(),
+            CliFiFeeAccountProvider::from_file(resume.fi_spv2_account_file.as_deref())?,
+        )
+        .await?;
+        Ok::<_, anyhow::Error>((client, endpoint))
+    };
     match args.command {
         Command::Init => {
             let identity = CliIdentity::load_or_create(&args.state_dir, true)?;
@@ -1168,32 +1206,37 @@ async fn run(
             endpoint.close().await;
             result?;
         }
-        Command::Resume(resume) => {
-            let identity = CliIdentity::load_or_create(&args.state_dir, false)?;
-            let endpoint = if std::env::var_os("FMAN_E2E_LOCAL_IROH").is_some() {
-                Endpoint::bind(presets::N0DisableRelay).await?
-            } else {
-                Endpoint::bind(presets::N0).await?
-            };
-            let live_registry = connect_environment_registry(args.manifold_environment).await?;
-            let client = open_client_with_fee_account_provider(
-                &args.state_dir,
-                identity,
-                CliPayments::open_for_resume(&resume, wallet_secret).await?,
-                &setup_payment,
-                Some(live_registry),
-                CliFmanConnector::new(endpoint.clone()),
-                peer_badge_verifier
-                    .clone()
-                    .expect("commands other than discover construct a PeerBadge verifier"),
-                profile.clone(),
-                CliFiFeeAccountProvider::from_file(resume.fi_spv2_account_file.as_deref())?,
-            )
-            .await?;
-            let result = client.resume().await;
+        Command::Resume { args: resume, .. } => {
+            let (client, endpoint) = open_existing(&resume, wallet_secret).await?;
+            let result = client.resume_with_options(resume_options).await;
             output.snapshot(&client.status(), format)?;
             endpoint.close().await;
             result?;
+        }
+        Command::RestartDkg(restart) => {
+            let (client, endpoint) = open_existing(&restart, wallet_secret).await?;
+            let results = client.restart_dkg(FormationRunOptions::default()).await;
+            endpoint.close().await;
+            let results = results?;
+            let output: Vec<_> = results
+                .iter()
+                .map(|item| {
+                    let result = item
+                        .result
+                        .as_ref()
+                        .map(ToString::to_string)
+                        .map_err(ToString::to_string);
+                    serde_json::json!({ "index": item.index, "result": result })
+                })
+                .collect();
+            println!("{}", serde_json::to_string(&output)?);
+            anyhow::ensure!(
+                results.iter().all(|item| matches!(
+                    item.result,
+                    Ok(fedi_decentralized_service_fleet_manager::ServiceStatus::DkgInProcess)
+                )),
+                "not every guardian acknowledged a fresh DKG ceremony"
+            );
         }
         Command::AuthorizePayments(authorize) => {
             let identity = CliIdentity::load_or_create(&args.state_dir, false)?;
@@ -2055,7 +2098,9 @@ impl WalletRootSecret {
     fn read_for(args: &AppArgs) -> anyhow::Result<Option<Self>> {
         let explicit_path = match &args.command {
             Command::Create(args) => args.wallet_secret_file.as_ref(),
-            Command::Resume(args) => args.wallet_secret_file.as_ref(),
+            Command::Resume { args, .. } | Command::RestartDkg(args) => {
+                args.wallet_secret_file.as_ref()
+            }
             Command::AuthorizePayments(args) => args.resume.wallet_secret_file.as_ref(),
             Command::PaymentWallet(args) => args.wallet_secret_file.as_ref(),
             Command::Init

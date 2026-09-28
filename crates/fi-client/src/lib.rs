@@ -55,7 +55,7 @@ pub use fedi_decentralized_service_liquidity_manager::{
 };
 pub use fedimint_core::config::FederationId as FedimintFederationId;
 pub use formation::{
-    FormationRunOptions, FormationRunOptionsConfig, FormationTimingField,
+    DkgRestartResult, FormationRunOptions, FormationRunOptionsConfig, FormationTimingField,
     InvalidFormationRunOptions,
 };
 pub use guardian_fee_ppm::{GuardianFeePpm, InvalidGuardianFeePpm};
@@ -422,8 +422,14 @@ where
     /// [`Self::open`] (or [`Self::open_with_setup_payment_publisher`]), then call
     /// [`Self::resume`] again.
     pub async fn resume(&self) -> FiResult<()> {
+        self.resume_with_options(FormationRunOptions::default())
+            .await
+    }
+
+    /// Resume with caller-selected time limits, using the same recovery path
+    /// and cancellation behavior as [`Self::resume`].
+    pub async fn resume_with_options(&self, options: FormationRunOptions) -> FiResult<()> {
         let _run = self.inner.run_guard.try_lock().map_err(|_| FiError::Busy)?;
-        let options = FormationRunOptions::default();
         options.validate_for_start(&self.inner.store)?;
         let fi_id = self
             .inner
