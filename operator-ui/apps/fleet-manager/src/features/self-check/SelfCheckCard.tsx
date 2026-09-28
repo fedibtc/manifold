@@ -84,9 +84,9 @@ export const SelfCheckCard = () => {
         uploaded.
       </p>
 
-      <button type="button" disabled={run.isPending} onClick={start}>
+      <Button loading={run.isPending} onClick={start}>
         {run.isPending ? 'Checking…' : 'Run self-check'}
-      </button>
+      </Button>
       {run.isPending && <p role="status">Checking configured services…</p>}
       {notice && <p role="status">{notice}</p>}
       {result && summary && (
@@ -135,23 +135,21 @@ export const SelfCheckCard = () => {
           )}
           <details>
             <summary>Shareable report</summary>
-
-            <p>Fixed-vocabulary results only. Review before sharing.</p>
-
-            <label htmlFor="self-check-report">Report preview</label>
-
-            <textarea
-              id="self-check-report"
-              ref={text}
-              className={styles.preview}
-              readOnly
-              value={report ?? ''}
-            />
-
-            <Button variant="secondary" size="small" onClick={copy}>
-              {copied ? 'Copied' : 'Copy report'}
-            </Button>
-            {manualCopy && <p>Select and copy the report manually.</p>}
+            <div className={styles.reportContent}>
+              <p>Fixed-vocabulary results only. Review before sharing.</p>
+              <label htmlFor="self-check-report">Report preview</label>
+              <textarea
+                id="self-check-report"
+                ref={text}
+                className={styles.preview}
+                readOnly
+                value={report ?? ''}
+              />
+              <Button variant="secondary" size="small" onClick={copy}>
+                {copied ? 'Copied' : 'Copy report'}
+              </Button>
+              {manualCopy && <p>Select and copy the report manually.</p>}
+            </div>
           </details>
         </div>
       )}

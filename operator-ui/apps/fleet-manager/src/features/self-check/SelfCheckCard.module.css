@@ -1,5 +1,5 @@
 .card {
-  @apply rounded-lg border p-4 uStack4;
+  @apply rounded-lg border p-4 uStack4 md:p-6;
 }
 
 .preview {
@@ -16,4 +16,8 @@
 
 .finding {
   @apply flex flex-col gap-1 rounded-lg border p-3 text-sm;
+}
+
+.reportContent {
+  @apply mt-4 uStack3;
 }
