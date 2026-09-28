@@ -10,9 +10,9 @@
 //! impossible. `Seat` sends commands and reads the shared watch value. A
 //! decommissioned seat has no loop.
 //!
-//! Setup state comes from the in-memory driven-DKG session and event stream;
-//! FMan never probes a setup network API. Once configured, only the periodic
-//! watchdog uses [`FedimintApi::probe`]; requests read its published health.
+//! Setup progress comes from the driven-DKG event stream, while accepted
+//! ceremony inputs are durable for child/daemon restart. FMan never probes a
+//! setup network API. Once configured, only the periodic watchdog uses [`FedimintApi::probe`]; requests read its published health.
 //! The immutable formed row and final data directory make missing guardian
 //! data detectable after every crash window.
 
@@ -1388,7 +1388,19 @@ impl SeatLoop {
         state: anyhow::Result<ChildState>,
     ) -> anyhow::Result<()> {
         match state? {
-            ChildState::NeedsParams => Ok(()),
+            ChildState::NeedsParams => {
+                // Never send params to a configured or formed seat, including the
+                // crash window after the final directory was installed but before
+                // FMan received ConfigPersisted.
+                if self.state.borrow().formed_invite.is_some() || self.final_data_exists()? {
+                    return Ok(());
+                }
+                if let Some(codes) = self.db.dkg_inputs(&self.facts.seat_id).await? {
+                    let (submitted, own_code) = self.validate_dkg_codes(&codes)?;
+                    self.run_validated_dkg(&submitted, &own_code).await?;
+                }
+                Ok(())
+            }
             ChildState::AlreadyConfigured { invite_code } => {
                 self.handle_persisted_invite(InviteCode(invite_code)).await
             }
@@ -1462,8 +1474,8 @@ impl SeatLoop {
         self.mint_setup_code(federation_name)
     }
 
-    /// `StartDkg` owns only an in-memory session. Its own code is identified by
-    /// the seat's Iroh API key and then recomputed byte-for-byte from the
+    /// `StartDkg` records the validated envelope before sending it to the child.
+    /// Its own code is identified by the seat's Iroh API key and then recomputed byte-for-byte from the
     /// submitted code's federation-name field.
     async fn start_dkg(
         &mut self,
@@ -1476,6 +1488,11 @@ impl SeatLoop {
             return Err(SeatVerbError::WrongState {
                 status: self.state.borrow().service_status(final_data_exists),
             });
+        }
+        if final_data_exists {
+            return Err(SeatVerbError::internal(anyhow!(
+                "unformed seat has a final configuration directory"
+            )));
         }
         if self.state.borrow().unformed_status() == ServiceStatus::DkgInProcess {
             return Err(SeatVerbError::WrongState {
@@ -1491,11 +1508,11 @@ impl SeatLoop {
         let (submitted, own_code) = self.validate_dkg_codes(codes)?;
 
         // The parked child has proved that this seat can receive a ceremony.
-        // Retain the callback before sending parameters so a crash after the
-        // child persists its configuration cannot lose formation-level work.
+        // One commit retains both the envelope and the first callback choice
+        // before the child can start (or persist) a configuration.
         let callback = completion_callback.map(ValidatedDkgCompletionCallback::into_inner);
         self.db
-            .install_completion_callback(&self.facts.seat_id, callback.as_ref())
+            .record_dkg_inputs(&self.facts.seat_id, &submitted, callback.as_ref())
             .await
             .map_err(SeatVerbError::internal)?;
         self.completion_hooks.mark();
@@ -1658,9 +1675,11 @@ impl SeatLoop {
     /// The final directory is the authoritative destructive-safety gate even
     /// if a prior crash prevented the configured event from reaching this
     /// process. Setup attempts use only the transient directory owned by the
-    /// child, so FMan never has setup state to wipe or reconstruct.
-    /// Restart only the in-memory driven session. The child's staging directory
-    /// dies with that session; the final directory is never removed here.
+    /// child, so FMan never has cryptographic progress to wipe or reconstruct.
+    /// Replace the durable inputs before stopping the child. If FMan dies
+    /// during that stop, its successor starts the newly requested envelope.
+    /// The child's staging directory dies with the session; the final
+    /// directory is never removed here.
     async fn restart_dkg(
         &mut self,
         codes: &[GuardianCode],
@@ -1672,6 +1691,16 @@ impl SeatLoop {
                 status: self.state.borrow().service_status(final_data_exists),
             });
         }
+        if final_data_exists {
+            return Err(SeatVerbError::internal(anyhow!(
+                "unformed seat has a final configuration directory"
+            )));
+        }
+        let (submitted, _) = self.validate_dkg_codes(codes)?;
+        self.db
+            .record_dkg_inputs(&self.facts.seat_id, &submitted, None)
+            .await
+            .map_err(SeatVerbError::internal)?;
         self.stop_child().await.map_err(SeatVerbError::internal)?;
         if let Err(error) = self.spawn_child().await {
             self.schedule_respawn();
@@ -1680,14 +1709,10 @@ impl SeatLoop {
         if self.state.borrow().formed_invite.is_some() {
             return Ok(ServiceStatus::Running);
         }
-        if !matches!(
-            self.child.client().map(|client| client.child_state()),
-            Some(ChildState::NeedsParams)
-        ) {
+        // spawn_child has consumed the recorded inputs only for NeedsParams.
+        if self.state.borrow().unformed_status() != ServiceStatus::DkgInProcess {
             return Err(SeatVerbError::SeatUnavailable);
         }
-        let (submitted, own_code) = self.validate_dkg_codes(codes)?;
-        self.run_validated_dkg(&submitted, &own_code).await?;
         Ok(ServiceStatus::DkgInProcess)
     }
 

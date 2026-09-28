@@ -39,6 +39,61 @@ fn completion_callback(name: &str) -> DkgCompletionCallback {
 }
 
 #[tokio::test]
+async fn dkg_inputs_and_callback_commit_together_and_formed_seat_fences_replacement() {
+    let (_dir, db) = open_db().await;
+    let seat = crate::test_support::insert_test_seat(&db, new_seat(39)).await;
+    let raw: Vec<_> = (0..7)
+        .map(|n| fedi_decentralized_service_fleet_manager::GuardianCode(format!("guardian-{n}")))
+        .collect();
+    let codes = crate::facts::DkgCodeSet::validate(&raw, FederationSize(7), &raw[0]).unwrap();
+    let callback = completion_callback("first");
+    db.record_dkg_inputs(&seat.seat_id, &codes, Some(&callback))
+        .await
+        .unwrap();
+    assert_eq!(
+        db.dkg_inputs(&seat.seat_id).await.unwrap(),
+        Some(codes.iter().cloned().collect())
+    );
+    assert_eq!(
+        db.completion_callback(&seat.seat_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .callback,
+        Some(callback.clone())
+    );
+
+    let mut altered = raw;
+    altered[2].0.push_str("-new");
+    let replacement =
+        crate::facts::DkgCodeSet::validate(&altered, FederationSize(7), &altered[0]).unwrap();
+    db.record_dkg_inputs(&seat.seat_id, &replacement, None)
+        .await
+        .unwrap();
+    assert_eq!(
+        db.completion_callback(&seat.seat_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .callback,
+        Some(callback),
+        "restart keeps original callback"
+    );
+    let invite = InviteCode("formed-invite".to_owned());
+    db.record_formed(&seat.seat_id, &invite).await.unwrap();
+    assert!(db.dkg_inputs(&seat.seat_id).await.unwrap().is_none());
+    assert!(
+        db.record_dkg_inputs(&seat.seat_id, &codes, None)
+            .await
+            .is_err()
+    );
+    assert_eq!(
+        db.formed_federation_invite(&seat.seat_id).await.unwrap(),
+        Some(invite)
+    );
+}
+
+#[tokio::test]
 async fn completion_callback_is_installed_once_for_the_whole_formation() {
     let (_dir, db) = open_db().await;
     let seat = crate::test_support::insert_test_seat(&db, new_seat(40)).await;
