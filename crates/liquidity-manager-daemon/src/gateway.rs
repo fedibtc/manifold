@@ -365,24 +365,43 @@ where
         {
             return Ok(Some(claim));
         }
-        match page_before(&page) {
+        match page_before(&page, end_position) {
             Some(position) => end_position = Some(position),
             None => return Ok(None),
         }
     }
 }
 
-/// The end position for the page preceding this one, or `None` when this page
-/// is empty or already reaches the start of the log.
+/// The end position for the read after one that ended at `ended_at` and
+/// returned `page`, or `None` when the walk is finished.
 ///
-/// A payment-log read never returns the entry at the position it is given: the
-/// raw window the gateway scans for it ends just below that position. The next
-/// read therefore ends at this page's oldest entry, which excludes that entry —
-/// already read — and admits every entry older than it. Stepping one further
-/// back would step over the entry between the two pages.
-fn page_before(page: &[PersistedLogEntry]) -> Option<EventLogId> {
+/// The gateway resolves an end position into a raw window it computes as
+/// `end - batch`, saturating at the start of the log, and then keeps entries at
+/// or below `end`. Whether `end` itself comes back therefore depends on where
+/// it sits:
+///
+/// - far enough from the start of the log, the window stops just below `end`
+///   and excludes it;
+/// - close to the start, the subtraction saturates, the window covers `end`,
+///   and the filter admits it.
+///
+/// So the endpoint cannot be assumed exclusive. The walk resumes at the page's
+/// oldest entry, which is the only choice that skips nothing in the first
+/// regime, and it tolerates re-reading that one entry in the second. A page
+/// whose oldest entry is the position just asked for carries nothing older, and
+/// ends the walk — as does the start of the log, and a page with no entries at
+/// all. That keeps the walk strictly receding whichever regime it is in, so it
+/// always terminates.
+///
+/// One entry of a page can be spent re-reading its own endpoint, so a page has
+/// to hold more than one entry for the walk to advance.
+/// [`PAYMENT_LOG_PAGE_SIZE`] is far above that.
+fn page_before(page: &[PersistedLogEntry], ended_at: Option<EventLogId>) -> Option<EventLogId> {
     let oldest = page.last()?.id();
-    (oldest != EventLogId::LOG_START).then_some(oldest)
+    if oldest == EventLogId::LOG_START || ended_at == Some(oldest) {
+        return None;
+    }
+    Some(oldest)
 }
 
 /// Reduces a gateway's payment log to the deposits its federation client

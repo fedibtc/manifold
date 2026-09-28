@@ -25,10 +25,15 @@ condition.
 `claim_event_kinds`. At the pinned gatewayd source
 (`fedimint-gateway-server/src/lib.rs`, `handle_payment_log_msg`) this reads
 the federation client's event log newest-first, filters to whatever kinds the
-caller names, and truncates to the requested page size. The adapter walks the
-log a page at a time, each read ending just before the oldest entry of the
-previous page, until a claim satisfies the query or a page reaches the start
-of the log. `DepositClaimReader::read_page` reduces both modules' records to
+caller names, and truncates to the requested page size. Whether the requested
+end position is itself returned depends on where it sits: the raw window is
+computed as `end - batch` and saturates at the start of the log, so the
+position is excluded when far from the start and included when near it. The
+adapter walks the log a page at a time, resuming at the oldest entry of the
+previous page, which skips nothing in the first case and re-reads one entry in
+the second. It stops when a page carries nothing older than the position asked
+for, reaches the start of the log, or comes back empty, so the walk recedes and
+terminates in either case. `DepositClaimReader::read_page` reduces both modules' records to
 one outpoint-keyed claim and carries walletv2 acceptances between pages, which
 `tests/gateway.rs` pins.
 
