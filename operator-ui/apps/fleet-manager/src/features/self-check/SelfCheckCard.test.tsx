@@ -23,6 +23,8 @@ it('runs only on click, previews and copies exactly the report', async () => {
   renderCard();
   expect(call).not.toHaveBeenCalled();
   fireEvent.click(screen.getByRole('button', { name: 'Run self-check' }));
+  await screen.findByText('Needs attention');
+  fireEvent.click(screen.getByText('Shareable report'));
   await screen.findByLabelText('Report preview');
   expect(call).toHaveBeenCalledWith('RunSelfCheck');
   const value = (screen.getByLabelText('Report preview') as HTMLTextAreaElement).value;
@@ -34,6 +36,7 @@ it('hides the old report on a rejected rerun and does not copy transport errors'
   call.mockResolvedValueOnce(fixture).mockRejectedValueOnce(new Error('private-host secret'));
   renderCard();
   fireEvent.click(screen.getByRole('button', { name: 'Run self-check' }));
+  fireEvent.click(await screen.findByText('Shareable report'));
   await screen.findByLabelText('Report preview');
   fireEvent.click(screen.getByRole('button', { name: 'Run self-check' }));
   await screen.findByText(/request failed/);
@@ -51,8 +54,31 @@ it('offers a manual copy of the same preview if clipboard permission fails', asy
   });
   renderCard();
   fireEvent.click(screen.getByRole('button', { name: 'Run self-check' }));
+  fireEvent.click(await screen.findByText('Shareable report'));
   await screen.findByLabelText('Report preview');
   fireEvent.click(screen.getByRole('button', { name: 'Copy report' }));
   await screen.findByText('Select and copy the report manually.');
   expect(screen.queryByText(/private-host/)).toBeNull();
+});
+
+it('shows a compact green pass for all-pass results and does not lead with report text', async () => {
+  call.mockResolvedValue({
+    ...fixture,
+    report: {
+      ...fixture.report,
+      checks: fixture.report.checks.map((check) => ({
+        ...check,
+        status: 'pass'
+      }))
+    }
+  });
+  renderCard();
+  fireEvent.click(screen.getByRole('button', { name: 'Run self-check' }));
+  await screen.findByText('All checks passed');
+  const banner = screen.getByText('All checks passed').closest('[data-variant]');
+  expect(banner).toHaveAttribute('data-variant', 'success');
+  expect(banner?.querySelector('[aria-hidden="true"]')).toHaveTextContent('✓');
+  expect(screen.queryByRole('list')).toBeNull();
+  expect(screen.getByLabelText('Report preview')).not.toBeVisible();
+  expect(screen.getByText('Shareable report')).toBeInTheDocument();
 });

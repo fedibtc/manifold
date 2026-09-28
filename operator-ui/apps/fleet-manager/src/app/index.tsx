@@ -10,6 +10,7 @@ import { SetupGate } from '@/app/components/setup-gate/SetupGate';
 import { AuthorizationPage } from '@/pages/authorization/AuthorizationPage';
 import { BackupPage } from '@/pages/backup/BackupPage';
 import { BackupPhrasePage } from '@/pages/backup-phrase/BackupPhrasePage';
+import { HealthPage } from '@/pages/health/HealthPage';
 import { OfferPage } from '@/pages/offer/OfferPage';
 import { OverviewPage } from '@/pages/overview/OverviewPage';
 import { PayoutsPage } from '@/pages/payouts/PayoutsPage';
@@ -39,6 +40,7 @@ const router = createBrowserRouter([
                 element: <AppShell />,
                 children: [
                   { index: true, element: <OverviewPage /> },
+                  { path: 'health', element: <HealthPage /> },
                   { path: 'authorization', element: <AuthorizationPage /> },
                   { path: 'seats', element: <SeatsPage /> },
                   { path: 'seats/:seatId', element: <SeatDetailPage /> },

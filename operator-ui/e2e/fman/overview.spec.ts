@@ -26,16 +26,59 @@ test('should run the self-check on click and keep clipboard failures local', asy
       }
     });
   });
-  await page.goto('/');
+  await page.goto('/health');
   await signIn(page);
 
   const preview = page.getByLabel('Report preview');
   await expect(preview).toHaveCount(0);
   await page.getByRole('button', { name: 'Run self-check' }).click();
-  await expect(preview).toContainText('FMan self-check');
+  await expect(page.getByText('Some checks were not confirmed')).toBeVisible();
+  await page.getByText('Shareable report').click();
+  await expect(preview).toContainText('fman-local-health-check');
   await page.getByRole('button', { name: 'Copy report' }).click();
   await expect(page.getByText('Select and copy the report manually.').first()).toBeVisible();
   await expect(preview).not.toContainText('private-host');
+});
+
+test('should distinguish all-pass and warning results on Health', async ({ page }) => {
+  await resetScenario(page, 'authorization-observed');
+  await page.addInitScript(() => {
+    const original = window.fetch.bind(window);
+    window.fetch = async (...args) => {
+      const response = await original(...args);
+      if (args[1]?.body !== '"RunSelfCheck"' || !response.ok) return response;
+      const payload = await response.clone().json();
+      const checks = payload.Ok.report.checks.map(
+        (check: { check_id: string; status: string; reason_code: string }) => ({
+          ...check,
+          status: 'pass',
+          reason_code: check.check_id === 'fman_relay' ? 'connected' : 'reached'
+        })
+      );
+      if (window.localStorage.getItem('health-test-warning') === 'true') {
+        checks[1].status = 'warning';
+        checks[1].reason_code = 'http_service';
+      }
+      return new Response(
+        JSON.stringify({ Ok: { state: 'completed', report: { schema_version: 1, checks } } }),
+        { status: 200, headers: { 'content-type': 'application/json' } }
+      );
+    };
+  });
+  await page.goto('/health');
+  await signIn(page);
+  await expect(page.getByRole('link', { name: 'Health' })).toHaveAttribute('aria-current', 'page');
+  await expect(page.getByRole('heading', { name: 'Fleet status' })).toBeVisible();
+  await page.getByRole('button', { name: 'Run self-check' }).click();
+  await expect(page.getByText('All checks passed')).toBeVisible();
+  await expect(page.getByText('8 checks passed.')).toBeVisible();
+  await expect(page.getByLabel('Report preview')).not.toBeVisible();
+
+  await page.evaluate(() => window.localStorage.setItem('health-test-warning', 'true'));
+  await page.getByRole('button', { name: 'Run self-check' }).click();
+  await expect(page.getByText('Needs attention').first()).toBeVisible();
+  await expect(page.getByText('Guardian discovery HTTPS transport — Warning')).toBeVisible();
+  await expect(page.getByText('All checks passed')).toHaveCount(0);
 });
 
 test('should lead with the money: balance and both revenue streams', async ({ page }) => {

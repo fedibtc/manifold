@@ -7,7 +7,7 @@ import type {
   SelfCheckResponse
 } from '@operator-ui/types';
 
-const labels: Record<CheckId, string> = {
+export const labels: Record<CheckId, string> = {
   discovery_dns: 'Guardian discovery name (daemon resolver)',
   discovery_https: 'Guardian discovery HTTPS transport',
   fman_relay: 'FMan control-plane relay',
@@ -18,7 +18,7 @@ const labels: Record<CheckId, string> = {
   directory_observation: 'Retained directory enrollment observation'
 };
 
-const statuses: Record<CheckStatus, string> = {
+export const statuses: Record<CheckStatus, string> = {
   pass: 'Pass',
   warning: 'Warning',
   failure: 'Failure',
@@ -26,7 +26,7 @@ const statuses: Record<CheckStatus, string> = {
   not_applicable: 'Not applicable'
 };
 
-const reasons: Record<ReasonCode, string> = {
+export const reasons: Record<ReasonCode, string> = {
   reached: 'The configured service answered this narrow check.',
   no_records: 'This name did not resolve during the check.',
   timeout: 'This attempt timed out; it may be transient.',
@@ -59,7 +59,7 @@ const reasons: Record<ReasonCode, string> = {
   previous_relay_error: 'A previous directory read failed; current relay access was not checked.'
 };
 
-const guidance: Record<CheckId, string> = {
+export const guidance: Record<CheckId, string> = {
   discovery_dns:
     'If unresolved, inspect the FMan host/container DNS settings and configured discovery service availability.',
   discovery_https:
@@ -124,21 +124,39 @@ export const parseSelfCheckResponse = (value: unknown): SelfCheckResponse | null
 };
 
 export const formatSelfCheckReport = (report: SelfCheckReport): string => {
-  const lines = [
-    'FMan self-check',
-    'Generic outcomes and guidance only; review before sharing.',
-    ''
-  ];
-  for (const check of report.checks as Check[]) {
-    lines.push(`${labels[check.check_id]} — ${statuses[check.status]}`);
-    lines.push(`  ${reasons[check.reason_code]}`);
-    if (check.status === 'warning' || check.status === 'failure' || check.status === 'unknown') {
-      lines.push(`  What to check: ${guidance[check.check_id]}`);
-    }
-  }
-  lines.push(
-    '',
-    'Limits: These are daemon-side samples and cached observations, not proof of guardian discovery, direct UDP, remote peers, consensus, chain-tip freshness, current enrollment or missing storage/data. No automatic changes or report upload occurred.'
+  // Construct every field from the closed vocabulary; never serialize wire data directly.
+  return JSON.stringify(
+    {
+      format: 'fman-local-health-check',
+      version: 1,
+      checks: (report.checks as Check[]).map((check) => ({
+        id: check.check_id,
+        label: labels[check.check_id],
+        status: check.status,
+        reason: check.reason_code,
+        explanation: reasons[check.reason_code],
+        ...(check.status === 'warning' || check.status === 'failure' || check.status === 'unknown'
+          ? { guidance: guidance[check.check_id] }
+          : {})
+      })),
+      limits:
+        'Daemon-side samples and cached observations, not proof of guardian discovery, direct UDP, remote peers, consensus, chain-tip freshness, current enrollment or missing storage/data. No automatic changes or report upload occurred.'
+    },
+    null,
+    2
   );
-  return lines.join('\n');
+};
+
+export const summarizeSelfCheck = (report: SelfCheckReport) => {
+  const counts = { pass: 0, warning: 0, failure: 0, unknown: 0, not_applicable: 0 };
+  for (const check of report.checks) counts[check.status]++;
+  const tone: 'error' | 'warn' | 'info' | 'success' =
+    counts.failure > 0
+      ? 'error'
+      : counts.warning > 0
+        ? 'warn'
+        : counts.unknown > 0 || counts.not_applicable > 0
+          ? 'info'
+          : 'success';
+  return { counts, tone };
 };
