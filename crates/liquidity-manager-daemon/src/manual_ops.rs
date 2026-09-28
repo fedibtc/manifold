@@ -15,6 +15,8 @@ use fedi_decentralized_service_liquidity_manager::{
     ResolveManualReviewRequest, ResolveManualReviewResponse, RetryFundingStepRequest,
     RetryFundingStepResponse, Sats, ServiceResult, WalletOperationId, WalletOperationStatus,
 };
+use std::future::Future;
+
 use sqlx::Row;
 use sqlx::sqlite::SqliteRow;
 
@@ -55,6 +57,27 @@ pub(crate) async fn abandon_gateway_item_with_database(
     database: &Database,
     request: AbandonGatewayItemRequest,
 ) -> ServiceResult<AbandonGatewayItemResponse> {
+    abandon_gateway_item_awaiting(database, request, || async { Ok(()) }).await
+}
+
+/// Abandons a gateway item, pausing between reading it and taking the write
+/// transaction.
+///
+/// The read decides eligibility and the guarded update enforces it, and between
+/// the two the item can reach a terminal state — a late claim completing it is
+/// the case that matters, since completion leaves the overdue marker in place
+/// and so passes every check made on the value that was read. `settle` runs in
+/// exactly that window, which is the only way to exercise the update's own
+/// predicate rather than the earlier check that usually rejects first.
+pub(crate) async fn abandon_gateway_item_awaiting<F, Fut>(
+    database: &Database,
+    request: AbandonGatewayItemRequest,
+    settle: F,
+) -> ServiceResult<AbandonGatewayItemResponse>
+where
+    F: FnOnce() -> Fut,
+    Fut: Future<Output = ServiceResult<()>>,
+{
     let reason = request.reason.trim().to_owned();
     if reason.is_empty() {
         return abandon_gateway_audited(
@@ -116,6 +139,8 @@ pub(crate) async fn abandon_gateway_item_with_database(
         )
         .await;
     }
+
+    settle().await?;
 
     let mut tx = database.begin_write().await.map_err(internal_error)?;
     let operation = match item.step.wallet_operation_id.as_deref() {

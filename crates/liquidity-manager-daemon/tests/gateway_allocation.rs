@@ -12,7 +12,7 @@ use fedi_decentralized_service_liquidity_manager::{
     ItemAllocationStatus, ItemId, LiquidityFailureCode, ManualOperationStatus,
     ManualReviewResolution, ProviderPolicy, ReplenishmentConfig, ResolveManualReviewRequest,
     RpcEndpointAddress, RpcEndpointConfig, RpcEndpointId, RpcProtocolName, RpcTransport,
-    SourceType, Url, WalletOperationType,
+    SourceType, Timestamp, Url, WalletOperationType,
 };
 use tokio::sync::Mutex;
 
@@ -25,8 +25,8 @@ use crate::gateway::{
     DepositClaimQuery, GatewayDepositClaim, GatewayFederationSnapshot, GatewaySnapshot,
 };
 use crate::manual_ops::{
-    abandon_gateway_item_with_database, cancel_allocation_with_database,
-    resolve_manual_review_with_database_for_test,
+    abandon_gateway_item_awaiting, abandon_gateway_item_with_database,
+    cancel_allocation_with_database, resolve_manual_review_with_database_for_test,
 };
 use crate::test_support::{AllocationSeed, ItemSeed, test_sqlite_path};
 use crate::wallet::{SyncedWalletStatus, TestFundsWallet, WalletOperationSync};
@@ -1075,6 +1075,9 @@ async fn one_resync_stays_one_outage_across_both_workers() -> anyhow::Result<()>
 
     gateway.set_synced_to_chain(false).await;
     run_gateway_pass(&database, &setup, &wallet, &gateway).await?;
+    // Age the record before the alternating passes. Immediate calls can all
+    // land in one Unix second, which would hide a reset behind equality.
+    backdate_gateway_observation(&database, &setup.gateway.gateway_id, 3_600).await?;
     let began = gateway_observation(&database, &setup.gateway.gateway_id)
         .await?
         .expect("the outage is recorded");
@@ -1337,6 +1340,116 @@ async fn abandoning_an_item_that_completed_after_going_overdue_is_refused() -> a
     Ok(())
 }
 
+/// A claim that lands while abandonment is in flight keeps the completion.
+///
+/// Abandonment reads the item, judges it eligible, and only then takes its
+/// write transaction. A late claim can complete the item inside that window,
+/// and completion leaves the overdue marker in place, so every check made on
+/// the value that was read still passes. Only the update's own status predicate
+/// can refuse at that point, and this is the interleaving that exercises it:
+/// with the predicate removed, the earlier check would still admit the request
+/// and the write would overwrite a real completion.
+#[tokio::test]
+async fn a_claim_completing_mid_abandonment_keeps_the_completion() -> anyhow::Result<()> {
+    let database = Database::connect(test_sqlite_path("gateway-abandon-interleaved")).await?;
+    let setup = test_setup_config();
+    let (federation_id, item_id) = seed_gateway_allocation(&database, &setup, Sats(25_000)).await?;
+    let wallet = TestFundsWallet::new(setup.network, Sats(100_000), regtest_address());
+    let gateway = FakeGateway::new(setup.network, regtest_address());
+    gateway.set_connect_balance(Sats(40_000)).await;
+
+    run_gateway_pass(&database, &setup, &wallet, &gateway).await?;
+    let operation =
+        wallet_operation_for_item(&database, WalletOperationType::GatewayFunding, &item_id)
+            .await?
+            .expect("wallet operation exists");
+    settle_funding_send(&database, &operation.operation_id.0, "txid-1").await?;
+    backdate_operation_update(
+        &database,
+        &operation.operation_id.0,
+        setup.funding_policy.gateway_claim_review_after_secs + 60,
+    )
+    .await?;
+    run_gateway_pass(&database, &setup, &wallet, &gateway).await?;
+    assert_eq!(
+        sole_item_status(&database, &federation_id).await?,
+        ItemAllocationStatus::Running,
+        "the item is eligible for abandonment when the operator asks"
+    );
+
+    // The gateway reports the claim after abandonment has read the item and
+    // before it takes the write transaction.
+    let outcome = abandon_gateway_item_awaiting(
+        &database,
+        AbandonGatewayItemRequest {
+            federation_id: federation_id.clone(),
+            reason: "operator acting on a view that is about to go stale".to_owned(),
+        },
+        || async {
+            gateway.set_balance("federation-1", Sats(65_000)).await;
+            gateway.claim_deposit("txid-1", 0, Sats(25_000)).await;
+            process_gateway_allocations_with(
+                &database,
+                &setup,
+                &wallet,
+                &gateway,
+                crate::endpoint_policy::EndpointPolicy::AllowPrivate,
+            )
+            .await?;
+            assert_eq!(
+                sole_item_status(&database, &federation_id)
+                    .await
+                    .expect("status"),
+                ItemAllocationStatus::Completed,
+                "the claim completed the item inside the window"
+            );
+            Ok(())
+        },
+    )
+    .await;
+
+    assert!(
+        outcome.is_err(),
+        "abandonment must not report success against an item that completed under it"
+    );
+
+    let status = load_allocation_status_by_federation(&database, &federation_id)
+        .await?
+        .expect("allocation status exists");
+    assert_eq!(
+        status.item_statuses[0].status,
+        ItemAllocationStatus::Completed,
+        "the completion stands"
+    );
+    assert_eq!(
+        status.item_statuses[0].fulfilled_amount,
+        Some(Sats(25_000)),
+        "the fulfilled accounting is untouched"
+    );
+    assert!(
+        status.item_statuses[0].failure.is_none(),
+        "no write-off is recorded against a completed item"
+    );
+    assert_eq!(
+        accepted_abandon_audits(&database).await?,
+        0,
+        "no accepted write-off is audited"
+    );
+    Ok(())
+}
+
+/// How many accepted `abandon_gateway_item` outcomes the audit log holds.
+async fn accepted_abandon_audits(database: &Database) -> anyhow::Result<i64> {
+    let count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM audit_log WHERE action = ? \
+         AND detail_json LIKE '%\"outcome\":\"accepted\"%'",
+    )
+    .bind("abandon_gateway_item")
+    .fetch_one(database.pool())
+    .await?;
+    Ok(count)
+}
+
 async fn run_gateway_pass(
     database: &Database,
     setup: &SetupConfigView,
@@ -1371,6 +1484,23 @@ async fn settle_funding_send(
         },
     )
     .await?;
+    Ok(())
+}
+
+/// Ages the gateway observation row, so a reset shows as a changed timestamp
+/// rather than hiding inside the same Unix second.
+async fn backdate_gateway_observation(
+    database: &Database,
+    gateway_id: &GatewayId,
+    seconds: u64,
+) -> anyhow::Result<()> {
+    // Through the store, so the recorded time moves wherever the row keeps it
+    // rather than only in the column a reader might not use.
+    let mut observation = gateway_observation(database, gateway_id)
+        .await?
+        .expect("an observation to backdate");
+    observation.observed_at = Timestamp(observation.observed_at.0.saturating_sub(seconds));
+    crate::allocation_store::upsert_gateway_observation(database, &observation).await?;
     Ok(())
 }
 
