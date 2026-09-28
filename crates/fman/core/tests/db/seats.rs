@@ -91,6 +91,18 @@ async fn dkg_inputs_and_callback_commit_together_and_formed_seat_fences_replacem
         db.formed_federation_invite(&seat.seat_id).await.unwrap(),
         Some(invite)
     );
+
+    let terminal = crate::test_support::insert_test_seat(&db, new_seat(38)).await;
+    db.record_dkg_inputs(&terminal.seat_id, &codes, None)
+        .await
+        .unwrap();
+    db.decommission_seat(&terminal.seat_id).await.unwrap();
+    assert!(db.dkg_inputs(&terminal.seat_id).await.unwrap().is_none());
+    assert!(
+        db.record_dkg_inputs(&terminal.seat_id, &codes, None)
+            .await
+            .is_err()
+    );
 }
 
 #[tokio::test]

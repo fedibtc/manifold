@@ -24,6 +24,34 @@ use fedi_decentralized_service_fleet_manager::{
     QuoteId, SeatId,
 };
 
+/// Insert the formation-wide first callback on the caller's transaction so
+/// accepted inputs and notification choice have one crash boundary.
+async fn install_completion_callback(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    seat_id: &SeatId,
+    completion_callback: Option<&DkgCompletionCallback>,
+) -> Result<(), DbError> {
+    let callback_json = completion_callback.map(|callback| {
+        serde_json::to_string(callback).expect("a validated callback always serializes")
+    });
+    sqlx::query(
+        "INSERT INTO completion_callbacks (quote_id, completion_callback, \
+         completion_callback_status, completion_callback_next_attempt_at_ms) \
+         VALUES (?, ?, ?, ?) ON CONFLICT(quote_id) DO NOTHING",
+    )
+    .bind(seat_id.as_bytes().as_slice())
+    .bind(&callback_json)
+    .bind(if completion_callback.is_some() {
+        "pending"
+    } else {
+        "not_configured"
+    })
+    .bind(completion_callback.map(|_| now_ms()))
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
+}
+
 /// Exhaustive terminal result for a callback delivery attempt.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum CompletionCallbackOutcome {
@@ -670,27 +698,9 @@ impl Db {
         seat_id: &SeatId,
         completion_callback: Option<&DkgCompletionCallback>,
     ) -> Result<(), DbError> {
-        let callback_json = completion_callback.map(|callback| {
-            serde_json::to_string(callback).expect("a validated callback always serializes")
-        });
-        let callback_status = if completion_callback.is_some() {
-            "pending"
-        } else {
-            "not_configured"
-        };
-        let next_attempt_at_ms = completion_callback.map(|_| now_ms());
-        let id = seat_id.as_bytes().as_slice();
-        sqlx::query(
-            "INSERT INTO completion_callbacks (quote_id, completion_callback, \
-             completion_callback_status, completion_callback_next_attempt_at_ms) \
-             VALUES (?, ?, ?, ?) ON CONFLICT(quote_id) DO NOTHING",
-        )
-        .bind(id)
-        .bind(&callback_json)
-        .bind(callback_status)
-        .bind(next_attempt_at_ms)
-        .execute(self.pool())
-        .await?;
+        let mut tx = self.begin_write().await?;
+        install_completion_callback(&mut tx, seat_id, completion_callback).await?;
+        tx.commit().await?;
         Ok(())
     }
 
@@ -706,9 +716,6 @@ impl Db {
     ) -> Result<(), DbError> {
         let encoded = serde_json::to_string(&codes.iter().map(|code| &code.0).collect::<Vec<_>>())
             .expect("validated guardian codes serialize");
-        let callback_json = completion_callback.map(|callback| {
-            serde_json::to_string(callback).expect("a validated callback always serializes")
-        });
         let id = seat_id.as_bytes().as_slice();
         let mut tx = self.begin_write().await?;
         let result = sqlx::query(
@@ -730,21 +737,7 @@ impl Db {
                 detail: "attempted to record inputs for a formed or decommissioned seat".to_owned(),
             });
         }
-        sqlx::query(
-            "INSERT INTO completion_callbacks (quote_id, completion_callback, \
-             completion_callback_status, completion_callback_next_attempt_at_ms) \
-             VALUES (?, ?, ?, ?) ON CONFLICT(quote_id) DO NOTHING",
-        )
-        .bind(id)
-        .bind(&callback_json)
-        .bind(if completion_callback.is_some() {
-            "pending"
-        } else {
-            "not_configured"
-        })
-        .bind(completion_callback.map(|_| now_ms()))
-        .execute(&mut *tx)
-        .await?;
+        install_completion_callback(&mut tx, seat_id, completion_callback).await?;
         tx.commit().await?;
         Ok(())
     }

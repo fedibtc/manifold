@@ -1043,13 +1043,6 @@ async fn assert_terminal_start_cleans_session(step: FakeDkgStep, quote: u8, firs
     })
     .await
     .expect("terminal start outcome replaces the child");
-    assert!(matches!(
-        fleet.seat_by_id(&seat_id).unwrap().cached_report_for_test(),
-        SeatReport::Active {
-            phase: SeatPhase::Created,
-            health: SeatHealth::Unavailable,
-        }
-    ));
 
     tokio::time::timeout(Duration::from_secs(1), async {
         while spawner.request_count() < 2 {
@@ -1124,13 +1117,6 @@ async fn acknowledged_dkg_failure_clears_the_session_before_replacement() {
     })
     .await
     .expect("failed acknowledged ceremony is replaced");
-    assert!(matches!(
-        fleet.seat_by_id(&seat_id).unwrap().cached_report_for_test(),
-        SeatReport::Active {
-            phase: SeatPhase::Created,
-            health: SeatHealth::Unavailable,
-        }
-    ));
     tokio::time::timeout(Duration::from_secs(1), async {
         while spawner.request_count() < 2 {
             tokio::task::yield_now().await;
@@ -1259,6 +1245,115 @@ async fn explicit_restart_replaces_retained_inputs_without_changing_seat() {
     assert_ne!(requests[0].1, requests[1].1);
     assert_eq!(requests[1], requests[2], "reopen uses replacement inputs");
     reopened.shutdown().await;
+}
+
+#[tokio::test]
+async fn committed_inputs_replay_even_if_daemon_dies_before_sending_them() {
+    let temp = TempDir::new().unwrap();
+    let mut config = config(&temp, 1, 31_217).await;
+    let spawner = Arc::new(FakeSeatProcessSpawner::default());
+    config.process_spawner = SeatProcessSpawner::Fake(spawner.clone());
+    let fleet = open_fleet(config.clone(), Arc::new(NoWallet))
+        .await
+        .unwrap();
+    let (fi_id, seat_id) = create_free_seat(&fleet, 144).await;
+    let codes = scripted_dkg_codes(&fleet, &fi_id, &seat_id).await;
+    let canonical = DkgCodeSet::validate(&codes, FederationSize(7), &codes[0]).unwrap();
+    fleet
+        .db
+        .record_dkg_inputs(&seat_id, &canonical, None)
+        .await
+        .unwrap();
+    assert_eq!(spawner.request_count(), 0, "only the commit has happened");
+    fleet.shutdown().await;
+    drop(fleet);
+    let reopened = open_fleet(config, Arc::new(NoWallet)).await.unwrap();
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while spawner.request_count() < 1 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("committed-but-unsent inputs replay");
+    assert_eq!(spawner.requests()[0].1.len(), 7);
+    reopened.shutdown().await;
+}
+
+#[tokio::test]
+async fn invalid_retained_inputs_reap_child_and_recover_after_repair() {
+    let temp = TempDir::new().unwrap();
+    let mut config = config(&temp, 1, 31_215).await;
+    config.respawn.initial_backoff = Duration::from_millis(50);
+    config.respawn.max_backoff = Duration::from_millis(50);
+    let spawner = Arc::new(FakeSeatProcessSpawner::default());
+    config.process_spawner = SeatProcessSpawner::Fake(spawner.clone());
+    let fleet = open_fleet(config.clone(), Arc::new(NoWallet))
+        .await
+        .unwrap();
+    let (fi_id, seat_id) = create_free_seat(&fleet, 142).await;
+    let codes = scripted_dkg_codes(&fleet, &fi_id, &seat_id).await;
+    start_dkg(&fleet, &fi_id, &seat_id, &codes).await.unwrap();
+    fleet.shutdown().await;
+    drop(fleet);
+
+    let db = Db::open(temp.path()).await.unwrap();
+    sqlx::query("UPDATE dkg_inputs SET guardian_codes = '{}' WHERE quote_id = ?")
+        .bind(seat_id.as_bytes().as_slice())
+        .execute(db.pool())
+        .await
+        .unwrap();
+    drop(db);
+    let reopened = open_fleet(config, Arc::new(NoWallet)).await.unwrap();
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while spawner.spawn_count() < 3 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("bad row did not strand the first replacement child");
+    assert_eq!(
+        spawner.request_count(),
+        1,
+        "invalid stored inputs were not sent"
+    );
+    let encoded =
+        serde_json::to_string(&codes.iter().map(|code| &code.0).collect::<Vec<_>>()).unwrap();
+    sqlx::query("UPDATE dkg_inputs SET guardian_codes = ? WHERE quote_id = ?")
+        .bind(encoded)
+        .bind(seat_id.as_bytes().as_slice())
+        .execute(reopened.db.pool())
+        .await
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while spawner.request_count() < 2 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("repaired row starts a later child");
+    reopened.shutdown().await;
+}
+
+#[tokio::test]
+async fn explicit_restart_preserves_parameter_rejection_error() {
+    let temp = TempDir::new().unwrap();
+    let mut config = config(&temp, 1, 31_216).await;
+    let spawner = Arc::new(FakeSeatProcessSpawner::scripted([vec![
+        vec![],
+        vec![FakeDkgStep::Message(ChildMessage::ParamsRejected {
+            reason: "peer parameters refused".to_owned(),
+        })],
+    ]]));
+    config.process_spawner = SeatProcessSpawner::Fake(spawner);
+    let fleet = open_fleet(config, Arc::new(NoWallet)).await.unwrap();
+    let (fi_id, seat_id) = create_free_seat(&fleet, 143).await;
+    let codes = scripted_dkg_codes(&fleet, &fi_id, &seat_id).await;
+    start_dkg(&fleet, &fi_id, &seat_id, &codes).await.unwrap();
+    assert!(
+        matches!(restart_dkg(&fleet, &fi_id, &seat_id, &codes).await,
+        Err(SeatVerbError::InvalidDkgInput(reason)) if reason == "peer parameters refused")
+    );
+    fleet.shutdown().await;
 }
 
 #[tokio::test]

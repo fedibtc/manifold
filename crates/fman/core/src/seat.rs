@@ -1328,11 +1328,12 @@ impl SeatLoop {
         Ok(())
     }
 
-    async fn spawn_child(&mut self) -> anyhow::Result<()> {
-        anyhow::ensure!(
-            matches!(self.child, ProcessSlot::Empty),
-            "child replacement requires a proved empty process slot"
-        );
+    async fn spawn_child(&mut self) -> Result<(), SeatVerbError> {
+        if !matches!(self.child, ProcessSlot::Empty) {
+            return Err(SeatVerbError::internal(anyhow!(
+                "child replacement requires a proved empty process slot"
+            )));
+        }
         let mut child = self
             .process_spawner
             .start(
@@ -1343,15 +1344,17 @@ impl SeatLoop {
                 &self.keys.api_auth,
             )
             .await
-            .map_err(anyhow::Error::new)?;
+            .map_err(SeatVerbError::internal)?;
         let client = match child.driven_client().await {
             Ok(client) => client,
             Err(error) => {
                 if let Err(stop_error) = child.stop().await {
                     self.set_process_slot(ProcessSlot::ExitUnproven);
-                    return Err(anyhow!("{error:#}; child stop also failed: {stop_error}"));
+                    return Err(SeatVerbError::internal(anyhow!(
+                        "{error:#}; child stop also failed: {stop_error}"
+                    )));
                 }
-                return Err(error);
+                return Err(SeatVerbError::internal(error));
             }
         };
         let state = client.child_state().clone();
@@ -1363,11 +1366,24 @@ impl SeatLoop {
             },
         });
         self.child_started = Some(tokio::time::Instant::now());
-        self.handle_child_state(Ok(state)).await
+        if let Err(error) = self.handle_child_state(state).await {
+            // Revalidation or a database read may fail before RunDkg begins.
+            // Do not leave that child parked while respawn is scheduled: the
+            // next spawn requires an empty, proven-reaped process slot.
+            if self.child.is_live() {
+                if let Err(stop_error) = self.stop_child().await {
+                    return Err(SeatVerbError::internal(anyhow!(
+                        "{error}; child cleanup also failed: {stop_error:#}"
+                    )));
+                }
+            }
+            return Err(error);
+        }
+        Ok(())
     }
 
     fn schedule_respawn(&mut self) {
-        if matches!(self.child, ProcessSlot::ExitUnproven) {
+        if self.respawn_at.is_some() || matches!(self.child, ProcessSlot::ExitUnproven) {
             return;
         }
         self.respawn_at = Some(tokio::time::Instant::now() + self.backoff);
@@ -1383,27 +1399,32 @@ impl SeatLoop {
         Ok(())
     }
 
-    async fn handle_child_state(
-        &mut self,
-        state: anyhow::Result<ChildState>,
-    ) -> anyhow::Result<()> {
-        match state? {
+    async fn handle_child_state(&mut self, state: ChildState) -> Result<(), SeatVerbError> {
+        match state {
             ChildState::NeedsParams => {
                 // Never send params to a configured or formed seat, including the
                 // crash window after the final directory was installed but before
                 // FMan received ConfigPersisted.
-                if self.state.borrow().formed_invite.is_some() || self.final_data_exists()? {
+                if self.state.borrow().formed_invite.is_some()
+                    || self.final_data_exists().map_err(SeatVerbError::internal)?
+                {
                     return Ok(());
                 }
-                if let Some(codes) = self.db.dkg_inputs(&self.facts.seat_id).await? {
+                if let Some(codes) = self
+                    .db
+                    .dkg_inputs(&self.facts.seat_id)
+                    .await
+                    .map_err(SeatVerbError::internal)?
+                {
                     let (submitted, own_code) = self.validate_dkg_codes(&codes)?;
                     self.run_validated_dkg(&submitted, &own_code).await?;
                 }
                 Ok(())
             }
-            ChildState::AlreadyConfigured { invite_code } => {
-                self.handle_persisted_invite(InviteCode(invite_code)).await
-            }
+            ChildState::AlreadyConfigured { invite_code } => self
+                .handle_persisted_invite(InviteCode(invite_code))
+                .await
+                .map_err(SeatVerbError::internal),
         }
     }
 
@@ -1704,7 +1725,7 @@ impl SeatLoop {
         self.stop_child().await.map_err(SeatVerbError::internal)?;
         if let Err(error) = self.spawn_child().await {
             self.schedule_respawn();
-            return Err(SeatVerbError::internal(error));
+            return Err(error);
         }
         if self.state.borrow().formed_invite.is_some() {
             return Ok(ServiceStatus::Running);
