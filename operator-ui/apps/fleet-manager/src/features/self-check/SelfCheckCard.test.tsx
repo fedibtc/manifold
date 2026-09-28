@@ -30,6 +30,10 @@ it('runs only on click, previews and copies exactly the report', async () => {
   const value = (screen.getByLabelText('Report preview') as HTMLTextAreaElement).value;
   fireEvent.click(screen.getByRole('button', { name: 'Copy report' }));
   await waitFor(() => expect(writeText).toHaveBeenCalledWith(value));
+  expect(await screen.findByRole('button', { name: 'Copied' })).toHaveAttribute(
+    'data-variant',
+    'secondary'
+  );
 });
 
 it('hides the old report on a rejected rerun and does not copy transport errors', async () => {

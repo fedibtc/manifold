@@ -1,4 +1,4 @@
-import { Banner } from '@operator-ui/common-ui';
+import { Banner, Button } from '@operator-ui/common-ui';
 import type { SelfCheckResponse } from '@operator-ui/types';
 import { useMutation } from '@tanstack/react-query';
 import { useEffect, useRef, useState } from 'react';
@@ -20,6 +20,7 @@ export const SelfCheckCard = () => {
   >(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [manualCopy, setManualCopy] = useState(false);
+  const [copied, setCopied] = useState(false);
   const text = useRef<HTMLTextAreaElement>(null);
   const run = useMutation({
     mutationFn: () => adminCall<unknown>('RunSelfCheck'),
@@ -53,6 +54,7 @@ export const SelfCheckCard = () => {
     setResult(null);
     setNotice(null);
     setManualCopy(false);
+    setCopied(false);
     run.mutate();
   };
   const copy = async () => {
@@ -61,8 +63,10 @@ export const SelfCheckCard = () => {
     try {
       await navigator.clipboard.writeText(report);
       setManualCopy(false);
+      setCopied(true);
       setNotice('Report copied. Review it before sharing.');
     } catch {
+      setCopied(false);
       setManualCopy(true);
       setNotice('Clipboard unavailable. Select and copy the report manually.');
       text.current?.focus();
@@ -144,9 +148,9 @@ export const SelfCheckCard = () => {
               value={report ?? ''}
             />
 
-            <button type="button" onClick={copy}>
-              Copy report
-            </button>
+            <Button variant="secondary" size="small" onClick={copy}>
+              {copied ? 'Copied' : 'Copy report'}
+            </Button>
             {manualCopy && <p>Select and copy the report manually.</p>}
           </details>
         </div>
