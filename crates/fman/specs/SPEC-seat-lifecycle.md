@@ -6,9 +6,9 @@ SQLite, the per-seat runtime loop, the driven child protocol, restore, and the
 FI RPC boundary jointly implement this lifecycle; no one implementation file
 can own the contract.
 
-## Three durable facts
+## Durable lifecycle facts and ceremony inputs
 
-A guardian seat has exactly three lifecycle facts:
+A guardian seat has three lifecycle facts:
 
 1. its immutable `seats` identity row (owner, quote, plan, federation size,
    never-reused seat number, and creation time);
@@ -16,9 +16,11 @@ A guardian seat has exactly three lifecycle facts:
    `{ federation_invite, formed_at_ms }`; and
 3. an optional terminal `decommissioned_seats` row.
 
-Formation attempts, guardian codes, federation names, submitted code sets,
-start acknowledgements, interruption reasons, and ceremony latches are not
-persisted. Restore is not a separate lifecycle case: after atomically installing
+The complete validated guardian-code set for an accepted `StartDkg` or
+`RestartDkg` is also stored per seat for automatic replay after child or daemon
+death. DKG round progress, start acknowledgements, interruption reasons, and
+ceremony latches are not persisted by FMan. Restore is not a separate lifecycle
+case: after atomically installing
 the recovered final directory it writes the same formed record as driven DKG.
 
 A completion callback is delivery work rather than ceremony state. The current
@@ -33,17 +35,20 @@ formed record.
 `GetDkgCode` is a pure deterministic function of the seat's derived Iroh keys,
 the guardian name `fm-` followed by the first eight hexadecimal characters of
 the seat id, and the optional leader-only federation name. It returns the bare
-upstream Fedimint base32 setup code and performs no child or database write. Running and
+upstream Fedimint base32 setup code and performs no child or database write.
+Running and
 decommissioned seats refuse it.
 
 `StartDkg` validates the complete code set before sending `RunDkg` to its parked
 `NeedsParams` child. It locates
 this seat's code by its embedded Iroh API key, decodes that code's federation
 name, recomputes the complete bare setup code byte-for-byte, and refuses
-a mismatch. The sorted upstream setup codes determine `our_index`. Success is
-returned only after the current driven child emits `DkgStarted`; parameter
-rejection is synchronous. Only the in-memory seat loop serializes a ceremony.
-No request is retained or replayed after child death.
+a mismatch. The sorted upstream setup codes determine `our_index`.
+The validated code set and first callback choice commit before `RunDkg` is sent. Success is returned only after the current driven child emits `DkgStarted`;
+parameter rejection is synchronous. Only the in-memory seat loop serializes a
+ceremony. On child or daemon restart, an unformed, non-decommissioned seat
+revalidates its stored set and automatically sends it to a `NeedsParams` child.
+`AlreadyConfigured` instead repairs the formed record without a new DKG.
 
 FMan deliberately does not endpoint-sign or cross-verify other guardians'
 setup codes. Fedimint's DKG peer-to-peer handshake authenticates the endpoint
@@ -57,16 +62,17 @@ configuration into the final data directory. FMan inserts the formed record and
 marks backup/callback work. `AlreadyConfigured` performs the same insertion, so
 a crash after rename but before the database write self-heals.
 
-An interrupted conversation has nothing to resume. Once its session is gone the
-parked child projects as `New`; any last child error is diagnostic
-memory only and disappears on FMan restart. The FI owns ceremony patience and
-human retry policy; FMan bounds only the local `DkgStarted` acknowledgement.
+An interrupted child has no cryptographic state to resume. Its replacement
+starts a fresh local attempt using the retained envelope; there is no guarantee
+that peers in later DKG rounds can still converge without a coordinated retry.
+FMan bounds the local `DkgStarted` acknowledgement, not the full ceremony.
 
 `RestartDkg` accepts both an idle and an acknowledged in-memory ceremony. It
-stops and reaps the current child, drops only that child's staging state, starts
-a replacement, and reads its initial `Hello`. `NeedsParams` causes the supplied
-complete code set to be validated exactly as for `StartDkg`, followed by
-`RunDkg` and a bounded wait for `DkgStarted`; the response is `DkgInProcess`.
+validates and commits the replacement code set before stopping and reaping the
+current child. If FMan dies during that stop, the next process replays the new
+set. The replacement child's initial `Hello` decides the result: `NeedsParams`
+replays the stored set with a bounded wait for `DkgStarted` and returns
+`DkgInProcess`.
 `AlreadyConfigured` repairs the formed record and returns `Running` without
 starting a second ceremony. Running, `DataLoss`, and decommissioned seats refuse
 restart before the child is touched. Restart never removes the final directory.
@@ -95,10 +101,11 @@ The FI-facing lifecycle statuses are:
 - `DataLoss`: a formed record exists but the final directory is absent; and
 - `Decommissioned`: the terminal record exists.
 
-At startup, every non-decommissioned seat spawns a child. An unformed or
-`DataLoss` child remains parked in `NeedsParams`; a formed child serves its
-configuration. All use capped-backoff respawn, which resets after a sufficiently
-long run.
+At startup, every non-decommissioned seat spawns a child. An unformed child
+with retained inputs automatically starts a fresh attempt when the child reports
+`NeedsParams`; without retained inputs it stays parked. A `DataLoss` child stays
+parked and never replays inputs; a formed child serves its configuration.
+All use capped-backoff respawn, which resets after a sufficiently long run.
 
 `GetStatus` derives its response from the shared source facts and performs only
 an inline filesystem stat so disappearance of the final directory is
@@ -138,17 +145,17 @@ on-disk guardian data; the lifetime port allocation is never reused.
 
 ## Ceremony and health state
 
-The lifecycle store contains only immutable seat identity, the optional set-once
-formed record, and terminal decommission. Ceremony state is deliberately
-process-local.
+The lifecycle store retains immutable seat identity, optional set-once formed
+record, terminal decommission, and the latest validated code set. DKG progress
+remains process-local.
 
 `GetDkgCode` is pure computation. `StartDkg` owns one driven conversation in the
-seat loop; a child or daemon restart loses that conversation and the seat is
-`New`. FMan reconstructs neither a RunDkg request nor an interruption
-latch. The seat loop directly owns the ceremony child and driven client and
-consumes its initial state and lifecycle events in order. `RestartDkg` replaces
-the child, derives its result from the replacement's initial state, and starts a
-fresh ceremony only when that state is `NeedsParams`.
+seat loop; a child or daemon restart loses its progress, but FMan reconstructs
+the `RunDkg` request from retained validated codes when the new child is
+parked. The seat loop directly owns the ceremony child and driven client and
+consumes its initial state and lifecycle events in order. `RestartDkg` commits
+the replacement set before stopping the child, then starts a fresh ceremony
+only when the replacement reports `NeedsParams`.
 
 The final data directory is structural evidence: driven DKG creates it only by
 atomically renaming a complete staging configuration. `AlreadyConfigured`

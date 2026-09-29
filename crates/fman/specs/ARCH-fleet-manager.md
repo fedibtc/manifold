@@ -349,8 +349,8 @@ Six kinds of state, six owners:
 - **Owned live facts** (durable accepted seats, the current ceremony's
   acknowledgement, the set-once formed federation invite, decommission):
   in-memory synchronization while the daemon runs; accepted-seat identity,
-  formation, and decommission survive in set-once SQLite records rebuilt at
-  startup, while ceremony acknowledgement is ephemeral. The signed acceptance
+  validated ceremony inputs, formation, and decommission survive in SQLite
+  records, while ceremony acknowledgement is ephemeral. The signed acceptance
   is reconstructed from durable seat facts and signed afresh on replay; its
   signature is not stored.
 - **Database-owned offer state** (epoch, plans, the retained setup-payment
@@ -374,8 +374,9 @@ Six kinds of state, six owners:
   native destination binding makes detectable skew fail closed rather than
   misassociate an old operation with a retargeted job.
 - **fedimintd-owned runtime state** (setup conversation, formed health):
-  never persisted; setup observations arrive through the driven-child stream,
-  while formed health is re-derived by probing the consensus API
+  never persisted by FMan; validated inputs are stored separately. Setup
+  observations arrive through the driven-child stream, while formed health is
+  re-derived by probing the consensus API
   ([ARCH-fleet-manager](./ARCH-fleet-manager.md)).
 
 ## Trust boundaries

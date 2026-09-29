@@ -344,6 +344,7 @@ pub struct FakeSeatProcessSpawner {
     scripts: Mutex<VecDeque<Vec<FakeDkgStep>>>,
     spawn_count: AtomicUsize,
     request_count: Arc<AtomicUsize>,
+    requests: Arc<Mutex<Vec<(u16, Vec<String>)>>>,
     next_generation: AtomicU64,
     children: Arc<Mutex<HashMap<SeatId, (u64, Weak<Mutex<FakeApiState>>)>>>,
 }
@@ -355,6 +356,7 @@ impl Default for FakeSeatProcessSpawner {
             scripts: Default::default(),
             spawn_count: Default::default(),
             request_count: Default::default(),
+            requests: Default::default(),
             next_generation: Default::default(),
             children: Default::default(),
         }
@@ -376,6 +378,10 @@ impl FakeSeatProcessSpawner {
 
     pub(crate) fn request_count(&self) -> usize {
         self.request_count.load(Ordering::Relaxed)
+    }
+
+    pub(crate) fn requests(&self) -> Vec<(u16, Vec<String>)> {
+        self.requests.lock().unwrap().clone()
     }
 
     pub(crate) async fn configure(
@@ -433,6 +439,7 @@ impl FakeSeatProcessSpawner {
         let task_seat_id = seat_id.clone();
         let child_seat_id = seat_id.clone();
         let request_count = self.request_count.clone();
+        let requests = self.requests.clone();
         let api_state = Arc::new(Mutex::new(FakeApiState::default()));
         let api_server = start_api_server(ports.api(), api_state.clone()).await;
         let generation = self.next_generation.fetch_add(1, Ordering::Relaxed);
@@ -451,6 +458,7 @@ impl FakeSeatProcessSpawner {
                 data_dir,
                 exit,
                 request_count,
+                requests,
                 task_api_state,
             )
             .await;
@@ -484,6 +492,7 @@ async fn run_fake_child(
     data_dir: PathBuf,
     exit: watch::Sender<Option<ObservedSeatExit>>,
     request_count: Arc<std::sync::atomic::AtomicUsize>,
+    requests: Arc<Mutex<Vec<(u16, Vec<String>)>>>,
     api_state: Arc<Mutex<FakeApiState>>,
 ) {
     use tokio::io::AsyncWriteExt as _;
@@ -513,12 +522,14 @@ async fn run_fake_child(
     {
         return;
     }
-    if state == ChildState::NeedsParams
-        && read_frame::<_, ParentMessage>(&mut control).await.is_err()
-    {
-        return;
-    }
     if state == ChildState::NeedsParams {
+        let Ok(ParentMessage::RunDkg {
+            our_index, codes, ..
+        }) = read_frame::<_, ParentMessage>(&mut control).await
+        else {
+            return;
+        };
+        requests.lock().unwrap().push((our_index, codes));
         request_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
 

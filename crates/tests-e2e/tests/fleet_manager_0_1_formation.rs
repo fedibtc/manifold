@@ -71,8 +71,9 @@ const FEDIMINT_CLI_WALLETV2_TIMEOUT: Duration = Duration::from_secs(120);
 /// Covers startup, formation, client join, metadata readiness, and clean shutdown.
 const FORMATION_TIMEOUT: Duration = Duration::from_secs(180);
 /// A killed 15-second FI invocation retains its lease for at most another 60
-/// seconds. The remaining budget covers takeover and real DKG completion.
-const FI_CRASH_RECOVERY_TIMEOUT: Duration = Duration::from_secs(220);
+/// seconds. Guardians now form without waiting for FI resume, so callback
+/// retries may already be in exponential backoff when the test unblocks them.
+const FI_CRASH_RECOVERY_TIMEOUT: Duration = Duration::from_secs(320);
 /// One real formation, child replacement, daemon restart, data-loss
 /// projection, and terminal decommission.
 const SEAT_LIFECYCLE_TIMEOUT: Duration = Duration::from_secs(420);
@@ -2917,7 +2918,12 @@ async fn wait_for_callbacks_delivered(
     temp: &Path,
     guardian_count: usize,
 ) -> anyhow::Result<()> {
-    tokio::time::timeout(Duration::from_secs(45), async {
+    // Automatic guardian replay can finish formation while the FI's 76-second
+    // lease is still held. Callbacks start failing against the deliberately
+    // unavailable gateway then, so their durable backoff may already be at
+    // 60-120 seconds by the time this test allows delivery. Wait for that
+    // scheduled retry; do not weaken the requirement that every seat delivers.
+    tokio::time::timeout(Duration::from_secs(180), async {
         loop {
             let mut delivered = true;
             for index in 0..guardian_count {

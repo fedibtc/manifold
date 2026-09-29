@@ -62,16 +62,17 @@ client or acknowledgement behind. Its one watch-state projection says only
 whether the current child has acknowledged DKG; the set-once formed record has
 a deliberately independent durable lifetime. This reverses
 the recent purposeful-process decision: every non-decommissioned seat keeps a
-child, including the rare minutes-long interval before `StartDkg` or after a
-failed ceremony. A parked `NeedsParams` child holds no keys, ports, or network,
+child, including the interval before the first `StartDkg`. A replacement after
+an accepted ceremony replays its retained inputs automatically. A parked `NeedsParams` child holds no keys, ports, or network,
 so conditional spawning saved little while branching every lifecycle path.
-`StartDkg` delivers `RunDkg` to that idle child; every child failure gets the
-same capped-backoff replacement policy. A failed consuming stop leaves the
+`StartDkg` delivers `RunDkg` to that idle child; after a committed ceremony,
+replacement children receive the same validated code set. Every child failure
+gets the same capped-backoff replacement policy. A failed consuming stop leaves the
 process slot permanently unreplaceable until daemon exit.
 As an accepted tradeoff, a verb awaiting a bounded Fedimint API timeout can
 delay a formed seat's respawn until it completes.
 
-Because a ceremony child binds its iroh endpoint only when `StartDkg` delivers
+Because a ceremony child binds its iroh endpoint only when `RunDkg` delivers
 its keys, first peer contact still has a discovery-publication ramp. Resolution
 now races an uncached HTTP GET to the official n0 pkarr relay against default n0
 DNS discovery, shrinking that ramp to pkarr publish latency while retaining DNS

@@ -97,14 +97,14 @@ and causes no database or child mutation.
 `StartDkg` supplies the complete guardian-code set and an optional completion
 callback. Unknown fields are rejected. Validation, including byte-for-byte
 recomputation of this seat's code, precedes the child request. Success means the
-wire `DkgStarted` event was observed. No exact-set intent, request replay, or
-interruption marker exists.
+wire `DkgStarted` event was observed. The validated set is retained and
+replayed after child or daemon death; DKG progress is not persisted by FMan.
 
-`RestartDkg` is the explicitly destructive retry verb. It stops and reaps the
-current child, starts its replacement, and reads the replacement's `Hello`. A
-`NeedsParams` replacement validates the supplied complete code set and starts a
-fresh ceremony; `AlreadyConfigured` records the invite and returns `Running`
-without starting another ceremony. Its response exposes that completion race
+`RestartDkg` is the explicitly destructive retry verb. It validates and
+persists the replacement code set, stops and reaps the current child, starts its
+replacement, and reads the replacement's `Hello`. A `NeedsParams` replacement
+replays the retained set and starts a fresh ceremony; `AlreadyConfigured`
+records the invite and returns `Running` without starting another ceremony. Its response exposes that completion race
 so the FI can decommission and replace the seat. Restart has no callback field:
 the first `StartDkg` choice remains fixed for the formation. It accepts
 `New` and `DkgInProcess`, while `StartDkg` continues to refuse an
