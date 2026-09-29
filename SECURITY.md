@@ -109,6 +109,10 @@ fedimintd can fetch blocks that Core has pruned. The existing backend also
 falls back on other Core RPC errors, including transaction broadcast failures.
 Use only an operator-approved, trusted endpoint serving the same Bitcoin
 network; it can observe fallback requests, transaction contents, and timing.
+The hybrid constructor does not probe or compare the endpoints' chain
+identities; operators must configure both for the intended network. Lazy
+primary-first chain identity lookup and runtime wallet/network and readiness
+checks remain, but do not establish that the fallback matches the primary.
 FMan does not add a public fallback by default. Re-review this boundary when
 the Fedimint pin or fallback endpoint changes.
 
