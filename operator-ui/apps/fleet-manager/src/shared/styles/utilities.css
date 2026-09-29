@@ -5,6 +5,10 @@
  */
 
 @layer utilities {
+  .uHealthCard {
+    @apply rounded-lg border p-4 uStack4 md:p-6;
+  }
+
   /* Wireframe rule: actions are separated from the last field by a divider,
      16px clear on each side of it. */
   .uFormActions {

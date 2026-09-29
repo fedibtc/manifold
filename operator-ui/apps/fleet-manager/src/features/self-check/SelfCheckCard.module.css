@@ -1,5 +1,5 @@
 .card {
-  @apply rounded-lg border p-4 uStack4 md:p-6;
+  @apply uHealthCard;
 }
 
 .card > button,
