@@ -135,9 +135,12 @@ export const SelfCheckCard = () => {
           )}
           <details>
             <summary>Shareable report</summary>
+
             <div className={styles.reportContent}>
               <p>Fixed-vocabulary results only. Review before sharing.</p>
+
               <label htmlFor="self-check-report">Report preview</label>
+
               <textarea
                 id="self-check-report"
                 ref={text}
@@ -145,6 +148,7 @@ export const SelfCheckCard = () => {
                 readOnly
                 value={report ?? ''}
               />
+
               <Button variant="secondary" size="small" onClick={copy}>
                 {copied ? 'Copied' : 'Copy report'}
               </Button>
