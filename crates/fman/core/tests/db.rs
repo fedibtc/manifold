@@ -199,11 +199,17 @@ async fn per_credential_holder_authorizations_migrate_to_the_newest() {
     .execute(&pool)
     .await
     .unwrap();
-    // The newest is neither the first row nor the lowest or highest digest.
+    // The newest in-bound row (within the one-hour future skew) is neither the
+    // first row nor the lowest or highest digest; a row two hours ahead is not.
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
     for (digest, issued_at, event) in [
         (2u8, 0x0100u64, "middle"),
-        (1, 0x0200, "newest"),
+        (1, now + 1800, "newest"),
         (0, 0x00ff, "older"),
+        (3, now + 7200, "future"),
     ] {
         sqlx::query("INSERT INTO holder_authorization_events VALUES (?, ?, ?)")
             .bind(vec![digest; 32])
@@ -230,7 +236,7 @@ async fn per_credential_holder_authorizations_migrate_to_the_newest() {
         .fetch_one(&pool)
         .await
         .unwrap();
-    assert_eq!(legacy, 3, "unadopted authorizations remain recoverable");
+    assert_eq!(legacy, 4, "unadopted authorizations remain recoverable");
 }
 
 #[tokio::test]
