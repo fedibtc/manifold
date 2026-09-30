@@ -1,6 +1,6 @@
 import { Button, SectionCard } from '@operator-ui/common-ui';
-import { useAuthorizationWatch } from '@/shared/api/hooks/use-authorization-watch/useAuthorizationWatch';
 import { useOnboarding } from '@/shared/api/hooks/use-onboarding/useOnboarding';
+import { useRefreshAuthorization } from '@/shared/api/hooks/use-refresh-authorization/useRefreshAuthorization';
 import { AuthorizationPanel } from '@/shared/components/authorization-panel/AuthorizationPanel';
 import { GuardianTerms } from '@/shared/components/guardian-terms/GuardianTerms';
 import { toNpub } from '@/shared/utils/npub';
@@ -16,9 +16,9 @@ const renderHolder = (holder: string) => (
 
 export const AuthorizationPage = () => {
   const onboarding = useOnboarding();
-  const refresh = useAuthorizationWatch();
+  const refresh = useRefreshAuthorization();
   const handleFetchAuthorization = () => {
-    void refresh.refetch();
+    refresh.mutate();
   };
   const nostr = onboarding.data?.nostr;
   const authorized = nostr?.state === 'authorization_observed';
@@ -48,7 +48,7 @@ export const AuthorizationPage = () => {
           authorization is retained if the check fails or finds nothing new.
         </p>
 
-        <Button variant="secondary" loading={refresh.isFetching} onClick={handleFetchAuthorization}>
+        <Button variant="secondary" loading={refresh.isPending} onClick={handleFetchAuthorization}>
           Fetch new authorization
         </Button>
       </SectionCard>

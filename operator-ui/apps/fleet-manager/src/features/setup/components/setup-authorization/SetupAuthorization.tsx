@@ -1,6 +1,7 @@
 import { Button } from '@operator-ui/common-ui';
 import { useEffect, useRef } from 'react';
-import { useAuthorizationWatch } from '@/shared/api/hooks/use-authorization-watch/useAuthorizationWatch';
+import { useOnboarding } from '@/shared/api/hooks/use-onboarding/useOnboarding';
+import { useRefreshAuthorization } from '@/shared/api/hooks/use-refresh-authorization/useRefreshAuthorization';
 import { AuthorizationPanel } from '@/shared/components/authorization-panel/AuthorizationPanel';
 import { isAuthorized } from '@/shared/utils/authorization';
 import styles from './SetupAuthorization.module.css';
@@ -12,7 +13,8 @@ interface SetupAuthorizationProps {
 }
 
 export const SetupAuthorization = ({ onSettled }: SetupAuthorizationProps) => {
-  const onboarding = useAuthorizationWatch();
+  const onboarding = useOnboarding();
+  const refresh = useRefreshAuthorization();
   const authorized = isAuthorized(onboarding.data);
   // One guard for the timer and the manual continue button landing together.
   const hasSettled = useRef(false);
@@ -31,7 +33,7 @@ export const SetupAuthorization = ({ onSettled }: SetupAuthorizationProps) => {
 
   // Relay reconciliation is explicit: setup performs no background refreshes.
   const handleCheckNow = () => {
-    void onboarding.refetch();
+    refresh.mutate();
   };
 
   useEffect(() => {
@@ -64,7 +66,7 @@ export const SetupAuthorization = ({ onSettled }: SetupAuthorizationProps) => {
       <AuthorizationPanel
         data={onboarding.data}
         isLoading={onboarding.isLoading}
-        error={onboarding.error}
+        error={refresh.error ?? onboarding.error}
       />
       {authorized ? (
         <p className={styles.statusLine} role="status">
@@ -75,7 +77,7 @@ export const SetupAuthorization = ({ onSettled }: SetupAuthorizationProps) => {
 
       <div className={styles.actions}>
         {authorized ? null : (
-          <Button variant="secondary" loading={onboarding.isFetching} onClick={handleCheckNow}>
+          <Button variant="secondary" loading={refresh.isPending} onClick={handleCheckNow}>
             Check now
           </Button>
         )}

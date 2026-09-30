@@ -27,7 +27,7 @@ export const createVerbLog = (getRouteKey: () => string): VerbLog => {
     record: (verb) => {
       const routeKey = getRouteKey();
       const seen = byRoute.get(routeKey) ?? EMPTY;
-      // Reads poll (`use-authorization-watch`, seat reports), so notifying on a
+      // Reads poll (onboarding, seat reports), so notifying on a
       // repeat would re-render the panel on a timer. Only a new verb is news.
       if (seen.includes(verb)) return;
 
