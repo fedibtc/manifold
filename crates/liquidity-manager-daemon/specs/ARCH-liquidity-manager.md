@@ -27,6 +27,18 @@ marketplace, automatic replenishment, or multi-gateway support; after an
 accepted allocation reaches a terminal state, more liquidity requires a new
 app request.
 
+The current stability path does not represent a separate stability-provider
+actor. The configured gatewayd wallet supplies the principal, while a
+FLIP-managed target client derives and controls the stability module's
+`AccountType::Provider` account from its locally stored root secret. FLIP's
+advertised provider identity is separate from that account authority, but no
+supported configuration or request binds either one to an independent capital
+owner, beneficiary, or delegation. This describes technical control only:
+credential possession does not establish legal or beneficial ownership, and an
+operator may be acting under an external agreement which the daemon cannot
+represent or enforce. See
+[CLAIM-flip-stability-provider-independent](CLAIM-flip-stability-provider-independent.md).
+
 The daemon exposes three surfaces:
 
 - an app-facing **Public Liquidity API** over iroh
