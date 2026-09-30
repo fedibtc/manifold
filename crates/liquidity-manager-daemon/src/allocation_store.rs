@@ -450,6 +450,19 @@ pub(crate) struct GatewayAllocationStep {
     pub gateway_connected: bool,
     pub deposit_address: Option<String>,
     pub wallet_operation_id: Option<String>,
+    /// When the gateway's attribution for this item first counted as overdue,
+    /// if it has.
+    ///
+    /// Set once the funding send has been settled longer than
+    /// `funding_policy.gateway_claim_review_after_secs` with no gateway claim
+    /// naming its output. It marks a wait worth an operator's attention and
+    /// nothing more: the item stays active, so the next pass reads the
+    /// gateway's log again and a claim reported later still completes it.
+    ///
+    /// Absent on every item written before the field existed, which reads as
+    /// "not overdue" and is corrected by the first pass that finds otherwise.
+    #[serde(default)]
+    pub attribution_overdue_since: Option<Timestamp>,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
@@ -687,6 +700,31 @@ pub(crate) async fn stability_pool_item(
     row.as_ref().map(stability_pool_item_from_row).transpose()
 }
 
+/// Loads one federation's gateway item whatever status it is in.
+///
+/// The gateway counterpart of [`stability_pool_item`]. Operator reconciliation
+/// needs an item the worker may have stopped selecting, so it cannot go through
+/// the active-item query.
+pub(crate) async fn gateway_item(
+    database: &Database,
+    federation_id: &FederationId,
+) -> ServiceResult<Option<GatewayAllocationItem>> {
+    let row = sqlx::query(
+        "SELECT i.item_id, i.status AS item_status, i.committed_amount_sats, \
+                i.reserved_amount_sats, i.item_json, i.step_json, \
+                a.federation_id, a.target_json \
+         FROM allocation_items i \
+         JOIN allocations a ON a.federation_id = i.federation_id \
+         WHERE i.federation_id = ? AND i.source_type = ?",
+    )
+    .bind(&federation_id.0)
+    .bind(SourceType::Gateway.to_string())
+    .fetch_optional(database.pool())
+    .await
+    .map_err(internal_error)?;
+    row.as_ref().map(gateway_item_from_row).transpose()
+}
+
 async fn active_item_rows(
     database: &Database,
     source_type: SourceType,
@@ -793,16 +831,23 @@ pub(crate) async fn compare_and_set_item_step<S: Serialize>(
     Ok(result.rows_affected() == 1)
 }
 
+/// Marks an item completed, and reports whether this call is what moved it.
+///
+/// The update is fenced on the pending and running statuses the caller
+/// observed, so a cancel or a failure another writer committed in between
+/// leaves the row alone. A `false` return means the row did not move and
+/// nothing completed: the caller holds a stale view and must not report
+/// progress or log an outcome it did not produce.
 pub(crate) async fn complete_item(
     database: &Database,
     federation_id: &FederationId,
     item_id: &ItemId,
     fulfilled_amount: Sats,
     evidence: CompletionEvidence,
-) -> ServiceResult<()> {
+) -> ServiceResult<bool> {
     let completion_evidence_json = serde_json::to_string(&evidence).map_err(internal_error)?;
     let mut tx = database.begin_write().await.map_err(internal_error)?;
-    sqlx::query(
+    let result = sqlx::query(
         "UPDATE allocation_items \
          SET status = ?, fulfilled_amount_sats = ?, completion_evidence_json = ?, updated_at = unixepoch() \
          WHERE item_id = ? AND status IN (?, ?)",
@@ -817,13 +862,16 @@ pub(crate) async fn complete_item(
     .await
     .map_err(internal_error)?;
     tx.commit().await.map_err(internal_error)?;
+    if result.rows_affected() != 1 {
+        return Ok(false);
+    }
     tracing::info!(
         federation_id = %federation_id.0,
         item_id = %item_id.0,
         fulfilled_sats = fulfilled_amount.0,
         "allocation item completed"
     );
-    Ok(())
+    Ok(true)
 }
 
 pub(crate) async fn fail_item(
@@ -896,7 +944,7 @@ async fn set_item_failure(
         tracing::warn!(
             item_id = %item_id.0,
             %status,
-            %code,
+            code = %failure.code,
             %reason,
             "allocation item stopped"
         );
@@ -942,6 +990,25 @@ pub(crate) async fn cancel_item_tx(
     .await
     .map_err(internal_error)?;
     Ok(())
+}
+
+/// The gateway-level observation row, if one has been written.
+///
+/// Keyed without a federation, so it is the row describing the gateway itself
+/// rather than one of its federations.
+pub(crate) async fn gateway_observation(
+    database: &Database,
+    gateway_id: &GatewayId,
+) -> ServiceResult<Option<GatewayObservation>> {
+    let row =
+        sqlx::query("SELECT observation_json FROM gateway_observations WHERE observation_key = ?")
+            .bind(format!("gateway:{}", gateway_id.0))
+            .fetch_optional(database.pool())
+            .await
+            .map_err(internal_error)?;
+    row.map(|row| serde_json::from_str(&row.get::<String, _>("observation_json")))
+        .transpose()
+        .map_err(internal_error)
 }
 
 pub(crate) async fn upsert_gateway_observation(

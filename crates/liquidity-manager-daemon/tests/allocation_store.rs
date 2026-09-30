@@ -200,6 +200,106 @@ async fn action_required_items_are_not_worker_active() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Completion is fenced on the statuses the worker read, and reports the fence.
+///
+/// A cancel can commit between the worker's read and its completion write, and
+/// the fence then leaves the row alone. The worker has to learn that, because
+/// it reports the return value as progress and logs a completion beside it. A
+/// silent no-op would claim an item completed while it stayed cancelled.
+#[tokio::test]
+async fn completing_an_item_another_writer_moved_reports_no_completion() -> anyhow::Result<()> {
+    let database = test_database("complete-item-fenced").await?;
+    let federation_id = FederationId("federation-1".to_owned());
+    AllocationSeed {
+        federation_id: federation_id.clone(),
+        items: vec![ItemSeed {
+            source_type: SourceType::Gateway,
+            status: ItemAllocationStatus::Cancelled,
+            ..ItemSeed::default()
+        }],
+        ..AllocationSeed::default()
+    }
+    .insert(&database)
+    .await?;
+
+    let completed = complete_item(
+        &database,
+        &federation_id,
+        &item_id(&federation_id, SourceType::Gateway),
+        Sats(10_000),
+        gateway_completion_evidence(),
+    )
+    .await?;
+
+    assert!(!completed);
+    assert_eq!(
+        sole_item_status(&database, &federation_id).await?,
+        ItemAllocationStatus::Cancelled
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn completing_a_running_item_reports_the_completion() -> anyhow::Result<()> {
+    let database = test_database("complete-item-running").await?;
+    let federation_id = FederationId("federation-1".to_owned());
+    AllocationSeed {
+        federation_id: federation_id.clone(),
+        items: vec![ItemSeed {
+            source_type: SourceType::Gateway,
+            status: ItemAllocationStatus::Running,
+            ..ItemSeed::default()
+        }],
+        ..AllocationSeed::default()
+    }
+    .insert(&database)
+    .await?;
+
+    let completed = complete_item(
+        &database,
+        &federation_id,
+        &item_id(&federation_id, SourceType::Gateway),
+        Sats(10_000),
+        gateway_completion_evidence(),
+    )
+    .await?;
+
+    assert!(completed);
+    assert_eq!(
+        sole_item_status(&database, &federation_id).await?,
+        ItemAllocationStatus::Completed
+    );
+    Ok(())
+}
+
+fn gateway_completion_evidence() -> CompletionEvidence {
+    use fedi_decentralized_service_liquidity_manager::{GatewayApiUrl, GatewayCompletionEvidence};
+
+    CompletionEvidence::Gateway(GatewayCompletionEvidence {
+        gateway_id: GatewayId("gateway-1".to_owned()),
+        gateway_api: GatewayApiUrl::try_from("https://gateway.example")
+            .expect("a parseable gateway api url"),
+        fulfilled_amount: Sats(10_000),
+        observed_gateway_balance: Sats(10_000),
+        observed_at: crate::now_timestamp(),
+        withdrawal_txid: Some("withdrawal-txid".to_owned()),
+        wallet_operation_id: None,
+    })
+}
+
+async fn sole_item_status(
+    database: &Database,
+    federation_id: &FederationId,
+) -> anyhow::Result<ItemAllocationStatus> {
+    let status = load_allocation_status_by_federation(database, federation_id)
+        .await?
+        .expect("allocation");
+    let [item] = status.item_statuses.as_slice() else {
+        anyhow::bail!("expected exactly one seeded item");
+    };
+    Ok(item.status)
+}
+
 async fn test_database(name: &str) -> anyhow::Result<Database> {
     let data_dir = test_data_dir(name);
     tokio::fs::create_dir_all(&data_dir).await?;

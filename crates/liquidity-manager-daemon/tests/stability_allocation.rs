@@ -315,7 +315,7 @@ async fn cancelled_wallet_operation_marks_stability_item_failed() -> anyhow::Res
         status.item_statuses[0]
             .failure
             .as_ref()
-            .map(|failure| failure.code),
+            .map(|failure| failure.code.clone()),
         Some(LiquidityFailureCode::WithdrawFailed)
     );
     Ok(())
@@ -357,7 +357,7 @@ async fn an_unusable_target_fails_the_item_before_any_funding() -> anyhow::Resul
         status.item_statuses[0]
             .failure
             .as_ref()
-            .map(|failure| failure.code),
+            .map(|failure| failure.code.clone()),
         Some(LiquidityFailureCode::StabilityPoolFailed)
     );
     // The point of the fence is the absence of this row. Failing after the

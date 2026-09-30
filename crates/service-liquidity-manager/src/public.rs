@@ -605,38 +605,108 @@ pub struct LiquidityFailure {
 }
 
 /// Allocation failure code.
-#[derive(
-    Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, strum::Display, Serialize, Deserialize,
-)]
-#[serde(rename_all = "snake_case")]
+///
+/// Carried on the wire and stored inside an allocation item's failure record
+/// as the string each variant displays as, so the vocabulary is exactly the
+/// snake_case names below.
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+#[serde(from = "String", into = "String")]
 pub enum LiquidityFailureCode {
     /// Request expired.
-    #[strum(serialize = "request_expired")]
     RequestExpired,
 
     /// Policy no longer matches.
-    #[strum(serialize = "policy_mismatch")]
     PolicyMismatch,
 
     /// Provider funds are insufficient.
-    #[strum(serialize = "insufficient_provider_funds")]
     InsufficientProviderFunds,
 
     /// Gateway attach failed.
-    #[strum(serialize = "gateway_attach_failed")]
     GatewayAttachFailed,
 
     /// Wallet withdrawal failed.
-    #[strum(serialize = "withdraw_failed")]
     WithdrawFailed,
 
     /// Stability-pool operation failed.
-    #[strum(serialize = "stability_pool_failed")]
     StabilityPoolFailed,
 
     /// Internal provider error.
-    #[strum(serialize = "internal_error")]
     InternalError,
+
+    /// Operator wrote off an item whose delivered funding the gateway cannot
+    /// attribute.
+    ///
+    /// Distinct from [`Self::GatewayAttachFailed`], which reports a gateway
+    /// that could not be attached before any value was sent. This one reports
+    /// value that reached the gateway and an accounting reservation released
+    /// without it: the two call for opposite remediation, so they should not
+    /// share a code.
+    ///
+    /// **Reserved, and not yet written.** A reader that does not know a code
+    /// refuses the whole allocation item carrying it, and readers gain that
+    /// tolerance only by shipping [`Self::Unknown`], which no already-installed
+    /// build has. Defining the code here is what teaches this and every later
+    /// build to accept it; `abandon_gateway_item` keeps writing
+    /// [`Self::GatewayAttachFailed`] until tolerant readers are the ones in the
+    /// field, and switches to this code then.
+    GatewayAttributionAbandoned,
+
+    /// A failure code this build does not know.
+    ///
+    /// Kept rather than refused, and it round-trips unchanged. The code rides
+    /// inside the item's stored failure record, so a build that refused an
+    /// unfamiliar one could not read that allocation item at all: one code a
+    /// peer or a later build writes would hide the whole item rather than one
+    /// field of it.
+    Unknown(String),
+}
+
+impl LiquidityFailureCode {
+    /// The stable string this code is carried and stored as.
+    pub fn as_str(&self) -> &str {
+        match self {
+            Self::RequestExpired => "request_expired",
+            Self::PolicyMismatch => "policy_mismatch",
+            Self::InsufficientProviderFunds => "insufficient_provider_funds",
+            Self::GatewayAttachFailed => "gateway_attach_failed",
+            Self::WithdrawFailed => "withdraw_failed",
+            Self::StabilityPoolFailed => "stability_pool_failed",
+            Self::InternalError => "internal_error",
+            Self::GatewayAttributionAbandoned => "gateway_attribution_abandoned",
+            Self::Unknown(code) => code,
+        }
+    }
+}
+
+impl std::fmt::Display for LiquidityFailureCode {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
+
+impl From<String> for LiquidityFailureCode {
+    fn from(code: String) -> Self {
+        match code.as_str() {
+            "request_expired" => Self::RequestExpired,
+            "policy_mismatch" => Self::PolicyMismatch,
+            "insufficient_provider_funds" => Self::InsufficientProviderFunds,
+            "gateway_attach_failed" => Self::GatewayAttachFailed,
+            "withdraw_failed" => Self::WithdrawFailed,
+            "stability_pool_failed" => Self::StabilityPoolFailed,
+            "internal_error" => Self::InternalError,
+            "gateway_attribution_abandoned" => Self::GatewayAttributionAbandoned,
+            _ => Self::Unknown(code),
+        }
+    }
+}
+
+impl From<LiquidityFailureCode> for String {
+    fn from(code: LiquidityFailureCode) -> Self {
+        match code {
+            LiquidityFailureCode::Unknown(code) => code,
+            known => known.as_str().to_owned(),
+        }
+    }
 }
 
 /// Verification summary exposed to operators.

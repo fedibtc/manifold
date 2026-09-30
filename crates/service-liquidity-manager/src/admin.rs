@@ -485,6 +485,22 @@ pub struct FundingPolicyConfig {
     /// cancellation both.
     #[serde(default = "default_in_doubt_review_after_secs")]
     pub in_doubt_review_after_secs: u64,
+
+    /// How long a gateway item may hold a settled funding send the gateway has
+    /// not reported claiming before the delay is raised for an operator.
+    ///
+    /// Measured from the funding operation's last update, which for a settled
+    /// send is when it reached `completed`. Completion needs the gateway's own
+    /// payment log to name the funded output, so a gateway that is offline,
+    /// resyncing, or behind on its log has not yet said anything either way.
+    ///
+    /// Passing the threshold means the wait deserves attention, not that the
+    /// funds are lost and not that the item is finished with: the item stays
+    /// active and keeps reconciling, so a claim the gateway reports later still
+    /// completes it without an operator touching anything. Zero stops the delay
+    /// being raised at all.
+    #[serde(default = "default_gateway_claim_review_after_secs")]
+    pub gateway_claim_review_after_secs: u64,
 }
 
 /// Conservative default review threshold: long enough that an honestly
@@ -494,6 +510,14 @@ const DEFAULT_IN_DOUBT_REVIEW_AFTER_SECS: u64 = 21_600;
 
 fn default_in_doubt_review_after_secs() -> u64 {
     DEFAULT_IN_DOUBT_REVIEW_AFTER_SECS
+}
+
+/// Gateway attribution gets the wallet threshold, because both answer the same
+/// question: how long is long enough for honest evidence to have appeared.
+const DEFAULT_GATEWAY_CLAIM_REVIEW_AFTER_SECS: u64 = DEFAULT_IN_DOUBT_REVIEW_AFTER_SECS;
+
+fn default_gateway_claim_review_after_secs() -> u64 {
+    DEFAULT_GATEWAY_CLAIM_REVIEW_AFTER_SECS
 }
 
 impl FundingPolicyConfig {
@@ -511,6 +535,7 @@ impl FundingPolicyConfig {
             confirmations,
             stability_pool_min_fee_rate_ppb: 0,
             in_doubt_review_after_secs: DEFAULT_IN_DOUBT_REVIEW_AFTER_SECS,
+            gateway_claim_review_after_secs: DEFAULT_GATEWAY_CLAIM_REVIEW_AFTER_SECS,
         }
     }
 }
@@ -1981,6 +2006,50 @@ pub struct AbandonTargetClientValueResponse {
     pub status: ManualOperationStatus,
 
     /// Value left at the target client, when the item recorded one.
+    pub abandoned_amount: Option<Sats>,
+
+    /// Optional detail.
+    pub detail: Option<String>,
+}
+
+/// Write off a gateway item whose delivered funding the gateway cannot
+/// attribute.
+///
+/// The gateway sibling of `abandon_target_client_value`, for the same dead end.
+/// A gateway item completes only when the gateway's payment log names the
+/// output its funding send paid. That log lives in the gateway's own database
+/// and is not replicated, so a gateway that was wiped, rolled back, replaced,
+/// or restored cannot attest to a deposit it really did claim. Once the send
+/// has settled, `cancel_allocation` and `retry_funding_step` both refuse the
+/// item for having already sent the money, so nothing else moves it and it
+/// reserves provider capacity indefinitely.
+///
+/// This is a last resort, not a timeout. FLIP keeps reconciling such an item
+/// for as long as it exists, and a claim the gateway reports at any point
+/// completes it with no operator action. The verb is admitted only for an item
+/// FLIP has itself recorded as overdue, so the operator is deciding about a
+/// wait FLIP already reported rather than pre-empting one.
+///
+/// It moves no money and recovers none. The value is at the gateway; getting it
+/// back is a gateway peg-out and is not this.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct AbandonGatewayItemRequest {
+    /// Federation whose gateway item to write off.
+    pub federation_id: FederationId,
+
+    /// Operator's reason. Required: this writes off FLIP's ability to account
+    /// for funds it already sent, and the audit log should say why.
+    pub reason: String,
+}
+
+/// Gateway abandonment response.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct AbandonGatewayItemResponse {
+    /// Manual operation status.
+    pub status: ManualOperationStatus,
+
+    /// Value the funding send delivered to the gateway, when the item's
+    /// operation recorded one.
     pub abandoned_amount: Option<Sats>,
 
     /// Optional detail.
