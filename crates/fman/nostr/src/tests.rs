@@ -23,6 +23,54 @@ fn authorization_event_at(holder: &Keys, subject: nostr_sdk::PublicKey, issued_a
         }),
         blind_msg: serde_json::json!(holder.public_key().to_string()),
     };
+    let signed_credential = peerbadge_protocol::SignedCredential {
+        version: ProtocolV1,
+        credential,
+        proof: CredentialProof {
+            signature: blind_rsa_signatures::Signature(vec![1, 2, 3, 4]),
+        },
+    };
+    authorization_event_for(holder, subject, issued_at, signed_credential)
+}
+
+/// An authorization whose badge the development environment's trusted issuer
+/// really issued to `holder`.
+fn issued_authorization_event_at(
+    holder: &Keys,
+    subject: nostr_sdk::PublicKey,
+    issued_at: u64,
+) -> Event {
+    let profile = ManifoldEnvironment::Development.profile().unwrap();
+    let issuer = peerbadge_protocol::IssuerContext::import_secret_key(
+        &serde_json::from_str(profile.test_issuer_secret_keys().unwrap()).unwrap(),
+    )
+    .unwrap();
+    let authority = issuer.issuer_authority(Vec::new()).unwrap();
+    let info = serde_json::json!({
+        "schema": "fedi-trust-score-v1.0",
+        "trust_level": 6,
+    });
+    let (request, pending) = peerbadge_protocol::PendingIssuance::create_request(
+        &authority.issuer.issuance_key,
+        authority.issuer.issuer_id_pubkey.clone(),
+        info.clone(),
+        serde_json::json!(holder.public_key().to_string()),
+    )
+    .unwrap();
+    let response = issuer.issue_credential(info, &request).unwrap();
+    let signed_credential = pending
+        .finalize(&authority.issuer.issuance_key, &response)
+        .unwrap();
+    authorization_event_for(holder, subject, issued_at, signed_credential)
+}
+
+fn authorization_event_for(
+    holder: &Keys,
+    subject: nostr_sdk::PublicKey,
+    issued_at: u64,
+    signed_credential: peerbadge_protocol::SignedCredential,
+) -> Event {
+    let credential = &signed_credential.credential;
     let statement = HolderAuthorizationStatement {
         holder_id_pubkey: HolderId(holder.public_key()),
         subject_pubkey: SubjectPubkey(subject),
@@ -40,13 +88,7 @@ fn authorization_event_at(holder: &Keys, subject: nostr_sdk::PublicKey, issued_a
             authorization: statement,
             proof: SchnorrSignatureProof { signature },
         },
-        "signed_credential": peerbadge_protocol::SignedCredential {
-            version: ProtocolV1,
-            credential,
-            proof: CredentialProof {
-                signature: blind_rsa_signatures::Signature(vec![1, 2, 3, 4]),
-            },
-        },
+        "signed_credential": signed_credential,
     });
     EventBuilder::new(
         nostr_sdk::Kind::Custom(fedi_decentralized_nostr::fman::HOLDER_AUTHORIZATION_EVENT_KIND),
@@ -99,6 +141,46 @@ fn candidate_verification_accepts_our_authorizations_and_rejects_others() {
 }
 
 #[test]
+fn newest_candidate_is_chosen_among_trusted_issuances_only() {
+    let fman = Keys::generate();
+    let trusted =
+        PeerBadgeVerifier::try_from_profile(&ManifoldEnvironment::Development.profile().unwrap())
+            .unwrap();
+    // The newest candidate is well formed but its badge names no trusted
+    // issuer, so the older trusted issuance wins over it.
+    let chosen = newest_issued_candidate(
+        [
+            issued_authorization_event_at(&Keys::generate(), fman.public_key(), 100),
+            authorization_event_at(&Keys::generate(), fman.public_key(), 300),
+            issued_authorization_event_at(&Keys::generate(), fman.public_key(), 200),
+        ],
+        &fman.public_key(),
+        &trusted,
+        1_000,
+    )
+    .expect("a trusted issuance is admitted");
+    assert_eq!(chosen.authorization_issued_at, 200);
+
+    let staging =
+        PeerBadgeVerifier::try_from_profile(&ManifoldEnvironment::Staging.profile().unwrap())
+            .unwrap();
+    assert!(
+        newest_issued_candidate(
+            [issued_authorization_event_at(
+                &Keys::generate(),
+                fman.public_key(),
+                100
+            )],
+            &fman.public_key(),
+            &staging,
+            1_000,
+        )
+        .is_none(),
+        "another environment's issuer is not trusted here"
+    );
+}
+
+#[test]
 fn retained_authorizations_are_reverified_before_reuse() {
     let holder = Keys::generate();
     let fman = Keys::generate();
@@ -106,7 +188,7 @@ fn retained_authorizations_are_reverified_before_reuse() {
 
     assert_eq!(
         decode_retained_holder_authorizations(
-            vec![event.as_json()],
+            Some(event.as_json()),
             fman.public_key(),
             1_730_000_000,
         )
@@ -116,7 +198,7 @@ fn retained_authorizations_are_reverified_before_reuse() {
     );
     assert!(
         decode_retained_holder_authorizations(
-            vec![event.as_json()],
+            Some(event.as_json()),
             Keys::generate().public_key(),
             1_730_000_000,
         )
@@ -194,7 +276,7 @@ async fn built_payload_advertises_the_service_pubkey() {
 }
 
 #[tokio::test]
-async fn renewed_authorization_updates_durable_and_live_state_without_rollback() {
+async fn newer_authorization_replaces_durable_and_live_state_without_rollback() {
     let temp = tempfile::TempDir::new().unwrap();
     let db = fman_core::db::Db::open(temp.path()).await.unwrap();
     db.install_identity(&RootMnemonic::generate().unwrap())
@@ -211,25 +293,17 @@ async fn renewed_authorization_updates_durable_and_live_state_without_rollback()
         ManifoldEnvironment::Development.profile().unwrap(),
         store.clone(),
     );
+    // The replacement comes from another holder with another credential: the
+    // FMan keeps exactly one authorization, not one per credential.
     let original = authorization_event_at(&holder, keys.public_key(), 100);
-    let mut content: HolderAuthorizationEventContent =
-        serde_json::from_str(&original.content).unwrap();
-    let authorization = &mut content.authorization.holder_authorization;
-    authorization.authorization.issued_at = Timestamp(200);
-    authorization.proof.signature =
-        holder.sign_schnorr(&nostr_sdk::secp256k1::Message::from_digest(
-            authorization.authorization.digest().unwrap().into(),
-        ));
-    let renewed = EventBuilder::new(original.kind, serde_json::to_string(&content).unwrap())
-        .sign_with_keys(&holder)
-        .unwrap();
+    let replacement = authorization_event_at(&Keys::generate(), keys.public_key(), 200);
     let mut changes = service.inner.holder_authorizations.subscribe();
-    for (event, expected_time) in [(original.clone(), 100), (renewed, 200), (original, 200)] {
+    for (event, expected_time) in [(original.clone(), 100), (replacement, 200), (original, 200)] {
         service
             .inner
-            .retain_authorizations(vec![
+            .retain_authorization(Some(
                 verified_holder_authorization_event(event, &keys.public_key(), now_secs()).unwrap(),
-            ])
+            ))
             .await
             .unwrap();
         assert!(changes.has_changed().unwrap());
@@ -253,11 +327,7 @@ async fn renewed_authorization_updates_durable_and_live_state_without_rollback()
         .await
         .unwrap_err();
     assert!(error.to_string().contains("already in progress"));
-    service
-        .inner
-        .retain_authorizations(Vec::new())
-        .await
-        .unwrap();
+    service.inner.retain_authorization(None).await.unwrap();
     assert_eq!(
         service.holder_authorizations()[0]
             .holder_authorization

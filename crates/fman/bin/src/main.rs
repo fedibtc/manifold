@@ -346,7 +346,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
             backup_relay_url.clone(),
         )),
         Arc::new(fman_nostr::NostrHolderAuthorizationFetcher::new(
-            manifold_environment.nostr_relays().as_urls().to_vec(),
+            manifold_environment.clone(),
             Arc::new(FleetHolderAuthorizationStore::new(db.clone())),
         )),
         manifold_environment.setup_payment_publisher().is_some(),

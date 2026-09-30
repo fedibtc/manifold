@@ -30,6 +30,10 @@ FI-facing `GetFmanTrustMaterial` response, kind-37701 advertisement
 carriage, and guardian telemetry-registration carriage. It makes no claim about a relying consumer's acceptance of that
 material.
 
+## Status
+
+Unverified.
+
 ## Assumptions
 
 - **A1 cryptography and canonicalization:** BIP-340 signatures are

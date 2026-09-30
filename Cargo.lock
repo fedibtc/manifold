@@ -4255,6 +4255,7 @@ dependencies = [
  "fedi-decentralized-manifold-environment",
  "fedi-decentralized-nostr",
  "fedi-decentralized-nostr-clients",
+ "fedi-decentralized-peer-badge-verifier",
  "fedi-decentralized-service-fleet-manager",
  "fman-core",
  "hex",

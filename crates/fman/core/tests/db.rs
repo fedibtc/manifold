@@ -119,136 +119,124 @@ async fn a_second_database_open_on_the_same_data_root_is_refused() {
 }
 
 #[tokio::test]
-async fn holder_authorization_events_merge_monotonically_and_survive_restart() {
+async fn holder_authorization_keeps_only_the_newest_across_restart() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().to_owned();
     let db = Db::open(&path).await.unwrap();
-    let first_digest = vec![1; 32];
-    let second_digest = vec![2; 32];
 
-    db.merge_holder_authorization_events(
-        &[
-            (first_digest.clone(), 10, "first".to_owned()),
-            (second_digest, 20, "second".to_owned()),
-        ],
-        100,
-    )
-    .await
-    .unwrap();
-    db.merge_holder_authorization_events(&[(first_digest.clone(), 11, "newer".to_owned())], 100)
+    // A different credential or holder replaces the retained one when newer.
+    db.replace_holder_authorization_event(10, "first", 100)
         .await
         .unwrap();
-    db.merge_holder_authorization_events(&[(first_digest, 10, "older".to_owned())], 100)
+    db.replace_holder_authorization_event(20, "second", 100)
         .await
         .unwrap();
-    db.merge_holder_authorization_events(&[], 100)
+    // Equal or older statements cannot roll it back.
+    db.replace_holder_authorization_event(20, "equal", 100)
+        .await
+        .unwrap();
+    db.replace_holder_authorization_event(15, "older", 100)
         .await
         .unwrap();
 
     drop(db);
     let reopened = Db::open(&path).await.unwrap();
     assert_eq!(
-        reopened
-            .bounded_holder_authorization_event_jsons(100)
-            .await
-            .unwrap(),
-        vec!["newer", "second"]
+        reopened.holder_authorization_event_json(100).await.unwrap(),
+        Some("second".to_owned())
     );
 }
 
 #[tokio::test]
-async fn holder_authorization_retention_enforces_exact_aggregate_boundary() {
+async fn holder_authorization_future_rows_fail_closed_and_are_removed() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().to_owned();
     let db = Db::open(&path).await.unwrap();
-    let limit = fedi_decentralized_domain::FMAN_HOLDER_AUTHORIZATION_RETENTION_MAX_COUNT;
-    let initial = (0..limit)
-        .map(|index| {
-            let mut digest = vec![0; 32];
-            digest[24..].copy_from_slice(&(index as u64).to_be_bytes());
-            (digest, 10, format!("event-{index}"))
-        })
-        .collect::<Vec<_>>();
-    db.merge_holder_authorization_events(&initial, 100)
-        .await
-        .unwrap();
-
-    let replay_digest = initial[0].0.clone();
-    db.merge_holder_authorization_events(
-        &[
-            (replay_digest, 11, "updated-existing".to_owned()),
-            (vec![0xff; 32], 11, "over-limit".to_owned()),
-        ],
-        100,
-    )
-    .await
-    .unwrap();
-
-    drop(db);
-    let reopened = Db::open(&path).await.unwrap();
-    let retained = reopened
-        .bounded_holder_authorization_event_jsons(100)
-        .await
-        .unwrap();
-    assert_eq!(retained.len(), limit);
-    assert!(retained.iter().any(|event| event == "updated-existing"));
-    assert!(!retained.iter().any(|event| event == "over-limit"));
-}
-
-#[tokio::test]
-async fn holder_authorization_future_rows_fail_closed_and_legacy_rows_are_removed() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().to_owned();
-    let db = Db::open(&path).await.unwrap();
-    let digest = vec![3; 32];
 
     let err = db
-        .merge_holder_authorization_events(&[(digest.clone(), 101, "future".to_owned())], 100)
+        .replace_holder_authorization_event(101, "future", 100)
         .await
         .unwrap_err();
     assert!(matches!(
         err,
         DbError::HolderAuthorizationIssuedAtTooFarFuture
     ));
-    assert!(
-        db.bounded_holder_authorization_event_jsons(100)
-            .await
-            .unwrap()
-            .is_empty()
-    );
+    assert_eq!(db.holder_authorization_event_json(100).await.unwrap(), None);
 
     sqlx::query(
-        "INSERT INTO holder_authorization_events
-         (credential_digest, authorization_issued_at, event_json) VALUES (?, ?, ?)",
+        "INSERT INTO holder_authorization (id, authorization_issued_at, event_json) \
+         VALUES (1, ?, ?)",
     )
-    .bind(&digest)
     .bind(u64::MAX.to_be_bytes().to_vec())
-    .bind("legacy-future")
+    .bind("pinned-future")
     .execute(db.pool())
     .await
     .unwrap();
     drop(db);
 
     let reopened = Db::open(&path).await.unwrap();
-    assert!(
-        reopened
-            .bounded_holder_authorization_event_jsons(100)
-            .await
-            .unwrap()
-            .is_empty(),
-        "startup normalization must remove a pre-fix pin"
-    );
+    // A future-dated row must not block a legitimate replacement.
     reopened
-        .merge_holder_authorization_events(&[(digest, 50, "legitimate".to_owned())], 100)
+        .replace_holder_authorization_event(50, "legitimate", 100)
         .await
         .unwrap();
     assert_eq!(
-        reopened
-            .bounded_holder_authorization_event_jsons(100)
-            .await
-            .unwrap(),
-        vec!["legitimate"]
+        reopened.holder_authorization_event_json(100).await.unwrap(),
+        Some("legitimate".to_owned())
     );
+}
+
+#[tokio::test]
+async fn per_credential_holder_authorizations_migrate_to_the_newest() {
+    let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+    sqlx::raw_sql(
+        "CREATE TABLE holder_authorization_events (\
+             credential_digest BLOB PRIMARY KEY NOT NULL, \
+             authorization_issued_at BLOB NOT NULL, \
+             event_json TEXT NOT NULL\
+         );",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    // The newest in-bound row (within the one-hour future skew) is neither the
+    // first row nor the lowest or highest digest; a row two hours ahead is not.
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    for (digest, issued_at, event) in [
+        (2u8, 0x0100u64, "middle"),
+        (1, now + 1800, "newest"),
+        (0, 0x00ff, "older"),
+        (3, now + 7200, "future"),
+    ] {
+        sqlx::query("INSERT INTO holder_authorization_events VALUES (?, ?, ?)")
+            .bind(vec![digest; 32])
+            .bind(issued_at.to_be_bytes().to_vec())
+            .bind(event)
+            .execute(&pool)
+            .await
+            .unwrap();
+    }
+
+    sqlx::raw_sql(include_str!(
+        "../migrations/0005_single_holder_authorization.sql"
+    ))
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let retained: Vec<String> = sqlx::query_scalar("SELECT event_json FROM holder_authorization")
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+    assert_eq!(retained, vec!["newest"]);
+    let legacy: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM holder_authorization_events")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(legacy, 4, "unadopted authorizations remain recoverable");
 }
 
 #[tokio::test]
@@ -392,7 +380,7 @@ async fn onboarding_progress_is_durable_and_ordered() {
     db.install_identity(&RootMnemonic::generate().unwrap())
         .await
         .unwrap();
-    db.merge_holder_authorization_events(&[(vec![1; 32], 1, "event".to_owned())], 100)
+    db.replace_holder_authorization_event(1, "event", 100)
         .await
         .unwrap();
     assert_eq!(

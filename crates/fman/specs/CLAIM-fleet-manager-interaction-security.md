@@ -59,9 +59,9 @@ as current.
   [CLAIM-fleet-manager-payment-policy-publisher-controlled](CLAIM-fleet-manager-payment-policy-publisher-controlled.md)).
 - Only holder-authentic authorizations bound to this Fleet Manager enter its
   served trust material. After this daemon version normalizes and exposes an
-  in-bound authorization, relay withholding cannot erase every enrolled row
-  while the receiver maximum issue time does not move backward; replay cannot replace an
-  enrolled same-credential authorization with an equal or older one. Relying
+  in-bound authorization, relay withholding cannot erase the enrolled
+  authorization while the receiver maximum issue time does not move backward;
+  replay cannot replace it with an equal or older one. Relying
   FIs check current issuer policy and revocation. The
   authentication part is recorded by
   [CLAIM-fleet-manager-holder-authorization-bound](CLAIM-fleet-manager-holder-authorization-bound.md).

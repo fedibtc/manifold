@@ -35,6 +35,7 @@ use fedi_decentralized_nostr::setup_payment_federations::{
     restore_durably_admitted_setup_payment_federations_event,
 };
 use fedi_decentralized_nostr_clients::NostrRelayClient;
+use fedi_decentralized_peer_badge_verifier::PeerBadgeVerifier;
 use fedi_decentralized_service_fleet_manager::{FEDERATION_SIZES_0_1, FEDIMINTD_VERSION_0_1};
 use fman_core::directory::{AdvertisementSnapshot, DirectoryPresence, OnboardingStatus};
 use fman_core::fleet::{
@@ -42,9 +43,7 @@ use fman_core::fleet::{
 };
 use fman_core::identity::RootMnemonic;
 use fman_core::onboarding::{FetchedHolderAuthorization, HolderAuthorizationFetcher};
-use nostr_sdk::{
-    Event, EventBuilder, Filter, JsonUtil, Keys, Kind, PublicKey, RelayUrl, Tag, Timestamp,
-};
+use nostr_sdk::{Event, EventBuilder, Filter, JsonUtil, Keys, Kind, PublicKey, Tag, Timestamp};
 use tokio::sync::watch;
 
 /// Advertisement republish cadence. fi-client's consumer-side
@@ -68,13 +67,19 @@ const AUTHORIZATION_REFRESH_TIMEOUT: Duration = Duration::from_secs(12);
 /// One bounded, operator-driven Holder enrollment read usable before a Fleet
 /// is opened.
 pub struct NostrHolderAuthorizationFetcher {
-    relay_urls: Vec<RelayUrl>,
+    manifold_environment: ManifoldEnvironmentProfile,
     store: Arc<FleetHolderAuthorizationStore>,
 }
 
 impl NostrHolderAuthorizationFetcher {
-    pub fn new(relay_urls: Vec<RelayUrl>, store: Arc<FleetHolderAuthorizationStore>) -> Self {
-        Self { relay_urls, store }
+    pub fn new(
+        manifold_environment: ManifoldEnvironmentProfile,
+        store: Arc<FleetHolderAuthorizationStore>,
+    ) -> Self {
+        Self {
+            manifold_environment,
+            store,
+        }
     }
 }
 
@@ -94,26 +99,28 @@ impl HolderAuthorizationFetcher for NostrHolderAuthorizationFetcher {
     async fn fetch(
         &self,
         identity: &RootMnemonic,
-    ) -> anyhow::Result<(Vec<FetchedHolderAuthorization>, u64)> {
+    ) -> anyhow::Result<(Option<FetchedHolderAuthorization>, u64)> {
         let keys = identity.derive_service_nostr_keys();
         // The authorization may sit on any profile relay: the Holder
         // publishes to every relay it knows, so one reachable relay is
         // enough to find it.
-        let nostr = NostrRelayClient::connect_pool(&self.relay_urls, keys.clone(), REQUEST_TIMEOUT)
-            .await
-            .context("connect to the configured Nostr relays")?;
-        let authorizations = fetch_holder_authorizations(&keys, &nostr)
-            .await?
-            .into_iter()
-            .map(|candidate| FetchedHolderAuthorization {
-                credential_digest: candidate.credential_digest,
-                authorization_issued_at: candidate.authorization_issued_at,
-                event_json: candidate.event.as_json(),
-                authorization: candidate.authorization,
-            })
-            .collect();
+        let nostr = NostrRelayClient::connect_pool(
+            self.manifold_environment.nostr_relays().as_urls(),
+            keys.clone(),
+            REQUEST_TIMEOUT,
+        )
+        .await
+        .context("connect to the configured Nostr relays")?;
+        let authorization =
+            fetch_newest_holder_authorization(&keys, &nostr, &self.manifold_environment)
+                .await?
+                .map(|candidate| FetchedHolderAuthorization {
+                    authorization_issued_at: candidate.authorization_issued_at,
+                    event_json: candidate.event.as_json(),
+                    authorization: candidate.authorization,
+                });
         Ok((
-            authorizations,
+            authorization,
             holder_authorization_max_issued_at(now_secs())?,
         ))
     }
@@ -344,34 +351,31 @@ impl fman_core::directory::HolderAuthorizationRefresher for FleetManagerNostr {
                 )
                 .await
                 .context("connect to the configured Nostr relays")?;
-                fetch_holder_authorizations(&inner.keys, &nostr).await
+                fetch_newest_holder_authorization(&inner.keys, &nostr, &inner.manifold_environment)
+                    .await
             })
             .await
             .context("authorization refresh timed out")??;
-            inner.retain_authorizations(fetched).await
+            inner.retain_authorization(fetched).await
         })
         .await?
     }
 }
 
 impl Inner {
-    async fn retain_authorizations(
+    async fn retain_authorization(
         &self,
-        fetched: Vec<VerifiedHolderAuthorizationEvent>,
+        fetched: Option<VerifiedHolderAuthorizationEvent>,
     ) -> anyhow::Result<()> {
-        let rows = fetched
-            .into_iter()
-            .map(|candidate| {
-                (
-                    candidate.credential_digest,
+        if let Some(candidate) = fetched {
+            self.authorization_store
+                .replace(
                     candidate.authorization_issued_at,
-                    candidate.event.as_json(),
+                    &candidate.event.as_json(),
+                    holder_authorization_max_issued_at(now_secs())?,
                 )
-            })
-            .collect::<Vec<_>>();
-        self.authorization_store
-            .merge(&rows, holder_authorization_max_issued_at(now_secs())?)
-            .await?;
+                .await?;
+        }
         let retained =
             load_retained_holder_authorizations(&self.authorization_store, self.keys.public_key())
                 .await?;
@@ -563,7 +567,6 @@ async fn advertise_once(
 struct VerifiedHolderAuthorizationEvent {
     event: Event,
     authorization: HolderAuthorizationEnvelope,
-    credential_digest: Vec<u8>,
     authorization_issued_at: u64,
 }
 
@@ -575,17 +578,22 @@ fn verified_holder_authorization_event(
     let authorization = verify_candidate_at(&event, fman_pubkey, max_issued_at)?;
     let statement = &authorization.holder_authorization.authorization;
     Ok(VerifiedHolderAuthorizationEvent {
-        credential_digest: statement.credential_digest.0.to_vec(),
         authorization_issued_at: statement.issued_at.0,
         event,
         authorization,
     })
 }
 
-async fn fetch_holder_authorizations(
+/// The valid candidate with the greatest signed issue time whose badge a
+/// trusted issuer of this environment issued to its holder; the FMan presents
+/// only that one. Revocation and trust level remain the relying FI's checks.
+async fn fetch_newest_holder_authorization(
     keys: &Keys,
     nostr: &NostrRelayClient,
-) -> anyhow::Result<Vec<VerifiedHolderAuthorizationEvent>> {
+    manifold_environment: &ManifoldEnvironmentProfile,
+) -> anyhow::Result<Option<VerifiedHolderAuthorizationEvent>> {
+    let issuers = PeerBadgeVerifier::try_from_profile(manifold_environment)
+        .context("resolve this environment's trusted PeerBadge issuers")?;
     let max_issued_at = holder_authorization_max_issued_at(now_secs())?;
     let filter = Filter::new()
         .kind(Kind::Custom(
@@ -598,26 +606,44 @@ async fn fetch_holder_authorizations(
         .fetch_events_capped(filter, REQUEST_TIMEOUT, 64)
         .await
         .map_err(|err| anyhow::anyhow!("fetch holder authorizations: {err}"))?;
-    let mut authorizations = std::collections::BTreeMap::new();
+    Ok(newest_issued_candidate(
+        candidates,
+        &keys.public_key(),
+        &issuers,
+        max_issued_at,
+    ))
+}
+
+fn newest_issued_candidate(
+    candidates: impl IntoIterator<Item = Event>,
+    fman_pubkey: &PublicKey,
+    issuers: &PeerBadgeVerifier,
+    max_issued_at: u64,
+) -> Option<VerifiedHolderAuthorizationEvent> {
+    let mut newest: Option<VerifiedHolderAuthorizationEvent> = None;
     for event in candidates {
-        match verified_holder_authorization_event(event, &keys.public_key(), max_issued_at) {
+        // The receiver bound doubles as the authorization's validity time, so
+        // the issuer check accepts the same future skew as the carriage check.
+        let admitted = verified_holder_authorization_event(event, fman_pubkey, max_issued_at)
+            .and_then(|candidate| {
+                issuers.verify_issuance_at(&candidate.authorization, max_issued_at)?;
+                Ok(candidate)
+            });
+        match admitted {
             Ok(candidate) => {
-                let replace = authorizations.get(&candidate.credential_digest).is_none_or(
-                    |current: &VerifiedHolderAuthorizationEvent| {
-                        candidate.authorization_issued_at > current.authorization_issued_at
-                    },
-                );
-                if replace {
-                    authorizations.insert(candidate.credential_digest.clone(), candidate);
+                if newest.as_ref().is_none_or(|current| {
+                    candidate.authorization_issued_at > current.authorization_issued_at
+                }) {
+                    newest = Some(candidate);
                 }
             }
             Err(_) => tracing::debug!("skipping invalid Holder authorization candidate"),
         }
     }
-    Ok(authorizations.into_values().collect())
+    newest
 }
 
-/// Revalidate every event retained by the fleet before seeding the runtime.
+/// Revalidate the event retained by the fleet before seeding the runtime.
 pub async fn load_retained_holder_authorizations(
     store: &FleetHolderAuthorizationStore,
     fman_pubkey: PublicKey,
@@ -631,11 +657,11 @@ pub async fn load_retained_holder_authorizations(
 }
 
 fn decode_retained_holder_authorizations(
-    event_jsons: Vec<String>,
+    event_json: Option<String>,
     fman_pubkey: PublicKey,
     max_issued_at: u64,
 ) -> anyhow::Result<Vec<HolderAuthorizationEnvelope>> {
-    event_jsons
+    event_json
         .into_iter()
         .map(|json| {
             let event = Event::from_json(json).context("parse retained Holder authorization")?;
