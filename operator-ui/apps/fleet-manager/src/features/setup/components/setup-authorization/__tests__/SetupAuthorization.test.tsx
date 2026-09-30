@@ -80,6 +80,49 @@ describe('SetupAuthorization', () => {
     ]);
   });
 
+  it('should keep a refresh result over an older onboarding read still in flight', async () => {
+    let releaseOnboarding!: (value: typeof waiting) => void;
+    let finishRefresh!: (value: typeof observed) => void;
+    const adminCall = vi.spyOn(adminCallModule, 'adminCall').mockImplementation((request) =>
+      request === 'Onboarding'
+        ? new Promise((resolve) => {
+            releaseOnboarding = resolve;
+          })
+        : new Promise((resolve) => {
+            finishRefresh = resolve;
+          })
+    );
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    client.setQueryData(ONBOARDING_KEY, waiting);
+    const Gate = () => {
+      useOnboarding();
+      return null;
+    };
+    render(
+      <QueryClientProvider client={client}>
+        <Gate />
+
+        <SetupAuthorization onSettled={vi.fn()} />
+      </QueryClientProvider>
+    );
+
+    await act(async () => {
+      void client.refetchQueries({ queryKey: ONBOARDING_KEY });
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Check now' }));
+    await vi.waitFor(() => expect(adminCall).toHaveBeenCalledWith('RefreshHolderAuthorizations'));
+    await act(async () => {
+      finishRefresh(observed);
+    });
+    await screen.findByText(/Approved\. Continuing to the terms step/i);
+    await act(async () => {
+      releaseOnboarding(waiting);
+    });
+
+    expect(client.getQueryData(ONBOARDING_KEY)).toEqual(observed);
+    expect(client.getQueryState(ONBOARDING_KEY)?.status).toBe('success');
+  });
+
   it('should show the key an attester signs over', async () => {
     renderAuthorization();
 
