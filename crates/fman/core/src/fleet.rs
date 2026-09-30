@@ -245,20 +245,21 @@ impl FleetHolderAuthorizationStore {
         }
     }
 
-    pub async fn load(&self, max_issued_at: u64) -> anyhow::Result<Vec<String>> {
+    pub async fn load(&self, max_issued_at: u64) -> anyhow::Result<Option<String>> {
         Ok(self
             .db
-            .bounded_holder_authorization_event_jsons(max_issued_at)
+            .holder_authorization_event_json(max_issued_at)
             .await?)
     }
 
-    pub async fn merge(
+    pub async fn replace(
         &self,
-        events: &[(Vec<u8>, u64, String)],
+        authorization_issued_at: u64,
+        event_json: &str,
         max_issued_at: u64,
     ) -> anyhow::Result<()> {
         self.db
-            .merge_holder_authorization_events(events, max_issued_at)
+            .replace_holder_authorization_event(authorization_issued_at, event_json, max_issued_at)
             .await?;
         Ok(())
     }

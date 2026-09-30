@@ -94,7 +94,7 @@ impl HolderAuthorizationFetcher for NostrHolderAuthorizationFetcher {
     async fn fetch(
         &self,
         identity: &RootMnemonic,
-    ) -> anyhow::Result<(Vec<FetchedHolderAuthorization>, u64)> {
+    ) -> anyhow::Result<(Option<FetchedHolderAuthorization>, u64)> {
         let keys = identity.derive_service_nostr_keys();
         // The authorization may sit on any profile relay: the Holder
         // publishes to every relay it knows, so one reachable relay is
@@ -102,18 +102,16 @@ impl HolderAuthorizationFetcher for NostrHolderAuthorizationFetcher {
         let nostr = NostrRelayClient::connect_pool(&self.relay_urls, keys.clone(), REQUEST_TIMEOUT)
             .await
             .context("connect to the configured Nostr relays")?;
-        let authorizations = fetch_holder_authorizations(&keys, &nostr)
-            .await?
-            .into_iter()
-            .map(|candidate| FetchedHolderAuthorization {
-                credential_digest: candidate.credential_digest,
-                authorization_issued_at: candidate.authorization_issued_at,
-                event_json: candidate.event.as_json(),
-                authorization: candidate.authorization,
-            })
-            .collect();
+        let authorization =
+            fetch_newest_holder_authorization(&keys, &nostr)
+                .await?
+                .map(|candidate| FetchedHolderAuthorization {
+                    authorization_issued_at: candidate.authorization_issued_at,
+                    event_json: candidate.event.as_json(),
+                    authorization: candidate.authorization,
+                });
         Ok((
-            authorizations,
+            authorization,
             holder_authorization_max_issued_at(now_secs())?,
         ))
     }
@@ -344,34 +342,30 @@ impl fman_core::directory::HolderAuthorizationRefresher for FleetManagerNostr {
                 )
                 .await
                 .context("connect to the configured Nostr relays")?;
-                fetch_holder_authorizations(&inner.keys, &nostr).await
+                fetch_newest_holder_authorization(&inner.keys, &nostr).await
             })
             .await
             .context("authorization refresh timed out")??;
-            inner.retain_authorizations(fetched).await
+            inner.retain_authorization(fetched).await
         })
         .await?
     }
 }
 
 impl Inner {
-    async fn retain_authorizations(
+    async fn retain_authorization(
         &self,
-        fetched: Vec<VerifiedHolderAuthorizationEvent>,
+        fetched: Option<VerifiedHolderAuthorizationEvent>,
     ) -> anyhow::Result<()> {
-        let rows = fetched
-            .into_iter()
-            .map(|candidate| {
-                (
-                    candidate.credential_digest,
+        if let Some(candidate) = fetched {
+            self.authorization_store
+                .replace(
                     candidate.authorization_issued_at,
-                    candidate.event.as_json(),
+                    &candidate.event.as_json(),
+                    holder_authorization_max_issued_at(now_secs())?,
                 )
-            })
-            .collect::<Vec<_>>();
-        self.authorization_store
-            .merge(&rows, holder_authorization_max_issued_at(now_secs())?)
-            .await?;
+                .await?;
+        }
         let retained =
             load_retained_holder_authorizations(&self.authorization_store, self.keys.public_key())
                 .await?;
@@ -563,7 +557,6 @@ async fn advertise_once(
 struct VerifiedHolderAuthorizationEvent {
     event: Event,
     authorization: HolderAuthorizationEnvelope,
-    credential_digest: Vec<u8>,
     authorization_issued_at: u64,
 }
 
@@ -575,17 +568,18 @@ fn verified_holder_authorization_event(
     let authorization = verify_candidate_at(&event, fman_pubkey, max_issued_at)?;
     let statement = &authorization.holder_authorization.authorization;
     Ok(VerifiedHolderAuthorizationEvent {
-        credential_digest: statement.credential_digest.0.to_vec(),
         authorization_issued_at: statement.issued_at.0,
         event,
         authorization,
     })
 }
 
-async fn fetch_holder_authorizations(
+/// The valid candidate with the greatest signed issue time; the FMan presents
+/// only that one.
+async fn fetch_newest_holder_authorization(
     keys: &Keys,
     nostr: &NostrRelayClient,
-) -> anyhow::Result<Vec<VerifiedHolderAuthorizationEvent>> {
+) -> anyhow::Result<Option<VerifiedHolderAuthorizationEvent>> {
     let max_issued_at = holder_authorization_max_issued_at(now_secs())?;
     let filter = Filter::new()
         .kind(Kind::Custom(
@@ -598,26 +592,23 @@ async fn fetch_holder_authorizations(
         .fetch_events_capped(filter, REQUEST_TIMEOUT, 64)
         .await
         .map_err(|err| anyhow::anyhow!("fetch holder authorizations: {err}"))?;
-    let mut authorizations = std::collections::BTreeMap::new();
+    let mut newest: Option<VerifiedHolderAuthorizationEvent> = None;
     for event in candidates {
         match verified_holder_authorization_event(event, &keys.public_key(), max_issued_at) {
             Ok(candidate) => {
-                let replace = authorizations.get(&candidate.credential_digest).is_none_or(
-                    |current: &VerifiedHolderAuthorizationEvent| {
-                        candidate.authorization_issued_at > current.authorization_issued_at
-                    },
-                );
-                if replace {
-                    authorizations.insert(candidate.credential_digest.clone(), candidate);
+                if newest.as_ref().is_none_or(|current| {
+                    candidate.authorization_issued_at > current.authorization_issued_at
+                }) {
+                    newest = Some(candidate);
                 }
             }
             Err(_) => tracing::debug!("skipping invalid Holder authorization candidate"),
         }
     }
-    Ok(authorizations.into_values().collect())
+    Ok(newest)
 }
 
-/// Revalidate every event retained by the fleet before seeding the runtime.
+/// Revalidate the event retained by the fleet before seeding the runtime.
 pub async fn load_retained_holder_authorizations(
     store: &FleetHolderAuthorizationStore,
     fman_pubkey: PublicKey,
@@ -631,11 +622,11 @@ pub async fn load_retained_holder_authorizations(
 }
 
 fn decode_retained_holder_authorizations(
-    event_jsons: Vec<String>,
+    event_json: Option<String>,
     fman_pubkey: PublicKey,
     max_issued_at: u64,
 ) -> anyhow::Result<Vec<HolderAuthorizationEnvelope>> {
-    event_jsons
+    event_json
         .into_iter()
         .map(|json| {
             let event = Event::from_json(json).context("parse retained Holder authorization")?;

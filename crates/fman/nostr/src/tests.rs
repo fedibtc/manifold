@@ -106,7 +106,7 @@ fn retained_authorizations_are_reverified_before_reuse() {
 
     assert_eq!(
         decode_retained_holder_authorizations(
-            vec![event.as_json()],
+            Some(event.as_json()),
             fman.public_key(),
             1_730_000_000,
         )
@@ -116,7 +116,7 @@ fn retained_authorizations_are_reverified_before_reuse() {
     );
     assert!(
         decode_retained_holder_authorizations(
-            vec![event.as_json()],
+            Some(event.as_json()),
             Keys::generate().public_key(),
             1_730_000_000,
         )
@@ -194,7 +194,7 @@ async fn built_payload_advertises_the_service_pubkey() {
 }
 
 #[tokio::test]
-async fn renewed_authorization_updates_durable_and_live_state_without_rollback() {
+async fn newer_authorization_replaces_durable_and_live_state_without_rollback() {
     let temp = tempfile::TempDir::new().unwrap();
     let db = fman_core::db::Db::open(temp.path()).await.unwrap();
     db.install_identity(&RootMnemonic::generate().unwrap())
@@ -211,25 +211,17 @@ async fn renewed_authorization_updates_durable_and_live_state_without_rollback()
         ManifoldEnvironment::Development.profile().unwrap(),
         store.clone(),
     );
+    // The replacement comes from another holder with another credential: the
+    // FMan keeps exactly one authorization, not one per credential.
     let original = authorization_event_at(&holder, keys.public_key(), 100);
-    let mut content: HolderAuthorizationEventContent =
-        serde_json::from_str(&original.content).unwrap();
-    let authorization = &mut content.authorization.holder_authorization;
-    authorization.authorization.issued_at = Timestamp(200);
-    authorization.proof.signature =
-        holder.sign_schnorr(&nostr_sdk::secp256k1::Message::from_digest(
-            authorization.authorization.digest().unwrap().into(),
-        ));
-    let renewed = EventBuilder::new(original.kind, serde_json::to_string(&content).unwrap())
-        .sign_with_keys(&holder)
-        .unwrap();
+    let replacement = authorization_event_at(&Keys::generate(), keys.public_key(), 200);
     let mut changes = service.inner.holder_authorizations.subscribe();
-    for (event, expected_time) in [(original.clone(), 100), (renewed, 200), (original, 200)] {
+    for (event, expected_time) in [(original.clone(), 100), (replacement, 200), (original, 200)] {
         service
             .inner
-            .retain_authorizations(vec![
+            .retain_authorization(Some(
                 verified_holder_authorization_event(event, &keys.public_key(), now_secs()).unwrap(),
-            ])
+            ))
             .await
             .unwrap();
         assert!(changes.has_changed().unwrap());
@@ -253,11 +245,7 @@ async fn renewed_authorization_updates_durable_and_live_state_without_rollback()
         .await
         .unwrap_err();
     assert!(error.to_string().contains("already in progress"));
-    service
-        .inner
-        .retain_authorizations(Vec::new())
-        .await
-        .unwrap();
+    service.inner.retain_authorization(None).await.unwrap();
     assert_eq!(
         service.holder_authorizations()[0]
             .holder_authorization

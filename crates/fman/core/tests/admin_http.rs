@@ -41,8 +41,8 @@ impl crate::onboarding::HolderAuthorizationFetcher for NoHolderAuthorizations {
     async fn fetch(
         &self,
         _identity: &crate::identity::RootMnemonic,
-    ) -> anyhow::Result<(Vec<crate::onboarding::FetchedHolderAuthorization>, u64)> {
-        Ok((Vec::new(), u64::MAX))
+    ) -> anyhow::Result<(Option<crate::onboarding::FetchedHolderAuthorization>, u64)> {
+        Ok((None, u64::MAX))
     }
 }
 
@@ -184,7 +184,7 @@ async fn the_operator_listener_serves_a_data_root_with_no_identity_and_survives_
 
     // The remaining stages are the browser's: the relay fetch is shortcut at
     // the database, and the initial offer lands over this same listener.
-    db.merge_holder_authorization_events(&[(vec![1; 32], 1, "{}".to_owned())], 1)
+    db.replace_holder_authorization_event(1, "{}", 1)
         .await
         .unwrap();
     let completed = post_admin(

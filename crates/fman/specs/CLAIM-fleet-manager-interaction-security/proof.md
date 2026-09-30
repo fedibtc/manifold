@@ -1,5 +1,11 @@
 # Proof: Fleet Manager remote-interaction confinement
 
+> **Stale proof:** the durable store now retains one authorization, replaced
+> only by a strictly later signed `issued_at` (migration
+> `0005_single_holder_authorization.sql`). Passages describing per-digest
+> merging, the 64-row service-wide bound, and `holder_authorization_events`
+> no longer match the code.
+
 ## Status
 
 

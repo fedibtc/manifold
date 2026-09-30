@@ -38,8 +38,8 @@ impl HolderAuthorizationFetcher for NoHolderAuthorizations {
     async fn fetch(
         &self,
         _identity: &RootMnemonic,
-    ) -> anyhow::Result<(Vec<FetchedHolderAuthorization>, u64)> {
-        Ok((Vec::new(), u64::MAX))
+    ) -> anyhow::Result<(Option<FetchedHolderAuthorization>, u64)> {
+        Ok((None, u64::MAX))
     }
 }
 
@@ -255,7 +255,7 @@ async fn completion_is_observed_across_a_restart() {
         db.install_identity(&crate::identity::RootMnemonic::generate().unwrap())
             .await
             .unwrap();
-        db.merge_holder_authorization_events(&[(vec![1; 32], 1, "{}".to_owned())], 1)
+        db.replace_holder_authorization_event(1, "{}", 1)
             .await
             .unwrap();
         db.configure_initial_offer(None, 1).await.unwrap();
