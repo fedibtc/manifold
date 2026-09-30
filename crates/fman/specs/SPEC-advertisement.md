@@ -77,8 +77,11 @@ statement holder id to equal the event author, verifies the holder's SDK
 authorization proof, requires the authorization subject to equal this FMan's
 Nostr pubkey, and requires the inline credential digest to equal the
 authorization's credential digest. It also rejects a statement issued more than
-one hour ahead of the receiver's clock. Malformed or mismatched candidates are
-skipped without logging candidate-controlled values.
+one hour ahead of the receiver's clock. A fetched candidate must further pass
+the shared verifier's offline issuance check: its badge names one of this
+environment's trusted issuers, verifies against that issuer's pinned authority,
+and was issued to the authorizing holder. Malformed, mismatched, or untrusted
+candidates are skipped without logging candidate-controlled values.
 
 One FMan identity retains exactly one complete authorization event, shared
 across every federation it operates, and reverifies it at startup. A refresh
@@ -86,10 +89,9 @@ selects the valid candidate with the greatest signed authorization `issued_at`,
 whatever its holder or credential, and it replaces the retained event only when
 strictly later; an empty, failed, equal, or older relay answer never deletes or
 rolls it back. Startup removes a retained event beyond the receiver-time bound
-before reuse. Because the daemon has no trusted-holder allowlist and the holder
-chooses `issued_at`, any signer can publish a later-dated candidate that a
-refresh then selects in place of the operator's; the operator enrollment flow
-must not treat admission as issuer trust.
+before reuse. The holder chooses `issued_at`, so any holder of a trusted badge
+can publish a later-dated candidate that a refresh then selects in place of the
+operator's.
 The UI never polls for enrollment; after setup the operator can explicitly
 check for renewed or replacement authorization. Refreshes update the live
 authorization and trigger republication, while ordinary advertisement
@@ -98,9 +100,10 @@ Holder-authorization relay query. A relying consumer still performs fresh
 issuer-policy, credential, and revocation verification; durable carriage is not
 a claim that the backing credential remains valid.
 
-The FMan does not decide whether the credential issuer is trusted, verify the
-backing credential's PBRSA proof, or check revocation. The FI must repeat the
-authorization checks and perform those issuer-policy checks itself, as required
+The FMan does not check revocation or the relying-party minimum trust level,
+and its issuance check is not a trust decision for anyone else. The FI must
+repeat the authorization checks and perform the full issuer-policy checks
+itself, as required
 by the FI verification rules in
 [SPEC-fman-nostr-events](../../nostr/specs/SPEC-fman-nostr-events.md).
 
