@@ -63,6 +63,7 @@ describe('SetupAuthorization', () => {
     render(
       <QueryClientProvider client={client}>
         <Gate />
+
         <SetupAuthorization onSettled={vi.fn()} />
       </QueryClientProvider>
     );
