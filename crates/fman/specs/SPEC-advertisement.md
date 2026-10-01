@@ -2,8 +2,9 @@
 
 ## Status
 
-Advertisement availability depends only on a configured offer and physical
-capacity. Setup-payment membership is enforced when a priced quote is requested.
+Advertisement availability depends only on a configured offer, physical
+capacity, and the daemon's readiness checks. Setup-payment membership is
+enforced when a priced quote is requested.
 
 ## Record justification
 
@@ -112,11 +113,33 @@ by the FI verification rules in
 The advertisement carries neither an availability boolean nor a count. Its
 existence means the publication cycle observed that the FMan was accepting
 seats: it had physical capacity after live seats — bounded by both the
-operator's seat limit and the remaining lifetime port grid — and the operator
-had configured an offer. Setup-payment membership and opening a retained
-payment-federation client in the current daemon process are not advertisement
-gates; RPC remains authoritative. A seat offered at zero settles against
-nothing, which is the deployment bootstrap where the first federation's
-guardians are given away because no ecash to pay them with exists yet.
+operator's seat limit and the remaining lifetime port grid — the operator
+had configured an offer, and the latest readiness check passed. Setup-payment
+membership and opening a retained payment-federation client in the current
+daemon process are not advertisement gates; RPC remains authoritative. A seat
+offered at zero settles against nothing, which is the deployment bootstrap
+where the first federation's guardians are given away because no ecash to pay
+them with exists yet.
 `GetAvailability` uses the same gated-slot calculation, but independent calls
 can observe different settings epochs and live state.
+
+## Readiness gate
+
+A seat sold by an FMan that cannot be reached or cannot use Bitcoin becomes
+the cause of a failed DKG, so the daemon admits new seats only while its
+readiness checks pass. At startup and then every 10 minutes (every minute
+while failing), it requires a connected home relay, its own discovery record
+resolving through n0 pkarr or DNS with a relay it is connected to, and its
+Bitcoin backend — read through the client `fedimintd` builds, with Bitcoin Core
+required on its own rather than through its Esplora fallback — serving the
+configured network, out of initial block download, with a fee estimate
+(regtest waives the last two). Failed checks are retried for about a minute before a run fails. Local E2E
+skips the relay and discovery checks. The verdict lives in memory and starts
+failed, so a restarted FMan admits nothing until its first run passes.
+
+A failed verdict suppresses publication, makes `GetAvailability` report
+`accepting_seats = false`, and makes `GetQuote` return `CapacityExhausted`, so
+FIs treat it like a full FMan. Each change of verdict also draws a fresh offer
+epoch: a quote issued before a failure is refused with `OfferChanged` and its
+refund instead of admitting a seat. Every run emits one shareable event with a
+fixed code per check for telemetry.

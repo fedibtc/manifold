@@ -77,6 +77,7 @@ async fn rpc_with_config(
     )
     .await
     .unwrap();
+    fleet.set_ready_for_new_seats(true).await.unwrap();
     fleet.set_offered_price(Some(TEST_PRICE)).await.unwrap();
     FleetManagerRpc::new(Arc::new(fleet), tokio::sync::watch::channel(None).1)
 }

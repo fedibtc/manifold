@@ -807,6 +807,7 @@ async fn advertisement_eligibility_changes_wake_publication_without_waiting_for_
             .await
             .unwrap(),
     );
+    fleet.set_ready_for_new_seats(true).await.unwrap();
     let host = FleetNostrHost::new(
         fleet.clone(),
         "endpoint".to_owned(),
@@ -840,6 +841,76 @@ async fn advertisement_eligibility_changes_wake_publication_without_waiting_for_
         "a priced offer is discoverable before payment runtime preparation"
     );
     assert!(host.advertisement().await.is_some());
+    fleet.shutdown().await;
+}
+
+/// A failed readiness check withdraws discovery and quoting, and refuses
+/// quotes already issued instead of admitting a seat this FMan may not serve.
+#[tokio::test]
+async fn readiness_gates_new_seats_and_refuses_outstanding_quotes() {
+    let temp = TempDir::new().unwrap();
+    let fleet = Arc::new(
+        open_fleet(config(&temp, 2, 30_660).await, Arc::new(NoWallet))
+            .await
+            .unwrap(),
+    );
+    let host = FleetNostrHost::new(
+        fleet.clone(),
+        "endpoint".to_owned(),
+        "f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f9"
+            .parse()
+            .unwrap(),
+    );
+    fleet.set_offered_price(Some(Msats(0))).await.unwrap();
+    assert!(
+        !fleet.availability_snapshot().await.accepting_seats,
+        "a fleet sells nothing before its first readiness check passes"
+    );
+    assert!(host.advertisement().await.is_none());
+    assert!(fleet.quote_offer().await.is_none());
+
+    fleet.set_ready_for_new_seats(true).await.unwrap();
+    tokio::time::timeout(Duration::from_secs(1), host.advertisement_changed())
+        .await
+        .expect("passing readiness wakes advertisement publication");
+    assert!(fleet.availability_snapshot().await.accepting_seats);
+    assert!(host.advertisement().await.is_some());
+    let quoted = fleet.quote_offer().await.expect("a ready fleet quotes");
+
+    let epoch = fleet.db.offer_epoch().await.unwrap();
+    fleet.set_ready_for_new_seats(true).await.unwrap();
+    assert_eq!(
+        fleet.db.offer_epoch().await.unwrap(),
+        epoch,
+        "an unchanged verdict keeps quotes in flight valid"
+    );
+
+    fleet.set_ready_for_new_seats(false).await.unwrap();
+    tokio::time::timeout(Duration::from_secs(1), host.advertisement_changed())
+        .await
+        .expect("failing readiness wakes advertisement publication");
+    assert!(!fleet.availability_snapshot().await.accepting_seats);
+    assert!(host.advertisement().await.is_none());
+    assert!(fleet.quote_offer().await.is_none());
+    let refusal = fleet
+        .create_seat(
+            input(quoted.epoch, 66, far_future(), 0, 0),
+            commitment(66),
+            |reason, refund| {
+                assert_eq!(reason, RefusalReason::OfferChanged);
+                assert!(refund.is_none());
+                Ok(raw_commitment(vec![66], 66))
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(refusal, raw_commitment(vec![66], 66));
+    assert!(fleet.db.list_seats().await.unwrap().is_empty());
+
+    fleet.set_ready_for_new_seats(true).await.unwrap();
+    assert!(fleet.availability_snapshot().await.accepting_seats);
+    let (_, seat_id) = create_free_seat(&fleet, 67).await;
+    assert!(fleet.seat_by_id(&seat_id).is_some());
     fleet.shutdown().await;
 }
 
@@ -890,6 +961,7 @@ async fn operator_settings_are_database_owned_and_persisted() {
     let fleet = open_fleet(config.clone(), Arc::new(NoWallet))
         .await
         .unwrap();
+    fleet.set_ready_for_new_seats(true).await.unwrap();
     let price = Msats(10_000_000);
     let advertised_plan = Plan::InfiniteBestEffort {
         price_msats: price.0,

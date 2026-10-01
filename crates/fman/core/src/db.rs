@@ -656,6 +656,15 @@ impl Db {
         Ok(())
     }
 
+    /// Refuse every outstanding quote without changing the offer itself.
+    pub(crate) async fn rotate_offer_epoch(&self) -> Result<(), DbError> {
+        sqlx::query("UPDATE offer_state SET offer_epoch = ? WHERE id = 1")
+            .bind(fresh_offer_epoch().as_bytes().as_slice())
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
     pub async fn offer_epoch(&self) -> Result<OfferEpoch, DbError> {
         let (epoch,): (Vec<u8>,) =
             sqlx::query_as("SELECT offer_epoch FROM offer_state WHERE id = 1")
