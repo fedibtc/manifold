@@ -1,35 +1,21 @@
 import { Banner } from '@operator-ui/common-ui';
-import type { ReadinessReport } from '@operator-ui/types';
+import type { ShowSeatReadinessResponse } from '@operator-ui/types';
 import { formatCheckedAt } from '@/shared/utils/format';
-import {
-  CHECKS,
-  failedChecks,
-  guidance,
-  labels,
-  outcomes,
-  passed
-} from '@/shared/utils/seatReadiness';
+import { CHECKS, guidance, isStale, labels, outcomes, passed } from '@/shared/utils/seatReadiness';
 import styles from './SeatReadinessCard.module.css';
 
 interface SeatReadinessCardProps {
-  /** Null until the daemon's first readiness run completes. */
-  report: ReadinessReport | null;
+  readiness: ShowSeatReadinessResponse;
+  nowMs: number;
 }
 
-export const SeatReadinessCard = ({ report }: SeatReadinessCardProps) => {
-  if (report === null) {
-    return (
-      <Banner variant="info" title="Checking readiness">
-        The first readiness check has not finished. New seats are not offered until it passes.
-      </Banner>
-    );
-  }
-  const ready = failedChecks(report).length === 0;
+export const SeatReadinessCard = ({ readiness, nowMs }: SeatReadinessCardProps) => {
+  const { ready_for_new_seats: ready, report } = readiness;
   return (
     <>
       {ready ? (
-        <Banner variant="success" title="Accepting new seats">
-          Every readiness check passed.
+        <Banner variant="success" title="Readiness checks passed">
+          New seats are offered while a price and free capacity are set.
         </Banner>
       ) : (
         <Banner variant="error" title="Not accepting new seats">
@@ -38,21 +24,38 @@ export const SeatReadinessCard = ({ report }: SeatReadinessCardProps) => {
         </Banner>
       )}
 
-      <ul className={styles.checks}>
-        {CHECKS.map((check) => (
-          <li key={check} className={styles.check} data-passed={passed(report[check])}>
-            <strong>{labels[check]}</strong>
+      {report === null ? (
+        <p className={styles.checkedAt}>
+          No check has finished since this host started. Until one does, the last stored result
+          applies.
+        </p>
+      ) : (
+        <>
+          {isStale(report, nowMs) && (
+            <Banner variant="warn" title="Checks may have stopped">
+              The last check finished more than 15 minutes ago. Restart the FMan if this persists.
+            </Banner>
+          )}
 
-            <span>{outcomes[report[check]]}</span>
-            {!passed(report[check]) && <span className={styles.guidance}>{guidance[check]}</span>}
-          </li>
-        ))}
-      </ul>
+          <ul className={styles.checks}>
+            {CHECKS.map((check) => (
+              <li key={check} className={styles.check}>
+                <strong>{labels[check]}</strong>
 
-      <p className={styles.checkedAt}>
-        Last checked {formatCheckedAt(Math.floor(report.checked_at_ms / 1000))}. Checks repeat every
-        10 minutes, or every minute while one fails.
-      </p>
+                <span>{outcomes[report[check]]}</span>
+                {!passed(report[check]) && (
+                  <span className={styles.guidance}>{guidance[check]}</span>
+                )}
+              </li>
+            ))}
+          </ul>
+
+          <p className={styles.checkedAt}>
+            Last checked {formatCheckedAt(Math.floor(report.checked_at_ms / 1000))}. Checks repeat
+            every 10 minutes, or every minute while one fails.
+          </p>
+        </>
+      )}
     </>
   );
 };

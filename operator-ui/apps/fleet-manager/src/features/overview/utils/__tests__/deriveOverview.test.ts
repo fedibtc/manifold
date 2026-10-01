@@ -135,14 +135,17 @@ it('should raise nothing when the state is unknown', () => {
   expect(model.attention).toHaveLength(0);
 });
 
+const failingReport = {
+  checked_at_ms: 0,
+  relay: 'pass',
+  discovery: 'discovery_record_missing',
+  bitcoin: 'bitcoin_no_fee_rate'
+} as const;
+
 it('should send the operator to Health when a readiness check fails, naming only the failures', () => {
   const model = deriveOverview({
-    seatReadiness: {
-      checked_at_ms: 0,
-      relay: 'pass',
-      discovery: 'discovery_record_missing',
-      bitcoin: 'bitcoin_no_fee_rate'
-    }
+    seatReadiness: { ready_for_new_seats: false, report: failingReport },
+    nowMs: 60_000
   });
 
   expect(model.tone).toBe('warn');
@@ -156,7 +159,13 @@ it('should send the operator to Health when a readiness check fails, naming only
   ]);
 });
 
-it('should raise nothing for readiness that passed, does not apply, or has not run yet', () => {
+it('should flag a closed gate even before the first run after a restart', () => {
+  const model = deriveOverview({ seatReadiness: { ready_for_new_seats: false, report: null } });
+
+  expect(model.attention.map((item) => item.key)).toEqual(['not-ready-for-new-seats']);
+});
+
+it('should raise nothing for a stored ready verdict, with or without a fresh run', () => {
   const ready = {
     checked_at_ms: 0,
     relay: 'not_applicable',
@@ -164,6 +173,20 @@ it('should raise nothing for readiness that passed, does not apply, or has not r
     bitcoin: 'pass'
   } as const;
 
-  expect(deriveOverview({ seatReadiness: ready }).attention).toEqual([]);
-  expect(deriveOverview({ seatReadiness: null }).attention).toEqual([]);
+  expect(
+    deriveOverview({ seatReadiness: { ready_for_new_seats: true, report: ready }, nowMs: 60_000 })
+      .attention
+  ).toEqual([]);
+  expect(
+    deriveOverview({ seatReadiness: { ready_for_new_seats: true, report: null } }).attention
+  ).toEqual([]);
+});
+
+it('should flag a ready verdict whose last check is stale', () => {
+  const model = deriveOverview({
+    seatReadiness: { ready_for_new_seats: true, report: { ...failingReport, relay: 'pass' } },
+    nowMs: 16 * 60_000
+  });
+
+  expect(model.attention.map((item) => item.key)).toEqual(['seat-readiness-stale']);
 });

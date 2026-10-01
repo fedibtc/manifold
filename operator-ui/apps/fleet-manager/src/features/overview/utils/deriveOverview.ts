@@ -2,10 +2,10 @@ import type {
   OnboardingNostrStatus,
   PaymentFederation,
   Plan,
-  ReadinessReport
+  ShowSeatReadinessResponse
 } from '@operator-ui/types';
 import { readOfferPriceMsat } from '@/shared/utils/offerPrice';
-import { failedChecks, labels } from '@/shared/utils/seatReadiness';
+import { failedChecks, isStale, labels } from '@/shared/utils/seatReadiness';
 
 export interface AttentionItem {
   key: string;
@@ -26,9 +26,10 @@ export interface OverviewInputs {
   /** Absent while the Onboarding query has not answered. The Overview says nothing
    *  rather than guessing. */
   nostrState?: OnboardingNostrStatus['state'];
-  /** Absent while ShowSeatReadiness has not answered; null before the daemon's
-   *  first run. Neither raises an item, for the same reason `checking` does not. */
-  seatReadiness?: ReadinessReport | null;
+  /** Absent while ShowSeatReadiness has not answered. */
+  seatReadiness?: ShowSeatReadinessResponse;
+  /** When `seatReadiness` was read; staleness is judged against it. */
+  nowMs?: number;
 }
 
 // ListSeats returns SeatSummary only — no health/phase (that's SeatStatus, a
@@ -38,7 +39,8 @@ export const deriveOverview = ({
   paymentFederations = [],
   plans = [],
   nostrState,
-  seatReadiness
+  seatReadiness,
+  nowMs
 }: OverviewInputs): OverviewModel => {
   const priceMsat = readOfferPriceMsat(plans);
   const isSellingForMoney = priceMsat !== null && priceMsat > 0;
@@ -104,12 +106,23 @@ export const deriveOverview = ({
 
   // The daemon has stopped advertising and quoting. Nothing else on the page
   // would show it: the offer still reads as set, and running seats are fine.
-  const failed = seatReadiness ? failedChecks(seatReadiness) : [];
-  if (failed.length > 0) {
+  if (seatReadiness?.ready_for_new_seats === false) {
+    const failed = seatReadiness.report ? failedChecks(seatReadiness.report) : [];
     attention.push({
       key: 'not-ready-for-new-seats',
       title: 'Not accepting new seats',
-      detail: `Failing: ${failed.map((check) => labels[check]).join(', ')}. Open Health for what to check.`,
+      detail:
+        failed.length > 0
+          ? `Failing: ${failed.map((check) => labels[check]).join(', ')}. Open Health for what to check.`
+          : 'No readiness check has passed yet. Open Health for details.',
+      path: '/health'
+    });
+  } else if (seatReadiness?.report && nowMs !== undefined && isStale(seatReadiness.report, nowMs)) {
+    // A stopped worker leaves the last verdict in force indefinitely.
+    attention.push({
+      key: 'seat-readiness-stale',
+      title: 'Readiness checks may have stopped',
+      detail: 'The last check finished more than 15 minutes ago. Open Health for details.',
       path: '/health'
     });
   }

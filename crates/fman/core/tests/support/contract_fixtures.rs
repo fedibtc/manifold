@@ -101,12 +101,15 @@ pub fn fixture_json() -> Vec<(&'static str, String)> {
         ("fman_plans", plans_fixture()),
         (
             "fman_seat_readiness",
-            admin::seat_readiness_json(Some(ReadinessReport {
-                checked_at_ms: 1_700_000_000_000,
-                relay: ReadinessOutcome::Pass,
-                discovery: ReadinessOutcome::DiscoveryRecordMissing,
-                bitcoin: ReadinessOutcome::BitcoinSyncing,
-            })),
+            admin::seat_readiness_json(
+                false,
+                Some(ReadinessReport {
+                    checked_at_ms: 1_700_000_000_000,
+                    relay: ReadinessOutcome::Pass,
+                    discovery: ReadinessOutcome::DiscoveryRecordMissing,
+                    bitcoin: ReadinessOutcome::BitcoinSyncing,
+                }),
+            ),
         ),
         ("fman_payment_federations", payment_federations_fixture()),
         ("fman_payout_destination", payout_destination_fixture()),

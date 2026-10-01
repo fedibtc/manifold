@@ -435,7 +435,10 @@ pub(crate) async fn dispatch(
             fleet.max_seats().await,
             fleet.available_slots().await,
         )),
-        AdminRequest::ShowSeatReadiness => Ok(seat_readiness_json(fleet.seat_readiness())),
+        AdminRequest::ShowSeatReadiness => Ok(seat_readiness_json(
+            fleet.ready_for_new_seats().await,
+            fleet.seat_readiness(),
+        )),
         AdminRequest::SetCapacity { max_seats } => {
             fleet.set_max_seats(max_seats).await?;
             Ok(capacity_json(
@@ -556,8 +559,8 @@ pub fn capacity_json(max_seats: u32, available_slots: u32) -> Value {
     json!({ "max_seats": max_seats, "available_slots": available_slots })
 }
 
-pub fn seat_readiness_json(report: Option<ReadinessReport>) -> Value {
-    json!({ "report": report })
+pub fn seat_readiness_json(ready_for_new_seats: bool, report: Option<ReadinessReport>) -> Value {
+    json!({ "ready_for_new_seats": ready_for_new_seats, "report": report })
 }
 
 pub fn payment_federations_json(statuses: Vec<PaymentFederationStatus>) -> Value {

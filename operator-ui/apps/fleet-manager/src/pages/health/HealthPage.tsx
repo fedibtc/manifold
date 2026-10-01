@@ -21,7 +21,9 @@ export const HealthPage = () => {
           </p>
 
           <QuerySurface disposition={disposition} onRetry={retry}>
-            {readiness.data && <SeatReadinessCard report={readiness.data.report} />}
+            {readiness.data && (
+              <SeatReadinessCard readiness={readiness.data} nowMs={readiness.dataUpdatedAt} />
+            )}
           </QuerySurface>
         </div>
       </SectionCard>

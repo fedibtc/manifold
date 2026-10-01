@@ -859,6 +859,43 @@ fn readiness(ready: bool) -> ReadinessReport {
     }
 }
 
+/// The verdict is durable: a restart keeps a ready FMan selling under the
+/// same quotes, and keeps a failing one closed, before any run completes.
+#[tokio::test]
+async fn readiness_verdict_survives_restart() {
+    let temp = TempDir::new().unwrap();
+    let fleet = open_fleet(config(&temp, 2, 30_680).await, Arc::new(NoWallet))
+        .await
+        .unwrap();
+    fleet.set_offered_price(Some(Msats(0))).await.unwrap();
+    fleet.set_seat_readiness(readiness(true)).await.unwrap();
+    let quoted = fleet.quote_offer().await.expect("a ready fleet quotes");
+    fleet.shutdown().await;
+    drop(fleet);
+
+    let fleet = open_fleet(config(&temp, 2, 30_680).await, Arc::new(NoWallet))
+        .await
+        .unwrap();
+    assert_eq!(fleet.seat_readiness(), None);
+    assert!(fleet.availability_snapshot().await.accepting_seats);
+    assert_eq!(
+        fleet.quote_offer().await.map(|offer| offer.epoch),
+        Some(quoted.epoch),
+        "a restart alone refuses no quote"
+    );
+    fleet.set_seat_readiness(readiness(false)).await.unwrap();
+    fleet.shutdown().await;
+    drop(fleet);
+
+    let fleet = open_fleet(config(&temp, 2, 30_680).await, Arc::new(NoWallet))
+        .await
+        .unwrap();
+    assert!(!fleet.availability_snapshot().await.accepting_seats);
+    assert!(fleet.quote_offer().await.is_none());
+    assert_ne!(fleet.db.offer_epoch().await.unwrap(), quoted.epoch);
+    fleet.shutdown().await;
+}
+
 /// A failed readiness check withdraws discovery and quoting, and refuses
 /// quotes already issued instead of admitting a seat this FMan may not serve.
 #[tokio::test]

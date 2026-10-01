@@ -64,6 +64,7 @@ const onboarding = (
 
 const authorized = onboarding(authorizationObserved);
 
+// `checked_at_ms` is restamped on every read by the ShowSeatReadiness verb.
 const READY: MockState['seatReadiness'] = {
   checked_at_ms: LAST_READ_AT * 1000,
   relay: 'pass',
@@ -156,11 +157,13 @@ const base = (): Pick<
   | 'payoutDestination'
   | 'relayAuthorization'
   | 'maxSeats'
+  | 'readyForNewSeats'
   | 'seatReadiness'
   | 'fleetOpensAfterReads'
 > => ({
   onboarded: true,
   maxSeats: 3,
+  readyForNewSeats: true,
   seatReadiness: READY,
   fleetOpensAfterReads: 0,
   relayAuthorization: 'present',
@@ -359,6 +362,7 @@ const builders = {
     paymentFederations: [],
     price: null,
     onboarding: authorized,
+    readyForNewSeats: false,
     seatReadiness: {
       ...READY,
       discovery: 'discovery_record_missing',

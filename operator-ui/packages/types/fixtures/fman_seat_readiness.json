@@ -1,4 +1,5 @@
 {
+  "ready_for_new_seats": false,
   "report": {
     "bitcoin": "bitcoin_syncing",
     "checked_at_ms": 1700000000000,

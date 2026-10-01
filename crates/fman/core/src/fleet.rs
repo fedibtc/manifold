@@ -323,8 +323,8 @@ pub struct Fleet {
     /// deliberately independent of the offer epoch, whose only job is quote
     /// validation.
     advertisement_changed: Notify,
-    /// The daemon's latest readiness report. Starts absent, so a restarted
-    /// FMan admits nothing until its first run passes.
+    /// The daemon's latest readiness report, for the operator. Admission
+    /// reads the durable verdict instead.
     seat_readiness: Mutex<Option<ReadinessReport>>,
 }
 
@@ -696,25 +696,22 @@ impl Fleet {
             .offer_snapshot(self.config.first_port_base)
             .await
             .expect("offer snapshot");
-        // Read after the snapshot: see `set_seat_readiness`.
-        (snapshot.slots > 0 && self.ready_for_new_seats()).then_some(snapshot.offer)
+        (snapshot.slots > 0 && snapshot.ready_for_new_seats).then_some(snapshot.offer)
     }
 
     /// Record the daemon's latest readiness report.
     ///
-    /// A change of verdict draws a fresh offer epoch, so quotes issued before
-    /// a failure are refused with their refund instead of admitting a seat this
-    /// FMan may not serve. The verdict changes before the epoch: a quote read
-    /// under the new epoch always observes the new verdict, because quoting
-    /// reads readiness after its offer snapshot.
+    /// The verdict is durable, so a restart resumes it. A change draws a fresh
+    /// offer epoch atomically with it, so quotes issued before a failure are
+    /// refused with their refund instead of admitting a seat this FMan may not
+    /// serve. A failed write changes neither, and the next report retries.
     pub async fn set_seat_readiness(&self, report: ReadinessReport) -> anyhow::Result<()> {
-        let ready = report.ready();
-        let previous = self
+        *self
             .seat_readiness
             .lock()
-            .expect("readiness lock is never poisoned")
-            .replace(report);
-        if previous.is_some_and(|previous| previous.ready()) == ready {
+            .expect("readiness lock is never poisoned") = Some(report);
+        let ready = report.ready();
+        if !self.db.set_ready_for_new_seats(ready).await? {
             return Ok(());
         }
         if ready {
@@ -729,20 +726,25 @@ impl Fleet {
             );
         }
         self.advertisement_changed.notify_one();
-        self.db.rotate_offer_epoch().await?;
         Ok(())
     }
 
-    /// The latest readiness report, absent before the first run completes.
+    /// The durable verdict that gates admission.
+    pub async fn ready_for_new_seats(&self) -> bool {
+        self.db
+            .offer_snapshot(self.config.first_port_base)
+            .await
+            .expect("offer snapshot")
+            .ready_for_new_seats
+    }
+
+    /// The latest readiness report since this process started; the verdict
+    /// that gates admission is the durable one.
     pub fn seat_readiness(&self) -> Option<ReadinessReport> {
         *self
             .seat_readiness
             .lock()
             .expect("readiness lock is never poisoned")
-    }
-
-    fn ready_for_new_seats(&self) -> bool {
-        self.seat_readiness().is_some_and(|report| report.ready())
     }
 
     /// What the advertisement and `GetAvailability` say: whether a seat
@@ -763,7 +765,7 @@ impl Fleet {
         AvailabilitySnapshot {
             accepting_seats: snapshot.slots > 0
                 && settings.price.is_some()
-                && self.ready_for_new_seats(),
+                && snapshot.ready_for_new_seats,
             plans: settings.plans(),
         }
     }

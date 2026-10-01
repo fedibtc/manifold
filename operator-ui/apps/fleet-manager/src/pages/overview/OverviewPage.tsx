@@ -38,7 +38,8 @@ export const OverviewPage = () => {
     paymentFederations: paymentFederations.data?.federations,
     plans,
     nostrState: onboarding.data?.nostr.state,
-    seatReadiness: seatReadiness.data?.report
+    seatReadiness: seatReadiness.data,
+    nowMs: seatReadiness.dataUpdatedAt
   });
   const unreadableFees =
     earnings.unreadableFeeSeatCount > 0

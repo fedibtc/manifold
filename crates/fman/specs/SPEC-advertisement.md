@@ -133,15 +133,24 @@ resolving through n0 pkarr or DNS with a relay it is connected to, and its
 Bitcoin backend — read through the client `fedimintd` builds, with Bitcoin Core
 required on its own rather than through its Esplora fallback — serving the
 configured network, out of initial block download, with a fee estimate
-(regtest waives the last two). Failed checks are retried for about a minute before a run fails. Local E2E
-skips the relay and discovery checks. The verdict lives in memory and starts
-failed, so a restarted FMan admits nothing until its first run passes.
+(regtest waives the last two). An Esplora-only backend cannot report initial
+block download and substitutes a default fee rate, so for it those two checks
+pass vacuously. Failed checks are retried for up to a minute before a run
+fails. Each Bitcoin check builds a fresh client and runs on a blocking thread
+with a 10-second deadline, because the Core client blocks inside its async
+calls; a check that outlives its deadline counts as unavailable, and the next
+attempt waits on it rather than starting another. Local E2E skips the relay
+and discovery checks.
+
+The verdict is durable in `offer_state`, so a restart resumes it: a ready FMan
+keeps selling and a failing one stays closed until a run passes. A fresh,
+restored, or upgraded FMan starts closed.
 
 A failed verdict suppresses publication, makes `GetAvailability` report
 `accepting_seats = false`, and makes `GetQuote` return `CapacityExhausted`, so
 FIs treat it like a full FMan. Each change of verdict also draws a fresh offer
-epoch: a quote issued before a failure is refused with `OfferChanged` and its
-refund instead of admitting a seat. Every run emits one shareable event with a
+epoch in the same database write: a quote issued before a failure is refused
+with `OfferChanged` and its refund instead of admitting a seat. Every run emits one shareable event with a
 fixed code per check for telemetry, and the latest report is served to the
 operator by the `ShowSeatReadiness` admin verb, which the operator UI's Health
 page shows.

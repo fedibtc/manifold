@@ -37,3 +37,9 @@ export const passed = (outcome: ReadinessOutcome): boolean =>
 
 export const failedChecks = (report: ReadinessReport): ReadinessCheck[] =>
   CHECKS.filter((check) => !passed(report[check]));
+
+/** A ready daemon reruns every 10 minutes; past this, the worker may have stopped. */
+export const STALE_AFTER_MS = 15 * 60_000;
+
+export const isStale = (report: ReadinessReport, nowMs: number): boolean =>
+  nowMs - report.checked_at_ms > STALE_AFTER_MS;

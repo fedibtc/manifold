@@ -327,6 +327,7 @@ const fmanAdminErrorMirror = {
 const fmanPlansMirror = { plans: [PLAN] } satisfies ShowPlansResponse;
 
 const fmanSeatReadinessMirror = {
+  ready_for_new_seats: false,
   report: {
     checked_at_ms: 1_700_000_000_000,
     relay: 'pass',

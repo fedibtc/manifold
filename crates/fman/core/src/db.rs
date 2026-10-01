@@ -112,6 +112,8 @@ pub(crate) struct Offer {
 pub(crate) struct OfferSnapshot {
     pub(crate) offer: Offer,
     pub(crate) slots: u32,
+    /// The last readiness verdict, read with the epoch it was drawn with.
+    pub(crate) ready_for_new_seats: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -171,11 +173,13 @@ impl Db {
             .into_iter()
             .map(|(id,)| FederationId(id))
             .collect();
-        let (epoch, price, max_seats): (Vec<u8>, Option<i64>, i64) = sqlx::query_as(
-            "SELECT offer_epoch, price_msats, max_seats FROM offer_state WHERE id = 1",
-        )
-        .fetch_one(&mut *tx)
-        .await?;
+        let (epoch, price, max_seats, ready_for_new_seats): (Vec<u8>, Option<i64>, i64, bool) =
+            sqlx::query_as(
+                "SELECT offer_epoch, price_msats, max_seats, ready_for_new_seats \
+                 FROM offer_state WHERE id = 1",
+            )
+            .fetch_one(&mut *tx)
+            .await?;
         let (active, next_no): (i64, i64) = sqlx::query_as(
             "SELECT COUNT(*) FILTER (WHERE d.quote_id IS NULL), COALESCE(MAX(s.seat_no) + 1, 0) \
              FROM seats s LEFT JOIN decommissioned_seats d USING (quote_id)",
@@ -198,6 +202,7 @@ impl Db {
                 active,
                 next_no,
             ),
+            ready_for_new_seats,
         })
     }
 
@@ -656,13 +661,21 @@ impl Db {
         Ok(())
     }
 
-    /// Refuse every outstanding quote without changing the offer itself.
-    pub(crate) async fn rotate_offer_epoch(&self) -> Result<(), DbError> {
-        sqlx::query("UPDATE offer_state SET offer_epoch = ? WHERE id = 1")
-            .bind(fresh_offer_epoch().as_bytes().as_slice())
-            .execute(&self.pool)
-            .await?;
-        Ok(())
+    /// Store the readiness verdict. A change draws a fresh offer epoch in the
+    /// same statement, refusing every quote issued under the old verdict.
+    /// Returns whether the verdict changed.
+    pub(crate) async fn set_ready_for_new_seats(&self, ready: bool) -> Result<bool, DbError> {
+        let changed = sqlx::query(
+            "UPDATE offer_state SET ready_for_new_seats = ?, offer_epoch = ? \
+             WHERE id = 1 AND ready_for_new_seats != ?",
+        )
+        .bind(ready)
+        .bind(fresh_offer_epoch().as_bytes().as_slice())
+        .bind(ready)
+        .execute(&self.pool)
+        .await?
+        .rows_affected();
+        Ok(changed == 1)
     }
 
     pub async fn offer_epoch(&self) -> Result<OfferEpoch, DbError> {

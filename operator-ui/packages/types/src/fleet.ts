@@ -293,8 +293,10 @@ export interface CapacityResponse {
 }
 export type ShowCapacityResponse = CapacityResponse;
 
-/** The daemon's latest new-seat readiness run; null before the first completes. */
+/** The durable verdict that gates new seats, and the latest run behind it;
+ *  `report` is null until a run completes after the daemon starts. */
 export interface ShowSeatReadinessResponse {
+  ready_for_new_seats: boolean;
   report: ReadinessReport | null;
 }
 export type SetCapacityResponse = CapacityResponse;

@@ -315,7 +315,15 @@ const capacity = () => ({
 
 const showCapacity: Verb<'ShowCapacity'> = capacity;
 
-const showSeatReadiness: Verb<'ShowSeatReadiness'> = () => ({ report: getState().seatReadiness });
+// The daemon reruns its checks on its own clock, so a report the mock serves is
+// always recent: stamped two minutes before the read.
+const showSeatReadiness: Verb<'ShowSeatReadiness'> = () => {
+  const report = getState().seatReadiness;
+  return {
+    ready_for_new_seats: getState().readyForNewSeats,
+    report: report && { ...report, checked_at_ms: Date.now() - 2 * 60_000 }
+  };
+};
 
 // The durable ceiling never moves below seats that are still active,
 // mirroring Db::set_max_seats and its error text.
