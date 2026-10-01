@@ -7,7 +7,7 @@
 //! outcome as one shareable event for telemetry.
 
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use fedimint_core::bitcoin::Network;
 use fedimint_core::util::SafeUrl;
@@ -16,6 +16,7 @@ use fedimint_server_bitcoin_rpc::esplora::EsploraClient;
 use fedimint_server_core::bitcoin_rpc::{DynServerBitcoinRpc, IServerBitcoinRpc as _};
 use fman_core::fleet::Fleet;
 use fman_core::seat_process::{BitcoinBackend, SeatProcessConfig};
+use fman_core::seat_readiness::{ReadinessOutcome as Outcome, ReadinessReport as Report};
 use futures::StreamExt as _;
 use iroh::address_lookup::{
     AddressLookup, AddressLookupBuilder as _, DnsAddressLookup, PkarrResolver,
@@ -29,51 +30,6 @@ const NOT_READY_INTERVAL: Duration = Duration::from_secs(60);
 const ATTEMPTS: u32 = 6;
 const RETRY_DELAY: Duration = Duration::from_secs(10);
 const CHECK_TIMEOUT: Duration = Duration::from_secs(10);
-
-/// One prerequisite's fixed outcome code; never a remote value or error text.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum Outcome {
-    Pass,
-    NotApplicable,
-    RelayDisconnected,
-    DiscoveryRecordMissing,
-    BitcoinUnavailable,
-    BitcoinWrongNetwork,
-    BitcoinSyncing,
-    BitcoinNoFeeRate,
-}
-
-impl Outcome {
-    fn passed(self) -> bool {
-        matches!(self, Self::Pass | Self::NotApplicable)
-    }
-
-    fn as_str(self) -> &'static str {
-        match self {
-            Self::Pass => "pass",
-            Self::NotApplicable => "not_applicable",
-            Self::RelayDisconnected => "relay_disconnected",
-            Self::DiscoveryRecordMissing => "record_missing",
-            Self::BitcoinUnavailable => "unavailable",
-            Self::BitcoinWrongNetwork => "wrong_network",
-            Self::BitcoinSyncing => "syncing",
-            Self::BitcoinNoFeeRate => "no_fee_rate",
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug)]
-struct Report {
-    relay: Outcome,
-    discovery: Outcome,
-    bitcoin: Outcome,
-}
-
-impl Report {
-    fn ready(&self) -> bool {
-        self.relay.passed() && self.discovery.passed() && self.bitcoin.passed()
-    }
-}
 
 pub(super) struct SeatReadiness {
     endpoint: Endpoint,
@@ -123,7 +79,7 @@ impl SeatReadiness {
                     bitcoin = report.bitcoin.as_str(),
                     "seat readiness check completed"
                 );
-                if let Err(error) = fleet.set_ready_for_new_seats(ready).await {
+                if let Err(error) = fleet.set_seat_readiness(report).await {
                     tracing::warn!(%error, "failed to apply the seat readiness verdict");
                 }
                 tokio::time::sleep(if ready {
@@ -157,6 +113,10 @@ impl SeatReadiness {
         };
         let (discovery, bitcoin) = tokio::join!(self.discovery(&relays), self.bitcoin());
         Report {
+            checked_at_ms: SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("system clock is after the Unix epoch")
+                .as_millis() as u64,
             relay,
             discovery,
             bitcoin,

@@ -315,6 +315,8 @@ const capacity = () => ({
 
 const showCapacity: Verb<'ShowCapacity'> = capacity;
 
+const showSeatReadiness: Verb<'ShowSeatReadiness'> = () => ({ report: getState().seatReadiness });
+
 // The durable ceiling never moves below seats that are still active,
 // mirroring Db::set_max_seats and its error text.
 const setCapacity: Verb<'SetCapacity'> = ({ max_seats }) => {
@@ -433,6 +435,7 @@ const fleetHandlers: VerbTable<Exclude<AdminRequestName, OnboardingVerbName>> = 
   ShowPlans: showPlans,
   SetPrice: setPrice,
   ShowCapacity: showCapacity,
+  ShowSeatReadiness: showSeatReadiness,
   SetCapacity: setCapacity,
   ListPaymentFederations: listPaymentFederations,
   PayoutDestination: payoutDestination,

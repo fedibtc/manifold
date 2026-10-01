@@ -134,3 +134,36 @@ it('should raise nothing when the state is unknown', () => {
 
   expect(model.attention).toHaveLength(0);
 });
+
+it('should send the operator to Health when a readiness check fails, naming only the failures', () => {
+  const model = deriveOverview({
+    seatReadiness: {
+      checked_at_ms: 0,
+      relay: 'pass',
+      discovery: 'discovery_record_missing',
+      bitcoin: 'bitcoin_no_fee_rate'
+    }
+  });
+
+  expect(model.tone).toBe('warn');
+  expect(model.attention).toEqual([
+    {
+      key: 'not-ready-for-new-seats',
+      title: 'Not accepting new seats',
+      detail: 'Failing: Guardian discovery, Bitcoin backend. Open Health for what to check.',
+      path: '/health'
+    }
+  ]);
+});
+
+it('should raise nothing for readiness that passed, does not apply, or has not run yet', () => {
+  const ready = {
+    checked_at_ms: 0,
+    relay: 'not_applicable',
+    discovery: 'not_applicable',
+    bitcoin: 'pass'
+  } as const;
+
+  expect(deriveOverview({ seatReadiness: ready }).attention).toEqual([]);
+  expect(deriveOverview({ seatReadiness: null }).attention).toEqual([]);
+});

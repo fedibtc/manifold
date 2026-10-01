@@ -13,8 +13,8 @@ mod payout;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{
-    Arc, RwLock,
-    atomic::{AtomicBool, AtomicU64, Ordering},
+    Arc, Mutex, RwLock,
+    atomic::{AtomicU64, Ordering},
 };
 use std::time::Duration;
 
@@ -46,6 +46,7 @@ use crate::seat::{
     SeatVerbError,
 };
 use crate::seat_process::{RespawnPolicy, SeatProcessConfig, SeatProcessSpawner};
+use crate::seat_readiness::ReadinessReport;
 
 // No `Debug`: [`SeatProcessConfig`] may hold a bitcoind password.
 #[derive(Clone)]
@@ -322,9 +323,9 @@ pub struct Fleet {
     /// deliberately independent of the offer epoch, whose only job is quote
     /// validation.
     advertisement_changed: Notify,
-    /// The daemon's latest readiness verdict for a new seat. Starts false, so
-    /// a restarted FMan admits nothing until its first probe passes.
-    ready_for_new_seats: AtomicBool,
+    /// The daemon's latest readiness report. Starts absent, so a restarted
+    /// FMan admits nothing until its first run passes.
+    seat_readiness: Mutex<Option<ReadinessReport>>,
 }
 
 /// Failure while resolving a capability-scoped guardian metrics target.
@@ -471,7 +472,7 @@ impl Fleet {
             telemetry_generation: AtomicU64::new(telemetry_generation),
             telemetry_registration_changed: Notify::new(),
             advertisement_changed: Notify::new(),
-            ready_for_new_seats: AtomicBool::new(false),
+            seat_readiness: Mutex::new(None),
         };
         Ok(fleet)
     }
@@ -695,20 +696,25 @@ impl Fleet {
             .offer_snapshot(self.config.first_port_base)
             .await
             .expect("offer snapshot");
-        // Read after the snapshot: see `set_ready_for_new_seats`.
-        (snapshot.slots > 0 && self.ready_for_new_seats.load(Ordering::SeqCst))
-            .then_some(snapshot.offer)
+        // Read after the snapshot: see `set_seat_readiness`.
+        (snapshot.slots > 0 && self.ready_for_new_seats()).then_some(snapshot.offer)
     }
 
-    /// Record the daemon's readiness verdict for a new seat.
+    /// Record the daemon's latest readiness report.
     ///
-    /// A change draws a fresh offer epoch, so quotes issued before a failure
-    /// are refused with their refund instead of admitting a seat this FMan may
-    /// not serve. The flag changes before the epoch: a quote read under the
-    /// new epoch always observes the new verdict, because quoting reads
-    /// readiness after its offer snapshot.
-    pub async fn set_ready_for_new_seats(&self, ready: bool) -> anyhow::Result<()> {
-        if self.ready_for_new_seats.swap(ready, Ordering::SeqCst) == ready {
+    /// A change of verdict draws a fresh offer epoch, so quotes issued before
+    /// a failure are refused with their refund instead of admitting a seat this
+    /// FMan may not serve. The verdict changes before the epoch: a quote read
+    /// under the new epoch always observes the new verdict, because quoting
+    /// reads readiness after its offer snapshot.
+    pub async fn set_seat_readiness(&self, report: ReadinessReport) -> anyhow::Result<()> {
+        let ready = report.ready();
+        let previous = self
+            .seat_readiness
+            .lock()
+            .expect("readiness lock is never poisoned")
+            .replace(report);
+        if previous.is_some_and(|previous| previous.ready()) == ready {
             return Ok(());
         }
         if ready {
@@ -725,6 +731,18 @@ impl Fleet {
         self.advertisement_changed.notify_one();
         self.db.rotate_offer_epoch().await?;
         Ok(())
+    }
+
+    /// The latest readiness report, absent before the first run completes.
+    pub fn seat_readiness(&self) -> Option<ReadinessReport> {
+        *self
+            .seat_readiness
+            .lock()
+            .expect("readiness lock is never poisoned")
+    }
+
+    fn ready_for_new_seats(&self) -> bool {
+        self.seat_readiness().is_some_and(|report| report.ready())
     }
 
     /// What the advertisement and `GetAvailability` say: whether a seat
@@ -745,7 +763,7 @@ impl Fleet {
         AvailabilitySnapshot {
             accepting_seats: snapshot.slots > 0
                 && settings.price.is_some()
-                && self.ready_for_new_seats.load(Ordering::SeqCst),
+                && self.ready_for_new_seats(),
             plans: settings.plans(),
         }
     }

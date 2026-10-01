@@ -64,6 +64,13 @@ const onboarding = (
 
 const authorized = onboarding(authorizationObserved);
 
+const READY: MockState['seatReadiness'] = {
+  checked_at_ms: LAST_READ_AT * 1000,
+  relay: 'pass',
+  discovery: 'pass',
+  bitcoin: 'pass'
+};
+
 const fees = (overrides: Partial<MockGuardianFees> = {}): MockGuardianFees => ({
   federation_id: FEDERATION_A,
   remittance_account: '{"id":"acct1mockguardianfeeaccount"}',
@@ -149,10 +156,12 @@ const base = (): Pick<
   | 'payoutDestination'
   | 'relayAuthorization'
   | 'maxSeats'
+  | 'seatReadiness'
   | 'fleetOpensAfterReads'
 > => ({
   onboarded: true,
   maxSeats: 3,
+  seatReadiness: READY,
   fleetOpensAfterReads: 0,
   relayAuthorization: 'present',
   payoutDestination: 'operator@example.com',
@@ -343,6 +352,18 @@ const builders = {
     paymentFederations: [],
     price: SEAT_PRICE_MSAT,
     onboarding: authorized
+  }),
+  'not-ready-for-seats': () => ({
+    ...base(),
+    seats: [],
+    paymentFederations: [],
+    price: null,
+    onboarding: authorized,
+    seatReadiness: {
+      ...READY,
+      discovery: 'discovery_record_missing',
+      bitcoin: 'bitcoin_syncing'
+    }
   }),
   // The state a fleet is actually in before its first payout: revenue on both
   // sides and nowhere to send it. Every sweep refuses until a destination is
@@ -545,6 +566,10 @@ const notes: Record<ScenarioName, ScenarioNote> = {
   'offer-without-payments': {
     desc: 'A paid offer with no payment federation — nothing can ever be bought.',
     affects: ['offer', 'overview']
+  },
+  'not-ready-for-seats': {
+    desc: 'The last readiness run failed: no discovery record and Bitcoin still syncing. The daemon has stopped advertising and quoting new seats.',
+    affects: ['overview', 'health']
   },
   'payouts-unset': {
     desc: 'Revenue on both sides and no payout destination stored: one federation holding a balance, one seat with fees in the pool and no collected ecash. Every sweep refuses until a destination is saved.',

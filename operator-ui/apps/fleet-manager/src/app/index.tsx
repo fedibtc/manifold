@@ -10,6 +10,7 @@ import { SetupGate } from '@/app/components/setup-gate/SetupGate';
 import { AuthorizationPage } from '@/pages/authorization/AuthorizationPage';
 import { BackupPage } from '@/pages/backup/BackupPage';
 import { BackupPhrasePage } from '@/pages/backup-phrase/BackupPhrasePage';
+import { HealthPage } from '@/pages/health/HealthPage';
 import { OfferPage } from '@/pages/offer/OfferPage';
 import { OverviewPage } from '@/pages/overview/OverviewPage';
 import { PayoutsPage } from '@/pages/payouts/PayoutsPage';
@@ -45,7 +46,8 @@ const router = createBrowserRouter([
                   { path: 'payouts', element: <PayoutsPage /> },
                   { path: 'offer', element: <OfferPage /> },
                   { path: 'backup', element: <BackupPage /> },
-                  { path: 'backup/phrase', element: <BackupPhrasePage /> }
+                  { path: 'backup/phrase', element: <BackupPhrasePage /> },
+                  { path: 'health', element: <HealthPage /> }
                 ]
               }
             ]

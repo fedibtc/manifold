@@ -101,6 +101,9 @@ the fleet.
 
 - `ShowPlans` returns the current complete plan list.
 - `ShowCapacity` returns the durable maximum and currently available slots.
+- `ShowSeatReadiness` returns the latest readiness run as `{ report }`, with a
+  fixed outcome code per check, or a null report before the first run
+  completes ([SPEC-advertisement](SPEC-advertisement.md#readiness-gate)).
 - `SetCapacity` replaces the durable maximum. It is refused below the number
   of active (not decommissioned) seats. A real change rotates the offer epoch,
   invalidating outstanding quotes; a no-op does not.

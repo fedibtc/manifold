@@ -12,7 +12,7 @@ import type { FederationId } from '../funds';
  * Operator verbs. The CLI (`fman-cli --data-dir ...`) is a thin mapping
  * onto these.
  */
-export type AdminRequest = "ShowPlans" | { "SetPrice": { price_msats: number | null, } } | "ShowCapacity" | { "SetCapacity": { max_seats: number, } } | "ListPaymentFederations" | "PayoutDestination" | { "SetPayoutDestination": { destination: string | null, } } | { "SweepPaymentFees": { federation_id: FederationId,
+export type AdminRequest = "ShowPlans" | { "SetPrice": { price_msats: number | null, } } | "ShowCapacity" | "ShowSeatReadiness" | { "SetCapacity": { max_seats: number, } } | "ListPaymentFederations" | "PayoutDestination" | { "SetPayoutDestination": { destination: string | null, } } | { "SweepPaymentFees": { federation_id: FederationId,
 /**
  * Caller-generated idempotency identity.
  */

@@ -3,6 +3,7 @@ import type {
   FeePolicy,
   OnboardingResponse,
   PaymentFederation,
+  ReadinessReport,
   Remittance,
   SeatGuardianFee,
   SeatReport,
@@ -75,6 +76,9 @@ export interface MockState {
   /** The durable seat-admission ceiling (`offer_state.max_seats`): written by
    *  `ConfigureInitialOffer` and `SetCapacity`, read by `ShowCapacity`. */
   maxSeats: number;
+  /** The daemon's latest new-seat readiness run, read by `ShowSeatReadiness`;
+   *  null before the first run completes. */
+  seatReadiness: ReadinessReport | null;
   /** How many `Onboarding` status reads still answer `runtime: starting` after
    *  the final stage is durable. The daemon reports `starting` until its fleet
    *  opens; the mock has no fleet to open, so completion arms a fixed number of

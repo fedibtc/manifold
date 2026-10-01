@@ -142,4 +142,6 @@ A failed verdict suppresses publication, makes `GetAvailability` report
 FIs treat it like a full FMan. Each change of verdict also draws a fresh offer
 epoch: a quote issued before a failure is refused with `OfferChanged` and its
 refund instead of admitting a seat. Every run emits one shareable event with a
-fixed code per check for telemetry.
+fixed code per check for telemetry, and the latest report is served to the
+operator by the `ShowSeatReadiness` admin verb, which the operator UI's Health
+page shows.

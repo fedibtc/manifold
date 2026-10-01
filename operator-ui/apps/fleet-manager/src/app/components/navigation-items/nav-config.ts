@@ -9,5 +9,6 @@ export const NAV_ITEMS: NavItem[] = [
   { key: 'authorization', label: 'Authorization', path: '/authorization' },
   { key: 'seats', label: 'Seats', path: '/seats' },
   { key: 'payouts', label: 'Payouts', path: '/payouts' },
-  { key: 'backup', label: 'Backup', path: '/backup' }
+  { key: 'backup', label: 'Backup', path: '/backup' },
+  { key: 'health', label: 'Health', path: '/health' }
 ];

@@ -51,6 +51,7 @@ import fmanPayoutJobStatusJson from '../../fixtures/fman_payout_job_status.json'
 import fmanPlansJson from '../../fixtures/fman_plans.json';
 import fmanReenrollTelemetryJson from '../../fixtures/fman_reenroll_telemetry.json';
 import fmanSeatGuardianFeesJson from '../../fixtures/fman_seat_guardian_fees.json';
+import fmanSeatReadinessJson from '../../fixtures/fman_seat_readiness.json';
 import fmanSeatReportsJson from '../../fixtures/fman_seat_reports.json';
 import fmanSeatStatusJson from '../../fixtures/fman_seat_status.json';
 import fmanSeatsJson from '../../fixtures/fman_seats.json';
@@ -85,7 +86,8 @@ import type {
   SeatReport,
   SeatStatusResponse,
   ShowMnemonicResponse,
-  ShowPlansResponse
+  ShowPlansResponse,
+  ShowSeatReadinessResponse
 } from '../index';
 
 // --- compile-time mirrors: real object literals, so literal/enum types stay
@@ -266,6 +268,7 @@ const adminRequestsMirror = {
   ShowPlans: 'ShowPlans',
   SetPrice: { SetPrice: { price_msats: 50_000_000 } },
   ShowCapacity: 'ShowCapacity',
+  ShowSeatReadiness: 'ShowSeatReadiness',
   SetCapacity: { SetCapacity: { max_seats: 4 } },
   ConfigureInitialOffer: {
     ConfigureInitialOffer: { max_seats: 4, price_msats: 50_000_000 }
@@ -322,6 +325,15 @@ const fmanAdminErrorMirror = {
 } satisfies AdminError;
 
 const fmanPlansMirror = { plans: [PLAN] } satisfies ShowPlansResponse;
+
+const fmanSeatReadinessMirror = {
+  report: {
+    checked_at_ms: 1_700_000_000_000,
+    relay: 'pass',
+    discovery: 'discovery_record_missing',
+    bitcoin: 'bitcoin_syncing'
+  }
+} satisfies ShowSeatReadinessResponse;
 
 const fmanPaymentFederationsMirror = {
   federations: [
@@ -708,6 +720,10 @@ describe('committed FMan fixtures match their type-checked mirrors', () => {
 
   it('should keep fman_plans.json equal to the typed mirror', () => {
     expect(fmanPlansJson).toEqual(fmanPlansMirror);
+  });
+
+  it('should keep fman_seat_readiness.json equal to the typed mirror', () => {
+    expect(fmanSeatReadinessJson).toEqual(fmanSeatReadinessMirror);
   });
 
   it('should keep fman_payment_federations.json equal to the typed mirror', () => {

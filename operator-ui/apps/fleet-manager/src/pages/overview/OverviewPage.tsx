@@ -7,6 +7,7 @@ import { deriveOverview } from '@/features/overview/utils/deriveOverview';
 import { useOffer } from '@/shared/api/hooks/use-offer/useOffer';
 import { useOnboarding } from '@/shared/api/hooks/use-onboarding/useOnboarding';
 import { usePaymentFederations } from '@/shared/api/hooks/use-payment-federations/usePaymentFederations';
+import { useSeatReadiness } from '@/shared/api/hooks/use-seat-readiness/useSeatReadiness';
 import { useSeats } from '@/shared/api/hooks/use-seats/useSeats';
 import { QuerySurface } from '@/shared/components/query-surface/QuerySurface';
 import { useQueryDisposition } from '@/shared/query/use-query-disposition/useQueryDisposition';
@@ -24,6 +25,8 @@ export const OverviewPage = () => {
   // Deliberately outside the disposition below: the Overview must still render
   // when the authorization state is unknown.
   const onboarding = useOnboarding();
+  // Outside the disposition for the same reason.
+  const seatReadiness = useSeatReadiness();
 
   // The three fleet-wide reads behind every figure on this page. A failure while
   // they hold answers marks the page stale — it never deletes the figures, which
@@ -34,7 +37,8 @@ export const OverviewPage = () => {
   const model = deriveOverview({
     paymentFederations: paymentFederations.data?.federations,
     plans,
-    nostrState: onboarding.data?.nostr.state
+    nostrState: onboarding.data?.nostr.state,
+    seatReadiness: seatReadiness.data?.report
   });
   const unreadableFees =
     earnings.unreadableFeeSeatCount > 0
