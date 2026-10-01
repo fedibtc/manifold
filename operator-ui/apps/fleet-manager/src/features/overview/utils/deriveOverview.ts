@@ -1,5 +1,11 @@
-import type { OnboardingNostrStatus, PaymentFederation, Plan } from '@operator-ui/types';
+import type {
+  OnboardingNostrStatus,
+  PaymentFederation,
+  Plan,
+  ShowSeatReadinessResponse
+} from '@operator-ui/types';
 import { readOfferPriceMsat } from '@/shared/utils/offerPrice';
+import { failedChecks, labels } from '@/shared/utils/seatReadiness';
 
 export interface AttentionItem {
   key: string;
@@ -20,6 +26,8 @@ export interface OverviewInputs {
   /** Absent while the Onboarding query has not answered. The Overview says nothing
    *  rather than guessing. */
   nostrState?: OnboardingNostrStatus['state'];
+  /** Absent while ShowSeatReadiness has not answered. */
+  seatReadiness?: ShowSeatReadinessResponse;
 }
 
 // ListSeats returns SeatSummary only — no health/phase (that's SeatStatus, a
@@ -28,7 +36,8 @@ export interface OverviewInputs {
 export const deriveOverview = ({
   paymentFederations = [],
   plans = [],
-  nostrState
+  nostrState,
+  seatReadiness
 }: OverviewInputs): OverviewModel => {
   const priceMsat = readOfferPriceMsat(plans);
   const isSellingForMoney = priceMsat !== null && priceMsat > 0;
@@ -89,6 +98,21 @@ export const deriveOverview = ({
       title: 'Approval could not be checked',
       detail: 'This host may or may not be approved. Open Authorization for the failure.',
       path: '/authorization'
+    });
+  }
+
+  // The daemon has stopped advertising and quoting. Nothing else on the page
+  // would show it: the offer still reads as set, and running seats are fine.
+  if (seatReadiness?.ready_for_new_seats === false) {
+    const failed = seatReadiness.report ? failedChecks(seatReadiness.report) : [];
+    attention.push({
+      key: 'not-ready-for-new-seats',
+      title: 'Not accepting new seats',
+      detail:
+        failed.length > 0
+          ? `Failing: ${failed.map((check) => labels[check]).join(', ')}. Open Health for what to check.`
+          : 'No readiness check has passed yet. Open Health for details.',
+      path: '/health'
     });
   }
 

@@ -232,7 +232,7 @@ it('should keep the earnings figures under a staleness marker for a whole outage
   expect(failedBalanceReads).toBe(4);
   await waitFor(() => screen.getByText('Showing last-known data'));
   screen.getByText('12 sats');
-  screen.getByText('Advertised and healthy');
+  screen.getByText('Readiness unavailable');
   expect(screen.queryByRole('button', { name: 'Try again' })).not.toBeInTheDocument();
 
   await act(async () => {
@@ -245,7 +245,7 @@ it('should keep the earnings figures under a staleness marker for a whole outage
   expect(failedBalanceReads).toBe(12);
   await waitFor(() => screen.getByText('Showing last-known data'));
   screen.getByText('12 sats');
-  screen.getByText('Advertised and healthy');
+  screen.getByText('Readiness unavailable');
 });
 
 // ListSeats and ListPaymentFederations resolve, so the page renders past its

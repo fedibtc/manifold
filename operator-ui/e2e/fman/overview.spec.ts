@@ -76,3 +76,18 @@ test('should flag a non-receivable payment federation as needing attention', asy
     '/payouts'
   );
 });
+
+test('should send the operator from a failed readiness check to the Health page', async ({
+  page
+}) => {
+  await resetScenario(page, 'not-ready-for-seats');
+
+  await page.goto('/');
+  await signIn(page);
+
+  await expect(page.getByText('Not accepting new seats')).toBeVisible();
+  await page.getByRole('link', { name: 'Review' }).click();
+
+  await expect(page.getByRole('heading', { name: 'Health', level: 1 })).toBeVisible();
+  await expect(page.getByText('Bitcoin Core is still in initial block download.')).toBeVisible();
+});

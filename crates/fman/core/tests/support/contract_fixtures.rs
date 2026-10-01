@@ -44,6 +44,7 @@ use fman_core::payout_wire::{
 };
 use fman_core::remittance_metadata::{RemittanceBreakdownItem, RemittanceMetadata};
 use fman_core::seat::{PaymentClaimStatus, SeatBackupStatus, SeatPhase, SeatReport, SeatSummary};
+use fman_core::seat_readiness::{ReadinessOutcome, ReadinessReport};
 use fman_core::wallet::PayoutRequestId;
 use serde_json::Value;
 use stability_pool_client::common::{Account, AccountType};
@@ -63,6 +64,7 @@ pub const FIXTURE_NAMES: &[&str] = &[
     ERROR_KINDS_FIXTURE,
     "fman_admin_error",
     "fman_plans",
+    "fman_seat_readiness",
     "fman_payment_federations",
     "fman_payout_destination",
     "fman_payout_job",
@@ -97,6 +99,18 @@ pub fn fixture_json() -> Vec<(&'static str, String)> {
         (ERROR_KINDS_FIXTURE, error_kinds_fixture()),
         ("fman_admin_error", admin_error_fixture()),
         ("fman_plans", plans_fixture()),
+        (
+            "fman_seat_readiness",
+            admin::seat_readiness_json(
+                false,
+                Some(ReadinessReport {
+                    checked_at_ms: 1_700_000_000_000,
+                    relay: ReadinessOutcome::Pass,
+                    discovery: ReadinessOutcome::DiscoveryRecordMissing,
+                    bitcoin: ReadinessOutcome::BitcoinSyncing,
+                }),
+            ),
+        ),
         ("fman_payment_federations", payment_federations_fixture()),
         ("fman_payout_destination", payout_destination_fixture()),
         ("fman_payout_job", payout_job_fixture()),
@@ -314,7 +328,8 @@ fn after(request: &AdminRequest) -> Option<AdminRequest> {
             price_msats: Some(50_000_000),
         },
         AdminRequest::SetPrice { .. } => AdminRequest::ShowCapacity,
-        AdminRequest::ShowCapacity => AdminRequest::SetCapacity { max_seats: 4 },
+        AdminRequest::ShowCapacity => AdminRequest::ShowSeatReadiness,
+        AdminRequest::ShowSeatReadiness => AdminRequest::SetCapacity { max_seats: 4 },
         AdminRequest::SetCapacity { .. } => AdminRequest::ListPaymentFederations,
         AdminRequest::ListPaymentFederations => AdminRequest::PayoutDestination,
         AdminRequest::PayoutDestination => AdminRequest::SetPayoutDestination {
@@ -372,6 +387,7 @@ pub fn request_name(request: &AdminRequest) -> &'static str {
         AdminRequest::ShowPlans => "ShowPlans",
         AdminRequest::SetPrice { .. } => "SetPrice",
         AdminRequest::ShowCapacity => "ShowCapacity",
+        AdminRequest::ShowSeatReadiness => "ShowSeatReadiness",
         AdminRequest::SetCapacity { .. } => "SetCapacity",
         AdminRequest::ListPaymentFederations => "ListPaymentFederations",
         AdminRequest::PayoutDestination => "PayoutDestination",

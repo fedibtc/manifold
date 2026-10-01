@@ -134,3 +134,48 @@ it('should raise nothing when the state is unknown', () => {
 
   expect(model.attention).toHaveLength(0);
 });
+
+const failingReport = {
+  checked_at_ms: 0,
+  relay: 'pass',
+  discovery: 'discovery_record_missing',
+  bitcoin: 'bitcoin_no_fee_rate'
+} as const;
+
+it('should send the operator to Health when a readiness check fails, naming only the failures', () => {
+  const model = deriveOverview({
+    seatReadiness: { ready_for_new_seats: false, report: failingReport }
+  });
+
+  expect(model.tone).toBe('warn');
+  expect(model.attention).toEqual([
+    {
+      key: 'not-ready-for-new-seats',
+      title: 'Not accepting new seats',
+      detail: 'Failing: Guardian discovery, Bitcoin backend. Open Health for what to check.',
+      path: '/health'
+    }
+  ]);
+});
+
+it('should flag a closed gate even before the first run after a restart', () => {
+  const model = deriveOverview({ seatReadiness: { ready_for_new_seats: false, report: null } });
+
+  expect(model.attention.map((item) => item.key)).toEqual(['not-ready-for-new-seats']);
+});
+
+it('should raise nothing for a stored ready verdict, with or without a fresh run', () => {
+  const ready = {
+    checked_at_ms: 0,
+    relay: 'not_applicable',
+    discovery: 'not_applicable',
+    bitcoin: 'pass'
+  } as const;
+
+  expect(
+    deriveOverview({ seatReadiness: { ready_for_new_seats: true, report: ready } }).attention
+  ).toEqual([]);
+  expect(
+    deriveOverview({ seatReadiness: { ready_for_new_seats: true, report: null } }).attention
+  ).toEqual([]);
+});

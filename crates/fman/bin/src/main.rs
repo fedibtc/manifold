@@ -12,6 +12,7 @@ mod duplicate_instance;
 #[cfg(feature = "embedded-operator-ui")]
 mod operator_ui;
 mod push_callback;
+mod seat_readiness;
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -430,7 +431,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
                 push_callback_retry_interval: DEFAULT_PUSH_CALLBACK_RETRY_INTERVAL,
                 completion_callback_invoker: Arc::new(PushGatewayCallbackInvoker::new()),
                 process_spawner: SeatProcessSpawner::Bundled,
-                process,
+                process: process.clone(),
             },
             async |identity| {
                 let wallet = fman_fedimint::Wallet::open_guarding(
@@ -520,6 +521,9 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         )
         .spawn();
 
+    let mut seat_readiness =
+        seat_readiness::SeatReadiness::new(router.endpoint().clone(), &process, local_e2e)?
+            .spawn(fleet.clone());
     let host = Arc::new(FleetNostrHost::new(
         fleet.clone(),
         router.endpoint().id().to_string(),
@@ -555,7 +559,17 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         "Fleet Manager serving FI and capability-scoped telemetry Iroh RPC; press Ctrl-C to stop"
     );
 
-    shutdown.await?;
+    // The readiness worker loops until aborted, so it only ends by panicking.
+    // Its verdict would then stay in force unchecked; stop the daemon instead
+    // so the supervisor restarts it.
+    let readiness_stopped = tokio::select! {
+        result = &mut shutdown => {
+            result?;
+            None
+        }
+        result = &mut seat_readiness => Some(result),
+    };
+    seat_readiness.abort();
     telemetry_registration.shutdown().await;
     router.shutdown().await?;
     // Stop and join every wallet-join task before shutting down the fleet.
@@ -564,6 +578,9 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     let join_shutdown = join_reconciler.shutdown().await;
     fleet.shutdown().await;
     join_shutdown?;
+    if let Some(result) = readiness_stopped {
+        anyhow::bail!("seat readiness worker stopped: {result:?}");
+    }
     Ok(())
 }
 

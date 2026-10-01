@@ -15,6 +15,7 @@ use crate::push_callback::{PushGatewayOrigin, PushGatewayOriginPolicy};
 use crate::seat_process::SeatProcessSpawner;
 use crate::seat_process::fake::{FakeApiState, block_forever, write_fake_fedimintd};
 use crate::seat_process::{BitcoindConfig, RespawnPolicy, SeatProcessConfig};
+use crate::seat_readiness::{ReadinessOutcome, ReadinessReport};
 use crate::wallet::NoWallet;
 use fedi_decentralized_service_fleet_manager::DkgCompletionCallbackInput;
 
@@ -77,6 +78,15 @@ async fn rpc_with_config(
     )
     .await
     .unwrap();
+    fleet
+        .set_seat_readiness(ReadinessReport {
+            checked_at_ms: 1,
+            relay: ReadinessOutcome::Pass,
+            discovery: ReadinessOutcome::Pass,
+            bitcoin: ReadinessOutcome::Pass,
+        })
+        .await
+        .unwrap();
     fleet.set_offered_price(Some(TEST_PRICE)).await.unwrap();
     FleetManagerRpc::new(Arc::new(fleet), tokio::sync::watch::channel(None).1)
 }

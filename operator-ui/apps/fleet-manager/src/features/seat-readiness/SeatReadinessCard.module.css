@@ -1,0 +1,15 @@
+.checks {
+  @apply grid gap-3 md:grid-cols-3;
+}
+
+.check {
+  @apply flex flex-col gap-1 rounded-lg border p-3 text-sm;
+}
+
+.guidance {
+  @apply uMutedSm;
+}
+
+.checkedAt {
+  @apply uMutedSm;
+}

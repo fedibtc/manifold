@@ -71,6 +71,7 @@
   "ShowCapacity": "ShowCapacity",
   "ShowMnemonic": "ShowMnemonic",
   "ShowPlans": "ShowPlans",
+  "ShowSeatReadiness": "ShowSeatReadiness",
   "SweepGuardianFees": {
     "SweepGuardianFees": {
       "request_id": "fixture-guardian-payout",

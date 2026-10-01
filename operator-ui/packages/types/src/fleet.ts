@@ -21,6 +21,7 @@
 
 import type { FederationId } from './funds';
 import type { AdminRequest as GeneratedAdminRequest } from './generated/adminRequest';
+import type { ReadinessReport } from './generated/seatReadiness';
 
 // Federation invite code (serde(transparent) string).
 type InviteCode = string;
@@ -291,6 +292,13 @@ export interface CapacityResponse {
   available_slots: number;
 }
 export type ShowCapacityResponse = CapacityResponse;
+
+/** The durable verdict that gates new seats, and the latest run behind it;
+ *  `report` is null until a run completes after the daemon starts. */
+export interface ShowSeatReadinessResponse {
+  ready_for_new_seats: boolean;
+  report: ReadinessReport | null;
+}
 export type SetCapacityResponse = CapacityResponse;
 export interface ConfigureInitialOfferResponse extends ShowPlansResponse {
   onboarding: 'complete';
@@ -443,6 +451,7 @@ export interface AdminResponseByName {
   ShowPlans: ShowPlansResponse;
   SetPrice: SetPriceResponse;
   ShowCapacity: ShowCapacityResponse;
+  ShowSeatReadiness: ShowSeatReadinessResponse;
   SetCapacity: SetCapacityResponse;
   ListPaymentFederations: ListPaymentFederationsResponse;
   PayoutDestination: PayoutDestinationResponse;

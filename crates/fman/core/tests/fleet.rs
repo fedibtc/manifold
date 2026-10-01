@@ -18,6 +18,7 @@ use crate::seat_process::fake::{
     FakeSeatProcessSpawner, block_forever, write_fake_fedimintd,
 };
 use crate::seat_process::{BitcoindConfig, seat_data_dir};
+use crate::seat_readiness::{ReadinessOutcome, ReadinessReport};
 use crate::wallet::NoWallet;
 use crate::wallet::testutil::GatedRefundWallet;
 
@@ -807,6 +808,7 @@ async fn advertisement_eligibility_changes_wake_publication_without_waiting_for_
             .await
             .unwrap(),
     );
+    fleet.set_seat_readiness(readiness(true)).await.unwrap();
     let host = FleetNostrHost::new(
         fleet.clone(),
         "endpoint".to_owned(),
@@ -840,6 +842,130 @@ async fn advertisement_eligibility_changes_wake_publication_without_waiting_for_
         "a priced offer is discoverable before payment runtime preparation"
     );
     assert!(host.advertisement().await.is_some());
+    fleet.shutdown().await;
+}
+
+/// A readiness report whose Bitcoin check passes or fails.
+fn readiness(ready: bool) -> ReadinessReport {
+    ReadinessReport {
+        checked_at_ms: 1,
+        relay: ReadinessOutcome::Pass,
+        discovery: ReadinessOutcome::NotApplicable,
+        bitcoin: if ready {
+            ReadinessOutcome::Pass
+        } else {
+            ReadinessOutcome::BitcoinSyncing
+        },
+    }
+}
+
+/// The verdict is durable: a restart keeps a ready FMan selling under the
+/// same quotes, and keeps a failing one closed, before any run completes.
+#[tokio::test]
+async fn readiness_verdict_survives_restart() {
+    let temp = TempDir::new().unwrap();
+    let fleet = open_fleet(config(&temp, 2, 30_680).await, Arc::new(NoWallet))
+        .await
+        .unwrap();
+    fleet.set_offered_price(Some(Msats(0))).await.unwrap();
+    fleet.set_seat_readiness(readiness(true)).await.unwrap();
+    let quoted = fleet.quote_offer().await.expect("a ready fleet quotes");
+    fleet.shutdown().await;
+    drop(fleet);
+
+    let fleet = open_fleet(config(&temp, 2, 30_680).await, Arc::new(NoWallet))
+        .await
+        .unwrap();
+    assert_eq!(fleet.seat_readiness(), None);
+    assert!(fleet.availability_snapshot().await.accepting_seats);
+    assert_eq!(
+        fleet.quote_offer().await.map(|offer| offer.epoch),
+        Some(quoted.epoch),
+        "a restart alone refuses no quote"
+    );
+    fleet.set_seat_readiness(readiness(false)).await.unwrap();
+    fleet.shutdown().await;
+    drop(fleet);
+
+    let fleet = open_fleet(config(&temp, 2, 30_680).await, Arc::new(NoWallet))
+        .await
+        .unwrap();
+    assert!(!fleet.availability_snapshot().await.accepting_seats);
+    assert!(fleet.quote_offer().await.is_none());
+    assert_ne!(fleet.db.offer_epoch().await.unwrap(), quoted.epoch);
+    fleet.shutdown().await;
+}
+
+/// A failed readiness check withdraws discovery and quoting, and refuses
+/// quotes already issued instead of admitting a seat this FMan may not serve.
+#[tokio::test]
+async fn readiness_gates_new_seats_and_refuses_outstanding_quotes() {
+    let temp = TempDir::new().unwrap();
+    let fleet = Arc::new(
+        open_fleet(config(&temp, 2, 30_660).await, Arc::new(NoWallet))
+            .await
+            .unwrap(),
+    );
+    let host = FleetNostrHost::new(
+        fleet.clone(),
+        "endpoint".to_owned(),
+        "f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f9"
+            .parse()
+            .unwrap(),
+    );
+    fleet.set_offered_price(Some(Msats(0))).await.unwrap();
+    assert!(
+        !fleet.availability_snapshot().await.accepting_seats,
+        "a fleet sells nothing before its first readiness check passes"
+    );
+    assert!(host.advertisement().await.is_none());
+    assert!(fleet.quote_offer().await.is_none());
+    assert_eq!(fleet.seat_readiness(), None);
+
+    fleet.set_seat_readiness(readiness(true)).await.unwrap();
+    assert_eq!(fleet.seat_readiness(), Some(readiness(true)));
+    tokio::time::timeout(Duration::from_secs(1), host.advertisement_changed())
+        .await
+        .expect("passing readiness wakes advertisement publication");
+    assert!(fleet.availability_snapshot().await.accepting_seats);
+    assert!(host.advertisement().await.is_some());
+    let quoted = fleet.quote_offer().await.expect("a ready fleet quotes");
+
+    let epoch = fleet.db.offer_epoch().await.unwrap();
+    fleet.set_seat_readiness(readiness(true)).await.unwrap();
+    assert_eq!(
+        fleet.db.offer_epoch().await.unwrap(),
+        epoch,
+        "an unchanged verdict keeps quotes in flight valid"
+    );
+
+    fleet.set_seat_readiness(readiness(false)).await.unwrap();
+    assert_eq!(fleet.seat_readiness(), Some(readiness(false)));
+    tokio::time::timeout(Duration::from_secs(1), host.advertisement_changed())
+        .await
+        .expect("failing readiness wakes advertisement publication");
+    assert!(!fleet.availability_snapshot().await.accepting_seats);
+    assert!(host.advertisement().await.is_none());
+    assert!(fleet.quote_offer().await.is_none());
+    let refusal = fleet
+        .create_seat(
+            input(quoted.epoch, 66, far_future(), 0, 0),
+            commitment(66),
+            |reason, refund| {
+                assert_eq!(reason, RefusalReason::OfferChanged);
+                assert!(refund.is_none());
+                Ok(raw_commitment(vec![66], 66))
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(refusal, raw_commitment(vec![66], 66));
+    assert!(fleet.db.list_seats().await.unwrap().is_empty());
+
+    fleet.set_seat_readiness(readiness(true)).await.unwrap();
+    assert!(fleet.availability_snapshot().await.accepting_seats);
+    let (_, seat_id) = create_free_seat(&fleet, 67).await;
+    assert!(fleet.seat_by_id(&seat_id).is_some());
     fleet.shutdown().await;
 }
 
@@ -890,6 +1016,7 @@ async fn operator_settings_are_database_owned_and_persisted() {
     let fleet = open_fleet(config.clone(), Arc::new(NoWallet))
         .await
         .unwrap();
+    fleet.set_seat_readiness(readiness(true)).await.unwrap();
     let price = Msats(10_000_000);
     let advertised_plan = Plan::InfiniteBestEffort {
         price_msats: price.0,

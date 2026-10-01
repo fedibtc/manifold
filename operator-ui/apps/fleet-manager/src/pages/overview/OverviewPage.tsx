@@ -7,6 +7,7 @@ import { deriveOverview } from '@/features/overview/utils/deriveOverview';
 import { useOffer } from '@/shared/api/hooks/use-offer/useOffer';
 import { useOnboarding } from '@/shared/api/hooks/use-onboarding/useOnboarding';
 import { usePaymentFederations } from '@/shared/api/hooks/use-payment-federations/usePaymentFederations';
+import { useSeatReadiness } from '@/shared/api/hooks/use-seat-readiness/useSeatReadiness';
 import { useSeats } from '@/shared/api/hooks/use-seats/useSeats';
 import { QuerySurface } from '@/shared/components/query-surface/QuerySurface';
 import { useQueryDisposition } from '@/shared/query/use-query-disposition/useQueryDisposition';
@@ -24,6 +25,10 @@ export const OverviewPage = () => {
   // Deliberately outside the disposition below: the Overview must still render
   // when the authorization state is unknown.
   const onboarding = useOnboarding();
+  // Outside the disposition for the same reason.
+  const seatReadiness = useSeatReadiness();
+  const { disposition: readiness } = useQueryDisposition([seatReadiness]);
+  const readinessUnavailable = readiness.kind === 'failed' || readiness.kind === 'stale';
 
   // The three fleet-wide reads behind every figure on this page. A failure while
   // they hold answers marks the page stale — it never deletes the figures, which
@@ -34,7 +39,8 @@ export const OverviewPage = () => {
   const model = deriveOverview({
     paymentFederations: paymentFederations.data?.federations,
     plans,
-    nostrState: onboarding.data?.nostr.state
+    nostrState: onboarding.data?.nostr.state,
+    seatReadiness: seatReadiness.data
   });
   const unreadableFees =
     earnings.unreadableFeeSeatCount > 0
@@ -46,7 +52,9 @@ export const OverviewPage = () => {
       <h1 className={styles.heading}>Overview</h1>
 
       <QuerySurface disposition={disposition} onRetry={retry}>
-        <Banner variant={toneVariant[model.tone]}>{model.headline}</Banner>
+        <Banner variant={readinessUnavailable ? 'warn' : toneVariant[model.tone]}>
+          {readinessUnavailable ? 'Readiness unavailable' : model.headline}
+        </Banner>
 
         <div className={styles.tileGrid}>
           <StatCard label="Held in federations" value={formatSats(earnings.balanceMsat)} />

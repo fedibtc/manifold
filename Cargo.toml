@@ -188,6 +188,7 @@ fedimint-mintv2-client = { version = "0.12.0", default-features = false }
 fedimint-mintv2-common = { version = "0.12.0", default-features = false }
 fedimint-rocksdb = { version = "0.12.0", default-features = false }
 fedimint-server = { version = "0.12.0", default-features = false }
+fedimint-server-bitcoin-rpc = { version = "0.12.0", default-features = false }
 fedimint-server-core = { version = "0.12.0", default-features = false }
 fedimint-tbs = { version = "0.12.0", default-features = false }
 fedimint-wallet-client = { version = ">=0.11.2, <0.13", default-features = false }
@@ -245,6 +246,7 @@ fedimint-mintv2-client = { path = ".nix-deps/fedimint/modules/fedimint-mintv2-cl
 fedimint-mintv2-common = { path = ".nix-deps/fedimint/modules/fedimint-mintv2-common" }
 fedimint-rocksdb = { path = ".nix-deps/fedimint/fedimint-rocksdb" }
 fedimint-server = { path = ".nix-deps/fedimint/fedimint-server" }
+fedimint-server-bitcoin-rpc = { path = ".nix-deps/fedimint/fedimint-server-bitcoin-rpc" }
 fedimint-server-core = { path = ".nix-deps/fedimint/fedimint-server-core" }
 fedimint-tbs = { path = ".nix-deps/fedimint/crypto/tbs" }
 fedimint-tpe = { path = ".nix-deps/fedimint/crypto/tpe" }
@@ -292,6 +294,7 @@ fedimint-mintv2-client = { path = ".nix-deps/fedimint/modules/fedimint-mintv2-cl
 fedimint-mintv2-common = { path = ".nix-deps/fedimint/modules/fedimint-mintv2-common" }
 fedimint-rocksdb = { path = ".nix-deps/fedimint/fedimint-rocksdb" }
 fedimint-server = { path = ".nix-deps/fedimint/fedimint-server" }
+fedimint-server-bitcoin-rpc = { path = ".nix-deps/fedimint/fedimint-server-bitcoin-rpc" }
 fedimint-server-core = { path = ".nix-deps/fedimint/fedimint-server-core" }
 fedimint-tbs = { path = ".nix-deps/fedimint/crypto/tbs" }
 fedimint-tpe = { path = ".nix-deps/fedimint/crypto/tpe" }

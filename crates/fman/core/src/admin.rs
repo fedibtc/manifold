@@ -32,6 +32,7 @@ use crate::guardian_fee::{
     Collected, CollectionFailurePhase, FederationFeeStatus, FeePolicy, Remittance,
 };
 use crate::seat::{PaymentClaimStatus, SeatPhase, SeatReport, SeatSummary};
+use crate::seat_readiness::ReadinessReport;
 use crate::wallet::Msats;
 
 /// The admin socket lives beside the database, under the same directory
@@ -54,6 +55,8 @@ pub enum AdminRequest {
     },
     /// Current durable admission ceiling.
     ShowCapacity,
+    /// The latest new-seat readiness report, absent before the first run.
+    ShowSeatReadiness,
     /// Replace the admission ceiling without moving it below active seats.
     SetCapacity { max_seats: u32 },
     /// Payment federations with wallet health and balance: the accepted
@@ -432,6 +435,10 @@ pub(crate) async fn dispatch(
             fleet.max_seats().await,
             fleet.available_slots().await,
         )),
+        AdminRequest::ShowSeatReadiness => Ok(seat_readiness_json(
+            fleet.ready_for_new_seats().await,
+            fleet.seat_readiness(),
+        )),
         AdminRequest::SetCapacity { max_seats } => {
             fleet.set_max_seats(max_seats).await?;
             Ok(capacity_json(
@@ -550,6 +557,10 @@ pub fn plans_json(plans: Vec<Plan>) -> Value {
 
 pub fn capacity_json(max_seats: u32, available_slots: u32) -> Value {
     json!({ "max_seats": max_seats, "available_slots": available_slots })
+}
+
+pub fn seat_readiness_json(ready_for_new_seats: bool, report: Option<ReadinessReport>) -> Value {
+    json!({ "ready_for_new_seats": ready_for_new_seats, "report": report })
 }
 
 pub fn payment_federations_json(statuses: Vec<PaymentFederationStatus>) -> Value {
