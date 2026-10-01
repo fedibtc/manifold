@@ -37,7 +37,7 @@ use fedi_decentralized_liquidity_manager_daemon::{
 };
 use fedi_decentralized_service_liquidity_manager::{
     AllocationItemTarget, BitcoinNetwork, FederationId, FederationLiquidityDetails, FederationName,
-    FmanEndorsement, GetAllocationStatusRequest, GetAllocationStatusResponse,
+    FmanEndorsement, FundingPolicyConfig, GetAllocationStatusRequest, GetAllocationStatusResponse,
     GetFmanTrustMaterialResponse, HashBytes, InviteCode as ServiceInviteCode, ItemAllocationStatus,
     LiquidityAmountBounds, LiquidityProviderAdvertisement, PayloadProof, ProtocolVersion, Pubkey,
     PublicLiquidityApi, PublicLiquidityApiClient, PublicRejectionCode, PublicRpcPayloadDomain,
@@ -1612,27 +1612,9 @@ async fn live_unresolvable_send_escalates_to_review_and_waits_for_the_operator()
 
     let mut stack = LiveLiquidityStack::start("live-manual-review").await?;
     stack.wallet.fund_gateway_wallet().await?;
-    let (endpoint_addr, advertisement, rpc) = stack.wallet.configure_publish_and_connect().await?;
+    let (_, advertisement, rpc) = stack.wallet.configure_publish_and_connect().await?;
     let http = stack.wallet.http.clone();
     let admin_url = stack.wallet.admin_url.clone();
-
-    // A review threshold this test can cross. The shipped default is
-    // deliberately long, and the funding policy cannot be changed once
-    // operations are active, so it has to go in before the request.
-    let mut prompt_review = live_setup_config(
-        &stack.wallet.gateway,
-        &stack.wallet.bitcoin,
-        &stack.wallet.relay_url,
-        &endpoint_addr.id.to_string(),
-        &stack.wallet.trust.attester_pubkey_hex,
-        None,
-    );
-    prompt_review["config"]["funding_policy"]["in_doubt_review_after_secs"] = json!(1);
-    let applied = admin_post(&http, &admin_url, "apply_setup_config", &prompt_review).await?;
-    assert_eq!(
-        applied["status"], "ready",
-        "the review threshold must apply cleanly: {applied}"
-    );
 
     let signed_request = sign_public_rpc(
         PublicRpcPayloadDomain::RequestLiquidityRequest,
@@ -1823,6 +1805,11 @@ async fn rewind_operation_to_unresolvable_in_doubt(
     unpaid_address: &str,
 ) -> anyhow::Result<()> {
     let database = Database::connect(data_dir.join("flip.sqlite")).await?;
+    // Keep the normal review threshold during the real send: a short threshold
+    // can escalate a healthy withdrawal before gatewayd returns its txid.
+    // Only the simulated lost response should be old enough to need review.
+    let review_after_secs = FundingPolicyConfig::defaults_for_network(BitcoinNetwork::Regtest)
+        .in_doubt_review_after_secs;
     let submitted_at = i64::try_from(
         SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -1830,6 +1817,7 @@ async fn rewind_operation_to_unresolvable_in_doubt(
             .as_secs(),
     )
     .context("submission timestamp does not fit")?
+        - i64::try_from(review_after_secs).context("review threshold does not fit")?
         - 3_600;
     let affected = sqlx::query(
         "UPDATE wallet_operations SET status = 'in_doubt', txid = NULL, tx_vout = NULL, \
