@@ -57,19 +57,33 @@ it('should report zero across the board with no seats and no fees', () => {
   });
 });
 
-it('should count a seat sale only once its payment claim succeeded', () => {
+it('should count a seat sale once its payment claim succeeded or was already spent', () => {
   const model = deriveEarnings({
     seats: [
       seat({ seat_id: 'sold' }),
       seat({ seat_id: 'pending', payment_claim: { state: 'pending' } }),
       seat({
-        seat_id: 'already-spent',
-        payment_claim: { state: 'already_spent', at_ms: DAY_ONE }
+        seat_id: 'restored',
+        payment_claim: { state: 'already_spent', at_ms: DAY_TWO }
       })
     ]
   });
 
-  expect(model.seatSalesMsat).toBe(50_000_000);
+  expect(model.seatSalesMsat).toBe(100_000_000);
+});
+
+it('should date a restored seat sale on the day the seat was created', () => {
+  const model = deriveEarnings({
+    seats: [
+      seat({
+        seat_id: 'restored',
+        created_at_ms: DAY_ONE,
+        payment_claim: { state: 'already_spent', at_ms: DAY_TWO }
+      })
+    ]
+  });
+
+  expect(model.days.map((bucket) => bucket.day)).toEqual(['2026-08-03']);
 });
 
 it('should price a seat sale from the plan the seat was sold under', () => {

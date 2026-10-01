@@ -461,7 +461,7 @@ const builders = {
         })
       }),
       seat({
-        seat_id: 'seat-unpaid-01',
+        seat_id: 'seat-restored-01',
         created_at_ms: NOW_MS - 2 * DAY_MS,
         payment_claim: { state: 'already_spent', at_ms: NOW_MS - 2 * DAY_MS },
         report: { state: 'active', health: 'healthy', phase: 'dkg_in_progress' }
