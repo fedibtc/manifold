@@ -1,15 +1,14 @@
 import { Banner } from '@operator-ui/common-ui';
 import type { ShowSeatReadinessResponse } from '@operator-ui/types';
 import { formatCheckedAt } from '@/shared/utils/format';
-import { CHECKS, guidance, isStale, labels, outcomes, passed } from '@/shared/utils/seatReadiness';
+import { CHECKS, guidance, labels, outcomes, passed } from '@/shared/utils/seatReadiness';
 import styles from './SeatReadinessCard.module.css';
 
 interface SeatReadinessCardProps {
   readiness: ShowSeatReadinessResponse;
-  nowMs: number;
 }
 
-export const SeatReadinessCard = ({ readiness, nowMs }: SeatReadinessCardProps) => {
+export const SeatReadinessCard = ({ readiness }: SeatReadinessCardProps) => {
   const { ready_for_new_seats: ready, report } = readiness;
   return (
     <>
@@ -31,12 +30,6 @@ export const SeatReadinessCard = ({ readiness, nowMs }: SeatReadinessCardProps) 
         </p>
       ) : (
         <>
-          {isStale(report, nowMs) && (
-            <Banner variant="warn" title="Checks may have stopped">
-              The last check finished more than 15 minutes ago. Restart the FMan if this persists.
-            </Banner>
-          )}
-
           <ul className={styles.checks}>
             {CHECKS.map((check) => (
               <li key={check} className={styles.check}>

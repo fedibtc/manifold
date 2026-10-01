@@ -5,7 +5,7 @@ import type {
   ShowSeatReadinessResponse
 } from '@operator-ui/types';
 import { readOfferPriceMsat } from '@/shared/utils/offerPrice';
-import { failedChecks, isStale, labels } from '@/shared/utils/seatReadiness';
+import { failedChecks, labels } from '@/shared/utils/seatReadiness';
 
 export interface AttentionItem {
   key: string;
@@ -28,8 +28,6 @@ export interface OverviewInputs {
   nostrState?: OnboardingNostrStatus['state'];
   /** Absent while ShowSeatReadiness has not answered. */
   seatReadiness?: ShowSeatReadinessResponse;
-  /** When `seatReadiness` was read; staleness is judged against it. */
-  nowMs?: number;
 }
 
 // ListSeats returns SeatSummary only — no health/phase (that's SeatStatus, a
@@ -39,8 +37,7 @@ export const deriveOverview = ({
   paymentFederations = [],
   plans = [],
   nostrState,
-  seatReadiness,
-  nowMs
+  seatReadiness
 }: OverviewInputs): OverviewModel => {
   const priceMsat = readOfferPriceMsat(plans);
   const isSellingForMoney = priceMsat !== null && priceMsat > 0;
@@ -115,14 +112,6 @@ export const deriveOverview = ({
         failed.length > 0
           ? `Failing: ${failed.map((check) => labels[check]).join(', ')}. Open Health for what to check.`
           : 'No readiness check has passed yet. Open Health for details.',
-      path: '/health'
-    });
-  } else if (seatReadiness?.report && nowMs !== undefined && isStale(seatReadiness.report, nowMs)) {
-    // A stopped worker leaves the last verdict in force indefinitely.
-    attention.push({
-      key: 'seat-readiness-stale',
-      title: 'Readiness checks may have stopped',
-      detail: 'The last check finished more than 15 minutes ago. Open Health for details.',
       path: '/health'
     });
   }

@@ -144,8 +144,7 @@ const failingReport = {
 
 it('should send the operator to Health when a readiness check fails, naming only the failures', () => {
   const model = deriveOverview({
-    seatReadiness: { ready_for_new_seats: false, report: failingReport },
-    nowMs: 60_000
+    seatReadiness: { ready_for_new_seats: false, report: failingReport }
   });
 
   expect(model.tone).toBe('warn');
@@ -174,19 +173,9 @@ it('should raise nothing for a stored ready verdict, with or without a fresh run
   } as const;
 
   expect(
-    deriveOverview({ seatReadiness: { ready_for_new_seats: true, report: ready }, nowMs: 60_000 })
-      .attention
+    deriveOverview({ seatReadiness: { ready_for_new_seats: true, report: ready } }).attention
   ).toEqual([]);
   expect(
     deriveOverview({ seatReadiness: { ready_for_new_seats: true, report: null } }).attention
   ).toEqual([]);
-});
-
-it('should flag a ready verdict whose last check is stale', () => {
-  const model = deriveOverview({
-    seatReadiness: { ready_for_new_seats: true, report: { ...failingReport, relay: 'pass' } },
-    nowMs: 16 * 60_000
-  });
-
-  expect(model.attention.map((item) => item.key)).toEqual(['seat-readiness-stale']);
 });
