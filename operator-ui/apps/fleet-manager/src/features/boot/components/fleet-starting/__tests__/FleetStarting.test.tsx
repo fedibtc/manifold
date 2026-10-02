@@ -15,6 +15,12 @@ it('should say the guardians and seats are safe while the fleet starts', () => {
   );
 });
 
+it('should show that the fleet is still starting', () => {
+  render(<FleetStarting />);
+
+  screen.getByRole('status', { name: 'Starting' });
+});
+
 it('should offer no control, because nothing an operator does shortens the wait', () => {
   render(<FleetStarting />);
 
