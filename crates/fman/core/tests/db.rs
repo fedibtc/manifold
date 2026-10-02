@@ -240,6 +240,35 @@ async fn per_credential_holder_authorizations_migrate_to_the_newest() {
 }
 
 #[tokio::test]
+async fn an_fman_from_before_readiness_upgrades_as_ready() {
+    let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+    for migration in [
+        include_str!("../migrations/0001_initial.sql"),
+        include_str!("../migrations/0002_wallet_origin.sql"),
+        include_str!("../migrations/0003_payout_destination_cap.sql"),
+        include_str!("../migrations/0004_dkg_inputs.sql"),
+        include_str!("../migrations/0005_single_holder_authorization.sql"),
+        include_str!("../migrations/0006_seat_readiness.sql"),
+    ] {
+        sqlx::raw_sql(migration).execute(&pool).await.unwrap();
+    }
+
+    sqlx::raw_sql(include_str!("../migrations/0007_seat_readiness_open.sql"))
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    // Ready, so the first failing run is a change of verdict that draws a
+    // fresh epoch and refuses quotes issued before the upgrade.
+    let ready: bool =
+        sqlx::query_scalar("SELECT ready_for_new_seats FROM offer_state WHERE id = 1")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert!(ready);
+}
+
+#[tokio::test]
 async fn operator_settings_round_trip_with_friendly_defaults() {
     let dir = tempfile::tempdir().unwrap();
     let db = Db::open(dir.path()).await.unwrap();

@@ -143,8 +143,10 @@ attempt waits on it rather than starting another. Local E2E skips the relay
 and discovery checks.
 
 The verdict is durable in `offer_state`, so a restart resumes it: a ready FMan
-keeps selling and a failing one stays closed until a run passes. A fresh,
-restored, or upgraded FMan starts closed.
+keeps selling and a failing one stays closed until a run passes. An FMan
+created or upgraded before its first run starts ready, as it was before
+readiness existed; a failing first run closes it like any other change of
+verdict, so a quote issued before the upgrade is refused.
 
 A failed verdict suppresses publication, makes `GetAvailability` report
 `accepting_seats = false`, and makes `GetQuote` return `CapacityExhausted`, so

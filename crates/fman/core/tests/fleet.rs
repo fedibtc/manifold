@@ -914,20 +914,11 @@ async fn readiness_gates_new_seats_and_refuses_outstanding_quotes() {
             .unwrap(),
     );
     fleet.set_offered_price(Some(Msats(0))).await.unwrap();
-    assert!(
-        !fleet.availability_snapshot().await.accepting_seats,
-        "a fleet sells nothing before its first readiness check passes"
-    );
-    assert!(host.advertisement().await.is_none());
-    assert!(fleet.quote_offer().await.is_none());
     assert_eq!(fleet.seat_readiness(), None);
-
-    fleet.set_seat_readiness(readiness(true)).await.unwrap();
-    assert_eq!(fleet.seat_readiness(), Some(readiness(true)));
-    tokio::time::timeout(Duration::from_secs(1), host.advertisement_changed())
-        .await
-        .expect("passing readiness wakes advertisement publication");
-    assert!(fleet.availability_snapshot().await.accepting_seats);
+    assert!(
+        fleet.availability_snapshot().await.accepting_seats,
+        "a fleet sells as it did before readiness existed until a check fails"
+    );
     assert!(host.advertisement().await.is_some());
     let quoted = fleet.quote_offer().await.expect("a ready fleet quotes");
 
