@@ -1,0 +1,22 @@
+import { render, screen } from '@testing-library/react';
+import { FleetStarting } from '../FleetStarting';
+
+it('should name the fleet as starting, not as needing setup', () => {
+  render(<FleetStarting />);
+
+  screen.getByRole('heading', { name: 'Manifold Fedimint Guardian is starting' });
+});
+
+it('should say the guardians and seats are safe while the fleet starts', () => {
+  render(<FleetStarting />);
+
+  screen.getByText(
+    'Your guardians and seats are safe. The dashboard opens when the fleet is ready.'
+  );
+});
+
+it('should offer no control, because nothing an operator does shortens the wait', () => {
+  render(<FleetStarting />);
+
+  expect(screen.queryByRole('button')).toBeNull();
+});

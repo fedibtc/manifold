@@ -1,0 +1,15 @@
+.page {
+  @apply uCenteredPage;
+}
+
+.card {
+  @apply uModalCard;
+}
+
+.title {
+  @apply uPageHeading;
+}
+
+.introText {
+  @apply uIntro;
+}
