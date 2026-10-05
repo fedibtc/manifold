@@ -28,7 +28,7 @@ it('should link to the item path', () => {
   expect(link.getAttribute('href')).toBe('/seats');
 });
 
-it('should show a count beside the label only when there is one', () => {
+it('should mark unread items with a dot and name the count', () => {
   const router = createMemoryRouter([
     {
       path: '*',
@@ -39,5 +39,7 @@ it('should show a count beside the label only when there is one', () => {
   ]);
   render(<RouterProvider router={router} />);
 
-  expect(screen.getByRole('link', { name: 'Support, 3 unread' })).toHaveTextContent('Support3');
+  const link = screen.getByRole('link', { name: 'Support, 3 unread' });
+  expect(link).toHaveTextContent(/^Support$/);
+  expect(link.querySelector('[aria-hidden="true"]')).not.toBeNull();
 });

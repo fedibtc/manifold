@@ -32,12 +32,13 @@ it('should count unread Fedi messages on Support only', () => {
   renderItems();
 
   expect(screen.getByRole('link', { name: 'Support, 2 unread' })).toBeInTheDocument();
-  expect(screen.getAllByText('2')).toHaveLength(1);
+  expect(document.querySelectorAll('a [aria-hidden="true"]')).toHaveLength(1);
 });
 
-it('should show no count once everything is read', () => {
+it('should show no dot once everything is read', () => {
   unread(0);
   renderItems();
 
   expect(screen.getByRole('link', { name: 'Support' })).toBeInTheDocument();
+  expect(document.querySelector('a [aria-hidden="true"]')).toBeNull();
 });

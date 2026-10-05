@@ -6,13 +6,13 @@ import { SupportThread } from '../SupportThread';
 const message = (id: string, author: SupportMessage['author'], body: string, created_at: number) =>
   ({ id: id.repeat(64), author, body, created_at }) satisfies SupportMessage;
 
-// 2023-11-14 23:50:00 UTC. "Now" is the next UTC day, so only the last group
-// below falls on today.
-const T = 1_700_005_800;
+// Local time, as the Fedi app shows it: 2023-11-14 23:50. "Now" is the next
+// day, so only the last group below falls on today.
+const T = new Date(2023, 10, 14, 23, 50).getTime() / 1000;
 
 beforeEach(() => {
   vi.useFakeTimers({ toFake: ['Date'] });
-  vi.setSystemTime(new Date('2023-11-15T12:00:00Z'));
+  vi.setSystemTime(new Date(2023, 10, 15, 12, 0));
 });
 
 afterEach(() => {
@@ -36,11 +36,11 @@ it('should time each group of messages, as the Fedi app chat does', () => {
 
   const items = screen.getAllByRole('listitem');
   expect(items.map((item) => item.querySelector('time')?.textContent ?? null)).toEqual([
-    'Nov 14, 23:50 UTC',
+    'Nov 14, 11:50pm',
     null,
     null,
-    'Nov 14, 23:53 UTC',
-    '00:10 UTC'
+    'Nov 14, 11:53pm',
+    '12:10am'
   ]);
   expect(items.map((item) => item.dataset.spacing ?? null)).toEqual([
     null,

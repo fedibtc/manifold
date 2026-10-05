@@ -6,6 +6,22 @@
   @apply uNavItemIdle flex items-center justify-between;
 }
 
-.count {
-  @apply min-w-5 rounded-full bg-warning px-1.5 text-center text-xs font-medium leading-5 text-surface;
+.label {
+  @apply relative;
+}
+
+/* The Fedi app's unread dot (web NotificationDot): red, 12px, a 2px white
+   ring, and a small pop as it appears. */
+.dot {
+  @apply absolute -right-3.5 -top-0.5 size-3 rounded-full border-2 border-surface bg-error;
+  animation: dot-pop 200ms cubic-bezier(0.25, 0.25, 0.315, 1.325);
+}
+
+@keyframes dot-pop {
+  from {
+    transform: scale(0);
+  }
+  to {
+    transform: scale(1);
+  }
 }

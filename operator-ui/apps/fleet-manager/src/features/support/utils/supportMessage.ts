@@ -7,13 +7,13 @@ export const supportMessageLength = (body: string) => [...body.trim()].length;
 
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 
-// The time above a group of messages, shaped like the Fedi app's chat
-// (`formatMessageItemTimestamp`): the time alone today, else the date too. In
-// UTC like every other time in this app, so a test asserts the value rather
-// than the runner's timezone.
-export const formatSupportTimestamp = (unixSeconds: number, nowMs = Date.now()) => {
-  const iso = new Date(unixSeconds * 1000).toISOString();
-  const time = `${iso.slice(11, 16)} UTC`;
-  if (iso.slice(0, 10) === new Date(nowMs).toISOString().slice(0, 10)) return time;
-  return `${MONTHS[Number(iso.slice(5, 7)) - 1]} ${iso.slice(8, 10)}, ${time}`;
+// The time above a group of messages, as the Fedi app's chat shows it
+// (`formatMessageItemTimestamp`, date-fns `h:mmaaa` and `MMM dd, h:mmaaa`):
+// local time, with the date only before today.
+export const formatSupportTimestamp = (unixSeconds: number, now = new Date()) => {
+  const date = new Date(unixSeconds * 1000);
+  const hours = date.getHours();
+  const time = `${hours % 12 || 12}:${String(date.getMinutes()).padStart(2, '0')}${hours < 12 ? 'am' : 'pm'}`;
+  if (date.toDateString() === now.toDateString()) return time;
+  return `${MONTHS[date.getMonth()]} ${String(date.getDate()).padStart(2, '0')}, ${time}`;
 };
