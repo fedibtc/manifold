@@ -105,6 +105,11 @@ pub struct SetupPaymentFederationsContent {
     /// older publications stay admissible, newer ones do not.
     #[serde(default = "default_min_fee_ppm")]
     pub min_fee_ppm: u64,
+
+    /// Hex x-only Nostr public key of Fedi support, which FMan operators chat
+    /// with over NIP-17. Optional on the wire: absent means no support chat.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub support_nostr_pubkey: Option<String>,
 }
 
 /// Semantically admitted common payment-federation set.
@@ -117,6 +122,7 @@ pub struct AdmittedSetupPaymentFederations {
     federations: BTreeMap<FederationId, InviteCode>,
     telemetry_registration_url: Url,
     min_fee_ppm: u64,
+    support_nostr_pubkey: Option<nostr::PublicKey>,
 }
 
 impl AdmittedSetupPaymentFederations {
@@ -156,6 +162,22 @@ impl AdmittedSetupPaymentFederations {
             return Err(SetupPaymentFederationsContentError::InvalidTelemetryRegistrationUrl);
         }
 
+        let support_nostr_pubkey = content
+            .support_nostr_pubkey
+            .map(|hex| {
+                // Exactly the 64 lowercase hex digits of NIP-01, so one key has
+                // one spelling on the wire.
+                if hex.len() != 64 || hex.bytes().any(|byte| byte.is_ascii_uppercase()) {
+                    return Err(SetupPaymentFederationsContentError::InvalidSupportNostrPubkey);
+                }
+                // `from_hex` only decodes; `xonly` checks the point is on the curve.
+                nostr::PublicKey::from_hex(&hex)
+                    .ok()
+                    .filter(|key| key.xonly().is_ok())
+                    .ok_or(SetupPaymentFederationsContentError::InvalidSupportNostrPubkey)
+            })
+            .transpose()?;
+
         let fman_version = content.fman_version;
         let mut federations = BTreeMap::new();
         for invite_code in content.federations {
@@ -182,6 +204,7 @@ impl AdmittedSetupPaymentFederations {
             federations,
             telemetry_registration_url: content.telemetry_registration_url,
             min_fee_ppm: content.min_fee_ppm,
+            support_nostr_pubkey,
         })
     }
 
@@ -228,6 +251,12 @@ impl AdmittedSetupPaymentFederations {
     pub fn min_fee_ppm(&self) -> u64 {
         self.min_fee_ppm
     }
+
+    /// Return the Fedi support key FMan operators chat with, if published.
+    #[must_use]
+    pub fn support_nostr_pubkey(&self) -> Option<&nostr::PublicKey> {
+        self.support_nostr_pubkey.as_ref()
+    }
 }
 
 /// Failure while parsing or semantically admitting publication content.
@@ -261,6 +290,9 @@ pub enum SetupPaymentFederationsContentError {
     /// The published minimum fee rate exceeds the payer's own send-rate
     /// ceiling, so no rate would satisfy both bounds.
     MinFeePpmTooHigh,
+    /// The Fedi support key is not 64 lowercase hex digits of a valid x-only
+    /// public key.
+    InvalidSupportNostrPubkey,
 }
 
 impl core::fmt::Display for SetupPaymentFederationsContentError {
@@ -280,6 +312,9 @@ impl core::fmt::Display for SetupPaymentFederationsContentError {
             }
             Self::MinFeePpmTooHigh => {
                 "setup-payment federation set sets a minimum guardian fee rate above the payer cap"
+            }
+            Self::InvalidSupportNostrPubkey => {
+                "setup-payment federation set contains an invalid support Nostr public key"
             }
         };
         formatter.write_str(message)

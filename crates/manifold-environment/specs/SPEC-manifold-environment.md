@@ -24,11 +24,6 @@ Each value resolves to a `ManifoldEnvironmentProfile` containing:
 - at most one typed setup-payment federation-list publisher public key;
 - at most one complete single-sig `BtcDepositor` Guardian Verification Fee
   account;
-- at most one typed Fedi support public key, the identity FMan operators chat
-  with over NIP-17 private messages
-  ([SPEC-fman-support-chat](../../fman/specs/SPEC-fman-support-chat.md));
-  development and staging use known-secret placeholders and production has
-  none yet;
 - the Bitcoin network on which the environment forms federations;
 - an optional typed public default Esplora URL; and
 - for development and staging only, the committed complete `IssuerSecretKeys`
@@ -37,10 +32,10 @@ Each value resolves to a `ManifoldEnvironmentProfile` containing:
 - one identity-signed public `IssuerAuthority` document per configured issuer
   (`pinned_issuer_authorities()`).
 
-The profile exposes `profile_revision()`, currently `10`. Every change to an
+The profile exposes `profile_revision()`, currently `9`. Every change to an
 environment's relay, issuer identity or authority, committed issuer secret,
 PeerBadge minimum trust level, setup-payment publisher, Guardian Verification
-Fee account, Fedi support key, Bitcoin network, or default Esplora mapping must increment the
+Fee account, Bitcoin network, or default Esplora mapping must increment the
 shared revision.
 Operators must roll out such a change across
 independently released FI, FMan, FLIP, push-gateway telemetry, and cloud FMan

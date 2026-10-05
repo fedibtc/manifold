@@ -3,9 +3,10 @@
 //!
 //! The FMan writes as its service key and reads the gift wraps addressed to
 //! it on the environment's canonical relays, which it also lists as its
-//! kind-10050 inbox. A message joins the thread only when its seal is signed
-//! by Fedi support or by this FMan and the rumor's room is exactly the two
-//! of them.
+//! kind-10050 inbox. Fedi support is the key the admitted setup-payment
+//! policy names. A message joins the thread only when its seal is signed by
+//! Fedi support or by this FMan and the rumor's room is exactly the two of
+//! them.
 
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -34,7 +35,7 @@ const BACKDATE_WINDOW_SECS: u64 = RANGE_RANDOM_TIMESTAMP_TWEAK.end + 60 * 60;
 
 pub(crate) async fn send(inner: &Inner, body: String) -> anyhow::Result<SupportMessage> {
     let fedi = inner
-        .support
+        .support()
         .context("Fedi support chat is not available for this deployment yet.")?;
     let nostr = inner
         .relays
@@ -64,9 +65,6 @@ pub(crate) async fn send(inner: &Inner, body: String) -> anyhow::Result<SupportM
 }
 
 pub(crate) async fn run_inbox(inner: Arc<Inner>, nostr: NostrRelayClient) {
-    let Some(fedi) = inner.support else {
-        return;
-    };
     let poll_interval = if std::env::var_os("FMAN_E2E_LOCAL_IROH").is_some() {
         LOCAL_E2E_POLL_INTERVAL
     } else {
@@ -75,7 +73,19 @@ pub(crate) async fn run_inbox(inner: Arc<Inner>, nostr: NostrRelayClient) {
     let mut inbox_listed = false;
     let mut seen = HashSet::<EventId>::new();
     let mut since = None;
+    let mut admitted_for = None;
     loop {
+        // The policy can name Fedi support late, or a new key later. Wraps
+        // judged against another key are judged again, from the start.
+        let Some(fedi) = inner.support() else {
+            tokio::time::sleep(poll_interval).await;
+            continue;
+        };
+        if admitted_for != Some(fedi) {
+            admitted_for = Some(fedi);
+            seen.clear();
+            since = None;
+        }
         if !inbox_listed {
             match nostr.publish_event(inbox_relays(&inner)).await {
                 Ok(_) => inbox_listed = true,

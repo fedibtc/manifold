@@ -13,10 +13,17 @@ An FMan operator and Fedi support exchange
 direct messages. There is one conversation per FMan and no tickets.
 
 - **Identities.** The FMan writes as its service Nostr key, the key its
-  advertisement and Holder authorization name. Fedi support is the one public
-  key in the Manifold environment profile
-  ([SPEC-manifold-environment](../../manifold-environment/specs/SPEC-manifold-environment.md)).
-  A deployment without one has no chat: the daemon neither reads nor sends.
+  advertisement and Holder authorization name. Fedi support is the
+  `support_nostr_pubkey` of the admitted setup-payment policy
+  ([SPEC-setup-payment-federations](../../../specs/SPEC-setup-payment-federations.md)),
+  so the policy publisher's signature authenticates it. Without one there is
+  no chat: the daemon neither reads nor sends.
+- **Rotation.** A newer policy with another key moves the chat to that key:
+  the daemon sends to it and admits only its room, reading the relays again
+  from the start. Stored messages of the earlier key stay in the thread, but
+  a reinstalled FMan reads back only the current key's room. Until an FMan
+  admits the newer policy it still sends to, and admits, the earlier key, so
+  Fedi watches the earlier inbox until its FMans have moved.
 - **Messages.** Each message is a `kind:14` rumor with exactly one `p` tag,
   sealed (`kind:13`) by its author and gift-wrapped (`kind:1059`) per NIP-59.
   The FMan wraps every message twice: to Fedi, and to itself so that a

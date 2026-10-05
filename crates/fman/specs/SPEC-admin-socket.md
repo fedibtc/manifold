@@ -319,7 +319,7 @@ the fleet.
   returns `{available, messages, unread}` from the database without a relay
   read. `SendSupportMessage` publishes before it answers `{message}` and
   returns an operation error when no relay accepts the message or the
-  deployment has no Fedi support identity. `MarkSupportRead` returns
+  admitted setup-payment policy names no Fedi support key. `MarkSupportRead` returns
   `{unread}`.
 - `ShowMnemonic` returns the root mnemonic phrase as `mnemonic`, for the
   operator's recovery material (the full backup also requires the FMan

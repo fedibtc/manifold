@@ -519,13 +519,14 @@ contract are defined by
 Production also pins its setup-payment publisher and Guardian Verification Fee
 account in that profile.
 
-The profile also names the Fedi support key that FMan operators chat with over
-NIP-17 ([SPEC-fman-support-chat](crates/fman/specs/SPEC-fman-support-chat.md)).
-Development and staging use known-secret test keys, so anyone can write as
-"Fedi support" there. Production has no support key until Fedi provides one,
-and the chat stays off. The FMan shows only messages sealed by that key or by
-itself, as plain text. Fedi support sees the FMan's service public key and the
-operator's words. Relays see only that some key wrote to each party.
+The signed setup-payment policy also names the Fedi support key that FMan
+operators chat with over NIP-17
+([SPEC-fman-support-chat](crates/fman/specs/SPEC-fman-support-chat.md)), so
+the setup-payment publisher key is its trust root: whoever holds that key can
+make FMans talk to a key of their choice. A policy without the key leaves the
+chat off. The FMan shows only messages sealed by that key or by itself, as
+plain text. Fedi support sees the FMan's service public key and the operator's
+words. Relays see only that some key wrote to each party.
 
 Each relying path applies the same profile-owned minimum PeerBadge trust level
 after complete authentication and schema parsing. A profile-policy change must

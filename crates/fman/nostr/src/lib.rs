@@ -247,8 +247,6 @@ struct Inner {
     started: AtomicBool,
     authorization_store: Arc<FleetHolderAuthorizationStore>,
     authorization_refresh: tokio::sync::Mutex<()>,
-    /// The environment's Fedi support identity; `None` disables the chat.
-    support: Option<PublicKey>,
     support_store: SupportStore,
     /// The relay pool, once [`Inner::run`] has connected it.
     relays: OnceLock<NostrRelayClient>,
@@ -286,7 +284,6 @@ impl FleetManagerNostr {
         let (setup_payment_federations, _) = watch::channel(retained_setup_payment_federations);
         Self {
             inner: Arc::new(Inner {
-                support: manifold_environment.support().copied(),
                 support_store,
                 relays: OnceLock::new(),
                 manifold_environment,
@@ -376,7 +373,7 @@ impl fman_core::directory::HolderAuthorizationRefresher for FleetManagerNostr {
 #[async_trait::async_trait]
 impl SupportSender for FleetManagerNostr {
     fn available(&self) -> bool {
-        self.inner.support.is_some()
+        self.inner.support().is_some()
     }
 
     async fn send(&self, body: String) -> anyhow::Result<SupportMessage> {
@@ -385,6 +382,15 @@ impl SupportSender for FleetManagerNostr {
 }
 
 impl Inner {
+    /// The Fedi support key the admitted setup-payment policy names; `None`
+    /// disables the support chat.
+    fn support(&self) -> Option<PublicKey> {
+        self.setup_payment_federations
+            .borrow()
+            .as_ref()
+            .and_then(|policy| policy.support_nostr_pubkey().copied())
+    }
+
     async fn retain_authorization(
         &self,
         fetched: Option<VerifiedHolderAuthorizationEvent>,

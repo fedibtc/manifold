@@ -1,19 +1,25 @@
 //! `SPEC-fman-support-chat` against real components: a defe Fleet Manager on
 //! a local relay, driven through its operator HTTP API, and Fedi support as a
-//! plain NIP-17 client holding the development support key.
+//! plain NIP-17 client holding the key the setup-payment policy names.
 
 use std::time::Duration;
 
 use anyhow::{Context as _, Result, bail, ensure};
 use defe_api::{FmanInfo, FmanRequest, ResourceDescriptor, SharingMode};
 use defe_client::AsyncDefeClient;
-use fedi_decentralized_manifold_environment::ManifoldEnvironment;
+use fedi_decentralized_nostr::setup_payment_federations::{
+    SETUP_PAYMENT_FEDERATIONS_D_TAG, SETUP_PAYMENT_FEDERATIONS_EVENT_KIND,
+};
 use fedi_decentralized_nostr_clients::NostrRelayClient;
 use nostr_sdk::nips::nip59::UnwrappedGift;
-use nostr_sdk::{Event, EventBuilder, Filter, Keys, Kind, PublicKey, SecretKey};
+use nostr_sdk::{Event, EventBuilder, Filter, Keys, Kind, PublicKey, Tag, Timestamp};
 use serde_json::{Value, json};
 
 const DEADLINE: Duration = Duration::from_secs(90);
+
+/// The setup-payment publisher every defe Fleet Manager trusts.
+const SETUP_PAYMENT_PUBLISHER_SECRET: &str =
+    "0000000000000000000000000000000000000000000000000000000000000001";
 
 #[tokio::test]
 async fn operator_and_fedi_support_chat_over_nip17() -> Result<()> {
@@ -45,12 +51,20 @@ async fn operator_and_fedi_support_chat_over_nip17() -> Result<()> {
             .context("service Nostr pubkey")?,
     )?;
 
-    // Fedi support is the development profile's known test key 7.
-    let mut secret = [0u8; 32];
-    secret[31] = 7;
-    let fedi = Keys::new(SecretKey::from_slice(&secret)?);
-    let profile = ManifoldEnvironment::Development.profile()?;
-    ensure!(profile.support() == Some(&fedi.public_key()));
+    // No policy names Fedi support yet, so there is no chat.
+    let chat = operator.admin(json!("SupportChat")).await?;
+    ensure!(chat["available"] == false, "{chat}");
+
+    let publisher = NostrRelayClient::connect(
+        &relay.url,
+        Keys::parse(SETUP_PAYMENT_PUBLISHER_SECRET)?,
+        Duration::from_secs(10),
+    )
+    .await
+    .map_err(|error| anyhow::anyhow!("connect setup-payment publisher: {error}"))?;
+    let fedi = Keys::generate();
+    let first_policy_at = Timestamp::now().as_secs() - 10;
+    publish_policy(&publisher, fedi.public_key(), first_policy_at).await?;
     let fedi_relay = NostrRelayClient::connect(&relay.url, fedi.clone(), Duration::from_secs(10))
         .await
         .map_err(|error| anyhow::anyhow!("connect Fedi support: {error}"))?;
@@ -87,21 +101,26 @@ async fn operator_and_fedi_support_chat_over_nip17() -> Result<()> {
     );
 
     // The FMan lists its inbox, so a standard client knows where to reply.
-    let inbox = fedi_relay
-        .fetch_events_capped(
-            Filter::new().kind(Kind::InboxRelays).author(fman_key),
-            Duration::from_secs(10),
-            4,
-        )
-        .await
-        .map_err(|error| anyhow::anyhow!("fetch FMan inbox: {error}"))?;
-    ensure!(
-        inbox
-            .iter()
-            .any(|event| nostr_sdk::nips::nip17::extract_relay_list(event)
-                .any(|url| url.as_str_without_trailing_slash() == relay.url.trim_end_matches('/'))),
-        "the FMan must list the relay as its NIP-17 inbox: {inbox:?}"
-    );
+    eventually(|| async {
+        let inbox = fedi_relay
+            .fetch_events_capped(
+                Filter::new().kind(Kind::InboxRelays).author(fman_key),
+                Duration::from_secs(10),
+                4,
+            )
+            .await
+            .map_err(|error| anyhow::anyhow!("fetch FMan inbox: {error}"))?;
+        ensure!(
+            inbox.iter().any(|event| {
+                nostr_sdk::nips::nip17::extract_relay_list(event).any(|url| {
+                    url.as_str_without_trailing_slash() == relay.url.trim_end_matches('/')
+                })
+            }),
+            "the FMan must list the relay as its NIP-17 inbox: {inbox:?}"
+        );
+        Ok(())
+    })
+    .await?;
 
     // Fedi replies; a stranger impersonates Fedi in the text.
     reply(&fedi_relay, &fedi, fman_key, "Thanks. Is the host online?").await?;
@@ -147,7 +166,100 @@ async fn operator_and_fedi_support_chat_over_nip17() -> Result<()> {
         .await?;
     ensure!(read == json!({ "unread": 0 }), "{read}");
 
+    // Fedi rotates its support key with a newer policy. The new key's
+    // replies join the stored thread once the FMan admits the policy; the
+    // old key's later message stays out.
+    let rotated = Keys::generate();
+    let rotated_relay =
+        NostrRelayClient::connect(&relay.url, rotated.clone(), Duration::from_secs(10))
+            .await
+            .map_err(|error| anyhow::anyhow!("connect rotated Fedi support: {error}"))?;
+    publish_policy(&publisher, rotated.public_key(), first_policy_at + 10).await?;
+    reply(&rotated_relay, &rotated, fman_key, "New key here.").await?;
+    let thread_len = |chat: &Value| chat["messages"].as_array().map_or(0, Vec::len);
+    eventually(|| async {
+        let chat = operator.admin(json!("SupportChat")).await?;
+        ensure!(
+            thread_len(&chat) >= 3,
+            "the new key's reply has not arrived yet: {chat}"
+        );
+        Ok(())
+    })
+    .await?;
+    // Published before the next reply, so the poll that admits that reply
+    // has already judged this one against the new key.
+    reply(&fedi_relay, &fedi, fman_key, "Old key, after the rotation.").await?;
+    reply(&rotated_relay, &rotated, fman_key, "Still the new key.").await?;
+    let chat = eventually(|| async {
+        let chat = operator.admin(json!("SupportChat")).await?;
+        ensure!(
+            thread_len(&chat) >= 4,
+            "the second reply has not arrived yet: {chat}"
+        );
+        Ok(chat)
+    })
+    .await?;
+    let bodies = chat["messages"]
+        .as_array()
+        .context("messages")?
+        .iter()
+        .map(|message| message["body"].as_str())
+        .collect::<Vec<_>>();
+    ensure!(
+        bodies
+            == [
+                Some(body),
+                Some("Thanks. Is the host online?"),
+                Some("New key here."),
+                Some("Still the new key."),
+            ],
+        "{chat}"
+    );
+    ensure!(chat["unread"] == 2, "{chat}");
+
+    let after = "Thanks, new key.";
+    operator
+        .admin(json!({ "SendSupportMessage": { "body": after } }))
+        .await?;
+    eventually(|| async {
+        for wrap in fetch_wraps(&rotated_relay, rotated.public_key()).await? {
+            let gift = UnwrappedGift::from_gift_wrap(&rotated, &wrap).await?;
+            if gift.sender == fman_key && gift.rumor.content == after {
+                return Ok(());
+            }
+        }
+        bail!("the new key has not received the operator message yet")
+    })
+    .await?;
+
     drop((fman_lease, relay_lease, bitcoind_lease));
+    Ok(())
+}
+
+/// Publish the setup-payment policy, naming `support` as Fedi support.
+async fn publish_policy(
+    publisher: &NostrRelayClient,
+    support: PublicKey,
+    created_at: u64,
+) -> Result<()> {
+    let content = json!({
+        "version": 1,
+        "fman_version": "0.1.0",
+        "federations": [],
+        "telemetry_registration_url": "https://push.fedi.example/v1/telemetry/registrations",
+        "support_nostr_pubkey": support.to_hex(),
+    });
+    publisher
+        .publish_event(
+            EventBuilder::new(
+                Kind::Custom(SETUP_PAYMENT_FEDERATIONS_EVENT_KIND),
+                content.to_string(),
+            )
+            .tag(Tag::identifier(SETUP_PAYMENT_FEDERATIONS_D_TAG))
+            .custom_created_at(Timestamp::from(created_at)),
+        )
+        .await
+        .map_err(|error| anyhow::anyhow!("publish setup-payment policy: {error}"))?;
     Ok(())
 }
 

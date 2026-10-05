@@ -48,6 +48,7 @@ fn content_with_min_fee_ppm(invites: Vec<String>, min_fee_ppm: u64) -> Vec<u8> {
             "https://push.fedi.example/v1/telemetry/registrations".to_owned()
         ),
         min_fee_ppm,
+        support_nostr_pubkey: None,
     })
     .expect("test content serializes")
 }
@@ -110,6 +111,58 @@ fn rejects_a_published_min_fee_ppm_above_the_payer_cap() {
     assert_eq!(error, SetupPaymentFederationsContentError::MinFeePpmTooHigh);
 }
 
+fn content_with_support(support_nostr_pubkey: &str) -> String {
+    format!(
+        r#"{{"version":1,"fman_version":"0.1.0","federations":[],"telemetry_registration_url":"https://push.fedi.example/v1/telemetry/registrations","support_nostr_pubkey":"{support_nostr_pubkey}"}}"#
+    )
+}
+
+#[test]
+fn support_nostr_pubkey_is_optional_and_admitted_when_valid() {
+    // Secret key 7: a fixed, valid x-only key.
+    let hex = "5cbdf0646e5db4eaa398f365f2ea7a0e3d419b7e0330e39ce92bddedcac4f9bc";
+    let admitted = AdmittedSetupPaymentFederations::parse(content_with_support(hex).as_bytes())
+        .expect("a valid support key is admitted");
+    assert_eq!(
+        admitted
+            .support_nostr_pubkey()
+            .map(nostr::PublicKey::to_hex),
+        Some(hex.to_owned())
+    );
+
+    let without = AdmittedSetupPaymentFederations::parse(&content(vec![])).unwrap();
+    assert_eq!(without.support_nostr_pubkey(), None);
+    // Absent stays absent on the wire, so today's publications re-serialize
+    // byte for byte.
+    assert!(
+        !String::from_utf8(content(vec![]))
+            .unwrap()
+            .contains("support")
+    );
+}
+
+#[test]
+fn rejects_a_support_nostr_pubkey_that_is_not_a_canonical_x_only_key() {
+    for invalid in [
+        // Uppercase spelling of a valid key.
+        "5CBDF0646E5DB4EAA398F365F2EA7A0E3D419B7E0330E39CE92BDDEDCAC4F9BC",
+        // An npub rather than hex.
+        "npub1tj7lqerwtk6w4gucvdj096n6pc75zxmuqvcrwhxjzdeyx2cfl8ezfy0nrl",
+        // 63 digits.
+        "5cbdf0646e5db4eaa398f365f2ea7a0e3d419b7e0330e39ce92bddedcac4f9b",
+        // Not on the curve.
+        "0000000000000000000000000000000000000000000000000000000000000000",
+        "",
+    ] {
+        assert_eq!(
+            AdmittedSetupPaymentFederations::parse(content_with_support(invalid).as_bytes())
+                .unwrap_err(),
+            SetupPaymentFederationsContentError::InvalidSupportNostrPubkey,
+            "{invalid}"
+        );
+    }
+}
+
 #[test]
 fn admits_only_credential_free_https_telemetry_registration_urls() {
     for invalid in [
@@ -125,6 +178,7 @@ fn admits_only_credential_free_https_telemetry_registration_urls() {
             federations: Vec::new(),
             telemetry_registration_url: Url(invalid.to_owned()),
             min_fee_ppm: DEFAULT_SETUP_PAYMENT_MIN_FEE_PPM,
+            support_nostr_pubkey: None,
         })
         .unwrap();
         assert_eq!(
