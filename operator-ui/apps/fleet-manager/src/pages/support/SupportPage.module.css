@@ -1,0 +1,23 @@
+.root {
+  @apply uStack6;
+}
+
+.pageHead {
+  @apply uPageHead;
+}
+
+.heading {
+  @apply uPageHeading;
+}
+
+.intro {
+  @apply uIntro;
+}
+
+.chat {
+  @apply uStack4;
+}
+
+.unavailable {
+  @apply uMutedSm;
+}

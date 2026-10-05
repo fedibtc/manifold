@@ -1,7 +1,11 @@
 .active {
-  @apply uNavItemActive;
+  @apply uNavItemActive flex items-center justify-between;
 }
 
 .idle {
-  @apply uNavItemIdle;
+  @apply uNavItemIdle flex items-center justify-between;
+}
+
+.count {
+  @apply min-w-5 rounded-full bg-warning px-1.5 text-center text-xs font-medium leading-5 text-surface;
 }

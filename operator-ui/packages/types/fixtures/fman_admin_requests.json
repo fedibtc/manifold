@@ -28,6 +28,11 @@
   },
   "ListPaymentFederations": "ListPaymentFederations",
   "ListSeats": "ListSeats",
+  "MarkSupportRead": {
+    "MarkSupportRead": {
+      "up_to": 1700000600
+    }
+  },
   "OnboardAsNew": {
     "OnboardAsNew": {
       "if_needed": true
@@ -53,6 +58,11 @@
       "seat_id": "0707070707070707070707070707070707070707070707070707070707070707"
     }
   },
+  "SendSupportMessage": {
+    "SendSupportMessage": {
+      "body": "Seat 2 stopped after the update."
+    }
+  },
   "SetCapacity": {
     "SetCapacity": {
       "max_seats": 4
@@ -72,6 +82,7 @@
   "ShowMnemonic": "ShowMnemonic",
   "ShowPlans": "ShowPlans",
   "ShowSeatReadiness": "ShowSeatReadiness",
+  "SupportChat": "SupportChat",
   "SweepGuardianFees": {
     "SweepGuardianFees": {
       "request_id": "fixture-guardian-payout",

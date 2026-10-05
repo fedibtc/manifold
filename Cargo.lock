@@ -10234,6 +10234,7 @@ dependencies = [
  "lnurl-rs",
  "nostr-sdk",
  "peerbadge-protocol",
+ "reqwest 0.12.28",
  "secp256k1 0.30.0",
  "serde_json",
  "serde_json_canonicalizer",

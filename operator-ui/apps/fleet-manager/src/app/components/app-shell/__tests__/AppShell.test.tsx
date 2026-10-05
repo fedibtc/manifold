@@ -2,14 +2,19 @@ import { render, screen } from '@testing-library/react';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { beforeEach, vi } from 'vitest';
 import { NAV_ITEMS } from '@/app/components/navigation-items/nav-config';
+import { useSupportChat } from '@/features/support/api/hooks/use-support-chat/useSupportChat';
 import { useOnboarding } from '@/shared/api/hooks/use-onboarding/useOnboarding';
 import { AppShell } from '../AppShell';
 
 vi.mock('@/shared/api/hooks/use-onboarding/useOnboarding');
+vi.mock('@/features/support/api/hooks/use-support-chat/useSupportChat');
 
 const useOnboardingMock = vi.mocked(useOnboarding);
 
 beforeEach(() => {
+  vi.mocked(useSupportChat).mockReturnValue({ data: undefined } as ReturnType<
+    typeof useSupportChat
+  >);
   useOnboardingMock.mockReturnValue({
     data: {
       fman_name: 'blissful-chiffchaff',

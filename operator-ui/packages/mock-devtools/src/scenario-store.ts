@@ -9,8 +9,9 @@ import type { ScenarioStore, StorageAdapter, WorldSource } from './types';
  *  onboarding `nostr` union — a v4 blob carries `waiting_for_authorization`,
  *  which is no longer a state the daemon can report; v6 added
  *  `lifetime_remitted_msat` to the fleet-manager fee ledger, which a v5 blob
- *  cannot supply and whose absence is the omission this typing closed. */
-export const STORE_VERSION = 6;
+ *  cannot supply and whose absence is the omission this typing closed; v7 added
+ *  the fleet-manager support chat, which a v6 blob cannot supply. */
+export const STORE_VERSION = 7;
 
 interface Persisted<W> {
   v: number;

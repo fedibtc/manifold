@@ -33,6 +33,7 @@ use crate::guardian_fee::{
 };
 use crate::seat::{PaymentClaimStatus, SeatPhase, SeatReport, SeatSummary};
 use crate::seat_readiness::ReadinessReport;
+use crate::support::{MAX_SUPPORT_MESSAGE_CHARS, SupportMessage, SupportStore};
 use crate::wallet::Msats;
 
 /// The admin socket lives beside the database, under the same directory
@@ -102,6 +103,15 @@ pub enum AdminRequest {
     /// Rotate the FMan-wide telemetry capability and immediately schedule a
     /// fresh verified registration without returning the bearer.
     ReenrollTelemetry,
+    /// The operator's chat with Fedi support (SPEC-fman-support-chat).
+    SupportChat,
+    /// Send the operator's message to Fedi support.
+    SendSupportMessage { body: String },
+    /// Mark Fedi messages created at or before `up_to` (Unix seconds) read.
+    MarkSupportRead {
+        #[ts(type = "number")]
+        up_to: u64,
+    },
     /// Guardian-fee revenue for one seat's federation: the account payers
     /// remit to, current balances, and recent remittances with their
     /// breakdown.
@@ -184,6 +194,7 @@ pub(crate) enum Phase {
         fleet: Arc<Fleet>,
         directory: tokio::sync::watch::Receiver<DirectoryPresence>,
         authorizations: Arc<dyn crate::directory::HolderAuthorizationRefresher>,
+        support: Arc<dyn crate::support::SupportSender>,
     },
 }
 
@@ -206,11 +217,13 @@ impl OperatorPhase {
         fleet: Arc<Fleet>,
         directory: tokio::sync::watch::Receiver<DirectoryPresence>,
         authorizations: Arc<dyn crate::directory::HolderAuthorizationRefresher>,
+        support: Arc<dyn crate::support::SupportSender>,
     ) -> Self {
         Self(Arc::new(std::sync::Mutex::new(Phase::Fleet {
             fleet,
             directory,
             authorizations,
+            support,
         })))
     }
 
@@ -220,11 +233,13 @@ impl OperatorPhase {
         fleet: Arc<Fleet>,
         directory: tokio::sync::watch::Receiver<DirectoryPresence>,
         authorizations: Arc<dyn crate::directory::HolderAuthorizationRefresher>,
+        support: Arc<dyn crate::support::SupportSender>,
     ) {
         *self.0.lock().expect("a phase writer panicked") = Phase::Fleet {
             fleet,
             directory,
             authorizations,
+            support,
         };
     }
 
@@ -237,7 +252,17 @@ impl OperatorPhase {
                 fleet,
                 directory,
                 authorizations,
-            } => dispatch(&fleet, &directory, authorizations.as_ref(), request).await,
+                support,
+            } => {
+                dispatch(
+                    &fleet,
+                    &directory,
+                    authorizations.as_ref(),
+                    support.as_ref(),
+                    request,
+                )
+                .await
+            }
         }
     }
 
@@ -423,6 +448,7 @@ pub(crate) async fn dispatch(
     fleet: &Fleet,
     directory: &tokio::sync::watch::Receiver<DirectoryPresence>,
     authorizations: &dyn crate::directory::HolderAuthorizationRefresher,
+    support: &dyn crate::support::SupportSender,
     request: AdminRequest,
 ) -> anyhow::Result<Value> {
     match request {
@@ -490,6 +516,32 @@ pub(crate) async fn dispatch(
         AdminRequest::ReenrollTelemetry => {
             fleet.reenroll_telemetry().await?;
             Ok(reenroll_telemetry_json())
+        }
+        AdminRequest::SupportChat => {
+            let store = SupportStore::for_fleet(fleet);
+            Ok(support_chat_json(
+                support.available(),
+                &store.messages().await?,
+                store.unread().await?,
+            ))
+        }
+        AdminRequest::SendSupportMessage { body } => {
+            let body = body.trim();
+            if body.is_empty() {
+                anyhow::bail!("Write a message first.");
+            }
+            if body.chars().count() > MAX_SUPPORT_MESSAGE_CHARS {
+                anyhow::bail!("A message can have at most {MAX_SUPPORT_MESSAGE_CHARS} characters.");
+            }
+            if !support.available() {
+                anyhow::bail!("Fedi support chat is not available for this deployment yet.");
+            }
+            Ok(support_message_json(&support.send(body.to_owned()).await?))
+        }
+        AdminRequest::MarkSupportRead { up_to } => {
+            let store = SupportStore::for_fleet(fleet);
+            store.mark_read(up_to).await?;
+            Ok(support_read_json(store.unread().await?))
         }
         AdminRequest::GuardianFees { seat_id, limit } => {
             let status = fleet.guardian_fee_status(&seat_id).await?;
@@ -615,6 +667,18 @@ pub fn decommission_seat_json(newly_decommissioned: bool) -> Value {
 }
 
 /// The rotated bearer is deliberately absent from the operator response.
+pub fn support_chat_json(available: bool, messages: &[SupportMessage], unread: u64) -> Value {
+    json!({ "available": available, "messages": messages, "unread": unread })
+}
+
+pub fn support_message_json(message: &SupportMessage) -> Value {
+    json!({ "message": message })
+}
+
+pub fn support_read_json(unread: u64) -> Value {
+    json!({ "unread": unread })
+}
+
 pub fn reenroll_telemetry_json() -> Value {
     json!({ "telemetry_reenrollment": "scheduled" })
 }

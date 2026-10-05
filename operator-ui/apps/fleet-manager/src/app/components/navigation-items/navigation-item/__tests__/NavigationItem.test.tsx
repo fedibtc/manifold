@@ -27,3 +27,17 @@ it('should link to the item path', () => {
   const link = screen.getByRole('link', { name: 'Seats' });
   expect(link.getAttribute('href')).toBe('/seats');
 });
+
+it('should show a count beside the label only when there is one', () => {
+  const router = createMemoryRouter([
+    {
+      path: '*',
+      element: (
+        <NavigationItem item={{ key: 'support', label: 'Support', path: '/support' }} count={3} />
+      )
+    }
+  ]);
+  render(<RouterProvider router={router} />);
+
+  expect(screen.getByRole('link', { name: 'Support, 3 unread' })).toHaveTextContent('Support3');
+});

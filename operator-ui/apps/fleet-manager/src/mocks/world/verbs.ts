@@ -361,6 +361,45 @@ const reenrollTelemetry: Verb<'ReenrollTelemetry'> = () => ({
   telemetry_reenrollment: 'scheduled'
 });
 
+// The daemon fills the thread from relays; the mock world holds it.
+const MAX_SUPPORT_MESSAGE_CHARS = 4000;
+
+const supportUnread = () => {
+  const state = getState();
+  return state.supportMessages.filter(
+    (message) => message.author === 'fedi' && message.created_at > state.supportReadUntil
+  ).length;
+};
+
+const supportChat: Verb<'SupportChat'> = () => ({
+  available: true,
+  messages: getState().supportMessages,
+  unread: supportUnread()
+});
+
+const sendSupportMessage: Verb<'SendSupportMessage'> = ({ body }) => {
+  const text = body.trim();
+  if (text.length === 0) throw new Error('Write a message first.');
+  if ([...text].length > MAX_SUPPORT_MESSAGE_CHARS) {
+    throw new Error(`A message can have at most ${MAX_SUPPORT_MESSAGE_CHARS} characters.`);
+  }
+  const state = getState();
+  const message = {
+    id: (state.supportMessages.length + 1).toString(16).padStart(64, '0'),
+    author: 'operator' as const,
+    body: text,
+    created_at: Math.floor(Date.now() / 1000)
+  };
+  state.supportMessages.push(message);
+  return { message };
+};
+
+const markSupportRead: Verb<'MarkSupportRead'> = ({ up_to }) => {
+  const state = getState();
+  state.supportReadUntil = Math.max(state.supportReadUntil, up_to);
+  return { unread: supportUnread() };
+};
+
 const showMnemonic: Verb<'ShowMnemonic'> = () => ({
   mnemonic:
     'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about'
@@ -440,6 +479,9 @@ const fleetHandlers: VerbTable<Exclude<AdminRequestName, OnboardingVerbName>> = 
   SeatStatus: seatStatus,
   DecommissionSeat: decommissionSeat,
   ReenrollTelemetry: reenrollTelemetry,
+  SupportChat: supportChat,
+  SendSupportMessage: sendSupportMessage,
+  MarkSupportRead: markSupportRead,
   ShowPlans: showPlans,
   SetPrice: setPrice,
   ShowCapacity: showCapacity,

@@ -1,0 +1,47 @@
+.empty {
+  @apply uMutedSm py-8 text-center;
+}
+
+.scroller {
+  @apply max-h-[32rem] overflow-y-auto;
+}
+
+.thread {
+  @apply uStack2;
+}
+
+.item {
+  @apply flex flex-col;
+}
+
+.item[data-author="operator"] {
+  @apply items-end;
+}
+
+.item[data-author="fedi"] {
+  @apply items-start;
+}
+
+.day {
+  @apply uMutedSm my-2 self-center;
+}
+
+.bubble {
+  @apply uStack1 max-w-[75%] rounded-card px-4 py-2;
+}
+
+.item[data-author="operator"] .bubble {
+  @apply bg-info text-surface;
+}
+
+.item[data-author="fedi"] .bubble {
+  @apply bg-gray-50 text-ink;
+}
+
+.body {
+  @apply whitespace-pre-wrap break-words text-sm;
+}
+
+.meta {
+  @apply self-end text-xs opacity-70;
+}

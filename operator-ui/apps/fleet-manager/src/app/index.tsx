@@ -16,6 +16,7 @@ import { OverviewPage } from '@/pages/overview/OverviewPage';
 import { PayoutsPage } from '@/pages/payouts/PayoutsPage';
 import { SeatDetailPage } from '@/pages/seat-detail/SeatDetailPage';
 import { SeatsPage } from '@/pages/seats/SeatsPage';
+import { SupportPage } from '@/pages/support/SupportPage';
 import { queryClient } from '@/shared/api/queryClient';
 
 // Gate order: BootGate (daemon reachable, session authenticated) → SetupGate
@@ -47,7 +48,8 @@ const router = createBrowserRouter([
                   { path: 'offer', element: <OfferPage /> },
                   { path: 'backup', element: <BackupPage /> },
                   { path: 'backup/phrase', element: <BackupPhrasePage /> },
-                  { path: 'health', element: <HealthPage /> }
+                  { path: 'health', element: <HealthPage /> },
+                  { path: 'support', element: <SupportPage /> }
                 ]
               }
             ]

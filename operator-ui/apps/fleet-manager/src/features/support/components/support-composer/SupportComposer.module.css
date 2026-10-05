@@ -1,0 +1,19 @@
+.form {
+  @apply uStack1 border-t border-muted pt-4;
+}
+
+.row {
+  @apply flex items-end gap-3;
+}
+
+.srOnly {
+  @apply sr-only;
+}
+
+.textarea {
+  @apply w-full resize-none rounded-card border border-strong px-3 py-2 text-sm;
+}
+
+.error {
+  @apply uFieldError;
+}

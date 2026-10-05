@@ -36,6 +36,7 @@ pub mod seat;
 pub mod seat_process;
 pub mod seat_readiness;
 pub mod service;
+pub mod support;
 pub mod wallet;
 
 #[cfg(test)]

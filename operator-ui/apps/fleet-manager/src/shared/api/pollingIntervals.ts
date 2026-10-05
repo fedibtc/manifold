@@ -5,6 +5,7 @@
 // changes to these constants in seats, not milliseconds.
 export const SEAT_FORMATION_POLL_MS = 5_000; // seat status, only while non-terminal
 export const LIST_POLL_MS = 30_000; // ListSeats, ListPaymentFederations
+export const SUPPORT_CHAT_POLL_MS = 10_000; // SupportChat, the daemon's own relay poll cadence
 export const FEES_POLL_MS = 60_000; // GuardianFees, screens that display fees only
 
 // Ceilings the backoff below decays toward. A poll that keeps failing costs the

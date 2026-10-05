@@ -9,6 +9,8 @@ use peerbadge_protocol::{
 use fedi_decentralized_service_fleet_manager::Plan;
 use fman_core::directory::AdvertisementSnapshot;
 
+use fman_core::support::SupportAuthor;
+
 use super::*;
 
 // The advertisement document's signing round-trip and exact wire-shape tests
@@ -284,7 +286,7 @@ async fn newer_authorization_replaces_durable_and_live_state_without_rollback() 
         .unwrap();
     let keys = Keys::generate();
     let holder = Keys::generate();
-    let store = Arc::new(FleetHolderAuthorizationStore::new(db));
+    let store = Arc::new(FleetHolderAuthorizationStore::new(db.clone()));
     let service = FleetManagerNostr::new(
         keys.clone(),
         None,
@@ -292,6 +294,7 @@ async fn newer_authorization_replaces_durable_and_live_state_without_rollback() 
         None,
         ManifoldEnvironment::Development.profile().unwrap(),
         store.clone(),
+        SupportStore::new(db),
     );
     // The replacement comes from another holder with another credential: the
     // FMan keeps exactly one authorization, not one per credential.
@@ -356,7 +359,8 @@ async fn service_exposes_onboarding_info_and_status_watcher() {
         Vec::new(),
         None,
         ManifoldEnvironment::Development.profile().unwrap(),
-        Arc::new(FleetHolderAuthorizationStore::new(db)),
+        Arc::new(FleetHolderAuthorizationStore::new(db.clone())),
+        SupportStore::new(db),
     );
 
     assert_eq!(
@@ -466,4 +470,68 @@ fn a_retained_authorization_reports_itself_with_no_check_time() {
             checked_at: None,
         }
     );
+}
+
+#[tokio::test]
+async fn support_thread_admits_only_the_fman_fedi_room() {
+    let me = Keys::generate();
+    let fedi = Keys::generate();
+    let stranger = Keys::generate();
+    // Every wrap here is addressed to this FMan, as its inbox reads them.
+    let wrap = |author: &Keys, receivers: Vec<PublicKey>, kind: Kind| {
+        let author = author.clone();
+        let me = me.public_key();
+        async move {
+            let mut rumor = EventBuilder::new(kind, "hello")
+                .tags(receivers.into_iter().map(Tag::public_key))
+                .build(author.public_key());
+            let id = rumor.id();
+            let event = EventBuilder::gift_wrap(&author, &me, rumor, [])
+                .await
+                .unwrap();
+            (id, event)
+        }
+    };
+
+    // Fedi's reply and this FMan's own copy both join, under the rumor id.
+    let (id, from_fedi) = wrap(&fedi, vec![me.public_key()], Kind::PrivateDirectMessage).await;
+    let admitted = support::admit(&me, fedi.public_key(), &from_fedi)
+        .await
+        .unwrap();
+    assert_eq!(admitted.author, SupportAuthor::Fedi);
+    assert_eq!(admitted.id, id.to_hex());
+    assert_eq!(admitted.body, "hello");
+    let rumor = EventBuilder::private_msg_rumor(fedi.public_key(), "mine").build(me.public_key());
+    let own_copy = EventBuilder::gift_wrap(&me, &me.public_key(), rumor, [])
+        .await
+        .unwrap();
+    assert_eq!(
+        support::admit(&me, fedi.public_key(), &own_copy)
+            .await
+            .unwrap()
+            .author,
+        SupportAuthor::Operator
+    );
+
+    // A stranger, a group room including Fedi, and a reaction stay out.
+    for (author, receivers, kind) in [
+        (&stranger, vec![me.public_key()], Kind::PrivateDirectMessage),
+        (
+            &fedi,
+            vec![me.public_key(), stranger.public_key()],
+            Kind::PrivateDirectMessage,
+        ),
+        (&fedi, vec![me.public_key()], Kind::Reaction),
+    ] {
+        let (_, event) = wrap(author, receivers, kind).await;
+        assert_eq!(support::admit(&me, fedi.public_key(), &event).await, None);
+    }
+
+    // A stranger's seal around a rumor that claims Fedi wrote it.
+    let forged =
+        EventBuilder::private_msg_rumor(me.public_key(), "trust me").build(fedi.public_key());
+    let forged = EventBuilder::gift_wrap(&stranger, &me.public_key(), forged, [])
+        .await
+        .unwrap();
+    assert_eq!(support::admit(&me, fedi.public_key(), &forged).await, None);
 }

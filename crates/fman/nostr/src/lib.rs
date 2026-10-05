@@ -15,9 +15,10 @@
 
 pub mod backup;
 pub mod format;
+mod support;
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use anyhow::Context as _;
@@ -43,6 +44,7 @@ use fman_core::fleet::{
 };
 use fman_core::identity::RootMnemonic;
 use fman_core::onboarding::{FetchedHolderAuthorization, HolderAuthorizationFetcher};
+use fman_core::support::{SupportMessage, SupportSender, SupportStore};
 use nostr_sdk::{Event, EventBuilder, Filter, JsonUtil, Keys, Kind, PublicKey, Tag, Timestamp};
 use tokio::sync::watch;
 
@@ -245,6 +247,11 @@ struct Inner {
     started: AtomicBool,
     authorization_store: Arc<FleetHolderAuthorizationStore>,
     authorization_refresh: tokio::sync::Mutex<()>,
+    /// The environment's Fedi support identity; `None` disables the chat.
+    support: Option<PublicKey>,
+    support_store: SupportStore,
+    /// The relay pool, once [`Inner::run`] has connected it.
+    relays: OnceLock<NostrRelayClient>,
 }
 
 impl FleetManagerNostr {
@@ -263,6 +270,7 @@ impl FleetManagerNostr {
         retained_setup_payment_federations: Option<AdmittedSetupPaymentFederations>,
         manifold_environment: ManifoldEnvironmentProfile,
         authorization_store: Arc<FleetHolderAuthorizationStore>,
+        support_store: SupportStore,
     ) -> Self {
         let latest_fman_version = retained_setup_payment_federations
             .as_ref()
@@ -278,6 +286,9 @@ impl FleetManagerNostr {
         let (setup_payment_federations, _) = watch::channel(retained_setup_payment_federations);
         Self {
             inner: Arc::new(Inner {
+                support: manifold_environment.support().copied(),
+                support_store,
+                relays: OnceLock::new(),
                 manifold_environment,
                 keys,
                 setup_payment_publisher,
@@ -362,6 +373,17 @@ impl fman_core::directory::HolderAuthorizationRefresher for FleetManagerNostr {
     }
 }
 
+#[async_trait::async_trait]
+impl SupportSender for FleetManagerNostr {
+    fn available(&self) -> bool {
+        self.inner.support.is_some()
+    }
+
+    async fn send(&self, body: String) -> anyhow::Result<SupportMessage> {
+        support::send(&self.inner, body).await
+    }
+}
+
 impl Inner {
     async fn retain_authorization(
         &self,
@@ -419,8 +441,10 @@ impl Inner {
                 }
             }
         };
+        let _ = self.relays.set(nostr.clone());
         tokio::join!(
             run_advertisements(self.clone(), host, nostr.clone()),
+            support::run_inbox(self.clone(), nostr.clone()),
             run_setup_payment_refreshes(self, setup_payment_store, nostr),
         );
     }

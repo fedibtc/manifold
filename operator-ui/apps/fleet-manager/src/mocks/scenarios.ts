@@ -159,12 +159,16 @@ const base = (): Pick<
   | 'maxSeats'
   | 'readyForNewSeats'
   | 'seatReadiness'
+  | 'supportMessages'
+  | 'supportReadUntil'
   | 'fleetOpensAfterReads'
 > => ({
   onboarded: true,
   maxSeats: 3,
   readyForNewSeats: true,
   seatReadiness: READY,
+  supportMessages: [],
+  supportReadUntil: 0,
   fleetOpensAfterReads: 0,
   relayAuthorization: 'present',
   payoutDestination: 'operator@example.com',
@@ -355,6 +359,36 @@ const builders = {
     paymentFederations: [],
     price: SEAT_PRICE_MSAT,
     onboarding: authorized
+  }),
+  // Fedi wrote first after seeing an outage in telemetry; its latest reply is
+  // unread, so the sidebar counts it.
+  'support-conversation': () => ({
+    ...base(),
+    seats: [],
+    paymentFederations: [],
+    price: SEAT_PRICE_MSAT,
+    onboarding: authorized,
+    supportMessages: [
+      {
+        id: 'a'.repeat(64),
+        author: 'fedi' as const,
+        body: 'Hi, this is Fedi support. Our telemetry shows one of your guardians has not answered for 20 minutes. Is the host online?',
+        created_at: LAST_READ_AT - 7_200
+      },
+      {
+        id: 'b'.repeat(64),
+        author: 'operator' as const,
+        body: 'The box rebooted after a power cut. It is back now, but the seat still shows as starting.',
+        created_at: LAST_READ_AT - 3_600
+      },
+      {
+        id: 'c'.repeat(64),
+        author: 'fedi' as const,
+        body: 'Thanks. Please restart the seat from the Seats page and tell us what it shows.',
+        created_at: LAST_READ_AT - 600
+      }
+    ],
+    supportReadUntil: LAST_READ_AT - 7_200
   }),
   'not-ready-for-seats': () => ({
     ...base(),
@@ -570,6 +604,10 @@ const notes: Record<ScenarioName, ScenarioNote> = {
   'offer-without-payments': {
     desc: 'A paid offer with no payment federation — nothing can ever be bought.',
     affects: ['offer', 'overview']
+  },
+  'support-conversation': {
+    desc: 'Fedi started a support chat from telemetry; its latest reply is unread.',
+    affects: ['support', 'overview']
   },
   'not-ready-for-seats': {
     desc: 'The last readiness run failed: no discovery record and Bitcoin still syncing. The daemon has stopped advertising and quoting new seats.',
