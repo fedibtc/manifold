@@ -6,12 +6,17 @@
   @apply max-h-[32rem] overflow-y-auto;
 }
 
-.thread {
-  @apply uStack2;
-}
-
 .item {
   @apply flex flex-col;
+}
+
+/* Fedi app chat spacing: 6px within one sender's run, 12px between senders. */
+.item[data-spacing="run"] {
+  @apply mt-1.5;
+}
+
+.item[data-spacing="turn"] {
+  @apply mt-3;
 }
 
 .item[data-author="operator"] {
@@ -22,26 +27,23 @@
   @apply items-start;
 }
 
-.day {
-  @apply uMutedSm my-2 self-center;
+.time {
+  @apply self-center p-4 text-[10px] text-gray-500;
 }
 
+/* The Fedi app's text bubble, with the tail corner on the sender's side. */
 .bubble {
-  @apply uStack1 max-w-[75%] rounded-card px-4 py-2;
+  @apply w-fit max-w-[90%] whitespace-pre-wrap break-words rounded-card p-2 text-sm font-medium leading-5;
 }
 
 .item[data-author="operator"] .bubble {
-  @apply bg-info text-surface;
+  @apply rounded-br bg-info text-surface;
 }
 
 .item[data-author="fedi"] .bubble {
-  @apply bg-gray-50 text-ink;
+  @apply rounded-bl bg-gray-150 text-ink;
 }
 
-.body {
-  @apply whitespace-pre-wrap break-words text-sm;
-}
-
-.meta {
-  @apply self-end text-xs opacity-70;
+.srOnly {
+  @apply sr-only;
 }

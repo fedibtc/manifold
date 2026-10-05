@@ -5,15 +5,15 @@ export const MAX_SUPPORT_MESSAGE_CHARS = 4000;
 // Characters as the daemon counts them (Rust `chars()`), not UTF-16 units.
 export const supportMessageLength = (body: string) => [...body.trim()].length;
 
-// Chat times render in UTC like every other time in this app, so a test asserts
-// the value rather than the runner's timezone.
-// Assembled from parts: ICU versions disagree on the commas of a full date.
-export const formatSupportDay = (unixSeconds: number) => {
-  const date = new Date(unixSeconds * 1000);
-  const name = (options: Intl.DateTimeFormatOptions) =>
-    date.toLocaleDateString('en-GB', { ...options, timeZone: 'UTC' });
-  return `${name({ weekday: 'long' })} ${date.getUTCDate()} ${name({ month: 'long' })} ${date.getUTCFullYear()}`;
-};
+const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 
-export const formatSupportTime = (unixSeconds: number) =>
-  `${new Date(unixSeconds * 1000).toISOString().slice(11, 16)} UTC`;
+// The time above a group of messages, shaped like the Fedi app's chat
+// (`formatMessageItemTimestamp`): the time alone today, else the date too. In
+// UTC like every other time in this app, so a test asserts the value rather
+// than the runner's timezone.
+export const formatSupportTimestamp = (unixSeconds: number, nowMs = Date.now()) => {
+  const iso = new Date(unixSeconds * 1000).toISOString();
+  const time = `${iso.slice(11, 16)} UTC`;
+  if (iso.slice(0, 10) === new Date(nowMs).toISOString().slice(0, 10)) return time;
+  return `${MONTHS[Number(iso.slice(5, 7)) - 1]} ${iso.slice(8, 10)}, ${time}`;
+};

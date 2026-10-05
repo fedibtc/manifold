@@ -1,7 +1,11 @@
 import type { SupportMessage } from '@operator-ui/types';
 import { useEffect, useRef } from 'react';
-import { formatSupportDay, formatSupportTime } from '@/features/support/utils/supportMessage';
+import { formatSupportTimestamp } from '@/features/support/utils/supportMessage';
 import styles from './SupportThread.module.css';
+
+// The Fedi app's chat starts a new group, under its own time, when a message
+// comes more than a minute after the one before it.
+const GROUP_GAP_SECONDS = 60;
 
 export const SupportThread = ({ messages }: { messages: SupportMessage[] }) => {
   const end = useRef<HTMLDivElement>(null);
@@ -20,21 +24,36 @@ export const SupportThread = ({ messages }: { messages: SupportMessage[] }) => {
     <div className={styles.scroller}>
       <ol className={styles.thread}>
         {messages.map((message, index) => {
-          const day = formatSupportDay(message.created_at);
           const previous = messages[index - 1];
-          const firstOfDay = !previous || formatSupportDay(previous.created_at) !== day;
+          const newGroup =
+            !previous || message.created_at - previous.created_at > GROUP_GAP_SECONDS;
+          const spacing = newGroup
+            ? undefined
+            : previous.author === message.author
+              ? 'run'
+              : 'turn';
           return (
-            <li key={message.id} className={styles.item} data-author={message.author}>
-              {firstOfDay && <span className={styles.day}>{day}</span>}
+            <li
+              key={message.id}
+              className={styles.item}
+              data-author={message.author}
+              data-spacing={spacing}
+            >
+              {newGroup && (
+                <time
+                  className={styles.time}
+                  dateTime={new Date(message.created_at * 1000).toISOString()}
+                >
+                  {formatSupportTimestamp(message.created_at)}
+                </time>
+              )}
 
-              <div className={styles.bubble}>
-                <p className={styles.body}>{message.body}</p>
-
-                <span className={styles.meta}>
-                  {formatSupportTime(message.created_at)}
-                  {message.author === 'fedi' && ' · Fedi support'}
+              <p className={styles.bubble}>
+                <span className={styles.srOnly}>
+                  {message.author === 'fedi' ? 'Fedi support: ' : 'You: '}
                 </span>
-              </div>
+                {message.body}
+              </p>
             </li>
           );
         })}
