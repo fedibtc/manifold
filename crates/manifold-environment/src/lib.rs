@@ -31,7 +31,7 @@ const TRUSTED_PEER_BADGE_TRUST_LEVEL: u64 = 9;
 /// Bump this after profiles are released whenever a public deployment mapping
 /// changes so independently released components can expose and compare what
 /// they use.
-pub const MANIFOLD_ENVIRONMENT_PROFILE_REVISION: u32 = 10;
+pub const MANIFOLD_ENVIRONMENT_PROFILE_REVISION: u32 = 9;
 
 ////////////////////////////////////////////////////////////////////////////////
 // !!! SECURITY BLOCKER: THESE ARE DELIBERATELY UNSAFE TEST-ONLY ROOT KEYS !!!

@@ -333,7 +333,7 @@ fn environment_aliases_round_trip_to_canonical_names() {
                 .profile_with_env(|_| None)
                 .unwrap()
                 .profile_revision(),
-            10
+            9
         );
     }
     assert!("nightly".parse::<ManifoldEnvironment>().is_err());

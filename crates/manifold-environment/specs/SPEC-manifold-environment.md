@@ -37,11 +37,13 @@ Each value resolves to a `ManifoldEnvironmentProfile` containing:
 - one identity-signed public `IssuerAuthority` document per configured issuer
   (`pinned_issuer_authorities()`).
 
-The profile exposes `profile_revision()`, currently `10`. Every change to an
+The profile exposes `profile_revision()`, currently `9`. Every change to an
 environment's relay, issuer identity or authority, committed issuer secret,
 PeerBadge minimum trust level, setup-payment publisher, Guardian Verification
-Fee account, Fedi support key, Bitcoin network, or default Esplora mapping must increment the
-shared revision.
+Fee account, Bitcoin network, or default Esplora mapping must increment the
+shared revision. The Fedi support key is outside the revision: only the FMan
+reads it, so a mixed rollout cannot disagree about anything that another
+component checks.
 Operators must roll out such a change across
 independently released FI, FMan, FLIP, push-gateway telemetry, and cloud FMan
 telemetry collector components as one coordinated deployment and use the revision in diagnostics to identify a
