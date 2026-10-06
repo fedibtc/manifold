@@ -40,6 +40,9 @@ const CATCH_UP_INTERVAL: Duration = Duration::from_secs(5 * 60);
 /// newest ones of the whole history; later ones only the recent window.
 const FETCH_LIMIT: u16 = 500;
 
+/// Gift wrap ids kept to skip judging a repeat.
+const MAX_SEEN_WRAPS: usize = 10_000;
+
 /// Gift wraps backdate their `created_at` by up to two days (NIP-59), so a
 /// catch-up fetch reaches back that far, with an hour for clock skew.
 const BACKDATE_WINDOW_SECS: u64 = RANGE_RANDOM_TIMESTAMP_TWEAK.end + 60 * 60;
@@ -108,14 +111,20 @@ async fn send(inner: &Inner, body: &str) -> anyhow::Result<SupportRow> {
     let id = rumor.id();
     let to_fedi = EventBuilder::gift_wrap(&inner.keys, &fedi, rumor.clone(), []).await?;
     let to_self = EventBuilder::gift_wrap(&inner.keys, &me, rumor.clone(), []).await?;
+    // A publish waits for every relay's answer or its acknowledgement
+    // timeout. The copy to ourselves only restores the thread after a
+    // reinstall, so it goes out in the background rather than adding a second
+    // wait that could pass the dashboard's request deadline.
+    let own_copy = nostr.clone();
+    tokio::spawn(async move {
+        if let Err(err) = own_copy.publish_signed_event(&to_self).await {
+            tracing::warn!(error = %err, "publish own copy of support message failed");
+        }
+    });
     nostr.publish_signed_event(&to_fedi).await.map_err(|err| {
         tracing::warn!(error = %err, "publish support message failed");
         anyhow::anyhow!("No Nostr relay accepted the message. Try again.")
     })?;
-    // The copy to ourselves only restores the thread after a reinstall.
-    if let Err(err) = nostr.publish_signed_event(&to_self).await {
-        tracing::warn!(error = %err, "publish own copy of support message failed");
-    }
     let message = SupportRow {
         rumor_id: id.to_hex(),
         from_fedi: false,
@@ -211,6 +220,12 @@ pub(crate) async fn run_inbox(inner: Arc<Inner>, nostr: NostrRelayClient) {
 
 /// Store the thread message a gift wrap carries, once.
 async fn judge(inner: &Inner, fedi: PublicKey, seen: &mut HashSet<EventId>, event: Event) {
+    // Anyone can address gift wraps to this FMan, so the dedupe set is
+    // bounded. Forgetting it only costs judging a wrap again; the database
+    // stores each message once.
+    if seen.len() >= MAX_SEEN_WRAPS {
+        seen.clear();
+    }
     if !seen.insert(event.id) {
         return;
     }

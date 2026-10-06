@@ -50,3 +50,12 @@ daemon holds a live relay subscription for new gift wraps, and every five
 minutes fetches what it missed while a relay was away. A gift wrap backdates
 its timestamp up to two days, so each catch-up fetch reaches back that far.
 The dashboard reads the stored thread, not the relays.
+
+**Limited recovery.** The relays are the only copy outside the database. A
+new install, and a change of support key, read back the newest 500 gift wraps
+addressed to the FMan, and older history is not recovered. Anyone can address
+wraps to the FMan's public key, so junk wraps count toward the 500.
+
+**Sending.** A send answers once a relay accepts the copy to Fedi. The copy
+to the FMan itself goes out in the background, so a relay that never answers
+delays the operator's request by one acknowledgement timeout, not two.

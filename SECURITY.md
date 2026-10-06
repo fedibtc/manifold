@@ -526,9 +526,14 @@ Development and staging pin known-secret test keys, so anyone can write as
 "Fedi support" there. Production pins none yet, and the chat stays off. The
 signed setup-payment policy can name another support key, which then wins, so
 the setup-payment publisher key is also a trust root of the chat: whoever
-holds that key can make FMans talk to a key of their choice. The FMan shows only messages sealed by that key or by itself, as
-plain text. Fedi support sees the FMan's service public key and the operator's
-words. Relays see only that some key wrote to each party.
+holds that key can make FMans talk to a key of their choice. The FMan shows
+only messages sealed by that key or by itself, as plain text. Fedi support
+sees the FMan's service public key and the operator's words. Relays cannot
+read messages, but they see each wrap's recipient key, its size, when it was
+published, and the IP address that published or fetched it. The FMan stores
+the thread in plain text in its database. The development and staging
+support secrets are public, so anyone can read and write those chats; use
+them only for synthetic conversations.
 
 Each relying path applies the same profile-owned minimum PeerBadge trust level
 after complete authentication and schema parsing. A profile-policy change must
