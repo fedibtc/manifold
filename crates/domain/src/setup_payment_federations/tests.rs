@@ -269,7 +269,7 @@ fn accepts_exact_content_and_entry_bounds() {
 }
 
 #[test]
-fn rejects_oversized_malformed_unknown_and_duplicate_fields() {
+fn rejects_oversized_malformed_versions_and_duplicate_fields() {
     assert_eq!(
         AdmittedSetupPaymentFederations::parse(&vec![
             b' ';
@@ -280,7 +280,6 @@ fn rejects_oversized_malformed_unknown_and_duplicate_fields() {
         SetupPaymentFederationsContentError::ContentTooLarge
     );
     for malformed in [
-        br#"{"version":1,"fman_version":"0.1.0","federations":[],"telemetry_registration_url":"https://push.fedi.example/v1/telemetry/registrations","extra":true}"#.as_slice(),
         br#"{"version":1,"version":1,"fman_version":"0.1.0","federations":[],"telemetry_registration_url":"https://push.fedi.example/v1/telemetry/registrations"}"#.as_slice(),
         br#"{"version":2,"fman_version":"0.1.0","federations":[],"telemetry_registration_url":"https://push.fedi.example/v1/telemetry/registrations"}"#.as_slice(),
         br#"{"version":1,"fman_version":"0.1.0","federations":"not-an-array","telemetry_registration_url":"https://push.fedi.example/v1/telemetry/registrations"}"#.as_slice(),

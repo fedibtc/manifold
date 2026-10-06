@@ -104,7 +104,7 @@ replacement ordering as the new shared high-water mark.
 
 ## Content and admission
 
-`content` is strict JSON with exactly:
+`content` is strict JSON with these known fields:
 
 - integer literal `version: 1`;
 - `fman_version`, the latest supported Fleet Manager release as a SemVer
@@ -117,6 +117,11 @@ replacement ordering as the new shared high-water mark.
   only — each FMan refuses one below it, while a rate a federation already
   adopted stays valid to carry forward and still reports as configured
   ([REQ-guardian-fee-remittance](./REQ-guardian-fee-remittance.md)).
+
+Consumers ignore unknown content fields so optional additions remain admissible
+without a coordinated upgrade. A policy change that consumers must understand
+uses a new `version`; consumers reject versions they do not support. Duplicate
+known fields remain invalid.
 
 The telemetry URL is required in version 1. It is a policy locator, not a
 bearer capability. The event deliberately does not publish FMan Iroh endpoint
@@ -137,7 +142,7 @@ Admission performs all of these checks before the set influences policy:
 2. verify the event ID and signature;
 3. require the configured publisher key, kind `37707`, and exact `d` tag;
 4. reject `created_at` more than 86,400 seconds ahead of the consumer clock;
-5. reject malformed JSON, unknown or duplicate object fields, schema versions
+5. reject malformed JSON, duplicate known object fields, schema versions
    other than 1, and an invalid `fman_version` SemVer;
 6. reject more than 16 invites or an invite larger than 16 KiB;
 7. parse every invite with the supported Fedimint parser and derive its
