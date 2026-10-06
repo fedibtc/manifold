@@ -4262,6 +4262,7 @@ dependencies = [
  "fedi-decentralized-peer-badge-verifier",
  "fedi-decentralized-service-fleet-manager",
  "fman-core",
+ "futures-util",
  "hex",
  "hmac",
  "nostr-sdk",

@@ -38,15 +38,21 @@ use fedi_decentralized_nostr::setup_payment_federations::{
 use fedi_decentralized_nostr_clients::NostrRelayClient;
 use fedi_decentralized_peer_badge_verifier::PeerBadgeVerifier;
 use fedi_decentralized_service_fleet_manager::{FEDERATION_SIZES_0_1, FEDIMINTD_VERSION_0_1};
+use fman_core::admin::{AdminRequest, SupportChat};
+use fman_core::db::Db;
 use fman_core::directory::{AdvertisementSnapshot, DirectoryPresence, OnboardingStatus};
 use fman_core::fleet::{
     FleetHolderAuthorizationStore, FleetNostrHost, FleetSetupPaymentPolicyStore,
 };
 use fman_core::identity::RootMnemonic;
 use fman_core::onboarding::{FetchedHolderAuthorization, HolderAuthorizationFetcher};
-use fman_core::support::{SupportMessage, SupportSender, SupportStore};
 use nostr_sdk::{Event, EventBuilder, Filter, JsonUtil, Keys, Kind, PublicKey, Tag, Timestamp};
+use serde_json::Value;
 use tokio::sync::watch;
+
+pub use support::{
+    MAX_SUPPORT_MESSAGE_CHARS, support_chat_json, support_message_json, support_read_json,
+};
 
 /// Advertisement republish cadence. fi-client's consumer-side
 /// `FMAN_ADVERTISEMENT_MAX_AGE` is derived from this value (4x the cadence),
@@ -247,7 +253,7 @@ struct Inner {
     started: AtomicBool,
     authorization_store: Arc<FleetHolderAuthorizationStore>,
     authorization_refresh: tokio::sync::Mutex<()>,
-    support_store: SupportStore,
+    db: Db,
     /// The relay pool, once [`Inner::run`] has connected it.
     relays: OnceLock<NostrRelayClient>,
 }
@@ -268,7 +274,7 @@ impl FleetManagerNostr {
         retained_setup_payment_federations: Option<AdmittedSetupPaymentFederations>,
         manifold_environment: ManifoldEnvironmentProfile,
         authorization_store: Arc<FleetHolderAuthorizationStore>,
-        support_store: SupportStore,
+        db: Db,
     ) -> Self {
         let latest_fman_version = retained_setup_payment_federations
             .as_ref()
@@ -284,7 +290,7 @@ impl FleetManagerNostr {
         let (setup_payment_federations, _) = watch::channel(retained_setup_payment_federations);
         Self {
             inner: Arc::new(Inner {
-                support_store,
+                db,
                 relays: OnceLock::new(),
                 manifold_environment,
                 keys,
@@ -371,13 +377,9 @@ impl fman_core::directory::HolderAuthorizationRefresher for FleetManagerNostr {
 }
 
 #[async_trait::async_trait]
-impl SupportSender for FleetManagerNostr {
-    fn available(&self) -> bool {
-        self.inner.support().is_some()
-    }
-
-    async fn send(&self, body: String) -> anyhow::Result<SupportMessage> {
-        support::send(&self.inner, body).await
+impl SupportChat for FleetManagerNostr {
+    async fn answer(&self, request: AdminRequest) -> anyhow::Result<Value> {
+        support::answer(&self.inner, request).await
     }
 }
 

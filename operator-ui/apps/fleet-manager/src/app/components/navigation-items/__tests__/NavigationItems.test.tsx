@@ -2,6 +2,7 @@ import { render, screen } from '@testing-library/react';
 import { createMemoryRouter, RouterProvider } from 'react-router-dom';
 import { beforeEach, vi } from 'vitest';
 import { useSupportChat } from '@/features/support/api/hooks/use-support-chat/useSupportChat';
+import { SUPPORT_UNREAD_POLL_MS } from '@/shared/api/pollingIntervals';
 import { NavigationItems } from '../NavigationItems';
 import { NAV_ITEMS } from '../nav-config';
 
@@ -33,6 +34,8 @@ it('should count unread Fedi messages on Support only', () => {
 
   expect(screen.getByRole('link', { name: 'Support, 2 unread' })).toBeInTheDocument();
   expect(document.querySelectorAll('a [aria-hidden="true"]')).toHaveLength(1);
+  // The dot polls at the slow cadence; only the open Support page polls fast.
+  expect(useSupportChat).toHaveBeenCalledWith(SUPPORT_UNREAD_POLL_MS);
 });
 
 it('should show no dot once everything is read', () => {

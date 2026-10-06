@@ -304,7 +304,7 @@ impl FleetSetupPaymentPolicyStore {
 
 pub struct Fleet {
     config: FleetConfig,
-    pub(crate) db: Db,
+    db: Db,
     identity: Arc<RootMnemonic>,
     wallet: Arc<dyn EcashWallet>,
     /// The reconciling publisher of recovery documents

@@ -18,6 +18,7 @@ fedi-decentralized-nostr-clients = { path = "../../nostr-clients" }
 fedi-decentralized-peer-badge-verifier = { path = "../../peer-badge-verifier" }
 fedi-decentralized-service-fleet-manager = { path = "../../service-fleet-manager" }
 fman-core = { path = "../core" }
+futures-util = "0.3"
 hex = "0.4"
 hmac = "0.12"
 nostr-sdk = { version = "0.44", features = ["nip59"] }

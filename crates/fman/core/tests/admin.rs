@@ -32,24 +32,14 @@ impl crate::directory::HolderAuthorizationRefresher for RefreshAuthorizations {
     }
 }
 
-/// Records each sent message as the operator's, created at second 50.
-pub(crate) struct RecordSupport(pub crate::support::SupportStore);
+/// Answers each support verb with the request it was handed, so a test
+/// sees exactly what the dispatcher forwarded.
+pub(crate) struct EchoSupport;
 
 #[async_trait::async_trait]
-impl crate::support::SupportSender for RecordSupport {
-    fn available(&self) -> bool {
-        true
-    }
-
-    async fn send(&self, body: String) -> anyhow::Result<crate::support::SupportMessage> {
-        let message = crate::support::SupportMessage {
-            id: format!("{:064x}", body.len()),
-            author: crate::support::SupportAuthor::Operator,
-            body,
-            created_at: 50,
-        };
-        self.0.record(&message).await?;
-        Ok(message)
+impl super::SupportChat for EchoSupport {
+    async fn answer(&self, request: AdminRequest) -> anyhow::Result<serde_json::Value> {
+        Ok(serde_json::to_value(request)?)
     }
 }
 
@@ -269,12 +259,11 @@ async fn admin_socket_round_trips_operator_verbs() {
         onboarding: OnboardingStatus::Checking,
         latest_fman_version: None,
     });
-    let support = crate::support::SupportStore::for_fleet(&fleet);
     let phase = OperatorPhase::fleet(
         fleet.clone(),
         presence,
         Arc::new(RefreshAuthorizations(presence_tx.clone())),
-        Arc::new(RecordSupport(support.clone())),
+        Arc::new(EchoSupport),
     );
     let server = serve(&phase, &path).unwrap();
 
@@ -283,72 +272,16 @@ async fn admin_socket_round_trips_operator_verbs() {
         async move { super::request(&path, &request).await.unwrap() }
     };
 
-    // The support thread: Fedi's message arrives through the store (twice,
-    // as relays repeat it), the operator's through the sender, trimmed.
-    let from_fedi = crate::support::SupportMessage {
-        id: "f".repeat(64),
-        author: crate::support::SupportAuthor::Fedi,
-        body: "Is the host online?".to_owned(),
-        created_at: 100,
-    };
-    support.record(&from_fedi).await.unwrap();
-    support.record(&from_fedi).await.unwrap();
-    let sent = ask(AdminRequest::SendSupportMessage {
-        body: "  Seat 2 is down\n".into(),
-    })
-    .await
-    .unwrap();
-    assert_eq!(sent["message"]["body"], "Seat 2 is down");
-    let chat = ask(AdminRequest::SupportChat).await.unwrap();
-    assert_eq!(chat["available"], true);
-    assert_eq!(chat["unread"], 1);
-    assert_eq!(
-        chat["messages"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|message| (message["author"].clone(), message["body"].clone()))
-            .collect::<Vec<_>>(),
-        [
-            (
-                serde_json::json!("operator"),
-                serde_json::json!("Seat 2 is down")
-            ),
-            (
-                serde_json::json!("fedi"),
-                serde_json::json!("Is the host online?")
-            ),
-        ],
-        "oldest first, each message once"
-    );
-    // Length counts characters, not bytes.
-    assert!(
-        ask(AdminRequest::SendSupportMessage {
-            body: "é".repeat(4000),
-        })
-        .await
-        .is_ok()
-    );
-    for body in ["  \n".to_owned(), "é".repeat(4001)] {
-        let refused = ask(AdminRequest::SendSupportMessage { body })
-            .await
-            .unwrap_err();
-        assert!(
-            [
-                "Write a message first.",
-                "A message can have at most 4000 characters."
-            ]
-            .contains(&refused.message.as_str()),
-            "{}",
-            refused.message
-        );
-    }
-    // Read state covers messages created up to the mark and never moves back.
-    for (up_to, unread) in [(99, 1), (100, 0), (10, 0)] {
-        assert_eq!(
-            ask(AdminRequest::MarkSupportRead { up_to }).await.unwrap(),
-            serde_json::json!({ "unread": unread }),
-        );
+    // Support verbs pass to the chat owner unchanged.
+    for request in [
+        AdminRequest::SupportChat,
+        AdminRequest::SendSupportMessage {
+            body: "  Seat 2 is down\n".into(),
+        },
+        AdminRequest::MarkSupportRead { up_to: 100 },
+    ] {
+        let forwarded = serde_json::to_value(&request).unwrap();
+        assert_eq!(ask(request).await.unwrap(), forwarded);
     }
 
     // Replace and read back the offer.
@@ -504,7 +437,7 @@ async fn admin_socket_round_trips_operator_verbs() {
             fleet,
             presence_tx.subscribe(),
             Arc::new(RefreshAuthorizations(presence_tx.clone())),
-            Arc::new(RecordSupport(support)),
+            Arc::new(EchoSupport),
         ),
         crate::admin_http::AdminHttpAuth::TrustedProxy,
     )

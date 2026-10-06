@@ -186,8 +186,8 @@ async fn operator_and_fedi_support_chat_over_nip17() -> Result<()> {
         Ok(())
     })
     .await?;
-    // Published before the next reply, so the poll that admits that reply
-    // has already judged this one against the new key.
+    // Published before the next reply, so the FMan judges it against the new
+    // key before the reply arrives.
     reply(&fedi_relay, &fedi, fman_key, "Old key, after the rotation.").await?;
     reply(&rotated_relay, &rotated, fman_key, "Still the new key.").await?;
     let chat = eventually(|| async {
@@ -215,7 +215,17 @@ async fn operator_and_fedi_support_chat_over_nip17() -> Result<()> {
             ],
         "{chat}"
     );
-    ensure!(chat["unread"] == 2, "{chat}");
+    // Unread is what Fedi created after the mark. A reply can share the
+    // mark's second.
+    let read_up_to = messages[1]["created_at"].as_u64().context("created_at")?;
+    let unread = chat["messages"]
+        .as_array()
+        .context("messages")?
+        .iter()
+        .skip(2)
+        .filter(|message| message["created_at"].as_u64() > Some(read_up_to))
+        .count();
+    ensure!(chat["unread"] == unread, "{chat}");
 
     let after = "Thanks, new key.";
     operator

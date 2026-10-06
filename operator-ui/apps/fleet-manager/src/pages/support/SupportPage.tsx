@@ -4,12 +4,13 @@ import { useMarkSupportRead } from '@/features/support/api/hooks/use-mark-suppor
 import { useSupportChat } from '@/features/support/api/hooks/use-support-chat/useSupportChat';
 import { SupportComposer } from '@/features/support/components/support-composer/SupportComposer';
 import { SupportThread } from '@/features/support/components/support-thread/SupportThread';
+import { SUPPORT_CHAT_OPEN_POLL_MS } from '@/shared/api/pollingIntervals';
 import { QuerySurface } from '@/shared/components/query-surface/QuerySurface';
 import { useQueryDisposition } from '@/shared/query/use-query-disposition/useQueryDisposition';
 import styles from './SupportPage.module.css';
 
 export const SupportPage = () => {
-  const chat = useSupportChat();
+  const chat = useSupportChat(SUPPORT_CHAT_OPEN_POLL_MS);
   const markRead = useMarkSupportRead();
   const { disposition, retry } = useQueryDisposition([chat]);
 

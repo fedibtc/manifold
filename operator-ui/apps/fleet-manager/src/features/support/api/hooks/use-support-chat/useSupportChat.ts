@@ -1,15 +1,15 @@
 import type { SupportChatResponse } from '@operator-ui/types';
 import { useQuery } from '@tanstack/react-query';
 import { adminCall } from '@/shared/api/adminCall';
-import { SUPPORT_CHAT_POLL_MS } from '@/shared/api/pollingIntervals';
 
 export const SUPPORT_KEY = ['support'] as const;
 
-// The daemon reads relays itself and answers from its database, so this poll
-// is local. The sidebar badge and the chat page share it.
-export const useSupportChat = () =>
+// The daemon holds a live relay subscription and answers from its database,
+// so this poll is local. The sidebar dot and the chat page share the query,
+// each at its own interval, and TanStack Query runs the shorter one.
+export const useSupportChat = (refetchInterval: number) =>
   useQuery({
     queryKey: SUPPORT_KEY,
-    refetchInterval: SUPPORT_CHAT_POLL_MS,
+    refetchInterval,
     queryFn: () => adminCall<SupportChatResponse>('SupportChat')
   });

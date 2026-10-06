@@ -45,7 +45,6 @@ use fman_core::payout_wire::{
 use fman_core::remittance_metadata::{RemittanceBreakdownItem, RemittanceMetadata};
 use fman_core::seat::{PaymentClaimStatus, SeatBackupStatus, SeatPhase, SeatReport, SeatSummary};
 use fman_core::seat_readiness::{ReadinessOutcome, ReadinessReport};
-use fman_core::support::{SupportAuthor, SupportMessage};
 use fman_core::wallet::PayoutRequestId;
 use serde_json::Value;
 use stability_pool_client::common::{Account, AccountType};
@@ -77,9 +76,6 @@ pub const FIXTURE_NAMES: &[&str] = &[
     "fman_seat_status",
     "fman_decommission_seat",
     "fman_reenroll_telemetry",
-    "fman_support_chat",
-    "fman_send_support_message",
-    "fman_mark_support_read",
     "fman_guardian_fees",
     "fman_guardian_fees_policy_error",
     "fman_collect_guardian_fees",
@@ -126,9 +122,6 @@ pub fn fixture_json() -> Vec<(&'static str, String)> {
         ("fman_seat_status", seat_status_fixture()),
         ("fman_decommission_seat", decommission_seat_fixture()),
         ("fman_reenroll_telemetry", reenroll_telemetry_fixture()),
-        ("fman_support_chat", support_chat_fixture()),
-        ("fman_send_support_message", send_support_message_fixture()),
-        ("fman_mark_support_read", mark_support_read_fixture()),
         ("fman_guardian_fees", guardian_fees_fixture()),
         (
             "fman_guardian_fees_policy_error",
@@ -718,49 +711,6 @@ pub fn decommission_seat_fixture() -> Value {
 
 pub fn reenroll_telemetry_fixture() -> Value {
     admin::reenroll_telemetry_json()
-}
-
-fn support_message(id: char, author: SupportAuthor, body: &str, created_at: u64) -> SupportMessage {
-    SupportMessage {
-        id: id.to_string().repeat(64),
-        author,
-        body: body.to_owned(),
-        created_at,
-    }
-}
-
-pub fn support_chat_fixture() -> Value {
-    admin::support_chat_json(
-        true,
-        &[
-            support_message(
-                'a',
-                SupportAuthor::Operator,
-                "Seat 2 stopped after the update.",
-                1_700_000_000,
-            ),
-            support_message(
-                'b',
-                SupportAuthor::Fedi,
-                "Thanks. Does the seat log show a DKG error?",
-                1_700_000_600,
-            ),
-        ],
-        1,
-    )
-}
-
-pub fn send_support_message_fixture() -> Value {
-    admin::support_message_json(&support_message(
-        'a',
-        SupportAuthor::Operator,
-        "Seat 2 stopped after the update.",
-        1_700_000_000,
-    ))
-}
-
-pub fn mark_support_read_fixture() -> Value {
-    admin::support_read_json(0)
 }
 
 /// Both remittance shapes: a breakdown that opened, and one whose sealed

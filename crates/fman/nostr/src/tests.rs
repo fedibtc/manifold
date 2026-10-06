@@ -9,8 +9,6 @@ use peerbadge_protocol::{
 use fedi_decentralized_service_fleet_manager::Plan;
 use fman_core::directory::AdvertisementSnapshot;
 
-use fman_core::support::SupportAuthor;
-
 use super::*;
 
 // The advertisement document's signing round-trip and exact wire-shape tests
@@ -294,7 +292,7 @@ async fn newer_authorization_replaces_durable_and_live_state_without_rollback() 
         None,
         ManifoldEnvironment::Development.profile().unwrap(),
         store.clone(),
-        SupportStore::new(db),
+        db,
     );
     // The replacement comes from another holder with another credential: the
     // FMan keeps exactly one authorization, not one per credential.
@@ -360,7 +358,7 @@ async fn service_exposes_onboarding_info_and_status_watcher() {
         None,
         ManifoldEnvironment::Development.profile().unwrap(),
         Arc::new(FleetHolderAuthorizationStore::new(db.clone())),
-        SupportStore::new(db),
+        db,
     );
 
     assert_eq!(
@@ -498,19 +496,18 @@ async fn support_thread_admits_only_the_fman_fedi_room() {
     let admitted = support::admit(&me, fedi.public_key(), &from_fedi)
         .await
         .unwrap();
-    assert_eq!(admitted.author, SupportAuthor::Fedi);
-    assert_eq!(admitted.id, id.to_hex());
+    assert!(admitted.from_fedi);
+    assert_eq!(admitted.rumor_id, id.to_hex());
     assert_eq!(admitted.body, "hello");
     let rumor = EventBuilder::private_msg_rumor(fedi.public_key(), "mine").build(me.public_key());
     let own_copy = EventBuilder::gift_wrap(&me, &me.public_key(), rumor, [])
         .await
         .unwrap();
-    assert_eq!(
-        support::admit(&me, fedi.public_key(), &own_copy)
+    assert!(
+        !support::admit(&me, fedi.public_key(), &own_copy)
             .await
             .unwrap()
-            .author,
-        SupportAuthor::Operator
+            .from_fedi
     );
 
     // A stranger, a group room including Fedi, and a reaction stay out.
@@ -534,4 +531,97 @@ async fn support_thread_admits_only_the_fman_fedi_room() {
         .await
         .unwrap();
     assert_eq!(support::admit(&me, fedi.public_key(), &forged).await, None);
+}
+
+#[tokio::test]
+async fn support_verbs_answer_from_the_fleet_database() {
+    let temp = tempfile::TempDir::new().unwrap();
+    let db = fman_core::db::Db::open(temp.path()).await.unwrap();
+    let service = FleetManagerNostr::new(
+        Keys::generate(),
+        None,
+        Vec::new(),
+        None,
+        ManifoldEnvironment::Development.profile().unwrap(),
+        Arc::new(FleetHolderAuthorizationStore::new(db.clone())),
+        db.clone(),
+    );
+    let send = |body: String| service.answer(AdminRequest::SendSupportMessage { body });
+
+    // The body is checked before anything else, and its length counts
+    // characters, not bytes: 4000 two-byte characters pass to the next check.
+    for (body, refusal) in [
+        ("  \n".to_owned(), "Write a message first."),
+        (
+            "é".repeat(4001),
+            "A message can have at most 4000 characters.",
+        ),
+        (
+            "é".repeat(4000),
+            "Fedi support chat is not available for this deployment yet.",
+        ),
+    ] {
+        assert_eq!(send(body).await.unwrap_err().to_string(), refusal);
+    }
+    let chat = service.answer(AdminRequest::SupportChat).await.unwrap();
+    assert_eq!(chat["available"], false);
+
+    // The admitted policy names Fedi support; sending then waits on relays.
+    let policy = serde_json::json!({
+        "version": 1,
+        "fman_version": "0.1.0",
+        "federations": [],
+        "telemetry_registration_url": "https://push.fedi.example/v1/telemetry/registrations",
+        "support_nostr_pubkey": Keys::generate().public_key().to_hex(),
+    });
+    service.inner.setup_payment_federations.send_replace(Some(
+        AdmittedSetupPaymentFederations::parse(policy.to_string().as_bytes()).unwrap(),
+    ));
+    assert_eq!(
+        send("hello".to_owned()).await.unwrap_err().to_string(),
+        "The Nostr relays are not connected yet. Try again in a minute."
+    );
+
+    // Relays repeat messages, and two can share a second.
+    let row = |id: char, from_fedi: bool, created_at: u64| fman_core::db::SupportRow {
+        rumor_id: id.to_string().repeat(64),
+        from_fedi,
+        body: id.to_string(),
+        created_at,
+    };
+    for message in [
+        row('c', true, 100),
+        row('b', true, 100),
+        row('a', false, 50),
+        row('c', true, 100),
+    ] {
+        db.record_support_message(&message).await.unwrap();
+    }
+    let chat = service.answer(AdminRequest::SupportChat).await.unwrap();
+    assert_eq!(chat["available"], true);
+    assert_eq!(chat["unread"], 2, "only Fedi's messages are unread");
+    assert_eq!(
+        chat["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|message| (
+                message["body"].as_str().unwrap(),
+                message["author"].as_str().unwrap()
+            ))
+            .collect::<Vec<_>>(),
+        [("a", "operator"), ("c", "fedi"), ("b", "fedi")],
+        "oldest first, then in arrival order, each message once"
+    );
+
+    // Read state covers messages created up to the mark and never moves back.
+    for (up_to, unread) in [(99, 2), (100, 0), (10, 0)] {
+        assert_eq!(
+            service
+                .answer(AdminRequest::MarkSupportRead { up_to })
+                .await
+                .unwrap(),
+            serde_json::json!({ "unread": unread }),
+        );
+    }
 }

@@ -415,7 +415,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     let wallet_origin = db.wallet_origin().await?;
     let fleet = Arc::new(
         Fleet::open_with_wallet(
-            db,
+            db.clone(),
             FleetConfig {
                 manifold_environment: manifold_environment.environment(),
                 first_port_base: PortBase::new(args.first_port_base).ok_or_else(|| {
@@ -492,7 +492,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         retained_setup_payment_federations,
         manifold_environment,
         holder_authorization_store,
-        fman_core::support::SupportStore::for_fleet(&fleet),
+        db,
     );
     // Construct the RPC only after the Nostr policy watch exists, so policy is
     // ordinary constructor-owned state rather than a late-bound service mode.

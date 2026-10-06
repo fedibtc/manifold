@@ -33,7 +33,6 @@ use crate::guardian_fee::{
 };
 use crate::seat::{PaymentClaimStatus, SeatPhase, SeatReport, SeatSummary};
 use crate::seat_readiness::ReadinessReport;
-use crate::support::{MAX_SUPPORT_MESSAGE_CHARS, SupportMessage, SupportStore};
 use crate::wallet::Msats;
 
 /// The admin socket lives beside the database, under the same directory
@@ -183,6 +182,14 @@ pub enum AdminRequest {
     },
 }
 
+/// The operator's chat with Fedi support, which the Nostr boundary owns
+/// (SPEC-fman-support-chat). Dispatch forwards the support verbs to it
+/// unchanged.
+#[async_trait::async_trait]
+pub trait SupportChat: Send + Sync {
+    async fn answer(&self, request: AdminRequest) -> anyhow::Result<Value>;
+}
+
 /// Which operator vocabulary both listeners answer from right now.
 #[derive(Clone)]
 pub(crate) enum Phase {
@@ -194,7 +201,7 @@ pub(crate) enum Phase {
         fleet: Arc<Fleet>,
         directory: tokio::sync::watch::Receiver<DirectoryPresence>,
         authorizations: Arc<dyn crate::directory::HolderAuthorizationRefresher>,
-        support: Arc<dyn crate::support::SupportSender>,
+        support: Arc<dyn SupportChat>,
     },
 }
 
@@ -217,7 +224,7 @@ impl OperatorPhase {
         fleet: Arc<Fleet>,
         directory: tokio::sync::watch::Receiver<DirectoryPresence>,
         authorizations: Arc<dyn crate::directory::HolderAuthorizationRefresher>,
-        support: Arc<dyn crate::support::SupportSender>,
+        support: Arc<dyn SupportChat>,
     ) -> Self {
         Self(Arc::new(std::sync::Mutex::new(Phase::Fleet {
             fleet,
@@ -233,7 +240,7 @@ impl OperatorPhase {
         fleet: Arc<Fleet>,
         directory: tokio::sync::watch::Receiver<DirectoryPresence>,
         authorizations: Arc<dyn crate::directory::HolderAuthorizationRefresher>,
-        support: Arc<dyn crate::support::SupportSender>,
+        support: Arc<dyn SupportChat>,
     ) {
         *self.0.lock().expect("a phase writer panicked") = Phase::Fleet {
             fleet,
@@ -448,7 +455,7 @@ pub(crate) async fn dispatch(
     fleet: &Fleet,
     directory: &tokio::sync::watch::Receiver<DirectoryPresence>,
     authorizations: &dyn crate::directory::HolderAuthorizationRefresher,
-    support: &dyn crate::support::SupportSender,
+    support: &dyn SupportChat,
     request: AdminRequest,
 ) -> anyhow::Result<Value> {
     match request {
@@ -517,32 +524,9 @@ pub(crate) async fn dispatch(
             fleet.reenroll_telemetry().await?;
             Ok(reenroll_telemetry_json())
         }
-        AdminRequest::SupportChat => {
-            let store = SupportStore::for_fleet(fleet);
-            Ok(support_chat_json(
-                support.available(),
-                &store.messages().await?,
-                store.unread().await?,
-            ))
-        }
-        AdminRequest::SendSupportMessage { body } => {
-            let body = body.trim();
-            if body.is_empty() {
-                anyhow::bail!("Write a message first.");
-            }
-            if body.chars().count() > MAX_SUPPORT_MESSAGE_CHARS {
-                anyhow::bail!("A message can have at most {MAX_SUPPORT_MESSAGE_CHARS} characters.");
-            }
-            if !support.available() {
-                anyhow::bail!("Fedi support chat is not available for this deployment yet.");
-            }
-            Ok(support_message_json(&support.send(body.to_owned()).await?))
-        }
-        AdminRequest::MarkSupportRead { up_to } => {
-            let store = SupportStore::for_fleet(fleet);
-            store.mark_read(up_to).await?;
-            Ok(support_read_json(store.unread().await?))
-        }
+        request @ (AdminRequest::SupportChat
+        | AdminRequest::SendSupportMessage { .. }
+        | AdminRequest::MarkSupportRead { .. }) => support.answer(request).await,
         AdminRequest::GuardianFees { seat_id, limit } => {
             let status = fleet.guardian_fee_status(&seat_id).await?;
             let policy = fleet.guardian_fee_policy(&seat_id).await;
@@ -667,18 +651,6 @@ pub fn decommission_seat_json(newly_decommissioned: bool) -> Value {
 }
 
 /// The rotated bearer is deliberately absent from the operator response.
-pub fn support_chat_json(available: bool, messages: &[SupportMessage], unread: u64) -> Value {
-    json!({ "available": available, "messages": messages, "unread": unread })
-}
-
-pub fn support_message_json(message: &SupportMessage) -> Value {
-    json!({ "message": message })
-}
-
-pub fn support_read_json(unread: u64) -> Value {
-    json!({ "unread": unread })
-}
-
 pub fn reenroll_telemetry_json() -> Value {
     json!({ "telemetry_reenrollment": "scheduled" })
 }

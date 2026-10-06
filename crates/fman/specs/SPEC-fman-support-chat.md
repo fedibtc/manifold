@@ -41,6 +41,8 @@ direct messages. There is one conversation per FMan and no tickets.
 - **Length.** An operator message is 1 to 4000 characters after trimming.
 
 The daemon stores the thread and a read mark in its database. Unread messages
-are Fedi messages created after the mark; the mark only moves forward. Relays
-are polled; a gift wrap backdates its timestamp up to two days, so each poll
-reaches back that far.
+are Fedi messages created after the mark; the mark only moves forward. The
+daemon holds a live relay subscription for new gift wraps, and every five
+minutes fetches what it missed while a relay was away. A gift wrap backdates
+its timestamp up to two days, so each catch-up fetch reaches back that far.
+The dashboard reads the stored thread, not the relays.
