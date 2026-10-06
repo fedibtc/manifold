@@ -318,9 +318,8 @@ the fleet.
   ([SPEC-fman-support-chat](SPEC-fman-support-chat.md)). `SupportChat`
   returns `{available, messages, unread}` from the database without a relay
   read. `SendSupportMessage` publishes before it answers `{message}` and
-  returns an operation error when no relay accepts the message, Fedi support
-  lists no inbox relays, or the admitted setup-payment policy names no Fedi
-  support key. `MarkSupportRead` returns
+  returns an operation error when no relay accepts the message or the
+  admitted setup-payment policy names no Fedi support key. `MarkSupportRead` returns
   `{unread}`.
 - `ShowMnemonic` returns the root mnemonic phrase as `mnemonic`, for the
   operator's recovery material (the full backup also requires the FMan

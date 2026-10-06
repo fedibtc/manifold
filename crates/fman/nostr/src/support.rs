@@ -4,9 +4,9 @@
 //! This module owns the chat: the support admin verbs, which core forwards
 //! unchanged, and the relay side. The thread is stored in the fleet database.
 //!
-//! The FMan writes as its service key to the relays Fedi support lists as its
-//! kind-10050 inbox, and reads the gift wraps addressed to it on the
-//! environment's canonical relays, which it lists as its own inbox. Fedi support is the key the admitted setup-payment
+//! The FMan writes as its service key and reads the gift wraps addressed to
+//! it on the environment's canonical relays, which it also lists as its
+//! kind-10050 inbox. Fedi support is the key the admitted setup-payment
 //! policy names. A message joins the thread only when its seal is signed by
 //! Fedi support or by this FMan and the rumor's room is exactly the two of
 //! them.
@@ -21,10 +21,9 @@ use fedi_decentralized_nostr_clients::NostrRelayClient;
 use fman_core::admin::AdminRequest;
 use fman_core::db::SupportRow;
 use futures_util::StreamExt as _;
-use nostr_sdk::nips::nip17;
 use nostr_sdk::nips::nip59::{RANGE_RANDOM_TIMESTAMP_TWEAK, UnwrappedGift};
 use nostr_sdk::{
-    Event, EventBuilder, EventId, Filter, Keys, Kind, PublicKey, RelayUrl, Tag, TagKind, Timestamp,
+    Event, EventBuilder, EventId, Filter, Keys, Kind, PublicKey, Tag, TagKind, Timestamp,
 };
 use serde_json::{Value, json};
 
@@ -40,10 +39,6 @@ const CATCH_UP_INTERVAL: Duration = Duration::from_secs(5 * 60);
 /// Gift wraps read per fetch. The first fetch for a support key reads the
 /// newest ones of the whole history; later ones only the recent window.
 const FETCH_LIMIT: u16 = 500;
-
-/// NIP-17 asks for small inbox lists. A longer list from Fedi support is cut
-/// here rather than connecting to each relay it names.
-const MAX_FEDI_INBOX_RELAYS: usize = 5;
 
 /// Gift wraps backdate their `created_at` by up to two days (NIP-59), so a
 /// catch-up fetch reaches back that far, with an hour for clock skew.
@@ -113,16 +108,7 @@ async fn send(inner: &Inner, body: &str) -> anyhow::Result<SupportRow> {
     let id = rumor.id();
     let to_fedi = EventBuilder::gift_wrap(&inner.keys, &fedi, rumor.clone(), []).await?;
     let to_self = EventBuilder::gift_wrap(&inner.keys, &me, rumor.clone(), []).await?;
-    let inbox = fedi_inbox(nostr, fedi).await?;
-    let fedi_relays = NostrRelayClient::connect_pool(&inbox, inner.keys.clone(), REQUEST_TIMEOUT)
-        .await
-        .map_err(|err| {
-            tracing::warn!(error = %err, "connect to Fedi support inbox failed");
-            anyhow::anyhow!("The Fedi support relays are not reachable. Try again in a minute.")
-        })?;
-    let published = fedi_relays.publish_signed_event(&to_fedi).await;
-    fedi_relays.disconnect().await;
-    published.map_err(|err| {
+    nostr.publish_signed_event(&to_fedi).await.map_err(|err| {
         tracing::warn!(error = %err, "publish support message failed");
         anyhow::anyhow!("No Nostr relay accepted the message. Try again.")
     })?;
@@ -235,38 +221,6 @@ async fn judge(inner: &Inner, fedi: PublicKey, seen: &mut HashSet<EventId>, even
         tracing::warn!(?err, "record support message failed");
         seen.remove(&event.id);
     }
-}
-
-/// Fedi support's NIP-17 inbox: the relays its newest `kind:10050` list
-/// names. NIP-17 sends only there, and a key without a list is not ready.
-async fn fedi_inbox(nostr: &NostrRelayClient, fedi: PublicKey) -> anyhow::Result<Vec<RelayUrl>> {
-    let lists = nostr
-        .fetch_events_capped(
-            Filter::new().kind(Kind::InboxRelays).author(fedi),
-            REQUEST_TIMEOUT,
-            FETCH_LIMIT,
-        )
-        .await
-        .map_err(|err| {
-            tracing::warn!(error = %err, "fetch Fedi support inbox relays failed");
-            anyhow::anyhow!("The Nostr relays are not reachable. Try again in a minute.")
-        })?;
-    let inbox = lists
-        .into_iter()
-        .filter(|list| {
-            list.pubkey == fedi && list.kind == Kind::InboxRelays && list.verify().is_ok()
-        })
-        .max_by_key(|list| list.created_at)
-        .map(|list| {
-            nip17::extract_owned_relay_list(list)
-                .take(MAX_FEDI_INBOX_RELAYS)
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
-    if inbox.is_empty() {
-        anyhow::bail!("Fedi support has not listed its inbox relays yet. Try again later.");
-    }
-    Ok(inbox)
 }
 
 /// This FMan's NIP-17 inbox: the relays it reads.

@@ -528,9 +528,7 @@ signed setup-payment policy can name another support key, which then wins, so
 the setup-payment publisher key is also a trust root of the chat: whoever
 holds that key can make FMans talk to a key of their choice. The FMan shows only messages sealed by that key or by itself, as
 plain text. Fedi support sees the FMan's service public key and the operator's
-words. Relays see only that some key wrote to each party. The support key
-also picks, through its NIP-17 inbox list, up to five relays that the FMan
-connects to when it sends, and these relays see the FMan's IP address.
+words. Relays see only that some key wrote to each party.
 
 Each relying path applies the same profile-owned minimum PeerBadge trust level
 after complete authentication and schema parsing. A profile-policy change must

@@ -13,7 +13,7 @@ use fedi_decentralized_nostr::setup_payment_federations::{
 };
 use fedi_decentralized_nostr_clients::NostrRelayClient;
 use nostr_sdk::nips::nip59::UnwrappedGift;
-use nostr_sdk::{Event, EventBuilder, Filter, Keys, Kind, PublicKey, Tag, TagKind};
+use nostr_sdk::{Event, EventBuilder, Filter, Keys, Kind, PublicKey, Tag};
 use serde_json::{Value, json};
 
 const DEADLINE: Duration = Duration::from_secs(90);
@@ -35,12 +35,6 @@ async fn operator_and_fedi_support_chat_over_nip17() -> Result<()> {
     };
     let relay_lease = defe.request_nostr_relay(SharingMode::Exclusive).await?;
     let ResourceDescriptor::NostrRelay(relay) = relay_lease.descriptor.clone() else {
-        bail!("expected a relay descriptor");
-    };
-    // Fedi support's NIP-17 inbox is another relay than the canonical one,
-    // so only a daemon that reads Fedi's inbox list can reach it.
-    let inbox_lease = defe.request_nostr_relay(SharingMode::Exclusive).await?;
-    let ResourceDescriptor::NostrRelay(inbox) = inbox_lease.descriptor.clone() else {
         bail!("expected a relay descriptor");
     };
     let fman_lease = defe
@@ -71,35 +65,19 @@ async fn operator_and_fedi_support_chat_over_nip17() -> Result<()> {
     let fedi_relay = NostrRelayClient::connect(&relay.url, fedi.clone(), Duration::from_secs(10))
         .await
         .map_err(|error| anyhow::anyhow!("connect Fedi support: {error}"))?;
-    let fedi_inbox = NostrRelayClient::connect(&inbox.url, fedi.clone(), Duration::from_secs(10))
-        .await
-        .map_err(|error| anyhow::anyhow!("connect Fedi support inbox: {error}"))?;
 
-    // The operator writes first. Until Fedi lists its inbox, there is
-    // nowhere to send; the daemon publishes before it answers.
+    // The operator writes first; the daemon publishes before it answers.
     let body = "Seat 2 stopped after the update.\nIt shows starting.";
-    let send = || async {
+    let sent = eventually(|| async {
         operator
             .admin(json!({ "SendSupportMessage": { "body": format!("  {body}\n") } }))
             .await
-    };
-    eventually(|| async {
-        let refused = send().await.expect_err("Fedi has no inbox yet");
-        ensure!(
-            refused
-                .to_string()
-                .contains("has not listed its inbox relays"),
-            "{refused:#}"
-        );
-        Ok(())
     })
     .await?;
-    list_inbox(&fedi_relay, &inbox.url).await?;
-    let sent = eventually(send).await?;
     ensure!(sent["message"]["author"] == "operator" && sent["message"]["body"] == body);
 
     let received = eventually(|| async {
-        for wrap in fetch_wraps(&fedi_inbox, fedi.public_key()).await? {
+        for wrap in fetch_wraps(&fedi_relay, fedi.public_key()).await? {
             let gift = UnwrappedGift::from_gift_wrap(&fedi, &wrap).await?;
             if gift.sender == fman_key && gift.rumor.content == body {
                 return Ok(gift);
@@ -193,7 +171,6 @@ async fn operator_and_fedi_support_chat_over_nip17() -> Result<()> {
         NostrRelayClient::connect(&relay.url, rotated.clone(), Duration::from_secs(10))
             .await
             .map_err(|error| anyhow::anyhow!("connect rotated Fedi support: {error}"))?;
-    list_inbox(&rotated_relay, &inbox.url).await?;
     let publisher = NostrRelayClient::connect(
         &relay.url,
         Keys::parse(SETUP_PAYMENT_PUBLISHER_SECRET)?,
@@ -259,7 +236,7 @@ async fn operator_and_fedi_support_chat_over_nip17() -> Result<()> {
         .admin(json!({ "SendSupportMessage": { "body": after } }))
         .await?;
     eventually(|| async {
-        for wrap in fetch_wraps(&fedi_inbox, rotated.public_key()).await? {
+        for wrap in fetch_wraps(&rotated_relay, rotated.public_key()).await? {
             let gift = UnwrappedGift::from_gift_wrap(&rotated, &wrap).await?;
             if gift.sender == fman_key && gift.rumor.content == after {
                 return Ok(());
@@ -269,18 +246,7 @@ async fn operator_and_fedi_support_chat_over_nip17() -> Result<()> {
     })
     .await?;
 
-    drop((fman_lease, inbox_lease, relay_lease, bitcoind_lease));
-    Ok(())
-}
-
-/// Publish the NIP-17 inbox relay list of the client's key.
-async fn list_inbox(relay: &NostrRelayClient, inbox: &str) -> Result<()> {
-    relay
-        .publish_event(
-            EventBuilder::new(Kind::InboxRelays, "").tag(Tag::custom(TagKind::Relay, [inbox])),
-        )
-        .await
-        .map_err(|error| anyhow::anyhow!("publish inbox relays: {error}"))?;
+    drop((fman_lease, relay_lease, bitcoind_lease));
     Ok(())
 }
 
