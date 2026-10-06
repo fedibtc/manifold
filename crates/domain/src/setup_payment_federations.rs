@@ -80,8 +80,10 @@ impl<'de> serde::Deserialize<'de> for FmanVersion {
 }
 
 /// Version-1 Nostr content published by the setup-payment federation authority.
+///
+/// Consumers ignore unknown fields. Policy changes requiring consumer support
+/// must use a new wire-format version instead.
 #[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct SetupPaymentFederationsContent {
     /// Wire-format version.
     pub version: ProtocolV1,
@@ -100,9 +102,8 @@ pub struct SetupPaymentFederationsContent {
 
     /// Smallest guardian fee rate, in parts per million, that a guardian will
     /// accept in a fee proposal. Optional on the wire: an event omitting it
-    /// carries [`DEFAULT_SETUP_PAYMENT_MIN_FEE_PPM`], which is what keeps
-    /// `deny_unknown_fields` from being the only compatibility direction —
-    /// older publications stay admissible, newer ones do not.
+    /// carries [`DEFAULT_SETUP_PAYMENT_MIN_FEE_PPM`], so older publications
+    /// stay admissible.
     #[serde(default = "default_min_fee_ppm")]
     pub min_fee_ppm: u64,
 }
@@ -236,7 +237,7 @@ pub enum SetupPaymentFederationsContentError {
     /// Event content exceeds the pre-parse byte limit.
     ContentTooLarge,
 
-    /// JSON is invalid or does not match the strict version-1 shape.
+    /// JSON is invalid or does not match the known version-1 fields.
     MalformedContent,
 
     /// The publication contains more than the allowed number of entries.
