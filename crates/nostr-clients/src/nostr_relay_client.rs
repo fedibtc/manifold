@@ -127,7 +127,9 @@ impl NostrRelayClient {
         Ok(Self { client })
     }
 
-    pub(crate) async fn disconnect(&self) {
+    /// Close every relay connection of this client. Dropping the client does
+    /// not, so a short-lived client must call this.
+    pub async fn disconnect(&self) {
         self.client.disconnect().await;
     }
 

@@ -32,9 +32,12 @@ direct messages. There is one conversation per FMan and no tickets.
   support and the rumor's only `p` tag is the FMan, or the signer is the FMan
   and the only `p` tag is Fedi support. Messages from other keys, rooms with
   more members, and other rumor kinds are ignored.
-- **Relays.** The FMan publishes and reads on the environment's canonical
-  relays and lists them in its `kind:10050` inbox relay list. Fedi support
-  reads its own inbox on the same relays.
+- **Relays.** Each side sends to the other's NIP-17 inbox, its newest
+  `kind:10050` relay list. The FMan reads its own inbox on the environment's
+  canonical relays and lists them there. It finds Fedi support's list on the
+  same relays and sends to at most the first five relays it names. Until
+  Fedi support publishes a list, the FMan cannot send. Its own copy of each
+  message goes to its own inbox.
 - **Identity of a message.** A message is identified by its rumor id, derived
   from the rumor rather than taken from it. Copies that relays serve again are
   stored once.
