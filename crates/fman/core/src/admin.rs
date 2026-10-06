@@ -106,11 +106,9 @@ pub enum AdminRequest {
     SupportChat,
     /// Send the operator's message to Fedi support.
     SendSupportMessage { body: String },
-    /// Mark Fedi messages created at or before `up_to` (Unix seconds) read.
-    MarkSupportRead {
-        #[ts(type = "number")]
-        up_to: u64,
-    },
+    /// Mark read the Fedi messages up to and including the one whose rumor id
+    /// is `up_to`, in thread order.
+    MarkSupportRead { up_to: String },
     /// Guardian-fee revenue for one seat's federation: the account payers
     /// remit to, current balances, and recent remittances with their
     /// breakdown.

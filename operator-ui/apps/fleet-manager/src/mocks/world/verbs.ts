@@ -367,7 +367,7 @@ const MAX_SUPPORT_MESSAGE_CHARS = 4000;
 const supportUnread = () => {
   const state = getState();
   return state.supportMessages.filter(
-    (message) => message.author === 'fedi' && message.created_at > state.supportReadUntil
+    (message) => message.author === 'fedi' && !state.supportReadIds.includes(message.id)
   ).length;
 };
 
@@ -396,7 +396,12 @@ const sendSupportMessage: Verb<'SendSupportMessage'> = ({ body }) => {
 
 const markSupportRead: Verb<'MarkSupportRead'> = ({ up_to }) => {
   const state = getState();
-  state.supportReadUntil = Math.max(state.supportReadUntil, up_to);
+  const upTo = state.supportMessages.findIndex((message) => message.id === up_to);
+  for (const message of state.supportMessages.slice(0, upTo + 1)) {
+    if (message.author === 'fedi' && !state.supportReadIds.includes(message.id)) {
+      state.supportReadIds.push(message.id);
+    }
+  }
   return { unread: supportUnread() };
 };
 

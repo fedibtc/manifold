@@ -792,22 +792,26 @@ impl Db {
     /// Fedi support messages the operator has not read.
     pub async fn support_unread(&self) -> Result<u64, DbError> {
         let unread: i64 = sqlx::query_scalar(
-            "SELECT count(*) FROM support_messages WHERE from_fedi = 1 \
-             AND created_at > (SELECT read_until FROM support_chat_state WHERE id = 1)",
+            "SELECT count(*) FROM support_messages WHERE from_fedi = 1 AND read = 0",
         )
         .fetch_one(&self.pool)
         .await?;
         Ok(u64::try_from(unread).expect("a count is non-negative"))
     }
 
-    /// Mark every Fedi support message created at or before `up_to` read.
-    /// The mark only moves forward, so a stale page cannot unread a newer
-    /// message.
-    pub async fn mark_support_read(&self, up_to: u64) -> Result<(), DbError> {
-        sqlx::query("UPDATE support_chat_state SET read_until = max(read_until, ?) WHERE id = 1")
-            .bind(stored_secs(up_to))
-            .execute(&self.pool)
-            .await?;
+    /// Mark read the Fedi support messages up to and including the message
+    /// `up_to_rumor_id`, in thread order. A message stored later stays unread
+    /// even when it sorts earlier or shares the second, and nothing goes back
+    /// to unread. An unknown id marks nothing.
+    pub async fn mark_support_read(&self, up_to_rumor_id: &str) -> Result<(), DbError> {
+        sqlx::query(
+            "UPDATE support_messages SET read = 1 WHERE from_fedi = 1 AND read = 0 \
+             AND (created_at, rowid) <= \
+             (SELECT created_at, rowid FROM support_messages WHERE rumor_id = ?)",
+        )
+        .bind(up_to_rumor_id)
+        .execute(&self.pool)
+        .await?;
         Ok(())
     }
 }

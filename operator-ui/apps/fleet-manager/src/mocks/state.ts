@@ -82,10 +82,10 @@ export interface MockState {
   /** The latest readiness run since the daemon started; null before one
    *  completes. */
   seatReadiness: ReadinessReport | null;
-  /** The chat with Fedi support, oldest first, and the read mark the daemon
-   *  keeps (Unix seconds). */
+  /** The chat with Fedi support, oldest first, and the ids of the Fedi
+   *  messages the operator has read. */
   supportMessages: SupportMessage[];
-  supportReadUntil: number;
+  supportReadIds: string[];
   /** How many `Onboarding` status reads still answer `runtime: starting` after
    *  the final stage is durable. The daemon reports `starting` until its fleet
    *  opens; the mock has no fleet to open, so completion arms a fixed number of

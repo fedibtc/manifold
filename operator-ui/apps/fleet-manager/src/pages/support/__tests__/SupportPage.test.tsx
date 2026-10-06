@@ -41,7 +41,7 @@ it('should mark read up to the newest Fedi message it shows', async () => {
   expect(await screen.findByText('Any news?')).toBeInTheDocument();
   await waitFor(() =>
     expect(adminCall).toHaveBeenCalledWith({
-      MarkSupportRead: { up_to: 1_700_000_200 }
+      MarkSupportRead: { up_to: 'b'.repeat(64) }
     } satisfies AdminRequest)
   );
 });
@@ -51,7 +51,7 @@ it('should mark read again on a later poll after a failed mark', async () => {
   let marks = 0;
   vi.spyOn(adminCallModule, 'adminCall').mockImplementation(async (request) => {
     if (request === 'SupportChat') return response as never;
-    expect(request).toEqual({ MarkSupportRead: { up_to: 1_700_000_200 } });
+    expect(request).toEqual({ MarkSupportRead: { up_to: 'b'.repeat(64) } });
     marks += 1;
     if (marks === 1) throw new Error('relay down');
     response = chat({ unread: 0 });

@@ -606,16 +606,33 @@ async fn support_verbs_answer_from_the_fleet_database() {
         "oldest first, then in arrival order, each message once"
     );
 
-    // Read state covers messages created up to the mark and never moves back.
-    for (up_to, unread) in [(99, 2), (100, 0), (10, 0)] {
-        assert_eq!(
-            service
-                .answer(AdminRequest::MarkSupportRead { up_to })
-                .await
-                .unwrap(),
-            serde_json::json!({ "unread": unread }),
-        );
-    }
+    // A mark reads the thread up to the named message: not a later message
+    // in the same second, nor one stored afterwards that sorts earlier.
+    let mark = |id: char| {
+        service.answer(AdminRequest::MarkSupportRead {
+            up_to: id.to_string().repeat(64),
+        })
+    };
+    assert_eq!(
+        mark('x').await.unwrap()["unread"],
+        2,
+        "an unknown id marks nothing"
+    );
+    assert_eq!(mark('c').await.unwrap()["unread"], 1, "b shares c's second");
+    db.record_support_message(&row('d', true, 90))
+        .await
+        .unwrap();
+    assert_eq!(
+        mark('a').await.unwrap()["unread"],
+        2,
+        "d arrived after the mark"
+    );
+    assert_eq!(mark('b').await.unwrap()["unread"], 0);
+    assert_eq!(
+        mark('a').await.unwrap()["unread"],
+        0,
+        "a stale mark unreads nothing"
+    );
 }
 
 /// Admit a setup-payment policy that names `support`, or no support key.

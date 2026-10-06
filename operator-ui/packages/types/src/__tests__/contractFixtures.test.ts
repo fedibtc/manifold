@@ -297,7 +297,7 @@ const adminRequestsMirror = {
   ReenrollTelemetry: 'ReenrollTelemetry',
   SupportChat: 'SupportChat',
   SendSupportMessage: { SendSupportMessage: { body: 'Seat 2 stopped after the update.' } },
-  MarkSupportRead: { MarkSupportRead: { up_to: 1700000600 } },
+  MarkSupportRead: { MarkSupportRead: { up_to: 'c'.repeat(64) } },
   GuardianFees: { GuardianFees: { seat_id: SEAT_ID, limit: 20 } },
   CollectGuardianFees: { CollectGuardianFees: { seat_id: SEAT_ID } },
   SweepGuardianFees: {

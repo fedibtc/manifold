@@ -358,7 +358,7 @@ fn after(request: &AdminRequest) -> Option<AdminRequest> {
             body: "Seat 2 stopped after the update.".to_owned(),
         },
         AdminRequest::SendSupportMessage { .. } => AdminRequest::MarkSupportRead {
-            up_to: 1_700_000_600,
+            up_to: "c".repeat(64),
         },
         AdminRequest::MarkSupportRead { .. } => AdminRequest::GuardianFees {
             seat_id: seat_id.clone(),

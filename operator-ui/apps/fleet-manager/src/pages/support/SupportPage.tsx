@@ -22,7 +22,7 @@ export const SupportPage = () => {
   // Each poll tries again, so one failed mark does not leave the page unread.
   const polledAt = chat.dataUpdatedAt;
   useEffect(() => {
-    if (polledAt > 0 && unread > 0 && lastFromFedi) mutate(lastFromFedi.created_at);
+    if (polledAt > 0 && unread > 0 && lastFromFedi) mutate(lastFromFedi.id);
   }, [polledAt, unread, lastFromFedi, mutate]);
 
   return (

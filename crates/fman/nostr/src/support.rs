@@ -62,7 +62,7 @@ pub(crate) async fn answer(inner: &Inner, request: AdminRequest) -> anyhow::Resu
             Ok(support_message_json(&send(inner, &body).await?))
         }
         AdminRequest::MarkSupportRead { up_to } => {
-            inner.db.mark_support_read(up_to).await?;
+            inner.db.mark_support_read(&up_to).await?;
             Ok(support_read_json(inner.db.support_unread().await?))
         }
         _ => anyhow::bail!("not a support chat request"),

@@ -160,7 +160,7 @@ const base = (): Pick<
   | 'readyForNewSeats'
   | 'seatReadiness'
   | 'supportMessages'
-  | 'supportReadUntil'
+  | 'supportReadIds'
   | 'fleetOpensAfterReads'
 > => ({
   onboarded: true,
@@ -168,7 +168,7 @@ const base = (): Pick<
   readyForNewSeats: true,
   seatReadiness: READY,
   supportMessages: [],
-  supportReadUntil: 0,
+  supportReadIds: [],
   fleetOpensAfterReads: 0,
   relayAuthorization: 'present',
   payoutDestination: 'operator@example.com',
@@ -388,7 +388,7 @@ const builders = {
         created_at: LAST_READ_AT - 600
       }
     ],
-    supportReadUntil: LAST_READ_AT - 7_200
+    supportReadIds: ['a'.repeat(64)]
   }),
   'not-ready-for-seats': () => ({
     ...base(),

@@ -162,7 +162,7 @@ async fn operator_and_fedi_support_chat_over_nip17() -> Result<()> {
     ensure!(chat["available"] == true && chat["unread"] == 1, "{chat}");
 
     let read = operator
-        .admin(json!({ "MarkSupportRead": { "up_to": messages[1]["created_at"] } }))
+        .admin(json!({ "MarkSupportRead": { "up_to": messages[1]["id"] } }))
         .await?;
     ensure!(read == json!({ "unread": 0 }), "{read}");
 
@@ -234,18 +234,9 @@ async fn operator_and_fedi_support_chat_over_nip17() -> Result<()> {
             ],
         "{chat}"
     );
-    // Unread is what Fedi created after the mark. A reply can share the
-    // mark's second.
-    let read_up_to = messages[1]["created_at"].as_u64().context("created_at")?;
-    let unread = chat["messages"]
-        .as_array()
-        .context("messages")?
-        .iter()
-        .filter(|message| {
-            message["author"] == "fedi" && message["created_at"].as_u64() > Some(read_up_to)
-        })
-        .count();
-    ensure!(chat["unread"] == unread, "{chat}");
+    // Every Fedi message stored after the mark is unread, including the one
+    // that sorts before it.
+    ensure!(chat["unread"] == 3, "{chat}");
 
     let after = "Thanks, new key.";
     operator

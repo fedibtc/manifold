@@ -278,7 +278,9 @@ async fn admin_socket_round_trips_operator_verbs() {
         AdminRequest::SendSupportMessage {
             body: "  Seat 2 is down\n".into(),
         },
-        AdminRequest::MarkSupportRead { up_to: 100 },
+        AdminRequest::MarkSupportRead {
+            up_to: "c".repeat(64),
+        },
     ] {
         let forwarded = serde_json::to_value(&request).unwrap();
         assert_eq!(ask(request).await.unwrap(), forwarded);
