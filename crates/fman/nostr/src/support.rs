@@ -111,20 +111,22 @@ async fn send(inner: &Inner, body: &str) -> anyhow::Result<SupportRow> {
     let id = rumor.id();
     let to_fedi = EventBuilder::gift_wrap(&inner.keys, &fedi, rumor.clone(), []).await?;
     let to_self = EventBuilder::gift_wrap(&inner.keys, &me, rumor.clone(), []).await?;
+    nostr.publish_signed_event(&to_fedi).await.map_err(|err| {
+        tracing::warn!(error = %err, "publish support message failed");
+        anyhow::anyhow!("No Nostr relay accepted the message. Try again.")
+    })?;
     // A publish waits for every relay's answer or its acknowledgement
     // timeout. The copy to ourselves only restores the thread after a
     // reinstall, so it goes out in the background rather than adding a second
-    // wait that could pass the dashboard's request deadline.
+    // wait that could pass the dashboard's request deadline. It starts only
+    // after Fedi's copy is accepted, so the inbox never shows a message that
+    // Fedi did not get.
     let own_copy = nostr.clone();
     tokio::spawn(async move {
         if let Err(err) = own_copy.publish_signed_event(&to_self).await {
             tracing::warn!(error = %err, "publish own copy of support message failed");
         }
     });
-    nostr.publish_signed_event(&to_fedi).await.map_err(|err| {
-        tracing::warn!(error = %err, "publish support message failed");
-        anyhow::anyhow!("No Nostr relay accepted the message. Try again.")
-    })?;
     let message = SupportRow {
         rumor_id: id.to_hex(),
         from_fedi: false,
