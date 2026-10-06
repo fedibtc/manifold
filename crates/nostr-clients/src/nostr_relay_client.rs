@@ -299,7 +299,7 @@ impl NostrRelayClient {
     /// resource backstops rather than completeness requirements, so an
     /// attacker publishing one event more than a cap cannot turn the whole
     /// query into an error.
-    pub(crate) async fn fetch_events_complete_or_capped(
+    pub async fn fetch_events_complete_or_capped(
         &self,
         filter: Filter,
         deadline: Instant,

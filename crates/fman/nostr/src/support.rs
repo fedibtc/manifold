@@ -40,6 +40,9 @@ const CATCH_UP_INTERVAL: Duration = Duration::from_secs(5 * 60);
 /// newest ones of the whole history; later ones only the recent window.
 const FETCH_LIMIT: u16 = 500;
 
+/// Memory bound for one fetch. Reaching it ends the fetch like the count does.
+const FETCH_MAX_BYTES: usize = 8 * 1024 * 1024;
+
 /// Gift wrap ids kept to skip judging a repeat.
 const MAX_SEEN_WRAPS: usize = 10_000;
 
@@ -195,11 +198,23 @@ pub(crate) async fn run_inbox(inner: Arc<Inner>, nostr: NostrRelayClient) {
                     }
                 }
                 let started = Timestamp::now();
-                let mut filter = addressed_to_me.clone();
+                // `limit` asks each relay for its newest wraps rather than the
+                // first ones it finds.
+                let mut filter = addressed_to_me.clone().limit(usize::from(FETCH_LIMIT));
                 if let Some(since) = since {
                     filter = filter.since(since);
                 }
-                match nostr.fetch_events_capped(filter, REQUEST_TIMEOUT, FETCH_LIMIT).await {
+                // Only a complete answer moves `since`: a fetch that a relay
+                // outage cut short is tried again from the same point.
+                match nostr
+                    .fetch_events_complete_or_capped(
+                        filter,
+                        tokio::time::Instant::now() + REQUEST_TIMEOUT,
+                        FETCH_LIMIT,
+                        FETCH_MAX_BYTES,
+                    )
+                    .await
+                {
                     Ok(events) => {
                         for event in events {
                             judge(&inner, fedi, &mut seen, event).await;

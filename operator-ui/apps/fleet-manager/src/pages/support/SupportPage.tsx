@@ -19,9 +19,11 @@ export const SupportPage = () => {
   const lastFromFedi = chat.data?.messages.filter((message) => message.author === 'fedi').at(-1);
   const unread = chat.data?.unread ?? 0;
   const { mutate } = markRead;
+  // Each poll tries again, so one failed mark does not leave the page unread.
+  const polledAt = chat.dataUpdatedAt;
   useEffect(() => {
-    if (unread > 0 && lastFromFedi) mutate(lastFromFedi.created_at);
-  }, [unread, lastFromFedi, mutate]);
+    if (polledAt > 0 && unread > 0 && lastFromFedi) mutate(lastFromFedi.created_at);
+  }, [polledAt, unread, lastFromFedi, mutate]);
 
   return (
     <div className={styles.root}>

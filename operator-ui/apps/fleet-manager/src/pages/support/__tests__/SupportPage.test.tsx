@@ -46,6 +46,28 @@ it('should mark read up to the newest Fedi message it shows', async () => {
   );
 });
 
+it('should mark read again on a later poll after a failed mark', async () => {
+  let response = chat({});
+  let marks = 0;
+  vi.spyOn(adminCallModule, 'adminCall').mockImplementation(async (request) => {
+    if (request === 'SupportChat') return response as never;
+    expect(request).toEqual({ MarkSupportRead: { up_to: 1_700_000_200 } });
+    marks += 1;
+    if (marks === 1) throw new Error('relay down');
+    response = chat({ unread: 0 });
+    return { unread: 0 } as never;
+  });
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  render(
+    <QueryClientProvider client={client}>
+      <SupportPage />
+    </QueryClientProvider>
+  );
+
+  // The poll answers the same unread thread; only the poll itself retries.
+  await waitFor(() => expect(marks).toBe(2), { timeout: 5_000 });
+}, 10_000);
+
 it('should not mark anything read when nothing is unread', async () => {
   const adminCall = renderPage(chat({ unread: 0 }));
 

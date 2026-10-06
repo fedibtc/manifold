@@ -12,8 +12,11 @@ use fedi_decentralized_nostr::setup_payment_federations::{
     SETUP_PAYMENT_FEDERATIONS_D_TAG, SETUP_PAYMENT_FEDERATIONS_EVENT_KIND,
 };
 use fedi_decentralized_nostr_clients::NostrRelayClient;
+use nostr_sdk::nips::nip44;
 use nostr_sdk::nips::nip59::UnwrappedGift;
-use nostr_sdk::{Event, EventBuilder, Filter, Keys, Kind, PublicKey, Tag};
+use nostr_sdk::{
+    Event, EventBuilder, Filter, JsonUtil as _, Keys, Kind, PublicKey, Tag, Timestamp,
+};
 use serde_json::{Value, json};
 
 const DEADLINE: Duration = Duration::from_secs(90);
@@ -178,14 +181,25 @@ async fn operator_and_fedi_support_chat_over_nip17() -> Result<()> {
     )
     .await
     .map_err(|error| anyhow::anyhow!("connect setup-payment publisher: {error}"))?;
+    // Older than the live subscription reaches back, so only the read-back of
+    // history the key change starts can bring it in.
+    let three_days_ago = Timestamp::now() - Duration::from_secs(3 * 24 * 60 * 60);
+    reply_at(
+        &rotated_relay,
+        &rotated,
+        fman_key,
+        "From before the rotation.",
+        three_days_ago,
+    )
+    .await?;
     publish_policy(&publisher, rotated.public_key()).await?;
     reply(&rotated_relay, &rotated, fman_key, "New key here.").await?;
     let thread_len = |chat: &Value| chat["messages"].as_array().map_or(0, Vec::len);
     eventually(|| async {
         let chat = operator.admin(json!("SupportChat")).await?;
         ensure!(
-            thread_len(&chat) >= 3,
-            "the new key's reply has not arrived yet: {chat}"
+            thread_len(&chat) >= 4,
+            "the new key's replies has not arrived yet: {chat}"
         );
         Ok(())
     })
@@ -197,7 +211,7 @@ async fn operator_and_fedi_support_chat_over_nip17() -> Result<()> {
     let chat = eventually(|| async {
         let chat = operator.admin(json!("SupportChat")).await?;
         ensure!(
-            thread_len(&chat) >= 4,
+            thread_len(&chat) >= 5,
             "the second reply has not arrived yet: {chat}"
         );
         Ok(chat)
@@ -212,6 +226,7 @@ async fn operator_and_fedi_support_chat_over_nip17() -> Result<()> {
     ensure!(
         bodies
             == [
+                Some("From before the rotation."),
                 Some(body),
                 Some("Thanks. Is the host online?"),
                 Some("New key here."),
@@ -226,8 +241,9 @@ async fn operator_and_fedi_support_chat_over_nip17() -> Result<()> {
         .as_array()
         .context("messages")?
         .iter()
-        .skip(2)
-        .filter(|message| message["created_at"].as_u64() > Some(read_up_to))
+        .filter(|message| {
+            message["author"] == "fedi" && message["created_at"].as_u64() > Some(read_up_to)
+        })
         .count();
     ensure!(chat["unread"] == unread, "{chat}");
 
@@ -290,6 +306,39 @@ async fn reply(relay: &NostrRelayClient, from: &Keys, to: PublicKey, text: &str)
         .publish_signed_event(&wrap)
         .await
         .map_err(|error| anyhow::anyhow!("publish reply: {error}"))?;
+    Ok(())
+}
+
+/// A reply whose rumor, seal, and gift wrap all carry `at`.
+async fn reply_at(
+    relay: &NostrRelayClient,
+    from: &Keys,
+    to: PublicKey,
+    text: &str,
+    at: Timestamp,
+) -> Result<()> {
+    let rumor = EventBuilder::private_msg_rumor(to, text)
+        .custom_created_at(at)
+        .build(from.public_key());
+    let seal = EventBuilder::seal(from, &to, rumor)
+        .await?
+        .custom_created_at(at)
+        .sign_with_keys(from)?;
+    let ephemeral = Keys::generate();
+    let content = nip44::encrypt(
+        ephemeral.secret_key(),
+        &to,
+        seal.as_json(),
+        nip44::Version::default(),
+    )?;
+    let wrap = EventBuilder::new(Kind::GiftWrap, content)
+        .tag(Tag::public_key(to))
+        .custom_created_at(at)
+        .sign_with_keys(&ephemeral)?;
+    relay
+        .publish_signed_event(&wrap)
+        .await
+        .map_err(|error| anyhow::anyhow!("publish backdated reply: {error}"))?;
     Ok(())
 }
 
