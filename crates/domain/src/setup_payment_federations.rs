@@ -107,7 +107,8 @@ pub struct SetupPaymentFederationsContent {
     pub min_fee_ppm: u64,
 
     /// Hex x-only Nostr public key of Fedi support, which FMan operators chat
-    /// with over NIP-17. Optional on the wire: absent means no support chat.
+    /// with over NIP-17. Optional on the wire: absent, the environment
+    /// profile's support key applies.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub support_nostr_pubkey: Option<String>,
 }
