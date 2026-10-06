@@ -519,12 +519,14 @@ contract are defined by
 Production also pins its setup-payment publisher and Guardian Verification Fee
 account in that profile.
 
-The signed setup-payment policy also names the Fedi support key that FMan
-operators chat with over NIP-17
-([SPEC-fman-support-chat](crates/fman/specs/SPEC-fman-support-chat.md)), so
-the setup-payment publisher key is its trust root: whoever holds that key can
-make FMans talk to a key of their choice. A policy without the key leaves the
-chat off. The FMan shows only messages sealed by that key or by itself, as
+The environment profile pins the Fedi support key that FMan operators chat
+with over NIP-17
+([SPEC-fman-support-chat](crates/fman/specs/SPEC-fman-support-chat.md)).
+Development and staging pin known-secret test keys, so anyone can write as
+"Fedi support" there. Production pins none yet, and the chat stays off. The
+signed setup-payment policy can name another support key, which then wins, so
+the setup-payment publisher key is also a trust root of the chat: whoever
+holds that key can make FMans talk to a key of their choice. The FMan shows only messages sealed by that key or by itself, as
 plain text. Fedi support sees the FMan's service public key and the operator's
 words. Relays see only that some key wrote to each party. The support key
 also picks, through its NIP-17 inbox list, up to five relays that the FMan

@@ -542,7 +542,8 @@ async fn support_verbs_answer_from_the_fleet_database() {
         None,
         Vec::new(),
         None,
-        ManifoldEnvironment::Development.profile().unwrap(),
+        // Production has no profile support key, so only a policy opens the chat.
+        ManifoldEnvironment::Production.profile().unwrap(),
         Arc::new(FleetHolderAuthorizationStore::new(db.clone())),
         db.clone(),
     );
@@ -567,16 +568,7 @@ async fn support_verbs_answer_from_the_fleet_database() {
     assert_eq!(chat["available"], false);
 
     // The admitted policy names Fedi support; sending then waits on relays.
-    let policy = serde_json::json!({
-        "version": 1,
-        "fman_version": "0.1.0",
-        "federations": [],
-        "telemetry_registration_url": "https://push.fedi.example/v1/telemetry/registrations",
-        "support_nostr_pubkey": Keys::generate().public_key().to_hex(),
-    });
-    service.inner.setup_payment_federations.send_replace(Some(
-        AdmittedSetupPaymentFederations::parse(policy.to_string().as_bytes()).unwrap(),
-    ));
+    admit_support_policy(&service, Some(Keys::generate().public_key()));
     assert_eq!(
         send("hello".to_owned()).await.unwrap_err().to_string(),
         "The Nostr relays are not connected yet. Try again in a minute."
@@ -624,4 +616,47 @@ async fn support_verbs_answer_from_the_fleet_database() {
             serde_json::json!({ "unread": unread }),
         );
     }
+}
+
+/// Admit a setup-payment policy that names `support`, or no support key.
+fn admit_support_policy(service: &FleetManagerNostr, support: Option<PublicKey>) {
+    let mut policy = serde_json::json!({
+        "version": 1,
+        "fman_version": "0.1.0",
+        "federations": [],
+        "telemetry_registration_url": "https://push.fedi.example/v1/telemetry/registrations",
+    });
+    if let Some(support) = support {
+        policy["support_nostr_pubkey"] = support.to_hex().into();
+    }
+    service.inner.setup_payment_federations.send_replace(Some(
+        AdmittedSetupPaymentFederations::parse(policy.to_string().as_bytes()).unwrap(),
+    ));
+}
+
+#[tokio::test]
+async fn the_policy_support_key_overrides_the_profile_key() {
+    let temp = tempfile::TempDir::new().unwrap();
+    let db = fman_core::db::Db::open(temp.path()).await.unwrap();
+    let profile = ManifoldEnvironment::Development.profile().unwrap();
+    let pinned = *profile.support().expect("development pins a support key");
+    let service = FleetManagerNostr::new(
+        Keys::generate(),
+        None,
+        Vec::new(),
+        None,
+        profile,
+        Arc::new(FleetHolderAuthorizationStore::new(db.clone())),
+        db,
+    );
+    assert_eq!(service.inner.support(), Some(pinned), "no policy yet");
+    admit_support_policy(&service, None);
+    assert_eq!(
+        service.inner.support(),
+        Some(pinned),
+        "the policy names no key"
+    );
+    let rotated = Keys::generate().public_key();
+    admit_support_policy(&service, Some(rotated));
+    assert_eq!(service.inner.support(), Some(rotated));
 }

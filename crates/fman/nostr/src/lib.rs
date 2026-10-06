@@ -384,13 +384,14 @@ impl SupportChat for FleetManagerNostr {
 }
 
 impl Inner {
-    /// The Fedi support key the admitted setup-payment policy names; `None`
-    /// disables the support chat.
+    /// The Fedi support key: the one the admitted setup-payment policy names,
+    /// else the environment profile's. `None` disables the support chat.
     fn support(&self) -> Option<PublicKey> {
         self.setup_payment_federations
             .borrow()
             .as_ref()
             .and_then(|policy| policy.support_nostr_pubkey().copied())
+            .or_else(|| self.manifold_environment.support().copied())
     }
 
     async fn retain_authorization(

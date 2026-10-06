@@ -16,8 +16,12 @@ direct messages. There is one conversation per FMan and no tickets.
   advertisement and Holder authorization name. Fedi support is the
   `support_nostr_pubkey` of the admitted setup-payment policy
   ([SPEC-setup-payment-federations](../../../specs/SPEC-setup-payment-federations.md)),
-  so the policy publisher's signature authenticates it. Without one there is
-  no chat: the daemon neither reads nor sends.
+  which the policy publisher's signature authenticates. When the policy names
+  none, it is the key the environment profile pins
+  ([SPEC-manifold-environment](../../manifold-environment/specs/SPEC-manifold-environment.md)).
+  Without either there is no chat: the daemon neither reads nor sends. Fedi
+  starts with the profile key and adds the policy field only to rotate, once
+  enough consumers accept the field.
 - **Rotation.** A newer policy with another key moves the chat to that key:
   the daemon sends to it and admits only its room, reading the relays again
   from the start. Stored messages of the earlier key stay in the thread, but

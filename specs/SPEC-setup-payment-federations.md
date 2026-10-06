@@ -119,8 +119,11 @@ replacement ordering as the new shared high-water mark.
   ([REQ-guardian-fee-remittance](./REQ-guardian-fee-remittance.md)); and
 - `support_nostr_pubkey`, the Fedi support key FMan operators chat with
   ([SPEC-fman-support-chat](../crates/fman/specs/SPEC-fman-support-chat.md)),
-  as 64 lowercase hex digits. Optional: absent means no support chat. A newer
-  publication with a different key rotates it.
+  as 64 lowercase hex digits. Optional: absent means the FMan uses the key its
+  environment profile pins. A present key overrides the profile key, so a
+  newer publication with a different key rotates it. Consumers older than
+  this field reject a publication that sets it, so Fedi sets it only after
+  enough consumers have upgraded.
 
 The telemetry URL is required in version 1. It is a policy locator, not a
 bearer capability. The event deliberately does not publish FMan Iroh endpoint

@@ -1,6 +1,7 @@
 //! `SPEC-fman-support-chat` against real components: a defe Fleet Manager on
 //! a local relay, driven through its operator HTTP API, and Fedi support as a
-//! plain NIP-17 client holding the key the setup-payment policy names.
+//! plain NIP-17 client holding the profile key, then the key a newer
+//! setup-payment policy names.
 
 use std::time::Duration;
 
@@ -12,10 +13,14 @@ use fedi_decentralized_nostr::setup_payment_federations::{
 };
 use fedi_decentralized_nostr_clients::NostrRelayClient;
 use nostr_sdk::nips::nip59::UnwrappedGift;
-use nostr_sdk::{Event, EventBuilder, Filter, Keys, Kind, PublicKey, Tag, TagKind, Timestamp};
+use nostr_sdk::{Event, EventBuilder, Filter, Keys, Kind, PublicKey, Tag, TagKind};
 use serde_json::{Value, json};
 
 const DEADLINE: Duration = Duration::from_secs(90);
+
+/// The Fedi support key the development profile pins.
+const DEVELOPMENT_SUPPORT_SECRET: &str =
+    "0000000000000000000000000000000000000000000000000000000000000007";
 
 /// The setup-payment publisher every defe Fleet Manager trusts.
 const SETUP_PAYMENT_PUBLISHER_SECRET: &str =
@@ -57,20 +62,12 @@ async fn operator_and_fedi_support_chat_over_nip17() -> Result<()> {
             .context("service Nostr pubkey")?,
     )?;
 
-    // No policy names Fedi support yet, so there is no chat.
+    // No policy names Fedi support yet, so the chat uses the key the
+    // development profile pins: the publicly known test secret 7.
     let chat = operator.admin(json!("SupportChat")).await?;
-    ensure!(chat["available"] == false, "{chat}");
+    ensure!(chat["available"] == true, "{chat}");
+    let fedi = Keys::parse(DEVELOPMENT_SUPPORT_SECRET)?;
 
-    let publisher = NostrRelayClient::connect(
-        &relay.url,
-        Keys::parse(SETUP_PAYMENT_PUBLISHER_SECRET)?,
-        Duration::from_secs(10),
-    )
-    .await
-    .map_err(|error| anyhow::anyhow!("connect setup-payment publisher: {error}"))?;
-    let fedi = Keys::generate();
-    let first_policy_at = Timestamp::now().as_secs() - 10;
-    publish_policy(&publisher, fedi.public_key(), first_policy_at).await?;
     let fedi_relay = NostrRelayClient::connect(&relay.url, fedi.clone(), Duration::from_secs(10))
         .await
         .map_err(|error| anyhow::anyhow!("connect Fedi support: {error}"))?;
@@ -197,7 +194,14 @@ async fn operator_and_fedi_support_chat_over_nip17() -> Result<()> {
             .await
             .map_err(|error| anyhow::anyhow!("connect rotated Fedi support: {error}"))?;
     list_inbox(&rotated_relay, &inbox.url).await?;
-    publish_policy(&publisher, rotated.public_key(), first_policy_at + 10).await?;
+    let publisher = NostrRelayClient::connect(
+        &relay.url,
+        Keys::parse(SETUP_PAYMENT_PUBLISHER_SECRET)?,
+        Duration::from_secs(10),
+    )
+    .await
+    .map_err(|error| anyhow::anyhow!("connect setup-payment publisher: {error}"))?;
+    publish_policy(&publisher, rotated.public_key()).await?;
     reply(&rotated_relay, &rotated, fman_key, "New key here.").await?;
     let thread_len = |chat: &Value| chat["messages"].as_array().map_or(0, Vec::len);
     eventually(|| async {
@@ -281,11 +285,7 @@ async fn list_inbox(relay: &NostrRelayClient, inbox: &str) -> Result<()> {
 }
 
 /// Publish the setup-payment policy, naming `support` as Fedi support.
-async fn publish_policy(
-    publisher: &NostrRelayClient,
-    support: PublicKey,
-    created_at: u64,
-) -> Result<()> {
+async fn publish_policy(publisher: &NostrRelayClient, support: PublicKey) -> Result<()> {
     let content = json!({
         "version": 1,
         "fman_version": "0.1.0",
@@ -299,8 +299,7 @@ async fn publish_policy(
                 Kind::Custom(SETUP_PAYMENT_FEDERATIONS_EVENT_KIND),
                 content.to_string(),
             )
-            .tag(Tag::identifier(SETUP_PAYMENT_FEDERATIONS_D_TAG))
-            .custom_created_at(Timestamp::from(created_at)),
+            .tag(Tag::identifier(SETUP_PAYMENT_FEDERATIONS_D_TAG)),
         )
         .await
         .map_err(|error| anyhow::anyhow!("publish setup-payment policy: {error}"))?;
