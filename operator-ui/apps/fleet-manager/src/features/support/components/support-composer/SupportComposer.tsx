@@ -42,13 +42,9 @@ export const SupportComposer = () => {
   return (
     <form className={styles.form} onSubmit={handleSubmit}>
       <div className={styles.row}>
-        <label className={styles.srOnly} htmlFor={id}>
-          Message to Fedi support
-        </label>
-
         <textarea
-          id={id}
           className={styles.textarea}
+          aria-label="Message to Fedi support"
           rows={1}
           placeholder="Type message…"
           value={body}
