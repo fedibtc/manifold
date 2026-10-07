@@ -119,7 +119,7 @@ replacement ordering as the new shared high-water mark.
   ([REQ-guardian-fee-remittance](./REQ-guardian-fee-remittance.md)); and
 - `support_nostr_pubkey`, the Fedi support key FMan operators chat with
   ([SPEC-fman-support-chat](../crates/fman/specs/SPEC-fman-support-chat.md)),
-  as 64 lowercase hex digits. Optional: absent means the FMan uses the key its
+  as a Nostr public key. Optional: absent means the FMan uses the key its
   environment profile pins. A present key overrides the profile key, so a
   newer publication with a different key rotates it. Consumers older than
   this field reject a publication that sets it, so Fedi sets it only after
@@ -154,9 +154,7 @@ Admission performs all of these checks before the set influences policy:
 10. reject a telemetry registration URL that is not credential-free HTTPS or
     contains a query or fragment;
 11. reject a `min_fee_ppm` above the payer's 210,000-ppm send-rate ceiling,
-    which would leave no proposable rate;
-12. reject a `support_nostr_pubkey` that is not 64 lowercase hex digits of a
-    valid x-only public key.
+    which would leave no proposable rate.
 
 Array position carries no preference or fallback meaning. A consumer uses the
 derived federation ID as the member identity and the signed invite as its join

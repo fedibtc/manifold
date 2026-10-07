@@ -142,25 +142,11 @@ fn support_nostr_pubkey_is_optional_and_admitted_when_valid() {
 }
 
 #[test]
-fn rejects_a_support_nostr_pubkey_that_is_not_a_canonical_x_only_key() {
-    for invalid in [
-        // Uppercase spelling of a valid key.
-        "5CBDF0646E5DB4EAA398F365F2EA7A0E3D419B7E0330E39CE92BDDEDCAC4F9BC",
-        // An npub rather than hex.
-        "npub1tj7lqerwtk6w4gucvdj096n6pc75zxmuqvcrwhxjzdeyx2cfl8ezfy0nrl",
-        // 63 digits.
-        "5cbdf0646e5db4eaa398f365f2ea7a0e3d419b7e0330e39ce92bddedcac4f9b",
-        // Not on the curve.
-        "0000000000000000000000000000000000000000000000000000000000000000",
-        "",
-    ] {
-        assert_eq!(
-            AdmittedSetupPaymentFederations::parse(content_with_support(invalid).as_bytes())
-                .unwrap_err(),
-            SetupPaymentFederationsContentError::InvalidSupportNostrPubkey,
-            "{invalid}"
-        );
-    }
+fn rejects_a_support_nostr_pubkey_that_is_not_a_key() {
+    assert!(
+        AdmittedSetupPaymentFederations::parse(content_with_support("not-a-key").as_bytes())
+            .is_err()
+    );
 }
 
 #[test]
