@@ -117,7 +117,7 @@ fn development_and_staging_pin_distinct_guardian_verification_fee_accounts() {
 }
 
 #[test]
-fn support_identity_is_a_known_test_key_outside_production() {
+fn support_identity_is_a_test_key_only_outside_production() {
     let test_key = |secret: u8| {
         let mut bytes = [0u8; 32];
         bytes[31] = secret;
@@ -132,7 +132,16 @@ fn support_identity_is_a_known_test_key_outside_production() {
     };
     assert_eq!(support(ManifoldEnvironment::Development), Some(test_key(7)));
     assert_eq!(support(ManifoldEnvironment::Staging), Some(test_key(8)));
-    assert_eq!(support(ManifoldEnvironment::Production), None);
+    // Fedi's support npub, decoded independently of the profile constant.
+    assert_eq!(
+        support(ManifoldEnvironment::Production),
+        Some(
+            nostr::PublicKey::parse(
+                "npub105qfyekclhm4827wsuf233saa0d3gmf6rxrhhc5f72xhah4wfghszug5n6"
+            )
+            .unwrap()
+        )
+    );
 }
 
 #[test]

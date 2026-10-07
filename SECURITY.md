@@ -523,7 +523,7 @@ The environment profile pins the Fedi support key that FMan operators chat
 with over NIP-17
 ([SPEC-fman-support-chat](crates/fman/specs/SPEC-fman-support-chat.md)).
 Development and staging pin known-secret test keys, so anyone can write as
-"Fedi support" there. Production pins none yet, and the chat stays off. The
+"Fedi support" there. Production pins a key that Fedi support holds. The
 signed setup-payment policy can name another support key, which then wins, so
 the setup-payment publisher key is also a trust root of the chat: whoever
 holds that key can make FMans talk to a key of their choice. The FMan shows
