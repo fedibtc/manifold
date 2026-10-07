@@ -4,11 +4,13 @@
 mod tests;
 
 use std::collections::HashSet;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use core::future::Future;
 
-use fedimint_core::runtime::{Instant, spawn, timeout as runtime_timeout};
+use fedimint_core::runtime::{Instant, sleep, spawn, timeout as runtime_timeout};
 use futures_util::{Stream, StreamExt};
 use nostr_sdk::pool::{Output, RelayLimits};
 use nostr_sdk::{
@@ -19,6 +21,10 @@ use tokio_stream::wrappers::BroadcastStream;
 
 use crate::relay_candidate_database::RelayCandidateDatabase;
 use crate::{NostrClientError, NostrClientResult, ROLE_FETCHED_EVENT_MAX_BYTES};
+
+/// How long [`NostrRelayClient::subscribe`] waits before it sends a
+/// subscription again to a relay that closed it.
+const RESUBSCRIBE_AFTER_CLOSED: Duration = Duration::from_secs(30);
 
 /// Thin wrapper around [`nostr_sdk::Client`] with common relay operations.
 ///
@@ -226,9 +232,11 @@ impl NostrRelayClient {
     /// event the relays deliver for it.
     ///
     /// The SDK sends the subscription again when a relay reconnects, and the
-    /// relay then replays the stored events the filter matches. Events
-    /// dropped when the notification channel lags are lost. Events are not
-    /// deduplicated; each relay delivers its own copy.
+    /// relay then replays the stored events the filter matches. A relay can
+    /// also close the subscription and keep the connection; the subscription
+    /// is then sent to that relay again after [`RESUBSCRIBE_AFTER_CLOSED`].
+    /// Events dropped when the notification channel lags are lost. Events
+    /// are not deduplicated; each relay delivers its own copy.
     ///
     /// # Errors
     ///
@@ -237,31 +245,63 @@ impl NostrRelayClient {
         &self,
         filter: Filter,
     ) -> NostrClientResult<impl Stream<Item = Event> + use<>> {
+        self.subscribe_resubscribing_after(filter, RESUBSCRIBE_AFTER_CLOSED)
+            .await
+    }
+
+    async fn subscribe_resubscribing_after(
+        &self,
+        filter: Filter,
+        resubscribe_after: Duration,
+    ) -> NostrClientResult<impl Stream<Item = Event> + use<>> {
         // Listen before subscribing so no early event is missed.
         let notifications = BroadcastStream::new(self.client.notifications());
         let subscription_id = SubscriptionId::generate();
         self.client
-            .subscribe_with_id(subscription_id.clone(), filter, None)
+            .subscribe_with_id(subscription_id.clone(), filter.clone(), None)
             .await
             .map_err(|source| NostrClientError::Fetch { source })?;
+        let open = Arc::new(AtomicBool::new(true));
         let client = self.client.clone();
         let cancel_subscription_id = subscription_id.clone();
-        let cleanup = CleanupOnDrop::new(move || {
-            drop(spawn("unsubscribe Nostr subscription", async move {
-                client.unsubscribe(&cancel_subscription_id).await;
-            }));
-        });
+        let cleanup = {
+            let open = open.clone();
+            CleanupOnDrop::new(move || {
+                open.store(false, Ordering::SeqCst);
+                drop(spawn("unsubscribe Nostr subscription", async move {
+                    client.unsubscribe(&cancel_subscription_id).await;
+                }));
+            })
+        };
+        let client = self.client.clone();
         Ok(notifications.filter_map(move |notification| {
             let _cleanup = &cleanup;
-            let event = match notification {
-                Ok(RelayPoolNotification::Message {
-                    message:
-                        RelayMessage::Event {
-                            subscription_id: delivered_to,
-                            event,
-                        },
-                    ..
-                }) if delivered_to.as_ref() == &subscription_id => Some(event.into_owned()),
+            let event = match notification.map(|notification| {
+                subscription_notification(notification, &subscription_id)
+            }) {
+                Ok(SubscriptionNotification::Event(event)) => Some(*event),
+                Ok(SubscriptionNotification::Closed(relay_url)) => {
+                    tracing::warn!(%relay_url, "Relay closed a Nostr subscription; sending it again later");
+                    let (client, open, id, filter) = (
+                        client.clone(),
+                        open.clone(),
+                        subscription_id.clone(),
+                        filter.clone(),
+                    );
+                    drop(spawn("resubscribe closed Nostr subscription", async move {
+                        sleep(resubscribe_after).await;
+                        if !open.load(Ordering::SeqCst) {
+                            return;
+                        }
+                        if let Err(err) = client
+                            .subscribe_with_id_to([relay_url.clone()], id, filter, None)
+                            .await
+                        {
+                            tracing::warn!(%relay_url, %err, "Failed to send a closed Nostr subscription again");
+                        }
+                    }));
+                    None
+                }
                 _ => None,
             };
             core::future::ready(event)
