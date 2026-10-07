@@ -11,20 +11,16 @@
 //! Fedi support or by this FMan and the rumor's room is exactly the two of
 //! them.
 
-use std::collections::HashSet;
 use std::pin::pin;
 use std::sync::Arc;
-use std::time::Duration;
 
 use anyhow::Context as _;
 use fedi_decentralized_nostr_clients::NostrRelayClient;
 use fman_core::admin::AdminRequest;
 use fman_core::db::SupportRow;
 use futures_util::StreamExt as _;
-use nostr_sdk::nips::nip59::{RANGE_RANDOM_TIMESTAMP_TWEAK, UnwrappedGift};
-use nostr_sdk::{
-    Event, EventBuilder, EventId, Filter, Keys, Kind, PublicKey, Tag, TagKind, Timestamp,
-};
+use nostr_sdk::nips::nip59::UnwrappedGift;
+use nostr_sdk::{Event, EventBuilder, EventId, Filter, Keys, Kind, PublicKey, Tag, TagKind};
 use serde_json::{Value, json};
 
 use crate::{Inner, REQUEST_TIMEOUT};
@@ -32,23 +28,9 @@ use crate::{Inner, REQUEST_TIMEOUT};
 /// Longest operator message, in characters.
 pub const MAX_SUPPORT_MESSAGE_CHARS: usize = 4000;
 
-/// The live subscription delivers new messages. This fetch only fills what
-/// it missed while a relay was away.
-const CATCH_UP_INTERVAL: Duration = Duration::from_secs(5 * 60);
-
-/// Gift wraps read per fetch. The first fetch for a support key reads the
-/// newest ones of the whole history; later ones only the recent window.
-const FETCH_LIMIT: u16 = 500;
-
-/// Memory bound for one fetch. Reaching it ends the fetch like the count does.
-const FETCH_MAX_BYTES: usize = 8 * 1024 * 1024;
-
-/// Gift wrap ids kept to skip judging a repeat.
-const MAX_SEEN_WRAPS: usize = 10_000;
-
-/// Gift wraps backdate their `created_at` by up to two days (NIP-59), so a
-/// catch-up fetch reaches back that far, with an hour for clock skew.
-const BACKDATE_WINDOW_SECS: u64 = RANGE_RANDOM_TIMESTAMP_TWEAK.end + 60 * 60;
+/// Gift wraps the inbox subscription asks each relay to replay. This bounds
+/// what a new install or a new support key reads back.
+const INBOX_LIMIT: usize = 500;
 
 /// Answer one of the support admin verbs.
 pub(crate) async fn answer(inner: &Inner, request: AdminRequest) -> anyhow::Result<Value> {
@@ -140,118 +122,57 @@ async fn send(inner: &Inner, body: &str) -> anyhow::Result<SupportRow> {
     Ok(message)
 }
 
-/// Keep the stored thread current: a live subscription for new gift wraps,
-/// and a periodic catch-up fetch for what the subscription missed.
+/// Keep the stored thread current with one subscription per support key. It
+/// asks for the newest wraps addressed to this FMan and then stays open for new
+/// ones. The SDK sends it again when a relay reconnects, and the relay then
+/// replays its newest wraps, so a message sent while the relay was away still
+/// arrives. The database stores each message once.
 pub(crate) async fn run_inbox(inner: Arc<Inner>, nostr: NostrRelayClient) {
     let addressed_to_me = Filter::new()
         .kind(Kind::GiftWrap)
-        .pubkey(inner.keys.public_key());
-    // History is the catch-up fetch's job, but `limit(0)` is not honored by
-    // every relay, and the client rejects what such a relay sends. A
-    // backdated wrap created from now on is never older than this.
-    let live_since = Timestamp::now()
-        .as_secs()
-        .saturating_sub(BACKDATE_WINDOW_SECS);
-    let live = loop {
-        match nostr
-            .subscribe(addressed_to_me.clone().since(Timestamp::from(live_since)))
-            .await
-        {
-            Ok(live) => break live,
-            Err(err) => {
-                tracing::warn!(error = %err, "subscribe to support messages failed");
-                tokio::time::sleep(REQUEST_TIMEOUT).await;
-            }
-        }
-    };
-    let mut live = pin!(live);
+        .pubkey(inner.keys.public_key())
+        .limit(INBOX_LIMIT);
     let mut policy = inner.setup_payment_federations.subscribe();
-    let mut catch_up = tokio::time::interval(CATCH_UP_INTERVAL);
-    let mut inbox_listed = false;
-    let mut seen = HashSet::<EventId>::new();
-    let mut since = None;
-    let mut admitted_for = None;
     loop {
-        // The policy can name Fedi support late, or a new key later. Wraps
-        // judged against another key are judged again, from the start.
-        let fedi = inner.support();
-        if fedi != admitted_for {
-            admitted_for = fedi;
-            seen.clear();
-            since = None;
-            catch_up.reset_immediately();
+        // The policy can name Fedi support late, or a new key later. A new
+        // subscription reads the history again for the new key.
+        let fedi = loop {
+            if let Some(fedi) = inner.support() {
+                break fedi;
+            }
+            if policy.changed().await.is_err() {
+                return;
+            }
+        };
+        if let Err(err) = nostr.publish_event(inbox_relays(&inner)).await {
+            tracing::warn!(error = %err, "publish support inbox relays failed");
         }
-        tokio::select! {
-            Some(event) = live.next() => {
-                if let Some(fedi) = fedi {
-                    judge(&inner, fedi, &mut seen, event).await;
+        let live = loop {
+            match nostr.subscribe(addressed_to_me.clone()).await {
+                Ok(live) => break live,
+                Err(err) => {
+                    tracing::warn!(error = %err, "subscribe to support messages failed");
+                    tokio::time::sleep(REQUEST_TIMEOUT).await;
                 }
             }
-            _ = catch_up.tick() => {
-                let Some(fedi) = fedi else { continue };
-                if !inbox_listed {
-                    match nostr.publish_event(inbox_relays(&inner)).await {
-                        Ok(_) => inbox_listed = true,
-                        Err(err) => {
-                            tracing::warn!(error = %err, "publish support inbox relays failed");
-                        }
+        };
+        let mut live = pin!(live);
+        while inner.support() == Some(fedi) {
+            tokio::select! {
+                Some(event) = live.next() => {
+                    if let Some(message) = admit(&inner.keys, fedi, &event).await
+                        && let Err(err) = inner.db.record_support_message(&message).await
+                    {
+                        tracing::warn!(?err, "record support message failed");
                     }
                 }
-                let started = Timestamp::now();
-                // `limit` asks each relay for its newest wraps rather than the
-                // first ones it finds.
-                let mut filter = addressed_to_me.clone().limit(usize::from(FETCH_LIMIT));
-                if let Some(since) = since {
-                    filter = filter.since(since);
-                }
-                // Only a complete answer moves `since`: a fetch that a relay
-                // outage cut short is tried again from the same point.
-                match nostr
-                    .fetch_events_complete_or_capped(
-                        filter,
-                        tokio::time::Instant::now() + REQUEST_TIMEOUT,
-                        FETCH_LIMIT,
-                        FETCH_MAX_BYTES,
-                    )
-                    .await
-                {
-                    Ok(events) => {
-                        for event in events {
-                            judge(&inner, fedi, &mut seen, event).await;
-                        }
-                        since = Some(Timestamp::from(
-                            started.as_secs().saturating_sub(BACKDATE_WINDOW_SECS),
-                        ));
+                changed = policy.changed() => {
+                    if changed.is_err() {
+                        return;
                     }
-                    Err(err) => tracing::warn!(error = %err, "fetch support messages failed"),
-                }
-            }
-            changed = policy.changed() => {
-                if changed.is_err() {
-                    return;
                 }
             }
         }
-    }
-}
-
-/// Store the thread message a gift wrap carries, once.
-async fn judge(inner: &Inner, fedi: PublicKey, seen: &mut HashSet<EventId>, event: Event) {
-    // Anyone can address gift wraps to this FMan, so the dedupe set is
-    // bounded. Forgetting it only costs judging a wrap again; the database
-    // stores each message once.
-    if seen.len() >= MAX_SEEN_WRAPS {
-        seen.clear();
-    }
-    if !seen.insert(event.id) {
-        return;
-    }
-    let Some(message) = admit(&inner.keys, fedi, &event).await else {
-        return;
-    };
-    if let Err(err) = inner.db.record_support_message(&message).await {
-        tracing::warn!(?err, "record support message failed");
-        seen.remove(&event.id);
     }
 }
 

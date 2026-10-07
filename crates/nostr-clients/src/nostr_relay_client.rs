@@ -222,13 +222,13 @@ impl NostrRelayClient {
         .map_err(|source| NostrClientError::Fetch { source })
     }
 
-    /// Keep a subscription open for the life of this client and yield every
+    /// Keep a subscription open until the stream is dropped and yield every
     /// event the relays deliver for it.
     ///
-    /// The SDK sends the subscription again when a relay reconnects, but
-    /// events published while a relay was away, or dropped when the
-    /// notification channel lags, are lost: pair this with a periodic fetch.
-    /// Events are not deduplicated; each relay delivers its own copy.
+    /// The SDK sends the subscription again when a relay reconnects, and the
+    /// relay then replays the stored events the filter matches. Events
+    /// dropped when the notification channel lags are lost. Events are not
+    /// deduplicated; each relay delivers its own copy.
     ///
     /// # Errors
     ///
@@ -244,7 +244,15 @@ impl NostrRelayClient {
             .subscribe_with_id(subscription_id.clone(), filter, None)
             .await
             .map_err(|source| NostrClientError::Fetch { source })?;
+        let client = self.client.clone();
+        let cancel_subscription_id = subscription_id.clone();
+        let cleanup = CleanupOnDrop::new(move || {
+            drop(spawn("unsubscribe Nostr subscription", async move {
+                client.unsubscribe(&cancel_subscription_id).await;
+            }));
+        });
         Ok(notifications.filter_map(move |notification| {
+            let _cleanup = &cleanup;
             let event = match notification {
                 Ok(RelayPoolNotification::Message {
                     message:
@@ -299,7 +307,7 @@ impl NostrRelayClient {
     /// resource backstops rather than completeness requirements, so an
     /// attacker publishing one event more than a cap cannot turn the whole
     /// query into an error.
-    pub async fn fetch_events_complete_or_capped(
+    pub(crate) async fn fetch_events_complete_or_capped(
         &self,
         filter: Filter,
         deadline: Instant,

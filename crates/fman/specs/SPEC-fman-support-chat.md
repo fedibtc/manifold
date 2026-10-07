@@ -48,18 +48,16 @@ The daemon stores the thread in its database, with a read flag on each Fedi
 message. Marking a message read marks every Fedi message stored before it in
 thread order. A message stored later stays unread, even when it shares the
 second or sorts earlier, and a read message never becomes unread again. The
-daemon holds a live relay subscription for new gift wraps, and every five
-minutes fetches what it missed while a relay was away. A gift wrap backdates
-its timestamp up to two days, so each catch-up fetch reaches back that far.
-The dashboard reads the stored thread, not the relays.
+daemon holds one relay subscription per support key. It asks each relay for
+the newest 500 gift wraps addressed to the FMan, then stays open for new
+ones. When a relay reconnects, the subscription is sent again and the relay
+replays its newest 500, so messages sent while it was away still arrive. The
+dashboard reads the stored thread, not the relays.
 
 **Limited recovery.** The relays are the only copy outside the database. A
 new install, and a change of support key, read back the newest 500 gift wraps
-addressed to the FMan, at most 8 MiB of them, and older history is not
-recovered. Anyone can address
-wraps to the FMan's public key, so junk wraps count toward the 500. The
-read-back counts only when a relay finished its answer; one cut short by an
-outage is tried again at the next catch-up.
+addressed to the FMan, and older history is not recovered. Anyone can address
+wraps to the FMan's public key, so junk wraps count toward the 500.
 
 **Sending.** A send answers once a relay accepts the copy to Fedi. The copy
 to the FMan itself goes out in the background, so a relay that never answers
