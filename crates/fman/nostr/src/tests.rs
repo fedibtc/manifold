@@ -559,7 +559,7 @@ async fn support_verbs_answer_from_the_fleet_database() {
         ),
         (
             "é".repeat(4000),
-            "The Nostr relays are not connected yet. Try again in a minute.",
+            "This host can't reach Fedi yet. Try again in a minute.",
         ),
     ] {
         assert_eq!(send(body).await.unwrap_err().to_string(), refusal);

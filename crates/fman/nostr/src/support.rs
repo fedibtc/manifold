@@ -87,11 +87,11 @@ async fn send(inner: &Inner, body: &str) -> anyhow::Result<SupportRow> {
     }
     let fedi = inner
         .support()
-        .context("Fedi support chat is not available for this deployment yet.")?;
+        .context("Chat with Fedi support isn't available on this host yet.")?;
     let nostr = inner
         .relays
         .get()
-        .context("The Nostr relays are not connected yet. Try again in a minute.")?;
+        .context("This host can't reach Fedi yet. Try again in a minute.")?;
     let me = inner.keys.public_key();
     let mut rumor = EventBuilder::private_msg_rumor(fedi, body).build(me);
     let id = rumor.id();
@@ -99,7 +99,7 @@ async fn send(inner: &Inner, body: &str) -> anyhow::Result<SupportRow> {
     let to_self = EventBuilder::gift_wrap(&inner.keys, &me, rumor.clone(), []).await?;
     nostr.publish_signed_event(&to_fedi).await.map_err(|err| {
         tracing::warn!(error = %err, "publish support message failed");
-        anyhow::anyhow!("No Nostr relay accepted the message. Try again.")
+        anyhow::anyhow!("Your message wasn't sent. Try again in a minute.")
     })?;
     // A publish waits for every relay's answer or its acknowledgement
     // timeout. The copy to ourselves only restores the thread after a
