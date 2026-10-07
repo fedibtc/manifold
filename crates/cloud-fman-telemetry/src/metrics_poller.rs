@@ -370,9 +370,10 @@ impl MetricsPoller {
             return failed_commit();
         }
         let mut snapshots = Vec::new();
+        // Aggregate outcome only: a failed seat must not suppress later snapshots.
         let mut complete = true;
         let mut total_bytes = 0usize;
-        for seat in response.seats {
+        'seats: for seat in response.seats {
             let Some(federation_id) = federation_id_from_invite(seat.invite_code.as_ref()) else {
                 self.observability
                     .record(AdmissionOutcome::InvalidFederationInvite);
@@ -447,12 +448,9 @@ impl MetricsPoller {
             for sample in &admitted.samples {
                 if tokio::time::Instant::now() >= deadline {
                     complete = false;
-                    break;
+                    break 'seats;
                 }
                 bytes = bytes.saturating_add(sample.len() + 1);
-            }
-            if !complete {
-                break;
             }
             total_bytes = total_bytes.saturating_add(bytes);
             if total_bytes > MAX_TARGET_SNAPSHOT_BYTES {

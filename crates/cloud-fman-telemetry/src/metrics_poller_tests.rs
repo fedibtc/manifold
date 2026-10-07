@@ -44,10 +44,24 @@ fn secure_state_path(directory: &tempfile::TempDir) -> std::path::PathBuf {
 }
 
 #[derive(Clone)]
+enum BadSeatFailure {
+    Delayed,
+    MissingInvite,
+    InvalidInvite,
+    HttpFailure,
+    RejectedMetrics,
+}
+
+#[derive(Clone)]
 struct TestService {
+    /// Seat whose samples must survive a sibling failure.
     good_seat: SeatId,
+    /// Seat with the configured collection failure.
     bad_seat: SeatId,
-    bad_delay: Duration,
+    /// Failure injected for the bad seat.
+    bad_failure: BadSeatFailure,
+    /// Whether the failed seat precedes the healthy seat in the listing.
+    bad_first: bool,
 }
 
 impl GuardianTelemetryApi for TestService {
@@ -56,22 +70,29 @@ impl GuardianTelemetryApi for TestService {
         request: ListGuardianTelemetrySeatsRequest,
     ) -> TelemetryResult<ListGuardianTelemetrySeatsResponse> {
         assert_eq!(request.capability.as_bytes(), &[7; 32]);
-        Ok(ListGuardianTelemetrySeatsResponse {
-            seats: vec![
-                GuardianTelemetrySeat {
-                    seat_id: self.good_seat.clone(),
-                    invite_code: Some(fedi_decentralized_service_fleet_manager::InviteCode(
-                        VALID_INVITE.to_owned(),
-                    )),
-                },
-                GuardianTelemetrySeat {
-                    seat_id: self.bad_seat.clone(),
-                    invite_code: Some(fedi_decentralized_service_fleet_manager::InviteCode(
-                        VALID_INVITE.to_owned(),
-                    )),
-                },
-            ],
-        })
+        let bad_invite = match self.bad_failure {
+            BadSeatFailure::MissingInvite => None,
+            BadSeatFailure::InvalidInvite => Some("not-an-invite"),
+            _ => Some(VALID_INVITE),
+        };
+        let mut seats = vec![
+            GuardianTelemetrySeat {
+                seat_id: self.good_seat.clone(),
+                invite_code: Some(fedi_decentralized_service_fleet_manager::InviteCode(
+                    VALID_INVITE.to_owned(),
+                )),
+            },
+            GuardianTelemetrySeat {
+                seat_id: self.bad_seat.clone(),
+                invite_code: bad_invite.map(|invite| {
+                    fedi_decentralized_service_fleet_manager::InviteCode(invite.to_owned())
+                }),
+            },
+        ];
+        if self.bad_first {
+            seats.reverse();
+        }
+        Ok(ListGuardianTelemetrySeatsResponse { seats })
     }
 
     async fn scrape_guardian_metrics(
@@ -80,14 +101,22 @@ impl GuardianTelemetryApi for TestService {
     ) -> TelemetryResult<GuardianMetricsResponse> {
         assert_eq!(request.capability.as_bytes(), &[7; 32]);
         let good = request.seat_id == self.good_seat;
-        if !good {
-            tokio::time::sleep(self.bad_delay).await;
+        if !good && matches!(self.bad_failure, BadSeatFailure::Delayed) {
+            tokio::time::sleep(Duration::from_secs(2)).await;
         }
         Ok(GuardianMetricsResponse {
-            status_code: if good { 200 } else { 503 },
+            status_code: if !good && matches!(self.bad_failure, BadSeatFailure::HttpFailure) {
+                503
+            } else {
+                200
+            },
             content_type: Some("text/plain; version=0.0.4".to_owned()),
             content_encoding: None,
-            body: b"fm_app_start_ts{version=\"test\",version_hash=\"hash\"} 1\nfm_consensus_session_count 2\n".to_vec(),
+            body: if !good && matches!(self.bad_failure, BadSeatFailure::RejectedMetrics) {
+                vec![0xff]
+            } else {
+                b"fm_app_start_ts{version=\"test\",version_hash=\"hash\"} 1\nfm_consensus_session_count 2\n".to_vec()
+            },
         })
     }
 
@@ -108,6 +137,26 @@ impl GuardianTelemetryApi for TestService {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn authenticated_production_client_discovers_and_scrapes_a_seat() {
+    assert_healthy_seat_survives(BadSeatFailure::Delayed, false, Duration::from_secs(1)).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn failed_seat_does_not_suppress_a_later_healthy_snapshot() {
+    for failure in [
+        BadSeatFailure::MissingInvite,
+        BadSeatFailure::InvalidInvite,
+        BadSeatFailure::HttpFailure,
+        BadSeatFailure::RejectedMetrics,
+    ] {
+        assert_healthy_seat_survives(failure, true, Duration::from_secs(5)).await;
+    }
+}
+
+async fn assert_healthy_seat_survives(
+    bad_failure: BadSeatFailure,
+    bad_first: bool,
+    budget: Duration,
+) {
     let good_seat = SeatId::new("22".repeat(32)).unwrap();
     let bad_seat = SeatId::new("33".repeat(32)).unwrap();
     let server_endpoint = Endpoint::builder(presets::N0)
@@ -119,9 +168,10 @@ async fn authenticated_production_client_discovers_and_scrapes_a_seat() {
         .accept(
             GUARDIAN_TELEMETRY_ALPN,
             IrohProtocol::new(GuardianTelemetryApiServer::new(TestService {
-                good_seat,
-                bad_seat,
-                bad_delay: Duration::from_secs(2),
+                good_seat: good_seat.clone(),
+                bad_seat: bad_seat.clone(),
+                bad_failure,
+                bad_first,
             })),
         )
         .spawn();
@@ -183,12 +233,16 @@ async fn authenticated_production_client_discovers_and_scrapes_a_seat() {
     );
     poller.connect_address = Some(router.endpoint().addr());
     let started = tokio::time::Instant::now();
-    let commit = poller
-        .collect_target(&target, started + Duration::from_secs(1))
-        .await;
-    assert!(started.elapsed() < Duration::from_secs(2));
+    let commit = poller.collect_target(&target, started + budget).await;
+    assert!(started.elapsed() < budget + Duration::from_secs(1));
     assert!(!commit.complete);
     assert_eq!(commit.snapshots.len(), 1);
+    assert_eq!(commit.snapshots[0].guardian_seat_id, good_seat.to_string());
+    assert!(!commit.snapshots[0].samples.is_empty());
+    assert_eq!(
+        commit.listed_seats.as_ref().unwrap(),
+        &BTreeSet::from([good_seat.to_string(), bad_seat.to_string()])
+    );
     let expected_federation = fedimint_core::invite_code::InviteCode::from_str(VALID_INVITE)
         .unwrap()
         .federation_id()
