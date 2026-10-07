@@ -1,0 +1,33 @@
+.page {
+  @apply uCenteredPage;
+}
+
+.card {
+  @apply uModalCard;
+}
+
+.title {
+  @apply uPageHeading;
+}
+
+.introText {
+  @apply uIntro;
+}
+
+.spinner {
+  @apply inline-block h-6 w-6 rounded-full border-2 border-muted border-t-ink;
+
+  animation: fleet-starting-spin 700ms linear infinite;
+}
+
+@keyframes fleet-starting-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .spinner {
+    animation: none;
+  }
+}
