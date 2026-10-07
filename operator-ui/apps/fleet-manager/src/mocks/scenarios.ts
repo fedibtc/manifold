@@ -392,7 +392,7 @@ const builders = {
     ],
     supportReadIds: ['a'.repeat(64)]
   }),
-  // This deployment has no Fedi support key, which is production today.
+  // This deployment has no Fedi support key.
   'support-unavailable': () => ({
     ...base(),
     seats: [],

@@ -102,6 +102,10 @@ const PRODUCTION_SETUP_PAYMENT_PUBLISHER: &str =
 const PRODUCTION_GUARDIAN_VERIFICATION_FEE_KEY: &str =
     "0255c6b0de21aa9d5da41cdbb53be23e73dc5b3697f10b13f806c5ee7d18bd604d";
 
+/// Fedi support identity FMan operators chat with, in x-only hex
+/// (`npub105qfyekclhm4827wsuf233saa0d3gmf6rxrhhc5f72xhah4wfghszug5n6`).
+const PRODUCTION_SUPPORT: &str = "7d009266d8fdf753abce8712a8c61debdb146d3a19877be289f28d7edeae4a2f";
+
 /// Production PeerBadge issuer identities, in trust-roster order.
 ///
 /// Each is a personal issuer key whose secret is held individually by its
@@ -228,9 +232,7 @@ impl ManifoldEnvironment {
                 PRODUCTION_ISSUERS,
                 Some(PRODUCTION_SETUP_PAYMENT_PUBLISHER),
                 Some(PRODUCTION_GUARDIAN_VERIFICATION_FEE_KEY),
-                // Fedi has no production support identity yet; the support
-                // chat stays unavailable rather than trusting a substitute.
-                None,
+                Some(PRODUCTION_SUPPORT),
                 PRODUCTION_NOSTR_RELAYS,
                 Network::Bitcoin,
                 None,

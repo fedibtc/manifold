@@ -542,7 +542,7 @@ async fn support_verbs_answer_from_the_fleet_database() {
         None,
         Vec::new(),
         None,
-        // Production has no profile support key, so only a policy opens the chat.
+        // Production names Fedi support in its profile, so no policy is needed.
         ManifoldEnvironment::Production.profile().unwrap(),
         Arc::new(FleetHolderAuthorizationStore::new(db.clone())),
         db.clone(),
@@ -559,20 +559,11 @@ async fn support_verbs_answer_from_the_fleet_database() {
         ),
         (
             "é".repeat(4000),
-            "Fedi support chat is not available for this deployment yet.",
+            "The Nostr relays are not connected yet. Try again in a minute.",
         ),
     ] {
         assert_eq!(send(body).await.unwrap_err().to_string(), refusal);
     }
-    let chat = service.answer(AdminRequest::SupportChat).await.unwrap();
-    assert_eq!(chat["available"], false);
-
-    // The admitted policy names Fedi support; sending then waits on relays.
-    admit_support_policy(&service, Some(Keys::generate().public_key()));
-    assert_eq!(
-        send("hello".to_owned()).await.unwrap_err().to_string(),
-        "The Nostr relays are not connected yet. Try again in a minute."
-    );
 
     // Relays repeat messages, and two can share a second.
     let row = |id: char, from_fedi: bool, created_at: u64| fman_core::db::SupportRow {
