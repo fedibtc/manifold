@@ -289,15 +289,41 @@ impl NostrRelayClient {
                         filter.clone(),
                     );
                     drop(spawn("resubscribe closed Nostr subscription", async move {
-                        sleep(resubscribe_after).await;
-                        if !open.load(Ordering::SeqCst) {
-                            return;
-                        }
-                        if let Err(err) = client
-                            .subscribe_with_id_to([relay_url.clone()], id, filter, None)
-                            .await
-                        {
-                            tracing::warn!(%relay_url, %err, "Failed to send a closed Nostr subscription again");
+                        // Until that relay takes it again: a refused or
+                        // unsent request leaves nothing that a reconnect
+                        // would send again.
+                        loop {
+                            sleep(resubscribe_after).await;
+                            if !open.load(Ordering::SeqCst) {
+                                return;
+                            }
+                            let sent = client
+                                .subscribe_with_id_to(
+                                    [relay_url.clone()],
+                                    id.clone(),
+                                    filter.clone(),
+                                    None,
+                                )
+                                .await;
+                            // The stream may have been dropped while this
+                            // request was in flight; close what it reopened.
+                            if !open.load(Ordering::SeqCst) {
+                                client.unsubscribe(&id).await;
+                                return;
+                            }
+                            match sent {
+                                Ok(output) if output.success.contains(&relay_url) => return,
+                                Ok(output) => tracing::warn!(
+                                    %relay_url,
+                                    error = ?output.failed.get(&relay_url),
+                                    "Failed to send a closed Nostr subscription again"
+                                ),
+                                Err(err) => tracing::warn!(
+                                    %relay_url,
+                                    %err,
+                                    "Failed to send a closed Nostr subscription again"
+                                ),
+                            }
                         }
                     }));
                     None
