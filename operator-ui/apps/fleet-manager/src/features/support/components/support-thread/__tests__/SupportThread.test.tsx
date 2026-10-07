@@ -18,6 +18,7 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.useRealTimers();
+  delete (Element.prototype as Partial<Element>).scrollIntoView;
 });
 
 it('should mark each new local day and time each message in its bubble', () => {
@@ -64,7 +65,8 @@ it('should show the first unread message rather than the newest', () => {
     scrolled.push(this);
   };
 
-  // A late Fedi message sorts above messages the operator already read.
+  // The unread Fedi message comes before a read one, so the newest message
+  // is not the one to show.
   render(
     <SupportThread
       messages={[
@@ -77,7 +79,6 @@ it('should show the first unread message rather than the newest', () => {
   );
 
   expect(scrolled.at(-1)).toBe(screen.getAllByRole('listitem')[1]);
-  delete (Element.prototype as Partial<Element>).scrollIntoView;
 });
 
 it('should invite the first message when the thread is empty', () => {
