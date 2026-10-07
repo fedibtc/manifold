@@ -18,6 +18,7 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.useRealTimers();
+  delete (Element.prototype as Partial<Element>).scrollIntoView;
 });
 
 it('should mark each new local day and time each message in its bubble', () => {
@@ -55,6 +56,29 @@ it('should mark each new local day and time each message in its bubble', () => {
   expect(items[1]).toHaveTextContent('Fedi support: Is the host running?');
   expect(items[2]).toHaveTextContent('You: Yes.');
   expect(screen.getByText(/Seat 2 is down/).textContent).toBe('You: Seat 2 is down.\nSince noon.');
+});
+
+it('should show the first unread message rather than the newest', () => {
+  // jsdom does not implement scrolling.
+  const scrolled: Element[] = [];
+  Element.prototype.scrollIntoView = function (this: Element) {
+    scrolled.push(this);
+  };
+
+  // The unread Fedi message comes before a read one, so the newest message
+  // is not the one to show.
+  render(
+    <SupportThread
+      messages={[
+        message('a', 'operator', 'Seat 2 is down.', at(14, 9, 0)),
+        { ...message('b', 'fedi', 'Is the host running?', at(14, 9, 5)), unread: true },
+        message('c', 'fedi', 'Any news?', at(15, 9, 0)),
+        { ...message('d', 'fedi', 'Restart it, please.', at(15, 9, 30)), unread: true }
+      ]}
+    />
+  );
+
+  expect(scrolled.at(-1)).toBe(screen.getAllByRole('listitem')[1]);
 });
 
 it('should invite the first message when the thread is empty', () => {
