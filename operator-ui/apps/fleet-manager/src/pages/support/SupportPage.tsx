@@ -32,8 +32,8 @@ export const SupportPage = () => {
         <h1 className={styles.heading}>Support</h1>
 
         <p className={styles.intro}>
-          Talk to the Fedi guardian team. Messages are end-to-end encrypted over Nostr. Fedi sees
-          this host's public key and what you write.
+          Ask the Fedi team for help with this host. Only you and Fedi can read these messages. Fedi
+          sees which host wrote and what you wrote.
         </p>
       </div>
 
@@ -56,7 +56,7 @@ export const SupportPage = () => {
                 </>
               ) : (
                 <p className={styles.unavailable}>
-                  Fedi support chat is not available for this deployment yet.
+                  Chat with Fedi support isn't available on this host yet.
                 </p>
               )}
             </div>

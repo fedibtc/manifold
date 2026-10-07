@@ -51,7 +51,7 @@ export const SupportComposer = () => {
           className={styles.textarea}
           aria-label="Message to Fedi support"
           rows={1}
-          placeholder="Type message…"
+          placeholder="Write a message…"
           value={body}
           readOnly={send.isPending}
           aria-invalid={error !== null}

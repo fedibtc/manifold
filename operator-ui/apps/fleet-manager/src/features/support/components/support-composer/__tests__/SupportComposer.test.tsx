@@ -68,7 +68,7 @@ it('should count characters the way the daemon does', async () => {
 
 it('should show the daemon refusal and keep the text to send again', async () => {
   vi.spyOn(adminCallModule, 'adminCall').mockRejectedValue(
-    new AdminApiError('No Nostr relay accepted the message. Try again.')
+    new AdminApiError("Your message wasn't sent. Try again in a minute.")
   );
   renderComposer();
 
@@ -76,7 +76,7 @@ it('should show the daemon refusal and keep the text to send again', async () =>
   fireEvent.click(screen.getByRole('button', { name: 'Send' }));
 
   expect(await screen.findByRole('alert')).toHaveTextContent(
-    'No Nostr relay accepted the message. Try again.'
+    "Your message wasn't sent. Try again in a minute."
   );
   expect(box()).toHaveValue('Any update?');
 });
