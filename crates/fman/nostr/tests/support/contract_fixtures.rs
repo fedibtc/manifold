@@ -16,6 +16,7 @@ fn support_message(id: char, from_fedi: bool, body: &str, created_at: u64) -> Su
         from_fedi,
         body: body.to_owned(),
         created_at,
+        unread: from_fedi,
     }
 }
 

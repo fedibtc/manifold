@@ -297,7 +297,7 @@ const adminRequestsMirror = {
   ReenrollTelemetry: 'ReenrollTelemetry',
   SupportChat: 'SupportChat',
   SendSupportMessage: { SendSupportMessage: { body: 'Seat 2 stopped after the update.' } },
-  MarkSupportRead: { MarkSupportRead: { up_to: 'c'.repeat(64) } },
+  MarkSupportRead: { MarkSupportRead: { ids: ['c'.repeat(64)] } },
   GuardianFees: { GuardianFees: { seat_id: SEAT_ID, limit: 20 } },
   CollectGuardianFees: { CollectGuardianFees: { seat_id: SEAT_ID } },
   SweepGuardianFees: {
@@ -572,7 +572,8 @@ const supportOperatorMessage = {
   id: 'a'.repeat(64),
   author: 'operator',
   body: 'Seat 2 stopped after the update.',
-  created_at: 1700000000
+  created_at: 1700000000,
+  unread: false
 } satisfies SupportMessage;
 
 const fmanSupportChatMirror = {
@@ -583,7 +584,8 @@ const fmanSupportChatMirror = {
       id: 'b'.repeat(64),
       author: 'fedi',
       body: 'Thanks. Does the seat log show a DKG error?',
-      created_at: 1700000600
+      created_at: 1700000600,
+      unread: true
     }
   ],
   unread: 1

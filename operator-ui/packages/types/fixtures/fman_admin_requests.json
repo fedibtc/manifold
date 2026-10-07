@@ -30,7 +30,9 @@
   "ListSeats": "ListSeats",
   "MarkSupportRead": {
     "MarkSupportRead": {
-      "up_to": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+      "ids": [
+        "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+      ]
     }
   },
   "OnboardAsNew": {

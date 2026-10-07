@@ -1,20 +1,32 @@
 import type { SupportMessage } from '@operator-ui/types';
 import { useEffect, useRef } from 'react';
-import { formatSupportTimestamp } from '@/features/support/utils/supportMessage';
+import fediLogo from '@/features/support/components/support-thread/fediLogo.svg';
+import {
+  formatSupportDay,
+  formatSupportTime,
+  isSameSupportDay
+} from '@/features/support/utils/supportMessage';
 import styles from './SupportThread.module.css';
 
-// The Fedi app's chat starts a new group, under its own time, when a message
-// comes more than a minute after the one before it.
-const GROUP_GAP_SECONDS = 60;
+interface SupportThreadProps {
+  messages: SupportMessage[];
+}
 
-export const SupportThread = ({ messages }: { messages: SupportMessage[] }) => {
+export const SupportThread = ({ messages }: SupportThreadProps) => {
   const end = useRef<HTMLDivElement>(null);
+  const firstUnreadItem = useRef<HTMLLIElement>(null);
   const latest = messages.at(-1)?.id;
+  const firstUnread = messages.find((message) => message.unread)?.id;
 
-  // Open at, and follow, the newest message.
+  // Open at, and follow, the newest message, but show an unread message
+  // first: one that arrives late can sort above the bottom.
   useEffect(() => {
     if (latest) end.current?.scrollIntoView?.({ block: 'end' });
   }, [latest]);
+
+  useEffect(() => {
+    if (firstUnread) firstUnreadItem.current?.scrollIntoView?.({ block: 'nearest' });
+  }, [firstUnread]);
 
   if (messages.length === 0) {
     return <p className={styles.empty}>No messages yet. Write to Fedi below.</p>;
@@ -25,35 +37,38 @@ export const SupportThread = ({ messages }: { messages: SupportMessage[] }) => {
       <ol className={styles.thread}>
         {messages.map((message, index) => {
           const previous = messages[index - 1];
-          const newGroup =
-            !previous || message.created_at - previous.created_at > GROUP_GAP_SECONDS;
-          const spacing = newGroup
-            ? undefined
-            : previous.author === message.author
-              ? 'run'
-              : 'turn';
+          const newDay = !previous || !isSameSupportDay(previous.created_at, message.created_at);
+          const fromFedi = message.author === 'fedi';
           return (
             <li
               key={message.id}
+              ref={message.id === firstUnread ? firstUnreadItem : undefined}
               className={styles.item}
               data-author={message.author}
-              data-spacing={spacing}
             >
-              {newGroup && (
-                <time
-                  className={styles.time}
-                  dateTime={new Date(message.created_at * 1000).toISOString()}
-                >
-                  {formatSupportTimestamp(message.created_at)}
-                </time>
-              )}
+              {newDay && <p className={styles.day}>{formatSupportDay(message.created_at)}</p>}
 
-              <p className={styles.bubble}>
-                <span className={styles.srOnly}>
-                  {message.author === 'fedi' ? 'Fedi support: ' : 'You: '}
-                </span>
-                {message.body}
-              </p>
+              <div className={styles.row}>
+                {fromFedi && (
+                  <span className={styles.avatar}>
+                    <img src={fediLogo} alt="" />
+                  </span>
+                )}
+
+                <div className={styles.bubble}>
+                  <p className={styles.body}>
+                    <span className={styles.srOnly}>{fromFedi ? 'Fedi support: ' : 'You: '}</span>
+                    {message.body}
+                  </p>
+
+                  <time
+                    className={styles.time}
+                    dateTime={new Date(message.created_at * 1000).toISOString()}
+                  >
+                    {formatSupportTime(message.created_at)}
+                  </time>
+                </div>
+              </div>
             </li>
           );
         })}

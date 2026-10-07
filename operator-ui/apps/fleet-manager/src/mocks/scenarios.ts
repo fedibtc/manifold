@@ -159,6 +159,7 @@ const base = (): Pick<
   | 'maxSeats'
   | 'readyForNewSeats'
   | 'seatReadiness'
+  | 'supportAvailable'
   | 'supportMessages'
   | 'supportReadIds'
   | 'fleetOpensAfterReads'
@@ -167,6 +168,7 @@ const base = (): Pick<
   maxSeats: 3,
   readyForNewSeats: true,
   seatReadiness: READY,
+  supportAvailable: true,
   supportMessages: [],
   supportReadIds: [],
   fleetOpensAfterReads: 0,
@@ -390,6 +392,15 @@ const builders = {
     ],
     supportReadIds: ['a'.repeat(64)]
   }),
+  // This deployment has no Fedi support key, which is production today.
+  'support-unavailable': () => ({
+    ...base(),
+    seats: [],
+    paymentFederations: [],
+    price: SEAT_PRICE_MSAT,
+    onboarding: authorized,
+    supportAvailable: false
+  }),
   'not-ready-for-seats': () => ({
     ...base(),
     seats: [],
@@ -583,7 +594,16 @@ const notes: Record<ScenarioName, ScenarioNote> = {
     // Every route inside the shell, because the takeover is mounted in AppShell
     // rather than on a page. `setup` is deliberately absent: setup sits above
     // the shell, and this scenario is onboarded, so the wizard never renders.
-    affects: ['overview', 'authorization', 'seats', 'seat-detail', 'payouts', 'offer', 'backup']
+    affects: [
+      'overview',
+      'authorization',
+      'seats',
+      'seat-detail',
+      'payouts',
+      'offer',
+      'backup',
+      'support'
+    ]
   },
   'seats-empty': {
     desc: 'Still no seats, but one receivable federation at a zero balance and a price set.',
@@ -606,8 +626,22 @@ const notes: Record<ScenarioName, ScenarioNote> = {
     affects: ['offer', 'overview']
   },
   'support-conversation': {
-    desc: 'Fedi started a support chat from telemetry; its latest reply is unread.',
-    affects: ['support', 'overview']
+    desc: 'Fedi started a support chat from telemetry; its latest reply is unread. The sidebar counts it on every page.',
+    // Every route inside the shell, because the unread count is in the sidebar.
+    affects: [
+      'overview',
+      'authorization',
+      'seats',
+      'seat-detail',
+      'payouts',
+      'offer',
+      'backup',
+      'support'
+    ]
+  },
+  'support-unavailable': {
+    desc: 'This deployment has no Fedi support key. The Support page says that chat is not available, and nothing is marked read.',
+    affects: ['support']
   },
   'not-ready-for-seats': {
     desc: 'The last readiness run failed: no discovery record and Bitcoin still syncing. The daemon has stopped advertising and quoting new seats.',

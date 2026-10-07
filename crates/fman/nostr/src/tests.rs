@@ -580,6 +580,8 @@ async fn support_verbs_answer_from_the_fleet_database() {
         from_fedi,
         body: id.to_string(),
         created_at,
+        // Storing ignores it: a new Fedi message is always unread.
+        unread: false,
     };
     for message in [
         row('c', true, 100),
@@ -606,33 +608,56 @@ async fn support_verbs_answer_from_the_fleet_database() {
         "oldest first, then in arrival order, each message once"
     );
 
-    // A mark reads the thread up to the named message: not a later message
-    // in the same second, nor one stored afterwards that sorts earlier.
-    let mark = |id: char| {
+    let unread_flags = |chat: &serde_json::Value| {
+        chat["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|message| {
+                (
+                    message["body"].as_str().unwrap().to_owned(),
+                    message["unread"] == true,
+                )
+            })
+            .collect::<Vec<_>>()
+    };
+    let flags = |list: &[(&str, bool)]| {
+        list.iter()
+            .map(|(body, unread)| ((*body).to_owned(), *unread))
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        unread_flags(&chat),
+        flags(&[("a", false), ("c", true), ("b", true)])
+    );
+
+    // A mark reads exactly the named messages: not another in the same
+    // second, nor one stored later that sorts earlier.
+    let mark = |ids: &[char]| {
         service.answer(AdminRequest::MarkSupportRead {
-            up_to: id.to_string().repeat(64),
+            ids: ids.iter().map(|id| id.to_string().repeat(64)).collect(),
         })
     };
     assert_eq!(
-        mark('x').await.unwrap()["unread"],
+        mark(&['x']).await.unwrap()["unread"],
         2,
         "an unknown id marks nothing"
     );
-    assert_eq!(mark('c').await.unwrap()["unread"], 1, "b shares c's second");
+    assert_eq!(
+        mark(&['c', 'a']).await.unwrap()["unread"],
+        1,
+        "b shares c's second"
+    );
     db.record_support_message(&row('d', true, 90))
         .await
         .unwrap();
+    assert_eq!(mark(&['b']).await.unwrap()["unread"], 1, "d sorts before b");
+    let chat = service.answer(AdminRequest::SupportChat).await.unwrap();
     assert_eq!(
-        mark('a').await.unwrap()["unread"],
-        2,
-        "d arrived after the mark"
+        unread_flags(&chat),
+        flags(&[("a", false), ("d", true), ("c", false), ("b", false)])
     );
-    assert_eq!(mark('b').await.unwrap()["unread"], 0);
-    assert_eq!(
-        mark('a').await.unwrap()["unread"],
-        0,
-        "a stale mark unreads nothing"
-    );
+    assert_eq!(mark(&[]).await.unwrap()["unread"], 1);
 }
 
 /// Admit a setup-payment policy that names `support`, or no support key.

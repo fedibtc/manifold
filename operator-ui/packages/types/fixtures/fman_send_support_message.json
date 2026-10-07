@@ -3,6 +3,7 @@
     "author": "operator",
     "body": "Seat 2 stopped after the update.",
     "created_at": 1700000000,
-    "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "unread": false
   }
 }

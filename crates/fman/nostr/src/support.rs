@@ -43,8 +43,8 @@ pub(crate) async fn answer(inner: &Inner, request: AdminRequest) -> anyhow::Resu
         AdminRequest::SendSupportMessage { body } => {
             Ok(support_message_json(&send(inner, &body).await?))
         }
-        AdminRequest::MarkSupportRead { up_to } => {
-            inner.db.mark_support_read(&up_to).await?;
+        AdminRequest::MarkSupportRead { ids } => {
+            inner.db.mark_support_read(&ids).await?;
             Ok(support_read_json(inner.db.support_unread().await?))
         }
         _ => anyhow::bail!("not a support chat request"),
@@ -73,6 +73,7 @@ fn message_json(message: &SupportRow) -> Value {
         "author": if message.from_fedi { "fedi" } else { "operator" },
         "body": message.body,
         "created_at": message.created_at,
+        "unread": message.unread,
     })
 }
 
@@ -117,6 +118,7 @@ async fn send(inner: &Inner, body: &str) -> anyhow::Result<SupportRow> {
         from_fedi: false,
         body: rumor.content,
         created_at: rumor.created_at.as_secs(),
+        unread: false,
     };
     inner.db.record_support_message(&message).await?;
     Ok(message)
@@ -216,5 +218,6 @@ pub(crate) async fn admit(keys: &Keys, fedi: PublicKey, event: &Event) -> Option
         from_fedi,
         body: rumor.content,
         created_at: rumor.created_at.as_secs(),
+        unread: from_fedi,
     })
 }

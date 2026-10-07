@@ -364,16 +364,19 @@ const reenrollTelemetry: Verb<'ReenrollTelemetry'> = () => ({
 // The daemon fills the thread from relays; the mock world holds it.
 const MAX_SUPPORT_MESSAGE_CHARS = 4000;
 
-const supportUnread = () => {
+const supportMessages = () => {
   const state = getState();
-  return state.supportMessages.filter(
-    (message) => message.author === 'fedi' && !state.supportReadIds.includes(message.id)
-  ).length;
+  return state.supportMessages.map((message) => ({
+    ...message,
+    unread: message.author === 'fedi' && !state.supportReadIds.includes(message.id)
+  }));
 };
 
+const supportUnread = () => supportMessages().filter((message) => message.unread).length;
+
 const supportChat: Verb<'SupportChat'> = () => ({
-  available: true,
-  messages: getState().supportMessages,
+  available: getState().supportAvailable,
+  messages: supportMessages(),
   unread: supportUnread()
 });
 
@@ -391,14 +394,17 @@ const sendSupportMessage: Verb<'SendSupportMessage'> = ({ body }) => {
     created_at: Math.floor(Date.now() / 1000)
   };
   state.supportMessages.push(message);
-  return { message };
+  return { message: { ...message, unread: false } };
 };
 
-const markSupportRead: Verb<'MarkSupportRead'> = ({ up_to }) => {
+const markSupportRead: Verb<'MarkSupportRead'> = ({ ids }) => {
   const state = getState();
-  const upTo = state.supportMessages.findIndex((message) => message.id === up_to);
-  for (const message of state.supportMessages.slice(0, upTo + 1)) {
-    if (message.author === 'fedi' && !state.supportReadIds.includes(message.id)) {
+  for (const message of state.supportMessages) {
+    if (
+      message.author === 'fedi' &&
+      ids.includes(message.id) &&
+      !state.supportReadIds.includes(message.id)
+    ) {
       state.supportReadIds.push(message.id);
     }
   }
@@ -522,7 +528,9 @@ const mutatingVerbNames: readonly AdminRequestName[] = [
   'OnboardFromBackup',
   'RefreshHolderAuthorizations',
   'ConfigureInitialOffer',
-  'SetCapacity'
+  'SetCapacity',
+  'SendSupportMessage',
+  'MarkSupportRead'
 ];
 
 // Exposed over `string` because the caller holds a name read off the wire.

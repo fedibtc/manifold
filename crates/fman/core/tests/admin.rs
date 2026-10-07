@@ -279,7 +279,7 @@ async fn admin_socket_round_trips_operator_verbs() {
             body: "  Seat 2 is down\n".into(),
         },
         AdminRequest::MarkSupportRead {
-            up_to: "c".repeat(64),
+            ids: vec!["c".repeat(64)],
         },
     ] {
         let forwarded = serde_json::to_value(&request).unwrap();

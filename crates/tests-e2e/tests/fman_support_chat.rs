@@ -159,10 +159,16 @@ async fn operator_and_fedi_support_chat_over_nip17() -> Result<()> {
             ],
         "only the FMan-Fedi room joins the thread: {chat}"
     );
-    ensure!(chat["available"] == true && chat["unread"] == 1, "{chat}");
+    ensure!(
+        chat["available"] == true
+            && chat["unread"] == 1
+            && messages[0]["unread"] == false
+            && messages[1]["unread"] == true,
+        "{chat}"
+    );
 
     let read = operator
-        .admin(json!({ "MarkSupportRead": { "up_to": messages[1]["id"] } }))
+        .admin(json!({ "MarkSupportRead": { "ids": [messages[1]["id"]] } }))
         .await?;
     ensure!(read == json!({ "unread": 0 }), "{read}");
 

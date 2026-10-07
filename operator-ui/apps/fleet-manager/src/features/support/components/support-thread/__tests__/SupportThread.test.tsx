@@ -4,11 +4,12 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { SupportThread } from '../SupportThread';
 
 const message = (id: string, author: SupportMessage['author'], body: string, created_at: number) =>
-  ({ id: id.repeat(64), author, body, created_at }) satisfies SupportMessage;
+  ({ id: id.repeat(64), author, body, created_at, unread: false }) satisfies SupportMessage;
 
-// Local time, as the Fedi app shows it: 2023-11-14 23:50. "Now" is the next
-// day, so only the last group below falls on today.
-const T = new Date(2023, 10, 14, 23, 50).getTime() / 1000;
+// Local time. "Now" is 2023-11-15 12:00, so the messages fall on the day
+// before yesterday, yesterday, and today.
+const at = (day: number, hours: number, minutes: number) =>
+  new Date(2023, 10, day, hours, minutes).getTime() / 1000;
 
 beforeEach(() => {
   vi.useFakeTimers({ toFake: ['Date'] });
@@ -19,38 +20,40 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-it('should time each group of messages, as the Fedi app chat does', () => {
+it('should mark each new local day and time each message in its bubble', () => {
   render(
     <SupportThread
       messages={[
-        message('a', 'operator', 'Seat 2 is down.\nSince noon.', T),
-        // 60 s after the one before: same group, no new time.
-        message('b', 'operator', 'Any idea?', T + 60),
-        message('c', 'fedi', 'Is the host running?', T + 120),
-        // 61 s after the one before: a new group.
-        message('d', 'operator', 'Yes.', T + 181),
-        message('e', 'fedi', 'Restart it, please.', T + 1_200)
+        message('a', 'operator', 'Seat 2 is down.\nSince noon.', at(13, 23, 59)),
+        message('b', 'fedi', 'Is the host running?', at(14, 0, 1)),
+        message('c', 'operator', 'Yes.', at(14, 12, 5)),
+        message('d', 'fedi', 'Restart it, please.', at(15, 9, 30))
       ]}
     />
   );
 
   const items = screen.getAllByRole('listitem');
-  expect(items.map((item) => item.querySelector('time')?.textContent ?? null)).toEqual([
-    'Nov 14, 11:50pm',
+  expect(items.map((item) => item.querySelector(':scope > p')?.textContent ?? null)).toEqual([
+    'Nov 13',
+    'Yesterday',
     null,
-    null,
-    'Nov 14, 11:53pm',
-    '12:10am'
+    'Today'
   ]);
-  expect(items.map((item) => item.dataset.spacing ?? null)).toEqual([
-    null,
-    'run',
-    'turn',
-    null,
-    null
+  expect(items.map((item) => item.querySelector('time')?.textContent)).toEqual([
+    '11:59pm',
+    '12:01am',
+    '12:05pm',
+    '9:30am'
   ]);
-  expect(items[2]).toHaveTextContent('Fedi support: Is the host running?');
-  expect(items[3]).toHaveTextContent('You: Yes.');
+  // Only Fedi's messages carry the Fedi avatar.
+  expect(items.map((item) => item.querySelector('img') !== null)).toEqual([
+    false,
+    true,
+    false,
+    true
+  ]);
+  expect(items[1]).toHaveTextContent('Fedi support: Is the host running?');
+  expect(items[2]).toHaveTextContent('You: Yes.');
   expect(screen.getByText(/Seat 2 is down/).textContent).toBe('You: Seat 2 is down.\nSince noon.');
 });
 

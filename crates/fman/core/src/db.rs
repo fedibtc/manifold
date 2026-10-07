@@ -744,6 +744,9 @@ pub struct SupportRow {
     pub body: String,
     /// Unix seconds, as the author stated it.
     pub created_at: u64,
+    /// A Fedi message the operator has not read. Storing a row ignores it:
+    /// every new Fedi message starts unread.
+    pub unread: bool,
 }
 
 /// SQLite stores signed integers. A timestamp past `i64::MAX` is nonsense from
@@ -771,21 +774,24 @@ impl Db {
     /// The whole support thread, oldest first; a same-second tie keeps
     /// arrival order.
     pub async fn support_messages(&self) -> Result<Vec<SupportRow>, DbError> {
-        let rows: Vec<(String, bool, String, i64)> = sqlx::query_as(
-            "SELECT rumor_id, from_fedi, body, created_at FROM support_messages \
-             ORDER BY created_at, rowid",
+        let rows: Vec<(String, bool, String, i64, bool)> = sqlx::query_as(
+            "SELECT rumor_id, from_fedi, body, created_at, from_fedi = 1 AND read = 0 \
+             FROM support_messages ORDER BY created_at, rowid",
         )
         .fetch_all(&self.pool)
         .await?;
         Ok(rows
             .into_iter()
-            .map(|(rumor_id, from_fedi, body, created_at)| SupportRow {
-                rumor_id,
-                from_fedi,
-                body,
-                created_at: u64::try_from(created_at)
-                    .expect("created_at is non-negative by schema CHECK"),
-            })
+            .map(
+                |(rumor_id, from_fedi, body, created_at, unread)| SupportRow {
+                    rumor_id,
+                    from_fedi,
+                    body,
+                    created_at: u64::try_from(created_at)
+                        .expect("created_at is non-negative by schema CHECK"),
+                    unread,
+                },
+            )
             .collect())
     }
 
@@ -799,17 +805,15 @@ impl Db {
         Ok(u64::try_from(unread).expect("a count is non-negative"))
     }
 
-    /// Mark read the Fedi support messages up to and including the message
-    /// `up_to_rumor_id`, in thread order. A message stored later stays unread
-    /// even when it sorts earlier or shares the second, and nothing goes back
-    /// to unread. An unknown id marks nothing.
-    pub async fn mark_support_read(&self, up_to_rumor_id: &str) -> Result<(), DbError> {
+    /// Mark read the Fedi support messages with these rumor ids: the ones
+    /// the operator was shown. Unknown ids mark nothing, and nothing goes back
+    /// to unread.
+    pub async fn mark_support_read(&self, rumor_ids: &[String]) -> Result<(), DbError> {
         sqlx::query(
-            "UPDATE support_messages SET read = 1 WHERE from_fedi = 1 AND read = 0 \
-             AND (created_at, rowid) <= \
-             (SELECT created_at, rowid FROM support_messages WHERE rumor_id = ?)",
+            "UPDATE support_messages SET read = 1 WHERE from_fedi = 1 \
+             AND rumor_id IN (SELECT value FROM json_each(?))",
         )
-        .bind(up_to_rumor_id)
+        .bind(serde_json::to_string(rumor_ids).expect("strings serialize"))
         .execute(&self.pool)
         .await?;
         Ok(())

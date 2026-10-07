@@ -7,8 +7,7 @@ export const useMarkSupportRead = () => {
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: (upTo: string) =>
-      adminCall<MarkSupportReadResponse>({ MarkSupportRead: { up_to: upTo } }),
+    mutationFn: (ids: string[]) => adminCall<MarkSupportReadResponse>({ MarkSupportRead: { ids } }),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: SUPPORT_KEY });
     }

@@ -14,16 +14,17 @@ export const SupportPage = () => {
   const markRead = useMarkSupportRead();
   const { disposition, retry } = useQueryDisposition([chat]);
 
-  // Reading the page reads every Fedi message it shows, and only those: one
-  // that arrives after this render stays unread until the page shows it.
-  const lastFromFedi = chat.data?.messages.filter((message) => message.author === 'fedi').at(-1);
-  const unread = chat.data?.unread ?? 0;
-  const { mutate } = markRead;
+  // Reading the page reads the unread Fedi messages it shows, and only those.
   // Each poll tries again, so one failed mark does not leave the page unread.
+  const unreadIds = chat.data?.available
+    ? chat.data.messages.filter((message) => message.unread).map((message) => message.id)
+    : [];
+  const unreadKey = unreadIds.join(' ');
+  const { mutate } = markRead;
   const polledAt = chat.dataUpdatedAt;
   useEffect(() => {
-    if (polledAt > 0 && unread > 0 && lastFromFedi) mutate(lastFromFedi.id);
-  }, [polledAt, unread, lastFromFedi, mutate]);
+    if (polledAt > 0 && unreadKey !== '') mutate(unreadKey.split(' '));
+  }, [polledAt, unreadKey, mutate]);
 
   return (
     <div className={styles.root}>

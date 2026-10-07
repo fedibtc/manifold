@@ -1,4 +1,4 @@
-import { type FormEvent, type KeyboardEvent, useId, useState } from 'react';
+import { type ChangeEvent, type FormEvent, type KeyboardEvent, useId, useState } from 'react';
 import { useSendSupportMessage } from '@/features/support/api/hooks/use-send-support-message/useSendSupportMessage';
 import {
   MAX_SUPPORT_MESSAGE_CHARS,
@@ -30,6 +30,11 @@ export const SupportComposer = () => {
     submit();
   };
 
+  const handleChange = (event: ChangeEvent<HTMLTextAreaElement>) => {
+    setBody(event.target.value);
+    setValidationError(null);
+  };
+
   const handleKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
     if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) {
       event.preventDefault();
@@ -52,10 +57,7 @@ export const SupportComposer = () => {
           aria-invalid={error !== null}
           aria-describedby={error ? `${id}-error` : undefined}
           onKeyDown={handleKeyDown}
-          onChange={(event) => {
-            setBody(event.target.value);
-            setValidationError(null);
-          }}
+          onChange={handleChange}
         />
 
         {/* The Fedi app's send control: an arrow in a circle, grey until there is text. */}

@@ -106,9 +106,8 @@ pub enum AdminRequest {
     SupportChat,
     /// Send the operator's message to Fedi support.
     SendSupportMessage { body: String },
-    /// Mark read the Fedi messages up to and including the one whose rumor id
-    /// is `up_to`, in thread order.
-    MarkSupportRead { up_to: String },
+    /// Mark read the Fedi messages with these rumor ids.
+    MarkSupportRead { ids: Vec<String> },
     /// Guardian-fee revenue for one seat's federation: the account payers
     /// remit to, current balances, and recent remittances with their
     /// breakdown.

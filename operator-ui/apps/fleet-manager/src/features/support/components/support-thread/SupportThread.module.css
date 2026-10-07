@@ -6,34 +6,38 @@
   @apply max-h-[32rem] overflow-y-auto;
 }
 
+/* Fedi design system, operator Support chat: 12px between messages. */
+.thread {
+  @apply flex flex-col gap-3;
+}
+
 .item {
-  @apply flex flex-col;
+  @apply grid gap-3;
 }
 
-/* Fedi app chat spacing: 6px within one sender's run, 12px between senders. */
-.item[data-spacing="run"] {
-  @apply mt-1.5;
+.day {
+  @apply justify-self-center text-xs text-gray-500;
 }
 
-.item[data-spacing="turn"] {
-  @apply mt-3;
+.row {
+  @apply flex items-end;
 }
 
-.item[data-author="operator"] {
-  @apply items-end;
+.item[data-author="operator"] .row {
+  @apply justify-end;
 }
 
-.item[data-author="fedi"] {
-  @apply items-start;
+.avatar {
+  @apply mr-2 grid size-8 flex-none place-items-center rounded-full bg-gradient-to-br from-warnSoft to-infoSoft p-1;
 }
 
-.time {
-  @apply self-center p-4 text-[10px] text-gray-500;
+.avatar img {
+  @apply size-full object-contain;
 }
 
-/* The Fedi app's text bubble, with the tail corner on the sender's side. */
+/* The base chat bubble, with the tail corner on the sender's side. */
 .bubble {
-  @apply w-fit max-w-[90%] whitespace-pre-wrap break-words rounded-card p-2 text-sm font-medium leading-5;
+  @apply grid max-w-[72%] gap-1 rounded-2xl px-4 py-3;
 }
 
 .item[data-author="operator"] .bubble {
@@ -41,7 +45,15 @@
 }
 
 .item[data-author="fedi"] .bubble {
-  @apply rounded-bl bg-gray-150 text-ink;
+  @apply rounded-bl bg-gray-50 text-ink;
+}
+
+.body {
+  @apply whitespace-pre-wrap break-words text-sm leading-5;
+}
+
+.time {
+  @apply justify-self-end text-xs opacity-70;
 }
 
 .srOnly {

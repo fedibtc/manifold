@@ -379,6 +379,8 @@ export interface SupportMessage {
   body: string;
   // Unix seconds, as the author stated it.
   created_at: number;
+  // A Fedi message the operator has not read.
+  unread: boolean;
 }
 export interface SupportChatResponse {
   // False while the deployment has no Fedi support identity.
