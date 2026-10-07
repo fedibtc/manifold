@@ -8,7 +8,7 @@ export const FleetStarting = () => (
       <h1 className={styles.title}>Manifold Fedimint Guardian is starting</h1>
 
       <p className={styles.introText}>
-        Your guardians and seats are safe. The dashboard opens when the fleet is ready.
+        Your guardians and seats are safe. The dashboard opens when this host is ready.
       </p>
     </div>
   </div>

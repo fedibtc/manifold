@@ -11,7 +11,7 @@ it('should say the guardians and seats are safe while the fleet starts', () => {
   render(<FleetStarting />);
 
   screen.getByText(
-    'Your guardians and seats are safe. The dashboard opens when the fleet is ready.'
+    'Your guardians and seats are safe. The dashboard opens when this host is ready.'
   );
 });
 
