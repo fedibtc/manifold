@@ -984,3 +984,64 @@ fn publish_succeeds_on_one_ack_and_fails_on_none() {
     };
     validate_publish_output(none_accepted).expect_err("no ack fails the publish");
 }
+
+/// The relay closes the first subscription request on a connection that
+/// stays open, then answers the same subscription, sent again, with an event.
+#[tokio::test]
+async fn subscribe_sends_a_closed_subscription_again() {
+    use futures_util::SinkExt;
+    use tokio_tungstenite::tungstenite::Message;
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("test relay binds");
+    let url = format!(
+        "ws://{}",
+        listener.local_addr().expect("test relay has an address")
+    );
+    let event = signed_text_event("after the relay closed the subscription");
+    let served: serde_json::Value =
+        serde_json::from_str(&event.as_json()).expect("event serializes");
+    tokio::spawn(async move {
+        let (stream, _) = listener.accept().await.expect("client connects");
+        let mut socket = tokio_tungstenite::accept_async(stream)
+            .await
+            .expect("websocket handshake");
+        let mut requests = 0;
+        while let Some(Ok(message)) = socket.next().await {
+            let Message::Text(text) = message else {
+                continue;
+            };
+            let request: serde_json::Value =
+                serde_json::from_str(&text).expect("client sends JSON");
+            if request[0] != "REQ" {
+                continue;
+            }
+            requests += 1;
+            let reply = if requests == 1 {
+                serde_json::json!(["CLOSED", request[1], "error: try again later"])
+            } else {
+                serde_json::json!(["EVENT", request[1], served])
+            };
+            socket
+                .send(Message::text(reply.to_string()))
+                .await
+                .expect("relay replies");
+        }
+    });
+
+    let client = NostrRelayClient::connect(&url, Keys::generate(), Duration::from_secs(5))
+        .await
+        .expect("client connects to the test relay");
+    let live = client
+        .subscribe_resubscribing_after(Filter::new(), Duration::from_millis(100))
+        .await
+        .expect("subscription is sent");
+    let mut live = std::pin::pin!(live);
+
+    let delivered = tokio::time::timeout(Duration::from_secs(5), live.next())
+        .await
+        .expect("the subscription is sent again after the relay closed it")
+        .expect("the stream stays open");
+    assert_eq!(delivered.id, event.id);
+}
