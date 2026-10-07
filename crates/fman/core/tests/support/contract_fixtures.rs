@@ -353,7 +353,14 @@ fn after(request: &AdminRequest) -> Option<AdminRequest> {
             seat_id: seat_id.clone(),
         },
         AdminRequest::DecommissionSeat { .. } => AdminRequest::ReenrollTelemetry,
-        AdminRequest::ReenrollTelemetry => AdminRequest::GuardianFees {
+        AdminRequest::ReenrollTelemetry => AdminRequest::SupportChat,
+        AdminRequest::SupportChat => AdminRequest::SendSupportMessage {
+            body: "Seat 2 stopped after the update.".to_owned(),
+        },
+        AdminRequest::SendSupportMessage { .. } => AdminRequest::MarkSupportRead {
+            ids: vec!["c".repeat(64)],
+        },
+        AdminRequest::MarkSupportRead { .. } => AdminRequest::GuardianFees {
             seat_id: seat_id.clone(),
             limit: Some(20),
         },
@@ -399,6 +406,9 @@ pub fn request_name(request: &AdminRequest) -> &'static str {
         AdminRequest::SeatStatus { .. } => "SeatStatus",
         AdminRequest::DecommissionSeat { .. } => "DecommissionSeat",
         AdminRequest::ReenrollTelemetry => "ReenrollTelemetry",
+        AdminRequest::SupportChat => "SupportChat",
+        AdminRequest::SendSupportMessage { .. } => "SendSupportMessage",
+        AdminRequest::MarkSupportRead { .. } => "MarkSupportRead",
         AdminRequest::GuardianFees { .. } => "GuardianFees",
         AdminRequest::CollectGuardianFees { .. } => "CollectGuardianFees",
         AdminRequest::SweepGuardianFees { .. } => "SweepGuardianFees",

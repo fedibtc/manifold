@@ -106,6 +106,12 @@ pub struct SetupPaymentFederationsContent {
     /// stay admissible.
     #[serde(default = "default_min_fee_ppm")]
     pub min_fee_ppm: u64,
+
+    /// Nostr public key of Fedi support, which FMan operators chat
+    /// with over NIP-17. Optional on the wire: absent, the environment
+    /// profile's support key applies.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub support_nostr_pubkey: Option<nostr::PublicKey>,
 }
 
 /// Semantically admitted common payment-federation set.
@@ -118,6 +124,7 @@ pub struct AdmittedSetupPaymentFederations {
     federations: BTreeMap<FederationId, InviteCode>,
     telemetry_registration_url: Url,
     min_fee_ppm: u64,
+    support_nostr_pubkey: Option<nostr::PublicKey>,
 }
 
 impl AdmittedSetupPaymentFederations {
@@ -183,6 +190,7 @@ impl AdmittedSetupPaymentFederations {
             federations,
             telemetry_registration_url: content.telemetry_registration_url,
             min_fee_ppm: content.min_fee_ppm,
+            support_nostr_pubkey: content.support_nostr_pubkey,
         })
     }
 
@@ -228,6 +236,12 @@ impl AdmittedSetupPaymentFederations {
     #[must_use]
     pub fn min_fee_ppm(&self) -> u64 {
         self.min_fee_ppm
+    }
+
+    /// Return the Fedi support key FMan operators chat with, if published.
+    #[must_use]
+    pub fn support_nostr_pubkey(&self) -> Option<&nostr::PublicKey> {
+        self.support_nostr_pubkey.as_ref()
     }
 }
 

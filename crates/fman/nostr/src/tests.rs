@@ -284,7 +284,7 @@ async fn newer_authorization_replaces_durable_and_live_state_without_rollback() 
         .unwrap();
     let keys = Keys::generate();
     let holder = Keys::generate();
-    let store = Arc::new(FleetHolderAuthorizationStore::new(db));
+    let store = Arc::new(FleetHolderAuthorizationStore::new(db.clone()));
     let service = FleetManagerNostr::new(
         keys.clone(),
         None,
@@ -292,6 +292,7 @@ async fn newer_authorization_replaces_durable_and_live_state_without_rollback() 
         None,
         ManifoldEnvironment::Development.profile().unwrap(),
         store.clone(),
+        db,
     );
     // The replacement comes from another holder with another credential: the
     // FMan keeps exactly one authorization, not one per credential.
@@ -356,7 +357,8 @@ async fn service_exposes_onboarding_info_and_status_watcher() {
         Vec::new(),
         None,
         ManifoldEnvironment::Development.profile().unwrap(),
-        Arc::new(FleetHolderAuthorizationStore::new(db)),
+        Arc::new(FleetHolderAuthorizationStore::new(db.clone())),
+        db,
     );
 
     assert_eq!(
@@ -466,4 +468,237 @@ fn a_retained_authorization_reports_itself_with_no_check_time() {
             checked_at: None,
         }
     );
+}
+
+#[tokio::test]
+async fn support_thread_admits_only_the_fman_fedi_room() {
+    let me = Keys::generate();
+    let fedi = Keys::generate();
+    let stranger = Keys::generate();
+    // Every wrap here is addressed to this FMan, as its inbox reads them.
+    let wrap = |author: &Keys, receivers: Vec<PublicKey>, kind: Kind| {
+        let author = author.clone();
+        let me = me.public_key();
+        async move {
+            let mut rumor = EventBuilder::new(kind, "hello")
+                .tags(receivers.into_iter().map(Tag::public_key))
+                .build(author.public_key());
+            let id = rumor.id();
+            let event = EventBuilder::gift_wrap(&author, &me, rumor, [])
+                .await
+                .unwrap();
+            (id, event)
+        }
+    };
+
+    // Fedi's reply and this FMan's own copy both join, under the rumor id.
+    let (id, from_fedi) = wrap(&fedi, vec![me.public_key()], Kind::PrivateDirectMessage).await;
+    let admitted = support::admit(&me, fedi.public_key(), &from_fedi)
+        .await
+        .unwrap();
+    assert!(admitted.from_fedi);
+    assert_eq!(admitted.rumor_id, id.to_hex());
+    assert_eq!(admitted.body, "hello");
+    let rumor = EventBuilder::private_msg_rumor(fedi.public_key(), "mine").build(me.public_key());
+    let own_copy = EventBuilder::gift_wrap(&me, &me.public_key(), rumor, [])
+        .await
+        .unwrap();
+    assert!(
+        !support::admit(&me, fedi.public_key(), &own_copy)
+            .await
+            .unwrap()
+            .from_fedi
+    );
+
+    // A stranger, a group room including Fedi, and a reaction stay out.
+    for (author, receivers, kind) in [
+        (&stranger, vec![me.public_key()], Kind::PrivateDirectMessage),
+        (
+            &fedi,
+            vec![me.public_key(), stranger.public_key()],
+            Kind::PrivateDirectMessage,
+        ),
+        (&fedi, vec![me.public_key()], Kind::Reaction),
+    ] {
+        let (_, event) = wrap(author, receivers, kind).await;
+        assert_eq!(support::admit(&me, fedi.public_key(), &event).await, None);
+    }
+
+    // A stranger's seal around a rumor that claims Fedi wrote it.
+    let forged =
+        EventBuilder::private_msg_rumor(me.public_key(), "trust me").build(fedi.public_key());
+    let forged = EventBuilder::gift_wrap(&stranger, &me.public_key(), forged, [])
+        .await
+        .unwrap();
+    assert_eq!(support::admit(&me, fedi.public_key(), &forged).await, None);
+}
+
+#[tokio::test]
+async fn support_verbs_answer_from_the_fleet_database() {
+    let temp = tempfile::TempDir::new().unwrap();
+    let db = fman_core::db::Db::open(temp.path()).await.unwrap();
+    let service = FleetManagerNostr::new(
+        Keys::generate(),
+        None,
+        Vec::new(),
+        None,
+        // Production has no profile support key, so only a policy opens the chat.
+        ManifoldEnvironment::Production.profile().unwrap(),
+        Arc::new(FleetHolderAuthorizationStore::new(db.clone())),
+        db.clone(),
+    );
+    let send = |body: String| service.answer(AdminRequest::SendSupportMessage { body });
+
+    // The body is checked before anything else, and its length counts
+    // characters, not bytes: 4000 two-byte characters pass to the next check.
+    for (body, refusal) in [
+        ("  \n".to_owned(), "Write a message first."),
+        (
+            "é".repeat(4001),
+            "A message can have at most 4000 characters.",
+        ),
+        (
+            "é".repeat(4000),
+            "Fedi support chat is not available for this deployment yet.",
+        ),
+    ] {
+        assert_eq!(send(body).await.unwrap_err().to_string(), refusal);
+    }
+    let chat = service.answer(AdminRequest::SupportChat).await.unwrap();
+    assert_eq!(chat["available"], false);
+
+    // The admitted policy names Fedi support; sending then waits on relays.
+    admit_support_policy(&service, Some(Keys::generate().public_key()));
+    assert_eq!(
+        send("hello".to_owned()).await.unwrap_err().to_string(),
+        "The Nostr relays are not connected yet. Try again in a minute."
+    );
+
+    // Relays repeat messages, and two can share a second.
+    let row = |id: char, from_fedi: bool, created_at: u64| fman_core::db::SupportRow {
+        rumor_id: id.to_string().repeat(64),
+        from_fedi,
+        body: id.to_string(),
+        created_at,
+        // Storing ignores it: a new Fedi message is always unread.
+        unread: false,
+    };
+    for message in [
+        row('c', true, 100),
+        row('b', true, 100),
+        row('a', false, 50),
+        row('c', true, 100),
+    ] {
+        db.record_support_message(&message).await.unwrap();
+    }
+    let chat = service.answer(AdminRequest::SupportChat).await.unwrap();
+    assert_eq!(chat["available"], true);
+    assert_eq!(chat["unread"], 2, "only Fedi's messages are unread");
+    assert_eq!(
+        chat["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|message| (
+                message["body"].as_str().unwrap(),
+                message["author"].as_str().unwrap()
+            ))
+            .collect::<Vec<_>>(),
+        [("a", "operator"), ("c", "fedi"), ("b", "fedi")],
+        "oldest first, then in arrival order, each message once"
+    );
+
+    let unread_flags = |chat: &serde_json::Value| {
+        chat["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|message| {
+                (
+                    message["body"].as_str().unwrap().to_owned(),
+                    message["unread"] == true,
+                )
+            })
+            .collect::<Vec<_>>()
+    };
+    let flags = |list: &[(&str, bool)]| {
+        list.iter()
+            .map(|(body, unread)| ((*body).to_owned(), *unread))
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        unread_flags(&chat),
+        flags(&[("a", false), ("c", true), ("b", true)])
+    );
+
+    // A mark reads exactly the named messages: not another in the same
+    // second, nor one stored later that sorts earlier.
+    let mark = |ids: &[char]| {
+        service.answer(AdminRequest::MarkSupportRead {
+            ids: ids.iter().map(|id| id.to_string().repeat(64)).collect(),
+        })
+    };
+    assert_eq!(
+        mark(&['x']).await.unwrap()["unread"],
+        2,
+        "an unknown id marks nothing"
+    );
+    assert_eq!(
+        mark(&['c', 'a']).await.unwrap()["unread"],
+        1,
+        "b shares c's second"
+    );
+    db.record_support_message(&row('d', true, 90))
+        .await
+        .unwrap();
+    assert_eq!(mark(&['b']).await.unwrap()["unread"], 1, "d sorts before b");
+    let chat = service.answer(AdminRequest::SupportChat).await.unwrap();
+    assert_eq!(
+        unread_flags(&chat),
+        flags(&[("a", false), ("d", true), ("c", false), ("b", false)])
+    );
+    assert_eq!(mark(&[]).await.unwrap()["unread"], 1);
+}
+
+/// Admit a setup-payment policy that names `support`, or no support key.
+fn admit_support_policy(service: &FleetManagerNostr, support: Option<PublicKey>) {
+    let mut policy = serde_json::json!({
+        "version": 1,
+        "fman_version": "0.1.0",
+        "federations": [],
+        "telemetry_registration_url": "https://push.fedi.example/v1/telemetry/registrations",
+    });
+    if let Some(support) = support {
+        policy["support_nostr_pubkey"] = support.to_hex().into();
+    }
+    service.inner.setup_payment_federations.send_replace(Some(
+        AdmittedSetupPaymentFederations::parse(policy.to_string().as_bytes()).unwrap(),
+    ));
+}
+
+#[tokio::test]
+async fn the_policy_support_key_overrides_the_profile_key() {
+    let temp = tempfile::TempDir::new().unwrap();
+    let db = fman_core::db::Db::open(temp.path()).await.unwrap();
+    let profile = ManifoldEnvironment::Development.profile().unwrap();
+    let pinned = *profile.support().expect("development pins a support key");
+    let service = FleetManagerNostr::new(
+        Keys::generate(),
+        None,
+        Vec::new(),
+        None,
+        profile,
+        Arc::new(FleetHolderAuthorizationStore::new(db.clone())),
+        db,
+    );
+    assert_eq!(service.inner.support(), Some(pinned), "no policy yet");
+    admit_support_policy(&service, None);
+    assert_eq!(
+        service.inner.support(),
+        Some(pinned),
+        "the policy names no key"
+    );
+    let rotated = Keys::generate().public_key();
+    admit_support_policy(&service, Some(rotated));
+    assert_eq!(service.inner.support(), Some(rotated));
 }

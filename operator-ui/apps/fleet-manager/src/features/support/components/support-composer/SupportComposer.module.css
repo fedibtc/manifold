@@ -1,0 +1,25 @@
+/* The Fedi app's message input: a divider above, a borderless box, a send arrow. */
+.form {
+  @apply uStack1 border-t border-gray-150 p-2;
+}
+
+.row {
+  @apply flex items-end gap-2;
+}
+
+.textarea {
+  @apply max-h-[120px] w-full resize-none border-0 p-1 text-sm focus:outline-none;
+  field-sizing: content;
+}
+
+.send {
+  @apply shrink-0 text-info hover:brightness-125 disabled:pointer-events-none disabled:text-gray-500;
+}
+
+.sendIcon {
+  @apply size-8;
+}
+
+.error {
+  @apply uFieldError;
+}

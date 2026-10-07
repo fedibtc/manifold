@@ -102,6 +102,12 @@ pub enum AdminRequest {
     /// Rotate the FMan-wide telemetry capability and immediately schedule a
     /// fresh verified registration without returning the bearer.
     ReenrollTelemetry,
+    /// The operator's chat with Fedi support (SPEC-fman-support-chat).
+    SupportChat,
+    /// Send the operator's message to Fedi support.
+    SendSupportMessage { body: String },
+    /// Mark read the Fedi messages with these rumor ids.
+    MarkSupportRead { ids: Vec<String> },
     /// Guardian-fee revenue for one seat's federation: the account payers
     /// remit to, current balances, and recent remittances with their
     /// breakdown.
@@ -173,6 +179,14 @@ pub enum AdminRequest {
     },
 }
 
+/// The operator's chat with Fedi support, which the Nostr boundary owns
+/// (SPEC-fman-support-chat). Dispatch forwards the support verbs to it
+/// unchanged.
+#[async_trait::async_trait]
+pub trait SupportChat: Send + Sync {
+    async fn answer(&self, request: AdminRequest) -> anyhow::Result<Value>;
+}
+
 /// Which operator vocabulary both listeners answer from right now.
 #[derive(Clone)]
 pub(crate) enum Phase {
@@ -184,6 +198,7 @@ pub(crate) enum Phase {
         fleet: Arc<Fleet>,
         directory: tokio::sync::watch::Receiver<DirectoryPresence>,
         authorizations: Arc<dyn crate::directory::HolderAuthorizationRefresher>,
+        support: Arc<dyn SupportChat>,
     },
 }
 
@@ -206,11 +221,13 @@ impl OperatorPhase {
         fleet: Arc<Fleet>,
         directory: tokio::sync::watch::Receiver<DirectoryPresence>,
         authorizations: Arc<dyn crate::directory::HolderAuthorizationRefresher>,
+        support: Arc<dyn SupportChat>,
     ) -> Self {
         Self(Arc::new(std::sync::Mutex::new(Phase::Fleet {
             fleet,
             directory,
             authorizations,
+            support,
         })))
     }
 
@@ -220,11 +237,13 @@ impl OperatorPhase {
         fleet: Arc<Fleet>,
         directory: tokio::sync::watch::Receiver<DirectoryPresence>,
         authorizations: Arc<dyn crate::directory::HolderAuthorizationRefresher>,
+        support: Arc<dyn SupportChat>,
     ) {
         *self.0.lock().expect("a phase writer panicked") = Phase::Fleet {
             fleet,
             directory,
             authorizations,
+            support,
         };
     }
 
@@ -237,7 +256,17 @@ impl OperatorPhase {
                 fleet,
                 directory,
                 authorizations,
-            } => dispatch(&fleet, &directory, authorizations.as_ref(), request).await,
+                support,
+            } => {
+                dispatch(
+                    &fleet,
+                    &directory,
+                    authorizations.as_ref(),
+                    support.as_ref(),
+                    request,
+                )
+                .await
+            }
         }
     }
 
@@ -423,6 +452,7 @@ pub(crate) async fn dispatch(
     fleet: &Fleet,
     directory: &tokio::sync::watch::Receiver<DirectoryPresence>,
     authorizations: &dyn crate::directory::HolderAuthorizationRefresher,
+    support: &dyn SupportChat,
     request: AdminRequest,
 ) -> anyhow::Result<Value> {
     match request {
@@ -491,6 +521,9 @@ pub(crate) async fn dispatch(
             fleet.reenroll_telemetry().await?;
             Ok(reenroll_telemetry_json())
         }
+        request @ (AdminRequest::SupportChat
+        | AdminRequest::SendSupportMessage { .. }
+        | AdminRequest::MarkSupportRead { .. }) => support.answer(request).await,
         AdminRequest::GuardianFees { seat_id, limit } => {
             let status = fleet.guardian_fee_status(&seat_id).await?;
             let policy = fleet.guardian_fee_policy(&seat_id).await;

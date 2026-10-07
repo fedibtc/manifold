@@ -222,6 +222,52 @@ impl NostrRelayClient {
         .map_err(|source| NostrClientError::Fetch { source })
     }
 
+    /// Keep a subscription open until the stream is dropped and yield every
+    /// event the relays deliver for it.
+    ///
+    /// The SDK sends the subscription again when a relay reconnects, and the
+    /// relay then replays the stored events the filter matches. Events
+    /// dropped when the notification channel lags are lost. Events are not
+    /// deduplicated; each relay delivers its own copy.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the subscription cannot be sent.
+    pub async fn subscribe(
+        &self,
+        filter: Filter,
+    ) -> NostrClientResult<impl Stream<Item = Event> + use<>> {
+        // Listen before subscribing so no early event is missed.
+        let notifications = BroadcastStream::new(self.client.notifications());
+        let subscription_id = SubscriptionId::generate();
+        self.client
+            .subscribe_with_id(subscription_id.clone(), filter, None)
+            .await
+            .map_err(|source| NostrClientError::Fetch { source })?;
+        let client = self.client.clone();
+        let cancel_subscription_id = subscription_id.clone();
+        let cleanup = CleanupOnDrop::new(move || {
+            drop(spawn("unsubscribe Nostr subscription", async move {
+                client.unsubscribe(&cancel_subscription_id).await;
+            }));
+        });
+        Ok(notifications.filter_map(move |notification| {
+            let _cleanup = &cleanup;
+            let event = match notification {
+                Ok(RelayPoolNotification::Message {
+                    message:
+                        RelayMessage::Event {
+                            subscription_id: delivered_to,
+                            event,
+                        },
+                    ..
+                }) if delivered_to.as_ref() == &subscription_id => Some(event.into_owned()),
+                _ => None,
+            };
+            core::future::ready(event)
+        }))
+    }
+
     /// Fetch a complete, bounded stored-event result before an absolute deadline.
     ///
     /// Unlike [`Self::fetch_events_capped`], this security-sensitive variant

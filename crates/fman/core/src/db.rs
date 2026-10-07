@@ -734,6 +734,92 @@ pub(super) fn parse_offer_epoch(bytes: Vec<u8>) -> Result<OfferEpoch, DbError> {
     Ok(OfferEpoch::from_bytes(bytes))
 }
 
+/// One stored message of the operator's chat with Fedi support. The Nostr
+/// boundary owns the chat (SPEC-fman-support-chat); this is only its row.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SupportRow {
+    /// The NIP-17 rumor id, which every copy of the message shares.
+    pub rumor_id: String,
+    pub from_fedi: bool,
+    pub body: String,
+    /// Unix seconds, as the author stated it.
+    pub created_at: u64,
+    /// A Fedi message the operator has not read. Storing a row ignores it:
+    /// every new Fedi message starts unread.
+    pub unread: bool,
+}
+
+/// SQLite stores signed integers. A timestamp past `i64::MAX` is nonsense from
+/// a relay, so it clamps: it then sorts last instead of failing the write.
+fn stored_secs(secs: u64) -> i64 {
+    i64::try_from(secs).unwrap_or(i64::MAX)
+}
+
+impl Db {
+    /// Record a support message unless the thread already holds it.
+    pub async fn record_support_message(&self, row: &SupportRow) -> Result<(), DbError> {
+        sqlx::query(
+            "INSERT INTO support_messages (rumor_id, from_fedi, body, created_at) \
+             VALUES (?, ?, ?, ?) ON CONFLICT (rumor_id) DO NOTHING",
+        )
+        .bind(&row.rumor_id)
+        .bind(row.from_fedi)
+        .bind(&row.body)
+        .bind(stored_secs(row.created_at))
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// The whole support thread, oldest first; a same-second tie keeps
+    /// arrival order.
+    pub async fn support_messages(&self) -> Result<Vec<SupportRow>, DbError> {
+        let rows: Vec<(String, bool, String, i64, bool)> = sqlx::query_as(
+            "SELECT rumor_id, from_fedi, body, created_at, from_fedi = 1 AND read = 0 \
+             FROM support_messages ORDER BY created_at, rowid",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(
+                |(rumor_id, from_fedi, body, created_at, unread)| SupportRow {
+                    rumor_id,
+                    from_fedi,
+                    body,
+                    created_at: u64::try_from(created_at)
+                        .expect("created_at is non-negative by schema CHECK"),
+                    unread,
+                },
+            )
+            .collect())
+    }
+
+    /// Fedi support messages the operator has not read.
+    pub async fn support_unread(&self) -> Result<u64, DbError> {
+        let unread: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM support_messages WHERE from_fedi = 1 AND read = 0",
+        )
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(u64::try_from(unread).expect("a count is non-negative"))
+    }
+
+    /// Mark read the Fedi support messages with these rumor ids: the ones
+    /// the operator was shown. Unknown ids mark nothing, and nothing goes back
+    /// to unread.
+    pub async fn mark_support_read(&self, rumor_ids: &[String]) -> Result<(), DbError> {
+        sqlx::query(
+            "UPDATE support_messages SET read = 1 WHERE from_fedi = 1 \
+             AND rumor_id IN (SELECT value FROM json_each(?))",
+        )
+        .bind(serde_json::to_string(rumor_ids).expect("strings serialize"))
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+}
+
 #[derive(Debug, Error)]
 pub enum DbError {
     #[error(transparent)]

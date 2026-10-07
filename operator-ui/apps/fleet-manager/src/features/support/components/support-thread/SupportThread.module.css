@@ -1,0 +1,61 @@
+.empty {
+  @apply uMutedSm py-8 text-center;
+}
+
+.scroller {
+  @apply max-h-[32rem] overflow-y-auto;
+}
+
+/* Fedi design system, operator Support chat: 12px between messages. */
+.thread {
+  @apply flex flex-col gap-3;
+}
+
+.item {
+  @apply grid gap-3;
+}
+
+.day {
+  @apply justify-self-center text-xs text-gray-500;
+}
+
+.row {
+  @apply flex items-end;
+}
+
+.item[data-author="operator"] .row {
+  @apply justify-end;
+}
+
+.avatar {
+  @apply mr-2 grid size-8 flex-none place-items-center rounded-full bg-gradient-to-br from-warnSoft to-infoSoft p-1;
+}
+
+.avatar img {
+  @apply size-full object-contain;
+}
+
+/* The base chat bubble, with the tail corner on the sender's side. */
+.bubble {
+  @apply grid max-w-[72%] gap-1 rounded-2xl px-4 py-3;
+}
+
+.item[data-author="operator"] .bubble {
+  @apply rounded-br bg-info text-surface;
+}
+
+.item[data-author="fedi"] .bubble {
+  @apply rounded-bl bg-gray-50 text-ink;
+}
+
+.body {
+  @apply whitespace-pre-wrap break-words text-sm leading-5;
+}
+
+.time {
+  @apply justify-self-end text-xs opacity-70;
+}
+
+.srOnly {
+  @apply sr-only;
+}

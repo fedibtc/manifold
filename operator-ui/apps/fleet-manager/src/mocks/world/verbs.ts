@@ -361,6 +361,56 @@ const reenrollTelemetry: Verb<'ReenrollTelemetry'> = () => ({
   telemetry_reenrollment: 'scheduled'
 });
 
+// The daemon fills the thread from relays; the mock world holds it.
+const MAX_SUPPORT_MESSAGE_CHARS = 4000;
+
+const supportMessages = () => {
+  const state = getState();
+  return state.supportMessages.map((message) => ({
+    ...message,
+    unread: message.author === 'fedi' && !state.supportReadIds.includes(message.id)
+  }));
+};
+
+const supportUnread = () => supportMessages().filter((message) => message.unread).length;
+
+const supportChat: Verb<'SupportChat'> = () => ({
+  available: getState().supportAvailable,
+  messages: supportMessages(),
+  unread: supportUnread()
+});
+
+const sendSupportMessage: Verb<'SendSupportMessage'> = ({ body }) => {
+  const text = body.trim();
+  if (text.length === 0) throw new Error('Write a message first.');
+  if ([...text].length > MAX_SUPPORT_MESSAGE_CHARS) {
+    throw new Error(`A message can have at most ${MAX_SUPPORT_MESSAGE_CHARS} characters.`);
+  }
+  const state = getState();
+  const message = {
+    id: (state.supportMessages.length + 1).toString(16).padStart(64, '0'),
+    author: 'operator' as const,
+    body: text,
+    created_at: Math.floor(Date.now() / 1000)
+  };
+  state.supportMessages.push(message);
+  return { message: { ...message, unread: false } };
+};
+
+const markSupportRead: Verb<'MarkSupportRead'> = ({ ids }) => {
+  const state = getState();
+  for (const message of state.supportMessages) {
+    if (
+      message.author === 'fedi' &&
+      ids.includes(message.id) &&
+      !state.supportReadIds.includes(message.id)
+    ) {
+      state.supportReadIds.push(message.id);
+    }
+  }
+  return { unread: supportUnread() };
+};
+
 const showMnemonic: Verb<'ShowMnemonic'> = () => ({
   mnemonic:
     'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about'
@@ -440,6 +490,9 @@ const fleetHandlers: VerbTable<Exclude<AdminRequestName, OnboardingVerbName>> = 
   SeatStatus: seatStatus,
   DecommissionSeat: decommissionSeat,
   ReenrollTelemetry: reenrollTelemetry,
+  SupportChat: supportChat,
+  SendSupportMessage: sendSupportMessage,
+  MarkSupportRead: markSupportRead,
   ShowPlans: showPlans,
   SetPrice: setPrice,
   ShowCapacity: showCapacity,
@@ -475,7 +528,9 @@ const mutatingVerbNames: readonly AdminRequestName[] = [
   'OnboardFromBackup',
   'RefreshHolderAuthorizations',
   'ConfigureInitialOffer',
-  'SetCapacity'
+  'SetCapacity',
+  'SendSupportMessage',
+  'MarkSupportRead'
 ];
 
 // Exposed over `string` because the caller holds a name read off the wire.

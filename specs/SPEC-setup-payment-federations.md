@@ -111,12 +111,19 @@ replacement ordering as the new shared high-water mark.
   string;
 - `federations`, an unordered array of public Fedimint invite strings;
 - `telemetry_registration_url`, an absolute HTTPS URL with a host and no
-  username, password, query, or fragment; and
-- `min_fee_ppm`, the smallest guardian fee rate an FI may propose, in ppm. The
-  only optional field: absent means 1,500 (0.15%). It bounds *new* proposals
+  username, password, query, or fragment;
+- `min_fee_ppm`, the smallest guardian fee rate an FI may propose, in ppm.
+  Optional: absent means 1,500 (0.15%). It bounds *new* proposals
   only — each FMan refuses one below it, while a rate a federation already
   adopted stays valid to carry forward and still reports as configured
-  ([REQ-guardian-fee-remittance](./REQ-guardian-fee-remittance.md)).
+  ([REQ-guardian-fee-remittance](./REQ-guardian-fee-remittance.md)); and
+- `support_nostr_pubkey`, the Fedi support key FMan operators chat with
+  ([SPEC-fman-support-chat](../crates/fman/specs/SPEC-fman-support-chat.md)),
+  as a Nostr public key. Optional: absent means the FMan uses the key its
+  environment profile pins. A present key overrides the profile key, so a
+  newer publication with a different key rotates it. Consumers older than
+  this field reject a publication that sets it, so Fedi sets it only after
+  enough consumers have upgraded.
 
 Consumers ignore unknown content fields so optional additions remain admissible
 without a coordinated upgrade. A policy change that consumers must understand

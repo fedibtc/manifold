@@ -313,6 +313,16 @@ the fleet.
   A concurrent refresh is refused rather than queued; relay work has a total
   deadline below the browser request timeout. Request cancellation does not interrupt
   durable merge through live publication. Ordinary status reads do not fetch relays.
+- `SupportChat`, `SendSupportMessage`, and `MarkSupportRead` are available
+  after the fleet opens and serve the operator's chat with Fedi support
+  ([SPEC-fman-support-chat](SPEC-fman-support-chat.md)). `SupportChat`
+  returns `{available, messages, unread}` from the database without a relay
+  read. `SendSupportMessage` publishes before it answers `{message}` and
+  returns an operation error when no relay accepts the message or the
+  admitted setup-payment policy names no Fedi support key. Each message
+  carries `unread`, true for a Fedi message not yet marked read.
+  `MarkSupportRead` takes the rumor ids of the messages the operator saw as
+  `ids`, marks those Fedi messages read, and returns `{unread}`.
 - `ShowMnemonic` returns the root mnemonic phrase as `mnemonic`, for the
   operator's recovery material (the full backup also requires the FMan
   database and each running seat's non-derivable fedimintd state,

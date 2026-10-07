@@ -32,6 +32,17 @@ impl crate::directory::HolderAuthorizationRefresher for RefreshAuthorizations {
     }
 }
 
+/// Answers each support verb with the request it was handed, so a test
+/// sees exactly what the dispatcher forwarded.
+pub(crate) struct EchoSupport;
+
+#[async_trait::async_trait]
+impl super::SupportChat for EchoSupport {
+    async fn answer(&self, request: AdminRequest) -> anyhow::Result<serde_json::Value> {
+        Ok(serde_json::to_value(request)?)
+    }
+}
+
 #[test]
 fn malformed_seat_id_is_an_unparsable_request() {
     let error = serde_json::from_value::<AdminRequest>(serde_json::json!({
@@ -252,6 +263,7 @@ async fn admin_socket_round_trips_operator_verbs() {
         fleet.clone(),
         presence,
         Arc::new(RefreshAuthorizations(presence_tx.clone())),
+        Arc::new(EchoSupport),
     );
     let server = serve(&phase, &path).unwrap();
 
@@ -259,6 +271,20 @@ async fn admin_socket_round_trips_operator_verbs() {
         let path = path.clone();
         async move { super::request(&path, &request).await.unwrap() }
     };
+
+    // Support verbs pass to the chat owner unchanged.
+    for request in [
+        AdminRequest::SupportChat,
+        AdminRequest::SendSupportMessage {
+            body: "  Seat 2 is down\n".into(),
+        },
+        AdminRequest::MarkSupportRead {
+            ids: vec!["c".repeat(64)],
+        },
+    ] {
+        let forwarded = serde_json::to_value(&request).unwrap();
+        assert_eq!(ask(request).await.unwrap(), forwarded);
+    }
 
     // Replace and read back the offer.
     let plans = ask(AdminRequest::SetPrice {
@@ -413,6 +439,7 @@ async fn admin_socket_round_trips_operator_verbs() {
             fleet,
             presence_tx.subscribe(),
             Arc::new(RefreshAuthorizations(presence_tx.clone())),
+            Arc::new(EchoSupport),
         ),
         crate::admin_http::AdminHttpAuth::TrustedProxy,
     )

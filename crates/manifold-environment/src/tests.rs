@@ -117,6 +117,25 @@ fn development_and_staging_pin_distinct_guardian_verification_fee_accounts() {
 }
 
 #[test]
+fn support_identity_is_a_known_test_key_outside_production() {
+    let test_key = |secret: u8| {
+        let mut bytes = [0u8; 32];
+        bytes[31] = secret;
+        nostr::Keys::new(nostr::SecretKey::from_slice(&bytes).unwrap()).public_key()
+    };
+    let support = |environment: ManifoldEnvironment| {
+        environment
+            .profile_with_env(|_| None)
+            .unwrap()
+            .support()
+            .copied()
+    };
+    assert_eq!(support(ManifoldEnvironment::Development), Some(test_key(7)));
+    assert_eq!(support(ManifoldEnvironment::Staging), Some(test_key(8)));
+    assert_eq!(support(ManifoldEnvironment::Production), None);
+}
+
+#[test]
 fn production_profile_uses_fedi_app_production_relays() {
     let production = ManifoldEnvironment::Production
         .profile_with_env(|_| None)

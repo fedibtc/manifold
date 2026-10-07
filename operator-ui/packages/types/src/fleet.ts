@@ -370,6 +370,31 @@ export interface ReenrollTelemetryResponse {
   telemetry_reenrollment: 'scheduled';
 }
 export type RefreshHolderAuthorizationsResponse = OnboardingResponse;
+// The operator's NIP-17 chat with Fedi support (SPEC-fman-support-chat).
+export type SupportAuthor = 'operator' | 'fedi';
+export interface SupportMessage {
+  // The rumor id, shared by every copy of the message.
+  id: string;
+  author: SupportAuthor;
+  body: string;
+  // Unix seconds, as the author stated it.
+  created_at: number;
+  // A Fedi message the operator has not read.
+  unread: boolean;
+}
+export interface SupportChatResponse {
+  // False while the deployment has no Fedi support identity.
+  available: boolean;
+  // Oldest first.
+  messages: SupportMessage[];
+  unread: number;
+}
+export interface SendSupportMessageResponse {
+  message: SupportMessage;
+}
+export interface MarkSupportReadResponse {
+  unread: number;
+}
 export interface GuardianFeesResponse {
   seat_id: SeatId;
   federation_id: FederationId;
@@ -463,6 +488,9 @@ export interface AdminResponseByName {
   SeatStatus: SeatStatusResponse;
   DecommissionSeat: DecommissionSeatResponse;
   ReenrollTelemetry: ReenrollTelemetryResponse;
+  SupportChat: SupportChatResponse;
+  SendSupportMessage: SendSupportMessageResponse;
+  MarkSupportRead: MarkSupportReadResponse;
   GuardianFees: GuardianFeesResponse;
   CollectGuardianFees: CollectGuardianFeesResponse;
   SweepGuardianFees: SweepGuardianFeesResponse;
