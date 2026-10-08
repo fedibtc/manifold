@@ -3098,7 +3098,7 @@ async fn open_with_backup_recovery_hint(
 ) -> TestClient {
     let (payments, _) = TestPayments::new();
     let state = Arc::new(FmanState::default());
-    FiClient::open_with_manifold_profile(
+    FiClient::open_with_manifold_profile_and_recovery(
         database,
         TestIdentity,
         payments,

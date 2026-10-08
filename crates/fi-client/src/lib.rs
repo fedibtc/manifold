@@ -266,6 +266,37 @@ where
         consensus_reader: C,
         fi_fee_account_provider: impl FiFeeAccountProvider,
         profile: ManifoldEnvironmentProfile,
+    ) -> FiResult<Self> {
+        Self::open_with_manifold_profile_and_recovery(
+            database,
+            identity,
+            payments,
+            registry,
+            fman_connector,
+            peer_badge_verifier,
+            consensus_reader,
+            fi_fee_account_provider,
+            profile,
+            BackupRecoveryHint::Skip,
+        )
+        .await
+    }
+
+    /// Open with explicit restored-mnemonic provenance.
+    ///
+    /// A restored opening claims the mutation guard and publishes recovery
+    /// before returning. The client owns relay lookup and durable completion.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn open_with_manifold_profile_and_recovery(
+        database: Database,
+        identity: I,
+        payments: P,
+        registry: N,
+        fman_connector: F,
+        peer_badge_verifier: PeerBadgeVerifier,
+        consensus_reader: C,
+        fi_fee_account_provider: impl FiFeeAccountProvider,
+        profile: ManifoldEnvironmentProfile,
         recovery_hint: BackupRecoveryHint,
     ) -> FiResult<Self> {
         let setup_payment_publisher = profile.setup_payment_publisher().copied();
