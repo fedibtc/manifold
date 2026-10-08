@@ -4,9 +4,9 @@
 //! it sends one `DecommissionSeat` per recorded seat and
 //! reports what each MG said. It takes no driver lease, records nothing, and
 //! leaves local FA state exactly as it found it — a decommissioned federation
-//! still reads as formed until the caller overwrites it. Every
-//! MG outside development and staging refuses the underlying verb, and the
-//! seat is forfeited, exactly as an operator decommission would leave it.
+//! still reads as formed until the caller overwrites it. MGs below API
+//! version 3 refuse the underlying verb in production. An accepted request
+//! forfeits the seat, exactly as an operator decommission would leave it.
 
 use std::time::Duration;
 

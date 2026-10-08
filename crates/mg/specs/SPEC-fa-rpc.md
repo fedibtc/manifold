@@ -146,13 +146,14 @@ in-flight ceremony.
 Restart discards only the replaced child's staging state and never removes the
 final data directory. Running, `DataLoss`, and
 decommissioned seats refuse it. Standalone cancellation is deliberately absent;
-operator `Decommission` is the only release path in production. Development and
-staging additionally accept an FA-signed `DecommissionSeat`, which resolves the
+all environments accept an FA-signed `DecommissionSeat`, which resolves the
 seat through the same ownership-checked path as every other seat-scoped verb and
 then performs exactly the operator decommission. It is terminal and idempotent,
-reporting whether the seat was already decommissioned, and is refused as
-`UnsupportedVerb` in any other environment. It exists only to churn test
-federations
+reporting whether the durable terminal record already existed. That flag does
+not confirm that the guardian process has exited: an earlier call can persist
+the record and then fail to stop it. Seat records and guardian data remain
+retained, and no refund is issued. Production MGs below API version 3 return
+`UnsupportedVerb`; callers can repeat the request after an upgrade
 ([ARCH-manifold-guardian-product-boundary](./ARCH-manifold-guardian-product-boundary.md)). The lifecycle status set is
 `New`, `DkgInProcess`, `Running` (with the durable invite), `DataLoss`,
 and `Decommissioned`. `GetStatus` reads a watchdog-maintained health

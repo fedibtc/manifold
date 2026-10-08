@@ -134,5 +134,5 @@ pub use types::{
 };
 pub use version::{
     FEDIMINT_STATS_API_VERSION, GUARDIAN_TRANSFER_V2_API_VERSION, GetVersionRequest,
-    GetVersionResponse, MG_API_VERSION, MgApiVersion,
+    GetVersionResponse, MG_API_VERSION, MgApiVersion, PRODUCTION_DECOMMISSION_API_VERSION,
 };

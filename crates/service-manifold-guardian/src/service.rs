@@ -10,11 +10,12 @@ use crate::{
     GetMgTrustMaterialRequest, GetMgTrustMaterialResponse, GetPeerAttestationRequest,
     GetPeerAttestationResponse, GetQuoteRequest, GetQuoteResponse, GetStatusRequest,
     GetStatusResponse, GetVersionRequest, GetVersionResponse, ManifoldGuardianError, MgApiVersion,
-    ProposeFormationMetaRequest, ProposeFormationMetaResponse, PullSeatRequest, PullSeatResponse,
-    RegisterGatewayRequest, RegisterGatewayResponse, RemoveSeatRequest, RemoveSeatResponse,
-    ReplaceSeatBindingRequest, ReplaceSeatBindingResponse, RestartDkgRequest, RestartDkgResponse,
-    SetMetaFieldRequest, SetMetaFieldResponse, SignedRequest, SignedResponse, StartDkgRequest,
-    StartDkgResponse, TransferSeatCall, TransferSeatResponse,
+    PRODUCTION_DECOMMISSION_API_VERSION, ProposeFormationMetaRequest, ProposeFormationMetaResponse,
+    PullSeatRequest, PullSeatResponse, RegisterGatewayRequest, RegisterGatewayResponse,
+    RemoveSeatRequest, RemoveSeatResponse, ReplaceSeatBindingRequest, ReplaceSeatBindingResponse,
+    RestartDkgRequest, RestartDkgResponse, SetMetaFieldRequest, SetMetaFieldResponse,
+    SignedRequest, SignedResponse, StartDkgRequest, StartDkgResponse, TransferSeatCall,
+    TransferSeatResponse,
 };
 
 /// Result type for Manifold Guardian protocol calls.
@@ -147,12 +148,12 @@ pub trait ManifoldGuardianService {
         request: SignedRequest<GetFedimintStatsRequest>,
     ) -> FmResult<GetFedimintStatsResponse>;
 
-    /// Decommission the caller's own seat (development and staging only).
+    /// Decommission the caller's own seat in any environment.
     ///
     /// Terminal and idempotent, with exactly the effect of an operator
-    /// decommission. Production daemons refuse it with `UnsupportedVerb`; see
-    /// [`crate::DecommissionSeatRequest`] for why it exists at all.
-    #[added_in(MgApiVersion(1))]
+    /// decommission. An MG below API version 3 answers `UnsupportedVerb`
+    /// outside development and staging.
+    #[added_in(PRODUCTION_DECOMMISSION_API_VERSION)]
     async fn decommission_seat(
         &self,
         request: SignedRequest<DecommissionSeatRequest>,

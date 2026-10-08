@@ -1,12 +1,10 @@
-//! Testing-only FA seat release.
+//! Owner-authorized terminal FA seat release in every environment.
 //!
-//! The 0.1 product boundary is deliberately asymmetric: an FA buys a seat for
-//! as long as the operator keeps hosting it, and only the operator can end it
+//! The FA forfeits its own seat without a refund. Decommission retains the
+//! seat records and guardian data, exactly as operator decommission does
 //! ([`ARCH-manifold-guardian-product-boundary`](../../mg/specs/ARCH-manifold-guardian-product-boundary.md)).
-//! This verb exists solely so development and staging deployments can churn
-//! federations without an operator in the loop, and the daemon refuses it in
-//! production with [`crate::ManifoldGuardianError::UnsupportedVerb`]. Nothing
-//! about it is a commercial commitment; do not build product behaviour on it.
+//! An MG below [`crate::PRODUCTION_DECOMMISSION_API_VERSION`] refuses this
+//! verb in production with [`crate::ManifoldGuardianError::UnsupportedVerb`].
 
 use crate::{FaId, SeatId, Timestamp};
 
@@ -31,6 +29,11 @@ pub struct DecommissionSeatRequest {
 /// than failing, so a retrying FA never has to distinguish the two.
 #[derive(serde::Deserialize, serde::Serialize, Clone, Debug, Eq, PartialEq)]
 pub struct DecommissionSeatResponse {
-    /// Whether the seat was already terminal before this call.
+    /// Whether the MG had already durably recorded the seat as decommissioned
+    /// before this call.
+    ///
+    /// This confirms the durable terminal marker, not that the seat's guardian
+    /// process has exited: an earlier call can persist the marker and then
+    /// fail to stop the process, and a retry still answers `true`.
     pub already_decommissioned: bool,
 }

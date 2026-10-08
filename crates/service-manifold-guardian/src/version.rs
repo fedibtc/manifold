@@ -24,6 +24,11 @@ pub const GUARDIAN_TRANSFER_V2_API_VERSION: MgApiVersion = MgApiVersion(1);
 /// annotates the verb with this version once it serves the figures.
 pub const FEDIMINT_STATS_API_VERSION: MgApiVersion = MgApiVersion(2);
 
+/// The API version from which a production MG answers the owner's
+/// `DecommissionSeat`. Earlier MGs answer it only in development and staging
+/// and return `UnsupportedVerb` in production.
+pub const PRODUCTION_DECOMMISSION_API_VERSION: MgApiVersion = MgApiVersion(3);
+
 /// The API version this build serves: the latest version a method names.
 pub const MG_API_VERSION: MgApiVersion =
     latest(crate::ManifoldGuardianServiceClient::METHOD_API_VERSIONS);
