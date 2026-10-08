@@ -5,8 +5,8 @@
 //! unchanged, and the relay side. The thread is stored in the fleet database.
 //!
 //! The FMan writes as its service key and reads the gift wraps addressed to
-//! it on the environment's canonical relays, which it also lists as its
-//! kind-10050 inbox. Fedi support is the key the admitted setup-payment
+//! it on the environment's canonical relays that carry them, which it also
+//! lists as its kind-10050 inbox. Fedi support is the key the admitted setup-payment
 //! policy names. A message joins the thread only when its seal is signed by
 //! Fedi support or by this FMan and the rumor's room is exactly the two of
 //! them.
@@ -15,12 +15,15 @@ use std::pin::pin;
 use std::sync::Arc;
 
 use anyhow::Context as _;
+use fedi_decentralized_manifold_environment::ManifoldEnvironmentProfile;
 use fedi_decentralized_nostr_clients::NostrRelayClient;
 use fman_core::admin::AdminRequest;
 use fman_core::db::SupportRow;
 use futures_util::StreamExt as _;
 use nostr_sdk::nips::nip59::UnwrappedGift;
-use nostr_sdk::{Event, EventBuilder, EventId, Filter, Keys, Kind, PublicKey, Tag, TagKind};
+use nostr_sdk::{
+    Event, EventBuilder, EventId, Filter, Keys, Kind, PublicKey, RelayUrl, Tag, TagKind,
+};
 use serde_json::{Value, json};
 
 use crate::{Inner, REQUEST_TIMEOUT};
@@ -31,6 +34,24 @@ pub const MAX_SUPPORT_MESSAGE_CHARS: usize = 4000;
 /// Gift wraps the inbox subscription asks each relay to replay. This bounds
 /// what a new install or a new support key reads back.
 const INBOX_LIMIT: usize = 500;
+
+/// A canonical relay that does not carry the chat. `relay.damus.io` serves
+/// gift wraps only after NIP-42 AUTH, and since 2026-10-08 its AUTH fails for
+/// every client ("relay needs serviceUrl to be configured before AUTH can
+/// work"). Reading it fails and the subscription retries forever, and a copy
+/// sent there cannot be read.
+const NOT_FOR_GIFT_WRAPS: &str = "relay.damus.io";
+
+/// The relays the chat sends to, reads, and lists as this FMan's inbox.
+pub(crate) fn chat_relays(environment: &ManifoldEnvironmentProfile) -> Vec<RelayUrl> {
+    environment
+        .nostr_relays()
+        .as_urls()
+        .iter()
+        .filter(|relay| relay.domain() != Some(NOT_FOR_GIFT_WRAPS))
+        .cloned()
+        .collect()
+}
 
 /// Answer one of the support admin verbs.
 pub(crate) async fn answer(inner: &Inner, request: AdminRequest) -> anyhow::Result<Value> {
@@ -97,10 +118,14 @@ async fn send(inner: &Inner, body: &str) -> anyhow::Result<SupportRow> {
     let id = rumor.id();
     let to_fedi = EventBuilder::gift_wrap(&inner.keys, &fedi, rumor.clone(), []).await?;
     let to_self = EventBuilder::gift_wrap(&inner.keys, &me, rumor.clone(), []).await?;
-    nostr.publish_signed_event(&to_fedi).await.map_err(|err| {
-        tracing::warn!(error = %err, "publish support message failed");
-        anyhow::anyhow!("Your message wasn't sent. Try again in a minute.")
-    })?;
+    let relays = chat_relays(&inner.manifold_environment);
+    nostr
+        .publish_signed_event_to(&relays, &to_fedi)
+        .await
+        .map_err(|err| {
+            tracing::warn!(error = %err, "publish support message failed");
+            anyhow::anyhow!("Your message wasn't sent. Try again in a minute.")
+        })?;
     // A publish waits for every relay's answer or its acknowledgement
     // timeout. The copy to ourselves only restores the thread after a
     // reinstall, so it goes out in the background rather than adding a second
@@ -109,7 +134,7 @@ async fn send(inner: &Inner, body: &str) -> anyhow::Result<SupportRow> {
     // Fedi did not get.
     let own_copy = nostr.clone();
     tokio::spawn(async move {
-        if let Err(err) = own_copy.publish_signed_event(&to_self).await {
+        if let Err(err) = own_copy.publish_signed_event_to(&relays, &to_self).await {
             tracing::warn!(error = %err, "publish own copy of support message failed");
         }
     });
@@ -150,7 +175,13 @@ pub(crate) async fn run_inbox(inner: Arc<Inner>, nostr: NostrRelayClient) {
             tracing::warn!(error = %err, "publish support inbox relays failed");
         }
         let live = loop {
-            match nostr.subscribe(addressed_to_me.clone()).await {
+            match nostr
+                .subscribe_to(
+                    &chat_relays(&inner.manifold_environment),
+                    addressed_to_me.clone(),
+                )
+                .await
+            {
                 Ok(live) => break live,
                 Err(err) => {
                     tracing::warn!(error = %err, "subscribe to support messages failed");
@@ -181,10 +212,7 @@ pub(crate) async fn run_inbox(inner: Arc<Inner>, nostr: NostrRelayClient) {
 /// This FMan's NIP-17 inbox: the relays it reads.
 fn inbox_relays(inner: &Inner) -> EventBuilder {
     EventBuilder::new(Kind::InboxRelays, "").tags(
-        inner
-            .manifold_environment
-            .nostr_relays()
-            .as_urls()
+        chat_relays(&inner.manifold_environment)
             .iter()
             .map(|relay| Tag::custom(TagKind::Relay, [relay.to_string()])),
     )

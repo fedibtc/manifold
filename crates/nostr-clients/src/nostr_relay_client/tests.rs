@@ -1034,7 +1034,7 @@ async fn subscribe_sends_a_closed_subscription_again() {
         .await
         .expect("client connects to the test relay");
     let live = client
-        .subscribe_resubscribing_after(Filter::new(), Duration::from_millis(100))
+        .subscribe_resubscribing_after(None, Filter::new(), Duration::from_millis(100))
         .await
         .expect("subscription is sent");
     let mut live = std::pin::pin!(live);

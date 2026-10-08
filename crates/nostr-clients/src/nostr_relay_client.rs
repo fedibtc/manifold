@@ -166,6 +166,26 @@ impl NostrRelayClient {
         validate_publish_output(output)
     }
 
+    /// Like [`Self::publish_signed_event`], but only to the given relays of
+    /// this pool.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if sending fails or none of them acknowledges the
+    /// event.
+    pub async fn publish_signed_event_to(
+        &self,
+        relays: &[RelayUrl],
+        event: &Event,
+    ) -> NostrClientResult<EventId> {
+        let output = self
+            .client
+            .send_event_to(relays.iter().cloned(), event)
+            .await
+            .map_err(|source| NostrClientError::Publish { source })?;
+        validate_publish_output(output)
+    }
+
     /// Fetch all events matching a filter within the timeout.
     ///
     /// Runs on the same bounded collector as [`Self::fetch_events_capped`]
@@ -245,22 +265,51 @@ impl NostrRelayClient {
         &self,
         filter: Filter,
     ) -> NostrClientResult<impl Stream<Item = Event> + use<>> {
-        self.subscribe_resubscribing_after(filter, RESUBSCRIBE_AFTER_CLOSED)
+        self.subscribe_resubscribing_after(None, filter, RESUBSCRIBE_AFTER_CLOSED)
+            .await
+    }
+
+    /// Like [`Self::subscribe`], but only on the given relays of this pool.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the subscription cannot be sent.
+    pub async fn subscribe_to(
+        &self,
+        relays: &[RelayUrl],
+        filter: Filter,
+    ) -> NostrClientResult<impl Stream<Item = Event> + use<>> {
+        self.subscribe_resubscribing_after(Some(relays), filter, RESUBSCRIBE_AFTER_CLOSED)
             .await
     }
 
     async fn subscribe_resubscribing_after(
         &self,
+        relays: Option<&[RelayUrl]>,
         filter: Filter,
         resubscribe_after: Duration,
     ) -> NostrClientResult<impl Stream<Item = Event> + use<>> {
         // Listen before subscribing so no early event is missed.
         let notifications = BroadcastStream::new(self.client.notifications());
         let subscription_id = SubscriptionId::generate();
-        self.client
-            .subscribe_with_id(subscription_id.clone(), filter.clone(), None)
-            .await
-            .map_err(|source| NostrClientError::Fetch { source })?;
+        match relays {
+            Some(relays) => {
+                self.client
+                    .subscribe_with_id_to(
+                        relays.iter().cloned(),
+                        subscription_id.clone(),
+                        filter.clone(),
+                        None,
+                    )
+                    .await
+            }
+            None => {
+                self.client
+                    .subscribe_with_id(subscription_id.clone(), filter.clone(), None)
+                    .await
+            }
+        }
+        .map_err(|source| NostrClientError::Fetch { source })?;
         let open = Arc::new(AtomicBool::new(true));
         let client = self.client.clone();
         let cancel_subscription_id = subscription_id.clone();

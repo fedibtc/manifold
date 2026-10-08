@@ -38,7 +38,8 @@ direct messages. There is one conversation per FMan and no tickets.
   more members, and other rumor kinds are ignored.
 - **Relays.** The FMan publishes and reads on the environment's canonical
   relays and lists them in its `kind:10050` inbox relay list. Fedi support
-  reads its own inbox on the same relays.
+  reads its own inbox on the same relays. `relay.damus.io` is left out: it
+  serves gift wraps only after NIP-42 AUTH, and its AUTH fails.
 - **Identity of a message.** A message is identified by its rumor id, derived
   from the rumor rather than taken from it. Copies that relays serve again are
   stored once.

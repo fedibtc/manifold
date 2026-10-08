@@ -470,6 +470,20 @@ fn a_retained_authorization_reports_itself_with_no_check_time() {
     );
 }
 
+/// Damus refuses gift wraps without a working AUTH, so the chat uses only
+/// the other production relays.
+#[test]
+fn support_chat_leaves_out_relay_damus() {
+    let production = ManifoldEnvironment::Production.profile().unwrap();
+    assert_eq!(
+        support::chat_relays(&production)
+            .iter()
+            .map(|relay| relay.as_str_without_trailing_slash())
+            .collect::<Vec<_>>(),
+        ["wss://relay.dev.fedibtc.com", "wss://relay.primal.net"]
+    );
+}
+
 #[tokio::test]
 async fn support_thread_admits_only_the_fman_fedi_room() {
     let me = Keys::generate();
