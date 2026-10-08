@@ -19,6 +19,7 @@ fedi-decentralized-nostr-clients = { path = "../nostr-clients" }
 fedi-decentralized-service-peerbadge-signing = { path = "../service-peerbadge-signing" }
 fedi-iroh-rpc = { path = "../fedi-iroh-rpc" }
 hex = "0.4"
+hmac = "0.12"
 iroh.workspace = true
 iroh-tickets = "1.0"
 nostr-sdk = "0.44.1"

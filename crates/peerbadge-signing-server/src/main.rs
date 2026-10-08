@@ -10,7 +10,8 @@ use clap::{Args, Parser, Subcommand};
 use fedi_decentralized_manifold_environment::ManifoldEnvironment;
 use fedi_decentralized_nostr::attester::{
     CREDENTIAL_REVOCATION_EVENT_KIND, CREDENTIAL_REVOCATION_HASHTAG, ISSUER_AUTHORITY_D_TAG,
-    ISSUER_AUTHORITY_EVENT_KIND, ISSUER_AUTHORITY_HASHTAG, credential_revocation_d_tag,
+    ISSUER_AUTHORITY_EVENT_KIND, ISSUER_AUTHORITY_HASHTAG, NOSTR_REVOCATION_LOCATION_PROTOCOL,
+    credential_revocation_d_tag,
 };
 use fedi_decentralized_nostr_clients::NostrRelayClient;
 use fedi_decentralized_peerbadge_signing_server::{
@@ -183,7 +184,7 @@ async fn main() -> anyhow::Result<()> {
                 .issuer
                 .revocation
                 .iter()
-                .filter(|location| location.protocol == "nostr")
+                .filter(|location| location.protocol == NOSTR_REVOCATION_LOCATION_PROTOCOL)
                 .map(|location| location.location.clone())
                 .collect::<Vec<_>>();
             ensure!(
@@ -287,6 +288,19 @@ fn create_secret_file(path: &Path) -> std::io::Result<File> {
 fn load_iroh_secret(path: &Path) -> anyhow::Result<SecretKey> {
     match File::open(path) {
         Ok(file) => {
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt as _;
+                ensure!(
+                    file.metadata()
+                        .context("inspect iroh secret file")?
+                        .permissions()
+                        .mode()
+                        & 0o077
+                        == 0,
+                    "iroh secret file must not be accessible by group or others"
+                );
+            }
             let mut bytes = Vec::with_capacity(33);
             file.take(33).read_to_end(&mut bytes)?;
             let bytes: [u8; 32] = bytes.try_into().map_err(|_| {
@@ -329,6 +343,30 @@ mod tests {
         assert!(load_iroh_secret(&path).is_err());
         std::fs::write(&path, [1; 31]).unwrap();
         assert!(load_iroh_secret(&path).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn iroh_secret_accepts_private_modes_and_rejects_each_group_other_bit() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("iroh.key");
+        let secret = load_iroh_secret(&path).unwrap();
+        for mode in [0o400, 0o600] {
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode)).unwrap();
+            assert_eq!(load_iroh_secret(&path).unwrap().public(), secret.public());
+        }
+        for bit in [0o040, 0o020, 0o010, 0o004, 0o002, 0o001] {
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600 | bit)).unwrap();
+            let error = load_iroh_secret(&path).err().unwrap();
+            assert_eq!(
+                error.to_string(),
+                "iroh secret file must not be accessible by group or others",
+                "accepted group/other permission bit {bit:o}"
+            );
+            assert_eq!(std::fs::read(&path).unwrap(), secret.to_bytes());
+        }
     }
 
     #[test]

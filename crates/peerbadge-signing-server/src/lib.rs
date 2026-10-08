@@ -13,6 +13,7 @@ use std::{
 use anyhow::ensure;
 use fedi_decentralized_service_peerbadge_signing::*;
 use fedi_iroh_rpc::IrohProtocol;
+use hmac::{Hmac, Mac as _};
 use iroh::{Endpoint, protocol::Router};
 use nostr_sdk::{
     PublicKey,
@@ -50,13 +51,20 @@ struct Session {
     level: u8,
     expires_at: u64,
     state: SessionState,
+    redemption: Option<CachedRedemption>,
+}
+
+struct CachedRedemption {
+    request_sha256: String,
+    response: String,
 }
 
 struct State {
     issuer: IssuerMaterial,
     issuer_id: [u8; 32],
     signers: HashMap<PublicKey, SignerState>,
-    challenges: HashMap<[u8; 32], u64>,
+    nonce_key: [u8; 32],
+    consumed_nonces: HashMap<[u8; 32], u64>,
     sessions: HashMap<String, Session>,
     audit: Audit,
 }
@@ -106,7 +114,8 @@ impl SigningServer {
                 issuer,
                 issuer_id,
                 signers: allowlist,
-                challenges: HashMap::new(),
+                nonce_key: random_bytes(),
+                consumed_nonces: HashMap::new(),
                 sessions: HashMap::new(),
                 audit: Audit::open(audit_path)?,
             })),
@@ -193,8 +202,12 @@ impl PeerBadgeSigningService for SigningServer {
 impl State {
     fn sweep(&mut self, now: u64) -> Result<(), SigningError> {
         self.audit.check()?;
-        self.challenges.retain(|_, expires_at| now < *expires_at);
+        self.consumed_nonces
+            .retain(|_, expires_at| now < *expires_at);
         for (id, session) in &mut self.sessions {
+            if now >= session.expires_at {
+                session.redemption = None;
+            }
             if now >= session.expires_at && matches!(session.state, SessionState::Open) {
                 self.audit.record(AuditEvent {
                     ts: now,
@@ -222,18 +235,15 @@ impl State {
         Ok(())
     }
 
-    fn challenge(&mut self, now: u64) -> Result<ChallengeResponse, SigningError> {
-        if self.challenges.len() >= MAX_ENTRIES {
-            return Err(SigningError::RateLimited);
-        }
-        let nonce = loop {
-            let nonce = random_bytes();
-            if !self.challenges.contains_key(&nonce) {
-                break nonce;
-            }
-        };
+    fn challenge(&self, now: u64) -> Result<ChallengeResponse, SigningError> {
         let expires_at = now + CHALLENGE_TTL;
-        self.challenges.insert(nonce, expires_at);
+        let mut nonce = [0; 32];
+        rand::rngs::OsRng.fill_bytes(&mut nonce[..16]);
+        nonce[16..24].copy_from_slice(&expires_at.to_be_bytes());
+        let mut mac =
+            Hmac::<Sha256>::new_from_slice(&self.nonce_key).expect("HMAC accepts a 32-byte key");
+        mac.update(&nonce[..24]);
+        nonce[24..].copy_from_slice(&mac.finalize().into_bytes()[..8]);
         Ok(ChallengeResponse {
             nonce: nonce.to_vec(),
             expires_at,
@@ -241,15 +251,28 @@ impl State {
         })
     }
 
+    fn authenticate_nonce(&self, bytes: &[u8]) -> Result<([u8; 32], u64), SigningError> {
+        let nonce: [u8; 32] = bytes.try_into().map_err(|_| SigningError::BadChallenge)?;
+        let mut mac =
+            Hmac::<Sha256>::new_from_slice(&self.nonce_key).expect("HMAC accepts a 32-byte key");
+        mac.update(&nonce[..24]);
+        mac.verify_truncated_left(&nonce[24..])
+            .map_err(|_| SigningError::BadChallenge)?;
+        let expires_at = u64::from_be_bytes(nonce[16..24].try_into().expect("8-byte expiry"));
+        Ok((nonce, expires_at))
+    }
+
     fn open(
         &mut self,
         req: OpenSessionRequest,
         now: u64,
     ) -> Result<OpenSessionResponse, SigningError> {
+        // Unauthenticated challenge traffic must not consume state or audit space.
+        let (nonce, expires_at) = self.authenticate_nonce(&req.nonce)?;
         let pubkey = parse_pubkey(&req.signer_pubkey);
         // Store only canonical public keys, never arbitrary attacker text.
         let signer_hex = pubkey.map(|key| key.to_hex());
-        let result = self.authorize(&req, pubkey, now);
+        let result = self.authorize(&req, pubkey, nonce, expires_at, now);
         let pubkey = match result {
             Ok(pubkey) => pubkey,
             Err(error) => {
@@ -295,6 +318,7 @@ impl State {
                 level: req.level,
                 expires_at,
                 state: SessionState::Open,
+                redemption: None,
             },
         );
         self.signers
@@ -314,21 +338,19 @@ impl State {
         &mut self,
         req: &OpenSessionRequest,
         pubkey: Option<PublicKey>,
+        nonce: [u8; 32],
+        expires_at: u64,
         now: u64,
     ) -> Result<PublicKey, SigningError> {
-        let nonce: [u8; 32] = req
-            .nonce
-            .as_slice()
-            .try_into()
-            .map_err(|_| SigningError::BadChallenge)?;
-        // Consume before all other validation: every use is a single attempt.
-        let expiry = self
-            .challenges
-            .remove(&nonce)
-            .ok_or(SigningError::BadChallenge)?;
-        if now >= expiry {
+        if now >= expires_at || self.consumed_nonces.contains_key(&nonce) {
             return Err(SigningError::BadChallenge);
         }
+        if self.consumed_nonces.len() >= MAX_ENTRIES {
+            return Err(SigningError::RateLimited);
+        }
+        // Only authentic, live nonces consume state. Every use is a single
+        // attempt, including authorization failures; never evict live protection.
+        self.consumed_nonces.insert(nonce, expires_at);
         let pubkey = pubkey.ok_or(SigningError::Unauthorized)?;
         let signer = self
             .signers
@@ -367,16 +389,39 @@ impl State {
             .sessions
             .get_mut(&req.session_id)
             .ok_or(SigningError::SessionNotFound)?;
-        match session.state {
-            SessionState::Redeemed => return Err(SigningError::SessionAlreadyRedeemed),
-            SessionState::Expired => return Err(SigningError::SessionExpired),
-            SessionState::Open => {}
-        }
         if now >= session.expires_at {
+            session.redemption = None;
+            return Err(SigningError::SessionExpired);
+        }
+        if matches!(session.state, SessionState::Expired) {
             return Err(SigningError::SessionExpired);
         }
         if req.request.len() > MAX_REQUEST_BYTES {
-            return Err(invalid_request());
+            return Err(if matches!(session.state, SessionState::Redeemed) {
+                SigningError::SessionAlreadyRedeemed
+            } else {
+                invalid_request()
+            });
+        }
+        let digest = hex::encode(Sha256::digest(req.request.as_bytes()));
+        if matches!(session.state, SessionState::Redeemed) {
+            let cached = session
+                .redemption
+                .as_ref()
+                .filter(|cached| cached.request_sha256 == digest)
+                .ok_or(SigningError::SessionAlreadyRedeemed)?;
+            self.audit.record(AuditEvent {
+                ts: now,
+                event: "session_redeem_replayed",
+                signer_pubkey: Some(&session.signer),
+                level: Some(session.level),
+                session_id: Some(&req.session_id),
+                request_sha256: Some(&cached.request_sha256),
+                reason: None,
+            })?;
+            return Ok(RedeemSessionResponse {
+                response: cached.response.clone(),
+            });
         }
         let request: IssuanceRequest =
             serde_json::from_str(&req.request).map_err(|_| invalid_request())?;
@@ -386,7 +431,6 @@ impl State {
             .issue_credential(trust_info(session.level), &request)
             .map_err(|_| invalid_request())?;
         let response = serde_json::to_string(&response).map_err(|_| unavailable())?;
-        let digest = hex::encode(Sha256::digest(req.request.as_bytes()));
         // No signature escapes before its durable audit record. A failed audit
         // poisons the service, so that capability can never be signed again.
         self.audit.record(AuditEvent {
@@ -399,6 +443,10 @@ impl State {
             reason: None,
         })?;
         session.state = SessionState::Redeemed;
+        session.redemption = Some(CachedRedemption {
+            request_sha256: digest,
+            response: response.clone(),
+        });
         Ok(RedeemSessionResponse { response })
     }
 }

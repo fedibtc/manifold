@@ -6,8 +6,10 @@ The issuer identity and PBRSA keys authorize issuance. Compromise bypasses the
 signer allowlist, level ceilings, and rate limits. Protect key files, process
 memory, host access, and backups accordingly. Development and Staging defaults
 are deliberately public fixture secrets and must never secure real decisions.
-Production requires an explicit key file; that does not make the key trusted
-by any Manifold consumer. Adding a production identity and pinned authority
+Production requires an explicit key file and rejects the public Development and
+Staging issuer identities even from that file; this does not make other keys
+trusted by any Manifold consumer. On Unix, issuer and Iroh secret files with any
+group/other permission bits are refused. Adding a production identity and pinned authority
 requires the existing [environment review and rollout](../manifold-environment/SECURITY.md).
 
 The signer file is trusted startup configuration. Restart to change it. A
@@ -32,12 +34,16 @@ the file is not automatically rotated.
 
 ## Runtime boundary
 
-Use one active process per issuer data directory. Challenges, sessions, and
-hourly admission history are bounded and in memory. Restart loses offers and
-resets limits; this is not a multi-instance or durable rate-limit design.
-Request/frame limits and deadlines bound protocol work but do not replace host
-and relay abuse controls. Redemption is irreversible if the response is lost:
-a retry cannot obtain a second credential from the same session.
+Use one active process per issuer data directory. Challenges are stateless and
+authenticated with a per-process HMAC key; consumed nonces, sessions, and hourly
+admission history are bounded and in memory. Invalid-MAC nonce submissions do
+not trigger audit writes. Restart loses offers and resets limits; this is not
+a multi-instance or durable rate-limit design. Request/frame limits and
+deadlines bound protocol work but do not replace host and relay abuse controls.
+Until the original session expiry, retrying the exact request bytes returns
+the cached response and audits the replay; no second issuance occurs. The
+response cannot be used without the holder's blinding factor and is discarded
+at expiry. Different request digests are rejected.
 
 Nostr publication is an administrative network action. Revocation requires a
 complete signed credential supplied by the operator; blinded issuance audit

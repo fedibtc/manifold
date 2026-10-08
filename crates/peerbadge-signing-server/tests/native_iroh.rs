@@ -100,11 +100,18 @@ async fn issuance_loop() -> anyhow::Result<()> {
         holder_client.redeem_session(redeem.clone()),
         holder_client.redeem_session(redeem)
     );
-    let issued = match (first, second) {
-        (Ok(response), Err(SigningError::SessionAlreadyRedeemed))
-        | (Err(SigningError::SessionAlreadyRedeemed), Ok(response)) => response,
-        _ => panic!("exactly one concurrent redemption must succeed"),
-    };
+    let issued = first?;
+    assert_eq!(issued.response, second?.response);
+    assert_eq!(
+        holder_client
+            .redeem_session(RedeemSessionRequest {
+                session_id: opened.session_id.clone(),
+                request: format!("{request_json} "),
+            })
+            .await
+            .unwrap_err(),
+        SigningError::SessionAlreadyRedeemed
+    );
     let response: IssuanceResponse = serde_json::from_str(&issued.response)?;
     let credential = pending.finalize(&metadata.issuance_key, &response)?;
     let subject = Keys::generate().public_key();
@@ -128,6 +135,7 @@ async fn issuance_loop() -> anyhow::Result<()> {
     assert!(!audit.contains(&request_json));
     assert!(!audit.contains(&holder.public_key().to_hex()));
     assert_eq!(audit.matches("session_redeemed").count(), 1);
+    assert_eq!(audit.matches("session_redeem_replayed").count(), 1);
     router.shutdown().await?;
     client_endpoint.close().await;
     holder_endpoint.close().await;
