@@ -1,10 +1,11 @@
+use fedi_decentralized_manifold_environment::ManifoldEnvironment;
 use fedi_decentralized_service_fleet_manager::{
-    CreateSeatOutcome, DkgCompletionCallback, FederationName, FederationSize, FiId, GatewayApiUrl,
-    GetDkgCodeRequest, GetFedimintStatsRequest, GetInviteCodeRequest, GetPeerAttestationRequest,
-    GetQuoteRequest, GetQuoteResponse, GetStatusRequest, GuardianCode, GuardianFeeAccount,
-    MetaConsensusBase, MetaFieldKey, MetaFieldValue, OfferEpoch, Plan, ProposeFormationMetaRequest,
-    RefusalReason, RegisterGatewayRequest, RestartDkgRequest, SeatId, SetMetaFieldRequest,
-    StartDkgRequest,
+    CreateSeatOutcome, DecommissionSeatRequest, DkgCompletionCallback, FederationName,
+    FederationSize, FiId, GatewayApiUrl, GetDkgCodeRequest, GetFedimintStatsRequest,
+    GetInviteCodeRequest, GetPeerAttestationRequest, GetQuoteRequest, GetQuoteResponse,
+    GetStatusRequest, GuardianCode, GuardianFeeAccount, MetaConsensusBase, MetaFieldKey,
+    MetaFieldValue, OfferEpoch, Plan, ProposeFormationMetaRequest, RefusalReason,
+    RegisterGatewayRequest, RestartDkgRequest, SeatId, SetMetaFieldRequest, StartDkgRequest,
 };
 use tempfile::TempDir;
 
@@ -27,13 +28,20 @@ async fn rpc_with_guardian_verification_fee_account(
     temp: &TempDir,
     guardian_verification_fee_account: Option<Account>,
 ) -> FleetManagerRpc {
-    rpc_with_config(temp, guardian_verification_fee_account, None).await
+    rpc_with_config(
+        temp,
+        guardian_verification_fee_account,
+        None,
+        ManifoldEnvironment::Development,
+    )
+    .await
 }
 
 async fn rpc_with_config(
     temp: &TempDir,
     guardian_verification_fee_account: Option<Account>,
     push_gateway_origin: Option<PushGatewayOrigin>,
+    environment: ManifoldEnvironment,
 ) -> FleetManagerRpc {
     // A fleet opens against an identity onboarding already chose; nothing
     // mints one on open.
@@ -47,8 +55,7 @@ async fn rpc_with_config(
             process_spawner: SeatProcessSpawner::Fake(Arc::new(
                 crate::seat_process::fake::FakeSeatProcessSpawner::default(),
             )),
-            manifold_environment:
-                fedi_decentralized_manifold_environment::ManifoldEnvironment::Development,
+            manifold_environment: environment,
             first_port_base: PortBase::new(30_000).unwrap(),
             setup_payments_configured: true,
             guardian_verification_fee_account,
@@ -105,15 +112,28 @@ async fn rpc_with_owned_seat(
     temp: &TempDir,
     guardian_verification_fee_account: Option<Account>,
 ) -> (FleetManagerRpc, Keypair, FiId, SeatId) {
-    rpc_with_owned_seat_and_origin(temp, guardian_verification_fee_account, None).await
+    rpc_with_owned_seat_and_origin(
+        temp,
+        guardian_verification_fee_account,
+        None,
+        ManifoldEnvironment::Development,
+    )
+    .await
 }
 
 async fn rpc_with_owned_seat_and_origin(
     temp: &TempDir,
     guardian_verification_fee_account: Option<Account>,
     push_gateway_origin: Option<PushGatewayOrigin>,
+    environment: ManifoldEnvironment,
 ) -> (FleetManagerRpc, Keypair, FiId, SeatId) {
-    let rpc = rpc_with_config(temp, guardian_verification_fee_account, push_gateway_origin).await;
+    let rpc = rpc_with_config(
+        temp,
+        guardian_verification_fee_account,
+        push_gateway_origin,
+        environment,
+    )
+    .await;
     let owner_key = Keypair::new(secp256k1::SECP256K1, &mut rand::thread_rng());
     let owner_id = FiId(owner_key.x_only_public_key().0);
     let quote = rpc
@@ -255,7 +275,8 @@ async fn start_dkg_rejects_off_origin_callback_when_gateway_is_configured() {
         PushGatewayOrigin::parse("https://push.example/", PushGatewayOriginPolicy::HttpsOnly)
             .unwrap();
     let (rpc, owner_key, owner_id, seat_id) =
-        rpc_with_owned_seat_and_origin(&temp, None, Some(origin)).await;
+        rpc_with_owned_seat_and_origin(&temp, None, Some(origin), ManifoldEnvironment::Development)
+            .await;
     let guardian_codes = valid_dkg_codes(&rpc, &owner_key, owner_id, &seat_id).await;
     let callback = DkgCompletionCallback::new(DkgCompletionCallbackInput {
         callback_url: "https://attacker.example/hooks/id/secret".to_owned(),
@@ -876,5 +897,107 @@ async fn trust_material_is_signed_for_the_fman_identity() {
         .verify_for_fman(&expected, now, 3600)
         .expect("the FMan's own response verifies for its consensus-listed identity");
 
+    rpc.fleet.shutdown().await;
+}
+
+#[tokio::test]
+async fn production_decommission_requires_owner_and_retains_terminal_records() {
+    let temp = TempDir::new().unwrap();
+    let (rpc, owner_key, owner_id, seat_id) =
+        rpc_with_owned_seat_and_origin(&temp, None, None, ManifoldEnvironment::Production).await;
+    let attacker_key = Keypair::new(secp256k1::SECP256K1, &mut rand::thread_rng());
+    let attacker_id = FiId(attacker_key.x_only_public_key().0);
+    let request = DecommissionSeatRequest {
+        ts: now(),
+        fi_id: owner_id,
+        seat_id: seat_id.clone(),
+    };
+    let before = rpc.fleet.available_slots().await;
+
+    // A valid foreign signer gets no existence oracle or authority.
+    for target in [seat_id.clone(), SeatId::new("ab".repeat(32)).unwrap()] {
+        let foreign = DecommissionSeatRequest {
+            ts: now(),
+            fi_id: attacker_id,
+            seat_id: target,
+        };
+        assert_eq!(
+            rpc.decommission_seat(SignedRequest::create(&foreign, &attacker_key).unwrap())
+                .await
+                .unwrap_err(),
+            FleetManagerError::UnknownSeat,
+        );
+    }
+    // Claiming the owner identity with another signing key is not ownership.
+    assert_eq!(
+        rpc.decommission_seat(SignedRequest::create(&request, &attacker_key).unwrap())
+            .await
+            .unwrap_err(),
+        FleetManagerError::Unauthorized,
+    );
+    let stale = DecommissionSeatRequest {
+        ts: Timestamp(now().0.saturating_sub(7200)),
+        ..request.clone()
+    };
+    assert_eq!(
+        rpc.decommission_seat(SignedRequest::create(&stale, &owner_key).unwrap())
+            .await
+            .unwrap_err(),
+        FleetManagerError::Unauthorized,
+    );
+    assert_eq!(rpc.fleet.available_slots().await, before);
+    let status_request = GetStatusRequest {
+        ts: now(),
+        fi_id: owner_id,
+        seat_id: seat_id.clone(),
+    };
+    assert_ne!(
+        rpc.get_status(SignedRequest::create(&status_request, &owner_key).unwrap())
+            .await
+            .unwrap()
+            .status,
+        ServiceStatus::Decommissioned,
+    );
+
+    let first = SignedRequest::create(&request, &owner_key).unwrap();
+    let second = SignedRequest::create(&request, &owner_key).unwrap();
+    let (first, second) = tokio::join!(rpc.decommission_seat(first), rpc.decommission_seat(second));
+    let first = first.unwrap();
+    let second = second.unwrap();
+    assert_ne!(first.already_decommissioned, second.already_decommissioned);
+    assert_eq!(rpc.fleet.available_slots().await, before + 1);
+    assert_eq!(
+        rpc.get_status(SignedRequest::create(&status_request, &owner_key).unwrap())
+            .await
+            .unwrap()
+            .status,
+        ServiceStatus::Decommissioned,
+    );
+    let config = rpc.fleet.config().clone();
+    rpc.fleet.shutdown().await;
+    drop(rpc);
+    let db = crate::db::Db::open(temp.path()).await.unwrap();
+    let records = db.list_seats().await.unwrap();
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].facts.seat_id, seat_id);
+    assert_eq!(records[0].facts.fi_id, owner_id);
+    let fleet = Fleet::open(db, config, Arc::new(NoWallet)).await.unwrap();
+    let rpc = FleetManagerRpc::new(Arc::new(fleet), tokio::sync::watch::channel(None).1);
+    assert!(
+        rpc.decommission_seat(SignedRequest::create(&request, &owner_key).unwrap())
+            .await
+            .unwrap()
+            .already_decommissioned
+    );
+    let foreign = DecommissionSeatRequest {
+        fi_id: attacker_id,
+        ..request
+    };
+    assert_eq!(
+        rpc.decommission_seat(SignedRequest::create(&foreign, &attacker_key).unwrap())
+            .await
+            .unwrap_err(),
+        FleetManagerError::UnknownSeat,
+    );
     rpc.fleet.shutdown().await;
 }

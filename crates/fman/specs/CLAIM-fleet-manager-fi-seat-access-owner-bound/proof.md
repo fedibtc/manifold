@@ -3,7 +3,7 @@
 ## Stale proof
 
 The composition does not enumerate the current service's thirteen signed verbs
-(most recently the environment-gated FI `DecommissionSeat`), so the local
+(most recently the owner-authorized FI `DecommissionSeat`), so the local
 completeness step below is not current.
 Regenerate the signed-route and access-origin enumeration before relying on this
 argument or removing the claim's `Unverified` status. A linked claim's evidence

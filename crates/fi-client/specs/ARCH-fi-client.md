@@ -502,7 +502,7 @@ whether the FMan decommissioned it, had already done so, or refused. It takes
 no driver lease and writes nothing, so durable FI state is unchanged and a
 decommissioned federation still reads as `Formed`; abandon or a fresh formation
 is still what returns the FI to `Idle`. Seats are forfeited, never refunded,
-and only development and staging FMans accept the underlying verb
+and older production FMans can refuse the underlying verb
 ([SPEC-fi-rpc](../../fman/specs/SPEC-fi-rpc.md)).
 
 Formation operations return run futures; dropping one cancels local work only,

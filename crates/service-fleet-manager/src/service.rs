@@ -116,11 +116,10 @@ pub trait FleetManagerService {
         request: SignedRequest<GetFedimintStatsRequest>,
     ) -> FmResult<GetFedimintStatsResponse>;
 
-    /// Decommission the caller's own seat (development and staging only).
+    /// Decommission the caller's own seat in any environment.
     ///
     /// Terminal and idempotent, with exactly the effect of an operator
-    /// decommission. Production daemons refuse it with `UnsupportedVerb`; see
-    /// [`crate::DecommissionSeatRequest`] for why it exists at all.
+    /// decommission. Older production daemons can return `UnsupportedVerb`.
     async fn decommission_seat(
         &self,
         request: SignedRequest<DecommissionSeatRequest>,
