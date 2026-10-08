@@ -94,6 +94,15 @@ each commitment-signing `service_pubkey`; another author with that key is
 rejected as `DuplicateServicePubkey`. There is no FI-owned, pinned, or BYO
 exception in the product path.
 
+Each verified badge holder may occupy only one seat, regardless of issuer or
+FMan service key. Later candidates sharing that holder are rejected as
+`DuplicateBadgeHolder` before live probing. Only a seated candidate reserves
+its holder. Approvals and saved seats retain the holder, and replacement walks
+exclude holders belonging to retained seats. The replacement write also checks
+holder uniqueness in its database transaction. Older saved seats without holder
+identities remain usable but cannot provide this guarantee; FI does not fetch
+their missing identities.
+
 Badge verification is deferred from discovery to the ranked walk. For each
 reached candidate it examines at most four
 (`FMAN_ADVERTISEMENT_MAX_HOLDER_AUTHORIZATIONS`) envelopes and seats the first

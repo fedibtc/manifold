@@ -62,12 +62,12 @@ runtime depends on `core` and calls `FleetNostrHost` and
 that its other implementors are all test doubles.
 
 A hole is also specifically something the daemon needs *done*. What it needs
-to *know* from a runtime is a value, and travels as one: the operator socket
-reads `directory::DirectoryPresence` off a `watch` channel the runtime
-publishes, which is why it cannot block on a relay even in principle. The
+to *know* from a runtime is a value, and travels as one: ordinary operator
+status reads sample `directory::DirectoryPresence` off the runtime's `watch`
+channel without waiting on a relay. The
 operator's explicit Holder-enrollment refresh travels in the other direction
-through a runtime-supplied callback: the admin operation schedules work and
-returns rather than holding its local connection across relay I/O.
+through a runtime-supplied capability: the explicit admin operation awaits one
+bounded relay reconciliation, while ordinary status reads remain local.
 
 ## Module responsibilities
 
@@ -259,13 +259,16 @@ direction is strictly bottom-up; each layer only knows the ones below it.
   `fedimintd`.
 
 The resolved `ManifoldEnvironmentProfile` is the sole source of a seat's
-Bitcoin network. The binary selects one chain-data backend: complete
-operator-supplied Bitcoin Core credentials replace the profile's public
-default Esplora route, but cannot replace its network. Staging therefore forms
-Mutinynet (`signet`) seats against its profile-owned Esplora default without
-Bitcoin Core configuration; Development and Production have no public default
-and require Bitcoin Core. The process spawner clears the child environment and
-passes only the selected backend's variables.
+Bitcoin network. Without Bitcoin Core configuration, the binary uses the
+profile's public default Esplora backend. Staging therefore forms Mutinynet
+(`signet`) seats against that default; Development and Production have no
+public default and require operator-supplied Core credentials. An optional
+explicit Esplora URL alongside Core enables the bundled fedimintd's existing
+fallback on RPC errors, including requests for pruned blocks. The endpoint
+must be trusted and serve the same network. Core never implicitly uses the
+profile's public Esplora default. The spawner clears the child environment and
+passes only the configured backend variables; see [SECURITY.md](../../../SECURITY.md)
+for fallback trust and privacy requirements.
 
 ## Concurrency model
 
@@ -327,8 +330,8 @@ The focused verification split is recorded in
 
 Operators configure the sole accepted gateway origin with
 `--push-gateway-origin` (`FLEET_MANAGER_PUSH_GATEWAY_ORIGIN`). Omitting it keeps
-ordinary direct-daemon service available but rejects callback-bearing
-callback-bearing `StartDkg` requests before mutation. Production accepts HTTPS only. Development may opt
+ordinary direct-daemon service available: FMan discards any supplied callback
+and proceeds with `StartDkg` callback-free. Production accepts HTTPS only. Development may opt
 into a loopback HTTP origin with `--allow-insecure-push-gateway-origin`
 (`FLEET_MANAGER_ALLOW_INSECURE_PUSH_GATEWAY_ORIGIN`); that escape hatch is
 rejected for every other Manifold environment.
@@ -346,8 +349,8 @@ Six kinds of state, six owners:
 - **Owned live facts** (durable accepted seats, the current ceremony's
   acknowledgement, the set-once formed federation invite, decommission):
   in-memory synchronization while the daemon runs; accepted-seat identity,
-  formation, and decommission survive in set-once SQLite records rebuilt at
-  startup, while ceremony acknowledgement is ephemeral. The signed acceptance
+  validated ceremony inputs, formation, and decommission survive in SQLite
+  records, while ceremony acknowledgement is ephemeral. The signed acceptance
   is reconstructed from durable seat facts and signed afresh on replay; its
   signature is not stored.
 - **Database-owned offer state** (epoch, plans, the retained setup-payment
@@ -371,8 +374,9 @@ Six kinds of state, six owners:
   native destination binding makes detectable skew fail closed rather than
   misassociate an old operation with a retargeted job.
 - **fedimintd-owned runtime state** (setup conversation, formed health):
-  never persisted; setup observations arrive through the driven-child stream,
-  while formed health is re-derived by probing the consensus API
+  never persisted by FMan; validated inputs are stored separately. Setup
+  observations arrive through the driven-child stream, while formed health is
+  re-derived by probing the consensus API
   ([ARCH-fleet-manager](./ARCH-fleet-manager.md)).
 
 ## Trust boundaries
@@ -412,8 +416,10 @@ Six kinds of state, six owners:
   already served to every iroh dialer, with admin verbs gated by the seat's
   `api_auth`. The public transport is iroh. The daemon owns the child's
   environment and startup contract:
-  nothing from the operator's shell can alter fedimintd behavior, and no
-  secrets travel via env or argv (test-enforced).
+  nothing from the operator's shell can alter fedimintd behavior. FMan supplies
+  the derived seat password through upstream UI/API password environment
+  settings, and Bitcoin Core credentials through its RPC environment settings;
+  secrets never travel via argv.
 - The host is assumed single-tenant: local processes are inside the trust
   boundary (pre-DKG fedimintd exposes no network API; its inherited socket is private to FMan
   until the daemon sets local params).

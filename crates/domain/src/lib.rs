@@ -1,7 +1,7 @@
 //! Domain types and data shapes for decentralized federation.
 //!
 //! Several wrappers here are still provisional protocol placeholders. They are
-//! expected to move toward credential-SDK types and canonical binary
+//! expected to move toward PeerBadge SDK types and canonical binary
 //! representations as the cross-component contracts settle.
 
 mod federation_config;
@@ -23,16 +23,14 @@ pub use federation_config::{
     FederationSeats, consensus_threshold, federation_config_hash, federation_id, federation_seats,
     parse_protocol_peer_id, protocol_peer_id,
 };
-pub use fedi_credential_sdk_protocol::{ProtocolV1, SchnorrSignatureProof};
 pub use fman_federation_directory::{
     FMAN_API_URL_MAX_BYTES, FMAN_API_URLS_MAX_COUNT, FMAN_API_URLS_MAX_VALUE_BYTES,
     FMAN_API_URLS_META_FIELD_KEY, FMAN_HOLDER_AUTHORIZATION_MAX_FUTURE_SKEW_SECS,
-    FMAN_HOLDER_AUTHORIZATION_RETENTION_MAX_COUNT, FMAN_TRUST_MATERIAL_CANONICAL_TYPE,
-    FMAN_TRUST_MATERIAL_MAX_FUTURE_SKEW_SECS, FMAN_TRUST_MATERIAL_MAX_HOLDER_AUTHORIZATIONS,
-    FMAN_TRUST_MATERIAL_MAX_RESPONSE_BYTES, FMAN_TRUST_MATERIAL_SIGNATURE_DOMAIN_SEPARATOR,
-    FmanApiUrlsMetadata, FmanApiUrlsMetadataError, FmanTrustMaterial,
-    FmanTrustMaterialVerificationError, GetFmanTrustMaterialRequest, GetFmanTrustMaterialResponse,
-    validate_fman_api_url,
+    FMAN_TRUST_MATERIAL_CANONICAL_TYPE, FMAN_TRUST_MATERIAL_MAX_FUTURE_SKEW_SECS,
+    FMAN_TRUST_MATERIAL_MAX_HOLDER_AUTHORIZATIONS, FMAN_TRUST_MATERIAL_MAX_RESPONSE_BYTES,
+    FMAN_TRUST_MATERIAL_SIGNATURE_DOMAIN_SEPARATOR, FmanApiUrlsMetadata, FmanApiUrlsMetadataError,
+    FmanTrustMaterial, FmanTrustMaterialVerificationError, GetFmanTrustMaterialRequest,
+    GetFmanTrustMaterialResponse, validate_fman_api_url,
 };
 pub use fman_peer_attestation::{
     FMAN_PEER_ATTESTATION_CANONICAL_TYPE, FMAN_PEER_ATTESTATION_SIGNATURE_DOMAIN_SEPARATOR,
@@ -45,6 +43,7 @@ pub use fman_seat_bindings::{
     VerifiedSeatBinding,
 };
 pub use gateway::{GatewayApiUrl, InvalidGatewayApiUrl};
+pub use peerbadge_protocol::{ProtocolV1, SchnorrSignatureProof};
 pub use setup_payment_federations::{
     AdmittedSetupPaymentFederations, DEFAULT_SETUP_PAYMENT_MIN_FEE_PPM, FmanVersion,
     SETUP_PAYMENT_FEDERATION_INVITE_MAX_BYTES, SETUP_PAYMENT_FEDERATIONS_MAX_CONTENT_BYTES,

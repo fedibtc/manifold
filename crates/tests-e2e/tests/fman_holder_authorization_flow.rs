@@ -8,11 +8,6 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use defe_api::{ResourceDescriptor, SharingMode};
 use defe_client::AsyncDefeClient;
-use fedi_credential_sdk_protocol::{
-    HolderAuthorization, HolderAuthorizationRequest, HolderContext, IssuerContext,
-    IssuerSecretKeys, PendingIssuance, RevocationLocation, SignedCredential, SubjectPubkey,
-    VerificationContext,
-};
 use fedi_decentralized_domain::HolderAuthorizationEnvelope;
 use fedi_decentralized_nostr::attester::{
     ISSUER_AUTHORITY_D_TAG, ISSUER_AUTHORITY_EVENT_KIND, ISSUER_AUTHORITY_HASHTAG,
@@ -38,6 +33,11 @@ use nostr_sdk::{
     Event, EventBuilder, Filter, Keys as NostrKeys, Kind, PublicKey as NostrPublicKey,
     SecretKey as NostrSecretKey, Tag,
     secp256k1::{Message, Secp256k1, SecretKey, schnorr::Signature},
+};
+use peerbadge_protocol::{
+    HolderAuthorization, HolderAuthorizationRequest, HolderContext, IssuerContext,
+    IssuerSecretKeys, PendingIssuance, RevocationLocation, SignedCredential, SubjectPubkey,
+    VerificationContext,
 };
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -329,7 +329,7 @@ async fn holder_trust_badge_to_concrete_fi_selection_flow() {
         .to_string();
     let first_endpoint_id = IrohSecretKey::from_bytes(&[43; 32]).public();
     let advertisement_payload = AdvertisementPayload {
-        version: fedi_credential_sdk_protocol::ProtocolV1,
+        version: peerbadge_protocol::ProtocolV1,
         fman_id_pubkey: fman_pubkey_string.clone(),
         service_pubkey: first_service_pubkey,
         issued_at,
@@ -463,9 +463,23 @@ async fn holder_trust_badge_to_concrete_fi_selection_flow() {
         "embedded trust badge carries the expected trust level"
     );
 
-    // Publish six more current, dialable advertisements so the public FI
-    // selection request can fill the minimum seven-seat product federation.
+    // Each additional guardian needs its own badge holder so FI can fill
+    // the minimum seven-seat federation without reusing a holder.
     for index in 1_u8..7 {
+        let holder = HolderContext::generate();
+        let (request, pending) = PendingIssuance::create_request(
+            &issuer_metadata.issuance_key,
+            issuer_metadata.issuer_id_pubkey.clone(),
+            trust_badge.credential.info.clone(),
+            json!(holder.public_key().to_string()),
+        )
+        .expect("new holder creates blind issuance request");
+        let response = issuer
+            .issue_credential(pending.info.clone(), &request)
+            .expect("issuer signs new holder's badge");
+        let trust_badge = pending
+            .finalize(&issuer_metadata.issuance_key, &response)
+            .expect("new holder finalizes badge");
         let fman_keys = NostrKeys::generate();
         let fman_pubkey = fman_keys.public_key();
         let authorization = holder
@@ -475,11 +489,11 @@ async fn holder_trust_badge_to_concrete_fi_selection_flow() {
                 },
                 &trust_badge,
             )
-            .expect("holder authorizes another FMan");
+            .expect("new holder authorizes its FMan");
         let endpoint_id = IrohSecretKey::from_bytes(&[50 + index; 32]).public();
         let service_key = SecretKey::from_slice(&[70 + index; 32]).expect("test key is valid");
         let payload = AdvertisementPayload {
-            version: fedi_credential_sdk_protocol::ProtocolV1,
+            version: peerbadge_protocol::ProtocolV1,
             fman_id_pubkey: fman_pubkey.to_string(),
             service_pubkey: service_key
                 .x_only_public_key(&Secp256k1::new())
@@ -500,7 +514,7 @@ async fn holder_trust_badge_to_concrete_fi_selection_flow() {
             }],
             holder_authorizations: vec![HolderAuthorizationEnvelope {
                 holder_authorization: authorization,
-                signed_credential: trust_badge.clone(),
+                signed_credential: trust_badge,
             }],
         };
         let document = sign_advertisement(payload, &fman_keys).expect("sign typed advertisement");
@@ -728,7 +742,7 @@ async fn publish_advertisement_payload(
 fn test_issuer_secret_keys() -> IssuerSecretKeys {
     // IssuerContext::generate() does real 2048-bit RSA keygen and is too slow for
     // this exploratory e2e test. These fixed test keys are copied from the
-    // credential SDK's own test fixtures.
+    // PeerBadge SDK's own test fixtures.
     serde_json::from_value(json!({
         "issuer_id_secret_key": "76127aa07dc3a3dcad06c8f8835ff997adb9c542868434bc47d16f1c9ba860b8",
         "issuance_secret_key": "MIIEvgIBADANBgkqhkiG9w0BAQEFAASCBKgwggSkAgEAAoIBAQDAQ1EwvOUFvlSU0vvwrRFsZoFtswUS1kdp0zxpmSF1clbKtpuY2TXkhSsOXMtAy2Ci2tCQ1_bqviht3pYTuF2KkBFa_0lbNXf1-jVbjckvWhjVfQoTNUn9QzvUPQklSBEokEXgHjvhI4vASaCWStl7Os5FfZW6MJ7CPNuSLouuIoI9aWTplP2-PD4DC9kzP3sRBSugVvx6CgPjPCq9T1eQzy52Ed18bpY0IKgvBkKnnc2j2JuvDENRDX2KxLHjpymDJhrMC_pSTxSnUMOncozdw-HI7E1I7t59gWiXz0S8Uk5kom2NS2x4QUkFKjpxQwarupAObUhtnDaLjCrszybxAgMBAAECggEAMxqxng7XoWsx-E0MgrC-DN5CUPJgyt0CJnLrf_YgGqPFxiQ7v6kc1h0_kJXBwPtOOHuJLLb6_vKEtI-RvLQoyQf6VQG-cewIcu2K-Ub6zwdXyoduAiUMAbG5WXTP1YUOaoXOzP-8Ut-r6fSoJsrGfCbpZTc4cUEzMdYTVwvgPOyhJr66lD26wWMnJD7hk8qi54lhpWG2fkwR61eSKhO_sBLUYXPywxkGVLRfXVpXZxxr8EDMDsxeD03Y6rZOMAS3-g4xv8-dIGFjbIPH_VsZn8g8eRmtAaaVLoDGfphaOfP5JSYw76QLzj5Y0Slzf3wUaaK3dxbAQoUIKi_RaCb7sQKBgQDRcOQ9hqQTF0g5TovWw8nLwJyCPrbqcjDT6MuQYDWKzKzPeQ6fPcjbpCgme7YCUZZ8AT2n9yZaFWOjNxGyRKps-YcBI2nhmQWzuV_UcmayxtehJ0ee3PyukKs8aJieuBwb9xFzZ5-ekSiDbghmA-wSvHDXoLFf1HDZXhH3XpxgBwKBgQDrANa5p1wmzNcW4Lvh8qkFhE9eGTbKugpxw94I6Qj2RQImupVBySSt1v_pi2771R66foBvspnzaEf505BNppYZ9jh3zLS3jjhztkkK76MOilho0cFHF0328s3AgNI8LFQDYpVp-_rCDb6NwPPLAhEewyecL690xvE_NbUMlTATRwKBgQDCnaZYzZ3053ODXMtwe2ouXQKRvHj4Dbf1kaJmvB_EpEAIYjMGIcFc54Mvj1EngmzVOcnzJCONHccCSQ-2mTvMG2op0qB2s1yrDpxPqyZnBYIlC3zvz-U0yNV1QrRe-DGWgtTCag3WqIf-6OYA9bAOEPDCTV3E8IEUWudS96VTTQKBgQDYbNlT-XHAuf2MsEPX_ubykbuWaZowcc2UoFIn2pXKWBt3F3bGMzx4bP0aVLNNciTuk_os5EssA-nlhpXrLXQnTL8MdZYpRe1vg30ZeUCt73MkdaiOlEPVHh-nHfyANkLZKz13cfyqIoZPflgHqkuiDRC5oqDv5xfeotOuVucDmQKBgH_9bUklrSGmRvIKwPyuaP52vSOWginmXzjRKvOGIleg6RRQs4tlbsVluHeQx7bZQQ4b578NYyK78FWfX1AG1OrbscHN8vUrSTN_viPGn6gXpxL0KDaX8okd7zdixwwxqYD0juxmLlaRSTGTAwUF0f-EkPDuNdisG-gkbbsBRJat",

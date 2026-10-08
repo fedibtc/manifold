@@ -32,7 +32,7 @@ pub const FLIP_AUTHORIZATION_D_TAG_PREFIX: &str = "flip-authorization";
 /// several providers with one credential publishes one addressable event per
 /// provider rather than replacing its own previous authorization.
 ///
-/// `credential_digest` is the credential-SDK `CredentialDigest` wire form, the
+/// `credential_digest` is the PeerBadge SDK `CredentialDigest` wire form, the
 /// same encoding the FMan variant and the attester revocation `d` tag use.
 /// Publishers and fetchers must agree on it or addressable replacement
 /// diverges across components.

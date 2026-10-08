@@ -20,7 +20,6 @@ use crate::wallet::Msats;
 use fedi_decentralized_domain::HolderAuthorizationEnvelope;
 
 pub struct FetchedHolderAuthorization {
-    pub credential_digest: Vec<u8>,
     pub authorization_issued_at: u64,
     pub event_json: String,
     pub authorization: HolderAuthorizationEnvelope,
@@ -36,11 +35,11 @@ pub trait HolderAuthorizationFetcher: Send + Sync {
     async fn fetch(
         &self,
         identity: &RootMnemonic,
-    ) -> anyhow::Result<(Vec<FetchedHolderAuthorization>, u64)>;
+    ) -> anyhow::Result<(Option<FetchedHolderAuthorization>, u64)>;
 }
 
 #[derive(Debug, thiserror::Error)]
-#[error("this Fleet Manager has not completed onboarding")]
+#[error("this Manifold Fedimint Guardian has not completed setup")]
 pub struct NotOnboarded;
 
 pub(crate) async fn onboard_as_new(db: &Db) -> anyhow::Result<RootMnemonic> {
@@ -158,19 +157,15 @@ impl Onboarding {
                 let identity = self.identity().await?;
                 match self.holder_authorizations.fetch(&identity).await {
                     Ok((fetched, max_issued_at)) => {
-                        let rows = fetched
-                            .iter()
-                            .map(|event| {
-                                (
-                                    event.credential_digest.clone(),
+                        if let Some(event) = &fetched {
+                            self.db
+                                .replace_holder_authorization_event(
                                     event.authorization_issued_at,
-                                    event.event_json.clone(),
+                                    &event.event_json,
+                                    max_issued_at,
                                 )
-                            })
-                            .collect::<Vec<_>>();
-                        self.db
-                            .merge_holder_authorization_events(&rows, max_issued_at)
-                            .await?;
+                                .await?;
+                        }
                         *self.holder_status.lock().await = observed_status(
                             &fetched
                                 .into_iter()
@@ -356,7 +351,7 @@ fn already_completed(request: &AdminRequest) -> anyhow::Result<Value> {
             Err(RestoreError::AlreadyOnboarded.into())
         }
         _ => Err(anyhow::anyhow!(
-            "this Fleet Manager has completed onboarding and is starting; its fleet is not open yet"
+            "this Manifold Fedimint Guardian has completed setup and is starting; its guardians are not open yet"
         )),
     }
 }

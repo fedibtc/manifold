@@ -8,7 +8,7 @@ FI, FLIP, push-gateway guardian telemetry, and cloud FMan telemetry receive a
 shared concrete PeerBadge verifier. FMan presents its own
 `HolderAuthorization` and receives the resolved environment profile at its
 Nostr boundary; it does not evaluate its own badge, issuer trust, or revocation
-state. This keeps FMan independent of the verifier's credential SDK, relay
+state. This keeps FMan independent of the verifier's PeerBadge SDK, relay
 client, async runtime, and cryptographic API surface.
 
 The profile owns PeerBadge issuer identities and a schema-valid minimum trust

@@ -17,8 +17,7 @@ const renderRestore = (onRestored = vi.fn(), onCancel = vi.fn()) => {
   return { onRestored, onCancel, client };
 };
 
-const submitButton = () =>
-  screen.getByRole('button', { name: 'Recover this fleet' }) as HTMLButtonElement;
+const submitButton = () => screen.getByRole('button', { name: 'Recover' }) as HTMLButtonElement;
 
 const acknowledgement = () => screen.getByLabelText(/permanently offline/i) as HTMLInputElement;
 
@@ -62,6 +61,35 @@ describe('SetupRestore', () => {
         OnboardFromBackup: { mnemonic: PHRASE, acknowledge_original_host_is_gone: true }
       })
     );
+  });
+
+  // The daemon matches BIP-39 words exactly, and the wordlist is lowercase.
+  it('should send a capitalised, one-word-per-line phrase in the form the daemon matches', async () => {
+    const adminCallSpy = vi.spyOn(adminCallModule, 'adminCall').mockResolvedValue(restored);
+    renderRestore();
+
+    fireEvent.change(screen.getByLabelText('Recovery phrase'), {
+      target: {
+        value: 'Abandon\nABANDON\nABANDON\nABANDON\nABANDON\nABANDON\nABANDON\nABANDON\nABOUT\n'
+      }
+    });
+    fireEvent.click(acknowledgement());
+    fireEvent.click(submitButton());
+
+    await waitFor(() =>
+      expect(adminCallSpy).toHaveBeenCalledWith({
+        OnboardFromBackup: { mnemonic: PHRASE, acknowledge_original_host_is_gone: true }
+      })
+    );
+  });
+
+  it('should block submitting a phrase made only of invisible characters', () => {
+    renderRestore();
+
+    fireEvent.change(screen.getByLabelText('Recovery phrase'), { target: { value: '\u200B\n' } });
+    fireEvent.click(acknowledgement());
+
+    expect(submitButton().disabled).toBe(true);
   });
 
   it('should warn that two hosts on one identity equivocate', () => {
@@ -178,7 +206,7 @@ describe('SetupRestore', () => {
       .mockRejectedValueOnce(new NetworkError())
       .mockRejectedValue(
         new AdminApiError(
-          'this Fleet Manager has not been onboarded yet: run `admin onboard new` or `admin onboard restore`',
+          'this Manifold Fedimint Guardian has not been set up yet: run `admin onboard new` or `admin onboard restore`',
           'not_onboarded'
         )
       );
@@ -254,7 +282,7 @@ describe('SetupRestore', () => {
       .mockRejectedValueOnce(new NetworkError())
       .mockRejectedValue(
         new AdminApiError(
-          'this Fleet Manager has not been onboarded yet: run `admin onboard new` or `admin onboard restore`',
+          'this Manifold Fedimint Guardian has not been set up yet: run `admin onboard new` or `admin onboard restore`',
           'not_onboarded'
         )
       );

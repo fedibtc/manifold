@@ -3,12 +3,12 @@
 use std::sync::LazyLock;
 
 use super::*;
-use fedi_credential_sdk_protocol::{
-    HolderAuthorizationRequest, HolderContext, IssuerContext, IssuerSecretKeys, PendingIssuance,
-};
 use nostr::{
     Keys, SecretKey,
     secp256k1::{Message, schnorr::Signature as SchnorrSignature},
+};
+use peerbadge_protocol::{
+    HolderAuthorizationRequest, HolderContext, IssuerContext, IssuerSecretKeys, PendingIssuance,
 };
 
 static ISSUER_SECRET_KEYS: LazyLock<IssuerSecretKeys> = LazyLock::new(|| {

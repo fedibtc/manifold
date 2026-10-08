@@ -76,7 +76,7 @@ it('should render the sign-in prompt on needs-auth', () => {
 it('should render the daemon error screen on daemon-unreachable', () => {
   renderWithStatus('daemon-unreachable');
 
-  screen.getByText("Can't reach the fleet manager");
+  screen.getByText("Can't reach Manifold Fedimint Guardian");
 });
 
 it('should hand the observed failure to the daemon error screen', () => {
@@ -88,7 +88,7 @@ it('should hand the observed failure to the daemon error screen', () => {
 it('should render the refused screen, not the routed shell, on access-denied', () => {
   renderWithStatus('access-denied', new AccessDeniedError());
 
-  screen.getByText('The fleet manager refused this dashboard');
+  screen.getByText('Manifold Fedimint Guardian refused this dashboard');
   screen.getByText('POST /api/admin · HTTP 403');
   expect(screen.queryByText('shell')).toBeNull();
   expect(screen.queryByRole('heading', { name: 'Sign in' })).toBeNull();

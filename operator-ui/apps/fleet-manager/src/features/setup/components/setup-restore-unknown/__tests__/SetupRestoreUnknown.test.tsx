@@ -4,7 +4,7 @@ import { SetupRestoreUnknown } from '../SetupRestoreUnknown';
 
 const networkError = {
   errorClass: 'network' as const,
-  message: "Can't reach the fleet manager. Try again once it's back online."
+  message: "Can't reach Manifold Fedimint Guardian. Try again once it's back online."
 };
 
 const props = {

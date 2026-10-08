@@ -37,8 +37,8 @@ export const PayoutsPage = () => {
         <h1 className={styles.heading}>Payouts</h1>
 
         <p className={styles.intro}>
-          A sweep sends the largest amount the wallet can economically fund, through a gateway the
-          daemon selects. There is no amount to enter and no gateway to pick.
+          Withdraw your earnings to your Lightning address. The system sends as much as it can and
+          chooses the route automatically — no amount to enter, nothing to configure.
         </p>
       </div>
 

@@ -11,7 +11,9 @@ const PHRASE = `${'abandon '.repeat(11)}about`;
 const startSetup = async (page: import('@playwright/test').Page) => {
   await page.goto('/');
   await signIn(page);
-  await expect(page.getByRole('heading', { name: 'Set up your fleet manager' })).toBeVisible();
+  await expect(
+    page.getByRole('heading', { name: 'Set up Manifold Fedimint Guardian' })
+  ).toBeVisible();
 };
 
 test('should gate the whole app behind setup, with no sidebar', async ({ page }) => {
@@ -27,16 +29,19 @@ test('should take a new fleet from the doors through to a priced offer', async (
   await resetScenario(page, 'not-onboarded');
 
   await startSetup(page);
-  await page.getByRole('button', { name: 'Start a new fleet' }).click();
+  await page.getByRole('button', { name: 'Start fresh' }).click();
 
   await expect(page.getByRole('heading', { name: 'Record your recovery phrase' })).toBeVisible();
   await page.getByRole('button', { name: 'Reveal phrase' }).click();
   await expect(page.getByText('abandon abandon abandon')).toBeVisible();
   await page.getByRole('button', { name: "I've written it down — continue" }).click();
 
-  await expect(page.getByRole('heading', { name: 'Get this fleet authorized' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Get approved' })).toBeVisible();
   await page.getByRole('button', { name: 'Check now' }).click();
   await page.getByRole('button', { name: 'Continue now' }).click();
+
+  await expect(page.getByRole('heading', { name: 'Accept the terms of service' })).toBeVisible();
+  await page.getByRole('button', { name: 'Accept and continue' }).click();
 
   await expect(page.getByRole('heading', { name: 'Set your price' })).toBeVisible();
   // The capacity field seeds from the daemon's RAM-derived recommendation; the
@@ -72,11 +77,11 @@ test('should hold setup at the authorization step until one is observed', async 
   await resetScenario(page, 'not-onboarded');
 
   await startSetup(page);
-  await page.getByRole('button', { name: 'Start a new fleet' }).click();
+  await page.getByRole('button', { name: 'Start fresh' }).click();
   await page.getByRole('button', { name: 'Reveal phrase' }).click();
   await page.getByRole('button', { name: "I've written it down — continue" }).click();
 
-  await expect(page.getByText(/No authorization for this fleet/i)).toBeVisible();
+  await expect(page.getByText(/Not approved yet/i)).toBeVisible();
   await expect(page.getByRole('button', { name: 'Continue', exact: true })).toBeDisabled();
 });
 
@@ -89,7 +94,7 @@ test('should require the acknowledgement before recovering from a phrase', async
   await expect(page.getByRole('heading', { name: 'Recover from your phrase' })).toBeVisible();
   await page.getByLabel('Recovery phrase').fill(PHRASE);
 
-  const recover = page.getByRole('button', { name: 'Recover this fleet' });
+  const recover = page.getByRole('button', { name: 'Recover', exact: true });
   await expect(recover).toBeDisabled();
 
   await page.getByLabel(/permanently offline/).check();
@@ -110,13 +115,13 @@ test('should recover a fleet and stop at the authorization step while it waits',
   await page.getByRole('button', { name: 'Recover from a phrase' }).click();
   await page.getByLabel('Recovery phrase').fill(PHRASE);
   await page.getByLabel(/permanently offline/).check();
-  await page.getByRole('button', { name: 'Recover this fleet' }).click();
+  await page.getByRole('button', { name: 'Recover', exact: true }).click();
 
   await expect(page.getByRole('heading', { name: 'Recovery finished' })).toBeVisible();
 
   await page.getByRole('button', { name: 'Continue' }).click();
 
-  await expect(page.getByRole('heading', { name: 'Get this fleet authorized' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Get approved' })).toBeVisible();
 });
 
 test('should not offer setup to a fleet that is already running', async ({ page }) => {
@@ -126,5 +131,7 @@ test('should not offer setup to a fleet that is already running', async ({ page 
   await signIn(page);
 
   await expect(page.getByRole('heading', { name: 'Overview', level: 1 })).toBeVisible();
-  await expect(page.getByRole('heading', { name: 'Set up your fleet manager' })).toHaveCount(0);
+  await expect(
+    page.getByRole('heading', { name: 'Set up Manifold Fedimint Guardian' })
+  ).toHaveCount(0);
 });

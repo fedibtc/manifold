@@ -22,7 +22,7 @@ test('should show price and seat capacity and let the operator change the price'
   await expect(page.getByText('50,000 sats per seat')).toBeVisible();
   await page.getByRole('link', { name: 'Change price and seats' }).click();
 
-  await expect(page.getByRole('heading', { name: 'Your offer', level: 1 })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Seat price', level: 1 })).toBeVisible();
   await expect(page.getByLabel('Maximum active seats')).toHaveValue('3');
   const price = page.getByLabel('Price per seat (sats)');
   await expect(price).toHaveValue('50000');
@@ -72,7 +72,7 @@ test('should reject a fractional price without leaving the form', async ({ page 
   await page.getByRole('button', { name: 'Save', exact: true }).click();
 
   await expect(page.getByText('Sats cannot be fractional.')).toBeVisible();
-  await expect(page.getByRole('heading', { name: 'Your offer', level: 1 })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Seat price', level: 1 })).toBeVisible();
 });
 
 test('should warn when a paid offer has nowhere to receive payment', async ({ page }) => {

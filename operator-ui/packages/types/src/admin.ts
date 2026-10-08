@@ -146,6 +146,12 @@ export interface FundingPolicyConfig {
   // before it is escalated to `manual_review_required`, in seconds.
   // serde(default) → 21600 when absent.
   in_doubt_review_after_secs: number;
+  // How long a gateway item may hold a settled funding send the gateway has
+  // not reported claiming before the delay is raised for an operator, in
+  // seconds. The item stays active and keeps reconciling past the threshold,
+  // so a claim reported later still completes it. 0 stops the delay being
+  // raised. serde(default) → 21600 when absent.
+  gateway_claim_review_after_secs: number;
 }
 
 export interface ReplenishmentConfig {

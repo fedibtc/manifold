@@ -5,15 +5,15 @@ use std::time::Duration;
 
 use anyhow::{Context as _, Result, ensure};
 use defe_client::{BitcoindInfo, FlipInfo, GatewaydInfo};
-use fedi_credential_sdk_protocol::{
-    HolderAuthorizationRequest, HolderContext, IssuerAuthority, IssuerContext, IssuerSecretKeys,
-    PendingIssuance, RevocationLocation, SubjectPubkey,
-};
 use fedi_decentralized_manifold_environment::ManifoldEnvironment;
 use fedi_decentralized_service_liquidity_manager::{
     AttestationInstallRequest, AttestationPayload, Pubkey,
 };
 use nostr_sdk::Keys;
+use peerbadge_protocol::{
+    HolderAuthorizationRequest, HolderContext, IssuerAuthority, IssuerContext, IssuerSecretKeys,
+    PendingIssuance, RevocationLocation, SubjectPubkey,
+};
 use reqwest::{Client, StatusCode};
 use serde_json::{Value, json};
 

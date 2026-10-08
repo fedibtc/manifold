@@ -38,12 +38,13 @@ use fman_core::guardian_fee::{
 };
 use fman_core::onboarding;
 use fman_core::payout_wire::{
-    DrainStateWire, OutgoingOperationWire, OutgoingRailWire, OutgoingStateWire,
+    DestinationCapWire, DrainStateWire, OutgoingOperationWire, OutgoingRailWire, OutgoingStateWire,
     PayoutJobOperationWire, PayoutJobStatusWire, PayoutJobWire, PayoutScopeWire,
     WalletDrainStatusWire,
 };
 use fman_core::remittance_metadata::{RemittanceBreakdownItem, RemittanceMetadata};
 use fman_core::seat::{PaymentClaimStatus, SeatBackupStatus, SeatPhase, SeatReport, SeatSummary};
+use fman_core::seat_readiness::{ReadinessOutcome, ReadinessReport};
 use fman_core::wallet::PayoutRequestId;
 use serde_json::Value;
 use stability_pool_client::common::{Account, AccountType};
@@ -63,9 +64,11 @@ pub const FIXTURE_NAMES: &[&str] = &[
     ERROR_KINDS_FIXTURE,
     "fman_admin_error",
     "fman_plans",
+    "fman_seat_readiness",
     "fman_payment_federations",
     "fman_payout_destination",
     "fman_payout_job",
+    "fman_payout_job_capped",
     "fman_payout_job_status",
     "fman_seats",
     "fman_seat_reports",
@@ -96,9 +99,22 @@ pub fn fixture_json() -> Vec<(&'static str, String)> {
         (ERROR_KINDS_FIXTURE, error_kinds_fixture()),
         ("fman_admin_error", admin_error_fixture()),
         ("fman_plans", plans_fixture()),
+        (
+            "fman_seat_readiness",
+            admin::seat_readiness_json(
+                false,
+                Some(ReadinessReport {
+                    checked_at_ms: 1_700_000_000_000,
+                    relay: ReadinessOutcome::Pass,
+                    discovery: ReadinessOutcome::DiscoveryRecordMissing,
+                    bitcoin: ReadinessOutcome::BitcoinSyncing,
+                }),
+            ),
+        ),
         ("fman_payment_federations", payment_federations_fixture()),
         ("fman_payout_destination", payout_destination_fixture()),
         ("fman_payout_job", payout_job_fixture()),
+        ("fman_payout_job_capped", payout_job_capped_fixture()),
         ("fman_payout_job_status", payout_job_status_fixture()),
         ("fman_seats", seats_fixture()),
         ("fman_seat_reports", seat_reports_fixture()),
@@ -312,7 +328,8 @@ fn after(request: &AdminRequest) -> Option<AdminRequest> {
             price_msats: Some(50_000_000),
         },
         AdminRequest::SetPrice { .. } => AdminRequest::ShowCapacity,
-        AdminRequest::ShowCapacity => AdminRequest::SetCapacity { max_seats: 4 },
+        AdminRequest::ShowCapacity => AdminRequest::ShowSeatReadiness,
+        AdminRequest::ShowSeatReadiness => AdminRequest::SetCapacity { max_seats: 4 },
         AdminRequest::SetCapacity { .. } => AdminRequest::ListPaymentFederations,
         AdminRequest::ListPaymentFederations => AdminRequest::PayoutDestination,
         AdminRequest::PayoutDestination => AdminRequest::SetPayoutDestination {
@@ -336,7 +353,14 @@ fn after(request: &AdminRequest) -> Option<AdminRequest> {
             seat_id: seat_id.clone(),
         },
         AdminRequest::DecommissionSeat { .. } => AdminRequest::ReenrollTelemetry,
-        AdminRequest::ReenrollTelemetry => AdminRequest::GuardianFees {
+        AdminRequest::ReenrollTelemetry => AdminRequest::SupportChat,
+        AdminRequest::SupportChat => AdminRequest::SendSupportMessage {
+            body: "Seat 2 stopped after the update.".to_owned(),
+        },
+        AdminRequest::SendSupportMessage { .. } => AdminRequest::MarkSupportRead {
+            ids: vec!["c".repeat(64)],
+        },
+        AdminRequest::MarkSupportRead { .. } => AdminRequest::GuardianFees {
             seat_id: seat_id.clone(),
             limit: Some(20),
         },
@@ -370,6 +394,7 @@ pub fn request_name(request: &AdminRequest) -> &'static str {
         AdminRequest::ShowPlans => "ShowPlans",
         AdminRequest::SetPrice { .. } => "SetPrice",
         AdminRequest::ShowCapacity => "ShowCapacity",
+        AdminRequest::ShowSeatReadiness => "ShowSeatReadiness",
         AdminRequest::SetCapacity { .. } => "SetCapacity",
         AdminRequest::ListPaymentFederations => "ListPaymentFederations",
         AdminRequest::PayoutDestination => "PayoutDestination",
@@ -381,6 +406,9 @@ pub fn request_name(request: &AdminRequest) -> &'static str {
         AdminRequest::SeatStatus { .. } => "SeatStatus",
         AdminRequest::DecommissionSeat { .. } => "DecommissionSeat",
         AdminRequest::ReenrollTelemetry => "ReenrollTelemetry",
+        AdminRequest::SupportChat => "SupportChat",
+        AdminRequest::SendSupportMessage { .. } => "SendSupportMessage",
+        AdminRequest::MarkSupportRead { .. } => "MarkSupportRead",
         AdminRequest::GuardianFees { .. } => "GuardianFees",
         AdminRequest::CollectGuardianFees { .. } => "CollectGuardianFees",
         AdminRequest::SweepGuardianFees { .. } => "SweepGuardianFees",
@@ -478,6 +506,7 @@ pub fn payout_job() -> PayoutJobWire {
         operation: Some(PayoutJobOperationWire {
             operation_id: "0f7c1b9a3e5d4c2b8a6f0e1d2c3b4a5960718293a4b5c6d7e8f90a1b2c3d4e5f".into(),
             amount_msat: 250_000,
+            capped: None,
             committed_at_ms: 1_753_600_002_000,
         }),
         created_at_ms: 1_753_600_001_000,
@@ -485,6 +514,17 @@ pub fn payout_job() -> PayoutJobWire {
 }
 pub fn payout_job_fixture() -> Value {
     serde_json::to_value(payout_job()).unwrap()
+}
+pub fn payout_job_capped_fixture() -> Value {
+    let mut job = payout_job();
+    job.operation = job.operation.map(|operation| PayoutJobOperationWire {
+        capped: Some(DestinationCapWire {
+            maximum_msat: 250_000,
+            remaining_msat: 12_345_000,
+        }),
+        ..operation
+    });
+    serde_json::to_value(job).unwrap()
 }
 pub fn payout_job_status_fixture() -> Value {
     serde_json::to_value(PayoutJobStatusWire {

@@ -23,7 +23,7 @@
 }
 
 .doorTitle {
-  @apply text-base font-semibold text-ink;
+  @apply uCardTitle;
 }
 
 .doorBody {

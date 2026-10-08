@@ -35,6 +35,22 @@ describe('useAuthPrompt', () => {
     expect(result.current.error).toBeNull();
   });
 
+  // The daemon compares the password byte for byte, and a space can be part of
+  // it. Trimming here would lock out an operator whose password has one.
+  it('should send the password exactly as typed, spaces included', async () => {
+    const authenticateSpy = vi
+      .spyOn(authenticateModule, 'authenticate')
+      .mockResolvedValue(undefined);
+    const { result } = renderHook(() => useAuthPrompt(), { wrapper });
+
+    act(() => result.current.onPasswordChange(changeEvent(' pass word ')));
+    await act(async () => {
+      await result.current.onSubmit(submitEvent);
+    });
+
+    expect(authenticateSpy).toHaveBeenCalledWith(' pass word ');
+  });
+
   it('should surface an inline error on a wrong password', async () => {
     vi.spyOn(authenticateModule, 'authenticate').mockRejectedValue(new InvalidPasswordError());
     const { result } = renderHook(() => useAuthPrompt(), { wrapper });
@@ -57,7 +73,7 @@ describe('useAuthPrompt', () => {
       await result.current.onSubmit(submitEvent);
     });
 
-    expect(result.current.error).toMatch(/can't reach the fleet manager/i);
+    expect(result.current.error).toMatch(/can't reach Manifold Fedimint Guardian/i);
     expect(result.current.error).not.toMatch(/incorrect password/i);
   });
 
@@ -74,7 +90,7 @@ describe('useAuthPrompt', () => {
     });
 
     expect(result.current.error).toBe(
-      'The fleet manager failed while signing in (HTTP 500). That is a fault in the service, not a wrong password. Check the service, then try again.'
+      'Manifold Fedimint Guardian failed while signing in (HTTP 500). That is a fault in the service, not a wrong password. Check the service, then try again.'
     );
   });
 });

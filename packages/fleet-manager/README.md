@@ -28,13 +28,13 @@ the optimized image is first built in the trusted publish workflow.
 
 The bundled `fedimintd` is compiled into the daemon binary from the `fedimint`
 flake input pinned in
-[`flake.nix`](../../flake.nix) — currently the immutable Fedi release
-[`v0.11.2-fedi4`](https://github.com/fedibtc/fedimint/tree/v0.11.2-fedi4)
-(commit `332efe1f664d36bcbbbfb089031d600c5f3e5585`). Its image
-`org.fedi.fedimintd.release` label is `0.11.2-fedi4`, while the typed DKG
-identity in `FEDIMINTD_VERSION_0_1` is `0.11.2+fedi`. The pinned release is bumped by updating
+[`flake.nix`](../../flake.nix) — currently the published Fedi fork tag
+[`v0.12.0-fedi11`](https://github.com/fedibtc/fedimint/releases/tag/v0.12.0-fedi11).
+`flake.lock` records its exact source revision. Its image
+`org.fedi.fedimintd.release` label is `0.12.0-fedi11`, while the typed DKG
+identity in `FEDIMINTD_VERSION_0_1` is `0.12.0+fedi`. The pinned release is bumped by updating
 the `fedimint` flake input (and `flake.lock`), not this package. The
-`fleet-manager-cli-contract` / OCI-image checks fail if the tag, DKG constant,
+`fleet-manager-cli-contract` / OCI-image checks fail if the source pin, DKG constant,
 this document, and image label drift apart.
 
 ## Runtime contract
@@ -49,6 +49,7 @@ fleet-manager serve \
   --bitcoind-url $FLEET_MANAGER_BITCOIND_URL \
   --bitcoind-username $FLEET_MANAGER_BITCOIND_USERNAME \
   --bitcoind-password=$FLEET_MANAGER_BITCOIND_PASSWORD \
+  [--esplora-url $FLEET_MANAGER_ESPLORA_URL] \
   [--admin-http-bind $FLEET_MANAGER_ADMIN_HTTP_BIND \
    --admin-http-auth $FLEET_MANAGER_ADMIN_HTTP_AUTH \
    --admin-http-password-file $FLEET_MANAGER_ADMIN_HTTP_PASSWORD_FILE]
@@ -60,6 +61,9 @@ Seat capacity and price are configured durably during browser or admin-socket on
 FLIP deployment (`development`, `staging`, or `production`).
 The profile supplies the Bitcoin network; this production package supplies an
 operator-owned Bitcoin Core backend instead of any profile Esplora default.
+`FLEET_MANAGER_ESPLORA_URL` optionally supplies a trusted, same-network Esplora
+fallback for Core RPC errors, including requests for blocks Core has pruned.
+It requires the Core settings above; the image supplies no default endpoint.
 `FLEET_MANAGER_PUSH_GATEWAY_ORIGIN` is optional, including in production.
 When set, it must be the real public HTTPS origin of the deployed gateway.
 Without it, FMan runs but rejects requests for DKG completion callbacks.

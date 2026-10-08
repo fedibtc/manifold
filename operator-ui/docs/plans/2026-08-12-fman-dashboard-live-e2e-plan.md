@@ -739,7 +739,7 @@ These tests require the pre-onboarding HTTP patch. Each test uses a fresh
 | SETUP-005 | `unconfigured` | Select **Copy the authorization request**. | The clipboard contains the exact request built from the FMan Nostr public key. The credential SDK parses it. | E3 |
 | SETUP-006 | `unconfigured` | Publish an authorization through the harness. | The setup page observes the signed relay event and enables **Continue now**. | E3 |
 | SETUP-007 | `unconfigured` | Select **Continue now** after authorization. | The wizard advances once. The delayed automatic transition cannot advance it twice. | E1 |
-| SETUP-008 | `unconfigured` | Do not select **Continue now** after authorization. | The delayed automatic transition advances to price once. | E1 |
+| SETUP-008 | `unconfigured` | Do not select **Continue now** after authorization. | The delayed automatic transition advances to the terms step once. | E1 |
 | SETUP-009 | `unconfigured` | Select **Skip for now** before authorization. | The wizard advances to price. FMan still reports that no authorization was observed. | E2 |
 | SETUP-010 | `unconfigured` | Enter a price and select **Finish setup**. | The overview shows the saved real price. Reload and FMan restart retain it. | E2 |
 | SETUP-011 | `unconfigured` | Leave price empty and select **Finish setup**. | FMan stores no offer. The overview shows that the fleet is not selling seats. | E2 |

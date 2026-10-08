@@ -31,7 +31,8 @@ export interface SafeRestoreError {
   reason?: AdminErrorKind;
 }
 
-const UNKNOWN_RESULT_MESSAGE = 'The connection to the fleet manager failed before it answered.';
+const UNKNOWN_RESULT_MESSAGE =
+  'The connection to Manifold Fedimint Guardian failed before it answered.';
 
 export type RestoreViewState =
   | { type: 'form' }

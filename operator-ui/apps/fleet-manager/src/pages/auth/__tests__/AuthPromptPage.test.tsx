@@ -39,3 +39,9 @@ it('should show an inline error and keep the field editable on a wrong password'
   await waitFor(() => screen.getByText(/incorrect password/i));
   expect(input.disabled).toBe(false);
 });
+
+it('should let a password manager fill the password', () => {
+  renderPage();
+
+  expect(screen.getByLabelText('Password')).toHaveAttribute('autocomplete', 'current-password');
+});

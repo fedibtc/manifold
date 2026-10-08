@@ -20,7 +20,7 @@ it('should report success when every accepted federation is receivable', () => {
   expect(model.attention).toEqual([]);
 });
 
-it('should flag a non-receivable federation as an attention item linking to wallet', () => {
+it('should flag a non-receivable federation as an attention item linking to payouts', () => {
   const model = deriveOverview({
     paymentFederations: [federation({ receivable: false, wallet: walletStatus(0) })]
   });
@@ -28,9 +28,9 @@ it('should flag a non-receivable federation as an attention item linking to wall
   expect(model.tone).toBe('warn');
   expect(model.attention).toContainEqual({
     key: 'fed1',
-    title: 'Payment federation not receiving',
+    title: 'Payment federation not accepting payments',
     detail: 'fed1',
-    path: '/wallet'
+    path: '/payouts'
   });
 });
 
@@ -86,18 +86,18 @@ it('should handle no data with an empty, all-clear model', () => {
   expect(model.attention).toEqual([]);
 });
 
-it('should raise an attention item when the authorization has not been observed', () => {
+it('should raise an attention item when no approval has been observed', () => {
   const model = deriveOverview({ nostrState: 'not_observed' });
 
   const item = model.attention.find((entry) => entry.key === 'authorization-not-observed');
-  expect(item?.title).toBe('No holder has authorized this fleet');
+  expect(item?.title).toBe('This host is not approved yet');
   expect(item?.path).toBe('/authorization');
 });
 
 // The daemon used to answer one state for both "nobody has authorized this" and
 // "the relay has not been read", so this item could only report what was not
 // known. `not_observed` is a completed read, so the item says what is true.
-it('should state plainly that no holder has authorized the fleet', () => {
+it('should state plainly that the fleet is not approved', () => {
   const model = deriveOverview({ nostrState: 'not_observed' });
 
   const item = model.attention.find((entry) => entry.key === 'authorization-not-observed');
@@ -133,4 +133,49 @@ it('should raise nothing when the state is unknown', () => {
   const model = deriveOverview({});
 
   expect(model.attention).toHaveLength(0);
+});
+
+const failingReport = {
+  checked_at_ms: 0,
+  relay: 'pass',
+  discovery: 'discovery_record_missing',
+  bitcoin: 'bitcoin_no_fee_rate'
+} as const;
+
+it('should send the operator to Health when a readiness check fails, naming only the failures', () => {
+  const model = deriveOverview({
+    seatReadiness: { ready_for_new_seats: false, report: failingReport }
+  });
+
+  expect(model.tone).toBe('warn');
+  expect(model.attention).toEqual([
+    {
+      key: 'not-ready-for-new-seats',
+      title: 'Not accepting new seats',
+      detail: 'Failing: Guardian discovery, Bitcoin backend. Open Health for what to check.',
+      path: '/health'
+    }
+  ]);
+});
+
+it('should flag a closed gate even before the first run after a restart', () => {
+  const model = deriveOverview({ seatReadiness: { ready_for_new_seats: false, report: null } });
+
+  expect(model.attention.map((item) => item.key)).toEqual(['not-ready-for-new-seats']);
+});
+
+it('should raise nothing for a stored ready verdict, with or without a fresh run', () => {
+  const ready = {
+    checked_at_ms: 0,
+    relay: 'not_applicable',
+    discovery: 'not_applicable',
+    bitcoin: 'pass'
+  } as const;
+
+  expect(
+    deriveOverview({ seatReadiness: { ready_for_new_seats: true, report: ready } }).attention
+  ).toEqual([]);
+  expect(
+    deriveOverview({ seatReadiness: { ready_for_new_seats: true, report: null } }).attention
+  ).toEqual([]);
 });

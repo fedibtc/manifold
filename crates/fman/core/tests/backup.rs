@@ -136,13 +136,14 @@ async fn a_publication_carries_the_archive_its_document_names() {
         fedimintd: temp.path().join("fedimintd"),
         bitcoin_network: bitcoin::Network::Regtest,
         iroh_dns: "https://dns.iroh.link/pkarr".parse().unwrap(),
-        bitcoin_backend: crate::seat_process::BitcoinBackend::Bitcoind(
-            crate::seat_process::BitcoindConfig {
+        bitcoin_backend: crate::seat_process::BitcoinBackend::Bitcoind {
+            primary: crate::seat_process::BitcoindConfig {
                 url: "http://127.0.0.1:18443".to_owned(),
                 username: "user".to_owned(),
                 password: "pass".to_owned(),
             },
-        ),
+            esplora_fallback: None,
+        },
     };
     let facts = seat_facts();
 

@@ -75,7 +75,7 @@ macOS caveats (as of Jul 2026, verified working around both):
   socket2's `all` feature but doesn't enable it. Local workaround: add to
   `crates/liquidity-manager-daemon/Cargo.toml` `[dependencies]` (do not commit):
   `socket2 = { version = "0.5", features = ["all"] }`
-- Older checkouts may pin the public credential SDK to an SSH URL. Without a
+- Older checkouts may pin the public PeerBadge SDK (previously the credential SDK) to an SSH URL. Without a
   GitHub SSH key, rewrite that URL to anonymous HTTPS as below.
 
 Build (from the PR checkout):

@@ -24,12 +24,17 @@ const renderAction = ({ balanceMsat = 250_000_000, hasDestination = true }: Opti
   );
 };
 
-const sweepButton = () => screen.getByRole('button', { name: 'Sweep' });
+const sweepButton = () => screen.getByRole('button', { name: 'Withdraw' });
 const payoutJob = {
   request_id: 'request-1',
   scope: { kind: 'payment_federation', federation_id: FEDERATION_ID },
   destination: 'operator@example.com',
-  operation: { operation_id: 'op-payment-1', amount_msat: 250_000_000, committed_at_ms: 2 },
+  operation: {
+    operation_id: 'op-payment-1',
+    amount_msat: 250_000_000,
+    capped: null,
+    committed_at_ms: 2
+  },
   created_at_ms: 1
 };
 
@@ -77,7 +82,7 @@ describe('PaymentSweepAction', () => {
     renderAction({ hasDestination: false });
 
     expect(sweepButton()).toBeDisabled();
-    expect(screen.getByText('Set a payout destination first.')).toBeInTheDocument();
+    expect(screen.getByText('Add a payout address first.')).toBeInTheDocument();
   });
 
   it('should not call the daemon while the sweep is blocked', () => {
@@ -93,7 +98,7 @@ describe('PaymentSweepAction', () => {
     renderAction({ balanceMsat: 0 });
 
     expect(sweepButton()).toBeDisabled();
-    expect(screen.getByText('This wallet holds nothing to sweep.')).toBeInTheDocument();
+    expect(screen.getByText('Nothing here to withdraw.')).toBeInTheDocument();
   });
 
   // An unread balance is not an empty one: the daemon is the authority on

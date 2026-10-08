@@ -25,6 +25,7 @@ fn content(invites: &[&str]) -> String {
             "https://push.fedi.example/v1/telemetry/registrations".to_owned()
         ),
         min_fee_ppm: DEFAULT_SETUP_PAYMENT_MIN_FEE_PPM,
+        support_nostr_pubkey: None,
     })
     .expect("test content serializes")
 }
@@ -119,6 +120,57 @@ fn admits_complete_event_and_empty_stop_set() {
         .set()
         .is_empty()
     );
+}
+
+#[test]
+fn admits_unknown_fields_but_rejects_unknown_versions() {
+    let keys = Keys::generate();
+    let mut policy: serde_json::Value = serde_json::from_str(&content(&[VALID_INVITE])).unwrap();
+    policy["min_fee_ppm"] = serde_json::json!(2_345);
+    policy["future_field"] = serde_json::json!({"nested": [null, true, 42]});
+
+    // Sign raw JSON: the current producer wire type would discard unknown fields.
+    for version in [1, 2] {
+        policy["version"] = serde_json::json!(version);
+        let publication = EventBuilder::new(
+            Kind::from(SETUP_PAYMENT_FEDERATIONS_EVENT_KIND),
+            serde_json::to_string(&policy).unwrap(),
+        )
+        .tag(Tag::identifier(SETUP_PAYMENT_FEDERATIONS_D_TAG))
+        .custom_created_at(Timestamp::from_secs(1_000))
+        .sign_with_keys(&keys)
+        .unwrap();
+        let result = admit_setup_payment_federations_event(
+            &publication,
+            keys.public_key(),
+            Timestamp::from_secs(1_000),
+            None,
+        );
+        if version == 1 {
+            let admitted = result.expect("unknown fields do not prevent admission");
+            assert_eq!(admitted.event(), &publication);
+            assert_eq!(admitted.set().len(), 1);
+            assert_eq!(admitted.set().fman_version().to_string(), "0.1.0");
+            assert_eq!(admitted.set().min_fee_ppm(), 2_345);
+            assert_eq!(
+                admitted.set().iter().next().unwrap().1,
+                &InviteCode(VALID_INVITE.to_owned())
+            );
+            let restored = restore_durably_admitted_setup_payment_federations_event(
+                admitted.event(),
+                keys.public_key(),
+            )
+            .expect("retained events with unknown fields still restore");
+            assert_eq!(restored.set(), admitted.set());
+        } else {
+            assert_eq!(
+                result.unwrap_err(),
+                SetupPaymentFederationsEventError::Content(
+                    fedi_decentralized_domain::SetupPaymentFederationsContentError::MalformedContent
+                )
+            );
+        }
+    }
 }
 
 #[test]

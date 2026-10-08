@@ -1,7 +1,8 @@
-import { newIdempotencyKey } from '@operator-ui/common-ui';
-import type { SweepPaymentFeesResponse } from '@operator-ui/types';
+import type { PayoutDestinationResponse, SweepPaymentFeesResponse } from '@operator-ui/types';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { useRef } from 'react';
+import { PAYOUT_DESTINATION_KEY } from '@/features/payouts/api/hooks/use-payout-destination/usePayoutDestination';
+import { type SweepRequest, sweepRequestFor } from '@/features/payouts/utils/sweepRequest';
 import { adminCall } from '@/shared/api/adminCall';
 import { PAYMENT_FEDERATIONS_KEY } from '@/shared/api/hooks/use-payment-federations/usePaymentFederations';
 
@@ -11,15 +12,19 @@ import { PAYMENT_FEDERATIONS_KEY } from '@/shared/api/hooks/use-payment-federati
 // amount can fail on mint and routing fees.
 export const useSweepPaymentFees = (federationId: string) => {
   const queryClient = useQueryClient();
-  const requestId = useRef(newIdempotencyKey());
+  const pendingRequest = useRef<SweepRequest | null>(null);
 
   return useMutation({
-    mutationFn: () =>
-      adminCall<SweepPaymentFeesResponse>({
-        SweepPaymentFees: { federation_id: federationId, request_id: requestId.current }
-      }),
+    mutationFn: () => {
+      const destination =
+        queryClient.getQueryData<PayoutDestinationResponse>(PAYOUT_DESTINATION_KEY)?.destination;
+      pendingRequest.current = sweepRequestFor(pendingRequest.current, destination);
+      return adminCall<SweepPaymentFeesResponse>({
+        SweepPaymentFees: { federation_id: federationId, request_id: pendingRequest.current.id }
+      });
+    },
     onSuccess: () => {
-      requestId.current = newIdempotencyKey();
+      pendingRequest.current = null;
       void queryClient.invalidateQueries({ queryKey: PAYMENT_FEDERATIONS_KEY });
     }
   });

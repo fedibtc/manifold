@@ -1,7 +1,8 @@
 import { Button, CopyButton, truncateMiddle } from '@operator-ui/common-ui';
-import { useId } from 'react';
+import { useEffect, useId, useRef, useState } from 'react';
 import { useCollectGuardianFees } from '@/features/payouts/api/hooks/use-collect-guardian-fees/useCollectGuardianFees';
 import { useSweepGuardianFees } from '@/features/payouts/api/hooks/use-sweep-guardian-fees/useSweepGuardianFees';
+import { CollectFeesConfirm } from '@/features/payouts/components/collect-fees-confirm/CollectFeesConfirm';
 import { describeCollection, describePayout } from '@/features/payouts/utils/sweepOutcome';
 import { describeActionError } from '@/shared/utils/describeActionError';
 import styles from './GuardianFeeActions.module.css';
@@ -25,10 +26,22 @@ const readSendBlock = (
   hasDestination: boolean,
   collectedEcashMsat: number | null
 ): string | null => {
-  if (!hasDestination) return 'Set a payout destination first.';
-  if (collectedEcashMsat === 0) return 'Nothing collected yet. Collect first.';
+  if (!hasDestination) return 'Add a payout address first.';
+  if (collectedEcashMsat === 0) return 'Nothing collected yet. Collect fees first.';
   return null;
 };
+
+// Shown whether or not the step is available: the two-step shape is the part
+// operators ask about, and a hint that appears only on the blocked path would
+// explain it exactly when it no longer matters.
+const COLLECT_HINT = 'Moves your fees out of the shared pool so they can be withdrawn.';
+
+const SMALL_COLLECTION_MSAT = 1_000_000;
+
+const readCollectableIfSmall = (collectableMsat: number | null): number | null =>
+  collectableMsat !== null && collectableMsat > 0 && collectableMsat < SMALL_COLLECTION_MSAT
+    ? collectableMsat
+    : null;
 
 /**
  * Guardian-fee money-out, which takes two steps and must look like two steps:
@@ -49,9 +62,30 @@ export const GuardianFeeActions = ({
   const sendNoteId = useId();
   const collectBlock = readCollectBlock(collectableMsat);
   const sendBlock = readSendBlock(hasDestination, collectedEcashMsat);
+  const smallCollectableMsat = readCollectableIfSmall(collectableMsat);
+  const [isConfirmingCollect, setIsConfirmingCollect] = useState(false);
+
+  const collectTriggerRef = useRef<HTMLButtonElement>(null);
+  const wasConfirming = useRef(false);
+  useEffect(() => {
+    if (wasConfirming.current && !isConfirmingCollect) collectTriggerRef.current?.focus();
+    wasConfirming.current = isConfirmingCollect;
+  }, [isConfirmingCollect]);
 
   const handleCollect = () => {
+    if (smallCollectableMsat !== null) {
+      setIsConfirmingCollect(true);
+      return;
+    }
     collect.mutate();
+  };
+
+  const handleCollectConfirm = () => {
+    collect.mutate(undefined, { onSuccess: () => setIsConfirmingCollect(false) });
+  };
+
+  const handleCollectCancel = () => {
+    setIsConfirmingCollect(false);
   };
 
   const handleSend = () => {
@@ -62,6 +96,7 @@ export const GuardianFeeActions = ({
     <div className={styles.root}>
       <div className={styles.step}>
         <Button
+          ref={collectTriggerRef}
           size="small"
           variant="secondary"
           disabled={collectBlock !== null}
@@ -69,8 +104,19 @@ export const GuardianFeeActions = ({
           describedBy={collectBlock ? collectNoteId : undefined}
           onClick={handleCollect}
         >
-          1. Collect out of the pool
+          Collect fees
         </Button>
+
+        {isConfirmingCollect && smallCollectableMsat !== null && (
+          <CollectFeesConfirm
+            collectableMsat={smallCollectableMsat}
+            onConfirm={handleCollectConfirm}
+            onCancel={handleCollectCancel}
+            isPending={collect.isPending}
+          />
+        )}
+
+        <span className={styles.note}>{COLLECT_HINT}</span>
 
         {collectBlock && (
           <span id={collectNoteId} className={styles.note}>
@@ -97,7 +143,7 @@ export const GuardianFeeActions = ({
           describedBy={sendBlock ? sendNoteId : undefined}
           onClick={handleSend}
         >
-          2. Send to destination
+          Withdraw
         </Button>
 
         {sendBlock && (

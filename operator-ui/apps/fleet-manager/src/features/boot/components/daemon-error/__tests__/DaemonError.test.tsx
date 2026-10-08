@@ -37,10 +37,10 @@ it('should report the observed status rather than a hard-coded refused connectio
 it('should say the request was refused, not that the daemon is unreachable, on a 403', () => {
   render(<DaemonError failure={new AccessDeniedError()} onRetry={vi.fn()} />);
 
-  screen.getByRole('heading', { name: 'The fleet manager refused this dashboard' });
+  screen.getByRole('heading', { name: 'Manifold Fedimint Guardian refused this dashboard' });
   screen.getByText('POST /api/admin · HTTP 403');
   screen.getByText(/signing in again will not change the answer/i);
-  expect(screen.queryByText(/can't reach the fleet manager/i)).toBeNull();
+  expect(screen.queryByText(/can't reach Manifold Fedimint Guardian/i)).toBeNull();
   expect(screen.queryByText(/check that the fleet-manager service is running/i)).toBeNull();
 });
 

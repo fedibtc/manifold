@@ -1,5 +1,6 @@
-use super::*;
 use std::os::fd::AsRawFd as _;
+
+use super::*;
 
 #[tokio::test]
 async fn protocol_frames_round_trip_over_socketpair() {
@@ -60,16 +61,18 @@ fn startup_frames_fit_socketpair_without_a_reader() {
 }
 
 #[tokio::test]
-async fn child_receives_configured_iroh_dns_relay() {
+async fn child_receives_configured_relay_and_auth_environment() {
     let temp = tempfile::tempdir().unwrap();
     let args_path = temp.path().join("args");
     let env_path = temp.path().join("iroh-dns");
+    let auth_path = temp.path().join("auth");
     let fedimintd = fake::write_fake_fedimintd(
         temp.path(),
         &format!(
-            "printf '%s\\n' \"$@\" > '{}'; printf '%s' \"$FM_IROH_DNS\" > '{}'",
+            "printf '%s\\n' \"$@\" > '{}'; printf '%s' \"$FM_IROH_DNS\" > '{}'; printf '%s\\n' \"$FM_PASSWORD_API\" \"$FM_PASSWORD_UI\" > '{}'",
             args_path.display(),
-            env_path.display()
+            env_path.display(),
+            auth_path.display()
         ),
     )
     .await;
@@ -87,6 +90,7 @@ async fn child_receives_configured_iroh_dns_relay() {
         SeatId::new("00".repeat(32)).unwrap(),
         SeatNo(0),
         SeatPorts::from_base(crate::facts::PortBase::new(31_000).unwrap()),
+        "test-seat-password",
     )
     .await
     .unwrap();
@@ -94,7 +98,56 @@ async fn child_receives_configured_iroh_dns_relay() {
 
     assert_eq!(tokio::fs::read_to_string(env_path).await.unwrap(), relay);
     let args = tokio::fs::read_to_string(args_path).await.unwrap();
-    assert!(args.lines().any(|arg| arg == "--enable-iroh"));
+    assert!(args.lines().any(|arg| arg == "--enable-iroh=true"));
+    assert!(!args.contains("test-seat-password"));
+    assert_eq!(
+        tokio::fs::read_to_string(auth_path).await.unwrap(),
+        "test-seat-password\ntest-seat-password\n"
+    );
+}
+
+#[tokio::test]
+async fn bitcoind_child_receives_esplora_fallback_with_core_credentials() {
+    let temp = tempfile::tempdir().unwrap();
+    let env_path = temp.path().join("bitcoin-env");
+    let fedimintd = fake::write_fake_fedimintd(
+        temp.path(),
+        &format!(
+            "printf '%s\\n' \"$FM_BITCOIND_URL\" \"$FM_BITCOIND_USERNAME\" \"$FM_BITCOIND_PASSWORD\" \"$FM_ESPLORA_URL\" > '{}'",
+            env_path.display()
+        ),
+    )
+    .await;
+    let config = SeatProcessConfig {
+        data_root: temp.path().to_owned(),
+        fedimintd,
+        bitcoin_network: bitcoin::Network::Signet,
+        bitcoin_backend: BitcoinBackend::Bitcoind {
+            primary: BitcoindConfig {
+                url: "http://127.0.0.1:38332".to_owned(),
+                username: "operator".to_owned(),
+                password: "secret".to_owned(),
+            },
+            esplora_fallback: Some("https://signet.example.test/api".parse().unwrap()),
+        },
+        iroh_dns: "https://pkarr.example.test/iroh".parse().unwrap(),
+    };
+
+    let mut child = SeatProcess::start(
+        &config,
+        SeatId::new("00".repeat(32)).unwrap(),
+        SeatNo(0),
+        SeatPorts::from_base(crate::facts::PortBase::new(31_000).unwrap()),
+        "test-seat-password",
+    )
+    .await
+    .unwrap();
+    child.wait().await.unwrap();
+
+    assert_eq!(
+        tokio::fs::read_to_string(env_path).await.unwrap(),
+        "http://127.0.0.1:38332\noperator\nsecret\nhttps://signet.example.test/api\n"
+    );
 }
 
 /// The iroh-carrying ports (p2p, api) must bind all interfaces — fedimintd
@@ -126,6 +179,7 @@ async fn iroh_carrying_ports_bind_all_interfaces_others_loopback() {
         SeatId::new("00".repeat(32)).unwrap(),
         SeatNo(0),
         SeatPorts::from_base(crate::facts::PortBase::new(31_000).unwrap()),
+        "test-seat-password",
     )
     .await
     .unwrap();

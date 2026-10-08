@@ -1032,8 +1032,7 @@ async fn complete_stability_pool_item(
             stability_pool_deposit_operation_id: item.step.sp_deposit_operation_id.clone(),
         }),
     )
-    .await?;
-    Ok(true)
+    .await
 }
 
 fn committed_deposit_amount(

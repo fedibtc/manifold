@@ -55,10 +55,12 @@ federation, peer, or seat assertion is trusted or required; seats are discovered
 later through the authenticated FMan service.
 
 The generation is a required part of the exact signed body. Adding it is a
-deliberate pre-production wire incompatibility: this receiver rejects older FMan
+deliberate historical wire incompatibility: this receiver rejects older FMan
 registrations that omit it. This transitional receiver verifies generation's
 signature but does not compare it with prior registrations; the standalone
 collector owns rollback-safe generation and NIP-98 `created_at` admission.
+Future protocol changes are governed by
+[`GATE-production-compatibility`](../../../specs/GATE-production-compatibility.md).
 
 Malformed endpoint ids, invalid/stale/below-minimum credentials, signer-subject
 mismatch, invalid NIP-98 proofs, and replays fail with sanitized errors before

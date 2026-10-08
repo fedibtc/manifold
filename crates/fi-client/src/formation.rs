@@ -426,6 +426,17 @@ pub(crate) struct SeatSession<C> {
     pub(crate) seat_id: SeatId,
 }
 
+/// One guardian's reply to an explicit restart. An error does not prove that
+/// its old ceremony survived: the request or acknowledgement may have been lost.
+#[derive(Debug)]
+pub struct DkgRestartResult {
+    /// Index in the saved formation's guardian set.
+    pub index: u16,
+    /// `DkgInProcess` acknowledges a new ceremony; `Running` means completion
+    /// won the race. Errors may follow a partial change on the guardian.
+    pub result: FiResult<ServiceStatus>,
+}
+
 #[derive(Clone)]
 pub(crate) struct PostFormedSeat {
     pub(crate) index: u16,
@@ -437,7 +448,6 @@ pub(crate) struct PostFormedSeat {
 pub(crate) struct PostFormedAuthority {
     pub(crate) formation_id: FormationId,
     pub(crate) invite_code: InviteCode,
-    pub(crate) federation_name: Option<crate::FederationName>,
     pub(crate) seats: Vec<PostFormedSeat>,
 }
 
@@ -685,7 +695,8 @@ where
     /// retains it through every pre-`DkgComplete` recovery, and sends the same value
     /// to every guardian. Public formation
     /// snapshots never expose the bearer. FI clears its copy atomically with the
-    /// `DkgComplete` checkpoint after every FMan has accepted durable retry ownership.
+    /// `DkgComplete` checkpoint; callback delivery is best effort, and an FMan
+    /// without delivery configured may proceed without accepting the callback.
     #[cfg(any(test, feature = "dev-pinned-formation"))]
     pub async fn create_with_pinned_fmans_and_callback(
         &self,
@@ -740,8 +751,9 @@ where
     /// FI persists the callback before any remote work, retains it through
     /// every pre-`DkgComplete` recovery, sends the same value to every guardian,
     /// never exposes the bearer in public formation snapshots, and clears its
-    /// copy atomically with the `DkgComplete` checkpoint once every FMan has accepted
-    /// durable retry ownership.
+    /// copy atomically with the `DkgComplete` checkpoint. Configured FMans have
+    /// accepted durable retry ownership by then; FMans without callback delivery
+    /// configured may have proceeded callback-free.
     pub async fn pay_and_create_with_callback(
         &self,
         intent: FormationIntent,
@@ -823,6 +835,7 @@ where
                     seat.locator,
                     FmanAdmission::fresh_peer_badge(
                         seat.fman_id,
+                        seat.holder,
                         verifier_provenance,
                         approval_valid_until,
                     ),
@@ -886,10 +899,12 @@ where
             .map(|seat| seat.index)
             .collect::<BTreeSet<_>>();
         let mut retained_service_pubkeys = BTreeMap::new();
+        let mut retained_holders = BTreeSet::new();
         for seat in &recovery.seats {
             if replacement_indices.contains(&seat.progress.index) {
                 continue;
             }
+            retained_holders.extend(seat.admission.holder());
             let fman_id = seat.admission.fman_id().ok_or_else(|| {
                 FiError::Storage("selected formation contains a pinned FMan admission".to_owned())
             })?;
@@ -919,6 +934,7 @@ where
             requirements,
             excluded,
             retained_service_pubkeys,
+            retained_holders,
             deadline,
             now,
             || fedimint_core::time::duration_since_epoch().as_secs(),
@@ -1020,6 +1036,7 @@ where
                         seat.locator,
                         FmanAdmission::fresh_peer_badge(
                             seat.fman_id,
+                            seat.holder,
                             verifier_provenance,
                             valid_until,
                         ),
@@ -1262,6 +1279,113 @@ where
         );
         let value = MetaFieldValue(send_ppm.value().to_string());
         let result = self.update_meta_field_pinned(key, value, fi_id, run).await;
+        finish_driver_run(result, self.inner.store.release_driver_lease(lease).await)
+    }
+
+    /// Explicitly replace every unfinished guardian ceremony, without paying
+    /// again. All status checks finish before any restart is sent. Guardians
+    /// can still finish or disappear afterward, so this is a best-effort wave.
+    ///
+    /// No request is retried. Cancellation or a missing reply leaves the
+    /// outcome unknown; another restart requires a new user decision. Call
+    /// `resume` afterward to observe formation and finish its publication.
+    pub async fn restart_dkg(
+        &self,
+        options: FormationRunOptions,
+    ) -> FiResult<Vec<DkgRestartResult>> {
+        let _guard = self.inner.run_guard.try_lock().map_err(|_| FiError::Busy)?;
+        options.validate_for_start(&self.inner.store)?;
+        let fi_id = self.fi_id()?;
+        let (deadline, lease) = start_driver_run(&self.inner.store, options).await?;
+        let run = DriverRun::new(options, deadline, &lease);
+        let result = async {
+            let mut recovery = self.active_recovery(fi_id).await?;
+            if recovery.snapshot.phase.dkg_complete() || recovery.snapshot.action_required.is_some()
+            {
+                return Err(FiError::InvalidIntent(
+                    "formation cannot restart DKG in its current state".into(),
+                ));
+            }
+            let codes = recovery
+                .seats
+                .iter()
+                .map(|seat| {
+                    seat.progress.guardian_code.clone().ok_or_else(|| {
+                        FiError::InvalidIntent("restart requires every saved guardian code".into())
+                    })
+                })
+                .collect::<FiResult<Vec<_>>>()?;
+            let sessions = self.seat_sessions(&recovery, run).await?;
+            let mut checks = FuturesUnordered::new();
+            for session in &sessions {
+                checks.push(async {
+                    let request = self.sign(&GetStatusRequest {
+                        ts: Timestamp(now_secs()?),
+                        fi_id,
+                        seat_id: session.seat_id.clone(),
+                    })?;
+                    let response = run
+                        .call("checking guardian before restart", || {
+                            Ok(session.client.get_status(request))
+                        })
+                        .await?
+                        .map_err(|error| {
+                            fman_error(usize::from(session.index), error.to_string())
+                        })?;
+                    if !matches!(
+                        response.status,
+                        ServiceStatus::New | ServiceStatus::DkgInProcess
+                    ) {
+                        return Err(fman_error(
+                            usize::from(session.index),
+                            format!("cannot restart guardian in {}", response.status),
+                        ));
+                    }
+                    Ok(())
+                });
+            }
+            while let Some(check) = checks.next().await {
+                check?;
+            }
+            drop(checks);
+            recovery.snapshot.freshness = FormationFreshness::Unsynced;
+            self.publish_snapshot(recovery.snapshot.clone());
+            let mut pending = FuturesUnordered::new();
+            for session in &sessions {
+                let codes = &codes;
+                pending.push(async move {
+                    let result = async {
+                        let request = self.sign(&RestartDkgRequest {
+                            ts: Timestamp(now_secs()?),
+                            fi_id,
+                            seat_id: session.seat_id.clone(),
+                            guardian_codes: codes.clone(),
+                        })?;
+                        let response = run
+                            .call("restarting guardian DKG", || {
+                                Ok(session.client.restart_dkg(request))
+                            })
+                            .await?
+                            .map_err(|error| {
+                                fman_error(usize::from(session.index), error.to_string())
+                            })?;
+                        Ok(response.status)
+                    }
+                    .await;
+                    DkgRestartResult {
+                        index: session.index,
+                        result,
+                    }
+                });
+            }
+            let mut results = Vec::new();
+            while let Some(result) = pending.next().await {
+                results.push(result);
+            }
+            results.sort_by_key(|result| result.index);
+            Ok(results)
+        }
+        .await;
         finish_driver_run(result, self.inner.store.release_driver_lease(lease).await)
     }
 
@@ -3774,19 +3898,28 @@ where
         fi_id: FiId,
         run: DriverRun<'_>,
     ) -> FiResult<()> {
-        let sessions = self.formed_sessions(recovery, run).await?;
-        self.poll_until_running(&sessions, recovery, fi_id, run)
-            .await?;
-        let invite = self.fetch_agreed_invite(&sessions, fi_id, run).await?;
-        let stored = recovery.snapshot.invite_code.as_ref().ok_or_else(|| {
+        let stored = recovery.snapshot.invite_code.clone().ok_or_else(|| {
             FiError::Storage("formed FI record contains no persisted invite".to_owned())
         })?;
-        if invite_federation_id(stored)? != invite_federation_id(&invite)? {
-            return Err(FiError::InvalidFleetManagers(
-                "formed federation identity changed during reconciliation".to_owned(),
-            ));
-        }
-        self.publish_seat_bindings(&sessions, recovery, fi_id, &invite, run)
+        let (manager_connections, invite) = if recovery.snapshot.phase == FormationPhase::Formed {
+            // Consensus already confirmed formation. Recheck that proof without
+            // requiring every manager to be online again.
+            (Vec::new(), stored)
+        } else {
+            let manager_connections = self.seat_sessions(recovery, run).await?;
+            self.poll_until_running(&manager_connections, recovery, fi_id, run)
+                .await?;
+            let invite = self
+                .fetch_agreed_invite(&manager_connections, fi_id, run)
+                .await?;
+            if invite_federation_id(&stored)? != invite_federation_id(&invite)? {
+                return Err(FiError::InvalidFleetManagers(
+                    "formed federation identity changed during reconciliation".to_owned(),
+                ));
+            }
+            (manager_connections, invite)
+        };
+        self.publish_seat_bindings(&manager_connections, recovery, fi_id, &invite, run)
             .await?;
         recovery.snapshot.phase = FormationPhase::Formed;
         recovery.snapshot.freshness = FormationFreshness::Fresh;
@@ -3807,82 +3940,15 @@ where
                 "restored FI backup contains no seats".to_owned(),
             ));
         }
-        let mut sessions = Vec::with_capacity(payload.seats.len());
-        for (position, seat) in payload.seats.iter().enumerate() {
-            let client = run
-                .call("reconnecting to restored Fleet Manager", || {
-                    Ok(self.inner.ports.fman_connector.connect(&seat.locator))
-                })
-                .await?
-                .map_err(|error| fman_error(position, error.to_string()))?;
-            sessions.push(SeatSession {
-                index: u16::try_from(position)
-                    .map_err(|_| FiError::Storage("restored FI seat index overflow".to_owned()))?,
-                client,
-                seat_id: seat.seat_id.clone(),
-            });
-        }
-
-        loop {
-            ensure_time_remaining(
-                run.deadline,
-                "waiting for every restored FMan to report running",
-            )?;
-            let mut pending = FuturesUnordered::new();
-            for (position, session) in sessions.iter().enumerate() {
-                pending.push(async move {
-                    let request = GetStatusRequest {
-                        ts: Timestamp(now_secs()?),
-                        fi_id,
-                        seat_id: session.seat_id.clone(),
-                    };
-                    let request = run
-                        .construct("signing restored GetStatus request", || self.sign(&request))
-                        .await?;
-                    let response = run
-                        .call("checking restored Fleet Manager status", || {
-                            Ok(session.client.get_status(request))
-                        })
-                        .await?
-                        .map_err(|error| fman_error(position, error.to_string()))?;
-                    Ok::<_, FiError>(response)
-                });
-            }
-            let mut running = 0;
-            while let Some(response) = pending.next().await {
-                let response = response?;
-                if response.status == ServiceStatus::Running
-                    && response.seat_health == Some(SeatHealth::Healthy)
-                {
-                    running += 1;
-                }
-            }
-            if running == sessions.len() {
-                break;
-            }
-            sleep_for_retry(run.deadline, run.options.poll_interval).await?;
-        }
-
-        let invite = self.fetch_agreed_invite(&sessions, fi_id, run).await?;
-        if invite_federation_id(&invite)? != invite_federation_id(&snapshot.federation_invite)? {
-            return Err(FiError::InvalidFleetManagers(
-                "restored Fleet Managers reported a different federation identity".to_owned(),
-            ));
-        }
-        let consensus = run
-            .call("reading restored federation consensus", || {
-                Ok(self
-                    .inner
-                    .ports
-                    .consensus_reader
-                    .read_consensus(&snapshot.federation_invite))
-            })
+        let consensus = self
+            .read_recovery_consensus(&snapshot.federation_invite, run)
             .await?
             .map_err(|error| {
                 FiError::InvalidFleetManagers(format!(
                     "reading restored federation consensus failed: {error}"
                 ))
             })?;
+        verify_consensus_identity(&consensus, &snapshot.federation_invite)?;
         let federation = federation_seats(&consensus.config).map_err(|error| {
             FiError::InvalidFleetManagers(format!(
                 "restored federation config is not usable: {error}"
@@ -3901,7 +3967,7 @@ where
                     "restored federation seat-binding directory is invalid: {error}"
                 ))
             })?;
-        let federation_name = restored_federation_name(&consensus.meta_value)?;
+        let federation_name = federation_name(&consensus)?;
         let validation_name = federation_name
             .clone()
             .or_else(|| {
@@ -3936,15 +4002,11 @@ where
             context.matches_commitment(commitment)?;
         }
 
-        let persisted_federation_name = federation_name.or_else(|| {
-            payload
-                .liquidity
-                .as_ref()
-                .map(|value| value.federation_details.federation_name.clone())
-        });
+        self.remember_read_invite(&snapshot.federation_invite, &consensus)
+            .await?;
         self.inner
             .store
-            .reconcile_restored_backup(fi_id, persisted_federation_name)
+            .reconcile_restored_backup(fi_id, federation_name)
             .await?;
         let mut status = self.inner.store.load_status(fi_id).await?;
         if let FiStatus::Restored(snapshot) = &mut status {
@@ -3955,7 +4017,7 @@ where
         Ok(())
     }
 
-    async fn formed_sessions(
+    async fn seat_sessions(
         &self,
         recovery: &ActiveFormationRecovery,
         run: DriverRun<'_>,
@@ -3963,10 +4025,10 @@ where
         let mut sessions = Vec::with_capacity(recovery.seats.len());
         for (position, seat) in recovery.seats.iter().enumerate() {
             let seat_id = seat.progress.seat_id.clone().ok_or_else(|| {
-                FiError::Storage(format!("formed FI seat row {position} has no seat id"))
+                FiError::Storage(format!("FI seat row {position} has no seat id"))
             })?;
             let client = run
-                .call("reconnecting to formed Fleet Manager", || {
+                .call("reconnecting to Fleet Manager", || {
                     Ok(self
                         .inner
                         .ports
@@ -4087,15 +4149,21 @@ where
 
         loop {
             ensure_time_remaining(run.deadline, "reading the formation metadata base")?;
-            let snapshot = run
-                .call("reading the formation metadata base", || {
+            let snapshot = if confirmed {
+                self.read_recovery_consensus(invite, run).await?
+            } else {
+                run.call("reading the formation metadata base", || {
                     Ok(self.inner.ports.consensus_reader.read_consensus(invite))
                 })
-                .await?;
+                .await?
+            };
             let Ok(snapshot) = snapshot else {
                 sleep_for_retry(run.deadline, run.options.poll_interval).await?;
                 continue;
             };
+            if confirmed {
+                verify_consensus_identity(&snapshot, invite)?;
+            }
             validate_consensus_metadata_size(snapshot.meta_value.as_deref()).map_err(|error| {
                 FiError::InvalidFleetManagers(format!(
                     "consensus metadata is {} bytes; formation permits at most {} bytes",
@@ -4119,6 +4187,7 @@ where
                     })
                     .await??;
                 }
+                self.remember_read_invite(invite, &snapshot).await?;
                 return Ok(());
             }
             if confirmed {
@@ -4385,6 +4454,121 @@ where
         Ok(true)
     }
 
+    /// Choose remembered guardian addresses for this saved invite, if available.
+    /// Otherwise return the saved invite. Only connection information is reused;
+    /// callers must still read fresh consensus.
+    pub(crate) async fn consensus_invite(&self, saved: &InviteCode) -> InviteCode {
+        self.inner
+            .read_invite
+            .lock()
+            .await
+            .as_ref()
+            .filter(|(original, _)| original == saved)
+            .map(|(_, invite)| invite.clone())
+            .unwrap_or_else(|| saved.clone())
+    }
+
+    /// Remember several guardian addresses from a verified consensus snapshot.
+    /// Call after verifying the directory and saved authority. This checks the
+    /// federation identity again before storing the connection hint in memory;
+    /// the saved invite, backups, and signed liquidity request stay unchanged.
+    async fn remember_read_invite(
+        &self,
+        saved: &InviteCode,
+        snapshot: &FederationConsensusSnapshot,
+    ) -> FiResult<()> {
+        verify_consensus_identity(snapshot, saved)?;
+        let peers = snapshot
+            .config
+            .global
+            .api_endpoints
+            .iter()
+            .map(|(peer, endpoint)| (*peer, endpoint.url.clone()))
+            .collect();
+        let parsed = FedimintInviteCode::from_str(&saved.0)
+            .map_err(|error| FiError::InvalidIntent(error.to_string()))?;
+        let invite =
+            FedimintInviteCode::from_map(&peers, parsed.federation_id(), parsed.api_secret());
+        *self.inner.read_invite.lock().await =
+            Some((saved.clone(), InviteCode(invite.to_string())));
+        Ok(())
+    }
+
+    /// Read fresh consensus, trying saved managers' invites if the first read fails.
+    /// Alternative invites and returned configurations must name the saved
+    /// federation. Calls share the driver deadlines, and remaining attempts are
+    /// dropped once one succeeds. The caller must still verify the directory and
+    /// saved authority before marking recovery fresh.
+    async fn read_recovery_consensus(
+        &self,
+        saved: &InviteCode,
+        run: DriverRun<'_>,
+    ) -> FiResult<Result<FederationConsensusSnapshot, crate::FederationConsensusError>> {
+        let invite = self.consensus_invite(saved).await;
+        let first = run
+            .call("reading federation recovery consensus", || {
+                Ok(self.inner.ports.consensus_reader.read_consensus(&invite))
+            })
+            .await;
+        match &first {
+            Ok(Ok(_)) => return first,
+            Err(error) if !matches!(error, FiError::Timeout(_)) => return first,
+            _ => {}
+        }
+
+        // A manager supplies another way to dial, never a trust verdict.
+        // Race the saved managers so one unavailable manager cannot hold up the rest.
+        let fi_id = self.fi_id()?;
+        let authority = self.post_formed_authority(fi_id).await?;
+        let expected = invite_federation_id(saved)?;
+        let mut pending = FuturesUnordered::new();
+        for seat in &authority.seats {
+            pending.push(async move {
+                let client = run
+                    .call("connecting for a recovery invite", || {
+                        Ok(self.inner.ports.fman_connector.connect(&seat.locator))
+                    })
+                    .await?
+                    .map_err(|error| fman_error(usize::from(seat.index), error.to_string()))?;
+                let request = run
+                    .construct("signing a recovery invite request", || {
+                        self.sign(&GetInviteCodeRequest {
+                            ts: Timestamp(now_secs()?),
+                            fi_id,
+                            seat_id: seat.seat_id.clone(),
+                        })
+                    })
+                    .await?;
+                let invite = run
+                    .call("fetching a recovery invite", || {
+                        Ok(client.get_invite_code(request))
+                    })
+                    .await?
+                    .map_err(|error| fman_error(usize::from(seat.index), error.to_string()))?
+                    .invite_code;
+                if invite_federation_id(&invite)? != expected {
+                    return Err(FiError::InvalidFleetManagers(
+                        "recovery invite names another federation".to_owned(),
+                    ));
+                }
+                let snapshot = run
+                    .call("reading alternate recovery consensus", || {
+                        Ok(self.inner.ports.consensus_reader.read_consensus(&invite))
+                    })
+                    .await?
+                    .map_err(|error| FiError::InvalidFleetManagers(error.to_string()))?;
+                verify_consensus_identity(&snapshot, saved)?;
+                Ok::<_, FiError>(snapshot)
+            });
+        }
+        while let Some(result) = pending.next().await {
+            if let Ok(snapshot) = result {
+                return Ok(Ok(snapshot));
+            }
+        }
+        first
+    }
+
     async fn fetch_agreed_invite(
         &self,
         sessions: &[SeatSession<F::Client>],
@@ -4480,7 +4664,6 @@ where
                 Ok(PostFormedAuthority {
                     formation_id: recovery.snapshot.formation_id,
                     invite_code,
-                    federation_name: Some(recovery.snapshot.intent.federation_name),
                     seats,
                 })
             }
@@ -4507,7 +4690,6 @@ where
                 Ok(PostFormedAuthority {
                     formation_id,
                     invite_code: snapshot.federation_invite,
-                    federation_name: snapshot.federation_name,
                     seats,
                 })
             }
@@ -4536,23 +4718,43 @@ where
     }
 }
 
-fn restored_federation_name(
-    meta_value: &Option<Vec<u8>>,
+/// Reject a configuration whose federation id differs from the saved invite.
+/// This checks identity only; the caller verifies the guardian directory separately.
+fn verify_consensus_identity(
+    snapshot: &FederationConsensusSnapshot,
+    invite: &InviteCode,
+) -> FiResult<()> {
+    if snapshot.config.calculate_federation_id() != invite_federation_id(invite)? {
+        return Err(FiError::InvalidFleetManagers(
+            "consensus federation identity differs from the saved invite".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+/// A rename overrides the original name in the client config.
+pub(crate) fn federation_name(
+    consensus: &FederationConsensusSnapshot,
 ) -> FiResult<Option<crate::FederationName>> {
-    let Some(bytes) = meta_value else {
-        return Ok(None);
-    };
-    let fields: BTreeMap<String, serde_json::Value> =
-        serde_json::from_slice(bytes).map_err(|error| {
-            FiError::InvalidFleetManagers(format!(
-                "restored federation metadata is invalid: {error}"
-            ))
-        })?;
+    let fields = consensus
+        .meta_value
+        .as_deref()
+        .map(serde_json::from_slice::<BTreeMap<String, serde_json::Value>>)
+        .transpose()
+        .map_err(|error| {
+            FiError::InvalidFleetManagers(format!("federation metadata is invalid: {error}"))
+        })?
+        .unwrap_or_default();
     match fields.get(FEDERATION_NAME_META_FIELD_KEY) {
-        None => Ok(None),
+        None => Ok(consensus
+            .config
+            .global
+            .meta
+            .get(FEDERATION_NAME_META_FIELD_KEY)
+            .map(|name| crate::FederationName(name.clone()))),
         Some(serde_json::Value::String(value)) => Ok(Some(crate::FederationName(value.clone()))),
         Some(_) => Err(FiError::InvalidFleetManagers(
-            "restored federation name metadata is not a string".to_owned(),
+            "federation name metadata is not a string".to_owned(),
         )),
     }
 }

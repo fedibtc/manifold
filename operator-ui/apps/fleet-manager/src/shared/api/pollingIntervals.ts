@@ -5,6 +5,8 @@
 // changes to these constants in seats, not milliseconds.
 export const SEAT_FORMATION_POLL_MS = 5_000; // seat status, only while non-terminal
 export const LIST_POLL_MS = 30_000; // ListSeats, ListPaymentFederations
+export const SUPPORT_CHAT_OPEN_POLL_MS = 2_000; // SupportChat, only while the Support page shows the thread
+export const SUPPORT_UNREAD_POLL_MS = 30_000; // SupportChat, the navigation unread dot
 export const FEES_POLL_MS = 60_000; // GuardianFees, screens that display fees only
 
 // Ceilings the backoff below decays toward. A poll that keeps failing costs the

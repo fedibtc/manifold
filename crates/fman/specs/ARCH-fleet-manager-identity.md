@@ -39,12 +39,15 @@ purpose-separated `info` labels:
 
    This separation belongs here rather than in a Fedimint root salt inside the
    wallet crate: this label list is the one place that answers what derives from
-   what, and a salt hidden at the client boundary is invisible to it. The repository's pre-production persisted-format
-   policy permits this per-seat derivation boundary to change
-   without a migration. Guardian client ecash created before this boundary is
+   what, and a salt hidden at the client boundary is invisible to it. The
+   repository's former pre-production persisted-format policy permitted this
+   per-seat derivation boundary to change without a migration. Guardian client
+   ecash created before this boundary is
    deliberately outside the new root's recovery domain; development installs
    with such state must retain their old wallet database or drain it before
-   adopting this pre-production format.
+   adopting this historical format. Subsequent persisted-format changes are
+   governed by
+   [`GATE-production-compatibility`](../../../specs/GATE-production-compatibility.md).
 - `fman/v1/nostr-backup`, `fman/v1/nostr-backup-tag`,
   `fman/v1/nostr-backup-encryption` → the backup identity
   ([SPEC-nostr-backup-restore](./SPEC-nostr-backup-restore.md)): the Nostr

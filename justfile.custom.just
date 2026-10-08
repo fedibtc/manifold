@@ -147,11 +147,12 @@ lean-check:
 # fixtures under operator-ui/packages/types/fixtures/, and the FMan
 # `AdminRequest` union at operator-ui/packages/types/src/generated/. Both are
 # consumed by TS tests and MSW mocks so they cannot drift from the real
-# admin-API serde shapes. Review the diff and commit it. Three paired tests fail
+# admin-API serde shapes. Review the diff and commit it. Four paired tests fail
 # CI if the committed files go stale:
 # `cargo test --package fedi-decentralized-service-liquidity-manager --test
 # contract_fixtures` (FLIP), `cargo test --package fman-core --test
-# contract_fixtures` and `--test admin_request_ts` (FMan).
+# contract_fixtures` and `--test admin_request_ts` (FMan), and `cargo test
+# --package fman-nostr --test contract_fixtures` (FMan support chat).
 gen-contract-fixtures:
   #!/usr/bin/env bash
   set -euo pipefail
@@ -160,6 +161,7 @@ gen-contract-fixtures:
   fi
   cargo run --package fedi-decentralized-service-liquidity-manager --bin gen_contract_fixtures
   cargo run --package fman-core --bin gen_fman_contract_fixtures
+  cargo run --package fman-nostr --bin gen_support_contract_fixtures
   cargo run --package fman-core --bin gen_fman_admin_request_ts
 
 # Measure Rust line coverage for the dashboard release surface (FLIP daemon,

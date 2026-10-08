@@ -42,6 +42,16 @@ it('should seed the price field from the stored offer', async () => {
   screen.getByText('Seat capacity editor');
 });
 
+it('should keep browser autofill out of the price field', async () => {
+  vi.spyOn(adminCallModule, 'adminCall').mockResolvedValue({ plans: [] });
+  renderPage();
+
+  const field = await readyPriceField();
+
+  expect(field).toHaveAttribute('inputmode', 'numeric');
+  expect(field).toHaveAttribute('autocomplete', 'off');
+});
+
 it('should write the entered price as millisatoshis', async () => {
   const adminCallSpy = vi.spyOn(adminCallModule, 'adminCall').mockResolvedValue({ plans: [] });
   renderPage();

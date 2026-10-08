@@ -10,7 +10,7 @@ test('should explain the empty seats state', async ({ page }) => {
 
   await expect(page.getByRole('heading', { name: 'Seats', level: 1 })).toBeVisible();
   await expect(
-    page.getByText('No seats yet. Seats are created by Federation Initiators')
+    page.getByText('No seats yet. Seats are created by Federation Ambassadors')
   ).toBeVisible();
 });
 

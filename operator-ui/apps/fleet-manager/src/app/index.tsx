@@ -10,12 +10,13 @@ import { SetupGate } from '@/app/components/setup-gate/SetupGate';
 import { AuthorizationPage } from '@/pages/authorization/AuthorizationPage';
 import { BackupPage } from '@/pages/backup/BackupPage';
 import { BackupPhrasePage } from '@/pages/backup-phrase/BackupPhrasePage';
+import { HealthPage } from '@/pages/health/HealthPage';
 import { OfferPage } from '@/pages/offer/OfferPage';
 import { OverviewPage } from '@/pages/overview/OverviewPage';
 import { PayoutsPage } from '@/pages/payouts/PayoutsPage';
 import { SeatDetailPage } from '@/pages/seat-detail/SeatDetailPage';
 import { SeatsPage } from '@/pages/seats/SeatsPage';
-import { WalletPage } from '@/pages/wallet/WalletPage';
+import { SupportPage } from '@/pages/support/SupportPage';
 import { queryClient } from '@/shared/api/queryClient';
 
 // Gate order: BootGate (daemon reachable, session authenticated) → SetupGate
@@ -43,11 +44,12 @@ const router = createBrowserRouter([
                   { path: 'authorization', element: <AuthorizationPage /> },
                   { path: 'seats', element: <SeatsPage /> },
                   { path: 'seats/:seatId', element: <SeatDetailPage /> },
-                  { path: 'wallet', element: <WalletPage /> },
                   { path: 'payouts', element: <PayoutsPage /> },
                   { path: 'offer', element: <OfferPage /> },
                   { path: 'backup', element: <BackupPage /> },
-                  { path: 'backup/phrase', element: <BackupPhrasePage /> }
+                  { path: 'backup/phrase', element: <BackupPhrasePage /> },
+                  { path: 'health', element: <HealthPage /> },
+                  { path: 'support', element: <SupportPage /> }
                 ]
               }
             ]

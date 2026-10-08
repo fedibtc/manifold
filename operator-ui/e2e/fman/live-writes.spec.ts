@@ -9,7 +9,7 @@ test('@live should set price and seat capacity and read them back', async ({ pag
   await page.goto('/offer');
   await signIn(page);
 
-  await expect(page.getByRole('heading', { name: 'Your offer', level: 1 })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Seat price', level: 1 })).toBeVisible();
 
   const maxSeats = page.getByLabel('Maximum active seats');
   await maxSeats.fill('9');

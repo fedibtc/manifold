@@ -17,9 +17,9 @@ export const AppShell = () => {
 
       <nav className={styles.sidebar} aria-label="Sections">
         <div className={styles.brand}>
-          FMan
+          Manifold Fedimint Guardian
           <div className={styles.brandSubtitle}>
-            {onboarding.data?.fman_name ?? 'Fleet manager admin'}
+            {onboarding.data?.fman_name ?? 'Operator dashboard'}
           </div>
         </div>
 

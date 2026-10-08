@@ -1,0 +1,11 @@
+.root {
+  @apply uStack6;
+}
+
+.heading {
+  @apply uPageHeading;
+}
+
+.readiness {
+  @apply uStack4;
+}

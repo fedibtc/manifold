@@ -255,7 +255,7 @@ impl FmanDriver {
                 )
                 .env("FMAN_E2E_LOCAL_IROH", "1")
                 .env(
-                    "FM_IROH_CONNECT_OVERRIDES",
+                    "FM_IROH_CONNECT_OVERRIDES_PLAIN",
                     stable.request.iroh_connect_overrides.clone(),
                 ),
             )

@@ -22,15 +22,16 @@
 //! seat keys are port-derived and publicly derivable — keeps all four ports
 //! on loopback. The public transport is iroh with
 //! deterministic per-seat keys (ARCH-fleet-manager-identity). The
-//! seat's `api_auth` is never in env or argv — it travels only through the
-//! private driven-DKG socket; when Bitcoin Core is selected its RPC credentials are
-//! the only secret handed to the child. Esplora configuration is public.
+//! seat's `api_auth` is supplied through upstream `FM_PASSWORD_API` and
+//! `FM_PASSWORD_UI` environment settings on every spawn, never through argv.
+//! The same secret travels through the private driven-DKG socket to encrypt
+//! guardian configuration. Bitcoin Core RPC credentials also use the child
+//! environment; Esplora configuration is public.
 //!
 //! Guarantees the rest of the daemon relies on:
 //! - **Daemon exit kills the child, even on SIGKILL** (kill-on-drop plus a
-//!   Linux parent-death signal): a leaked fedimintd would squat the seat
-//!   port grid and answer the next daemon's clients with a stale
-//!   `api_auth`.
+//!   Linux parent-death signal): a leaked fedimintd would squat the seat port
+//!   grid and answer the next daemon's clients with a stale `api_auth`.
 //! - **[`SeatProcess::stop`] returns only after the child is reaped**, so a
 //!   ceremony restart can safely inspect the final data-directory gate.
 //! - **Child output has structural line integrity**: stdout and stderr use
@@ -47,7 +48,9 @@ use std::process::Stdio;
 use std::sync::Arc;
 use std::time::Duration;
 
-use fedimint_core::{envs::FM_IROH_DNS_ENV, util::SafeUrl};
+use fedi_decentralized_service_fleet_manager::SeatId;
+use fedimint_core::envs::FM_IROH_DNS_ENV;
+use fedimint_core::util::SafeUrl;
 use fedimint_server::config::driven::DrivenDkgClient;
 #[cfg(test)]
 use fedimint_server::config::driven::{
@@ -66,7 +69,6 @@ use tracing::instrument::WithSubscriber;
 use crate::bundled_fedimintd;
 use crate::facts::{SeatNo, SeatPorts};
 use crate::identity::SeatKeys;
-use fedi_decentralized_service_fleet_manager::SeatId;
 
 #[cfg(target_os = "linux")]
 mod die_with_parent;
@@ -111,13 +113,18 @@ pub struct SeatProcessConfig {
     pub iroh_dns: SafeUrl,
 }
 
-/// The one chain-data backend supplied to a seat's bundled `fedimintd`.
+/// Chain-data backends supplied to a seat's bundled `fedimintd`.
 #[derive(Clone)]
 pub enum BitcoinBackend {
     /// Public HTTP Esplora API.
     Esplora(url::Url),
-    /// Operator-owned Bitcoin Core JSON-RPC.
-    Bitcoind(BitcoindConfig),
+    /// Operator-owned Bitcoin Core JSON-RPC, optionally with Esplora fallback.
+    Bitcoind {
+        /// Primary Bitcoin Core JSON-RPC connection.
+        primary: BitcoindConfig,
+        /// Esplora endpoint tried by fedimintd after a Core RPC error.
+        esplora_fallback: Option<url::Url>,
+    },
 }
 
 // No `Debug`: `password` is a credential and must never be formatted.
@@ -194,9 +201,10 @@ impl SeatProcessSpawner {
         seat_id: SeatId,
         seat_no: SeatNo,
         ports: SeatPorts,
+        api_auth: &str,
     ) -> Result<SeatProcess, SeatProcessError> {
         match self {
-            Self::Bundled => SeatProcess::start(config, seat_id, seat_no, ports).await,
+            Self::Bundled => SeatProcess::start(config, seat_id, seat_no, ports, api_auth).await,
             #[cfg(test)]
             Self::Fake(fake) => fake.start(config, seat_id, seat_no, ports).await,
         }
@@ -235,9 +243,10 @@ impl SeatProcess {
         seat_id: SeatId,
         seat_no: SeatNo,
         ports: SeatPorts,
+        api_auth: &str,
     ) -> Result<Self, SeatProcessError> {
         let (child, stdout_pump, stderr_pump, control) =
-            spawn_child(config, &seat_id, seat_no, ports).await?;
+            spawn_child(config, &seat_id, seat_no, ports, api_auth).await?;
         Ok(Self {
             seat_id,
             child: SeatChild::Real(child),
@@ -473,6 +482,7 @@ async fn spawn_child(
     seat_id: &SeatId,
     seat_no: SeatNo,
     ports: SeatPorts,
+    api_auth: &str,
 ) -> Result<
     (
         Child,
@@ -495,7 +505,7 @@ async fn spawn_child(
     // with port-derived keys. Those keys are publicly derivable, so harness
     // children keep the old loopback binds: their discovery records then
     // carry only loopback and relay addresses, and the harness dials
-    // loopback routes via FM_IROH_CONNECT_OVERRIDES.
+    // loopback routes via FM_IROH_CONNECT_OVERRIDES_PLAIN.
     let local_e2e = std::env::var_os("FMAN_E2E_LOCAL_IROH").is_some();
     let iroh_bind_ip = if local_e2e { "127.0.0.1" } else { "0.0.0.0" };
     #[cfg(not(test))]
@@ -508,6 +518,8 @@ async fn spawn_child(
     command.as_std_mut().arg0(bundled_fedimintd::ARGV0);
     command
         .env_clear()
+        .env("FM_PASSWORD_API", api_auth)
+        .env("FM_PASSWORD_UI", api_auth)
         .arg("--data-dir")
         .arg(&data_dir)
         .arg("--bitcoin-network")
@@ -523,7 +535,7 @@ async fn spawn_child(
         .arg(format!("127.0.0.1:{}", ports.ui()))
         .arg("--bind-metrics")
         .arg(format!("127.0.0.1:{}", ports.metrics()))
-        .arg("--enable-iroh")
+        .arg("--enable-iroh=true")
         .env(SAFE_EVENT_DIR_ENV, safe_event_dir(config, seat_no))
         .env(
             FM_IROH_DNS_ENV,
@@ -551,6 +563,8 @@ async fn spawn_child(
         // Forward only the explicit harness marker so its module registry can
         // select hermetic test dependencies too.
         command.env("FMAN_E2E_LOCAL_IROH", "1");
+        // A per-seat marker lets the real-process test stop inside message exchange.
+        command.env("FMAN_E2E_DKG_PAUSE", data_dir.with_extension("pause-dkg"));
     }
     parent
         .set_nonblocking(true)
@@ -563,11 +577,17 @@ async fn spawn_child(
         BitcoinBackend::Esplora(url) => {
             command.env("FM_ESPLORA_URL", url.as_str());
         }
-        BitcoinBackend::Bitcoind(bitcoind) => {
+        BitcoinBackend::Bitcoind {
+            primary: bitcoind,
+            esplora_fallback,
+        } => {
             command
                 .env("FM_BITCOIND_URL", &bitcoind.url)
                 .env("FM_BITCOIND_USERNAME", &bitcoind.username)
                 .env("FM_BITCOIND_PASSWORD", &bitcoind.password);
+            if let Some(url) = esplora_fallback {
+                command.env("FM_ESPLORA_URL", url.as_str());
+            }
         }
     }
     // Do not let the daemon's development/package environment silently change
@@ -586,8 +606,8 @@ async fn spawn_child(
     if std::env::var_os("DEV_DEFE_SOCKET_PATH").is_some() {
         command.env("FM_IN_DEVIMINT", "1");
     }
-    if local_e2e && let Some(value) = std::env::var_os("FM_IROH_CONNECT_OVERRIDES") {
-        command.env("FM_IROH_CONNECT_OVERRIDES", value);
+    if local_e2e && let Some(value) = std::env::var_os("FM_IROH_CONNECT_OVERRIDES_PLAIN") {
+        command.env("FM_IROH_CONNECT_OVERRIDES_PLAIN", value);
     }
 
     // "FMan exit kills its fedimintd children" (ARCH-fleet-manager)
@@ -621,7 +641,7 @@ async fn spawn_child(
             })?;
     #[cfg(not(target_os = "linux"))]
     let mut child = command.spawn().map_err(|source| SeatProcessError::Spawn {
-        path: program,
+        path: program.clone(),
         source,
     })?;
     let stdout = child

@@ -1,6 +1,12 @@
 import { type FormEvent, useState } from 'react';
 import { useSetPayoutDestination } from '@/features/payouts/api/hooks/use-set-payout-destination/useSetPayoutDestination';
+import {
+  isPayoutDestinationFormat,
+  normalizePayoutDestination
+} from '@/features/payouts/utils/payoutDestination';
 import { describeActionError } from '@/shared/utils/describeActionError';
+
+const NOT_A_DESTINATION = 'Enter a Lightning address (name@example.com) or an LNURL (lnurl1…).';
 
 export interface PayoutDestinationForm {
   value: string;
@@ -26,25 +32,43 @@ export const usePayoutDestinationForm = (destination: string | null): PayoutDest
     setHasSeeded(true);
   }
 
+  const [formatError, setFormatError] = useState<string | null>(null);
+
+  const destinationToSave = normalizePayoutDestination(value);
+
+  const onChange = (next: string) => {
+    setValue(next);
+    setFormatError(null);
+  };
+
   const onSubmit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    const trimmed = value.trim();
-    if (trimmed === '') return;
-    setDestination.mutate(trimmed);
+    if (destinationToSave === '') return;
+    if (!isPayoutDestinationFormat(destinationToSave)) {
+      setFormatError(NOT_A_DESTINATION);
+      return;
+    }
+    // The field shows what was stored, not what was typed, so it agrees with
+    // the "Revenue leaves to" line above it.
+    setDestination.mutate(destinationToSave, {
+      onSuccess: (stored) => setValue(stored.destination ?? '')
+    });
   };
 
   const onClear = () => {
     setValue('');
+    setFormatError(null);
     setDestination.mutate(null);
   };
 
   return {
     value,
-    onChange: setValue,
+    onChange,
     onSubmit,
     onClear,
-    error: setDestination.isError ? describeActionError(setDestination.error) : null,
+    error:
+      formatError ?? (setDestination.isError ? describeActionError(setDestination.error) : null),
     isPending: setDestination.isPending,
-    canSave: value.trim() !== ''
+    canSave: destinationToSave !== ''
   };
 };

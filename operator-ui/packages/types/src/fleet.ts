@@ -21,6 +21,7 @@
 
 import type { FederationId } from './funds';
 import type { AdminRequest as GeneratedAdminRequest } from './generated/adminRequest';
+import type { ReadinessReport } from './generated/seatReadiness';
 
 // Federation invite code (serde(transparent) string).
 type InviteCode = string;
@@ -291,6 +292,13 @@ export interface CapacityResponse {
   available_slots: number;
 }
 export type ShowCapacityResponse = CapacityResponse;
+
+/** The durable verdict that gates new seats, and the latest run behind it;
+ *  `report` is null until a run completes after the daemon starts. */
+export interface ShowSeatReadinessResponse {
+  ready_for_new_seats: boolean;
+  report: ReadinessReport | null;
+}
 export type SetCapacityResponse = CapacityResponse;
 export interface ConfigureInitialOfferResponse extends ShowPlansResponse {
   onboarding: 'complete';
@@ -313,9 +321,14 @@ export type PayoutScope =
       seat_id: SeatId;
       invite_code: string;
     };
+export interface DestinationCap {
+  maximum_msat: number;
+  remaining_msat: number;
+}
 export interface PayoutJobOperation {
   operation_id: string;
   amount_msat: number;
+  capped: DestinationCap | null;
   committed_at_ms: number;
 }
 export interface PayoutJob {
@@ -357,6 +370,31 @@ export interface ReenrollTelemetryResponse {
   telemetry_reenrollment: 'scheduled';
 }
 export type RefreshHolderAuthorizationsResponse = OnboardingResponse;
+// The operator's NIP-17 chat with Fedi support (SPEC-fman-support-chat).
+export type SupportAuthor = 'operator' | 'fedi';
+export interface SupportMessage {
+  // The rumor id, shared by every copy of the message.
+  id: string;
+  author: SupportAuthor;
+  body: string;
+  // Unix seconds, as the author stated it.
+  created_at: number;
+  // A Fedi message the operator has not read.
+  unread: boolean;
+}
+export interface SupportChatResponse {
+  // False while the deployment has no Fedi support identity.
+  available: boolean;
+  // Oldest first.
+  messages: SupportMessage[];
+  unread: number;
+}
+export interface SendSupportMessageResponse {
+  message: SupportMessage;
+}
+export interface MarkSupportReadResponse {
+  unread: number;
+}
 export interface GuardianFeesResponse {
   seat_id: SeatId;
   federation_id: FederationId;
@@ -438,6 +476,7 @@ export interface AdminResponseByName {
   ShowPlans: ShowPlansResponse;
   SetPrice: SetPriceResponse;
   ShowCapacity: ShowCapacityResponse;
+  ShowSeatReadiness: ShowSeatReadinessResponse;
   SetCapacity: SetCapacityResponse;
   ListPaymentFederations: ListPaymentFederationsResponse;
   PayoutDestination: PayoutDestinationResponse;
@@ -449,6 +488,9 @@ export interface AdminResponseByName {
   SeatStatus: SeatStatusResponse;
   DecommissionSeat: DecommissionSeatResponse;
   ReenrollTelemetry: ReenrollTelemetryResponse;
+  SupportChat: SupportChatResponse;
+  SendSupportMessage: SendSupportMessageResponse;
+  MarkSupportRead: MarkSupportReadResponse;
   GuardianFees: GuardianFeesResponse;
   CollectGuardianFees: CollectGuardianFeesResponse;
   SweepGuardianFees: SweepGuardianFeesResponse;

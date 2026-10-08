@@ -1,6 +1,5 @@
 use std::path::PathBuf;
 
-use fedi_credential_sdk_protocol::{HolderContext, SignedCredential as SdkSignedCredential};
 use fedi_decentralized_service_liquidity_manager::{
     AcceptedAttesterPolicy, BitcoinNetwork, FederationId, FederationLiquidityDetails,
     FederationName, FleetSeat, FleetSeatId, FmanEndorsement, FmanPeerAttestation,
@@ -10,6 +9,7 @@ use fedi_decentralized_service_liquidity_manager::{
 };
 use nostr_sdk::Keys;
 use nostr_sdk::secp256k1::Message;
+use peerbadge_protocol::{HolderContext, SignedCredential as SdkSignedCredential};
 
 use super::*;
 use crate::attestation_store;
@@ -20,8 +20,8 @@ use crate::revocation::test_fakes::FakeRevocationFetcher;
 use crate::test_support::credentials::{
     UNIT_TEST_ISSUER_RELAY, UNIT_TEST_PEER_BADGE_TRUST_LEVEL, attestation_payload,
     holder_authorization_for_provider, issue_credential_for_holder,
-    issue_credential_for_holder_with_trust_level, test_foreign_issuer_context,
-    test_issuer_authority, test_issuer_context,
+    issue_credential_for_holder_with_trust_level, test_additional_issuer_context,
+    test_foreign_issuer_context, test_issuer_authority, test_issuer_context,
 };
 use fedi_decentralized_service_liquidity_manager::Timestamp;
 
@@ -92,13 +92,10 @@ fn attestation_for(
 
 /// Issue a badge to `fman` and bind it with a holder authorization.
 fn envelope_for(
-    issuer: &fedi_credential_sdk_protocol::IssuerContext,
-    authority: &fedi_credential_sdk_protocol::IssuerAuthority,
+    issuer: &peerbadge_protocol::IssuerContext,
+    authority: &peerbadge_protocol::IssuerAuthority,
     fman: &Fman,
-) -> anyhow::Result<(
-    fedi_credential_sdk_protocol::HolderAuthorization,
-    SdkSignedCredential,
-)> {
+) -> anyhow::Result<(peerbadge_protocol::HolderAuthorization, SdkSignedCredential)> {
     let holder = HolderContext::generate();
     let credential = issue_credential_for_holder(issuer, authority, &holder)?;
     let authorization =
@@ -135,8 +132,8 @@ fn material_for(
 
 /// A complete, valid endorsement: seat attestation plus trust envelope.
 fn endorsement_for(
-    issuer: &fedi_credential_sdk_protocol::IssuerContext,
-    authority: &fedi_credential_sdk_protocol::IssuerAuthority,
+    issuer: &peerbadge_protocol::IssuerContext,
+    authority: &peerbadge_protocol::IssuerAuthority,
     preview: &FederationPreview,
     fman: &Fman,
     peer_id: &str,
@@ -153,10 +150,17 @@ fn endorsement_for(
     })
 }
 
+/// One installed issuer authority plus the context that can sign for it.
+struct TestIssuer {
+    issuer: peerbadge_protocol::IssuerContext,
+    authority: peerbadge_protocol::IssuerAuthority,
+    attester_hex: String,
+}
+
 struct Harness {
     database: Database,
-    issuer: fedi_credential_sdk_protocol::IssuerContext,
-    authority: fedi_credential_sdk_protocol::IssuerAuthority,
+    issuer: peerbadge_protocol::IssuerContext,
+    authority: peerbadge_protocol::IssuerAuthority,
     attester_hex: String,
     preview: FederationPreview,
     fmans: Vec<Fman>,
@@ -351,10 +355,7 @@ impl Harness {
     fn trust_envelope_for(
         &self,
         fman: &Fman,
-    ) -> anyhow::Result<(
-        fedi_credential_sdk_protocol::HolderAuthorization,
-        SdkSignedCredential,
-    )> {
+    ) -> anyhow::Result<(peerbadge_protocol::HolderAuthorization, SdkSignedCredential)> {
         envelope_for(&self.issuer, &self.authority, fman)
     }
 
@@ -401,6 +402,108 @@ impl Harness {
     fn program_untrusted(&self, fman_index: usize) {
         let fman = &self.fmans[fman_index];
         self.push_material(material_for(fman, vec![]));
+    }
+
+    /// Install one more issuer authority, so a test can badge operators from
+    /// different issuers the way the FI's round-robin bucketing produces them.
+    ///
+    /// `index` selects a distinct attester identity.
+    async fn install_issuer(&self, index: u8) -> anyhow::Result<TestIssuer> {
+        let issuer = test_additional_issuer_context(index);
+        let authority = test_issuer_authority(&issuer, ISSUER_RELAY)?;
+        let attester_hex = authority.issuer.issuer_id_pubkey.0.to_string();
+        attestation_store::install(
+            &self.database,
+            fedi_decentralized_service_liquidity_manager::AttestationInstallRequest {
+                payload: attestation_payload(&authority)?,
+            },
+        )
+        .await?;
+        Ok(TestIssuer {
+            issuer,
+            authority,
+            attester_hex,
+        })
+    }
+
+    /// Carry trust material for this FMan holding one badge from `issuer`.
+    fn program_trusted_by(&self, fman_index: usize, issuer: &TestIssuer) -> anyhow::Result<()> {
+        let fman = &self.fmans[fman_index];
+        let (holder_authorization, signed_credential) =
+            envelope_for(&issuer.issuer, &issuer.authority, fman)?;
+        self.push_material(material_for(
+            fman,
+            vec![HolderAuthorizationEnvelope {
+                holder_authorization,
+                signed_credential,
+            }],
+        ));
+        Ok(())
+    }
+
+    /// Carry trust material for this FMan holding one badge from each issuer,
+    /// the way an operator vouched for by several attesters serves them.
+    fn program_trusted_by_each(
+        &self,
+        fman_index: usize,
+        issuers: &[(
+            &peerbadge_protocol::IssuerContext,
+            &peerbadge_protocol::IssuerAuthority,
+        )],
+    ) -> anyhow::Result<()> {
+        let fman = &self.fmans[fman_index];
+        let envelopes = issuers
+            .iter()
+            .map(|(issuer, authority)| {
+                let (holder_authorization, signed_credential) =
+                    envelope_for(issuer, authority, fman)?;
+                Ok(HolderAuthorizationEnvelope {
+                    holder_authorization,
+                    signed_credential,
+                })
+            })
+            .collect::<anyhow::Result<Vec<_>>>()?;
+        self.push_material(material_for(fman, envelopes));
+        Ok(())
+    }
+
+    /// Accept attesters that do not all carry the same requirement.
+    fn config_accepting_pairs(
+        &self,
+        entries: &[(&str, VerificationRequirement)],
+    ) -> SetupConfigView {
+        let mut config = base_setup_config();
+        config.policy = ProviderPolicy {
+            accepted_attester_policies: entries
+                .iter()
+                .map(|(attester, requirement)| AcceptedAttesterPolicy {
+                    attester_pubkey: Pubkey((*attester).to_owned()),
+                    verification_requirement: *requirement,
+                })
+                .collect(),
+            supported_networks: vec![BitcoinNetwork::Regtest],
+        };
+        config
+    }
+
+    /// Accept several attesters at once under one requirement.
+    fn config_accepting(
+        &self,
+        attesters: &[&str],
+        requirement: VerificationRequirement,
+    ) -> SetupConfigView {
+        let mut config = base_setup_config();
+        config.policy = ProviderPolicy {
+            accepted_attester_policies: attesters
+                .iter()
+                .map(|attester| AcceptedAttesterPolicy {
+                    attester_pubkey: Pubkey((*attester).to_owned()),
+                    verification_requirement: requirement,
+                })
+                .collect(),
+            supported_networks: vec![BitcoinNetwork::Regtest],
+        };
+        config
     }
 
     /// Replaces any existing entry for the same FMan: material is that
@@ -1231,12 +1334,13 @@ async fn required_revocation_lookup_failure_is_unavailable() -> anyhow::Result<(
 #[tokio::test]
 async fn no_nostr_endorsement_authority_is_unavailable() -> anyhow::Result<()> {
     let harness = Harness::new("endorsement-no-nostr", 1, 1, &[&[0]]).await?;
-    let authority = harness.issuer.issuer_authority(vec![
-        fedi_credential_sdk_protocol::RevocationLocation {
-            protocol: "https".to_owned(),
-            location: "https://attester.example/revocations".to_owned(),
-        },
-    ])?;
+    let authority =
+        harness
+            .issuer
+            .issuer_authority(vec![peerbadge_protocol::RevocationLocation {
+                protocol: "https".to_owned(),
+                location: "https://attester.example/revocations".to_owned(),
+            }])?;
     attestation_store::install(
         &harness.database,
         fedi_decentralized_service_liquidity_manager::AttestationInstallRequest {
@@ -1260,11 +1364,10 @@ async fn no_nostr_endorsement_authority_is_unavailable() -> anyhow::Result<()> {
 async fn no_nostr_advertisement_authority_is_unavailable() -> anyhow::Result<()> {
     let harness = Harness::new("advertisement-no-nostr", 1, 1, &[&[0]]).await?;
     let issuer = test_foreign_issuer_context();
-    let authority =
-        issuer.issuer_authority(vec![fedi_credential_sdk_protocol::RevocationLocation {
-            protocol: "https".to_owned(),
-            location: "https://attester.example/revocations".to_owned(),
-        }])?;
+    let authority = issuer.issuer_authority(vec![peerbadge_protocol::RevocationLocation {
+        protocol: "https".to_owned(),
+        location: "https://attester.example/revocations".to_owned(),
+    }])?;
     let issuer_hex = authority.issuer.issuer_id_pubkey.0.to_string();
     attestation_store::install(
         &harness.database,
@@ -1344,13 +1447,12 @@ async fn a_badge_with_the_wrong_schema_rejects_invalid_credentials() -> anyhow::
         "schema": "fedi-other-schema-v1.0",
         "trust_level": 7,
     });
-    let (issuance_request, pending) =
-        fedi_credential_sdk_protocol::PendingIssuance::create_request(
-            &harness.authority.issuer.issuance_key,
-            harness.authority.issuer.issuer_id_pubkey.clone(),
-            info.clone(),
-            serde_json::json!(holder.public_key().to_string()),
-        )?;
+    let (issuance_request, pending) = peerbadge_protocol::PendingIssuance::create_request(
+        &harness.authority.issuer.issuance_key,
+        harness.authority.issuer.issuer_id_pubkey.clone(),
+        info.clone(),
+        serde_json::json!(holder.public_key().to_string()),
+    )?;
     let issuance_response = harness.issuer.issue_credential(info, &issuance_request)?;
     let bad_credential =
         pending.finalize(&harness.authority.issuer.issuance_key, &issuance_response)?;
@@ -1410,5 +1512,255 @@ async fn all_trusted_fails_with_any_untrusted_identity() -> anyhow::Result<()> {
 
     let outcome = harness.verify(VerificationRequirement::AllTrusted).await;
     assert_rejects(&outcome, PublicRejectionCode::PolicyMismatch);
+    Ok(())
+}
+
+#[tokio::test]
+async fn all_trusted_pools_badges_across_accepted_attesters() -> anyhow::Result<()> {
+    // The shape the FI produces: it seats operators round-robin across issuer
+    // buckets, so three seats commonly carry badges from more than one issuer
+    // and no single issuer covers them all. Every operator is vouched for by
+    // an accepted attester, so `all_trusted` is satisfied.
+    let harness = Harness::new("pooled-all-trusted", 3, 2, &[&[0], &[1], &[2]]).await?;
+    let second = harness.install_issuer(2).await?;
+    harness.program_trusted(0)?;
+    harness.program_trusted_by(1, &second)?;
+    harness.program_trusted_by(2, &second)?;
+
+    let config = harness.config_accepting(
+        &[&harness.attester_hex, &second.attester_hex],
+        VerificationRequirement::AllTrusted,
+    );
+    let outcome = harness.provider().verify(&harness.request(), &config).await;
+
+    assert!(outcome.rejection.is_none(), "{:?}", outcome.summary);
+    assert_eq!(
+        outcome.summary.policy_result,
+        VerificationCheckStatus::Passed
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn all_trusted_rejects_an_identity_no_accepted_attester_vouches_for() -> anyhow::Result<()> {
+    // Pooling widens which badge counts; it does not drop the requirement that
+    // every operating identity be covered by one of them.
+    let harness = Harness::new("pooled-all-trusted-gap", 3, 2, &[&[0], &[1], &[2]]).await?;
+    let second = harness.install_issuer(2).await?;
+    harness.program_trusted(0)?;
+    harness.program_trusted_by(1, &second)?;
+    harness.program_untrusted(2);
+
+    let config = harness.config_accepting(
+        &[&harness.attester_hex, &second.attester_hex],
+        VerificationRequirement::AllTrusted,
+    );
+    let outcome = harness.provider().verify(&harness.request(), &config).await;
+
+    assert_rejects(&outcome, PublicRejectionCode::PolicyMismatch);
+    Ok(())
+}
+
+#[tokio::test]
+async fn pooling_counts_only_accepted_attesters() -> anyhow::Result<()> {
+    // An installed issuer authority the policy does not accept contributes
+    // nothing: the operator it badges stays untrusted, so `all_trusted` fails
+    // while the same federation passes once that attester is accepted.
+    let harness = Harness::new("pooled-unaccepted", 2, 2, &[&[0], &[1]]).await?;
+    let second = harness.install_issuer(2).await?;
+    harness.program_trusted(0)?;
+    harness.program_trusted_by(1, &second)?;
+
+    let only_first = harness.config_accepting(
+        &[&harness.attester_hex],
+        VerificationRequirement::AllTrusted,
+    );
+    let outcome = harness
+        .provider()
+        .verify(&harness.request(), &only_first)
+        .await;
+    assert_rejects(&outcome, PublicRejectionCode::PolicyMismatch);
+
+    let both = harness.config_accepting(
+        &[&harness.attester_hex, &second.attester_hex],
+        VerificationRequirement::AllTrusted,
+    );
+    let outcome = harness.provider().verify(&harness.request(), &both).await;
+    assert!(outcome.rejection.is_none(), "{:?}", outcome.summary);
+    Ok(())
+}
+
+#[tokio::test]
+async fn consensus_majority_pools_badges_across_accepted_attesters() -> anyhow::Result<()> {
+    // Four seats, threshold three. Two issuers cover three identities between
+    // them and neither covers three alone, so the threshold is only reached by
+    // counting the pooled set.
+    let harness = Harness::new("pooled-majority", 4, 3, &[&[0], &[1], &[2], &[3]]).await?;
+    let second = harness.install_issuer(2).await?;
+    harness.program_trusted(0)?;
+    harness.program_trusted_by(1, &second)?;
+    harness.program_untrusted(2);
+    harness.program_untrusted(3);
+
+    let config = harness.config_accepting(
+        &[&harness.attester_hex, &second.attester_hex],
+        VerificationRequirement::ConsensusMajorityTrusted,
+    );
+    let outcome = harness.provider().verify(&harness.request(), &config).await;
+    assert_rejects(&outcome, PublicRejectionCode::PolicyMismatch);
+
+    harness.program_trusted_by(2, &second)?;
+    let outcome = harness.provider().verify(&harness.request(), &config).await;
+    assert!(outcome.rejection.is_none(), "{:?}", outcome.summary);
+    Ok(())
+}
+
+#[tokio::test]
+async fn all_trusted_passes_when_one_attester_covers_every_operator() -> anyhow::Result<()> {
+    // The undiversified federation still passes. Pooling only ever widens the
+    // trusted set, so a cohort drawn from a single issuer bucket is unaffected.
+    let harness = Harness::new("pooled-single-issuer", 3, 2, &[&[0], &[1], &[2]]).await?;
+    let unused = harness.install_issuer(2).await?;
+    harness.program_trusted(0)?;
+    harness.program_trusted(1)?;
+    harness.program_trusted(2)?;
+
+    let config = harness.config_accepting(
+        &[&harness.attester_hex, &unused.attester_hex],
+        VerificationRequirement::AllTrusted,
+    );
+    let outcome = harness.provider().verify(&harness.request(), &config).await;
+
+    assert!(outcome.rejection.is_none(), "{:?}", outcome.summary);
+    Ok(())
+}
+
+#[tokio::test]
+async fn all_trusted_pools_across_three_attesters() -> anyhow::Result<()> {
+    // Three operators, three issuers, one each: the most diverse cohort the FI
+    // can seat at this size, and every identity is still covered.
+    let harness = Harness::new("pooled-three-issuers", 3, 2, &[&[0], &[1], &[2]]).await?;
+    let second = harness.install_issuer(2).await?;
+    let third = harness.install_issuer(3).await?;
+    harness.program_trusted(0)?;
+    harness.program_trusted_by(1, &second)?;
+    harness.program_trusted_by(2, &third)?;
+
+    let config = harness.config_accepting(
+        &[
+            &harness.attester_hex,
+            &second.attester_hex,
+            &third.attester_hex,
+        ],
+        VerificationRequirement::AllTrusted,
+    );
+    let outcome = harness.provider().verify(&harness.request(), &config).await;
+
+    assert!(outcome.rejection.is_none(), "{:?}", outcome.summary);
+    Ok(())
+}
+
+#[tokio::test]
+async fn mixed_requirements_admit_on_the_entry_the_pooled_set_satisfies() -> anyhow::Result<()> {
+    // Entries may carry different requirements. Each is evaluated over the one
+    // pooled trusted set, and the federation is eligible when any holds: here
+    // three of four identities miss `all_trusted` but meet the threshold.
+    let harness =
+        Harness::new("pooled-mixed-requirements", 4, 3, &[&[0], &[1], &[2], &[3]]).await?;
+    let second = harness.install_issuer(2).await?;
+    harness.program_trusted(0)?;
+    harness.program_trusted(1)?;
+    harness.program_trusted_by(2, &second)?;
+    harness.program_untrusted(3);
+
+    let all_trusted_only = harness.config_accepting(
+        &[&harness.attester_hex, &second.attester_hex],
+        VerificationRequirement::AllTrusted,
+    );
+    let outcome = harness
+        .provider()
+        .verify(&harness.request(), &all_trusted_only)
+        .await;
+    assert_rejects(&outcome, PublicRejectionCode::PolicyMismatch);
+
+    let mixed = harness.config_accepting_pairs(&[
+        (&harness.attester_hex, VerificationRequirement::AllTrusted),
+        (
+            &second.attester_hex,
+            VerificationRequirement::ConsensusMajorityTrusted,
+        ),
+    ]);
+    let outcome = harness.provider().verify(&harness.request(), &mixed).await;
+    assert!(outcome.rejection.is_none(), "{:?}", outcome.summary);
+    Ok(())
+}
+
+#[tokio::test]
+async fn an_identity_vouched_for_twice_counts_once() -> anyhow::Result<()> {
+    // Two accepted attesters vouching for the same operator must not let one
+    // identity stand in for a missing one: three seats with two covered stay
+    // short of the threshold however many badges those two carry.
+    let harness = Harness::new("pooled-double-badged", 3, 3, &[&[0], &[1], &[2]]).await?;
+    let second = harness.install_issuer(2).await?;
+    let both_issuers = [
+        (&harness.issuer, &harness.authority),
+        (&second.issuer, &second.authority),
+    ];
+    harness.program_trusted_by_each(0, &both_issuers)?;
+    harness.program_trusted_by_each(1, &both_issuers)?;
+    harness.program_untrusted(2);
+
+    let config = harness.config_accepting(
+        &[&harness.attester_hex, &second.attester_hex],
+        VerificationRequirement::ConsensusMajorityTrusted,
+    );
+    let outcome = harness.provider().verify(&harness.request(), &config).await;
+    assert_rejects(&outcome, PublicRejectionCode::PolicyMismatch);
+
+    harness.program_trusted(2)?;
+    let outcome = harness.provider().verify(&harness.request(), &config).await;
+    assert!(outcome.rejection.is_none(), "{:?}", outcome.summary);
+    Ok(())
+}
+
+#[tokio::test]
+async fn ten_operators_across_four_attesters_pass_all_trusted() -> anyhow::Result<()> {
+    // A fleet-sized cohort: ten operators over four accepted attesters, the
+    // largest of them covering five. No attester considered alone admits the
+    // federation; pooled, every operating identity is trusted.
+    let harness = Harness::new(
+        "pooled-ten-operators",
+        10,
+        7,
+        &[&[0], &[1], &[2], &[3], &[4], &[5], &[6], &[7], &[8], &[9]],
+    )
+    .await?;
+    let second = harness.install_issuer(2).await?;
+    let third = harness.install_issuer(3).await?;
+    let fourth = harness.install_issuer(4).await?;
+    for index in 0..5 {
+        harness.program_trusted(index)?;
+    }
+    for index in 5..8 {
+        harness.program_trusted_by(index, &second)?;
+    }
+    harness.program_trusted_by(8, &third)?;
+    harness.program_trusted_by(9, &fourth)?;
+
+    let attesters = [
+        harness.attester_hex.clone(),
+        second.attester_hex.clone(),
+        third.attester_hex.clone(),
+        fourth.attester_hex.clone(),
+    ];
+    let borrowed: Vec<&str> = attesters.iter().map(String::as_str).collect();
+    let config = harness.config_accepting(&borrowed, VerificationRequirement::AllTrusted);
+    let outcome = harness.provider().verify(&harness.request(), &config).await;
+
+    assert!(outcome.rejection.is_none(), "{:?}", outcome.summary);
+    assert_eq!(
+        outcome.summary.policy_result,
+        VerificationCheckStatus::Passed
+    );
     Ok(())
 }

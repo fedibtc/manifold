@@ -12,6 +12,6 @@ stability-pool-common = { workspace = true }
 url = "2"
 
 [dev-dependencies]
-fedi-credential-sdk-protocol = { workspace = true }
-fedi-credential-sdk-schemas = { workspace = true }
+peerbadge-protocol = { workspace = true }
+peerbadge-schemas = { workspace = true }
 serde_json = { workspace = true }

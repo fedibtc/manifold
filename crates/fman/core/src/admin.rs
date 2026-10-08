@@ -32,6 +32,7 @@ use crate::guardian_fee::{
     Collected, CollectionFailurePhase, FederationFeeStatus, FeePolicy, Remittance,
 };
 use crate::seat::{PaymentClaimStatus, SeatPhase, SeatReport, SeatSummary};
+use crate::seat_readiness::ReadinessReport;
 use crate::wallet::Msats;
 
 /// The admin socket lives beside the database, under the same directory
@@ -54,6 +55,8 @@ pub enum AdminRequest {
     },
     /// Current durable admission ceiling.
     ShowCapacity,
+    /// The latest new-seat readiness report, absent before the first run.
+    ShowSeatReadiness,
     /// Replace the admission ceiling without moving it below active seats.
     SetCapacity { max_seats: u32 },
     /// Payment federations with wallet health and balance: the accepted
@@ -99,6 +102,12 @@ pub enum AdminRequest {
     /// Rotate the FMan-wide telemetry capability and immediately schedule a
     /// fresh verified registration without returning the bearer.
     ReenrollTelemetry,
+    /// The operator's chat with Fedi support (SPEC-fman-support-chat).
+    SupportChat,
+    /// Send the operator's message to Fedi support.
+    SendSupportMessage { body: String },
+    /// Mark read the Fedi messages with these rumor ids.
+    MarkSupportRead { ids: Vec<String> },
     /// Guardian-fee revenue for one seat's federation: the account payers
     /// remit to, current balances, and recent remittances with their
     /// breakdown.
@@ -170,6 +179,14 @@ pub enum AdminRequest {
     },
 }
 
+/// The operator's chat with Fedi support, which the Nostr boundary owns
+/// (SPEC-fman-support-chat). Dispatch forwards the support verbs to it
+/// unchanged.
+#[async_trait::async_trait]
+pub trait SupportChat: Send + Sync {
+    async fn answer(&self, request: AdminRequest) -> anyhow::Result<Value>;
+}
+
 /// Which operator vocabulary both listeners answer from right now.
 #[derive(Clone)]
 pub(crate) enum Phase {
@@ -180,6 +197,8 @@ pub(crate) enum Phase {
     Fleet {
         fleet: Arc<Fleet>,
         directory: tokio::sync::watch::Receiver<DirectoryPresence>,
+        authorizations: Arc<dyn crate::directory::HolderAuthorizationRefresher>,
+        support: Arc<dyn SupportChat>,
     },
 }
 
@@ -201,10 +220,14 @@ impl OperatorPhase {
     pub fn fleet(
         fleet: Arc<Fleet>,
         directory: tokio::sync::watch::Receiver<DirectoryPresence>,
+        authorizations: Arc<dyn crate::directory::HolderAuthorizationRefresher>,
+        support: Arc<dyn SupportChat>,
     ) -> Self {
         Self(Arc::new(std::sync::Mutex::new(Phase::Fleet {
             fleet,
             directory,
+            authorizations,
+            support,
         })))
     }
 
@@ -213,8 +236,15 @@ impl OperatorPhase {
         &self,
         fleet: Arc<Fleet>,
         directory: tokio::sync::watch::Receiver<DirectoryPresence>,
+        authorizations: Arc<dyn crate::directory::HolderAuthorizationRefresher>,
+        support: Arc<dyn SupportChat>,
     ) {
-        *self.0.lock().expect("a phase writer panicked") = Phase::Fleet { fleet, directory };
+        *self.0.lock().expect("a phase writer panicked") = Phase::Fleet {
+            fleet,
+            directory,
+            authorizations,
+            support,
+        };
     }
 
     /// Answer one operator request from the phase current when it arrived.
@@ -222,12 +252,20 @@ impl OperatorPhase {
     pub(crate) async fn answer(&self, request: AdminRequest) -> anyhow::Result<Value> {
         match self.sample() {
             Phase::Onboarding(onboarding) => onboarding.answer(request).await,
-            Phase::Fleet { fleet, directory } => {
-                // Sampled once per request: the answer is what the directory
-                // runtime had last published when the operator asked, never a
-                // value it goes on to fetch.
-                let directory = directory.borrow().clone();
-                dispatch(&fleet, &directory, request).await
+            Phase::Fleet {
+                fleet,
+                directory,
+                authorizations,
+                support,
+            } => {
+                dispatch(
+                    &fleet,
+                    &directory,
+                    authorizations.as_ref(),
+                    support.as_ref(),
+                    request,
+                )
+                .await
             }
         }
     }
@@ -412,7 +450,9 @@ where
 /// daemon answers with rather than by a second description of it.
 pub(crate) async fn dispatch(
     fleet: &Fleet,
-    directory: &DirectoryPresence,
+    directory: &tokio::sync::watch::Receiver<DirectoryPresence>,
+    authorizations: &dyn crate::directory::HolderAuthorizationRefresher,
+    support: &dyn SupportChat,
     request: AdminRequest,
 ) -> anyhow::Result<Value> {
     match request {
@@ -424,6 +464,10 @@ pub(crate) async fn dispatch(
         AdminRequest::ShowCapacity => Ok(capacity_json(
             fleet.max_seats().await,
             fleet.available_slots().await,
+        )),
+        AdminRequest::ShowSeatReadiness => Ok(seat_readiness_json(
+            fleet.ready_for_new_seats().await,
+            fleet.seat_readiness(),
         )),
         AdminRequest::SetCapacity { max_seats } => {
             fleet.set_max_seats(max_seats).await?;
@@ -477,6 +521,9 @@ pub(crate) async fn dispatch(
             fleet.reenroll_telemetry().await?;
             Ok(reenroll_telemetry_json())
         }
+        request @ (AdminRequest::SupportChat
+        | AdminRequest::SendSupportMessage { .. }
+        | AdminRequest::MarkSupportRead { .. }) => support.answer(request).await,
         AdminRequest::GuardianFees { seat_id, limit } => {
             let status = fleet.guardian_fee_status(&seat_id).await?;
             let policy = fleet.guardian_fee_policy(&seat_id).await;
@@ -503,15 +550,10 @@ pub(crate) async fn dispatch(
         } => Ok(serde_json::to_value(
             fleet.payout_guardian_fees(&seat_id, &request_id).await?,
         )?),
-        AdminRequest::Onboarding => Ok(onboarding_json(
-            &fleet.identity().derive_service_pubkey().to_string(),
-            directory,
-            &env!("CARGO_PKG_VERSION")
-                .parse::<FmanVersion>()
-                .expect("workspace package version is valid SemVer"),
-        )),
+        AdminRequest::Onboarding => Ok(fleet_status_json(fleet, &directory.borrow())),
         AdminRequest::RefreshHolderAuthorizations => {
-            Err(crate::restore::RestoreError::AlreadyOnboarded.into())
+            authorizations.refresh().await?;
+            Ok(fleet_status_json(fleet, &directory.borrow()))
         }
         AdminRequest::ConfigureInitialOffer { .. } => {
             Err(crate::restore::RestoreError::AlreadyOnboarded.into())
@@ -528,6 +570,18 @@ pub(crate) async fn dispatch(
     }
 }
 
+// The legacy Onboarding wire response also carries a running fleet's status;
+// projecting it does not perform or resume the setup workflow.
+fn fleet_status_json(fleet: &Fleet, directory: &DirectoryPresence) -> Value {
+    onboarding_json(
+        &fleet.identity().derive_service_pubkey().to_string(),
+        directory,
+        &env!("CARGO_PKG_VERSION")
+            .parse::<FmanVersion>()
+            .expect("workspace package version is valid SemVer"),
+    )
+}
+
 /// `ShowPlans` and `SetPrice` answer the same view, so a write needs no
 /// follow-up read.
 pub fn plans_json(plans: Vec<Plan>) -> Value {
@@ -536,6 +590,10 @@ pub fn plans_json(plans: Vec<Plan>) -> Value {
 
 pub fn capacity_json(max_seats: u32, available_slots: u32) -> Value {
     json!({ "max_seats": max_seats, "available_slots": available_slots })
+}
+
+pub fn seat_readiness_json(ready_for_new_seats: bool, report: Option<ReadinessReport>) -> Value {
+    json!({ "ready_for_new_seats": ready_for_new_seats, "report": report })
 }
 
 pub fn payment_federations_json(statuses: Vec<PaymentFederationStatus>) -> Value {
@@ -946,4 +1004,4 @@ pub async fn request(
 
 #[cfg(test)]
 #[path = "../tests/admin.rs"]
-mod tests;
+pub(crate) mod tests;

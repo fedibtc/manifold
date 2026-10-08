@@ -39,7 +39,7 @@ pub const MANIFOLD_ENVIRONMENT_PROFILE_REVISION: u32 = 9;
 // The real development and staging issuer and setup-payment publisher
 // identities do not exist yet. These public keys are derived from the
 // publicly known test secret keys 1 and 2 (issuers), 3 and 4 (publishers), and
-// 5 and 6 (Guardian Verification Fee accounts).
+// 5 and 6 (Guardian Verification Fee accounts), and 7 and 8 (Fedi support).
 // Anyone can impersonate them. They MUST be replaced before either
 // environment treats PeerBadge results or the setup-payment federation list
 // as a security decision.
@@ -89,6 +89,11 @@ const DEVELOPMENT_PLACEHOLDER_GUARDIAN_VERIFICATION_FEE_KEY: &str =
 const STAGING_PLACEHOLDER_GUARDIAN_VERIFICATION_FEE_KEY: &str =
     "03fff97bd5755eeea420453a14355235d382f6472f8568a18b2f057a1460297556";
 
+const DEVELOPMENT_PLACEHOLDER_SUPPORT: &str =
+    "5cbdf0646e5db4eaa398f365f2ea7a0e3d419b7e0330e39ce92bddedcac4f9bc";
+const STAGING_PLACEHOLDER_SUPPORT: &str =
+    "2f01e5e15cca351daff3843fb70f3c2f0a1bdd05e5af888a67784ef3e10a2a01";
+
 /// Deployment-owned setup-payment publisher identity, in x-only hex.
 const PRODUCTION_SETUP_PAYMENT_PUBLISHER: &str =
     "725cc60e9b9405acf48f27f8ec6e846dd499b7b5d1e0fff6c922da7dfa120f65";
@@ -96,6 +101,10 @@ const PRODUCTION_SETUP_PAYMENT_PUBLISHER: &str =
 /// Deployment-owned Guardian Verification Fee account key, in compressed hex.
 const PRODUCTION_GUARDIAN_VERIFICATION_FEE_KEY: &str =
     "0255c6b0de21aa9d5da41cdbb53be23e73dc5b3697f10b13f806c5ee7d18bd604d";
+
+/// Fedi support identity FMan operators chat with, in x-only hex
+/// (`npub105qfyekclhm4827wsuf233saa0d3gmf6rxrhhc5f72xhah4wfghszug5n6`).
+const PRODUCTION_SUPPORT: &str = "7d009266d8fdf753abce8712a8c61debdb146d3a19877be289f28d7edeae4a2f";
 
 /// Production PeerBadge issuer identities, in trust-roster order.
 ///
@@ -196,6 +205,7 @@ impl ManifoldEnvironment {
             issuers,
             publisher,
             guardian_verification_fee_key,
+            support,
             relays,
             bitcoin_network,
             esplora_url,
@@ -204,6 +214,7 @@ impl ManifoldEnvironment {
                 &[DEVELOPMENT_PLACEHOLDER_ISSUER][..],
                 Some(DEVELOPMENT_PLACEHOLDER_SETUP_PAYMENT_PUBLISHER),
                 Some(DEVELOPMENT_PLACEHOLDER_GUARDIAN_VERIFICATION_FEE_KEY),
+                Some(DEVELOPMENT_PLACEHOLDER_SUPPORT),
                 STAGING_NOSTR_RELAYS,
                 Network::Regtest,
                 None,
@@ -212,6 +223,7 @@ impl ManifoldEnvironment {
                 &[STAGING_PLACEHOLDER_ISSUER][..],
                 Some(STAGING_PLACEHOLDER_SETUP_PAYMENT_PUBLISHER),
                 Some(STAGING_PLACEHOLDER_GUARDIAN_VERIFICATION_FEE_KEY),
+                Some(STAGING_PLACEHOLDER_SUPPORT),
                 STAGING_NOSTR_RELAYS,
                 Network::Signet,
                 Some(STAGING_ESPLORA_URL),
@@ -220,6 +232,7 @@ impl ManifoldEnvironment {
                 PRODUCTION_ISSUERS,
                 Some(PRODUCTION_SETUP_PAYMENT_PUBLISHER),
                 Some(PRODUCTION_GUARDIAN_VERIFICATION_FEE_KEY),
+                Some(PRODUCTION_SUPPORT),
                 PRODUCTION_NOSTR_RELAYS,
                 Network::Bitcoin,
                 None,
@@ -258,6 +271,9 @@ impl ManifoldEnvironment {
             minimum_peer_badge_trust_level: TRUSTED_PEER_BADGE_TRUST_LEVEL,
             setup_payment_publisher,
             guardian_verification_fee_account,
+            support: support.map(|support| {
+                PublicKey::parse(support).expect("built-in support identity is valid")
+            }),
             bitcoin_network,
             default_esplora_url: esplora_url
                 .map(|url| Url::parse(url).expect("built-in default Esplora URL is valid")),
@@ -349,6 +365,7 @@ pub struct ManifoldEnvironmentProfile {
     minimum_peer_badge_trust_level: u64,
     setup_payment_publisher: Option<PublicKey>,
     guardian_verification_fee_account: Option<Account>,
+    support: Option<PublicKey>,
     bitcoin_network: Network,
     default_esplora_url: Option<Url>,
 }
@@ -455,6 +472,13 @@ impl ManifoldEnvironmentProfile {
     #[must_use]
     pub fn guardian_verification_fee_account(&self) -> Option<&Account> {
         self.guardian_verification_fee_account.as_ref()
+    }
+
+    /// Return the Fedi support identity operators chat with over NIP-17
+    /// private messages, or `None` while the environment has none.
+    #[must_use]
+    pub fn support(&self) -> Option<&PublicKey> {
+        self.support.as_ref()
     }
 
     /// Return the Bitcoin network on which this environment forms federations.

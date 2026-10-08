@@ -1,7 +1,7 @@
 //! Shared `fedi-trust-score-v1.0` holder trust badge schema and the inline
 //! holder-authorization trust envelope carried in FMan and FLIP advertisements.
 //!
-//! The badge schema is owned by the credential SDK's `schemas` crate and
+//! The badge schema is owned by the PeerBadge SDK's `schemas` crate and
 //! re-exported here; this module adds inline envelope carriage plus the generic,
 //! validated relying-party minimum-level policy. The envelope is the shared
 //! advertisement convention: each entry embeds the
@@ -11,14 +11,14 @@
 #[cfg(test)]
 mod tests;
 
-use fedi_credential_sdk_protocol::{
+use peerbadge_protocol::{
     CredentialsError, HolderAuthorization, SignedCredential, VerificationContext,
 };
 use serde::{Deserialize, Serialize};
 
 use crate::{Pubkey, Timestamp};
 
-pub use fedi_credential_sdk_schemas::{
+pub use peerbadge_schemas::{
     TRUST_SCORE_LEVEL_MAX, TRUST_SCORE_LEVEL_MIN, TRUST_SCORE_SCHEMA_V1, TrustScoreBadgeV1,
     TrustScoreSchemaError, parse_trust_score_badge_v1, trust_score_blind_msg_v1,
     trust_score_info_v1,

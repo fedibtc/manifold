@@ -4,7 +4,7 @@ This repository is experimental infrastructure for decentralized federation comp
 
 ## Nix source inputs and public binary caches
 
-The default development shell's credential SDK, Fedi, and Fedimint source
+The default development shell's PeerBadge SDK, Fedi, and Fedimint source
 inputs are public and pinned in the lockfiles. Neither local builds nor CI need
 a cross-repository GitHub token to fetch them.
 
@@ -104,6 +104,18 @@ This accepted lack of sandboxing is defense in depth only: it does not weaken
 the required operator custody, data-root, admin-socket, credential, backup, or
 network boundaries.
 
+FMan can pass an explicit Esplora URL alongside Bitcoin Core so the bundled
+fedimintd can fetch blocks that Core has pruned. The existing backend also
+falls back on other Core RPC errors, including transaction broadcast failures.
+Use only an operator-approved, trusted endpoint serving the same Bitcoin
+network; it can observe fallback requests, transaction contents, and timing.
+The hybrid constructor does not probe or compare the endpoints' chain
+identities; operators must configure both for the intended network. Lazy
+primary-first chain identity lookup and runtime wallet/network and readiness
+checks remain, but do not establish that the fallback matches the primary.
+FMan does not add a public fallback by default. Re-review this boundary when
+the Fedimint pin or fallback endpoint changes.
+
 FLIP treats every federation endpoint in an FI-supplied invite as an outbound
 network capability. The default `GlobalOnly` policy accepts only canonical
 `iroh://<node-id>` guardian endpoints and rejects every `ws`/`wss` endpoint
@@ -170,7 +182,9 @@ alone is not an SSRF defense: the daemon must match the parsed URL's origin to
 its explicit deployment configuration, require the exact public hook path,
 reject credentials, query, fragment and redirects, and permit HTTP only for an
 explicitly enabled development loopback origin. Never log or format the
-callback URL or its idempotency key. SQLite/WAL files and backups containing
+callback URL or its idempotency key. An FMan with no configured callback origin
+must discard the callback without parsing, persisting, or invoking it and allow
+the signed DKG request to proceed. SQLite/WAL files and backups containing
 pending callbacks are bearer-capability material. Delivery or a definitive
 terminal outcome atomically clears the live plaintext bearer while retaining a
 one-way, non-authorizing commitment and sanitized outcome. The commitment
@@ -504,6 +518,22 @@ contract are defined by
 [`SPEC-manifold-environment`](crates/manifold-environment/specs/SPEC-manifold-environment.md).
 Production also pins its setup-payment publisher and Guardian Verification Fee
 account in that profile.
+
+The environment profile pins the Fedi support key that FMan operators chat
+with over NIP-17
+([SPEC-fman-support-chat](crates/fman/specs/SPEC-fman-support-chat.md)).
+Development and staging pin known-secret test keys, so anyone can write as
+"Fedi support" there. Production pins a key that Fedi support holds. The
+signed setup-payment policy can name another support key, which then wins, so
+the setup-payment publisher key is also a trust root of the chat: whoever
+holds that key can make FMans talk to a key of their choice. The FMan shows
+only messages sealed by that key or by itself, as plain text. Fedi support
+sees the FMan's service public key and the operator's words. Relays cannot
+read messages, but they see each wrap's recipient key, its size, when it was
+published, and the IP address that published or fetched it. The FMan stores
+the thread in plain text in its database. The development and staging
+support secrets are public, so anyone can read and write those chats; use
+them only for synthetic conversations.
 
 Each relying path applies the same profile-owned minimum PeerBadge trust level
 after complete authentication and schema parsing. A profile-policy change must

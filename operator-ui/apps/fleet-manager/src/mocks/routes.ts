@@ -6,11 +6,12 @@ const ROUTES: readonly { pattern: RegExp; key: RouteKey }[] = [
   { pattern: /^\/backup\/phrase\/?$/, key: 'backup-phrase' },
   { pattern: /^\/seats\/[^/]+\/?$/, key: 'seat-detail' },
   { pattern: /^\/seats\/?$/, key: 'seats' },
-  { pattern: /^\/wallet\/?$/, key: 'wallet' },
   { pattern: /^\/payouts\/?$/, key: 'payouts' },
   { pattern: /^\/offer\/?$/, key: 'offer' },
   { pattern: /^\/backup\/?$/, key: 'backup' },
   { pattern: /^\/authorization\/?$/, key: 'authorization' },
+  { pattern: /^\/health\/?$/, key: 'health' },
+  { pattern: /^\/support\/?$/, key: 'support' },
   { pattern: /^\/$/, key: 'overview' }
 ];
 

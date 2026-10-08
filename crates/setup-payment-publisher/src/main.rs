@@ -253,8 +253,19 @@ fn read_content(path: &Path) -> anyhow::Result<SetupPaymentFederationsContent> {
         SETUP_PAYMENT_FEDERATIONS_MAX_CONTENT_BYTES,
         "policy content",
     )?;
-    serde_json::from_slice(&bytes)
-        .with_context(|| format!("parse policy content {}", path.display()))
+    let content: SetupPaymentFederationsContent = serde_json::from_slice(&bytes)
+        .with_context(|| format!("parse policy content {}", path.display()))?;
+    // Consumers ignore future fields, but the publisher must not silently
+    // discard operator policy. Derive known fields from the shared wire type.
+    let input: serde_json::Map<String, serde_json::Value> = serde_json::from_slice(&bytes)?;
+    let serialized = serde_json::to_value(&content)?;
+    for field in input.keys() {
+        ensure!(
+            serialized.get(field).is_some(),
+            "unknown policy content field: {field}"
+        );
+    }
+    Ok(content)
 }
 
 fn read_secret_key(path: Option<&Path>) -> anyhow::Result<Zeroizing<String>> {

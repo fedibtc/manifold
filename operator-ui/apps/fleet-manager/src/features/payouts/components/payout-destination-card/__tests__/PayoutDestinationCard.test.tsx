@@ -14,7 +14,7 @@ const renderCard = (destination: string | null) => {
 };
 
 const field = () => screen.getByLabelText('Lightning address or LNURL-pay');
-const saveButton = () => screen.getByRole('button', { name: 'Save destination' });
+const saveButton = () => screen.getByRole('button', { name: 'Save address' });
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -64,6 +64,67 @@ describe('PayoutDestinationCard', () => {
     expect(saveButton()).toBeDisabled();
   });
 
+  it('should refuse to save a destination made only of invisible characters', () => {
+    renderCard(null);
+
+    fireEvent.change(field(), { target: { value: '\u200B' } });
+
+    expect(saveButton()).toBeDisabled();
+  });
+
+  it('should store the destination without the spaces and capitals a paste can carry', async () => {
+    const adminCall = vi
+      .spyOn(adminCallModule, 'adminCall')
+      .mockResolvedValue({ destination: 'operator@example.com' });
+    renderCard(null);
+
+    fireEvent.change(field(), { target: { value: ' Operator@Example.com\n' } });
+    fireEvent.click(saveButton());
+
+    await waitFor(() =>
+      expect(adminCall).toHaveBeenCalledWith({
+        SetPayoutDestination: { destination: 'operator@example.com' }
+      })
+    );
+  });
+
+  it('should show the stored destination in the field once the save is accepted', async () => {
+    vi.spyOn(adminCallModule, 'adminCall').mockResolvedValue({
+      destination: 'operator@example.com'
+    });
+    renderCard(null);
+
+    fireEvent.change(field(), { target: { value: ' LIGHTNING:Operator@Example.com ' } });
+    fireEvent.click(saveButton());
+
+    await waitFor(() => expect(field()).toHaveValue('operator@example.com'));
+  });
+
+  // The daemon parses the destination only when a payout starts, so a value
+  // that can never be paid would otherwise be stored without a word.
+  it('should refuse a destination that is not a Lightning address or LNURL', () => {
+    const adminCall = vi.spyOn(adminCallModule, 'adminCall');
+    renderCard(null);
+
+    fireEvent.change(field(), { target: { value: 'hello' } });
+    fireEvent.click(saveButton());
+
+    expect(
+      screen.getByText('Enter a Lightning address (name@example.com) or an LNURL (lnurl1…).')
+    ).toBeInTheDocument();
+    expect(adminCall).not.toHaveBeenCalled();
+  });
+
+  it('should drop the format message once the operator edits the field', () => {
+    renderCard(null);
+
+    fireEvent.change(field(), { target: { value: 'hello' } });
+    fireEvent.click(saveButton());
+    fireEvent.change(field(), { target: { value: 'hello@example.com' } });
+
+    expect(screen.queryByText(/Enter a Lightning address/)).toBeNull();
+  });
+
   it('should offer no clear control when there is nothing stored', () => {
     renderCard(null);
 
@@ -71,19 +132,20 @@ describe('PayoutDestinationCard', () => {
   });
 
   // The ordering the daemon enforces has to be readable off the screen rather
-  // than discovered through a refusal.
-  it('should warn that sweeps refuse while no destination is stored', () => {
+  // than discovered through a refusal. The banner names the action it unblocks,
+  // and says which step still works without it.
+  it('should warn that withdrawals need a destination before one is stored', () => {
     renderCard(null);
 
-    expect(screen.getByText('No payout destination')).toBeInTheDocument();
-    expect(screen.getByText(/Sweeps are refused until one is set/)).toBeInTheDocument();
+    expect(screen.getByText('Add a payout address to withdraw')).toBeInTheDocument();
+    expect(screen.getByText(/You can still collect guardian fees below/)).toBeInTheDocument();
   });
 
   it('should name the destination revenue leaves to', () => {
     renderCard('operator@example.com');
 
     expect(screen.getByText('operator@example.com')).toBeInTheDocument();
-    expect(screen.queryByText('No payout destination')).toBeNull();
+    expect(screen.queryByText('Add a payout address to withdraw')).toBeNull();
   });
 
   it('should report a refused write instead of showing it as stored', async () => {

@@ -343,13 +343,13 @@ pub trait GuardianTelemetryApi {
 #[cfg(test)]
 mod tests {
     use blind_rsa_signatures::Signature as PbrsaSignature;
-    use fedi_credential_sdk_protocol::{
+    use fedi_decentralized_services::domain::{HolderAuthorizationEnvelope, SchnorrSignatureProof};
+    use nostr::{Keys, secp256k1::Message};
+    use peerbadge_protocol::{
         Credential, CredentialDigest, CredentialProof, HolderAuthorization,
         HolderAuthorizationStatement, HolderId, IssuerId, SignedCredential, SubjectPubkey,
         Timestamp as CredentialTimestamp,
     };
-    use fedi_decentralized_services::domain::{HolderAuthorizationEnvelope, SchnorrSignatureProof};
-    use nostr::{Keys, secp256k1::Message};
 
     use super::*;
     use crate::QuoteId;

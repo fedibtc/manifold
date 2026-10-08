@@ -12,11 +12,11 @@ import type { FederationId } from '../funds';
  * Operator verbs. The CLI (`fman-cli --data-dir ...`) is a thin mapping
  * onto these.
  */
-export type AdminRequest = "ShowPlans" | { "SetPrice": { price_msats: number | null, } } | "ShowCapacity" | { "SetCapacity": { max_seats: number, } } | "ListPaymentFederations" | "PayoutDestination" | { "SetPayoutDestination": { destination: string | null, } } | { "SweepPaymentFees": { federation_id: FederationId,
+export type AdminRequest = "ShowPlans" | { "SetPrice": { price_msats: number | null, } } | "ShowCapacity" | "ShowSeatReadiness" | { "SetCapacity": { max_seats: number, } } | "ListPaymentFederations" | "PayoutDestination" | { "SetPayoutDestination": { destination: string | null, } } | { "SweepPaymentFees": { federation_id: FederationId,
 /**
  * Caller-generated idempotency identity.
  */
-request_id: string, } } | { "PayoutStatus": { request_id: string, } } | { "AwaitPayout": { request_id: string, } } | "ListSeats" | { "SeatStatus": { seat_id: SeatId, } } | { "DecommissionSeat": { seat_id: SeatId, } } | "ReenrollTelemetry" | { "GuardianFees": { seat_id: SeatId, limit: number | null, } } | { "CollectGuardianFees": { seat_id: SeatId, } } | { "SweepGuardianFees": { seat_id: SeatId,
+request_id: string, } } | { "PayoutStatus": { request_id: string, } } | { "AwaitPayout": { request_id: string, } } | "ListSeats" | { "SeatStatus": { seat_id: SeatId, } } | { "DecommissionSeat": { seat_id: SeatId, } } | "ReenrollTelemetry" | "SupportChat" | { "SendSupportMessage": { body: string, } } | { "MarkSupportRead": { ids: Array<string>, } } | { "GuardianFees": { seat_id: SeatId, limit: number | null, } } | { "CollectGuardianFees": { seat_id: SeatId, } } | { "SweepGuardianFees": { seat_id: SeatId,
 /**
  * Caller-generated idempotency identity.
  */

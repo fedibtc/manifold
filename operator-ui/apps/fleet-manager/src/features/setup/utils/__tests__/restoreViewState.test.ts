@@ -23,7 +23,7 @@ describe('classifyRestoreError', () => {
   it('should classify a transport failure', () => {
     expect(classifyRestoreError(new NetworkError())).toEqual({
       errorClass: 'network',
-      message: 'The connection to the fleet manager failed before it answered.'
+      message: 'The connection to Manifold Fedimint Guardian failed before it answered.'
     });
   });
 
@@ -32,7 +32,7 @@ describe('classifyRestoreError', () => {
     // the daemon acted on. Unknown is the only safe reading.
     expect(classifyRestoreError('boom')).toEqual({
       errorClass: 'network',
-      message: 'The connection to the fleet manager failed before it answered.'
+      message: 'The connection to Manifold Fedimint Guardian failed before it answered.'
     });
   });
 

@@ -2,7 +2,9 @@ use fedi_decentralized_service_fleet_manager::{FederationId, SeatId};
 use fman_core::db::Db;
 use sqlx::FromRow;
 
-use crate::payout_job::{Payout, PayoutJob, PayoutJobOperation, PayoutRequestId, PayoutScope};
+use crate::payout_job::{
+    DestinationCap, Payout, PayoutJob, PayoutJobOperation, PayoutRequestId, PayoutScope,
+};
 use crate::payout_operation_id::PayoutOperationId;
 
 pub(crate) async fn destination(db: &Db) -> anyhow::Result<Option<String>> {
@@ -50,7 +52,7 @@ pub(crate) async fn get(
     db: &Db,
     request_id: &PayoutRequestId,
 ) -> anyhow::Result<Option<PayoutJob>> {
-    let row: Option<Row> = sqlx::query_as("SELECT request_id, scope_kind, federation_id, seat_id, invite_code, destination, operation_id, amount_msat, created_at_ms, committed_at_ms FROM payout_jobs WHERE request_id = ?")
+    let row: Option<Row> = sqlx::query_as("SELECT request_id, scope_kind, federation_id, seat_id, invite_code, destination, operation_id, amount_msat, cap_maximum_msat, cap_remaining_msat, created_at_ms, committed_at_ms FROM payout_jobs WHERE request_id = ?")
         .bind(request_id.as_str()).fetch_optional(db.pool()).await?;
     row.map(parse).transpose()
 }
@@ -63,8 +65,19 @@ pub(crate) async fn commit(
     let amount = i64::try_from(payout.amount_msat).map_err(|_| {
         anyhow::anyhow!("payout amount does not fit the durable SQLite representation")
     })?;
-    sqlx::query("UPDATE payout_jobs SET operation_id = ?, amount_msat = ?, committed_at_ms = ? WHERE request_id = ? AND operation_id IS NULL")
-        .bind(payout.operation_id.as_str()).bind(amount).bind(now_ms()).bind(request_id.as_str()).execute(db.pool()).await?;
+    let (cap_maximum, cap_remaining) = match payout.capped {
+        Some(cap) => (
+            Some(i64::try_from(cap.maximum_msat).map_err(|_| {
+                anyhow::anyhow!("payout cap does not fit the durable SQLite representation")
+            })?),
+            Some(i64::try_from(cap.remaining_msat).map_err(|_| {
+                anyhow::anyhow!("payout cap does not fit the durable SQLite representation")
+            })?),
+        ),
+        None => (None, None),
+    };
+    sqlx::query("UPDATE payout_jobs SET operation_id = ?, amount_msat = ?, cap_maximum_msat = ?, cap_remaining_msat = ?, committed_at_ms = ? WHERE request_id = ? AND operation_id IS NULL")
+        .bind(payout.operation_id.as_str()).bind(amount).bind(cap_maximum).bind(cap_remaining).bind(now_ms()).bind(request_id.as_str()).execute(db.pool()).await?;
     let job = get(db, request_id)
         .await?
         .ok_or_else(|| anyhow::anyhow!("payout request {request_id} does not exist"))?;
@@ -87,6 +100,8 @@ struct Row {
     destination: String,
     operation_id: Option<String>,
     amount_msat: Option<i64>,
+    cap_maximum_msat: Option<i64>,
+    cap_remaining_msat: Option<i64>,
     created_at_ms: i64,
     committed_at_ms: Option<i64>,
 }
@@ -102,11 +117,26 @@ fn parse(r: Row) -> anyhow::Result<PayoutJob> {
         },
         _ => anyhow::bail!("corrupt payout_jobs row {request_id}: invalid scope shape"),
     };
+    let capped = match (r.cap_maximum_msat, r.cap_remaining_msat) {
+        (None, None) => None,
+        (Some(maximum), Some(remaining)) => Some(DestinationCap {
+            maximum_msat: u64::try_from(maximum)?,
+            remaining_msat: u64::try_from(remaining)?,
+        }),
+        _ => anyhow::bail!("corrupt payout_jobs row {request_id}: partial destination cap"),
+    };
     let operation = match (r.operation_id, r.amount_msat, r.committed_at_ms) {
-        (None, None, None) => None,
+        (None, None, None) => {
+            anyhow::ensure!(
+                capped.is_none(),
+                "corrupt payout_jobs row {request_id}: destination cap without an operation"
+            );
+            None
+        }
         (Some(id), Some(amount), Some(at)) => Some(PayoutJobOperation {
             operation_id: PayoutOperationId::parse(&id)?,
             amount_msat: u64::try_from(amount)?,
+            capped,
             committed_at_ms: u64::try_from(at)?,
         }),
         _ => anyhow::bail!("corrupt payout_jobs row {request_id}: partial operation commit"),
@@ -162,6 +192,10 @@ mod tests {
         let payout = Payout {
             operation_id: PayoutOperationId::parse(&"ab".repeat(32)).unwrap(),
             amount_msat: 42,
+            capped: Some(DestinationCap {
+                maximum_msat: 42,
+                remaining_msat: 58,
+            }),
         };
         let committed = commit(&db, &request, &payout).await.unwrap();
         assert_eq!(
@@ -169,10 +203,12 @@ mod tests {
             payout.operation_id
         );
         assert_eq!(committed.operation.as_ref().unwrap().amount_msat, 42);
+        assert_eq!(committed.operation.as_ref().unwrap().capped, payout.capped);
         assert_eq!(commit(&db, &request, &payout).await.unwrap(), committed);
         let other = Payout {
             operation_id: PayoutOperationId::parse(&"cd".repeat(32)).unwrap(),
             amount_msat: 43,
+            capped: None,
         };
         assert!(commit(&db, &request, &other).await.is_err());
         sqlx::query("UPDATE payout_jobs SET operation_id = ? WHERE request_id = ?")
@@ -181,6 +217,11 @@ mod tests {
             .execute(db.pool())
             .await
             .expect_err("the schema rejects direct payout operation replacement");
+        sqlx::query("UPDATE payout_jobs SET cap_remaining_msat = 0 WHERE request_id = ?")
+            .bind(request.as_str())
+            .execute(db.pool())
+            .await
+            .expect_err("the schema rejects direct payout cap replacement");
 
         drop(db);
         let reopened = Db::open(&path).await.unwrap();
@@ -206,6 +247,7 @@ mod tests {
         let native = Payout {
             operation_id: PayoutOperationId::parse(&"cd".repeat(32)).unwrap(),
             amount_msat: 1_000,
+            capped: None,
         };
         let reconciled = commit(&db, &request, &native).await.unwrap();
         assert_eq!(
@@ -237,6 +279,7 @@ mod tests {
         let payout = Payout {
             operation_id: PayoutOperationId::parse(&"ef".repeat(32)).unwrap(),
             amount_msat: 2_000,
+            capped: None,
         };
         let (left, right) = tokio::join!(
             commit(&db, &request, &payout),

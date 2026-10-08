@@ -1,10 +1,10 @@
-use fedi_credential_sdk_protocol::{
+use fedi_decentralized_service_fleet_manager::{FEDERATION_SIZES_0_1, FEDIMINTD_VERSION_0_1, Plan};
+use nostr::{JsonUtil as _, Keys};
+use peerbadge_protocol::{
     Credential, CredentialDigest, CredentialProof, HolderAuthorization,
     HolderAuthorizationStatement, HolderId, IssuerId, ProtocolV1 as SdkProtocolV1,
     SignedCredential, SubjectPubkey, Timestamp as SdkTimestamp,
 };
-use fedi_decentralized_service_fleet_manager::{FEDERATION_SIZES_0_1, FEDIMINTD_VERSION_0_1, Plan};
-use nostr::{JsonUtil as _, Keys};
 
 use super::*;
 

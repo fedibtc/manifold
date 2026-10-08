@@ -1,10 +1,10 @@
-use fedi_credential_sdk_protocol::{
+use fedi_decentralized_manifold_environment::ManifoldEnvironment;
+use nostr_sdk::EventBuilder;
+use peerbadge_protocol::{
     Credential, CredentialDigest, CredentialProof, HolderAuthorization,
     HolderAuthorizationStatement, HolderId, IssuerId, ProtocolV1, SchnorrSignatureProof,
     SubjectPubkey, Timestamp,
 };
-use fedi_decentralized_manifold_environment::ManifoldEnvironment;
-use nostr_sdk::EventBuilder;
 
 use fedi_decentralized_service_fleet_manager::Plan;
 use fman_core::directory::AdvertisementSnapshot;
@@ -23,6 +23,54 @@ fn authorization_event_at(holder: &Keys, subject: nostr_sdk::PublicKey, issued_a
         }),
         blind_msg: serde_json::json!(holder.public_key().to_string()),
     };
+    let signed_credential = peerbadge_protocol::SignedCredential {
+        version: ProtocolV1,
+        credential,
+        proof: CredentialProof {
+            signature: blind_rsa_signatures::Signature(vec![1, 2, 3, 4]),
+        },
+    };
+    authorization_event_for(holder, subject, issued_at, signed_credential)
+}
+
+/// An authorization whose badge the development environment's trusted issuer
+/// really issued to `holder`.
+fn issued_authorization_event_at(
+    holder: &Keys,
+    subject: nostr_sdk::PublicKey,
+    issued_at: u64,
+) -> Event {
+    let profile = ManifoldEnvironment::Development.profile().unwrap();
+    let issuer = peerbadge_protocol::IssuerContext::import_secret_key(
+        &serde_json::from_str(profile.test_issuer_secret_keys().unwrap()).unwrap(),
+    )
+    .unwrap();
+    let authority = issuer.issuer_authority(Vec::new()).unwrap();
+    let info = serde_json::json!({
+        "schema": "fedi-trust-score-v1.0",
+        "trust_level": 6,
+    });
+    let (request, pending) = peerbadge_protocol::PendingIssuance::create_request(
+        &authority.issuer.issuance_key,
+        authority.issuer.issuer_id_pubkey.clone(),
+        info.clone(),
+        serde_json::json!(holder.public_key().to_string()),
+    )
+    .unwrap();
+    let response = issuer.issue_credential(info, &request).unwrap();
+    let signed_credential = pending
+        .finalize(&authority.issuer.issuance_key, &response)
+        .unwrap();
+    authorization_event_for(holder, subject, issued_at, signed_credential)
+}
+
+fn authorization_event_for(
+    holder: &Keys,
+    subject: nostr_sdk::PublicKey,
+    issued_at: u64,
+    signed_credential: peerbadge_protocol::SignedCredential,
+) -> Event {
+    let credential = &signed_credential.credential;
     let statement = HolderAuthorizationStatement {
         holder_id_pubkey: HolderId(holder.public_key()),
         subject_pubkey: SubjectPubkey(subject),
@@ -40,13 +88,7 @@ fn authorization_event_at(holder: &Keys, subject: nostr_sdk::PublicKey, issued_a
             authorization: statement,
             proof: SchnorrSignatureProof { signature },
         },
-        "signed_credential": fedi_credential_sdk_protocol::SignedCredential {
-            version: ProtocolV1,
-            credential,
-            proof: CredentialProof {
-                signature: blind_rsa_signatures::Signature(vec![1, 2, 3, 4]),
-            },
-        },
+        "signed_credential": signed_credential,
     });
     EventBuilder::new(
         nostr_sdk::Kind::Custom(fedi_decentralized_nostr::fman::HOLDER_AUTHORIZATION_EVENT_KIND),
@@ -99,6 +141,46 @@ fn candidate_verification_accepts_our_authorizations_and_rejects_others() {
 }
 
 #[test]
+fn newest_candidate_is_chosen_among_trusted_issuances_only() {
+    let fman = Keys::generate();
+    let trusted =
+        PeerBadgeVerifier::try_from_profile(&ManifoldEnvironment::Development.profile().unwrap())
+            .unwrap();
+    // The newest candidate is well formed but its badge names no trusted
+    // issuer, so the older trusted issuance wins over it.
+    let chosen = newest_issued_candidate(
+        [
+            issued_authorization_event_at(&Keys::generate(), fman.public_key(), 100),
+            authorization_event_at(&Keys::generate(), fman.public_key(), 300),
+            issued_authorization_event_at(&Keys::generate(), fman.public_key(), 200),
+        ],
+        &fman.public_key(),
+        &trusted,
+        1_000,
+    )
+    .expect("a trusted issuance is admitted");
+    assert_eq!(chosen.authorization_issued_at, 200);
+
+    let staging =
+        PeerBadgeVerifier::try_from_profile(&ManifoldEnvironment::Staging.profile().unwrap())
+            .unwrap();
+    assert!(
+        newest_issued_candidate(
+            [issued_authorization_event_at(
+                &Keys::generate(),
+                fman.public_key(),
+                100
+            )],
+            &fman.public_key(),
+            &staging,
+            1_000,
+        )
+        .is_none(),
+        "another environment's issuer is not trusted here"
+    );
+}
+
+#[test]
 fn retained_authorizations_are_reverified_before_reuse() {
     let holder = Keys::generate();
     let fman = Keys::generate();
@@ -106,7 +188,7 @@ fn retained_authorizations_are_reverified_before_reuse() {
 
     assert_eq!(
         decode_retained_holder_authorizations(
-            vec![event.as_json()],
+            Some(event.as_json()),
             fman.public_key(),
             1_730_000_000,
         )
@@ -116,7 +198,7 @@ fn retained_authorizations_are_reverified_before_reuse() {
     );
     assert!(
         decode_retained_holder_authorizations(
-            vec![event.as_json()],
+            Some(event.as_json()),
             Keys::generate().public_key(),
             1_730_000_000,
         )
@@ -194,7 +276,80 @@ async fn built_payload_advertises_the_service_pubkey() {
 }
 
 #[tokio::test]
+async fn newer_authorization_replaces_durable_and_live_state_without_rollback() {
+    let temp = tempfile::TempDir::new().unwrap();
+    let db = fman_core::db::Db::open(temp.path()).await.unwrap();
+    db.install_identity(&RootMnemonic::generate().unwrap())
+        .await
+        .unwrap();
+    let keys = Keys::generate();
+    let holder = Keys::generate();
+    let store = Arc::new(FleetHolderAuthorizationStore::new(db.clone()));
+    let service = FleetManagerNostr::new(
+        keys.clone(),
+        None,
+        Vec::new(),
+        None,
+        ManifoldEnvironment::Development.profile().unwrap(),
+        store.clone(),
+        db,
+    );
+    // The replacement comes from another holder with another credential: the
+    // FMan keeps exactly one authorization, not one per credential.
+    let original = authorization_event_at(&holder, keys.public_key(), 100);
+    let replacement = authorization_event_at(&Keys::generate(), keys.public_key(), 200);
+    let mut changes = service.inner.holder_authorizations.subscribe();
+    for (event, expected_time) in [(original.clone(), 100), (replacement, 200), (original, 200)] {
+        service
+            .inner
+            .retain_authorization(Some(
+                verified_holder_authorization_event(event, &keys.public_key(), now_secs()).unwrap(),
+            ))
+            .await
+            .unwrap();
+        assert!(changes.has_changed().unwrap());
+        changes.borrow_and_update();
+        let live = service.holder_authorizations();
+        assert_eq!(live.len(), 1);
+        assert_eq!(
+            live[0].holder_authorization.authorization.issued_at.0,
+            expected_time
+        );
+        let retained = load_retained_holder_authorizations(&store, keys.public_key())
+            .await
+            .unwrap();
+        assert_eq!(
+            serde_json::to_value(live).unwrap(),
+            serde_json::to_value(retained).unwrap()
+        );
+    }
+    let _in_progress = service.inner.authorization_refresh.lock().await;
+    let error = fman_core::directory::HolderAuthorizationRefresher::refresh(&service)
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("already in progress"));
+    service.inner.retain_authorization(None).await.unwrap();
+    assert_eq!(
+        service.holder_authorizations()[0]
+            .holder_authorization
+            .authorization
+            .issued_at
+            .0,
+        200
+    );
+    assert!(matches!(
+        service.presence().borrow().onboarding,
+        OnboardingStatus::AuthorizationObserved {
+            authorizations: 1,
+            ..
+        }
+    ));
+}
+
+#[tokio::test]
 async fn service_exposes_onboarding_info_and_status_watcher() {
+    let temp = tempfile::TempDir::new().unwrap();
+    let db = fman_core::db::Db::open(temp.path()).await.unwrap();
     let keys = Keys::generate();
     let service = FleetManagerNostr::new(
         keys.clone(),
@@ -202,6 +357,8 @@ async fn service_exposes_onboarding_info_and_status_watcher() {
         Vec::new(),
         None,
         ManifoldEnvironment::Development.profile().unwrap(),
+        Arc::new(FleetHolderAuthorizationStore::new(db.clone())),
+        db,
     );
 
     assert_eq!(
@@ -311,4 +468,228 @@ fn a_retained_authorization_reports_itself_with_no_check_time() {
             checked_at: None,
         }
     );
+}
+
+#[tokio::test]
+async fn support_thread_admits_only_the_fman_fedi_room() {
+    let me = Keys::generate();
+    let fedi = Keys::generate();
+    let stranger = Keys::generate();
+    // Every wrap here is addressed to this FMan, as its inbox reads them.
+    let wrap = |author: &Keys, receivers: Vec<PublicKey>, kind: Kind| {
+        let author = author.clone();
+        let me = me.public_key();
+        async move {
+            let mut rumor = EventBuilder::new(kind, "hello")
+                .tags(receivers.into_iter().map(Tag::public_key))
+                .build(author.public_key());
+            let id = rumor.id();
+            let event = EventBuilder::gift_wrap(&author, &me, rumor, [])
+                .await
+                .unwrap();
+            (id, event)
+        }
+    };
+
+    // Fedi's reply and this FMan's own copy both join, under the rumor id.
+    let (id, from_fedi) = wrap(&fedi, vec![me.public_key()], Kind::PrivateDirectMessage).await;
+    let admitted = support::admit(&me, fedi.public_key(), &from_fedi)
+        .await
+        .unwrap();
+    assert!(admitted.from_fedi);
+    assert_eq!(admitted.rumor_id, id.to_hex());
+    assert_eq!(admitted.body, "hello");
+    let rumor = EventBuilder::private_msg_rumor(fedi.public_key(), "mine").build(me.public_key());
+    let own_copy = EventBuilder::gift_wrap(&me, &me.public_key(), rumor, [])
+        .await
+        .unwrap();
+    assert!(
+        !support::admit(&me, fedi.public_key(), &own_copy)
+            .await
+            .unwrap()
+            .from_fedi
+    );
+
+    // A stranger, a group room including Fedi, and a reaction stay out.
+    for (author, receivers, kind) in [
+        (&stranger, vec![me.public_key()], Kind::PrivateDirectMessage),
+        (
+            &fedi,
+            vec![me.public_key(), stranger.public_key()],
+            Kind::PrivateDirectMessage,
+        ),
+        (&fedi, vec![me.public_key()], Kind::Reaction),
+    ] {
+        let (_, event) = wrap(author, receivers, kind).await;
+        assert_eq!(support::admit(&me, fedi.public_key(), &event).await, None);
+    }
+
+    // A stranger's seal around a rumor that claims Fedi wrote it.
+    let forged =
+        EventBuilder::private_msg_rumor(me.public_key(), "trust me").build(fedi.public_key());
+    let forged = EventBuilder::gift_wrap(&stranger, &me.public_key(), forged, [])
+        .await
+        .unwrap();
+    assert_eq!(support::admit(&me, fedi.public_key(), &forged).await, None);
+}
+
+#[tokio::test]
+async fn support_verbs_answer_from_the_fleet_database() {
+    let temp = tempfile::TempDir::new().unwrap();
+    let db = fman_core::db::Db::open(temp.path()).await.unwrap();
+    let service = FleetManagerNostr::new(
+        Keys::generate(),
+        None,
+        Vec::new(),
+        None,
+        // Production names Fedi support in its profile, so no policy is needed.
+        ManifoldEnvironment::Production.profile().unwrap(),
+        Arc::new(FleetHolderAuthorizationStore::new(db.clone())),
+        db.clone(),
+    );
+    let send = |body: String| service.answer(AdminRequest::SendSupportMessage { body });
+
+    // The body is checked before anything else, and its length counts
+    // characters, not bytes: 4000 two-byte characters pass to the next check.
+    for (body, refusal) in [
+        ("  \n".to_owned(), "Write a message first."),
+        (
+            "é".repeat(4001),
+            "A message can have at most 4000 characters.",
+        ),
+        (
+            "é".repeat(4000),
+            "This host can't reach Fedi yet. Try again in a minute.",
+        ),
+    ] {
+        assert_eq!(send(body).await.unwrap_err().to_string(), refusal);
+    }
+
+    // Relays repeat messages, and two can share a second.
+    let row = |id: char, from_fedi: bool, created_at: u64| fman_core::db::SupportRow {
+        rumor_id: id.to_string().repeat(64),
+        from_fedi,
+        body: id.to_string(),
+        created_at,
+        // Storing ignores it: a new Fedi message is always unread.
+        unread: false,
+    };
+    for message in [
+        row('c', true, 100),
+        row('b', true, 100),
+        row('a', false, 50),
+        row('c', true, 100),
+    ] {
+        db.record_support_message(&message).await.unwrap();
+    }
+    let chat = service.answer(AdminRequest::SupportChat).await.unwrap();
+    assert_eq!(chat["available"], true);
+    assert_eq!(chat["unread"], 2, "only Fedi's messages are unread");
+    assert_eq!(
+        chat["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|message| (
+                message["body"].as_str().unwrap(),
+                message["author"].as_str().unwrap()
+            ))
+            .collect::<Vec<_>>(),
+        [("a", "operator"), ("c", "fedi"), ("b", "fedi")],
+        "oldest first, then in arrival order, each message once"
+    );
+
+    let unread_flags = |chat: &serde_json::Value| {
+        chat["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|message| {
+                (
+                    message["body"].as_str().unwrap().to_owned(),
+                    message["unread"] == true,
+                )
+            })
+            .collect::<Vec<_>>()
+    };
+    let flags = |list: &[(&str, bool)]| {
+        list.iter()
+            .map(|(body, unread)| ((*body).to_owned(), *unread))
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        unread_flags(&chat),
+        flags(&[("a", false), ("c", true), ("b", true)])
+    );
+
+    // A mark reads exactly the named messages: not another in the same
+    // second, nor one stored later that sorts earlier.
+    let mark = |ids: &[char]| {
+        service.answer(AdminRequest::MarkSupportRead {
+            ids: ids.iter().map(|id| id.to_string().repeat(64)).collect(),
+        })
+    };
+    assert_eq!(
+        mark(&['x']).await.unwrap()["unread"],
+        2,
+        "an unknown id marks nothing"
+    );
+    assert_eq!(
+        mark(&['c', 'a']).await.unwrap()["unread"],
+        1,
+        "b shares c's second"
+    );
+    db.record_support_message(&row('d', true, 90))
+        .await
+        .unwrap();
+    assert_eq!(mark(&['b']).await.unwrap()["unread"], 1, "d sorts before b");
+    let chat = service.answer(AdminRequest::SupportChat).await.unwrap();
+    assert_eq!(
+        unread_flags(&chat),
+        flags(&[("a", false), ("d", true), ("c", false), ("b", false)])
+    );
+    assert_eq!(mark(&[]).await.unwrap()["unread"], 1);
+}
+
+/// Admit a setup-payment policy that names `support`, or no support key.
+fn admit_support_policy(service: &FleetManagerNostr, support: Option<PublicKey>) {
+    let mut policy = serde_json::json!({
+        "version": 1,
+        "fman_version": "0.1.0",
+        "federations": [],
+        "telemetry_registration_url": "https://push.fedi.example/v1/telemetry/registrations",
+    });
+    if let Some(support) = support {
+        policy["support_nostr_pubkey"] = support.to_hex().into();
+    }
+    service.inner.setup_payment_federations.send_replace(Some(
+        AdmittedSetupPaymentFederations::parse(policy.to_string().as_bytes()).unwrap(),
+    ));
+}
+
+#[tokio::test]
+async fn the_policy_support_key_overrides_the_profile_key() {
+    let temp = tempfile::TempDir::new().unwrap();
+    let db = fman_core::db::Db::open(temp.path()).await.unwrap();
+    let profile = ManifoldEnvironment::Development.profile().unwrap();
+    let pinned = *profile.support().expect("development pins a support key");
+    let service = FleetManagerNostr::new(
+        Keys::generate(),
+        None,
+        Vec::new(),
+        None,
+        profile,
+        Arc::new(FleetHolderAuthorizationStore::new(db.clone())),
+        db,
+    );
+    assert_eq!(service.inner.support(), Some(pinned), "no policy yet");
+    admit_support_policy(&service, None);
+    assert_eq!(
+        service.inner.support(),
+        Some(pinned),
+        "the policy names no key"
+    );
+    let rotated = Keys::generate().public_key();
+    admit_support_policy(&service, Some(rotated));
+    assert_eq!(service.inner.support(), Some(rotated));
 }

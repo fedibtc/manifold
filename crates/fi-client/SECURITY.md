@@ -174,6 +174,10 @@ Replacement preview seeds this verified walk with every retained sibling's
 service key, and replacement apply revalidates the complete final key set in
 the same database transaction that changes the rows. A distinct advertised
 author therefore cannot reintroduce a retained signing authority.
+Verified badge holders also occupy at most one seat, even across issuers and
+service keys. FI saves each selected holder for replacement checks and recovery.
+Only successfully seated candidates reserve a holder. Older saved seats lacking
+holder identities retain their existing behavior without this guarantee.
 Because the claimed price and claimed issuer are both publisher-
 controlled and rank the deterministic walk, a spam campaign can
 deliberately claim the cheapest prices in every bucket and thereby sit
@@ -350,8 +354,9 @@ stable idempotency key can identify one formation operation. Neither is
 projected in public status or `Debug`, but database files and backups containing
 them remain sensitive. Schema 11 preserves the callback through every
 pre-`DkgComplete` recovery and atomically clears it with that checkpoint,
-after every FMan has durably assumed retry ownership. Older pre-production
-schemas fail closed and require reset.
+after configured FMans have durably assumed retry ownership; an FMan without
+callback delivery configured may have proceeded callback-free. Older schemas
+from before the production compatibility baseline fail closed and require reset.
 Logical clearing does not erase old pages or backups. FI storage must never
 contain raw bearer ecash, payment signatures, identity secret material, or
 wallet-private refund secrets.
@@ -410,6 +415,19 @@ moves or the process restarts is the explicit availability cost of avoiding
 new durable sequence state in MVP.
 
 ## Cancellation and replay
+
+Rechecking an already formed federation uses fresh threshold consensus, not
+Fleet Manager liveness. Verify the saved invite's federation identity and the
+complete signed directory; local formations also require their saved directory
+and fee recipients to remain exact. Restored backups must match every saved seat
+and any liquidity commitment before exposing fresh authority. Initial formation
+still requires every manager's health and agreed invite.
+If the saved invite cannot reach consensus, recovery may ask the saved managers
+for alternative invites. They are dialing hints only: reject a different
+federation id and apply the same consensus and directory checks. Retain a
+multi-guardian read invite in memory after verification, never a cached
+consensus result. The original invite, backup, and signed liquidity commitment
+remain unchanged; liquidity and gateway verification use the read invite.
 
 Dropping a driving future cannot undo a wallet transaction or remote request
 already accepted. Every await between a durable write and its response is a

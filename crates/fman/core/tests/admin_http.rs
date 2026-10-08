@@ -41,8 +41,8 @@ impl crate::onboarding::HolderAuthorizationFetcher for NoHolderAuthorizations {
     async fn fetch(
         &self,
         _identity: &crate::identity::RootMnemonic,
-    ) -> anyhow::Result<(Vec<crate::onboarding::FetchedHolderAuthorization>, u64)> {
-        Ok((Vec::new(), u64::MAX))
+    ) -> anyhow::Result<(Option<crate::onboarding::FetchedHolderAuthorization>, u64)> {
+        Ok((None, u64::MAX))
     }
 }
 
@@ -64,11 +64,14 @@ async fn process(temp: &TempDir) -> SeatProcessConfig {
         fedimintd: write_fake_fedimintd(temp.path(), &block_forever()).await,
         bitcoin_network: bitcoin::Network::Regtest,
         iroh_dns: "https://dns.iroh.link/pkarr".parse().unwrap(),
-        bitcoin_backend: crate::seat_process::BitcoinBackend::Bitcoind(BitcoindConfig {
-            url: "http://127.0.0.1:18443".to_owned(),
-            username: "user".to_owned(),
-            password: "pass".to_owned(),
-        }),
+        bitcoin_backend: crate::seat_process::BitcoinBackend::Bitcoind {
+            primary: BitcoindConfig {
+                url: "http://127.0.0.1:18443".to_owned(),
+                username: "user".to_owned(),
+                password: "pass".to_owned(),
+            },
+            esplora_fallback: None,
+        },
     }
 }
 
@@ -181,7 +184,7 @@ async fn the_operator_listener_serves_a_data_root_with_no_identity_and_survives_
 
     // The remaining stages are the browser's: the relay fetch is shortcut at
     // the database, and the initial offer lands over this same listener.
-    db.merge_holder_authorization_events(&[(vec![1; 32], 1, "{}".to_owned())], 1)
+    db.replace_holder_authorization_event(1, "{}", 1)
         .await
         .unwrap();
     let completed = post_admin(
@@ -202,7 +205,17 @@ async fn the_operator_listener_serves_a_data_root_with_no_identity_and_survives_
         .expect("startup observes that the browser settled onboarding")
         .unwrap();
     let fleet = opened_fleet(&temp, db).await;
-    phase.open_fleet(fleet.clone(), directory(&fleet));
+    let (presence_tx, presence) = tokio::sync::watch::channel(directory(&fleet).borrow().clone());
+    phase.open_fleet(
+        fleet.clone(),
+        presence,
+        Arc::new(crate::admin::tests::RefreshAuthorizations(presence_tx)),
+        Arc::new(crate::admin::tests::EchoSupport),
+    );
+    let refreshed = post_admin(addr, &AdminRequest::RefreshHolderAuthorizations)
+        .await
+        .unwrap();
+    assert_eq!(refreshed["nostr"]["state"], "authorization_observed");
 
     // Same address, no rebind, and now the full surface.
     assert_eq!(

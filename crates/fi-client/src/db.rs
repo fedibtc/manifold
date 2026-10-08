@@ -34,6 +34,8 @@ use crate::{
     ResolvedFormationIntent, SeatPaymentRequirement, SeatPhase, SeatProgress,
 };
 
+// Persisted-format changes are governed by GATE-production-compatibility
+// (../../../specs/GATE-production-compatibility.md).
 const STORAGE_SCHEMA_VERSION: u16 = 11;
 // Keep this fixed when advancing the schema written by current code.
 const RESET_BEFORE_SCHEMA_VERSION: u16 = 11;
@@ -389,6 +391,9 @@ pub(crate) enum FmanAdmission {
     Pinned,
     PeerBadge {
         fman_id: PublicKey,
+        /// Older saved seats did not record the verified badge holder.
+        #[serde(default)]
+        holder: Option<PublicKey>,
         verifier_provenance: StoredVerifierProvenance,
         valid_until: Timestamp,
         state: AdmissionState,
@@ -424,11 +429,13 @@ pub(crate) enum AdmissionState {
 impl FmanAdmission {
     pub(crate) fn fresh_peer_badge(
         fman_id: PublicKey,
+        holder: PublicKey,
         verifier_provenance: StoredVerifierProvenance,
         valid_until: Timestamp,
     ) -> Self {
         Self::PeerBadge {
             fman_id,
+            holder: Some(holder),
             verifier_provenance,
             valid_until,
             state: AdmissionState::Fresh,
@@ -439,6 +446,13 @@ impl FmanAdmission {
         match self {
             Self::Pinned => None,
             Self::PeerBadge { fman_id, .. } => Some(*fman_id),
+        }
+    }
+
+    pub(crate) fn holder(&self) -> Option<PublicKey> {
+        match self {
+            Self::Pinned => None,
+            Self::PeerBadge { holder, .. } => *holder,
         }
     }
 
@@ -3208,6 +3222,7 @@ impl FiStore {
                             ));
                         }
                         let mut service_pubkeys = BTreeMap::new();
+                        let mut holders = BTreeSet::new();
                         for index in 0..formation.seat_count {
                             if replacement_indices.contains(&index) {
                                 continue;
@@ -3219,6 +3234,7 @@ impl FiStore {
                             let seat = dbtx.get_value(&key).await.ok_or_else(|| {
                                 FiError::Storage(format!("missing retained FI seat row {index}"))
                             })?;
+                            holders.extend(seat.admission.holder());
                             if service_pubkeys
                                 .insert(seat.locator.service_pubkey, index)
                                 .is_some()
@@ -3273,6 +3289,13 @@ impl FiStore {
                                      key of seat row {existing_index}",
                                     requirement.index
                                 )));
+                            }
+                            if let Some(holder) = admission.holder()
+                                && !holders.insert(holder)
+                            {
+                                return Err(FiError::InvalidFleetManagers(
+                                    "replacement guardian duplicates a retained or replacement badge holder".to_owned(),
+                                ));
                             }
                             seat.locator = locator.clone();
                             seat.admission = admission.clone();
@@ -3785,8 +3808,16 @@ fn validate_formation_progress(formation: &StoredFormation, seats: &[StoredSeat]
 
     let mut created = 0;
     let mut fman_ids = BTreeSet::new();
+    let mut holders = BTreeSet::new();
     let mut service_pubkeys = BTreeMap::new();
     for seat in seats {
+        if let Some(holder) = seat.admission.holder()
+            && !holders.insert(holder)
+        {
+            return Err(FiError::Storage(
+                "persisted FI seats contain duplicate badge holders".to_owned(),
+            ));
+        }
         match (&formation.creation_mode, &seat.admission) {
             (FormationCreationMode::Pinned, FmanAdmission::Pinned) => {}
             (FormationCreationMode::Selected { .. }, FmanAdmission::PeerBadge { fman_id, .. }) => {

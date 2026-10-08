@@ -38,6 +38,11 @@ export type ItemAllocationStatus =
   | 'cancelled';
 
 // --- per-item failure (public.rs `LiquidityFailure`) ---
+// The daemon carries the code as a plain string and keeps one it does not
+// recognise rather than refusing it, so a daemon newer than this build can
+// report a code absent from the list below. The trailing `string` arm accepts
+// that while the literals above still drive completion and narrowing; treat
+// the code as an opaque label unless it matches one of them.
 export type LiquidityFailureCode =
   | 'request_expired'
   | 'policy_mismatch'
@@ -45,7 +50,9 @@ export type LiquidityFailureCode =
   | 'gateway_attach_failed'
   | 'withdraw_failed'
   | 'stability_pool_failed'
-  | 'internal_error';
+  | 'internal_error'
+  | 'gateway_attribution_abandoned'
+  | (string & Record<never, never>);
 
 export interface LiquidityFailure {
   code: LiquidityFailureCode;

@@ -183,7 +183,7 @@ returned subject to the event author before producing a trust conclusion.
 ## Attester events (37703, 37704)
 
 `37703` is the addressable distribution event for canonical
-`fedi-credential-sdk-protocol::IssuerAuthority` content. Every canonical
+`peerbadge-protocol::IssuerAuthority` content. Every canonical
 profile pins its committed authority documents, so the shared verifier performs
 no 37703 lookup for those issuers. The event is discovery only: no consumer may
 treat the newest 37703 event as a replacement for a profile-pinned authority.

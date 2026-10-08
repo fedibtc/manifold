@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Outlet } from 'react-router-dom';
+import { FleetStarting } from '@/features/boot/components/fleet-starting/FleetStarting';
 import { SetupWizard } from '@/features/setup/components/setup-wizard/SetupWizard';
 import { isNotOnboardedError } from '@/features/setup/utils/setupState';
 import { useOnboarding } from '@/shared/api/hooks/use-onboarding/useOnboarding';
@@ -17,15 +18,15 @@ import { gateSurface } from '@/shared/surface/gateSurface';
 export const SetupGate = () => {
   const onboarding = useOnboarding();
   const [isSettingUp, setIsSettingUp] = useState(false);
-  const requiresSetup =
+  const hostHasNoIdentity =
     isNotOnboardedError(onboarding.error) ||
-    (onboarding.data !== undefined && onboarding.data.runtime !== 'ready');
+    (onboarding.data !== undefined && onboarding.data.stage !== 'complete');
   // Guarded setState during render, not an effect — the compiler forbids setState
   // inside useEffect, and this is the sanctioned "adjust state on data change" shape.
-  if (!isSettingUp && requiresSetup) {
+  if (!isSettingUp && hostHasNoIdentity) {
     setIsSettingUp(true);
   }
-  if (isSettingUp && onboarding.data?.runtime === 'ready') {
+  if (isSettingUp && !hostHasNoIdentity && onboarding.data?.runtime === 'ready') {
     setIsSettingUp(false);
   }
 
@@ -44,15 +45,21 @@ export const SetupGate = () => {
     void onboarding.refetch();
   };
 
+  // `initial_offer` reopens on the terms, not the price: the daemon keeps no
+  // record of the acceptance, so a reload asks again rather than assuming it.
   const initialStep =
     onboarding.data?.stage === 'initial_offer'
-      ? 'price'
+      ? 'terms'
       : onboarding.data?.stage === 'holder_authorization'
         ? 'authorization'
         : 'doors';
 
   if (isSettingUp) {
     return <SetupWizard onComplete={handleComplete} initialStep={initialStep} />;
+  }
+
+  if (onboarding.data?.stage === 'complete' && onboarding.data.runtime === 'starting') {
+    return <FleetStarting />;
   }
 
   return <Outlet />;

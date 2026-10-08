@@ -9,11 +9,14 @@ fn process(temp: &TempDir) -> SeatProcessConfig {
         fedimintd: temp.path().join("fedimintd"),
         bitcoin_network: bitcoin::Network::Regtest,
         iroh_dns: "https://dns.iroh.link/pkarr".parse().unwrap(),
-        bitcoin_backend: crate::seat_process::BitcoinBackend::Bitcoind(BitcoindConfig {
-            url: "http://127.0.0.1:18443".to_owned(),
-            username: "user".to_owned(),
-            password: "pass".to_owned(),
-        }),
+        bitcoin_backend: crate::seat_process::BitcoinBackend::Bitcoind {
+            primary: BitcoindConfig {
+                url: "http://127.0.0.1:18443".to_owned(),
+                username: "user".to_owned(),
+                password: "pass".to_owned(),
+            },
+            esplora_fallback: None,
+        },
     }
 }
 
@@ -35,8 +38,8 @@ impl HolderAuthorizationFetcher for NoHolderAuthorizations {
     async fn fetch(
         &self,
         _identity: &RootMnemonic,
-    ) -> anyhow::Result<(Vec<FetchedHolderAuthorization>, u64)> {
-        Ok((Vec::new(), u64::MAX))
+    ) -> anyhow::Result<(Option<FetchedHolderAuthorization>, u64)> {
+        Ok((None, u64::MAX))
     }
 }
 
@@ -116,7 +119,7 @@ async fn a_second_onboarding_cannot_replace_the_first() {
         .await
         .unwrap_err();
     assert!(
-        refused.message.contains("already been onboarded"),
+        refused.message.contains("already been set up"),
         "{refused:?}"
     );
     assert_eq!(
@@ -252,7 +255,7 @@ async fn completion_is_observed_across_a_restart() {
         db.install_identity(&crate::identity::RootMnemonic::generate().unwrap())
             .await
             .unwrap();
-        db.merge_holder_authorization_events(&[(vec![1; 32], 1, "{}".to_owned())], 1)
+        db.replace_holder_authorization_event(1, "{}", 1)
             .await
             .unwrap();
         db.configure_initial_offer(None, 1).await.unwrap();

@@ -78,7 +78,7 @@ describe('staged onboarding dispatch', () => {
       Err: {
         kind: 'not_onboarded',
         message:
-          'this Fleet Manager has not been onboarded yet: run `admin onboard new` or `admin onboard restore`'
+          'this Manifold Fedimint Guardian has not been set up yet: run `admin onboard new` or `admin onboard restore`'
       }
     });
   });
@@ -128,7 +128,7 @@ describe('staged onboarding dispatch', () => {
       Err: {
         kind: 'other',
         message:
-          'this Fleet Manager has completed onboarding and is starting; its fleet is not open yet'
+          'this Manifold Fedimint Guardian has completed setup and is starting; its guardians are not open yet'
       }
     });
   });
@@ -177,17 +177,21 @@ describe('staged onboarding dispatch', () => {
     expect(refused.Err.message).toBe('cannot set max seats to 1; 2 seats are active');
   });
 
-  it('should refuse the settled setup verbs on a running fleet', () => {
+  it('should allow authorization refresh but refuse initial offer setup on a running fleet', () => {
     resetState('fresh-fleet');
 
     const alreadyOnboarded = {
       Err: {
         kind: 'already_onboarded',
-        message: 'this Fleet Manager has already been onboarded; a host is set up once'
+        message: 'this Manifold Fedimint Guardian has already been set up; a host is set up once'
       }
     };
 
-    expect(dispatch('RefreshHolderAuthorizations')).toEqual(alreadyOnboarded);
+    const refreshed = dispatch('RefreshHolderAuthorizations') as { Ok: Record<string, unknown> };
+    expect(refreshed.Ok.nostr).toMatchObject({ state: 'authorization_observed' });
+    getState().relayAuthorization = 'absent';
+    const emptyRefresh = dispatch('RefreshHolderAuthorizations') as { Ok: Record<string, unknown> };
+    expect(emptyRefresh.Ok.nostr).toEqual(refreshed.Ok.nostr);
     expect(dispatch({ ConfigureInitialOffer: { max_seats: 3, price_msats: 50_000_000 } })).toEqual(
       alreadyOnboarded
     );

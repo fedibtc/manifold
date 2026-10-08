@@ -15,6 +15,7 @@ const renderPrice = (onDone = vi.fn()) => {
 };
 
 const priceField = () => screen.getByLabelText('Price per seat (sats)');
+const maxSeatsField = () => screen.getByLabelText('Maximum active seats');
 const finishButton = () => screen.getByRole('button', { name: 'Finish setup' });
 
 afterEach(() => {
@@ -70,5 +71,47 @@ describe('SetupPrice', () => {
       expect.objectContaining({ ConfigureInitialOffer: expect.anything() })
     );
     expect(onDone).not.toHaveBeenCalled();
+  });
+
+  // Reported by an operator: `2,587` was refused as "not a whole number".
+  it('should write a price entered with thousands separators', async () => {
+    const adminCallSpy = vi.spyOn(adminCallModule, 'adminCall').mockResolvedValue({ plans: [] });
+    renderPrice();
+
+    fireEvent.change(priceField(), { target: { value: '2,587' } });
+    fireEvent.click(finishButton());
+
+    await waitFor(() =>
+      expect(adminCallSpy).toHaveBeenCalledWith({
+        ConfigureInitialOffer: { max_seats: 0, price_msats: 2_587_000 }
+      })
+    );
+  });
+
+  // `Number('')` is 0, so a cleared field used to finish setup with no seats.
+  it('should refuse a blank maximum seat count without calling the daemon', async () => {
+    const adminCallSpy = vi
+      .spyOn(adminCallModule, 'adminCall')
+      .mockResolvedValue({ plans: [], recommended_max_seats: 3, minimum_max_seats: 0 });
+    const { onDone } = renderPrice();
+    await waitFor(() => expect(maxSeatsField()).toHaveValue('3'));
+
+    fireEvent.change(maxSeatsField(), { target: { value: '' } });
+    fireEvent.click(finishButton());
+
+    await screen.findByText('Maximum seats must be a whole number from 0 to 4294967295.');
+    expect(adminCallSpy).not.toHaveBeenCalledWith(
+      expect.objectContaining({ ConfigureInitialOffer: expect.anything() })
+    );
+    expect(onDone).not.toHaveBeenCalled();
+  });
+
+  it('should keep browser autofill out of the number fields', () => {
+    vi.spyOn(adminCallModule, 'adminCall').mockResolvedValue({ plans: [] });
+    renderPrice();
+
+    expect(priceField()).toHaveAttribute('inputmode', 'numeric');
+    expect(priceField()).toHaveAttribute('autocomplete', 'off');
+    expect(maxSeatsField()).toHaveAttribute('autocomplete', 'off');
   });
 });

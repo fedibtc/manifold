@@ -28,8 +28,8 @@ const renderActions = ({
   );
 };
 
-const collectButton = () => screen.getByRole('button', { name: '1. Collect out of the pool' });
-const sendButton = () => screen.getByRole('button', { name: '2. Send to destination' });
+const collectButton = () => screen.getByRole('button', { name: 'Collect fees' });
+const sendButton = () => screen.getByRole('button', { name: 'Withdraw' });
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -93,7 +93,12 @@ describe('GuardianFeeActions', () => {
         invite_code: 'invite'
       },
       destination: 'operator@example.com',
-      operation: { operation_id: 'op-fees-1', amount_msat: 8_000_000, committed_at_ms: 2 },
+      operation: {
+        operation_id: 'op-fees-1',
+        amount_msat: 8_000_000,
+        capped: null,
+        committed_at_ms: 2
+      },
       created_at_ms: 1
     });
     renderActions();
@@ -117,7 +122,12 @@ describe('GuardianFeeActions', () => {
         invite_code: 'invite'
       },
       destination: 'operator@example.com',
-      operation: { operation_id: 'op-fees-1', amount_msat: 8_000_000, committed_at_ms: 2 },
+      operation: {
+        operation_id: 'op-fees-1',
+        amount_msat: 8_000_000,
+        capped: null,
+        committed_at_ms: 2
+      },
       created_at_ms: 1
     });
     renderActions();
@@ -131,7 +141,7 @@ describe('GuardianFeeActions', () => {
     renderActions({ hasDestination: false });
 
     expect(sendButton()).toBeDisabled();
-    expect(screen.getByText('Set a payout destination first.')).toBeInTheDocument();
+    expect(screen.getByText('Add a payout address first.')).toBeInTheDocument();
   });
 
   // Collecting moves money out of the pool into the fleet's own ecash. Nothing
@@ -147,7 +157,7 @@ describe('GuardianFeeActions', () => {
     renderActions({ collectedEcashMsat: 0 });
 
     expect(sendButton()).toBeDisabled();
-    expect(screen.getByText('Nothing collected yet. Collect first.')).toBeInTheDocument();
+    expect(screen.getByText('Nothing collected yet. Collect fees first.')).toBeInTheDocument();
   });
 
   it('should block collecting when the pool is known to hold nothing', () => {
@@ -162,6 +172,59 @@ describe('GuardianFeeActions', () => {
 
     expect(collectButton()).toBeEnabled();
     expect(sendButton()).toBeEnabled();
+  });
+
+  // The mint charges per ecash note, so a small collection gives back visibly
+  // less than the pool showed. Above the threshold the click still goes
+  // straight through, because a confirmation on every collection would be noise.
+  it('should collect a pool above the threshold in one click', async () => {
+    const adminCall = vi
+      .spyOn(adminCallModule, 'adminCall')
+      .mockResolvedValue({ claimed_msat: 13_000_000, awaiting_cycle_msat: 3_000_000 });
+    renderActions({ collectableMsat: 1_000_000 });
+
+    fireEvent.click(collectButton());
+
+    await waitFor(() => expect(adminCall).toHaveBeenCalled());
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+  });
+
+  it('should ask before collecting a pool below the threshold', () => {
+    const adminCall = vi.spyOn(adminCallModule, 'adminCall').mockResolvedValue({});
+    renderActions({ collectableMsat: 93_000 });
+
+    fireEvent.click(collectButton());
+
+    expect(screen.getByRole('dialog')).toHaveAccessibleName('Collect 93 sats now?');
+    expect(adminCall).not.toHaveBeenCalled();
+  });
+
+  it('should collect once the operator confirms a small pool', async () => {
+    const adminCall = vi
+      .spyOn(adminCallModule, 'adminCall')
+      .mockResolvedValue({ claimed_msat: 80_000, awaiting_cycle_msat: 13_000 });
+    renderActions({ collectableMsat: 93_000 });
+
+    fireEvent.click(collectButton());
+    fireEvent.click(screen.getByRole('button', { name: 'Collect anyway' }));
+
+    await waitFor(() =>
+      expect(adminCall).toHaveBeenCalledWith({
+        CollectGuardianFees: { seat_id: 'seat-earning-01' }
+      })
+    );
+    await waitFor(() => expect(collectButton()).toBeInTheDocument());
+  });
+
+  it('should collect nothing when the operator cancels a small pool', () => {
+    const adminCall = vi.spyOn(adminCallModule, 'adminCall').mockResolvedValue({});
+    renderActions({ collectableMsat: 93_000 });
+
+    fireEvent.click(collectButton());
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+
+    expect(adminCall).not.toHaveBeenCalled();
+    expect(collectButton()).toHaveFocus();
   });
 
   it('should report a refused collection', async () => {

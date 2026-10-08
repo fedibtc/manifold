@@ -10,10 +10,6 @@ use std::{
 use base64::{Engine as _, engine::general_purpose};
 use defe_api::{ResourceDescriptor, SharingMode};
 use defe_client::AsyncDefeClient;
-use fedi_credential_sdk_protocol::{
-    HolderAuthorizationRequest, HolderContext, IssuerContext, IssuerSecretKeys, PendingIssuance,
-    RevocationLocation, SubjectPubkey,
-};
 use fedi_decentralized_domain::{HolderAuthorizationEnvelope, ProtocolV1};
 use fedi_decentralized_manifold_environment::ManifoldEnvironment;
 use fedi_decentralized_nostr::attester::{
@@ -33,6 +29,10 @@ use fedi_iroh_rpc::{
     iroh::{Endpoint, RelayMode, endpoint::presets, protocol::Router},
 };
 use nostr::{EventBuilder, Keys, Kind, Tag, Timestamp};
+use peerbadge_protocol::{
+    HolderAuthorizationRequest, HolderContext, IssuerContext, IssuerSecretKeys, PendingIssuance,
+    RevocationLocation, SubjectPubkey,
+};
 use sha2::{Digest as _, Sha256};
 use tokio::{
     io::{AsyncReadExt as _, AsyncWriteExt as _},

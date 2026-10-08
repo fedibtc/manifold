@@ -1,4 +1,4 @@
-//! L7 daemon: CLI args → open the fleet → serve the iroh RPC and the local
+//! L7 daemon: CLI args → onboard → check for a duplicate → open the fleet → serve the iroh RPC and the local
 //! admin socket.
 //!
 //! This binary is also the `fedimintd` its seats run
@@ -8,9 +8,11 @@
 //! stops every seat process before the runtime exits; Linux children also
 //! receive a parent-death signal if the FMan is hard-killed.
 
+mod duplicate_instance;
 #[cfg(feature = "embedded-operator-ui")]
 mod operator_ui;
 mod push_callback;
+mod seat_readiness;
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -92,6 +94,10 @@ struct ServeArgs {
     /// boundaries*).
     #[arg(long, requires = "bitcoind_url")]
     bitcoind_password: Option<String>,
+    /// Trusted, same-network Esplora URL used when Bitcoin Core RPC fails,
+    /// including requests for blocks the node has pruned.
+    #[arg(long, requires = "bitcoind_url")]
+    esplora_url: Option<SafeUrl>,
     /// First seat port block on the `base + 4k` grid. The grid is
     /// per-host: multiple FMans sharing a host (the E2E harness) must be
     /// given disjoint grids.
@@ -179,13 +185,14 @@ fn seat_process_config(
         &args.bitcoind_username,
         &args.bitcoind_password,
     ) {
-        (Some(url), Some(username), Some(password)) => {
-            BitcoinBackend::Bitcoind(BitcoindConfig {
+        (Some(url), Some(username), Some(password)) => BitcoinBackend::Bitcoind {
+            primary: BitcoindConfig {
                 url: url.clone(),
                 username: username.clone(),
                 password: password.clone(),
-            })
-        }
+            },
+            esplora_fallback: args.esplora_url.clone().map(SafeUrl::to_unsafe),
+        },
         (None, None, None) => BitcoinBackend::Esplora(
             manifold_environment
                 .default_esplora_url()
@@ -299,7 +306,14 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         bitcoin_network = %process.bitcoin_network,
         bitcoin_backend = match &process.bitcoin_backend {
             BitcoinBackend::Esplora(_) => "esplora",
-            BitcoinBackend::Bitcoind(_) => "bitcoind",
+            BitcoinBackend::Bitcoind {
+                esplora_fallback: Some(_),
+                ..
+            } => "bitcoind-with-esplora-fallback",
+            BitcoinBackend::Bitcoind {
+                esplora_fallback: None,
+                ..
+            } => "bitcoind",
         },
         "selected Bitcoin chain backend"
     );
@@ -333,14 +347,14 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
             backup_relay_url.clone(),
         )),
         Arc::new(fman_nostr::NostrHolderAuthorizationFetcher::new(
-            manifold_environment.nostr_relays().as_urls().to_vec(),
+            manifold_environment.clone(),
             Arc::new(FleetHolderAuthorizationStore::new(db.clone())),
         )),
         manifold_environment.setup_payment_publisher().is_some(),
     );
     let phase = admin::OperatorPhase::onboarding(onboarding.clone());
-    let _admin = admin::serve(&phase, &admin::socket_path(&args.data_dir))?;
-    let _admin_http = match operator_http {
+    let admin_task = admin::serve(&phase, &admin::socket_path(&args.data_dir))?;
+    let admin_http_task = match operator_http {
         Some((bind, auth)) => {
             let (bound, task) =
                 admin_http::serve(with_operator_ui(admin_http::router(&phase, auth)), bind).await?;
@@ -364,10 +378,44 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     }
     onboarding.completed().await?;
 
+    // One check after onboarding (including restore) but before the wallet,
+    // seats, and persistent-key endpoint can start. E2E uses isolated explicit
+    // routes, so it skips production discovery and its startup delay.
+    let local_e2e = std::env::var_os("FMAN_E2E_LOCAL_IROH").is_some();
+    // Reuse this registration through fleet startup; dropping a polled signal
+    // future here could swallow a stop request before the fleet starts serving.
+    let mut shutdown = Box::pin(shutdown_signal());
+    if duplicate_instance::should_probe(local_e2e) {
+        let target = db
+            .load_identity()
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("completed onboarding has no fleet identity"))?
+            .derive_iroh_secret_key()
+            .public();
+        let outcome = duplicate_instance::probe(
+            target.into(),
+            duplicate_instance::PROBE_BUDGET,
+            shutdown.as_mut(),
+        )
+        .await?;
+        // Retain the DB lock on a duplicate; the old instance disappearing
+        // cannot resume startup and the fleet remains unopened.
+        if !duplicate_instance::allow_activation(
+            outcome,
+            admin_task,
+            admin_http_task,
+            shutdown.as_mut(),
+        )
+        .await?
+        {
+            return Ok(());
+        }
+    }
+
     let wallet_origin = db.wallet_origin().await?;
     let fleet = Arc::new(
         Fleet::open_with_wallet(
-            db,
+            db.clone(),
             FleetConfig {
                 manifold_environment: manifold_environment.environment(),
                 first_port_base: PortBase::new(args.first_port_base).ok_or_else(|| {
@@ -383,7 +431,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
                 push_callback_retry_interval: DEFAULT_PUSH_CALLBACK_RETRY_INTERVAL,
                 completion_callback_invoker: Arc::new(PushGatewayCallbackInvoker::new()),
                 process_spawner: SeatProcessSpawner::Bundled,
-                process,
+                process: process.clone(),
             },
             async |identity| {
                 let wallet = fman_fedimint::Wallet::open_guarding(
@@ -420,7 +468,6 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         None => None,
     };
     // The network-isolated formation harness supplies explicit loopback routes.
-    let local_e2e = std::env::var_os("FMAN_E2E_LOCAL_IROH").is_some();
     let endpoint_builder = if local_e2e {
         Endpoint::builder(presets::N0DisableRelay)
     } else {
@@ -444,6 +491,8 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         retained_holder_authorizations,
         retained_setup_payment_federations,
         manifold_environment,
+        holder_authorization_store,
+        db,
     );
     // Construct the RPC only after the Nostr policy watch exists, so policy is
     // ordinary constructor-owned state rather than a late-bound service mode.
@@ -473,6 +522,9 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         )
         .spawn();
 
+    let mut seat_readiness =
+        seat_readiness::SeatReadiness::new(router.endpoint().clone(), &process, local_e2e)?
+            .spawn(fleet.clone());
     let host = Arc::new(FleetNostrHost::new(
         fleet.clone(),
         router.endpoint().id().to_string(),
@@ -494,7 +546,12 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         fleet.wallet().clone(),
         nostr.subscribe_setup_payment_federations(),
     );
-    phase.open_fleet(fleet.clone(), nostr.presence());
+    phase.open_fleet(
+        fleet.clone(),
+        nostr.presence(),
+        Arc::new(nostr.clone()),
+        Arc::new(nostr.clone()),
+    );
 
     // The connection card an FI needs to reach this FMan: printed to stdout
     // behind the prefix the e2e harnesses read. They are the only consumers,
@@ -508,7 +565,17 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         "Fleet Manager serving FI and capability-scoped telemetry Iroh RPC; press Ctrl-C to stop"
     );
 
-    shutdown_signal().await?;
+    // The readiness worker loops until aborted, so it only ends by panicking.
+    // Its verdict would then stay in force unchecked; stop the daemon instead
+    // so the supervisor restarts it.
+    let readiness_stopped = tokio::select! {
+        result = &mut shutdown => {
+            result?;
+            None
+        }
+        result = &mut seat_readiness => Some(result),
+    };
+    seat_readiness.abort();
     telemetry_registration.shutdown().await;
     router.shutdown().await?;
     // Stop and join every wallet-join task before shutting down the fleet.
@@ -517,6 +584,9 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     let join_shutdown = join_reconciler.shutdown().await;
     fleet.shutdown().await;
     join_shutdown?;
+    if let Some(result) = readiness_stopped {
+        anyhow::bail!("seat readiness worker stopped: {result:?}");
+    }
     Ok(())
 }
 

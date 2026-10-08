@@ -3,7 +3,7 @@ import { isNotOnboardedError } from '../setupState';
 
 it('should recognise the daemon refusal that means this host is not onboarded', () => {
   const error = new AdminApiError(
-    'this Fleet Manager has not been onboarded yet: run `admin onboard new` or `admin onboard restore`',
+    'this Manifold Fedimint Guardian has not been set up yet: run `admin onboard new` or `admin onboard restore`',
     'not_onboarded'
   );
 
@@ -17,7 +17,10 @@ it('should still recognise the refusal after the daemon rewords its sentence', (
 });
 
 it('should not open setup for an undifferentiated refusal that merely reads like one', () => {
-  const impostor = new AdminApiError('this Fleet Manager has not been onboarded yet', 'other');
+  const impostor = new AdminApiError(
+    'this Manifold Fedimint Guardian has not been set up yet',
+    'other'
+  );
 
   expect(isNotOnboardedError(impostor)).toBe(false);
 });

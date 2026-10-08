@@ -19,7 +19,7 @@ export const SetupPhrase = ({ onSaved }: SetupPhraseProps) => {
       <h1 className={styles.heading}>Record your recovery phrase</h1>
 
       <Banner variant="error">
-        These twelve words are the entire fleet's identity and its only backup. Write them down
+        These twelve words are this host's entire identity and its only backup. Write them down
         offline before continuing — they are never stored in the browser, and losing them loses
         every seat's guardian identity.
       </Banner>

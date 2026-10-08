@@ -112,6 +112,8 @@ pub(crate) struct Offer {
 pub(crate) struct OfferSnapshot {
     pub(crate) offer: Offer,
     pub(crate) slots: u32,
+    /// The last readiness verdict, read with the epoch it was drawn with.
+    pub(crate) ready_for_new_seats: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -171,11 +173,13 @@ impl Db {
             .into_iter()
             .map(|(id,)| FederationId(id))
             .collect();
-        let (epoch, price, max_seats): (Vec<u8>, Option<i64>, i64) = sqlx::query_as(
-            "SELECT offer_epoch, price_msats, max_seats FROM offer_state WHERE id = 1",
-        )
-        .fetch_one(&mut *tx)
-        .await?;
+        let (epoch, price, max_seats, ready_for_new_seats): (Vec<u8>, Option<i64>, i64, bool) =
+            sqlx::query_as(
+                "SELECT offer_epoch, price_msats, max_seats, ready_for_new_seats \
+                 FROM offer_state WHERE id = 1",
+            )
+            .fetch_one(&mut *tx)
+            .await?;
         let (active, next_no): (i64, i64) = sqlx::query_as(
             "SELECT COUNT(*) FILTER (WHERE d.quote_id IS NULL), COALESCE(MAX(s.seat_no) + 1, 0) \
              FROM seats s LEFT JOIN decommissioned_seats d USING (quote_id)",
@@ -198,6 +202,7 @@ impl Db {
                 active,
                 next_no,
             ),
+            ready_for_new_seats,
         })
     }
 
@@ -542,116 +547,70 @@ impl Db {
         )
     }
 
-    /// Normalize and load Holder-authorization events accepted during
-    /// operator-driven enrollment.
-    ///
-    /// This removes pre-fix rows outside the current time and aggregate bounds
-    /// before the Nostr boundary revalidates every returned event.
-    pub(crate) async fn bounded_holder_authorization_event_jsons(
+    /// Load the retained Holder-authorization event, first removing one whose
+    /// issue time lies beyond the receiver bound. The Nostr boundary
+    /// revalidates the returned event.
+    pub(crate) async fn holder_authorization_event_json(
         &self,
         max_issued_at: u64,
-    ) -> Result<Vec<String>, DbError> {
+    ) -> Result<Option<String>, DbError> {
         let mut tx = self.begin_write().await?;
-        sqlx::query("DELETE FROM holder_authorization_events WHERE authorization_issued_at > ?")
+        sqlx::query("DELETE FROM holder_authorization WHERE authorization_issued_at > ?")
+            .bind(max_issued_at.to_be_bytes().to_vec())
+            .execute(&mut *tx)
+            .await?;
+        let event = sqlx::query_scalar("SELECT event_json FROM holder_authorization WHERE id = 1")
+            .fetch_optional(&mut *tx)
+            .await?;
+        tx.commit().await?;
+        Ok(event)
+    }
+
+    /// Retain a verified Holder authorization as this FMan's only one when its
+    /// signed issue time is later than the retained one's. An equal or older
+    /// statement cannot roll the retained authorization back.
+    pub(crate) async fn replace_holder_authorization_event(
+        &self,
+        authorization_issued_at: u64,
+        event_json: &str,
+        max_issued_at: u64,
+    ) -> Result<(), DbError> {
+        if authorization_issued_at > max_issued_at {
+            return Err(DbError::HolderAuthorizationIssuedAtTooFarFuture);
+        }
+        let mut tx = self.begin_write().await?;
+        sqlx::query("DELETE FROM holder_authorization WHERE authorization_issued_at > ?")
             .bind(max_issued_at.to_be_bytes().to_vec())
             .execute(&mut *tx)
             .await?;
         sqlx::query(
-            "DELETE FROM holder_authorization_events
-             WHERE credential_digest NOT IN (
-                 SELECT credential_digest FROM holder_authorization_events
-                 ORDER BY credential_digest
-                 LIMIT ?
-             )",
+            "INSERT INTO holder_authorization (id, authorization_issued_at, event_json) \
+             VALUES (1, ?, ?) \
+             ON CONFLICT (id) DO UPDATE SET \
+             authorization_issued_at = excluded.authorization_issued_at, \
+             event_json = excluded.event_json \
+             WHERE excluded.authorization_issued_at > holder_authorization.authorization_issued_at",
         )
-        .bind(
-            i64::try_from(fedi_decentralized_domain::FMAN_HOLDER_AUTHORIZATION_RETENTION_MAX_COUNT)
-                .expect("Holder authorization retention bound fits SQLite INTEGER"),
-        )
+        .bind(authorization_issued_at.to_be_bytes().to_vec())
+        .bind(event_json)
         .execute(&mut *tx)
         .await?;
-        let events = sqlx::query_scalar(
-            "SELECT event_json FROM holder_authorization_events ORDER BY credential_digest",
-        )
-        .fetch_all(&mut *tx)
-        .await?;
-        tx.commit().await?;
-        Ok(events)
-    }
-
-    /// Merge verified Holder authorizations without treating relay omission as
-    /// deletion. A later authorization for the same credential supersedes an
-    /// earlier one; equal or older statements cannot roll retained state back.
-    /// New credential digests are ignored once this FMan identity's aggregate
-    /// retention bound is full; existing rows are never evicted for relay churn.
-    pub(crate) async fn merge_holder_authorization_events(
-        &self,
-        events: &[(Vec<u8>, u64, String)],
-        max_issued_at: u64,
-    ) -> Result<(), DbError> {
-        if events
-            .iter()
-            .any(|(_, authorization_issued_at, _)| *authorization_issued_at > max_issued_at)
-        {
-            return Err(DbError::HolderAuthorizationIssuedAtTooFarFuture);
-        }
-        let mut tx = self.begin_write().await?;
-        sqlx::query("DELETE FROM holder_authorization_events WHERE authorization_issued_at > ?")
-            .bind(max_issued_at.to_be_bytes().to_vec())
-            .execute(&mut *tx)
-            .await?;
-        for (credential_digest, authorization_issued_at, event_json) in events {
-            let authorization_issued_at = authorization_issued_at.to_be_bytes().to_vec();
-            sqlx::query(
-                "INSERT INTO holder_authorization_events
-                 (credential_digest, authorization_issued_at, event_json)
-                 SELECT ?, ?, ?
-                 WHERE EXISTS (
-                     SELECT 1 FROM holder_authorization_events WHERE credential_digest = ?
-                 ) OR (
-                     SELECT COUNT(*) FROM holder_authorization_events
-                 ) < ?
-                 ON CONFLICT (credential_digest) DO UPDATE SET \
-                 authorization_issued_at = excluded.authorization_issued_at, \
-                 event_json = excluded.event_json \
-                 WHERE excluded.authorization_issued_at > \
-                       holder_authorization_events.authorization_issued_at",
-            )
-            .bind(credential_digest)
-            .bind(authorization_issued_at)
-            .bind(event_json)
-            .bind(credential_digest)
-            .bind(
-                i64::try_from(
-                    fedi_decentralized_domain::FMAN_HOLDER_AUTHORIZATION_RETENTION_MAX_COUNT,
-                )
-                .expect("Holder authorization retention bound fits SQLite INTEGER"),
-            )
-            .execute(&mut *tx)
-            .await?;
-        }
-        let retained: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM holder_authorization_events")
+        let stage: String = sqlx::query_scalar("SELECT stage FROM onboarding_state WHERE id = 1")
             .fetch_one(&mut *tx)
             .await?;
-        if retained > 0 {
-            let stage: String =
-                sqlx::query_scalar("SELECT stage FROM onboarding_state WHERE id = 1")
-                    .fetch_one(&mut *tx)
-                    .await?;
-            let stage = OnboardingStage::parse(&stage)?;
-            let stage_update = sqlx::query(
-                "UPDATE onboarding_state SET stage = 'initial_offer', updated_at_ms = ? \
-                 WHERE id = 1 AND stage = 'holder_authorization'",
-            )
-            .bind(now_ms())
-            .execute(&mut *tx)
-            .await?;
-            if stage == OnboardingStage::HolderAuthorization && stage_update.rows_affected() != 1 {
-                return Err(DbError::WrongOnboardingStage {
-                    expected: OnboardingStage::HolderAuthorization,
-                    actual: stage,
-                });
-            }
+        let stage = OnboardingStage::parse(&stage)?;
+        let stage_update = sqlx::query(
+            "UPDATE onboarding_state SET stage = 'initial_offer', updated_at_ms = ? \
+             WHERE id = 1 AND stage = 'holder_authorization'",
+        )
+        .bind(now_ms())
+        .execute(&mut *tx)
+        .await?;
+        if stage == OnboardingStage::HolderAuthorization && stage_update.rows_affected() != 1 {
+            return Err(DbError::WrongOnboardingStage {
+                expected: OnboardingStage::HolderAuthorization,
+                actual: stage,
+            });
         }
         tx.commit().await?;
         Ok(())
@@ -700,6 +659,23 @@ impl Db {
         }
         tx.commit().await?;
         Ok(())
+    }
+
+    /// Store the readiness verdict. A change draws a fresh offer epoch in the
+    /// same statement, refusing every quote issued under the old verdict.
+    /// Returns whether the verdict changed.
+    pub(crate) async fn set_ready_for_new_seats(&self, ready: bool) -> Result<bool, DbError> {
+        let changed = sqlx::query(
+            "UPDATE offer_state SET ready_for_new_seats = ?, offer_epoch = ? \
+             WHERE id = 1 AND ready_for_new_seats != ?",
+        )
+        .bind(ready)
+        .bind(fresh_offer_epoch().as_bytes().as_slice())
+        .bind(ready)
+        .execute(&self.pool)
+        .await?
+        .rows_affected();
+        Ok(changed == 1)
     }
 
     pub async fn offer_epoch(&self) -> Result<OfferEpoch, DbError> {
@@ -756,6 +732,92 @@ pub(super) fn parse_offer_epoch(bytes: Vec<u8>) -> Result<OfferEpoch, DbError> {
         detail: "offer_epoch is not 32 bytes".into(),
     })?;
     Ok(OfferEpoch::from_bytes(bytes))
+}
+
+/// One stored message of the operator's chat with Fedi support. The Nostr
+/// boundary owns the chat (SPEC-fman-support-chat); this is only its row.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SupportRow {
+    /// The NIP-17 rumor id, which every copy of the message shares.
+    pub rumor_id: String,
+    pub from_fedi: bool,
+    pub body: String,
+    /// Unix seconds, as the author stated it.
+    pub created_at: u64,
+    /// A Fedi message the operator has not read. Storing a row ignores it:
+    /// every new Fedi message starts unread.
+    pub unread: bool,
+}
+
+/// SQLite stores signed integers. A timestamp past `i64::MAX` is nonsense from
+/// a relay, so it clamps: it then sorts last instead of failing the write.
+fn stored_secs(secs: u64) -> i64 {
+    i64::try_from(secs).unwrap_or(i64::MAX)
+}
+
+impl Db {
+    /// Record a support message unless the thread already holds it.
+    pub async fn record_support_message(&self, row: &SupportRow) -> Result<(), DbError> {
+        sqlx::query(
+            "INSERT INTO support_messages (rumor_id, from_fedi, body, created_at) \
+             VALUES (?, ?, ?, ?) ON CONFLICT (rumor_id) DO NOTHING",
+        )
+        .bind(&row.rumor_id)
+        .bind(row.from_fedi)
+        .bind(&row.body)
+        .bind(stored_secs(row.created_at))
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// The whole support thread, oldest first; a same-second tie keeps
+    /// arrival order.
+    pub async fn support_messages(&self) -> Result<Vec<SupportRow>, DbError> {
+        let rows: Vec<(String, bool, String, i64, bool)> = sqlx::query_as(
+            "SELECT rumor_id, from_fedi, body, created_at, from_fedi = 1 AND read = 0 \
+             FROM support_messages ORDER BY created_at, rowid",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(
+                |(rumor_id, from_fedi, body, created_at, unread)| SupportRow {
+                    rumor_id,
+                    from_fedi,
+                    body,
+                    created_at: u64::try_from(created_at)
+                        .expect("created_at is non-negative by schema CHECK"),
+                    unread,
+                },
+            )
+            .collect())
+    }
+
+    /// Fedi support messages the operator has not read.
+    pub async fn support_unread(&self) -> Result<u64, DbError> {
+        let unread: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM support_messages WHERE from_fedi = 1 AND read = 0",
+        )
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(u64::try_from(unread).expect("a count is non-negative"))
+    }
+
+    /// Mark read the Fedi support messages with these rumor ids: the ones
+    /// the operator was shown. Unknown ids mark nothing, and nothing goes back
+    /// to unread.
+    pub async fn mark_support_read(&self, rumor_ids: &[String]) -> Result<(), DbError> {
+        sqlx::query(
+            "UPDATE support_messages SET read = 1 WHERE from_fedi = 1 \
+             AND rumor_id IN (SELECT value FROM json_each(?))",
+        )
+        .bind(serde_json::to_string(rumor_ids).expect("strings serialize"))
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
 }
 
 #[derive(Debug, Error)]
@@ -824,7 +886,7 @@ async fn lock_data_root(data_root: &Path) -> anyhow::Result<std::fs::File> {
         }
     }
     Err(anyhow::anyhow!(
-        "another Fleet Manager instance already runs on {}",
+        "another Manifold Fedimint Guardian instance already runs on {}",
         data_root.display(),
     ))
 }

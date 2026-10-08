@@ -17,7 +17,7 @@ const arrangeVersion = (version: FmanVersionReport | undefined) => {
   useOnboardingMock.mockReturnValue({ data } as ReturnType<typeof useOnboarding>);
 };
 
-const heading = () => screen.queryByRole('heading', { name: 'Update this Fleet Manager' });
+const heading = () => screen.queryByRole('heading', { name: 'Update Manifold Fedimint Guardian' });
 
 beforeEach(() => {
   vi.clearAllMocks();

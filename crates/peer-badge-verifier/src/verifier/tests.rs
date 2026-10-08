@@ -1,16 +1,16 @@
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{LazyLock, Mutex};
 
-use fedi_credential_sdk_protocol::{
-    HolderAuthorizationRequest, HolderContext, IssuerContext, IssuerSecretKeys, PendingIssuance,
-    RevocationLocation,
-};
 use fedi_decentralized_domain::{HolderAuthorizationEnvelope, TRUST_SCORE_SCHEMA_V1};
 #[cfg(feature = "test-support")]
 use fedi_decentralized_domain::{TRUST_SCORE_LEVEL_MAX, TRUST_SCORE_LEVEL_MIN};
 use fedi_decentralized_manifold_environment::ManifoldEnvironment;
 use fedi_decentralized_nostr::attester::{CREDENTIAL_REVOCATION_HASHTAG, ISSUER_AUTHORITY_HASHTAG};
 use nostr_sdk::{EventBuilder, Keys, Tag, Timestamp};
+use peerbadge_protocol::{
+    HolderAuthorizationRequest, HolderContext, IssuerContext, IssuerSecretKeys, PendingIssuance,
+    RevocationLocation,
+};
 use serde_json::json;
 
 use super::*;
@@ -793,4 +793,76 @@ fn every_canonical_profile_pins_each_configured_issuer() {
             assert!(verifier.inner.pinned_authorities.contains_key(issuer));
         }
     }
+}
+
+#[test]
+fn issuance_verifies_offline_against_the_pinned_authority() {
+    let fixture = fixture();
+    let source = Arc::new(FakeSource::default());
+    let verifier = pinned_verifier(&fixture, source.clone());
+
+    verifier
+        .verify_issuance_at(&fixture.envelope, VERIFY_AT)
+        .expect("pinned issuer issued this badge to this holder");
+    assert_eq!(source.authority_calls.load(Ordering::SeqCst), 0);
+    assert_eq!(source.revocation_calls.load(Ordering::SeqCst), 0);
+
+    assert!(matches!(
+        verifier.verify_issuance_at(&fixture.envelope, AUTHORIZED_AT - 1),
+        Err(PeerBadgeVerificationError::InvalidEnvelope(
+            CredentialsError::AuthorizationNotYetValid
+        ))
+    ));
+}
+
+#[test]
+fn issuance_rejects_a_forged_proof_under_a_trusted_issuer() {
+    let mut fixture = fixture();
+    let verifier = pinned_verifier(&fixture, Arc::new(FakeSource::default()));
+    // Names the trusted issuer but carries another credential's proof.
+    fixture.envelope.signed_credential.proof =
+        fixture_with_trust_level(8).envelope.signed_credential.proof;
+
+    assert!(matches!(
+        verifier.verify_issuance_at(&fixture.envelope, VERIFY_AT),
+        Err(PeerBadgeVerificationError::InvalidEnvelope(_))
+    ));
+}
+
+#[test]
+fn issuance_rejects_another_holders_badge() {
+    let mut fixture = fixture();
+    let verifier = pinned_verifier(&fixture, Arc::new(FakeSource::default()));
+    // A validly issued badge, authorized by a holder it was not issued to.
+    let other = Keys::generate();
+    let statement = &mut fixture.envelope.holder_authorization.authorization;
+    statement.holder_id_pubkey = HolderId(other.public_key());
+    let digest = statement.digest().expect("statement digest");
+    fixture.envelope.holder_authorization.proof.signature =
+        other.sign_schnorr(&nostr_sdk::secp256k1::Message::from_digest(digest.into()));
+
+    assert!(matches!(
+        verifier.verify_issuance_at(&fixture.envelope, VERIFY_AT),
+        Err(PeerBadgeVerificationError::InvalidEnvelope(
+            CredentialsError::HolderIdMismatch
+        ))
+    ));
+}
+
+#[test]
+fn issuance_rejects_untrusted_and_unpinned_issuers() {
+    let fixture = fixture();
+    let unpinned = verifier(&fixture, Arc::new(FakeSource::default()));
+    assert!(matches!(
+        unpinned.verify_issuance_at(&fixture.envelope, VERIFY_AT),
+        Err(PeerBadgeVerificationError::MissingAuthority)
+    ));
+
+    let development =
+        PeerBadgeVerifier::try_from_profile(&ManifoldEnvironment::Development.profile().unwrap())
+            .unwrap();
+    assert!(matches!(
+        development.verify_issuance_at(&fixture.envelope, VERIFY_AT),
+        Err(PeerBadgeVerificationError::UntrustedIssuer { .. })
+    ));
 }

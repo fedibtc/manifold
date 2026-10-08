@@ -45,6 +45,7 @@ mod payout_worker;
 pub mod setup_payment_policy;
 mod wallet_drain;
 
+pub(crate) use payout_job::DestinationCap;
 pub(crate) use payout_native::{await_payout, payout_for_request, payout_status, start_payout};
 
 pub use fman_core::db::WalletOrigin;
@@ -1201,10 +1202,23 @@ fn validate_payment_config(config: &fedimint_core::config::ClientConfig) -> anyh
     Ok(())
 }
 
+pub(crate) fn floor_to_whole_sats(msats: u64) -> u64 {
+    msats - msats % 1_000
+}
+
+fn cap_to_maximum(sendable_msat: u64, max_sendable_msat: u64) -> (u64, Option<DestinationCap>) {
+    let amount = sendable_msat.min(max_sendable_msat);
+    let capped = (amount < sendable_msat).then(|| DestinationCap {
+        maximum_msat: max_sendable_msat,
+        remaining_msat: sendable_msat - amount,
+    });
+    (amount, capped)
+}
+
 async fn lnurl_pay(
     destination: &str,
-    choose_amount: impl FnOnce(u64) -> u64,
-) -> anyhow::Result<(Bolt11Invoice, u64)> {
+    sendable_msat: u64,
+) -> anyhow::Result<(Bolt11Invoice, u64, Option<DestinationCap>)> {
     let lnurl = if destination.contains('@') {
         LightningAddress::from_str(destination)
             .context("invalid Lightning Address")?
@@ -1219,22 +1233,58 @@ async fn lnurl_pay(
     else {
         anyhow::bail!("destination is not an LNURL-pay endpoint");
     };
-    let amount = choose_amount(pay.max_sendable);
+    let (capped_amount, capped) = cap_to_maximum(sendable_msat, pay.max_sendable);
+    let amount = floor_to_whole_sats(capped_amount);
     anyhow::ensure!(
         amount >= pay.min_sendable,
         "balance cannot cover the destination's minimum payment and fees"
     );
     let response = bounded_lnurl_get(&client, &pay.callback, Some(amount)).await?;
-    let response: lnurl::pay::LnURLPayInvoice = serde_json::from_slice(&response)?;
+    let response: lnurl::pay::LnURLPayInvoice =
+        serde_json::from_slice(&response).context("LNURL callback returned no usable invoice")?;
     let invoice = Bolt11Invoice::from_str(response.invoice()).context("invalid LNURL invoice")?;
-    anyhow::ensure!(
-        invoice.amount_milli_satoshis() == Some(amount),
-        "LNURL endpoint returned an invoice for the wrong amount"
-    );
-    Ok((invoice, amount))
+    match invoice.amount_milli_satoshis() {
+        Some(invoiced) => anyhow::ensure!(
+            invoiced == amount,
+            "LNURL endpoint returned an invoice for {invoiced} msat, but {amount} msat was requested"
+        ),
+        None => anyhow::bail!(
+            "LNURL endpoint returned an invoice with no amount, but {amount} msat was requested"
+        ),
+    }
+    Ok((invoice, amount, capped))
+}
+
+/// Longest refusal reason repeated back from an LNURL service.
+const MAX_LNURL_REASON_CHARS: usize = 200;
+/// Stands in when a service refuses without saying why.
+const UNSTATED_LNURL_REASON: &str = "no reason given";
+
+/// The service's stated reason, when this body is an LNURL error response.
+///
+/// Recognized from `status` alone, so a service that lowercases it or omits
+/// `reason` still reads as a refusal. The reason is remote text, so an
+/// over-long one is truncated with an ellipsis.
+fn lnurl_error_reason(body: &[u8]) -> Option<String> {
+    let body: serde_json::Value = serde_json::from_slice(body).ok()?;
+    if !body.get("status")?.as_str()?.eq_ignore_ascii_case("ERROR") {
+        return None;
+    }
+    let Some(reason) = body.get("reason").and_then(serde_json::Value::as_str) else {
+        return Some(UNSTATED_LNURL_REASON.to_owned());
+    };
+    let mut bounded: String = reason.chars().take(MAX_LNURL_REASON_CHARS).collect();
+    if reason.chars().nth(MAX_LNURL_REASON_CHARS).is_some() {
+        bounded.push('…');
+    }
+    Some(bounded)
 }
 
 /// Fetch one LNURL response without retaining more than the compatibility cap.
+///
+/// A refusal arrives as HTTP 200, so `error_for_status` cannot catch it and the
+/// body would otherwise reach a typed parse sharing no field with it. Refusing
+/// here keeps that out of every caller.
 async fn bounded_lnurl_get(
     client: &lnurl::AsyncClient,
     url: &str,
@@ -1264,6 +1314,9 @@ async fn bounded_lnurl_get(
             "LNURL response exceeds {MAX_LNURL_RESPONSE_BYTES} bytes"
         );
         body.extend_from_slice(&chunk);
+    }
+    if let Some(reason) = lnurl_error_reason(&body) {
+        anyhow::bail!("LNURL endpoint refused the request: {reason}");
     }
     Ok(body)
 }

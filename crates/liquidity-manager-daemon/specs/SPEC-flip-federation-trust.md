@@ -78,16 +78,30 @@ withdraw it earlier.
 
 ## Policy evaluation
 
-Each `accepted_attester_policies` entry (attester pubkey plus
-`verification_requirement`) is evaluated independently over the **distinct**
-`fman_pubkey` identities from accepted peer bindings; the federation is
-eligible if at least one entry is satisfied. An identity is trusted for an
-entry only when an envelope from its verified trust material validates against
-that entry's attester, is unrevoked, and is unexpired. `all_trusted` requires
-every distinct operating identity trusted; `consensus_majority_trusted`
-requires at least the consensus-majority threshold derived from the final
-peer set, counting each identity once regardless of how many peers it
-operates. If the threshold cannot be determined, the request is rejected.
+The accepted attesters are pooled. A distinct `fman_pubkey` identity from the
+accepted peer bindings is trusted when an envelope from its verified trust
+material validates against **any** `accepted_attester_policies` attester, is
+unrevoked, and is unexpired. Every entry's `verification_requirement` is then
+evaluated over that one pooled trusted set, and the federation is eligible if
+at least one is satisfied. `all_trusted` requires every distinct operating
+identity trusted; `consensus_majority_trusted` requires at least the
+consensus-majority threshold derived from the final peer set, counting each
+identity once regardless of how many peers it operates. If the threshold cannot
+be determined, the request is rejected.
+
+Pooling is what keeps FLIP reachable for the federations the FI builds. The FI
+admits a seat on a badge from any configured trusted issuer root, then fills
+seats round-robin across issuer buckets to spread operators across regions
+([ARCH-fi-client-discovery-selection](../../fi-client/specs/ARCH-fi-client-discovery-selection.md)).
+A federation it assembles therefore normally carries several issuers, and no
+single one covers every seat. Requiring one attester to cover the whole
+operator set would reject a federation for carrying the operator diversity the
+FI exists to produce, so provider and initiator share one notion of a trusted
+operator: vouched for by one of the trusted signers, not by the same one.
+
+`VerificationSummary.accepted_attester_policy` records the entry whose
+requirement admitted the federation. It names the satisfied requirement; it
+does not assert that the entry's attester vouched for every identity.
 
 An empty policy list can satisfy no federation and is invalid provider setup;
 FLIP must not reach Ready or publish an advertisement until at least one

@@ -12,8 +12,8 @@ it('should map a single seat to seat-detail rather than seats', () => {
   expect(routeToKey('/seats/seat-running-01')).toBe('seat-detail');
 });
 
-it('should map the wallet to wallet', () => {
-  expect(routeToKey('/wallet')).toBe('wallet');
+it('should map the payouts screen to payouts', () => {
+  expect(routeToKey('/payouts')).toBe('payouts');
 });
 
 it('should map the offer to offer', () => {

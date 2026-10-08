@@ -101,6 +101,9 @@ the fleet.
 
 - `ShowPlans` returns the current complete plan list.
 - `ShowCapacity` returns the durable maximum and currently available slots.
+- `ShowSeatReadiness` returns `{ ready_for_new_seats, report }`: the durable
+  verdict that gates admission, and the latest run since the daemon started
+  with a fixed outcome code per check, or a null report before one completes ([SPEC-advertisement](SPEC-advertisement.md#readiness-gate)).
 - `SetCapacity` replaces the durable maximum. It is refused below the number
   of active (not decommissioned) seats. A real change rotates the offer epoch,
   invalidating outstanding quotes; a no-op does not.
@@ -127,7 +130,8 @@ the fleet.
   The wallet projection keeps monetary meanings separate:
   `available_ecash_msat` is only notes currently available to a new
   transaction; `economically_sweepable_recipient_msat` is a point-in-time
-  fee-aware maximum for one currently usable gateway;
+  fee-aware maximum for one currently usable gateway, floored to whole
+  satoshis because a sweep sends a whole-satoshi amount;
   `encumbered_outgoing_msat` is payout contract or refund value known not
   currently available as ecash (null when cached state cannot establish that
   amount); and `outgoing` contains the native operation id, rail,
@@ -156,8 +160,11 @@ the fleet.
   Fedimint client's native, persisted Lightning
   operation to send as much of that federation's balance as can economically
   fund the recipient amount, gateway fee, federation Lightning output fee,
-  and mint input fees. It accepts no amount: uneconomical notes and rounding
-  residue remain rather than making a best-effort sweep fail. Gateway
+  and mint input fees. It accepts no amount: uneconomical notes, sub-satoshi
+  residue, and rounding residue remain rather than making a best-effort
+  sweep fail. The amount sent is floored to whole satoshis, because an
+  LNURL service backed by a whole-satoshi ledger refuses anything else and
+  a sub-satoshi remainder is not enforceable on chain. Gateway
   selection is automatic: Lightning v2's own selection supplies its vetted
   route; when v2 is unavailable the v1 path prefers the federation metadata's
   currently available `vetted_gateways` and falls back to another available
@@ -296,11 +303,26 @@ the fleet.
   setup-payment publication (or null before one is admitted), and whether
   SemVer ordering requires an update. Consumers decide how to present that
   information; the daemon does not stop its guardian children.
-- `RefreshHolderAuthorizations` is available only during the onboarding
-  Holder-authorization stage. It awaits one bounded Nostr reconciliation and
+- `RefreshHolderAuthorizations` is available during the onboarding
+  Holder-authorization stage and after the fleet opens. It awaits one bounded Nostr reconciliation and
   returns the resulting onboarding projection. Verified events merge into
   durable enrollment state; failures and empty answers retain the last accepted
-  state. There is no post-fleet manual refresh operation.
+  state. Post-fleet refreshes update the live trust material and wake advertisement
+  publication only after durable merge and revalidation. A failed post-fleet
+  refresh returns an operation error without clearing the current authorization.
+  A concurrent refresh is refused rather than queued; relay work has a total
+  deadline below the browser request timeout. Request cancellation does not interrupt
+  durable merge through live publication. Ordinary status reads do not fetch relays.
+- `SupportChat`, `SendSupportMessage`, and `MarkSupportRead` are available
+  after the fleet opens and serve the operator's chat with Fedi support
+  ([SPEC-fman-support-chat](SPEC-fman-support-chat.md)). `SupportChat`
+  returns `{available, messages, unread}` from the database without a relay
+  read. `SendSupportMessage` publishes before it answers `{message}` and
+  returns an operation error when no relay accepts the message or the
+  admitted setup-payment policy names no Fedi support key. Each message
+  carries `unread`, true for a Fedi message not yet marked read.
+  `MarkSupportRead` takes the rumor ids of the messages the operator saw as
+  `ids`, marks those Fedi messages read, and returns `{unread}`.
 - `ShowMnemonic` returns the root mnemonic phrase as `mnemonic`, for the
   operator's recovery material (the full backup also requires the FMan
   database and each running seat's non-derivable fedimintd state,

@@ -68,8 +68,7 @@ pub(crate) async fn start_payout(
                 let spendable = lightning
                     .spendable_amount(balance, Some(gateway.clone()))
                     .await?;
-                let (invoice, amount) =
-                    lnurl_pay(destination, |maximum| spendable.msats.min(maximum)).await?;
+                let (invoice, amount, capped) = lnurl_pay(destination, spendable.msats).await?;
                 let gateway_fee_quote_msat =
                     routing_info.send_parameters(&invoice).0.fee(amount).msats;
                 let operation_id = lightning
@@ -91,6 +90,7 @@ pub(crate) async fn start_payout(
                     operation_id: PayoutOperationId::parse(&operation_id.fmt_full().to_string())
                         .expect("Fedimint formats a canonical operation id"),
                     amount_msat: amount,
+                    capped,
                 });
             }
             Err(error) if has_v1_lightning => {
@@ -117,8 +117,7 @@ pub(crate) async fn start_payout(
         let spendable = lightning
             .spendable_amount(balance, Some(gateway.clone()))
             .await?;
-        let (invoice, amount) =
-            lnurl_pay(destination, |maximum| spendable.msats.min(maximum)).await?;
+        let (invoice, amount, capped) = lnurl_pay(destination, spendable.msats).await?;
         let has_completed_payment = {
             let mut dbtx = lightning.db.begin_transaction_nc().await;
             lightning
@@ -154,6 +153,7 @@ pub(crate) async fn start_payout(
             operation_id: PayoutOperationId::parse(&operation_id.fmt_full().to_string())
                 .expect("Fedimint formats a canonical operation id"),
             amount_msat: amount,
+            capped,
         })
     }
 }

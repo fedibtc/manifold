@@ -22,7 +22,7 @@ describe('SetupDoors', () => {
   it('should offer both doors', () => {
     renderDoors();
 
-    expect(screen.getByRole('button', { name: 'Start a new fleet' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Start fresh' })).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Recover from a phrase' })).toBeTruthy();
   });
 
@@ -32,7 +32,7 @@ describe('SetupDoors', () => {
       .mockResolvedValue({ onboarded: 'new', seats: 0 });
     renderDoors();
 
-    fireEvent.click(screen.getByRole('button', { name: 'Start a new fleet' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Start fresh' }));
 
     await waitFor(() =>
       expect(adminCallSpy).toHaveBeenCalledWith({ OnboardAsNew: { if_needed: false } })
@@ -44,7 +44,7 @@ describe('SetupDoors', () => {
     const { onNewFleet } = renderDoors();
 
     expect(onNewFleet).not.toHaveBeenCalled();
-    fireEvent.click(screen.getByRole('button', { name: 'Start a new fleet' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Start fresh' }));
 
     await waitFor(() => expect(onNewFleet).toHaveBeenCalled());
   });

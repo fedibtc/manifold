@@ -321,7 +321,7 @@ fn group_by_issuer(required: &[(String, CredentialDigest)]) -> Vec<(String, Vec<
 
 /// Serialize a credential digest to its base64url-unpadded wire string.
 ///
-/// The credential SDK owns this encoding (its serde form); the d-tag built
+/// The PeerBadge SDK owns this encoding (its serde form); the d-tag built
 /// from it must match what attesters publish. A non-string serialization is
 /// unrepresentable for `CredentialDigest`, and quietly substituting another
 /// value here would make the fail-closed lookup query the wrong d-tag and

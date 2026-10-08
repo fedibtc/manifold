@@ -1,12 +1,15 @@
 import {
+  Chip,
   type Column,
   CopyButton,
   DataTable,
   isTruncated,
   SectionCard,
+  SectionDescription,
   truncateMiddle
 } from '@operator-ui/common-ui';
 import { GuardianFeeActions } from '@/features/payouts/components/guardian-fee-actions/GuardianFeeActions';
+import { GuardianFeeZeroNote } from '@/features/payouts/components/guardian-fee-zero-note/GuardianFeeZeroNote';
 import type { GuardianFeeRow } from '@/features/payouts/hooks/use-guardian-fee-rows/useGuardianFeeRows';
 import { formatSats } from '@/shared/utils/format';
 import styles from './GuardianFeeTable.module.css';
@@ -18,12 +21,16 @@ interface GuardianFeeTableProps {
 
 const seatRowKey = (row: GuardianFeeRow) => row.seatId;
 
+const isEmptyWhileEarning = (row: GuardianFeeRow) =>
+  row.collectableMsat === 0 && row.collectedEcashMsat === 0 && row.earning === true;
+
 /**
  * Guardian-fee revenue, which is per seat and leaves in two steps. The two
  * amount columns are the two places the money can sit: still in the pool, and
  * collected into ecash. A sweep can only send the second.
  */
 export const GuardianFeeTable = ({ rows, hasDestination }: GuardianFeeTableProps) => {
+  const everySeatEmptyWhileEarning = rows.length > 0 && rows.every(isEmptyWhileEarning);
   const columns: Column<GuardianFeeRow>[] = [
     {
       key: 'seat',
@@ -33,6 +40,8 @@ export const GuardianFeeTable = ({ rows, hasDestination }: GuardianFeeTableProps
           <span className={styles.mono}>{truncateMiddle(row.seatId, 8, 8)}</span>
 
           {isTruncated(row.seatId, 8, 8) && <CopyButton value={row.seatId} label="Copy seat ID" />}
+
+          {row.earning === false && <Chip tone="warn">Fees stopped</Chip>}
         </span>
       )
     },
@@ -61,8 +70,24 @@ export const GuardianFeeTable = ({ rows, hasDestination }: GuardianFeeTableProps
   ];
 
   return (
-    <SectionCard title="Guardian-fee revenue" frame="table">
-      <DataTable columns={columns} rows={rows} rowKey={seatRowKey} />
+    <SectionCard title="Guardian fees" frame="table">
+      <div className={styles.intro}>
+        <SectionDescription>
+          Ongoing fees from payments in federations you guard. They arrive in batches, not one
+          payment at a time.
+        </SectionDescription>
+      </div>
+
+      {rows.length === 0 ? (
+        <p className={styles.empty}>
+          No guardian fees yet. They appear once a federation you guard is running and its members
+          start sending payments.
+        </p>
+      ) : (
+        <DataTable columns={columns} rows={rows} rowKey={seatRowKey} />
+      )}
+
+      {everySeatEmptyWhileEarning && <GuardianFeeZeroNote />}
     </SectionCard>
   );
 };

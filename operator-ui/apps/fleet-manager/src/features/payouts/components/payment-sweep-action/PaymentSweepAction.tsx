@@ -17,8 +17,8 @@ interface PaymentSweepActionProps {
 // an unread wallet rather than an empty one, so it never blocks: the daemon is
 // the authority on whether there is anything there.
 const readBlockedReason = (hasDestination: boolean, balanceMsat: number | null): string | null => {
-  if (!hasDestination) return 'Set a payout destination first.';
-  if (balanceMsat === 0) return 'This wallet holds nothing to sweep.';
+  if (!hasDestination) return 'Add a payout address first.';
+  if (balanceMsat === 0) return 'Nothing here to withdraw.';
   return null;
 };
 
@@ -50,7 +50,7 @@ export const PaymentSweepAction = ({
         describedBy={blockedReason ? noteId : undefined}
         onClick={handleSweep}
       >
-        Sweep
+        Withdraw
       </Button>
 
       {blockedReason && (

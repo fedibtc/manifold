@@ -26,11 +26,20 @@ const answer = (request: unknown) => {
   if (request === 'ListSeats') {
     return Promise.resolve({ seats: [seat('seat-live-01'), seat('seat-gone-01', true)] });
   }
-  return Promise.resolve({
-    collectable_msat: 16_000_000,
-    wallet: walletStatus(8_000_000)
-  });
+  return Promise.resolve(fees());
 };
+
+const fees = (policy: object = { configured: true, send_ppm: 1_000 }) => ({
+  collectable_msat: 16_000_000,
+  wallet: walletStatus(8_000_000),
+  policy
+});
+
+const answerWithPolicy = (policy: object) =>
+  ((request: unknown) =>
+    request === 'ListSeats'
+      ? Promise.resolve({ seats: [seat('seat-live-01')] })
+      : Promise.resolve(fees(policy))) as typeof adminCallModule.adminCall;
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -46,7 +55,12 @@ describe('useGuardianFeeRows', () => {
 
     await waitFor(() =>
       expect(result.current).toEqual([
-        { seatId: 'seat-live-01', collectableMsat: 16_000_000, collectedEcashMsat: 8_000_000 }
+        {
+          seatId: 'seat-live-01',
+          collectableMsat: 16_000_000,
+          collectedEcashMsat: 8_000_000,
+          earning: true
+        }
       ])
     );
   });
@@ -78,8 +92,39 @@ describe('useGuardianFeeRows', () => {
 
     await waitFor(() =>
       expect(result.current).toEqual([
-        { seatId: 'seat-live-01', collectableMsat: null, collectedEcashMsat: null }
+        { seatId: 'seat-live-01', collectableMsat: null, collectedEcashMsat: null, earning: null }
       ])
     );
+  });
+
+  it('should report a seat whose federation charges a rate of zero as not earning', async () => {
+    vi.spyOn(adminCallModule, 'adminCall').mockImplementation(
+      answerWithPolicy({ configured: true, send_ppm: 0 })
+    );
+
+    const { result } = renderHook(() => useGuardianFeeRows(), { wrapper });
+
+    await waitFor(() => expect(result.current[0]?.earning).toBe(false));
+  });
+
+  it('should report a seat whose federation has no fee policy as not earning', async () => {
+    vi.spyOn(adminCallModule, 'adminCall').mockImplementation(
+      answerWithPolicy({ configured: false, send_ppm: null })
+    );
+
+    const { result } = renderHook(() => useGuardianFeeRows(), { wrapper });
+
+    await waitFor(() => expect(result.current[0]?.earning).toBe(false));
+  });
+
+  it('should not guess whether a seat earns when its fee policy cannot be read', async () => {
+    vi.spyOn(adminCallModule, 'adminCall').mockImplementation(
+      answerWithPolicy({ policy_error: 'meta module unavailable' })
+    );
+
+    const { result } = renderHook(() => useGuardianFeeRows(), { wrapper });
+
+    await waitFor(() => expect(result.current[0]?.collectableMsat).toBe(16_000_000));
+    expect(result.current[0]?.earning).toBeNull();
   });
 });

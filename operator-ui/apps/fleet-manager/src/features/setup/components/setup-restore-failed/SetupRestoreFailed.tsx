@@ -26,12 +26,13 @@ export const SetupRestoreFailed = ({
       <h1 className={styles.heading}>Recovery did not complete</h1>
 
       <p className={styles.intro}>
-        The fleet manager refused the request, so this host still has no identity. Read what it said
-        before you retry — a refusal part-way through can leave a seat directory behind.
+        Manifold Fedimint Guardian refused the request, so this host still has no identity. Read
+        what it said before you retry — a refusal part-way through can leave a seat directory
+        behind.
       </p>
     </div>
 
-    <Banner variant="error">The fleet manager said:</Banner>
+    <Banner variant="error">Manifold Fedimint Guardian said:</Banner>
 
     <p className={styles.message}>{error.message}</p>
 

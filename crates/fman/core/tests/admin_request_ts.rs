@@ -25,3 +25,12 @@ fn the_committed_typescript_union_matches_this_build() {
         "the committed TypeScript AdminRequest union is stale — run `just gen-contract-fixtures`"
     );
 }
+
+#[test]
+fn the_committed_seat_readiness_types_match_this_build() {
+    assert_eq!(
+        std::fs::read_to_string(generator::seat_readiness_path()).unwrap(),
+        generator::seat_readiness_generated(),
+        "the committed TypeScript seat readiness types are stale — run `just gen-contract-fixtures`"
+    );
+}

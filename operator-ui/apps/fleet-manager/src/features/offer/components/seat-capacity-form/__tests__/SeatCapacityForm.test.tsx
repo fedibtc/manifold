@@ -53,7 +53,8 @@ afterEach(() => {
   seatsUnavailable = false;
 });
 
-it.each(['', '-1', '2.5', '4294967296'])('should reject invalid capacity %j', (value) => {
+// `1e3` is a valid float, which `Number()` would read as 1000.
+it.each(['', '-1', '2.5', '4294967296', '1e3'])('should reject invalid capacity %j', (value) => {
   expect(parseSeatCapacity(value)).toEqual({
     ok: false,
     error: 'Enter a whole number from 0 to 4294967295.'
@@ -65,12 +66,12 @@ it('should preserve an edited limit through refresh and save it', async () => {
   const client = renderForm();
   const input = await screen.findByLabelText('Maximum active seats');
 
-  expect(input).toHaveValue(4);
+  expect(input).toHaveValue('4');
   fireEvent.change(input, { target: { value: '6' } });
 
   storedMaxSeats = 8;
   await act(() => client.invalidateQueries({ queryKey: CAPACITY_KEY }));
-  expect(input).toHaveValue(6);
+  expect(input).toHaveValue('6');
 
   fireEvent.click(screen.getByRole('button', { name: 'Save seat limit' }));
   await waitFor(() => expect(adminCall).toHaveBeenCalledWith({ SetCapacity: { max_seats: 6 } }));
@@ -110,28 +111,39 @@ it('should tell the operator the floor before they hit it', async () => {
   await screen.findByText('3 seats are active. The limit cannot go below that.');
 });
 
-// `min` makes the field itself range-invalid, so the browser stops the submit
-// before the handler runs. The operator gets the rule from the hint and the
-// stepper floor rather than from a round trip to the daemon.
+// The operator gets the floor from the hint and an inline message rather than
+// from a round trip to the daemon.
 it('should refuse a below-floor limit without calling the daemon', async () => {
   storedSeats = activeSeats(3);
   const adminCall = mockDaemon();
   renderForm();
-  const input = (await screen.findByLabelText('Maximum active seats')) as HTMLInputElement;
+  const input = await screen.findByLabelText('Maximum active seats');
   await screen.findByText('3 seats are active. The limit cannot go below that.');
 
-  expect(input).toHaveAttribute('min', '3');
   fireEvent.change(input, { target: { value: '2' } });
-  expect(input.validity.rangeUnderflow).toBe(true);
-
   fireEvent.click(screen.getByRole('button', { name: 'Save seat limit' }));
 
-  await waitFor(() => expect(adminCall).toHaveBeenCalledWith('ListSeats'));
+  await screen.findByText(
+    'You have 3 active seats. Decommission a seat before lowering the limit below that.'
+  );
   expect(adminCall).not.toHaveBeenCalledWith({ SetCapacity: { max_seats: 2 } });
 });
 
-// The floor the browser cannot hold: no `min` is set until the seat list has
-// answered, and the count can move under a form the operator left open.
+// A number field empties "2,587" in Firefox and Safari (HTML value sanitization),
+// and jsdom follows the spec, so this fails on a number field.
+it('should save a grouped limit as the number it shows', async () => {
+  const adminCall = mockDaemon();
+  renderForm();
+  const input = await screen.findByLabelText('Maximum active seats');
+
+  fireEvent.change(input, { target: { value: '2,587' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Save seat limit' }));
+
+  await waitFor(() => expect(adminCall).toHaveBeenCalledWith({ SetCapacity: { max_seats: 2587 } }));
+});
+
+// The floor lives in the validator, and the count can move under a form the
+// operator left open.
 it('should keep the floor in the validator for values the field lets through', () => {
   expect(parseSeatCapacity('2', 3).ok).toBe(false);
 });

@@ -1662,6 +1662,10 @@ fn unsupported() -> FleetManagerError {
 fn test_federation_config() -> fedimint_core::config::ClientConfig {
     let mut config =
         fedi_decentralized_domain::test_support::test_config(usize::from(MIN_FEDERATION_SIZE));
+    config.global.meta.insert(
+        FEDERATION_NAME_META_FIELD_KEY.to_owned(),
+        "Test Federation".to_owned(),
+    );
     for (peer, endpoint) in &mut config.global.api_endpoints {
         let byte = u8::try_from(peer.to_usize() + 1).expect("small test peer");
         let api_pk = iroh_base_035::SecretKey::from_bytes(&[byte; 32]).public();
@@ -1766,6 +1770,7 @@ struct TestConsensusReader {
     state: Arc<FmanState>,
     config: fedimint_core::config::ClientConfig,
     failures: Arc<AtomicUsize>,
+    offline_peers: Arc<Mutex<BTreeSet<PeerId>>>,
     forced_value: Arc<Mutex<Option<String>>>,
     advance_meta_after_next_read: Arc<Mutex<Option<Vec<u8>>>>,
     reads_before_meta_advance: Arc<AtomicUsize>,
@@ -1778,11 +1783,23 @@ impl TestConsensusReader {
             state,
             config: test_federation_config(),
             failures: Arc::new(AtomicUsize::new(0)),
+            offline_peers: Arc::new(Mutex::new(BTreeSet::new())),
             forced_value: Arc::new(Mutex::new(None)),
             advance_meta_after_next_read: Arc::new(Mutex::new(None)),
             reads_before_meta_advance: Arc::new(AtomicUsize::new(0)),
             revision_bump_after_next_read: Arc::new(AtomicU64::new(0)),
         }
+    }
+
+    fn check_invite(&self, invite: &InviteCode) -> Result<(), FederationConsensusError> {
+        let peers = invite.0.parse::<FedimintInviteCode>().unwrap().peers();
+        let offline = self.offline_peers.lock().expect("test lock");
+        if peers.keys().all(|peer| offline.contains(peer)) {
+            return Err(FederationConsensusError::new(
+                "invite guardians are unreachable",
+            ));
+        }
+        Ok(())
     }
 
     /// Report `value` as consensus regardless of what any seat accepted.
@@ -1889,8 +1906,9 @@ impl TestConsensusReader {
 impl FederationConsensusReader for TestConsensusReader {
     async fn read_consensus(
         &self,
-        _invite_code: &InviteCode,
+        invite_code: &InviteCode,
     ) -> Result<FederationConsensusSnapshot, FederationConsensusError> {
+        self.check_invite(invite_code)?;
         if self
             .failures
             .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |left| {
@@ -2001,8 +2019,9 @@ impl FederationConsensusReader for TestConsensusReader {
 
     async fn read_lnv2_gateways(
         &self,
-        _invite_code: &InviteCode,
+        invite_code: &InviteCode,
     ) -> Result<Vec<GatewayApiUrl>, FederationConsensusError> {
+        self.check_invite(invite_code)?;
         self.state
             .gateway_registrations
             .lock()
@@ -2055,9 +2074,13 @@ fn test_invite_for_federation(index: usize, federation: u8) -> InviteCode {
         FedimintInviteCode::new(
             SafeUrl::parse(&format!("https://guardian-{index}.example/")).expect("valid test URL"),
             PeerId::from(u16::try_from(index).expect("test index fits peer id")),
-            format!("{federation:064x}")
-                .parse()
-                .expect("valid test federation id"),
+            if federation == 0 {
+                test_federation_config().calculate_federation_id()
+            } else {
+                format!("{federation:064x}")
+                    .parse()
+                    .expect("valid test federation id")
+            },
             None,
         )
         .to_string(),
@@ -2164,6 +2187,7 @@ fn selection_approval(max_total_msats: u64) -> FmanSelectionApproval {
             .enumerate()
             .map(|(index, locator)| crate::selection::ApprovedFmanSeat {
                 fman_id: test_fman_id(index),
+                holder: test_fman_id(index),
                 locator,
             })
             .collect(),
@@ -2178,8 +2202,8 @@ fn compatible_selection_approval(max_total_msats: u64) -> FmanSelectionApproval 
     approval.request = FmanSelectionRequest::new(
         FederationSize(MIN_FEDERATION_SIZE),
         FedimintdVersionRange::new(
-            "0.11.1".parse().expect("range minimum parses"),
-            "0.11.3".parse().expect("range maximum parses"),
+            "0.12.0".parse().expect("range minimum parses"),
+            "0.12.3".parse().expect("range maximum parses"),
         )
         .expect("test range is ordered"),
         PlanPreference::InfiniteBestEffort,
@@ -2400,6 +2424,7 @@ fn selected_initial_seat(index: u16, valid_until: u64) -> crate::db::InitialSeat
         usize::from(index),
         locator(usize::from(index)),
         crate::db::FmanAdmission::fresh_peer_badge(
+            test_fman_id(usize::from(index)),
             test_fman_id(usize::from(index)),
             test_peer_badge_verifier().provenance().into(),
             Timestamp(valid_until),
@@ -3384,9 +3409,83 @@ async fn restored_snapshot_reports_backup_eligible_after_reconcile() {
 }
 
 #[tokio::test]
+async fn restored_federation_name_uses_consensus_without_a_liquidity_backup() {
+    let (source, _, state, _) = formed_client_for_liquidity().await;
+    let payload = source.inner.store.backup_payload().await.unwrap().payload;
+    assert!(payload.liquidity.is_none());
+    for name in ["Test Federation", "Renamed Federation"] {
+        if name == "Renamed Federation" {
+            source
+                .update_federation_metadata(
+                    FederationMetadataUpdate::name(name).unwrap(),
+                    MaintenanceRunOptions::default(),
+                )
+                .await
+                .unwrap();
+        }
+        let (payments, _) = TestPayments::new();
+        let restored = open_client(
+            MemDatabase::new().into_database(),
+            payments,
+            state.clone(),
+            FmanConfig::given_away(),
+        )
+        .await;
+        let fi_id = restored.inner.ports.identity.public_key().unwrap();
+        let status = restored
+            .inner
+            .store
+            .restore_backup_payload(fi_id, payload.clone())
+            .await
+            .unwrap();
+        restored.inner.progress.send_replace(status);
+        restored.resume().await.unwrap();
+        let FiStatus::Restored(snapshot) = restored.status() else {
+            panic!("restored status");
+        };
+        assert_eq!(
+            snapshot.federation_name,
+            Some(FederationName(name.to_owned()))
+        );
+    }
+}
+
+#[test]
+fn federation_name_uses_config_only_when_metadata_name_is_absent() {
+    for (meta, expected) in [
+        (None, "Test Federation"),
+        (Some("{}"), "Test Federation"),
+        (Some(r#"{"federation_name":"Renamed"}"#), "Renamed"),
+    ] {
+        let snapshot = FederationConsensusSnapshot {
+            config: test_federation_config(),
+            meta_value: meta.map(|value| value.as_bytes().to_vec()),
+            meta_revision: meta.map(|_| 0),
+            network: fedi_decentralized_domain::BitcoinNetwork::Regtest,
+        };
+        assert_eq!(
+            crate::formation::federation_name(&snapshot).unwrap(),
+            Some(FederationName(expected.to_owned()))
+        );
+        let mut missing = snapshot;
+        missing.config.global.meta.clear();
+        missing.meta_value = None;
+        assert_eq!(crate::formation::federation_name(&missing).unwrap(), None);
+        for invalid in [
+            "{",
+            r#"{"federation_name":42}"#,
+            r#"{"federation_name":null}"#,
+        ] {
+            missing.config = test_federation_config();
+            missing.meta_value = Some(invalid.as_bytes().to_vec());
+            assert!(crate::formation::federation_name(&missing).is_err());
+        }
+    }
+}
+
+#[tokio::test]
 async fn restored_backup_reconciles_to_usable_authority_and_hydrates_liquidity() {
     let (source, formation_id, fman_state, connector) = formed_client_for_liquidity().await;
-    connector.0.fail_next_connect.store(true, Ordering::SeqCst);
     let provider = liquidity_api::Pubkey(liquidity_provider_keys().public_key().to_string());
     source
         .start_liquidity_for_test(
@@ -3397,14 +3496,14 @@ async fn restored_backup_reconciles_to_usable_authority_and_hydrates_liquidity()
             &TestLiquidityVerifier,
         )
         .await
-        .expect_err("provider connection fails after persisting the commitment");
+        .expect("provider accepts an allocation that is still pending");
     let source_operation = source
         .list_liquidity_operations(None, 10)
         .await
         .unwrap()
         .operations
         .pop()
-        .expect("source prepared operation");
+        .expect("source accepted operation");
     let keys = crate::backup::FiBackupKeys::derive(&source.inner.ports.identity.scoped_root());
     let encrypted = keys
         .seal(&source.inner.store.backup_payload().await.unwrap().payload)
@@ -3417,12 +3516,13 @@ async fn restored_backup_reconciles_to_usable_authority_and_hydrates_liquidity()
         .expect("test lock")
         .push(liquidity_provider_event());
     let (payments, _) = TestPayments::new();
+    let database = MemDatabase::new().into_database();
     let restored = open_client_with_registry(
-        MemDatabase::new().into_database(),
-        payments,
+        database.clone(),
+        payments.clone(),
         fman_state.clone(),
         FmanConfig::given_away(),
-        registry,
+        registry.clone(),
     )
     .await;
     let payload = keys.open(&encrypted).unwrap();
@@ -3450,10 +3550,14 @@ async fn restored_backup_reconciles_to_usable_authority_and_hydrates_liquidity()
         "an imported snapshot is not backup-eligible before authority reconciliation",
     );
 
+    let connect_calls = fman_state.connect_calls.load(Ordering::SeqCst);
+    fman_state
+        .connect_failures_remaining
+        .store(usize::MAX, Ordering::SeqCst);
     restored
         .resume()
         .await
-        .expect("authenticate restored seats and federation consensus");
+        .expect("verify restored seats through consensus while managers are unreachable");
     let FiStatus::Restored(reconciled) = restored.status() else {
         panic!("reconciled restored status");
     };
@@ -3464,6 +3568,10 @@ async fn restored_backup_reconciles_to_usable_authority_and_hydrates_liquidity()
     );
     assert_eq!(reconciled.phase, FormationPhase::Formed);
     assert_eq!(reconciled.formation_id, restored_formation_id);
+    assert_eq!(
+        fman_state.connect_calls.load(Ordering::SeqCst),
+        connect_calls
+    );
     let republished = restored.inner.store.backup_payload().await.unwrap();
     assert_eq!(republished.payload.snapshot_generation, restored_generation);
     assert_eq!(
@@ -3474,6 +3582,40 @@ async fn restored_backup_reconciles_to_usable_authority_and_hydrates_liquidity()
         "the restored writer can publish its current lean authority",
     );
 
+    drop(restored);
+    let restored = open_client_with_registry(
+        database,
+        payments,
+        fman_state.clone(),
+        FmanConfig::given_away(),
+        registry,
+    )
+    .await;
+    restored
+        .inner
+        .ports
+        .consensus_reader
+        .offline_peers
+        .lock()
+        .unwrap()
+        .insert(PeerId::from(0));
+    fman_state
+        .connect_failures_remaining
+        .store(0, Ordering::SeqCst);
+    // One hanging manager must not delay another manager's working invite.
+    let next = fman_state
+        .connect_attempts
+        .lock()
+        .unwrap()
+        .get(&0)
+        .copied()
+        .unwrap_or(0)
+        + 1;
+    *fman_state.hang_connect_on_attempt.lock().unwrap() = Some((0, next));
+    tokio::time::timeout(Duration::from_secs(2), restored.resume())
+        .await
+        .unwrap()
+        .unwrap();
     let hydrated = restored
         .current_liquidity_operation()
         .await
@@ -3485,15 +3627,24 @@ async fn restored_backup_reconciles_to_usable_authority_and_hydrates_liquidity()
         source_operation.details_payload_hash
     );
     assert_eq!(hydrated.endpoint_hint, None);
+    {
+        let mut allocations = connector.0.allocations.lock().unwrap();
+        complete_gateway_allocation(
+            allocations.get_mut(&hydrated.details_payload_hash).unwrap(),
+            GatewayApiUrl::try_from("https://gateway.example/").unwrap(),
+        );
+    }
     let resumed = restored
         .resume_liquidity_for_test(&hydrated.operation_id, &connector, &TestLiquidityVerifier)
         .await
-        .expect("restored authority can resume the exact pending request");
+        .expect("restored authority resumes and verifies the same request through other guardians");
     assert_eq!(resumed.phase, LiquidityOperationPhase::Accepted);
-
+    assert!(resumed.gateway_view_verified);
+    assert_eq!(connector.0.requests.lock().unwrap().len(), 1);
     fman_state
         .connect_failures_remaining
-        .store(1, Ordering::SeqCst);
+        .store(usize::MAX, Ordering::SeqCst);
+    restored.inner.ports.consensus_reader.fail_next(1);
     restored
         .resume()
         .await
@@ -3510,6 +3661,86 @@ async fn restored_backup_reconciles_to_usable_authority_and_hydrates_liquidity()
             .is_none(),
         "post-formed mutations remain gated after failed reconciliation",
     );
+}
+
+#[tokio::test]
+async fn restored_recovery_rejects_unverified_consensus_and_changed_seats() {
+    for fault in [
+        "identity",
+        "directory",
+        "seat",
+        "unreachable",
+        "alternate_identity",
+    ] {
+        let (source, _, state, _) = formed_client_for_liquidity().await;
+        let mut payload = source.inner.store.backup_payload().await.unwrap().payload;
+        let mut reader = TestConsensusReader::new(state.clone());
+        match fault {
+            "identity" => {
+                reader
+                    .config
+                    .global
+                    .api_endpoints
+                    .remove(&fedimint_core::PeerId::from(0));
+            }
+            "directory" => {
+                reader.adopt(b"{}".to_vec());
+                reader.force_value("{}");
+            }
+            "seat" => payload.seats[0].fman_identity = fman_keys(20).public_key(),
+            "unreachable" => reader.fail_next(usize::MAX),
+            "alternate_identity" => {
+                reader
+                    .offline_peers
+                    .lock()
+                    .unwrap()
+                    .extend((0..MIN_FEDERATION_SIZE - 1).map(PeerId::from));
+                state.disagreeing_invite.store(true, Ordering::SeqCst);
+            }
+            _ => unreachable!(),
+        }
+        let (payments, _) = TestPayments::new();
+        let restored = open_client_with_reader(
+            MemDatabase::new().into_database(),
+            payments,
+            state.clone(),
+            FmanConfig::given_away(),
+            reader,
+        )
+        .await;
+        let status = restored
+            .inner
+            .store
+            .restore_backup_payload(TestIdentity::fi_id(), payload)
+            .await
+            .unwrap();
+        restored.inner.progress.send_replace(status);
+        let calls = state.connect_calls.load(Ordering::SeqCst);
+        let error = restored.resume().await.expect_err(fault);
+        if fault == "identity" {
+            assert!(
+                error
+                    .to_string()
+                    .contains("identity differs from the saved invite")
+            );
+        }
+        let FiStatus::Restored(snapshot) = restored.status() else {
+            panic!("expected restored status");
+        };
+        assert_eq!(snapshot.phase, FormationPhase::Formed);
+        assert_eq!(snapshot.freshness, FormationFreshness::Unsynced);
+        assert!(!snapshot.backup_eligible);
+        assert!(
+            restored
+                .current_liquidity_operation()
+                .await
+                .unwrap()
+                .is_none()
+        );
+        if !matches!(fault, "unreachable" | "alternate_identity") {
+            assert_eq!(state.connect_calls.load(Ordering::SeqCst), calls);
+        }
+    }
 }
 
 #[tokio::test]
@@ -3904,6 +4135,7 @@ async fn open_client_with_store_and_registry(
     let (progress, _) = tokio::sync::watch::channel(status);
     FiClient {
         inner: Arc::new(FiClientInner {
+            read_invite: tokio::sync::Mutex::new(None),
             store,
             ports: FiClientPorts {
                 identity: TestIdentity,
@@ -4574,6 +4806,10 @@ async fn default_name_final_status_and_formed_reconciliation_are_typed() {
     let create_calls = fman_state.create_calls.load(Ordering::SeqCst);
     let status_calls = fman_state.status_calls.load(Ordering::SeqCst);
     let invite_calls = fman_state.invite_calls.load(Ordering::SeqCst);
+    let connect_calls = fman_state.connect_calls.load(Ordering::SeqCst);
+    fman_state
+        .connect_failures_remaining
+        .store(usize::MAX, Ordering::SeqCst);
     let reopened = open_client(
         database,
         payments,
@@ -4601,13 +4837,11 @@ async fn default_name_final_status_and_formed_reconciliation_are_typed() {
     assert_eq!(reconciled.intent.federation_name, generated_name);
     assert_eq!(fman_state.quote_calls.load(Ordering::SeqCst), quote_calls);
     assert_eq!(fman_state.create_calls.load(Ordering::SeqCst), create_calls);
+    assert_eq!(fman_state.status_calls.load(Ordering::SeqCst), status_calls);
+    assert_eq!(fman_state.invite_calls.load(Ordering::SeqCst), invite_calls);
     assert_eq!(
-        fman_state.status_calls.load(Ordering::SeqCst),
-        status_calls + usize::from(MIN_FEDERATION_SIZE)
-    );
-    assert_eq!(
-        fman_state.invite_calls.load(Ordering::SeqCst),
-        invite_calls + usize::from(MIN_FEDERATION_SIZE)
+        fman_state.connect_calls.load(Ordering::SeqCst),
+        connect_calls
     );
 }
 
@@ -5349,6 +5583,28 @@ async fn current_storage_requires_selected_mode_and_output_tombstone_fields() {
             "schema 11 must reject a missing {field}"
         );
     }
+}
+
+#[test]
+fn older_saved_admissions_without_badge_holders_still_decode() {
+    let admission = crate::db::FmanAdmission::fresh_peer_badge(
+        test_fman_id(0),
+        test_fman_id(1),
+        test_peer_badge_verifier().provenance().into(),
+        Timestamp(123),
+    );
+    let mut stored = serde_json::to_value(&admission).unwrap();
+    stored["peer_badge"]
+        .as_object_mut()
+        .unwrap()
+        .remove("holder");
+    let legacy: crate::db::FmanAdmission = serde_json::from_value(stored).unwrap();
+    assert_eq!(legacy.holder(), None);
+    assert_eq!(legacy.fman_id(), admission.fman_id());
+    assert_eq!(
+        legacy.requires_effect_authorization(),
+        admission.requires_effect_authorization()
+    );
 }
 
 #[tokio::test]
@@ -7394,11 +7650,19 @@ async fn completed_setup_stays_formed_through_rechecks_and_cancellation() {
     // Let the cancelled driver's lease cleanup finish before reopening.
     tokio::task::yield_now().await;
 
-    for fail in [false, true] {
-        let reader = TestConsensusReader::new(state.clone());
+    for fault in ["none", "identity", "directory"] {
+        let fail = fault != "none";
+        let mut reader = TestConsensusReader::new(state.clone());
         // Yield during readback so the observer sees the phase while checking.
         reader.fail_next(1);
-        if fail {
+        if fault == "identity" {
+            reader
+                .config
+                .global
+                .api_endpoints
+                .remove(&fedimint_core::PeerId::from(0));
+        }
+        if fault == "directory" {
             reader.adopt(b"{}".to_vec());
             reader.force_value("{}");
         }
@@ -8528,8 +8792,8 @@ fn compatible_intent() -> FormationIntent {
         FederationSize(MIN_FEDERATION_SIZE),
         PlanPreference::InfiniteBestEffort,
         FedimintdVersionRange::new(
-            "0.11.1".parse().expect("range minimum parses"),
-            "0.11.3".parse().expect("range maximum parses"),
+            "0.12.0".parse().expect("range minimum parses"),
+            "0.12.3".parse().expect("range maximum parses"),
         )
         .expect("test range is ordered"),
     )
@@ -8589,7 +8853,7 @@ fn fedimintd_range_and_dkg_identity_enforce_separate_boundaries() {
 
 #[test]
 fn resolved_intent_requires_an_allowed_fedi_dkg_identity() {
-    for version in ["0.11.2", "0.11.2+acme", "0.12.0+fedi"] {
+    for version in ["0.12.2", "0.12.2+acme", "0.13.0+fedi"] {
         assert!(
             compatible_intent()
                 .resolve_for_dkg(
@@ -8824,7 +9088,7 @@ async fn selected_formation_persists_and_enforces_its_compatible_release() {
     let database = MemDatabase::new().into_database();
     let (payments, _) = TestPayments::new();
     let fman_state = Arc::new(FmanState::default());
-    set_fman_version(&fman_state, 0, "0.11.1+fedi");
+    set_fman_version(&fman_state, 0, "0.12.1+fedi");
     let client = open_client(database, payments, fman_state.clone(), FmanConfig::paid()).await;
     let cap = PAYMENT_AMOUNT_MSATS * u64::from(MIN_FEDERATION_SIZE);
 
@@ -8850,7 +9114,7 @@ async fn selected_formation_persists_and_enforces_its_compatible_release() {
             .fedimintd_versions
             .maximum_exclusive()
             .to_string(),
-        "0.11.3"
+        "0.12.3"
     );
     assert!(
         fman_state
@@ -8858,7 +9122,7 @@ async fn selected_formation_persists_and_enforces_its_compatible_release() {
             .lock()
             .expect("test lock")
             .iter()
-            .any(|record| record.fedimintd_version.to_string() == "0.11.1+fedi"),
+            .any(|record| record.fedimintd_version.to_string() == "0.12.1+fedi"),
         "same-minor patch drift is used for the exact quote",
     );
 }
@@ -8867,7 +9131,7 @@ async fn selected_formation_persists_and_enforces_its_compatible_release() {
 async fn selected_fman_minor_drift_requires_fresh_selection_before_payment() {
     let (payments, payment_state) = TestPayments::new();
     let fman_state = Arc::new(FmanState::default());
-    set_fman_version(&fman_state, 0, "0.12.0+fedi");
+    set_fman_version(&fman_state, 0, "0.13.0+fedi");
     let client = open_client(
         MemDatabase::new().into_database(),
         payments,
@@ -8943,7 +9207,7 @@ async fn reopen_preserves_the_selected_dkg_identity_and_accepts_patch_skew() {
         .await
         .unwrap();
     drop(client);
-    set_fman_version(&fman_state, 0, "0.11.2+fedi");
+    set_fman_version(&fman_state, 0, "0.12.2+fedi");
 
     let reopened = open_client(database, payments, fman_state, FmanConfig::paid()).await;
     let persisted = formation(&reopened.status()).clone();
@@ -8957,7 +9221,7 @@ async fn reopen_preserves_the_selected_dkg_identity_and_accepts_patch_skew() {
             .fedimintd_versions
             .maximum_exclusive()
             .to_string(),
-        "0.11.3"
+        "0.12.3"
     );
     reopened
         .resume()
@@ -8983,7 +9247,7 @@ async fn persisted_formation_rejects_a_cross_minor_replacement() {
             &fman_keys(20),
             &discovery::issuer_keys(0),
             PAYMENT_AMOUNT_MSATS,
-            "0.12.0+fedi",
+            "0.13.0+fedi",
             manager_key(20).x_only_public_key().0,
             test_now_secs(),
         ),
@@ -9303,6 +9567,7 @@ async fn persist_provisional_replacement_for_test(
             &[(
                 locator(replacement_index),
                 crate::db::FmanAdmission::fresh_peer_badge(
+                    test_fman_id(replacement_index),
                     test_fman_id(replacement_index),
                     test_peer_badge_verifier().provenance().into(),
                     valid_until,
@@ -9752,24 +10017,34 @@ async fn selected_refusal_changes_only_the_proven_unsecured_guardian() {
         .keys()
         .next()
         .expect("one accepted sibling remains");
-    let colliding_approval = FmanReplacementApproval {
+    let mut colliding_approval = FmanReplacementApproval {
         requirements: requirements.clone(),
         verifier_provenance: test_peer_badge_verifier().provenance(),
         seats: vec![crate::selection::ApprovedFmanSeat {
             fman_id: test_fman_id(usize::from(MAX_FEDERATION_SIZE)),
+            holder: test_fman_id(usize::from(MAX_FEDERATION_SIZE)),
             locator: reopened.seats[usize::from(retained_index)].locator.clone(),
         }],
         max_total_msats: PAYMENT_AMOUNT_MSATS,
         valid_until: Timestamp(test_now_secs() + 120),
     };
     let error = client
-        .apply_fman_replacements(colliding_approval, options())
+        .apply_fman_replacements(colliding_approval.clone(), options())
         .await
         .expect_err("a distinct author cannot reuse a retained signing authority");
     assert!(
         matches!(&error, FiError::InvalidFleetManagers(message)
             if message.contains("service signing key")),
         "unexpected collision error: {error:?}",
+    );
+    colliding_approval.seats[0].locator = locator(usize::from(MAX_FEDERATION_SIZE));
+    colliding_approval.seats[0].holder = test_fman_id(usize::from(retained_index));
+    let error = client
+        .apply_fman_replacements(colliding_approval, options())
+        .await
+        .expect_err("a new service key cannot reuse a retained badge holder after restart");
+    assert!(
+        matches!(error, FiError::InvalidFleetManagers(message) if message.contains("badge holder"))
     );
     assert_eq!(
         formation(&client.status()).action_required,
@@ -9784,6 +10059,7 @@ async fn selected_refusal_changes_only_the_proven_unsecured_guardian() {
         verifier_provenance: test_peer_badge_verifier().provenance(),
         seats: vec![crate::selection::ApprovedFmanSeat {
             fman_id: test_fman_id(usize::from(MAX_FEDERATION_SIZE)),
+            holder: test_fman_id(usize::from(MAX_FEDERATION_SIZE)),
             locator: locator(usize::from(MAX_FEDERATION_SIZE)),
         }],
         // Model an advertisement below the eventual real quote so the test
@@ -9905,6 +10181,7 @@ async fn selected_paid_replacement_reopens_after_authorized_output_without_new_s
         verifier_provenance: test_peer_badge_verifier().provenance(),
         seats: vec![crate::selection::ApprovedFmanSeat {
             fman_id: test_fman_id(usize::from(MAX_FEDERATION_SIZE)),
+            holder: test_fman_id(usize::from(MAX_FEDERATION_SIZE)),
             locator: locator(usize::from(MAX_FEDERATION_SIZE)),
         }],
         max_total_msats: PAYMENT_AMOUNT_MSATS,
@@ -12524,6 +12801,13 @@ async fn completed_gateway_recovery_uses_durable_evidence_before_provider_connec
 #[tokio::test]
 async fn liquidity_recovery_replays_the_exact_commitment_only_after_not_found() {
     let (client, formation_id, _fman_state, connector) = formed_client_for_liquidity().await;
+    client
+        .update_federation_metadata(
+            FederationMetadataUpdate::name("First rename").unwrap(),
+            MaintenanceRunOptions::default(),
+        )
+        .await
+        .unwrap();
     connector
         .0
         .fail_first_before_allocation
@@ -12547,6 +12831,13 @@ async fn liquidity_recovery_replays_the_exact_commitment_only_after_not_found() 
         .operations
         .pop()
         .expect("one prepared operation");
+    client
+        .update_federation_metadata(
+            FederationMetadataUpdate::name("Second rename").unwrap(),
+            MaintenanceRunOptions::default(),
+        )
+        .await
+        .unwrap();
     let recovered = client
         .resume_liquidity_for_test(&prepared.operation_id, &connector, &TestLiquidityVerifier)
         .await
@@ -12558,6 +12849,10 @@ async fn liquidity_recovery_replays_the_exact_commitment_only_after_not_found() 
     );
     let requests = connector.0.requests.lock().expect("test lock");
     assert_eq!(requests.len(), 2);
+    assert_eq!(
+        requests[0].payload.federation_details.federation_name.0,
+        "First rename"
+    );
     assert_eq!(
         liquidity_api::request_liquidity_details_hash_for_request(&requests[0].payload)
             .expect("first request hashes"),

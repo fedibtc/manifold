@@ -55,7 +55,7 @@ pub use fedi_decentralized_service_liquidity_manager::{
 };
 pub use fedimint_core::config::FederationId as FedimintFederationId;
 pub use formation::{
-    FormationRunOptions, FormationRunOptionsConfig, FormationTimingField,
+    DkgRestartResult, FormationRunOptions, FormationRunOptionsConfig, FormationTimingField,
     InvalidFormationRunOptions,
 };
 pub use guardian_fee_ppm::{GuardianFeePpm, InvalidGuardianFeePpm};
@@ -126,6 +126,8 @@ struct FiClientInner<I, P, N, F, C> {
     ports: FiClientPorts<I, P, N, F, C>,
     progress: watch::Sender<FiStatus>,
     run_guard: Arc<Mutex<()>>,
+    // Connection hints only; consensus is still read and verified each time.
+    read_invite: Mutex<Option<(InviteCode, InviteCode)>>,
     peer_badge_verifier: PeerBadgeVerifier,
     setup_payment_publisher: Option<PublicKey>,
     guardian_verification_fee_account: Option<Account>,
@@ -348,6 +350,7 @@ where
                 ports,
                 progress,
                 run_guard: Arc::new(Mutex::new(())),
+                read_invite: Mutex::new(None),
                 peer_badge_verifier,
                 setup_payment_publisher,
                 guardian_verification_fee_account,
@@ -417,8 +420,11 @@ where
     /// authorization.
     ///
     /// A stored [`FormationPhase::Formed`] state is also not treated as proof of
-    /// current remote state: resume reconnects to the Fleet Managers, reconciles
-    /// their status and common invite, and rejects a changed federation identity.
+    /// current remote state: resume reads fresh federation consensus and verifies
+    /// the saved identity, directory, and fee recipients. Restored backups likewise
+    /// verify their saved seats against the signed consensus directory. Neither
+    /// path requires every manager online; if the saved invite is unreachable,
+    /// recovery asks saved managers for alternative invites to the same federation.
     /// Inspect [`FormationFreshness`] through status observation when presenting
     /// persisted state before that reconciliation completes.
     ///
@@ -435,8 +441,14 @@ where
     /// [`Self::open`] (or [`Self::open_with_setup_payment_publisher`]), then call
     /// [`Self::resume`] again.
     pub async fn resume(&self) -> FiResult<()> {
+        self.resume_with_options(FormationRunOptions::default())
+            .await
+    }
+
+    /// Resume with caller-selected time limits, using the same recovery path
+    /// and cancellation behavior as [`Self::resume`].
+    pub async fn resume_with_options(&self, options: FormationRunOptions) -> FiResult<()> {
         let _run = self.inner.run_guard.try_lock().map_err(|_| FiError::Busy)?;
-        let options = FormationRunOptions::default();
         options.validate_for_start(&self.inner.store)?;
         let fi_id = self
             .inner

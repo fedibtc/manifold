@@ -20,10 +20,11 @@ in the authenticated production setup-payment policy.
 
 ## Stored-data baseline
 
+Project-wide API and persisted-format compatibility is governed immediately by
+[`GATE-production-compatibility`](../../specs/GATE-production-compatibility.md).
 The first production release's source commit, recorded in each package's image
-pin and release notes, establishes the supported persisted formats. From
-that release onward, production FMan updates must preserve operator data; the
-repository's disposable pre-production exception no longer applies to them.
+pin and release notes, identifies the exact supported persisted formats shipped
+in that release.
 
 The baseline includes the complete SQLite migration set (`0001_initial.sql`
 and `0002_wallet_origin.sql` at this writing), serialized values within SQLite,

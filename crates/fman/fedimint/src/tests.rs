@@ -57,6 +57,313 @@ async fn lnurl_body_cap_accepts_exact_chunked_boundary_and_rejects_next_byte() {
     assert!(error.to_string().contains("exceeds 65536 bytes"));
 }
 
+/// Serve an LNURL-pay response whose callback is `callback_url`.
+async fn serve_pay_response(callback_url: &str) -> String {
+    serve_pay_response_with_bounds(callback_url, 1_000, 100_000).await
+}
+
+async fn serve_pay_response_with_bounds(
+    callback_url: &str,
+    min_sendable: u64,
+    max_sendable: u64,
+) -> String {
+    serve_chunked_body(
+        serde_json::json!({
+            "callback": callback_url,
+            "maxSendable": max_sendable,
+            "minSendable": min_sendable,
+            "tag": "payRequest",
+            "metadata": "[[\"text/plain\",\"payout\"]]",
+        })
+        .to_string()
+        .into_bytes(),
+    )
+    .await
+}
+
+fn lnurl_destination(url: String) -> String {
+    LnUrl::from_url(url).encode()
+}
+
+#[tokio::test]
+async fn lnurl_callback_refusal_reports_the_service_reason() {
+    let callback_url = serve_chunked_body(
+        br#"{"status":"ERROR","reason":"amount must be a whole number of sats"}"#.to_vec(),
+    )
+    .await;
+    let destination = lnurl_destination(serve_pay_response(&callback_url).await);
+
+    let error = lnurl_pay(&destination, u64::MAX).await.unwrap_err();
+
+    let message = format!("{error:#}");
+    assert!(
+        message.contains("amount must be a whole number of sats"),
+        "{message}"
+    );
+    assert!(!message.contains("missing field"), "{message}");
+}
+
+#[tokio::test]
+async fn lnurl_first_response_refusal_reports_the_service_reason() {
+    let destination = lnurl_destination(
+        serve_chunked_body(br#"{"status":"ERROR","reason":"unknown recipient"}"#.to_vec()).await,
+    );
+
+    let error = lnurl_pay(&destination, u64::MAX).await.unwrap_err();
+
+    assert!(
+        format!("{error:#}").contains("unknown recipient"),
+        "{error:#}"
+    );
+}
+
+#[tokio::test]
+async fn lnurl_refusal_reason_is_bounded() {
+    let reason = "e".repeat(MAX_LNURL_REASON_CHARS * 2);
+    let callback_url = serve_chunked_body(
+        serde_json::json!({ "status": "ERROR", "reason": reason })
+            .to_string()
+            .into_bytes(),
+    )
+    .await;
+    let destination = lnurl_destination(serve_pay_response(&callback_url).await);
+
+    let error = lnurl_pay(&destination, u64::MAX).await.unwrap_err();
+
+    let message = format!("{error:#}");
+    assert!(
+        message.contains(&format!("{}…", "e".repeat(MAX_LNURL_REASON_CHARS))),
+        "{message}"
+    );
+    assert!(
+        !message.contains(&"e".repeat(MAX_LNURL_REASON_CHARS + 1)),
+        "{message}"
+    );
+}
+
+/// A reason short enough to repeat whole must not look truncated.
+#[tokio::test]
+async fn lnurl_reason_within_the_bound_is_not_marked_truncated() {
+    let callback_url =
+        serve_chunked_body(br#"{"status":"ERROR","reason":"recipient offline"}"#.to_vec()).await;
+    let destination = lnurl_destination(serve_pay_response(&callback_url).await);
+
+    let error = lnurl_pay(&destination, u64::MAX).await.unwrap_err();
+
+    let message = format!("{error:#}");
+    assert!(message.contains("recipient offline"), "{message}");
+    assert!(!message.contains('…'), "{message}");
+}
+
+/// LUD-06 specifies an uppercase status, but services are not reliably
+/// compliant; a lowercase refusal is still a refusal.
+#[tokio::test]
+async fn lnurl_lowercase_error_status_is_still_a_refusal() {
+    let callback_url =
+        serve_chunked_body(br#"{"status":"error","reason":"over daily limit"}"#.to_vec()).await;
+    let destination = lnurl_destination(serve_pay_response(&callback_url).await);
+
+    let error = lnurl_pay(&destination, u64::MAX).await.unwrap_err();
+
+    let message = format!("{error:#}");
+    assert!(message.contains("over daily limit"), "{message}");
+    assert!(!message.contains("missing field"), "{message}");
+}
+
+/// A refusal carrying no `reason` must still read as a refusal rather than as
+/// a malformed invoice.
+#[tokio::test]
+async fn lnurl_error_without_a_reason_is_still_a_refusal() {
+    let callback_url = serve_chunked_body(br#"{"status":"ERROR"}"#.to_vec()).await;
+    let destination = lnurl_destination(serve_pay_response(&callback_url).await);
+
+    let error = lnurl_pay(&destination, u64::MAX).await.unwrap_err();
+
+    let message = format!("{error:#}");
+    assert!(message.contains("refused the request"), "{message}");
+    assert!(message.contains(UNSTATED_LNURL_REASON), "{message}");
+    assert!(!message.contains("missing field"), "{message}");
+}
+
+/// A successful pay response must not be mistaken for a refusal.
+#[tokio::test]
+async fn lnurl_non_error_status_is_not_a_refusal() {
+    assert_eq!(lnurl_error_reason(br#"{"status":"OK"}"#), None);
+    assert_eq!(lnurl_error_reason(br#"{"pr":"lnbc1"}"#), None);
+    assert_eq!(lnurl_error_reason(b"not json at all"), None);
+}
+
+/// A callback body that is neither an invoice nor an LNURL error must not
+/// surface a bare serde message.
+#[tokio::test]
+async fn lnurl_unparsable_callback_reports_context() {
+    let callback_url = serve_chunked_body(br#"{"unexpected":"shape"}"#.to_vec()).await;
+    let destination = lnurl_destination(serve_pay_response(&callback_url).await);
+
+    let error = lnurl_pay(&destination, u64::MAX).await.unwrap_err();
+
+    assert!(
+        format!("{error:#}").contains("LNURL callback returned no usable invoice"),
+        "{error:#}"
+    );
+}
+
+async fn serve_invoice_callback(amount_msat: Option<u64>) -> String {
+    use bitcoin::secp256k1::{SECP256K1, SecretKey};
+    use lightning_invoice::{Currency, InvoiceBuilder, PaymentSecret};
+
+    let mut builder = InvoiceBuilder::new(Currency::Regtest)
+        .description(String::new())
+        .payment_hash(sha256::Hash::hash(&[1; 32]))
+        .current_timestamp()
+        .min_final_cltv_expiry_delta(0)
+        .payment_secret(PaymentSecret([2; 32]));
+    if let Some(amount_msat) = amount_msat {
+        builder = builder.amount_milli_satoshis(amount_msat);
+    }
+    let invoice = builder
+        .build_signed(|message| {
+            SECP256K1.sign_ecdsa_recoverable(message, &SecretKey::from_slice(&[3; 32]).unwrap())
+        })
+        .unwrap();
+    serve_chunked_body(
+        serde_json::json!({ "pr": invoice.to_string() })
+            .to_string()
+            .into_bytes(),
+    )
+    .await
+}
+
+#[tokio::test]
+async fn lnurl_pay_reports_the_maximum_that_bound_a_partial_sweep() {
+    let callback_url = serve_invoice_callback(Some(100_000)).await;
+    let destination = lnurl_destination(serve_pay_response(&callback_url).await);
+
+    let (_, amount, capped) = lnurl_pay(&destination, 150_000).await.unwrap();
+
+    assert_eq!(amount, 100_000);
+    assert_eq!(
+        capped,
+        Some(DestinationCap {
+            maximum_msat: 100_000,
+            remaining_msat: 50_000,
+        })
+    );
+}
+
+#[tokio::test]
+async fn lnurl_pay_reports_no_cap_when_the_whole_balance_fits() {
+    let callback_url = serve_invoice_callback(Some(50_000)).await;
+    let destination = lnurl_destination(serve_pay_response(&callback_url).await);
+
+    let (_, amount, capped) = lnurl_pay(&destination, 50_000).await.unwrap();
+
+    assert_eq!(amount, 50_000);
+    assert_eq!(capped, None);
+}
+
+#[tokio::test]
+async fn lnurl_amount_mismatch_names_both_amounts() {
+    let callback_url = serve_invoice_callback(Some(8_000)).await;
+    let destination = lnurl_destination(serve_pay_response(&callback_url).await);
+
+    let error = lnurl_pay(&destination, 9_941).await.unwrap_err();
+
+    let message = format!("{error:#}");
+    assert!(message.contains("8000 msat"), "{message}");
+    assert!(message.contains("9000 msat"), "{message}");
+}
+
+#[tokio::test]
+async fn lnurl_amountless_invoice_is_reported_as_such() {
+    let callback_url = serve_invoice_callback(None).await;
+    let destination = lnurl_destination(serve_pay_response(&callback_url).await);
+
+    let error = lnurl_pay(&destination, 9_941).await.unwrap_err();
+
+    let message = format!("{error:#}");
+    assert!(message.contains("no amount"), "{message}");
+    assert!(message.contains("9000 msat"), "{message}");
+}
+
+#[test]
+fn whole_sat_flooring_drops_only_the_sub_sat_remainder() {
+    assert_eq!(floor_to_whole_sats(0), 0);
+    assert_eq!(floor_to_whole_sats(999), 0);
+    assert_eq!(floor_to_whole_sats(1_000), 1_000);
+    assert_eq!(floor_to_whole_sats(3_333_123), 3_333_000);
+    assert_eq!(floor_to_whole_sats(3_333_999), 3_333_000);
+}
+
+#[tokio::test]
+async fn lnurl_pay_requests_a_whole_sat_amount() {
+    let callback_url = serve_invoice_callback(Some(9_000)).await;
+    let destination = lnurl_destination(serve_pay_response(&callback_url).await);
+
+    let (_, amount, capped) = lnurl_pay(&destination, 9_941).await.unwrap();
+
+    assert_eq!(amount, 9_000);
+    assert_eq!(capped, None);
+}
+
+#[tokio::test]
+async fn lnurl_pay_floors_the_amount_the_maximum_capped_it_to() {
+    let callback_url = serve_invoice_callback(Some(99_000)).await;
+    let destination =
+        lnurl_destination(serve_pay_response_with_bounds(&callback_url, 1_000, 99_500).await);
+
+    let (_, amount, capped) = lnurl_pay(&destination, 150_000).await.unwrap();
+
+    assert_eq!(amount, 99_000);
+    assert_eq!(
+        capped,
+        Some(DestinationCap {
+            maximum_msat: 99_500,
+            remaining_msat: 50_500,
+        })
+    );
+}
+
+#[tokio::test]
+async fn lnurl_pay_refuses_a_balance_that_floors_below_the_minimum() {
+    let callback_url = serve_invoice_callback(Some(1_000)).await;
+    let destination =
+        lnurl_destination(serve_pay_response_with_bounds(&callback_url, 1_500, 100_000).await);
+
+    let error = lnurl_pay(&destination, 1_999).await.unwrap_err();
+
+    assert!(
+        format!("{error:#}").contains("minimum payment"),
+        "{error:#}"
+    );
+}
+
+#[test]
+fn cap_detection_binds_only_above_the_maximum() {
+    assert_eq!(cap_to_maximum(999, 1_000), (999, None));
+    assert_eq!(cap_to_maximum(1_000, 1_000), (1_000, None));
+    assert_eq!(
+        cap_to_maximum(1_001, 1_000),
+        (
+            1_000,
+            Some(DestinationCap {
+                maximum_msat: 1_000,
+                remaining_msat: 1,
+            })
+        )
+    );
+    assert_eq!(
+        cap_to_maximum(1_000, 0),
+        (
+            0,
+            Some(DestinationCap {
+                maximum_msat: 0,
+                remaining_msat: 1_000,
+            })
+        )
+    );
+}
+
 #[tokio::test]
 async fn canceled_wallet_client_open_is_fenced_until_restart() {
     for scope in [payment(1), guardian(1, 1)] {

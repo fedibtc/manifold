@@ -15,7 +15,6 @@ use std::str::FromStr;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::Context;
-use fedi_credential_sdk_protocol::{HolderContext, IssuerAuthority, IssuerContext};
 use fedi_decentralized_liquidity_manager_daemon::{FederationPreview, PreviewPeer, trust_fixtures};
 use fedi_decentralized_service_liquidity_manager::{
     AttestationInstallRequest, BitcoinNetwork, FederationId, FmanEndorsement, FmanPeerAttestation,
@@ -25,6 +24,7 @@ use fedi_decentralized_service_liquidity_manager::{
 };
 use nostr_sdk::Keys;
 use nostr_sdk::secp256k1::Message;
+use peerbadge_protocol::{HolderContext, IssuerAuthority, IssuerContext};
 use reqwest::Client;
 
 use crate::common::credentials;
@@ -150,8 +150,8 @@ pub async fn enrol_provider_authorization(
 async fn publish_holder_authorization(
     relay_url: &str,
     holder: &HolderContext,
-    authorization: &fedi_credential_sdk_protocol::HolderAuthorization,
-    credential: &fedi_credential_sdk_protocol::SignedCredential,
+    authorization: &peerbadge_protocol::HolderAuthorization,
+    credential: &peerbadge_protocol::SignedCredential,
     provider_pubkey: &Pubkey,
 ) -> anyhow::Result<()> {
     use fedi_decentralized_nostr::flip::{
@@ -199,7 +199,7 @@ async fn publish_holder_authorization(
 /// exercise revocation against them later.
 pub struct TrustFixtureArtifacts {
     /// Backing credential per fixture FMan, in fixture order.
-    pub fman_credentials: Vec<fedi_credential_sdk_protocol::SignedCredential>,
+    pub fman_credentials: Vec<peerbadge_protocol::SignedCredential>,
 
     /// A valid admission endorsement from the first fixture FMan, for the
     /// same federation the invite code names.
@@ -378,14 +378,14 @@ pub fn rewrite_preview_fixture(
 pub async fn publish_revocation(
     relay_ws_url: &str,
     trust: &LiveTrust,
-    credential: &fedi_credential_sdk_protocol::SignedCredential,
+    credential: &peerbadge_protocol::SignedCredential,
 ) -> anyhow::Result<()> {
-    use fedi_credential_sdk_protocol::CredentialDigest;
     use fedi_decentralized_liquidity_manager_daemon::revocation::credential_digest_wire_string;
     use fedi_decentralized_nostr::attester::{
         CREDENTIAL_REVOCATION_EVENT_KIND, CREDENTIAL_REVOCATION_HASHTAG,
         credential_revocation_d_tag,
     };
+    use peerbadge_protocol::CredentialDigest;
 
     let revocation = trust.issuer.revoke_credential(credential)?;
     let digest = credential_digest_wire_string(&CredentialDigest(credential.credential.digest()?));
@@ -422,8 +422,8 @@ fn seat_material(
     now: u64,
 ) -> anyhow::Result<(
     FmanPeerAttestation,
-    fedi_credential_sdk_protocol::HolderAuthorization,
-    fedi_credential_sdk_protocol::SignedCredential,
+    peerbadge_protocol::HolderAuthorization,
+    peerbadge_protocol::SignedCredential,
 )> {
     let fman_pubkey = Pubkey(fman_keys.public_key().to_hex());
     let account_seed = peer_id.parse::<u8>().unwrap_or(0).saturating_add(1);

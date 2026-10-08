@@ -3,7 +3,7 @@ import type { OnboardingResponse } from '@operator-ui/types';
 /**
  * The one place the QR's content is decided.
  *
- * This is the credential SDK's `HolderAuthorizationRequest`: the holder app
+ * This is the PeerBadge SDK's `HolderAuthorizationRequest`: the holder app
  * parses the scanned or pasted text as JSON and accepts `subject_pubkey`
  * alone, so a bare key is rejected before it reaches the badge picker. The
  * same shape is what `manifold-test-issuer` takes on the command line.

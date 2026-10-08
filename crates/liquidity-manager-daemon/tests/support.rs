@@ -249,8 +249,8 @@ pub(crate) fn fixed_test_keys(tag: u8) -> Keys {
 
 /// The trust-envelope pair enrolled by [`enroll_provider_trust_envelope`].
 pub(crate) struct InstalledProviderEnvelope {
-    pub authorization: fedi_credential_sdk_protocol::HolderAuthorization,
-    pub credential: fedi_credential_sdk_protocol::SignedCredential,
+    pub authorization: peerbadge_protocol::HolderAuthorization,
+    pub credential: peerbadge_protocol::SignedCredential,
 }
 
 /// Relay URL the static enrollment fetcher answers for.
@@ -304,7 +304,7 @@ pub(crate) async fn enroll_provider_trust_envelope(
     let issuer = credentials::test_issuer_context();
     let authority =
         credentials::test_issuer_authority(&issuer, credentials::UNIT_TEST_ISSUER_RELAY)?;
-    let holder = fedi_credential_sdk_protocol::HolderContext::generate();
+    let holder = peerbadge_protocol::HolderContext::generate();
     let credential = credentials::issue_credential_for_holder(&issuer, &authority, &holder)?;
     let authorization =
         credentials::holder_authorization_for_provider(&holder, &credential, provider_pubkey)?;
@@ -511,18 +511,18 @@ fn test_data_dir(name: &str) -> PathBuf {
         .join(format!("{name}-{}-{nanos}-{sequence}", std::process::id()))
 }
 
-/// Credential SDK fixtures for crate unit tests.
+/// PeerBadge SDK fixtures for crate unit tests.
 ///
 /// The containing module is compiled only under `cfg(test)`, so the hardcoded
 /// test issuer keys stay out of shipped binaries.
 pub(crate) mod credentials {
-    use fedi_credential_sdk_protocol::{
-        HolderAuthorization, HolderAuthorizationRequest, HolderContext, IssuerAuthority,
-        IssuerContext, IssuerSecretKeys, PendingIssuance, SignedCredential, SubjectPubkey,
-    };
     use fedi_decentralized_service_liquidity_manager::{
         AttestationPayload, HolderAuthorization as ServiceHolderAuthorization, Pubkey,
         SignedCredential as ServiceCredential,
+    };
+    use peerbadge_protocol::{
+        HolderAuthorization, HolderAuthorizationRequest, HolderContext, IssuerAuthority,
+        IssuerContext, IssuerSecretKeys, PendingIssuance, SignedCredential, SubjectPubkey,
     };
     use serde::Serialize;
     use serde_json::json;
@@ -530,6 +530,19 @@ pub(crate) mod credentials {
     pub(crate) fn test_issuer_context() -> IssuerContext {
         IssuerContext::import_secret_key(&test_issuer_secret_keys())
             .expect("fixed test issuer secret keys import")
+    }
+
+    /// A distinct accepted-attester identity, for tests needing several.
+    ///
+    /// Reuses the fixture issuance keypair and varies only the issuer identity
+    /// key. Generating a fresh issuance keypair costs tens of seconds, well past
+    /// the per-test timeout. Indices start at 1 and stay clear of the primary
+    /// issuer and of `test_foreign_issuer_context`.
+    pub(crate) fn test_additional_issuer_context(index: u8) -> IssuerContext {
+        assert!(index > 0, "index 0 is the primary test issuer");
+        let mut keys = test_issuer_secret_keys();
+        keys.issuer_id_secret_key = format!("{:064x}", 0x10 + u32::from(index));
+        IssuerContext::import_secret_key(&keys).expect("fixed additional test issuer keys import")
     }
 
     pub(crate) fn test_foreign_issuer_context() -> IssuerContext {
@@ -549,7 +562,7 @@ pub(crate) mod credentials {
         revocation_relay_url: &str,
     ) -> anyhow::Result<IssuerAuthority> {
         Ok(
-            issuer.issuer_authority(vec![fedi_credential_sdk_protocol::RevocationLocation {
+            issuer.issuer_authority(vec![peerbadge_protocol::RevocationLocation {
                 protocol: "nostr".to_owned(),
                 location: revocation_relay_url.to_owned(),
             }])?,
@@ -608,7 +621,7 @@ pub(crate) mod credentials {
         Ok(AttestationPayload(serde_json::to_vec(value)?))
     }
 
-    /// Nostr keys for a Holder, matching its credential-SDK identity.
+    /// Nostr keys for a Holder, matching its PeerBadge SDK identity.
     ///
     /// The kind-37705 admission checks bind the signed statement's holder to
     /// the event author, so a test that signs with an unrelated key is testing

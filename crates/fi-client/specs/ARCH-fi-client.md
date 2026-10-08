@@ -50,7 +50,9 @@ schema 11 also persists the selected major/minor/vendor DKG identity beside
 the selected-vs-pinned mode, durable verifier provenance, selected preview
 deadline, exact aggregate reservation identity, commercial-history tombstone,
 and wallet-output tombstone. Every older record must be
-reset rather than migrated in this pre-launch namespace.
+reset rather than migrated because it predates the production compatibility
+baseline. Subsequent schema changes are governed by
+[`GATE-production-compatibility`](../../../specs/GATE-production-compatibility.md).
 
 The cap changes only payment-readiness behavior, and it is **one-shot**: it
 is the consumer's approval of the initial aggregate only. In the product path
@@ -145,7 +147,8 @@ or DKG and sends the same callback and idempotency key to every FMan in the
 signed `StartDkg` wave. The ordinary entry point leaves the optional
 callback absent. An ordinary resume repeats the idempotent `StartDkg` wave
 with the same durable guardian codes; each FMan retains the first start
-choice.
+callback it accepts for delivery, while an FMan without callback delivery
+configured discards it and proceeds callback-free.
 Callback state is deliberately absent from `FormationSnapshot`: a push is
 non-authoritative transport, while the durable formation driver remains the
 only source of lifecycle progress after the app resumes.
@@ -153,10 +156,13 @@ Cross-component durability verification is recorded in
 [`crates/fman/testing.md`](../../fman/testing.md).
 
 Formation storage schema 11 owns this callback lifecycle and the selected
-Fedimint DKG identity. Older pre-production records fail closed and require reset.
+Fedimint DKG identity. Older records from before the production compatibility
+baseline fail closed and require reset.
 FI retains the bearer across every pre-`DkgComplete` crash, then clears it in
-the same transaction that records the DKG invite because every FMan has
-already accepted durable retry ownership.
+the same transaction that records the DKG invite. Callback delivery remains
+best effort: configured FMans have accepted durable retry ownership by then,
+while FMans without callback delivery configured completed DKG without taking
+ownership.
 
 Whether a formation pays at all is decided by configuration, not by the
 formation intent: an FI opened without a deployment-pinned setup-payment
@@ -229,7 +235,10 @@ seat: after badge verification, a later verified author sharing a selected
 key receives a typed rejection and its bucket continues to its next candidate.
 Replacement walks begin with retained siblings' keys already occupied, and the
 same final-set uniqueness is checked atomically when the approved rows are
-applied. Each reached, verified, non-duplicate candidate is then probed live
+applied. The same rule applies to verified badge holders, which are saved with
+new seats and checked again on recovery. Older saved seats without holder
+identities keep their existing behavior without a holder-uniqueness guarantee.
+Each reached, verified, non-duplicate candidate is then probed live
 over the consumer's FMan connector with the same availability predicate
 quoting applies; a probe failure or incompatible live response is a typed
 rejection, the bucket continues, and a stale advertisement is rejected before
@@ -374,6 +383,15 @@ checkpoints their exact readback. An interrupted proposal replays the persisted
 target without re-resolving accounts or policy. Once confirmed, formed-state
 reconciliation requires the immutable directory and recipients to remain exact,
 accepts later rate changes, and needs no formation account provider.
+On restart, both a local `Formed` record and a restored backup start unsynced.
+Fresh threshold consensus must match the saved federation identity and verified
+directory before either becomes fresh; restored seats and any saved liquidity
+commitment must also match. This check needs no live Fleet Manager and does not
+repeat initial formation's all-seat health and invite checks.
+If the saved invite is unreachable, recovery tries alternative invites from
+the saved managers without waiting for every manager. It verifies the same
+federation and remembers multiple guardian addresses in memory for later
+liquidity and gateway reads. Backups and committed request bytes are unchanged.
 
 After `Formed`, `propose_guardian_fees` changes only the rate through the generic
 metadata verb. It does not resolve or resend recipient accounts. Directory and
@@ -402,8 +420,8 @@ these phases, and later checks keep `Formed` visible with freshness and errors
 reported separately. Inconsistent storage fails closed before status is published.
 The seat/fee-account pairing is
 validated on load, so formation records persisted before signed fee-account
-acceptance existed fail closed and must be reset rather than migrated, per
-this pre-launch namespace's schema policy. Payment readiness and
+acceptance existed fail closed and must be reset rather than migrated because
+they predate the production compatibility baseline. Payment readiness and
 authorization are aggregate formation state — one authorization covers the
 complete verified quote set. Immediately before funding, the FI refreshes every
 unpaid paid quote as one barrier and carries the authorization forward only

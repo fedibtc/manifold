@@ -30,7 +30,7 @@ uuid = "1"
 bitcoin = { version = "0.32.6", features = ["serde"] }
 blind-rsa-signatures = "0.17"
 ciborium.workspace = true
-fedi-credential-sdk-protocol.workspace = true
 iroh = { workspace = true }
 nostr = "0.44"
+peerbadge-protocol.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

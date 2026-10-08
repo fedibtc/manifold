@@ -16,11 +16,11 @@ export const OfferPage = () => {
   return (
     <div className={styles.root}>
       <div className={styles.head}>
-        <h1 className={styles.heading}>Your offer</h1>
+        <h1 className={styles.heading}>Seat price</h1>
 
         <p className={styles.intro}>
-          One price is the whole offer. It is the gross amount a federation initiator pays for a
-          seat, before mint and Lightning fees.
+          One price is the whole offer. It is what a Federation Ambassador pays for a seat. Network
+          fees apply.
         </p>
       </div>
 
@@ -28,8 +28,8 @@ export const OfferPage = () => {
 
       <QuerySurface disposition={disposition} onRetry={retry}>
         <Banner variant="info">
-          Leave the field blank to stop selling seats. A price of 0 keeps the fleet advertised and
-          gives seats away free.
+          Leave the field blank to stop selling seats. A price of zero keeps this host advertised
+          and gives seats away free.
         </Banner>
 
         <form className={styles.form} onSubmit={onSubmit}>
@@ -40,6 +40,8 @@ export const OfferPage = () => {
           <input
             id="price-sats"
             className={styles.input}
+            inputMode="numeric"
+            autoComplete="off"
             value={priceSats}
             onChange={handlePriceChange}
             aria-describedby="price-sats-hint"

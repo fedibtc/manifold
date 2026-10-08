@@ -2,8 +2,9 @@
 
 ## Status
 
-Advertisement availability depends only on a configured offer and physical
-capacity. Setup-payment membership is enforced when a priced quote is requested.
+Advertisement availability depends only on a configured offer, physical
+capacity, and the daemon's readiness checks. Setup-payment membership is
+enforced when a priced quote is requested.
 
 ## Record justification
 
@@ -67,39 +68,43 @@ The commitment-signing pubkey inside the signed payload is what binds the dialin
 
 ## Holder-authorization enrollment
 
-The operator's `Check now` action invokes a bounded query of at most
-64 kind-37705 candidate events indexed to the FMan's own Nostr pubkey while it
-waits for setup to complete. Relay tags are discovery hints only. Before
-retaining a candidate, the daemon verifies the Nostr event signature, parses
+The operator explicitly requests a bounded query of at most 64 kind-37705
+candidate events indexed to the FMan's own Nostr pubkey: `Check now` during
+setup, or `Fetch new authorization` when renewing authorization afterward.
+Relay tags are discovery hints only. Before retaining a candidate, the daemon
+verifies the Nostr event signature, parses
 its versioned content, requires the content holder id and authorization
 statement holder id to equal the event author, verifies the holder's SDK
 authorization proof, requires the authorization subject to equal this FMan's
 Nostr pubkey, and requires the inline credential digest to equal the
 authorization's credential digest. It also rejects a statement issued more than
-one hour ahead of the receiver's clock. Malformed or mismatched candidates are
-skipped without logging candidate-controlled values.
+one hour ahead of the receiver's clock. A fetched candidate must further pass
+the shared verifier's offline issuance check: its badge names one of this
+environment's trusted issuers, verifies against that issuer's pinned authority,
+and was issued to the authorizing holder. Malformed, mismatched, or untrusted
+candidates are skipped without logging candidate-controlled values.
 
-Accepted complete events are retained in the FMan database by credential
-digest and reverified at startup. One FMan identity has one authorization set
-shared across every federation it operates, and retains at most 64 distinct
-credential digests so the whole set remains representable in one public
-trust-material response. A later signed authorization statement for the same
-credential may advance the retained value even at that limit; an empty, failed,
-equal, or older relay answer never deletes or rolls it back. A new digest is
-ignored when the set is full rather than evicting an existing valid row in
-response to attacker-controlled churn. Because the daemon has no trusted-holder
-allowlist, arbitrary signers may fill this one service-wide set and deny later
-new digests; the operator enrollment flow must not treat first admission as
-issuer trust. Startup removes legacy rows beyond the aggregate or receiver-time
-bounds before reuse. Once the UI observes enrollment it stops requesting
-refreshes, and ordinary advertisement publication performs no
+One FMan identity retains exactly one complete authorization event, shared
+across every federation it operates, and reverifies it at startup. A refresh
+selects the valid candidate with the greatest signed authorization `issued_at`,
+whatever its holder or credential, and it replaces the retained event only when
+strictly later; an empty, failed, equal, or older relay answer never deletes or
+rolls it back. Startup removes a retained event beyond the receiver-time bound
+before reuse. The holder chooses `issued_at`, so any holder of a trusted badge
+can publish a later-dated candidate that a refresh then selects in place of the
+operator's.
+The UI never polls for enrollment; after setup the operator can explicitly
+check for renewed or replacement authorization. Refreshes update the live
+authorization and trigger republication, while ordinary advertisement
+publication performs no
 Holder-authorization relay query. A relying consumer still performs fresh
 issuer-policy, credential, and revocation verification; durable carriage is not
 a claim that the backing credential remains valid.
 
-The FMan does not decide whether the credential issuer is trusted, verify the
-backing credential's PBRSA proof, or check revocation. The FI must repeat the
-authorization checks and perform those issuer-policy checks itself, as required
+The FMan does not check revocation or the relying-party minimum trust level,
+and its issuance check is not a trust decision for anyone else. The FI must
+repeat the authorization checks and perform the full issuer-policy checks
+itself, as required
 by the FI verification rules in
 [SPEC-fman-nostr-events](../../nostr/specs/SPEC-fman-nostr-events.md).
 
@@ -108,11 +113,44 @@ by the FI verification rules in
 The advertisement carries neither an availability boolean nor a count. Its
 existence means the publication cycle observed that the FMan was accepting
 seats: it had physical capacity after live seats — bounded by both the
-operator's seat limit and the remaining lifetime port grid — and the operator
-had configured an offer. Setup-payment membership and opening a retained
-payment-federation client in the current daemon process are not advertisement
-gates; RPC remains authoritative. A seat offered at zero settles against
-nothing, which is the deployment bootstrap where the first federation's
-guardians are given away because no ecash to pay them with exists yet.
+operator's seat limit and the remaining lifetime port grid — the operator
+had configured an offer, and the latest readiness check passed. Setup-payment
+membership and opening a retained payment-federation client in the current
+daemon process are not advertisement gates; RPC remains authoritative. A seat
+offered at zero settles against nothing, which is the deployment bootstrap
+where the first federation's guardians are given away because no ecash to pay
+them with exists yet.
 `GetAvailability` uses the same gated-slot calculation, but independent calls
 can observe different settings epochs and live state.
+
+## Readiness gate
+
+A seat sold by an FMan that cannot be reached or cannot use Bitcoin becomes
+the cause of a failed DKG, so the daemon admits new seats only while its
+readiness checks pass. At startup and then every 10 minutes (every minute
+while failing), it requires a connected home relay, its own discovery record
+resolving through n0 pkarr or DNS with a relay it is connected to, and its
+Bitcoin backend — read through the client `fedimintd` builds, with Bitcoin Core
+required on its own rather than through its Esplora fallback — serving the
+configured network, out of initial block download, with a fee estimate
+(regtest waives the last two). An Esplora-only backend cannot report initial
+block download and substitutes a default fee rate, so for it those two checks
+pass vacuously. Failed checks are retried for up to a minute before a run
+fails. Each Bitcoin check builds a fresh client and runs on a blocking thread
+with a 10-second deadline, because the Core client blocks inside its async
+calls; a check that outlives its deadline counts as unavailable, and the next
+attempt waits on it rather than starting another. Local E2E skips the relay
+and discovery checks.
+
+The verdict is durable in `offer_state`, so a restart resumes it: a ready FMan
+keeps selling and a failing one stays closed until a run passes. A fresh,
+restored, or upgraded FMan starts closed.
+
+A failed verdict suppresses publication, makes `GetAvailability` report
+`accepting_seats = false`, and makes `GetQuote` return `CapacityExhausted`, so
+FIs treat it like a full FMan. Each change of verdict also draws a fresh offer
+epoch in the same database write: a quote issued before a failure is refused
+with `OfferChanged` and its refund instead of admitting a seat. Every run emits one shareable event with a
+fixed code per check for telemetry, and the latest report is served to the
+operator by the `ShowSeatReadiness` admin verb, which the operator UI's Health
+page shows.

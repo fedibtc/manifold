@@ -7,7 +7,9 @@ collector must authenticate the same
 credential and holder-authorization format. Keeping that security decision in one shared crate prevents relying
 programs from acquiring subtly different authority, revocation, proof, or
 schema rules. FMan verifies carriage integrity for its own HolderAuthorization
-but does not judge its own badge.
+and uses the verifier's offline issuance check to admit only badges a trusted
+issuer issued to the authorizing holder, but does not judge its own badge's
+revocation or trust level.
 
 This record governs `fedi-decentralized-peer-badge-verifier`. Environment
 identity and public configuration are governed by
@@ -120,7 +122,7 @@ afresh:
    incomplete lookup, local truncation, excessive location count, or malformed
    matching revocation candidate fails closed. A valid issuer-signed
    revocation for the digest rejects the credential.
-4. Install the admitted authority into a new credential-SDK
+4. Install the admitted authority into a new PeerBadge SDK
    `VerificationContext` and verify the complete `SignedCredential` plus
    `HolderAuthorization` at the requested time. This covers issuance proof,
    credential digest binding, holder signature, holder/blind-subject binding,
@@ -128,6 +130,12 @@ afresh:
 5. Parse the credential as the typed `fedi-trust-score-v1.0` PeerBadge schema
    and reject an authentic badge whose `trust_level` is below the configured
    environment minimum.
+
+A separate offline issuance check performs steps 1 and 4 only, for pinned
+issuers, with no relay I/O; an unpinned issuer fails it. It proves that a
+trusted issuer issued the badge to the authorizing holder, not that the badge
+is currently acceptable, so relying parties must not use it in place of the
+complete verification.
 
 Dropping verification cooperatively cancels its pending relay reads and leaves
 no verifier state. The relay layer can briefly retain its private ephemeral
@@ -203,7 +211,7 @@ omission-resistance, and delegated-trust consequences.
 
 ## Verification coverage
 
-Focused verifier tests use real credential-SDK issuance and signatures with
+Focused verifier tests use real PeerBadge SDK issuance and signatures with
 fixed test-only issuer keys. They prove typed success, behavioral authority
 and revocation changes between calls, invalid-newest-authority rejection,
 pre-network rejection of untrusted issuers, resource bounds, fail-closed

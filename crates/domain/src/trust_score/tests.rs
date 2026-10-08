@@ -2,7 +2,7 @@
 
 use std::sync::LazyLock;
 
-use fedi_credential_sdk_protocol::{
+use peerbadge_protocol::{
     CredentialsError, HolderAuthorizationRequest, HolderContext, IssuerAuthority, IssuerContext,
     IssuerSecretKeys, PendingIssuance, SignedCredential, VerificationContext,
 };
@@ -32,7 +32,7 @@ struct Fixture {
 fn fixture() -> Fixture {
     let issuer = IssuerContext::import_secret_key(&ISSUER_SECRET_KEYS).expect("import issuer");
     let authority = issuer
-        .issuer_authority(vec![fedi_credential_sdk_protocol::RevocationLocation {
+        .issuer_authority(vec![peerbadge_protocol::RevocationLocation {
             protocol: "nostr".to_owned(),
             location: "wss://relay.example".to_owned(),
         }])
@@ -396,9 +396,9 @@ fn envelope_wire_shape_is_stable() {
 }
 
 /// Golden vector: a badge issued by the shipped PeerBadge app (captured in
-/// the credential-sdk repo, public material only). The fixture arrives through
+/// the peerbadge-sdk repo, public material only). The fixture arrives through
 /// the same flake pin as the parser, so the truly independent wire pin lives
-/// in credential-sdk's own golden tests; this test adds the local assertions
+/// in peerbadge-sdk's own golden tests; this test adds the local assertions
 /// (level, holder binding) and proves the full verify-then-parse chain in this
 /// repo accepts a real app-issued badge.
 #[test]
@@ -411,7 +411,7 @@ fn app_issued_golden_vector_verifies_and_parses() {
     }
 
     let vector: AppIssuedVector = serde_json::from_str(include_str!(
-        "../../../../.nix-deps/credential-sdk/crates/schemas/fixtures/app-issued-vector.json"
+        "../../../../.nix-deps/peerbadge-sdk/crates/schemas/fixtures/app-issued-vector.json"
     ))
     .expect("app-issued vector deserializes");
 

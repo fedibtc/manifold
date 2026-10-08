@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { MOCK_HOLDER_PUBKEY, MOCK_SERVICE_NOSTR_PUBKEY } from '@/mocks/world/keys';
 import * as adminCallModule from '@/shared/api/adminCall';
 import { AdminApiError } from '@/shared/api/errors';
-import { ONBOARDING_KEY } from '@/shared/api/hooks/use-onboarding/useOnboarding';
+import { ONBOARDING_KEY, useOnboarding } from '@/shared/api/hooks/use-onboarding/useOnboarding';
 import { SetupAuthorization } from '../SetupAuthorization';
 
 const waiting = {
@@ -49,19 +49,103 @@ describe('SetupAuthorization', () => {
     await vi.waitFor(() => expect(adminCall).toHaveBeenCalledWith('RefreshHolderAuthorizations'));
   });
 
+  // The relay read used to share the Onboarding query, so any later
+  // invalidation of that key repeated it without the operator asking.
+  it('should not repeat the relay read when onboarding is invalidated after a check', async () => {
+    const adminCall = vi.spyOn(adminCallModule, 'adminCall').mockResolvedValue(waiting);
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    client.setQueryData(ONBOARDING_KEY, waiting);
+    // SetupGate's observer, which keeps the Onboarding query enabled in the app.
+    const Gate = () => {
+      useOnboarding();
+      return null;
+    };
+    render(
+      <QueryClientProvider client={client}>
+        <Gate />
+
+        <SetupAuthorization onSettled={vi.fn()} />
+      </QueryClientProvider>
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Check now' }));
+    await vi.waitFor(() => expect(adminCall).toHaveBeenCalledWith('RefreshHolderAuthorizations'));
+    await act(async () => {
+      await client.invalidateQueries({ queryKey: ONBOARDING_KEY });
+    });
+
+    expect(adminCall.mock.calls.map(([request]) => request)).toEqual([
+      'RefreshHolderAuthorizations',
+      'Onboarding'
+    ]);
+  });
+
+  it('should keep a refresh result over an older onboarding read still in flight', async () => {
+    let releaseOnboarding!: (value: typeof waiting) => void;
+    let finishRefresh!: (value: typeof observed) => void;
+    const adminCall = vi.spyOn(adminCallModule, 'adminCall').mockImplementation((request) =>
+      request === 'Onboarding'
+        ? new Promise((resolve) => {
+            releaseOnboarding = resolve;
+          })
+        : new Promise((resolve) => {
+            finishRefresh = resolve;
+          })
+    );
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    client.setQueryData(ONBOARDING_KEY, waiting);
+    const Gate = () => {
+      useOnboarding();
+      return null;
+    };
+    render(
+      <QueryClientProvider client={client}>
+        <Gate />
+
+        <SetupAuthorization onSettled={vi.fn()} />
+      </QueryClientProvider>
+    );
+
+    await act(async () => {
+      void client.refetchQueries({ queryKey: ONBOARDING_KEY });
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Check now' }));
+    await vi.waitFor(() => expect(adminCall).toHaveBeenCalledWith('RefreshHolderAuthorizations'));
+    await act(async () => {
+      finishRefresh(observed);
+    });
+    await screen.findByText(/Approved\. Continuing to the terms step/i);
+    await act(async () => {
+      releaseOnboarding(waiting);
+    });
+
+    expect(client.getQueryData(ONBOARDING_KEY)).toEqual(observed);
+    expect(client.getQueryState(ONBOARDING_KEY)?.status).toBe('success');
+  });
+
   it('should show the key an attester signs over', async () => {
     renderAuthorization();
 
     await screen.findByText(MOCK_SERVICE_NOSTR_PUBKEY);
   });
 
-  it('should say it is waiting while no authorization has been observed', async () => {
+  it('should say it is waiting while no approval has been observed', async () => {
     renderAuthorization();
 
-    await screen.findByText(/no authorization for this fleet/i);
+    await screen.findByText(/Not approved yet/i);
     expect((screen.getByRole('button', { name: 'Continue' }) as HTMLButtonElement).disabled).toBe(
       true
     );
+  });
+
+  // The paragraph used to render in both states, so an approved operator read
+  // "setup cannot continue past this step" beside an enabled Continue button.
+  it('should drop the blocked-setup sentence once the fleet is approved', async () => {
+    renderAuthorization(vi.fn(), observed);
+
+    await screen.findByText(/Approved\. Continuing to the terms step/i);
+    expect(screen.queryByText(/setup cannot continue past this step/i)).toBeNull();
+    expect(screen.getByRole('button', { name: 'Continue now' })).toBeTruthy();
   });
 
   // Fake timers never advance here, so no automatic tick can stand in for the
@@ -95,9 +179,7 @@ describe('SetupAuthorization', () => {
     renderAuthorization();
 
     fireEvent.click(screen.getByRole('button', { name: 'Check now' }));
-    await vi.waitFor(() =>
-      expect(screen.getByText(/no authorization for this fleet/i)).toBeTruthy()
-    );
+    await vi.waitFor(() => expect(screen.getByText(/Not approved yet/i)).toBeTruthy());
   });
 
   it('should continue on its own once the authorization is observed', async () => {
@@ -105,7 +187,7 @@ describe('SetupAuthorization', () => {
     try {
       const { onSettled } = renderAuthorization(vi.fn(), observed);
 
-      await vi.waitFor(() => expect(screen.getByRole('status').textContent).toMatch(/observed/i));
+      await vi.waitFor(() => expect(screen.getByRole('status').textContent).toMatch(/approved/i));
       expect(screen.queryByRole('button', { name: 'Skip for now' })).toBeNull();
       expect(onSettled).not.toHaveBeenCalled();
 

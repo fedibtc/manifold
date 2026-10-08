@@ -123,7 +123,12 @@ write buffers, not allocations performed inside a service handler or that
 initial service-return encoding. Custom response limits that are too small to
 hold a transport error may close a rejected stream without an error frame.
 
-The current implementation uses serde-compatible binary encoding internally for frames and bodies. Treat the Rust frame shapes and method semantics above as the calling convention; do not rely on a stable raw byte format unless this crate later promises one.
+The current implementation uses serde-compatible binary encoding internally for
+frames and bodies. Treat the Rust frame shapes and method semantics above as the
+calling convention; do not rely on a stable raw byte format unless this crate
+later promises one. Production protocols built on this transport must preserve
+their calling conventions in accordance with
+[`GATE-production-compatibility`](../../specs/GATE-production-compatibility.md).
 
 ## Requirements
 

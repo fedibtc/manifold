@@ -13,11 +13,6 @@ mod types;
 
 pub use admin::*;
 pub use canonical::*;
-pub use fedi_credential_sdk_protocol::{
-    CredentialDigest, CredentialsError, HolderAuthorization, HolderAuthorizationStatement,
-    HolderId, IssuerAuthority, ProtocolV1, RevocationLocation, SchnorrSignatureProof,
-    SignedCredential, SignedRevocation, SubjectPubkey, VerificationContext,
-};
 pub use fedi_decentralized_services::domain::{
     BitcoinNetwork, CanonicalPayload, FMAN_API_URLS_META_FIELD_KEY,
     FMAN_PEER_ATTESTATION_SIGNATURE_DOMAIN_SEPARATOR, FMAN_SEAT_BINDINGS_META_FIELD_KEY,
@@ -33,6 +28,11 @@ pub use fedi_decentralized_services::domain::{
     federation_seats, parse_trust_score_badge_v1, verify_holder_trust_envelope,
 };
 pub use fedi_decentralized_services::{ServiceError, ServiceErrorCode, ServiceResult};
+pub use peerbadge_protocol::{
+    CredentialDigest, CredentialsError, HolderAuthorization, HolderAuthorizationStatement,
+    HolderId, IssuerAuthority, ProtocolV1, RevocationLocation, SchnorrSignatureProof,
+    SignedCredential, SignedRevocation, SubjectPubkey, VerificationContext,
+};
 pub use public::*;
 pub use service::{
     OperatorAdminApi, PublicLiquidityApi, PublicLiquidityApiClient, PublicLiquidityApiServer,
@@ -629,5 +629,69 @@ mod tests {
         let patch: ProviderConfigPatch =
             serde_json::from_value(patch_json).expect("legacy key ignored");
         assert_eq!(patch, ProviderConfigPatch::default());
+    }
+
+    /// The vocabulary is the contract, so each code keeps its exact string
+    /// over both the CBOR the RPC carries and the JSON an item is stored as.
+    #[test]
+    fn every_failure_code_keeps_its_wire_string() {
+        let codes = [
+            (LiquidityFailureCode::RequestExpired, "request_expired"),
+            (LiquidityFailureCode::PolicyMismatch, "policy_mismatch"),
+            (
+                LiquidityFailureCode::InsufficientProviderFunds,
+                "insufficient_provider_funds",
+            ),
+            (
+                LiquidityFailureCode::GatewayAttachFailed,
+                "gateway_attach_failed",
+            ),
+            (LiquidityFailureCode::WithdrawFailed, "withdraw_failed"),
+            (
+                LiquidityFailureCode::StabilityPoolFailed,
+                "stability_pool_failed",
+            ),
+            (LiquidityFailureCode::InternalError, "internal_error"),
+            (
+                LiquidityFailureCode::GatewayAttributionAbandoned,
+                "gateway_attribution_abandoned",
+            ),
+        ];
+
+        for (code, wire) in codes {
+            assert_eq!(code.to_string(), wire);
+            assert_eq!(
+                serde_json::to_value(&code).expect("serializes"),
+                serde_json::json!(wire)
+            );
+            assert_eq!(cbor_roundtrip(&code), code);
+        }
+    }
+
+    /// A failure code one build does not know must not hide the item carrying
+    /// it. The code rides inside the item's stored failure record, so refusing
+    /// an unfamiliar string would make the whole record unreadable.
+    #[test]
+    fn an_unknown_failure_code_is_read_and_carried_unchanged() {
+        let failure: LiquidityFailure = serde_json::from_value(serde_json::json!({
+            "code": "a_code_this_build_does_not_know",
+            "reason": "written by another build",
+        }))
+        .expect("an unfamiliar code is read, not refused");
+
+        assert_eq!(
+            failure.code,
+            LiquidityFailureCode::Unknown("a_code_this_build_does_not_know".to_owned())
+        );
+        assert_eq!(failure.code.to_string(), "a_code_this_build_does_not_know");
+        assert_eq!(
+            serde_json::to_value(&failure).expect("serializes"),
+            serde_json::json!({
+                "code": "a_code_this_build_does_not_know",
+                "reason": "written by another build",
+            }),
+            "the code round-trips unchanged rather than being rewritten"
+        );
+        assert_eq!(cbor_roundtrip(&failure), failure);
     }
 }

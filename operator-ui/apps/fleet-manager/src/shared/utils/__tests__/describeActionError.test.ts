@@ -10,19 +10,19 @@ import { describeActionError } from '../describeActionError';
 
 it('should describe a NetworkError as the fleet manager being unreachable', () => {
   expect(describeActionError(new NetworkError())).toBe(
-    "Can't reach the fleet manager. Try again once it's back online."
+    "Can't reach Manifold Fedimint Guardian. Try again once it's back online."
   );
 });
 
 it('should describe a server-side status as the fleet manager being unreachable', () => {
   expect(describeActionError(new HttpStatusError(502))).toBe(
-    "Can't reach the fleet manager. Try again once it's back online."
+    "Can't reach Manifold Fedimint Guardian. Try again once it's back online."
   );
 });
 
 it('should describe an unreadable answer as the fleet manager being unreachable', () => {
   expect(describeActionError(new ProtocolError())).toBe(
-    "Can't reach the fleet manager. Try again once it's back online."
+    "Can't reach Manifold Fedimint Guardian. Try again once it's back online."
   );
 });
 
@@ -36,7 +36,7 @@ it('should describe a 403 as a refusal, never as an unreachable fleet manager', 
 
 it('should state the status when a client-side status is refused', () => {
   expect(describeActionError(new HttpStatusError(404))).toBe(
-    'The fleet manager refused the request (HTTP 404).'
+    'Manifold Fedimint Guardian refused the request (HTTP 404).'
   );
 });
 

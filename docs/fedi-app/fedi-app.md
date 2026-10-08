@@ -193,9 +193,11 @@ Only after the release-and-wipe transition succeeds does relaunch route to
 preview/payer choice. If `payment_outputs_started` is true, resume is mandatory
 and uses exact quote-bound wallet recovery.
 
-Reloaded service-derived state is marked unsynced until FMan reconciliation.
-The UI may display it as last known information but must not present it as a
-fresh remote observation.
+Reloaded service-derived state is marked unsynced until reconciliation. An
+already formed federation is verified through fresh guardian consensus; if its
+saved invite is unreachable, recovery may ask saved managers for alternatives.
+Unfinished formation retains its FMan checks. The UI may display reloaded state
+as last known information but must not present it as a fresh remote observation.
 
 ## Testing responsibilities
 

@@ -1,5 +1,11 @@
-import type { OnboardingNostrStatus, PaymentFederation, Plan } from '@operator-ui/types';
+import type {
+  OnboardingNostrStatus,
+  PaymentFederation,
+  Plan,
+  ShowSeatReadinessResponse
+} from '@operator-ui/types';
 import { readOfferPriceMsat } from '@/shared/utils/offerPrice';
+import { failedChecks, labels } from '@/shared/utils/seatReadiness';
 
 export interface AttentionItem {
   key: string;
@@ -20,6 +26,8 @@ export interface OverviewInputs {
   /** Absent while the Onboarding query has not answered. The Overview says nothing
    *  rather than guessing. */
   nostrState?: OnboardingNostrStatus['state'];
+  /** Absent while ShowSeatReadiness has not answered. */
+  seatReadiness?: ShowSeatReadinessResponse;
 }
 
 // ListSeats returns SeatSummary only — no health/phase (that's SeatStatus, a
@@ -28,7 +36,8 @@ export interface OverviewInputs {
 export const deriveOverview = ({
   paymentFederations = [],
   plans = [],
-  nostrState
+  nostrState,
+  seatReadiness
 }: OverviewInputs): OverviewModel => {
   const priceMsat = readOfferPriceMsat(plans);
   const isSellingForMoney = priceMsat !== null && priceMsat > 0;
@@ -40,9 +49,11 @@ export const deriveOverview = ({
     .filter((federation) => federation.accepted && !federation.receivable)
     .map((federation) => ({
       key: federation.federation_id,
-      title: 'Payment federation not receiving',
+      title: 'Payment federation not accepting payments',
       detail: federation.federation_id,
-      path: '/wallet'
+      // No screen can make a federation receivable again, so this points at the
+      // only screen that lists it and offers an action on it.
+      path: '/payouts'
     }));
 
   // A paid offer with nowhere to receive payment advertises seats nobody can
@@ -70,8 +81,9 @@ export const deriveOverview = ({
   if (nostrState === 'not_observed') {
     attention.push({
       key: 'authorization-not-observed',
-      title: 'No holder has authorized this fleet',
-      detail: 'Initiators cannot evaluate the fleet until one does. Open Authorization to check.',
+      title: 'This host is not approved yet',
+      detail:
+        'Until it is approved it is not advertised and cannot sell seats. Open Authorization to check.',
       path: '/authorization'
     });
   }
@@ -83,9 +95,24 @@ export const deriveOverview = ({
   if (nostrState === 'relay_error') {
     attention.push({
       key: 'authorization-relay-error',
-      title: 'The relay could not be read',
-      detail: 'The fleet may or may not be authorized. Open Authorization for the failure.',
+      title: 'Approval could not be checked',
+      detail: 'This host may or may not be approved. Open Authorization for the failure.',
       path: '/authorization'
+    });
+  }
+
+  // The daemon has stopped advertising and quoting. Nothing else on the page
+  // would show it: the offer still reads as set, and running seats are fine.
+  if (seatReadiness?.ready_for_new_seats === false) {
+    const failed = seatReadiness.report ? failedChecks(seatReadiness.report) : [];
+    attention.push({
+      key: 'not-ready-for-new-seats',
+      title: 'Not accepting new seats',
+      detail:
+        failed.length > 0
+          ? `Failing: ${failed.map((check) => labels[check]).join(', ')}. Open Health for what to check.`
+          : 'No readiness check has passed yet. Open Health for details.',
+      path: '/health'
     });
   }
 

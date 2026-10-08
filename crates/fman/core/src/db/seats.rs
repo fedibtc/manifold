@@ -5,8 +5,8 @@
 //! and terminal claim observation live in its claim row;
 //! A completion callback is durable delivery work, and a formed-seat row is
 //! the immutable fact that this seat has installed its final configuration.
-//! Everything else fedimintd owns — setup phase and health — is runtime state
-//! on the in-memory seat, rederived by probing, never persisted.
+//! Validated DKG inputs are retained for replacement children; the child owns
+//! its setup progress and formed health, which are not persisted by FMan.
 //!
 //! SQLite owns durable admission serialization; the in-memory registry is a
 //! rebuildable runtime projection. Per-seat ceremony consistency remains
@@ -14,12 +14,43 @@
 //! transitions fail loudly instead of upserting.
 
 use super::{Db, DbError, IDENTITY_ID, now_ms};
-use crate::facts::{CompletionCallbackReason, CompletionCallbackStatus, SeatFacts, SeatNo};
+use crate::facts::{
+    CompletionCallbackReason, CompletionCallbackStatus, DkgCodeSet, SeatFacts, SeatNo,
+};
 use crate::identity::RootMnemonic;
 use crate::wallet::{ClaimOutcome, EcashClaimEvidence};
 use fedi_decentralized_service_fleet_manager::{
-    DkgCompletionCallback, FederationSize, FiId, InviteCode, OfferEpoch, Plan, QuoteId, SeatId,
+    DkgCompletionCallback, FederationSize, FiId, GuardianCode, InviteCode, OfferEpoch, Plan,
+    QuoteId, SeatId,
 };
+
+/// Insert the formation-wide first callback on the caller's transaction so
+/// accepted inputs and notification choice have one crash boundary.
+async fn install_completion_callback(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    seat_id: &SeatId,
+    completion_callback: Option<&DkgCompletionCallback>,
+) -> Result<(), DbError> {
+    let callback_json = completion_callback.map(|callback| {
+        serde_json::to_string(callback).expect("a validated callback always serializes")
+    });
+    sqlx::query(
+        "INSERT INTO completion_callbacks (quote_id, completion_callback, \
+         completion_callback_status, completion_callback_next_attempt_at_ms) \
+         VALUES (?, ?, ?, ?) ON CONFLICT(quote_id) DO NOTHING",
+    )
+    .bind(seat_id.as_bytes().as_slice())
+    .bind(&callback_json)
+    .bind(if completion_callback.is_some() {
+        "pending"
+    } else {
+        "not_configured"
+    })
+    .bind(completion_callback.map(|_| now_ms()))
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
+}
 
 /// Exhaustive terminal result for a callback delivery attempt.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -667,28 +698,78 @@ impl Db {
         seat_id: &SeatId,
         completion_callback: Option<&DkgCompletionCallback>,
     ) -> Result<(), DbError> {
-        let callback_json = completion_callback.map(|callback| {
-            serde_json::to_string(callback).expect("a validated callback always serializes")
-        });
-        let callback_status = if completion_callback.is_some() {
-            "pending"
-        } else {
-            "not_configured"
-        };
-        let next_attempt_at_ms = completion_callback.map(|_| now_ms());
+        let mut tx = self.begin_write().await?;
+        install_completion_callback(&mut tx, seat_id, completion_callback).await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    /// Commit a validated ceremony envelope and the first callback choice before
+    /// giving the child RunDkg. Restart replaces only the envelope, never the
+    /// formation-wide callback. A crash at either side of this commit is safe:
+    /// no child receives an unrecorded set and replacement reads the latest set.
+    pub(crate) async fn record_dkg_inputs(
+        &self,
+        seat_id: &SeatId,
+        codes: &DkgCodeSet,
+        completion_callback: Option<&DkgCompletionCallback>,
+    ) -> Result<(), DbError> {
+        let encoded = serde_json::to_string(&codes.iter().map(|code| &code.0).collect::<Vec<_>>())
+            .expect("validated guardian codes serialize");
         let id = seat_id.as_bytes().as_slice();
-        sqlx::query(
-            "INSERT INTO completion_callbacks (quote_id, completion_callback, \
-             completion_callback_status, completion_callback_next_attempt_at_ms) \
-             VALUES (?, ?, ?, ?) ON CONFLICT(quote_id) DO NOTHING",
+        let mut tx = self.begin_write().await?;
+        let result = sqlx::query(
+            "INSERT INTO dkg_inputs (quote_id, guardian_codes) \
+             SELECT ?, ? WHERE NOT EXISTS (SELECT 1 FROM formed_seats WHERE quote_id = ?) \
+             AND NOT EXISTS (SELECT 1 FROM decommissioned_seats WHERE quote_id = ?) \
+             ON CONFLICT(quote_id) DO UPDATE SET guardian_codes = excluded.guardian_codes",
         )
         .bind(id)
-        .bind(&callback_json)
-        .bind(callback_status)
-        .bind(next_attempt_at_ms)
-        .execute(self.pool())
+        .bind(encoded)
+        .bind(id)
+        .bind(id)
+        .execute(&mut *tx)
         .await?;
+        if result.rows_affected() != 1 {
+            return Err(DbError::CorruptRow {
+                table: "dkg_inputs",
+                key: seat_id.to_string(),
+                detail: "attempted to record inputs for a formed or decommissioned seat".to_owned(),
+            });
+        }
+        install_completion_callback(&mut tx, seat_id, completion_callback).await?;
+        tx.commit().await?;
         Ok(())
+    }
+
+    /// An absent row means no FI has committed a complete StartDkg yet.
+    /// The seat loop revalidates the stored envelope against its own derived
+    /// code before sending it to any replacement child.
+    pub(crate) async fn dkg_inputs(
+        &self,
+        seat_id: &SeatId,
+    ) -> Result<Option<Vec<GuardianCode>>, DbError> {
+        let stored: Option<String> = sqlx::query_scalar(
+            "SELECT guardian_codes FROM dkg_inputs WHERE quote_id = ? \
+             AND NOT EXISTS (SELECT 1 FROM formed_seats WHERE quote_id = ?) \
+             AND NOT EXISTS (SELECT 1 FROM decommissioned_seats WHERE quote_id = ?)",
+        )
+        .bind(seat_id.as_bytes().as_slice())
+        .bind(seat_id.as_bytes().as_slice())
+        .bind(seat_id.as_bytes().as_slice())
+        .fetch_optional(self.pool())
+        .await?;
+        stored
+            .map(|json| {
+                serde_json::from_str::<Vec<String>>(&json)
+                    .map(|codes| codes.into_iter().map(GuardianCode).collect())
+                    .map_err(|err| DbError::CorruptRow {
+                        table: "dkg_inputs",
+                        key: seat_id.to_string(),
+                        detail: err.to_string(),
+                    })
+            })
+            .transpose()
     }
 
     /// Record the one-way configured/no-wipe latch and return the stored

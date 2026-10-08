@@ -7,10 +7,11 @@
 The only production writer that sets a gateway item to `completed` is
 `allocation_store::complete_item`, called from `complete_if_gateway_funded`
 (`gateway_allocation.rs`). Before completing, the worker reads the item's own
-`gateway_funding` wallet operation and requires a claim entry from the
-configured gateway whose `txid` equals the operation's recorded txid, whose
-`out_idx` equals the operation's recorded `tx_vout` when chain observation has
-recorded one, and whose amount covers the committed amount. A transaction can
+`gateway_funding` wallet operation and builds a `DepositClaimQuery` from it:
+the operation's recorded txid, its recorded `tx_vout` when chain observation
+has recorded one, and the committed amount as a floor. Completion requires the
+configured gateway to hold a claim satisfying that query, as
+`DepositClaimQuery::matches` defines it. A transaction can
 pay two items' deposit addresses in separate outputs, so the output index is
 what separates them. The guard therefore holds an
 item-funding-output-to-target-claim identity; the aggregate federation balance
@@ -19,13 +20,21 @@ condition.
 
 ### L2 — the payment-log read returns per-deposit identity for both wallet modules (`code`, `test`, pinned source)
 
-`ConfiguredGatewayClient::deposit_claims` calls gatewayd's `/payment_log`
-endpoint for the target federation, filtered to the kinds in
+`ConfiguredGatewayClient::find_deposit_claim` calls gatewayd's
+`/payment_log` endpoint for the target federation, filtered to the kinds in
 `claim_event_kinds`. At the pinned gatewayd source
 (`fedimint-gateway-server/src/lib.rs`, `handle_payment_log_msg`) this reads
-the federation client's event log and returns `PersistedLogEntry` payloads,
-filtered to whatever kinds the caller names. `deposit_claims_from_log`
-reduces both modules' records to one outpoint-keyed claim, which
+the federation client's event log newest-first, filters to whatever kinds the
+caller names, and truncates to the requested page size. Whether the requested
+end position is itself returned depends on where it sits: the raw window is
+computed as `end - batch` and saturates at the start of the log, so the
+position is excluded when far from the start and included when near it. The
+adapter walks the log a page at a time, resuming at the oldest entry of the
+previous page, which skips nothing in the first case and re-reads one entry in
+the second. It stops when a page carries nothing older than the position asked
+for, reaches the start of the log, or comes back empty, so the walk recedes and
+terminates in either case. `DepositClaimReader::read_page` reduces both modules' records to
+one outpoint-keyed claim and carries walletv2 acceptances between pages, which
 `tests/gateway.rs` pins.
 
 `handle_address_msg` decides which module serves a federation: wallet v1 if
@@ -105,10 +114,10 @@ federation leaves the item running rather than recording a substitute value.
   gateway/Fedimint or chain-observer responses remain outside the claim's
   adversary model. A forged `deposit-confirmed` log entry is a forged backend
   response and outside A2.
-- **Liveness.** A claimed deposit whose log entry falls outside the bounded
-  payment-log page delays completion rather than falsifying it; the
-  payment-log read is newest-first and the page far exceeds the concurrent
-  item ceiling.
+- **Liveness.** A claim the gateway has not yet logged delays completion
+  rather than falsifying it. How far back the entry sits does not bound the
+  search: the walk ends only at the start of the log, so a negative result
+  means the gateway holds no matching claim.
 
 ## Weakest links
 

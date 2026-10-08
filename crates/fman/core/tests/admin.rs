@@ -16,6 +16,33 @@ use crate::seat_process::SeatProcessSpawner;
 use crate::seat_process::fake::{block_forever, write_fake_fedimintd};
 use crate::seat_process::{BitcoindConfig, RespawnPolicy, SeatProcessConfig};
 
+pub(crate) struct RefreshAuthorizations(pub tokio::sync::watch::Sender<DirectoryPresence>);
+
+#[async_trait::async_trait]
+impl crate::directory::HolderAuthorizationRefresher for RefreshAuthorizations {
+    async fn refresh(&self) -> anyhow::Result<()> {
+        self.0.send_modify(|presence| {
+            presence.onboarding = OnboardingStatus::AuthorizationObserved {
+                authorizations: 1,
+                holders: vec![presence.service_nostr_pubkey],
+                checked_at: Some(123),
+            };
+        });
+        Ok(())
+    }
+}
+
+/// Answers each support verb with the request it was handed, so a test
+/// sees exactly what the dispatcher forwarded.
+pub(crate) struct EchoSupport;
+
+#[async_trait::async_trait]
+impl super::SupportChat for EchoSupport {
+    async fn answer(&self, request: AdminRequest) -> anyhow::Result<serde_json::Value> {
+        Ok(serde_json::to_value(request)?)
+    }
+}
+
 #[test]
 fn malformed_seat_id_is_an_unparsable_request() {
     let error = serde_json::from_value::<AdminRequest>(serde_json::json!({
@@ -208,13 +235,14 @@ async fn admin_socket_round_trips_operator_verbs() {
                     fedimintd: fedimintd_path,
                     bitcoin_network: bitcoin::Network::Regtest,
                     iroh_dns: "https://dns.iroh.link/pkarr".parse().unwrap(),
-                    bitcoin_backend: crate::seat_process::BitcoinBackend::Bitcoind(
-                        BitcoindConfig {
+                    bitcoin_backend: crate::seat_process::BitcoinBackend::Bitcoind {
+                        primary: BitcoindConfig {
                             url: "http://127.0.0.1:18443".to_owned(),
                             username: "user".to_owned(),
                             password: "pass".to_owned(),
                         },
-                    ),
+                        esplora_fallback: None,
+                    },
                 },
             },
             Arc::new(crate::wallet::NoWallet),
@@ -231,13 +259,32 @@ async fn admin_socket_round_trips_operator_verbs() {
         onboarding: OnboardingStatus::Checking,
         latest_fman_version: None,
     });
-    let phase = OperatorPhase::fleet(fleet.clone(), presence);
+    let phase = OperatorPhase::fleet(
+        fleet.clone(),
+        presence,
+        Arc::new(RefreshAuthorizations(presence_tx.clone())),
+        Arc::new(EchoSupport),
+    );
     let server = serve(&phase, &path).unwrap();
 
     let ask = |request: AdminRequest| {
         let path = path.clone();
         async move { super::request(&path, &request).await.unwrap() }
     };
+
+    // Support verbs pass to the chat owner unchanged.
+    for request in [
+        AdminRequest::SupportChat,
+        AdminRequest::SendSupportMessage {
+            body: "  Seat 2 is down\n".into(),
+        },
+        AdminRequest::MarkSupportRead {
+            ids: vec!["c".repeat(64)],
+        },
+    ] {
+        let forwarded = serde_json::to_value(&request).unwrap();
+        assert_eq!(ask(request).await.unwrap(), forwarded);
+    }
 
     // Replace and read back the offer.
     let plans = ask(AdminRequest::SetPrice {
@@ -347,11 +394,12 @@ async fn admin_socket_round_trips_operator_verbs() {
     assert_eq!(onboarding["fman_version"]["latest"], "0.2.0");
     assert_eq!(onboarding["fman_version"]["update_required"], true);
 
-    assert!(
-        ask(AdminRequest::RefreshHolderAuthorizations)
-            .await
-            .is_err()
-    );
+    let refreshed = ask(AdminRequest::RefreshHolderAuthorizations)
+        .await
+        .unwrap();
+    assert_eq!(refreshed["nostr"]["state"], "authorization_observed");
+    assert_eq!(refreshed["nostr"]["checked_at"], 123);
+    assert_eq!(ask(AdminRequest::Onboarding).await.unwrap(), refreshed);
 
     assert_eq!(
         ask(AdminRequest::ReenrollTelemetry).await.unwrap(),
@@ -387,7 +435,12 @@ async fn admin_socket_round_trips_operator_verbs() {
     // admin responses as non-cacheable because other verbs return secrets.
     let over_socket = ask(AdminRequest::ShowPlans).await.unwrap();
     let response = crate::admin_http::router(
-        &crate::admin::OperatorPhase::fleet(fleet, presence_tx.subscribe()),
+        &crate::admin::OperatorPhase::fleet(
+            fleet,
+            presence_tx.subscribe(),
+            Arc::new(RefreshAuthorizations(presence_tx.clone())),
+            Arc::new(EchoSupport),
+        ),
         crate::admin_http::AdminHttpAuth::TrustedProxy,
     )
     .oneshot(

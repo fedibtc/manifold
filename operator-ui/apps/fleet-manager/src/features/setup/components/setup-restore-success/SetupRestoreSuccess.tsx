@@ -43,13 +43,13 @@ export const SetupRestoreSuccess = ({ result, onContinue }: SetupRestoreSuccessP
             </p>
 
             <ul className={styles.reasons}>
-              <li>the fleet never sold a seat;</li>
+              <li>this host never sold a seat;</li>
 
               <li>its records are not on the relay this host reads;</li>
 
               <li>this host points at a different environment;</li>
 
-              <li>the phrase is another valid phrase, but for a different fleet.</li>
+              <li>the phrase is another valid phrase, but for a different host.</li>
             </ul>
 
             <p>

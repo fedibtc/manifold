@@ -7,12 +7,19 @@ repository.workspace = true
 
 [features]
 embedded-operator-ui = ["dep:operator-ui-static", "dep:rust-embed"]
+# Keep process regression compilation out of routine SelfCI.
+bitcoin-fallback-startup-tests = []
 
 # The shipped binary keeps its deployed name: package images, the StartOS and
 # Umbrel entrypoints, and the E2E harnesses all invoke `fleet-manager serve`.
 [[bin]]
 name = "fleet-manager"
 path = "src/main.rs"
+
+[[test]]
+name = "bitcoin_fallback_startup"
+path = "tests/bitcoin_fallback_startup.rs"
+required-features = ["bitcoin-fallback-startup-tests"]
 
 # The composition root: it owns daemon argument parsing and wires the
 # capability adapters into `fman-core`. Nothing else may
@@ -29,12 +36,14 @@ fedi-decentralized-push-gateway-types = { path = "../../push-gateway-types" }
 fedi-decentralized-service-fleet-manager = { path = "../../service-fleet-manager" }
 fedi-iroh-rpc = { path = "../../fedi-iroh-rpc" }
 fedimint-core = { workspace = true }
+fedimint-server-bitcoin-rpc = { workspace = true }
 fedimint-server-core = { workspace = true }
 fedimintd = { workspace = true, features = ["jemalloc"] }
 fman-core = { path = "../core" }
 fman-fedimint = { path = "../fedimint" }
 fman-nostr = { path = "../nostr" }
 fman-telemetry = { path = "../telemetry" }
+futures = "0.3"
 hex = "0.4"
 iroh = { workspace = true }
 nostr-sdk = "0.44"
@@ -64,4 +73,6 @@ fedimint-build = { workspace = true }
 
 [dev-dependencies]
 bitcoin = "0.32.6"
+fedimint-server = { workspace = true }
+tempfile = "3"
 tower = { version = "0.5", features = ["util"] }

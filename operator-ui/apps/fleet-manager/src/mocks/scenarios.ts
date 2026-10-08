@@ -64,6 +64,14 @@ const onboarding = (
 
 const authorized = onboarding(authorizationObserved);
 
+// `checked_at_ms` is restamped on every read by the ShowSeatReadiness verb.
+const READY: MockState['seatReadiness'] = {
+  checked_at_ms: LAST_READ_AT * 1000,
+  relay: 'pass',
+  discovery: 'pass',
+  bitcoin: 'pass'
+};
+
 const fees = (overrides: Partial<MockGuardianFees> = {}): MockGuardianFees => ({
   federation_id: FEDERATION_A,
   remittance_account: '{"id":"acct1mockguardianfeeaccount"}',
@@ -149,10 +157,20 @@ const base = (): Pick<
   | 'payoutDestination'
   | 'relayAuthorization'
   | 'maxSeats'
+  | 'readyForNewSeats'
+  | 'seatReadiness'
+  | 'supportAvailable'
+  | 'supportMessages'
+  | 'supportReadIds'
   | 'fleetOpensAfterReads'
 > => ({
   onboarded: true,
   maxSeats: 3,
+  readyForNewSeats: true,
+  seatReadiness: READY,
+  supportAvailable: true,
+  supportMessages: [],
+  supportReadIds: [],
   fleetOpensAfterReads: 0,
   relayAuthorization: 'present',
   payoutDestination: 'operator@example.com',
@@ -344,6 +362,58 @@ const builders = {
     price: SEAT_PRICE_MSAT,
     onboarding: authorized
   }),
+  // Fedi wrote first after seeing an outage in telemetry; its latest reply is
+  // unread, so the sidebar counts it.
+  'support-conversation': () => ({
+    ...base(),
+    seats: [],
+    paymentFederations: [],
+    price: SEAT_PRICE_MSAT,
+    onboarding: authorized,
+    supportMessages: [
+      {
+        id: 'a'.repeat(64),
+        author: 'fedi' as const,
+        body: 'Hi, this is Fedi support. Our telemetry shows one of your guardians has not answered for 20 minutes. Is the host online?',
+        created_at: LAST_READ_AT - 7_200
+      },
+      {
+        id: 'b'.repeat(64),
+        author: 'operator' as const,
+        body: 'The box rebooted after a power cut. It is back now, but the seat still shows as starting.',
+        created_at: LAST_READ_AT - 3_600
+      },
+      {
+        id: 'c'.repeat(64),
+        author: 'fedi' as const,
+        body: 'Thanks. Please restart the seat from the Seats page and tell us what it shows.',
+        created_at: LAST_READ_AT - 600
+      }
+    ],
+    supportReadIds: ['a'.repeat(64)]
+  }),
+  // This deployment has no Fedi support key.
+  'support-unavailable': () => ({
+    ...base(),
+    seats: [],
+    paymentFederations: [],
+    price: SEAT_PRICE_MSAT,
+    onboarding: authorized,
+    supportAvailable: false
+  }),
+  'not-ready-for-seats': () => ({
+    ...base(),
+    seats: [],
+    paymentFederations: [],
+    price: null,
+    onboarding: authorized,
+    readyForNewSeats: false,
+    seatReadiness: {
+      ...READY,
+      discovery: 'discovery_record_missing',
+      bitcoin: 'bitcoin_syncing'
+    }
+  }),
   // The state a fleet is actually in before its first payout: revenue on both
   // sides and nowhere to send it. Every sweep refuses until a destination is
   // stored, which is the ordering the Payouts screen has to make visible.
@@ -367,6 +437,37 @@ const builders = {
           // Nothing has left yet, so the lifetime figure is exactly what the
           // pool still holds.
           lifetime_remitted_msat: 16_000_000
+        })
+      })
+    ],
+    paymentFederations: [
+      {
+        federation_id: FEDERATION_A,
+        accepted: true,
+        receivable: true,
+        wallet: walletStatus(150_000_000)
+      }
+    ],
+    price: SEAT_PRICE_MSAT,
+    onboarding: authorized
+  }),
+  'fees-dust': () => ({
+    ...base(),
+    seats: [
+      seat({
+        seat_id: 'seat-earning-01',
+        report: {
+          state: 'active',
+          health: 'healthy',
+          phase: 'running',
+          invite_code: 'fed1earning0000000000000000000000000000000000000000000000000000'
+        },
+        fees: fees({
+          staged_msat: 60_000,
+          locked_msat: 20_000,
+          idle_msat: 13_000,
+          collected_ecash_msat: 0,
+          lifetime_remitted_msat: 93_000
         })
       })
     ],
@@ -462,7 +563,7 @@ export type ScenarioName = keyof typeof builders;
 const notes: Record<ScenarioName, ScenarioNote> = {
   'fresh-fleet': {
     desc: 'Default. Onboarded and authorized, but nothing sold yet: no seats, no payment federations, no price.',
-    affects: ['overview', 'seats', 'wallet', 'offer']
+    affects: ['overview', 'seats', 'offer']
   },
   'not-onboarded': {
     desc: 'Host has never been onboarded. Only the onboarding verbs answer; everything else refuses.',
@@ -493,11 +594,20 @@ const notes: Record<ScenarioName, ScenarioNote> = {
     // Every route inside the shell, because the takeover is mounted in AppShell
     // rather than on a page. `setup` is deliberately absent: setup sits above
     // the shell, and this scenario is onboarded, so the wizard never renders.
-    affects: ['overview', 'authorization', 'seats', 'seat-detail', 'wallet', 'offer', 'backup']
+    affects: [
+      'overview',
+      'authorization',
+      'seats',
+      'seat-detail',
+      'payouts',
+      'offer',
+      'backup',
+      'support'
+    ]
   },
   'seats-empty': {
     desc: 'Still no seats, but one receivable federation at a zero balance and a price set.',
-    affects: ['seats', 'wallet']
+    affects: ['seats', 'payouts']
   },
   'seats-mixed': {
     desc: 'Four seats: running, DKG in progress, created, decommissioned. The two pre-formation seats have no fee account yet.',
@@ -509,19 +619,45 @@ const notes: Record<ScenarioName, ScenarioNote> = {
   },
   'wallet-not-receivable': {
     desc: 'Payment federation cannot receive.',
-    affects: ['wallet', 'overview']
+    affects: ['payouts', 'overview']
   },
   'offer-without-payments': {
     desc: 'A paid offer with no payment federation — nothing can ever be bought.',
     affects: ['offer', 'overview']
   },
+  'support-conversation': {
+    desc: 'Fedi started a support chat from telemetry; its latest reply is unread. The sidebar counts it on every page.',
+    // Every route inside the shell, because the unread count is in the sidebar.
+    affects: [
+      'overview',
+      'authorization',
+      'seats',
+      'seat-detail',
+      'payouts',
+      'offer',
+      'backup',
+      'support'
+    ]
+  },
+  'support-unavailable': {
+    desc: 'This deployment has no Fedi support key. The Support page says that chat is not available, and nothing is marked read.',
+    affects: ['support']
+  },
+  'not-ready-for-seats': {
+    desc: 'The last readiness run failed: no discovery record and Bitcoin still syncing. The daemon has stopped advertising and quoting new seats.',
+    affects: ['overview', 'health']
+  },
   'payouts-unset': {
     desc: 'Revenue on both sides and no payout destination stored: one federation holding a balance, one seat with fees in the pool and no collected ecash. Every sweep refuses until a destination is saved.',
     affects: ['payouts']
   },
+  'fees-dust': {
+    desc: 'One seat holding 93 sats in the pool. Below the threshold where the mint fee is a visible slice of a collection, so collecting asks for confirmation first.',
+    affects: ['payouts']
+  },
   earnings: {
     desc: 'Two paid running seats with guardian-fee remittances across several days, one already-spent claim, and a wallet-only leftover federation.',
-    affects: ['overview', 'wallet', 'seat-detail', 'payouts']
+    affects: ['overview', 'seat-detail', 'payouts']
   }
 };
 

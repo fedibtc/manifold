@@ -85,7 +85,7 @@ pub(crate) async fn wallet_drain_status(client: &ClientHandleArc) -> WalletDrain
         Ok(Msats(0)) => Ok(Msats(0)),
         Ok(amount) => economically_sweepable(client, Amount::from_msats(amount.0))
             .await
-            .map(|amount| Msats(amount.msats))
+            .map(|amount| Msats(crate::floor_to_whole_sats(amount.msats)))
             .map_err(|_| WalletDrainQuery::EconomicallySweepable),
         Err(_) => Err(WalletDrainQuery::EconomicallySweepable),
     };
@@ -249,6 +249,7 @@ pub(crate) async fn payout_for_request(
             operation_id: PayoutOperationId::parse(&key.operation_id.fmt_full().to_string())
                 .expect("Fedimint formats a canonical operation id"),
             amount_msat,
+            capped: None,
         });
     }
     Ok(found)

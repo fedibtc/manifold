@@ -1,9 +1,11 @@
 import {
+  Chip,
   type Column,
   CopyButton,
   DataTable,
   isTruncated,
   SectionCard,
+  SectionDescription,
   truncateMiddle
 } from '@operator-ui/common-ui';
 import type { PaymentFederation } from '@operator-ui/types';
@@ -23,6 +25,11 @@ const federationRowKey = (federation: PaymentFederation) => federation.federatio
  * Former members are listed too: membership is the authenticated common set
  * rather than an operator choice, and a leftover balance is still the operator's
  * money to move.
+ *
+ * The status column used to live on a separate Wallet screen that restated this
+ * federation list without offering an action on it. It belongs beside the
+ * withdraw button instead: "former member" and "not accepting payments" are the
+ * two answers to the question a stranded balance raises.
  */
 export const PaymentSweepTable = ({ federations, hasDestination }: PaymentSweepTableProps) => {
   const columns: Column<PaymentFederation>[] = [
@@ -40,13 +47,25 @@ export const PaymentSweepTable = ({ federations, hasDestination }: PaymentSweepT
       )
     },
     {
+      key: 'status',
+      header: 'Status',
+      render: (federation) => {
+        if (!federation.accepted) return <Chip tone="neutral">Former member</Chip>;
+        return federation.receivable ? (
+          <Chip tone="ok">Accepting payments</Chip>
+        ) : (
+          <Chip tone="warn">Not accepting payments</Chip>
+        );
+      }
+    },
+    {
       key: 'balance',
       header: 'Balance',
       render: (federation) => formatSats(federation.wallet.available_ecash_msat)
     },
     {
       key: 'sweep',
-      header: 'Send to destination',
+      header: 'Withdraw',
       render: (federation) => (
         <PaymentSweepAction
           federationId={federation.federation_id}
@@ -58,8 +77,18 @@ export const PaymentSweepTable = ({ federations, hasDestination }: PaymentSweepT
   ];
 
   return (
-    <SectionCard title="Setup-payment revenue" frame="table">
-      <DataTable columns={columns} rows={federations} rowKey={federationRowKey} />
+    <SectionCard title="Seat sales" frame="table">
+      <div className={styles.intro}>
+        <SectionDescription>
+          One-time payments for seats, listed by the federation the payment came through.
+        </SectionDescription>
+      </div>
+
+      {federations.length === 0 ? (
+        <p className={styles.empty}>No payment federations accepted yet.</p>
+      ) : (
+        <DataTable columns={columns} rows={federations} rowKey={federationRowKey} />
+      )}
     </SectionCard>
   );
 };

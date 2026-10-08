@@ -175,6 +175,7 @@ const sweepPaymentFees: Verb<'SweepPaymentFees'> = ({ federation_id, request_id 
     operation: {
       operation_id: `op_${federation_id.slice(4, 12)}_${swept}`,
       amount_msat: swept,
+      capped: null,
       committed_at_ms: now
     },
     created_at_ms: now
@@ -209,6 +210,7 @@ const sweepGuardianFees: Verb<'SweepGuardianFees'> = ({ seat_id, request_id }) =
     operation: {
       operation_id: `op_fees_${seat_id.slice(0, 8)}_${swept}`,
       amount_msat: swept,
+      capped: null,
       committed_at_ms: now
     },
     created_at_ms: now
@@ -297,7 +299,8 @@ const refreshHolderAuthorizations: Verb<'RefreshHolderAuthorizations'> = () => {
       ...state.onboarding,
       // A relay that is down stays down across reads; the scenario says so.
       nostr:
-        state.onboarding.nostr.state === 'relay_error'
+        state.onboarding.nostr.state === 'relay_error' ||
+        state.onboarding.nostr.state === 'authorization_observed'
           ? state.onboarding.nostr
           : { state: 'not_observed', checked_at: REFRESH_READ_AT }
     };
@@ -311,6 +314,16 @@ const capacity = () => ({
 });
 
 const showCapacity: Verb<'ShowCapacity'> = capacity;
+
+// The daemon reruns its checks on its own clock, so a report the mock serves is
+// always recent: stamped two minutes before the read.
+const showSeatReadiness: Verb<'ShowSeatReadiness'> = () => {
+  const report = getState().seatReadiness;
+  return {
+    ready_for_new_seats: getState().readyForNewSeats,
+    report: report && { ...report, checked_at_ms: Date.now() - 2 * 60_000 }
+  };
+};
 
 // The durable ceiling never moves below seats that are still active,
 // mirroring Db::set_max_seats and its error text.
@@ -348,6 +361,56 @@ const reenrollTelemetry: Verb<'ReenrollTelemetry'> = () => ({
   telemetry_reenrollment: 'scheduled'
 });
 
+// The daemon fills the thread from relays; the mock world holds it.
+const MAX_SUPPORT_MESSAGE_CHARS = 4000;
+
+const supportMessages = () => {
+  const state = getState();
+  return state.supportMessages.map((message) => ({
+    ...message,
+    unread: message.author === 'fedi' && !state.supportReadIds.includes(message.id)
+  }));
+};
+
+const supportUnread = () => supportMessages().filter((message) => message.unread).length;
+
+const supportChat: Verb<'SupportChat'> = () => ({
+  available: getState().supportAvailable,
+  messages: supportMessages(),
+  unread: supportUnread()
+});
+
+const sendSupportMessage: Verb<'SendSupportMessage'> = ({ body }) => {
+  const text = body.trim();
+  if (text.length === 0) throw new Error('Write a message first.');
+  if ([...text].length > MAX_SUPPORT_MESSAGE_CHARS) {
+    throw new Error(`A message can have at most ${MAX_SUPPORT_MESSAGE_CHARS} characters.`);
+  }
+  const state = getState();
+  const message = {
+    id: (state.supportMessages.length + 1).toString(16).padStart(64, '0'),
+    author: 'operator' as const,
+    body: text,
+    created_at: Math.floor(Date.now() / 1000)
+  };
+  state.supportMessages.push(message);
+  return { message: { ...message, unread: false } };
+};
+
+const markSupportRead: Verb<'MarkSupportRead'> = ({ ids }) => {
+  const state = getState();
+  for (const message of state.supportMessages) {
+    if (
+      message.author === 'fedi' &&
+      ids.includes(message.id) &&
+      !state.supportReadIds.includes(message.id)
+    ) {
+      state.supportReadIds.push(message.id);
+    }
+  }
+  return { unread: supportUnread() };
+};
+
 const showMnemonic: Verb<'ShowMnemonic'> = () => ({
   mnemonic:
     'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about'
@@ -362,7 +425,7 @@ const onboardAsNew: Verb<'OnboardAsNew'> = ({ if_needed }) => {
     if (if_needed) return { onboarded: 'already' };
     throw new RefusalWithReason(
       'already_onboarded',
-      'this Fleet Manager has already been onboarded; a host is set up once'
+      'this Manifold Fedimint Guardian has already been set up; a host is set up once'
     );
   }
   state.onboarded = true;
@@ -387,7 +450,7 @@ const onboardFromBackup: Verb<'OnboardFromBackup'> = ({
   if (getState().onboarded) {
     throw new RefusalWithReason(
       'already_onboarded',
-      'this Fleet Manager has already been onboarded; a host is set up once'
+      'this Manifold Fedimint Guardian has already been set up; a host is set up once'
     );
   }
   if (!acknowledge_original_host_is_gone) {
@@ -427,9 +490,13 @@ const fleetHandlers: VerbTable<Exclude<AdminRequestName, OnboardingVerbName>> = 
   SeatStatus: seatStatus,
   DecommissionSeat: decommissionSeat,
   ReenrollTelemetry: reenrollTelemetry,
+  SupportChat: supportChat,
+  SendSupportMessage: sendSupportMessage,
+  MarkSupportRead: markSupportRead,
   ShowPlans: showPlans,
   SetPrice: setPrice,
   ShowCapacity: showCapacity,
+  ShowSeatReadiness: showSeatReadiness,
   SetCapacity: setCapacity,
   ListPaymentFederations: listPaymentFederations,
   PayoutDestination: payoutDestination,
@@ -461,7 +528,9 @@ const mutatingVerbNames: readonly AdminRequestName[] = [
   'OnboardFromBackup',
   'RefreshHolderAuthorizations',
   'ConfigureInitialOffer',
-  'SetCapacity'
+  'SetCapacity',
+  'SendSupportMessage',
+  'MarkSupportRead'
 ];
 
 // Exposed over `string` because the caller holds a name read off the wire.
@@ -520,7 +589,7 @@ const notOnboardedRefusal = (): AdminResult<unknown> => ({
   Err: {
     kind: 'not_onboarded',
     message:
-      'this Fleet Manager has not been onboarded yet: run `admin onboard new` or `admin onboard restore`'
+      'this Manifold Fedimint Guardian has not been set up yet: run `admin onboard new` or `admin onboard restore`'
   }
 });
 
@@ -532,7 +601,7 @@ const startingRefusal = (): AdminResult<unknown> => ({
   Err: {
     kind: 'other',
     message:
-      'this Fleet Manager has completed onboarding and is starting; its fleet is not open yet'
+      'this Manifold Fedimint Guardian has completed setup and is starting; its guardians are not open yet'
   }
 });
 
@@ -548,14 +617,12 @@ const stageRefusal = (method: AdminRequestName): AdminResult<unknown> | null => 
   if (runtime === 'starting' && method !== 'Onboarding' && !isOnboardingVerb(method)) {
     return startingRefusal();
   }
-  // The fleet dispatcher answers these two setup questions with the same
-  // refusal the onboard verbs get: they were settled before the fleet existed
-  // (admin.rs's RefreshHolderAuthorizations / ConfigureInitialOffer arms).
-  if (method === 'RefreshHolderAuthorizations' || method === 'ConfigureInitialOffer') {
+  // Initial offer setup is settled; authorization can be refreshed again.
+  if (method === 'ConfigureInitialOffer') {
     return {
       Err: {
         kind: 'already_onboarded',
-        message: 'this Fleet Manager has already been onboarded; a host is set up once'
+        message: 'this Manifold Fedimint Guardian has already been set up; a host is set up once'
       }
     };
   }

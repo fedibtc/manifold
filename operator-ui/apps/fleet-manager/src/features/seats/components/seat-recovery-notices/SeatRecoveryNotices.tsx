@@ -25,7 +25,7 @@ export const SeatRecoveryNotices = ({ report }: SeatRecoveryNoticesProps) => (
 
     {report.state === 'active' && report.phase === 'dkg_in_progress' && (
       <Banner variant="info">
-        The setup ceremony is driven by the Federation Initiator over their own protocol — there is
+        The setup ceremony is driven by the Federation Ambassador over their own protocol — there is
         no Start/Restart control here because the admin API has none.
       </Banner>
     )}

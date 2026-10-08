@@ -13,7 +13,7 @@ mod payout;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{
-    Arc, RwLock,
+    Arc, Mutex, RwLock,
     atomic::{AtomicU64, Ordering},
 };
 use std::time::Duration;
@@ -46,6 +46,7 @@ use crate::seat::{
     SeatVerbError,
 };
 use crate::seat_process::{RespawnPolicy, SeatProcessConfig, SeatProcessSpawner};
+use crate::seat_readiness::ReadinessReport;
 
 // No `Debug`: [`SeatProcessConfig`] may hold a bitcoind password.
 #[derive(Clone)]
@@ -70,7 +71,7 @@ pub struct FleetConfig {
     /// ([`crate::backup_worker::DEFAULT_SCAN_INTERVAL`]).
     pub backup_scan_interval: Duration,
     /// Exact public push-gateway origin accepted for FI callback capabilities.
-    /// `None` keeps ordinary FMan operation available but rejects callbacks.
+    /// `None` keeps ordinary FMan operation available and ignores callbacks.
     pub push_gateway_origin: Option<PushGatewayOrigin>,
     /// Probe/retry cadence while one DKG completion callback is pending.
     pub push_callback_retry_interval: Duration,
@@ -245,20 +246,21 @@ impl FleetHolderAuthorizationStore {
         }
     }
 
-    pub async fn load(&self, max_issued_at: u64) -> anyhow::Result<Vec<String>> {
+    pub async fn load(&self, max_issued_at: u64) -> anyhow::Result<Option<String>> {
         Ok(self
             .db
-            .bounded_holder_authorization_event_jsons(max_issued_at)
+            .holder_authorization_event_json(max_issued_at)
             .await?)
     }
 
-    pub async fn merge(
+    pub async fn replace(
         &self,
-        events: &[(Vec<u8>, u64, String)],
+        authorization_issued_at: u64,
+        event_json: &str,
         max_issued_at: u64,
     ) -> anyhow::Result<()> {
         self.db
-            .merge_holder_authorization_events(events, max_issued_at)
+            .replace_holder_authorization_event(authorization_issued_at, event_json, max_issued_at)
             .await?;
         Ok(())
     }
@@ -321,6 +323,9 @@ pub struct Fleet {
     /// deliberately independent of the offer epoch, whose only job is quote
     /// validation.
     advertisement_changed: Notify,
+    /// The daemon's latest readiness report, for the operator. Admission
+    /// reads the durable verdict instead.
+    seat_readiness: Mutex<Option<ReadinessReport>>,
 }
 
 /// Failure while resolving a capability-scoped guardian metrics target.
@@ -381,7 +386,7 @@ impl Fleet {
             .await?;
         anyhow::ensure!(
             db.onboarding_stage().await? == crate::db::OnboardingStage::Complete,
-            "this Fleet Manager has not completed onboarding"
+            "this Manifold Fedimint Guardian has not completed setup"
         );
         // A fleet is opened against an identity that already exists. Acquiring
         // one is onboarding's job ([`crate::onboarding`]), and it happens
@@ -390,7 +395,7 @@ impl Fleet {
         let identity = Arc::new(
             db.load_identity()
                 .await?
-                .ok_or_else(|| anyhow!("this Fleet Manager has not been onboarded"))?,
+                .ok_or_else(|| anyhow!("this Manifold Fedimint Guardian has not been set up"))?,
         );
         let telemetry_generation = db.telemetry_capability_generation().await?;
         let wallet = wallet(&identity).await?;
@@ -467,6 +472,7 @@ impl Fleet {
             telemetry_generation: AtomicU64::new(telemetry_generation),
             telemetry_registration_changed: Notify::new(),
             advertisement_changed: Notify::new(),
+            seat_readiness: Mutex::new(None),
         };
         Ok(fleet)
     }
@@ -690,12 +696,61 @@ impl Fleet {
             .offer_snapshot(self.config.first_port_base)
             .await
             .expect("offer snapshot");
-        (snapshot.slots > 0).then_some(snapshot.offer)
+        (snapshot.slots > 0 && snapshot.ready_for_new_seats).then_some(snapshot.offer)
+    }
+
+    /// Record the daemon's latest readiness report.
+    ///
+    /// The verdict is durable, so a restart resumes it. A change draws a fresh
+    /// offer epoch atomically with it, so quotes issued before a failure are
+    /// refused with their refund instead of admitting a seat this FMan may not
+    /// serve. A failed write changes neither, and the next report retries.
+    pub async fn set_seat_readiness(&self, report: ReadinessReport) -> anyhow::Result<()> {
+        *self
+            .seat_readiness
+            .lock()
+            .expect("readiness lock is never poisoned") = Some(report);
+        let ready = report.ready();
+        if !self.db.set_ready_for_new_seats(ready).await? {
+            return Ok(());
+        }
+        if ready {
+            tracing::info!(
+                safe_to_share = true,
+                "readiness checks passed; accepting new seats"
+            );
+        } else {
+            tracing::warn!(
+                safe_to_share = true,
+                "readiness checks failed; not accepting new seats"
+            );
+        }
+        self.advertisement_changed.notify_one();
+        Ok(())
+    }
+
+    /// The durable verdict that gates admission.
+    pub async fn ready_for_new_seats(&self) -> bool {
+        self.db
+            .offer_snapshot(self.config.first_port_base)
+            .await
+            .expect("offer snapshot")
+            .ready_for_new_seats
+    }
+
+    /// The latest readiness report since this process started; the verdict
+    /// that gates admission is the durable one.
+    pub fn seat_readiness(&self) -> Option<ReadinessReport> {
+        *self
+            .seat_readiness
+            .lock()
+            .expect("readiness lock is never poisoned")
     }
 
     /// What the advertisement and `GetAvailability` say: whether a seat
-    /// would be allocated right now. False with no free capacity, and false
-    /// when the operator has configured no offer. Payment-policy membership and
+    /// would be allocated right now. False with no free capacity, when the
+    /// operator has configured no offer, and when the daemon's readiness
+    /// checks have not passed. Payment-policy membership and
     /// retained wallet-client readiness are RPC concerns, not advertisement
     /// availability; `GetQuote` remains authoritative.
     /// No advertisement is produced while this is false; an earlier one ages
@@ -708,7 +763,9 @@ impl Fleet {
             .expect("offer snapshot");
         let settings = snapshot.offer.settings;
         AvailabilitySnapshot {
-            accepting_seats: snapshot.slots > 0 && settings.price.is_some(),
+            accepting_seats: snapshot.slots > 0
+                && settings.price.is_some()
+                && snapshot.ready_for_new_seats,
             plans: settings.plans(),
         }
     }

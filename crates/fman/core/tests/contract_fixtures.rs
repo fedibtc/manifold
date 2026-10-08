@@ -79,7 +79,7 @@ fn the_request_inventory_covers_every_admin_request_variant_once() {
     // sees the inventory grow in the diff when a verb is added.
     assert_eq!(
         requests.len(),
-        23,
+        27,
         "AdminRequest gained or lost a verb — update this count and regenerate the fixtures"
     );
 }

@@ -39,6 +39,8 @@ families or safe journals. The fixed ALPN
 `fedi/fman/guardian-telemetry/1` is the protocol-version compatibility boundary.
 A future incompatible telemetry protocol must negotiate another ALPN/version;
 release metadata is not a substitute for that protocol negotiation.
+Protocol evolution is governed by
+[`GATE-production-compatibility`](../../../specs/GATE-production-compatibility.md).
 Method-labelled API families likewise use the same compiled canonical-method
 allowlist at both boundaries for every release; a raw or unrecognized method
 value discards its family.
@@ -136,7 +138,7 @@ greater generation replaces both. Independently, an accepted NIP-98 `created_at`
 may not move backward. Thus a fresh, correctly signed old body cannot roll
 capability state back. Periodic idempotent registration recovers collector
 database loss and endpoint changes without acknowledgements. Generation is part
-of the exact NIP-98-bound body. Making it required is a deliberate pre-production
+of the exact NIP-98-bound body. Making it required was a deliberate historical
 wire incompatibility: receivers reject registrations from older FMan builds
 rather than accepting a body without rollback ordering. The owner-only local
 `admin reenroll-telemetry` command durably advances the global generation,

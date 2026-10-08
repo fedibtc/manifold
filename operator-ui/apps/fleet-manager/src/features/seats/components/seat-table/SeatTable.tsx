@@ -31,19 +31,19 @@ const columns: Column<SeatRow>[] = [
   },
   {
     key: 'fi',
-    header: 'FI',
+    header: 'Ambassador',
     render: (row) => (
       <span className={styles.idRow}>
         <span className={styles.mono}>{truncateMiddle(row.seat.fi_id, 8, 8)}</span>
 
         {isTruncated(row.seat.fi_id, 8, 8) && (
-          <CopyButton value={row.seat.fi_id} label="Copy FI ID" />
+          <CopyButton value={row.seat.fi_id} label="Copy Ambassador ID" />
         )}
       </span>
     )
   },
   { key: 'plan', header: 'Plan', render: (row) => describePlan(row.seat.plan) },
-  { key: 'created', header: 'Created', render: (row) => formatDate(row.seat.created_at_ms) },
+  { key: 'created', header: 'Sold', render: (row) => formatDate(row.seat.created_at_ms) },
   {
     key: 'phase',
     header: 'Phase',

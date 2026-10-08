@@ -131,7 +131,7 @@ impl GatewaydDriver {
             .env("FM_GATEWAY_MNEMONIC", "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about")
             .env("FM_IN_DEVIMINT", "1");
         if let Some(overrides) = &stable.iroh_connect_overrides {
-            config = config.env("FM_IROH_CONNECT_OVERRIDES", overrides);
+            config = config.env("FM_IROH_CONNECT_OVERRIDES_PLAIN", overrides);
         }
         let process = Arc::new(ResourceProcess::spawn(config).map_err(|error| {
             ApiError::new(

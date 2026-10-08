@@ -2,7 +2,7 @@
 
 ## Record justification
 
-The enrollment contract binds the Holder miniapp and credential SDK outside
+The enrollment contract binds the Holder miniapp and PeerBadge SDK outside
 this repository, the operator console that shows the authorization request, and
 the FLIP daemon that admits the published event, so no single implementation
 artifact can own it coherently.
@@ -44,7 +44,7 @@ This is the same event kind FMan uses
 document is one Holder authorization over a service subject, and only the
 addressing differs. The FLIP `d` prefix, hashtag, and `p` tag keep the two
 indexes disjoint, so a filter for one service can never match the other's
-publication. `credential_digest` is the credential-SDK `CredentialDigest` wire
+publication. `credential_digest` is the PeerBadge SDK `CredentialDigest` wire
 form, the same encoding the FMan variant and the attester revocation `d` tag
 use.
 

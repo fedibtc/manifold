@@ -256,6 +256,7 @@ pub struct SelectedFmanSeat {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct ApprovedFmanSeat {
     pub(crate) fman_id: PublicKey,
+    pub(crate) holder: PublicKey,
     pub(crate) locator: Locator,
 }
 
@@ -263,6 +264,7 @@ impl From<SelectedFmanSeat> for ApprovedFmanSeat {
     fn from(seat: SelectedFmanSeat) -> Self {
         Self {
             fman_id: seat.candidate.fman_id,
+            holder: seat.candidate.badge.holder,
             locator: seat.candidate.locator,
         }
     }
@@ -1035,6 +1037,7 @@ pub(crate) async fn preview_fman_selection_with(
             candidates,
             request.federation_size,
             BTreeMap::new(),
+            BTreeSet::new(),
             deadline,
             &mut cohort_rejected,
         )
@@ -1097,6 +1100,7 @@ pub(crate) async fn preview_fman_replacements_with(
     requirements: GuardianReplacementRequirements,
     excluded: BTreeSet<PublicKey>,
     retained_service_pubkeys: BTreeMap<secp256k1::XOnlyPublicKey, PublicKey>,
+    retained_holders: BTreeSet<PublicKey>,
     deadline: Instant,
     now: u64,
     completed_at: impl FnOnce() -> u64,
@@ -1122,6 +1126,7 @@ pub(crate) async fn preview_fman_replacements_with(
         discovery.candidates,
         FederationSize(requested),
         retained_service_pubkeys,
+        retained_holders,
         deadline,
         &mut discovery.rejected,
     )
@@ -1171,6 +1176,7 @@ pub(crate) async fn preview_fman_replacements_with(
 /// selection supplies an empty map. `seats_to_fill` is the number of seats
 /// to fill, which during replacement is smaller than the request's
 /// federation size.
+/// `selected_holders` likewise reserves every known retained badge holder.
 pub(crate) async fn select_fman_seats(
     verifier: &impl SelectionBadgeVerifier,
     prober: &impl SelectionAvailabilityProber,
@@ -1179,6 +1185,7 @@ pub(crate) async fn select_fman_seats(
     candidates: Vec<EligibleFmanCandidate>,
     seats_to_fill: FederationSize,
     mut selected_service_pubkeys: BTreeMap<secp256k1::XOnlyPublicKey, PublicKey>,
+    mut selected_holders: BTreeSet<PublicKey>,
     deadline: Instant,
     rejected: &mut Vec<RejectedAdvertisement>,
 ) -> Vec<SelectedFmanSeat> {
@@ -1224,6 +1231,13 @@ pub(crate) async fn select_fman_seats(
                             // a diversity slot from the collision.
                             continue;
                         }
+                        if selected_holders.contains(&badge.holder) {
+                            rejected.push(RejectedAdvertisement {
+                                author: candidate.fman_id,
+                                reason: AdvertisementRejection::DuplicateBadgeHolder,
+                            });
+                            continue;
+                        }
                         // Probe after the duplicate check so a candidate that
                         // can never seat is not dialed at all.
                         if let Err(reason) = probe_reached_candidate(
@@ -1249,6 +1263,7 @@ pub(crate) async fn select_fman_seats(
                         }
                         selected_service_pubkeys
                             .insert(candidate.locator.service_pubkey, candidate.fman_id);
+                        selected_holders.insert(badge.holder);
                         seats.push(SelectedFmanSeat {
                             candidate: VerifiedCandidate {
                                 fman_id: candidate.fman_id,

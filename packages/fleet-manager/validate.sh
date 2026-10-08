@@ -31,7 +31,7 @@ grep -Fx -- '--bitcoind-password=-leading-hyphen-password' "$capture"
 grep -Fx -- '--push-gateway-origin' "$capture"
 
 # Production without notifications still starts with its local Bitcoin node.
-env -u FLEET_MANAGER_PUSH_GATEWAY_ORIGIN \
+env -u FLEET_MANAGER_PUSH_GATEWAY_ORIGIN -u FLEET_MANAGER_ESPLORA_URL \
   PATH="$tmp_dir:$PATH" FLEET_MANAGER_CAPTURED_ARGV="$capture" \
   FLEET_MANAGER_MANIFOLD_ENVIRONMENT=production \
   FLEET_MANAGER_BITCOIND_URL=http://bitcoin:8332 \
@@ -43,9 +43,29 @@ if grep -q -- '--push-gateway-origin' "$capture"; then
   echo 'Absent push gateway must not be passed to the daemon' >&2
   exit 1
 fi
+if grep -q -- '--esplora-url' "$capture"; then
+  echo 'Absent Esplora fallback must not be passed to the daemon' >&2
+  exit 1
+fi
+
+# An explicit fallback accompanies Core; it never replaces its credentials.
+PATH="$tmp_dir:$PATH" FLEET_MANAGER_CAPTURED_ARGV="$capture" \
+  FLEET_MANAGER_MANIFOLD_ENVIRONMENT=production \
+  FLEET_MANAGER_BITCOIND_URL=http://bitcoin:8332 \
+  FLEET_MANAGER_BITCOIND_USERNAME=operator \
+  FLEET_MANAGER_BITCOIND_PASSWORD=test-password \
+  FLEET_MANAGER_ESPLORA_URL=https://mempool.space/api \
+  packages/fleet-manager/entrypoint.sh
+grep -Fx -- '--esplora-url' "$capture"
+grep -Fx -- 'https://mempool.space/api' "$capture"
+grep -Fx -- 'http://bitcoin:8332' "$capture"
+grep -Fx -- 'operator' "$capture"
+grep -Fx -- '--bitcoind-password=test-password' "$capture"
+
 if env -u FLEET_MANAGER_BITCOIND_URL \
   PATH="$tmp_dir:$PATH" FLEET_MANAGER_CAPTURED_ARGV="$capture" \
   FLEET_MANAGER_MANIFOLD_ENVIRONMENT=production \
+  FLEET_MANAGER_ESPLORA_URL=https://mempool.space/api \
   packages/fleet-manager/entrypoint.sh 2>"$tmp_dir/error"; then
   echo 'Production must refuse a missing Bitcoin Core connection' >&2
   exit 1

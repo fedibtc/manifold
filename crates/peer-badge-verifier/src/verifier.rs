@@ -6,10 +6,6 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use fedi_credential_sdk_protocol::{
-    CredentialDigest, CredentialsError, HolderId, IssuerAuthority, IssuerId, SignedRevocation,
-    SubjectPubkey, VerificationContext,
-};
 use fedi_decentralized_domain::{
     HolderAuthorizationEnvelope, PeerBadgeTrustPolicy, PeerBadgeTrustPolicyConfigError,
     PeerBadgeTrustPolicyError, TrustScoreBadgeV1, TrustScoreSchemaError,
@@ -23,6 +19,10 @@ use fedi_decentralized_nostr::attester::{
 use fedi_decentralized_nostr_clients::{NostrClientError, NostrPeerBadgeClient};
 use fedimint_core::runtime::Instant;
 use nostr_sdk::{Event, EventId, Kind, PublicKey, RelayUrl, TagKind};
+use peerbadge_protocol::{
+    CredentialDigest, CredentialsError, HolderId, IssuerAuthority, IssuerId, SignedRevocation,
+    SubjectPubkey, VerificationContext,
+};
 
 const PEER_BADGE_VERIFICATION_TIMEOUT: Duration = Duration::from_secs(10);
 const MAX_AUTHORITY_RELAYS: usize = 4;
@@ -443,6 +443,47 @@ impl PeerBadgeVerifier {
         let now = fedimint_core::time::duration_since_epoch().as_secs();
         let deadline = Instant::now() + PEER_BADGE_VERIFICATION_TIMEOUT;
         self.verify_at(envelope, now, deadline).await
+    }
+
+    /// Authenticate an envelope's issuance without relay I/O: the issuer is a
+    /// configured root with a pinned authority, and the credential proof,
+    /// holder binding, credential digest, and authorization time (`now`)
+    /// verify. It checks neither revocation nor the relying-party trust level,
+    /// so it does not make the badge acceptable; it only proves that a trusted
+    /// issuer issued it to this holder.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PeerBadgeVerificationError::UntrustedIssuer`] for an issuer
+    /// outside the root set, [`PeerBadgeVerificationError::MissingAuthority`]
+    /// for a root without a pinned authority (canonical profiles pin every
+    /// root), and [`PeerBadgeVerificationError::InvalidEnvelope`] when any
+    /// signature or binding fails.
+    pub fn verify_issuance_at(
+        &self,
+        envelope: &HolderAuthorizationEnvelope,
+        now: u64,
+    ) -> Result<(), PeerBadgeVerificationError> {
+        let issuer = &envelope.signed_credential.credential.issuer_id_pubkey;
+        if !self.inner.issuer_roots.contains(&issuer.0) {
+            return Err(PeerBadgeVerificationError::UntrustedIssuer { issuer: issuer.0 });
+        }
+        let authority = self
+            .inner
+            .pinned_authorities
+            .get(&issuer.0)
+            .ok_or(PeerBadgeVerificationError::MissingAuthority)?;
+        let mut verifier = VerificationContext::new();
+        verifier
+            .add_issuer_authority(authority)
+            .map_err(PeerBadgeVerificationError::InvalidEnvelope)?;
+        verifier
+            .verify_credential_authorization_at_time(
+                &envelope.signed_credential,
+                &envelope.holder_authorization,
+                now,
+            )
+            .map_err(PeerBadgeVerificationError::InvalidEnvelope)
     }
 
     async fn verify_at(

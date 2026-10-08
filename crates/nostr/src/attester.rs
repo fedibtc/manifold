@@ -26,7 +26,7 @@ pub const NOSTR_REVOCATION_LOCATION_PROTOCOL: &str = "nostr";
 /// Issuer credential-revocation event kind.
 ///
 /// Addressable, provisional kind used by issuers to publish
-/// `fedi-credential-sdk-protocol::SignedRevocation` documents. Verifiers fetch
+/// `peerbadge-protocol::SignedRevocation` documents. Verifiers fetch
 /// these from every relay location listed in the authenticated
 /// `IssuerAuthority.issuer.revocation` entries and must verify the signed
 /// content. The authority delegates negative-state completeness trust to those
@@ -41,7 +41,7 @@ pub const CREDENTIAL_REVOCATION_D_TAG_PREFIX: &str = "credential-revocation";
 
 /// Build the `d` tag value for an attester credential revocation event.
 ///
-/// `credential_digest` is the credential-SDK `CredentialDigest` wire form: the
+/// `credential_digest` is the PeerBadge SDK `CredentialDigest` wire form: the
 /// base64url-unpadded SHA-256 digest string produced by `Credential::digest()`
 /// serde serialization. Publishers and fetchers must use this same encoding or
 /// addressable replacement/filtering diverges across components.

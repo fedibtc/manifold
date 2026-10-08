@@ -1,9 +1,6 @@
 #!/usr/bin/env bash
 flakebox_git_integration_outdated=
-# The toplevel is probed only to confirm we are inside a git tree — nothing
-# reads it, so it is not captured (shellcheck SC2034 fails the pre-commit
-# gate on an assigned-and-unused variable, which blocks every commit).
-if git rev-parse --show-toplevel >/dev/null 2>&1 &&
+if root="$(git rev-parse --show-toplevel 2>/dev/null)" &&
   dot_git="$(git rev-parse --git-common-dir 2>/dev/null)" &&
   git_dir="$(git rev-parse --absolute-git-dir 2>/dev/null)"; then
   hook="${dot_git}/hooks/pre-commit"
@@ -35,7 +32,7 @@ fi
 if [[ -n "${flakebox_git_integration_outdated}" ]]; then
   >&2 echo "ℹ️  Flakebox Git integration is missing or outdated. Run 'flakebox install-hooks'."
 fi
-unset flakebox_git_integration_outdated dispatcher git_dir hook source dot_git
+unset flakebox_git_integration_outdated dispatcher git_dir hook source root dot_git
 
 if ! flakebox lint --silent; then
   >&2 echo "ℹ️  Project recommendations detected. Run 'flakebox lint' for more info."

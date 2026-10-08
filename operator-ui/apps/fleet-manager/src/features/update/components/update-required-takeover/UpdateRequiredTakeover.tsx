@@ -37,7 +37,7 @@ export const UpdateRequiredTakeover = () => {
     <div className={styles.root} role="dialog" aria-modal="true" aria-labelledby={HEADING_ID}>
       <div className={styles.card}>
         <h1 className={styles.heading} id={HEADING_ID}>
-          Update this Fleet Manager
+          Update Manifold Fedimint Guardian
         </h1>
 
         <p className={styles.intro}>
@@ -59,7 +59,7 @@ export const UpdateRequiredTakeover = () => {
           </div>
         </dl>
 
-        <p className={styles.note}>This does not stop your fleet. You can update later.</p>
+        <p className={styles.note}>This does not stop your guardians. You can update later.</p>
 
         <Button ref={dismissButtonRef} fullWidth onClick={onDismiss}>
           Continue to the dashboard

@@ -37,14 +37,6 @@ pub const FMAN_TRUST_MATERIAL_MAX_RESPONSE_BYTES: usize = 131_072;
 /// Each authorization carries its own backing credential, so this bounds both.
 pub const FMAN_TRUST_MATERIAL_MAX_HOLDER_AUTHORIZATIONS: usize = 64;
 
-/// Maximum distinct Holder authorizations retained by one FMan identity.
-///
-/// A Fleet Manager has one authorization set shared by all federations it
-/// operates. Keeping this equal to the public response bound ensures every
-/// retained authorization remains representable in one response.
-pub const FMAN_HOLDER_AUTHORIZATION_RETENTION_MAX_COUNT: usize =
-    FMAN_TRUST_MATERIAL_MAX_HOLDER_AUTHORIZATIONS;
-
 /// Maximum future clock skew accepted for a Holder authorization statement.
 pub const FMAN_HOLDER_AUTHORIZATION_MAX_FUTURE_SKEW_SECS: u64 = 3600;
 

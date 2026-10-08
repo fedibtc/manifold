@@ -38,6 +38,7 @@ import fmanDecommissionSeatJson from '../../fixtures/fman_decommission_seat.json
 import fmanGuardianFeesJson from '../../fixtures/fman_guardian_fees.json';
 import fmanGuardianFeesPolicyErrorJson from '../../fixtures/fman_guardian_fees_policy_error.json';
 import fmanHolderAuthorizationRefreshJson from '../../fixtures/fman_holder_authorization_refresh.json';
+import fmanMarkSupportReadJson from '../../fixtures/fman_mark_support_read.json';
 import fmanMnemonicJson from '../../fixtures/fman_mnemonic.json';
 import fmanOnboardAsNewJson from '../../fixtures/fman_onboard_as_new.json';
 import fmanOnboardAsNewAlreadyJson from '../../fixtures/fman_onboard_as_new_already.json';
@@ -46,13 +47,17 @@ import fmanOnboardingJson from '../../fixtures/fman_onboarding.json';
 import fmanPaymentFederationsJson from '../../fixtures/fman_payment_federations.json';
 import fmanPayoutDestinationJson from '../../fixtures/fman_payout_destination.json';
 import fmanPayoutJobJson from '../../fixtures/fman_payout_job.json';
+import fmanPayoutJobCappedJson from '../../fixtures/fman_payout_job_capped.json';
 import fmanPayoutJobStatusJson from '../../fixtures/fman_payout_job_status.json';
 import fmanPlansJson from '../../fixtures/fman_plans.json';
 import fmanReenrollTelemetryJson from '../../fixtures/fman_reenroll_telemetry.json';
 import fmanSeatGuardianFeesJson from '../../fixtures/fman_seat_guardian_fees.json';
+import fmanSeatReadinessJson from '../../fixtures/fman_seat_readiness.json';
 import fmanSeatReportsJson from '../../fixtures/fman_seat_reports.json';
 import fmanSeatStatusJson from '../../fixtures/fman_seat_status.json';
 import fmanSeatsJson from '../../fixtures/fman_seats.json';
+import fmanSendSupportMessageJson from '../../fixtures/fman_send_support_message.json';
+import fmanSupportChatJson from '../../fixtures/fman_support_chat.json';
 import fundsJson from '../../fixtures/funds.json';
 import healthJson from '../../fixtures/health.json';
 import pagingJson from '../../fixtures/paging.json';
@@ -72,6 +77,7 @@ import type {
   ListPaymentFederationsResponse,
   ListSeatsResponse,
   ListWalletOperationsResponse,
+  MarkSupportReadResponse,
   OnboardAsNewResponse,
   OnboardFromBackupResponse,
   OnboardingResponse,
@@ -83,8 +89,12 @@ import type {
   SeatGuardianFee,
   SeatReport,
   SeatStatusResponse,
+  SendSupportMessageResponse,
   ShowMnemonicResponse,
-  ShowPlansResponse
+  ShowPlansResponse,
+  ShowSeatReadinessResponse,
+  SupportChatResponse,
+  SupportMessage
 } from '../index';
 
 // --- compile-time mirrors: real object literals, so literal/enum types stay
@@ -265,6 +275,7 @@ const adminRequestsMirror = {
   ShowPlans: 'ShowPlans',
   SetPrice: { SetPrice: { price_msats: 50_000_000 } },
   ShowCapacity: 'ShowCapacity',
+  ShowSeatReadiness: 'ShowSeatReadiness',
   SetCapacity: { SetCapacity: { max_seats: 4 } },
   ConfigureInitialOffer: {
     ConfigureInitialOffer: { max_seats: 4, price_msats: 50_000_000 }
@@ -284,6 +295,9 @@ const adminRequestsMirror = {
   SeatStatus: { SeatStatus: { seat_id: SEAT_ID } },
   DecommissionSeat: { DecommissionSeat: { seat_id: SEAT_ID } },
   ReenrollTelemetry: 'ReenrollTelemetry',
+  SupportChat: 'SupportChat',
+  SendSupportMessage: { SendSupportMessage: { body: 'Seat 2 stopped after the update.' } },
+  MarkSupportRead: { MarkSupportRead: { ids: ['c'.repeat(64)] } },
   GuardianFees: { GuardianFees: { seat_id: SEAT_ID, limit: 20 } },
   CollectGuardianFees: { CollectGuardianFees: { seat_id: SEAT_ID } },
   SweepGuardianFees: {
@@ -321,6 +335,16 @@ const fmanAdminErrorMirror = {
 } satisfies AdminError;
 
 const fmanPlansMirror = { plans: [PLAN] } satisfies ShowPlansResponse;
+
+const fmanSeatReadinessMirror = {
+  ready_for_new_seats: false,
+  report: {
+    checked_at_ms: 1_700_000_000_000,
+    relay: 'pass',
+    discovery: 'discovery_record_missing',
+    bitcoin: 'bitcoin_syncing'
+  }
+} satisfies ShowSeatReadinessResponse;
 
 const fmanPaymentFederationsMirror = {
   federations: [
@@ -388,11 +412,20 @@ const fmanPayoutJobMirror = {
   destination: 'operator@example.com',
   operation: {
     amount_msat: 250_000,
+    capped: null,
     committed_at_ms: 1_753_600_002_000,
     operation_id: '0f7c1b9a3e5d4c2b8a6f0e1d2c3b4a5960718293a4b5c6d7e8f90a1b2c3d4e5f'
   },
   request_id: 'fixture-payout-request',
   scope: { federation_id: 'fed1fixturepayment', kind: 'payment_federation' }
+} satisfies PayoutJob;
+
+const fmanPayoutJobCappedMirror = {
+  ...fmanPayoutJobMirror,
+  operation: {
+    ...fmanPayoutJobMirror.operation,
+    capped: { maximum_msat: 250_000, remaining_msat: 12_345_000 }
+  }
 } satisfies PayoutJob;
 
 const fmanPayoutJobStatusMirror = {
@@ -534,6 +567,35 @@ const fmanDecommissionSeatMirror = {
 const fmanReenrollTelemetryMirror = {
   telemetry_reenrollment: 'scheduled'
 } satisfies ReenrollTelemetryResponse;
+
+const supportOperatorMessage = {
+  id: 'a'.repeat(64),
+  author: 'operator',
+  body: 'Seat 2 stopped after the update.',
+  created_at: 1700000000,
+  unread: false
+} satisfies SupportMessage;
+
+const fmanSupportChatMirror = {
+  available: true,
+  messages: [
+    supportOperatorMessage,
+    {
+      id: 'b'.repeat(64),
+      author: 'fedi',
+      body: 'Thanks. Does the seat log show a DKG error?',
+      created_at: 1700000600,
+      unread: true
+    }
+  ],
+  unread: 1
+} satisfies SupportChatResponse;
+
+const fmanSendSupportMessageMirror = {
+  message: supportOperatorMessage
+} satisfies SendSupportMessageResponse;
+
+const fmanMarkSupportReadMirror = { unread: 0 } satisfies MarkSupportReadResponse;
 
 const fmanGuardianFeesMirror = {
   seat_id: SEAT_ID,
@@ -700,6 +762,10 @@ describe('committed FMan fixtures match their type-checked mirrors', () => {
     expect(fmanPlansJson).toEqual(fmanPlansMirror);
   });
 
+  it('should keep fman_seat_readiness.json equal to the typed mirror', () => {
+    expect(fmanSeatReadinessJson).toEqual(fmanSeatReadinessMirror);
+  });
+
   it('should keep fman_payment_federations.json equal to the typed mirror', () => {
     expect(fmanPaymentFederationsJson).toEqual(fmanPaymentFederationsMirror);
   });
@@ -710,6 +776,7 @@ describe('committed FMan fixtures match their type-checked mirrors', () => {
 
   it('should keep fman payout job fixtures equal to the typed mirrors', () => {
     expect(fmanPayoutJobJson).toEqual(fmanPayoutJobMirror);
+    expect(fmanPayoutJobCappedJson).toEqual(fmanPayoutJobCappedMirror);
     expect(fmanPayoutJobStatusJson).toEqual(fmanPayoutJobStatusMirror);
   });
 
@@ -735,6 +802,9 @@ describe('committed FMan fixtures match their type-checked mirrors', () => {
 
   it('should keep fman_reenroll_telemetry.json equal to the typed mirror', () => {
     expect(fmanReenrollTelemetryJson).toEqual(fmanReenrollTelemetryMirror);
+    expect(fmanSupportChatJson).toEqual(fmanSupportChatMirror);
+    expect(fmanSendSupportMessageJson).toEqual(fmanSendSupportMessageMirror);
+    expect(fmanMarkSupportReadJson).toEqual(fmanMarkSupportReadMirror);
   });
 
   it('should keep fman_guardian_fees.json equal to the typed mirror', () => {

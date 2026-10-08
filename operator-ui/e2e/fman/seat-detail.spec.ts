@@ -38,7 +38,7 @@ test('should explain the FI-driven setup ceremony for a seat mid-DKG', async ({ 
 
   await expect(page.getByRole('heading', { name: 'seat-dkg-01', level: 1 })).toBeVisible();
   await expect(
-    page.getByText('The setup ceremony is driven by the Federation Initiator')
+    page.getByText('The setup ceremony is driven by the Federation Ambassador')
   ).toBeVisible();
 });
 

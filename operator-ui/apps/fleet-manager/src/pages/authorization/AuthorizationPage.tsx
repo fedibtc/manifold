@@ -1,6 +1,8 @@
-import { SectionCard } from '@operator-ui/common-ui';
+import { Button, SectionCard } from '@operator-ui/common-ui';
 import { useOnboarding } from '@/shared/api/hooks/use-onboarding/useOnboarding';
+import { useRefreshAuthorization } from '@/shared/api/hooks/use-refresh-authorization/useRefreshAuthorization';
 import { AuthorizationPanel } from '@/shared/components/authorization-panel/AuthorizationPanel';
+import { GuardianTerms } from '@/shared/components/guardian-terms/GuardianTerms';
 import { toNpub } from '@/shared/utils/npub';
 import styles from './AuthorizationPage.module.css';
 
@@ -14,34 +16,62 @@ const renderHolder = (holder: string) => (
 
 export const AuthorizationPage = () => {
   const onboarding = useOnboarding();
+  const refresh = useRefreshAuthorization();
+  const handleFetchAuthorization = () => {
+    refresh.mutate();
+  };
   const nostr = onboarding.data?.nostr;
   const authorized = nostr?.state === 'authorization_observed';
   const holders = authorized ? nostr.holders : [];
+  // An approved fleet is not waiting for a scan, so asking for one states
+  // something the rest of the screen contradicts.
+  const intro = authorized
+    ? 'This host is approved. The code below is your Manifold Fedimint Guardian ID.'
+    : 'This host needs to be approved before Federation Ambassadors can discover and use it. Scan the code below with the Holder app to approve it.';
 
   return (
     <div className={styles.root}>
       <h1 className={styles.heading}>Authorization</h1>
 
-      <p className={styles.intro}>
-        Until a holder has authorized this fleet manager, initiators have no way to evaluate it.
-        This page stays available for as long as the fleet runs.
-      </p>
+      <p className={styles.intro}>{intro}</p>
 
       <AuthorizationPanel
         data={onboarding.data}
         isLoading={onboarding.isLoading}
-        error={onboarding.error}
+        error={refresh.error ?? onboarding.error}
       />
+
+      <SectionCard title="Update authorization">
+        <p className={styles.hint}>
+          To renew or replace your authorization, scan the Manifold Fedimint Guardian ID with the
+          Holder app and authorize it again. Then fetch the new authorization here. Your existing
+          authorization is retained if the check fails or finds nothing new.
+        </p>
+
+        <Button variant="secondary" loading={refresh.isPending} onClick={handleFetchAuthorization}>
+          Fetch new authorization
+        </Button>
+      </SectionCard>
       {holders.length > 0 ? (
-        <SectionCard title="Observed holders">
-          <p className={styles.holdersHint}>
-            Shown as an npub, so this can be compared against the identity key a holder application
-            displays.
+        <SectionCard title="Approved by">
+          <p className={styles.hint}>
+            Compare these with the approver shown in the Holder app to confirm they match.
           </p>
 
           <ul className={styles.holdersList}>{holders.map(renderHolder)}</ul>
         </SectionCard>
       ) : null}
+      {/* No acceptance date: the daemon keeps no record of when, or whether, the
+          terms were accepted, and a fleet onboarded before the terms step never
+          saw it. */}
+      <SectionCard title="Terms of service">
+        <p className={styles.hint}>
+          These terms cover Fedi verification and the telemetry your fleet shares with Fedi. Updates
+          are posted at the same address.
+        </p>
+
+        <GuardianTerms />
+      </SectionCard>
     </div>
   );
 };

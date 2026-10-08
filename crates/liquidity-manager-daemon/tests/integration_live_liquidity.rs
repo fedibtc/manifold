@@ -37,7 +37,7 @@ use fedi_decentralized_liquidity_manager_daemon::{
 };
 use fedi_decentralized_service_liquidity_manager::{
     AllocationItemTarget, BitcoinNetwork, FederationId, FederationLiquidityDetails, FederationName,
-    FmanEndorsement, GetAllocationStatusRequest, GetAllocationStatusResponse,
+    FmanEndorsement, FundingPolicyConfig, GetAllocationStatusRequest, GetAllocationStatusResponse,
     GetFmanTrustMaterialResponse, HashBytes, InviteCode as ServiceInviteCode, ItemAllocationStatus,
     LiquidityAmountBounds, LiquidityProviderAdvertisement, PayloadProof, ProtocolVersion, Pubkey,
     PublicLiquidityApi, PublicLiquidityApiClient, PublicRejectionCode, PublicRpcPayloadDomain,
@@ -1612,27 +1612,9 @@ async fn live_unresolvable_send_escalates_to_review_and_waits_for_the_operator()
 
     let mut stack = LiveLiquidityStack::start("live-manual-review").await?;
     stack.wallet.fund_gateway_wallet().await?;
-    let (endpoint_addr, advertisement, rpc) = stack.wallet.configure_publish_and_connect().await?;
+    let (_, advertisement, rpc) = stack.wallet.configure_publish_and_connect().await?;
     let http = stack.wallet.http.clone();
     let admin_url = stack.wallet.admin_url.clone();
-
-    // A review threshold this test can cross. The shipped default is
-    // deliberately long, and the funding policy cannot be changed once
-    // operations are active, so it has to go in before the request.
-    let mut prompt_review = live_setup_config(
-        &stack.wallet.gateway,
-        &stack.wallet.bitcoin,
-        &stack.wallet.relay_url,
-        &endpoint_addr.id.to_string(),
-        &stack.wallet.trust.attester_pubkey_hex,
-        None,
-    );
-    prompt_review["config"]["funding_policy"]["in_doubt_review_after_secs"] = json!(1);
-    let applied = admin_post(&http, &admin_url, "apply_setup_config", &prompt_review).await?;
-    assert_eq!(
-        applied["status"], "ready",
-        "the review threshold must apply cleanly: {applied}"
-    );
 
     let signed_request = sign_public_rpc(
         PublicRpcPayloadDomain::RequestLiquidityRequest,
@@ -1823,6 +1805,11 @@ async fn rewind_operation_to_unresolvable_in_doubt(
     unpaid_address: &str,
 ) -> anyhow::Result<()> {
     let database = Database::connect(data_dir.join("flip.sqlite")).await?;
+    // Keep the normal review threshold during the real send: a short threshold
+    // can escalate a healthy withdrawal before gatewayd returns its txid.
+    // Only the simulated lost response should be old enough to need review.
+    let review_after_secs = FundingPolicyConfig::defaults_for_network(BitcoinNetwork::Regtest)
+        .in_doubt_review_after_secs;
     let submitted_at = i64::try_from(
         SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -1830,6 +1817,7 @@ async fn rewind_operation_to_unresolvable_in_doubt(
             .as_secs(),
     )
     .context("submission timestamp does not fit")?
+        - i64::try_from(review_after_secs).context("review threshold does not fit")?
         - 3_600;
     let affected = sqlx::query(
         "UPDATE wallet_operations SET status = 'in_doubt', txid = NULL, tx_vout = NULL, \
@@ -2871,8 +2859,8 @@ async fn fund_gateway_wallet(
     .await
 }
 
-/// Tops the provider wallet up by `btc` and waits until gatewayd reports at
-/// least `min_spendable_sats` spendable.
+/// Tops the provider wallet up by `btc` and waits until FLIP reports at least
+/// `min_available_sats` available for a new allocation.
 ///
 /// The amount is a parameter because a capacity test has to fund a wallet that
 /// cannot cover everything it will be asked for, which the suite's usual whole
@@ -2882,7 +2870,7 @@ async fn fund_gateway_wallet_amount(
     admin_url: &str,
     bitcoin: &BitcoinFixture,
     btc: f64,
-    min_spendable_sats: u64,
+    min_available_sats: u64,
 ) -> anyhow::Result<()> {
     let deposit = admin_post(
         http,
@@ -2896,7 +2884,7 @@ async fn fund_gateway_wallet_amount(
         .context("create_deposit_address returned address")?;
     bitcoin.send_to_address(address, btc).await?;
     mine_and_sync(bitcoin, FEDIMINT_FINALITY_BLOCKS).await?;
-    wait_for_spendable_funds(http, admin_url, bitcoin, min_spendable_sats).await?;
+    wait_for_available_funds(http, admin_url, bitcoin, min_available_sats).await?;
     Ok(())
 }
 
@@ -2993,7 +2981,9 @@ async fn wait_for_active_wallet_operations(
     admin_url: &str,
     federation_id: &str,
 ) -> anyhow::Result<()> {
-    for _ in 0..120 {
+    // Gateway registration and funding can exceed 12 seconds on shared runners.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+    while tokio::time::Instant::now() < deadline {
         let allocation = get_admin_allocation(http, admin_url, federation_id).await?;
         let operations = allocation["allocation"]["wallet_operations"]
             .as_array()
@@ -3174,6 +3164,54 @@ async fn wait_for_spendable_funds(
         tokio::time::sleep(POLL_INTERVAL).await;
     }
     anyhow::bail!("gateway wallet did not report at least {min_sats} spendable sats")
+}
+
+async fn wait_for_available_funds(
+    http: &Client,
+    admin_url: &str,
+    bitcoin: &BitcoinFixture,
+    min_sats: u64,
+) -> anyhow::Result<Value> {
+    for _ in 0..60 {
+        let funds = admin_post(http, admin_url, "get_funds", &json!({})).await?;
+        if reports_available_funds(&funds, min_sats) {
+            return Ok(funds);
+        }
+        mine_and_sync(bitcoin, 1).await?;
+        tokio::time::sleep(POLL_INTERVAL).await;
+    }
+    anyhow::bail!("FLIP did not report at least {min_sats} available sats")
+}
+
+fn reports_available_funds(funds: &Value, min_sats: u64) -> bool {
+    funds["balance"]["available_balance"]
+        .as_u64()
+        .is_some_and(|available| available >= min_sats)
+}
+
+#[test]
+fn available_funds_predicate_ignores_stale_spendable_balance() {
+    let stale = json!({
+        "balance": {
+            "spendable": 1_500_000,
+            "available_balance": 100_000,
+        }
+    });
+    assert!(!reports_available_funds(
+        &stale,
+        GATEWAY_AMOUNT + GATEWAY_FEE_RESERVE
+    ));
+
+    let topped_up = json!({
+        "balance": {
+            "spendable": 101_500_000,
+            "available_balance": 100_100_000,
+        }
+    });
+    assert!(reports_available_funds(
+        &topped_up,
+        GATEWAY_AMOUNT + GATEWAY_FEE_RESERVE
+    ));
 }
 
 async fn mine_and_sync(bitcoin: &BitcoinFixture, blocks: u32) -> anyhow::Result<()> {

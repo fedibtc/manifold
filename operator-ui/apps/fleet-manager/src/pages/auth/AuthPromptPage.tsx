@@ -25,6 +25,7 @@ export const AuthPromptPage = () => {
           <input
             id="operator-password"
             type="password"
+            autoComplete="current-password"
             className={styles.input}
             value={password}
             onChange={onPasswordChange}

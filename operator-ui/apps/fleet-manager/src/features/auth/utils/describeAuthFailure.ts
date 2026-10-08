@@ -16,16 +16,16 @@ export const describeAuthFailure = (error: unknown): string => {
     return 'Incorrect password. Try again.';
   }
   if (error instanceof NetworkError) {
-    return "Can't reach the fleet manager, so the password was never checked. Make sure the service is running, then try again.";
+    return "Can't reach Manifold Fedimint Guardian, so the password was never checked. Make sure the service is running, then try again.";
   }
   if (error instanceof HttpStatusError && error.status >= 500) {
-    return `The fleet manager failed while signing in (HTTP ${error.status}). That is a fault in the service, not a wrong password. Check the service, then try again.`;
+    return `Manifold Fedimint Guardian failed while signing in (HTTP ${error.status}). That is a fault in the service, not a wrong password. Check the service, then try again.`;
   }
   if (error instanceof HttpStatusError) {
-    return `The fleet manager refused the sign-in (HTTP ${error.status}). A wrong password answers 401, so this is a different fault.`;
+    return `Manifold Fedimint Guardian refused the sign-in (HTTP ${error.status}). A wrong password answers 401, so this is a different fault.`;
   }
   if (error instanceof ProtocolError) {
-    return 'The sign-in reply could not be read. Check that the fleet manager, and nothing in front of it, is answering, then try again.';
+    return 'The sign-in reply could not be read. Check that Manifold Fedimint Guardian, and nothing in front of it, is answering, then try again.';
   }
   return 'Sign-in failed. Try again.';
 };

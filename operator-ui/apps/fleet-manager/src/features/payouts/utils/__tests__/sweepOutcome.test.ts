@@ -1,17 +1,47 @@
+import type { PayoutJob } from '@operator-ui/types';
 import { describe, expect, it } from 'vitest';
 import { describeCollection, describePayout } from '../sweepOutcome';
 
 describe('describePayout', () => {
+  const payout = (operation: PayoutJob['operation']): PayoutJob => ({
+    request_id: 'request-1',
+    scope: { kind: 'payment_federation', federation_id: 'fed1aaa' },
+    destination: 'operator@example.com',
+    operation,
+    created_at_ms: 1
+  });
+
   it('should state what the sweep sent, in sats', () => {
     expect(
-      describePayout({
-        request_id: 'request-1',
-        scope: { kind: 'payment_federation', federation_id: 'fed1aaa' },
-        destination: 'operator@example.com',
-        operation: { operation_id: 'op-1', amount_msat: 250_000_000, committed_at_ms: 2 },
-        created_at_ms: 1
-      })
+      describePayout(
+        payout({
+          operation_id: 'op-1',
+          amount_msat: 250_000_000,
+          capped: null,
+          committed_at_ms: 2
+        })
+      )
     ).toBe('Sent 250,000 sats.');
+  });
+
+  it('should name the limit that bound the sweep and what it left behind', () => {
+    const sentence = describePayout(
+      payout({
+        operation_id: 'op-1',
+        amount_msat: 50_000_000,
+        capped: { maximum_msat: 50_000_000, remaining_msat: 12_345_000 },
+        committed_at_ms: 2
+      })
+    );
+
+    expect(sentence).toBe(
+      'Sent 50,000 sats. Your Lightning address accepts at most 50,000 sats per payment. ' +
+        '12,345 sats are still here — press Withdraw again to send the rest.'
+    );
+  });
+
+  it('should still read as pending before an operation is committed', () => {
+    expect(describePayout(payout(null))).toBe('Payout request is pending.');
   });
 });
 

@@ -8,5 +8,6 @@ export * from './advertisement';
 export * from './allocations';
 export * from './fleet';
 export * from './funds';
+export * from './generated/seatReadiness';
 export * from './health';
 export * from './paging';

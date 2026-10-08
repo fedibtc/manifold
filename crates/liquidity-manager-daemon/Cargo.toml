@@ -118,7 +118,7 @@ url = "2.5.7"
 [dev-dependencies]
 defe-client = { path = "../defe-client" }
 defe-portalloc = { path = "../defe-portalloc" }
-fedi-credential-sdk-protocol.workspace = true
+peerbadge-protocol.workspace = true
 # Lets the live suite probe a target-federation client's database lock with the
 # same engine the daemon opens it with. Already a normal dependency; RocksDB
 # takes fcntl record locks, which a plain `File::try_lock` (flock) cannot see.

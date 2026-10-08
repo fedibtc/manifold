@@ -5,3 +5,11 @@
 .idRow {
   @apply uCopyRow;
 }
+
+.intro {
+  @apply uTableIntro;
+}
+
+.empty {
+  @apply uTableEmpty;
+}

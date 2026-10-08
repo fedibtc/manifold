@@ -1,0 +1,28 @@
+/* A rounded message box and a round send button, below a divider. */
+.form {
+  @apply uStack1 border-t border-muted px-4 py-3;
+}
+
+.row {
+  @apply flex items-center gap-2;
+}
+
+.textarea {
+  @apply max-h-[120px] min-h-10 w-full resize-none rounded-[20px] border border-gray-200 px-4 py-2.5 text-sm leading-5 focus:border-info focus:outline-none;
+  field-sizing: content;
+}
+
+.send {
+  @apply grid size-10 shrink-0 place-items-center rounded-full bg-ink text-surface hover:bg-ink/80 disabled:pointer-events-none disabled:bg-gray-200;
+}
+
+.sendIcon {
+  @apply size-[18px] fill-none stroke-current;
+  stroke-width: 1.75;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.error {
+  @apply uFieldError;
+}

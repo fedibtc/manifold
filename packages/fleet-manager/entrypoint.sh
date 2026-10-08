@@ -14,6 +14,11 @@ fi
 : "${FLEET_MANAGER_BITCOIND_USERNAME:?set FLEET_MANAGER_BITCOIND_USERNAME from platform bitcoind RPC}"
 : "${FLEET_MANAGER_BITCOIND_PASSWORD:?set FLEET_MANAGER_BITCOIND_PASSWORD from platform bitcoind RPC}"
 
+esplora=()
+if [ -n "${FLEET_MANAGER_ESPLORA_URL:-}" ]; then
+  esplora+=(--esplora-url "$FLEET_MANAGER_ESPLORA_URL")
+fi
+
 # Operator dashboard and HTTP admin API. A release binary embeds the dashboard
 # and serves it from this listener, so this is the only way to reach the
 # dashboard in a shipped image.
@@ -47,4 +52,5 @@ exec fleet-manager serve \
   --bitcoind-url "${FLEET_MANAGER_BITCOIND_URL}" \
   --bitcoind-username "${FLEET_MANAGER_BITCOIND_USERNAME}" \
   --bitcoind-password="${FLEET_MANAGER_BITCOIND_PASSWORD}" \
+  ${esplora[@]+"${esplora[@]}"} \
   ${operator_http[@]+"${operator_http[@]}"}
