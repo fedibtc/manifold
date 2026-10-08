@@ -1,8 +1,8 @@
-import { Banner, SectionCard } from '@operator-ui/common-ui';
-import { useEffect } from 'react';
+import { useEffect, useId } from 'react';
 import { useMarkSupportRead } from '@/features/support/api/hooks/use-mark-support-read/useMarkSupportRead';
 import { useSupportChat } from '@/features/support/api/hooks/use-support-chat/useSupportChat';
 import { SupportComposer } from '@/features/support/components/support-composer/SupportComposer';
+import fediLogo from '@/features/support/components/support-thread/fediLogo.svg';
 import { SupportThread } from '@/features/support/components/support-thread/SupportThread';
 import { SUPPORT_CHAT_OPEN_POLL_MS } from '@/shared/api/pollingIntervals';
 import { QuerySurface } from '@/shared/components/query-surface/QuerySurface';
@@ -13,6 +13,7 @@ export const SupportPage = () => {
   const chat = useSupportChat(SUPPORT_CHAT_OPEN_POLL_MS);
   const markRead = useMarkSupportRead();
   const { disposition, retry } = useQueryDisposition([chat]);
+  const titleId = useId();
 
   // Reading the page reads the unread Fedi messages it shows, and only those.
   // Each poll tries again, so one failed mark does not leave the page unread.
@@ -30,37 +31,43 @@ export const SupportPage = () => {
     <div className={styles.root}>
       <div className={styles.pageHead}>
         <h1 className={styles.heading}>Support</h1>
-
-        <p className={styles.intro}>
-          Ask the Fedi team for help with this host. Only you and Fedi can read these messages. Fedi
-          sees which host wrote and what you wrote.
-        </p>
       </div>
 
       <QuerySurface disposition={disposition} onRetry={retry}>
         {chat.data && (
-          <SectionCard title="Fedi guardian support">
-            <div className={styles.chat}>
-              <Banner
-                variant="info"
-                title="Fedi support will never ask for your recovery phrase, your password or remote access to your machine."
-              >
-                If someone does, it is not Fedi. Stop the chat.
-              </Banner>
+          <section className={styles.card} aria-labelledby={titleId}>
+            <header className={styles.cardHead}>
+              <span className={styles.avatar}>
+                <img src={fediLogo} alt="" />
+              </span>
 
-              {chat.data.available ? (
-                <>
-                  <SupportThread messages={chat.data.messages} />
+              <h2 id={titleId} className={styles.cardTitle}>
+                Fedi guardian support
+              </h2>
+            </header>
 
-                  <SupportComposer />
-                </>
-              ) : (
-                <p className={styles.unavailable}>
-                  Chat with Fedi support isn't available on this host yet.
-                </p>
-              )}
-            </div>
-          </SectionCard>
+            <p className={styles.safety}>
+              <svg aria-hidden="true" viewBox="0 0 24 24" className={styles.safetyIcon}>
+                <path d="M12 3 5 6v5c0 4.5 3 8.3 7 10 4-1.7 7-5.5 7-10V6l-7-3z" />
+
+                <path d="m9 12 2 2 4-4" />
+              </svg>
+              Fedi support will never ask for your recovery phrase, your password or remote access
+              to your machine.
+            </p>
+
+            {chat.data.available ? (
+              <>
+                <SupportThread messages={chat.data.messages} />
+
+                <SupportComposer />
+              </>
+            ) : (
+              <p className={styles.unavailable}>
+                Chat with Fedi support isn't available on this host yet.
+              </p>
+            )}
+          </section>
         )}
       </QuerySurface>
     </div>

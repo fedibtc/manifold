@@ -5,16 +5,30 @@ export const MAX_SUPPORT_MESSAGE_CHARS = 4000;
 // Characters as the daemon counts them (Rust `chars()`), not UTF-16 units.
 export const supportMessageLength = (body: string) => [...body.trim()].length;
 
-const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+const WEEKDAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+const MONTHS = [
+  'January',
+  'February',
+  'March',
+  'April',
+  'May',
+  'June',
+  'July',
+  'August',
+  'September',
+  'October',
+  'November',
+  'December'
+];
 
 const localDate = (unixSeconds: number) => new Date(unixSeconds * 1000);
 
-// The time in a bubble, in local time as the Fedi app's chat writes it
-// (date-fns `h:mmaaa`).
+const twoDigits = (value: number) => String(value).padStart(2, '0');
+
+// The time in a bubble, in local 24-hour time as the operator design writes it.
 export const formatSupportTime = (unixSeconds: number) => {
   const date = localDate(unixSeconds);
-  const hours = date.getHours();
-  return `${hours % 12 || 12}:${String(date.getMinutes()).padStart(2, '0')}${hours < 12 ? 'am' : 'pm'}`;
+  return `${twoDigits(date.getHours())}:${twoDigits(date.getMinutes())}`;
 };
 
 // The local day a message falls on, as the line above that day's messages.
@@ -23,8 +37,8 @@ export const formatSupportDay = (unixSeconds: number, now = new Date()) => {
   const yesterday = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1);
   if (date.toDateString() === now.toDateString()) return 'Today';
   if (date.toDateString() === yesterday.toDateString()) return 'Yesterday';
-  const day = `${MONTHS[date.getMonth()]} ${date.getDate()}`;
-  return date.getFullYear() === now.getFullYear() ? day : `${day}, ${date.getFullYear()}`;
+  const day = `${WEEKDAYS[date.getDay()]}, ${date.getDate()} ${MONTHS[date.getMonth()]}`;
+  return date.getFullYear() === now.getFullYear() ? day : `${day} ${date.getFullYear()}`;
 };
 
 export const isSameSupportDay = (a: number, b: number) =>

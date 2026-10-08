@@ -1,9 +1,9 @@
 .empty {
-  @apply uMutedSm py-8 text-center;
+  @apply uMutedSm p-8 text-center;
 }
 
 .scroller {
-  @apply max-h-[32rem] overflow-y-auto;
+  @apply max-h-[32rem] overflow-y-auto p-6;
 }
 
 /* Fedi design system, operator Support chat: 12px between messages. */
