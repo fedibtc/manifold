@@ -111,6 +111,7 @@ pub(crate) struct Offer {
 
 pub(crate) struct OfferSnapshot {
     pub(crate) offer: Offer,
+    pub(crate) max_seats: u32,
     pub(crate) slots: u32,
     /// The last readiness verdict, read with the epoch it was drawn with.
     pub(crate) ready_for_new_seats: bool,
@@ -188,6 +189,7 @@ impl Db {
         .await?;
         tx.commit().await?;
         let epoch = parse_offer_epoch(epoch)?;
+        let max_seats = stored_max_seats(max_seats)?;
         Ok(OfferSnapshot {
             offer: Offer {
                 epoch,
@@ -196,12 +198,8 @@ impl Db {
                     payment_federations,
                 },
             },
-            slots: available_slots(
-                stored_max_seats(max_seats)?,
-                first_port_base,
-                active,
-                next_no,
-            ),
+            max_seats,
+            slots: available_slots(max_seats, first_port_base, active, next_no),
             ready_for_new_seats,
         })
     }
