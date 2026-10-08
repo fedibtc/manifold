@@ -217,3 +217,41 @@ describe('SetCapacity', () => {
     expect(dispatch('ShowCapacity')).toEqual({ Ok: { max_seats: 5, available_slots: 2 } });
   });
 });
+
+describe('guardian link', () => {
+  it('should retain a terminal device while offering replacement and revoke both on cancel', () => {
+    resetState('fedi-app-terminal');
+    dispatch('CreateGuardianLinkOffer');
+
+    expect(getState().guardianLink.link?.device_label).toBe('Pixel 8');
+    expect(getState().guardianLink.offer?.uri).toContain('secret=mock-only');
+    expect(dispatch('RevokeGuardianLink')).toEqual({
+      Ok: { available: true, link: null, offer: null }
+    });
+  });
+
+  it('should reject testing without a phone and deliver after loading a linked scenario', () => {
+    resetState('fedi-app-unlinked');
+    expect(dispatch('TestGuardianLinkNotification')).toEqual({
+      Err: { kind: 'other', message: 'no phone linked' }
+    });
+    resetState('fedi-app-active');
+    expect(dispatch('TestGuardianLinkNotification')).toEqual({
+      Ok: { outcome: 'delivered', reason: null }
+    });
+    expect(getState().guardianLink.link?.notified_reasons).toEqual(['test']);
+    resetState('fedi-app-active');
+    expect(getState().guardianLink.link?.notified_reasons).toEqual([
+      'seat_failed',
+      'support_message'
+    ]);
+  });
+
+  it('should not create an offer without a push gateway', () => {
+    resetState('fedi-app-unavailable');
+    expect(dispatch('CreateGuardianLinkOffer')).toEqual({
+      Err: { kind: 'other', message: 'no push gateway configured' }
+    });
+    expect(getState().guardianLink.offer).toBeNull();
+  });
+});

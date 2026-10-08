@@ -8,6 +8,7 @@ import type {
   PayoutJob,
   Plan
 } from '@operator-ui/types';
+import { mockGuardianLinkOffer } from '@/mocks/scenarios';
 import { getState, type MockSeat, RESTORE_COUNTS } from '@/mocks/state';
 import { walletStatus } from '@/mocks/wallet-status';
 import { MOCK_HOLDER_PUBKEY } from '@/mocks/world/keys';
@@ -411,6 +412,40 @@ const markSupportRead: Verb<'MarkSupportRead'> = ({ ids }) => {
   return { unread: supportUnread() };
 };
 
+const guardianLink: Verb<'GuardianLink'> = () => {
+  const status = getState().guardianLink;
+  return {
+    ...status,
+    offer:
+      status.offer && status.offer.expires_at >= Math.floor(Date.now() / 1000) ? status.offer : null
+  };
+};
+
+const createGuardianLinkOffer: Verb<'CreateGuardianLinkOffer'> = () => {
+  const status = getState().guardianLink;
+  if (!status.available) throw new Error('no push gateway configured');
+  status.offer = mockGuardianLinkOffer();
+  return guardianLink(undefined);
+};
+
+const revokeGuardianLink: Verb<'RevokeGuardianLink'> = () => {
+  const status = getState().guardianLink;
+  status.link = null;
+  status.offer = null;
+  return guardianLink(undefined);
+};
+
+const testGuardianLinkNotification: Verb<'TestGuardianLinkNotification'> = () => {
+  const link = getState().guardianLink.link;
+  if (!link) throw new Error('no phone linked');
+  if (link.delivery.state === 'terminal') {
+    return { outcome: 'terminal', reason: link.delivery.reason };
+  }
+  link.last_notified_at = Math.floor(Date.now() / 1000);
+  link.notified_reasons = ['test'];
+  return { outcome: 'delivered', reason: null };
+};
+
 const showMnemonic: Verb<'ShowMnemonic'> = () => ({
   mnemonic:
     'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about'
@@ -490,6 +525,10 @@ const fleetHandlers: VerbTable<Exclude<AdminRequestName, OnboardingVerbName>> = 
   SeatStatus: seatStatus,
   DecommissionSeat: decommissionSeat,
   ReenrollTelemetry: reenrollTelemetry,
+  GuardianLink: guardianLink,
+  CreateGuardianLinkOffer: createGuardianLinkOffer,
+  RevokeGuardianLink: revokeGuardianLink,
+  TestGuardianLinkNotification: testGuardianLinkNotification,
   SupportChat: supportChat,
   SendSupportMessage: sendSupportMessage,
   MarkSupportRead: markSupportRead,
@@ -530,7 +569,10 @@ const mutatingVerbNames: readonly AdminRequestName[] = [
   'ConfigureInitialOffer',
   'SetCapacity',
   'SendSupportMessage',
-  'MarkSupportRead'
+  'MarkSupportRead',
+  'CreateGuardianLinkOffer',
+  'RevokeGuardianLink',
+  'TestGuardianLinkNotification'
 ];
 
 // Exposed over `string` because the caller holds a name read off the wire.

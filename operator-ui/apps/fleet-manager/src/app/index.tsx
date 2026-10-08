@@ -10,6 +10,7 @@ import { SetupGate } from '@/app/components/setup-gate/SetupGate';
 import { AuthorizationPage } from '@/pages/authorization/AuthorizationPage';
 import { BackupPage } from '@/pages/backup/BackupPage';
 import { BackupPhrasePage } from '@/pages/backup-phrase/BackupPhrasePage';
+import { FediAppPage } from '@/pages/fedi-app/FediAppPage';
 import { HealthPage } from '@/pages/health/HealthPage';
 import { OfferPage } from '@/pages/offer/OfferPage';
 import { OverviewPage } from '@/pages/overview/OverviewPage';
@@ -49,7 +50,8 @@ const router = createBrowserRouter([
                   { path: 'backup', element: <BackupPage /> },
                   { path: 'backup/phrase', element: <BackupPhrasePage /> },
                   { path: 'health', element: <HealthPage /> },
-                  { path: 'support', element: <SupportPage /> }
+                  { path: 'support', element: <SupportPage /> },
+                  { path: 'fedi-app', element: <FediAppPage /> }
                 ]
               }
             ]
