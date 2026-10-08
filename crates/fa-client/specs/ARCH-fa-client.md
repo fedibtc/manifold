@@ -492,7 +492,7 @@ whether the MG decommissioned it, had already done so, or refused. It takes
 no driver lease and writes nothing, so durable FA state is unchanged and a
 decommissioned federation still reads as `Formed`; abandon or a fresh formation
 is still what returns the FA to `Idle`. Seats are forfeited, never refunded,
-and only development and staging MGs accept the underlying verb
+and older production MGs can refuse the underlying verb
 ([SPEC-fa-rpc](../../mg/specs/SPEC-fa-rpc.md)).
 
 Formation operations return run futures; dropping one cancels local work only,

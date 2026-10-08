@@ -1,10 +1,12 @@
+use fedi_decentralized_manifold_environment::ManifoldEnvironment;
 use fedi_decentralized_service_manifold_guardian::{
-    CreateSeatOutcome, DkgCompletionCallback, FaId, FederationName, FederationSize, GatewayApiUrl,
-    GetDkgCodeRequest, GetFedimintStatsRequest, GetInviteCodeRequest, GetPeerAttestationRequest,
-    GetQuoteRequest, GetQuoteResponse, GetStatusRequest, GuardianCode, GuardianFeeAccount,
-    MetaConsensusBase, MetaFieldKey, MetaFieldValue, MgSignedRequest, OfferEpoch, Plan,
-    ProposeFormationMetaRequest, RefusalReason, RegisterGatewayRequest, RestartDkgRequest, SeatId,
-    SeatTransferGrant, SetMetaFieldRequest, StartDkgRequest, TransferSeatRequest,
+    CreateSeatOutcome, DecommissionSeatRequest, DkgCompletionCallback, FaId, FederationName,
+    FederationSize, GatewayApiUrl, GetDkgCodeRequest, GetFedimintStatsRequest,
+    GetInviteCodeRequest, GetPeerAttestationRequest, GetQuoteRequest, GetQuoteResponse,
+    GetStatusRequest, GuardianCode, GuardianFeeAccount, MetaConsensusBase, MetaFieldKey,
+    MetaFieldValue, MgSignedRequest, OfferEpoch, Plan, ProposeFormationMetaRequest, RefusalReason,
+    RegisterGatewayRequest, RestartDkgRequest, SeatId, SeatTransferGrant, SetMetaFieldRequest,
+    StartDkgRequest, TransferSeatRequest,
 };
 use tempfile::TempDir;
 
@@ -40,6 +42,7 @@ async fn rpc_with_config(
         guardian_verification_fee_account,
         push_gateway_origin,
         bitcoin::Network::Regtest,
+        ManifoldEnvironment::Development,
         first_port_base,
     )
     .await
@@ -50,6 +53,7 @@ async fn rpc_with_network(
     guardian_verification_fee_account: Option<Account>,
     push_gateway_origin: Option<PushGatewayOrigin>,
     bitcoin_network: bitcoin::Network,
+    manifold_environment: ManifoldEnvironment,
     first_port_base: u16,
 ) -> ManifoldGuardianRpc {
     // A fleet opens against an identity onboarding already chose; nothing
@@ -66,8 +70,7 @@ async fn rpc_with_network(
             process_spawner: SeatProcessSpawner::Fake(Arc::new(
                 crate::seat_process::fake::FakeSeatProcessSpawner::default(),
             )),
-            manifold_environment:
-                fedi_decentralized_manifold_environment::ManifoldEnvironment::Development,
+            manifold_environment,
             first_port_base: PortBase::new(first_port_base).unwrap(),
             setup_payments_configured: true,
             guardian_verification_fee_account,
@@ -150,6 +153,12 @@ async fn rpc_with_owned_seat_and_origin(
         first_port_base,
     )
     .await;
+    let (owner_key, owner_id, seat_id) = owned_seat(&rpc).await;
+    (rpc, owner_key, owner_id, seat_id)
+}
+
+/// Buy one free seat on `rpc` for a fresh owner.
+async fn owned_seat(rpc: &ManifoldGuardianRpc) -> (Keypair, FaId, SeatId) {
     let owner_key = Keypair::new(secp256k1::SECP256K1, &mut rand::thread_rng());
     let owner_id = FaId(owner_key.x_only_public_key().0);
     let quote = rpc
@@ -184,7 +193,7 @@ async fn rpc_with_owned_seat_and_origin(
     let CreateSeatOutcome::Accepted { seat_id, .. } = created.outcome else {
         panic!("free seat was refused")
     };
-    (rpc, owner_key, owner_id, seat_id)
+    (owner_key, owner_id, seat_id)
 }
 
 fn endpoint_setup(index: usize) -> fedimint_core::setup_code::PeerSetupCode {
@@ -894,7 +903,15 @@ async fn wrong_owner_precedes_policy_and_unsupported_results() {
 #[tokio::test]
 async fn transfer_source_and_removal_validate_requests_on_bitcoin() {
     let temp = TempDir::new().unwrap();
-    let rpc = rpc_with_network(&temp, None, None, bitcoin::Network::Bitcoin, 29_110).await;
+    let rpc = rpc_with_network(
+        &temp,
+        None,
+        None,
+        bitcoin::Network::Bitcoin,
+        ManifoldEnvironment::Development,
+        29_110,
+    )
+    .await;
     let key = Keypair::new(secp256k1::SECP256K1, &mut rand::thread_rng());
     let fa_id = FaId(key.x_only_public_key().0);
     let seat_id = SeatId::from(fedi_decentralized_service_manifold_guardian::QuoteId(
@@ -997,5 +1014,115 @@ async fn trust_material_is_signed_for_the_mg_identity() {
         .verify_for_mg(&expected, now, 3600)
         .expect("the MG's own response verifies for its consensus-listed identity");
 
+    rpc.fleet.shutdown().await;
+}
+
+#[tokio::test]
+async fn production_decommission_requires_owner_and_retains_terminal_records() {
+    let temp = TempDir::new().unwrap();
+    let rpc = rpc_with_network(
+        &temp,
+        None,
+        None,
+        bitcoin::Network::Regtest,
+        ManifoldEnvironment::Production,
+        29_140,
+    )
+    .await;
+    let (owner_key, owner_id, seat_id) = owned_seat(&rpc).await;
+    let attacker_key = Keypair::new(secp256k1::SECP256K1, &mut rand::thread_rng());
+    let attacker_id = FaId(attacker_key.x_only_public_key().0);
+    let request = DecommissionSeatRequest {
+        ts: now(),
+        fa_id: owner_id,
+        seat_id: seat_id.clone(),
+    };
+    let before = rpc.fleet.available_slots().await;
+
+    // A valid foreign signer gets no existence oracle or authority.
+    for target in [seat_id.clone(), SeatId::new("ab".repeat(32)).unwrap()] {
+        let foreign = DecommissionSeatRequest {
+            ts: now(),
+            fa_id: attacker_id,
+            seat_id: target,
+        };
+        assert_eq!(
+            rpc.decommission_seat(SignedRequest::create(&foreign, &attacker_key).unwrap())
+                .await
+                .unwrap_err(),
+            ManifoldGuardianError::UnknownSeat,
+        );
+    }
+    // Claiming the owner identity with another signing key is not ownership.
+    assert_eq!(
+        rpc.decommission_seat(SignedRequest::create(&request, &attacker_key).unwrap())
+            .await
+            .unwrap_err(),
+        ManifoldGuardianError::Unauthorized,
+    );
+    let stale = DecommissionSeatRequest {
+        ts: Timestamp(now().0.saturating_sub(7200)),
+        ..request.clone()
+    };
+    assert_eq!(
+        rpc.decommission_seat(SignedRequest::create(&stale, &owner_key).unwrap())
+            .await
+            .unwrap_err(),
+        ManifoldGuardianError::Unauthorized,
+    );
+    assert_eq!(rpc.fleet.available_slots().await, before);
+    let status_request = GetStatusRequest {
+        ts: now(),
+        fa_id: owner_id,
+        seat_id: seat_id.clone(),
+    };
+    assert_ne!(
+        rpc.get_status(SignedRequest::create(&status_request, &owner_key).unwrap())
+            .await
+            .unwrap()
+            .status,
+        ServiceStatus::Decommissioned,
+    );
+
+    let first = SignedRequest::create(&request, &owner_key).unwrap();
+    let second = SignedRequest::create(&request, &owner_key).unwrap();
+    let (first, second) = tokio::join!(rpc.decommission_seat(first), rpc.decommission_seat(second));
+    let first = first.unwrap();
+    let second = second.unwrap();
+    assert_ne!(first.already_decommissioned, second.already_decommissioned);
+    assert_eq!(rpc.fleet.available_slots().await, before + 1);
+    assert_eq!(
+        rpc.get_status(SignedRequest::create(&status_request, &owner_key).unwrap())
+            .await
+            .unwrap()
+            .status,
+        ServiceStatus::Decommissioned,
+    );
+    let config = rpc.fleet.config().clone();
+    rpc.fleet.shutdown().await;
+    drop(rpc);
+    let db = crate::db::Db::open(temp.path()).await.unwrap();
+    let records = db.list_seats().await.unwrap();
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].facts.seat_id, seat_id);
+    assert_eq!(records[0].facts.fa_id, owner_id);
+    let fleet = Fleet::open(db, config, Arc::new(NoWallet)).await.unwrap();
+    let rpc = ManifoldGuardianRpc::new(Arc::new(fleet), tokio::sync::watch::channel(None).1);
+    assert!(
+        rpc.decommission_seat(SignedRequest::create(&request, &owner_key).unwrap())
+            .await
+            .unwrap()
+            .already_decommissioned
+    );
+    let foreign = DecommissionSeatRequest {
+        fa_id: attacker_id,
+        ..request
+    };
+    assert_eq!(
+        rpc.decommission_seat(SignedRequest::create(&foreign, &attacker_key).unwrap())
+            .await
+            .unwrap_err(),
+        ManifoldGuardianError::UnknownSeat,
+    );
     rpc.fleet.shutdown().await;
 }

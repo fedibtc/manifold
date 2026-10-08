@@ -140,8 +140,8 @@ enum Command {
     PaymentWallet(PaymentWalletArgs),
     /// Ask every MG to decommission this formation's seat (testing only).
     ///
-    /// Development and staging MGs alone accept the request, seats are
-    /// forfeited rather than refunded, and local FA state is left untouched.
+    /// Older production MGs can refuse the request. Seats are forfeited
+    /// rather than refunded, and local FA state is left untouched.
     Decommission,
 }
 
