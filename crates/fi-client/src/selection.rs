@@ -52,8 +52,10 @@ use crate::{
 };
 
 /// How long one freshly fetched advertisement selection may authorize the
-/// start of a Pay-and-create operation.
-pub const FMAN_SELECTION_PREVIEW_VALIDITY: Duration = Duration::from_secs(2 * 60);
+/// start of a Pay-and-create operation and each pre-effect resume. Once an
+/// admission is effect-authorized, this deadline no longer applies. This
+/// freshness allowance does not size the consumer's retry budget.
+pub const FMAN_SELECTION_PREVIEW_VALIDITY: Duration = Duration::from_secs(5 * 60);
 
 /// Per-candidate budget for one live availability probe inside the walk.
 ///
@@ -502,7 +504,7 @@ impl FmanSelectionPreview {
     /// Bind the displayed verified set to the user's maximum setup spend.
     ///
     /// This is commercial approval, not the irreversible wallet boundary.
-    /// The returned sealed value can start Pay-and-create for two minutes;
+    /// The returned sealed value can start Pay-and-create for five minutes;
     /// the wallet-output boundary is durably recorded only immediately before
     /// `FiPayments::create_seat_payment` is polled. A zero limit is valid only
     /// for an all-zero advertisement estimate and can be consumed only by the
@@ -529,7 +531,7 @@ impl FmanSelectionPreview {
 ///
 /// Consumers can retain and return this capability but cannot construct or
 /// alter its verified seats. It is intentionally not serializable: a bridge
-/// keeps it only for the active two-minute screen flow and refetches when the
+/// keeps it only for the active five-minute screen flow and refetches when the
 /// user backs out and re-enters.
 #[derive(Clone, Debug)]
 pub struct FmanSelectionApproval {

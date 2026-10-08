@@ -56,7 +56,7 @@ baseline. Subsequent schema changes are governed by
 
 The cap changes only payment-readiness behavior, and it is **one-shot**: it
 is the consumer's approval of the initial aggregate only. In the product path
-it is sealed into the two-minute advertisement approval returned by
+it is sealed into the five-minute advertisement approval returned by
 `FmanSelectionPreview::approve`; no FMan quote exists before the consumer
 invokes `pay_and_create` with that approval and one explicit payer, or invokes
 `create_without_payer` for the all-zero deployment bootstrap. The latter
@@ -283,7 +283,7 @@ screen. It takes the same
 `FmanDiscoveryOptions` clamped-timeout bound as `discover_fman_candidates`
 — not formation run options, since no lease or driver timing applies to a
 read-only query. It has no durable state and no lease. The result carries a
-two-minute validity bound anchored after enumeration and verification and can
+five-minute validity bound anchored after enumeration and verification and can
 be consumed into a sealed, non-serializable `FmanSelectionApproval`; leaving
 and re-entering the flow refetches instead of caching it. The approval binds
 the complete selection request and immutable verifier/environment provenance.

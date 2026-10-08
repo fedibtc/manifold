@@ -243,7 +243,10 @@ struct PaymentState {
     /// One-based funding call whose committed wallet result is lost.
     hang_funding_on_call: AtomicUsize,
     funding_started: Notify,
+    first_payment_acceptance_delay: Mutex<Duration>,
+    payment_signatures_delay: Mutex<Duration>,
     hang_first_refund: AtomicBool,
+    refund_delay: Mutex<Duration>,
     refund_started: Notify,
     pay_none: AtomicBool,
     insufficient_funds: AtomicBool,
@@ -563,6 +566,10 @@ impl FiPayments for TestPayments {
             .expect("test lock")
             .contains(&quote_id)
         {
+            let delay = *self.0.payment_signatures_delay.lock().expect("test lock");
+            if !delay.is_zero() {
+                tokio::time::sleep(delay).await;
+            }
             Ok(SeatPaymentRecovery::Prepared(self.prepared(quote_id)))
         } else {
             Ok(SeatPaymentRecovery::NotStarted)
@@ -640,6 +647,20 @@ impl FiPayments for TestPayments {
             self.0.funding_started.notify_one();
             return pending().await;
         }
+        if call == 0 {
+            let delay = *self
+                .0
+                .first_payment_acceptance_delay
+                .lock()
+                .expect("test lock");
+            if !delay.is_zero() {
+                tokio::time::sleep(delay).await;
+            }
+            let delay = *self.0.payment_signatures_delay.lock().expect("test lock");
+            if !delay.is_zero() {
+                tokio::time::sleep(delay).await;
+            }
+        }
         Ok(self.prepared(quote_id))
     }
 
@@ -682,6 +703,10 @@ impl FiPayments for TestPayments {
         if self.0.hang_first_refund.swap(false, Ordering::SeqCst) {
             self.0.refund_started.notify_one();
             return pending().await;
+        }
+        let delay = *self.0.refund_delay.lock().expect("test lock");
+        if !delay.is_zero() {
+            tokio::time::sleep(delay).await;
         }
         Ok(crate::SettledSeatRefund {
             amount_msats: PAYMENT_AMOUNT_MSATS,
@@ -6679,6 +6704,54 @@ async fn lost_create_seat_response_replays_exact_quote_without_refunding_twice()
     assert_eq!(replayed[0].signed_quote, replayed[1].signed_quote);
 }
 
+#[tokio::test(start_paused = true)]
+async fn slow_refund_settlement_finishes_before_quote_replacement() {
+    let (payments, payment_state) = TestPayments::new();
+    *payment_state.refund_delay.lock().expect("test lock") = Duration::from_secs(95);
+    let fman_state = Arc::new(FmanState::default());
+    let config = FmanConfig {
+        create_behavior: CreateBehavior::RefuseFirstQuote,
+        ..FmanConfig::paid()
+    };
+    let client = open_client(
+        MemDatabase::new().into_database(),
+        payments,
+        fman_state.clone(),
+        config,
+    )
+    .await;
+    let error = client
+        .create_with_pinned_fmans(
+            capped_paid_intent(PAYMENT_AMOUNT_MSATS * u64::from(MIN_FEDERATION_SIZE)),
+            locators(),
+            FormationRunOptions::default(),
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(error, FiError::SeatRefused { .. }), "{error:?}");
+    let refused_quote = fman_state.refused_quote.lock().expect("test lock").unwrap();
+    assert_eq!(payment_state.refund_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        payment_state
+            .refund_contexts
+            .lock()
+            .expect("test lock")
+            .as_slice(),
+        &[refused_quote],
+    );
+    let payments_before = payment_state.create_calls.load(Ordering::SeqCst);
+    client.resume().await.unwrap();
+    let status = client.status();
+    let requirements = payment_requirements(&status);
+    assert_eq!(requirements.seats.len(), 1);
+    assert_ne!(requirements.seats[0].quote_id, refused_quote);
+    assert_eq!(payment_state.refund_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        payment_state.create_calls.load(Ordering::SeqCst),
+        payments_before
+    );
+}
+
 #[tokio::test]
 async fn repeated_refund_settlement_replays_exact_context_before_quote_replacement() {
     let database = MemDatabase::new().into_database();
@@ -8920,6 +8993,78 @@ fn spending_cap_rejects_zero_and_roundtrips_through_the_strict_schema() {
         }))
         .is_err()
     );
+}
+
+#[tokio::test(start_paused = true)]
+async fn slow_payment_preparation_and_recovery_keep_the_exact_payment() {
+    for interrupt in [false, true] {
+        let database = MemDatabase::new().into_database();
+        let (payments, payment_state) = TestPayments::new();
+        // Acceptance fits the ordinary 30-second request cap, but collecting
+        // signatures afterward does not. Recovery itself also exceeds that cap.
+        *payment_state
+            .first_payment_acceptance_delay
+            .lock()
+            .expect("test lock") = Duration::from_millis(29_600);
+        *payment_state
+            .payment_signatures_delay
+            .lock()
+            .expect("test lock") = Duration::from_secs(95);
+        let fman_state = Arc::new(FmanState::default());
+        let started = tokio::time::Instant::now();
+        let clock = Arc::new(move || 10_000 + started.elapsed().as_secs());
+        let store = db::FiStore::new_with_lease_clock(database, clock);
+        let client = open_client_with_store(
+            store.clone(),
+            payments.clone(),
+            fman_state.clone(),
+            FmanConfig::paid(),
+        )
+        .await;
+        let options = FormationRunOptions::new(crate::FormationRunOptionsConfig {
+            run_timeout: Duration::from_secs(if interrupt { 40 } else { 600 }),
+            ..Default::default()
+        })
+        .unwrap();
+        let result = client
+            .create_with_pinned_fmans(
+                capped_paid_intent(PAYMENT_AMOUNT_MSATS * u64::from(MIN_FEDERATION_SIZE)),
+                locators(),
+                options,
+            )
+            .await;
+        if interrupt {
+            assert!(matches!(result, Err(FiError::Timeout(_))), "{result:?}");
+            assert_eq!(payment_state.create_calls.load(Ordering::SeqCst), 1);
+            let paid_quote = payment_state.created_quotes.lock().expect("test lock")[0];
+            drop(client);
+            let reopened =
+                open_client_with_store(store, payments, fman_state, FmanConfig::paid()).await;
+            reopened
+                .resume()
+                .await
+                .expect("recover signatures without another payment");
+            assert_eq!(formation(&reopened.status()).phase, FormationPhase::Formed);
+            assert_eq!(
+                payment_state
+                    .created_quotes
+                    .lock()
+                    .expect("test lock")
+                    .iter()
+                    .filter(|quote| **quote == paid_quote)
+                    .count(),
+                1,
+            );
+        } else {
+            result.expect("payment preparation can outlast a network request");
+            assert_eq!(formation(&client.status()).phase, FormationPhase::Formed);
+        }
+        assert_eq!(
+            payment_state.create_calls.load(Ordering::SeqCst),
+            usize::from(MIN_FEDERATION_SIZE),
+            "fund each seat once, including after an interrupted payment",
+        );
+    }
 }
 
 #[tokio::test]
