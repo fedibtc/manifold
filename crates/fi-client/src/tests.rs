@@ -218,6 +218,7 @@ enum TestEffect {
 #[derive(Default)]
 struct PaymentState {
     payable_calls: AtomicUsize,
+    fail_payable: AtomicBool,
     readiness_calls: AtomicUsize,
     reservation_recover_calls: AtomicUsize,
     whole_release_calls: AtomicUsize,
@@ -312,6 +313,9 @@ impl FiPayments for TestPayments {
         admitted: &[FederationId],
     ) -> Result<Vec<FederationId>, FiPaymentError> {
         self.0.payable_calls.fetch_add(1, Ordering::SeqCst);
+        if self.0.fail_payable.load(Ordering::SeqCst) {
+            return Err(FiPaymentError::new("wallet capability query interrupted"));
+        }
         if self.0.pay_none.load(Ordering::SeqCst) {
             return Ok(Vec::new());
         }
@@ -774,6 +778,7 @@ struct CreateRecord {
 
 #[derive(Default)]
 struct FmanState {
+    status_overrides: Mutex<HashMap<usize, ServiceStatus>>,
     connect_calls: AtomicUsize,
     connect_attempts: Mutex<HashMap<usize, usize>>,
     fail_connect_on_attempt: Mutex<Option<(usize, usize)>>,
@@ -1321,7 +1326,14 @@ impl FleetManagerService for TestFman {
     ) -> FmResult<GetStatusResponse> {
         self.state.status_calls.fetch_add(1, Ordering::SeqCst);
         Ok(GetStatusResponse {
-            status: ServiceStatus::Running,
+            status: self
+                .state
+                .status_overrides
+                .lock()
+                .unwrap()
+                .get(&self.index)
+                .cloned()
+                .unwrap_or(ServiceStatus::Running),
             detail: StatusDetail::None,
             seat_health: Some(SeatHealth::Healthy),
         })
@@ -6553,7 +6565,13 @@ async fn external_capability_calls_obey_request_timeout() {
         Err(FiError::Timeout(_))
     ));
     let status = client.status();
-    assert_eq!(formation(&status).last_error, Some(FiErrorCode::Timeout));
+    assert_eq!(
+        formation(&status).last_error,
+        Some(crate::FormationFailure {
+            code: FiErrorCode::Timeout,
+            disposition: crate::FailureDisposition::Retryable
+        })
+    );
     assert_eq!(fman_state.quote_calls.load(Ordering::SeqCst), 0);
     assert_eq!(fman_state.create_calls.load(Ordering::SeqCst), 0);
     assert_eq!(payment_state.payable_calls.load(Ordering::SeqCst), 0);
@@ -6585,6 +6603,10 @@ async fn terminal_payment_rejection_clears_quotes_and_requires_fresh_authorizati
         client.authorize_payments(authorization_id, options()).await,
         Err(FiError::Payment(_))
     ));
+    assert_eq!(
+        formation(&client.status()).last_error.unwrap().disposition,
+        crate::FailureDisposition::Retryable,
+    );
     assert_eq!(fman_state.create_calls.load(Ordering::SeqCst), 0);
     assert_eq!(payment_state.create_calls.load(Ordering::SeqCst), 0);
     let recovery = active_recovery(
@@ -6983,9 +7005,10 @@ async fn formation_names_the_fman_with_a_divergent_guardian_verification_fee_acc
         .lock()
         .expect("test lock")
         .insert(divergent_index, divergent_account.clone());
+    let database = MemDatabase::new().into_database();
     let client = open_client(
-        MemDatabase::new().into_database(),
-        payments,
+        database.clone(),
+        payments.clone(),
         fman_state.clone(),
         FmanConfig::given_away(),
     )
@@ -7008,6 +7031,20 @@ async fn formation_names_the_fman_with_a_divergent_guardian_verification_fee_acc
             .contains_key(&divergent_index),
         "the divergent FMan must reject before submitting a vote"
     );
+    assert_eq!(
+        formation(&client.status()).last_error,
+        Some(crate::FormationFailure {
+            code: FiErrorCode::FleetManager,
+            disposition: crate::FailureDisposition::Retryable,
+        })
+    );
+    drop(client);
+    let reopened = open_client(database, payments, fman_state, FmanConfig::given_away()).await;
+    assert_eq!(formation(&reopened.status()).last_error, None);
+    // A single refused vote is not a terminal aggregate failure: successful
+    // siblings can already have adopted the proposal, which resume must read.
+    reopened.resume().await.unwrap();
+    assert_eq!(formation(&reopened.status()).phase, FormationPhase::Formed);
 }
 
 #[tokio::test]
@@ -12094,9 +12131,16 @@ async fn absence_without_release_intent_still_never_returns_idle() {
     let reopened = open_client(database, payments, fman_state, FmanConfig::paid()).await;
     let error = reopened.resume().await.unwrap_err();
     assert!(
-        matches!(&error, FiError::Storage(message)
+        matches!(&error, FiError::StorageInvariant(message)
             if message.contains("durable FI reservation is absent from the payment wallet")),
         "{error:?}"
+    );
+    assert_eq!(
+        formation(&reopened.status()).last_error,
+        Some(crate::FormationFailure {
+            code: FiErrorCode::Storage,
+            disposition: crate::FailureDisposition::Terminal,
+        }),
     );
     assert!(
         matches!(reopened.status(), FiStatus::Formation(_)),
@@ -12105,9 +12149,16 @@ async fn absence_without_release_intent_still_never_returns_idle() {
 
     let error = reopened.abandon_formation(options()).await.unwrap_err();
     assert!(
-        matches!(&error, FiError::Storage(message)
+        matches!(&error, FiError::StorageInvariant(message)
             if message.contains("durable FI reservation is absent from the payment wallet")),
         "{error:?}"
+    );
+    assert_eq!(
+        formation(&reopened.status()).last_error,
+        Some(crate::FormationFailure {
+            code: FiErrorCode::Storage,
+            disposition: crate::FailureDisposition::Terminal,
+        }),
     );
     let retained = active_recovery(
         reopened
@@ -12230,9 +12281,16 @@ async fn release_intent_is_superseded_by_reservation_adoption() {
     let reopened = open_client(database, payments, fman_state, FmanConfig::paid()).await;
     let error = reopened.resume().await.unwrap_err();
     assert!(
-        matches!(&error, FiError::Storage(message)
+        matches!(&error, FiError::StorageInvariant(message)
             if message.contains("durable FI reservation is absent from the payment wallet")),
         "{error:?}"
+    );
+    assert_eq!(
+        formation(&reopened.status()).last_error,
+        Some(crate::FormationFailure {
+            code: FiErrorCode::Storage,
+            disposition: crate::FailureDisposition::Terminal,
+        }),
     );
     let retained = active_recovery(
         reopened
@@ -13758,4 +13816,156 @@ async fn an_all_stale_wave_rereads_rebases_and_replays_one_identical_base() {
         seats,
         "the rebased retry sends an identical accepted request to every seat"
     );
+}
+
+#[test]
+fn failure_disposition_distinguishes_causes_with_identical_progress_codes() {
+    use crate::FailureDisposition::{Retryable, Terminal};
+
+    let cases = [
+        (
+            FiError::Storage("I/O interrupted".into()),
+            FiErrorCode::Storage,
+            Retryable,
+        ),
+        (
+            FiError::StorageInvariant("missing authorized quote".into()),
+            FiErrorCode::Storage,
+            Terminal,
+        ),
+        (
+            FiError::FleetManager {
+                index: 3,
+                message: "connection interrupted".into(),
+            },
+            FiErrorCode::FleetManager,
+            Retryable,
+        ),
+        (
+            FiError::SeatUnrecoverable {
+                index: 3,
+                status: ServiceStatus::Decommissioned,
+            },
+            FiErrorCode::FleetManager,
+            Terminal,
+        ),
+        (
+            FiError::Timeout("request".into()),
+            FiErrorCode::Timeout,
+            Retryable,
+        ),
+        (
+            FiError::SelectionPreviewTimeout,
+            FiErrorCode::Timeout,
+            Terminal,
+        ),
+        (
+            FiError::Payment("wallet temporarily unavailable".into()),
+            FiErrorCode::Payment,
+            Retryable,
+        ),
+        (
+            FiError::SelectionReauthorizationRequired(
+                SelectionReauthorizationReason::SelectedPayerInsufficientFunds,
+            ),
+            FiErrorCode::SelectionReauthorizationRequired,
+            Terminal,
+        ),
+    ];
+    for (error, code, disposition) in cases {
+        assert_eq!(error.code(), code);
+        assert_eq!(error.disposition(), disposition, "{error:?}");
+        assert_eq!(
+            crate::FormationFailure::from(&error),
+            crate::FormationFailure { code, disposition }
+        );
+    }
+}
+
+#[tokio::test]
+async fn terminal_guardian_status_pauses_formation_without_discarding_recovery() {
+    for status in [ServiceStatus::DataLoss, ServiceStatus::Decommissioned] {
+        let database = MemDatabase::new().into_database();
+        let (payments, _) = TestPayments::new();
+        let state = Arc::new(FmanState::default());
+        state
+            .status_overrides
+            .lock()
+            .unwrap()
+            .insert(4, status.clone());
+        let client = open_client(
+            database.clone(),
+            payments.clone(),
+            state.clone(),
+            FmanConfig::given_away(),
+        )
+        .await;
+        assert!(matches!(
+            client.create_with_pinned_fmans(intent(), locators(), options()).await,
+            Err(FiError::SeatUnrecoverable { index: 4, status: actual }) if actual == status
+        ));
+        let before = formation(&client.status()).clone();
+        assert_eq!(
+            before.last_error,
+            Some(crate::FormationFailure {
+                code: FiErrorCode::FleetManager,
+                disposition: crate::FailureDisposition::Terminal,
+            })
+        );
+        assert!(before.seats.iter().all(|seat| seat.seat_id.is_some()));
+        drop(client);
+        let reopened = open_client(database, payments, state, FmanConfig::given_away()).await;
+        assert_eq!(
+            formation(&reopened.status()).formation_id,
+            before.formation_id
+        );
+        assert_eq!(formation(&reopened.status()).last_error, None);
+        assert!(reopened.resume().await.is_err());
+        assert_eq!(formation(&reopened.status()).last_error, before.last_error);
+    }
+}
+
+#[tokio::test]
+async fn wallet_lookup_failure_retains_selected_formation_and_exact_reservation() {
+    let (payments, payment_state) = TestPayments::new();
+    let fman_state = Arc::new(FmanState::default());
+    let client = open_client(
+        MemDatabase::new().into_database(),
+        payments,
+        fman_state.clone(),
+        FmanConfig::paid(),
+    )
+    .await;
+    let formation_id = FormationId("retry-wallet-query".to_owned());
+    let reservation_id = seed_selected_recorded_reservation(
+        &client,
+        &payment_state,
+        formation_id.clone(),
+        test_now_secs() + 300,
+    )
+    .await;
+    payment_state.fail_payable.store(true, Ordering::SeqCst);
+    let error = client.resume().await.unwrap_err();
+    assert!(matches!(error, FiError::Payment(_)), "{error:?}");
+    assert_eq!(formation(&client.status()).formation_id, formation_id);
+    assert_eq!(
+        formation(&client.status()).last_error,
+        Some(crate::FormationFailure {
+            code: FiErrorCode::Payment,
+            disposition: crate::FailureDisposition::Retryable,
+        })
+    );
+    assert!(
+        payment_state
+            .reservations
+            .lock()
+            .unwrap()
+            .contains_key(reservation_id.as_str())
+    );
+    assert_eq!(payment_state.whole_release_calls.load(Ordering::SeqCst), 0);
+    assert_eq!(payment_state.create_calls.load(Ordering::SeqCst), 0);
+    assert_eq!(fman_state.create_calls.load(Ordering::SeqCst), 0);
+    payment_state.fail_payable.store(false, Ordering::SeqCst);
+    client.resume().await.unwrap();
+    assert_eq!(formation(&client.status()).phase, FormationPhase::Formed);
 }

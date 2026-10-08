@@ -654,14 +654,14 @@ fn apply_authorized_effect_in_memory(
     effect: AdmissionEffect,
 ) -> FiResult<()> {
     let seat = recovery.seats.get_mut(position).ok_or_else(|| {
-        FiError::Storage(format!(
+        FiError::StorageInvariant(format!(
             "authorized effect names missing FI seat row {position}"
         ))
     })?;
     seat.admission.mark_effect_authorized(quote_id, effect)?;
     if seat.replacement_for.is_some() {
         if !seat.replacement_approved {
-            return Err(FiError::Storage(format!(
+            return Err(FiError::StorageInvariant(format!(
                 "authorized replacement FI seat row {position} lacks its approval"
             )));
         }
@@ -925,7 +925,7 @@ where
             .iter()
             .map(|seat| {
                 seat.admission.fman_id().ok_or_else(|| {
-                    FiError::Storage(
+                    FiError::StorageInvariant(
                         "selected formation contains a pinned FMan admission".to_owned(),
                     )
                 })
@@ -944,13 +944,15 @@ where
             }
             retained_holders.extend(seat.admission.holder());
             let fman_id = seat.admission.fman_id().ok_or_else(|| {
-                FiError::Storage("selected formation contains a pinned FMan admission".to_owned())
+                FiError::StorageInvariant(
+                    "selected formation contains a pinned FMan admission".to_owned(),
+                )
             })?;
             if retained_service_pubkeys
                 .insert(seat.progress.locator.service_pubkey, fman_id)
                 .is_some()
             {
-                return Err(FiError::Storage(
+                return Err(FiError::StorageInvariant(
                     "selected formation contains duplicate retained service signing keys"
                         .to_owned(),
                 ));
@@ -1041,7 +1043,7 @@ where
                     continue;
                 }
                 let fman_id = seat.admission.fman_id().ok_or_else(|| {
-                    FiError::Storage(
+                    FiError::StorageInvariant(
                         "selected formation contains a pinned FMan admission".to_owned(),
                     )
                 })?;
@@ -1049,7 +1051,7 @@ where
                     .insert(seat.progress.locator.service_pubkey, fman_id)
                     .is_some()
                 {
-                    return Err(FiError::Storage(
+                    return Err(FiError::StorageInvariant(
                         "selected formation contains duplicate retained service signing keys"
                             .to_owned(),
                     ));
@@ -1501,7 +1503,7 @@ where
                     .await
                     .map(|latest| latest.snapshot)
                     .unwrap_or(validated_fallback);
-                snapshot.last_error = Some(error.code());
+                snapshot.last_error = Some(error.into());
                 self.publish_snapshot(snapshot);
             }
             result
@@ -1545,7 +1547,7 @@ where
         if cleanup == ReservationCleanup::DefinitivelyAbsent
             && recovery.payment_reservation_id.is_some()
         {
-            return Err(FiError::Storage(
+            return Err(FiError::StorageInvariant(
                 "wallet reservation cannot be both durable and definitively absent".to_owned(),
             ));
         }
@@ -1592,7 +1594,7 @@ where
                         if recovery.payment_reservation_id.as_ref() == Some(&reservation_id)
                             && !recovery.payment_reservation_release_intended
                         {
-                            return Err(FiError::Storage(
+                            return Err(FiError::StorageInvariant(
                                 "durable FI reservation is absent from the payment wallet"
                                     .to_owned(),
                             ));
@@ -1604,7 +1606,7 @@ where
                 }
             }
             _ if recovery.payment_reservation_id.is_some() => {
-                return Err(FiError::Storage(
+                return Err(FiError::StorageInvariant(
                     "cannot wipe FI state while its wallet reservation cannot be reconstructed"
                         .to_owned(),
                 ));
@@ -1633,7 +1635,7 @@ where
             let requirements = recovery
                 .reserved_payment_requirements(fi_id)?
                 .ok_or_else(|| {
-                    FiError::Storage(
+                    FiError::StorageInvariant(
                         "replacement reservation has no exact payment requirements".to_owned(),
                     )
                 })?;
@@ -1641,7 +1643,7 @@ where
                 || crate::db::payment_reservation_id(&recovery.snapshot.formation_id, &requirements)
                     != reservation_id
             {
-                return Err(FiError::Storage(
+                return Err(FiError::StorageInvariant(
                     "replacement reservation no longer matches its exact authorization".to_owned(),
                 ));
             }
@@ -1711,7 +1713,7 @@ where
                 .as_ref()
                 .is_some_and(|stored| stored != &reservation_id)
             {
-                return Err(FiError::Storage(
+                return Err(FiError::StorageInvariant(
                     "stored wallet reservation does not match exact payment requirements"
                         .to_owned(),
                 ));
@@ -1732,7 +1734,7 @@ where
                 }
                 PaymentReservationRecovery::Absent if recovery.payment_reservation_id.is_some() => {
                     if !recovery.payment_reservation_release_intended {
-                        return Err(FiError::Storage(
+                        return Err(FiError::StorageInvariant(
                             "durable FI reservation is absent from the payment wallet".to_owned(),
                         ));
                     }
@@ -1988,7 +1990,7 @@ where
             .as_ref()
             .is_some_and(|stored| stored != &reservation_id)
         {
-            return Err(FiError::Storage(
+            return Err(FiError::StorageInvariant(
                 "stored wallet reservation does not match exact payment requirements".to_owned(),
             ));
         }
@@ -2001,7 +2003,7 @@ where
             return Ok(reservation);
         }
         if recovery.payment_reservation_id.is_some() {
-            return Err(FiError::Storage(
+            return Err(FiError::StorageInvariant(
                 "durable FI reservation is absent from the payment wallet".to_owned(),
             ));
         }
@@ -2090,13 +2092,13 @@ where
                 .iter()
                 .find(|seat| seat.progress.index == requirement.index)
                 .ok_or_else(|| {
-                    FiError::Storage(format!(
+                    FiError::StorageInvariant(format!(
                         "payment requirement names missing FI seat row {}",
                         requirement.index
                     ))
                 })?;
             let signed = seat.signed_quote.as_ref().ok_or_else(|| {
-                FiError::Storage(format!(
+                FiError::StorageInvariant(format!(
                     "payment requirement has no quote for FI seat row {}",
                     requirement.index
                 ))
@@ -2110,7 +2112,7 @@ where
                 expected_payer.as_ref(),
             )?;
             if quote.quote_id() != requirement.quote_id || quote.terms.payment.is_none() {
-                return Err(FiError::Storage(format!(
+                return Err(FiError::StorageInvariant(format!(
                     "payment requirement does not match FI seat row {}",
                     requirement.index
                 )));
@@ -2332,7 +2334,9 @@ where
                 continue;
             }
             let reservation_id = recovery_reservation_id.clone().ok_or_else(|| {
-                FiError::Storage("authorized paid quote has no aggregate reservation id".to_owned())
+                FiError::StorageInvariant(
+                    "authorized paid quote has no aggregate reservation id".to_owned(),
+                )
             })?;
             pending_recoveries.push(async move {
                 let recovered = run
@@ -2553,7 +2557,7 @@ where
                 recovery.payment_requirements(fi_id)?
             }
             .ok_or_else(|| {
-                FiError::Storage(
+                FiError::StorageInvariant(
                     "paid output generation has no complete payment requirements".to_owned(),
                 )
             })?;
@@ -2588,7 +2592,7 @@ where
             let recovered_payment = recovered_payments[position].take();
             let refreshed_payment = refreshed_payments[position].take();
             let client = clients[position].take().ok_or_else(|| {
-                FiError::Storage(format!(
+                FiError::StorageInvariant(format!(
                     "missing preflight FMan connection for seat {position}"
                 ))
             })?;
@@ -2605,8 +2609,9 @@ where
                 });
                 continue;
             }
-            let signed_quote = signed_quote
-                .ok_or_else(|| FiError::Storage(format!("FI seat row {position} has no quote")))?;
+            let signed_quote = signed_quote.ok_or_else(|| {
+                FiError::StorageInvariant(format!("FI seat row {position} has no quote"))
+            })?;
             match recovered_payment {
                 None => {
                     presentations.push(PendingSeatPresentation {
@@ -2627,12 +2632,12 @@ where
                 }
                 Some(SeatPaymentRecovery::NotStarted) => {
                     let quote = refreshed_payment.ok_or_else(|| {
-                        FiError::Storage(format!(
+                        FiError::StorageInvariant(format!(
                             "paid FI seat row {position} escaped the refresh barrier"
                         ))
                     })?;
                     let reservation = payment_reservation.clone().ok_or_else(|| {
-                        FiError::Storage(format!(
+                        FiError::StorageInvariant(format!(
                             "paid FI seat row {position} has no aggregate reservation"
                         ))
                     })?;
@@ -2648,12 +2653,12 @@ where
                     });
                 }
                 Some(SeatPaymentRecovery::Prepared(_)) => {
-                    return Err(FiError::Storage(format!(
+                    return Err(FiError::StorageInvariant(format!(
                         "prepared FI seat row {position} escaped the replay barrier"
                     )));
                 }
                 Some(SeatPaymentRecovery::Rejected(_)) => {
-                    return Err(FiError::Storage(format!(
+                    return Err(FiError::StorageInvariant(format!(
                         "rejected FI seat row {position} escaped terminal clearing"
                     )));
                 }
@@ -2911,7 +2916,7 @@ where
             .enumerate()
             .map(|(position, session)| {
                 session.ok_or_else(|| {
-                    FiError::Storage(format!("missing live session for seat {position}"))
+                    FiError::StorageInvariant(format!("missing live session for seat {position}"))
                 })
             })
             .collect()
@@ -2937,13 +2942,13 @@ where
             let requirements = recovery
                 .reserved_payment_requirements(fi_id)?
                 .ok_or_else(|| {
-                    FiError::Storage(
+                    FiError::StorageInvariant(
                         "stored wallet reservation has no exact payment requirements".to_owned(),
                     )
                 })?;
             let expected = crate::db::payment_reservation_id(&formation_id, &requirements);
             if recovery.payment_reservation_id.as_ref() != Some(&expected) {
-                return Err(FiError::Storage(
+                return Err(FiError::StorageInvariant(
                     "stored wallet reservation no longer matches journaled quotes".to_owned(),
                 ));
             }
@@ -2957,7 +2962,7 @@ where
                         return Ok(None);
                     }
                     let signed = seat.signed_quote.clone().ok_or_else(|| {
-                        FiError::Storage(format!(
+                        FiError::StorageInvariant(format!(
                             "reserved FI seat row {position} has no signed quote"
                         ))
                     })?;
@@ -3160,7 +3165,7 @@ where
             .enumerate()
             .map(|(position, code)| {
                 code.ok_or_else(|| {
-                    FiError::Storage(format!("missing guardian code for seat {position}"))
+                    FiError::StorageInvariant(format!("missing guardian code for seat {position}"))
                 })
             })
             .collect::<FiResult<Vec<_>>>()?;
@@ -3307,7 +3312,7 @@ where
             .await?
             .map_err(|error| FiError::Payment(error.to_string()))?;
         } else if release_proof.is_some() {
-            return Err(FiError::Storage(format!(
+            return Err(FiError::StorageInvariant(format!(
                 "free FI seat row {position} unexpectedly carried a wallet release proof"
             )));
         }
@@ -3334,7 +3339,7 @@ where
                         .verify(&recovery.seats[position].progress.locator.service_pubkey)
                         .map(|quote| quote.quote_id())
                         .map_err(|error| {
-                            FiError::Storage(format!(
+                            FiError::StorageInvariant(format!(
                                 "invalid terminal quote for replacement row {position}: {error}"
                             ))
                         })
@@ -3696,7 +3701,7 @@ where
     ) -> FiResult<FreeSeatQuote> {
         let verified = self.verify_quote(index, &signed, locator, intent, fi_id, expected_payer)?;
         if verified.terms.payment.is_some() {
-            return Err(FiError::Storage(format!(
+            return Err(FiError::StorageInvariant(format!(
                 "paid FI seat row {index} had no authorized payment action"
             )));
         }
@@ -3714,7 +3719,7 @@ where
     ) -> FiResult<PaidSeatQuote> {
         let verified = self.verify_quote(index, &signed, locator, intent, fi_id, expected_payer)?;
         if verified.terms.payment.is_none() {
-            return Err(FiError::Storage(format!(
+            return Err(FiError::StorageInvariant(format!(
                 "free FI seat row {index} had a paid acquisition action"
             )));
         }
@@ -3942,7 +3947,7 @@ where
         run: DriverRun<'_>,
     ) -> FiResult<()> {
         let stored = recovery.snapshot.invite_code.clone().ok_or_else(|| {
-            FiError::Storage("formed FI record contains no persisted invite".to_owned())
+            FiError::StorageInvariant("formed FI record contains no persisted invite".to_owned())
         })?;
         let (manager_connections, invite) = if recovery.snapshot.phase == FormationPhase::Formed {
             // Consensus already confirmed formation. Recheck that proof without
@@ -4068,7 +4073,7 @@ where
         let mut sessions = Vec::with_capacity(recovery.seats.len());
         for (position, seat) in recovery.seats.iter().enumerate() {
             let seat_id = seat.progress.seat_id.clone().ok_or_else(|| {
-                FiError::Storage(format!("FI seat row {position} has no seat id"))
+                FiError::StorageInvariant(format!("FI seat row {position} has no seat id"))
             })?;
             let client = run
                 .call("reconnecting to Fleet Manager", || {
@@ -4655,12 +4660,12 @@ where
         }
         let mut invites = invites.into_iter().enumerate().map(|(position, invite)| {
             invite.ok_or_else(|| {
-                FiError::Storage(format!("missing invite response for seat {position}"))
+                FiError::StorageInvariant(format!("missing invite response for seat {position}"))
             })
         });
-        let (deliverable, expected_id) = invites
-            .next()
-            .ok_or_else(|| FiError::Storage("formed FI record contains no seats".to_owned()))??;
+        let (deliverable, expected_id) = invites.next().ok_or_else(|| {
+            FiError::StorageInvariant("formed FI record contains no seats".to_owned())
+        })??;
         for invite in invites {
             let (_, federation_id) = invite?;
             if federation_id != expected_id {
@@ -4688,7 +4693,9 @@ where
                     return Err(FiError::NoActiveFormation);
                 }
                 let invite_code = recovery.snapshot.invite_code.clone().ok_or_else(|| {
-                    FiError::Storage("formed FI record has no federation invite".to_owned())
+                    FiError::StorageInvariant(
+                        "formed FI record has no federation invite".to_owned(),
+                    )
                 })?;
                 let seats = recovery
                     .seats
@@ -4699,7 +4706,9 @@ where
                             fman_id: seat.admission.fman_id(),
                             locator: seat.progress.locator,
                             seat_id: seat.progress.seat_id.ok_or_else(|| {
-                                FiError::Storage("formed FI seat has no seat id".to_owned())
+                                FiError::StorageInvariant(
+                                    "formed FI seat has no seat id".to_owned(),
+                                )
                             })?,
                         })
                     })
@@ -4722,7 +4731,9 @@ where
                     .map(|(index, seat)| {
                         Ok(PostFormedSeat {
                             index: u16::try_from(index).map_err(|_| {
-                                FiError::Storage("restored FI seat index overflow".to_owned())
+                                FiError::StorageInvariant(
+                                    "restored FI seat index overflow".to_owned(),
+                                )
                             })?,
                             fman_id: Some(seat.fman_identity),
                             locator: seat.locator,
@@ -4938,14 +4949,14 @@ fn service_seat_phase(index: usize, status: &ServiceStatus) -> FiResult<SeatPhas
     match status {
         ServiceStatus::New => Ok(SeatPhase::Created),
         ServiceStatus::DkgInProcess => Ok(SeatPhase::DkgUnderway),
-        ServiceStatus::DataLoss => Err(FiError::FleetManager {
+        ServiceStatus::DataLoss => Err(FiError::SeatUnrecoverable {
             index: u16::try_from(index).expect("validated formation size fits u16"),
-            message: "guardian data loss; decommission and replace this seat".to_owned(),
+            status: status.clone(),
         }),
         ServiceStatus::Running => Ok(SeatPhase::Running),
-        ServiceStatus::Decommissioned => Err(FiError::FleetManager {
+        ServiceStatus::Decommissioned => Err(FiError::SeatUnrecoverable {
             index: u16::try_from(index).expect("validated formation size fits u16"),
-            message: format!("seat entered terminal/non-running status {status}"),
+            status: status.clone(),
         }),
     }
 }

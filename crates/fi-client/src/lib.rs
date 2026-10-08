@@ -39,8 +39,8 @@ pub use discovery::{
 #[cfg(any(test, feature = "dev-pinned-formation"))]
 pub use discovery::{InsecureUntrustedPinnedFman, InsecureUntrustedPinnedFmanDiscovery};
 pub use error::{
-    AbandonUnavailableReason, Capability, FiError, FiErrorCode, FiResult,
-    SelectionReauthorizationReason,
+    AbandonUnavailableReason, Capability, FailureDisposition, FiError, FiErrorCode, FiResult,
+    FormationFailure, SelectionReauthorizationReason,
 };
 pub use fedi_decentralized_nostr::fman::{ApiEndpoint, Availability};
 pub use fedi_decentralized_service_fleet_manager::{
@@ -421,7 +421,7 @@ where
             &self.inner.ports.registry,
             &self.inner.ports.fman_connector,
         );
-        self.publish_error(FiErrorCode::CapabilityUnavailable);
+        self.publish_error(&FiError::CapabilityUnavailable(Capability::Registry));
         Err(FiError::CapabilityUnavailable(Capability::Registry))
     }
 
@@ -480,54 +480,66 @@ where
     /// and cancellation behavior as [`Self::resume`].
     pub async fn resume_with_options(&self, options: FormationRunOptions) -> FiResult<()> {
         let _run = self.inner.run_guard.try_lock().map_err(|_| FiError::Busy)?;
-        options.validate_for_start(&self.inner.store)?;
-        let fi_id = self
-            .inner
-            .ports
-            .identity
-            .public_key()
-            .map_err(FiError::Identity)?;
-        let (deadline, lease) = formation::start_driver_run(&self.inner.store, options).await?;
         let result = async {
-            let recovery = self.inner.store.load_recovery(fi_id).await?;
-            match recovery {
-                db::FiRecovery::Idle => Err(FiError::NoActiveFormation),
-                db::FiRecovery::Formation(recovery) => {
-                    self.inner
-                        .progress
-                        .send_replace(FiStatus::Formation(recovery.snapshot.clone()));
-                    self.resume_pinned(*recovery, options, deadline, &lease)
+            options.validate_for_start(&self.inner.store)?;
+            let fi_id = self
+                .inner
+                .ports
+                .identity
+                .public_key()
+                .map_err(FiError::Identity)?;
+            let (deadline, lease) = formation::start_driver_run(&self.inner.store, options).await?;
+            let result = async {
+                let recovery = self.inner.store.load_recovery(fi_id).await?;
+                match recovery {
+                    db::FiRecovery::Idle => Err(FiError::NoActiveFormation),
+                    db::FiRecovery::Formation(recovery) => {
+                        self.inner
+                            .progress
+                            .send_replace(FiStatus::Formation(recovery.snapshot.clone()));
+                        self.resume_pinned(*recovery, options, deadline, &lease)
+                            .await
+                    }
+                    db::FiRecovery::Restored(snapshot)
+                        if snapshot.freshness == FormationFreshness::Fresh =>
+                    {
+                        Ok(())
+                    }
+                    db::FiRecovery::Restored(snapshot) => {
+                        self.inner
+                            .progress
+                            .send_replace(FiStatus::Restored(snapshot.clone()));
+                        self.reconcile_restored(
+                            snapshot,
+                            fi_id,
+                            formation::DriverRun::new(options, deadline, &lease),
+                        )
                         .await
-                }
-                db::FiRecovery::Restored(snapshot)
-                    if snapshot.freshness == FormationFreshness::Fresh =>
-                {
-                    Ok(())
-                }
-                db::FiRecovery::Restored(snapshot) => {
-                    self.inner
-                        .progress
-                        .send_replace(FiStatus::Restored(snapshot.clone()));
-                    self.reconcile_restored(
-                        snapshot,
-                        fi_id,
-                        formation::DriverRun::new(options, deadline, &lease),
-                    )
-                    .await
+                    }
                 }
             }
+            .await;
+            formation::finish_driver_run(result, self.inner.store.release_driver_lease(lease).await)
         }
         .await;
-        formation::finish_driver_run(result, self.inner.store.release_driver_lease(lease).await)
+        if let Err(error) = &result {
+            self.publish_error(error);
+        }
+        result
     }
 
-    fn publish_error(&self, error: FiErrorCode) {
-        if let FiStatus::Formation(mut snapshot) = self.status() {
-            snapshot.last_error = Some(error);
-            self.inner
-                .progress
-                .send_replace(FiStatus::Formation(snapshot));
-        }
+    fn publish_error(&self, error: &FiError) {
+        let failure = Some(error.into());
+        self.inner.progress.send_if_modified(|status| {
+            if let FiStatus::Formation(snapshot) = status
+                && snapshot.last_error != failure
+            {
+                snapshot.last_error = failure;
+                true
+            } else {
+                false
+            }
+        });
     }
 }
 
