@@ -121,7 +121,7 @@ services:
   flip-daemon:
     # Tagged with the workspace version by the nix build; override
     # FLIP_IMAGE_TAG after a version bump.
-    image: flip-liquidity-manager:${FLIP_IMAGE_TAG:-0.1.1}
+    image: flip-liquidity-manager:${FLIP_IMAGE_TAG:-0.1.2}
     profiles:
       - daemon
     depends_on:
