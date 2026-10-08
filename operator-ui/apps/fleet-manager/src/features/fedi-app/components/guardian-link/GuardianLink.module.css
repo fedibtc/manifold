@@ -1,0 +1,36 @@
+.root {
+  @apply uStack6;
+}
+.intro {
+  @apply uMutedSm;
+}
+.title {
+  @apply uCardTitle;
+}
+.link {
+  @apply uStack4;
+}
+.details {
+  @apply grid gap-x-6 gap-y-2 text-sm text-ink sm:grid-cols-2;
+}
+.details dt {
+  @apply text-ink/60;
+}
+.actions {
+  @apply flex flex-wrap gap-3;
+}
+.offer {
+  @apply uStack4 border-t border-muted pt-6;
+}
+.qr {
+  @apply h-auto w-64 max-w-full rounded-card border border-muted bg-surface;
+}
+.warning {
+  @apply rounded-card bg-warnSoft p-4 text-sm text-ink;
+}
+.outcome {
+  @apply uActionOutcome;
+}
+.error {
+  @apply text-sm text-error;
+}
