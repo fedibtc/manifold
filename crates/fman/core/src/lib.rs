@@ -26,6 +26,7 @@ pub mod facts;
 pub mod fedimint_api;
 pub mod fleet;
 pub mod guardian_fee;
+pub mod guardian_link;
 pub mod identity;
 pub mod onboarding;
 pub mod payout_wire;

@@ -10,7 +10,7 @@ use fman_core::facts::CompletionCallbackReason;
 use fman_core::push_callback::{
     CallbackAttemptOutcome, CompletionCallbackInvoker, ValidatedDkgCompletionCallback,
 };
-use serde_json::{Map, Value};
+use serde_json::Value;
 
 const CALLBACK_REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 const RATE_LIMIT_RESPONSE_MAX_BYTES: usize = 4 * 1024;
@@ -68,7 +68,7 @@ impl CompletionCallbackInvoker for PushGatewayCallbackInvoker {
         };
         let request = InvokeHookRequest {
             idempotency_key: Some(callback.idempotency_key().to_owned()),
-            data: Map::new(),
+            data: callback.data().clone(),
         };
         let response = match client
             .post(callback.callback_url())

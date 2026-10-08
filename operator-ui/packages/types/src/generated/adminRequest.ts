@@ -20,7 +20,7 @@ request_id: string, } } | { "PayoutStatus": { request_id: string, } } | { "Await
 /**
  * Caller-generated idempotency identity.
  */
-request_id: string, } } | "Onboarding" | "RefreshHolderAuthorizations" | { "ConfigureInitialOffer": { max_seats: number, price_msats: number | null, } } | "ShowMnemonic" | { "OnboardAsNew": {
+request_id: string, } } | "GuardianLink" | "CreateGuardianLinkOffer" | "RevokeGuardianLink" | "TestGuardianLinkNotification" | "Onboarding" | "RefreshHolderAuthorizations" | { "ConfigureInitialOffer": { max_seats: number, price_msats: number | null, } } | "ShowMnemonic" | { "OnboardAsNew": {
 /**
  * Whether "this host is already onboarded" is success rather than a
  * refusal. Set by orchestrators whose want is *ensure onboarded* —

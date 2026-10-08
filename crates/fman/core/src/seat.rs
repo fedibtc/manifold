@@ -567,11 +567,16 @@ impl Seat {
         self.ports
     }
 
+    /// The report from the last published facts, with one filesystem probe
+    /// and no round trip to the loop.
+    pub(crate) fn cached_report(&self) -> std::io::Result<SeatReport> {
+        let final_data_exists = self.data_dir.try_exists()?;
+        Ok(self.state.borrow().report(final_data_exists))
+    }
+
     #[cfg(test)]
     pub(crate) fn cached_report_for_test(&self) -> SeatReport {
-        self.state
-            .borrow()
-            .report(self.data_dir.try_exists().unwrap())
+        self.cached_report().unwrap()
     }
 
     #[cfg(test)]
