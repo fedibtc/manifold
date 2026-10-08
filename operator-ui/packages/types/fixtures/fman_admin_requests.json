@@ -15,6 +15,7 @@
       "price_msats": 50000000
     }
   },
+  "CreateGuardianLinkOffer": "CreateGuardianLinkOffer",
   "DecommissionSeat": {
     "DecommissionSeat": {
       "seat_id": "0707070707070707070707070707070707070707070707070707070707070707"
@@ -26,6 +27,7 @@
       "seat_id": "0707070707070707070707070707070707070707070707070707070707070707"
     }
   },
+  "GuardianLink": "GuardianLink",
   "ListPaymentFederations": "ListPaymentFederations",
   "ListSeats": "ListSeats",
   "MarkSupportRead": {
@@ -55,6 +57,7 @@
   },
   "ReenrollTelemetry": "ReenrollTelemetry",
   "RefreshHolderAuthorizations": "RefreshHolderAuthorizations",
+  "RevokeGuardianLink": "RevokeGuardianLink",
   "SeatStatus": {
     "SeatStatus": {
       "seat_id": "0707070707070707070707070707070707070707070707070707070707070707"
@@ -96,5 +99,6 @@
       "federation_id": "fed1fixturepaymentfederation",
       "request_id": "fixture-payment-payout"
     }
-  }
+  },
+  "TestGuardianLinkNotification": "TestGuardianLinkNotification"
 }

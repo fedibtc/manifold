@@ -22,7 +22,7 @@ use anyhow::{Context as _, anyhow};
 use fedi_decentralized_domain::Pubkey;
 use fedi_decentralized_service_fleet_manager::{
     CreateSeatResponse, FederationId, FiId, GuardianTelemetrySeat, Plan, QuoteId, QuoteTerms,
-    RefundTransaction, RefusalReason, SafeEventJournal, SeatId, SeatScopedFiRequest,
+    RefundTransaction, RefusalReason, SafeEventJournal, SeatHealth, SeatId, SeatScopedFiRequest,
     SignedResponse, TelemetryCapability, VerifiedFiRequest,
 };
 use tokio::sync::Notify;
@@ -326,6 +326,12 @@ pub struct Fleet {
     /// The daemon's latest readiness report, for the operator. Admission
     /// reads the durable verdict instead.
     seat_readiness: Mutex<Option<ReadinessReport>>,
+    /// The operator's linked phone: offer and evaluator memory
+    /// ([`crate::guardian_link`]).
+    pub(crate) guardian_link: crate::guardian_link::GuardianLinkState,
+    /// This daemon's Iroh endpoint id, bound once the router exists; the link
+    /// offer names it so the phone can dial back.
+    iroh_endpoint_id: std::sync::OnceLock<String>,
 }
 
 /// Failure while resolving a capability-scoped guardian metrics target.
@@ -473,6 +479,8 @@ impl Fleet {
             telemetry_registration_changed: Notify::new(),
             advertisement_changed: Notify::new(),
             seat_readiness: Mutex::new(None),
+            guardian_link: Default::default(),
+            iroh_endpoint_id: std::sync::OnceLock::new(),
         };
         Ok(fleet)
     }
@@ -609,6 +617,37 @@ impl Fleet {
 
     pub fn config(&self) -> &FleetConfig {
         &self.config
+    }
+
+    pub(crate) fn db(&self) -> &Db {
+        &self.db
+    }
+
+    /// Record the Iroh endpoint id the daemon serves on. Set once; a second
+    /// call with the same id is a no-op.
+    pub fn bind_iroh_endpoint_id(&self, id: String) {
+        let _ = self.iroh_endpoint_id.set(id);
+    }
+
+    pub(crate) fn iroh_endpoint_id(&self) -> Option<String> {
+        self.iroh_endpoint_id.get().cloned()
+    }
+
+    /// Every seat's cached report, without touching a child. A seat whose
+    /// data directory cannot be probed is reported as unavailable.
+    pub(crate) fn seat_report_snapshot(&self) -> Vec<(SeatId, SeatReport)> {
+        self.seats
+            .read()
+            .expect("seat registry lock is never poisoned")
+            .values()
+            .map(|seat| {
+                let report = seat.cached_report().unwrap_or(SeatReport::Active {
+                    phase: crate::seat::SeatPhase::Created,
+                    health: SeatHealth::Unavailable,
+                });
+                (seat.facts().seat_id.clone(), report)
+            })
+            .collect()
     }
 
     /// Stop every supervised child. Used by the daemon before process exit and

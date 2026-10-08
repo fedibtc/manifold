@@ -23,13 +23,14 @@ use anyhow::Context as _;
 use clap::{Parser, ValueEnum};
 use fedi_decentralized_manifold_environment::{ManifoldEnvironment, ManifoldEnvironmentProfile};
 use fedi_decentralized_service_fleet_manager::{
-    FLEET_MANAGER_ALPN, FleetManagerServiceServer, GUARDIAN_TELEMETRY_ALPN,
-    GuardianTelemetryApiServer, Locator,
+    FLEET_MANAGER_ALPN, FleetManagerServiceServer, GUARDIAN_LINK_ALPN, GUARDIAN_TELEMETRY_ALPN,
+    GuardianLinkServiceServer, GuardianTelemetryApiServer, Locator,
 };
 use fedi_iroh_rpc::IrohProtocol;
 use fman_core::admin;
 use fman_core::admin_http::{self, AdminHttpAuth};
 use fman_core::bundled_fedimintd;
+use fman_core::guardian_link::GuardianLinkRpc;
 
 use fedimint_core::Amount;
 use fedimint_core::util::SafeUrl;
@@ -520,7 +521,27 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
                 std::time::Duration::from_secs(5),
             ),
         )
+        .accept(
+            GUARDIAN_LINK_ALPN,
+            // One phone talks to this; a signed verb with a hook URL fits in
+            // a few kilobytes.
+            IrohProtocol::with_limits_and_request_read_timeout(
+                GuardianLinkServiceServer::new(GuardianLinkRpc::new(
+                    fleet.clone(),
+                    nostr.presence(),
+                )),
+                8 * 1024,
+                4,
+                std::time::Duration::from_secs(5),
+            ),
+        )
         .spawn();
+    fleet.bind_iroh_endpoint_id(router.endpoint().id().to_string());
+    let guardian_link_notifier = fman_core::guardian_link::spawn_notifier(
+        fleet.clone(),
+        nostr.presence(),
+        fman_core::guardian_link::DEFAULT_NOTIFY_SCAN_INTERVAL,
+    );
 
     let mut seat_readiness =
         seat_readiness::SeatReadiness::new(router.endpoint().clone(), &process, local_e2e)?
@@ -576,6 +597,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         result = &mut seat_readiness => Some(result),
     };
     seat_readiness.abort();
+    guardian_link_notifier.shutdown().await;
     telemetry_registration.shutdown().await;
     router.shutdown().await?;
     // Stop and join every wallet-join task before shutting down the fleet.

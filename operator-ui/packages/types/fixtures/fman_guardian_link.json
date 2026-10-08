@@ -1,0 +1,21 @@
+{
+  "available": true,
+  "link": {
+    "callback_expires_at": 1702592000,
+    "delivery": {
+      "reason": "hook_expired_or_revoked",
+      "state": "terminal"
+    },
+    "device_label": "Pixel 8",
+    "last_notified_at": 1700003600,
+    "linked_at": 1700000000,
+    "notified_reasons": [
+      "seat_failed",
+      "support_message"
+    ]
+  },
+  "offer": {
+    "expires_at": 1700004200,
+    "uri": "fedi://guardian-link?v=1&fman=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb&node=cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc&env=development&secret=0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d"
+  }
+}
