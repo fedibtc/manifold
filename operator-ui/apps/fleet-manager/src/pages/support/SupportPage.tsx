@@ -1,8 +1,8 @@
 import { useEffect, useId } from 'react';
 import { useMarkSupportRead } from '@/features/support/api/hooks/use-mark-support-read/useMarkSupportRead';
 import { useSupportChat } from '@/features/support/api/hooks/use-support-chat/useSupportChat';
+import { FediAvatar } from '@/features/support/components/fedi-avatar/FediAvatar';
 import { SupportComposer } from '@/features/support/components/support-composer/SupportComposer';
-import fediLogo from '@/features/support/components/support-thread/fediLogo.svg';
 import { SupportThread } from '@/features/support/components/support-thread/SupportThread';
 import { SUPPORT_CHAT_OPEN_POLL_MS } from '@/shared/api/pollingIntervals';
 import { QuerySurface } from '@/shared/components/query-surface/QuerySurface';
@@ -37,9 +37,7 @@ export const SupportPage = () => {
         {chat.data && (
           <section className={styles.card} aria-labelledby={titleId}>
             <header className={styles.cardHead}>
-              <span className={styles.avatar}>
-                <img src={fediLogo} alt="" />
-              </span>
+              <FediAvatar />
 
               <h2 id={titleId} className={styles.cardTitle}>
                 Fedi guardian support

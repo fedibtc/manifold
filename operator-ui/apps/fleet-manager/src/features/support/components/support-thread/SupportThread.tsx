@@ -1,6 +1,6 @@
 import type { SupportMessage } from '@operator-ui/types';
 import { useEffect, useRef } from 'react';
-import fediLogo from '@/features/support/components/support-thread/fediLogo.svg';
+import { FediAvatar } from '@/features/support/components/fedi-avatar/FediAvatar';
 import {
   formatSupportDay,
   formatSupportTime,
@@ -49,11 +49,7 @@ export const SupportThread = ({ messages }: SupportThreadProps) => {
               {newDay && <p className={styles.day}>{formatSupportDay(message.created_at)}</p>}
 
               <div className={styles.row}>
-                {fromFedi && (
-                  <span className={styles.avatar}>
-                    <img src={fediLogo} alt="" />
-                  </span>
-                )}
+                {fromFedi && <FediAvatar />}
 
                 <div className={styles.bubble}>
                   <p className={styles.body}>

@@ -13,6 +13,9 @@
   .uSubmitButton {
     @apply rounded-card bg-ink px-4 py-2 text-sm font-medium text-surface disabled:cursor-not-allowed disabled:opacity-50;
   }
+  .uCardTitle {
+    @apply text-base font-semibold text-ink;
+  }
   .uMono {
     @apply font-mono text-xs text-ink/70;
   }
