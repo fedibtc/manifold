@@ -87,6 +87,13 @@ not an approximation of deployment-owned production credentials. It issues
 the selected profile's minimum level so local and staging workflows exercise
 the same relying-party gate as deployed consumers.
 
+The `peerbadge-signing-server` also defaults to these complete public fixtures
+in Development and Staging and returns their pinned authority documents.
+Its signer allowlist does not make these known-secret roots secure. Production
+requires an explicit issuer key file; generating or loading that file does not
+add its identity or authority to any profile. A production server root still
+requires the authorization, authority pinning, revision, and rollout above.
+
 The setup-payment publisher key authenticates the kind-37707 federation list
 that decides which federations paid setup uses, so whoever holds its secret
 controls that policy. Each environment deliberately trusts exactly one

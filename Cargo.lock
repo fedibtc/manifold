@@ -433,6 +433,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ef49f5882e4b6afaac09ad239a4f8c70a24b8f2b0897edb1f706008efd109cf4"
 
 [[package]]
+name = "atomic-polyfill"
+version = "1.0.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8cf2bce30dfe09ef0bfaef228b9d414faaf7e563035494d7fe092dba54b300f4"
+dependencies = [
+ "critical-section",
+]
+
+[[package]]
 name = "atomic-waker"
 version = "1.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2612,6 +2621,34 @@ dependencies = [
 ]
 
 [[package]]
+name = "fedi-decentralized-peerbadge-signing-server"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "fedi-decentralized-domain",
+ "fedi-decentralized-manifold-environment",
+ "fedi-decentralized-nostr",
+ "fedi-decentralized-nostr-clients",
+ "fedi-decentralized-peer-badge-verifier",
+ "fedi-decentralized-service-peerbadge-signing",
+ "fedi-iroh-rpc",
+ "hex",
+ "iroh 1.0.3",
+ "iroh-tickets",
+ "nostr-sdk",
+ "peerbadge-protocol",
+ "peerbadge-schemas",
+ "rand 0.8.6",
+ "rustls",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
 name = "fedi-decentralized-push-gateway"
 version = "0.1.0"
 dependencies = [
@@ -2732,6 +2769,19 @@ dependencies = [
  "serde_json_canonicalizer",
  "sha2 0.10.9",
  "strum 0.26.3",
+]
+
+[[package]]
+name = "fedi-decentralized-service-peerbadge-signing"
+version = "0.1.0"
+dependencies = [
+ "ciborium",
+ "fedi-iroh-rpc",
+ "serde",
+ "serde_bytes",
+ "serde_json",
+ "sha2 0.10.9",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
@@ -4703,6 +4753,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "hash32"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b0c35f58762feb77d74ebe43bdbc3210f09be9fe6742234d573bacc26ed92b67"
+dependencies = [
+ "byteorder",
+]
+
+[[package]]
 name = "hashbrown"
 version = "0.12.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4767,6 +4826,20 @@ dependencies = [
  "flate2",
  "nom 8.0.0",
  "num-traits",
+]
+
+[[package]]
+name = "heapless"
+version = "0.7.17"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cdc6457c0eb62c71aac4bc17216026d8410337c4126773b9c5daba343f17964f"
+dependencies = [
+ "atomic-polyfill",
+ "hash32",
+ "rustc_version",
+ "serde",
+ "spin 0.9.8",
+ "stable_deref_trait",
 ]
 
 [[package]]
@@ -5864,6 +5937,20 @@ dependencies = [
  "url",
  "webpki-roots 1.0.7",
  "ws_stream_wasm",
+]
+
+[[package]]
+name = "iroh-tickets"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "da53233419ca36bf521ed45683b7748366f9b233032891eefc2d70567a84ac54"
+dependencies = [
+ "data-encoding",
+ "derive_more 2.1.1",
+ "iroh-base 1.2.0",
+ "n0-error",
+ "postcard",
+ "serde",
 ]
 
 [[package]]
@@ -8105,6 +8192,7 @@ dependencies = [
  "cobs",
  "embedded-io 0.4.0",
  "embedded-io 0.6.1",
+ "heapless",
  "postcard-derive",
  "serde",
 ]

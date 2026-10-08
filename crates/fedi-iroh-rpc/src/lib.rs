@@ -14,6 +14,7 @@ pub use async_trait;
 pub use client::RpcClient;
 pub use error::{RpcError, RpcResult};
 pub use fedi_iroh_rpc_macros::service;
+pub use frame::{RequestFrame, ResponseFrame, WIRE_VERSION};
 pub use iroh;
 pub use iroh_protocol::IrohProtocol;
 pub use rpc_return::RpcReturn;
