@@ -132,7 +132,7 @@ the typed `InsufficientFmanSeats` partial failure.
 
 The preview is read-only: it returns selected seats, their locators, advertised
 prices, verified provenance, estimate, and seen/eligible/selected summary. Its
-result is valid for two minutes and can become a non-serializable
+result is valid for five minutes and can become a non-serializable
 `FmanSelectionApproval` that seals the complete request, selected DKG identity,
 verifier/environment provenance, locators, estimate, and user cap. Leaving the screen, restarting, or
 re-entering obtains a new preview.

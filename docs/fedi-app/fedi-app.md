@@ -78,7 +78,7 @@ flowchart LR
     G --> H["Federation formed"]
 ```
 
-Preview is advertisement-only and valid for two minutes from completion of its
+Preview is advertisement-only and valid for five minutes from completion of its
 verified walk. Its sealed handle binds the exact request and canonical verifier
 environment. The bridge keeps the
 sealed, non-serializable approval behind an opaque transient handle; back-out,
@@ -116,7 +116,7 @@ The bridge exposes four concepts:
 
 - current FI service health plus the typed `FiStatus`;
 - an uncached verified preview command returning display DTOs plus an opaque
-  two-minute handle;
+  five-minute handle;
 - authenticated admitted payer IDs (including zero-balance wallets), a
   Pay-and-create command with an explicit payer, the no-payer all-zero
   bootstrap command, and the post-output

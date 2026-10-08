@@ -764,7 +764,7 @@ where
     /// Execute the Pay-and-create action for one fresh, verified selection.
     ///
     /// The approval comes only from [`crate::FmanSelectionPreview::approve`] and is
-    /// valid for two minutes. No quote is requested during preview: this
+    /// valid for five minutes. No quote is requested during preview: this
     /// method first validates the sealed set and explicit ready payer, then
     /// obtains exact quotes and proceeds automatically only while their total
     /// remains within the approved limit. Any stale preview, unavailable
