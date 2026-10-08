@@ -35,16 +35,16 @@ it('should mark each new local day and time each message in its bubble', () => {
 
   const items = screen.getAllByRole('listitem');
   expect(items.map((item) => item.querySelector(':scope > p')?.textContent ?? null)).toEqual([
-    'Nov 13',
+    'Monday, 13 November',
     'Yesterday',
     null,
     'Today'
   ]);
   expect(items.map((item) => item.querySelector('time')?.textContent)).toEqual([
-    '11:59pm',
-    '12:01am',
-    '12:05pm',
-    '9:30am'
+    '23:59',
+    '00:01',
+    '12:05',
+    '09:30'
   ]);
   // Only Fedi's messages carry the Fedi avatar.
   expect(items.map((item) => item.querySelector('img') !== null)).toEqual([

@@ -60,7 +60,6 @@ export const SupportComposer = () => {
           onChange={handleChange}
         />
 
-        {/* The Fedi app's send control: an arrow in a circle, grey until there is text. */}
         <button
           type="submit"
           className={styles.send}
@@ -68,12 +67,9 @@ export const SupportComposer = () => {
           disabled={send.isPending || body.trim() === ''}
         >
           <svg aria-hidden="true" viewBox="0 0 24 24" className={styles.sendIcon}>
-            <path
-              fill="currentColor"
-              fillRule="evenodd"
-              clipRule="evenodd"
-              d="M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Zm-4.293-.707-4-4a1 1 0 0 0-1.414 0l-4 4a1 1 0 1 0 1.414 1.414L11 10.414V16a1 1 0 1 0 2 0v-5.586l2.293 2.293a1 1 0 0 0 1.414-1.414Z"
-            />
+            <path d="M22 2 11 13" />
+
+            <path d="M22 2 15 22l-4-9-9-4 20-7z" />
           </svg>
         </button>
       </div>

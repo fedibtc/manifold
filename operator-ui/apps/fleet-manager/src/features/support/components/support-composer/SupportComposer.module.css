@@ -1,23 +1,26 @@
-/* The Fedi app's message input: a divider above, a borderless box, a send arrow. */
+/* A rounded message box and a round send button, below a divider. */
 .form {
-  @apply uStack1 border-t border-gray-150 p-2;
+  @apply uStack1 border-t border-muted px-4 py-3;
 }
 
 .row {
-  @apply flex items-end gap-2;
+  @apply flex items-center gap-2;
 }
 
 .textarea {
-  @apply max-h-[120px] w-full resize-none border-0 p-1 text-sm focus:outline-none;
+  @apply max-h-[120px] min-h-10 w-full resize-none rounded-[20px] border border-gray-200 px-4 py-2.5 text-sm leading-5 focus:border-info focus:outline-none;
   field-sizing: content;
 }
 
 .send {
-  @apply shrink-0 text-info hover:brightness-125 disabled:pointer-events-none disabled:text-gray-500;
+  @apply grid size-10 shrink-0 place-items-center rounded-full bg-ink text-surface hover:bg-ink/80 disabled:pointer-events-none disabled:bg-gray-200;
 }
 
 .sendIcon {
-  @apply size-8;
+  @apply size-[18px] fill-none stroke-current;
+  stroke-width: 1.75;
+  stroke-linecap: round;
+  stroke-linejoin: round;
 }
 
 .error {
