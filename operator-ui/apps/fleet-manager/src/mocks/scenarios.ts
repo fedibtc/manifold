@@ -374,7 +374,7 @@ const builders = {
       {
         id: 'a'.repeat(64),
         author: 'fedi' as const,
-        body: 'Hi, this is Fedi support. Our telemetry shows one of your guardians has not answered for 20 minutes. Is the host online?',
+        body: 'Hi, this is guardian support. Our telemetry shows one of your guardians has not answered for 20 minutes. Is the host online?',
         created_at: LAST_READ_AT - 7_200
       },
       {

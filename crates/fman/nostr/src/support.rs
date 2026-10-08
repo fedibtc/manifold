@@ -87,11 +87,11 @@ async fn send(inner: &Inner, body: &str) -> anyhow::Result<SupportRow> {
     }
     let fedi = inner
         .support()
-        .context("Chat with Fedi support isn't available on this host yet.")?;
+        .context("Chat with guardian support isn't available on this host yet.")?;
     let nostr = inner
         .relays
         .get()
-        .context("This host can't reach Fedi yet. Try again in a minute.")?;
+        .context("This host can't reach guardian support yet. Try again in a minute.")?;
     let me = inner.keys.public_key();
     let mut rumor = EventBuilder::private_msg_rumor(fedi, body).build(me);
     let id = rumor.id();
