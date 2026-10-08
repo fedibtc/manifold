@@ -159,7 +159,7 @@ pub struct FormationRunOptions {
     poll_interval: Duration,
     /// Runtime-representable maximum elapsed time for one driver/API invocation.
     run_timeout: Duration,
-    /// Runtime-representable maximum time for one consumer or network capability call.
+    /// Runtime-representable maximum time for one ordinary capability call.
     request_timeout: Duration,
     /// Precomputed maximum durable lease duration.
     lease_duration: Duration,
@@ -173,7 +173,8 @@ pub struct FormationRunOptionsConfig {
     pub poll_interval: Duration,
     /// Maximum elapsed time for one driver/API invocation.
     pub run_timeout: Duration,
-    /// Maximum time for one consumer or network capability call.
+    /// Maximum time for one ordinary capability call.
+    /// Payment creation, recovery, and refund settlement use the remaining run timeout.
     pub request_timeout: Duration,
 }
 
@@ -322,6 +323,19 @@ impl<'a> DriverRun<'a> {
     where
         Fut: Future<Output = T>,
     {
+        self.call_with_timeout(operation, self.options.request_timeout(), make_future)
+            .await
+    }
+
+    async fn call_with_timeout<T, Fut>(
+        &self,
+        operation: &'static str,
+        call_timeout: Duration,
+        make_future: impl FnOnce() -> FiResult<Fut>,
+    ) -> FiResult<T>
+    where
+        Fut: Future<Output = T>,
+    {
         ensure_effective_time_remaining(self.deadline, operation)?;
         self.lease.renew().await?;
         ensure_effective_time_remaining(self.deadline, operation)?;
@@ -329,16 +343,40 @@ impl<'a> DriverRun<'a> {
         ensure_effective_time_remaining(self.deadline, operation)?;
         self.lease.renew().await?;
         let duration = select_timer_duration(
-            self.options.request_timeout(),
+            call_timeout,
             self.deadline.saturating_duration_since(Instant::now()),
             operation,
         )?;
-        timeout(duration, future)
-            .await
-            .map_err(|_| FiError::Timeout(operation.to_owned()))
+        self.poll_with_lease(operation, duration, future).await
+    }
+
+    /// Keep ownership live while a capability is pending, without spawning a
+    /// task or extending either its timeout or the invocation deadline.
+    async fn poll_with_lease<T>(
+        &self,
+        operation: &'static str,
+        duration: Duration,
+        future: impl Future<Output = T>,
+    ) -> FiResult<T> {
+        timeout(duration, async {
+            futures::pin_mut!(future);
+            loop {
+                tokio::select! {
+                    result = &mut future => return Ok(result),
+                    _ = sleep(self.options.lease_renewal_duration() / 4) => {
+                        self.lease.renew().await?;
+                    }
+                }
+            }
+        })
+        .await
+        .map_err(|_| FiError::Timeout(operation.to_owned()))?
     }
 
     /// Prepare the timeout budget for a value-moving wallet call.
+    ///
+    /// Acceptance, spendable change, and signature collection share the remaining
+    /// invocation budget rather than the timeout for one network request.
     ///
     /// This refreshes the coarse run guard and captures the call's time budget.
     /// Constructing the future remains effect-free; the wallet body starts only
@@ -353,7 +391,6 @@ impl<'a> DriverRun<'a> {
         Ok(ValueCallTimeoutBudget {
             operation,
             deadline: self.deadline,
-            request_timeout: self.options.request_timeout(),
         })
     }
 
@@ -395,28 +432,29 @@ impl<'a> DriverRun<'a> {
     }
 }
 
-/// Absolute run deadline and request cap prepared for one wallet-output poll.
+/// Absolute run deadline prepared for one wallet-output poll.
 struct ValueCallTimeoutBudget {
     operation: &'static str,
     deadline: Instant,
-    request_timeout: Duration,
 }
 
 impl ValueCallTimeoutBudget {
-    async fn poll_value_call<T>(self, future: impl Future<Output = T>) -> FiResult<T> {
+    async fn poll_value_call<T>(
+        self,
+        run: DriverRun<'_>,
+        future: impl Future<Output = T>,
+    ) -> FiResult<T> {
         // Preflight can precede the atomic output-start boundary and other
         // per-seat preparation. Recompute the relative timer only when this
         // wallet future is about to be polled, so that intervening work cannot
         // extend the absolute formation run deadline.
         ensure_effective_time_remaining(self.deadline, self.operation)?;
         let duration = select_timer_duration(
-            self.request_timeout,
+            run.options.run_timeout,
             self.deadline.saturating_duration_since(Instant::now()),
             self.operation,
         )?;
-        timeout(duration, future)
-            .await
-            .map_err(|_| FiError::Timeout(self.operation.to_owned()))
+        run.poll_with_lease(self.operation, duration, future).await
     }
 }
 
@@ -2298,7 +2336,7 @@ where
             })?;
             pending_recoveries.push(async move {
                 let recovered = run
-                    .call("recovering seat payment", || {
+                    .call_with_timeout("recovering seat payment", run.options.run_timeout, || {
                         Ok(self
                             .inner
                             .ports
@@ -3370,6 +3408,7 @@ where
                 // the wallet call passed to it.
                 let prepared = timeout_budget
                     .poll_value_call(
+                        run,
                         self.inner
                             .ports
                             .payments
@@ -3770,13 +3809,17 @@ where
             } => {
                 let release_proof = match (refund_context, refund_transaction) {
                     (Some(refund_context), Some(refund)) => Some(
-                        run.call("settling refused seat refund", || {
-                            Ok(self
-                                .inner
-                                .ports
-                                .payments
-                                .settle_seat_refund(refund_context, refund))
-                        })
+                        run.call_with_timeout(
+                            "settling refused seat refund",
+                            run.options.run_timeout,
+                            || {
+                                Ok(self
+                                    .inner
+                                    .ports
+                                    .payments
+                                    .settle_seat_refund(refund_context, refund))
+                            },
+                        )
                         .await?
                         .map_err(|error| FiError::Payment(error.to_string()))?
                         .release_proof,
