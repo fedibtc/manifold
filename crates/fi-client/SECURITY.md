@@ -197,7 +197,7 @@ probed candidate before any approval — the same exposure quote time already
 creates for selected candidates, widened to reached candidates; consumers
 for whom pre-approval linkability matters should supply an ephemeral probe
 transport, as `fi-cli` does. Every product-path seat must pass the complete verification; there
-is no pinned/BYO exception. The sealed two-minute preview approval is the only input
+is no pinned/BYO exception. The sealed five-minute preview approval is the only input
 to selected creation. Its usable window begins after the verified walk and it
 binds the complete request plus canonical verifier/environment provenance. The
 stable provenance is persisted separately on every selected or replacement
@@ -249,7 +249,7 @@ a selection approval. Production consumers must not expose it.
 
 The following ordering is part of the monetary safety boundary:
 
-1. verify every selected seat and seal its advertisement-only preview for two
+1. verify every selected seat and seal its advertisement-only preview for five
    minutes from completion of the verified walk; request no quote before
    Pay-and-create;
 2. for paid creation, authenticate the explicit setup payer and require wallet
