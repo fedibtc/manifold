@@ -51,7 +51,7 @@ resolver = "2"
 edition = "2024"
 license = "MIT"
 repository = "https://github.com/fedibtc/manifold"
-version = "0.1.0"
+version = "0.1.2"
 
 [profile.dev]
 debug = false
