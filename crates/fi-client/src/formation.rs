@@ -3901,9 +3901,10 @@ where
         let stored = recovery.snapshot.invite_code.clone().ok_or_else(|| {
             FiError::Storage("formed FI record contains no persisted invite".to_owned())
         })?;
-        let (manager_connections, invite) = if recovery.snapshot.phase == FormationPhase::Formed {
-            // Consensus already confirmed formation. Recheck that proof without
-            // requiring every manager to be online again.
+        let (manager_connections, invite) = if recovery.formation_meta_target.is_some() {
+            // The complete validated proposal is already durable. Check its
+            // consensus result before reconnecting; publication can finish
+            // through reachable managers without collecting attestations again.
             (Vec::new(), stored)
         } else {
             let manager_connections = self.seat_sessions(recovery, run).await?;
@@ -4161,9 +4162,7 @@ where
                 sleep_for_retry(run.deadline, run.options.poll_interval).await?;
                 continue;
             };
-            if confirmed {
-                verify_consensus_identity(&snapshot, invite)?;
-            }
+            verify_consensus_identity(&snapshot, invite)?;
             validate_consensus_metadata_size(snapshot.meta_value.as_deref()).map_err(|error| {
                 FiError::InvalidFleetManagers(format!(
                     "consensus metadata is {} bytes; formation permits at most {} bytes",
@@ -4204,16 +4203,7 @@ where
                 snapshot_meta_consensus(&snapshot).map_err(FiError::InvalidFleetManagers)?,
             );
             let results = self
-                .submit_formation_meta_wave(
-                    sessions,
-                    fi_id,
-                    expected_base,
-                    &target.binding_entries,
-                    &target.fi_fee_account,
-                    &target.guardian_verification_fee_account,
-                    target.send_ppm,
-                    run,
-                )
+                .submit_formation_meta_wave(sessions, recovery, fi_id, expected_base, &target, run)
                 .await;
             for (index, result) in results {
                 match result {
@@ -4310,34 +4300,65 @@ where
         Ok((bindings, entries))
     }
 
+    /// Initial publication reuses its complete session set; resumed publication
+    /// supplies none and reconnects each saved seat independently.
     async fn submit_formation_meta_wave(
         &self,
         sessions: &[SeatSession<F::Client>],
+        recovery: &ActiveFormationRecovery,
         fi_id: FiId,
         expected_base: MetaConsensusBase,
-        seat_bindings: &[FormationSeatBinding],
-        fi_fee_account: &GuardianFeeAccount,
-        guardian_verification_fee_account: &GuardianFeeAccount,
-        send_ppm: u64,
+        target: &FormationMetaTarget,
         run: DriverRun<'_>,
     ) -> Vec<(
         u16,
         Result<ProposeFormationMetaResponse, MetaFieldSubmissionError>,
     )> {
         let mut pending = FuturesUnordered::new();
-        for session in sessions {
+        for seat in &recovery.seats {
             pending.push(async move {
                 let result = async {
+                    let seat_id = seat.progress.seat_id.clone().ok_or_else(|| {
+                        MetaFieldSubmissionError::Driver(FiError::Storage(
+                            "formation metadata target has a seat without an id".to_owned(),
+                        ))
+                    })?;
+                    let connected;
+                    let client = if let Some(session) = sessions
+                        .iter()
+                        .find(|session| session.index == seat.progress.index)
+                    {
+                        &session.client
+                    } else {
+                        connected = run
+                            .call("reconnecting to publish formation metadata", || {
+                                Ok(self
+                                    .inner
+                                    .ports
+                                    .fman_connector
+                                    .connect(&seat.progress.locator))
+                            })
+                            .await
+                            .map_err(MetaFieldSubmissionError::Driver)?
+                            .map_err(|error| {
+                                MetaFieldSubmissionError::Driver(fman_error(
+                                    usize::from(seat.progress.index),
+                                    error.to_string(),
+                                ))
+                            })?;
+                        &connected
+                    };
                     let request = ProposeFormationMetaRequest {
                         ts: Timestamp(now_secs().map_err(MetaFieldSubmissionError::Driver)?),
                         fi_id,
-                        seat_id: session.seat_id.clone(),
+                        seat_id,
                         expected_base,
-                        seat_bindings: seat_bindings.to_vec(),
-                        fi_fee_account: fi_fee_account.clone(),
-                        guardian_verification_fee_account: guardian_verification_fee_account
+                        seat_bindings: target.binding_entries.clone(),
+                        fi_fee_account: target.fi_fee_account.clone(),
+                        guardian_verification_fee_account: target
+                            .guardian_verification_fee_account
                             .clone(),
-                        send_ppm,
+                        send_ppm: target.send_ppm,
                     };
                     let request = run
                         .construct("signing ProposeFormationMeta request", || {
@@ -4346,17 +4367,17 @@ where
                         .await
                         .map_err(MetaFieldSubmissionError::Driver)?;
                     run.call("proposing formation metadata", || {
-                        Ok(session.client.propose_formation_meta(request))
+                        Ok(client.propose_formation_meta(request))
                     })
                     .await
                     .map_err(MetaFieldSubmissionError::Driver)?
                     .map_err(MetaFieldSubmissionError::FleetManager)
                 }
                 .await;
-                (session.index, result)
+                (seat.progress.index, result)
             });
         }
-        let mut results = Vec::with_capacity(sessions.len());
+        let mut results = Vec::with_capacity(recovery.seats.len());
         while let Some(result) = pending.next().await {
             results.push(result);
         }
