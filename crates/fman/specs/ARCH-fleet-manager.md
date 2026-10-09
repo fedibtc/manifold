@@ -218,6 +218,11 @@ direction is strictly bottom-up; each layer only knows the ones below it.
   `restore` and below `fleet`, which cannot open until every stage has finished
   ([SPEC-admin-socket](./SPEC-admin-socket.md)).
 - `admin` — operator admin socket ([SPEC-admin-socket](./SPEC-admin-socket.md)).
+- `guardian_link` — the operator's linked Fedi app: the one-time link offer,
+  the device-signed Iroh service, the attention evaluator over fleet state,
+  and the edge-triggered notifier that invokes the app's push-gateway hook
+  through the same origin-pinned `CompletionCallbackInvoker`
+  ([SPEC-guardian-link](./SPEC-guardian-link.md)).
 - `admin_http` — optional browser adapter over the same operations; the binary
   may compose its dashboard assets through the shared `operator-ui-static`
   router onto this API router

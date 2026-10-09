@@ -1,4 +1,7 @@
+mod guardian_link;
 mod seats;
+
+pub use guardian_link::{GuardianLinkDelivery, GuardianLinkRecord};
 
 pub(crate) use seats::SeatAdmissionResult;
 pub(crate) use seats::{CompletionCallbackOutcome, CompletionCallbackRecord};
