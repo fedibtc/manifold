@@ -976,6 +976,36 @@ async fn run(
     payment_wallet_preflight: Option<PaymentWalletPreflight>,
     maintenance_preflight: Option<MaintenancePreflight>,
 ) -> anyhow::Result<()> {
+    let mut active_client = None;
+    let result = run_command(
+        args,
+        wallet_secret,
+        create_preflight,
+        payment_wallet_preflight,
+        maintenance_preflight,
+        &mut active_client,
+    )
+    .await;
+    // Join even on command/output errors, before Tokio starts shutting down.
+    if let Some(client) = active_client {
+        let shutdown = client
+            .shutdown()
+            .await
+            .context("shut down FI backup workers");
+        result.and(shutdown)
+    } else {
+        result
+    }
+}
+
+async fn run_command(
+    args: AppArgs,
+    wallet_secret: Option<WalletRootSecret>,
+    create_preflight: Option<CreatePreflight>,
+    payment_wallet_preflight: Option<PaymentWalletPreflight>,
+    maintenance_preflight: Option<MaintenancePreflight>,
+    active_client: &mut Option<CliClient>,
+) -> anyhow::Result<()> {
     let mut output = CliOutput::stdio();
     let resume_options = match &args.command {
         Command::Resume {
@@ -1033,6 +1063,7 @@ async fn run(
                 profile.clone(),
             )
             .await?;
+            let client = active_client.insert(client);
             let fi_pubkey = identity.public_key().map_err(anyhow::Error::msg)?;
             if args.json {
                 output.init(fi_pubkey, &client.status())?;
@@ -1161,6 +1192,7 @@ async fn run(
                 fi_fee_account_provider,
             )
             .await?;
+            let client = active_client.insert(client);
             let mut observer = client.observe();
             let result = if selected_mode {
                 let (_, approval) = selected.expect("selected creation retains its approval");
@@ -1194,8 +1226,7 @@ async fn run(
                 }
                 .map_err(anyhow::Error::from);
                 if formed.is_ok() {
-                    formed =
-                        authorize_pending_payments(&client, options, format, &mut output).await;
+                    formed = authorize_pending_payments(client, options, format, &mut output).await;
                 }
                 formed
             };
@@ -1208,6 +1239,7 @@ async fn run(
         }
         Command::Resume { args: resume, .. } => {
             let (client, endpoint) = open_existing(&resume, wallet_secret).await?;
+            let client = active_client.insert(client);
             let result = client.resume_with_options(resume_options).await;
             output.snapshot(&client.status(), format)?;
             endpoint.close().await;
@@ -1215,6 +1247,7 @@ async fn run(
         }
         Command::RestartDkg(restart) => {
             let (client, endpoint) = open_existing(&restart, wallet_secret).await?;
+            let client = active_client.insert(client);
             let results = client.restart_dkg(FormationRunOptions::default()).await;
             endpoint.close().await;
             let results = results?;
@@ -1262,6 +1295,7 @@ async fn run(
                 )?,
             )
             .await?;
+            let client = active_client.insert(client);
             let result = client
                 .authorize_payments(
                     PaymentAuthorizationId::try_from_opaque(authorize.authorization_id)
@@ -1287,6 +1321,7 @@ async fn run(
                 profile.clone(),
             )
             .await?;
+            let client = active_client.insert(client);
             output.snapshot(&client.status(), format)?;
         }
         Command::Discover(discover) => {
@@ -1345,6 +1380,7 @@ async fn run(
                 CliFiFeeAccountProvider::unavailable(),
             )
             .await?;
+            let client = active_client.insert(client);
             let result = match operation {
                 MaintenancePreflight::Metadata {
                     update,
@@ -1387,6 +1423,7 @@ async fn run(
                 profile.clone(),
             )
             .await?;
+            let client = active_client.insert(client);
             let result = client.decommission_seats().await;
             endpoint.close().await;
             output.decommission(&result.context("decommission seats")?, format)?;
@@ -1517,6 +1554,7 @@ async fn run(
                     profile.clone(),
                 )
                 .await?;
+                let client = active_client.insert(client);
                 let discovery = client
                     .discover_liquidity_providers(
                         &discover.intent.intent(),
@@ -1543,6 +1581,7 @@ async fn run(
                     profile.clone(),
                 )
                 .await?;
+                let client = active_client.insert(client);
                 let intent = request.intent.intent();
                 let discovery = client
                     .discover_liquidity_providers(&intent, request.intent.network)
@@ -1594,6 +1633,7 @@ async fn run(
                     profile.clone(),
                 )
                 .await?;
+                let client = active_client.insert(client);
                 let operation_id = LiquidityOperationId(resume.operation_id);
                 client.liquidity_status(&operation_id).await?;
                 let connector = CliLiquidityConnector::new(endpoint.clone());
@@ -1620,6 +1660,7 @@ async fn run(
                     profile.clone(),
                 )
                 .await?;
+                let client = active_client.insert(client);
                 let snapshot = client
                     .liquidity_status(&LiquidityOperationId(status.operation_id))
                     .await?;
@@ -1638,6 +1679,7 @@ async fn run(
                     profile,
                 )
                 .await?;
+                let client = active_client.insert(client);
                 let after = list.after.map(LiquidityOperationId);
                 let page = client
                     .list_liquidity_operations(after.as_ref(), list.limit)

@@ -41,6 +41,11 @@ event id, and time. To guard against relay retention pruning, each worker
 publishes a freshly resealed replacement when its relay's confirmation reaches
 15 days old, without advancing the snapshot generation. Publication never
 blocks an FI operation. Fedi enforces one active writer.
+Consumers finish foreground operations and await `FiClient::shutdown` before
+tearing down their async runtime. Shutdown cancels and joins the background
+workers shared by all client clones; it does not await relay publication or
+discard pending durable backups. Dropping the last client only requests
+cancellation and cannot guarantee the workers have exited.
 
 Restore queries every configured relay, ignores invalid, foreign,
 undecryptable, or unsupported candidates, and selects the authenticated

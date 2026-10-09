@@ -3775,6 +3775,37 @@ async fn open_client_that_cannot_pay(
     .expect("open test FI client")
 }
 
+#[tokio::test]
+async fn shutdown_joins_workers_before_returning_with_other_client_clones_alive() {
+    let (payments, _) = TestPayments::new();
+    let client = open_client_that_cannot_pay(
+        MemDatabase::new().into_database(),
+        payments,
+        Arc::new(FmanState::default()),
+        FmanConfig::given_away(),
+    )
+    .await;
+    let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+    let (worker_lifetime, mut worker_dropped) = tokio::sync::oneshot::channel::<()>();
+    client
+        .inner
+        .backup_tasks
+        .spawn_cancellable("shutdown regression worker", async move {
+            let _worker_lifetime = worker_lifetime;
+            started_tx.send(()).unwrap();
+            std::future::pending::<()>().await;
+        });
+    started_rx.await.unwrap();
+
+    client.clone().shutdown().await.unwrap();
+    // Signalling cancellation without joining leaves this Empty on the
+    // current-thread runtime: the worker has not been polled again yet.
+    assert!(matches!(
+        worker_dropped.try_recv(),
+        Err(tokio::sync::oneshot::error::TryRecvError::Closed)
+    ));
+}
+
 async fn open_client_with_reader(
     database: fedimint_core::db::Database,
     payments: TestPayments,

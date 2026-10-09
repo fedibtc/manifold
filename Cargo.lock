@@ -4035,6 +4035,7 @@ dependencies = [
 name = "fi-client"
 version = "0.1.2"
 dependencies = [
+ "anyhow",
  "base64 0.22.1",
  "bitcoin",
  "bitcoin_hashes",
