@@ -1016,7 +1016,7 @@ checksum = "102dbef1187b1893e6dfe05a774e79fd52265f49f214f6879c8ff49f52c8188b"
 
 [[package]]
 name = "bounded-rolling-file"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "rustix",
  "tempfile",
@@ -1816,7 +1816,7 @@ dependencies = [
 
 [[package]]
 name = "defe"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "ctrlc",
  "defe-api",
@@ -1833,7 +1833,7 @@ dependencies = [
 
 [[package]]
 name = "defe-api"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "ciborium",
  "serde",
@@ -1842,7 +1842,7 @@ dependencies = [
 
 [[package]]
 name = "defe-client"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "defe-api",
  "futures-util",
@@ -1858,7 +1858,7 @@ dependencies = [
 
 [[package]]
 name = "defe-env"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "defe-client",
@@ -1884,7 +1884,7 @@ dependencies = [
 
 [[package]]
 name = "defe-portalloc"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "dirs",
@@ -2020,7 +2020,7 @@ dependencies = [
 
 [[package]]
 name = "devmon"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "axum 0.8.9",
@@ -2391,7 +2391,7 @@ checksum = "9f1f227452a390804cdb637b74a86990f2a7d7ba4b7d5693aac9b4dd6defd8d6"
 
 [[package]]
 name = "fedi-decentralized-cloud-fman-telemetry"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "aes-gcm",
  "async-trait",
@@ -2439,7 +2439,7 @@ dependencies = [
 
 [[package]]
 name = "fedi-decentralized-domain"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "bitcoin",
  "fedimint-core",
@@ -2460,7 +2460,7 @@ dependencies = [
 
 [[package]]
 name = "fedi-decentralized-federation-preview"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "bitcoin",
@@ -2479,7 +2479,7 @@ dependencies = [
 
 [[package]]
 name = "fedi-decentralized-guardian-metrics-policy"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "sha2 0.10.9",
  "thiserror 2.0.18",
@@ -2487,7 +2487,7 @@ dependencies = [
 
 [[package]]
 name = "fedi-decentralized-liquidity-manager-daemon"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -2552,7 +2552,7 @@ dependencies = [
 
 [[package]]
 name = "fedi-decentralized-manifold-environment"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "bitcoin",
  "nostr",
@@ -2565,7 +2565,7 @@ dependencies = [
 
 [[package]]
 name = "fedi-decentralized-nostr"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "blind-rsa-signatures",
  "fedi-decentralized-domain",
@@ -2580,7 +2580,7 @@ dependencies = [
 
 [[package]]
 name = "fedi-decentralized-nostr-clients"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "fedi-decentralized-nostr",
  "fedimint-core",
@@ -2596,7 +2596,7 @@ dependencies = [
 
 [[package]]
 name = "fedi-decentralized-peer-badge-verifier"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "async-trait",
  "fedi-decentralized-domain",
@@ -2613,7 +2613,7 @@ dependencies = [
 
 [[package]]
 name = "fedi-decentralized-push-gateway"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "aes-gcm",
  "axum 0.8.9",
@@ -2648,14 +2648,14 @@ dependencies = [
 
 [[package]]
 name = "fedi-decentralized-push-gateway-provider"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "fedi-decentralized-push-gateway-types",
 ]
 
 [[package]]
 name = "fedi-decentralized-push-gateway-provider-fcm"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "fedi-decentralized-push-gateway-provider",
  "fedi-decentralized-push-gateway-types",
@@ -2668,7 +2668,7 @@ dependencies = [
 
 [[package]]
 name = "fedi-decentralized-push-gateway-storage"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "fedi-decentralized-push-gateway-types",
  "serde",
@@ -2680,7 +2680,7 @@ dependencies = [
 
 [[package]]
 name = "fedi-decentralized-push-gateway-types"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "base64 0.22.1",
  "hex",
@@ -2692,7 +2692,7 @@ dependencies = [
 
 [[package]]
 name = "fedi-decentralized-service-fleet-manager"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "bitcoin",
  "blind-rsa-signatures",
@@ -2721,7 +2721,7 @@ dependencies = [
 
 [[package]]
 name = "fedi-decentralized-service-liquidity-manager"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "ciborium",
  "fedi-decentralized-services",
@@ -2736,7 +2736,7 @@ dependencies = [
 
 [[package]]
 name = "fedi-decentralized-services"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "fedi-decentralized-domain",
  "fedi-iroh-rpc",
@@ -2745,7 +2745,7 @@ dependencies = [
 
 [[package]]
 name = "fedi-iroh-rpc"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "async-trait",
  "ciborium",
@@ -2759,7 +2759,7 @@ dependencies = [
 
 [[package]]
 name = "fedi-iroh-rpc-macros"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "proc-macro-crate",
  "proc-macro2",
@@ -3928,7 +3928,7 @@ dependencies = [
 
 [[package]]
 name = "fi-cli"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "bitcoin_hashes",
@@ -3982,7 +3982,7 @@ dependencies = [
 
 [[package]]
 name = "fi-client"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "base64 0.22.1",
  "bitcoin",
@@ -4014,6 +4014,7 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]
@@ -4056,7 +4057,7 @@ dependencies = [
 
 [[package]]
 name = "flip-ui-e2e-runner"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "defe-client",
@@ -4076,7 +4077,7 @@ dependencies = [
 
 [[package]]
 name = "fman"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4118,7 +4119,7 @@ dependencies = [
 
 [[package]]
 name = "fman-cli"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "clap",
@@ -4132,7 +4133,7 @@ dependencies = [
 
 [[package]]
 name = "fman-core"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4237,7 +4238,7 @@ dependencies = [
 
 [[package]]
 name = "fman-meta-fields"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "bitcoin",
  "fedi-decentralized-domain",
@@ -4248,7 +4249,7 @@ dependencies = [
 
 [[package]]
 name = "fman-nostr"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4280,7 +4281,7 @@ dependencies = [
 
 [[package]]
 name = "fman-telemetry"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "base64 0.22.1",
  "bounded-rolling-file",
@@ -4302,7 +4303,7 @@ dependencies = [
 
 [[package]]
 name = "fman-ui-e2e-runner"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "defe-client",
@@ -7565,7 +7566,7 @@ dependencies = [
 
 [[package]]
 name = "operator-ui-auth"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "axum 0.8.9",
  "axum-extra",
@@ -7577,7 +7578,7 @@ dependencies = [
 
 [[package]]
 name = "operator-ui-static"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "axum 0.8.9",
  "rust-embed",
@@ -9033,7 +9034,7 @@ checksum = "dd29631678d6fb0903b69223673e122c32e9ae559d0960a38d574695ebc0ea15"
 
 [[package]]
 name = "safe-tracing"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "bounded-rolling-file",
  "serde_json",
@@ -9387,7 +9388,7 @@ dependencies = [
 
 [[package]]
 name = "setup-payment-publisher"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "clap",
@@ -10207,7 +10208,7 @@ dependencies = [
 
 [[package]]
 name = "tests-e2e"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "axum 0.8.9",

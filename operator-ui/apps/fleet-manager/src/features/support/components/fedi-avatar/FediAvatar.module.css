@@ -1,7 +1,0 @@
-.root {
-  @apply grid size-8 flex-none place-items-center rounded-full bg-gradient-to-br from-warnSoft to-infoSoft p-1;
-}
-
-.root img {
-  @apply size-full object-contain;
-}

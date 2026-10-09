@@ -56,7 +56,7 @@ baseline. Subsequent schema changes are governed by
 
 The cap changes only payment-readiness behavior, and it is **one-shot**: it
 is the consumer's approval of the initial aggregate only. In the product path
-it is sealed into the two-minute advertisement approval returned by
+it is sealed into the five-minute advertisement approval returned by
 `FmanSelectionPreview::approve`; no FMan quote exists before the consumer
 invokes `pay_and_create` with that approval and one explicit payer, or invokes
 `create_without_payer` for the all-zero deployment bootstrap. The latter
@@ -283,7 +283,7 @@ screen. It takes the same
 `FmanDiscoveryOptions` clamped-timeout bound as `discover_fman_candidates`
 — not formation run options, since no lease or driver timing applies to a
 read-only query. It has no durable state and no lease. The result carries a
-two-minute validity bound anchored after enumeration and verification and can
+five-minute validity bound anchored after enumeration and verification and can
 be consumed into a sealed, non-serializable `FmanSelectionApproval`; leaving
 and re-entering the flow refetches instead of caching it. The approval binds
 the complete selection request and immutable verifier/environment provenance.
@@ -400,9 +400,16 @@ the stored signed directory and compiled split before voting.
 
 ## Public state and concurrency
 
-The engine exposes `FiStatus::Idle` or one active formation that always
-carries its formation id and fully resolved persisted intent. Aggregate phases
-are `Preparing`, `AwaitingPaymentReadiness`, `AcquiringSeats`, `PreparingDkg`,
+The engine exposes `FiStatus::Recovery` while an opened restored-mnemonic FI
+has an unfinished backup check; `Idle`, `Formation`, and `Restored` mean the
+check is complete or not required. A formation always carries its formation id
+and fully resolved persisted intent. Recovery lookup failures remain retryable;
+the status watch publishes the ready state only after releasing the mutation
+guard. The recovery requirement is reconstructed on reopen from the caller's
+persisted mnemonic provenance and the FI database's environment-scoped
+completion marker.
+
+Aggregate phases are `Preparing`, `AwaitingPaymentReadiness`, `AcquiringSeats`, `PreparingDkg`,
 `DkgUnderway`, `DkgComplete`, `PublishingSeatBindings`, `Formed`; status is
 published through a watch channel independently of the future driving the run. Durable phases advance atomically
 with their required recovery facts: `DkgComplete` saves every accepted seat's
@@ -498,10 +505,11 @@ is still what returns the FI to `Idle`. Seats are forfeited, never refunded,
 and only development and staging FMans accept the underlying verb
 ([SPEC-fi-rpc](../../fman/specs/SPEC-fi-rpc.md)).
 
-The library returns run futures instead of spawning tasks; dropping one
-cancels local work only, and reopening the same database, identity, and wallet
-then calling the continuation API is the supported resume. A process-local
-guard serializes clones. The primary Fedi host runs one active formation driver
+Formation operations return run futures; dropping one cancels local work only,
+and reopening the same database, identity, and wallet then calling the
+continuation API is the supported resume. Backup recovery and publication are
+client-owned background tasks, separate from those formation runs. A
+process-local guard serializes clones. The primary Fedi host runs one active formation driver
 in one app process; a process restart ends that driver before persisted state is
 reopened. A renewable database lease is a coarse guard against accidentally
 opening a second mutating driver, but sequential payment safety does not depend

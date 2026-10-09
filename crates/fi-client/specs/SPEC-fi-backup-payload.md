@@ -42,17 +42,30 @@ publishes a freshly resealed replacement when its relay's confirmation reaches
 15 days old, without advancing the snapshot generation. Publication never
 blocks an FI operation. Fedi enforces one active writer.
 
-Restore queries every configured relay, ignores invalid, foreign,
-undecryptable, or unsupported candidates, and selects the authenticated
-payload with the highest snapshot generation. It imports local recovery state
-as `Unsynced`; reconciliation gates mutations until fresh guardian consensus
-confirms the saved federation identity and complete signed seat-binding directory.
-It checks the saved FMan identities and any liquidity commitment against that
-directory. If the saved invite cannot reach consensus, recovery signs invite
-requests through the saved manager locators and tries alternatives for the same
-federation without requiring every manager online or every seat healthy.
-Verified guardian addresses are remembered only in memory for subsequent reads;
-the backup and signed liquidity commitment remain unchanged.
+Restore queries every configured relay through its bounded deadline, ignores
+invalid, foreign, undecryptable, or unsupported candidates, and selects the
+authenticated payload with the highest snapshot generation among completed
+reads. When no authenticated payload is found, a strict majority of canonical
+relays must complete their queries before FI reports no backup; fewer complete
+reads report an incomplete lookup for retry. This is an availability policy,
+not proof that the remaining relays hold no backup. FI records a successful
+restored-or-empty lookup in its own FI database by Manifold environment.
+An authenticated import and its completion record commit in one transaction;
+an incomplete read commits neither. Reopening the same FI database skips a
+completed lookup; a fresh database or a different environment checks again.
+When opened with a restored-mnemonic hint, `fi-client` starts the lookup and
+retries failures in its own task group while holding its mutation guard.
+New-seed openings skip recovery.
+
+A restored payload imports local recovery state as `Unsynced`; reconciliation
+gates mutations until fresh guardian consensus confirms the saved federation
+identity and complete signed seat-binding directory. It checks the saved FMan
+identities and any liquidity commitment against that directory. If the saved
+invite cannot reach consensus, recovery signs invite requests through the saved
+manager locators and tries alternatives for the same federation without
+requiring every manager online or every seat healthy. Verified guardian
+addresses are remembered only in memory for subsequent reads; the backup and
+signed liquidity commitment remain unchanged.
 Import derives a stable local formation handle
 without reconstructing omitted formation transcript rows. Only after
 reconciliation does FI expose fresh post-formed authority and hydrate the

@@ -223,8 +223,14 @@ async fn freshly_funded_signed_refusal_clears_the_presented_quote_in_one_run() {
         .insert(0);
 
     assert!(matches!(
-        client.authorize_payments(authorization_id, options()).await,
-        Err(FiError::SeatRefused { .. })
+        client
+            .authorize_payments(authorization_id, options())
+            .await
+            .as_ref(),
+        Err(FiError::Fman(FmanFailure {
+            cause: FmanCause::OfferChanged,
+            ..
+        }))
     ));
     let recovery = active_recovery(
         client
@@ -631,7 +637,10 @@ async fn fund_new_failure_preserves_signed_refusal_quote_and_authorization_for_r
             registry.clone(),
         )
         .await;
-        assert!(matches!(reopened.resume().await, Err(FiError::Payment(_))));
+        assert!(matches!(
+            reopened.resume().await.as_ref(),
+            Err(FiError::Payment(_))
+        ));
         assert_eq!(
             payment_state.create_calls.load(Ordering::SeqCst),
             funding_calls
@@ -662,8 +671,11 @@ async fn fund_new_failure_preserves_signed_refusal_quote_and_authorization_for_r
         *registry.candidates.lock().expect("test lock") =
             vec![setup_payment_event(now + 2, &[PAYMENT_INVITE])];
         assert!(matches!(
-            reopened.resume().await,
-            Err(FiError::SeatRefused { .. })
+            reopened.resume().await.as_ref(),
+            Err(FiError::Fman(FmanFailure {
+                cause: FmanCause::OfferChanged,
+                ..
+            }))
         ));
         let recovered = active_recovery(
             reopened
@@ -772,7 +784,13 @@ async fn mixed_prepared_and_signed_refusal_survives_interrupted_replay_wave() {
     .await
     .expect("cancelled driver released its lease");
     assert!(
-        matches!(resume, Err(FiError::SeatRefused { .. })),
+        matches!(
+            resume.as_ref(),
+            Err(FiError::Fman(FmanFailure {
+                cause: FmanCause::OfferChanged,
+                ..
+            }))
+        ),
         "unexpected resume result: {resume:?}"
     );
     let recovered = active_recovery(
@@ -1069,7 +1087,16 @@ async fn mixed_replacement_wave_survives_paid_result_loss_and_preview_expiry() {
         )
         .await
         .expect_err("two paid members refuse their initial presentations");
-    assert!(matches!(error, FiError::SeatRefused { .. }), "{error:?}");
+    assert!(
+        matches!(
+            &error,
+            FiError::Fman(FmanFailure {
+                cause: FmanCause::OfferChanged,
+                ..
+            })
+        ),
+        "{error:?}"
+    );
     let requirements = match formation(&client.status())
         .action_required
         .clone()

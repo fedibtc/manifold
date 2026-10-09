@@ -52,8 +52,10 @@ use crate::{
 };
 
 /// How long one freshly fetched advertisement selection may authorize the
-/// start of a Pay-and-create operation.
-pub const FMAN_SELECTION_PREVIEW_VALIDITY: Duration = Duration::from_secs(2 * 60);
+/// start of a Pay-and-create operation and each pre-effect resume. Once an
+/// admission is effect-authorized, this deadline no longer applies. This
+/// freshness allowance does not size the consumer's retry budget.
+pub const FMAN_SELECTION_PREVIEW_VALIDITY: Duration = Duration::from_secs(5 * 60);
 
 /// Per-candidate budget for one live availability probe inside the walk.
 ///
@@ -502,16 +504,17 @@ impl FmanSelectionPreview {
     /// Bind the displayed verified set to the user's maximum setup spend.
     ///
     /// This is commercial approval, not the irreversible wallet boundary.
-    /// The returned sealed value can start Pay-and-create for two minutes;
+    /// The returned sealed value can start Pay-and-create for five minutes;
     /// the wallet-output boundary is durably recorded only immediately before
     /// `FiPayments::create_seat_payment` is polled. A zero limit is valid only
     /// for an all-zero advertisement estimate and can be consumed only by the
     /// no-payer bootstrap entry.
     pub fn approve(self, max_total_msats: u64) -> FiResult<FmanSelectionApproval> {
         if max_total_msats < self.total_advertised_msats {
-            return Err(FiError::SelectionReauthorizationRequired(
-                SelectionReauthorizationReason::AdvertisementEstimateExceedsLimit,
-            ));
+            return Err(FiError::SelectionReauthorizationRequired {
+                reason: SelectionReauthorizationReason::AdvertisementEstimateExceedsLimit,
+                failure: None,
+            });
         }
         Ok(FmanSelectionApproval {
             request: self.request,
@@ -529,7 +532,7 @@ impl FmanSelectionPreview {
 ///
 /// Consumers can retain and return this capability but cannot construct or
 /// alter its verified seats. It is intentionally not serializable: a bridge
-/// keeps it only for the active two-minute screen flow and refetches when the
+/// keeps it only for the active five-minute screen flow and refetches when the
 /// user backs out and re-enters.
 #[derive(Clone, Debug)]
 pub struct FmanSelectionApproval {
@@ -563,9 +566,10 @@ impl FmanSelectionApproval {
 
     pub(crate) fn into_seats_at(self, now: Timestamp) -> FiResult<Vec<ApprovedFmanSeat>> {
         if self.valid_until <= now {
-            return Err(FiError::SelectionReauthorizationRequired(
-                SelectionReauthorizationReason::PreviewExpired,
-            ));
+            return Err(FiError::SelectionReauthorizationRequired {
+                reason: SelectionReauthorizationReason::PreviewExpired,
+                failure: None,
+            });
         }
         Ok(self.seats)
     }
@@ -609,9 +613,10 @@ impl FmanReplacementPreview {
     /// Seal this exact subset to renewed user authorization.
     pub fn approve(self, max_total_msats: u64) -> FiResult<FmanReplacementApproval> {
         if max_total_msats == 0 || max_total_msats < self.total_advertised_msats {
-            return Err(FiError::SelectionReauthorizationRequired(
-                SelectionReauthorizationReason::AdvertisementEstimateExceedsLimit,
-            ));
+            return Err(FiError::SelectionReauthorizationRequired {
+                reason: SelectionReauthorizationReason::AdvertisementEstimateExceedsLimit,
+                failure: None,
+            });
         }
         Ok(FmanReplacementApproval {
             requirements: self.requirements,
@@ -654,9 +659,10 @@ impl FmanReplacementApproval {
 
     pub(crate) fn into_seats_at(self, now: Timestamp) -> FiResult<Vec<ApprovedFmanSeat>> {
         if self.valid_until <= now {
-            return Err(FiError::SelectionReauthorizationRequired(
-                SelectionReauthorizationReason::PreviewExpired,
-            ));
+            return Err(FiError::SelectionReauthorizationRequired {
+                reason: SelectionReauthorizationReason::PreviewExpired,
+                failure: None,
+            });
         }
         Ok(self.seats)
     }
@@ -764,21 +770,6 @@ pub(crate) enum AvailabilityMismatch {
     FedimintdVersion,
     /// No offered plan matches the requested plan preference.
     Plan,
-}
-
-impl AvailabilityMismatch {
-    /// Formation-facing message, kept identical to the historical quote-time
-    /// diagnostics.
-    pub(crate) fn message(self) -> &'static str {
-        match self {
-            Self::NotAcceptingSeats => "Fleet Manager is not accepting seats",
-            Self::FederationSize => "requested federation size is not offered",
-            Self::FedimintdVersion => {
-                "Fleet Manager version is outside the selected Fedimint DKG identity"
-            }
-            Self::Plan => "requested plan is not offered",
-        }
-    }
 }
 
 impl From<AvailabilityMismatch> for AdvertisementRejection {

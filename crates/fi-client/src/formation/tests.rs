@@ -66,16 +66,22 @@ async fn sub_millisecond_remainder_precedes_construct_effect() {
 
 #[tokio::test(start_paused = true)]
 async fn value_call_budget_rechecks_the_absolute_deadline_when_polled() {
+    let options = FormationRunOptions::default();
+    let store = FiStore::new(MemDatabase::new().into_database());
+    let lease = store
+        .acquire_driver_lease(options.lease_duration(), options.lease_renewal_duration())
+        .await
+        .unwrap();
+    let run = DriverRun::new(options, Instant::now() + Duration::from_secs(2), &lease);
     let budget = ValueCallTimeoutBudget {
         operation: "test wallet output",
         deadline: Instant::now() + Duration::from_secs(2),
-        request_timeout: Duration::from_secs(30),
     };
     tokio::time::advance(Duration::from_secs(3)).await;
     let polled = std::cell::Cell::new(false);
 
     let result = budget
-        .poll_value_call(async {
+        .poll_value_call(run, async {
             polled.set(true);
         })
         .await;
@@ -87,6 +93,53 @@ async fn value_call_budget_rechecks_the_absolute_deadline_when_polled() {
         !polled.get(),
         "an expired wallet future must remain unpolled"
     );
+}
+
+#[tokio::test(start_paused = true)]
+async fn wallet_call_stops_on_lease_takeover_before_its_deadline() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    let now = Arc::new(AtomicU64::new(1_000));
+    let clock = {
+        let now = now.clone();
+        Arc::new(move || now.load(Ordering::SeqCst))
+    };
+    let store = FiStore::new_with_lease_clock(MemDatabase::new().into_database(), clock);
+    let options = FormationRunOptions::default();
+    let lease = store
+        .acquire_driver_lease(options.lease_duration(), options.lease_renewal_duration())
+        .await
+        .unwrap();
+    let run = DriverRun::new(options, Instant::now() + Duration::from_secs(600), &lease);
+    let budget = run
+        .prepare_value_call_budget("test wallet output")
+        .await
+        .unwrap();
+    let completed = std::cell::Cell::new(false);
+    let started = tokio::sync::Notify::new();
+    let wallet = budget.poll_value_call(run, async {
+        started.notify_one();
+        fedimint_core::runtime::sleep(Duration::from_secs(200)).await;
+        completed.set(true);
+    });
+    let takeover = async {
+        started.notified().await;
+        // Simulate process suspension beyond the lease without exhausting
+        // the runtime deadline, then let a second driver acquire ownership.
+        now.store(1_091, Ordering::SeqCst);
+        store
+            .acquire_driver_lease(options.lease_duration(), options.lease_renewal_duration())
+            .await
+            .unwrap()
+    };
+    let (result, replacement) = tokio::join!(wallet, takeover);
+    assert!(matches!(result, Err(FiError::Busy)), "{result:?}");
+    assert!(
+        !completed.get(),
+        "lost ownership cancels pending wallet work"
+    );
+    replacement.renew().await.unwrap();
 }
 
 #[test]

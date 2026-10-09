@@ -321,7 +321,7 @@ async fn replacement_preview_excludes_every_persisted_sibling_locator() {
 
     assert_eq!(preview.requirements(), &requirements);
     assert_eq!(preview.seats().len(), 1);
-    assert_eq!(preview.valid_until(), Timestamp(NOW + 120));
+    assert_eq!(preview.valid_until(), Timestamp(NOW + 300));
     assert_eq!(
         preview.seats()[0]
             .candidate()
@@ -504,7 +504,16 @@ async fn replacement_preview_public_approval_seals_cap_and_expires_before_effect
         )
         .await
         .unwrap_err();
-    assert!(matches!(error, FiError::SeatRefused { .. }), "{error:?}");
+    assert!(
+        matches!(
+            &error,
+            FiError::Fman(FmanFailure {
+                cause: FmanCause::OfferChanged,
+                ..
+            })
+        ),
+        "{error:?}"
+    );
     let status = client.status();
     let initial_formation = formation(&status);
     let FormationActionRequired::ReplaceGuardians(requirements) = initial_formation
@@ -539,10 +548,11 @@ async fn replacement_preview_public_approval_seals_cap_and_expires_before_effect
         .approve(PAYMENT_AMOUNT_MSATS - 1)
         .unwrap_err();
     assert!(matches!(
-        error,
-        FiError::SelectionReauthorizationRequired(
-            SelectionReauthorizationReason::AdvertisementEstimateExceedsLimit
-        )
+        &error,
+        FiError::SelectionReauthorizationRequired {
+            reason: SelectionReauthorizationReason::AdvertisementEstimateExceedsLimit,
+            failure: None
+        }
     ));
 
     let expired_completed_at =
@@ -570,8 +580,11 @@ async fn replacement_preview_public_approval_seals_cap_and_expires_before_effect
         .await
         .unwrap_err();
     assert!(matches!(
-        error,
-        FiError::SelectionReauthorizationRequired(SelectionReauthorizationReason::PreviewExpired)
+        &error,
+        FiError::SelectionReauthorizationRequired {
+            reason: SelectionReauthorizationReason::PreviewExpired,
+            failure: None
+        }
     ));
     let status_after_expiry = client.status();
     assert_eq!(
@@ -601,10 +614,7 @@ async fn replacement_preview_public_approval_seals_cap_and_expires_before_effect
         preview_completed_at,
     )
     .await;
-    assert_eq!(
-        preview.valid_until(),
-        Timestamp(preview_completed_at + crate::FMAN_SELECTION_PREVIEW_VALIDITY.as_secs())
-    );
+    assert_eq!(preview.valid_until(), Timestamp(preview_completed_at + 300));
     let replacement_locator = preview.seats()[0].candidate().locator().clone();
     let approval = preview
         .approve(PAYMENT_AMOUNT_MSATS)
@@ -613,7 +623,7 @@ async fn replacement_preview_public_approval_seals_cap_and_expires_before_effect
     assert_eq!(approval.max_total_msats(), PAYMENT_AMOUNT_MSATS);
     assert_eq!(
         approval.valid_until(),
-        Timestamp(preview_completed_at + crate::FMAN_SELECTION_PREVIEW_VALIDITY.as_secs())
+        Timestamp(preview_completed_at + 300)
     );
     client
         .apply_fman_replacements(approval, options())
@@ -808,9 +818,10 @@ async fn selected_without_payer_rejects_a_priced_live_offer_before_effects() {
 
     assert!(matches!(
         error,
-        FiError::SelectionReauthorizationRequired(
-            SelectionReauthorizationReason::PaymentFederationRequired
-        )
+        FiError::SelectionReauthorizationRequired {
+            reason: SelectionReauthorizationReason::PaymentFederationRequired,
+            failure: None
+        }
     ));
     assert_eq!(client.status(), FiStatus::Idle);
     assert_eq!(payment_state.payable_calls.load(Ordering::SeqCst), 0);
@@ -2173,7 +2184,7 @@ async fn preview_returns_selected_seats_estimate_and_summary() {
         4 * 2_000 + 3 * 1_000
     };
     assert_eq!(preview.total_advertised_msats(), expected_total);
-    assert_eq!(preview.valid_until(), Timestamp(NOW + 120));
+    assert_eq!(preview.valid_until(), Timestamp(NOW + 300));
     assert_eq!(preview.rejected().len(), 1, "{:?}", preview.rejected());
     assert!(matches!(
         preview.rejected()[0].reason,
@@ -2189,7 +2200,7 @@ async fn preview_returns_selected_seats_estimate_and_summary() {
         .expect("displayed estimate is an admissible cap");
     assert_eq!(approval.advertised_total_msats(), expected_total);
     assert_eq!(approval.max_total_msats(), expected_total);
-    assert_eq!(approval.valid_until(), Timestamp(NOW + 120));
+    assert_eq!(approval.valid_until(), Timestamp(NOW + 300));
 }
 
 #[tokio::test]
@@ -2220,10 +2231,25 @@ async fn preview_validity_starts_when_the_verified_walk_completes() {
     .await
     .expect("preview succeeds after a slow verified walk");
 
+    assert_eq!(preview.valid_until(), Timestamp(completed_at + 300));
+    let approval = preview.approve(7_000).expect("exact advertised cap");
     assert_eq!(
-        preview.valid_until(),
-        Timestamp(completed_at + FMAN_SELECTION_PREVIEW_VALIDITY.as_secs())
+        approval
+            .clone()
+            .into_seats_at(Timestamp(completed_at + 299))
+            .expect("the full five-minute window is available")
+            .len(),
+        usize::from(MIN_FEDERATION_SIZE),
     );
+    for now in [completed_at + 300, completed_at + 301] {
+        assert!(matches!(
+            approval.clone().into_seats_at(Timestamp(now)),
+            Err(FiError::SelectionReauthorizationRequired {
+                reason: SelectionReauthorizationReason::PreviewExpired,
+                failure: None
+            }),
+        ));
+    }
 }
 
 #[tokio::test]

@@ -1,7 +1,6 @@
 import { useEffect, useId } from 'react';
 import { useMarkSupportRead } from '@/features/support/api/hooks/use-mark-support-read/useMarkSupportRead';
 import { useSupportChat } from '@/features/support/api/hooks/use-support-chat/useSupportChat';
-import { FediAvatar } from '@/features/support/components/fedi-avatar/FediAvatar';
 import { SupportComposer } from '@/features/support/components/support-composer/SupportComposer';
 import { SupportThread } from '@/features/support/components/support-thread/SupportThread';
 import { SUPPORT_CHAT_OPEN_POLL_MS } from '@/shared/api/pollingIntervals';
@@ -37,10 +36,8 @@ export const SupportPage = () => {
         {chat.data && (
           <section className={styles.card} aria-labelledby={titleId}>
             <header className={styles.cardHead}>
-              <FediAvatar />
-
               <h2 id={titleId} className={styles.cardTitle}>
-                Fedi guardian support
+                Guardian support
               </h2>
             </header>
 
@@ -50,8 +47,8 @@ export const SupportPage = () => {
 
                 <path d="m9 12 2 2 4-4" />
               </svg>
-              Fedi support will never ask for your recovery phrase, your password or remote access
-              to your machine.
+              Guardian support will never ask for your recovery phrase, your password or remote
+              access to your machine.
             </p>
 
             {chat.data.available ? (
@@ -62,7 +59,7 @@ export const SupportPage = () => {
               </>
             ) : (
               <p className={styles.unavailable}>
-                Chat with Fedi support isn't available on this host yet.
+                Chat with guardian support isn't available on this host yet.
               </p>
             )}
           </section>
