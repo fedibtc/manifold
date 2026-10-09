@@ -145,15 +145,17 @@ where
             self.payable_setup_payment_federations(run)
                 .await
                 .map_err(|error| match error {
-                    FiError::Payment(_) => FiError::SelectionReauthorizationRequired(
-                        crate::SelectionReauthorizationReason::SelectedPayerUnavailable,
-                    ),
+                    FiError::Payment(_) => FiError::SelectionReauthorizationRequired {
+                        reason: crate::SelectionReauthorizationReason::SelectedPayerUnavailable,
+                        failure: None,
+                    },
                     error => error,
                 })?;
         if !policy_ids.contains(requested) || !payable.contains(requested) {
-            return Err(FiError::SelectionReauthorizationRequired(
-                crate::SelectionReauthorizationReason::SelectedPayerUnavailable,
-            ));
+            return Err(FiError::SelectionReauthorizationRequired {
+                reason: crate::SelectionReauthorizationReason::SelectedPayerUnavailable,
+                failure: None,
+            });
         }
         Ok(requested.clone())
     }

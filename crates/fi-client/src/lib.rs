@@ -8,6 +8,7 @@ mod db;
 mod decommission;
 mod discovery;
 mod error;
+mod fman;
 mod formation;
 mod guardian_fee_ppm;
 mod liquidity;
@@ -39,8 +40,8 @@ pub use discovery::{
 #[cfg(any(test, feature = "dev-pinned-formation"))]
 pub use discovery::{InsecureUntrustedPinnedFman, InsecureUntrustedPinnedFmanDiscovery};
 pub use error::{
-    AbandonUnavailableReason, Capability, FiError, FiErrorCode, FiResult, FmanRequestContext,
-    FmanRequestFailureClass, SelectionReauthorizationReason,
+    AbandonUnavailableReason, Capability, FiError, FiErrorCode, FiResult, FmanCause, FmanFailure,
+    FmanOperation, SelectionReauthorizationReason,
 };
 pub use fedi_decentralized_nostr::fman::{ApiEndpoint, Availability};
 pub use fedi_decentralized_service_fleet_manager::{

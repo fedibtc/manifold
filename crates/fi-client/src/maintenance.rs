@@ -613,15 +613,14 @@ where
                         Ok(self.inner.ports.fman_connector.connect(&locator))
                     })
                     .await;
-                (index, seat_id, locator.service_pubkey, result)
+                (index, seat_id, result)
             });
         }
 
         let mut outcomes = Vec::with_capacity(unresolved.len());
-        while let Some((index, seat_id, manager, result)) = pending.next().await {
+        while let Some((index, seat_id, result)) = pending.next().await {
             match result {
                 Ok(Ok(client)) => outcomes.push(MaintenanceConnection::Connected(SeatSession {
-                    manager,
                     index,
                     client,
                     seat_id,

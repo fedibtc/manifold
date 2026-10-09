@@ -28,32 +28,37 @@ use crate::db::{
     FormationCreationMode, FormationMetaTarget, InitialSeat, QuoteAuthorization,
     StoredVerifierProvenance,
 };
+use crate::fman::FmanClient;
 use crate::ports::FiIdentityExt as _;
 use crate::selection::AvailabilityMismatch;
 use crate::{
     FederationConsensusReader, FederationConsensusSnapshot, FiClient, FiError, FiIdentity,
-    FiPayments, FiResult, FiStatus, FleetManagerConnector, FmanReplacementApproval,
-    FmanReplacementPreview, FmanRequestContext, FmanRequestFailureClass, FmanSelectionApproval,
-    FmanSelectionRequest, FormationActionRequired, FormationFreshness, FormationId,
-    FormationIntent, FormationPhase, FormationSnapshot, GuardianFeePpm, PaymentAuthorizationId,
-    PaymentRequirements, PaymentReservationId, PaymentReservationRecovery, ResolvedFormationIntent,
-    SeatPaymentRecovery, SeatPhase, SelectionReauthorizationReason,
+    FiPayments, FiResult, FiStatus, FleetManagerConnector, FmanCause, FmanFailure, FmanOperation,
+    FmanReplacementApproval, FmanReplacementPreview, FmanSelectionApproval, FmanSelectionRequest,
+    FormationActionRequired, FormationFreshness, FormationId, FormationIntent, FormationPhase,
+    FormationSnapshot, GuardianFeePpm, PaymentAuthorizationId, PaymentRequirements,
+    PaymentReservationId, PaymentReservationRecovery, ResolvedFormationIntent, SeatPaymentRecovery,
+    SeatPhase, SelectionReauthorizationReason,
 };
 
-fn log_fman_failure(error: &FiError, outcome: &'static str) {
-    if let Some(context) = error.fman_request() {
-        tracing::warn!(
-            safe_to_share = true,
-            formation_id = %context.formation_id.0,
-            fman_pubkey = %context.fman,
-            seat_index = context.seat_index,
-            seat_id = context.seat_id.as_ref().map(tracing::field::display),
-            operation = context.operation,
-            error_class = context.class.as_str(),
-            outcome,
-            "formation request failed"
-        );
-    }
+fn log_fman_failure(formation_id: &FormationId, error: &FiError, outcome: &'static str) {
+    let failure = match error {
+        FiError::Fman(failure)
+        | FiError::SelectionReauthorizationRequired {
+            failure: Some(failure),
+            ..
+        } => failure,
+        _ => return,
+    };
+    tracing::warn!(
+        safe_to_share = true,
+        formation_id = %formation_id.0,
+        fman_pubkey = %failure.fman,
+        operation = %failure.operation,
+        cause = %failure.cause,
+        outcome,
+        "formation request failed"
+    );
 }
 
 /// Smallest duration represented without truncation by native and WASM runtime timers.
@@ -92,37 +97,6 @@ fn quote_attempt_policy(
         FormationCreationMode::Pinned | FormationCreationMode::Selected { .. } => {
             QuoteAttemptPolicy::ExactRecovery
         }
-    }
-}
-
-enum QuoteAttemptError {
-    Transport(FiError),
-    Other(FiError),
-}
-
-impl QuoteAttemptError {
-    fn attribute(self, target: FmanTarget<'_>, operation: &'static str) -> Self {
-        match self {
-            Self::Transport(error) => {
-                Self::Transport(target.attribute(error, operation, FmanRequestFailureClass::Remote))
-            }
-            Self::Other(error) => {
-                Self::Other(target.attribute(error, operation, FmanRequestFailureClass::Remote))
-            }
-        }
-    }
-
-    fn into_fi_error(self) -> FiError {
-        match self {
-            Self::Transport(error) => error,
-            Self::Other(error) => error,
-        }
-    }
-}
-
-impl From<FiError> for QuoteAttemptError {
-    fn from(error: FiError) -> Self {
-        Self::Other(error)
     }
 }
 
@@ -300,67 +274,6 @@ impl Default for FormationRunOptions {
     }
 }
 
-/// Explicit public identity of one formation request, separate from its budget.
-#[derive(Clone, Copy)]
-struct FmanTarget<'a> {
-    formation_id: &'a FormationId,
-    fman: secp256k1::XOnlyPublicKey,
-    seat_index: u16,
-    seat_id: Option<&'a SeatId>,
-}
-
-impl<'a> FmanTarget<'a> {
-    fn new(
-        formation_id: &'a FormationId,
-        fman: secp256k1::XOnlyPublicKey,
-        seat_index: u16,
-        seat_id: Option<&'a SeatId>,
-    ) -> Self {
-        Self {
-            formation_id,
-            fman,
-            seat_index,
-            seat_id,
-        }
-    }
-
-    fn seat<C>(formation_id: &'a FormationId, session: &'a SeatSession<C>) -> Self {
-        Self::new(
-            formation_id,
-            session.manager,
-            session.index,
-            Some(&session.seat_id),
-        )
-    }
-
-    fn attribute(
-        self,
-        source: FiError,
-        operation: &'static str,
-        class: FmanRequestFailureClass,
-    ) -> FiError {
-        FiError::FmanRequest {
-            context: Box::new(FmanRequestContext {
-                formation_id: self.formation_id.clone(),
-                fman: self.fman,
-                seat_index: self.seat_index,
-                seat_id: self.seat_id.cloned(),
-                operation,
-                class,
-            }),
-            source: Box::new(source),
-        }
-    }
-
-    fn remote(self, operation: &'static str, error: impl std::fmt::Display) -> FiError {
-        self.attribute(
-            fman_error(usize::from(self.seat_index), error.to_string()),
-            operation,
-            FmanRequestFailureClass::Remote,
-        )
-    }
-}
-
 #[derive(Clone, Copy)]
 /// One bounded driver's deadline, ownership fence, and call timeout policy.
 pub(crate) struct DriverRun<'a> {
@@ -381,24 +294,6 @@ impl<'a> DriverRun<'a> {
             deadline,
             lease,
         }
-    }
-
-    async fn call_fman<T, E, Fut>(
-        self,
-        target: FmanTarget<'_>,
-        operation: &'static str,
-        make_future: impl FnOnce() -> FiResult<Fut>,
-    ) -> FiResult<Result<T, E>>
-    where
-        Fut: Future<Output = Result<T, E>>,
-    {
-        self.call(operation, make_future).await.map_err(|error| {
-            if matches!(error.cause(), FiError::Timeout(_)) {
-                target.attribute(error, operation, FmanRequestFailureClass::Timeout)
-            } else {
-                error
-            }
-        })
     }
 
     /// Return the per-capability timeout for composite fenced operations.
@@ -565,7 +460,6 @@ impl ValueCallTimeoutBudget {
 }
 
 pub(crate) struct SeatSession<C> {
-    pub(crate) manager: secp256k1::XOnlyPublicKey,
     pub(crate) index: u16,
     pub(crate) client: C,
     pub(crate) seat_id: SeatId,
@@ -577,6 +471,8 @@ pub(crate) struct SeatSession<C> {
 pub struct DkgRestartResult {
     /// Index in the saved formation's guardian set.
     pub index: u16,
+    /// Identity of the Fleet Manager that owns this guardian.
+    pub fman: secp256k1::XOnlyPublicKey,
     /// `DkgInProcess` acknowledges a new ceremony; `Running` means completion
     /// won the race. Errors may follow a partial change on the guardian.
     pub result: FiResult<ServiceStatus>,
@@ -610,18 +506,6 @@ pub(crate) enum MetaFieldSubmissionError {
     Driver(FiError),
     /// Typed refusal returned by the FMan protocol.
     FleetManager(FleetManagerError),
-}
-
-impl MetaFieldSubmissionError {
-    fn into_formation_error(self, index: u16) -> FiError {
-        match self {
-            Self::Driver(error) => error,
-            Self::FleetManager(error) => FiError::FleetManager {
-                index,
-                message: error.to_string(),
-            },
-        }
-    }
 }
 
 enum SeatCreation<T> {
@@ -700,13 +584,13 @@ enum SeatPresentation<R> {
 }
 
 struct SeatRefusal<T> {
-    error: FiError,
+    error: FmanFailure,
     release_proof: Option<T>,
 }
 
 enum TerminalSeatOutcome {
     PaymentRejected { position: usize },
-    SeatRefused(FiError),
+    SeatRefused(FmanFailure),
 }
 
 impl TerminalSeatOutcome {
@@ -716,7 +600,7 @@ impl TerminalSeatOutcome {
                 "payment for Fleet Manager {} was rejected; its quote was cleared",
                 position + 1
             )),
-            Self::SeatRefused(error) => error,
+            Self::SeatRefused(error) => error.into(),
         }
     }
 
@@ -732,17 +616,17 @@ impl TerminalSeatOutcome {
         creation_mode: &FormationCreationMode,
         payment_outputs_started: bool,
     ) -> FiError {
-        if creation_mode.is_selected()
-            && !payment_outputs_started
-            && matches!(&self, Self::SeatRefused(_))
-        {
-            return self.into_error().map_cause(|_| {
-                FiError::SelectionReauthorizationRequired(
-                    SelectionReauthorizationReason::SelectedFmanUnavailable,
-                )
-            });
+        match self {
+            Self::SeatRefused(failure)
+                if creation_mode.is_selected() && !payment_outputs_started =>
+            {
+                FiError::SelectionReauthorizationRequired {
+                    reason: SelectionReauthorizationReason::SelectedFmanUnavailable,
+                    failure: Some(failure),
+                }
+            }
+            outcome => outcome.into_error(),
         }
-        self.into_error()
     }
 
     fn requires_pre_output_reauthorization(
@@ -1117,9 +1001,10 @@ where
                 ));
             }
             if approval.verifier_provenance != self.inner.peer_badge_verifier.provenance() {
-                return Err(FiError::SelectionReauthorizationRequired(
-                    SelectionReauthorizationReason::VerifierEnvironmentChanged,
-                ));
+                return Err(FiError::SelectionReauthorizationRequired {
+                    reason: SelectionReauthorizationReason::VerifierEnvironmentChanged,
+                    failure: None,
+                });
             }
             let valid_until = approval.valid_until;
             let verifier_provenance = approval.verifier_provenance.into();
@@ -1474,27 +1359,20 @@ where
                         fi_id,
                         seat_id: session.seat_id.clone(),
                     })?;
-                    let response = run
-                        .call_fman(
-                            FmanTarget::seat(formation_id, session),
-                            "checking guardian before restart",
-                            || Ok(session.client.get_status(request)),
-                        )
-                        .await?
-                        .map_err(|error| {
-                            FmanTarget::seat(formation_id, session)
-                                .remote("checking guardian before restart", error)
-                        })?;
+                    let response = session.client.get_status(run, request).await?;
                     if !matches!(
                         response.status,
                         ServiceStatus::New | ServiceStatus::DkgInProcess
                     ) {
-                        return Err(fman_error(
-                            usize::from(session.index),
-                            format!("cannot restart guardian in {}", response.status),
-                        ));
+                        return Err(session
+                            .client
+                            .failure(
+                                FmanOperation::RestartDkg,
+                                FmanCause::WrongState(response.status),
+                            )
+                            .into());
                     }
-                    Ok(())
+                    Ok::<_, FiError>(())
                 });
             }
             while let Some(check) = checks.next().await {
@@ -1514,25 +1392,16 @@ where
                             seat_id: session.seat_id.clone(),
                             guardian_codes: codes.clone(),
                         })?;
-                        let response = run
-                            .call_fman(
-                                FmanTarget::seat(formation_id, session),
-                                "restarting guardian DKG",
-                                || Ok(session.client.restart_dkg(request)),
-                            )
-                            .await?
-                            .map_err(|error| {
-                                FmanTarget::seat(formation_id, session)
-                                    .remote("restarting guardian DKG", error)
-                            })?;
+                        let response = session.client.restart_dkg(run, request).await?;
                         Ok(response.status)
                     }
                     .await;
                     if let Err(error) = &result {
-                        log_fman_failure(error, "returned");
+                        log_fman_failure(&formation_id, error, "returned");
                     }
                     DkgRestartResult {
                         index: session.index,
+                        fman: session.client.fman,
                         result,
                     }
                 });
@@ -1572,8 +1441,8 @@ where
             let validated_fallback = recovery.snapshot.clone();
             let result = self.drive_pinned_inner(&mut recovery, fi_id, run).await;
             if matches!(
-                result.as_ref().map_err(FiError::cause),
-                Err(FiError::SelectionReauthorizationRequired(_))
+                result.as_ref(),
+                Err(FiError::SelectionReauthorizationRequired { .. })
             ) && recovery.creation_mode.is_selected()
                 && recovery.payment_outputs_started
                 && recovery.seats.iter().any(|seat| seat.replacement_approved)
@@ -1590,8 +1459,8 @@ where
                 .await?;
             }
             if matches!(
-                result.as_ref().map_err(FiError::cause),
-                Err(FiError::SelectionReauthorizationRequired(_))
+                result.as_ref(),
+                Err(FiError::SelectionReauthorizationRequired { .. })
             ) && recovery.creation_mode.is_selected()
                 && !recovery.payment_outputs_started
             {
@@ -1601,10 +1470,11 @@ where
                 // so they must reconstruct the deterministic reservation before
                 // deleting the formation.
                 let cleanup = if matches!(
-                    result.as_ref().map_err(FiError::cause),
-                    Err(FiError::SelectionReauthorizationRequired(
-                        SelectionReauthorizationReason::SelectedPayerInsufficientFunds
-                    ))
+                    result.as_ref(),
+                    Err(FiError::SelectionReauthorizationRequired {
+                        reason: SelectionReauthorizationReason::SelectedPayerInsufficientFunds,
+                        ..
+                    })
                 ) && recovery.payment_reservation_id.is_none()
                 {
                     ReservationCleanup::DefinitivelyAbsent
@@ -1634,7 +1504,7 @@ where
         }
         .await;
         if let Err(error) = &result {
-            log_fman_failure(error, "returned");
+            log_fman_failure(&formation_id, error, "returned");
             tracing::warn!(
                 formation_id = %formation_id.0,
                 phase = ?recovery.snapshot.phase,
@@ -1955,9 +1825,10 @@ where
                     authorizations,
                 );
             } else if recovery.creation_mode.is_selected() && !recovery.payment_outputs_started {
-                return Err(FiError::SelectionReauthorizationRequired(
-                    SelectionReauthorizationReason::QuoteTotalExceedsLimit,
-                ));
+                return Err(FiError::SelectionReauthorizationRequired {
+                    reason: SelectionReauthorizationReason::QuoteTotalExceedsLimit,
+                    failure: None,
+                });
             } else {
                 recovery.snapshot.phase = FormationPhase::AwaitingPaymentReadiness;
                 recovery.snapshot.action_required =
@@ -2058,12 +1929,8 @@ where
             pending.push(async move {
                 let (signed_quote, _) = self
                     .request_quote_with_retry(
-                        FmanTarget::new(
-                            formation_id,
-                            locator.service_pubkey,
-                            position as u16,
-                            None,
-                        ),
+                        formation_id,
+                        position,
                         &locator,
                         intent,
                         fi_id,
@@ -2097,7 +1964,7 @@ where
                 }
                 Err(error) => {
                     if first_error.is_some() {
-                        log_fman_failure(&error, "discarded");
+                        log_fman_failure(&formation_id, &error, "discarded");
                     }
                     first_error.get_or_insert(error);
                 }
@@ -2164,9 +2031,10 @@ where
                 FormationCreationMode::Selected { .. }
                     if error.proves_insufficient_funds_without_reservation() =>
                 {
-                    FiError::SelectionReauthorizationRequired(
-                        SelectionReauthorizationReason::SelectedPayerInsufficientFunds,
-                    )
+                    FiError::SelectionReauthorizationRequired {
+                        reason: SelectionReauthorizationReason::SelectedPayerInsufficientFunds,
+                        failure: None,
+                    }
                 }
                 FormationCreationMode::Selected { .. } | FormationCreationMode::Pinned => {
                     FiError::Payment(error.to_string())
@@ -2264,10 +2132,10 @@ where
     async fn connect_with_selected_retry(
         &self,
         locator: &Locator,
-        target: FmanTarget<'_>,
+        formation_id: &FormationId,
         policy: QuoteAttemptPolicy,
         run: DriverRun<'_>,
-    ) -> FiResult<F::Client> {
+    ) -> FiResult<FmanClient<F::Client>> {
         let retry_deadline = Instant::now()
             .checked_add(SELECTED_FMAN_CONNECT_RETRY_BUDGET)
             .unwrap_or(run.deadline)
@@ -2277,40 +2145,29 @@ where
             .poll_interval
             .max(SELECTED_FMAN_CONNECT_RETRY_MIN_DELAY)
             .min(SELECTED_FMAN_CONNECT_RETRY_MAX_DELAY);
-
         loop {
-            let attempt = run
-                .call_fman(target, "connecting to Fleet Manager", || {
-                    Ok(self.inner.ports.fman_connector.connect(locator))
-                })
-                .await;
-            let error = match attempt {
-                Ok(Ok(client)) => return Ok(client),
-                Ok(Err(error)) => target.remote("connecting to Fleet Manager", error),
-                Err(error) => error,
+            let error =
+                match FmanClient::connect(&self.inner.ports.fman_connector, locator, run).await {
+                    Ok(client) => return Ok(client),
+                    Err(error) => error,
+                };
+            let FiError::Fman(failure) = error else {
+                return Err(error);
             };
             if !policy.allows_selection_reauthorization()
-                || !matches!(
-                    error.cause(),
-                    FiError::Timeout(_) | FiError::FleetManager { .. }
-                )
+                || !matches!(failure.cause, FmanCause::Timeout | FmanCause::Transport)
             {
-                return Err(error);
+                return Err(failure.into());
             }
             if Instant::now() >= retry_deadline
                 || sleep_for_retry(retry_deadline, retry_delay).await.is_err()
             {
-                return Err(target.attribute(
-                    FiError::SelectionReauthorizationRequired(
-                        SelectionReauthorizationReason::SelectedFmanUnavailable,
-                    ),
-                    "connecting to Fleet Manager",
-                    error
-                        .fman_request()
-                        .map_or(FmanRequestFailureClass::Remote, |context| context.class),
-                ));
+                return Err(FiError::SelectionReauthorizationRequired {
+                    reason: SelectionReauthorizationReason::SelectedFmanUnavailable,
+                    failure: Some(failure),
+                });
             }
-            log_fman_failure(&error, "retried");
+            log_fman_failure(formation_id, &FiError::Fman(failure), "retried");
             retry_delay = retry_delay
                 .saturating_mul(2)
                 .min(SELECTED_FMAN_CONNECT_RETRY_MAX_DELAY);
@@ -2325,7 +2182,8 @@ where
     #[allow(clippy::too_many_arguments)]
     async fn request_quote_with_retry(
         &self,
-        target: FmanTarget<'_>,
+        formation_id: &FormationId,
+        index: usize,
         locator: &Locator,
         intent: &ResolvedFormationIntent,
         fi_id: FiId,
@@ -2346,52 +2204,12 @@ where
             .poll_interval
             .max(SELECTED_FMAN_CONNECT_RETRY_MIN_DELAY)
             .min(SELECTED_FMAN_CONNECT_RETRY_MAX_DELAY);
-
         loop {
-            let client = match run
-                .call_fman(target, "connecting to Fleet Manager", || {
-                    Ok(self.inner.ports.fman_connector.connect(locator))
-                })
-                .await
-            {
-                Ok(result) => {
-                    result.map_err(|error| target.remote("connecting to Fleet Manager", error))
-                }
-                Err(error) => Err(error),
-            };
-            let client = match client {
-                Ok(client) => client,
-                Err(error) => {
-                    if !policy.allows_selection_reauthorization()
-                        || !matches!(
-                            error.cause(),
-                            FiError::Timeout(_) | FiError::FleetManager { .. }
-                        )
-                    {
-                        return Err(error);
-                    }
-                    if retry_quote_attempt(retry_deadline, &mut retry_delay)
-                        .await
-                        .is_err()
-                    {
-                        return Err(target.attribute(
-                            FiError::SelectionReauthorizationRequired(
-                                SelectionReauthorizationReason::SelectedFmanUnavailable,
-                            ),
-                            "connecting to Fleet Manager",
-                            error
-                                .fman_request()
-                                .map_or(FmanRequestFailureClass::Remote, |context| context.class),
-                        ));
-                    }
-                    log_fman_failure(&error, "retried");
-                    continue;
-                }
-            };
-
-            let error = match self
-                .request_new_quote(
-                    target,
+            let result = async {
+                let client =
+                    FmanClient::connect(&self.inner.ports.fman_connector, locator, run).await?;
+                self.request_new_quote(
+                    index,
                     &client,
                     locator,
                     intent,
@@ -2402,32 +2220,30 @@ where
                     run,
                 )
                 .await
-            {
+            }
+            .await;
+            let error = match result {
                 Ok(quote) => return Ok(quote),
                 Err(error) => error,
             };
-            let retryable = matches!(&error, QuoteAttemptError::Transport(_))
-                || matches!(&error, QuoteAttemptError::Other(error) if matches!(error.cause(), FiError::Timeout(_)));
-            let error = error.into_fi_error();
-            if !policy.allows_selection_reauthorization() || !retryable {
+            let FiError::Fman(failure) = error else {
                 return Err(error);
+            };
+            if !policy.allows_selection_reauthorization()
+                || !matches!(failure.cause, FmanCause::Timeout | FmanCause::Transport)
+            {
+                return Err(failure.into());
             }
             if retry_quote_attempt(retry_deadline, &mut retry_delay)
                 .await
                 .is_err()
             {
-                let context = error.fman_request();
-                return Err(target.attribute(
-                    FiError::SelectionReauthorizationRequired(
-                        SelectionReauthorizationReason::SelectedFmanUnavailable,
-                    ),
-                    context.map_or("requesting Fleet Manager quote", |context| {
-                        context.operation
-                    }),
-                    context.map_or(FmanRequestFailureClass::Remote, |context| context.class),
-                ));
+                return Err(FiError::SelectionReauthorizationRequired {
+                    reason: SelectionReauthorizationReason::SelectedFmanUnavailable,
+                    failure: Some(failure),
+                });
             }
-            log_fman_failure(&error, "retried");
+            log_fman_failure(formation_id, &FiError::Fman(failure), "retried");
         }
     }
 
@@ -2436,7 +2252,7 @@ where
         recovery: &mut ActiveFormationRecovery,
         fi_id: FiId,
         run: DriverRun<'_>,
-    ) -> FiResult<Vec<SeatSession<F::Client>>> {
+    ) -> FiResult<Vec<SeatSession<FmanClient<F::Client>>>> {
         let formation_id = recovery.snapshot.formation_id.clone();
         let formation_id = &formation_id;
         let intent = recovery.snapshot.intent.clone();
@@ -2528,7 +2344,7 @@ where
                 Ok((position, recovered)) => recovered_payments[position] = Some(recovered),
                 Err(error) => {
                     if first_barrier_error.is_some() {
-                        log_fman_failure(&error, "discarded");
+                        log_fman_failure(&formation_id, &error, "discarded");
                     }
                     first_barrier_error.get_or_insert(error);
                 }
@@ -2546,8 +2362,6 @@ where
             };
             let seat = &recovery.seats[position];
             let locator = seat.progress.locator.clone();
-            let seat_index = seat.progress.index;
-            let seat_id = seat.progress.seat_id.clone();
             let signed_quote = seat
                 .signed_quote
                 .clone()
@@ -2561,21 +2375,12 @@ where
                 expected_payer.as_ref(),
             )?;
             pending_replays.push(async move {
-                let target = FmanTarget::new(
-                    formation_id,
-                    locator.service_pubkey,
-                    seat_index,
-                    seat_id.as_ref(),
-                );
-                let client = run
-                    .call_fman(target, "connecting to Fleet Manager", || {
-                        Ok(self.inner.ports.fman_connector.connect(&locator))
-                    })
-                    .await?
-                    .map_err(|error| target.remote("connecting to Fleet Manager", error))?;
+                let client =
+                    FmanClient::connect(&self.inner.ports.fman_connector, &locator, run).await?;
                 let creation = self
                     .create_or_replay_seat(
-                        target,
+                        formation_id,
+                        position,
                         &client,
                         &locator,
                         fi_id,
@@ -2594,7 +2399,7 @@ where
                 Ok(value) => value,
                 Err(error) => {
                     if first_barrier_error.is_some() {
-                        log_fman_failure(&error, "discarded");
+                        log_fman_failure(&formation_id, &error, "discarded");
                     }
                     first_barrier_error.get_or_insert(error);
                     continue;
@@ -2607,7 +2412,7 @@ where
                         .await
                     {
                         if first_barrier_error.is_some() {
-                            log_fman_failure(&error, "discarded");
+                            log_fman_failure(&formation_id, &error, "discarded");
                         }
                         first_barrier_error.get_or_insert(error);
                     }
@@ -2670,9 +2475,10 @@ where
                         .await?,
                 ),
                 (FormationCreationMode::Selected { .. }, None) => {
-                    return Err(FiError::SelectionReauthorizationRequired(
-                        SelectionReauthorizationReason::PaymentFederationRequired,
-                    ));
+                    return Err(FiError::SelectionReauthorizationRequired {
+                        reason: SelectionReauthorizationReason::PaymentFederationRequired,
+                        failure: None,
+                    });
                 }
                 (FormationCreationMode::Pinned, _) if self.can_pay() => {
                     Some(self.select_setup_payment_federation(run).await?)
@@ -2703,7 +2509,7 @@ where
         // recovery errors and never become replacement advice.
         let mut clients = (0..recovery.seats.len())
             .map(|_| None)
-            .collect::<Vec<Option<F::Client>>>();
+            .collect::<Vec<Option<FmanClient<F::Client>>>>();
         let mut pending_connections = FuturesUnordered::new();
         for (position, seat) in recovery.seats.iter().enumerate() {
             if terminal_positions.contains(&position) {
@@ -2711,17 +2517,9 @@ where
             }
             let locator = seat.progress.locator.clone();
             let connection_policy = quote_attempt_policy(&recovery.creation_mode, &seat.admission);
-            let index = seat.progress.index;
-            let seat_id = seat.progress.seat_id.clone();
             pending_connections.push(async move {
-                let target = FmanTarget::new(
-                    formation_id,
-                    locator.service_pubkey,
-                    index,
-                    seat_id.as_ref(),
-                );
                 let client = self
-                    .connect_with_selected_retry(&locator, target, connection_policy, run)
+                    .connect_with_selected_retry(&locator, formation_id, connection_policy, run)
                     .await?;
                 Ok::<_, FiError>((position, client))
             });
@@ -2958,7 +2756,7 @@ where
 
         let mut sessions = (0..recovery.seats.len())
             .map(|_| None)
-            .collect::<Vec<Option<SeatSession<F::Client>>>>();
+            .collect::<Vec<Option<SeatSession<FmanClient<F::Client>>>>>();
         let mut first_barrier_error = None;
         // A payment wallet may need the change from one accepted Fedimint
         // transaction to fund the next quote. Drive paid seats in stable seat
@@ -2983,7 +2781,7 @@ where
                 Ok(value) => value,
                 Err(error) => {
                     if first_barrier_error.is_some() {
-                        log_fman_failure(&error, "discarded");
+                        log_fman_failure(&formation_id, &error, "discarded");
                     }
                     first_barrier_error.get_or_insert(error);
                     break;
@@ -3007,7 +2805,6 @@ where
                 break;
             }
             sessions[position] = Some(SeatSession {
-                manager: recovery.seats[position].progress.locator.service_pubkey,
                 index: recovery.seats[position].progress.index,
                 client,
                 seat_id: recovery.seats[position]
@@ -3043,7 +2840,7 @@ where
                 Ok(value) => value,
                 Err(error) => {
                     if first_barrier_error.is_some() {
-                        log_fman_failure(&error, "discarded");
+                        log_fman_failure(&formation_id, &error, "discarded");
                     }
                     first_barrier_error.get_or_insert(error);
                     continue;
@@ -3067,7 +2864,6 @@ where
                 continue;
             }
             sessions[position] = Some(SeatSession {
-                manager: recovery.seats[position].progress.locator.service_pubkey,
                 index: recovery.seats[position].progress.index,
                 client,
                 seat_id: recovery.seats[position]
@@ -3207,12 +3003,8 @@ where
             pending.push(async move {
                 let (signed, verified) = self
                     .request_quote_with_retry(
-                        FmanTarget::new(
-                            formation_id,
-                            locator.service_pubkey,
-                            position as u16,
-                            None,
-                        ),
+                        formation_id,
+                        position,
                         &locator,
                         &intent,
                         fi_id,
@@ -3250,7 +3042,7 @@ where
                 }
                 Err(error) => {
                     if first_error.is_some() {
-                        log_fman_failure(&error, "discarded");
+                        log_fman_failure(&formation_id, &error, "discarded");
                     }
                     first_error.get_or_insert(error);
                 }
@@ -3292,9 +3084,10 @@ where
         }
         if let Some(position) = first_changed_position {
             if recovery.creation_mode.is_selected() {
-                return Err(FiError::SelectionReauthorizationRequired(
-                    crate::SelectionReauthorizationReason::QuoteTermsChanged,
-                ));
+                return Err(FiError::SelectionReauthorizationRequired {
+                    reason: crate::SelectionReauthorizationReason::QuoteTermsChanged,
+                    failure: None,
+                });
             }
             return Err(FiError::Payment(format!(
                 "payment terms for Fleet Manager {} changed; review the fresh quote",
@@ -3307,7 +3100,7 @@ where
     async fn run_dkg(
         &self,
         recovery: &mut ActiveFormationRecovery,
-        sessions: &[SeatSession<F::Client>],
+        sessions: &[SeatSession<FmanClient<F::Client>>],
         fi_id: FiId,
         run: DriverRun<'_>,
     ) -> FiResult<()> {
@@ -3324,7 +3117,7 @@ where
             pending_codes.push(async move {
                 let code = self
                     .get_dkg_code_with_retry(
-                        FmanTarget::seat(formation_id, session),
+                        formation_id,
                         session,
                         fi_id,
                         federation_name,
@@ -3352,7 +3145,7 @@ where
                 Ok(value) => value,
                 Err(error) => {
                     if first_error.is_some() {
-                        log_fman_failure(&error, "discarded");
+                        log_fman_failure(&formation_id, &error, "discarded");
                     }
                     first_error.get_or_insert(error);
                     continue;
@@ -3405,24 +3198,12 @@ where
                 let request = run
                     .construct("signing StartDkg request", || self.sign(&request))
                     .await?;
-                let result = run
-                    .call_fman(
-                        FmanTarget::seat(formation_id, session),
-                        "starting DKG",
-                        || Ok(session.client.start_dkg(request)),
-                    )
-                    .await?;
-                match result {
-                    Ok(_)
-                    | Err(FleetManagerError::WrongState {
-                        status: ServiceStatus::DkgInProcess,
-                    }) => Ok::<_, FiError>((position, false)),
-                    Err(FleetManagerError::WrongState {
-                        status: ServiceStatus::Running,
-                    }) => Ok((position, false)),
-                    Err(error) => {
-                        Err(FmanTarget::seat(formation_id, session).remote("starting DKG", error))
-                    }
+                match session.client.start_dkg(run, request).await {
+                    Ok(_) | Err(FiError::Fman(FmanFailure {
+                        cause: FmanCause::WrongState(ServiceStatus::DkgInProcess | ServiceStatus::Running),
+                        ..
+                    })) => Ok::<_, FiError>((position, false)),
+                    Err(error) => Err(error),
                 }
             });
         }
@@ -3436,7 +3217,7 @@ where
                 }
                 Err(error) => {
                     if first_error.is_some() {
-                        log_fman_failure(&error, "discarded");
+                        log_fman_failure(&formation_id, &error, "discarded");
                     }
                     first_error.get_or_insert(error);
                 }
@@ -3450,9 +3231,7 @@ where
         self.poll_until_running(sessions, recovery, fi_id, run)
             .await?;
 
-        let invite = self
-            .fetch_agreed_invite(formation_id, sessions, fi_id, run)
-            .await?;
+        let invite = self.fetch_agreed_invite(sessions, fi_id, run).await?;
         recovery.snapshot.invite_code = Some(invite.clone());
         recovery.snapshot.action_required = None;
         // Save DKG before publication so an interrupted run never repeats it.
@@ -3624,10 +3403,10 @@ where
     async fn complete_pending_seat_work(
         &self,
         formation_id: &FormationId,
-        work: PendingSeatWork<F::Client, P::RefundContext, P::PaymentReservation>,
+        work: PendingSeatWork<FmanClient<F::Client>, P::RefundContext, P::PaymentReservation>,
         fi_id: FiId,
         run: DriverRun<'_>,
-    ) -> FiResult<CompletedSeatWork<F::Client, P::TerminalReleaseProof>> {
+    ) -> FiResult<CompletedSeatWork<FmanClient<F::Client>, P::TerminalReleaseProof>> {
         match work {
             PendingSeatWork::Funding(funding) => {
                 let PendingSeatFunding {
@@ -3653,12 +3432,8 @@ where
                     .map_err(|error| FiError::Payment(error.to_string()))?;
                 let creation = self
                     .create_or_replay_seat(
-                        FmanTarget::new(
-                            formation_id,
-                            locator.service_pubkey,
-                            position as u16,
-                            None,
-                        ),
+                        formation_id,
+                        position,
                         &client,
                         &locator,
                         fi_id,
@@ -3692,12 +3467,8 @@ where
             }) => {
                 let creation = self
                     .create_or_replay_seat(
-                        FmanTarget::new(
-                            formation_id,
-                            locator.service_pubkey,
-                            position as u16,
-                            None,
-                        ),
+                        formation_id,
+                        position,
                         &client,
                         &locator,
                         fi_id,
@@ -3717,8 +3488,9 @@ where
 
     async fn create_or_replay_seat(
         &self,
-        target: FmanTarget<'_>,
-        client: &F::Client,
+        formation_id: &FormationId,
+        index: usize,
+        client: &FmanClient<F::Client>,
         locator: &Locator,
         fi_id: FiId,
         acquisition: SeatAcquisition<P::RefundContext>,
@@ -3731,7 +3503,8 @@ where
             SeatAcquisition::Free(quote) => {
                 return self
                     .present_seat(
-                        target,
+                        formation_id,
+                        index,
                         client,
                         locator,
                         fi_id,
@@ -3744,15 +3517,23 @@ where
                 SeatPresentation::Paid { quote, prepared }
             }
         };
-        self.present_seat(target, client, locator, fi_id, presentation, run)
-            .await
+        self.present_seat(
+            formation_id,
+            index,
+            client,
+            locator,
+            fi_id,
+            presentation,
+            run,
+        )
+        .await
     }
 
     #[allow(clippy::too_many_arguments)]
     async fn request_new_quote(
         &self,
-        target: FmanTarget<'_>,
-        client: &F::Client,
+        index: usize,
+        client: &FmanClient<F::Client>,
         locator: &Locator,
         intent: &ResolvedFormationIntent,
         fi_id: FiId,
@@ -3760,32 +3541,17 @@ where
         expected_payer: Option<&FederationId>,
         payment_federation: Option<&OnceCell<FederationId>>,
         run: DriverRun<'_>,
-    ) -> Result<
-        (
-            SignedResponse<GetQuoteResponse>,
-            SignatureVerified<GetQuoteResponse>,
-        ),
-        QuoteAttemptError,
-    > {
-        let index = usize::from(target.seat_index);
-        let availability = run
-            .call_fman(target, "checking Fleet Manager availability", || {
-                Ok(self
-                    .inner
-                    .ports
-                    .fman_connector
-                    .get_availability(client, GetAvailabilityRequest))
-            })
-            .await?
-            .map_err(|error| {
-                QuoteAttemptError::Transport(
-                    target.remote("checking Fleet Manager availability", error),
-                )
-            })?
-            .map_err(|error| {
-                quote_attempt_error(index, error, QuoteAttemptPolicy::ExactRecovery)
-                    .attribute(target, "checking Fleet Manager availability")
-            })?;
+    ) -> FiResult<(
+        SignedResponse<GetQuoteResponse>,
+        SignatureVerified<GetQuoteResponse>,
+    )> {
+        let availability = client
+            .get_availability(
+                &self.inner.ports.fman_connector,
+                run,
+                GetAvailabilityRequest,
+            )
+            .await?;
         // One shared predicate with the selection walk's live probe
         // (`selection::match_requested_availability`), so a candidate the
         // probing preview seats is exactly a candidate this gate accepts.
@@ -3797,23 +3563,22 @@ where
             intent.plan,
         ) {
             Ok(matched) => matched,
-            Err(mismatch @ AvailabilityMismatch::NotAcceptingSeats) => {
-                return Err(target
-                    .attribute(
-                        selected_availability_error(policy, index, mismatch.message()),
-                        "checking Fleet Manager availability",
-                        FmanRequestFailureClass::Unavailable,
-                    )
-                    .into());
-            }
             Err(mismatch) => {
-                return Err(target
-                    .attribute(
-                        selected_availability_error(policy, index, mismatch.message()),
-                        "checking Fleet Manager availability",
-                        FmanRequestFailureClass::IncompatibleAvailability,
-                    )
-                    .into());
+                let cause = match mismatch {
+                    AvailabilityMismatch::NotAcceptingSeats => FmanCause::NotAcceptingSeats,
+                    AvailabilityMismatch::FederationSize => FmanCause::UnsupportedFederationSize,
+                    AvailabilityMismatch::FedimintdVersion => FmanCause::UnsupportedVersion,
+                    AvailabilityMismatch::Plan => FmanCause::PlanNotOffered,
+                };
+                let failure = client.failure(FmanOperation::GetAvailability, cause);
+                return Err(if policy.allows_selection_reauthorization() {
+                    FiError::SelectionReauthorizationRequired {
+                        reason: SelectionReauthorizationReason::SelectedFmanUnavailable,
+                        failure: Some(failure),
+                    }
+                } else {
+                    failure.into()
+                });
             }
         };
         let fedimintd_version = matched.fedimintd_version.clone();
@@ -3829,9 +3594,10 @@ where
         let payment_federation_id = if priced {
             let payment_federation = payment_federation.ok_or_else(|| {
                 if policy.allows_selection_reauthorization() {
-                    FiError::SelectionReauthorizationRequired(
-                        SelectionReauthorizationReason::PaymentFederationRequired,
-                    )
+                    FiError::SelectionReauthorizationRequired {
+                        reason: SelectionReauthorizationReason::PaymentFederationRequired,
+                        failure: None,
+                    }
                 } else {
                     fman_error(
                         index,
@@ -3878,38 +3644,34 @@ where
             payment_federation_id,
             refund_issuance,
         };
-        let signed_quote = run
-            .call_fman(target, "requesting Fleet Manager quote", || {
-                Ok(self
-                    .inner
-                    .ports
-                    .fman_connector
-                    .get_quote(client, quote_request.clone()))
-            })
-            .await?
-            .map_err(|error| {
-                QuoteAttemptError::Transport(target.remote("requesting Fleet Manager quote", error))
-            })?
-            .map_err(|error| {
-                quote_attempt_error(index, error, policy)
-                    .attribute(target, "requesting Fleet Manager quote")
+        let signed_quote = client
+            .get_quote(&self.inner.ports.fman_connector, run, quote_request.clone())
+            .await
+            .map_err(|error| match error {
+                FiError::Fman(failure)
+                    if policy.allows_selection_reauthorization()
+                        && matches!(
+                            failure.cause,
+                            FmanCause::CapacityExhausted
+                                | FmanCause::PlanNotOffered
+                                | FmanCause::PaymentFederationNotAccepted
+                                | FmanCause::UnsupportedVersion
+                                | FmanCause::UnsupportedFederationSize
+                        ) =>
+                {
+                    FiError::SelectionReauthorizationRequired {
+                        reason: SelectionReauthorizationReason::SelectedFmanUnavailable,
+                        failure: Some(failure),
+                    }
+                }
+                error => error,
             })?;
         let quote = self
             .verify_quote(index, &signed_quote, locator, intent, fi_id, expected_payer)
-            .map_err(|error| {
-                target.attribute(
-                    error,
-                    "requesting Fleet Manager quote",
-                    FmanRequestFailureClass::InvalidResponse,
-                )
-            })?;
+            .map_err(|_| client.failure(FmanOperation::GetQuote, FmanCause::InvalidResponse))?;
         if quote.terms.request != quote_request {
-            return Err(target
-                .attribute(
-                    fman_error(index, "quote echoed a different request"),
-                    "requesting Fleet Manager quote",
-                    FmanRequestFailureClass::InvalidResponse,
-                )
+            return Err(client
+                .failure(FmanOperation::GetQuote, FmanCause::InvalidResponse)
                 .into());
         }
         Ok((signed_quote, quote))
@@ -3998,14 +3760,14 @@ where
 
     async fn present_seat(
         &self,
-        target: FmanTarget<'_>,
-        client: &F::Client,
+        formation_id: &FormationId,
+        index: usize,
+        client: &FmanClient<F::Client>,
         locator: &Locator,
         fi_id: FiId,
         presentation: SeatPresentation<P::RefundContext>,
         run: DriverRun<'_>,
     ) -> FiResult<SeatCreation<P::TerminalReleaseProof>> {
-        let index = usize::from(target.seat_index);
         let (signed_quote, quote, payment_signatures, refund_context) = match presentation {
             SeatPresentation::Free(FreeSeatQuote { signed, verified }) => {
                 (signed, verified, Vec::new(), None)
@@ -4043,29 +3805,15 @@ where
         let request = run
             .construct("signing CreateSeat request", || self.sign(&request))
             .await?;
-        let response = run
-            .call_fman(target, "creating Fleet Manager seat", || {
-                Ok(client.create_seat(request))
-            })
+        let response = client
+            .create_seat(run, request)
             .await?
-            .map_err(|error| target.remote("creating Fleet Manager seat", error))?
             .verify(&locator.service_pubkey)
-            .map_err(|error| {
-                target.attribute(
-                    fman_error(
-                        index,
-                        format!("invalid signed CreateSeat response: {error}"),
-                    ),
-                    "creating Fleet Manager seat",
-                    FmanRequestFailureClass::InvalidResponse,
-                )
-            })?;
+            .map_err(|_| client.failure(FmanOperation::CreateSeat, FmanCause::InvalidResponse))?;
         if response.quote_id != quote_id {
-            return Err(target.attribute(
-                fman_error(index, "CreateSeat answered a different quote"),
-                "creating Fleet Manager seat",
-                FmanRequestFailureClass::InvalidResponse,
-            ));
+            return Err(client
+                .failure(FmanOperation::CreateSeat, FmanCause::InvalidResponse)
+                .into());
         }
         match response.into_inner().outcome {
             CreateSeatOutcome::Accepted {
@@ -4076,17 +3824,8 @@ where
                     guardian_fee_account.clone(),
                     GUARDIAN_GUARDIAN_FEE_WEIGHT,
                 )])
-                .map_err(|error| {
-                    target.attribute(
-                        fman_error(
-                            index,
-                            format!(
-                                "CreateSeat committed an invalid guardian-fee account: {error}"
-                            ),
-                        ),
-                        "creating Fleet Manager seat",
-                        FmanRequestFailureClass::InvalidResponse,
-                    )
+                .map_err(|_| {
+                    client.failure(FmanOperation::CreateSeat, FmanCause::InvalidResponse)
                 })?;
                 Ok(SeatCreation::Accepted(SeatAcceptance {
                     seat_id,
@@ -4097,15 +3836,15 @@ where
                 reason,
                 refund_transaction,
             } => {
-                let error = target.attribute(
-                    FiError::SeatRefused {
-                        index: index as u16,
-                        reason: format!("{reason:?}"),
-                    },
-                    "creating Fleet Manager seat",
-                    FmanRequestFailureClass::Refused,
+                let cause = match reason {
+                    RefusalReason::OfferChanged => FmanCause::OfferChanged,
+                };
+                let error = client.failure(FmanOperation::CreateSeat, cause);
+                log_fman_failure(
+                    formation_id,
+                    &FiError::Fman(error.clone()),
+                    "pending_refund",
                 );
-                log_fman_failure(&error, "pending_refund");
                 let release_proof = match (refund_context, refund_transaction) {
                     (Some(refund_context), Some(refund)) => Some(
                         run.call_with_timeout(
@@ -4141,8 +3880,8 @@ where
 
     async fn get_dkg_code_with_retry(
         &self,
-        target: FmanTarget<'_>,
-        session: &SeatSession<F::Client>,
+        formation_id: &FormationId,
+        session: &SeatSession<FmanClient<F::Client>>,
         fi_id: FiId,
         federation_name: Option<FederationName>,
         recorded_code: Option<GuardianCode>,
@@ -4159,46 +3898,38 @@ where
             let request = run
                 .construct("signing GetDkgCode request", || self.sign(&request))
                 .await?;
-            match run
-                .call_fman(target, "requesting guardian code", || {
-                    Ok(session.client.get_dkg_code(request))
-                })
-                .await?
-            {
+            match session.client.get_dkg_code(run, request).await {
                 Ok(response) => return Ok(response.guardian_code),
-                Err(FleetManagerError::SeatUnavailable) => {
+                Err(
+                    error @ FiError::Fman(FmanFailure {
+                        cause: FmanCause::SeatUnavailable,
+                        ..
+                    }),
+                ) => {
                     sleep_for_retry(run.deadline, run.options.poll_interval)
                         .await
-                        .map_err(|error| {
-                            target.attribute(
-                                error,
-                                "waiting for guardian code",
-                                FmanRequestFailureClass::SeatUnavailable,
-                            )
+                        .map_err(|_| {
+                            session
+                                .client
+                                .failure(FmanOperation::GetDkgCode, FmanCause::Timeout)
                         })?;
-                    log_fman_failure(
-                        &target.remote(
-                            "requesting guardian code",
-                            FleetManagerError::SeatUnavailable,
-                        ),
-                        "retried",
-                    );
+                    log_fman_failure(formation_id, &error, "retried");
                 }
-                Err(FleetManagerError::WrongState {
-                    status: ServiceStatus::DkgInProcess | ServiceStatus::Running,
-                }) if recorded_code.is_some() => {
+                Err(FiError::Fman(FmanFailure {
+                    cause:
+                        FmanCause::WrongState(ServiceStatus::DkgInProcess | ServiceStatus::Running),
+                    ..
+                })) if recorded_code.is_some() => {
                     return Ok(recorded_code.expect("matched present recorded code"));
                 }
-                Err(error) => {
-                    return Err(target.remote("requesting guardian code", error));
-                }
+                Err(error) => return Err(error),
             }
         }
     }
 
     async fn poll_until_running(
         &self,
-        sessions: &[SeatSession<F::Client>],
+        sessions: &[SeatSession<FmanClient<F::Client>>],
         recovery: &mut ActiveFormationRecovery,
         fi_id: FiId,
         run: DriverRun<'_>,
@@ -4220,29 +3951,17 @@ where
                     let request = run
                         .construct("signing GetStatus request", || self.sign(&request))
                         .await?;
-                    let status = run
-                        .call_fman(
-                            FmanTarget::seat(formation_id, session),
-                            "checking Fleet Manager status",
-                            || Ok(session.client.get_status(request)),
-                        )
-                        .await?
-                        .map_err(|error| {
-                            FmanTarget::seat(formation_id, session)
-                                .remote("checking Fleet Manager status", error)
-                        })?;
+                    let status = session.client.get_status(run, request).await?;
                     Ok::<_, FiError>((position, status))
                 });
             }
             while let Some(result) = pending_status.next().await {
                 let (position, status) = result?;
-                recovery.seats[position].progress.phase =
-                    service_seat_phase(position, &status.status).map_err(|error| {
-                        FmanTarget::seat(formation_id, &sessions[position]).attribute(
-                            error,
-                            "checking Fleet Manager status",
-                            FmanRequestFailureClass::TerminalStatus,
-                        )
+                recovery.seats[position].progress.phase = service_seat_phase(&status.status)
+                    .map_err(|cause| {
+                        sessions[position]
+                            .client
+                            .failure(FmanOperation::GetStatus, cause)
                     })?;
                 recovery.seats[position].progress.freshness = FormationFreshness::Fresh;
                 recovery.snapshot.seats[position] = recovery.seats[position].progress.clone();
@@ -4267,11 +3986,11 @@ where
                 .inspect_err(|_| {
                     for session in &waiting {
                         log_fman_failure(
-                            &FmanTarget::seat(formation_id, session).attribute(
-                                FiError::Timeout("waiting for seat to run".to_owned()),
-                                "waiting for seat to run",
-                                FmanRequestFailureClass::NotRunning,
-                            ),
+                            formation_id,
+                            &session
+                                .client
+                                .failure(FmanOperation::WaitForRunning, FmanCause::NotRunning)
+                                .into(),
                             "returned",
                         );
                     }
@@ -4297,12 +4016,7 @@ where
             self.poll_until_running(&manager_connections, recovery, fi_id, run)
                 .await?;
             let invite = self
-                .fetch_agreed_invite(
-                    &recovery.snapshot.formation_id,
-                    &manager_connections,
-                    fi_id,
-                    run,
-                )
+                .fetch_agreed_invite(&manager_connections, fi_id, run)
                 .await?;
             if invite_federation_id(&stored)? != invite_federation_id(&invite)? {
                 return Err(FiError::InvalidFleetManagers(
@@ -4413,31 +4127,20 @@ where
         &self,
         recovery: &ActiveFormationRecovery,
         run: DriverRun<'_>,
-    ) -> FiResult<Vec<SeatSession<F::Client>>> {
-        let formation_id = &recovery.snapshot.formation_id;
+    ) -> FiResult<Vec<SeatSession<FmanClient<F::Client>>>> {
         let mut sessions = Vec::with_capacity(recovery.seats.len());
         for (position, seat) in recovery.seats.iter().enumerate() {
             let seat_id = seat.progress.seat_id.clone().ok_or_else(|| {
                 FiError::Storage(format!("FI seat row {position} has no seat id"))
             })?;
-            let target = FmanTarget::new(
-                formation_id,
-                seat.progress.locator.service_pubkey,
-                seat.progress.index,
-                Some(&seat_id),
-            );
-            let client = run
-                .call_fman(target, "reconnecting to Fleet Manager", || {
-                    Ok(self
-                        .inner
-                        .ports
-                        .fman_connector
-                        .connect(&seat.progress.locator))
-                })
-                .await?
-                .map_err(|error| target.remote("reconnecting to Fleet Manager", error))?;
+
+            let client = FmanClient::connect(
+                &self.inner.ports.fman_connector,
+                &seat.progress.locator,
+                run,
+            )
+            .await?;
             sessions.push(SeatSession {
-                manager: seat.progress.locator.service_pubkey,
                 index: seat.progress.index,
                 client,
                 seat_id,
@@ -4449,7 +4152,7 @@ where
     /// Publish the directory and initial fee policy as one formation vote.
     async fn publish_seat_bindings(
         &self,
-        sessions: &[SeatSession<F::Client>],
+        sessions: &[SeatSession<FmanClient<F::Client>>],
         recovery: &mut ActiveFormationRecovery,
         fi_id: FiId,
         invite: &InviteCode,
@@ -4605,7 +4308,6 @@ where
             );
             let results = self
                 .submit_formation_meta_wave(
-                    &recovery.snapshot.formation_id,
                     sessions,
                     fi_id,
                     expected_base,
@@ -4616,50 +4318,27 @@ where
                     run,
                 )
                 .await;
-            for (position, result) in results {
-                let session = &sessions[position];
-                let index = session.index;
-                let target = FmanTarget::seat(&recovery.snapshot.formation_id, session);
-                let attribute = |error| {
-                    target.attribute(
-                        error,
-                        "proposing formation metadata",
-                        FmanRequestFailureClass::Remote,
-                    )
-                };
+            for result in results {
                 match result {
                     Ok(_) => {}
-                    Err(MetaFieldSubmissionError::FleetManager(
-                        FleetManagerError::MetaConsensusChanged,
-                    )) => {}
-                    Err(MetaFieldSubmissionError::FleetManager(
-                        FleetManagerError::FormationMetaAlreadyPublished,
-                    )) => {
-                        let error = attribute(FiError::InvalidFleetManagers(
-                            "federation already published different formation metadata".to_owned(),
-                        ));
-                        log_fman_failure(&error, "pending_consensus");
-                        pending_error.get_or_insert(error);
-                    }
-                    Err(MetaFieldSubmissionError::FleetManager(
-                        error @ (FleetManagerError::GuardianVerificationFeeAccountUnavailable
-                        | FleetManagerError::GuardianVerificationFeeAccountMismatch),
-                    )) => {
-                        return Err(attribute(FiError::FleetManager {
-                            index,
-                            message: error.to_string(),
-                        }));
-                    }
+                    Err(FiError::Fman(FmanFailure {
+                        cause: FmanCause::MetaConsensusChanged,
+                        ..
+                    })) => {}
+                    Err(
+                        error @ FiError::Fman(FmanFailure {
+                            cause:
+                                FmanCause::GuardianVerificationFeeAccountUnavailable
+                                | FmanCause::GuardianVerificationFeeAccountMismatch,
+                            ..
+                        }),
+                    ) => return Err(error),
                     Err(error) => {
-                        let error = error.into_formation_error(index);
-                        let error = if error.fman_request().is_some() {
-                            error
-                        } else if matches!(error.cause(), FiError::FleetManager { .. }) {
-                            attribute(error)
-                        } else {
-                            error
-                        };
-                        log_fman_failure(&error, "pending_consensus");
+                        log_fman_failure(
+                            &recovery.snapshot.formation_id,
+                            &error,
+                            "pending_consensus",
+                        );
                         pending_error.get_or_insert(error);
                     }
                 }
@@ -4671,12 +4350,11 @@ where
     /// Collect one FMan attestation and endpoint proof per seat.
     async fn assemble_seat_bindings(
         &self,
-        sessions: &[SeatSession<F::Client>],
+        sessions: &[SeatSession<FmanClient<F::Client>>],
         recovery: &ActiveFormationRecovery,
         fi_id: FiId,
         run: DriverRun<'_>,
     ) -> FiResult<(String, Vec<FormationSeatBinding>)> {
-        let formation_id = &recovery.snapshot.formation_id;
         let mut pending = FuturesUnordered::new();
         for (position, session) in sessions.iter().enumerate() {
             let expected_guardian_fee_account = recovery.seats[position]
@@ -4687,7 +4365,7 @@ where
                         "accepted seat {position} has no persisted guardian-fee account"
                     ))
                 })?;
-            let target = FmanTarget::seat(formation_id, session);
+
             pending.push(async move {
                 let request = GetPeerAttestationRequest {
                     ts: Timestamp(now_secs()?),
@@ -4697,22 +4375,20 @@ where
                 let request = run
                     .construct("signing GetPeerAttestation request", || self.sign(&request))
                     .await?;
-                let response = run.call_fman(target, "fetching the FMan peer attestation", || {
-                        Ok(session.client.get_peer_attestation(request))
-                    })
-                    .await?
-                    .map_err(|error| target.remote("fetching the FMan peer attestation", error))?;
-                if response.fman_peer_attestation.attestation.guardian_fee_account
+                let response = session.client.get_peer_attestation(run, request).await?;
+                if response
+                    .fman_peer_attestation
+                    .attestation
+                    .guardian_fee_account
                     != expected_guardian_fee_account
                 {
-                    let error = FiError::InvalidFleetManagers(format!(
-                        "Fleet Manager {position} attested a guardian-fee account that differs from its signed seat acceptance"
-                    ));
-                    return Err(target.attribute(
-                        error,
-                        "fetching the FMan peer attestation",
-                        FmanRequestFailureClass::InvalidResponse,
-                    ));
+                    return Err(session
+                        .client
+                        .failure(
+                            FmanOperation::GetPeerAttestation,
+                            FmanCause::InvalidResponse,
+                        )
+                        .into());
                 }
                 Ok::<_, FiError>(FormationSeatBinding {
                     attestation: response.fman_peer_attestation,
@@ -4737,8 +4413,7 @@ where
 
     async fn submit_formation_meta_wave(
         &self,
-        formation_id: &FormationId,
-        sessions: &[SeatSession<F::Client>],
+        sessions: &[SeatSession<FmanClient<F::Client>>],
         fi_id: FiId,
         expected_base: MetaConsensusBase,
         seat_bindings: &[FormationSeatBinding],
@@ -4746,42 +4421,26 @@ where
         guardian_verification_fee_account: &GuardianFeeAccount,
         send_ppm: u64,
         run: DriverRun<'_>,
-    ) -> Vec<(
-        usize,
-        Result<ProposeFormationMetaResponse, MetaFieldSubmissionError>,
-    )> {
+    ) -> Vec<FiResult<ProposeFormationMetaResponse>> {
         let mut pending = FuturesUnordered::new();
-        for (position, session) in sessions.iter().enumerate() {
+        for session in sessions {
             pending.push(async move {
-                let result = async {
-                    let request = ProposeFormationMetaRequest {
-                        ts: Timestamp(now_secs().map_err(MetaFieldSubmissionError::Driver)?),
-                        fi_id,
-                        seat_id: session.seat_id.clone(),
-                        expected_base,
-                        seat_bindings: seat_bindings.to_vec(),
-                        fi_fee_account: fi_fee_account.clone(),
-                        guardian_verification_fee_account: guardian_verification_fee_account
-                            .clone(),
-                        send_ppm,
-                    };
-                    let request = run
-                        .construct("signing ProposeFormationMeta request", || {
-                            self.sign(&request)
-                        })
-                        .await
-                        .map_err(MetaFieldSubmissionError::Driver)?;
-                    run.call_fman(
-                        FmanTarget::seat(formation_id, session),
-                        "proposing formation metadata",
-                        || Ok(session.client.propose_formation_meta(request)),
-                    )
-                    .await
-                    .map_err(MetaFieldSubmissionError::Driver)?
-                    .map_err(MetaFieldSubmissionError::FleetManager)
-                }
-                .await;
-                (position, result)
+                let request = ProposeFormationMetaRequest {
+                    ts: Timestamp(now_secs()?),
+                    fi_id,
+                    seat_id: session.seat_id.clone(),
+                    expected_base,
+                    seat_bindings: seat_bindings.to_vec(),
+                    fi_fee_account: fi_fee_account.clone(),
+                    guardian_verification_fee_account: guardian_verification_fee_account.clone(),
+                    send_ppm,
+                };
+                let request = run
+                    .construct("signing ProposeFormationMeta request", || {
+                        self.sign(&request)
+                    })
+                    .await?;
+                session.client.propose_formation_meta(run, request).await
             });
         }
         let mut results = Vec::with_capacity(sessions.len());
@@ -4940,7 +4599,7 @@ where
             .await;
         match &first {
             Ok(Ok(_)) => return first,
-            Err(error) if !matches!(error.cause(), FiError::Timeout(_)) => return first,
+            Err(error) if !matches!(error, FiError::Timeout(_)) => return first,
             _ => {}
         }
 
@@ -4948,23 +4607,13 @@ where
         // Race the saved managers so one unavailable manager cannot hold up the rest.
         let fi_id = self.fi_id()?;
         let authority = self.post_formed_authority(fi_id).await?;
-        let formation_id = &authority.formation_id;
         let expected = invite_federation_id(saved)?;
         let mut pending = FuturesUnordered::new();
         for seat in &authority.seats {
             pending.push(async move {
-                let target = FmanTarget::new(
-                    formation_id,
-                    seat.locator.service_pubkey,
-                    seat.index,
-                    Some(&seat.seat_id),
-                );
-                let client = run
-                    .call_fman(target, "connecting for a recovery invite", || {
-                        Ok(self.inner.ports.fman_connector.connect(&seat.locator))
-                    })
-                    .await?
-                    .map_err(|error| target.remote("connecting for a recovery invite", error))?;
+                let client =
+                    FmanClient::connect(&self.inner.ports.fman_connector, &seat.locator, run)
+                        .await?;
                 let request = run
                     .construct("signing a recovery invite request", || {
                         self.sign(&GetInviteCodeRequest {
@@ -4974,13 +4623,7 @@ where
                         })
                     })
                     .await?;
-                let invite = run
-                    .call_fman(target, "fetching a recovery invite", || {
-                        Ok(client.get_invite_code(request))
-                    })
-                    .await?
-                    .map_err(|error| target.remote("fetching a recovery invite", error))?
-                    .invite_code;
+                let invite = client.get_invite_code(run, request).await?.invite_code;
                 if invite_federation_id(&invite)? != expected {
                     return Err(FiError::InvalidFleetManagers(
                         "recovery invite names another federation".to_owned(),
@@ -5006,8 +4649,7 @@ where
 
     async fn fetch_agreed_invite(
         &self,
-        formation_id: &FormationId,
-        sessions: &[SeatSession<F::Client>],
+        sessions: &[SeatSession<FmanClient<F::Client>>],
         fi_id: FiId,
         run: DriverRun<'_>,
     ) -> FiResult<InviteCode> {
@@ -5027,24 +4669,15 @@ where
                 let request = run
                     .construct("signing GetInviteCode request", || self.sign(&request))
                     .await?;
-                let invite = run
-                    .call_fman(
-                        FmanTarget::seat(formation_id, session),
-                        "fetching federation invite code",
-                        || Ok(session.client.get_invite_code(request)),
-                    )
+                let invite = session
+                    .client
+                    .get_invite_code(run, request)
                     .await?
-                    .map_err(|error| {
-                        FmanTarget::seat(formation_id, session)
-                            .remote("fetching federation invite code", error)
-                    })?
                     .invite_code;
-                let federation_id = invite_federation_id(&invite).map_err(|error| {
-                    FmanTarget::seat(formation_id, session).attribute(
-                        fman_error(position, error.to_string()),
-                        "fetching federation invite code",
-                        FmanRequestFailureClass::InvalidResponse,
-                    )
+                let federation_id = invite_federation_id(&invite).map_err(|_| {
+                    session
+                        .client
+                        .failure(FmanOperation::GetInviteCode, FmanCause::InvalidResponse)
                 })?;
                 Ok::<_, FiError>((position, invite, federation_id))
             });
@@ -5337,19 +4970,14 @@ fn validate_locators(intent: &FormationIntent, locators: &[Locator]) -> FiResult
     Ok(())
 }
 
-fn service_seat_phase(index: usize, status: &ServiceStatus) -> FiResult<SeatPhase> {
+fn service_seat_phase(status: &ServiceStatus) -> Result<SeatPhase, FmanCause> {
     match status {
         ServiceStatus::New => Ok(SeatPhase::Created),
         ServiceStatus::DkgInProcess => Ok(SeatPhase::DkgUnderway),
-        ServiceStatus::DataLoss => Err(FiError::FleetManager {
-            index: u16::try_from(index).expect("validated formation size fits u16"),
-            message: "guardian data loss; decommission and replace this seat".to_owned(),
-        }),
         ServiceStatus::Running => Ok(SeatPhase::Running),
-        ServiceStatus::Decommissioned => Err(FiError::FleetManager {
-            index: u16::try_from(index).expect("validated formation size fits u16"),
-            message: format!("seat entered terminal/non-running status {status}"),
-        }),
+        ServiceStatus::DataLoss | ServiceStatus::Decommissioned => {
+            Err(FmanCause::TerminalStatus(status.clone()))
+        }
     }
 }
 
@@ -5556,45 +5184,6 @@ fn fman_error(index: usize, message: impl Into<String>) -> FiError {
     FiError::FleetManager {
         index: u16::try_from(index).expect("validated formation size fits u16"),
         message: message.into(),
-    }
-}
-
-fn selected_availability_error(
-    policy: QuoteAttemptPolicy,
-    index: usize,
-    message: impl Into<String>,
-) -> FiError {
-    if policy.allows_selection_reauthorization() {
-        FiError::SelectionReauthorizationRequired(
-            SelectionReauthorizationReason::SelectedFmanUnavailable,
-        )
-    } else {
-        fman_error(index, message)
-    }
-}
-
-fn quote_attempt_error(
-    index: usize,
-    error: FleetManagerError,
-    policy: QuoteAttemptPolicy,
-) -> QuoteAttemptError {
-    match error {
-        error
-            if policy.allows_selection_reauthorization()
-                && matches!(
-                    error,
-                    FleetManagerError::CapacityExhausted
-                        | FleetManagerError::PlanNotOffered
-                        | FleetManagerError::PaymentFederationNotAccepted
-                        | FleetManagerError::UnsupportedVersion
-                        | FleetManagerError::UnsupportedFederationSize
-                ) =>
-        {
-            QuoteAttemptError::Other(FiError::SelectionReauthorizationRequired(
-                SelectionReauthorizationReason::SelectedFmanUnavailable,
-            ))
-        }
-        error => QuoteAttemptError::Other(fman_error(index, error.to_string())),
     }
 }
 
