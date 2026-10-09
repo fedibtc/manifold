@@ -47,142 +47,30 @@ impl<C: FleetManagerService> FmanClient<C> {
         }
     }
 
-    fn timeout(&self, operation: FmanOperation, error: FiError) -> FiError {
-        match error {
-            FiError::Timeout(_) => self.failure(operation, FmanCause::Timeout).into(),
-            error => error,
-        }
-    }
-
-    async fn request<T, Fut: Future<Output = FmResult<T>>>(
-        &self,
+    /// Construct the service future only after the driver's ownership fence.
+    pub(crate) async fn call<'s, T, E, Fut>(
+        &'s self,
         run: DriverRun<'_>,
         operation: FmanOperation,
-        make_future: impl FnOnce() -> Fut,
-    ) -> FiResult<T> {
-        run.call(operation.as_str(), || Ok(make_future()))
+        request: impl FnOnce(&'s C) -> Fut,
+    ) -> FiResult<T>
+    where
+        Fut: Future<Output = Result<T, E>> + 's,
+        E: Into<FmanCause>,
+    {
+        run.call(operation.as_str(), || Ok(request(&self.inner)))
             .await
-            .map_err(|error| self.timeout(operation, error))?
+            .map_err(|error| match error {
+                FiError::Timeout(_) => self.failure(operation, FmanCause::Timeout).into(),
+                error => error,
+            })?
             .map_err(|error| self.failure(operation, error.into()).into())
     }
+}
 
-    pub(crate) async fn get_availability<F: FleetManagerConnector<Client = C>>(
-        &self,
-        connector: &F,
-        run: DriverRun<'_>,
-        request: GetAvailabilityRequest,
-    ) -> FiResult<GetAvailabilityResponse> {
-        let operation = FmanOperation::GetAvailability;
-        run.call(operation.as_str(), || {
-            Ok(connector.get_availability(&self.inner, request))
-        })
-        .await
-        .map_err(|error| self.timeout(operation, error))?
-        .map_err(|_| self.failure(operation, FmanCause::Transport))?
-        .map_err(|error| self.failure(operation, error.into()).into())
-    }
-
-    pub(crate) async fn get_quote<F: FleetManagerConnector<Client = C>>(
-        &self,
-        connector: &F,
-        run: DriverRun<'_>,
-        request: GetQuoteRequest,
-    ) -> FiResult<SignedResponse<GetQuoteResponse>> {
-        let operation = FmanOperation::GetQuote;
-        run.call(operation.as_str(), || {
-            Ok(connector.get_quote(&self.inner, request))
-        })
-        .await
-        .map_err(|error| self.timeout(operation, error))?
-        .map_err(|_| self.failure(operation, FmanCause::Transport))?
-        .map_err(|error| self.failure(operation, error.into()).into())
-    }
-
-    pub(crate) async fn create_seat(
-        &self,
-        run: DriverRun<'_>,
-        request: SignedRequest<CreateSeatRequest>,
-    ) -> FiResult<SignedResponse<CreateSeatResponse>> {
-        self.request(run, FmanOperation::CreateSeat, || {
-            self.inner.create_seat(request)
-        })
-        .await
-    }
-
-    pub(crate) async fn get_dkg_code(
-        &self,
-        run: DriverRun<'_>,
-        request: SignedRequest<GetDkgCodeRequest>,
-    ) -> FiResult<GetDkgCodeResponse> {
-        self.request(run, FmanOperation::GetDkgCode, || {
-            self.inner.get_dkg_code(request)
-        })
-        .await
-    }
-
-    pub(crate) async fn start_dkg(
-        &self,
-        run: DriverRun<'_>,
-        request: SignedRequest<StartDkgRequest>,
-    ) -> FiResult<StartDkgResponse> {
-        self.request(run, FmanOperation::StartDkg, || {
-            self.inner.start_dkg(request)
-        })
-        .await
-    }
-
-    pub(crate) async fn restart_dkg(
-        &self,
-        run: DriverRun<'_>,
-        request: SignedRequest<RestartDkgRequest>,
-    ) -> FiResult<RestartDkgResponse> {
-        self.request(run, FmanOperation::RestartDkg, || {
-            self.inner.restart_dkg(request)
-        })
-        .await
-    }
-
-    pub(crate) async fn get_status(
-        &self,
-        run: DriverRun<'_>,
-        request: SignedRequest<GetStatusRequest>,
-    ) -> FiResult<GetStatusResponse> {
-        self.request(run, FmanOperation::GetStatus, || {
-            self.inner.get_status(request)
-        })
-        .await
-    }
-
-    pub(crate) async fn get_invite_code(
-        &self,
-        run: DriverRun<'_>,
-        request: SignedRequest<GetInviteCodeRequest>,
-    ) -> FiResult<GetInviteCodeResponse> {
-        self.request(run, FmanOperation::GetInviteCode, || {
-            self.inner.get_invite_code(request)
-        })
-        .await
-    }
-
-    pub(crate) async fn get_peer_attestation(
-        &self,
-        run: DriverRun<'_>,
-        request: SignedRequest<GetPeerAttestationRequest>,
-    ) -> FiResult<GetPeerAttestationResponse> {
-        self.request(run, FmanOperation::GetPeerAttestation, || {
-            self.inner.get_peer_attestation(request)
-        })
-        .await
-    }
-
-    pub(crate) async fn propose_formation_meta(
-        &self,
-        run: DriverRun<'_>,
-        request: SignedRequest<ProposeFormationMetaRequest>,
-    ) -> FiResult<ProposeFormationMetaResponse> {
-        self.request(run, FmanOperation::ProposeFormationMeta, || {
-            self.inner.propose_formation_meta(request)
-        })
-        .await
-    }
+/// Preserve the connector's distinction between transport and service refusals.
+pub(crate) fn fold_transport<T, E>(result: Result<FmResult<T>, E>) -> Result<T, FmanCause> {
+    result
+        .map_err(|_| FmanCause::Transport)?
+        .map_err(Into::into)
 }

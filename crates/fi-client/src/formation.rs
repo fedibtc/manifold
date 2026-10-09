@@ -1359,7 +1359,12 @@ where
                         fi_id,
                         seat_id: session.seat_id.clone(),
                     })?;
-                    let response = session.client.get_status(run, request).await?;
+                    let response = session
+                        .client
+                        .call(run, FmanOperation::GetStatus, |client| {
+                            client.get_status(request)
+                        })
+                        .await?;
                     if !matches!(
                         response.status,
                         ServiceStatus::New | ServiceStatus::DkgInProcess
@@ -1392,7 +1397,12 @@ where
                             seat_id: session.seat_id.clone(),
                             guardian_codes: codes.clone(),
                         })?;
-                        let response = session.client.restart_dkg(run, request).await?;
+                        let response = session
+                            .client
+                            .call(run, FmanOperation::RestartDkg, |client| {
+                                client.restart_dkg(request)
+                            })
+                            .await?;
                         Ok(response.status)
                     }
                     .await;
@@ -3198,7 +3208,7 @@ where
                 let request = run
                     .construct("signing StartDkg request", || self.sign(&request))
                     .await?;
-                match session.client.start_dkg(run, request).await {
+                match session.client.call(run, FmanOperation::StartDkg, |client| client.start_dkg(request)).await {
                     Ok(_) | Err(FiError::Fman(FmanFailure {
                         cause: FmanCause::WrongState(ServiceStatus::DkgInProcess | ServiceStatus::Running),
                         ..
@@ -3546,11 +3556,15 @@ where
         SignatureVerified<GetQuoteResponse>,
     )> {
         let availability = client
-            .get_availability(
-                &self.inner.ports.fman_connector,
-                run,
-                GetAvailabilityRequest,
-            )
+            .call(run, FmanOperation::GetAvailability, |client| async {
+                crate::fman::fold_transport(
+                    self.inner
+                        .ports
+                        .fman_connector
+                        .get_availability(client, GetAvailabilityRequest)
+                        .await,
+                )
+            })
             .await?;
         // One shared predicate with the selection walk's live probe
         // (`selection::match_requested_availability`), so a candidate the
@@ -3646,7 +3660,15 @@ where
         };
         let result = async {
             let signed_quote = client
-                .get_quote(&self.inner.ports.fman_connector, run, quote_request.clone())
+                .call(run, FmanOperation::GetQuote, |client| async {
+                    crate::fman::fold_transport(
+                        self.inner
+                            .ports
+                            .fman_connector
+                            .get_quote(client, quote_request.clone())
+                            .await,
+                    )
+                })
                 .await?;
             let quote = self
                 .verify_quote(index, &signed_quote, locator, intent, fi_id, expected_payer)
@@ -3810,7 +3832,9 @@ where
             .construct("signing CreateSeat request", || self.sign(&request))
             .await?;
         let response = client
-            .create_seat(run, request)
+            .call(run, FmanOperation::CreateSeat, |client| {
+                client.create_seat(request)
+            })
             .await?
             .verify(&locator.service_pubkey)
             .map_err(|_| client.failure(FmanOperation::CreateSeat, FmanCause::InvalidResponse))?;
@@ -3902,7 +3926,13 @@ where
             let request = run
                 .construct("signing GetDkgCode request", || self.sign(&request))
                 .await?;
-            match session.client.get_dkg_code(run, request).await {
+            match session
+                .client
+                .call(run, FmanOperation::GetDkgCode, |client| {
+                    client.get_dkg_code(request)
+                })
+                .await
+            {
                 Ok(response) => return Ok(response.guardian_code),
                 Err(
                     error @ FiError::Fman(FmanFailure {
@@ -3955,7 +3985,12 @@ where
                     let request = run
                         .construct("signing GetStatus request", || self.sign(&request))
                         .await?;
-                    let status = session.client.get_status(run, request).await?;
+                    let status = session
+                        .client
+                        .call(run, FmanOperation::GetStatus, |client| {
+                            client.get_status(request)
+                        })
+                        .await?;
                     Ok::<_, FiError>((position, status))
                 });
             }
@@ -4379,7 +4414,12 @@ where
                 let request = run
                     .construct("signing GetPeerAttestation request", || self.sign(&request))
                     .await?;
-                let response = session.client.get_peer_attestation(run, request).await?;
+                let response = session
+                    .client
+                    .call(run, FmanOperation::GetPeerAttestation, |client| {
+                        client.get_peer_attestation(request)
+                    })
+                    .await?;
                 if response
                     .fman_peer_attestation
                     .attestation
@@ -4444,7 +4484,12 @@ where
                         self.sign(&request)
                     })
                     .await?;
-                session.client.propose_formation_meta(run, request).await
+                session
+                    .client
+                    .call(run, FmanOperation::ProposeFormationMeta, |client| {
+                        client.propose_formation_meta(request)
+                    })
+                    .await
             });
         }
         let mut results = Vec::with_capacity(sessions.len());
@@ -4627,7 +4672,12 @@ where
                         })
                     })
                     .await?;
-                let invite = client.get_invite_code(run, request).await?.invite_code;
+                let invite = client
+                    .call(run, FmanOperation::GetInviteCode, |client| {
+                        client.get_invite_code(request)
+                    })
+                    .await?
+                    .invite_code;
                 if invite_federation_id(&invite)? != expected {
                     return Err(FiError::InvalidFleetManagers(
                         "recovery invite names another federation".to_owned(),
@@ -4675,7 +4725,9 @@ where
                     .await?;
                 let invite = session
                     .client
-                    .get_invite_code(run, request)
+                    .call(run, FmanOperation::GetInviteCode, |client| {
+                        client.get_invite_code(request)
+                    })
                     .await?
                     .invite_code;
                 let federation_id = invite_federation_id(&invite).map_err(|_| {
