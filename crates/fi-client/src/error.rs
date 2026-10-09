@@ -150,9 +150,57 @@ pub enum FiErrorCode {
     Timeout,
 }
 
+/// Public protocol identifiers for the Fleet Manager operation that failed.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FmanRequestContext {
+    pub formation_id: crate::FormationId,
+    pub fman: secp256k1::XOnlyPublicKey,
+    pub seat_index: u16,
+    pub seat_id: Option<crate::SeatId>,
+    pub operation: &'static str,
+    pub class: FmanRequestFailureClass,
+}
+
+/// Bounded request diagnostics, independent of the source error's retry policy.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FmanRequestFailureClass {
+    Timeout,
+    Remote,
+    InvalidResponse,
+    Refused,
+    Unavailable,
+    IncompatibleAvailability,
+    TerminalStatus,
+    NotRunning,
+    SeatUnavailable,
+}
+
+impl FmanRequestFailureClass {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Timeout => "timeout",
+            Self::Remote => "remote",
+            Self::InvalidResponse => "invalid_response",
+            Self::Refused => "refused",
+            Self::Unavailable => "unavailable",
+            Self::IncompatibleAvailability => "incompatible_availability",
+            Self::TerminalStatus => "terminal_status",
+            Self::NotRunning => "not_running",
+            Self::SeatUnavailable => "seat_unavailable",
+        }
+    }
+}
+
 /// Error returned by FI client operations.
 #[derive(Debug, thiserror::Error)]
 pub enum FiError {
+    /// Request attribution. The underlying cause retains its error category and policy.
+    #[error("{source} (FMan {} seat {} while {})", context.fman, context.seat_index, context.operation)]
+    FmanRequest {
+        context: Box<FmanRequestContext>,
+        #[source]
+        source: Box<FiError>,
+    },
     /// Consumer intent failed validation.
     #[error("invalid formation intent: {0}")]
     InvalidIntent(String),
@@ -302,10 +350,38 @@ pub enum FiError {
 }
 
 impl FiError {
+    /// The underlying error for callers that make policy decisions by variant.
+    pub fn cause(&self) -> &Self {
+        match self {
+            Self::FmanRequest { source, .. } => source.cause(),
+            error => error,
+        }
+    }
+
+    /// Preserve request attribution when formation policy replaces the cause.
+    pub(crate) fn map_cause(self, map: impl FnOnce(Self) -> Self) -> Self {
+        match self {
+            Self::FmanRequest { context, source } => Self::FmanRequest {
+                context,
+                source: Box::new(source.map_cause(map)),
+            },
+            error => map(error),
+        }
+    }
+
+    /// Request attribution, when this error came from a known Fleet Manager.
+    pub fn fman_request(&self) -> Option<&FmanRequestContext> {
+        match self {
+            Self::FmanRequest { context, .. } => Some(context),
+            _ => None,
+        }
+    }
+
     /// Return the stable error category used by progress surfaces.
     #[must_use]
     pub fn code(&self) -> FiErrorCode {
         match self {
+            Self::FmanRequest { source, .. } => source.code(),
             Self::InvalidIntent(_) => FiErrorCode::InvalidIntent,
             Self::InvalidOptions(_) => FiErrorCode::InvalidOptions,
             Self::Storage(_) => FiErrorCode::Storage,

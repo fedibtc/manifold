@@ -504,7 +504,10 @@ async fn replacement_preview_public_approval_seals_cap_and_expires_before_effect
         )
         .await
         .unwrap_err();
-    assert!(matches!(error, FiError::SeatRefused { .. }), "{error:?}");
+    assert!(
+        matches!(error.cause(), FiError::SeatRefused { .. }),
+        "{error:?}"
+    );
     let status = client.status();
     let initial_formation = formation(&status);
     let FormationActionRequired::ReplaceGuardians(requirements) = initial_formation
@@ -539,7 +542,7 @@ async fn replacement_preview_public_approval_seals_cap_and_expires_before_effect
         .approve(PAYMENT_AMOUNT_MSATS - 1)
         .unwrap_err();
     assert!(matches!(
-        error,
+        error.cause(),
         FiError::SelectionReauthorizationRequired(
             SelectionReauthorizationReason::AdvertisementEstimateExceedsLimit
         )
@@ -570,7 +573,7 @@ async fn replacement_preview_public_approval_seals_cap_and_expires_before_effect
         .await
         .unwrap_err();
     assert!(matches!(
-        error,
+        error.cause(),
         FiError::SelectionReauthorizationRequired(SelectionReauthorizationReason::PreviewExpired)
     ));
     let status_after_expiry = client.status();
