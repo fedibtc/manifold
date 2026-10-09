@@ -13657,6 +13657,13 @@ impl std::io::Write for FormationLogCapture {
 
 impl FormationLogCapture {
     fn subscriber(&self) -> impl tracing::Subscriber + Send + Sync + 'static {
+        // A callsite first registered by a parallel test without a scoped
+        // subscriber must not cache Interest::never for our capture.
+        static TRACING: std::sync::Once = std::sync::Once::new();
+        TRACING.call_once(|| {
+            tracing::subscriber::set_global_default(tracing_subscriber::registry())
+                .expect("test tracing registry is installed once");
+        });
         let capture = self.clone();
         tracing_subscriber::fmt()
             .without_time()
