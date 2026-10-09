@@ -15,6 +15,11 @@ own field order and enum spelling. Byte fields are CBOR byte strings, not
 integer arrays. SDK authority, issuance-request, and issuance-response documents
 travel as JSON strings rather than translated CBOR objects. Golden fixtures
 under `tests/golden` are byte-level interoperability evidence.
+The `info` JSON value uses native CBOR scalars, arrays, and maps, never
+serde_json's private number representation. Object keys are sorted by UTF-8
+lexicographic order at every depth, independent of Cargo feature unification.
+Integer values must fit `i64` or `u64`; decimal/exponent values use finite `f64`.
+The trust-score schema's level is an integer, not a string or private wrapper.
 
 A signer obtains a 32-byte opaque authenticated challenge valid for 60 seconds.
 Clients echo its bytes unchanged. The BIP-340 signature signs SHA-256 of the UTF-8 domain

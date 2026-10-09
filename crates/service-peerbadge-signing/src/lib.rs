@@ -7,6 +7,8 @@ use fedi_iroh_rpc::{RpcError, service};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+mod info_serde;
+
 pub const PEERBADGE_SIGNING_ALPN: &[u8] = b"fedi/peerbadge-signing/1";
 
 /// Digest signed directly with BIP-340 by the allowlisted signer.
@@ -50,6 +52,7 @@ pub struct OpenSessionRequest {
 pub struct OpenSessionResponse {
     /// Bearer secret: 32 random bytes encoded as lowercase hex.
     pub session_id: String,
+    #[serde(serialize_with = "info_serde::serialize")]
     pub info: serde_json::Value,
     /// IssuerAuthority JSON, exactly as published in kind 37703.
     pub issuer_authority: String,

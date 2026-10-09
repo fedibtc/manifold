@@ -8,6 +8,7 @@
 use std::fmt::{Debug, Write as _};
 use std::path::PathBuf;
 
+use ciborium::Value as CborValue;
 use fedi_decentralized_service_peerbadge_signing::{
     ChallengeRequest, ChallengeResponse, OpenSessionRequest, OpenSessionResponse,
     RedeemSessionRequest, RedeemSessionResponse, SessionState, SessionStatusRequest,
@@ -45,8 +46,9 @@ fn golden_bytes(name: &str, bytes: &[u8]) {
     assert_eq!(
         actual,
         expected,
-        "{} differs; regenerate with PEERBADGE_UPDATE_GOLDEN=1 and review the wire change",
-        path.display()
+        "{} differs\ncommitted hex: {actual}\nencoded hex: {expected}\n\
+         Diagnose the encoding difference before regenerating fixtures",
+        path.display(),
     );
 }
 
@@ -121,7 +123,9 @@ fn service_response_frames() {
         "response_open_session",
         Ok(OpenSessionResponse {
             session_id: "33".repeat(32),
-            info: serde_json::json!({"schema": "fedi-trust-score-v1.0", "trust_level": 9}),
+            // Reverse insertion order must still match the committed wire bytes.
+            info: serde_json::from_str(r#"{"trust_level":9,"schema":"fedi-trust-score-v1.0"}"#)
+                .unwrap(),
             issuer_authority: r#"{"fixture":"issuer-authority"}"#.to_owned(),
             expires_at: EXPIRES_AT + 540,
         }),
@@ -138,6 +142,108 @@ fn service_response_frames() {
         ("response_session_status_expired", SessionState::Expired),
     ] {
         response(name, Ok(SessionStatusResponse { state }));
+    }
+}
+
+fn info_response(info: serde_json::Value) -> OpenSessionResponse {
+    OpenSessionResponse {
+        session_id: "33".repeat(32),
+        info,
+        issuer_authority: r#"{"fixture":"issuer-authority"}"#.to_owned(),
+        expires_at: EXPIRES_AT + 540,
+    }
+}
+
+fn assert_info_wire(info: serde_json::Value, expected: CborValue) -> Vec<u8> {
+    let response = info_response(info);
+    let bytes = encode(&response);
+    let decoded: OpenSessionResponse = decode(&bytes);
+    assert_eq!(decoded, response);
+    assert_eq!(encode(&decoded), bytes);
+    let CborValue::Map(fields) = decode(&bytes) else {
+        panic!("response must be a CBOR map");
+    };
+    let (_, actual) = fields
+        .into_iter()
+        .find(|(key, _)| key == &CborValue::Text("info".to_owned()))
+        .expect("response info field");
+    assert_eq!(actual, expected);
+    bytes
+}
+
+#[test]
+fn info_uses_native_cbor_values() {
+    for (json, expected) in [
+        ("null", CborValue::Null),
+        ("true", CborValue::Bool(true)),
+        ("false", CborValue::Bool(false)),
+        (r#""text""#, CborValue::Text("text".to_owned())),
+        ("0", CborValue::Integer(0.into())),
+        ("9", CborValue::Integer(9.into())),
+        ("-1", CborValue::Integer((-1).into())),
+        ("-9223372036854775808", CborValue::Integer(i64::MIN.into())),
+        ("9223372036854775807", CborValue::Integer(i64::MAX.into())),
+        ("18446744073709551615", CborValue::Integer(u64::MAX.into())),
+        ("1.5", CborValue::Float(1.5)),
+        ("[]", CborValue::Array(vec![])),
+        ("{}", CborValue::Map(vec![])),
+        (
+            "[9,-1,1.5,true,null]",
+            CborValue::Array(vec![
+                CborValue::Integer(9.into()),
+                CborValue::Integer((-1).into()),
+                CborValue::Float(1.5),
+                CborValue::Bool(true),
+                CborValue::Null,
+            ]),
+        ),
+    ] {
+        assert_info_wire(serde_json::from_str(json).unwrap(), expected);
+    }
+}
+
+#[test]
+fn info_sorts_nested_object_keys_independent_of_insertion_order() {
+    let nested = CborValue::Map(vec![
+        (
+            CborValue::Text("aa".to_owned()),
+            CborValue::Integer(1.into()),
+        ),
+        (
+            CborValue::Text("b".to_owned()),
+            CborValue::Integer(2.into()),
+        ),
+    ]);
+    let expected = CborValue::Map(vec![
+        (CborValue::Text("aa".to_owned()), nested.clone()),
+        (
+            CborValue::Text("b".to_owned()),
+            CborValue::Array(vec![nested]),
+        ),
+    ]);
+    // "aa" precedes "b" lexically, not by encoded CBOR key length.
+    let reversed = serde_json::from_str(r#"{"b":[{"b":2,"aa":1}],"aa":{"b":2,"aa":1}}"#).unwrap();
+    let sorted = serde_json::from_str(r#"{"aa":{"aa":1,"b":2},"b":[{"aa":1,"b":2}]}"#).unwrap();
+    assert_eq!(
+        assert_info_wire(reversed, expected.clone()),
+        assert_info_wire(sorted, expected),
+    );
+}
+
+#[test]
+fn info_rejects_integers_outside_native_range_without_rounding() {
+    // These values only exist when arbitrary_precision is feature-unified in.
+    for number in [
+        serde_json::Number::from_i128(i128::from(i64::MIN) - 1),
+        serde_json::Number::from_u128(u128::from(u64::MAX) + 1),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        let response = info_response(serde_json::json!({"nested": [number]}));
+        let error = ciborium::into_writer(&response, Vec::new())
+            .expect_err("out-of-range integers must not silently become floats");
+        assert!(error.to_string().contains("unsupported info number"));
     }
 }
 
