@@ -3,17 +3,18 @@
 use std::{sync::Arc, time::Duration};
 
 use bitcoin_hashes::sha256;
+use fedi_decentralized_manifold_environment::ManifoldEnvironmentProfile;
 use fedi_decentralized_nostr_clients::NostrRelayClient;
 use fedimint_core::runtime::{Instant, sleep};
 use fedimint_core::task::TaskGroup;
 use fedimint_derive_secret::DerivableSecret;
 use nostr_sdk::{Event, EventBuilder, Filter, Kind, RelayUrl, Tag, Timestamp};
-use tokio::sync::watch;
+use tokio::sync::{OwnedMutexGuard, watch};
 
 use crate::backup::{EncryptedFiBackup, FI_BACKUP_D_TAG, FI_BACKUP_EVENT_KIND, FiBackupKeys};
 use crate::{
     FiError, FiId, FiResult, FiStatus,
-    db::{BACKUP_REFRESH_INTERVAL_SECS, BackupRelayConfirmation, FiStore},
+    db::{BACKUP_REFRESH_INTERVAL_SECS, BackupRelayConfirmation, FiStore, RecoveryCompletedKey},
 };
 
 const SCAN_INTERVAL: Duration = Duration::from_secs(30);
@@ -175,12 +176,111 @@ async fn deliver(relay: &RelayUrl, desired: &Desired) -> Result<(), FiError> {
     Ok(())
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum BackupRestoreOutcome {
+    Restored,
+    NoBackup,
+}
+
+pub(crate) struct RecoveryWorker {
+    pub(crate) store: FiStore,
+    pub(crate) root: DerivableSecret,
+    pub(crate) fi_id: FiId,
+    pub(crate) profile: ManifoldEnvironmentProfile,
+    pub(crate) progress: watch::Sender<FiStatus>,
+}
+
+pub(crate) fn spawn_recovery(
+    task_group: &TaskGroup,
+    worker: RecoveryWorker,
+    guard: OwnedMutexGuard<()>,
+) {
+    let RecoveryWorker {
+        store,
+        root,
+        fi_id,
+        profile,
+        progress,
+    } = worker;
+    let key = RecoveryCompletedKey::new(profile.environment());
+    // Capture independent state rather than FiClient: the task group is owned
+    // by FiClient, so capturing it here would keep the client alive forever.
+    task_group.spawn_cancellable("FI backup recovery", async move {
+        let guard = guard;
+        let mut delay = Duration::ZERO;
+        loop {
+            let result = restore_from_relays(
+                &store,
+                &root,
+                fi_id,
+                profile.nostr_relays().as_urls(),
+                profile.fi_backup_empty_read_quorum(),
+                &key,
+            )
+            .await;
+            let result = match result {
+                Ok(BackupRestoreOutcome::Restored) => store.load_status(fi_id).await.map(Some),
+                Ok(BackupRestoreOutcome::NoBackup) => Ok(None),
+                Err(error) => Err(error),
+            };
+            match result {
+                Ok(status) => {
+                    // The first ready status must be published only after the
+                    // mutation guard is released.
+                    drop(guard);
+                    progress.send_replace(status.unwrap_or(FiStatus::Idle));
+                    break;
+                }
+                Err(error) => {
+                    tracing::warn!(error_code = ?error.code(), "FI backup lookup will retry");
+                    progress.send_replace(FiStatus::Recovery {
+                        last_error: Some(error.code()),
+                    });
+                    delay = if delay.is_zero() {
+                        Duration::from_secs(1)
+                    } else {
+                        delay.saturating_mul(2).min(Duration::from_secs(5 * 60))
+                    };
+                    sleep(delay).await;
+                    progress.send_replace(FiStatus::Recovery { last_error: None });
+                }
+            }
+        }
+    });
+}
+
+// Empty is admitted only after a majority completed. The remaining relays
+// are still queried until their deadlines to find a possible backup.
+fn no_backup_or_unavailable(
+    successful_reads: usize,
+    required_reads: usize,
+) -> FiResult<BackupRestoreOutcome> {
+    if required_reads > 0 && successful_reads >= required_reads {
+        Ok(BackupRestoreOutcome::NoBackup)
+    } else {
+        Err(FiError::Registry(
+            "FI backup relay lookup incomplete".to_owned(),
+        ))
+    }
+}
+
 pub(crate) async fn restore_from_relays(
     store: &FiStore,
     root: &DerivableSecret,
     fi_id: FiId,
     relays: &[RelayUrl],
-) -> FiResult<FiStatus> {
+    required_reads: usize,
+    recovery: &RecoveryCompletedKey,
+) -> FiResult<BackupRestoreOutcome> {
+    if store.recovery_completed(recovery).await {
+        return Ok(
+            if matches!(store.load_status(fi_id).await?, FiStatus::Restored(_)) {
+                BackupRestoreOutcome::Restored
+            } else {
+                BackupRestoreOutcome::NoBackup
+            },
+        );
+    }
     let keys = FiBackupKeys::derive(root);
     let queries = relays.iter().cloned().map(|relay| {
         let author = keys.public_key();
@@ -202,11 +302,13 @@ pub(crate) async fn restore_from_relays(
         }
     });
     let mut best = None;
+    let mut successful_reads = 0;
     for events in futures::future::join_all(queries)
         .await
         .into_iter()
         .flatten()
     {
+        successful_reads += 1;
         for event in events {
             if event.pubkey != keys.public_key() || event.verify().is_err() {
                 continue;
@@ -227,10 +329,15 @@ pub(crate) async fn restore_from_relays(
             }
         }
     }
-    let payload = best.ok_or_else(|| {
-        FiError::Storage("no authenticated FI backup found on configured relays".to_owned())
-    })?;
-    store.restore_backup_payload(fi_id, payload).await
+    let Some(payload) = best else {
+        let outcome = no_backup_or_unavailable(successful_reads, required_reads)?;
+        store.complete_empty_recovery(recovery).await?;
+        return Ok(outcome);
+    };
+    store
+        .restore_backup_payload_with_completion(fi_id, payload, Some(recovery))
+        .await?;
+    Ok(BackupRestoreOutcome::Restored)
 }
 
 #[cfg(test)]
@@ -238,6 +345,24 @@ mod tests {
     use bitcoin_hashes::Hash as _;
 
     use super::*;
+
+    #[test]
+    fn empty_restore_requires_a_complete_read_quorum() {
+        assert_eq!(
+            no_backup_or_unavailable(2, 2).unwrap(),
+            BackupRestoreOutcome::NoBackup
+        );
+        assert_eq!(
+            no_backup_or_unavailable(3, 2).unwrap(),
+            BackupRestoreOutcome::NoBackup
+        );
+        for (completed, required) in [(0, 1), (1, 2), (0, 2)] {
+            assert!(matches!(
+                no_backup_or_unavailable(completed, required),
+                Err(FiError::Registry(_))
+            ));
+        }
+    }
 
     #[test]
     fn backup_confirmation_expires_after_refresh_interval() {
