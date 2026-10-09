@@ -195,10 +195,13 @@ mod tests {
     }
 
     #[test]
-    fn production_accepts_generated_keys_but_rejects_fixture_identities_with_new_issuance_keys() {
+    fn production_accepts_distinct_identity_but_rejects_fixtures_with_other_issuance_keys() {
         let production = ManifoldEnvironment::Production.profile().unwrap();
-        let context = IssuerContext::generate().unwrap();
-        let mut secret = context.export_secret_key().unwrap();
+        let staging = ManifoldEnvironment::Staging.profile().unwrap();
+        // Exercise identity policy without variable-cost RSA prime generation.
+        let mut secret: IssuerSecretKeys =
+            serde_json::from_str(staging.test_issuer_secret_keys().unwrap()).unwrap();
+        secret.issuer_id_secret_key = Keys::generate().secret_key().to_secret_hex();
         let file = private_key_file(&serde_json::to_string(&secret).unwrap());
         let material = IssuerMaterial::load(&production, Some(file.path())).unwrap();
         assert_eq!(
@@ -217,13 +220,22 @@ mod tests {
                 .all(|location| location.protocol == NOSTR_REVOCATION_LOCATION_PROTOCOL)
         );
 
-        for environment in [
-            ManifoldEnvironment::Development,
-            ManifoldEnvironment::Staging,
+        for (environment, issuance_environment) in [
+            (
+                ManifoldEnvironment::Development,
+                ManifoldEnvironment::Staging,
+            ),
+            (
+                ManifoldEnvironment::Staging,
+                ManifoldEnvironment::Development,
+            ),
         ] {
             let profile = environment.profile().unwrap();
             let fixture: IssuerSecretKeys =
                 serde_json::from_str(profile.test_issuer_secret_keys().unwrap()).unwrap();
+            let issuance_profile = issuance_environment.profile().unwrap();
+            let mut secret: IssuerSecretKeys =
+                serde_json::from_str(issuance_profile.test_issuer_secret_keys().unwrap()).unwrap();
             secret.issuer_id_secret_key = fixture.issuer_id_secret_key;
             let file = private_key_file(&serde_json::to_string(&secret).unwrap());
             let error = IssuerMaterial::load(&production, Some(file.path()))
