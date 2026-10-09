@@ -51,8 +51,8 @@ pub enum ServiceStatus {
     #[strum(serialize = "running")]
     Running,
 
-    /// Seat was decommissioned by the operator (an `InfiniteBestEffort` seat
-    /// never expires, so only the operator ends it).
+    /// Seat was decommissioned by the operator or owner.
+    /// An `InfiniteBestEffort` seat never expires.
     #[strum(serialize = "decommissioned")]
     Decommissioned,
 }
