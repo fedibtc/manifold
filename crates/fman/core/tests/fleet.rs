@@ -845,6 +845,75 @@ async fn advertisement_eligibility_changes_wake_publication_without_waiting_for_
     fleet.shutdown().await;
 }
 
+/// Records the fields of every `seat capacity` event.
+#[derive(Clone, Default)]
+struct SeatCapacityEvents(Arc<std::sync::Mutex<Vec<std::collections::BTreeMap<String, String>>>>);
+
+impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for SeatCapacityEvents {
+    fn on_event(&self, event: &tracing::Event<'_>, _: tracing_subscriber::layer::Context<'_, S>) {
+        struct Fields(std::collections::BTreeMap<String, String>);
+        impl tracing::field::Visit for Fields {
+            fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+                self.0.insert(field.name().to_owned(), format!("{value:?}"));
+            }
+        }
+        let mut fields = Fields(Default::default());
+        event.record(&mut fields);
+        if fields.0.get("message").map(String::as_str) == Some("seat capacity") {
+            self.0.lock().unwrap().push(fields.0);
+        }
+    }
+}
+
+/// Every advertisement cycle shares the seat capacity, also when it
+/// publishes nothing.
+#[tokio::test]
+async fn advertisement_cycle_shares_seat_capacity() {
+    use tracing_subscriber::layer::SubscriberExt as _;
+
+    let events = SeatCapacityEvents::default();
+    let _guard =
+        tracing::subscriber::set_default(tracing_subscriber::registry().with(events.clone()));
+    let temp = TempDir::new().unwrap();
+    let fleet = Arc::new(
+        open_fleet(config(&temp, 3, 31_660).await, Arc::new(NoWallet))
+            .await
+            .unwrap(),
+    );
+    fleet.set_seat_readiness(readiness(true)).await.unwrap();
+    fleet.set_offered_price(Some(Msats(0))).await.unwrap();
+    let host = FleetNostrHost::new(
+        fleet.clone(),
+        "endpoint".to_owned(),
+        "f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f9"
+            .parse()
+            .unwrap(),
+    );
+
+    create_free_seat(&fleet, 1).await;
+    assert!(host.advertisement().await.is_some());
+    fleet.set_max_seats(1).await.unwrap();
+    assert!(host.advertisement().await.is_none());
+
+    let shared = |max: &str, available: &str, accepting: &str| {
+        std::collections::BTreeMap::from(
+            [
+                ("message", "seat capacity"),
+                ("safe_to_share", "true"),
+                ("max_seats", max),
+                ("available_seats", available),
+                ("accepting_seats", accepting),
+            ]
+            .map(|(name, value)| (name.to_owned(), value.to_owned())),
+        )
+    };
+    assert_eq!(
+        *events.0.lock().unwrap(),
+        [shared("3", "2", "true"), shared("1", "0", "false")]
+    );
+    fleet.shutdown().await;
+}
+
 /// A readiness report whose Bitcoin check passes or fails.
 fn readiness(ready: bool) -> ReadinessReport {
     ReadinessReport {

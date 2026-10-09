@@ -113,9 +113,9 @@ it('should pin the safety line and say when there is no Fedi support to reach', 
   const adminCall = renderPage(chat({ available: false }));
 
   expect(
-    await screen.findByText("Chat with Fedi support isn't available on this host yet.")
+    await screen.findByText("Chat with guardian support isn't available on this host yet.")
   ).toBeInTheDocument();
   expect(screen.getByText(/never ask for your recovery phrase/)).toBeInTheDocument();
-  expect(screen.queryByLabelText('Message to Fedi support')).not.toBeInTheDocument();
+  expect(screen.queryByLabelText('Message to guardian support')).not.toBeInTheDocument();
   expect(adminCall).toHaveBeenCalledTimes(1);
 });

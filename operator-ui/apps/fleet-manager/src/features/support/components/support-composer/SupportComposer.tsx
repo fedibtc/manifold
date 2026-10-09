@@ -49,7 +49,7 @@ export const SupportComposer = () => {
       <div className={styles.row}>
         <textarea
           className={styles.textarea}
-          aria-label="Message to Fedi support"
+          aria-label="Message to guardian support"
           rows={1}
           placeholder="Write a message…"
           value={body}

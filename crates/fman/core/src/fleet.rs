@@ -172,6 +172,8 @@ pub struct PaymentFederationStatus {
 /// publish or skip an advertisement. The seat count remains operator-private.
 pub(crate) struct AvailabilitySnapshot {
     pub(crate) accepting_seats: bool,
+    pub(crate) max_seats: u32,
+    pub(crate) available_seats: u32,
     pub(crate) plans: Vec<Plan>,
 }
 
@@ -203,6 +205,15 @@ impl FleetNostrHost {
     /// needs, so no runtime assembles one from reads that could disagree.
     pub async fn advertisement(&self) -> Option<crate::directory::AdvertisementSnapshot> {
         let snapshot = self.fleet.availability_snapshot().await;
+        // Each advertisement cycle reports capacity, including cycles that
+        // publish nothing, so telemetry can count free seats across hosts.
+        tracing::info!(
+            safe_to_share = true,
+            max_seats = snapshot.max_seats,
+            available_seats = snapshot.available_seats,
+            accepting_seats = snapshot.accepting_seats,
+            "seat capacity"
+        );
         snapshot
             .accepting_seats
             .then_some(crate::directory::AdvertisementSnapshot {
@@ -766,6 +777,8 @@ impl Fleet {
             accepting_seats: snapshot.slots > 0
                 && settings.price.is_some()
                 && snapshot.ready_for_new_seats,
+            max_seats: snapshot.max_seats,
+            available_seats: snapshot.slots,
             plans: settings.plans(),
         }
     }

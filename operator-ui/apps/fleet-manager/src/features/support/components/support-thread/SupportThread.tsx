@@ -1,6 +1,5 @@
 import type { SupportMessage } from '@operator-ui/types';
 import { useEffect, useRef } from 'react';
-import { FediAvatar } from '@/features/support/components/fedi-avatar/FediAvatar';
 import {
   formatSupportDay,
   formatSupportTime,
@@ -29,7 +28,7 @@ export const SupportThread = ({ messages }: SupportThreadProps) => {
   }, [firstUnread]);
 
   if (messages.length === 0) {
-    return <p className={styles.empty}>No messages yet. Write to Fedi below.</p>;
+    return <p className={styles.empty}>No messages yet. Write to guardian support below.</p>;
   }
 
   return (
@@ -49,11 +48,11 @@ export const SupportThread = ({ messages }: SupportThreadProps) => {
               {newDay && <p className={styles.day}>{formatSupportDay(message.created_at)}</p>}
 
               <div className={styles.row}>
-                {fromFedi && <FediAvatar />}
-
                 <div className={styles.bubble}>
                   <p className={styles.body}>
-                    <span className={styles.srOnly}>{fromFedi ? 'Fedi support: ' : 'You: '}</span>
+                    <span className={styles.srOnly}>
+                      {fromFedi ? 'Guardian support: ' : 'You: '}
+                    </span>
                     {message.body}
                   </p>
 

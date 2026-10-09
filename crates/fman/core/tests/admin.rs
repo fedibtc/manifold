@@ -380,7 +380,10 @@ async fn admin_socket_round_trips_operator_verbs() {
             .public_key()
             .to_string()
     );
-    assert_eq!(onboarding["fman_version"]["current"], "0.1.0");
+    assert_eq!(
+        onboarding["fman_version"]["current"],
+        env!("CARGO_PKG_VERSION")
+    );
     assert_eq!(
         onboarding["fman_version"]["latest"],
         serde_json::Value::Null
