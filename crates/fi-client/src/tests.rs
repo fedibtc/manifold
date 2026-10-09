@@ -736,6 +736,7 @@ struct FmanConfig {
     hang_availability: bool,
     create_behavior: CreateBehavior,
     reject_quote: bool,
+    invalid_quote_signature: bool,
     capacity_exhausted_quote: bool,
 }
 
@@ -749,6 +750,7 @@ impl FmanConfig {
             hang_availability: false,
             create_behavior: CreateBehavior::Accept,
             reject_quote: false,
+            invalid_quote_signature: false,
             capacity_exhausted_quote: false,
         }
     }
@@ -1126,6 +1128,11 @@ impl FleetManagerService for TestFman {
                 }),
             )
         };
+        let signing_key = if self.config.invalid_quote_signature {
+            manager_key(30)
+        } else {
+            self.manager_key
+        };
         let signed_quote = SignedResponse::create(
             &GetQuoteResponse {
                 terms: QuoteTerms {
@@ -1136,10 +1143,10 @@ impl FleetManagerService for TestFman {
                     payment,
                 },
             },
-            &self.manager_key,
+            &signing_key,
         )?;
         let quote_id = signed_quote
-            .verify(&self.manager_key.x_only_public_key().0)?
+            .verify(&signing_key.x_only_public_key().0)?
             .quote_id();
         self.state
             .quote_records
@@ -14727,4 +14734,36 @@ async fn fman_connect_lease_loss_is_busy_not_remote_failure() {
     };
     let (result, _replacement) = tokio::join!(call, takeover);
     assert!(matches!(result, Err(FiError::Busy)));
+}
+
+#[tokio::test]
+async fn malformed_selected_quote_returns_to_selection_with_blame() {
+    let (payments, payment_state) = TestPayments::new();
+    let state = Arc::new(FmanState::default());
+    let client = open_client(
+        MemDatabase::new().into_database(),
+        payments,
+        state.clone(),
+        FmanConfig {
+            invalid_quote_signature: true,
+            ..FmanConfig::paid()
+        },
+    )
+    .await;
+    let error = client
+        .pay_and_create(
+            intent(),
+            selection_approval(1_000),
+            payment_federation_id(),
+            options(),
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(error, FiError::SelectionReauthorizationRequired {
+        reason: SelectionReauthorizationReason::SelectedFmanUnavailable,
+        failure: Some(FmanFailure { fman, operation: FmanOperation::GetQuote, cause: FmanCause::InvalidResponse }),
+    } if fman == manager_key(0).x_only_public_key().0));
+    assert_eq!(client.status(), FiStatus::Idle);
+    assert_eq!(payment_state.create_calls.load(Ordering::SeqCst), 0);
+    assert_eq!(state.create_calls.load(Ordering::SeqCst), 0);
 }

@@ -3649,37 +3649,41 @@ where
             payment_federation_id,
             refund_issuance,
         };
-        let signed_quote = client
-            .get_quote(&self.inner.ports.fman_connector, run, quote_request.clone())
-            .await
-            .map_err(|error| match error {
-                FiError::Fman(failure)
-                    if policy.allows_selection_reauthorization()
-                        && matches!(
-                            failure.cause,
-                            FmanCause::CapacityExhausted
-                                | FmanCause::PlanNotOffered
-                                | FmanCause::PaymentFederationNotAccepted
-                                | FmanCause::UnsupportedVersion
-                                | FmanCause::UnsupportedFederationSize
-                        ) =>
-                {
-                    FiError::SelectionReauthorizationRequired {
-                        reason: SelectionReauthorizationReason::SelectedFmanUnavailable,
-                        failure: Some(failure),
-                    }
-                }
-                error => error,
-            })?;
-        let quote = self
-            .verify_quote(index, &signed_quote, locator, intent, fi_id, expected_payer)
-            .map_err(|_| client.failure(FmanOperation::GetQuote, FmanCause::InvalidResponse))?;
-        if quote.terms.request != quote_request {
-            return Err(client
-                .failure(FmanOperation::GetQuote, FmanCause::InvalidResponse)
-                .into());
+        let result = async {
+            let signed_quote = client
+                .get_quote(&self.inner.ports.fman_connector, run, quote_request.clone())
+                .await?;
+            let quote = self
+                .verify_quote(index, &signed_quote, locator, intent, fi_id, expected_payer)
+                .map_err(|_| client.failure(FmanOperation::GetQuote, FmanCause::InvalidResponse))?;
+            if quote.terms.request != quote_request {
+                return Err(client
+                    .failure(FmanOperation::GetQuote, FmanCause::InvalidResponse)
+                    .into());
+            }
+            Ok((signed_quote, quote))
         }
-        Ok((signed_quote, quote))
+        .await;
+        result.map_err(|error| match error {
+            FiError::Fman(failure)
+                if policy.allows_selection_reauthorization()
+                    && matches!(
+                        failure.cause,
+                        FmanCause::CapacityExhausted
+                            | FmanCause::PlanNotOffered
+                            | FmanCause::PaymentFederationNotAccepted
+                            | FmanCause::UnsupportedVersion
+                            | FmanCause::UnsupportedFederationSize
+                            | FmanCause::InvalidResponse
+                    ) =>
+            {
+                FiError::SelectionReauthorizationRequired {
+                    reason: SelectionReauthorizationReason::SelectedFmanUnavailable,
+                    failure: Some(failure),
+                }
+            }
+            error => error,
+        })
     }
 
     fn verify_quote(
