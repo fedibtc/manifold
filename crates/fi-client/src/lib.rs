@@ -8,6 +8,7 @@ mod db;
 mod decommission;
 mod discovery;
 mod error;
+mod fman;
 mod formation;
 mod guardian_fee_ppm;
 mod liquidity;
@@ -40,7 +41,7 @@ pub use discovery::{
 pub use discovery::{InsecureUntrustedPinnedFman, InsecureUntrustedPinnedFmanDiscovery};
 pub use error::{
     AbandonUnavailableReason, Capability, FailureDisposition, FiError, FiErrorCode, FiResult,
-    FmanRequestContext, FmanRequestFailureClass, FormationFailure, SelectionReauthorizationReason,
+    FmanCause, FmanFailure, FmanOperation, FormationFailure, SelectionReauthorizationReason,
 };
 pub use fedi_decentralized_nostr::fman::{ApiEndpoint, Availability};
 pub use fedi_decentralized_service_fleet_manager::{

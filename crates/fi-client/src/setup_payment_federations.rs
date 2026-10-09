@@ -143,9 +143,10 @@ where
     ) -> FiResult<FederationId> {
         let (policy_ids, payable) = self.payable_setup_payment_federations(run).await?;
         if !policy_ids.contains(requested) || !payable.contains(requested) {
-            return Err(FiError::SelectionReauthorizationRequired(
-                crate::SelectionReauthorizationReason::SelectedPayerUnavailable,
-            ));
+            return Err(FiError::SelectionReauthorizationRequired {
+                reason: crate::SelectionReauthorizationReason::SelectedPayerUnavailable,
+                failure: None,
+            });
         }
         Ok(requested.clone())
     }
