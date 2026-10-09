@@ -316,6 +316,20 @@ where
         })
     }
 
+    /// Cancel and join the background backup workers shared by all clones.
+    ///
+    /// Consumers must finish foreground operations and await this before
+    /// shutting down their async runtime. Dropping the last client only signals
+    /// cancellation; it cannot wait for workers that are still being polled.
+    /// This does not wait for relay publication or discard pending durable backups.
+    pub async fn shutdown(&self) -> anyhow::Result<()> {
+        self.inner
+            .backup_tasks
+            .clone()
+            .shutdown_join_all(None)
+            .await
+    }
+
     /// Subscribe to the latest FI state.
     #[must_use]
     pub fn observe(&self) -> watch::Receiver<FiStatus> {
