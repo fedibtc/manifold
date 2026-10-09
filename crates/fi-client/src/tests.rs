@@ -796,6 +796,7 @@ struct FmanState {
     create_calls: AtomicUsize,
     status_calls: AtomicUsize,
     dkg_code_calls: AtomicUsize,
+    unavailable_dkg_code_indices: Mutex<HashSet<usize>>,
     restart_calls: AtomicUsize,
     report_dkg_already_started: AtomicBool,
     start_callbacks: Mutex<Vec<Option<DkgCompletionCallback>>>,
@@ -1268,6 +1269,15 @@ impl FleetManagerService for TestFman {
         _request: SignedRequest<GetDkgCodeRequest>,
     ) -> FmResult<GetDkgCodeResponse> {
         self.state.dkg_code_calls.fetch_add(1, Ordering::SeqCst);
+        if self
+            .state
+            .unavailable_dkg_code_indices
+            .lock()
+            .expect("test lock")
+            .contains(&self.index)
+        {
+            return Err(FleetManagerError::SeatUnavailable);
+        }
         Ok(GetDkgCodeResponse {
             guardian_code: GuardianCode(format!("guardiancode{}", self.index)),
         })
@@ -4558,7 +4568,7 @@ async fn daemon_rejection_of_selected_common_set_member_is_quote_failure() {
         .create_with_pinned_fmans(intent(), locators(), options())
         .await
         .expect_err("daemon-local policy rejection is actionable quote failure");
-    assert!(matches!(error, FiError::FleetManager { .. }));
+    assert!(matches!(error.cause(), FiError::FleetManager { .. }));
     assert_eq!(
         state.quote_calls.load(Ordering::SeqCst),
         usize::from(MIN_FEDERATION_SIZE)
@@ -6489,7 +6499,9 @@ async fn a_closed_fman_stops_before_quote_or_value_moving_payment_work() {
     assert!(matches!(
         client
             .create_with_pinned_fmans(intent(), locators(), options())
-            .await,
+            .await
+            .as_ref()
+            .map_err(FiError::cause),
         Err(FiError::FleetManager { .. })
     ));
     assert_eq!(
@@ -6561,7 +6573,9 @@ async fn external_capability_calls_obey_request_timeout() {
     assert!(matches!(
         client
             .create_with_pinned_fmans(intent(), locators(), timeout_options)
-            .await,
+            .await
+            .as_ref()
+            .map_err(FiError::cause),
         Err(FiError::Timeout(_))
     ));
     let status = client.status();
@@ -6750,7 +6764,10 @@ async fn slow_refund_settlement_finishes_before_quote_replacement() {
         )
         .await
         .unwrap_err();
-    assert!(matches!(error, FiError::SeatRefused { .. }), "{error:?}");
+    assert!(
+        matches!(error.cause(), FiError::SeatRefused { .. }),
+        "{error:?}"
+    );
     let refused_quote = fman_state.refused_quote.lock().expect("test lock").unwrap();
     assert_eq!(payment_state.refund_calls.load(Ordering::SeqCst), 1);
     assert_eq!(
@@ -6818,7 +6835,7 @@ async fn repeated_refund_settlement_replays_exact_context_before_quote_replaceme
     let reopened = open_client(database, payments, fman_state.clone(), config).await;
     let replay_error = reopened.resume().await.unwrap_err();
     assert!(
-        matches!(replay_error, FiError::SeatRefused { .. }),
+        matches!(replay_error.cause(), FiError::SeatRefused { .. }),
         "{replay_error:?}"
     );
     assert_eq!(payment_state.refund_calls.load(Ordering::SeqCst), 2);
@@ -7019,7 +7036,7 @@ async fn formation_names_the_fman_with_a_divergent_guardian_verification_fee_acc
         .await
         .unwrap_err();
     assert!(matches!(
-        &error,
+        error.cause(),
         FiError::FleetManager { index: 2, message }
             if message == "Guardian Verification Fee account does not match this Fleet Manager's configuration"
     ));
@@ -7550,7 +7567,7 @@ async fn selected_free_refusal_returns_idle_and_requires_a_fresh_preview() {
         .await
         .unwrap_err();
     assert!(matches!(
-        error,
+        error.cause(),
         FiError::SelectionReauthorizationRequired(
             SelectionReauthorizationReason::SelectedFmanUnavailable
         )
@@ -7585,7 +7602,7 @@ async fn selected_free_refusal_returns_idle_and_requires_a_fresh_preview() {
     .await;
     assert_eq!(reopened.status(), FiStatus::Idle);
     assert!(matches!(
-        reopened.resume().await,
+        reopened.resume().await.as_ref().map_err(FiError::cause),
         Err(FiError::NoActiveFormation)
     ));
     assert_eq!(
@@ -7884,7 +7901,7 @@ async fn an_attested_fee_account_must_match_the_signed_seat_acceptance() {
         .await;
 
     assert!(
-        matches!(&result, Err(FiError::InvalidFleetManagers(message))
+        matches!(result.as_ref().map_err(FiError::cause), Err(FiError::InvalidFleetManagers(message))
             if message.contains("differs from its signed seat acceptance")),
         "expected the account rebind to fail before publication, got {result:?}"
     );
@@ -8181,7 +8198,7 @@ async fn pre_payment_abandon_forfeits_accepted_free_seats() {
         .unwrap_err();
     assert!(
         matches!(
-            error,
+            error.cause(),
             FiError::SeatRefused { .. } | FiError::FleetManager { .. }
         ),
         "{error}"
@@ -8264,7 +8281,10 @@ async fn connector_failure_before_first_output_remains_abandonable() {
         .authorize_payments(requirements.authorization_id, options())
         .await
         .expect_err("the injected final connection fails");
-    assert!(matches!(error, FiError::FleetManager { .. }), "{error}");
+    assert!(
+        matches!(error.cause(), FiError::FleetManager { .. }),
+        "{error}"
+    );
     assert_eq!(payment_state.create_calls.load(Ordering::SeqCst), 0);
     let recovery = active_recovery(
         client
@@ -8311,7 +8331,7 @@ async fn connector_deadline_before_first_output_remains_abandonable() {
         .authorize_payments(requirements.authorization_id, short_request)
         .await
         .expect_err("the final connection reaches its request deadline");
-    assert!(matches!(error, FiError::Timeout(_)), "{error}");
+    assert!(matches!(error.cause(), FiError::Timeout(_)), "{error}");
     assert_eq!(payment_state.create_calls.load(Ordering::SeqCst), 0);
     let recovery = active_recovery(
         client
@@ -9333,7 +9353,7 @@ async fn selected_fman_minor_drift_requires_fresh_selection_before_payment() {
         .expect_err("a different live minor invalidates the selected set");
 
     assert!(matches!(
-        error,
+        error.cause(),
         FiError::SelectionReauthorizationRequired(
             SelectionReauthorizationReason::SelectedFmanUnavailable
         )
@@ -9456,7 +9476,7 @@ async fn persisted_formation_rejects_a_cross_minor_replacement() {
         )
         .await
         .expect_err("the original selected guardian refuses its paid presentation");
-    assert!(matches!(error, FiError::SeatRefused { .. }));
+    assert!(matches!(error.cause(), FiError::SeatRefused { .. }));
     let persisted = formation(&client.status()).clone();
     assert_eq!(
         persisted.intent.fedimintd_dkg_version,
@@ -9472,7 +9492,7 @@ async fn persisted_formation_rejects_a_cross_minor_replacement() {
         .await
         .expect_err("replacement discovery keeps the persisted DKG identity");
     assert!(matches!(
-        error,
+        error.cause(),
         FiError::InsufficientFmanSeats {
             selected: 0,
             eligible: 0,
@@ -9593,7 +9613,10 @@ async fn selected_remote_quote_error_cannot_impersonate_local_transport_failure(
         .await
         .expect_err("remote service error must return without transport retries");
 
-    assert!(matches!(error, FiError::FleetManager { .. }), "{error}");
+    assert!(
+        matches!(error.cause(), FiError::FleetManager { .. }),
+        "{error}"
+    );
     assert_eq!(
         fman_state.quote_calls.load(Ordering::SeqCst),
         usize::from(MIN_FEDERATION_SIZE),
@@ -9635,6 +9658,59 @@ async fn selected_acquisition_connection_failure_retries_before_output_generatio
 }
 
 #[tokio::test]
+async fn selected_connection_timeouts_retry_in_quote_and_acquisition_phases() {
+    use tracing::instrument::WithSubscriber as _;
+
+    // Attempt one obtains the quote; attempt two opens the acquisition barrier.
+    for attempt in [1, 2] {
+        let (payments, payment_state) = TestPayments::new();
+        let state = Arc::new(FmanState::default());
+        *state.hang_connect_on_attempt.lock().unwrap() = Some((3, attempt));
+        let client = open_client(
+            MemDatabase::new().into_database(),
+            payments,
+            state.clone(),
+            FmanConfig::paid(),
+        )
+        .await;
+        let capture = FormationLogCapture::default();
+        client
+            .pay_and_create(
+                intent(),
+                selection_approval(PAYMENT_AMOUNT_MSATS * u64::from(MIN_FEDERATION_SIZE)),
+                payment_federation_id(),
+                formation_log_options(Duration::from_millis(50)),
+            )
+            .with_subscriber(capture.subscriber())
+            .await
+            .unwrap();
+
+        assert_eq!(formation(&client.status()).phase, FormationPhase::Formed);
+        assert!(state.connect_attempts.lock().unwrap()[&3] > attempt);
+        assert_eq!(
+            payment_state.create_calls.load(Ordering::SeqCst),
+            usize::from(MIN_FEDERATION_SIZE),
+            "a retried connection must not duplicate payment outputs",
+        );
+        let logs = capture.text();
+        assert!(
+            logs.lines().any(|line| {
+                line.contains("formation request failed")
+                    && line.contains("seat_index=3")
+                    && line.contains(&format!(
+                        "fman_pubkey={}",
+                        manager_key(3).x_only_public_key().0
+                    ))
+                    && line.contains("operation=\"connecting to Fleet Manager\"")
+                    && line.contains("error_class=\"timeout\"")
+                    && line.contains("outcome=\"retried\"")
+            }),
+            "attempt {attempt}: {logs}",
+        );
+    }
+}
+
+#[tokio::test]
 async fn exhausted_selected_connection_retry_is_typed_and_returns_idle() {
     let (payments, payment_state) = TestPayments::new();
     let fman_state = Arc::new(FmanState::default());
@@ -9660,11 +9736,18 @@ async fn exhausted_selected_connection_retry_is_typed_and_returns_idle() {
         .unwrap_err();
 
     assert!(matches!(
-        error,
+        error.cause(),
         FiError::SelectionReauthorizationRequired(
             SelectionReauthorizationReason::SelectedFmanUnavailable
         )
     ));
+    let context = error
+        .fman_request()
+        .expect("reauthorization retains request context");
+    assert_eq!(context.operation, "connecting to Fleet Manager");
+    assert_eq!(context.class, FmanRequestFailureClass::Remote);
+    assert_eq!(context.seat_id, None);
+    assert_eq!(error.code(), FiErrorCode::SelectionReauthorizationRequired);
     assert_eq!(client.status(), FiStatus::Idle);
     assert_eq!(payment_state.create_calls.load(Ordering::SeqCst), 0);
 }
@@ -9703,7 +9786,10 @@ async fn post_output_connection_failure_requires_exact_replay_not_replacement() 
         .store(1, Ordering::SeqCst);
     let error = client.resume().await.unwrap_err();
 
-    assert!(matches!(error, FiError::FleetManager { .. }), "{error}");
+    assert!(
+        matches!(error.cause(), FiError::FleetManager { .. }),
+        "{error}"
+    );
     assert!(formation(&client.status()).payment_outputs_started);
 }
 
@@ -9728,7 +9814,10 @@ async fn persist_provisional_replacement_for_test(
         )
         .await
         .expect_err("the original selected guardian refuses its paid presentation");
-    assert!(matches!(error, FiError::SeatRefused { .. }), "{error:?}");
+    assert!(
+        matches!(error.cause(), FiError::SeatRefused { .. }),
+        "{error:?}"
+    );
     let status = client.status();
     let formation = formation(&status).clone();
     let FormationActionRequired::ReplaceGuardians(requirements) = formation
@@ -9843,7 +9932,7 @@ async fn unavailable_provisional_replacement_reopens_with_fresh_preview_before_q
         .await
         .expect_err("replacement is unavailable");
     assert!(matches!(
-        error,
+        error.cause(),
         FiError::SelectionReauthorizationRequired(
             SelectionReauthorizationReason::SelectedFmanUnavailable
         )
@@ -9951,7 +10040,7 @@ async fn expired_paid_replacement_releases_exact_hold_and_reopens_with_fresh_pre
         .await
         .expect_err("replacement approval expired");
     assert!(matches!(
-        error,
+        error.cause(),
         FiError::SelectionReauthorizationRequired(SelectionReauthorizationReason::PreviewExpired)
     ));
     assert!(
@@ -10016,7 +10105,7 @@ async fn verifier_drifted_free_replacement_reopens_with_fresh_preview_before_pre
         .await
         .expect_err("verifier provenance drifted");
     assert!(matches!(
-        error,
+        error.cause(),
         FiError::SelectionReauthorizationRequired(
             SelectionReauthorizationReason::VerifierEnvironmentChanged
         )
@@ -10063,7 +10152,9 @@ async fn selected_free_refusal_survives_failed_abandon_and_replays_before_cleanu
         )
         .await
         .expect_err("injected abandon failure retains exact refusal recovery");
-    assert!(matches!(error, FiError::Storage(message) if message.contains("abandon failure")));
+    assert!(
+        matches!(error.cause(), FiError::Storage(message) if message.contains("abandon failure"))
+    );
     let recovery = active_recovery(
         client
             .inner
@@ -10104,7 +10195,7 @@ async fn selected_free_refusal_survives_failed_abandon_and_replays_before_cleanu
         .await
         .expect_err("replayed refusal returns fresh-selection guidance");
     assert!(matches!(
-        error,
+        error.cause(),
         FiError::SelectionReauthorizationRequired(
             SelectionReauthorizationReason::SelectedFmanUnavailable
         )
@@ -10140,7 +10231,10 @@ async fn selected_refusal_changes_only_the_proven_unsecured_guardian() {
         )
         .await
         .unwrap_err();
-    assert!(matches!(error, FiError::SeatRefused { .. }), "{error:?}");
+    assert!(
+        matches!(error.cause(), FiError::SeatRefused { .. }),
+        "{error:?}"
+    );
     let interrupted = formation(&client.status()).clone();
     let FormationActionRequired::ReplaceGuardians(requirements) = interrupted
         .action_required
@@ -10215,7 +10309,7 @@ async fn selected_refusal_changes_only_the_proven_unsecured_guardian() {
         .await
         .expect_err("a distinct author cannot reuse a retained signing authority");
     assert!(
-        matches!(&error, FiError::InvalidFleetManagers(message)
+        matches!(error.cause(), FiError::InvalidFleetManagers(message)
             if message.contains("service signing key")),
         "unexpected collision error: {error:?}",
     );
@@ -10226,7 +10320,7 @@ async fn selected_refusal_changes_only_the_proven_unsecured_guardian() {
         .await
         .expect_err("a new service key cannot reuse a retained badge holder after restart");
     assert!(
-        matches!(error, FiError::InvalidFleetManagers(message) if message.contains("badge holder"))
+        matches!(error.cause(), FiError::InvalidFleetManagers(message) if message.contains("badge holder"))
     );
     assert_eq!(
         formation(&client.status()).action_required,
@@ -10342,7 +10436,10 @@ async fn selected_paid_replacement_reopens_after_authorized_output_without_new_s
         )
         .await
         .unwrap_err();
-    assert!(matches!(error, FiError::SeatRefused { .. }), "{error:?}");
+    assert!(
+        matches!(error.cause(), FiError::SeatRefused { .. }),
+        "{error:?}"
+    );
     let FormationActionRequired::ReplaceGuardians(requirements) = formation(&client.status())
         .action_required
         .clone()
@@ -11492,7 +11589,7 @@ async fn lost_replacement_reserve_result_releases_after_preview_expiry() {
     let reopened = open_client(database, payments, fman_state, config).await;
     let error = reopened.resume().await.unwrap_err();
     assert!(matches!(
-        error,
+        error.cause(),
         FiError::SelectionReauthorizationRequired(SelectionReauthorizationReason::PreviewExpired)
     ));
     assert_replacement_preview_still_reachable(&reopened, &requirements).await;
@@ -11549,7 +11646,7 @@ async fn lost_replacement_reserve_result_releases_after_verifier_drift() {
     .await;
     let error = reopened.resume().await.unwrap_err();
     assert!(matches!(
-        error,
+        error.cause(),
         FiError::SelectionReauthorizationRequired(
             SelectionReauthorizationReason::VerifierEnvironmentChanged
         )
@@ -11599,7 +11696,7 @@ async fn absent_replacement_reservation_restores_without_wallet_release() {
     let reopened = open_client(database, payments, fman_state, config).await;
     let error = reopened.resume().await.unwrap_err();
     assert!(matches!(
-        error,
+        error.cause(),
         FiError::SelectionReauthorizationRequired(SelectionReauthorizationReason::PreviewExpired)
     ));
     assert_replacement_preview_still_reachable(&reopened, &requirements).await;
@@ -12025,7 +12122,7 @@ async fn interrupted_replacement_restore_completes_on_resume() {
         .await
         .expect_err("the atomic restore is interrupted after the wallet release");
     assert!(
-        matches!(&error, FiError::Storage(message) if message.contains("restore failure")),
+        matches!(error.cause(), FiError::Storage(message) if message.contains("restore failure")),
         "{error:?}"
     );
     assert_eq!(
@@ -12062,7 +12159,7 @@ async fn interrupted_replacement_restore_completes_on_resume() {
     let reopened = open_client(database, payments, fman_state, config).await;
     let error = reopened.resume().await.unwrap_err();
     assert!(matches!(
-        error,
+        error.cause(),
         FiError::SelectionReauthorizationRequired(SelectionReauthorizationReason::PreviewExpired)
     ));
     assert_replacement_preview_still_reachable(&reopened, &replacement_requirements).await;
@@ -12454,7 +12551,7 @@ async fn selected_fman_unavailability_requires_a_fresh_set_and_returns_idle() {
         .unwrap_err();
 
     assert!(matches!(
-        error,
+        error.cause(),
         FiError::SelectionReauthorizationRequired(
             SelectionReauthorizationReason::SelectedFmanUnavailable
         )
@@ -12490,7 +12587,7 @@ async fn selected_quote_capacity_race_requires_a_fresh_set_and_returns_idle() {
         .unwrap_err();
 
     assert!(matches!(
-        error,
+        error.cause(),
         FiError::SelectionReauthorizationRequired(
             SelectionReauthorizationReason::SelectedFmanUnavailable
         )
@@ -12531,7 +12628,7 @@ async fn under_cap_self_authorization_survives_reopen_and_resume() {
         .create_with_pinned_fmans(capped_paid_intent(cap), locators(), short)
         .await
         .unwrap_err();
-    assert!(matches!(error, FiError::Timeout(_)), "{error}");
+    assert!(matches!(error.cause(), FiError::Timeout(_)), "{error}");
     let recovery = active_recovery(
         client
             .inner
@@ -12580,7 +12677,10 @@ async fn quote_replacement_after_self_authorization_parks_even_under_cap() {
         .create_with_pinned_fmans(capped_paid_intent(cap), locators(), options())
         .await
         .unwrap_err();
-    assert!(matches!(error, FiError::SeatRefused { .. }), "{error}");
+    assert!(
+        matches!(error.cause(), FiError::SeatRefused { .. }),
+        "{error}"
+    );
     let funded = payment_state.create_calls.load(Ordering::SeqCst);
     assert!(funded > 0, "the self-authorized run started funding");
     drop(client);
@@ -13872,13 +13972,27 @@ fn failure_disposition_distinguishes_causes_with_identical_progress_codes() {
             Terminal,
         ),
     ];
-    for (error, code, disposition) in cases {
-        assert_eq!(error.code(), code);
-        assert_eq!(error.disposition(), disposition, "{error:?}");
-        assert_eq!(
-            crate::FormationFailure::from(&error),
-            crate::FormationFailure { code, disposition }
-        );
+    for (mut error, code, disposition) in cases {
+        // The request class is deliberately the same for opposite retry policies.
+        for _ in 0..3 {
+            assert_eq!(error.code(), code);
+            assert_eq!(error.disposition(), disposition, "{error:?}");
+            assert_eq!(
+                crate::FormationFailure::from(&error),
+                crate::FormationFailure { code, disposition }
+            );
+            error = FiError::FmanRequest {
+                context: Box::new(FmanRequestContext {
+                    formation_id: FormationId("disposition-context".to_owned()),
+                    fman: manager_key(3).x_only_public_key().0,
+                    seat_index: 3,
+                    seat_id: None,
+                    operation: "connecting to Fleet Manager",
+                    class: FmanRequestFailureClass::Timeout,
+                }),
+                source: Box::new(error),
+            };
+        }
     }
 }
 
@@ -13901,8 +14015,8 @@ async fn terminal_guardian_status_pauses_formation_without_discarding_recovery()
         )
         .await;
         assert!(matches!(
-            client.create_with_pinned_fmans(intent(), locators(), options()).await,
-            Err(FiError::SeatUnrecoverable { index: 4, status: actual }) if actual == status
+            client.create_with_pinned_fmans(intent(), locators(), options()).await.as_ref().map_err(FiError::cause),
+            Err(FiError::SeatUnrecoverable { index: 4, status: actual }) if *actual == status
         ));
         let before = formation(&client.status()).clone();
         assert_eq!(
@@ -13968,4 +14082,399 @@ async fn wallet_lookup_failure_retains_selected_formation_and_exact_reservation(
     payment_state.fail_payable.store(false, Ordering::SeqCst);
     client.resume().await.unwrap();
     assert_eq!(formation(&client.status()).phase, FormationPhase::Formed);
+}
+
+// Keep the subscriber attached to the future, not a process-global default:
+// formation tests run concurrently and each seat's diagnostics must stay isolated.
+#[derive(Clone, Default)]
+struct FormationLogCapture(Arc<Mutex<Vec<u8>>>);
+
+impl std::io::Write for FormationLogCapture {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.0
+            .lock()
+            .expect("test log lock")
+            .extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+impl FormationLogCapture {
+    fn subscriber(&self) -> impl tracing::Subscriber + Send + Sync + 'static {
+        let capture = self.clone();
+        tracing_subscriber::fmt()
+            .without_time()
+            .with_ansi(false)
+            .with_writer(move || capture.clone())
+            .finish()
+    }
+
+    fn text(&self) -> String {
+        String::from_utf8(self.0.lock().expect("test log lock").clone()).unwrap()
+    }
+}
+
+fn formation_log_options(request_timeout: Duration) -> FormationRunOptions {
+    FormationRunOptions::new(crate::FormationRunOptionsConfig {
+        poll_interval: Duration::from_millis(1),
+        // Leave room for parallel-suite scheduling; only the request bound is under test.
+        run_timeout: Duration::from_secs(30),
+        request_timeout,
+    })
+    .unwrap()
+}
+
+#[tokio::test]
+async fn formation_request_logs_bind_concurrent_seats_and_exclude_remote_secrets() {
+    use tracing::instrument::WithSubscriber as _;
+
+    const SECRET: &str = "SENTINEL-private-remote-payload-refund-secret";
+    let state = Arc::new(FmanState::default());
+    state
+        .meta_terminal_errors
+        .lock()
+        .unwrap()
+        .insert(2, FleetManagerError::Other(SECRET.to_owned()));
+    state.hang_meta_indices.lock().unwrap().insert(5);
+    let (payments, _) = TestPayments::new();
+    let reader = TestConsensusReader::new(state.clone());
+    reader.force_value("test-consensus-does-not-adopt-proposals");
+    let client = open_client_with_reader(
+        MemDatabase::new().into_database(),
+        payments,
+        state.clone(),
+        FmanConfig::given_away(),
+        reader,
+    )
+    .await;
+    let capture = FormationLogCapture::default();
+    let options = formation_log_options(Duration::from_millis(20));
+    assert!(
+        client
+            .create_with_pinned_fmans(intent(), locators(), options)
+            .with_subscriber(capture.subscriber())
+            .await
+            .is_err()
+    );
+    let FiStatus::Formation(snapshot) = client.status() else {
+        panic!("failed formation remains recoverable");
+    };
+    let logs = capture.text();
+    let failures = logs
+        .lines()
+        .filter(|line| {
+            line.contains("safe_to_share=true") && line.contains("formation request failed")
+        })
+        .collect::<Vec<_>>();
+    for (index, class) in [(2, "remote"), (5, "timeout")] {
+        let seat = &snapshot.seats[index];
+        let expected_key = manager_key(index).x_only_public_key().0.to_string();
+        let expected_seat = seat.seat_id.as_ref().unwrap().to_string();
+        assert!(
+            failures.iter().any(|line| {
+                line.contains(&format!("seat_index={index}"))
+                    && line.contains(&format!("fman_pubkey={expected_key}"))
+                    && line.contains(&format!("seat_id={expected_seat}"))
+                    && line.contains(&format!("formation_id={}", snapshot.formation_id.0))
+                    && line.contains("operation=\"proposing formation metadata\"")
+                    && line.contains(&format!("error_class=\"{class}\""))
+            }),
+            "{logs}"
+        );
+    }
+    // Only annotated request events promise secret exclusion. The existing
+    // unannotated drive-failure event intentionally retains local remote-error details.
+    assert!(failures.iter().all(|line| !line.contains(SECRET)), "{logs}");
+    for index in [0, 1, 3, 4, 6] {
+        assert!(
+            !failures
+                .iter()
+                .any(|line| line.contains(&format!("seat_index={index}"))),
+            "successful sibling was blamed: {logs}"
+        );
+    }
+    assert!(
+        failures.iter().all(|line| !line.contains("guardiancode")),
+        "{logs}"
+    );
+    assert!(
+        failures.iter().all(|line| !line.contains("endpoint_addr")),
+        "{logs}"
+    );
+}
+
+#[tokio::test]
+async fn formation_connect_timeout_logs_identity_without_unassigned_seat_id() {
+    use tracing::instrument::WithSubscriber as _;
+
+    let state = Arc::new(FmanState::default());
+    *state.hang_connect_on_attempt.lock().unwrap() = Some((3, 1));
+    let (payments, _) = TestPayments::new();
+    let client = open_client(
+        MemDatabase::new().into_database(),
+        payments,
+        state,
+        FmanConfig::given_away(),
+    )
+    .await;
+    let capture = FormationLogCapture::default();
+    let options = formation_log_options(Duration::from_millis(20));
+    let error = client
+        .create_with_pinned_fmans(intent(), locators(), options)
+        .with_subscriber(capture.subscriber())
+        .await
+        .unwrap_err();
+    assert!(matches!(error.cause(), FiError::Timeout(_)));
+    assert_eq!(error.code(), FiErrorCode::Timeout);
+    let context = error.fman_request().expect("request attribution");
+    assert_eq!(context.fman, manager_key(3).x_only_public_key().0);
+    assert_eq!(context.seat_index, 3);
+    assert_eq!(context.seat_id, None);
+    assert_eq!(context.operation, "connecting to Fleet Manager");
+    assert_eq!(context.class, FmanRequestFailureClass::Timeout);
+    let logs = capture.text();
+    let line = logs
+        .lines()
+        .find(|line| line.contains("formation request failed"))
+        .unwrap_or_else(|| panic!("missing request event: {logs}"));
+    assert!(line.contains("seat_index=3"), "{logs}");
+    assert!(
+        line.contains(&format!(
+            "fman_pubkey={}",
+            manager_key(3).x_only_public_key().0
+        )),
+        "{logs}"
+    );
+    assert!(
+        line.contains("operation=\"connecting to Fleet Manager\""),
+        "{logs}"
+    );
+    assert!(line.contains("error_class=\"timeout\""), "{logs}");
+    assert!(!line.contains("seat_id="), "{logs}");
+    assert!(!line.contains("endpoint_addr"), "{logs}");
+}
+
+#[tokio::test]
+async fn formation_quote_logs_both_nested_transport_and_service_errors() {
+    use tracing::instrument::WithSubscriber as _;
+
+    for transport in [true, false] {
+        let state = Arc::new(FmanState::default());
+        let mut config = FmanConfig::given_away();
+        let payload = if transport {
+            state
+                .quote_transport_failures_remaining
+                .store(1, Ordering::SeqCst);
+            "injected quote stream loss"
+        } else {
+            config.reject_quote = true;
+            "test daemon rejects the selected payment federation"
+        };
+        let (payments, _) = TestPayments::new();
+        let client = open_client(MemDatabase::new().into_database(), payments, state, config).await;
+        let capture = FormationLogCapture::default();
+        let options = formation_log_options(Duration::from_millis(200));
+        assert!(
+            client
+                .create_with_pinned_fmans(intent(), locators(), options)
+                .with_subscriber(capture.subscriber())
+                .await
+                .is_err()
+        );
+        let logs = capture.text();
+        assert!(
+            logs.lines().any(|line| {
+                line.contains("formation request failed")
+                    && line.contains("seat_index=0")
+                    && line.contains(&format!(
+                        "fman_pubkey={}",
+                        manager_key(0).x_only_public_key().0
+                    ))
+                    && line.contains("operation=\"requesting Fleet Manager quote\"")
+                    && line.contains("error_class=\"remote\"")
+                    && !line.contains("seat_id=")
+            }),
+            "{logs}"
+        );
+        assert!(
+            logs.lines()
+                .filter(|line| {
+                    line.contains("safe_to_share=true") && line.contains("formation request failed")
+                })
+                .all(|line| !line.contains(payload)),
+            "{logs}"
+        );
+        assert!(
+            logs.lines()
+                .any(|line| line.contains("formation drive failed") && line.contains(payload)),
+            "legacy unannotated error detail was lost: {logs}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn formation_acquisition_reconnect_logs_already_assigned_seat_id() {
+    use tracing::instrument::WithSubscriber as _;
+
+    let state = Arc::new(FmanState::default());
+    state.failed_create_indices.lock().unwrap().insert(3);
+    let (payments, _) = TestPayments::new();
+    let client = open_client(
+        MemDatabase::new().into_database(),
+        payments,
+        state.clone(),
+        FmanConfig::given_away(),
+    )
+    .await;
+    assert!(
+        client
+            .create_with_pinned_fmans(intent(), locators(), options())
+            .await
+            .is_err()
+    );
+    let FiStatus::Formation(snapshot) = client.status() else {
+        panic!("active formation");
+    };
+    let seat_id = snapshot.seats[2].seat_id.as_ref().unwrap().to_string();
+    let next_attempt = state.connect_attempts.lock().unwrap()[&2] + 1;
+    *state.hang_connect_on_attempt.lock().unwrap() = Some((2, next_attempt));
+    let capture = FormationLogCapture::default();
+    let options = formation_log_options(Duration::from_millis(20));
+    assert!(matches!(
+        client
+            .resume_with_options(options)
+            .with_subscriber(capture.subscriber())
+            .await
+            .as_ref()
+            .map_err(FiError::cause),
+        Err(FiError::Timeout(_))
+    ));
+    let logs = capture.text();
+    assert!(
+        logs.lines().any(|line| {
+            line.contains("formation request failed")
+                && line.contains("seat_index=2")
+                && line.contains(&format!("seat_id={seat_id}"))
+                && line.contains(&format!(
+                    "fman_pubkey={}",
+                    manager_key(2).x_only_public_key().0
+                ))
+                && line.contains("operation=\"connecting to Fleet Manager\"")
+                && line.contains("error_class=\"timeout\"")
+        }),
+        "{logs}"
+    );
+}
+
+#[tokio::test]
+async fn formation_guardian_code_deadline_logs_only_the_never_ready_seat() {
+    use tracing::instrument::WithSubscriber as _;
+
+    let state = Arc::new(FmanState::default());
+    state.unavailable_dkg_code_indices.lock().unwrap().insert(5);
+    let (payments, _) = TestPayments::new();
+    let client = open_client(
+        MemDatabase::new().into_database(),
+        payments,
+        state,
+        FmanConfig::given_away(),
+    )
+    .await;
+    // The interval consumes the remaining run budget after SeatUnavailable,
+    // so the actual exit must be sleep_for_retry, not the next loop's preflight.
+    let options = FormationRunOptions::new(crate::FormationRunOptionsConfig {
+        poll_interval: Duration::from_secs(5),
+        run_timeout: Duration::from_secs(5),
+        request_timeout: Duration::from_secs(1),
+    })
+    .unwrap();
+    let capture = FormationLogCapture::default();
+    let error = client
+        .create_with_pinned_fmans(intent(), locators(), options)
+        .with_subscriber(capture.subscriber())
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(error.cause(), FiError::Timeout(operation)
+        if operation == "waiting to retry Fleet Manager"),
+        "{error:?}"
+    );
+    let FiStatus::Formation(snapshot) = client.status() else {
+        panic!("active formation");
+    };
+    for (index, seat) in snapshot.seats.iter().enumerate() {
+        assert_eq!(
+            seat.guardian_code.is_some(),
+            index != 5,
+            "only the never-ready child should lack its code"
+        );
+    }
+    let logs = capture.text();
+    let deadline_events = logs
+        .lines()
+        .filter(|line| {
+            line.contains("safe_to_share=true")
+                && line.contains("formation request failed")
+                && line.contains("operation=\"waiting for guardian code\"")
+                && line.contains("error_class=\"seat_unavailable\"")
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(deadline_events.len(), 1, "{logs}");
+    let line = deadline_events[0];
+    assert!(line.contains("seat_index=5"), "{logs}");
+    assert!(
+        line.contains(&format!(
+            "fman_pubkey={}",
+            manager_key(5).x_only_public_key().0
+        )),
+        "{logs}"
+    );
+    assert!(
+        line.contains(&format!(
+            "seat_id={}",
+            snapshot.seats[5].seat_id.as_ref().unwrap()
+        )),
+        "{logs}"
+    );
+    assert!(
+        line.contains(&format!("formation_id={}", snapshot.formation_id.0)),
+        "{logs}"
+    );
+}
+
+#[test]
+fn request_context_preserves_nested_error_codes_and_policy_causes() {
+    let context = FmanRequestContext {
+        formation_id: FormationId("request-context-test".to_owned()),
+        fman: manager_key(4).x_only_public_key().0,
+        seat_index: 4,
+        seat_id: None,
+        operation: "requesting Fleet Manager quote",
+        class: FmanRequestFailureClass::Remote,
+    };
+    let error = FiError::FmanRequest {
+        context: Box::new(context.clone()),
+        source: Box::new(FiError::FmanRequest {
+            context: Box::new(context.clone()),
+            source: Box::new(FiError::SelectionReauthorizationRequired(
+                SelectionReauthorizationReason::SelectedFmanUnavailable,
+            )),
+        }),
+    };
+    assert_eq!(error.code(), FiErrorCode::SelectionReauthorizationRequired);
+    assert!(matches!(
+        error.cause(),
+        FiError::SelectionReauthorizationRequired(
+            SelectionReauthorizationReason::SelectedFmanUnavailable
+        )
+    ));
+    assert_eq!(error.fman_request(), Some(&context));
+    let error = error.map_cause(|_| FiError::Timeout("quote deadline".to_owned()));
+    assert_eq!(error.code(), FiErrorCode::Timeout);
+    assert!(matches!(error.cause(), FiError::Timeout(operation) if operation == "quote deadline"));
+    assert_eq!(error.fman_request(), Some(&context));
 }

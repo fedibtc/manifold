@@ -40,7 +40,7 @@ pub use discovery::{
 pub use discovery::{InsecureUntrustedPinnedFman, InsecureUntrustedPinnedFmanDiscovery};
 pub use error::{
     AbandonUnavailableReason, Capability, FailureDisposition, FiError, FiErrorCode, FiResult,
-    FormationFailure, SelectionReauthorizationReason,
+    FmanRequestContext, FmanRequestFailureClass, FormationFailure, SelectionReauthorizationReason,
 };
 pub use fedi_decentralized_nostr::fman::{ApiEndpoint, Availability};
 pub use fedi_decentralized_service_fleet_manager::{
