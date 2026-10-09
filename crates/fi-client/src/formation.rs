@@ -4189,7 +4189,7 @@ where
         Ok(sessions)
     }
 
-    /// Publish the directory and initial fee policy as one formation vote.
+    /// Freeze once, converge the exact proposal, or audit an already formed federation.
     async fn publish_seat_bindings(
         &self,
         sessions: &[SeatSession<FmanClient<F::Client>>],
@@ -4198,108 +4198,156 @@ where
         invite: &InviteCode,
         run: DriverRun<'_>,
     ) -> FiResult<()> {
-        let confirmed = recovery.snapshot.phase == FormationPhase::Formed;
+        let target = match recovery.formation_meta_target.clone() {
+            Some(target) => target,
+            None => {
+                self.freeze_formation_proposal(sessions, recovery, fi_id, invite, run)
+                    .await?
+            }
+        };
+        if recovery.snapshot.phase == FormationPhase::Formed {
+            return self.audit_formed(invite, &target, run).await;
+        }
+        recovery.snapshot.phase = FormationPhase::PublishingSeatBindings;
+        self.publish_snapshot(recovery.snapshot.clone());
+        self.converge_formation_proposal(sessions, recovery, fi_id, invite, &target, run)
+            .await
+    }
 
+    /// Validate and durably save the complete proposal before any publication.
+    async fn freeze_formation_proposal(
+        &self,
+        sessions: &[SeatSession<FmanClient<F::Client>>],
+        recovery: &mut ActiveFormationRecovery,
+        fi_id: FiId,
+        invite: &InviteCode,
+        run: DriverRun<'_>,
+    ) -> FiResult<FormationMetaTarget> {
         // A new target must be validated against the final config before it is
         // durable: recovery replays its exact bytes and cannot repair an
         // invalid directory after pinning it. This read validates the signed
         // directory only; recipient derivation no longer uses API keys.
-        let formation_config = if recovery.formation_meta_target.is_none() {
-            loop {
-                ensure_time_remaining(run.deadline, "reading the formation config")?;
-                match run
-                    .call("reading the formation config", || {
-                        Ok(self.inner.ports.consensus_reader.read_consensus(invite))
-                    })
-                    .await?
-                {
-                    Ok(snapshot) => break Some(snapshot.config),
-                    Err(_) => sleep_for_retry(run.deadline, run.options.poll_interval).await?,
-                }
-            }
-        } else {
-            None
-        };
-        let target = match recovery.formation_meta_target.clone() {
-            Some(target) => target,
-            None => {
-                let (bindings, binding_entries) = self
-                    .assemble_seat_bindings(sessions, recovery, fi_id, run)
-                    .await?;
-                let federation_id = invite_federation_id(invite)?;
-                let fi_account = self
-                    .inner
-                    .ports
-                    .fi_fee_account_provider
-                    .formed_federation_fee_account(&federation_id)
-                    .map_err(|_| {
-                        FiError::CapabilityUnavailable(crate::Capability::FeeArrangement)
-                    })?;
-                let guardian_verification_fee_account =
-                    self.inner.guardian_verification_fee_account.clone().ok_or(
-                        FiError::CapabilityUnavailable(crate::Capability::FeeArrangement),
-                    )?;
-                let recipients = canonical_fee_recipients(
-                    formation_config
-                        .as_ref()
-                        .expect("a new formation target has a downloaded config"),
-                    &bindings,
-                    fi_account.clone(),
-                    guardian_verification_fee_account.clone(),
-                )?;
-                let recipients =
-                    canonical_guardian_fee_recipient_list(&recipients).map_err(|error| {
-                        FiError::InvalidFleetManagers(format!(
-                            "guardian-fee recipient accounts cannot form canonical metadata: {error}"
-                        ))
-                    })?;
-                let send_ppm = self
-                    .min_guardian_fee_ppm()
-                    .await
-                    .max(u64::from(GuardianFeePpm::MANIFOLD_DEFAULT.value()));
-                let fi_fee_account = GuardianFeeAccount::try_from(fi_account).map_err(|error| {
-                    FiError::InvalidIntent(format!("FI guardian-fee account is invalid: {error}"))
-                })?;
-                let guardian_verification_fee_account = GuardianFeeAccount::try_from(
-                    guardian_verification_fee_account,
-                )
-                .map_err(|_| FiError::CapabilityUnavailable(crate::Capability::FeeArrangement))?;
-                let target = FormationMetaTarget {
-                    seat_bindings: bindings,
-                    binding_entries,
-                    fi_fee_account,
-                    guardian_verification_fee_account,
-                    send_ppm,
-                    recipients,
-                };
-                run.call("recording the formation metadata target", || {
-                    Ok(self.inner.store.record_formation_meta_target(
-                        &recovery.snapshot.formation_id,
-                        target.clone(),
-                    ))
+        let formation_config = loop {
+            ensure_time_remaining(run.deadline, "reading the formation config")?;
+            match run
+                .call("reading the formation config", || {
+                    Ok(self.inner.ports.consensus_reader.read_consensus(invite))
                 })
-                .await??;
-                recovery.formation_meta_target = Some(target.clone());
-                target
+                .await?
+            {
+                Ok(snapshot) => break snapshot.config,
+                Err(_) => sleep_for_retry(run.deadline, run.options.poll_interval).await?,
             }
         };
+        let (bindings, binding_entries) = self
+            .assemble_seat_bindings(sessions, recovery, fi_id, run)
+            .await?;
+        let federation_id = invite_federation_id(invite)?;
+        let fi_account = self
+            .inner
+            .ports
+            .fi_fee_account_provider
+            .formed_federation_fee_account(&federation_id)
+            .map_err(|_| FiError::CapabilityUnavailable(crate::Capability::FeeArrangement))?;
+        let guardian_verification_fee_account =
+            self.inner.guardian_verification_fee_account.clone().ok_or(
+                FiError::CapabilityUnavailable(crate::Capability::FeeArrangement),
+            )?;
+        let recipients = canonical_fee_recipients(
+            &formation_config,
+            &bindings,
+            fi_account.clone(),
+            guardian_verification_fee_account.clone(),
+        )?;
+        let recipients = canonical_guardian_fee_recipient_list(&recipients).map_err(|error| {
+            FiError::InvalidFleetManagers(format!(
+                "guardian-fee recipient accounts cannot form canonical metadata: {error}"
+            ))
+        })?;
+        let send_ppm = self
+            .min_guardian_fee_ppm()
+            .await
+            .max(u64::from(GuardianFeePpm::MANIFOLD_DEFAULT.value()));
+        let fi_fee_account = GuardianFeeAccount::try_from(fi_account).map_err(|error| {
+            FiError::InvalidIntent(format!("FI guardian-fee account is invalid: {error}"))
+        })?;
+        let guardian_verification_fee_account =
+            GuardianFeeAccount::try_from(guardian_verification_fee_account)
+                .map_err(|_| FiError::CapabilityUnavailable(crate::Capability::FeeArrangement))?;
+        let target = FormationMetaTarget {
+            seat_bindings: bindings,
+            binding_entries,
+            fi_fee_account,
+            guardian_verification_fee_account,
+            send_ppm,
+            recipients,
+        };
+        run.call("recording the formation metadata target", || {
+            Ok(self
+                .inner
+                .store
+                .record_formation_meta_target(&recovery.snapshot.formation_id, target.clone()))
+        })
+        .await??;
+        recovery.formation_meta_target = Some(target.clone());
+        Ok(target)
+    }
 
-        if !confirmed {
-            recovery.snapshot.phase = FormationPhase::PublishingSeatBindings;
-            self.publish_snapshot(recovery.snapshot.clone());
+    /// An already formed federation is read-only here; later fee-rate changes are valid.
+    async fn audit_formed(
+        &self,
+        invite: &InviteCode,
+        target: &FormationMetaTarget,
+        run: DriverRun<'_>,
+    ) -> FiResult<()> {
+        loop {
+            ensure_time_remaining(run.deadline, "reading the formation metadata base")?;
+            let Ok(snapshot) = self.read_recovery_consensus(invite, run).await? else {
+                sleep_for_retry(run.deadline, run.options.poll_interval).await?;
+                continue;
+            };
+            verify_consensus_identity(&snapshot, invite)?;
+            validate_consensus_metadata_size(snapshot.meta_value.as_deref()).map_err(|error| {
+                FiError::InvalidFleetManagers(format!(
+                    "consensus metadata is {} bytes; formation permits at most {} bytes",
+                    error.actual_bytes, error.max_bytes
+                ))
+            })?;
+            if !self.seat_bindings_match(&snapshot, &target.seat_bindings)?
+                || !guardian_fee_recipients_match(
+                    snapshot.meta_value.as_deref(),
+                    &target.recipients,
+                )?
+            {
+                return Err(FiError::InvalidFleetManagers(
+                    "formed federation changed its immutable directory or fee recipients"
+                        .to_owned(),
+                ));
+            }
+            self.remember_read_invite(invite, &snapshot).await?;
+            return Ok(());
         }
+    }
+
+    /// Only exact consensus readback, not acknowledgements, completes publication.
+    async fn converge_formation_proposal(
+        &self,
+        sessions: &[SeatSession<FmanClient<F::Client>>],
+        recovery: &ActiveFormationRecovery,
+        fi_id: FiId,
+        invite: &InviteCode,
+        target: &FormationMetaTarget,
+        run: DriverRun<'_>,
+    ) -> FiResult<()> {
         let mut pending_error = None;
 
         loop {
             ensure_time_remaining(run.deadline, "reading the formation metadata base")?;
-            let snapshot = if confirmed {
-                self.read_recovery_consensus(invite, run).await?
-            } else {
-                run.call("reading the formation metadata base", || {
+            let snapshot = run
+                .call("reading the formation metadata base", || {
                     Ok(self.inner.ports.consensus_reader.read_consensus(invite))
                 })
-                .await?
-            };
+                .await?;
             let Ok(snapshot) = snapshot else {
                 sleep_for_retry(run.deadline, run.options.poll_interval).await?;
                 continue;
@@ -4316,26 +4364,18 @@ where
                     snapshot.meta_value.as_deref(),
                     &target.recipients,
                 )?;
-            let exact_matches = immutable_matches
-                && guardian_fee_rate_matches(snapshot.meta_value.as_deref(), target.send_ppm)?;
-            if (confirmed && immutable_matches) || exact_matches {
-                if !confirmed {
-                    run.call("confirming formation metadata consensus", || {
-                        Ok(self
-                            .inner
-                            .store
-                            .confirm_formation_meta_target(&recovery.snapshot.formation_id))
-                    })
-                    .await??;
-                }
+            if immutable_matches
+                && guardian_fee_rate_matches(snapshot.meta_value.as_deref(), target.send_ppm)?
+            {
+                run.call("confirming formation metadata consensus", || {
+                    Ok(self
+                        .inner
+                        .store
+                        .confirm_formation_meta_target(&recovery.snapshot.formation_id))
+                })
+                .await??;
                 self.remember_read_invite(invite, &snapshot).await?;
                 return Ok(());
-            }
-            if confirmed {
-                return Err(FiError::InvalidFleetManagers(
-                    "formed federation changed its immutable directory or fee recipients"
-                        .to_owned(),
-                ));
             }
             if let Some(error) = pending_error.take() {
                 return Err(error);
