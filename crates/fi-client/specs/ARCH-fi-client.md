@@ -409,6 +409,14 @@ guard. The recovery requirement is reconstructed on reopen from the caller's
 persisted mnemonic provenance and the FI database's environment-scoped
 completion marker.
 
+Formation `last_error` carries a runtime-only error code and retry disposition.
+Manifold classifies the cause; consumers must not infer retry policy from the
+coarse code. `Terminal` stops automatic resume until an explicit command or a
+fresh launch. It neither permits abandonment nor means funds are unrecoverable.
+Reopen clears the verdict and rechecks durable facts once; no error verdict is
+stored in the database or backup. Concrete user actions still come from the
+durable formation state.
+
 Aggregate phases are `Preparing`, `AwaitingPaymentReadiness`, `AcquiringSeats`, `PreparingDkg`,
 `DkgUnderway`, `DkgComplete`, `PublishingSeatBindings`, `Formed`; status is
 published through a watch channel independently of the future driving the run. Durable phases advance atomically
