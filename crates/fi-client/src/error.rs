@@ -127,9 +127,9 @@ pub enum FiErrorCode {
     SelectionReauthorizationRequired,
     /// A later-stage capability is unavailable.
     CapabilityUnavailable,
-    /// Pinned Fleet Manager inputs were invalid.
+    /// Fleet Manager inputs, responses, or published formation metadata were invalid.
     InvalidFleetManagers,
-    /// A local verdict about a seat; no remote request is attributed.
+    /// A Fleet Manager request failed, or a local verdict rejected a seat.
     FleetManager,
     /// Consumer payment or refund settlement failed.
     Payment,
