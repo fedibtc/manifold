@@ -14613,3 +14613,130 @@ async fn malformed_selected_quote_returns_to_selection_with_blame() {
     assert_eq!(payment_state.create_calls.load(Ordering::SeqCst), 0);
     assert_eq!(state.create_calls.load(Ordering::SeqCst), 0);
 }
+
+#[tokio::test]
+async fn post_dkg_publication_uses_alternate_invites_without_repeating_setup() {
+    for freeze_needed in [true, false] {
+        let database = MemDatabase::new().into_database();
+        let (payments, payment_state) = TestPayments::new();
+        let state = Arc::new(FmanState::default());
+        let reader = TestConsensusReader::new(state.clone());
+        if freeze_needed {
+            reader.fail_next(usize::MAX);
+        }
+        let client = open_client_with_reader(
+            database.clone(),
+            payments.clone(),
+            state.clone(),
+            FmanConfig::given_away(),
+            reader,
+        )
+        .await;
+        let result = client
+            .create_with_pinned_fmans(intent(), locators(), options())
+            .await;
+        if freeze_needed {
+            assert!(result.is_err());
+            assert_eq!(
+                formation(&client.status()).phase,
+                FormationPhase::DkgComplete
+            );
+        } else {
+            result.unwrap();
+            client
+                .inner
+                .store
+                .unconfirm_formation_meta_target_for_test()
+                .await;
+            *state.meta_consensus_raw.lock().unwrap() = None;
+            state.meta_submissions.lock().unwrap().clear();
+            state.fee_submissions.lock().unwrap().clear();
+            state.offline_indices.lock().unwrap().extend([0, 6]);
+        }
+        let starts = state.start_callbacks.lock().unwrap().len();
+        let creates = state.create_calls.load(Ordering::SeqCst);
+        let attestations = state.attestation_calls.load(Ordering::SeqCst);
+        let invites = state.invite_calls.load(Ordering::SeqCst);
+        drop(client);
+        let reader = TestConsensusReader::new(state.clone());
+        reader.offline_peers.lock().unwrap().insert(PeerId::from(0));
+        let reopened = open_client_with_reader(
+            database,
+            payments,
+            state.clone(),
+            FmanConfig::given_away(),
+            reader,
+        )
+        .await;
+        reopened.resume_with_options(options()).await.unwrap();
+        assert_eq!(formation(&reopened.status()).phase, FormationPhase::Formed);
+        assert!(state.invite_calls.load(Ordering::SeqCst) > invites);
+        assert_eq!(state.start_callbacks.lock().unwrap().len(), starts);
+        assert_eq!(state.create_calls.load(Ordering::SeqCst), creates);
+        assert_eq!(payment_state.create_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(
+            state.attestation_calls.load(Ordering::SeqCst),
+            attestations
+                + if freeze_needed {
+                    usize::from(MIN_FEDERATION_SIZE)
+                } else {
+                    0
+                }
+        );
+    }
+}
+
+#[tokio::test]
+async fn unfinished_publication_rejects_an_alternate_invite_for_another_federation() {
+    let database = MemDatabase::new().into_database();
+    let (payments, _) = TestPayments::new();
+    let state = Arc::new(FmanState::default());
+    let client = open_client(
+        database.clone(),
+        payments.clone(),
+        state.clone(),
+        FmanConfig::given_away(),
+    )
+    .await;
+    client
+        .create_with_pinned_fmans(intent(), locators(), options())
+        .await
+        .unwrap();
+    client
+        .inner
+        .store
+        .unconfirm_formation_meta_target_for_test()
+        .await;
+    *state.meta_consensus_raw.lock().unwrap() = None;
+    state.meta_submissions.lock().unwrap().clear();
+    state.fee_submissions.lock().unwrap().clear();
+    drop(client);
+    let reader = TestConsensusReader::new(state.clone());
+    reader
+        .offline_peers
+        .lock()
+        .unwrap()
+        .extend((0..MIN_FEDERATION_SIZE - 1).map(PeerId::from));
+    state.disagreeing_invite.store(true, Ordering::SeqCst);
+    let reopened = open_client_with_reader(
+        database,
+        payments,
+        state.clone(),
+        FmanConfig::given_away(),
+        reader,
+    )
+    .await;
+    reopened
+        .resume_with_options(options())
+        .await
+        .expect_err("the only reachable invite names a foreign federation");
+    assert_eq!(
+        formation(&reopened.status()).phase,
+        FormationPhase::PublishingSeatBindings
+    );
+    assert!(state.meta_submissions.lock().unwrap().is_empty());
+    assert!(reopened.inner.store.backup_payload().await.is_err());
+    state.disagreeing_invite.store(false, Ordering::SeqCst);
+    reopened.resume_with_options(options()).await.unwrap();
+    assert_eq!(formation(&reopened.status()).phase, FormationPhase::Formed);
+}

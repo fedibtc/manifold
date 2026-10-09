@@ -3251,13 +3251,7 @@ where
             .await?;
         recovery.snapshot.phase = FormationPhase::DkgComplete;
         self.publish_snapshot(recovery.snapshot.clone());
-        self.publish_seat_bindings(sessions, recovery, fi_id, &invite, run)
-            .await?;
-        recovery.snapshot.phase = FormationPhase::Formed;
-        recovery.snapshot.freshness = FormationFreshness::Fresh;
-        recovery.snapshot.last_error = None;
-        self.publish_snapshot(recovery.snapshot.clone());
-        Ok(())
+        self.resume_after_dkg(recovery, fi_id, run).await
     }
 
     async fn checkpoint_accepted_seat(
@@ -4043,30 +4037,24 @@ where
         fi_id: FiId,
         run: DriverRun<'_>,
     ) -> FiResult<()> {
-        let stored = recovery.snapshot.invite_code.clone().ok_or_else(|| {
-            FiError::Storage("formed FI record contains no persisted invite".to_owned())
+        let invite = recovery.snapshot.invite_code.clone().ok_or_else(|| {
+            FiError::Storage("post-DKG FI record contains no persisted invite".to_owned())
         })?;
-        let (manager_connections, invite) = if recovery.formation_meta_target.is_some() {
-            // The complete validated proposal is already durable. Check its
-            // consensus result before reconnecting; publication can finish
-            // through reachable managers without collecting attestations again.
-            (Vec::new(), stored)
-        } else {
-            let manager_connections = self.seat_sessions(recovery, run).await?;
-            self.poll_until_running(&manager_connections, recovery, fi_id, run)
-                .await?;
-            let invite = self
-                .fetch_agreed_invite(&manager_connections, fi_id, run)
-                .await?;
-            if invite_federation_id(&stored)? != invite_federation_id(&invite)? {
-                return Err(FiError::InvalidFleetManagers(
-                    "formed federation identity changed during reconciliation".to_owned(),
-                ));
+        let target = match recovery.formation_meta_target.clone() {
+            Some(target) => target,
+            None => {
+                self.freeze_formation_proposal(recovery, fi_id, &invite, run)
+                    .await?
             }
-            (manager_connections, invite)
         };
-        self.publish_seat_bindings(&manager_connections, recovery, fi_id, &invite, run)
-            .await?;
+        if recovery.snapshot.phase == FormationPhase::Formed {
+            self.audit_formed(&invite, &target, run).await?;
+        } else {
+            recovery.snapshot.phase = FormationPhase::PublishingSeatBindings;
+            self.publish_snapshot(recovery.snapshot.clone());
+            self.converge_formation_proposal(recovery, fi_id, &invite, &target, run)
+                .await?;
+        }
         recovery.snapshot.phase = FormationPhase::Formed;
         recovery.snapshot.freshness = FormationFreshness::Fresh;
         recovery.snapshot.last_error = None;
@@ -4189,35 +4177,9 @@ where
         Ok(sessions)
     }
 
-    /// Freeze once, converge the exact proposal, or audit an already formed federation.
-    async fn publish_seat_bindings(
-        &self,
-        sessions: &[SeatSession<FmanClient<F::Client>>],
-        recovery: &mut ActiveFormationRecovery,
-        fi_id: FiId,
-        invite: &InviteCode,
-        run: DriverRun<'_>,
-    ) -> FiResult<()> {
-        let target = match recovery.formation_meta_target.clone() {
-            Some(target) => target,
-            None => {
-                self.freeze_formation_proposal(sessions, recovery, fi_id, invite, run)
-                    .await?
-            }
-        };
-        if recovery.snapshot.phase == FormationPhase::Formed {
-            return self.audit_formed(invite, &target, run).await;
-        }
-        recovery.snapshot.phase = FormationPhase::PublishingSeatBindings;
-        self.publish_snapshot(recovery.snapshot.clone());
-        self.converge_formation_proposal(sessions, recovery, fi_id, invite, &target, run)
-            .await
-    }
-
     /// Validate and durably save the complete proposal before any publication.
     async fn freeze_formation_proposal(
         &self,
-        sessions: &[SeatSession<FmanClient<F::Client>>],
         recovery: &mut ActiveFormationRecovery,
         fi_id: FiId,
         invite: &InviteCode,
@@ -4229,19 +4191,15 @@ where
         // directory only; recipient derivation no longer uses API keys.
         let formation_config = loop {
             ensure_time_remaining(run.deadline, "reading the formation config")?;
-            match run
-                .call("reading the formation config", || {
-                    Ok(self.inner.ports.consensus_reader.read_consensus(invite))
-                })
-                .await?
-            {
-                Ok(snapshot) => break snapshot.config,
+            match self.read_recovery_consensus(invite, run).await? {
+                Ok(snapshot) => {
+                    verify_consensus_identity(&snapshot, invite)?;
+                    break snapshot.config;
+                }
                 Err(_) => sleep_for_retry(run.deadline, run.options.poll_interval).await?,
             }
         };
-        let (bindings, binding_entries) = self
-            .assemble_seat_bindings(sessions, recovery, fi_id, run)
-            .await?;
+        let (bindings, binding_entries) = self.assemble_seat_bindings(recovery, fi_id, run).await?;
         let federation_id = invite_federation_id(invite)?;
         let fi_account = self
             .inner
@@ -4332,7 +4290,6 @@ where
     /// Only exact consensus readback, not acknowledgements, completes publication.
     async fn converge_formation_proposal(
         &self,
-        sessions: &[SeatSession<FmanClient<F::Client>>],
         recovery: &ActiveFormationRecovery,
         fi_id: FiId,
         invite: &InviteCode,
@@ -4343,11 +4300,7 @@ where
 
         loop {
             ensure_time_remaining(run.deadline, "reading the formation metadata base")?;
-            let snapshot = run
-                .call("reading the formation metadata base", || {
-                    Ok(self.inner.ports.consensus_reader.read_consensus(invite))
-                })
-                .await?;
+            let snapshot = self.read_recovery_consensus(invite, run).await?;
             let Ok(snapshot) = snapshot else {
                 sleep_for_retry(run.deadline, run.options.poll_interval).await?;
                 continue;
@@ -4385,7 +4338,7 @@ where
                 snapshot_meta_consensus(&snapshot).map_err(FiError::InvalidFleetManagers)?,
             );
             let results = self
-                .submit_formation_meta_wave(sessions, recovery, fi_id, expected_base, &target, run)
+                .submit_formation_meta_wave(recovery, fi_id, expected_base, target, run)
                 .await;
             for result in results {
                 match result {
@@ -4419,33 +4372,38 @@ where
     /// Collect one FMan attestation and endpoint proof per seat.
     async fn assemble_seat_bindings(
         &self,
-        sessions: &[SeatSession<FmanClient<F::Client>>],
         recovery: &ActiveFormationRecovery,
         fi_id: FiId,
         run: DriverRun<'_>,
     ) -> FiResult<(String, Vec<FormationSeatBinding>)> {
         let mut pending = FuturesUnordered::new();
-        for (position, session) in sessions.iter().enumerate() {
-            let expected_guardian_fee_account = recovery.seats[position]
-                .guardian_fee_account
-                .clone()
-                .ok_or_else(|| {
+        for (position, seat) in recovery.seats.iter().enumerate() {
+            let expected_guardian_fee_account =
+                seat.guardian_fee_account.clone().ok_or_else(|| {
                     FiError::InvalidFleetManagers(format!(
                         "accepted seat {position} has no persisted guardian-fee account"
                     ))
                 })?;
 
             pending.push(async move {
+                let seat_id = seat.progress.seat_id.clone().ok_or_else(|| {
+                    FiError::Storage("post-DKG FI seat has no seat id".to_owned())
+                })?;
+                let client = FmanClient::connect(
+                    &self.inner.ports.fman_connector,
+                    &seat.progress.locator,
+                    run,
+                )
+                .await?;
                 let request = GetPeerAttestationRequest {
                     ts: Timestamp(now_secs()?),
                     fi_id,
-                    seat_id: session.seat_id.clone(),
+                    seat_id,
                 };
                 let request = run
                     .construct("signing GetPeerAttestation request", || self.sign(&request))
                     .await?;
-                let response = session
-                    .client
+                let response = client
                     .call(run, FmanOperation::GetPeerAttestation, |client| {
                         client.get_peer_attestation(request)
                     })
@@ -4456,8 +4414,7 @@ where
                     .guardian_fee_account
                     != expected_guardian_fee_account
                 {
-                    return Err(session
-                        .client
+                    return Err(client
                         .failure(
                             FmanOperation::GetPeerAttestation,
                             FmanCause::InvalidResponse,
@@ -4470,7 +4427,7 @@ where
                 })
             });
         }
-        let mut entries = Vec::with_capacity(sessions.len());
+        let mut entries = Vec::with_capacity(recovery.seats.len());
         while let Some(result) = pending.next().await {
             entries.push(result?);
         }
@@ -4485,10 +4442,9 @@ where
         Ok((bindings, entries))
     }
 
-    /// Initial publication reuses its complete sessions; resume reconnects per seat.
+    /// Each publication wave connects its own reachable seats independently.
     async fn submit_formation_meta_wave(
         &self,
-        sessions: &[SeatSession<FmanClient<F::Client>>],
         recovery: &ActiveFormationRecovery,
         fi_id: FiId,
         expected_base: MetaConsensusBase,
@@ -4503,21 +4459,12 @@ where
                         "formation metadata target has a seat without an id".to_owned(),
                     )
                 })?;
-                let connected;
-                let client = if let Some(session) = sessions
-                    .iter()
-                    .find(|session| session.index == seat.progress.index)
-                {
-                    &session.client
-                } else {
-                    connected = FmanClient::connect(
-                        &self.inner.ports.fman_connector,
-                        &seat.progress.locator,
-                        run,
-                    )
-                    .await?;
-                    &connected
-                };
+                let client = FmanClient::connect(
+                    &self.inner.ports.fman_connector,
+                    &seat.progress.locator,
+                    run,
+                )
+                .await?;
                 let request = ProposeFormationMetaRequest {
                     ts: Timestamp(now_secs()?),
                     fi_id,
@@ -4655,9 +4602,9 @@ where
     }
 
     /// Remember several guardian addresses from a verified consensus snapshot.
-    /// Call after verifying the directory and saved authority. This checks the
-    /// federation identity again before storing the connection hint in memory;
-    /// the saved invite, backups, and signed liquidity request stay unchanged.
+    /// This checks federation identity before storing dialing hints in memory.
+    /// It grants no authority: callers still verify the directory and saved facts.
+    /// The saved invite, backups, and signed liquidity request stay unchanged.
     async fn remember_read_invite(
         &self,
         saved: &InviteCode,
@@ -4705,20 +4652,36 @@ where
         // A manager supplies another way to dial, never a trust verdict.
         // Race the saved managers so one unavailable manager cannot hold up the rest.
         let fi_id = self.fi_id()?;
-        let authority = self.post_formed_authority(fi_id).await?;
+        let seats = match self.inner.store.load_recovery(fi_id).await? {
+            FiRecovery::Formation(recovery) if recovery.snapshot.phase.dkg_complete() => recovery
+                .seats
+                .into_iter()
+                .map(|seat| {
+                    let seat_id = seat.progress.seat_id.ok_or_else(|| {
+                        FiError::Storage("post-DKG FI seat has no seat id".to_owned())
+                    })?;
+                    Ok((seat.progress.locator, seat_id))
+                })
+                .collect::<FiResult<Vec<_>>>()?,
+            FiRecovery::Restored(snapshot) => snapshot
+                .seats
+                .into_iter()
+                .map(|seat| (seat.locator, seat.seat_id))
+                .collect(),
+            _ => return first,
+        };
         let expected = invite_federation_id(saved)?;
         let mut pending = FuturesUnordered::new();
-        for seat in &authority.seats {
+        for (locator, seat_id) in &seats {
             pending.push(async move {
                 let client =
-                    FmanClient::connect(&self.inner.ports.fman_connector, &seat.locator, run)
-                        .await?;
+                    FmanClient::connect(&self.inner.ports.fman_connector, locator, run).await?;
                 let request = run
                     .construct("signing a recovery invite request", || {
                         self.sign(&GetInviteCodeRequest {
                             ts: Timestamp(now_secs()?),
                             fi_id,
-                            seat_id: seat.seat_id.clone(),
+                            seat_id: seat_id.clone(),
                         })
                     })
                     .await?;
@@ -4739,13 +4702,17 @@ where
                     })
                     .await?
                     .map_err(|error| FiError::InvalidFleetManagers(error.to_string()))?;
-                verify_consensus_identity(&snapshot, saved)?;
+                self.remember_read_invite(saved, &snapshot).await?;
                 Ok::<_, FiError>(snapshot)
             });
         }
         while let Some(result) = pending.next().await {
-            if let Ok(snapshot) = result {
-                return Ok(Ok(snapshot));
+            match result {
+                Ok(snapshot) => return Ok(Ok(snapshot)),
+                Err(error @ (FiError::Busy | FiError::Storage(_) | FiError::Identity(_))) => {
+                    return Err(error);
+                }
+                Err(_) => {}
             }
         }
         first
