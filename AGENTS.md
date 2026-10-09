@@ -26,7 +26,7 @@ Other:
 
 ## Production compatibility
 
-Production API and persisted-format changes are governed by
+Production network-interface and persisted-format changes are governed by
 [`GATE-production-compatibility`](specs/GATE-production-compatibility.md).
 Consult it before changing interfaces used across deployments, persistence
 schemas, serialized state, or backup formats.
