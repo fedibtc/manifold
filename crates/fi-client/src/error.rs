@@ -46,7 +46,7 @@ impl std::fmt::Display for AbandonUnavailableReason {
 #[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SelectionReauthorizationReason {
-    /// The advertisement preview's two-minute approval window elapsed.
+    /// The advertisement preview's five-minute approval window elapsed.
     PreviewExpired,
     /// The consumer's limit is below the advertisement estimate it displayed.
     AdvertisementEstimateExceedsLimit,

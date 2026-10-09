@@ -17,7 +17,7 @@ Load it into the local Docker image store:
 just flip-docker-load
 ```
 
-The image name is `flip-liquidity-manager:<workspace-version>` (`flip-liquidity-manager:0.1.0` today); `just flip-docker-run` derives the tag from `Cargo.toml`.
+The image name is `flip-liquidity-manager:<workspace-version>` (`flip-liquidity-manager:0.1.2` today); `just flip-docker-run` derives the tag from `Cargo.toml`.
 
 ## Run Locally
 
@@ -45,7 +45,7 @@ docker run --rm \
   -p 127.0.0.1:8173:8173 \
   -p 127.0.0.1:8174:8174/udp \
   -v /tmp/flip-liquidity-manager-docker-data:/var/lib/flip \
-  flip-liquidity-manager:0.1.0
+  flip-liquidity-manager:0.1.2
 ```
 
 The image defaults are:
@@ -204,7 +204,7 @@ docker run --rm \
   -p 127.0.0.1:8173:8173 \
   -v /tmp/flip-liquidity-manager-restored:/var/lib/flip \
   -v /path/to/backups:/restore-backups:ro \
-  flip-liquidity-manager:0.1.0
+  flip-liquidity-manager:0.1.2
 ```
 
 Then call restore against the restore-mode Admin API, which requires the target

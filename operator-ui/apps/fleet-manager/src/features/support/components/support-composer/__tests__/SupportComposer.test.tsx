@@ -15,7 +15,7 @@ const renderComposer = () => {
   );
 };
 
-const box = () => screen.getByLabelText('Message to Fedi support');
+const box = () => screen.getByLabelText('Message to guardian support');
 const type = (value: string) => fireEvent.change(box(), { target: { value } });
 
 afterEach(() => {

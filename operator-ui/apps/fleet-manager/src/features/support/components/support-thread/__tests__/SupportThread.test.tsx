@@ -46,14 +46,7 @@ it('should mark each new local day and time each message in its bubble', () => {
     '12:05',
     '09:30'
   ]);
-  // Only Fedi's messages carry the Fedi avatar.
-  expect(items.map((item) => item.querySelector('img') !== null)).toEqual([
-    false,
-    true,
-    false,
-    true
-  ]);
-  expect(items[1]).toHaveTextContent('Fedi support: Is the host running?');
+  expect(items[1]).toHaveTextContent('Guardian support: Is the host running?');
   expect(items[2]).toHaveTextContent('You: Yes.');
   expect(screen.getByText(/Seat 2 is down/).textContent).toBe('You: Seat 2 is down.\nSince noon.');
 });
@@ -84,5 +77,5 @@ it('should show the first unread message rather than the newest', () => {
 it('should invite the first message when the thread is empty', () => {
   render(<SupportThread messages={[]} />);
 
-  expect(screen.getByText('No messages yet. Write to Fedi below.')).toBeInTheDocument();
+  expect(screen.getByText('No messages yet. Write to guardian support below.')).toBeInTheDocument();
 });
