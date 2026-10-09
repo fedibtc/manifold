@@ -511,9 +511,10 @@ impl FmanSelectionPreview {
     /// no-payer bootstrap entry.
     pub fn approve(self, max_total_msats: u64) -> FiResult<FmanSelectionApproval> {
         if max_total_msats < self.total_advertised_msats {
-            return Err(FiError::SelectionReauthorizationRequired(
-                SelectionReauthorizationReason::AdvertisementEstimateExceedsLimit,
-            ));
+            return Err(FiError::SelectionReauthorizationRequired {
+                reason: SelectionReauthorizationReason::AdvertisementEstimateExceedsLimit,
+                failure: None,
+            });
         }
         Ok(FmanSelectionApproval {
             request: self.request,
@@ -565,9 +566,10 @@ impl FmanSelectionApproval {
 
     pub(crate) fn into_seats_at(self, now: Timestamp) -> FiResult<Vec<ApprovedFmanSeat>> {
         if self.valid_until <= now {
-            return Err(FiError::SelectionReauthorizationRequired(
-                SelectionReauthorizationReason::PreviewExpired,
-            ));
+            return Err(FiError::SelectionReauthorizationRequired {
+                reason: SelectionReauthorizationReason::PreviewExpired,
+                failure: None,
+            });
         }
         Ok(self.seats)
     }
@@ -611,9 +613,10 @@ impl FmanReplacementPreview {
     /// Seal this exact subset to renewed user authorization.
     pub fn approve(self, max_total_msats: u64) -> FiResult<FmanReplacementApproval> {
         if max_total_msats == 0 || max_total_msats < self.total_advertised_msats {
-            return Err(FiError::SelectionReauthorizationRequired(
-                SelectionReauthorizationReason::AdvertisementEstimateExceedsLimit,
-            ));
+            return Err(FiError::SelectionReauthorizationRequired {
+                reason: SelectionReauthorizationReason::AdvertisementEstimateExceedsLimit,
+                failure: None,
+            });
         }
         Ok(FmanReplacementApproval {
             requirements: self.requirements,
@@ -656,9 +659,10 @@ impl FmanReplacementApproval {
 
     pub(crate) fn into_seats_at(self, now: Timestamp) -> FiResult<Vec<ApprovedFmanSeat>> {
         if self.valid_until <= now {
-            return Err(FiError::SelectionReauthorizationRequired(
-                SelectionReauthorizationReason::PreviewExpired,
-            ));
+            return Err(FiError::SelectionReauthorizationRequired {
+                reason: SelectionReauthorizationReason::PreviewExpired,
+                failure: None,
+            });
         }
         Ok(self.seats)
     }
@@ -766,21 +770,6 @@ pub(crate) enum AvailabilityMismatch {
     FedimintdVersion,
     /// No offered plan matches the requested plan preference.
     Plan,
-}
-
-impl AvailabilityMismatch {
-    /// Formation-facing message, kept identical to the historical quote-time
-    /// diagnostics.
-    pub(crate) fn message(self) -> &'static str {
-        match self {
-            Self::NotAcceptingSeats => "Fleet Manager is not accepting seats",
-            Self::FederationSize => "requested federation size is not offered",
-            Self::FedimintdVersion => {
-                "Fleet Manager version is outside the selected Fedimint DKG identity"
-            }
-            Self::Plan => "requested plan is not offered",
-        }
-    }
 }
 
 impl From<AvailabilityMismatch> for AdvertisementRejection {

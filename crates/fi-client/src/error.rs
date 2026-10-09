@@ -127,9 +127,9 @@ pub enum FiErrorCode {
     SelectionReauthorizationRequired,
     /// A later-stage capability is unavailable.
     CapabilityUnavailable,
-    /// Pinned Fleet Manager inputs were invalid.
+    /// Fleet Manager inputs, responses, or published formation metadata were invalid.
     InvalidFleetManagers,
-    /// A Fleet Manager transport or protocol operation failed.
+    /// A Fleet Manager request failed, or a local verdict rejected a seat.
     FleetManager,
     /// Consumer payment or refund settlement failed.
     Payment,
@@ -150,9 +150,161 @@ pub enum FiErrorCode {
     Timeout,
 }
 
+/// A failure produced by one identity-bound Fleet Manager operation.
+#[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
+#[error("FMan {fman} {operation}: {cause}")]
+pub struct FmanFailure {
+    pub fman: secp256k1::XOnlyPublicKey,
+    pub operation: FmanOperation,
+    pub cause: FmanCause,
+}
+
+/// Closed request names; never supplied by a remote peer.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FmanOperation {
+    Connect,
+    GetAvailability,
+    GetQuote,
+    CreateSeat,
+    GetDkgCode,
+    StartDkg,
+    RestartDkg,
+    GetStatus,
+    GetInviteCode,
+    GetPeerAttestation,
+    ProposeFormationMeta,
+    WaitForRunning,
+}
+impl FmanOperation {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Connect => "connect",
+            Self::GetAvailability => "get_availability",
+            Self::GetQuote => "get_quote",
+            Self::CreateSeat => "create_seat",
+            Self::GetDkgCode => "get_dkg_code",
+            Self::StartDkg => "start_dkg",
+            Self::RestartDkg => "restart_dkg",
+            Self::GetStatus => "get_status",
+            Self::GetInviteCode => "get_invite_code",
+            Self::GetPeerAttestation => "get_peer_attestation",
+            Self::ProposeFormationMeta => "propose_formation_meta",
+            Self::WaitForRunning => "wait_for_running",
+        }
+    }
+}
+impl std::fmt::Display for FmanOperation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// Request causes, independent of the formation policy that handles them.
+/// Remote free text is deliberately absent.
+#[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
+pub enum FmanCause {
+    #[error("timeout")]
+    Timeout,
+    #[error("transport")]
+    Transport,
+    #[error("invalid_response")]
+    InvalidResponse,
+    #[error("not_accepting_seats")]
+    NotAcceptingSeats,
+    #[error("offer_changed")]
+    OfferChanged,
+    #[error("not_running")]
+    NotRunning,
+    #[error("plan_not_offered")]
+    PlanNotOffered,
+    #[error("payment_federation_not_accepted")]
+    PaymentFederationNotAccepted,
+    #[error("payment_federation_unavailable")]
+    PaymentFederationUnavailable,
+    #[error("invalid_payment")]
+    InvalidPayment,
+    #[error("capacity_exhausted")]
+    CapacityExhausted,
+    #[error("unknown_seat")]
+    UnknownSeat,
+    #[error("unsupported_version")]
+    UnsupportedVersion,
+    #[error("unsupported_federation_size")]
+    UnsupportedFederationSize,
+    #[error("unauthorized")]
+    Unauthorized,
+    #[error("seat_unavailable")]
+    SeatUnavailable,
+    #[error("federation_is_running")]
+    FederationIsRunning,
+    #[error("invalid_dkg_input")]
+    InvalidDkgInput,
+    #[error("meta_key_refused")]
+    MetaKeyRefused,
+    #[error("meta_value_invalid")]
+    MetaValueInvalid,
+    #[error("guardian_verification_fee_account_unavailable")]
+    GuardianVerificationFeeAccountUnavailable,
+    #[error("guardian_verification_fee_account_mismatch")]
+    GuardianVerificationFeeAccountMismatch,
+    #[error("meta_consensus_changed")]
+    MetaConsensusChanged,
+    #[error("formation_meta_already_published")]
+    FormationMetaAlreadyPublished,
+    #[error("meta_target_conflict")]
+    MetaTargetConflict,
+    #[error("invalid_gateway_api_url")]
+    InvalidGatewayApiUrl,
+    #[error("unsupported_verb")]
+    UnsupportedVerb,
+    #[error("other")]
+    Other,
+    #[error("wrong_state: {0}")]
+    WrongState(fedi_decentralized_service_fleet_manager::ServiceStatus),
+    #[error("terminal_status: {0}")]
+    TerminalStatus(fedi_decentralized_service_fleet_manager::ServiceStatus),
+}
+
+impl From<fedi_decentralized_service_fleet_manager::FleetManagerError> for FmanCause {
+    fn from(error: fedi_decentralized_service_fleet_manager::FleetManagerError) -> Self {
+        use fedi_decentralized_service_fleet_manager::FleetManagerError as E;
+        match error {
+            E::PlanNotOffered => Self::PlanNotOffered,
+            E::PaymentFederationNotAccepted => Self::PaymentFederationNotAccepted,
+            E::PaymentFederationUnavailable => Self::PaymentFederationUnavailable,
+            E::InvalidPayment => Self::InvalidPayment,
+            E::CapacityExhausted => Self::CapacityExhausted,
+            E::UnknownSeat => Self::UnknownSeat,
+            E::UnsupportedVersion => Self::UnsupportedVersion,
+            E::UnsupportedFederationSize => Self::UnsupportedFederationSize,
+            E::Unauthorized => Self::Unauthorized,
+            E::SeatUnavailable => Self::SeatUnavailable,
+            E::FederationIsRunning => Self::FederationIsRunning,
+            E::MetaKeyRefused => Self::MetaKeyRefused,
+            E::MetaValueInvalid => Self::MetaValueInvalid,
+            E::GuardianVerificationFeeAccountUnavailable => {
+                Self::GuardianVerificationFeeAccountUnavailable
+            }
+            E::GuardianVerificationFeeAccountMismatch => {
+                Self::GuardianVerificationFeeAccountMismatch
+            }
+            E::MetaConsensusChanged => Self::MetaConsensusChanged,
+            E::FormationMetaAlreadyPublished => Self::FormationMetaAlreadyPublished,
+            E::MetaTargetConflict => Self::MetaTargetConflict,
+            E::InvalidGatewayApiUrl => Self::InvalidGatewayApiUrl,
+            E::WrongState { status } => Self::WrongState(status),
+            E::InvalidDkgInput(_) => Self::InvalidDkgInput,
+            E::UnsupportedVerb { .. } => Self::UnsupportedVerb,
+            E::Other(_) => Self::Other,
+        }
+    }
+}
+
 /// Error returned by FI client operations.
 #[derive(Debug, thiserror::Error)]
 pub enum FiError {
+    #[error(transparent)]
+    Fman(#[from] FmanFailure),
     /// Consumer intent failed validation.
     #[error("invalid formation intent: {0}")]
     InvalidIntent(String),
@@ -213,15 +365,18 @@ pub enum FiError {
     SelectionEstimateOverflow,
     /// The preview, selected set, exact price, or payer changed before the
     /// wallet output-generation boundary.
-    #[error("fresh selection authorization required: {0}")]
-    SelectionReauthorizationRequired(SelectionReauthorizationReason),
+    #[error("fresh selection authorization required: {reason}")]
+    SelectionReauthorizationRequired {
+        reason: SelectionReauthorizationReason,
+        failure: Option<FmanFailure>,
+    },
     /// A later-stage capability is unavailable.
     #[error("FI capability unavailable: {0:?}")]
     CapabilityUnavailable(Capability),
     /// Pinned locator set failed local validation.
     #[error("invalid Fleet Manager set: {0}")]
     InvalidFleetManagers(String),
-    /// A Fleet Manager transport or protocol operation failed.
+    /// A local verdict about a seat; no remote request is attributed.
     #[error("Fleet Manager {index} failure: {message}")]
     FleetManager { index: u16, message: String },
     /// Consumer wallet operation failed.
@@ -293,9 +448,6 @@ pub enum FiError {
         /// Last sanitized consumer consensus-read failure, when one occurred.
         consensus_error: Option<String>,
     },
-    /// A paid or free seat presentation was refused.
-    #[error("Fleet Manager {index} refused seat: {reason}")]
-    SeatRefused { index: u16, reason: String },
     /// Formation polling reached its deadline.
     #[error("formation timed out while {0}")]
     Timeout(String),
@@ -306,6 +458,13 @@ impl FiError {
     #[must_use]
     pub fn code(&self) -> FiErrorCode {
         match self {
+            Self::Fman(failure) => match failure.cause {
+                FmanCause::Timeout => FiErrorCode::Timeout,
+                FmanCause::InvalidResponse | FmanCause::FormationMetaAlreadyPublished => {
+                    FiErrorCode::InvalidFleetManagers
+                }
+                _ => FiErrorCode::FleetManager,
+            },
             Self::InvalidIntent(_) => FiErrorCode::InvalidIntent,
             Self::InvalidOptions(_) => FiErrorCode::InvalidOptions,
             Self::Storage(_) => FiErrorCode::Storage,
@@ -318,12 +477,12 @@ impl FiError {
             | Self::InsufficientFmanSeats { .. }
             | Self::SelectionEstimateOverflow => FiErrorCode::Selection,
             Self::SelectionPreviewTimeout => FiErrorCode::Timeout,
-            Self::SelectionReauthorizationRequired(_) => {
+            Self::SelectionReauthorizationRequired { .. } => {
                 FiErrorCode::SelectionReauthorizationRequired
             }
             Self::CapabilityUnavailable(_) => FiErrorCode::CapabilityUnavailable,
             Self::InvalidFleetManagers(_) => FiErrorCode::InvalidFleetManagers,
-            Self::FleetManager { .. } | Self::SeatRefused { .. } => FiErrorCode::FleetManager,
+            Self::FleetManager { .. } => FiErrorCode::FleetManager,
             Self::Payment(_) => FiErrorCode::Payment,
             Self::Liquidity(_) | Self::LiquidityOperationExists { .. } => FiErrorCode::Liquidity,
             Self::MaintenanceWrongState { .. } => FiErrorCode::MaintenanceWrongState,

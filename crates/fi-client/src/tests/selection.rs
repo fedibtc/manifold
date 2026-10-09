@@ -504,7 +504,16 @@ async fn replacement_preview_public_approval_seals_cap_and_expires_before_effect
         )
         .await
         .unwrap_err();
-    assert!(matches!(error, FiError::SeatRefused { .. }), "{error:?}");
+    assert!(
+        matches!(
+            &error,
+            FiError::Fman(FmanFailure {
+                cause: FmanCause::OfferChanged,
+                ..
+            })
+        ),
+        "{error:?}"
+    );
     let status = client.status();
     let initial_formation = formation(&status);
     let FormationActionRequired::ReplaceGuardians(requirements) = initial_formation
@@ -539,10 +548,11 @@ async fn replacement_preview_public_approval_seals_cap_and_expires_before_effect
         .approve(PAYMENT_AMOUNT_MSATS - 1)
         .unwrap_err();
     assert!(matches!(
-        error,
-        FiError::SelectionReauthorizationRequired(
-            SelectionReauthorizationReason::AdvertisementEstimateExceedsLimit
-        )
+        &error,
+        FiError::SelectionReauthorizationRequired {
+            reason: SelectionReauthorizationReason::AdvertisementEstimateExceedsLimit,
+            failure: None
+        }
     ));
 
     let expired_completed_at =
@@ -570,8 +580,11 @@ async fn replacement_preview_public_approval_seals_cap_and_expires_before_effect
         .await
         .unwrap_err();
     assert!(matches!(
-        error,
-        FiError::SelectionReauthorizationRequired(SelectionReauthorizationReason::PreviewExpired)
+        &error,
+        FiError::SelectionReauthorizationRequired {
+            reason: SelectionReauthorizationReason::PreviewExpired,
+            failure: None
+        }
     ));
     let status_after_expiry = client.status();
     assert_eq!(
@@ -805,9 +818,10 @@ async fn selected_without_payer_rejects_a_priced_live_offer_before_effects() {
 
     assert!(matches!(
         error,
-        FiError::SelectionReauthorizationRequired(
-            SelectionReauthorizationReason::PaymentFederationRequired
-        )
+        FiError::SelectionReauthorizationRequired {
+            reason: SelectionReauthorizationReason::PaymentFederationRequired,
+            failure: None
+        }
     ));
     assert_eq!(client.status(), FiStatus::Idle);
     assert_eq!(payment_state.payable_calls.load(Ordering::SeqCst), 0);
@@ -2230,9 +2244,10 @@ async fn preview_validity_starts_when_the_verified_walk_completes() {
     for now in [completed_at + 300, completed_at + 301] {
         assert!(matches!(
             approval.clone().into_seats_at(Timestamp(now)),
-            Err(FiError::SelectionReauthorizationRequired(
-                SelectionReauthorizationReason::PreviewExpired,
-            )),
+            Err(FiError::SelectionReauthorizationRequired {
+                reason: SelectionReauthorizationReason::PreviewExpired,
+                failure: None
+            }),
         ));
     }
 }

@@ -45,3 +45,4 @@ blind-rsa-signatures = "0.17"
 fedi-decentralized-manifold-environment = { path = "../manifold-environment" }
 peerbadge-protocol.workspace = true
 tokio = { workspace = true, features = ["macros", "rt", "test-util"] }
+tracing-subscriber = { version = "0.3", features = ["fmt"] }

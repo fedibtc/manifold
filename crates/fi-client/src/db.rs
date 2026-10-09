@@ -3723,14 +3723,16 @@ fn validate_fresh_admission(
             ..
         } => {
             if *verifier_provenance != expected_provenance {
-                return Err(FiError::SelectionReauthorizationRequired(
-                    crate::SelectionReauthorizationReason::VerifierEnvironmentChanged,
-                ));
+                return Err(FiError::SelectionReauthorizationRequired {
+                    reason: crate::SelectionReauthorizationReason::VerifierEnvironmentChanged,
+                    failure: None,
+                });
             }
             if *valid_until <= now {
-                return Err(FiError::SelectionReauthorizationRequired(
-                    crate::SelectionReauthorizationReason::PreviewExpired,
-                ));
+                return Err(FiError::SelectionReauthorizationRequired {
+                    reason: crate::SelectionReauthorizationReason::PreviewExpired,
+                    failure: None,
+                });
             }
             Ok(())
         }
