@@ -42,18 +42,21 @@ const planPriceMsat = (plan: SeatSummary['plan']): number =>
 const dayOf = (atMs: number | null): string | null =>
   atMs === null ? null : new Date(atMs).toISOString().slice(0, 10);
 
-// `success` is the terminal result of fedimint's receive state machine
-// (crates/fman/core/src/wallet.rs), so a seat counts as sold once the buyer's
-// payment has been received — not merely claimed.
+// Only this FMan's key can spend the buyer's notes, so `already_spent` is a
+// sale an earlier install claimed before a mnemonic restore, stamped with the
+// restore time (crates/fman/core/src/wallet.rs).
+const isSold = (claim: SeatSummary['payment_claim']): boolean =>
+  claim.state === 'success' || claim.state === 'already_spent';
+
 const seatSales = (seats: SeatSummary[]): EarningEvent[] =>
   seats
-    .filter((seat) => seat.payment_claim.state === 'success')
+    .filter((seat) => isSold(seat.payment_claim))
     .map((seat) => ({
       key: `seat-sale:${seat.seat_id}`,
       kind: 'seat-sale' as const,
       amountMsat: planPriceMsat(seat.plan),
       detail: seat.seat_id,
-      atMs: seat.payment_claim.state === 'success' ? seat.payment_claim.at_ms : null
+      atMs: seat.created_at_ms
     }));
 
 // `remittances` is a display window: the daemon caps it (`limit.unwrap_or(20)`),
