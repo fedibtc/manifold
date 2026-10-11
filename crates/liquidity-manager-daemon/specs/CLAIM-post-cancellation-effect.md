@@ -41,7 +41,11 @@ not rely on two daemon instances.
 
 ## Status
 
-Unverified.
+Falsified: after a funding submission CAS commits but before that invocation
+calls `send_onchain`, normal chain reconciliation can terminalize the same
+txid-less operation from exact third-party output evidence; the older invocation
+then performs its irreversible send after terminalization
+([evidence](CLAIM-post-cancellation-effect/falsification-terminal-between-fence-and-send.md)).
 
 ## Assumptions
 

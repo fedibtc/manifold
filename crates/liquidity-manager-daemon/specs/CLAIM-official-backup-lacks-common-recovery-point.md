@@ -7,7 +7,10 @@ but cannot modify the archive or bypass the official daemon.
 
 ## Status
 
-Unverified.
+Falsified: official backup quiesces periodic worker passes but leaves retained
+target-client background writers and detached/Admin-triggered client opens live
+while copying mutable RocksDB files individually
+([evidence](CLAIM-official-backup-lacks-common-recovery-point/falsification-live-target-client-writers.md)).
 
 ## Assumptions
 

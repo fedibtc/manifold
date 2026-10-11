@@ -68,9 +68,6 @@ These are ordinary state-consistency schedules and do not require a faulty
 gatewayd, chain observer, or operator. External behavior outside A3 and
 arbitrary database editing are excluded by A1.
 
-**This claim is falsified by current code.** The argument records the writer
-inventory and concrete admitted traces rather than weakening the predicate.
-
 **Live restore.** The daemon can replace its data directory without exiting
 ([ARCH-liquidity-manager](../specs/ARCH-liquidity-manager.md), "Startup and
 readiness"), so a restore need not be preceded by a process boundary. This does
@@ -91,6 +88,10 @@ nanosecond component, so a surviving counter is narrower than a reset one.
 
 ## Status
 
-Unverified.
+Falsified: withdrawal admission can retain an older truthful local spendable
+balance after its observation update loses to a newer durable read tick, then
+combine that old balance with the newer reconciliation watermark and commit
+liabilities exceeding the durable balance
+([evidence](CLAIM-wallet-budget-overcommit/falsification-stale-local-withdrawal-balance.md)).
 
 ## Assumptions
