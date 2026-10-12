@@ -5014,6 +5014,7 @@ fn service_seat_phase(status: &ServiceStatus) -> Result<SeatPhase, MgCause> {
         ServiceStatus::DataLoss
         | ServiceStatus::Decommissioned
         | ServiceStatus::AwaitingTransfer
+        | ServiceStatus::TransferGrantExpired
         | ServiceStatus::Transferred
         | ServiceStatus::Removed => Err(MgCause::TerminalStatus(status.clone())),
     }

@@ -71,11 +71,13 @@ impl SeatTransferGrant {
     }
 }
 
-/// Ask a bought `New` seat to pull a guardian from its source MG.
+/// Ask a bought `New` or `TransferGrantExpired` seat to pull a guardian from
+/// its source MG.
 ///
 /// The seat becomes `AwaitingTransfer` and polls the source until it obtains
-/// the guardian or the grant expires, then returns to `New`. A replay of the
-/// same grant succeeds; a different grant on an awaiting seat is refused.
+/// the guardian or the grant expires, then reports `TransferGrantExpired`. A
+/// replay of the same grant succeeds; a different grant on an awaiting seat
+/// is refused.
 #[derive(serde::Deserialize, serde::Serialize, Clone, Debug, Eq, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct PullSeatRequest {
@@ -103,8 +105,8 @@ pub struct PullSeatResponse;
 
 /// The source's answer to a [`SeatTransferGrant`].
 ///
-/// The source has durably recorded `Transferred` and stopped its guardian
-/// before it answers. Repeats return a fresh seal of the same guardian.
+/// The source has durably recorded `Transferred`, stopped its guardian, and
+/// published `Transferred` in the seat's backup before it answers. Repeats return a fresh seal of the same guardian.
 #[derive(serde::Deserialize, serde::Serialize, Clone, Debug, Eq, PartialEq)]
 pub struct TransferSeatResponse {
     /// The guardian's config and secrets, sealed to the grant's
