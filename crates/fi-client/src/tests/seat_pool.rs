@@ -46,6 +46,7 @@ async fn formed_paid_client() -> (
 fn spare_approval(max_msats: u64) -> SpareSeatApproval {
     SpareSeatApproval {
         verifier_provenance: test_peer_badge_verifier().provenance(),
+        fedimintd_dkg_version: fedimintd_version().dkg_version(),
         seat: ApprovedFmanSeat {
             fman_id: test_fman_id(SPARE_INDEX),
             holder: test_fman_id(SPARE_INDEX),
@@ -351,4 +352,83 @@ fn a_backup_without_spares_keeps_its_earlier_encoding() {
     ciborium::into_writer(&with_spare, &mut encoded).unwrap();
     let decoded: crate::backup::FiBackupPayload = ciborium::from_reader(&encoded[..]).unwrap();
     assert_eq!(decoded, with_spare);
+}
+
+fn fman_ad(index: usize, price_msats: u64, version: &str) -> nostr_sdk::Event {
+    selection::issuer_ad_for_version_and_service_key_at(
+        &fman_keys(index),
+        &discovery::issuer_keys(0),
+        price_msats,
+        version,
+        manager_key(index).x_only_public_key().0,
+        test_now_secs(),
+    )
+}
+
+#[tokio::test]
+async fn a_restored_fi_buys_a_spare_on_the_federation_line() {
+    let (_database, _payments, _payment_state, fman_state, source) = formed_paid_client().await;
+    let backup = source.inner.store.backup_payload().await.unwrap().payload;
+
+    // Neither a guardian of the federation nor an FMan on another Fedimint
+    // line may hold a spare.
+    let registry = TestRegistry::default();
+    registry
+        .candidates
+        .lock()
+        .expect("test lock")
+        .push(setup_payment_event(test_now_secs(), &[PAYMENT_INVITE]));
+    registry.advertisements.lock().expect("test lock").extend([
+        fman_ad(0, PAYMENT_AMOUNT_MSATS, FEDIMINTD_VERSION_0_1),
+        fman_ad(20, PAYMENT_AMOUNT_MSATS, "0.13.0+fedi"),
+    ]);
+    let (payments, payment_state) = TestPayments::new();
+    let restored = open_client_with_registry(
+        MemDatabase::new().into_database(),
+        payments,
+        fman_state.clone(),
+        FmanConfig::paid(),
+        registry,
+    )
+    .await;
+    let status = restored
+        .inner
+        .store
+        .restore_backup_payload_with_completion(TestIdentity::fi_id(), backup, None)
+        .await
+        .unwrap();
+    restored.inner.progress.send_replace(status);
+    assert!(matches!(restored.status(), FiStatus::Restored(_)));
+
+    let error = restored
+        .preview_spare_seat(crate::FmanDiscoveryOptions::default())
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(error, FiError::InsufficientFmanSeats { eligible: 0, .. }),
+        "{error:?}"
+    );
+
+    let spare = restored
+        .buy_spare_seat(spare_approval(PAYMENT_AMOUNT_MSATS), long_request_options())
+        .await
+        .unwrap();
+
+    assert_eq!(spare.fman_id, test_fman_id(SPARE_INDEX));
+    assert_eq!(payment_state.create_calls.load(Ordering::SeqCst), 1);
+    let records = spare_create_records(&fman_state);
+    assert_eq!(records.len(), 1);
+    let quote = records[0]
+        .signed_quote
+        .verify(&manager_key(SPARE_INDEX).x_only_public_key().0)
+        .unwrap();
+    assert_eq!(
+        quote.terms.request.federation_size,
+        FederationSize(MIN_FEDERATION_SIZE)
+    );
+    assert_eq!(
+        quote.terms.request.fedimintd_version.dkg_version(),
+        fedimintd_version().dkg_version()
+    );
+    assert_eq!(restored.spare_seats().await.unwrap(), vec![spare]);
 }

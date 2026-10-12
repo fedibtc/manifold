@@ -631,16 +631,22 @@ The seat pool holds spare seats that the FI bought for its formed federation
 but that host no guardian yet. A later guardian transfer takes its destination
 seat from the pool. Formation does not use the pool.
 
-`preview_spare_seat` selects one FMan outside the federation and the pool.
-`buy_spare_seat` takes the approved preview with a price cap and buys one seat
-with the normal `GetQuote` and `CreateSeat` for the federation's size. It
+The FI can buy spares for a federation it formed on this device or restored
+from a backup. `preview_spare_seat` reads the Fedimint major/minor line the
+federation runs now with `GetFedimintStats` from the first seat that answers.
+It then selects one FMan on that line outside the federation and the pool.
+After a restore the badge holders of the seats are unknown, so the preview
+excludes their FMans but not their holders. `buy_spare_seat` takes the
+approved preview with a price cap and buys one seat with the normal
+`GetQuote` and `CreateSeat` for the federation's size. The purchase row keeps
+these terms, so a resume does not need the formation record. It
 holds the driver lease and allows one open purchase at a time. The purchase
 row follows the formation purchase rules: it persists a paid quote before the
 reservation, refreshes a stale quote and releases its reservation before the
 payment output starts, and replays the exact quote after that point. A refusal
 settles the refund and releases the reservation. A crash leaves the row for
 `resume_spare_seat_purchase`. Success replaces the row with a spare-seat row in
-one transaction. A restored FI has no formation intent and cannot buy seats.
+one transaction.
 
 ## Modules
 
