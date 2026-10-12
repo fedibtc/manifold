@@ -37,6 +37,13 @@ describe('SeatRecoveryNotices', () => {
     expect(screen.queryByText(/not necessarily broken/i)).toBeNull();
   });
 
+  it('should explain a created seat as awaiting setup, not recovering', () => {
+    render_({ state: 'active', health: 'unavailable', phase: 'created' });
+
+    expect(screen.getByText(/not set up yet/i)).toBeTruthy();
+    expect(screen.queryByText(/currently recovering/i)).toBeNull();
+  });
+
   it('should render nothing for a healthy running seat', () => {
     render_({ state: 'active', health: 'healthy', phase: 'running', invite_code: 'fed1abc' });
 

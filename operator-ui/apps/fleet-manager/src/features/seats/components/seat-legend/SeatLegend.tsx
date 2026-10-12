@@ -52,11 +52,12 @@ const ENTRIES: LegendEntry[] = [
   },
   {
     term: 'Health',
-    description: join(
-      HEALTH_ORDER.map(
+    description: join([
+      ...HEALTH_ORDER.map(
         (health) => `${describeSeatHealth(health).label} — ${HEALTH_MEANING[health]}`
-      )
-    )
+      ),
+      'Awaiting setup — a Created seat has no federation to serve yet'
+    ])
   },
   {
     term: '—',

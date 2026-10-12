@@ -31,6 +31,11 @@ export const describeSeatReport = (report: SeatReport): { label: string; tone: C
   if (report.state === 'decommissioned') {
     return { label: 'Decommissioned', tone: 'neutral' };
   }
+  // The daemon reports a created seat as unavailable because it has no
+  // federation to serve yet. That is not a fault, so do not show it as one.
+  if (report.phase === 'created') {
+    return { label: 'Awaiting setup', tone: 'neutral' };
+  }
   return describeSeatHealth(report.health);
 };
 
