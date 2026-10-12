@@ -15,7 +15,8 @@ MG identity, seat id, and stable locator. It optionally contains the exact
 request. The operation id and payload hash are recomputed from that commitment.
 Completed and terminally rejected liquidity work is omitted.
 It also lists every spare seat in the FA seat pool by MG identity, seat id,
-and locator. An empty list is omitted from the encoding, so a payload without
+and locator. A spare that an open guardian transfer uses stays in this list
+until consensus names it, and then moves into the seats. An empty list is omitted from the encoding, so a payload without
 spares keeps its earlier bytes and older readers.
 
 The payload omits FA identity, formation id and intent, runtime checkpoints,
