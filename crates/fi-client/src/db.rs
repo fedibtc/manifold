@@ -193,6 +193,10 @@ struct RestoredBackupState {
     formation_id: FormationId,
     backup_eligible: bool,
     federation_name: Option<crate::FederationName>,
+    /// Verified badge holders this device knows, by seat id. A backup carries
+    /// none, so an imported record starts empty.
+    #[serde(default)]
+    seat_holders: Vec<(SeatId, PublicKey)>,
 }
 
 #[derive(Debug, Decodable, Encodable)]
@@ -1189,6 +1193,7 @@ impl FiStore {
                     locator: spare.locator.clone(),
                     seat_id: spare.seat_id.clone(),
                     guardian_fee_account: None,
+                    holder: None,
                 },
             )
             .await;
@@ -1206,6 +1211,7 @@ impl FiStore {
                 formation_id,
                 backup_eligible: false,
                 federation_name: None,
+                seat_holders: Vec::new(),
             },
         )
         .await;
@@ -3582,6 +3588,40 @@ impl FiStore {
             .map_err(|_| FiError::Storage("persisting the FI seat pool failed".to_owned()))
     }
 
+    /// Put a pool spare in place of a restored seat, after consensus showed
+    /// that a transfer, interrupted before this device recorded it, moved
+    /// the guardian there.
+    pub(crate) async fn adopt_transferred_spare(
+        &self,
+        fi_id: FiId,
+        seat_index: u16,
+        source_seat_id: &SeatId,
+        spare: &crate::seat_pool::StoredSpareSeat,
+    ) -> FiResult<()> {
+        let mut dbtx = self.database.begin_transaction().await;
+        rebind_federation_seat(&mut dbtx, fi_id, seat_index, source_seat_id, spare).await?;
+        dbtx.commit_tx_result()
+            .await
+            .map_err(|_| FiError::Storage("persisting the adopted spare seat failed".to_owned()))
+    }
+
+    /// Verified badge holders of the restored record's seats.
+    pub(crate) async fn restored_seat_holders(&self) -> BTreeSet<PublicKey> {
+        self.database
+            .begin_transaction_nc()
+            .await
+            .get_value(&RestoredBackupKey)
+            .await
+            .map(|restored| {
+                restored
+                    .seat_holders
+                    .into_iter()
+                    .map(|(_, holder)| holder)
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
     pub(crate) async fn load_guardian_transfer(
         &self,
     ) -> FiResult<Option<crate::transfer::StoredGuardianTransfer>> {
@@ -3645,11 +3685,14 @@ impl FiStore {
                         "the open guardian transfer changed under its driver".to_owned(),
                     ));
                 }
-                rebind_federation_seat(&mut dbtx, fi_id, &transfer).await?;
-                dbtx.remove_entry(&SpareSeatKey {
-                    seat_id: transfer.destination.seat_id.to_string(),
-                })
-                .await;
+                rebind_federation_seat(
+                    &mut dbtx,
+                    fi_id,
+                    transfer.seat_index,
+                    &transfer.source_seat_id,
+                    &transfer.destination,
+                )
+                .await?;
                 dbtx.insert_entry(&GuardianTransferKey, &transfer).await;
             }
             GuardianTransferWrite::Close => {
@@ -4025,7 +4068,8 @@ pub(crate) fn payment_reservation_id(
     PaymentReservationId::from_digest(sha256::Hash::hash(&preimage).to_byte_array())
 }
 
-/// Replace the transferred seat in the federation's durable seat list.
+/// Replace the transferred seat in the federation's durable seat list and
+/// take its replacement out of the pool. Repeating it changes nothing.
 ///
 /// A formation record describes how the federation was formed; after a
 /// transfer it no longer describes who hosts it. The first transfer
@@ -4034,7 +4078,9 @@ pub(crate) fn payment_reservation_id(
 async fn rebind_federation_seat(
     dbtx: &mut fedimint_core::db::DatabaseTransaction<'_, fedimint_core::db::Committable>,
     fi_id: FiId,
-    transfer: &crate::transfer::StoredGuardianTransfer,
+    seat_index: u16,
+    source_seat_id: &SeatId,
+    destination: &crate::seat_pool::StoredSpareSeat,
 ) -> FiResult<()> {
     let mut restored = if let Some(formation) = dbtx.get_value(&ActiveFormationKey).await {
         validate_schema_and_owner(&formation, fi_id)?;
@@ -4044,6 +4090,7 @@ async fn rebind_federation_seat(
             ));
         }
         let mut seats = Vec::with_capacity(usize::from(formation.seat_count));
+        let mut seat_holders = Vec::new();
         for index in 0..formation.seat_count {
             let key = SeatKey {
                 formation_id: formation.formation_id.0.clone(),
@@ -4054,13 +4101,17 @@ async fn rebind_federation_seat(
                 .await
                 .ok_or_else(|| FiError::Storage("formed FI record is missing a seat".to_owned()))?;
             dbtx.remove_entry(&key).await;
+            let seat_id = seat
+                .seat_id
+                .ok_or_else(|| FiError::Storage("formed FI seat has no seat id".to_owned()))?;
+            if let Some(holder) = seat.admission.holder() {
+                seat_holders.push((seat_id.clone(), holder));
+            }
             seats.push(crate::backup::FiBackupSeat {
                 fman_identity: seat.admission.fman_id().ok_or_else(|| {
                     FiError::Storage("formed FI seat has no authenticated FMan identity".to_owned())
                 })?,
-                seat_id: seat
-                    .seat_id
-                    .ok_or_else(|| FiError::Storage("formed FI seat has no seat id".to_owned()))?,
+                seat_id,
                 locator: seat.locator,
             });
         }
@@ -4084,6 +4135,7 @@ async fn rebind_federation_seat(
             formation_id: formation.formation_id,
             backup_eligible: true,
             federation_name: Some(formation.intent.federation_name),
+            seat_holders,
         }
     } else {
         let restored = dbtx
@@ -4100,17 +4152,33 @@ async fn rebind_federation_seat(
     let seat = restored
         .payload
         .seats
-        .get_mut(usize::from(transfer.seat_index))
-        .filter(|seat| seat.seat_id == transfer.source_seat_id)
-        .ok_or_else(|| {
-            FiError::Storage("the transferred seat is no longer in the federation".to_owned())
-        })?;
-    *seat = crate::backup::FiBackupSeat {
-        fman_identity: transfer.destination.fman_id,
-        seat_id: transfer.destination.seat_id.clone(),
-        locator: transfer.destination.locator.clone(),
-    };
+        .get_mut(usize::from(seat_index))
+        .ok_or_else(|| FiError::Storage("the transferred seat index is out of range".to_owned()))?;
+    if seat.seat_id != destination.seat_id {
+        if &seat.seat_id != source_seat_id {
+            return Err(FiError::Storage(
+                "the transferred seat is no longer in the federation".to_owned(),
+            ));
+        }
+        *seat = crate::backup::FiBackupSeat {
+            fman_identity: destination.fman_id,
+            seat_id: destination.seat_id.clone(),
+            locator: destination.locator.clone(),
+        };
+        restored
+            .seat_holders
+            .retain(|(seat_id, _)| seat_id != source_seat_id);
+        if let Some(holder) = destination.holder {
+            restored
+                .seat_holders
+                .push((destination.seat_id.clone(), holder));
+        }
+    }
     dbtx.insert_entry(&RestoredBackupKey, &restored).await;
+    dbtx.remove_entry(&SpareSeatKey {
+        seat_id: destination.seat_id.to_string(),
+    })
+    .await;
     Ok(())
 }
 

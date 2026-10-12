@@ -36,7 +36,7 @@ use crate::formation::{
     DriverRun, FreeSeatQuote, PaidSeatQuote, QuoteAttemptPolicy, SeatCreation, SeatPresentation,
     finish_driver_run, now_secs, start_driver_run,
 };
-use crate::selection::{SpareSeatApproval, SpareSeatPreview, dkg_line};
+use crate::selection::{SelectionBadgeVerifier, SpareSeatApproval, SpareSeatPreview, dkg_line};
 use crate::{
     FederationConsensusReader, FederationName, FederationSize, FiClient, FiError, FiIdentity,
     FiPayments, FiResult, FleetManagerConnector, FmanDiscoveryOptions, FormationId, FormationPhase,
@@ -79,6 +79,8 @@ pub(crate) struct StoredSpareSeat {
     /// The FMan-signed account from the seat's acceptance. Absent for a
     /// spare restored from a backup, which carries no acceptance.
     pub(crate) guardian_fee_account: Option<Account>,
+    /// Verified badge holder at purchase. Absent for a restored spare.
+    pub(crate) holder: Option<PublicKey>,
 }
 
 impl From<StoredSpareSeat> for SpareSeat {
@@ -139,6 +141,15 @@ where
         &self,
         options: FmanDiscoveryOptions,
     ) -> FiResult<SpareSeatPreview> {
+        self.preview_spare_seat_with_verifier(options, &self.inner.peer_badge_verifier)
+            .await
+    }
+
+    pub(crate) async fn preview_spare_seat_with_verifier(
+        &self,
+        options: FmanDiscoveryOptions,
+        verifier: &impl SelectionBadgeVerifier,
+    ) -> FiResult<SpareSeatPreview> {
         let fi_id = self.fi_id()?;
         let federation = self.pool_federation(fi_id).await?;
         let mut members = BTreeSet::new();
@@ -150,7 +161,9 @@ where
             }
         }
         let mut excluded = members.clone();
+        let mut holders = federation.holders;
         for spare in self.inner.store.list_spare_seats().await? {
+            holders.extend(spare.holder);
             excluded.insert(spare.fman_id);
             retained_service_pubkeys.insert(spare.locator.service_pubkey, spare.fman_id);
         }
@@ -160,7 +173,7 @@ where
             .expect("clamped discovery timeout fits the monotonic deadline domain");
         crate::selection::preview_spare_seat_with(
             &self.inner.ports.registry,
-            &self.inner.peer_badge_verifier,
+            verifier,
             &crate::selection::LiveAvailabilityProber {
                 connector: Some(&self.inner.ports.fman_connector),
             },
@@ -169,7 +182,7 @@ where
             &members,
             excluded,
             retained_service_pubkeys,
-            federation.holders,
+            holders,
             deadline,
             now,
             || fedimint_core::time::duration_since_epoch().as_secs(),
@@ -317,7 +330,7 @@ where
                     .into_iter()
                     .map(|seat| (Some(seat.fman_identity), seat.locator, seat.seat_id))
                     .collect(),
-                holders: BTreeSet::new(),
+                holders: self.inner.store.restored_seat_holders().await,
             }),
             FiRecovery::Idle | FiRecovery::Formation(_) => Err(FiError::NoActiveFormation),
         }
@@ -444,6 +457,7 @@ where
                     locator: purchase.locator,
                     seat_id: acceptance.seat_id,
                     guardian_fee_account: Some(acceptance.guardian_fee_account),
+                    holder: Some(purchase.holder),
                 };
                 lease
                     .write_seat_pool(SeatPoolWrite::Complete(spare.clone()))

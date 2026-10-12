@@ -578,6 +578,13 @@ where
             crate::formation::start_driver_run(&self.inner.store, options).await?;
         let result = async {
             intent.validate()?;
+            // The request commits to the current seats, which an open
+            // guardian transfer is about to change.
+            if self.inner.store.load_guardian_transfer().await?.is_some() {
+                return Err(FiError::InvalidIntent(
+                    "finish the open guardian transfer before a liquidity request".to_owned(),
+                ));
+            }
             lease.renew().await?;
             let context = self.formed_liquidity_context(formation_id).await?;
             self.ensure_no_live_liquidity_operation(context.federation.federation_id())
@@ -961,7 +968,7 @@ where
     ///
     /// The one-live-operation-per-federation invariant makes "first" also
     /// "only" for the filters used here.
-    async fn find_live_liquidity_operation<M>(
+    pub(crate) async fn find_live_liquidity_operation<M>(
         &self,
         matches: M,
     ) -> FiResult<Option<LiquidityOperationSnapshot>>

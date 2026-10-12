@@ -4118,6 +4118,9 @@ where
                     "restored federation seat-binding directory is invalid: {error}"
                 ))
             })?;
+        let payload = self
+            .adopt_transferred_spare(fi_id, payload, &bindings)
+            .await?;
         let federation_name = federation_name(&consensus)?;
         let validation_name = federation_name
             .clone()
@@ -4166,6 +4169,55 @@ where
         }
         self.inner.progress.send_replace(status);
         Ok(())
+    }
+
+    /// Take a pool spare into the seat list when consensus shows that a
+    /// transfer moved a guardian onto it. That happens when this device lost
+    /// the transfer before it recorded the move, or restored a backup taken
+    /// before then: exactly one listed FMan is absent from consensus, and the
+    /// one FMan that consensus adds is a spare of this FI.
+    async fn adopt_transferred_spare(
+        &self,
+        fi_id: FiId,
+        payload: crate::backup::FiBackupPayload,
+        bindings: &[fedi_decentralized_domain::VerifiedSeatBinding],
+    ) -> FiResult<crate::backup::FiBackupPayload> {
+        let named = bindings
+            .iter()
+            .map(|binding| binding.fman_pubkey.0.clone())
+            .collect::<BTreeSet<_>>();
+        let listed = payload
+            .seats
+            .iter()
+            .map(|seat| seat.fman_identity.to_string())
+            .collect::<BTreeSet<_>>();
+        let missing = payload
+            .seats
+            .iter()
+            .enumerate()
+            .filter(|(_, seat)| !named.contains(&seat.fman_identity.to_string()))
+            .collect::<Vec<_>>();
+        let added = named.difference(&listed).collect::<Vec<_>>();
+        let ([(index, source)], [added]) = (missing.as_slice(), added.as_slice()) else {
+            return Ok(payload);
+        };
+        let Some(spare) = self
+            .inner
+            .store
+            .list_spare_seats()
+            .await?
+            .into_iter()
+            .find(|spare| &&spare.fman_id.to_string() == added)
+        else {
+            return Ok(payload);
+        };
+        let index = u16::try_from(*index)
+            .map_err(|_| FiError::Storage("restored seat index is out of range".to_owned()))?;
+        self.inner
+            .store
+            .adopt_transferred_spare(fi_id, index, &source.seat_id, &spare)
+            .await?;
+        self.inner.store.restored_backup_payload(fi_id).await
     }
 
     async fn seat_sessions(

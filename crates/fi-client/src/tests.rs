@@ -866,6 +866,10 @@ struct FmanState {
     attest_foreign_peer: AtomicBool,
     /// Seat 0 signs an account different from its earlier signed acceptance.
     attest_wrong_fee_account: AtomicBool,
+    /// Sign every attestation with a new `issued_at`, as real FMans do.
+    attest_with_fresh_timestamps: AtomicBool,
+    /// The federation stops answering once a transfer binding has votes.
+    consensus_down_after_binding_votes: AtomicBool,
     /// One entry per public trust-material request, preserving the FMan queried.
     trust_material_requests: Mutex<Vec<usize>>,
     /// Corrupt the first FMan trust-material response signature.
@@ -1473,6 +1477,7 @@ impl FleetManagerService for TestFman {
         let foreign = self.index == 0 && self.state.attest_foreign_peer.load(Ordering::SeqCst);
         let wrong_fee_account =
             self.index == 0 && self.state.attest_wrong_fee_account.load(Ordering::SeqCst);
+        let call = self.state.attestation_calls.load(Ordering::SeqCst) as u64;
         let mut attestation = if foreign {
             foreign_peer_attestation()
         } else if let Some(peer) = self
@@ -1489,8 +1494,17 @@ impl FleetManagerService for TestFman {
         } else {
             test_attestation_for_peer(self.index, 0)
         };
+        let fresh_timestamp = self
+            .state
+            .attest_with_fresh_timestamps
+            .load(Ordering::SeqCst);
+        if fresh_timestamp {
+            attestation.attestation.issued_at = Timestamp(1_700_000_000 + call);
+        }
         if wrong_fee_account {
             attestation.attestation.guardian_fee_account = guardian_fee_account(60);
+        }
+        if wrong_fee_account || fresh_timestamp {
             let message = nostr_sdk::secp256k1::Message::from_digest(
                 attestation
                     .attestation
@@ -2065,6 +2079,19 @@ impl FederationConsensusReader for TestConsensusReader {
         invite_code: &InviteCode,
     ) -> Result<FederationConsensusSnapshot, FederationConsensusError> {
         self.check_invite(invite_code)?;
+        if self
+            .state
+            .consensus_down_after_binding_votes
+            .load(Ordering::SeqCst)
+            && !self
+                .state
+                .binding_votes
+                .lock()
+                .expect("test lock")
+                .is_empty()
+        {
+            return Err(FederationConsensusError::new("test federation unreachable"));
+        }
         if self
             .failures
             .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |left| {
