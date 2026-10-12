@@ -421,7 +421,11 @@ Fleet Manager liveness. Verify the saved invite's federation identity and the
 complete signed directory; local formations also require their saved directory
 and fee recipients to remain exact. Restored backups must match every saved seat
 and any liquidity commitment before exposing fresh authority. Initial formation
-still requires every manager's health and agreed invite.
+still requires every manager's health, agreed invite, and attestation before the
+complete metadata proposal is saved. Once that validated proposal is durable,
+resume checks consensus first and can replay it through reachable managers.
+Only fresh consensus with the exact saved directory, fee recipients, and initial
+rate confirms publication; acknowledgements or manager liveness alone do not.
 If the saved invite cannot reach consensus, recovery may ask the saved managers
 for alternative invites. They are dialing hints only: reject a different
 federation id and apply the same consensus and directory checks. Retain a

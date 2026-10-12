@@ -455,8 +455,9 @@ where
     /// current remote state: resume reads fresh federation consensus and verifies
     /// the saved identity, directory, and fee recipients. Restored backups likewise
     /// verify their saved seats against the signed consensus directory. Neither
-    /// path requires every manager online; if the saved invite is unreachable,
-    /// recovery asks saved managers for alternative invites to the same federation.
+    /// path requires every manager online. From `DkgComplete` onward, an
+    /// unreachable saved invite can be replaced by a dialing hint from a saved
+    /// manager, verified against the same federation identity.
     /// Inspect [`FormationFreshness`] through status observation when presenting
     /// persisted state before that reconciliation completes.
     ///
