@@ -24,8 +24,8 @@ online once. The FA does not have to be online at the same time.
    sends the grant to the destination seat with `PullSeat`.
 2. The destination persists the grant, reports `AwaitingTransfer`, and
    presents the grant to the source with `TransferSeat` until the source
-   answers or the grant expires. On expiry the seat drops the grant and
-   reports `TransferGrantExpired`. The source may already have answered, so
+   answers or the grant expires. On expiry a seat that has not stored a
+   package drops the grant and reports `TransferGrantExpired`. The source may already have answered, so
    the FA does not treat the seat as a free spare: it renews the move with
    `PullSeat` and a new grant. A `TransferGrantExpired` seat accepts a grant
    like a `New` seat.
@@ -37,9 +37,13 @@ online once. The FA does not have to be online at the same time.
    the destination service key and bound to both seat ids. A `Transferred`
    seat never starts again, and it answers every later valid grant for the
    seat with the same guardian.
-4. The destination opens the package, checks it against the grant, installs
-   the guardian, publishes it in the seat's backup, and only then reports
-   `Running`. It refuses a grant for a federation it already hosts. It then
+4. The destination opens the package, checks it against the grant, and
+   durably stores the imported guardian. From then on the grant's expiry no
+   longer applies to the seat: across restarts it installs the guardian,
+   retries its backup until the relays confirm it, and only then reports
+   `Running`. Until then it reports `AwaitingTransfer`, and it accepts a
+   renewed grant for the same move as a replay. It refuses a grant for a
+   federation it already hosts, but its own pending import does not count. It then
    invokes the `PullSeat` completion callback. `Running` ends the
    destination's part of the transfer.
 5. The FA sends `ReplaceSeatBinding` to every seat. Each MG replaces only
@@ -78,7 +82,13 @@ the move.
 
 The source records the move as a tombstone in its seat backup, not as a
 deletion: relays may keep a deleted event. A restored `Transferred` seat
-stays stopped, and `RemoveSeat` still applies to it.
+stays stopped, and `RemoveSeat` still applies to it. A confirmed publish does
+not stop a relay from serving the older running-seat event instead. The
+transfer therefore depends on restore never adopting a replayed older seat
+event in place of the tombstone, as
+[CLAIM-manifold-guardian-restore-adopts-authentic-consistent-state](./CLAIM-manifold-guardian-restore-adopts-authentic-consistent-state.md)
+requires. The MG implementation must satisfy that claim before transfer
+ships.
 
 ## Custody
 
