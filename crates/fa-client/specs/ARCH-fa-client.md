@@ -658,7 +658,9 @@ one transaction.
 seat, by the contract in
 [`SPEC-guardian-transfer`](../../mg/specs/SPEC-guardian-transfer.md). It
 signs a grant that is valid for 14 days, records the transfer, and sends
-`PullSeat` with an optional completion callback. One transfer is open at a
+`PullSeat` with an optional completion callback. It refuses a spare whose
+MG or known badge holder hosts, or hosted before a transfer, a peer of the
+federation: that host could hold two key shares. One transfer is open at a
 time, and the spare stays in the pool and the backup until consensus names
 it. A transfer and a liquidity request do not overlap: the liquidity
 commitment names the current seats, so each refuses to start while the other
@@ -666,8 +668,10 @@ is live.
 
 `resume_guardian_transfer` continues from the recorded phase. While the
 destination is `AwaitingTransfer` it polls until the run ends and then
-reports `AwaitingSource`. A destination that is `New` again after expiry
-closes the transfer as `Expired`. When the destination is `Running`, the FA
+reports `AwaitingSource`. When the grant expired, the destination reports
+`TransferGrantExpired`. The source may have answered already, so the FA does
+not give up the move: it signs a new grant for the same move and sends
+`PullSeat` again. When the destination is `Running`, the FA
 reads the destination's attestation, saves it in the transfer, and votes it
 through every guardian except the source, like a metadata update. The
 destination signs a new attestation on each request, so a resume votes the
@@ -676,7 +680,8 @@ from `rebind_transferred_seat`, for the saved attestation or another one of
 the destination for the same peer. This step does not need a reconciled
 seat list, because consensus may already name the destination. In the
 same transaction it replaces the source seat in the federation's seat list
-with the spare and takes the spare out of the pool. It then sends
+with the spare, takes the spare out of the pool, and records the source MG
+and its known holder as a past host. It then sends
 `RemoveSeat` to the source. An unreachable source leaves the transfer in
 `RemovingSource` for a later resume.
 

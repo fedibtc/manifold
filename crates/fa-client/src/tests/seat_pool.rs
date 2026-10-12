@@ -344,6 +344,7 @@ fn a_backup_without_spares_keeps_its_earlier_encoding() {
         seats: Vec::new(),
         liquidity: None,
         spare_seats: Vec::new(),
+        past_hosts: Vec::new(),
     };
     let json = serde_json::to_value(&payload).unwrap();
     assert!(json.get("spare_seats").is_none());
