@@ -160,11 +160,18 @@ pub(crate) async fn install(
             .map_err(|err| anyhow::anyhow!("wipe leftover restore staging: {err}"))?;
     }
 
+    // Seat numbers are this host's to assign. Two hosts that ran one
+    // mnemonic at once each numbered their new seats independently, so their
+    // seats can claim one number. Creation order keeps the assignment stable
+    // across a retry, which then adopts the directories it already wrote.
+    let mut seats: Vec<_> = fleet.seats.iter().collect();
+    seats.sort_by(|a, b| (a.created_at_ms, &a.seat_id).cmp(&(b.created_at_ms, &b.seat_id)));
+    let seats: Vec<_> = (0..).map(crate::facts::SeatNo).zip(seats).collect();
+
     // Check every destination before creating any of them, deciding per seat
     // between adopting an existing complete directory and staging a write.
     let mut to_write = Vec::new();
-    for seat in &fleet.seats {
-        let seat_no = crate::facts::SeatNo(seat.seat_no);
+    for &(seat_no, seat) in &seats {
         let root = seat_dir(process, seat_no);
         if seat_root_has_unexpected_entries(&root).await? {
             return Err(RestoreError::SeatDirectoryExists(seat.seat_id.clone()));
@@ -194,22 +201,22 @@ pub(crate) async fn install(
                         seat_id: seat.seat_id.clone(),
                     });
                 }
-                to_write.push(seat);
+                to_write.push((seat_no, seat));
             }
         }
     }
 
-    for seat in &to_write {
+    for &(seat_no, seat) in &to_write {
         let guardian = seat.guardian.as_ref().expect("only formed seats staged");
         let archive = fleet.archives.get(&seat.seat_id).expect("checked above");
-        let staged = staging_root.join(seat.seat_no.to_string());
+        let staged = staging_root.join(seat_no.0.to_string());
         // `write_restored_seat_dir` re-checks the digest itself: relay bytes
         // are untrusted, and the check belongs on the side of the boundary
         // that cannot skip it. The password is re-derived, not restored — the
         // backup deliberately excludes it.
         let api_auth = identity.derive_seat_keys(&seat.seat_id).api_auth;
         write_restored_seat_dir(&staged, archive, &guardian.archive_sha256, &api_auth).await?;
-        let dir = seat_data_dir(process, crate::facts::SeatNo(seat.seat_no));
+        let dir = seat_data_dir(process, seat_no);
         if let Some(parent) = dir.parent() {
             tokio::fs::create_dir_all(parent)
                 .await
@@ -225,10 +232,10 @@ pub(crate) async fn install(
     // wipe-on-entry look like it had something to clean.
     let _ = tokio::fs::remove_dir_all(&staging_root).await;
 
-    let mut restored = Vec::with_capacity(fleet.seats.len());
-    for seat in &fleet.seats {
+    let mut restored = Vec::with_capacity(seats.len());
+    for &(seat_no, seat) in &seats {
         restored.push(RestoredSeat {
-            facts: seat.to_seat_facts(),
+            facts: seat.to_seat_facts(seat_no),
             payment: seat.payment.as_ref().map(|payment| NewPayment {
                 evidence: payment.evidence.clone(),
             }),
