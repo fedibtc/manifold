@@ -42,6 +42,20 @@ pub(crate) struct FaBackupPayload {
     /// without spares keeps its earlier bytes.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(crate) spare_seats: Vec<FaBackupSeat>,
+    /// MGs that hosted a peer before a guardian transfer moved it away.
+    /// Omitted when empty, like `spare_seats`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) past_hosts: Vec<FaBackupPastHost>,
+}
+
+/// An MG that may still hold the key share of a peer it no longer hosts.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct FaBackupPastHost {
+    #[serde(rename = "fman_identity")]
+    pub(crate) mg_identity: PublicKey,
+    /// Verified badge holder, when this device knew it.
+    pub(crate) holder: Option<PublicKey>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -251,6 +265,7 @@ mod tests {
             seats: vec![],
             liquidity: None,
             spare_seats: Vec::new(),
+            past_hosts: Vec::new(),
         };
         let mut payload = payload;
         // Payload validation happens on open; use a fixture seat in DB-level tests.
@@ -295,6 +310,7 @@ mod tests {
             seats: vec![],
             liquidity: None,
             spare_seats: Vec::new(),
+            past_hosts: Vec::new(),
         };
         assert!(keys(1).seal(&payload).is_err());
     }
