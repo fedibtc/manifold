@@ -82,7 +82,7 @@ pub use ports::{
     ManifoldGuardianCallError, ManifoldGuardianConnector, ManifoldGuardianConnectorError,
     PaymentReservationRecovery, PreparedSeatPayment, SeatPaymentRecovery, SettledSeatRefund,
 };
-pub use seat_pool::SpareSeat;
+pub use seat_pool::{PendingSpareSeat, SpareSeat};
 pub use selection::{
     MG_SELECTION_PREVIEW_VALIDITY, MG_SELECTION_PROBE_TIMEOUT, MgReplacementApproval,
     MgReplacementPreview, MgSelectionApproval, MgSelectionPreview, MgSelectionQuery,

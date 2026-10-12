@@ -55,6 +55,20 @@ pub struct SpareSeat {
     pub seat_id: SeatId,
 }
 
+/// An interrupted spare-seat purchase that
+/// [`FaClient::resume_spare_seat_purchase`] finishes.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PendingSpareSeat {
+    /// MG that sells the seat.
+    pub mg_id: PublicKey,
+    pub locator: Locator,
+    /// Spending cap the user approved.
+    pub max_msats: u64,
+    /// Whether the payment may have started. Then a resume replays the same
+    /// payment, and the purchase cannot be dropped.
+    pub outputs_started: bool,
+}
+
 /// Durable pool entry.
 #[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
@@ -240,6 +254,21 @@ where
             .await
             .map(Some);
         finish_driver_run(result, self.inner.store.release_driver_lease(lease).await)
+    }
+
+    /// The open purchase, if any, as last recorded. Reads no network.
+    pub async fn spare_seat_purchase(&self) -> FaResult<Option<PendingSpareSeat>> {
+        Ok(self
+            .inner
+            .store
+            .load_seat_purchase()
+            .await?
+            .map(|purchase| PendingSpareSeat {
+                mg_id: purchase.mg_id,
+                locator: purchase.locator,
+                max_msats: purchase.max_msats,
+                outputs_started: purchase.outputs_started,
+            }))
     }
 
     /// Seats the FA owns that host no guardian.
