@@ -14,6 +14,7 @@ mod liquidity;
 mod maintenance;
 mod mg;
 mod ports;
+mod seat_pool;
 mod selection;
 mod setup_payment_federations;
 mod state;
@@ -78,10 +79,12 @@ pub use ports::{
     ManifoldGuardianCallError, ManifoldGuardianConnector, ManifoldGuardianConnectorError,
     PaymentReservationRecovery, PreparedSeatPayment, SeatPaymentRecovery, SettledSeatRefund,
 };
+pub use seat_pool::SpareSeat;
 pub use selection::{
     MG_SELECTION_PREVIEW_VALIDITY, MG_SELECTION_PROBE_TIMEOUT, MgReplacementApproval,
     MgReplacementPreview, MgSelectionApproval, MgSelectionPreview, MgSelectionQuery,
-    MgSelectionRequest, SeatProvenance, SelectedMgSeat, VerifiedBadgeFacts, VerifiedCandidate,
+    MgSelectionRequest, SeatProvenance, SelectedMgSeat, SpareSeatApproval, SpareSeatPreview,
+    VerifiedBadgeFacts, VerifiedCandidate,
 };
 pub use setup_payment_federations::AdmittedSetupPaymentFederation;
 /// Exact SPv2 account type returned by [`FaFeeAccountProvider`].

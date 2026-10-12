@@ -1147,6 +1147,130 @@ pub(crate) async fn preview_mg_replacements_with(
     })
 }
 
+/// Read-only verified selection of one MG for a spare seat.
+#[derive(Debug)]
+pub struct SpareSeatPreview {
+    verifier_provenance: PeerBadgeVerifierProvenance,
+    seat: SelectedMgSeat,
+    valid_until: Timestamp,
+}
+
+impl SpareSeatPreview {
+    /// The verified MG this preview selected.
+    #[must_use]
+    pub fn seat(&self) -> &SelectedMgSeat {
+        &self.seat
+    }
+
+    /// Advertised price of the seat.
+    #[must_use]
+    pub fn advertised_price_msats(&self) -> u64 {
+        self.seat.advertised_price_msats()
+    }
+
+    /// Unix timestamp at which this uncached preview becomes stale.
+    #[must_use]
+    pub fn valid_until(&self) -> Timestamp {
+        self.valid_until
+    }
+
+    /// Seal this selection to user authorization of at most `max_msats`.
+    pub fn approve(self, max_msats: u64) -> FaResult<SpareSeatApproval> {
+        if max_msats == 0 || max_msats < self.seat.advertised_price_msats() {
+            return Err(FaError::SelectionReauthorizationRequired {
+                reason: SelectionReauthorizationReason::AdvertisementEstimateExceedsLimit,
+                failure: None,
+            });
+        }
+        Ok(SpareSeatApproval {
+            verifier_provenance: self.verifier_provenance,
+            seat: self.seat.into(),
+            max_msats,
+            valid_until: self.valid_until,
+        })
+    }
+}
+
+/// Sealed, short-lived approval to buy one spare seat.
+#[derive(Clone, Debug)]
+pub struct SpareSeatApproval {
+    pub(crate) verifier_provenance: PeerBadgeVerifierProvenance,
+    pub(crate) seat: ApprovedMgSeat,
+    pub(crate) max_msats: u64,
+    pub(crate) valid_until: Timestamp,
+}
+
+impl SpareSeatApproval {
+    /// Approved maximum price.
+    #[must_use]
+    pub fn max_msats(&self) -> u64 {
+        self.max_msats
+    }
+
+    /// Unix timestamp at which buying with this approval must fail.
+    #[must_use]
+    pub fn valid_until(&self) -> Timestamp {
+        self.valid_until
+    }
+}
+
+/// Select one fresh MG that holds no seat of this FA yet.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn preview_spare_seat_with(
+    registry: &impl FaNostrClient,
+    verifier: &impl SelectionBadgeVerifier,
+    prober: &impl SelectionAvailabilityProber,
+    verifier_provenance: PeerBadgeVerifierProvenance,
+    request: &MgSelectionRequest,
+    fedimintd_dkg_version: &FedimintdDkgVersion,
+    excluded: BTreeSet<PublicKey>,
+    retained_service_pubkeys: BTreeMap<secp256k1::XOnlyPublicKey, PublicKey>,
+    retained_holders: BTreeSet<PublicKey>,
+    deadline: Instant,
+    now: u64,
+    completed_at: impl FnOnce() -> u64,
+) -> FaResult<SpareSeatPreview> {
+    let discovery_requirements = MgCandidateRequirements {
+        federation_size: request.federation_size,
+        fedimintd_versions: request.fedimintd_versions.clone(),
+    };
+    let mut discovery =
+        discover_mg_candidates_with(registry, &discovery_requirements, deadline, now).await?;
+    discovery
+        .candidates
+        .retain(|candidate| !excluded.contains(&candidate.mg_id));
+    let seen = discovery.seen();
+    let eligible = discovery.candidates.len();
+    let seat = select_mg_seats(
+        verifier,
+        prober,
+        request,
+        fedimintd_dkg_version,
+        discovery.candidates,
+        FederationSize(1),
+        retained_service_pubkeys,
+        retained_holders,
+        deadline,
+        &mut discovery.rejected,
+    )
+    .await
+    .pop()
+    .ok_or(FaError::InsufficientMgSeats {
+        requested: 1,
+        selected: 0,
+        seen,
+        eligible,
+    })?;
+    let valid_until = completed_at()
+        .checked_add(MG_SELECTION_PREVIEW_VALIDITY.as_secs())
+        .ok_or_else(|| FaError::Selection("spare seat preview expiry overflows".to_owned()))?;
+    Ok(SpareSeatPreview {
+        verifier_provenance,
+        seat,
+        valid_until: Timestamp(valid_until),
+    })
+}
+
 /// Fill seats round-robin across claimed-issuer buckets, verifying lazily.
 ///
 /// Buckets iterate in issuer-key order; within a bucket candidates rank by

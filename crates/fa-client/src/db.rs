@@ -58,6 +58,43 @@ enum FaDbPrefix {
     BackupRelayConfirmation = 0x06,
     RestoredBackup = 0x07,
     RecoveryCompleted = 0x08,
+    SeatPurchase = 0x09,
+    SpareSeat = 0x0a,
+}
+
+#[derive(Debug, Decodable, Encodable)]
+struct SeatPurchaseKey;
+impl_db_record!(
+    key = SeatPurchaseKey,
+    value = crate::seat_pool::StoredSeatPurchase,
+    db_prefix = FaDbPrefix::SeatPurchase
+);
+
+#[derive(Debug, Decodable, Encodable)]
+struct SpareSeatKey {
+    seat_id: String,
+}
+
+#[derive(Debug, Decodable, Encodable)]
+struct SpareSeatKeyPrefix;
+
+impl_db_record!(
+    key = SpareSeatKey,
+    value = crate::seat_pool::StoredSpareSeat,
+    db_prefix = FaDbPrefix::SpareSeat
+);
+impl_db_lookup!(key = SpareSeatKey, query_prefix = SpareSeatKeyPrefix);
+
+/// One lease-fenced change to the seat pool or its open purchase.
+pub(crate) enum SeatPoolWrite {
+    /// Record a new purchase; refused while another is open.
+    Begin(crate::seat_pool::StoredSeatPurchase),
+    /// Replace the open purchase with the same purchase id.
+    Update(crate::seat_pool::StoredSeatPurchase),
+    /// Close the open purchase and add its seat to the pool.
+    Complete(crate::seat_pool::StoredSpareSeat),
+    /// Close the open purchase without a seat.
+    Abort,
 }
 
 #[derive(Debug, Decodable, Encodable)]
@@ -659,6 +696,8 @@ json_database_value!(crate::liquidity::StoredLiquidityOperation);
 json_database_value!(BackupGenerationState);
 json_database_value!(BackupRelayConfirmation);
 json_database_value!(RestoredBackupState);
+json_database_value!(crate::seat_pool::StoredSeatPurchase);
+json_database_value!(crate::seat_pool::StoredSpareSeat);
 
 /// One seat's public projection and its private recovery-only quote facts.
 pub(crate) struct SeatRecovery {
@@ -815,6 +854,13 @@ impl DriverLease {
             .await
     }
 
+    /// Renew this owner and apply one seat-pool change in the same
+    /// transaction, so a fenced-out driver cannot move the pool.
+    pub(crate) async fn write_seat_pool(&self, write: SeatPoolWrite) -> FaResult<()> {
+        let _guard = self.renewal_lock.lock().await;
+        self.store.write_seat_pool(write, self).await
+    }
+
     /// Renew this owner while atomically wiping a still-abandonable formation.
     pub(crate) async fn abandon_formation(&self, formation_id: &FormationId) -> FaResult<()> {
         let _guard = self.renewal_lock.lock().await;
@@ -948,12 +994,23 @@ impl FaStore {
             }
         }
         drop(entries);
+        let spare_seats = dbtx
+            .find_by_prefix(&SpareSeatKeyPrefix)
+            .await
+            .map(|(_key, seat)| crate::backup::FaBackupSeat {
+                mg_identity: seat.mg_id,
+                seat_id: seat.seat_id,
+                locator: seat.locator,
+            })
+            .collect()
+            .await;
         let mut payload = crate::backup::FaBackupPayload {
             schema_version: crate::backup::BACKUP_SCHEMA_VERSION,
             snapshot_generation: 0,
             federation_invite,
             seats,
             liquidity,
+            spare_seats,
         };
         let semantic_hash = crate::backup::semantic_hash(&payload)?;
         let prior = dbtx.get_value(&BackupGenerationKey).await;
@@ -1065,10 +1122,31 @@ impl FaStore {
                 .next()
                 .await
                 .is_some()
+            || dbtx.get_value(&SeatPurchaseKey).await.is_some()
+            || dbtx
+                .find_by_prefix(&SpareSeatKeyPrefix)
+                .await
+                .next()
+                .await
+                .is_some()
         {
             return Err(FaError::Storage(
                 "FA restore requires an empty database namespace".to_owned(),
             ));
+        }
+        for spare in &payload.spare_seats {
+            dbtx.insert_entry(
+                &SpareSeatKey {
+                    seat_id: spare.seat_id.to_string(),
+                },
+                &crate::seat_pool::StoredSpareSeat {
+                    mg_id: spare.mg_identity,
+                    locator: spare.locator.clone(),
+                    seat_id: spare.seat_id.clone(),
+                    guardian_fee_account: None,
+                },
+            )
+            .await;
         }
         // An expired driver lease is not a formation. Keep independently
         // authenticated setup-payment policy; its publisher is revalidated on use.
@@ -3369,6 +3447,80 @@ impl FaStore {
     }
 
     /// Renew the lease only while the database still recognizes this owner.
+    pub(crate) async fn load_seat_purchase(
+        &self,
+    ) -> FaResult<Option<crate::seat_pool::StoredSeatPurchase>> {
+        Ok(self
+            .database
+            .begin_transaction_nc()
+            .await
+            .get_value(&SeatPurchaseKey)
+            .await)
+    }
+
+    pub(crate) async fn list_spare_seats(
+        &self,
+    ) -> FaResult<Vec<crate::seat_pool::StoredSpareSeat>> {
+        let mut dbtx = self.database.begin_transaction_nc().await;
+        Ok(dbtx
+            .find_by_prefix(&SpareSeatKeyPrefix)
+            .await
+            .map(|(_key, seat)| seat)
+            .collect()
+            .await)
+    }
+
+    async fn write_seat_pool(&self, write: SeatPoolWrite, lease: &DriverLease) -> FaResult<()> {
+        let mut dbtx = self.database.begin_transaction().await;
+        let Some(current) = dbtx.get_value(&DriverLeaseKey).await else {
+            return Err(FaError::Busy);
+        };
+        let now = (self.lease_clock)();
+        if current.owner != lease.owner || current.expires_at <= now {
+            return Err(FaError::Busy);
+        }
+        let open = dbtx.get_value(&SeatPurchaseKey).await;
+        match write {
+            SeatPoolWrite::Begin(purchase) => {
+                if open.is_some() {
+                    return Err(FaError::InvalidIntent(
+                        "a spare seat purchase is already open; resume it instead".to_owned(),
+                    ));
+                }
+                dbtx.insert_new_entry(&SeatPurchaseKey, &purchase).await;
+            }
+            SeatPoolWrite::Update(purchase) => {
+                if open.is_none_or(|open| open.purchase_id != purchase.purchase_id) {
+                    return Err(FaError::Storage(
+                        "the open spare seat purchase changed under its driver".to_owned(),
+                    ));
+                }
+                dbtx.insert_entry(&SeatPurchaseKey, &purchase).await;
+            }
+            SeatPoolWrite::Complete(seat) => {
+                if open.is_none() {
+                    return Err(FaError::Storage(
+                        "no open spare seat purchase to complete".to_owned(),
+                    ));
+                }
+                dbtx.remove_entry(&SeatPurchaseKey).await;
+                dbtx.insert_entry(
+                    &SpareSeatKey {
+                        seat_id: seat.seat_id.to_string(),
+                    },
+                    &seat,
+                )
+                .await;
+            }
+            SeatPoolWrite::Abort => {
+                dbtx.remove_entry(&SeatPurchaseKey).await;
+            }
+        }
+        dbtx.commit_tx_result()
+            .await
+            .map_err(|_| FaError::Storage("persisting the FA seat pool failed".to_owned()))
+    }
+
     pub(crate) async fn renew_driver_lease(&self, lease: &DriverLease) -> FaResult<()> {
         let mut dbtx = self.database.begin_transaction().await;
         let Some(current) = dbtx.get_value(&DriverLeaseKey).await else {
@@ -3694,7 +3846,7 @@ pub(crate) fn replacement_requirements(
     })
 }
 
-fn payment_authorization_id(
+pub(crate) fn payment_authorization_id(
     formation_id: &FormationId,
     total_msats: u64,
     seats: &[SeatPaymentRequirement],

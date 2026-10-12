@@ -2,6 +2,7 @@ mod callback;
 mod discovery;
 mod maintenance;
 mod recovery_policy;
+mod seat_pool;
 mod selection;
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
