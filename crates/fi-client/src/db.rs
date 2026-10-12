@@ -981,7 +981,7 @@ impl FiStore {
     /// next refresh boundary; changed facts advance both immediately.
     pub(crate) async fn backup_payload(&self) -> FiResult<crate::backup::PreparedFiBackup> {
         let mut dbtx = self.database.begin_transaction().await;
-        let (federation_invite, seats, restored_baseline) = if let Some(formation) =
+        let (federation_invite, seats, past_hosts, restored_baseline) = if let Some(formation) =
             dbtx.get_value(&ActiveFormationKey).await
         {
             if formation.phase != StoredFormationPhase::Formed {
@@ -1014,7 +1014,7 @@ impl FiStore {
                     locator: seat.locator,
                 });
             }
-            (federation_invite, seats, None)
+            (federation_invite, seats, Vec::new(), None)
         } else {
             let restored = dbtx
                 .get_value(&RestoredBackupKey)
@@ -1028,6 +1028,7 @@ impl FiStore {
             (
                 restored.payload.federation_invite,
                 restored.payload.seats,
+                restored.payload.past_hosts,
                 baseline,
             )
         };
@@ -1060,6 +1061,7 @@ impl FiStore {
             seats,
             liquidity,
             spare_seats,
+            past_hosts,
         };
         let semantic_hash = crate::backup::semantic_hash(&payload)?;
         let prior = dbtx.get_value(&BackupGenerationKey).await;
@@ -3605,21 +3607,30 @@ impl FiStore {
             .map_err(|_| FiError::Storage("persisting the adopted spare seat failed".to_owned()))
     }
 
-    /// Verified badge holders of the restored record's seats.
-    pub(crate) async fn restored_seat_holders(&self) -> BTreeSet<PublicKey> {
-        self.database
+    /// Who may hold a key share of the restored federation, besides its
+    /// current FMans: the known badge holders of its seats and of its past
+    /// hosts, and the past hosts' FMans.
+    pub(crate) async fn restored_custody(&self) -> (BTreeSet<PublicKey>, BTreeSet<PublicKey>) {
+        let Some(restored) = self
+            .database
             .begin_transaction_nc()
             .await
             .get_value(&RestoredBackupKey)
             .await
-            .map(|restored| {
-                restored
-                    .seat_holders
-                    .into_iter()
-                    .map(|(_, holder)| holder)
-                    .collect()
-            })
-            .unwrap_or_default()
+        else {
+            return Default::default();
+        };
+        let mut holders = restored
+            .seat_holders
+            .into_iter()
+            .map(|(_, holder)| holder)
+            .collect::<BTreeSet<_>>();
+        let mut past_fmans = BTreeSet::new();
+        for host in restored.payload.past_hosts {
+            past_fmans.insert(host.fman_identity);
+            holders.extend(host.holder);
+        }
+        (holders, past_fmans)
     }
 
     pub(crate) async fn load_guardian_transfer(
@@ -4131,6 +4142,7 @@ async fn rebind_federation_seat(
                 seats,
                 liquidity: None,
                 spare_seats: Vec::new(),
+                past_hosts: Vec::new(),
             },
             formation_id: formation.formation_id,
             backup_eligible: true,
@@ -4160,11 +4172,26 @@ async fn rebind_federation_seat(
                 "the transferred seat is no longer in the federation".to_owned(),
             ));
         }
-        *seat = crate::backup::FiBackupSeat {
-            fman_identity: destination.fman_id,
-            seat_id: destination.seat_id.clone(),
-            locator: destination.locator.clone(),
-        };
+        let source = std::mem::replace(
+            seat,
+            crate::backup::FiBackupSeat {
+                fman_identity: destination.fman_id,
+                seat_id: destination.seat_id.clone(),
+                locator: destination.locator.clone(),
+            },
+        );
+        let holder = restored
+            .seat_holders
+            .iter()
+            .find(|(seat_id, _)| seat_id == source_seat_id)
+            .map(|(_, holder)| *holder);
+        restored
+            .payload
+            .past_hosts
+            .push(crate::backup::FiBackupPastHost {
+                fman_identity: source.fman_identity,
+                holder,
+            });
         restored
             .seat_holders
             .retain(|(seat_id, _)| seat_id != source_seat_id);

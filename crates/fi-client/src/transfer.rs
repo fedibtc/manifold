@@ -79,9 +79,6 @@ pub enum GuardianTransferPhase {
     RemovingSource,
     /// The transfer is done.
     Completed,
-    /// The grant expired before the source handed over the guardian. The
-    /// spare seat is back in the pool.
-    Expired,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
@@ -101,6 +98,8 @@ pub(crate) struct StoredGuardianTransfer {
     pub(crate) source_locator: Locator,
     pub(crate) source_seat_id: SeatId,
     pub(crate) destination: StoredSpareSeat,
+    pub(crate) federation_id: FederationId,
+    /// The latest grant. The FI replaces it when it expires.
     pub(crate) grant: SignedRequest<SeatTransferGrant>,
     /// The grant's expiry, which its envelope only exposes after verification.
     pub(crate) expires_at: Timestamp,
@@ -185,26 +184,38 @@ where
             .into_iter()
             .find(|spare| spare.seat_id == spare_seat_id)
             .ok_or_else(|| FiError::InvalidIntent("no spare seat has this id".to_owned()))?;
-        let now = now_secs()?;
-        let expires_at = Timestamp(now + GRANT_LIFETIME.as_secs());
-        let grant = self.sign(&SeatTransferGrant {
-            ts: Timestamp(now),
+        // A host of another peer, now or before, would hold two key shares.
+        let custody = self.pool_federation(fi_id).await?;
+        if custody
+            .seats
+            .iter()
+            .any(|(fman_id, _, _)| *fman_id == Some(destination.fman_id))
+            || custody.past_fmans.contains(&destination.fman_id)
+            || destination
+                .holder
+                .is_some_and(|holder| custody.holders.contains(&holder))
+        {
+            return Err(FiError::InvalidIntent(
+                "the spare's FMan or holder hosts or hosted a peer of this federation".to_owned(),
+            ));
+        }
+        let federation_id = FederationId(
+            crate::formation::invite_federation_id(&authority.invite_code)?.to_string(),
+        );
+        let (grant, expires_at) = self.sign_grant(
             fi_id,
-            federation_id: FederationId(
-                crate::formation::invite_federation_id(&authority.invite_code)?.to_string(),
-            ),
-            source: source.locator.clone(),
-            source_seat_id: source.seat_id.clone(),
-            destination_service_pubkey: destination.locator.service_pubkey,
-            destination_seat_id: destination.seat_id.clone(),
-            expires_at,
-        })?;
+            &federation_id,
+            &source.locator,
+            &source.seat_id,
+            &destination,
+        )?;
         let transfer = StoredGuardianTransfer {
             seat_index,
             source_fman_id,
             source_locator: source.locator.clone(),
             source_seat_id: source.seat_id.clone(),
             destination,
+            federation_id,
             grant,
             expires_at,
             completion_callback,
@@ -270,7 +281,7 @@ where
         let lease = run.lease();
         if transfer.phase == StoredTransferPhase::Pulling {
             match self
-                .await_pulled_guardian(&transfer, fi_id, wait, run)
+                .await_pulled_guardian(&mut transfer, fi_id, wait, run)
                 .await?
             {
                 Pulled::Running => {
@@ -283,12 +294,6 @@ where
                         .await?;
                 }
                 Pulled::Waiting => return Ok(transfer.view(GuardianTransferPhase::AwaitingSource)),
-                Pulled::Expired => {
-                    lease
-                        .write_guardian_transfer(fi_id, GuardianTransferWrite::Close)
-                        .await?;
-                    return Ok(transfer.view(GuardianTransferPhase::Expired));
-                }
             }
         }
         if transfer.phase == StoredTransferPhase::Binding {
@@ -343,12 +348,12 @@ where
         }
     }
 
-    /// Ask the destination to pull. With `wait`, poll it until the guardian
-    /// runs, the grant expires, or the run ends. An unreachable destination
-    /// counts as still waiting.
+    /// Ask the destination to pull, with a new grant once the last one
+    /// expired. With `wait`, poll it until the guardian runs or the run ends.
+    /// An unreachable destination counts as still waiting.
     async fn await_pulled_guardian(
         &self,
-        transfer: &StoredGuardianTransfer,
+        transfer: &mut StoredGuardianTransfer,
         fi_id: FiId,
         wait: bool,
         run: DriverRun<'_>,
@@ -365,12 +370,12 @@ where
 
     async fn poll_pulled_guardian(
         &self,
-        transfer: &StoredGuardianTransfer,
+        transfer: &mut StoredGuardianTransfer,
         fi_id: FiId,
         wait: bool,
         run: DriverRun<'_>,
     ) -> FiResult<Pulled> {
-        let destination = &transfer.destination;
+        let destination = transfer.destination.clone();
         let client =
             match FmanClient::connect(&self.inner.ports.fman_connector, &destination.locator, run)
                 .await
@@ -394,10 +399,25 @@ where
             match status {
                 ServiceStatus::Running => return Ok(Pulled::Running),
                 ServiceStatus::AwaitingTransfer => {}
-                ServiceStatus::New if transfer.expires_at.0 < now_secs()? => {
-                    return Ok(Pulled::Expired);
-                }
-                ServiceStatus::New => {
+                // An expired grant does not mean that the source kept the
+                // guardian: its answer may have been lost. Only a new grant
+                // for the same move can finish it.
+                ServiceStatus::New | ServiceStatus::TransferGrantExpired => {
+                    if transfer.expires_at.0 <= now_secs()? {
+                        (transfer.grant, transfer.expires_at) = self.sign_grant(
+                            fi_id,
+                            &transfer.federation_id,
+                            &transfer.source_locator,
+                            &transfer.source_seat_id,
+                            &destination,
+                        )?;
+                        run.lease()
+                            .write_guardian_transfer(
+                                fi_id,
+                                GuardianTransferWrite::Update(transfer.clone()),
+                            )
+                            .await?;
+                    }
                     let request = self.sign(&PullSeatRequest {
                         ts: Timestamp(now_secs()?),
                         fi_id,
@@ -662,6 +682,30 @@ where
         results
     }
 
+    /// Sign a grant for the move, valid for [`GRANT_LIFETIME`] from now.
+    fn sign_grant(
+        &self,
+        fi_id: FiId,
+        federation_id: &FederationId,
+        source: &Locator,
+        source_seat_id: &SeatId,
+        destination: &StoredSpareSeat,
+    ) -> FiResult<(SignedRequest<SeatTransferGrant>, Timestamp)> {
+        let now = now_secs()?;
+        let expires_at = Timestamp(now + GRANT_LIFETIME.as_secs());
+        let grant = self.sign(&SeatTransferGrant {
+            ts: Timestamp(now),
+            fi_id,
+            federation_id: federation_id.clone(),
+            source: source.clone(),
+            source_seat_id: source_seat_id.clone(),
+            destination_service_pubkey: destination.locator.service_pubkey,
+            destination_seat_id: destination.seat_id.clone(),
+            expires_at,
+        })?;
+        Ok((grant, expires_at))
+    }
+
     async fn remove_source_seat(
         &self,
         transfer: &StoredGuardianTransfer,
@@ -691,7 +735,6 @@ where
 enum Pulled {
     Running,
     Waiting,
-    Expired,
 }
 
 /// Whether consensus names the destination for the moved peer, in both the

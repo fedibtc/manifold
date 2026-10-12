@@ -18,6 +18,10 @@ It also lists every spare seat in the FI seat pool by FMan identity, seat id,
 and locator. A spare that an open guardian transfer uses stays in this list
 until consensus names it, and then moves into the seats. An empty list is omitted from the encoding, so a payload without
 spares keeps its earlier bytes and older readers.
+It lists every past host: the FMan identity, and the verified badge holder
+when known, of each source that a guardian transfer moved a peer away from.
+Spare selection and transfer grants exclude them, because a past host may
+still hold its key share. An empty list is omitted in the same way.
 
 The payload omits FI identity, formation id and intent, runtime checkpoints,
 signed quotes, acceptances and attestations, guardian codes and fee accounts,

@@ -179,18 +179,39 @@ async fn a_guardian_moves_onto_a_spare_seat() {
     );
     assert!(client.spare_seats().await.unwrap().is_empty());
     assert_eq!(client.guardian_transfer().await.unwrap(), None);
-    // Selection still knows who holds every seat.
+    // Selection still knows who holds every seat, and who held the moved
+    // peer before.
+    let (holders, past_fmans) = client.inner.store.restored_custody().await;
     assert_eq!(
-        client.inner.store.restored_seat_holders().await,
+        holders,
         holders_before
             .into_iter()
-            .filter(|holder| *holder != moved_holder)
             .chain([test_fman_id(SPARE_INDEX)])
             .collect()
     );
+    assert_eq!(past_fmans, BTreeSet::from([test_fman_id(MOVED)]));
     let backup = client.inner.store.backup_payload().await.unwrap().payload;
     assert_eq!(backup.seats[MOVED].seat_id, spare.seat_id);
     assert!(backup.spare_seats.is_empty());
+    assert_eq!(
+        backup.past_hosts,
+        vec![crate::backup::FiBackupPastHost {
+            fman_identity: test_fman_id(MOVED),
+            holder: Some(moved_holder),
+        }]
+    );
+    let restored = db::FiStore::new(MemDatabase::new().into_database());
+    restored
+        .restore_backup_payload_with_completion(TestIdentity::fi_id(), backup, None)
+        .await
+        .unwrap();
+    assert_eq!(
+        restored.restored_custody().await,
+        (
+            BTreeSet::from([moved_holder]),
+            BTreeSet::from([test_fman_id(MOVED)])
+        )
+    );
 
     // Maintenance keeps working on the new seat list.
     client
@@ -321,10 +342,10 @@ async fn a_refused_vote_keeps_the_transfer_open_and_the_seats_unchanged() {
 }
 
 #[tokio::test]
-async fn an_expired_grant_returns_the_spare_to_the_pool() {
+async fn an_expired_grant_is_renewed_for_the_same_move() {
     let (_database, _payments, _payment_state, fman_state, client) = formed_paid_client().await;
     let spare = buy_spare(&client, &fman_state).await;
-    client
+    let started = client
         .start_guardian_transfer(
             MOVED as u16,
             spare.seat_id.clone(),
@@ -333,32 +354,91 @@ async fn an_expired_grant_returns_the_spare_to_the_pool() {
         )
         .await
         .unwrap();
-    // The source never answered, so the destination gave up and is new again.
+    // The grant expired. The source may have answered, so the destination
+    // keeps waiting for a new grant.
     client.inner.store.expire_guardian_transfer_for_test().await;
     fman_state
         .seat_statuses
         .lock()
         .expect("test lock")
-        .insert(SPARE_INDEX, ServiceStatus::New);
+        .insert(SPARE_INDEX, ServiceStatus::TransferGrantExpired);
 
-    let expired = client
-        .resume_guardian_transfer(transfer_options())
+    let renewed = client
+        .resume_guardian_transfer(short_options())
         .await
         .unwrap()
         .unwrap();
 
-    assert_eq!(expired.phase, GuardianTransferPhase::Expired);
-    assert_eq!(client.guardian_transfer().await.unwrap(), None);
+    assert_eq!(renewed.phase, GuardianTransferPhase::AwaitingSource);
+    let pulls = fman_state.pull_requests.lock().expect("test lock").clone();
+    assert_eq!(pulls.len(), 2);
+    let (first, second) = (&pulls[0].1, &pulls[1].1);
+    assert_eq!(pulls[1].0, SPARE_INDEX);
+    let first = first
+        .grant
+        .clone()
+        .verify(Timestamp(test_now_secs()))
+        .unwrap()
+        .into_inner();
+    let second = second
+        .grant
+        .clone()
+        .verify(Timestamp(test_now_secs()))
+        .unwrap()
+        .into_inner();
+    assert_eq!(
+        (
+            second.source,
+            second.source_seat_id,
+            second.destination_seat_id
+        ),
+        (
+            first.source,
+            first.source_seat_id,
+            first.destination_seat_id
+        )
+    );
+    assert_eq!(second.federation_id, first.federation_id);
+    assert!(started.expires_at <= second.expires_at);
+    assert_eq!(renewed.expires_at, second.expires_at);
     assert_eq!(client.spare_seats().await.unwrap(), vec![spare]);
-    assert_eq!(fman_state.pull_requests.lock().expect("test lock").len(), 1);
+
+    // The renewed grant finishes the move.
+    guardian_arrives(&fman_state);
+    let finished = client
+        .resume_guardian_transfer(transfer_options())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(finished.phase, GuardianTransferPhase::Completed);
+}
+
+#[tokio::test]
+async fn a_spare_held_by_a_guardian_holder_gets_no_grant() {
+    let (_database, _payments, _payment_state, fman_state, client) = formed_paid_client().await;
+    let mut approval = spare_approval(PAYMENT_AMOUNT_MSATS);
+    let guardian_holder = test_fman_id(MOVED + 1);
+    assert!(formation_holders(&client).await.contains(&guardian_holder));
+    approval.seat.holder = guardian_holder;
+    let spare = client
+        .buy_spare_seat(approval, long_request_options())
+        .await
+        .unwrap();
+
+    let error = client
+        .start_guardian_transfer(MOVED as u16, spare.seat_id, None, transfer_options())
+        .await
+        .unwrap_err();
+
+    assert!(matches!(error, FiError::InvalidIntent(_)), "{error:?}");
+    assert_eq!(client.guardian_transfer().await.unwrap(), None);
     assert!(
         fman_state
-            .binding_votes
+            .pull_requests
             .lock()
             .expect("test lock")
             .is_empty()
     );
-    assert_eq!(formation(&client.status()).phase, FormationPhase::Formed);
 }
 
 #[tokio::test]

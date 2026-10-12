@@ -115,14 +115,17 @@ pub(crate) struct StoredSeatPurchase {
 
 /// The formed federation a spare seat is bought for, from a formation this
 /// device ran or from a restored backup.
-struct PoolFederation {
+pub(crate) struct PoolFederation {
     formation_id: FormationId,
     federation_name: FederationName,
     federation_size: FederationSize,
     /// FMan identity, when known, locator, and seat id of every guardian seat.
-    seats: Vec<(Option<PublicKey>, Locator, SeatId)>,
-    /// Badge holders of the seats. Unknown after a restore.
-    holders: BTreeSet<PublicKey>,
+    pub(crate) seats: Vec<(Option<PublicKey>, Locator, SeatId)>,
+    /// Known badge holders of the seats and of past hosts. Unknown after a
+    /// restore.
+    pub(crate) holders: BTreeSet<PublicKey>,
+    /// FMans that hosted a peer before a transfer moved it away.
+    pub(crate) past_fmans: BTreeSet<PublicKey>,
 }
 
 impl<I, P, N, F, C> FiClient<I, P, N, F, C>
@@ -161,6 +164,7 @@ where
             }
         }
         let mut excluded = members.clone();
+        excluded.extend(federation.past_fmans);
         let mut holders = federation.holders;
         for spare in self.inner.store.list_spare_seats().await? {
             holders.extend(spare.holder);
@@ -294,7 +298,7 @@ where
             .collect())
     }
 
-    async fn pool_federation(&self, fi_id: crate::FiId) -> FiResult<PoolFederation> {
+    pub(crate) async fn pool_federation(&self, fi_id: crate::FiId) -> FiResult<PoolFederation> {
         match self.inner.store.load_recovery(fi_id).await? {
             FiRecovery::Formation(recovery)
                 if recovery.snapshot.phase == FormationPhase::Formed =>
@@ -315,23 +319,31 @@ where
                     federation_size: recovery.snapshot.intent.federation_size,
                     seats,
                     holders,
+                    past_fmans: BTreeSet::new(),
                 })
             }
-            FiRecovery::Restored(snapshot) => Ok(PoolFederation {
-                federation_size: FederationSize(u16::try_from(snapshot.seats.len()).map_err(
-                    |_| FiError::Storage("restored federation has too many seats".to_owned()),
-                )?),
-                federation_name: snapshot.federation_name.unwrap_or_else(|| {
-                    crate::formation::default_federation_name(fi_id, snapshot.snapshot_generation)
-                }),
-                formation_id: snapshot.formation_id,
-                seats: snapshot
-                    .seats
-                    .into_iter()
-                    .map(|seat| (Some(seat.fman_identity), seat.locator, seat.seat_id))
-                    .collect(),
-                holders: self.inner.store.restored_seat_holders().await,
-            }),
+            FiRecovery::Restored(snapshot) => {
+                let (holders, past_fmans) = self.inner.store.restored_custody().await;
+                Ok(PoolFederation {
+                    federation_size: FederationSize(u16::try_from(snapshot.seats.len()).map_err(
+                        |_| FiError::Storage("restored federation has too many seats".to_owned()),
+                    )?),
+                    federation_name: snapshot.federation_name.unwrap_or_else(|| {
+                        crate::formation::default_federation_name(
+                            fi_id,
+                            snapshot.snapshot_generation,
+                        )
+                    }),
+                    formation_id: snapshot.formation_id,
+                    seats: snapshot
+                        .seats
+                        .into_iter()
+                        .map(|seat| (Some(seat.fman_identity), seat.locator, seat.seat_id))
+                        .collect(),
+                    holders,
+                    past_fmans,
+                })
+            }
             FiRecovery::Idle | FiRecovery::Formation(_) => Err(FiError::NoActiveFormation),
         }
     }
