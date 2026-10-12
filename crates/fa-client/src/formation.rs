@@ -4826,7 +4826,7 @@ fn service_seat_phase(status: &ServiceStatus) -> Result<SeatPhase, MgCause> {
     }
 }
 
-fn default_federation_name(fa_id: FaId, created_at: u64) -> FederationName {
+pub(crate) fn default_federation_name(fa_id: FaId, created_at: u64) -> FederationName {
     const ADJECTIVES: [&str; 16] = [
         "Amber", "Bright", "Calm", "Cedar", "Clear", "Copper", "Gentle", "Golden", "Kind",
         "Lively", "Quiet", "Silver", "Solar", "Steady", "Warm", "Wild",
