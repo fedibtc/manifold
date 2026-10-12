@@ -24,6 +24,12 @@ Other:
 
 - **DKG** - Distributed Key Generation; Fedimint/federation setup ceremony.
 
+## Public repository
+
+This repository is public. Commits, PR text, and code must not name people,
+operators, FMans, npubs, or seat and federation ids from production
+incidents. Describe the scenario in general terms instead.
+
 ## Production compatibility
 
 Production network-interface and persisted-format changes are governed by
