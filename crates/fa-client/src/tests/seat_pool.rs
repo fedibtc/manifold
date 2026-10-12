@@ -4,9 +4,9 @@ use super::*;
 use crate::selection::{ApprovedMgSeat, SpareSeatApproval};
 
 /// The first MG outside the formation's pinned seats.
-const SPARE_INDEX: usize = MIN_FEDERATION_SIZE as usize;
+pub(super) const SPARE_INDEX: usize = MIN_FEDERATION_SIZE as usize;
 
-async fn formed_paid_client() -> (
+pub(super) async fn formed_paid_client() -> (
     fedimint_core::db::Database,
     TestPayments,
     Arc<PaymentState>,
@@ -43,7 +43,7 @@ async fn formed_paid_client() -> (
     (database, payments, payment_state, mg_state, client)
 }
 
-fn spare_approval(max_msats: u64) -> SpareSeatApproval {
+pub(super) fn spare_approval(max_msats: u64) -> SpareSeatApproval {
     SpareSeatApproval {
         verifier_provenance: test_peer_badge_verifier().provenance(),
         fedimintd_dkg_version: fedimintd_version().dkg_version(),
@@ -354,7 +354,7 @@ fn a_backup_without_spares_keeps_its_earlier_encoding() {
     assert_eq!(decoded, with_spare);
 }
 
-fn mg_ad(index: usize, price_msats: u64, version: &str) -> nostr_sdk::Event {
+pub(super) fn mg_ad(index: usize, price_msats: u64, version: &str) -> nostr_sdk::Event {
     selection::issuer_ad_for_version_and_service_key_at(
         &mg_keys(index),
         &discovery::issuer_keys(0),
@@ -367,7 +367,7 @@ fn mg_ad(index: usize, price_msats: u64, version: &str) -> nostr_sdk::Event {
 
 /// A fresh FA restored from the backup of a formed paid federation, with
 /// the given MG advertisements in its registry.
-async fn restored_client(
+pub(super) async fn restored_client(
     advertisements: Vec<nostr_sdk::Event>,
 ) -> (Arc<PaymentState>, Arc<MgState>, TestClient) {
     let (_database, _payments, _payment_state, mg_state, source) = formed_paid_client().await;

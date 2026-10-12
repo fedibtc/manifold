@@ -4,6 +4,7 @@ mod maintenance;
 mod recovery_policy;
 mod seat_pool;
 mod selection;
+mod transfer;
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::future::pending;
@@ -869,6 +870,14 @@ struct MgState {
     trust_material_requests: Mutex<Vec<usize>>,
     /// Corrupt the first MG trust-material response signature.
     corrupt_trust_material_signature: AtomicBool,
+    /// Per-MG seat status; absent reports `Running`.
+    seat_statuses: Mutex<HashMap<usize, ServiceStatus>>,
+    /// Every accepted `PullSeat`, by destination MG.
+    pull_requests: Mutex<Vec<(usize, PullSeatRequest)>>,
+    /// Seat index -> the moved-peer attestation that seat voted for.
+    binding_votes: Mutex<HashMap<usize, fedi_decentralized_domain::MgPeerAttestation>>,
+    /// Every accepted `RemoveSeat`, by MG.
+    removed_seats: Mutex<Vec<(usize, SeatId)>>,
 }
 
 #[derive(Clone)]
@@ -1340,9 +1349,20 @@ impl ManifoldGuardianService for TestMg {
 
     async fn pull_seat(
         &self,
-        _request: SignedRequest<fedi_decentralized_service_manifold_guardian::PullSeatRequest>,
-    ) -> FmResult<fedi_decentralized_service_manifold_guardian::PullSeatResponse> {
-        unsupported_test_verb("PullSeat")
+        request: SignedRequest<PullSeatRequest>,
+    ) -> FmResult<PullSeatResponse> {
+        let request = request.verify(Timestamp(test_now_secs()))?.into_inner();
+        self.state
+            .seat_statuses
+            .lock()
+            .expect("test lock")
+            .insert(self.index, ServiceStatus::AwaitingTransfer);
+        self.state
+            .pull_requests
+            .lock()
+            .expect("test lock")
+            .push((self.index, request));
+        Ok(PullSeatResponse)
     }
 
     async fn transfer_seat(
@@ -1354,18 +1374,55 @@ impl ManifoldGuardianService for TestMg {
 
     async fn replace_seat_binding(
         &self,
-        _request: SignedRequest<
-            fedi_decentralized_service_manifold_guardian::ReplaceSeatBindingRequest,
-        >,
-    ) -> FmResult<fedi_decentralized_service_manifold_guardian::ReplaceSeatBindingResponse> {
-        unsupported_test_verb("ReplaceSeatBinding")
+        request: SignedRequest<ReplaceSeatBindingRequest>,
+    ) -> FmResult<ReplaceSeatBindingResponse> {
+        let request = request.verify(Timestamp(test_now_secs()))?.into_inner();
+        if let Some(error) = self
+            .state
+            .meta_terminal_errors
+            .lock()
+            .expect("test lock")
+            .get(&self.index)
+            .cloned()
+        {
+            return Err(error);
+        }
+        let current = self
+            .state
+            .meta_consensus_raw
+            .lock()
+            .expect("test lock")
+            .clone();
+        let actual_base = MetaConsensusBase::from_consensus(current.as_deref().map(|value| {
+            (
+                self.state.meta_consensus_revision.load(Ordering::SeqCst),
+                value,
+            )
+        }));
+        if request.expected_base != actual_base {
+            return Err(ManifoldGuardianError::MetaConsensusChanged);
+        }
+        self.state
+            .binding_votes
+            .lock()
+            .expect("test lock")
+            .insert(self.index, request.seat_binding.attestation);
+        Ok(ReplaceSeatBindingResponse)
     }
 
     async fn remove_seat(
         &self,
-        _request: SignedRequest<fedi_decentralized_service_manifold_guardian::RemoveSeatRequest>,
-    ) -> FmResult<fedi_decentralized_service_manifold_guardian::RemoveSeatResponse> {
-        unsupported_test_verb("RemoveSeat")
+        request: SignedRequest<RemoveSeatRequest>,
+    ) -> FmResult<RemoveSeatResponse> {
+        let request = request.verify(Timestamp(test_now_secs()))?.into_inner();
+        self.state
+            .removed_seats
+            .lock()
+            .expect("test lock")
+            .push((self.index, request.seat_id));
+        Ok(RemoveSeatResponse {
+            already_removed: false,
+        })
     }
 
     async fn restart_dkg(
@@ -1384,7 +1441,14 @@ impl ManifoldGuardianService for TestMg {
     ) -> FmResult<GetStatusResponse> {
         self.state.status_calls.fetch_add(1, Ordering::SeqCst);
         Ok(GetStatusResponse {
-            status: ServiceStatus::Running,
+            status: self
+                .state
+                .seat_statuses
+                .lock()
+                .expect("test lock")
+                .get(&self.index)
+                .cloned()
+                .unwrap_or(ServiceStatus::Running),
             detail: StatusDetail::None,
             seat_health: Some(SeatHealth::Healthy),
         })
@@ -1977,6 +2041,15 @@ impl TestConsensusReader {
             .map(|(field, _)| field)
     }
 
+    fn agreed_binding_replacement(&self) -> Option<fedi_decentralized_domain::MgPeerAttestation> {
+        let votes = self.state.binding_votes.lock().expect("test lock");
+        let threshold = test_federation_seats().consensus_threshold() as usize;
+        votes
+            .values()
+            .find(|vote| votes.values().filter(|other| other == vote).count() >= threshold)
+            .cloned()
+    }
+
     fn agreed_fee_policy(&self) -> Option<(u64, String)> {
         let submissions = self.state.fee_submissions.lock().expect("test lock");
         let threshold = test_federation_seats().consensus_threshold() as usize;
@@ -2065,6 +2138,33 @@ impl FederationConsensusReader for TestConsensusReader {
                 .expect("test metadata is valid JSON")
                 .unwrap_or_default();
             fields.insert(key, serde_json::Value::String(value));
+            let next = serde_json::to_vec(&fields).expect("test metadata serializes");
+            self.adopt(next.clone());
+            meta_value = Some(next);
+        }
+        if let Some(attestation) = self.agreed_binding_replacement()
+            && let Some(current) = meta_value.clone()
+        {
+            let mut fields: BTreeMap<String, serde_json::Value> =
+                serde_json::from_slice(&current).expect("test metadata is valid JSON");
+            let field = |key: &str| match &fields[key] {
+                serde_json::Value::String(value) => value.clone(),
+                _ => panic!("test metadata field is a string"),
+            };
+            let (directory, recipients) = rebind_transferred_seat(
+                &field(fedi_decentralized_domain::MG_SEAT_BINDINGS_META_FIELD_KEY),
+                &field(GUARDIAN_FEE_RECIPIENTS_META_FIELD_KEY),
+                &attestation,
+            )
+            .expect("test rebind applies");
+            fields.insert(
+                fedi_decentralized_domain::MG_SEAT_BINDINGS_META_FIELD_KEY.to_owned(),
+                serde_json::Value::String(directory),
+            );
+            fields.insert(
+                GUARDIAN_FEE_RECIPIENTS_META_FIELD_KEY.to_owned(),
+                serde_json::Value::String(recipients),
+            );
             let next = serde_json::to_vec(&fields).expect("test metadata serializes");
             self.adopt(next.clone());
             meta_value = Some(next);

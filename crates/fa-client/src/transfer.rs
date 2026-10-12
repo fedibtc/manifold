@@ -206,7 +206,8 @@ where
             lease
                 .write_guardian_transfer(fa_id, GuardianTransferWrite::Begin(transfer.clone()))
                 .await?;
-            self.drive_guardian_transfer(transfer, fa_id, run).await
+            self.drive_guardian_transfer(transfer, fa_id, false, run)
+                .await
         }
         .await;
         finish_driver_run(result, self.inner.store.release_driver_lease(lease).await)
@@ -232,7 +233,7 @@ where
         let (deadline, lease) = start_driver_run(&self.inner.store, options).await?;
         let run = DriverRun::new(options, deadline, &lease);
         let result = self
-            .drive_guardian_transfer(transfer, fa_id, run)
+            .drive_guardian_transfer(transfer, fa_id, true, run)
             .await
             .map(Some);
         finish_driver_run(result, self.inner.store.release_driver_lease(lease).await)
@@ -252,11 +253,15 @@ where
         &self,
         mut transfer: StoredGuardianTransfer,
         fa_id: FaId,
+        wait: bool,
         run: DriverRun<'_>,
     ) -> FaResult<GuardianTransfer> {
         let lease = run.lease();
         if transfer.phase == StoredTransferPhase::Pulling {
-            match self.await_pulled_guardian(&transfer, fa_id, run).await? {
+            match self
+                .await_pulled_guardian(&transfer, fa_id, wait, run)
+                .await?
+            {
                 Pulled::Running => {
                     transfer.phase = StoredTransferPhase::Binding;
                     lease
@@ -306,12 +311,31 @@ where
         }
     }
 
-    /// Ask the destination to pull, and poll it until the guardian runs, the
-    /// grant expires, or the run ends.
+    /// Ask the destination to pull. With `wait`, poll it until the guardian
+    /// runs, the grant expires, or the run ends. An unreachable destination
+    /// counts as still waiting.
     async fn await_pulled_guardian(
         &self,
         transfer: &StoredGuardianTransfer,
         fa_id: FaId,
+        wait: bool,
+        run: DriverRun<'_>,
+    ) -> FaResult<Pulled> {
+        match self.poll_pulled_guardian(transfer, fa_id, wait, run).await {
+            Err(FaError::Mg(failure))
+                if matches!(failure.cause, MgCause::Timeout | MgCause::Transport) =>
+            {
+                Ok(Pulled::Waiting)
+            }
+            result => result,
+        }
+    }
+
+    async fn poll_pulled_guardian(
+        &self,
+        transfer: &StoredGuardianTransfer,
+        fa_id: FaId,
+        wait: bool,
         run: DriverRun<'_>,
     ) -> FaResult<Pulled> {
         let destination = &transfer.destination;
@@ -365,9 +389,10 @@ where
                         .into());
                 }
             }
-            if sleep_for_retry(run.deadline(), run.poll_interval())
-                .await
-                .is_err()
+            if !wait
+                || sleep_for_retry(run.deadline(), run.poll_interval())
+                    .await
+                    .is_err()
             {
                 return Ok(Pulled::Waiting);
             }
