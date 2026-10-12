@@ -73,3 +73,10 @@ it('should describe an active report by its health', () => {
     })
   ).toEqual({ label: 'Unavailable', tone: 'warn' });
 });
+
+it('should describe a created seat as awaiting setup, not unavailable', () => {
+  expect(describeSeatReport({ state: 'active', health: 'unavailable', phase: 'created' })).toEqual({
+    label: 'Awaiting setup',
+    tone: 'neutral'
+  });
+});

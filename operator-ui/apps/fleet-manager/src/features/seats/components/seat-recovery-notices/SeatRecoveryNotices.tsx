@@ -9,7 +9,8 @@ export const SeatRecoveryNotices = ({ report }: SeatRecoveryNoticesProps) => (
   <>
     {report.state === 'active' &&
       report.health === 'unavailable' &&
-      report.phase !== 'data_loss' && (
+      report.phase !== 'data_loss' &&
+      report.phase !== 'created' && (
         <Banner variant="warn">
           This seat is supervised and currently recovering — not necessarily broken. Decommissioning
           is a choice, not something you need to do right now.
@@ -20,6 +21,13 @@ export const SeatRecoveryNotices = ({ report }: SeatRecoveryNoticesProps) => (
       <Banner variant="error">
         This seat has formed but its guardian data is missing. Restore its backup before expecting
         it to serve the federation.
+      </Banner>
+    )}
+
+    {report.state === 'active' && report.phase === 'created' && (
+      <Banner variant="info">
+        This seat is paid for, but its federation is not set up yet. It starts serving when the
+        Federation Ambassador completes the setup ceremony. You do not need to do anything.
       </Banner>
     )}
 
