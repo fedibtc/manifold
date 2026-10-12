@@ -14,6 +14,7 @@ use fedimint_core::core::OperationId;
 use fedimint_ln_client::LightningClientModule;
 use fedimint_ln_common::config::FeeToAmount as _;
 use fedimint_lnv2_client::{LightningClientModule as LightningV2ClientModule, SelectGatewayError};
+use fedimint_lnv2_common::gateway_api::PaymentFee;
 use lightning_invoice::RoutingFees;
 use tracing::{info, warn};
 
@@ -112,7 +113,7 @@ pub(crate) async fn start_payout(
 
     {
         let lightning = v1_lightning.context("federation has no Lightning v1 module")?;
-        let gateway = select_v1_gateway(client, &lightning).await?;
+        let gateway = select_v1_gateway(client, &lightning, balance).await?;
         validate_v1_gateway_fees(balance, &gateway.fees)?;
         let spendable = lightning
             .spendable_amount(balance, Some(gateway.clone()))
@@ -158,9 +159,13 @@ pub(crate) async fn start_payout(
     }
 }
 
-/// Reject a v1 gateway fee schedule that can panic or overflow the pinned
-/// client's fee arithmetic for an invoice no larger than `balance`.
+/// Enforce the shared send fee-schedule limits and checked native arithmetic
+/// for an invoice no larger than `balance`.
 pub(crate) fn validate_v1_gateway_fees(balance: Amount, fees: &RoutingFees) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        PaymentFee::from(*fees).is_within(&PaymentFee::SEND_FEE_LIMIT),
+        "v1 gateway fee schedule exceeds send limits"
+    );
     // Mirror the pinned client's `FeeToAmount` implementation without invoking
     // its unchecked division or additions. The fee is monotone over
     // `[0, balance]`, so proving the endpoint also proves every binary-search

@@ -1326,33 +1326,49 @@ async fn bounded_lnurl_get(
 pub(crate) async fn select_v1_gateway(
     client: &ClientHandleArc,
     lightning: &LightningClientModule,
+    balance: Amount,
 ) -> anyhow::Result<fedimint_ln_common::LightningGateway> {
     lightning.update_gateway_cache().await?;
     let vetted = client
         .meta_service()
         .get_field::<Vec<String>>(client.db(), "vetted_gateways")
         .await
-        .map_or(Vec::new(), |value| value.value.unwrap_or_default())
+        .map_or(Vec::new(), |value| value.value.unwrap_or_default());
+    let vetted = vetted_v1_gateway_keys(vetted);
+    let announcements = lightning.list_gateways().await;
+    select_v1_gateway_from_announcements(&announcements, &vetted, balance)
+}
+
+fn vetted_v1_gateway_keys(values: Vec<String>) -> HashSet<bitcoin::secp256k1::PublicKey> {
+    values
         .into_iter()
         .filter_map(|value| {
             bitcoin::secp256k1::PublicKey::from_str(&value)
                 .inspect_err(|error| warn!(%error, %value, "invalid vetted gateway"))
                 .ok()
         })
-        .collect::<HashSet<_>>();
-    let announcements = lightning.list_gateways().await;
+        .collect()
+}
+
+/// Apply eligibility before preference so a usable alternative remains selectable.
+fn select_v1_gateway_from_announcements(
+    announcements: &[fedimint_ln_common::LightningGatewayAnnouncement],
+    vetted: &HashSet<bitcoin::secp256k1::PublicKey>,
+    balance: Amount,
+) -> anyhow::Result<fedimint_ln_common::LightningGateway> {
     let (mut vetted_gateways, unvetted_gateways): (Vec<_>, Vec<_>) = announcements
         .iter()
-        .cloned()
-        .into_iter()
         .filter(|announcement| announcement.ttl > MINIMUM_V1_GATEWAY_TTL)
+        .filter(|announcement| {
+            payout_native::validate_v1_gateway_fees(balance, &announcement.info.fees).is_ok()
+        })
         .partition(|announcement| vetted.contains(&announcement.info.gateway_id));
     if vetted_gateways.is_empty() {
         vetted_gateways = unvetted_gateways;
     }
     vetted_gateways.sort_by_key(|announcement| announcement.info.gateway_id);
     match vetted_gateways.into_iter().next() {
-        Some(announcement) => Ok(announcement.info),
+        Some(announcement) => Ok(announcement.info.clone()),
         None => Err(v1_gateway_unavailable(
             announcements.iter().map(|announcement| announcement.ttl),
         )),
@@ -1370,6 +1386,14 @@ fn v1_gateway_unavailable(
     } else if announcement_ttls.iter().all(|ttl| ttl.is_zero()) {
         anyhow::anyhow!(
             "federation announced {} Lightning v1 gateways, but all announcements have expired",
+            announcement_count
+        )
+    } else if announcement_ttls
+        .iter()
+        .any(|ttl| *ttl > MINIMUM_V1_GATEWAY_TTL)
+    {
+        anyhow::anyhow!(
+            "federation announced {} Lightning v1 gateways, but none with sufficient lifetime has an eligible fee schedule for this balance",
             announcement_count
         )
     } else {

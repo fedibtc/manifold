@@ -67,9 +67,14 @@ fragment data, so payout diagnostics never format a gateway API URL. The upstrea
 v2 selector reports only aggregate gateway outcomes; a failure to obtain routing
 information is not evidence about any particular guardian or peer.
 
+Lightning v1 gateway selection applies the existing Lightning send fee-schedule
+limits to both vetted and unvetted candidates before preference and ordering.
+Payouts and drain estimates share this balance-aware selection. When no eligible
+route exists, selection returns an error, leaving the drain estimate unknown
+rather than drained.
 The pinned Lightning v1 client performs unchecked arithmetic over the selected
 gateway's advertised fee schedule. Before calling its affordability or payment
-paths, MG rejects a schedule whose proportional divisor is zero or whose
+paths, MG also rejects a schedule whose proportional divisor is zero or whose
 maximum invoice fee or contract amount would overflow at the current wallet
 balance. Do not move a selected v1 gateway into dependency fee arithmetic before
 this check.

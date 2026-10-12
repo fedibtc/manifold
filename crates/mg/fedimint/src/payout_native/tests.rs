@@ -39,23 +39,43 @@ fn returned_v1_operation_must_match_exact_committed_payout() {
 }
 
 #[test]
-fn v1_gateway_fee_validation_rejects_pinned_client_panics_and_overflow() {
+fn v1_gateway_fee_validation_applies_send_schedule_limits() {
     let fees = |base_msat, proportional_millionths| RoutingFees {
         base_msat,
         proportional_millionths,
     };
 
-    validate_v1_gateway_fees(Amount::ZERO, &fees(u32::MAX, 1_000_000)).unwrap();
-    validate_v1_gateway_fees(Amount::from_msats(1), &fees(0, 1_000_000)).unwrap();
-    assert!(
-        validate_v1_gateway_fees(Amount::from_msats(1), &fees(0, 1_000_001)).is_err(),
-        "a rate above one million makes the pinned client's divisor zero"
-    );
+    for (base, rate) in [
+        (0, 0),
+        (1_000, 100),
+        (100_000, 0),
+        (0, 15_000),
+        (100_000, 15_000),
+    ] {
+        validate_v1_gateway_fees(Amount::from_msats(1_000_000), &fees(base, rate)).unwrap();
+    }
+    for (base, rate) in [
+        (100_001, 0),
+        (0, 15_001),
+        (u32::MAX, 0),
+        (0, u32::MAX),
+        (u32::MAX, u32::MAX),
+        (0, 1_000_000),
+    ] {
+        assert!(validate_v1_gateway_fees(Amount::ZERO, &fees(base, rate)).is_err());
+    }
+}
 
+#[test]
+fn v1_gateway_fee_validation_preserves_checked_native_arithmetic() {
+    let fees = |base_msat, proportional_millionths| RoutingFees {
+        base_msat,
+        proportional_millionths,
+    };
     validate_v1_gateway_fees(Amount::from_msats(u64::MAX), &fees(0, 0)).unwrap();
-    validate_v1_gateway_fees(Amount::from_msats(u64::MAX / 2), &fees(1, 1_000_000)).unwrap();
+    validate_v1_gateway_fees(Amount::from_msats(u64::MAX / 2), &fees(1, 15_000)).unwrap();
     assert!(
-        validate_v1_gateway_fees(Amount::from_msats(u64::MAX), &fees(1, 1_000_000)).is_err(),
+        validate_v1_gateway_fees(Amount::from_msats(u64::MAX), &fees(1, 15_000)).is_err(),
         "base and proportional fee addition must not overflow"
     );
     assert!(
@@ -63,9 +83,21 @@ fn v1_gateway_fee_validation_rejects_pinned_client_panics_and_overflow() {
         "base-fee addition must not overflow"
     );
     assert!(
-        validate_v1_gateway_fees(Amount::from_msats(u64::MAX), &fees(0, 1_000_000)).is_err(),
+        validate_v1_gateway_fees(Amount::from_msats(u64::MAX), &fees(0, 15_000)).is_err(),
         "proportional-fee and contract additions must not overflow"
     );
+}
+
+#[test]
+fn v1_fee_limit_preserves_native_rounding() {
+    let fees = RoutingFees {
+        base_msat: 100_000,
+        proportional_millionths: 15_000,
+    };
+    let amount = Amount::from_msats(1_000_000);
+    validate_v1_gateway_fees(amount, &fees).unwrap();
+    // Legacy fees retain the native integer-divisor calculation.
+    assert_eq!(fees.to_amount(&amount).msats, 100_000 + amount.msats / 66);
 }
 
 #[test]

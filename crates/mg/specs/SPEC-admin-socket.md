@@ -167,9 +167,13 @@ the fleet.
   a sub-satoshi remainder is not enforceable on chain. Gateway
   selection is automatic: Lightning v2's own selection supplies its vetted
   route; when v2 is unavailable the v1 path prefers the federation metadata's
-  currently available `vetted_gateways` and falls back to another available
-  gateway only when none of those are usable, matching Fedi's selection
-  policy. The response is a durable job carrying the request, its immutable
+  eligible `vetted_gateways` and falls back to another eligible
+  gateway only when none of those are usable. Legacy candidates must have
+  sufficient announcement lifetime, satisfy the existing Lightning send
+  fee-schedule limits, and support native fee arithmetic at the current balance.
+  Payouts and drain estimates use the same selection rules. When no eligible route
+  exists, selection returns an unavailable result, not a drained wallet.
+  The response is a durable job carrying the request, its immutable
   payment-federation scope and destination snapshot, and the committed native
   operation id and recipient amount, not bearer ecash.
 
