@@ -257,6 +257,12 @@ fedimint-walletv2-client = { path = ".nix-deps/fedimint/modules/fedimint-walletv
 fedimint-walletv2-common = { path = ".nix-deps/fedimint/modules/fedimint-walletv2-common" }
 # netwatch 0.5 uses socket2 APIs gated behind its "all" feature on macOS.
 netwatch = { git = "https://github.com/fedibtc/net-tools", rev = "0b4a63b847fd662779ad1a9c04a23db6fec39390" }
+# iroh 0.35 (Fedimint p2p) with a fix for a send livelock that pins every
+# tokio worker (fedibtc/iroh `fedi/v0.35.0-no-send-spin`). `iroh-base` and
+# `iroh-relay` come from the same checkout because git `iroh` uses them by path.
+iroh = { git = "https://github.com/fedibtc/iroh", rev = "a5b069896b2f320a50b71cb0e77ba67457aa253f" }
+iroh-base = { git = "https://github.com/fedibtc/iroh", rev = "a5b069896b2f320a50b71cb0e77ba67457aa253f" }
+iroh-relay = { git = "https://github.com/fedibtc/iroh", rev = "a5b069896b2f320a50b71cb0e77ba67457aa253f" }
 
 # Still load-bearing after workspace crates dropped their direct Fedimint git
 # deps: `stability-pool-client`/`stability-pool-common` (a git dependency of
