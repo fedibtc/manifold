@@ -153,6 +153,10 @@ async fn a_lost_acceptance_after_payment_replays_the_exact_quote() {
         .buy_spare_seat(spare_approval(PAYMENT_AMOUNT_MSATS), long_request_options())
         .await
         .unwrap_err();
+    let pending = client.spare_seat_purchase().await.unwrap().unwrap();
+    assert_eq!(pending.mg_id, test_mg_id(SPARE_INDEX));
+    assert_eq!(pending.max_msats, PAYMENT_AMOUNT_MSATS);
+    assert!(pending.outputs_started);
     let quotes_after_failure = mg_state.quote_calls.load(Ordering::SeqCst);
     let funded_after_failure = payment_state.create_calls.load(Ordering::SeqCst);
     assert!(
@@ -190,6 +194,7 @@ async fn a_lost_acceptance_after_payment_replays_the_exact_quote() {
     assert_eq!(records.len(), 2);
     assert_eq!(records[0].quote_id, records[1].quote_id);
     assert_eq!(spare.seat_id, records[1].seat_id);
+    assert_eq!(client.spare_seat_purchase().await.unwrap(), None);
 }
 
 #[tokio::test]
