@@ -54,7 +54,9 @@ pub struct SeatTransferGrant {
     /// Bought, unformed seat on the destination FMan.
     pub destination_seat_id: SeatId,
 
-    /// Last second at which either side acts on this grant. At most
+    /// Last second at which the destination asks the source and the source
+    /// answers. A destination that stored the package before then finishes
+    /// the import after it. At most
     /// [`SEAT_TRANSFER_GRANT_MAX_LIFETIME_SECS`] after `ts`.
     pub expires_at: Timestamp,
 }
