@@ -622,9 +622,12 @@ but that host no guardian yet. A later guardian transfer takes its destination
 seat from the pool. Formation does not use the pool.
 
 The FA can buy spares for a federation it formed on this device or restored
-from a backup. `preview_spare_seat` reads the Fedimint major/minor line the
-federation runs now with `GetFedimintStats` from the first seat that answers.
-It then selects one MG on that line outside the federation and the pool.
+from a backup. `preview_spare_seat` takes the Fedimint major/minor line the
+federation runs from the registry advertisements of the federation's own
+MGs: an MG runs one `fedimintd` build for all its seats. During an
+upgrade the line most of them advertise wins, then the newer line. The
+preview then selects one MG on that line outside the federation and the
+pool.
 After a restore the badge holders of the seats are unknown, so the preview
 excludes their MGs but not their holders. `buy_spare_seat` takes the
 approved preview with a price cap and buys one seat with the normal

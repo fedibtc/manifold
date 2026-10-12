@@ -23,11 +23,9 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use fedi_decentralized_nostr_clients::FaNostrClient;
 use fedi_decentralized_service_manifold_guardian::{
-    FedimintdDkgVersion, FedimintdVersionCore, GetFedimintStatsRequest, GetQuoteResponse, Locator,
-    ManifoldGuardianService, SeatId, SignatureVerified, SignedResponse, Timestamp,
+    GetQuoteResponse, Locator, SeatId, SignatureVerified, SignedResponse, Timestamp,
 };
-use fedimint_core::runtime::{Instant, timeout};
-use futures::stream::{FuturesUnordered, StreamExt as _};
+use fedimint_core::runtime::Instant;
 use nostr_sdk::PublicKey;
 use stability_pool_common::Account;
 use tokio::sync::OnceCell;
@@ -38,13 +36,12 @@ use crate::formation::{
     finish_driver_run, now_secs, start_driver_run,
 };
 use crate::mg::MgClient;
-use crate::selection::{SpareSeatApproval, SpareSeatPreview};
+use crate::selection::{SpareSeatApproval, SpareSeatPreview, dkg_line};
 use crate::{
     FaClient, FaError, FaIdentity, FaPayments, FaResult, FederationConsensusReader, FederationName,
-    FederationSize, FedimintdVersionRange, FormationId, FormationPhase, FormationRunOptions,
-    ManifoldGuardianConnector, MgDiscoveryOptions, MgSelectionRequest, PaymentRequirements,
-    PaymentReservationRecovery, PlanPreference, ResolvedFormationIntent, SeatPaymentRecovery,
-    SeatPaymentRequirement,
+    FederationSize, FormationId, FormationPhase, FormationRunOptions, ManifoldGuardianConnector,
+    MgDiscoveryOptions, PaymentRequirements, PaymentReservationRecovery, PlanPreference,
+    ResolvedFormationIntent, SeatPaymentRecovery, SeatPaymentRequirement,
 };
 
 /// One seat the FA owns that hosts no guardian.
@@ -132,30 +129,23 @@ where
     ) -> FaResult<SpareSeatPreview> {
         let fa_id = self.fa_id()?;
         let federation = self.pool_federation(fa_id).await?;
-        let deadline = Instant::now()
-            .checked_add(options.timeout())
-            .expect("clamped discovery timeout fits the monotonic deadline domain");
-        let dkg_version = self
-            .running_dkg_version(&federation, fa_id, deadline)
-            .await?;
-        let request = MgSelectionRequest::new(
-            federation.federation_size,
-            dkg_line(&dkg_version)?,
-            PlanPreference::default(),
-        )?;
-        let mut excluded = BTreeSet::new();
+        let mut members = BTreeSet::new();
         let mut retained_service_pubkeys = BTreeMap::new();
         for (mg_id, locator, _) in &federation.seats {
             if let Some(mg_id) = mg_id {
-                excluded.insert(*mg_id);
+                members.insert(*mg_id);
                 retained_service_pubkeys.insert(locator.service_pubkey, *mg_id);
             }
         }
+        let mut excluded = members.clone();
         for spare in self.inner.store.list_spare_seats().await? {
             excluded.insert(spare.mg_id);
             retained_service_pubkeys.insert(spare.locator.service_pubkey, spare.mg_id);
         }
         let now = fedimint_core::time::duration_since_epoch().as_secs();
+        let deadline = Instant::now()
+            .checked_add(options.timeout())
+            .expect("clamped discovery timeout fits the monotonic deadline domain");
         crate::selection::preview_spare_seat_with(
             &self.inner.ports.registry,
             &self.inner.peer_badge_verifier,
@@ -163,8 +153,8 @@ where
                 connector: Some(&self.inner.ports.mg_connector),
             },
             self.inner.peer_badge_verifier.provenance(),
-            &request,
-            dkg_version,
+            federation.federation_size,
+            &members,
             excluded,
             retained_service_pubkeys,
             federation.holders,
@@ -304,63 +294,6 @@ where
             }),
             FaRecovery::Idle | FaRecovery::Formation(_) => Err(FaError::NoActiveFormation),
         }
-    }
-
-    /// The Fedimint line the federation runs now, as the first of its seats
-    /// to answer reports it.
-    async fn running_dkg_version(
-        &self,
-        federation: &PoolFederation,
-        fa_id: crate::FaId,
-        deadline: Instant,
-    ) -> FaResult<FedimintdDkgVersion> {
-        let mut pending = federation
-            .seats
-            .iter()
-            .map(|(_, locator, seat_id)| async move {
-                let client = self
-                    .inner
-                    .ports
-                    .mg_connector
-                    .connect(locator)
-                    .await
-                    .map_err(|error| error.to_string())?;
-                let request = self
-                    .sign(&GetFedimintStatsRequest {
-                        ts: Timestamp(now_secs().map_err(|error| error.to_string())?),
-                        fa_id,
-                        seat_id: seat_id.clone(),
-                    })
-                    .map_err(|error| error.to_string())?;
-                client
-                    .get_fedimint_stats(request)
-                    .await
-                    .map(|response| response.stats.fedimintd_version.dkg_version())
-                    .map_err(|error| error.to_string())
-            })
-            .collect::<FuturesUnordered<_>>();
-        let first_answer = async {
-            let mut last_error = "the federation has no seats".to_owned();
-            while let Some(result) = pending.next().await {
-                match result {
-                    Ok(version) => return Ok(version),
-                    Err(error) => last_error = error,
-                }
-            }
-            Err(last_error)
-        };
-        timeout(
-            deadline.saturating_duration_since(Instant::now()),
-            first_answer,
-        )
-        .await
-        .map_err(|_| "no seat reported its Fedimint version in time".to_owned())
-        .flatten()
-        .map_err(|error| {
-            FaError::Selection(format!(
-                "cannot read the Fedimint version the federation runs: {error}"
-            ))
-        })
     }
 
     async fn drive_seat_purchase(
@@ -600,23 +533,6 @@ where
             .map_err(|error| FaError::Payment(error.to_string()))?;
         Ok(Some(prepared))
     }
-}
-
-/// Every release of the Fedimint major/minor line a DKG identity names.
-fn dkg_line(dkg_version: &FedimintdDkgVersion) -> FaResult<FedimintdVersionRange> {
-    let (major, minor) = dkg_version.major_minor();
-    FedimintdVersionRange::from_cores(
-        FedimintdVersionCore {
-            major,
-            minor,
-            patch: 0,
-        },
-        FedimintdVersionCore {
-            major,
-            minor: minor.saturating_add(1),
-            patch: 0,
-        },
-    )
 }
 
 /// The purchase's payment as an aggregate of one member.
