@@ -1151,6 +1151,7 @@ pub(crate) async fn preview_mg_replacements_with(
 #[derive(Debug)]
 pub struct SpareSeatPreview {
     verifier_provenance: PeerBadgeVerifierProvenance,
+    fedimintd_dkg_version: FedimintdDkgVersion,
     seat: SelectedMgSeat,
     valid_until: Timestamp,
 }
@@ -1184,6 +1185,7 @@ impl SpareSeatPreview {
         }
         Ok(SpareSeatApproval {
             verifier_provenance: self.verifier_provenance,
+            fedimintd_dkg_version: self.fedimintd_dkg_version,
             seat: self.seat.into(),
             max_msats,
             valid_until: self.valid_until,
@@ -1195,6 +1197,8 @@ impl SpareSeatPreview {
 #[derive(Clone, Debug)]
 pub struct SpareSeatApproval {
     pub(crate) verifier_provenance: PeerBadgeVerifierProvenance,
+    /// The Fedimint line the federation ran at preview time.
+    pub(crate) fedimintd_dkg_version: FedimintdDkgVersion,
     pub(crate) seat: ApprovedMgSeat,
     pub(crate) max_msats: u64,
     pub(crate) valid_until: Timestamp,
@@ -1222,7 +1226,7 @@ pub(crate) async fn preview_spare_seat_with(
     prober: &impl SelectionAvailabilityProber,
     verifier_provenance: PeerBadgeVerifierProvenance,
     request: &MgSelectionRequest,
-    fedimintd_dkg_version: &FedimintdDkgVersion,
+    fedimintd_dkg_version: FedimintdDkgVersion,
     excluded: BTreeSet<PublicKey>,
     retained_service_pubkeys: BTreeMap<secp256k1::XOnlyPublicKey, PublicKey>,
     retained_holders: BTreeSet<PublicKey>,
@@ -1245,7 +1249,7 @@ pub(crate) async fn preview_spare_seat_with(
         verifier,
         prober,
         request,
-        fedimintd_dkg_version,
+        &fedimintd_dkg_version,
         discovery.candidates,
         FederationSize(1),
         retained_service_pubkeys,
@@ -1266,6 +1270,7 @@ pub(crate) async fn preview_spare_seat_with(
         .ok_or_else(|| FaError::Selection("spare seat preview expiry overflows".to_owned()))?;
     Ok(SpareSeatPreview {
         verifier_provenance,
+        fedimintd_dkg_version,
         seat,
         valid_until: Timestamp(valid_until),
     })

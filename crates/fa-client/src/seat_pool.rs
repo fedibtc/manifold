@@ -23,9 +23,11 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use fedi_decentralized_nostr_clients::FaNostrClient;
 use fedi_decentralized_service_manifold_guardian::{
-    GetQuoteResponse, Locator, SeatId, SignatureVerified, SignedResponse, Timestamp,
+    FedimintdDkgVersion, FedimintdVersionCore, GetFedimintStatsRequest, GetQuoteResponse, Locator,
+    ManifoldGuardianService, SeatId, SignatureVerified, SignedResponse, Timestamp,
 };
-use fedimint_core::runtime::Instant;
+use fedimint_core::runtime::{Instant, timeout};
+use futures::stream::{FuturesUnordered, StreamExt as _};
 use nostr_sdk::PublicKey;
 use stability_pool_common::Account;
 use tokio::sync::OnceCell;
@@ -38,9 +40,10 @@ use crate::formation::{
 use crate::mg::MgClient;
 use crate::selection::{SpareSeatApproval, SpareSeatPreview};
 use crate::{
-    FaClient, FaError, FaIdentity, FaPayments, FaResult, FederationConsensusReader, FormationId,
-    FormationPhase, FormationRunOptions, ManifoldGuardianConnector, MgDiscoveryOptions,
-    MgSelectionRequest, PaymentRequirements, PaymentReservationRecovery, SeatPaymentRecovery,
+    FaClient, FaError, FaIdentity, FaPayments, FaResult, FederationConsensusReader, FederationName,
+    FederationSize, FedimintdVersionRange, FormationId, FormationPhase, FormationRunOptions,
+    ManifoldGuardianConnector, MgDiscoveryOptions, MgSelectionRequest, PaymentRequirements,
+    PaymentReservationRecovery, PlanPreference, ResolvedFormationIntent, SeatPaymentRecovery,
     SeatPaymentRequirement,
 };
 
@@ -88,12 +91,27 @@ pub(crate) struct StoredSeatPurchase {
     pub(crate) mg_id: PublicKey,
     pub(crate) holder: PublicKey,
     pub(crate) locator: Locator,
+    /// What every quote must match: the federation's size and the Fedimint
+    /// line it ran when the seat was selected.
+    pub(crate) terms: ResolvedFormationIntent,
     /// Spending cap the user approved for this seat.
     pub(crate) max_msats: u64,
     /// Current quote. Replaced only while it is free of value effects.
     pub(crate) signed_quote: Option<SignedResponse<GetQuoteResponse>>,
     /// Durable output boundary: once set, the quote is replayed exactly.
     pub(crate) outputs_started: bool,
+}
+
+/// The formed federation a spare seat is bought for, from a formation this
+/// device ran or from a restored backup.
+struct PoolFederation {
+    formation_id: FormationId,
+    federation_name: FederationName,
+    federation_size: FederationSize,
+    /// MG identity, when known, locator, and seat id of every guardian seat.
+    seats: Vec<(Option<PublicKey>, Locator, SeatId)>,
+    /// Badge holders of the seats. Unknown after a restore.
+    holders: BTreeSet<PublicKey>,
 }
 
 impl<I, P, N, F, C> FaClient<I, P, N, F, C>
@@ -113,21 +131,24 @@ where
         options: MgDiscoveryOptions,
     ) -> FaResult<SpareSeatPreview> {
         let fa_id = self.fa_id()?;
-        let recovery = self.formed_recovery(fa_id).await?;
-        let intent = &recovery.snapshot.intent;
+        let federation = self.pool_federation(fa_id).await?;
+        let deadline = Instant::now()
+            .checked_add(options.timeout())
+            .expect("clamped discovery timeout fits the monotonic deadline domain");
+        let dkg_version = self
+            .running_dkg_version(&federation, fa_id, deadline)
+            .await?;
         let request = MgSelectionRequest::new(
-            intent.federation_size,
-            intent.fedimintd_versions.clone(),
-            intent.plan,
+            federation.federation_size,
+            dkg_line(&dkg_version)?,
+            PlanPreference::default(),
         )?;
         let mut excluded = BTreeSet::new();
         let mut retained_service_pubkeys = BTreeMap::new();
-        let mut retained_holders = BTreeSet::new();
-        for seat in &recovery.seats {
-            retained_holders.extend(seat.admission.holder());
-            if let Some(mg_id) = seat.admission.mg_id() {
-                excluded.insert(mg_id);
-                retained_service_pubkeys.insert(seat.progress.locator.service_pubkey, mg_id);
+        for (mg_id, locator, _) in &federation.seats {
+            if let Some(mg_id) = mg_id {
+                excluded.insert(*mg_id);
+                retained_service_pubkeys.insert(locator.service_pubkey, *mg_id);
             }
         }
         for spare in self.inner.store.list_spare_seats().await? {
@@ -135,9 +156,6 @@ where
             retained_service_pubkeys.insert(spare.locator.service_pubkey, spare.mg_id);
         }
         let now = fedimint_core::time::duration_since_epoch().as_secs();
-        let deadline = Instant::now()
-            .checked_add(options.timeout())
-            .expect("clamped discovery timeout fits the monotonic deadline domain");
         crate::selection::preview_spare_seat_with(
             &self.inner.ports.registry,
             &self.inner.peer_badge_verifier,
@@ -146,10 +164,10 @@ where
             },
             self.inner.peer_badge_verifier.provenance(),
             &request,
-            &intent.fedimintd_dkg_version,
+            dkg_version,
             excluded,
             retained_service_pubkeys,
-            retained_holders,
+            federation.holders,
             deadline,
             now,
             || fedimint_core::time::duration_since_epoch().as_secs(),
@@ -183,18 +201,24 @@ where
                 failure: None,
             });
         }
-        let recovery = self.formed_recovery(fa_id).await?;
+        let federation = self.pool_federation(fa_id).await?;
+        let terms = ResolvedFormationIntent {
+            federation_name: federation.federation_name,
+            federation_size: federation.federation_size,
+            plan: PlanPreference::default(),
+            fedimintd_versions: dkg_line(&approval.fedimintd_dkg_version)?,
+            fedimintd_dkg_version: approval.fedimintd_dkg_version,
+            max_total_msats: Some(approval.max_msats),
+        };
         let (deadline, lease) = start_driver_run(&self.inner.store, options).await?;
         let run = DriverRun::new(options, deadline, &lease);
         let result = async {
             let purchase = StoredSeatPurchase {
-                purchase_id: FormationId(format!(
-                    "{}:spare-seat:{now}",
-                    recovery.snapshot.formation_id.0
-                )),
+                purchase_id: FormationId(format!("{}:spare-seat:{now}", federation.formation_id.0)),
                 mg_id: approval.seat.mg_id,
                 holder: approval.seat.holder,
                 locator: approval.seat.locator,
+                terms,
                 max_msats: approval.max_msats,
                 signed_quote: None,
                 outputs_started: false,
@@ -202,8 +226,7 @@ where
             lease
                 .write_seat_pool(SeatPoolWrite::Begin(purchase.clone()))
                 .await?;
-            self.drive_seat_purchase(purchase, &recovery.snapshot.intent, fa_id, run)
-                .await
+            self.drive_seat_purchase(purchase, fa_id, run).await
         }
         .await;
         finish_driver_run(result, self.inner.store.release_driver_lease(lease).await)
@@ -220,11 +243,10 @@ where
         let Some(purchase) = self.inner.store.load_seat_purchase().await? else {
             return Ok(None);
         };
-        let recovery = self.formed_recovery(fa_id).await?;
         let (deadline, lease) = start_driver_run(&self.inner.store, options).await?;
         let run = DriverRun::new(options, deadline, &lease);
         let result = self
-            .drive_seat_purchase(purchase, &recovery.snapshot.intent, fa_id, run)
+            .drive_seat_purchase(purchase, fa_id, run)
             .await
             .map(Some);
         finish_driver_run(result, self.inner.store.release_driver_lease(lease).await)
@@ -242,31 +264,113 @@ where
             .collect())
     }
 
-    async fn formed_recovery(
-        &self,
-        fa_id: crate::FaId,
-    ) -> FaResult<crate::db::ActiveFormationRecovery> {
+    async fn pool_federation(&self, fa_id: crate::FaId) -> FaResult<PoolFederation> {
         match self.inner.store.load_recovery(fa_id).await? {
             FaRecovery::Formation(recovery)
                 if recovery.snapshot.phase == FormationPhase::Formed =>
             {
-                Ok(*recovery)
+                let mut seats = Vec::with_capacity(recovery.seats.len());
+                let mut holders = BTreeSet::new();
+                for seat in recovery.seats {
+                    holders.extend(seat.admission.holder());
+                    let seat_id = seat
+                        .progress
+                        .seat_id
+                        .ok_or_else(|| FaError::Storage("formed seat has no seat id".to_owned()))?;
+                    seats.push((seat.admission.mg_id(), seat.progress.locator, seat_id));
+                }
+                Ok(PoolFederation {
+                    formation_id: recovery.snapshot.formation_id,
+                    federation_name: recovery.snapshot.intent.federation_name,
+                    federation_size: recovery.snapshot.intent.federation_size,
+                    seats,
+                    holders,
+                })
             }
-            FaRecovery::Restored(_) => Err(FaError::InvalidIntent(
-                "a restored FA has no local formation intent to buy a seat with".to_owned(),
-            )),
+            FaRecovery::Restored(snapshot) => Ok(PoolFederation {
+                federation_size: FederationSize(u16::try_from(snapshot.seats.len()).map_err(
+                    |_| FaError::Storage("restored federation has too many seats".to_owned()),
+                )?),
+                federation_name: snapshot.federation_name.unwrap_or_else(|| {
+                    crate::formation::default_federation_name(fa_id, snapshot.snapshot_generation)
+                }),
+                formation_id: snapshot.formation_id,
+                seats: snapshot
+                    .seats
+                    .into_iter()
+                    .map(|seat| (Some(seat.mg_identity), seat.locator, seat.seat_id))
+                    .collect(),
+                holders: BTreeSet::new(),
+            }),
             FaRecovery::Idle | FaRecovery::Formation(_) => Err(FaError::NoActiveFormation),
         }
+    }
+
+    /// The Fedimint line the federation runs now, as the first of its seats
+    /// to answer reports it.
+    async fn running_dkg_version(
+        &self,
+        federation: &PoolFederation,
+        fa_id: crate::FaId,
+        deadline: Instant,
+    ) -> FaResult<FedimintdDkgVersion> {
+        let mut pending = federation
+            .seats
+            .iter()
+            .map(|(_, locator, seat_id)| async move {
+                let client = self
+                    .inner
+                    .ports
+                    .mg_connector
+                    .connect(locator)
+                    .await
+                    .map_err(|error| error.to_string())?;
+                let request = self
+                    .sign(&GetFedimintStatsRequest {
+                        ts: Timestamp(now_secs().map_err(|error| error.to_string())?),
+                        fa_id,
+                        seat_id: seat_id.clone(),
+                    })
+                    .map_err(|error| error.to_string())?;
+                client
+                    .get_fedimint_stats(request)
+                    .await
+                    .map(|response| response.stats.fedimintd_version.dkg_version())
+                    .map_err(|error| error.to_string())
+            })
+            .collect::<FuturesUnordered<_>>();
+        let first_answer = async {
+            let mut last_error = "the federation has no seats".to_owned();
+            while let Some(result) = pending.next().await {
+                match result {
+                    Ok(version) => return Ok(version),
+                    Err(error) => last_error = error,
+                }
+            }
+            Err(last_error)
+        };
+        timeout(
+            deadline.saturating_duration_since(Instant::now()),
+            first_answer,
+        )
+        .await
+        .map_err(|_| "no seat reported its Fedimint version in time".to_owned())
+        .flatten()
+        .map_err(|error| {
+            FaError::Selection(format!(
+                "cannot read the Fedimint version the federation runs: {error}"
+            ))
+        })
     }
 
     async fn drive_seat_purchase(
         &self,
         mut purchase: StoredSeatPurchase,
-        intent: &crate::ResolvedFormationIntent,
         fa_id: crate::FaId,
         run: DriverRun<'_>,
     ) -> FaResult<SpareSeat> {
         let lease = run.lease();
+        let intent = &purchase.terms.clone();
         let client =
             MgClient::connect(&self.inner.ports.mg_connector, &purchase.locator, run).await?;
         let payment_federation = OnceCell::new();
@@ -496,6 +600,23 @@ where
             .map_err(|error| FaError::Payment(error.to_string()))?;
         Ok(Some(prepared))
     }
+}
+
+/// Every release of the Fedimint major/minor line a DKG identity names.
+fn dkg_line(dkg_version: &FedimintdDkgVersion) -> FaResult<FedimintdVersionRange> {
+    let (major, minor) = dkg_version.major_minor();
+    FedimintdVersionRange::from_cores(
+        FedimintdVersionCore {
+            major,
+            minor,
+            patch: 0,
+        },
+        FedimintdVersionCore {
+            major,
+            minor: minor.saturating_add(1),
+            patch: 0,
+        },
+    )
 }
 
 /// The purchase's payment as an aggregate of one member.
