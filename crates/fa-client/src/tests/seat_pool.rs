@@ -374,7 +374,12 @@ pub(super) fn mg_ad(index: usize, price_msats: u64, version: &str) -> nostr_sdk:
 /// the given MG advertisements in its registry.
 pub(super) async fn restored_client(
     advertisements: Vec<nostr_sdk::Event>,
-) -> (Arc<PaymentState>, Arc<MgState>, TestClient) {
+) -> (
+    fedimint_core::db::Database,
+    Arc<PaymentState>,
+    Arc<MgState>,
+    TestClient,
+) {
     let (_database, _payments, _payment_state, mg_state, source) = formed_paid_client().await;
     let backup = source.inner.store.backup_payload().await.unwrap().payload;
     let registry = TestRegistry::default();
@@ -385,8 +390,9 @@ pub(super) async fn restored_client(
         .push(setup_payment_event(test_now_secs(), &[PAYMENT_INVITE]));
     *registry.advertisements.lock().expect("test lock") = advertisements;
     let (payments, payment_state) = TestPayments::new();
+    let database = MemDatabase::new().into_database();
     let restored = open_client_with_registry(
-        MemDatabase::new().into_database(),
+        database.clone(),
         payments,
         mg_state.clone(),
         MgConfig::paid(),
@@ -401,7 +407,7 @@ pub(super) async fn restored_client(
         .unwrap();
     restored.inner.progress.send_replace(status);
     assert!(matches!(restored.status(), FaStatus::Restored(_)));
-    (payment_state, mg_state, restored)
+    (database, payment_state, mg_state, restored)
 }
 
 async fn eligible_spare_mgs(client: &TestClient) -> usize {
@@ -418,7 +424,7 @@ async fn eligible_spare_mgs(client: &TestClient) -> usize {
 async fn a_restored_fa_buys_a_spare_on_the_federation_line() {
     // Neither a guardian of the federation nor an MG on another Fedimint
     // line may hold a spare.
-    let (payment_state, mg_state, restored) = restored_client(vec![
+    let (_, payment_state, mg_state, restored) = restored_client(vec![
         mg_ad(0, PAYMENT_AMOUNT_MSATS, FEDIMINTD_VERSION_0_1),
         mg_ad(20, PAYMENT_AMOUNT_MSATS, "0.13.0+fedi"),
     ])
@@ -453,7 +459,7 @@ async fn a_restored_fa_buys_a_spare_on_the_federation_line() {
 async fn the_spare_line_is_the_one_most_guardians_advertise() {
     let newer = "0.13.0+fedi";
     // A tie between lines picks the newer one.
-    let (_, _, restored) = restored_client(vec![
+    let (_, _, _, restored) = restored_client(vec![
         mg_ad(0, PAYMENT_AMOUNT_MSATS, FEDIMINTD_VERSION_0_1),
         mg_ad(1, PAYMENT_AMOUNT_MSATS, newer),
         mg_ad(20, PAYMENT_AMOUNT_MSATS, newer),
@@ -462,7 +468,7 @@ async fn the_spare_line_is_the_one_most_guardians_advertise() {
     assert_eq!(eligible_spare_mgs(&restored).await, 1);
 
     // A majority outweighs the newer line.
-    let (_, _, restored) = restored_client(vec![
+    let (_, _, _, restored) = restored_client(vec![
         mg_ad(0, PAYMENT_AMOUNT_MSATS, FEDIMINTD_VERSION_0_1),
         mg_ad(1, PAYMENT_AMOUNT_MSATS, newer),
         mg_ad(2, PAYMENT_AMOUNT_MSATS, FEDIMINTD_VERSION_0_1),
@@ -470,4 +476,69 @@ async fn the_spare_line_is_the_one_most_guardians_advertise() {
     ])
     .await;
     assert_eq!(eligible_spare_mgs(&restored).await, 0);
+}
+
+/// Badge verifier that reports a chosen holder for some MGs, and the MG
+/// itself for every other one.
+struct HolderVerifier(BTreeMap<PublicKey, PublicKey>);
+
+impl crate::selection::SelectionBadgeVerifier for HolderVerifier {
+    async fn verify_badge(
+        &self,
+        envelope: &fedi_decentralized_domain::HolderAuthorizationEnvelope,
+    ) -> Result<
+        crate::VerifiedBadgeFacts,
+        fedi_decentralized_peer_badge_verifier::PeerBadgeVerificationError,
+    > {
+        let subject = envelope.holder_authorization.authorization.subject_pubkey.0;
+        Ok(crate::VerifiedBadgeFacts {
+            issuer: envelope.signed_credential.credential.issuer_id_pubkey.0,
+            holder: self.0.get(&subject).copied().unwrap_or(subject),
+            subject,
+            badge: fedi_decentralized_domain::parse_trust_score_badge_v1(
+                &envelope.signed_credential.credential,
+            )
+            .expect("test badge parses"),
+        })
+    }
+}
+
+#[tokio::test]
+async fn a_spare_holder_cannot_sell_a_second_spare_through_another_mg() {
+    let other = 20;
+    let (_, _, _, restored) = restored_client(vec![
+        mg_ad(0, PAYMENT_AMOUNT_MSATS, FEDIMINTD_VERSION_0_1),
+        mg_ad(other, PAYMENT_AMOUNT_MSATS, FEDIMINTD_VERSION_0_1),
+    ])
+    .await;
+    restored
+        .buy_spare_seat(spare_approval(PAYMENT_AMOUNT_MSATS), long_request_options())
+        .await
+        .unwrap();
+
+    // The holder of the bought spare also holds the other MG.
+    let error = restored
+        .preview_spare_seat_with_verifier(
+            crate::MgDiscoveryOptions::default(),
+            &HolderVerifier(BTreeMap::from([(
+                test_mg_id(other),
+                test_mg_id(SPARE_INDEX),
+            )])),
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(error, FaError::InsufficientMgSeats { selected: 0, .. }),
+        "{error:?}"
+    );
+
+    // With its own holder, the other MG can sell a spare.
+    let preview = restored
+        .preview_spare_seat_with_verifier(
+            crate::MgDiscoveryOptions::default(),
+            &HolderVerifier(BTreeMap::new()),
+        )
+        .await
+        .unwrap();
+    assert_eq!(preview.seat().candidate().mg_id(), test_mg_id(other));
 }

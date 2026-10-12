@@ -107,6 +107,10 @@ pub(crate) struct StoredGuardianTransfer {
     pub(crate) expires_at: Timestamp,
     /// Bearer callback the destination invokes once the guardian runs.
     pub(crate) completion_callback: Option<DkgCompletionCallback>,
+    /// The destination's binding for the moved peer, saved before the first
+    /// vote. The destination signs a new one on every request, so a resumed
+    /// transfer must vote and look for the same one.
+    pub(crate) binding: Option<FormationSeatBinding>,
     pub(crate) phase: StoredTransferPhase,
 }
 
@@ -159,6 +163,13 @@ where
         options.validate_for_start(&self.inner.store)?;
         let fa_id = self.fa_id()?;
         let authority = self.maintenance_authority(fa_id).await?;
+        // A liquidity request commits to the current seats. Moving one now
+        // would strand a request that the provider may already have accepted.
+        if let Some(operation) = self.find_live_liquidity_operation(|_| true).await? {
+            return Err(FaError::LiquidityOperationExists {
+                operation_id: operation.operation_id,
+            });
+        }
         let source = authority
             .seats
             .iter()
@@ -198,6 +209,7 @@ where
             grant,
             expires_at,
             completion_callback,
+            binding: None,
             phase: StoredTransferPhase::Pulling,
         };
         let (deadline, lease) = start_driver_run(&self.inner.store, options).await?;
@@ -281,16 +293,37 @@ where
             }
         }
         if transfer.phase == StoredTransferPhase::Binding {
-            let authority = self.maintenance_authority(fa_id).await?;
-            self.publish_moved_binding(&transfer, &authority, fa_id, run)
+            // The seat list may be stale after a reopen: consensus can name
+            // the destination already. The readback below confirms the moved
+            // seat itself, so the transfer does not wait for a full
+            // reconciliation, which would refuse the destination.
+            let authority = self.post_formed_authority(fa_id).await?;
+            let binding = match transfer.binding.clone() {
+                Some(binding) => binding,
+                None => {
+                    let binding = self.destination_binding(&transfer, fa_id, run).await?;
+                    transfer.binding = Some(binding.clone());
+                    lease
+                        .write_guardian_transfer(
+                            fa_id,
+                            GuardianTransferWrite::Update(transfer.clone()),
+                        )
+                        .await?;
+                    binding
+                }
+            };
+            self.publish_moved_binding(&transfer, &binding, &authority, fa_id, run)
                 .await?;
+            let was_fresh = !matches!(
+                self.status(),
+                FaStatus::Restored(snapshot) if snapshot.freshness != FormationFreshness::Fresh
+            );
             transfer.phase = StoredTransferPhase::RemovingSource;
             lease
                 .write_guardian_transfer(fa_id, GuardianTransferWrite::Rebind(transfer.clone()))
                 .await?;
-            // The readback just confirmed this seat list against consensus.
             let mut status = self.inner.store.load_status(fa_id).await?;
-            if let FaStatus::Restored(snapshot) = &mut status {
+            if was_fresh && let FaStatus::Restored(snapshot) = &mut status {
                 snapshot.freshness = FormationFreshness::Fresh;
             }
             self.inner.progress.send_replace(status);
@@ -399,15 +432,13 @@ where
         }
     }
 
-    /// Vote the destination's binding for the moved peer into consensus and
-    /// confirm it by readback.
-    async fn publish_moved_binding(
+    /// Fetch and check the destination's binding for the moved peer.
+    async fn destination_binding(
         &self,
         transfer: &StoredGuardianTransfer,
-        authority: &PostFormedAuthority,
         fa_id: FaId,
         run: DriverRun<'_>,
-    ) -> FaResult<()> {
+    ) -> FaResult<FormationSeatBinding> {
         let destination = &transfer.destination;
         let client =
             MgClient::connect(&self.inner.ports.mg_connector, &destination.locator, run).await?;
@@ -438,8 +469,20 @@ where
                 .failure(MgOperation::GetPeerAttestation, MgCause::InvalidResponse)
                 .into());
         }
-        drop(client);
+        Ok(binding)
+    }
 
+    /// Vote the destination's binding for the moved peer into consensus and
+    /// confirm it by readback.
+    async fn publish_moved_binding(
+        &self,
+        transfer: &StoredGuardianTransfer,
+        binding: &FormationSeatBinding,
+        authority: &PostFormedAuthority,
+        fa_id: FaId,
+        run: DriverRun<'_>,
+    ) -> FaResult<()> {
+        let destination = &transfer.destination;
         // Every current guardian votes, with the destination in place of the
         // stopped source.
         let mut voters = authority.clone();
@@ -528,7 +571,7 @@ where
             }
             let mut terminal = BTreeMap::new();
             for (index, result) in self
-                .submit_binding_wave(&sessions, fa_id, expected_base, &binding, run)
+                .submit_binding_wave(&sessions, fa_id, expected_base, binding, run)
                 .await
             {
                 match result {
@@ -649,7 +692,9 @@ enum Pulled {
 }
 
 /// Whether consensus names the destination for the moved peer, in both the
-/// seat-binding directory and the fee recipients.
+/// seat-binding directory and the fee recipients. Another binding of the
+/// destination for the same peer counts too: an earlier run may have voted
+/// one before this device saved it.
 fn moved_binding_adopted(
     snapshot: &crate::FederationConsensusSnapshot,
     attestation: &MgPeerAttestation,
@@ -674,7 +719,7 @@ fn moved_binding_adopted(
         .iter()
         .find(|entry| entry.attestation.peer_id == attestation.attestation.peer_id)
         .ok_or_else(|| invalid("the moved peer has no seat binding".to_owned()))?;
-    if current != attestation {
+    if current.attestation.mg_pubkey != attestation.attestation.mg_pubkey {
         // Still the source's entry, or a different one. Refuse a peer that
         // the source does not hold: the attestation names the wrong guardian.
         if current.attestation.mg_pubkey.0 != transfer.source_mg_id.to_string() {
@@ -687,7 +732,7 @@ fn moved_binding_adopted(
     // Adopted values must be exactly what the shared rule derives, and the
     // full directory must still verify against the federation.
     let (expected_directory, expected_recipients) =
-        rebind_transferred_seat(directory, recipients, attestation)
+        rebind_transferred_seat(directory, recipients, current)
             .map_err(|error| invalid(error.to_string()))?;
     if expected_directory != directory || expected_recipients != recipients {
         return Ok(false);
