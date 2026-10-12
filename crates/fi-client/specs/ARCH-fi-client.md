@@ -651,6 +651,33 @@ settles the refund and releases the reservation. A crash leaves the row for
 `resume_spare_seat_purchase`. Success replaces the row with a spare-seat row in
 one transaction.
 
+## Guardian transfer
+
+`start_guardian_transfer` moves the guardian at one seat index onto a spare
+seat, by the contract in
+[`SPEC-guardian-transfer`](../../fman/specs/SPEC-guardian-transfer.md). It
+signs a grant that is valid for 14 days, records the transfer, and sends
+`PullSeat` with an optional completion callback. One transfer is open at a
+time, and the spare stays in the pool and the backup until consensus names
+it.
+
+`resume_guardian_transfer` continues from the recorded phase. While the
+destination is `AwaitingTransfer` it polls until the run ends and then
+reports `AwaitingSource`. A destination that is `New` again after expiry
+closes the transfer as `Expired`. When the destination is `Running`, the FI
+reads the destination's attestation and votes it through every guardian
+except the source, like a metadata update. It confirms by readback that
+consensus holds exactly the values from `rebind_transferred_seat`. In the
+same transaction it replaces the source seat in the federation's seat list
+with the spare and takes the spare out of the pool. It then sends
+`RemoveSeat` to the source. An unreachable source leaves the transfer in
+`RemovingSource` for a later resume.
+
+The first transfer turns a formation record into the post-formation record
+that a restore imports, with the same formation id: the formation record
+describes how the federation formed, not who hosts it now. The FI reports
+`FiStatus::Restored` from then on.
+
 ## Modules
 
 - `state` — public intent, status, and phase types.
@@ -668,6 +695,7 @@ one transaction.
 - `liquidity` — post-formation FLIP selection and signed allocation recovery,
   including exact-URL gateway attachment and its durable readback proof.
 - `seat_pool` — spare-seat purchase and the persisted seat pool.
+- `transfer` — guardian transfer onto a spare seat.
 - `maintenance` — typed post-formation consensus maintenance orchestration.
 - `unavailable` — deliberately unavailable adapters for consumer scaffolding.
 

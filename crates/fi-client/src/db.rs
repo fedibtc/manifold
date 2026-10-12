@@ -1747,6 +1747,15 @@ impl FiStore {
     }
 
     #[cfg(test)]
+    pub(crate) async fn expire_guardian_transfer_for_test(&self) {
+        let mut dbtx = self.database.begin_transaction().await;
+        let mut transfer = dbtx.get_value(&GuardianTransferKey).await.unwrap();
+        transfer.expires_at = Timestamp(0);
+        dbtx.insert_entry(&GuardianTransferKey, &transfer).await;
+        dbtx.commit_tx().await;
+    }
+
+    #[cfg(test)]
     pub(crate) async fn unconfirm_formation_meta_target_for_test(&self) {
         let mut dbtx = self.database.begin_transaction().await;
         let mut formation = dbtx

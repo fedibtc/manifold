@@ -2,10 +2,11 @@
 
 ## Status
 
-Only the protocol exists. `crates/service-fleet-manager` defines the grant,
-the four verbs, the four seat statuses, and the grant's validity rule. Every
-Fleet Manager answers the four verbs with `UnsupportedVerb`, never reports the
-new statuses, and `fi-client` does not drive a transfer yet.
+`crates/service-fleet-manager` defines the grant, the four verbs, the four
+seat statuses, the grant's validity rule, and `rebind_transferred_seat`.
+`fi-client` drives the FI side of every step. Every Fleet Manager still
+answers the four verbs with `UnsupportedVerb` and never reports the new
+statuses.
 
 ## Record justification
 
@@ -46,9 +47,13 @@ online once. The FI does not have to be online at the same time.
    federation it already hosts, but its own pending import does not count. It then
    invokes the `PullSeat` completion callback. `Running` ends the
    destination's part of the transfer.
-5. The FI sends `ReplaceSeatBinding` to every seat. Each FMan replaces only
-   the moved peer's directory entry and fee recipient and votes. The FI
-   confirms by consensus readback.
+5. The FI sends `ReplaceSeatBinding` with the destination's attestation to
+   every seat except the stopped source. Each FMan derives its vote from
+   the consensus values in `expected_base` with `rebind_transferred_seat`:
+   the moved peer's directory entry becomes the new attestation, and the
+   peer's fee recipient share moves to the new account. Nothing else
+   changes. The FI confirms by readback that consensus holds exactly those
+   values.
 6. The FI sends `RemoveSeat` to the source. The source deletes the seat's
    guardian data and drops it from the seat's backup, which keeps the
    tombstone. It keeps the seat row and fee-wallet data, and reports
