@@ -20,7 +20,9 @@ fn test_identity() -> RootMnemonic {
     RootMnemonic::parse(TEST_MNEMONIC).unwrap()
 }
 
-fn facts(seat: u8, seat_no: u32) -> SeatFacts {
+/// A seat's creation facts. Its seat number stays the default: a backup
+/// document does not carry it.
+fn facts(seat: u8) -> SeatFacts {
     let mut seed = [0_u8; 32];
     seed[0] = 7;
     let fi_id = FiId(
@@ -31,7 +33,7 @@ fn facts(seat: u8, seat_no: u32) -> SeatFacts {
     );
     SeatFacts {
         seat_id: SeatId::from(QuoteId([seat; 32])),
-        seat_no: SeatNo(seat_no),
+        seat_no: SeatNo(0),
         fi_id,
         plan: Plan::InfiniteBestEffort { price_msats: 1_000 },
         federation_size: FederationSize(7),
@@ -105,12 +107,12 @@ async fn a_recovered_backup_rebuilds_the_fleet() {
 
     let archive = guardian_archive(&consensus_json);
     let formed = SeatBackupDocument::new(
-        &facts(1, 0),
+        &facts(1),
         Some(payment()),
         Some(guardian_ref(&archive)),
         None,
     );
-    let unformed = SeatBackupDocument::new(&facts(2, 1), Some(payment()), None, None);
+    let unformed = SeatBackupDocument::new(&facts(2), Some(payment()), None, None);
 
     let recovered = recovered(
         vec![formed.clone(), unformed.clone()],
@@ -170,9 +172,7 @@ async fn a_recovered_backup_rebuilds_the_fleet() {
         "a paid-but-unformed seat is meant to run the ceremony"
     );
 
-    // Seat numbers are restored, not reallocated: they name the data directory
-    // and the port block, so reassigning them would point a recovered guardian
-    // at someone else's.
+    // Seat numbers are assigned in creation order; the seat id breaks the tie.
     let seats = db.list_seats().await.unwrap();
     let mut numbers: Vec<u32> = seats.iter().map(|seat| seat.facts.seat_no.0).collect();
     numbers.sort_unstable();
@@ -180,6 +180,82 @@ async fn a_recovered_backup_rebuilds_the_fleet() {
 
     // The money came back with them.
     assert!(db.payment(&formed.seat_id).await.unwrap().is_some());
+}
+
+/// Two hosts that ran one mnemonic at once numbered their new seats
+/// independently, so a restore of both of their seats must not trust either
+/// host's numbers. The restoring host numbers the whole fleet in creation
+/// order, whatever order the relay returned the documents in.
+#[tokio::test]
+async fn seats_from_two_diverged_hosts_restore_side_by_side() {
+    let identity = test_identity();
+    let first_archive = guardian_archive(r#"{"api_endpoints":"first"}"#);
+    let second_archive = guardian_archive(r#"{"api_endpoints":"second"}"#);
+    let created = |seat, created_at_ms| SeatFacts {
+        created_at_ms,
+        ..facts(seat)
+    };
+    // The relay order is not the creation order, and the seat ids sort
+    // against the creation order too.
+    let host_b_seat = SeatBackupDocument::new(
+        &created(1, 1_700_000_000_300),
+        None,
+        Some(guardian_ref(&second_archive)),
+        None,
+    );
+    let unformed = SeatBackupDocument::new(&created(2, 1_700_000_000_200), None, None, None);
+    let host_a_seat = SeatBackupDocument::new(
+        &created(3, 1_700_000_000_100),
+        None,
+        Some(guardian_ref(&first_archive)),
+        None,
+    );
+    let recovered = recovered(
+        vec![host_b_seat.clone(), unformed.clone(), host_a_seat.clone()],
+        vec![
+            (host_b_seat.seat_id.clone(), second_archive),
+            (host_a_seat.seat_id.clone(), first_archive),
+        ],
+    );
+
+    let temp = TempDir::new().unwrap();
+    let process = process(&temp);
+    let db = test_db(&temp).await;
+    install(&db, &process, &identity, &recovered).await.unwrap();
+
+    let mut numbers: Vec<(SeatId, u32)> = db
+        .list_seats()
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|seat| (seat.facts.seat_id, seat.facts.seat_no.0))
+        .collect();
+    numbers.sort();
+    let mut expected = vec![
+        (host_a_seat.seat_id.clone(), 0),
+        (unformed.seat_id.clone(), 1),
+        (host_b_seat.seat_id.clone(), 2),
+    ];
+    expected.sort();
+    assert_eq!(numbers, expected);
+    for (seat_no, consensus_json) in [
+        (0, r#"{"api_endpoints":"first"}"#),
+        (2, r#"{"api_endpoints":"second"}"#),
+    ] {
+        let dir = crate::seat_process::seat_data_dir(&process, SeatNo(seat_no));
+        assert_eq!(
+            tokio::fs::read_to_string(dir.join("consensus.json"))
+                .await
+                .unwrap(),
+            consensus_json
+        );
+    }
+    assert!(
+        !tokio::fs::try_exists(crate::seat_process::seat_data_dir(&process, SeatNo(1)))
+            .await
+            .unwrap(),
+        "an unformed seat gets a number but no guardian directory"
+    );
 }
 
 /// The onboarding boundary: an install that already has an identity refuses.
@@ -214,7 +290,7 @@ async fn a_restore_never_writes_into_an_existing_seat_directory() {
     let temp = TempDir::new().unwrap();
     let process = process(&temp);
 
-    let seat = SeatBackupDocument::new(&facts(3, 0), None, None, None);
+    let seat = SeatBackupDocument::new(&facts(3), None, None, None);
     let occupied = crate::seat_process::seat_data_dir(&process, SeatNo(0));
     tokio::fs::create_dir_all(&occupied).await.unwrap();
     tokio::fs::write(occupied.join("private.encrypt"), "a live guardian")
@@ -244,7 +320,7 @@ async fn restore_refuses_a_preexisting_safe_event_journal_sibling() {
     let identity = test_identity();
     let temp = TempDir::new().unwrap();
     let process = process(&temp);
-    let seat = SeatBackupDocument::new(&facts(4, 0), None, None, None);
+    let seat = SeatBackupDocument::new(&facts(4), None, None, None);
     let journal = crate::seat_process::seat_dir(&process, SeatNo(0)).join("safe-events");
     tokio::fs::create_dir_all(&journal).await.unwrap();
     tokio::fs::write(journal.join("sentinel"), b"prior install")
@@ -275,7 +351,7 @@ async fn a_crashed_restore_retries_to_completion() {
     let consensus_json = big_consensus_json();
     let archive = guardian_archive(&consensus_json);
     let seat = SeatBackupDocument::new(
-        &facts(5, 0),
+        &facts(5),
         Some(payment()),
         Some(guardian_ref(&archive)),
         None,
@@ -338,7 +414,7 @@ async fn a_crashed_restore_retries_to_completion() {
 async fn an_existing_directory_with_a_different_archive_refuses_adoption() {
     let identity = test_identity();
     let archive = guardian_archive(&big_consensus_json());
-    let seat = SeatBackupDocument::new(&facts(6, 0), None, Some(guardian_ref(&archive)), None);
+    let seat = SeatBackupDocument::new(&facts(6), None, Some(guardian_ref(&archive)), None);
     let recovered = recovered(
         vec![seat.clone()],
         vec![(seat.seat_id.clone(), archive.clone())],
@@ -382,7 +458,7 @@ async fn an_existing_directory_with_a_different_archive_refuses_adoption() {
 async fn an_existing_directory_with_extra_files_refuses_adoption() {
     let identity = test_identity();
     let archive = guardian_archive(&big_consensus_json());
-    let seat = SeatBackupDocument::new(&facts(6, 0), None, Some(guardian_ref(&archive)), None);
+    let seat = SeatBackupDocument::new(&facts(6), None, Some(guardian_ref(&archive)), None);
     let recovered = recovered(
         vec![seat.clone()],
         vec![(seat.seat_id.clone(), archive.clone())],
@@ -426,7 +502,7 @@ async fn an_existing_directory_with_extra_files_refuses_adoption() {
 async fn a_formed_seat_without_its_archive_refuses_the_whole_restore() {
     let identity = test_identity();
     let archive = guardian_archive(&big_consensus_json());
-    let seat = SeatBackupDocument::new(&facts(4, 0), None, Some(guardian_ref(&archive)), None);
+    let seat = SeatBackupDocument::new(&facts(4), None, Some(guardian_ref(&archive)), None);
 
     // The seat document is there; its archive is not.
     let recovered = recovered(vec![seat], vec![]);
@@ -446,7 +522,7 @@ async fn a_formed_seat_without_its_archive_refuses_the_whole_restore() {
 async fn a_selected_guardianless_document_ignores_a_recovered_archive() {
     let identity = test_identity();
     let archive = guardian_archive(&big_consensus_json());
-    let seat = SeatBackupDocument::new(&facts(5, 0), None, None, None);
+    let seat = SeatBackupDocument::new(&facts(5), None, None, None);
     let recovered = recovered(vec![seat.clone()], vec![(seat.seat_id.clone(), archive)]);
     assert_eq!(recovered.formed(), 0);
 
@@ -483,13 +559,13 @@ async fn a_selected_guardianless_document_ignores_a_recovered_archive() {
 #[tokio::test]
 async fn a_restore_that_cannot_finish_leaves_the_host_un_onboarded() {
     let identity = test_identity();
-    // Two distinct seats claiming one seat number: the second insert violates
-    // the seats table's uniqueness, standing in for anything that can stop the
-    // fleet being written whole.
+    // Two documents for one seat: the second insert violates the seats
+    // table's primary key, standing in for anything that can stop the fleet
+    // being written whole.
     let recovered = recovered(
         vec![
-            SeatBackupDocument::new(&facts(8, 3), Some(payment()), None, None),
-            SeatBackupDocument::new(&facts(9, 3), None, None, None),
+            SeatBackupDocument::new(&facts(8), Some(payment()), None, None),
+            SeatBackupDocument::new(&facts(8), None, None, None),
         ],
         vec![],
     );

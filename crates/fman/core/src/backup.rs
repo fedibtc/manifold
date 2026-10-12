@@ -52,12 +52,15 @@ use crate::identity::RootMnemonic;
 /// `guardian.is_some()` is the predicate, not an approximation of it. Carrying
 /// an observation timestamp beside it would be a second source of truth for one
 /// fact.
+///
+/// **No seat number is carried.** A seat number names a data directory and a
+/// port block on one host, so the restoring host assigns its own. Documents
+/// from older builds carry a `seat_no` key, which readers ignore.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct SeatBackupDocument {
     /// The seat's public identity, which *is* its quote identity
     /// ([`SeatId::quote_id`]).
     pub seat_id: SeatId,
-    pub seat_no: u32,
     pub fi_id: FiId,
     pub plan: Plan,
     pub federation_size: FederationSize,
@@ -314,7 +317,6 @@ impl SeatBackupDocument {
     ) -> Self {
         Self {
             seat_id: facts.seat_id.clone(),
-            seat_no: facts.seat_no.0,
             fi_id: facts.fi_id,
             plan: facts.plan.clone(),
             federation_size: facts.federation_size,
@@ -325,11 +327,12 @@ impl SeatBackupDocument {
         }
     }
 
-    /// Rebuild the durable creation facts a restored fleet inserts.
-    pub fn to_seat_facts(&self) -> SeatFacts {
+    /// Rebuild the durable creation facts a restored fleet inserts, under the
+    /// seat number the restoring host assigned.
+    pub fn to_seat_facts(&self, seat_no: SeatNo) -> SeatFacts {
         SeatFacts {
             seat_id: self.seat_id.clone(),
-            seat_no: SeatNo(self.seat_no),
+            seat_no,
             fi_id: self.fi_id,
             plan: self.plan.clone(),
             federation_size: self.federation_size,

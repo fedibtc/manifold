@@ -104,12 +104,13 @@ relay-to-durable paths are:
   canonical mnemonic phrase last in the transaction. Service and per-seat
   runtime identities subsequently derive from that mnemonic; the per-seat
   derivation is additionally scoped by the authenticated seat id.
-- Each seat document supplies `seat_id`, `seat_no`, `quote_terms` (and hence
-  `fi_id`), creation time, optional payment federation and signatures, optional
-  guardian reference, and optional decommission time. `to_seat_facts` and
+- Each seat document supplies `seat_id`, `quote_terms` (and hence `fi_id`),
+  creation time, optional payment federation and signatures, optional
+  guardian reference, and optional decommission time. `install` assigns each
+  seat a local `seat_no` in creation order. `to_seat_facts` and
   `install_restored_fleet` copy precisely those fields into the seat, payment,
   and decommission rows. The database primary/unique/foreign-key constraints
-  reject duplicate seat ids, seat numbers, and orphan payments.
+  reject duplicate seat ids and orphan payments.
 - Archive chunks carry an embedded seat id, whole-archive digest, index, and
   count. Recovery groups them by that seat id. `GuardianArchiveChunk::join`
   sorts by index and uses the first chunk's count to require exactly indices

@@ -185,6 +185,13 @@ it is read back.
   the durable seat keeps only the lifecycle projections of the accepted quote,
   not its full signed terms. Restore uses both values to reconstruct the seat.
 
+  The document carries no seat number. A seat number names a data directory
+  and a port block on one host, so the restoring host numbers the recovered
+  seats itself, in creation order. Two hosts that ran one mnemonic at once
+  number their new seats independently, and a restore of both must still
+  succeed. Documents from older builds carry a `seat_no`, which readers
+  ignore.
+
 **There is no fleet-wide event.** Operator settings and offered plans are the
 operator's to re-enter, and the offer generation must *not* survive a restore:
 a fresh install's generation refuses every quote issued before the loss, which

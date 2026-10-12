@@ -109,8 +109,9 @@ fn seat_document_roundtrips_through_seal_and_restores_the_original_facts() {
     let recovered = identity.open_seat_document(&sealed).unwrap();
 
     assert_eq!(recovered, document);
-    // The whole point of the document: the durable facts come back intact.
-    assert_eq!(recovered.to_seat_facts(), facts);
+    // The whole point of the document: the durable facts come back intact,
+    // except the seat number, which the restoring host assigns.
+    assert_eq!(recovered.to_seat_facts(facts.seat_no), facts);
     // The guardian half is named, not carried: this document is republished
     // whenever the seat changes, and the archive it points at never changes.
     assert_eq!(recovered.guardian.unwrap(), guardian_ref());
@@ -372,6 +373,35 @@ fn a_non_canonical_frame_is_refused() {
     // The canonical spelling of the same document still opens.
     let canonical = seal_frame(framed(&payload, PADDED_PLAINTEXT_LEN));
     identity.open_seat_document(&canonical).unwrap();
+}
+
+/// Documents from older builds carry a `seat_no` key. They still open, and the
+/// number is dropped: the restoring host assigns its own.
+#[test]
+fn a_document_with_a_legacy_seat_number_still_opens() {
+    #[derive(serde::Serialize)]
+    struct LegacyDocument<'a> {
+        #[serde(flatten)]
+        document: &'a SeatBackupDocument,
+        seat_no: u32,
+    }
+    let identity = test_identity();
+    let document = SeatBackupDocument::new(&seat_facts(), None, Some(guardian_ref()), None);
+    let mut payload = Vec::new();
+    ciborium::into_writer(
+        &Envelope {
+            version: BACKUP_DOCUMENT_VERSION,
+            document: LegacyDocument {
+                document: &document,
+                seat_no: 4,
+            },
+        },
+        &mut payload,
+    )
+    .unwrap();
+    let content = identity.seal_padded(payload, AAD_DOCUMENT).remove(0);
+
+    assert_eq!(identity.open_seat_document(&content).unwrap(), document);
 }
 
 /// The decode half of a restore: the published events come back as the seats

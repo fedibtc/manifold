@@ -544,6 +544,221 @@ async fn run_formed_fleet_restore() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Two hosts that ran one mnemonic at once: host B is restored while host A
+/// still runs, and each host then
+/// forms one more guardian on its own. Both hosts number that guardian 1. A
+/// later restore onto a clean host must still recover every seat of both.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn fman_restore_of_two_diverged_hosts_under_defe() {
+    if env::var_os(OPT_IN_ENV).is_none() {
+        eprintln!("skipping diverged-hosts restore E2E; set {OPT_IN_ENV}=1 to run");
+        return;
+    }
+
+    tokio::time::timeout(Duration::from_secs(900), run_diverged_hosts_restore())
+        .await
+        .expect("diverged-hosts restore E2E timed out")
+        .expect("diverged-hosts restore E2E failed");
+}
+
+async fn wait_for_settled_backup(
+    fleet_manager_bin: &Path,
+    data_dir: &Path,
+    seats: usize,
+) -> anyhow::Result<()> {
+    tokio::time::timeout(Duration::from_secs(90), async {
+        loop {
+            let listing =
+                fleet_manager_admin(fleet_manager_bin, data_dir, &["seats", "list"]).await?;
+            let listed = listing["seats"].as_array().cloned().unwrap_or_default();
+            if listing["backup_scan"]["pending_seats"].as_u64() == Some(0)
+                && listed.len() == seats
+                && listed
+                    .iter()
+                    .all(|seat| seat["backup"]["archive_confirmed"].as_bool() == Some(true))
+            {
+                return Ok::<_, anyhow::Error>(());
+            }
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+    })
+    .await
+    .map_err(|_| anyhow::anyhow!("backup of {} did not settle", data_dir.display()))?
+}
+
+async fn run_diverged_hosts_restore() -> anyhow::Result<()> {
+    let fleet_manager_bin = locate_binary(FLEET_MANAGER_BIN_ENV, "fleet-manager")?;
+    let fi_cli_bin = locate_binary(FI_CLI_BIN_ENV, "fi-cli")?;
+    let mut defe = AsyncDefeClient::connect_from_env().await?;
+    let bitcoind_lease = defe.request_bitcoind(SharingMode::Exclusive).await?;
+    let ResourceDescriptor::Bitcoind(bitcoind) = &bitcoind_lease.descriptor else {
+        anyhow::bail!("expected bitcoind descriptor");
+    };
+    let nostr_relay_lease = defe.request_nostr_relay(SharingMode::Exclusive).await?;
+    let ResourceDescriptor::NostrRelay(nostr_relay) = &nostr_relay_lease.descriptor else {
+        anyhow::bail!("expected Nostr relay descriptor");
+    };
+    let setup_payment_publisher =
+        NostrKeys::parse("0000000000000000000000000000000000000000000000000000000000000001")?
+            .public_key()
+            .to_string();
+    let nostr = NostrEnv {
+        relay_urls: &nostr_relay.url,
+        holder_relay_url: &nostr_relay.url,
+        setup_payment_publisher: &setup_payment_publisher,
+    };
+
+    let temp = fman_e2e_temp_dir()?;
+    eprintln!("diverged-hosts restore E2E data dir: {}", temp.display());
+    // Index GUARDIAN_COUNT is host B, GUARDIAN_COUNT + 1 is the clean host C.
+    let max_seats = 3;
+    let iroh_overrides = local_iroh_overrides_for_grid(54_000, 3, GUARDIAN_COUNT + 2);
+    let (mut daemons, locators) = start_daemons(
+        &fleet_manager_bin,
+        &temp,
+        bitcoind,
+        max_seats,
+        54_000,
+        Some(&iroh_overrides),
+        GUARDIAN_COUNT,
+        Some(nostr),
+        None,
+    )
+    .await;
+    offer_free_seats(&fleet_manager_bin, &temp, GUARDIAN_COUNT).await?;
+    form_federation_in_state(
+        &fi_cli_bin,
+        &temp.join("fi-1"),
+        &locators,
+        &iroh_overrides,
+        None,
+    )
+    .await?;
+
+    let host_a = temp.join("fman-0");
+    wait_for_settled_backup(&fleet_manager_bin, &host_a, 1).await?;
+    let mnemonic =
+        fleet_manager_admin(&fleet_manager_bin, &host_a, &["show-mnemonic"]).await?["mnemonic"]
+            .as_str()
+            .context("show-mnemonic returns the root phrase")?
+            .to_owned();
+    let mnemonic_file = temp.join("restore-mnemonic");
+    write_sensitive_file(&mnemonic_file, &mnemonic)?;
+    let mnemonic_file_arg = mnemonic_file.display().to_string();
+
+    // Host B: restored while host A still runs, with a false acknowledgement.
+    let host_b = temp.join(format!("fman-{GUARDIAN_COUNT}"));
+    let mut b = spawn_fleet_manager(
+        &fleet_manager_bin,
+        &host_b,
+        &bitcoind.rpc_url,
+        &bitcoind.rpc_username,
+        &bitcoind.rpc_password,
+        54_000 + u16::try_from(GUARDIAN_COUNT).unwrap() * 100,
+        Some(&iroh_overrides),
+        Some(nostr),
+        None,
+    )?;
+    let b_restore = retry_fleet_manager_admin(
+        &fleet_manager_bin,
+        &host_b,
+        &[
+            "onboard",
+            "restore",
+            "--mnemonic-file",
+            &mnemonic_file_arg,
+            "--acknowledge-original-host-is-gone",
+        ],
+    )
+    .await?;
+    anyhow::ensure!(
+        b_restore["seats"].as_u64() == Some(1),
+        "host B must restore the seat of host A: {b_restore}"
+    );
+    complete_onboarding_stages(&fleet_manager_bin, &host_b, max_seats, nostr).await?;
+    let b_locator = read_locator(&mut b, GUARDIAN_COUNT).await?;
+    retry_fleet_manager_admin(
+        &fleet_manager_bin,
+        &host_b,
+        &["plans", "set", "--price-msats", "0"],
+    )
+    .await?;
+    daemons.push(b);
+
+    // Each host forms one more guardian on its own.
+    form_federation_in_state(
+        &fi_cli_bin,
+        &temp.join("fi-2"),
+        &locators,
+        &iroh_overrides,
+        None,
+    )
+    .await?;
+    let mut b_locators = locators.clone();
+    b_locators[0] = b_locator;
+    form_federation_in_state(
+        &fi_cli_bin,
+        &temp.join("fi-3"),
+        &b_locators,
+        &iroh_overrides,
+        None,
+    )
+    .await?;
+    wait_for_settled_backup(&fleet_manager_bin, &host_a, 2).await?;
+    wait_for_settled_backup(&fleet_manager_bin, &host_b, 2).await?;
+
+    // Stop both hosts, then restore onto a clean host C. Each host numbered
+    // its second seat 1, and C must restore both of them.
+    shutdown_daemons(daemons).await?;
+    let host_c = temp.join(format!("fman-{}", GUARDIAN_COUNT + 1));
+    let mut c = spawn_fleet_manager(
+        &fleet_manager_bin,
+        &host_c,
+        &bitcoind.rpc_url,
+        &bitcoind.rpc_username,
+        &bitcoind.rpc_password,
+        54_000 + u16::try_from(GUARDIAN_COUNT + 1).unwrap() * 100,
+        Some(&iroh_overrides),
+        Some(nostr),
+        None,
+    )?;
+    let c_restore = retry_fleet_manager_admin(
+        &fleet_manager_bin,
+        &host_c,
+        &[
+            "onboard",
+            "restore",
+            "--mnemonic-file",
+            &mnemonic_file_arg,
+            "--acknowledge-original-host-is-gone",
+        ],
+    )
+    .await?;
+    anyhow::ensure!(
+        c_restore["onboarded"] == "restored"
+            && c_restore["seats"].as_u64() == Some(3)
+            && c_restore["formed"].as_u64() == Some(3),
+        "restore must recover the seats of both hosts: {c_restore}"
+    );
+    for seat_no in 0..3 {
+        let config = host_c.join(format!("seats/{seat_no}/data/consensus.json"));
+        anyhow::ensure!(config.exists(), "{} is missing", config.display());
+    }
+    complete_onboarding_stages(&fleet_manager_bin, &host_c, max_seats, nostr).await?;
+    read_locator(&mut c, GUARDIAN_COUNT + 1).await?;
+    let c_seats = fleet_manager_admin(&fleet_manager_bin, &host_c, &["seats", "list"]).await?;
+    anyhow::ensure!(
+        c_seats["seats"].as_array().map(Vec::len) == Some(3),
+        "the restored host must list the seats of both hosts: {c_seats}"
+    );
+
+    shutdown_daemons(vec![c]).await?;
+    defe.release(nostr_relay_lease.handle_id).await?;
+    defe.release(bitcoind_lease.handle_id).await?;
+    std::fs::remove_dir_all(&temp).context("remove diverged-hosts restore E2E tempdir")?;
+    Ok(())
+}
+
 /// Exercise the adverse formed-seat lifecycle against the shipped process
 /// boundary. Formation uses the real seven-guardian minimum; fault injection
 /// is confined to one FMan because the behavior under test is local ownership.
