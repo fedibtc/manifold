@@ -459,6 +459,31 @@ where
         fa_id: FaId,
         run: DriverRun<'_>,
     ) -> FaResult<FormationSeatBinding> {
+        loop {
+            match self.fetch_destination_binding(transfer, fa_id, run).await {
+                // Running means the imported configuration is durable, not
+                // that the child's live API is already answering. Retry the
+                // ordinary transient readiness/transport failures within this
+                // invocation's existing deadline; never weaken validation.
+                Err(FaError::Mg(failure))
+                    if matches!(
+                        failure.cause,
+                        MgCause::SeatUnavailable | MgCause::Timeout | MgCause::Transport
+                    ) =>
+                {
+                    sleep_for_retry(run.deadline(), run.poll_interval()).await?;
+                }
+                result => return result,
+            }
+        }
+    }
+
+    async fn fetch_destination_binding(
+        &self,
+        transfer: &StoredGuardianTransfer,
+        fa_id: FaId,
+        run: DriverRun<'_>,
+    ) -> FaResult<FormationSeatBinding> {
         let destination = &transfer.destination;
         let client =
             MgClient::connect(&self.inner.ports.mg_connector, &destination.locator, run).await?;

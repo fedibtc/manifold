@@ -22,6 +22,13 @@ use crate::seat_readiness::{ReadinessOutcome, ReadinessReport};
 use crate::wallet::NoWallet;
 use crate::wallet::testutil::GatedRefundWallet;
 
+#[path = "transfer_binding.rs"]
+mod transfer_binding;
+#[path = "transfer_import.rs"]
+mod transfer_import;
+#[path = "transfer_source.rs"]
+mod transfer_source;
+
 fn owned_seat(fleet: &Fleet, fa_id: &FaId, seat_id: &SeatId) -> Result<Arc<Seat>, SeatVerbError> {
     let seat = fleet
         .seat_by_id(seat_id)
@@ -30,6 +37,79 @@ fn owned_seat(fleet: &Fleet, fa_id: &FaId, seat_id: &SeatId) -> Result<Arc<Seat>
         return Err(SeatVerbError::UnknownSeat);
     }
     Ok(seat)
+}
+
+#[tokio::test]
+async fn restored_retirement_fences_override_missing_directory_and_never_spawn() {
+    use crate::transfer_state::OutgoingTransfer;
+    for phase in [
+        OutgoingTransfer::Stopping,
+        OutgoingTransfer::Stopped,
+        OutgoingTransfer::Removing,
+        OutgoingTransfer::Removed,
+    ] {
+        let temp = TempDir::new().unwrap();
+        let mut config = config(&temp, 1, 31_213).await;
+        // The same retirement fences apply on the production Bitcoin network.
+        config.process.bitcoin_network = bitcoin::Network::Bitcoin;
+        let spawner = Arc::new(FakeSeatProcessSpawner::default());
+        config.process_spawner = SeatProcessSpawner::Fake(spawner.clone());
+        let fleet = open_fleet(config.clone(), Arc::new(NoWallet))
+            .await
+            .unwrap();
+        let (fa_id, seat_id) = create_free_seat(&fleet, 140).await;
+        fleet.shutdown().await;
+        fleet
+            .db
+            .record_formed(&seat_id, &InviteCode("retained-test-invite".into()))
+            .await
+            .unwrap();
+        assert!(fleet.db.retire_for_transfer(&seat_id).await.unwrap());
+        for (from, to) in [
+            (OutgoingTransfer::Stopping, OutgoingTransfer::Stopped),
+            (OutgoingTransfer::Stopped, OutgoingTransfer::Removing),
+            (OutgoingTransfer::Removing, OutgoingTransfer::Removed),
+        ] {
+            if fleet.db.outgoing_transfer(&seat_id).await.unwrap() == Some(phase) {
+                break;
+            }
+            fleet
+                .db
+                .advance_retirement(&seat_id, from, to)
+                .await
+                .unwrap();
+        }
+        let prior_spawns = spawner.spawn_count();
+        drop(fleet);
+        let reopened = open_fleet(config, Arc::new(NoWallet)).await.unwrap();
+        let seat = owned_seat(&reopened, &fa_id, &seat_id).unwrap();
+        let status = if phase == OutgoingTransfer::Removed {
+            ServiceStatus::Removed
+        } else {
+            ServiceStatus::Transferred
+        };
+        assert!(matches!(
+            seat.report().await.unwrap(),
+            SeatReport::Active { phase: SeatPhase::Transfer { status: found }, .. } if found == status
+        ));
+        assert!(matches!(
+            seat.start_dkg(&[], None).await,
+            Err(SeatVerbError::WrongState { .. })
+        ));
+        assert!(matches!(
+            seat.restart_dkg(&[]).await,
+            Err(SeatVerbError::WrongState { .. })
+        ));
+        seat.watchdog_tick_for_test().await;
+        assert_eq!(spawner.spawn_count(), prior_spawns);
+        // Recovery may already have advanced Stopping to Stopped. Both states
+        // fence spawning; only the former still consumes capacity.
+        assert!(
+            reopened.db.active_seat_count().await.unwrap()
+                <= u32::from(phase == OutgoingTransfer::Stopping)
+        );
+        reopened.shutdown().await;
+    }
 }
 
 impl Fleet {
@@ -218,6 +298,8 @@ async fn config(temp: &TempDir, max_seats: u32, first_port_base: u16) -> FleetCo
     db.complete_onboarding_for_test(max_seats).await.unwrap();
     drop(db);
     FleetConfig {
+        transfer_source: Arc::new(crate::transfer_source::UnavailableTransferSource),
+        guardian_config_validator: Arc::new(crate::transfer_native::RejectGuardianConfig),
         process_spawner: SeatProcessSpawner::Fake(Arc::new(
             crate::seat_process::fake::FakeSeatProcessSpawner::default(),
         )),
@@ -718,6 +800,218 @@ async fn accepted_replay_repairs_a_missing_runtime_registry_entry() {
     assert!(fleet.seat_by_id(&seat_id).is_some());
     assert_eq!(fleet.db.list_seats().await.unwrap().len(), 1);
     fleet.shutdown().await;
+}
+
+#[tokio::test]
+async fn imported_startup_and_replay_use_original_keys_and_refuse_missing_material() {
+    use crate::transfer_native::tests::{CoreConfigValidator, material, native_config};
+    use fedi_decentralized_service_manifold_guardian::{Locator, SeatTransferGrant, Timestamp};
+
+    let temp = TempDir::new().unwrap();
+    let mut config = config(&temp, 1, 31_225).await;
+    config.guardian_config_validator = Arc::new(CoreConfigValidator);
+    let fleet = open_fleet(config.clone(), Arc::new(NoWallet))
+        .await
+        .unwrap();
+    let epoch = fleet.db.offer_epoch().await.unwrap();
+    let fa = secp256k1::Keypair::from_seckey_slice(secp256k1::SECP256K1, &[51; 32]).unwrap();
+    let make_input = || {
+        let mut input = input(epoch, 145, far_future(), 0, 0);
+        input.fa_id = FaId(fa.x_only_public_key().0);
+        input
+    };
+    let accepted = fleet
+        .create_seat(make_input(), commitment(145), refusal_commitment(145))
+        .await
+        .unwrap();
+    let seat_id = committed_seat_id(&accepted);
+    let removed = fleet.seats.write().unwrap().remove(&seat_id).unwrap();
+    removed.stop().await;
+    let facts = removed.facts().clone();
+    let native = native_config();
+    let package = material(&native);
+    let now = (crate::db::now_ms() / 1000) as u64;
+    let grant = SeatTransferGrant {
+        ts: Timestamp(now),
+        expires_at: Timestamp(now + 3600),
+        fa_id: make_input().fa_id,
+        federation_id: FederationId(native.calculate_federation_id().to_string()),
+        source: Locator::new(
+            fedi_iroh_rpc::iroh::EndpointAddr::new(
+                fedi_iroh_rpc::iroh::SecretKey::from_bytes(&[52; 32]).public(),
+            ),
+            fa.x_only_public_key().0,
+        ),
+        source_seat_id: SeatId::from(QuoteId([146; 32])),
+        destination_service_pubkey: fleet.identity.derive_service_pubkey(),
+        destination_seat_id: seat_id.clone(),
+    };
+    let signed =
+        fedi_decentralized_service_manifold_guardian::SignedRequest::create(&grant, &fa).unwrap();
+    let callback = DkgCompletionCallback::new(
+        fedi_decentralized_service_manifold_guardian::DkgCompletionCallbackInput {
+            callback_url: "http://127.0.0.1:3000/hooks/transfer/secret".into(),
+            idempotency_key: "import-callback".into(),
+        },
+    )
+    .unwrap();
+    let admission = fleet
+        .db
+        .admit_transfer(&signed, Some(&callback))
+        .await
+        .unwrap()
+        .unwrap();
+    let validated = crate::transfer_native::validate_material(
+        &fleet.db,
+        &config.process,
+        facts.seat_no,
+        crate::transfer_package::TransferMaterial::decode(&package.encode().unwrap()).unwrap(),
+        grant.federation_id.clone(),
+        config.guardian_config_validator.clone(),
+    )
+    .await
+    .unwrap();
+    assert!(
+        fleet
+            .db
+            .accept_transfer(
+                &seat_id,
+                admission.generation,
+                &admission.binding,
+                &package,
+                &validated.invite,
+            )
+            .await
+            .unwrap()
+    );
+    // Idempotent repair must hydrate imported auth before Seat::start, even
+    // though accepted installation is still fenced and has no directory yet.
+    fleet
+        .create_seat(make_input(), commitment(145), refusal_commitment(145))
+        .await
+        .unwrap();
+    assert!(matches!(
+        fleet.seat_by_id(&seat_id).unwrap().report().await.unwrap(),
+        SeatReport::Active {
+            phase: SeatPhase::Transfer {
+                status: ServiceStatus::AwaitingTransfer
+            },
+            ..
+        }
+    ));
+    let keys = crate::transfer_native::load_effective_keys(
+        &fleet.db,
+        &fleet.identity,
+        &config.process,
+        &facts,
+        config.guardian_config_validator.clone(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(keys.api_auth, package.api_auth);
+    assert_ne!(
+        keys.api_auth,
+        fleet.identity.derive_seat_keys(&seat_id).api_auth
+    );
+    assert_eq!(keys.iroh_api.public(), validated.keys.iroh_api.public());
+    assert_eq!(keys.iroh_p2p.public(), validated.keys.iroh_p2p.public());
+    fleet.shutdown().await;
+    drop(fleet);
+
+    // Daemon reconstruction repeats native validation before a client/child.
+    let reopened = open_fleet(config.clone(), Arc::new(NoWallet))
+        .await
+        .unwrap();
+    assert!(matches!(
+        reopened
+            .seat_by_id(&seat_id)
+            .unwrap()
+            .report()
+            .await
+            .unwrap(),
+        SeatReport::Active {
+            phase: SeatPhase::Transfer {
+                status: ServiceStatus::AwaitingTransfer
+            },
+            ..
+        }
+    ));
+    reopened.shutdown().await;
+    // This deliberately bypasses the runtime install/publication gates, to
+    // prove startup refuses an Imported row lacking its installed bytes.
+    assert!(
+        reopened
+            .db
+            .complete_transfer(&seat_id, admission.generation)
+            .await
+            .unwrap()
+    );
+    drop(reopened);
+    assert!(
+        open_fleet(config.clone(), Arc::new(NoWallet))
+            .await
+            .is_err()
+    );
+
+    let db = Db::open(temp.path()).await.unwrap();
+    db.record_formed(&seat_id, &validated.invite).await.unwrap();
+    assert_eq!(
+        db.deliverable_completion_callbacks().await.unwrap().len(),
+        1
+    );
+    drop(db);
+
+    // A later transfer's removal tombstone supersedes imported provenance.
+    // Guardian bytes may be gone; neither startup nor replay may demand them.
+    let data = seat_data_dir(&config.process, facts.seat_no);
+    crate::backup::write_restored_seat_dir(
+        &data,
+        &package.archive,
+        &package.archive.digest(),
+        &package.api_auth,
+    )
+    .await
+    .unwrap();
+    let reopened = open_fleet(config.clone(), Arc::new(NoWallet))
+        .await
+        .unwrap();
+    reopened.shutdown().await;
+    drop(reopened);
+    let db = Db::open(temp.path()).await.unwrap();
+    db.record_formed(&seat_id, &validated.invite).await.unwrap();
+    assert!(db.retire_for_transfer(&seat_id).await.unwrap());
+    use crate::transfer_state::OutgoingTransfer;
+    for (from, to) in [
+        (OutgoingTransfer::Stopping, OutgoingTransfer::Stopped),
+        (OutgoingTransfer::Stopped, OutgoingTransfer::Removing),
+        (OutgoingTransfer::Removing, OutgoingTransfer::Removed),
+    ] {
+        assert!(db.advance_retirement(&seat_id, from, to).await.unwrap());
+        if to == OutgoingTransfer::Removing {
+            tokio::fs::remove_dir_all(&data).await.unwrap();
+        }
+        if matches!(to, OutgoingTransfer::Removing | OutgoingTransfer::Removed) {
+            let reopened = Fleet::open(db.clone(), config.clone(), Arc::new(NoWallet))
+                .await
+                .unwrap();
+            let seat = reopened.seats.write().unwrap().remove(&seat_id).unwrap();
+            seat.stop().await;
+            reopened
+                .create_seat(make_input(), commitment(145), refusal_commitment(145))
+                .await
+                .unwrap();
+            let expected = if to == OutgoingTransfer::Removed {
+                ServiceStatus::Removed
+            } else {
+                ServiceStatus::Transferred
+            };
+            assert!(matches!(
+                reopened.seat_by_id(&seat_id).unwrap().report().await.unwrap(),
+                SeatReport::Active { phase: SeatPhase::Transfer { status }, .. } if status == expected
+            ));
+            reopened.shutdown().await;
+        }
+    }
 }
 
 #[tokio::test]
@@ -3837,14 +4131,18 @@ async fn guardian_fee_proposal_canonicalizes_meta_map_independent_of_input_order
 /// Records what the durability gate published, and can be made to fail the
 /// way a relay outage would.
 struct FakeBackupSink {
+    attempted: tokio::sync::watch::Sender<Option<crate::backup::SeatBackupDocument>>,
     published: std::sync::Mutex<Vec<crate::backup::SeatBackupDocument>>,
+    archives: std::sync::Mutex<Vec<crate::backup::GuardianArchive>>,
     fails: std::sync::atomic::AtomicBool,
 }
 
 impl FakeBackupSink {
     fn new() -> Arc<Self> {
         Arc::new(Self {
+            attempted: tokio::sync::watch::channel(None).0,
             published: std::sync::Mutex::new(Vec::new()),
+            archives: std::sync::Mutex::new(Vec::new()),
             fails: std::sync::atomic::AtomicBool::new(false),
         })
     }
@@ -3857,11 +4155,14 @@ impl FakeBackupSink {
 #[async_trait::async_trait]
 impl crate::backup::BackupSink for FakeBackupSink {
     async fn publish(&self, publication: &crate::backup::SeatPublication) -> anyhow::Result<()> {
+        self.attempted
+            .send_replace(Some(publication.document.clone()));
         if self.fails.load(std::sync::atomic::Ordering::SeqCst) {
             anyhow::bail!("relay is down");
         }
-        // Only seat documents are what these tests are about; the guardian
-        // archive rides along and is checked in `restore`.
+        if let Some(archive) = &publication.archive {
+            self.archives.lock().unwrap().push(archive.clone());
+        }
         self.published
             .lock()
             .unwrap()
@@ -3871,6 +4172,10 @@ impl crate::backup::BackupSink for FakeBackupSink {
 
     fn format_version(&self) -> u32 {
         1
+    }
+
+    fn supports_transfer_barrier(&self) -> bool {
+        true
     }
 }
 

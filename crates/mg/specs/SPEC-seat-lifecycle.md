@@ -85,11 +85,34 @@ request that same terminal decommission
 
 The final `seats/{seat_no}/data` directory exists iff fedimintd has atomically
 installed a complete configuration. Formation and restart may discard
-only staging directories. **No MG path removes a final seat data
-directory.** Decommission is a decision about capacity, not about
+only staging directories. **Only FA-authorized removal of an already
+transfer-retired guardian may remove a final seat data directory**, under the
+narrow exception below. Decommission is a decision about capacity, not about
 the guardian material a federation may still depend on, so it retains that
 directory along with the durable seat, payment evidence, and DKG history.
-Removing guardian data stays a separate, deliberate operator step.
+It never acquires the transfer-removal exception implicitly.
+
+### Transfer-retired cleanup exception
+
+The transfer implementation serializes retirement, export and removal in the
+seat owner ([SPEC-guardian-transfer](./SPEC-guardian-transfer.md)). Retirement
+commits its permanent fence before stopping the child and releases capacity
+only after process exit is proved. Export waits outside the seat queue for the
+exact retired-source recovery document, then rechecks the fence, grant and
+document before sealing material. An older archive publication is insufficient.
+
+`RemoveSeat` first commits a removal fence that rejects all later exports.
+Only confirmation of the exact archive-less tombstone permits deletion of the
+final guardian data directory and the known guardian-transfer work subtree.
+Accepted incoming secret copies are removed locally at completion, but the
+outgoing tombstone, formed invite, seat/payment facts, fee wallets and safe-event
+journal remain. A crash retries from this monotone fence. This does not prove
+erasure of historical backups or source copies, and does not authorize general
+cleanup from formation, restart or decommission.
+
+Transfers are enabled in ordinary builds. Recovery assumes latest published
+backups and no stale local snapshots, as specified in SPEC-guardian-transfer.
+Publication confirmation does not establish freshness against hostile rollback.
 
 ## Status and reads
 
@@ -162,9 +185,10 @@ atomically renaming a complete staging configuration. `AlreadyConfigured`
 repairs a missing formed record. Conversely, a formed record with no final
 directory is `DataLoss`, never an invitation to form again.
 
-No path removes the final directory: formation and restart discard only
-staging, and decommission retains it. Thus safety does not depend on a
-procedural restart guard, attempt log, or crash-window replay protocol.
+Formation and restart discard only staging, and decommission retains the final
+directory. Transfer-retired cleanup is the exception above, protected by its
+permanent durable fence even after the directory disappears. No missing
+directory on a retired seat can authorize another ceremony or child start.
 
 After formation, the seat loop owns a periodic watchdog. One local consensus
 API probe has a one-second outer bound; a healthy seat is checked every 60

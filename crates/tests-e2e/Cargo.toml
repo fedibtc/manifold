@@ -23,6 +23,7 @@ fedi-decentralized-cloud-mg-telemetry = { path = "../cloud-mg-telemetry", featur
   "test-support",
 ] }
 fedi-decentralized-domain = { path = "../domain" }
+fedi-decentralized-federation-preview = { path = "../federation-preview" }
 fedi-decentralized-manifold-environment = { path = "../manifold-environment" }
 fedi-decentralized-peer-badge-verifier = { path = "../peer-badge-verifier", features = [
   "test-support",

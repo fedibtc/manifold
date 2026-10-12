@@ -43,6 +43,8 @@ use tokio::io::{AsyncBufReadExt as _, AsyncReadExt as _, AsyncWriteExt as _, Buf
 use tokio::net::{TcpListener, TcpStream};
 use tokio::process::{Child, Command};
 
+#[path = "manifold_guardian_0_1_formation/guardian_transfer.rs"]
+mod guardian_transfer;
 #[path = "manifold_guardian_0_1_formation/restart_dkg.rs"]
 mod restart_dkg;
 

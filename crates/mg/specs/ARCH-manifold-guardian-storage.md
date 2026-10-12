@@ -5,8 +5,9 @@ offer settings (see [ARCH-manifold-guardian](./ARCH-manifold-guardian.md)
 *Concurrency model*). Per-seat runtime state is rebuilt from its durable rows
 when needed. Operator settings and their epoch are read in one transaction
 with capacity for quoting. Capacity is not separate state: database snapshots
-count non-decommissioned seats and derive the remaining monotonic lifetime port
-grid. Admission first resolves immutable replay or an already-stale epoch from
+count non-decommissioned seats except transfer-retired sources whose child exit
+is already proved, and derive the remaining monotonic lifetime port grid.
+Retirement never reuses a seat number or its port block. Admission first resolves immutable replay or an already-stale epoch from
 one read snapshot; a potentially accepting request checks the same facts again
 after acquiring SQLite's writer reservation. Write methods return the
 committed fact directly (or no value); they never reread a just-written row to
@@ -59,6 +60,14 @@ Consequences the database transaction and schema enforce:
   fresh random value in a quote-invalidating transaction. Formation and
   decommission are immutable once recorded; the seat row survives as dispute
   material.
+
+Guardian transfer intent and accepted native material are database-owned
+recovery facts, not a live RPC's state. Pending generations fence stale replies;
+acceptance is durable before filesystem installation and survives grant expiry.
+Outgoing retirement/removal is monotone and survives guardian-data deletion.
+The per-seat owner serializes child and filesystem effects with these facts;
+exact backup confirmation precedes export, imported startup, or source cleanup
+([SPEC-guardian-transfer](./SPEC-guardian-transfer.md)).
 
 ## Representation: columns are for constraints, not for queries
 

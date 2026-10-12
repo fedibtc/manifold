@@ -962,6 +962,7 @@ pub fn report_json(report: SeatReport) -> Value {
                 SeatHealth::Failed => "failed",
             };
             let phase = match phase {
+                SeatPhase::Transfer { status } => json!({ "phase": status }),
                 SeatPhase::Created => json!({ "phase": "created" }),
                 SeatPhase::DkgInProgress => json!({ "phase": "dkg_in_progress" }),
                 SeatPhase::DataLoss { invite_code } => json!({

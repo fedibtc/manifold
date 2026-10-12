@@ -99,7 +99,7 @@ const SEALED_LEN: usize = PADDED_PLAINTEXT_LEN + SEAL_OVERHEAD;
 /// ([`mg_core::backup::BackupSink::format_version`]): a record written under
 /// another version describes events this build's own reader refuses, so
 /// bumping it republishes every seat.
-pub(crate) const BACKUP_DOCUMENT_VERSION: u32 = 1;
+pub(crate) const BACKUP_DOCUMENT_VERSION: u32 = 2;
 
 /// Failure building or reading a backup payload.
 #[derive(Debug, thiserror::Error)]
@@ -226,10 +226,19 @@ impl BackupIdentity {
     /// reader of a document is a restore path acting on recovery material:
     /// guessing at a partially understood payload is the one outcome none of
     /// them may have, so the refusal is not theirs to forget.
+    #[cfg(test)]
     pub(crate) fn open_seat_document(
         &self,
         content: &str,
     ) -> Result<SeatBackupDocument, BackupError> {
+        self.open_versioned_seat_document(content)
+            .map(|(_, document)| document)
+    }
+
+    fn open_versioned_seat_document(
+        &self,
+        content: &str,
+    ) -> Result<(u32, SeatBackupDocument), BackupError> {
         let blob = BASE64.decode(content).map_err(|_| BackupError::Decrypt)?;
         let plaintext = self.open_blob(&blob, AAD_DOCUMENT)?;
         let payload = unframe(&plaintext)?;
@@ -238,7 +247,7 @@ impl BackupIdentity {
         // whichever fields happen to still match.
         let version: Envelope<serde::de::IgnoredAny> =
             ciborium::from_reader(payload).map_err(BackupError::Parse)?;
-        if version.version != BACKUP_DOCUMENT_VERSION {
+        if !matches!(version.version, 1 | BACKUP_DOCUMENT_VERSION) {
             return Err(BackupError::UnsupportedVersion {
                 found: version.version,
             });
@@ -252,7 +261,10 @@ impl BackupIdentity {
         if cursor.position() as usize != payload.len() {
             return Err(BackupError::Frame);
         }
-        Ok(envelope.document)
+        if version.version == 1 && envelope.document.transfer.is_some() {
+            return Err(BackupError::UnsupportedVersion { found: 1 });
+        }
+        Ok((version.version, envelope.document))
     }
 
     /// The base64 event contents one seat's guardian archive is sealed into.
@@ -441,9 +453,15 @@ pub fn recover_from_events(
     let mut seats = Vec::new();
     let mut claimed_seats = std::collections::HashSet::new();
     let mut slices: HashMap<String, Event> = HashMap::new();
+    // A legacy or mixed fleet must republish under v2 instead of falsely
+    // seeding v2 confirmations from v1 envelopes.
+    let mut format_version = BACKUP_DOCUMENT_VERSION;
     for event in events {
-        match backup.open_seat_document(&event.content) {
-            Ok(seat) => {
+        match backup.open_versioned_seat_document(&event.content) {
+            Ok((version, seat)) => {
+                if version != BACKUP_DOCUMENT_VERSION {
+                    format_version = 0;
+                }
                 // The document names its own coordinate (it is derived from
                 // the seat id inside it), so a document at any other address
                 // — or a second document at the same one — is an enumeration
@@ -479,6 +497,20 @@ pub fn recover_from_events(
     let mut archives = HashMap::new();
     for seat in &seats {
         let Some(guardian) = &seat.guardian else {
+            if seat
+                .transfer
+                .as_ref()
+                .and_then(|transfer| transfer.outgoing.as_ref())
+                .is_some_and(|outgoing| outgoing.removed)
+            {
+                // Removing an archive reference cannot delete old addressable
+                // slices reliably. The authenticated tombstone retires exactly
+                // this seat's known slice coordinates; unrelated events remain
+                // fatal. Include gaps left by relay omission.
+                for index in 0..u32::from(crate::backup::MAX_RESTORE_EVENTS_PER_SEAT - 1) {
+                    slices.remove(&backup.archive_coordinate(&seat.seat_id, index));
+                }
+            }
             continue;
         };
         let mut found = Vec::new();
@@ -510,7 +542,7 @@ pub fn recover_from_events(
     Ok(RecoveredFleet {
         seats,
         archives,
-        format_version: BACKUP_DOCUMENT_VERSION,
+        format_version,
     })
 }
 

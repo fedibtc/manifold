@@ -321,6 +321,63 @@ fn a_document_from_a_future_version_is_refused() {
     );
 }
 
+#[test]
+fn legacy_documents_remain_readable_but_do_not_seed_v2_confirmations() {
+    let identity = test_identity();
+    let document = SeatBackupDocument::new(&seat_facts(), None, None, None);
+    let mut payload = Vec::new();
+    ciborium::into_writer(
+        &Envelope {
+            version: 1,
+            document: &document,
+        },
+        &mut payload,
+    )
+    .unwrap();
+    let content = identity.seal_padded(payload, AAD_DOCUMENT).remove(0);
+    assert_eq!(identity.open_seat_document(&content).unwrap(), document);
+    let event = addressable_event(content, identity.seat_coordinate(&document.seat_id))
+        .sign_with_keys(identity.keys())
+        .unwrap();
+    let recovered = recover_from_events(&identity, vec![event]).unwrap();
+    assert_eq!(recovered.format_version, 0);
+    assert_eq!(recovered.seats, vec![document]);
+}
+
+#[test]
+fn a_removal_tombstone_claims_only_its_obsolete_archive_slices() {
+    use mg_core::backup::{OutgoingTransferBackup, TransferBackup};
+    let identity = test_identity();
+    let facts = seat_facts();
+    let publication = formed_publication(&facts, &big_guardian_archive());
+    let mut old_events = published_events(&identity, &publication);
+    old_events.pop().unwrap(); // replaced seat document
+    assert!(old_events.len() > 1);
+    old_events.remove(0); // an omitted obsolete slice is irrelevant too
+    let mut document = SeatBackupDocument::new(&facts, None, None, None);
+    document.transfer = Some(TransferBackup {
+        incoming: None,
+        outgoing: Some(OutgoingTransferBackup {
+            removed: true,
+            federation_invite: InviteCode("retained-formed-invite".into()),
+        }),
+    });
+    old_events.extend(published_events(
+        &identity,
+        &SeatPublication {
+            document: document.clone(),
+            archive: None,
+        },
+    ));
+    let recovered = recover_from_events(&identity, old_events.clone()).unwrap();
+    assert_eq!(recovered.seats, vec![document]);
+    assert!(recovered.archives.is_empty());
+    // An orphan from another seat must still fail closed.
+    let other = formed_publication(&seat_facts_no(7, 0), &big_guardian_archive());
+    old_events.push(published_events(&identity, &other).remove(0));
+    assert!(recover_from_events(&identity, old_events).is_err());
+}
+
 /// The frame inside a seal has one canonical spelling: a length prefix, the
 /// payload, zero padding short of a whole extra event, and nothing hiding
 /// after the CBOR item inside the declared payload. Each deviation is our own

@@ -51,6 +51,7 @@ mg-meta-fields = { path = "../meta-fields" }
 nostr-sdk = "0.44"
 operator-ui-auth = { path = "../../operator-ui-auth" }
 rand = "0.8"
+ring = "0.17"
 secp256k1 = "0.30"
 serde = { workspace = true }
 serde_json = "1"
@@ -58,6 +59,7 @@ serde_json_canonicalizer = "0.3"
 sha2 = "0.10"
 sqlx = { version = "0.8.6", features = ["migrate", "runtime-tokio", "sqlite"] }
 stability-pool-client = { workspace = true }
+tempfile = "3"
 thiserror = { workspace = true }
 tokio = { workspace = true, features = [
   "fs",
@@ -80,7 +82,6 @@ fedimint-build = { workspace = true }
 blind-rsa-signatures = "0.17"
 jsonrpsee-server = "0.24"
 reqwest = { version = "0.12", default-features = false }
-tempfile = "3"
 tokio = { workspace = true, features = ["macros", "rt", "time"] }
 tower = { version = "0.5", features = ["util"] }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }

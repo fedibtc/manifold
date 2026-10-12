@@ -71,6 +71,70 @@ async fn buy_spare(client: &TestClient, state: &MgState) -> SpareSeat {
 }
 
 #[tokio::test]
+async fn a_running_destination_retries_transient_attestation_readiness() {
+    let (_database, _payments, _payment_state, state, client) = formed_paid_client().await;
+    let spare = buy_spare(&client, &state).await;
+    client
+        .start_guardian_transfer(MOVED as u16, spare.seat_id, None, transfer_options())
+        .await
+        .unwrap();
+    guardian_arrives(&state);
+    let before = state.attestation_calls.load(Ordering::SeqCst);
+    state
+        .attestation_unavailable_remaining
+        .store(2, Ordering::SeqCst);
+    let result = client
+        .resume_guardian_transfer(transfer_options())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(result.phase, GuardianTransferPhase::Completed);
+    assert_eq!(state.attestation_calls.load(Ordering::SeqCst), before + 3);
+}
+
+#[tokio::test]
+async fn unavailable_destination_attestation_obeys_deadline_and_remains_resumable() {
+    let (_database, _payments, _payment_state, state, client) = formed_paid_client().await;
+    let spare = buy_spare(&client, &state).await;
+    client
+        .start_guardian_transfer(MOVED as u16, spare.seat_id, None, transfer_options())
+        .await
+        .unwrap();
+    guardian_arrives(&state);
+    state
+        .attestation_unavailable_remaining
+        .store(usize::MAX, Ordering::SeqCst);
+    let options = MaintenanceRunOptions::new(MaintenanceRunOptionsConfig {
+        poll_interval: Duration::from_millis(10),
+        run_timeout: Duration::from_millis(100),
+        request_timeout: Duration::from_millis(50),
+    })
+    .unwrap();
+    assert!(matches!(
+        client.resume_guardian_transfer(options).await,
+        Err(FaError::Timeout(_)),
+    ));
+    assert_eq!(
+        client.guardian_transfer().await.unwrap().unwrap().phase,
+        GuardianTransferPhase::PublishingBinding,
+    );
+    assert!(state.binding_votes.lock().unwrap().is_empty());
+    assert!(state.removed_seats.lock().unwrap().is_empty());
+    state
+        .attestation_unavailable_remaining
+        .store(0, Ordering::SeqCst);
+    assert_eq!(
+        client
+            .resume_guardian_transfer(transfer_options())
+            .await
+            .unwrap()
+            .unwrap()
+            .phase,
+        GuardianTransferPhase::Completed,
+    );
+}
+
+#[tokio::test]
 async fn a_guardian_moves_onto_a_spare_seat() {
     let (_database, _payments, _payment_state, mg_state, client) = formed_paid_client().await;
     let spare = buy_spare(&client, &mg_state).await;

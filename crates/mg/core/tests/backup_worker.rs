@@ -15,6 +15,7 @@ use crate::seat_process::BitcoindConfig;
 /// relay down (or slow) and watch what the worker does anyway.
 struct SwitchableSink {
     published: Mutex<Vec<SeatId>>,
+    documents: Mutex<Vec<crate::backup::SeatBackupDocument>>,
     archives: AtomicUsize,
     attempts: AtomicUsize,
     fails: AtomicBool,
@@ -25,6 +26,7 @@ impl SwitchableSink {
     fn new() -> Arc<Self> {
         Arc::new(Self {
             published: Mutex::new(Vec::new()),
+            documents: Mutex::new(Vec::new()),
             archives: AtomicUsize::new(0),
             attempts: AtomicUsize::new(0),
             fails: AtomicBool::new(false),
@@ -54,12 +56,79 @@ impl BackupSink for SwitchableSink {
             .lock()
             .unwrap()
             .push(publication.document.seat_id.clone());
+        self.documents
+            .lock()
+            .unwrap()
+            .push(publication.document.clone());
         Ok(())
     }
 
     fn format_version(&self) -> u32 {
         1
     }
+
+    fn supports_transfer_barrier(&self) -> bool {
+        true
+    }
+}
+
+#[tokio::test]
+async fn transfer_barrier_requires_the_exact_confirmed_document() {
+    let temp = TempDir::new().unwrap();
+    let db = test_db(&temp).await;
+    let process = test_process(&temp);
+    let facts = create_seat(&db, 1).await;
+    let sink = SwitchableSink::new();
+    let worker = BackupWorker::new(sink.clone(), Duration::from_millis(10));
+    let old = seat_publication_plan(&db, &process, &facts, None)
+        .await
+        .unwrap();
+    worker.spawn(db.clone(), process.clone());
+    worker
+        .confirm_transfer_publication(&db, &old, Duration::from_secs(5))
+        .await
+        .unwrap();
+
+    // An old confirmation does not authorize a document never published.
+    let mut changed = old;
+    changed.document.decommissioned_at_ms = Some(123);
+    assert!(
+        worker
+            .confirm_transfer_publication(&db, &changed, Duration::from_millis(40))
+            .await
+            .is_err()
+    );
+    assert!(
+        sink.documents
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|document| document.decommissioned_at_ms.is_none())
+    );
+}
+
+#[tokio::test]
+async fn discard_sink_cannot_authorize_transfer_even_with_a_matching_record() {
+    let temp = TempDir::new().unwrap();
+    let db = test_db(&temp).await;
+    let process = test_process(&temp);
+    let facts = create_seat(&db, 1).await;
+    let plan = seat_publication_plan(&db, &process, &facts, None)
+        .await
+        .unwrap();
+    db.record_backup_publication(&facts.seat_id, &plan.doc_sha256(), None, 0)
+        .await
+        .unwrap();
+    let worker = BackupWorker::new(
+        Arc::new(crate::backup::DiscardBackupSink),
+        Duration::from_millis(10),
+    );
+    assert!(
+        worker
+            .confirm_transfer_publication(&db, &plan, Duration::from_secs(5))
+            .await
+            .is_err()
+    );
 }
 
 fn test_facts(seat: u8) -> SeatFacts {
@@ -453,8 +522,8 @@ async fn a_confirmed_archive_is_never_reread_or_republished() {
 /// The envelope schema version scopes a confirmed publication: the version is
 /// outside the hashed plaintext, so after an upgrade an unchanged document
 /// still needs republishing — the relay holds events the new build's own
-/// restore would refuse. The archive digest's never-regress rule holds only
-/// within one version for the same reason.
+/// restore may interpret differently. Archive references describe the exact
+/// confirmed document, including archive-less removal tombstones.
 #[tokio::test]
 async fn a_publication_record_counts_only_for_the_version_that_wrote_it() {
     let temp = TempDir::new().unwrap();
@@ -478,7 +547,8 @@ async fn a_publication_record_counts_only_for_the_version_that_wrote_it() {
         "another version's record is no confirmation"
     );
 
-    // Same version: a document-only republish must not forget the archive.
+    // A publication record represents the exact document reference. Removal
+    // tombstones can intentionally drop it even within the same version.
     db.record_backup_publication(&facts.seat_id, "doc-hash-2", None, 1)
         .await
         .unwrap();
@@ -489,7 +559,7 @@ async fn a_publication_record_counts_only_for_the_version_that_wrote_it() {
             .unwrap()
             .archive_digest
             .as_deref(),
-        Some("archive-digest")
+        None
     );
 
     // New version: the confirmed archive is laid out under rules the new

@@ -38,7 +38,7 @@ const RESTORE_TIMEOUT: Duration = Duration::from_secs(60);
 /// config reaches today. An operator running more seats than the budget
 /// supports would hit the failed-closed refusal above, not a truncated fleet.
 const MAX_RESTORE_SEATS: u16 = 256;
-const MAX_RESTORE_EVENTS_PER_SEAT: u16 = 16;
+pub(crate) const MAX_RESTORE_EVENTS_PER_SEAT: u16 = 16;
 const MAX_RESTORE_DOCUMENTS: u16 = MAX_RESTORE_SEATS * MAX_RESTORE_EVENTS_PER_SEAT;
 
 /// A relay's worth of one MG's backup documents.
@@ -90,8 +90,8 @@ impl BackupRelay {
 
     /// Publish a document and confirm the relay will serve it back.
     ///
-    /// The read-back is the whole point: nothing waits for this, but its `Ok`
-    /// is what stops the MG retrying, so an unconfirmed write reported as
+    /// The read-back is the whole point: its `Ok` stops retries and can satisfy
+    /// an explicit transfer publication barrier, so an unconfirmed write reported as
     /// success would retire a seat from the publisher's list on a copy the
     /// relay may never have kept.
     pub async fn publish_confirmed(&self, builder: EventBuilder) -> anyhow::Result<()> {
@@ -120,11 +120,10 @@ impl BackupRelay {
 pub struct RelayBackupSink {
     identity: BackupIdentity,
     relay_url: String,
-    /// Connected on the first publication rather than at startup. Nothing in
-    /// the daemon waits on a relay (SPEC-nostr-backup-restore), and that has to
-    /// include the daemon's own start: an unreachable relay would otherwise
-    /// stop an MG running its existing guardians. The publisher retries, so
-    /// a failed connection costs a retry interval and nothing else.
+    /// Connected on first publication rather than startup: an unreachable relay
+    /// must not stop existing guardians. Ordinary lifecycle publication retries
+    /// in the background; explicit transfer barriers remain pending until their
+    /// exact recovery documents are confirmed.
     relay: tokio::sync::Mutex<Option<BackupRelay>>,
 }
 
@@ -158,6 +157,10 @@ impl BackupSink for RelayBackupSink {
 
     fn format_version(&self) -> u32 {
         BACKUP_DOCUMENT_VERSION
+    }
+
+    fn supports_transfer_barrier(&self) -> bool {
+        true
     }
 }
 

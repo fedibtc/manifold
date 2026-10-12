@@ -5,7 +5,9 @@ setup-payment-policy rework and durable invite caching changed its scope and
 exit paths. The Lean model also omits a wipe event when explicit restart's
 `remove_dir_all` returns an error, even though recursive removal may already
 have deleted part of the directory. The claim remains Unverified, and the Lean
-theorem does not currently transfer to every Rust deletion execution.
+theorem does not currently transfer to every Rust deletion execution. The
+FA-authorized transfer-removal exception adds another deletion path outside
+that model; this evidence maintenance is not a fresh verification.
 
 ## Property and scope
 
@@ -17,10 +19,21 @@ keys.
 
 ## Implementation argument
 
-The source inventory identifies two guardian-directory deletion sites:
+The pre-transfer source inventory identified two guardian-directory deletion sites:
 
 - the supervisor's optional pre-first-spawn wipe; and
 - `SeatLoop::restart_dkg`'s explicit restart wipe.
+
+`seat::transfer` now additionally removes a transfer-retired source's guardian
+directory, after durable removal intent and confirmation of its archive-less
+backup tombstone. This is the claim's narrow authorized exception, not permission
+for either DKG wipe path to delete published data. The source owner retains
+the seat/formed/accounting facts and wallet paths. Focused regression coverage is
+`removal_fences_exports_before_relay_and_only_deletes_guardian_paths` and
+`removal_wins_over_a_delayed_export_after_its_publication_wait`; the native
+guardian-transfer fixture also checks actual removal and the retired source's
+restart fence. These tests do not establish completeness of the deletion
+inventory or close the pre-existing correspondence gaps below.
 
 It identifies two FA response surfaces that carry invites: `GetInviteCode` and
 the running report used by `GetStatus`. On a fresh live observation, both paths
@@ -40,7 +53,7 @@ never restores it during respawn. Under the `fedimintd` lifecycle assumption, a
 codeless current attempt cannot coexist with a current or prior consensus API
 from which an invite could be emitted.
 
-Both deletion sites derive the target from the typed seat ID. Database
+The two DKG deletion sites derive the target from the typed seat ID. Database
 uniqueness keeps sibling seat IDs distinct. Decommission and shutdown stop a
 child but do not remove its directory.
 
@@ -86,7 +99,9 @@ failure, and child-start failure after the startup wipe from process crashes.
 This preserves their durable and volatile state more accurately than treating a
 task-local error as a reboot.
 
-Three correspondence gaps prevent transfer to the Rust property. First,
+Transfer retirement/removal is absent from this model and its no-wipe theorem
+must not be read as prohibiting the claim's authorized exception. In addition,
+three pre-existing correspondence gaps prevent transfer to the Rust property. First,
 `Step.restartWipeFailed` emits no `.wipe`; a failed recursive removal is
 therefore absent from the model log even when it partially deletes guardian
 data. Second, the model has no durable invite field or transition for replaying
