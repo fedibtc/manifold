@@ -14,6 +14,9 @@ FMan identity, seat id, and stable locator. It optionally contains the exact
 `RequestLiquidityDetailsCommitmentV1` for the sole non-terminal liquidity
 request. The operation id and payload hash are recomputed from that commitment.
 Completed and terminally rejected liquidity work is omitted.
+It also lists every spare seat in the FI seat pool by FMan identity, seat id,
+and locator. An empty list is omitted from the encoding, so a payload without
+spares keeps its earlier bytes and older readers.
 
 The payload omits FI identity, formation id and intent, runtime checkpoints,
 signed quotes, acceptances and attestations, guardian codes and fee accounts,
@@ -66,6 +69,8 @@ manager locators and tries alternatives for the same federation without
 requiring every manager online or every seat healthy. Verified guardian
 addresses are remembered only in memory for subsequent reads; the backup and
 signed liquidity commitment remain unchanged.
+Restore imports spare seats without their guardian-fee accounts. An open
+seat purchase is not backed up.
 Import derives a stable local formation handle
 without reconstructing omitted formation transcript rows. Only after
 reconciliation does FI expose fresh post-formed authority and hydrate the

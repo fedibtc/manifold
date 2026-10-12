@@ -38,6 +38,10 @@ pub(crate) struct FiBackupPayload {
     pub(crate) seats: Vec<FiBackupSeat>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) liquidity: Option<RequestLiquidityDetailsCommitmentV1>,
+    /// Paid seats that host no guardian. Omitted when empty, so a payload
+    /// without spares keeps its earlier bytes.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) spare_seats: Vec<FiBackupSeat>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -245,6 +249,7 @@ mod tests {
             federation_invite: InviteCode("invite".into()),
             seats: vec![],
             liquidity: None,
+            spare_seats: Vec::new(),
         };
         let mut payload = payload;
         // Payload validation happens on open; use a fixture seat in DB-level tests.
@@ -288,6 +293,7 @@ mod tests {
             federation_invite: InviteCode("x".repeat(PADDED_PLAINTEXT_LEN)),
             seats: vec![],
             liquidity: None,
+            spare_seats: Vec::new(),
         };
         assert!(keys(1).seal(&payload).is_err());
     }

@@ -14,6 +14,7 @@ mod guardian_fee_ppm;
 mod liquidity;
 mod maintenance;
 mod ports;
+mod seat_pool;
 mod selection;
 mod setup_payment_federations;
 mod state;
@@ -81,10 +82,12 @@ pub use ports::{
     LiquidityProviderConnectorError, PaymentReservationRecovery, PreparedSeatPayment,
     SeatPaymentRecovery, SettledSeatRefund,
 };
+pub use seat_pool::SpareSeat;
 pub use selection::{
     FMAN_SELECTION_PREVIEW_VALIDITY, FMAN_SELECTION_PROBE_TIMEOUT, FmanReplacementApproval,
     FmanReplacementPreview, FmanSelectionApproval, FmanSelectionPreview, FmanSelectionQuery,
-    FmanSelectionRequest, SeatProvenance, SelectedFmanSeat, VerifiedBadgeFacts, VerifiedCandidate,
+    FmanSelectionRequest, SeatProvenance, SelectedFmanSeat, SpareSeatApproval, SpareSeatPreview,
+    VerifiedBadgeFacts, VerifiedCandidate,
 };
 pub use setup_payment_federations::AdmittedSetupPaymentFederation;
 /// Exact SPv2 account type returned by [`FiFeeAccountProvider`].
