@@ -1000,6 +1000,12 @@ impl FleetManagerConnector for TestConnector {
     }
 }
 
+fn unsupported_test_verb<T>(verb: &str) -> FmResult<T> {
+    Err(FleetManagerError::UnsupportedVerb {
+        verb: verb.to_owned(),
+    })
+}
+
 struct TestFman {
     index: usize,
     manager_key: Keypair,
@@ -1324,6 +1330,36 @@ impl FleetManagerService for TestFman {
                 already_decommissioned: false,
             },
         )
+    }
+
+    async fn pull_seat(
+        &self,
+        _request: SignedRequest<fedi_decentralized_service_fleet_manager::PullSeatRequest>,
+    ) -> FmResult<fedi_decentralized_service_fleet_manager::PullSeatResponse> {
+        unsupported_test_verb("PullSeat")
+    }
+
+    async fn transfer_seat(
+        &self,
+        _request: SignedRequest<fedi_decentralized_service_fleet_manager::SeatTransferGrant>,
+    ) -> FmResult<fedi_decentralized_service_fleet_manager::TransferSeatResponse> {
+        unsupported_test_verb("TransferSeat")
+    }
+
+    async fn replace_seat_binding(
+        &self,
+        _request: SignedRequest<
+            fedi_decentralized_service_fleet_manager::ReplaceSeatBindingRequest,
+        >,
+    ) -> FmResult<fedi_decentralized_service_fleet_manager::ReplaceSeatBindingResponse> {
+        unsupported_test_verb("ReplaceSeatBinding")
+    }
+
+    async fn remove_seat(
+        &self,
+        _request: SignedRequest<fedi_decentralized_service_fleet_manager::RemoveSeatRequest>,
+    ) -> FmResult<fedi_decentralized_service_fleet_manager::RemoveSeatResponse> {
+        unsupported_test_verb("RemoveSeat")
     }
 
     async fn restart_dkg(

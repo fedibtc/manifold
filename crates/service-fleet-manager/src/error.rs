@@ -107,6 +107,15 @@ pub enum FleetManagerError {
     #[error("invalid gateway API URL")]
     InvalidGatewayApiUrl,
 
+    /// A seat transfer grant does not name this seat, this FMan, or the
+    /// seat's federation.
+    #[error("seat transfer grant does not match this seat")]
+    SeatTransferGrantMismatch,
+
+    /// The destination FMan already hosts a guardian of the grant's federation.
+    #[error("this Fleet Manager already hosts a guardian of that federation")]
+    FederationAlreadyHosted,
+
     /// The verb exists in the protocol crate but is intentionally not
     /// implemented by this daemon/profile version.
     #[error("{verb} unsupported in this Fleet Manager profile")]

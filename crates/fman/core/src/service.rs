@@ -27,10 +27,12 @@ use fedi_decentralized_service_fleet_manager::{
     GetFedimintStatsResponse, GetFmanTrustMaterialRequest, GetFmanTrustMaterialResponse,
     GetInviteCodeRequest, GetInviteCodeResponse, GetPeerAttestationRequest,
     GetPeerAttestationResponse, GetStatusRequest, GetStatusResponse, GuardianFeeAccount, Plan,
-    ProposeFormationMetaRequest, ProposeFormationMetaResponse, QuoteTerms, RegisterGatewayRequest,
-    RegisterGatewayResponse, RestartDkgRequest, RestartDkgResponse, ServiceStatus,
-    SetMetaFieldRequest, SetMetaFieldResponse, SignedRequest, SignedResponse, StartDkgRequest,
-    StartDkgResponse, StatusDetail, Timestamp, VerifiedFiRequest,
+    ProposeFormationMetaRequest, ProposeFormationMetaResponse, PullSeatRequest, PullSeatResponse,
+    QuoteTerms, RegisterGatewayRequest, RegisterGatewayResponse, RemoveSeatRequest,
+    RemoveSeatResponse, ReplaceSeatBindingRequest, ReplaceSeatBindingResponse, RestartDkgRequest,
+    RestartDkgResponse, SeatTransferGrant, ServiceStatus, SetMetaFieldRequest,
+    SetMetaFieldResponse, SignedRequest, SignedResponse, StartDkgRequest, StartDkgResponse,
+    StatusDetail, Timestamp, TransferSeatResponse, VerifiedFiRequest,
 };
 use fedimint_core::util::SafeUrl;
 use secp256k1::Keypair;
@@ -257,6 +259,8 @@ fn fleet_manager_error_kind(error: &FleetManagerError) -> &'static str {
         FleetManagerError::FormationMetaAlreadyPublished => "formation_meta_already_published",
         FleetManagerError::MetaTargetConflict => "meta_target_conflict",
         FleetManagerError::InvalidGatewayApiUrl => "invalid_gateway_api_url",
+        FleetManagerError::SeatTransferGrantMismatch => "seat_transfer_grant_mismatch",
+        FleetManagerError::FederationAlreadyHosted => "federation_already_hosted",
         FleetManagerError::UnsupportedVerb { .. } => "unsupported_verb",
         FleetManagerError::Other(_) => "internal_or_other",
     }
@@ -877,6 +881,34 @@ impl FleetManagerService for FleetManagerRpc {
             })
         })
         .await
+    }
+
+    async fn pull_seat(
+        &self,
+        _request: SignedRequest<PullSeatRequest>,
+    ) -> FmResult<PullSeatResponse> {
+        unsupported("PullSeat")
+    }
+
+    async fn transfer_seat(
+        &self,
+        _request: SignedRequest<SeatTransferGrant>,
+    ) -> FmResult<TransferSeatResponse> {
+        unsupported("TransferSeat")
+    }
+
+    async fn replace_seat_binding(
+        &self,
+        _request: SignedRequest<ReplaceSeatBindingRequest>,
+    ) -> FmResult<ReplaceSeatBindingResponse> {
+        unsupported("ReplaceSeatBinding")
+    }
+
+    async fn remove_seat(
+        &self,
+        _request: SignedRequest<RemoveSeatRequest>,
+    ) -> FmResult<RemoveSeatResponse> {
+        unsupported("RemoveSeat")
     }
 
     /// Serve this FMan's current signed trust material.

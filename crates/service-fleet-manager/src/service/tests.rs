@@ -124,6 +124,27 @@ impl FleetManagerService for TestFleetManager {
     ) -> FmResult<crate::DecommissionSeatResponse> {
         unsupported()
     }
+    async fn pull_seat(&self, _: SignedRequest<PullSeatRequest>) -> FmResult<PullSeatResponse> {
+        unsupported()
+    }
+    async fn transfer_seat(
+        &self,
+        _: SignedRequest<SeatTransferGrant>,
+    ) -> FmResult<TransferSeatResponse> {
+        unsupported()
+    }
+    async fn replace_seat_binding(
+        &self,
+        _: SignedRequest<ReplaceSeatBindingRequest>,
+    ) -> FmResult<ReplaceSeatBindingResponse> {
+        unsupported()
+    }
+    async fn remove_seat(
+        &self,
+        _: SignedRequest<RemoveSeatRequest>,
+    ) -> FmResult<RemoveSeatResponse> {
+        unsupported()
+    }
     async fn set_meta_field(
         &self,
         _: SignedRequest<SetMetaFieldRequest>,

@@ -4,6 +4,8 @@
 
 Paid quoting checks the authenticated common setup-payment membership and quotes a configured gross price; minimum-net-revenue pricing remains unimplemented.
 
+The guardian transfer verbs `PullSeat`, `TransferSeat`, `ReplaceSeatBinding`, and `RemoveSeat` exist only in the protocol crate; the daemon answers them with `UnsupportedVerb` ([SPEC-guardian-transfer](./SPEC-guardian-transfer.md)).
+
 ## Record justification
 
 The FI RPC contract spans service wire types, daemon handlers, wallet payment flows, and FI consumers, so no single implementation artifact can own it coherently.
