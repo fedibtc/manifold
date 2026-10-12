@@ -88,6 +88,10 @@ pub struct RespawnPolicy {
     /// A run that stays up at least this long resets the backoff, so a seat
     /// that crashes rarely is not punished for last month's crash loop.
     pub backoff_reset_after: Duration,
+    /// A formed child whose local API keeps failing the watchdog probe this
+    /// long is killed and respawned. The API is local, so a long outage means
+    /// the child is wedged rather than its peers being unreachable.
+    pub unresponsive_restart_after: Duration,
 }
 
 impl Default for RespawnPolicy {
@@ -96,6 +100,7 @@ impl Default for RespawnPolicy {
             initial_backoff: Duration::from_secs(1),
             max_backoff: Duration::from_secs(60),
             backoff_reset_after: Duration::from_secs(60),
+            unresponsive_restart_after: Duration::from_secs(15 * 60),
         }
     }
 }
