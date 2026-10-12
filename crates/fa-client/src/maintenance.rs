@@ -120,6 +120,10 @@ impl MaintenanceRunOptions {
         .map_err(InvalidMaintenanceRunOptions::from)
     }
 
+    pub(crate) fn run_options(self) -> FormationRunOptions {
+        self.0
+    }
+
     #[cfg(test)]
     pub(crate) fn lease_duration(self) -> Duration {
         self.0.lease_duration()
@@ -168,7 +172,7 @@ impl From<InvalidFormationRunOptions> for InvalidMaintenanceRunOptions {
     }
 }
 
-enum MaintenanceConnection<C> {
+pub(crate) enum MaintenanceConnection<C> {
     Connected(SeatSession<C>),
     Retryable { index: u16, message: String },
 }
@@ -593,7 +597,7 @@ where
         .await
     }
 
-    async fn connect_unresolved_formed_sessions(
+    pub(crate) async fn connect_unresolved_formed_sessions(
         &self,
         authority: &crate::formation::PostFormedAuthority,
         unresolved: &BTreeSet<u16>,
@@ -638,7 +642,7 @@ where
         Ok(outcomes)
     }
 
-    async fn maintenance_authority(
+    pub(crate) async fn maintenance_authority(
         &self,
         fa_id: FaId,
     ) -> FaResult<crate::formation::PostFormedAuthority> {
@@ -669,7 +673,7 @@ where
     }
 }
 
-fn maintenance_convergence(
+pub(crate) fn maintenance_convergence(
     unresolved: &BTreeSet<u16>,
     guardian_errors: &BTreeMap<u16, String>,
     consensus_error: Option<String>,
@@ -684,7 +688,7 @@ fn maintenance_convergence(
     }
 }
 
-async fn sleep_for_maintenance_retry(
+pub(crate) async fn sleep_for_maintenance_retry(
     run: DriverRun<'_>,
     delay: &mut Duration,
     unresolved: &BTreeSet<u16>,

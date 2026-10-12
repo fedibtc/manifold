@@ -18,6 +18,7 @@ mod seat_pool;
 mod selection;
 mod setup_payment_federations;
 mod state;
+mod transfer;
 mod unavailable;
 
 use std::sync::Arc;
@@ -104,6 +105,7 @@ pub use state::{
     ResolvedFormationIntent, RestoredFormationSnapshot, RestoredSeat, SeatPaymentRequirement,
     SeatPhase, SeatProgress,
 };
+pub use transfer::{GuardianTransfer, GuardianTransferPhase};
 pub use unavailable::{
     UnavailableFaFeeAccountProvider, UnavailableFederationConsensusReader,
     UnavailableManifoldGuardianConnector, UnavailablePayments, UnavailableRegistry,

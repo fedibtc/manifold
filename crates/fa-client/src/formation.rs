@@ -491,6 +491,7 @@ pub(crate) struct PostFormedSeat {
     pub(crate) seat_id: SeatId,
 }
 
+#[derive(Clone)]
 pub(crate) struct PostFormedAuthority {
     pub(crate) formation_id: FormationId,
     pub(crate) invite_code: InviteCode,
@@ -5264,7 +5265,7 @@ pub(crate) fn restored_formation_id(fa_id: FaId, invite: &InviteCode) -> FaResul
     )))
 }
 
-fn invite_federation_id(invite: &InviteCode) -> FaResult<FedimintFederationId> {
+pub(crate) fn invite_federation_id(invite: &InviteCode) -> FaResult<FedimintFederationId> {
     let parsed = FedimintInviteCode::from_str(&invite.0).map_err(|error| {
         FaError::InvalidManifoldGuardians(format!(
             "Manifold Guardian returned an invalid federation invite: {error}"

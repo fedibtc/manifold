@@ -98,10 +98,10 @@ pub use telemetry::{
     ScrapeGuardianMetricsRequest, TelemetryCapability, TelemetryResult,
 };
 pub use transfer::{
-    PullSeatRequest, PullSeatResponse, RemoveSeatRequest, RemoveSeatResponse,
+    PullSeatRequest, PullSeatResponse, RebindSeatError, RemoveSeatRequest, RemoveSeatResponse,
     ReplaceSeatBindingRequest, ReplaceSeatBindingResponse, SEALED_SEAT_PACKAGE_MAX_BYTES,
     SEAT_TRANSFER_GRANT_MAX_LIFETIME_SECS, SealedSeatPackage, SealedSeatPackageTooLarge,
-    SeatTransferGrant, TransferSeatResponse,
+    SeatTransferGrant, TransferSeatResponse, rebind_transferred_seat,
 };
 pub use types::{
     AvailabilityInfo, FEDERATION_ICON_URL_META_FIELD_KEY, FEDERATION_NAME_META_FIELD_KEY, FaId,
