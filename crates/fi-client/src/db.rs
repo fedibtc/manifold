@@ -60,6 +60,7 @@ enum FiDbPrefix {
     RecoveryCompleted = 0x08,
     SeatPurchase = 0x09,
     SpareSeat = 0x0a,
+    GuardianTransfer = 0x0b,
 }
 
 #[derive(Debug, Decodable, Encodable)]
@@ -84,6 +85,28 @@ impl_db_record!(
     db_prefix = FiDbPrefix::SpareSeat
 );
 impl_db_lookup!(key = SpareSeatKey, query_prefix = SpareSeatKeyPrefix);
+
+#[derive(Debug, Decodable, Encodable)]
+struct GuardianTransferKey;
+impl_db_record!(
+    key = GuardianTransferKey,
+    value = crate::transfer::StoredGuardianTransfer,
+    db_prefix = FiDbPrefix::GuardianTransfer
+);
+
+/// One lease-fenced change to the open guardian transfer.
+pub(crate) enum GuardianTransferWrite {
+    /// Record a new transfer onto a spare seat; refused while one is open.
+    Begin(crate::transfer::StoredGuardianTransfer),
+    /// Replace the open transfer's phase.
+    Update(crate::transfer::StoredGuardianTransfer),
+    /// Move the spare seat into the federation's seats in place of the source
+    /// seat, after consensus adopted the new binding.
+    Rebind(crate::transfer::StoredGuardianTransfer),
+    /// Close the open transfer. The spare seat stays in the pool when the
+    /// transfer never rebound.
+    Close,
+}
 
 /// One lease-fenced change to the seat pool or its open purchase.
 pub(crate) enum SeatPoolWrite {
@@ -692,6 +715,7 @@ json_database_value!(BackupRelayConfirmation);
 json_database_value!(RestoredBackupState);
 json_database_value!(crate::seat_pool::StoredSeatPurchase);
 json_database_value!(crate::seat_pool::StoredSpareSeat);
+json_database_value!(crate::transfer::StoredGuardianTransfer);
 
 /// One seat's public projection and its private recovery-only quote facts.
 pub(crate) struct SeatRecovery {
@@ -864,6 +888,17 @@ impl DriverLease {
     pub(crate) async fn write_seat_pool(&self, write: SeatPoolWrite) -> FiResult<()> {
         let _guard = self.renewal_lock.lock().await;
         self.store.write_seat_pool(write, self).await
+    }
+
+    /// Renew this owner and apply one guardian-transfer change in the same
+    /// transaction.
+    pub(crate) async fn write_guardian_transfer(
+        &self,
+        fi_id: FiId,
+        write: GuardianTransferWrite,
+    ) -> FiResult<()> {
+        let _guard = self.renewal_lock.lock().await;
+        self.store.write_guardian_transfer(fi_id, write, self).await
     }
 
     /// Renew this owner while atomically wiping a still-abandonable formation.
@@ -3538,6 +3573,85 @@ impl FiStore {
             .map_err(|_| FiError::Storage("persisting the FI seat pool failed".to_owned()))
     }
 
+    pub(crate) async fn load_guardian_transfer(
+        &self,
+    ) -> FiResult<Option<crate::transfer::StoredGuardianTransfer>> {
+        Ok(self
+            .database
+            .begin_transaction_nc()
+            .await
+            .get_value(&GuardianTransferKey)
+            .await)
+    }
+
+    async fn write_guardian_transfer(
+        &self,
+        fi_id: FiId,
+        write: GuardianTransferWrite,
+        lease: &DriverLease,
+    ) -> FiResult<()> {
+        let mut dbtx = self.database.begin_transaction().await;
+        let Some(current) = dbtx.get_value(&DriverLeaseKey).await else {
+            return Err(FiError::Busy);
+        };
+        let now = (self.lease_clock)();
+        if current.owner != lease.owner || current.expires_at <= now {
+            return Err(FiError::Busy);
+        }
+        let open = dbtx.get_value(&GuardianTransferKey).await;
+        let same = |transfer: &crate::transfer::StoredGuardianTransfer| {
+            open.as_ref().is_some_and(|open| {
+                open.destination.seat_id == transfer.destination.seat_id
+                    && open.source_seat_id == transfer.source_seat_id
+            })
+        };
+        match write {
+            GuardianTransferWrite::Begin(transfer) => {
+                if open.is_some() {
+                    return Err(FiError::InvalidIntent(
+                        "a guardian transfer is already open; resume it instead".to_owned(),
+                    ));
+                }
+                let spare = SpareSeatKey {
+                    seat_id: transfer.destination.seat_id.to_string(),
+                };
+                if dbtx.get_value(&spare).await.is_none() {
+                    return Err(FiError::InvalidIntent(
+                        "the destination is not a spare seat in the pool".to_owned(),
+                    ));
+                }
+                dbtx.insert_new_entry(&GuardianTransferKey, &transfer).await;
+            }
+            GuardianTransferWrite::Update(transfer) => {
+                if !same(&transfer) {
+                    return Err(FiError::Storage(
+                        "the open guardian transfer changed under its driver".to_owned(),
+                    ));
+                }
+                dbtx.insert_entry(&GuardianTransferKey, &transfer).await;
+            }
+            GuardianTransferWrite::Rebind(transfer) => {
+                if !same(&transfer) {
+                    return Err(FiError::Storage(
+                        "the open guardian transfer changed under its driver".to_owned(),
+                    ));
+                }
+                rebind_federation_seat(&mut dbtx, fi_id, &transfer).await?;
+                dbtx.remove_entry(&SpareSeatKey {
+                    seat_id: transfer.destination.seat_id.to_string(),
+                })
+                .await;
+                dbtx.insert_entry(&GuardianTransferKey, &transfer).await;
+            }
+            GuardianTransferWrite::Close => {
+                dbtx.remove_entry(&GuardianTransferKey).await;
+            }
+        }
+        dbtx.commit_tx_result()
+            .await
+            .map_err(|_| FiError::Storage("persisting the guardian transfer failed".to_owned()))
+    }
+
     pub(crate) async fn renew_driver_lease(&self, lease: &DriverLease) -> FiResult<()> {
         let mut dbtx = self.database.begin_transaction().await;
         let Some(current) = dbtx.get_value(&DriverLeaseKey).await else {
@@ -3900,6 +4014,95 @@ pub(crate) fn payment_reservation_id(
         .extend_from_slice(&(requirements.authorization_id.as_str().len() as u64).to_be_bytes());
     preimage.extend_from_slice(requirements.authorization_id.as_str().as_bytes());
     PaymentReservationId::from_digest(sha256::Hash::hash(&preimage).to_byte_array())
+}
+
+/// Replace the transferred seat in the federation's durable seat list.
+///
+/// A formation record describes how the federation was formed; after a
+/// transfer it no longer describes who hosts it. The first transfer
+/// therefore turns it into the lean post-formation record that a restore
+/// imports, with the same formation id. Later transfers edit that record.
+async fn rebind_federation_seat(
+    dbtx: &mut fedimint_core::db::DatabaseTransaction<'_, fedimint_core::db::Committable>,
+    fi_id: FiId,
+    transfer: &crate::transfer::StoredGuardianTransfer,
+) -> FiResult<()> {
+    let mut restored = if let Some(formation) = dbtx.get_value(&ActiveFormationKey).await {
+        validate_schema_and_owner(&formation, fi_id)?;
+        if formation.phase != StoredFormationPhase::Formed {
+            return Err(FiError::Storage(
+                "a guardian transfer needs a formed federation".to_owned(),
+            ));
+        }
+        let mut seats = Vec::with_capacity(usize::from(formation.seat_count));
+        for index in 0..formation.seat_count {
+            let key = SeatKey {
+                formation_id: formation.formation_id.0.clone(),
+                index,
+            };
+            let seat = dbtx
+                .get_value(&key)
+                .await
+                .ok_or_else(|| FiError::Storage("formed FI record is missing a seat".to_owned()))?;
+            dbtx.remove_entry(&key).await;
+            seats.push(crate::backup::FiBackupSeat {
+                fman_identity: seat.admission.fman_id().ok_or_else(|| {
+                    FiError::Storage("formed FI seat has no authenticated FMan identity".to_owned())
+                })?,
+                seat_id: seat
+                    .seat_id
+                    .ok_or_else(|| FiError::Storage("formed FI seat has no seat id".to_owned()))?,
+                locator: seat.locator,
+            });
+        }
+        dbtx.remove_entry(&ActiveFormationKey).await;
+        let snapshot_generation = dbtx
+            .get_value(&BackupGenerationKey)
+            .await
+            .map_or(0, |state| state.generation);
+        RestoredBackupState {
+            fi_id,
+            payload: crate::backup::FiBackupPayload {
+                schema_version: crate::backup::BACKUP_SCHEMA_VERSION,
+                snapshot_generation,
+                federation_invite: formation.invite_code.ok_or_else(|| {
+                    FiError::Storage("formed FI record has no federation invite".to_owned())
+                })?,
+                seats,
+                liquidity: None,
+                spare_seats: Vec::new(),
+            },
+            formation_id: formation.formation_id,
+            backup_eligible: true,
+            federation_name: Some(formation.intent.federation_name),
+        }
+    } else {
+        let restored = dbtx
+            .get_value(&RestoredBackupKey)
+            .await
+            .ok_or(FiError::NoActiveFormation)?;
+        if restored.fi_id != fi_id {
+            return Err(FiError::Storage(
+                "restored FI backup belongs to another scoped root".to_owned(),
+            ));
+        }
+        restored
+    };
+    let seat = restored
+        .payload
+        .seats
+        .get_mut(usize::from(transfer.seat_index))
+        .filter(|seat| seat.seat_id == transfer.source_seat_id)
+        .ok_or_else(|| {
+            FiError::Storage("the transferred seat is no longer in the federation".to_owned())
+        })?;
+    *seat = crate::backup::FiBackupSeat {
+        fman_identity: transfer.destination.fman_id,
+        seat_id: transfer.destination.seat_id.clone(),
+        locator: transfer.destination.locator.clone(),
+    };
+    dbtx.insert_entry(&RestoredBackupKey, &restored).await;
+    Ok(())
 }
 
 fn authorization_covers(

@@ -491,6 +491,7 @@ pub(crate) struct PostFormedSeat {
     pub(crate) seat_id: SeatId,
 }
 
+#[derive(Clone)]
 pub(crate) struct PostFormedAuthority {
     pub(crate) formation_id: FormationId,
     pub(crate) invite_code: InviteCode,
@@ -5278,7 +5279,7 @@ pub(crate) fn restored_formation_id(fi_id: FiId, invite: &InviteCode) -> FiResul
     )))
 }
 
-fn invite_federation_id(invite: &InviteCode) -> FiResult<FedimintFederationId> {
+pub(crate) fn invite_federation_id(invite: &InviteCode) -> FiResult<FedimintFederationId> {
     let parsed = FedimintInviteCode::from_str(&invite.0).map_err(|error| {
         FiError::InvalidFleetManagers(format!(
             "Fleet Manager returned an invalid federation invite: {error}"

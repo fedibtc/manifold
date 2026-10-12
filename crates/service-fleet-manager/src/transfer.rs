@@ -8,11 +8,16 @@
 
 use std::fmt;
 
+use fedi_decentralized_services::domain::{
+    FmanPeerAttestation, FmanSeatBindings, FmanSeatBindingsError,
+};
 use secp256k1::XOnlyPublicKey;
 
 use crate::{
-    DkgCompletionCallback, FederationId, FiId, FormationSeatBinding, Locator, MetaConsensusBase,
-    SeatId, SignedRequest, Timestamp, signing::FI_REQUEST_FRESHNESS_WINDOW_SECS,
+    DkgCompletionCallback, FederationId, FiId, FormationSeatBinding, GuardianFeeAccount,
+    GuardianFeeRecipient, GuardianFeeRecipientListError, Locator, MetaConsensusBase, SeatId,
+    SignedRequest, Timestamp, canonical_guardian_fee_recipient_list,
+    signing::FI_REQUEST_FRESHNESS_WINDOW_SECS,
 };
 
 /// Longest validity an FI may give a [`SeatTransferGrant`].
@@ -213,6 +218,78 @@ pub struct RemoveSeatRequest {
 pub struct RemoveSeatResponse {
     /// Whether the seat was already removed before this call.
     pub already_removed: bool,
+}
+
+/// The seat-binding directory and guardian-fee recipient list after a moved
+/// peer's new attestation replaces its entry.
+///
+/// Every FMan builds its `ReplaceSeatBinding` vote with this function, and the
+/// FI predicts the readback with it, so both derive the same bytes from the
+/// same consensus values. The peer's old fee account gives its recipient
+/// share to the new account; every other entry and weight stays. Applying it
+/// to values that already carry the attestation returns them unchanged.
+pub fn rebind_transferred_seat(
+    seat_bindings: &str,
+    recipients: &str,
+    attestation: &FmanPeerAttestation,
+) -> Result<(String, String), RebindSeatError> {
+    let directory = FmanSeatBindings::parse_canonical(seat_bindings)?;
+    let peer_id = &attestation.attestation.peer_id;
+    let old = directory
+        .seat_bindings()
+        .iter()
+        .find(|entry| &entry.attestation.peer_id == peer_id)
+        .ok_or(RebindSeatError::UnknownPeer)?;
+    let old_account = old.attestation.guardian_fee_account.clone();
+    let new_account =
+        GuardianFeeAccount::try_from(attestation.attestation.guardian_fee_account.clone())
+            .map_err(|_| RebindSeatError::InvalidFeeAccount)?;
+    let directory = FmanSeatBindings::new(directory.seat_bindings().iter().map(|entry| {
+        if &entry.attestation.peer_id == peer_id {
+            attestation.clone()
+        } else {
+            entry.clone()
+        }
+    }))?
+    .canonical_string()?;
+
+    #[derive(serde::Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct RecipientList {
+        version: u16,
+        recipients: Vec<GuardianFeeRecipient>,
+    }
+    let list: RecipientList =
+        serde_json::from_str(recipients).map_err(|_| RebindSeatError::InvalidRecipients)?;
+    if list.version != 1 {
+        return Err(RebindSeatError::InvalidRecipients);
+    }
+    let mut list = list.recipients;
+    let recipient = list
+        .iter_mut()
+        .find(|recipient| recipient.account.as_account() == &old_account)
+        .ok_or(RebindSeatError::MissingRecipient)?;
+    recipient.account = new_account;
+    list.sort_by_key(|recipient| recipient.account.as_account().id());
+    let recipients = canonical_guardian_fee_recipient_list(&list)?;
+    Ok((directory, recipients))
+}
+
+/// Why consensus values cannot be rebound to a moved peer.
+#[derive(Debug, thiserror::Error)]
+pub enum RebindSeatError {
+    #[error("seat-binding directory is invalid: {0}")]
+    Directory(#[from] FmanSeatBindingsError),
+    #[error("the attestation names a peer the directory does not hold")]
+    UnknownPeer,
+    #[error("the attestation's guardian-fee account is invalid")]
+    InvalidFeeAccount,
+    #[error("guardian-fee recipient list is invalid")]
+    InvalidRecipients,
+    #[error("guardian-fee recipient list has no share for the moved peer")]
+    MissingRecipient,
+    #[error("guardian-fee recipient list cannot be encoded: {0}")]
+    RecipientList(#[from] GuardianFeeRecipientListError),
 }
 
 #[cfg(test)]

@@ -174,6 +174,8 @@ pub enum FmanOperation {
     GetPeerAttestation,
     ProposeFormationMeta,
     WaitForRunning,
+    PullSeat,
+    RemoveSeat,
 }
 impl FmanOperation {
     pub(crate) fn as_str(self) -> &'static str {
@@ -190,6 +192,8 @@ impl FmanOperation {
             Self::GetPeerAttestation => "get_peer_attestation",
             Self::ProposeFormationMeta => "propose_formation_meta",
             Self::WaitForRunning => "wait_for_running",
+            Self::PullSeat => "pull_seat",
+            Self::RemoveSeat => "remove_seat",
         }
     }
 }
