@@ -1,6 +1,7 @@
 import type {
   FederationId,
   FeePolicy,
+  GuardianLinkResponse,
   OnboardingResponse,
   PaymentFederation,
   ReadinessReport,
@@ -84,6 +85,7 @@ export interface MockState {
   seatReadiness: ReadinessReport | null;
   /** Whether the deployment has a Fedi support key; false is production today. */
   supportAvailable: boolean;
+  guardianLink: GuardianLinkResponse;
   /** The chat with Fedi support, oldest first, and the ids of the Fedi
    *  messages the operator has read. */
   supportMessages: Omit<SupportMessage, 'unread'>[];

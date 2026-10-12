@@ -39,6 +39,12 @@ pub enum AdminVerb {
         #[command(subcommand)]
         verb: GuardianFeesVerb,
     },
+    /// The operator's linked Fedi app, which gets a push notification when
+    /// the fleet needs attention.
+    GuardianLink {
+        #[command(subcommand)]
+        verb: GuardianLinkVerb,
+    },
     /// Identity material for operator onboarding (registry listing, holder
     /// authorization).
     Onboarding,
@@ -156,6 +162,20 @@ pub enum SeatsVerb {
     Decommission {
         seat_id: SeatId,
     },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum GuardianLinkVerb {
+    /// The linked phone, the open link offer, and whether this host can
+    /// notify a phone at all.
+    Show,
+    /// Open a ten-minute link offer and print the `fedi://guardian-link` URI
+    /// to scan. The URI carries a one-time secret.
+    Offer,
+    /// Forget the linked phone and close any open offer.
+    Revoke,
+    /// Send the linked phone a test notification now.
+    Test,
 }
 
 #[derive(Debug, Subcommand)]
@@ -288,6 +308,18 @@ pub async fn run(data_dir: &Path, verb: AdminVerb) -> anyhow::Result<()> {
             seat_id: seat_id.into_seat_id(),
             request_id,
         },
+        AdminVerb::GuardianLink {
+            verb: GuardianLinkVerb::Show,
+        } => AdminRequest::GuardianLink,
+        AdminVerb::GuardianLink {
+            verb: GuardianLinkVerb::Offer,
+        } => AdminRequest::CreateGuardianLinkOffer,
+        AdminVerb::GuardianLink {
+            verb: GuardianLinkVerb::Revoke,
+        } => AdminRequest::RevokeGuardianLink,
+        AdminVerb::GuardianLink {
+            verb: GuardianLinkVerb::Test,
+        } => AdminRequest::TestGuardianLinkNotification,
         AdminVerb::Onboarding => AdminRequest::Onboarding,
         AdminVerb::RefreshHolderAuthorizations => AdminRequest::RefreshHolderAuthorizations,
         AdminVerb::ReenrollTelemetry => AdminRequest::ReenrollTelemetry,

@@ -21,6 +21,7 @@ mod decommission;
 mod dkg;
 mod error;
 mod fman_name;
+pub mod guardian_link;
 mod locator;
 mod locked_payment;
 mod maintenance;
@@ -47,6 +48,13 @@ pub use fedi_decentralized_services::domain::{
 };
 pub use fedi_decentralized_services::{ServiceError, ServiceErrorCode, ServiceResult};
 pub use fman_name::FmanName;
+pub use guardian_link::{
+    AttentionReason, DEVICE_LABEL_MAX_CHARS, GUARDIAN_LINK_ALPN, GetAttentionRequest,
+    GetAttentionResponse, GuardianLinkError, GuardianLinkInvite, GuardianLinkResult,
+    GuardianLinkService, GuardianLinkServiceClient, GuardianLinkServiceServer,
+    InvalidGuardianLinkInvite, LinkDeviceRequest, LinkDeviceResponse, LinkSecret,
+    RenewCallbackRequest, RenewCallbackResponse, UnlinkDeviceRequest, UnlinkDeviceResponse,
+};
 pub use locator::{FLEET_MANAGER_ALPN, Locator};
 pub use locked_payment::{
     CreateSeatOutcome, CreateSeatRequest, CreateSeatResponse, GetQuoteRequest, GetQuoteResponse,

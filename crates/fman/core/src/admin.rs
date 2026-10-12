@@ -132,6 +132,17 @@ pub enum AdminRequest {
         #[ts(type = "string")]
         request_id: crate::wallet::PayoutRequestId,
     },
+    /// The operator's linked Fedi app, the open link offer, and whether this
+    /// host can notify a phone at all (SPEC-guardian-link).
+    GuardianLink,
+    /// Open a fresh ten-minute link offer for the dashboard's QR code,
+    /// replacing any open one.
+    CreateGuardianLinkOffer,
+    /// Forget the linked phone and close any open offer.
+    RevokeGuardianLink,
+    /// Send the linked phone a `test` notification now. Spends one of the
+    /// gateway's hourly invocations.
+    TestGuardianLinkNotification,
     /// Identity material the operator needs for onboarding (registry
     /// listing, holder authorization).
     Onboarding,
@@ -550,6 +561,18 @@ pub(crate) async fn dispatch(
         } => Ok(serde_json::to_value(
             fleet.payout_guardian_fees(&seat_id, &request_id).await?,
         )?),
+        AdminRequest::GuardianLink => Ok(guardian_link_json(fleet.guardian_link_status().await?)),
+        AdminRequest::CreateGuardianLinkOffer => {
+            fleet.create_guardian_link_offer()?;
+            Ok(guardian_link_json(fleet.guardian_link_status().await?))
+        }
+        AdminRequest::RevokeGuardianLink => {
+            fleet.revoke_guardian_link().await?;
+            Ok(guardian_link_json(fleet.guardian_link_status().await?))
+        }
+        AdminRequest::TestGuardianLinkNotification => Ok(guardian_link_test_json(
+            fleet.test_guardian_link_notification().await?,
+        )),
         AdminRequest::Onboarding => Ok(fleet_status_json(fleet, &directory.borrow())),
         AdminRequest::RefreshHolderAuthorizations => {
             authorizations.refresh().await?;
@@ -610,6 +633,47 @@ fn payment_federation_json(status: PaymentFederationStatus) -> Value {
         "receivable": status.receivable,
         "wallet": status.wallet,
     })
+}
+
+/// `GuardianLink`, `CreateGuardianLinkOffer`, and `RevokeGuardianLink` all
+/// answer with the whole link status. Timestamps are Unix seconds; the offer
+/// URI is the QR payload and carries the one-time secret, so the dashboard
+/// shows it and never logs it.
+pub fn guardian_link_json(status: crate::guardian_link::GuardianLinkStatus) -> Value {
+    let link = status.link.map(|link| {
+        let (state, reason) = match link.delivery {
+            crate::db::GuardianLinkDelivery::Active => ("active", None),
+            crate::db::GuardianLinkDelivery::Terminal(reason) => {
+                ("terminal", Some(reason.as_str()))
+            }
+        };
+        json!({
+            "device_label": link.device_label,
+            "linked_at": link.linked_at_ms / 1000,
+            "callback_expires_at": link.callback_expires_at,
+            "last_notified_at": link.last_notified_at_ms.map(|at| at / 1000),
+            "notified_reasons": link.notified_reasons,
+            "delivery": { "state": state, "reason": reason },
+        })
+    });
+    let offer = status
+        .offer
+        .map(|offer| json!({ "uri": offer.uri, "expires_at": offer.expires_at }));
+    json!({ "available": status.available, "link": link, "offer": offer })
+}
+
+/// `TestGuardianLinkNotification` reports the one attempt it made.
+pub fn guardian_link_test_json(outcome: crate::push_callback::CallbackAttemptOutcome) -> Value {
+    let (outcome, reason) = match outcome {
+        crate::push_callback::CallbackAttemptOutcome::Delivered => ("delivered", None),
+        crate::push_callback::CallbackAttemptOutcome::Retryable(reason) => {
+            ("retryable", Some(reason.as_str()))
+        }
+        crate::push_callback::CallbackAttemptOutcome::Terminal(reason) => {
+            ("terminal", Some(reason.as_str()))
+        }
+    };
+    json!({ "outcome": outcome, "reason": reason })
 }
 
 /// Both `PayoutDestination` and `SetPayoutDestination` answer with the stored
