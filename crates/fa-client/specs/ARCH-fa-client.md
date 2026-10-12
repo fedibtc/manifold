@@ -625,6 +625,23 @@ operation itself stores no second mutable maintenance state: cancelling or
 crashing is safe because a later identical request rereads consensus and either
 observes success or replays the idempotent typed mutation.
 
+## Seat pool
+
+The seat pool holds spare seats that the FA bought for its formed federation
+but that host no guardian yet. A later guardian transfer takes its destination
+seat from the pool. Formation does not use the pool.
+
+`preview_spare_seat` selects one MG outside the federation and the pool.
+`buy_spare_seat` takes the approved preview with a price cap and buys one seat
+with the normal `GetQuote` and `CreateSeat` for the federation's size. It
+holds the driver lease and allows one open purchase at a time. The purchase
+row follows the formation purchase rules: it persists a paid quote before the
+reservation, refreshes a stale quote and releases its reservation before the
+payment output starts, and replays the exact quote after that point. A refusal
+settles the refund and releases the reservation. A crash leaves the row for
+`resume_spare_seat_purchase`. Success replaces the row with a spare-seat row in
+one transaction. A restored FA has no formation intent and cannot buy seats.
+
 ## Modules
 
 - `state` — public intent, status, and phase types.
@@ -641,6 +658,7 @@ observes success or replays the idempotent typed mutation.
   and guardian-fee policy orchestration.
 - `liquidity` — post-formation FLIP selection and signed allocation recovery,
   including exact-URL gateway attachment and its durable readback proof.
+- `seat_pool` — spare-seat purchase and the persisted seat pool.
 - `maintenance` — typed post-formation consensus maintenance orchestration.
 - `unavailable` — deliberately unavailable adapters for consumer scaffolding.
 
