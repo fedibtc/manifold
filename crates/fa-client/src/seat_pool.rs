@@ -36,7 +36,7 @@ use crate::formation::{
     finish_driver_run, now_secs, start_driver_run,
 };
 use crate::mg::MgClient;
-use crate::selection::{SpareSeatApproval, SpareSeatPreview, dkg_line};
+use crate::selection::{SelectionBadgeVerifier, SpareSeatApproval, SpareSeatPreview, dkg_line};
 use crate::{
     FaClient, FaError, FaIdentity, FaPayments, FaResult, FederationConsensusReader, FederationName,
     FederationSize, FormationId, FormationPhase, FormationRunOptions, ManifoldGuardianConnector,
@@ -80,6 +80,8 @@ pub(crate) struct StoredSpareSeat {
     /// The MG-signed account from the seat's acceptance. Absent for a
     /// spare restored from a backup, which carries no acceptance.
     pub(crate) guardian_fee_account: Option<Account>,
+    /// Verified badge holder at purchase. Absent for a restored spare.
+    pub(crate) holder: Option<PublicKey>,
 }
 
 impl From<StoredSpareSeat> for SpareSeat {
@@ -141,6 +143,15 @@ where
         &self,
         options: MgDiscoveryOptions,
     ) -> FaResult<SpareSeatPreview> {
+        self.preview_spare_seat_with_verifier(options, &self.inner.peer_badge_verifier)
+            .await
+    }
+
+    pub(crate) async fn preview_spare_seat_with_verifier(
+        &self,
+        options: MgDiscoveryOptions,
+        verifier: &impl SelectionBadgeVerifier,
+    ) -> FaResult<SpareSeatPreview> {
         let fa_id = self.fa_id()?;
         let federation = self.pool_federation(fa_id).await?;
         let mut members = BTreeSet::new();
@@ -152,7 +163,9 @@ where
             }
         }
         let mut excluded = members.clone();
+        let mut holders = federation.holders;
         for spare in self.inner.store.list_spare_seats().await? {
+            holders.extend(spare.holder);
             excluded.insert(spare.mg_id);
             retained_service_pubkeys.insert(spare.locator.service_pubkey, spare.mg_id);
         }
@@ -162,7 +175,7 @@ where
             .expect("clamped discovery timeout fits the monotonic deadline domain");
         crate::selection::preview_spare_seat_with(
             &self.inner.ports.registry,
-            &self.inner.peer_badge_verifier,
+            verifier,
             &crate::selection::LiveAvailabilityProber {
                 connector: Some(&self.inner.ports.mg_connector),
             },
@@ -171,7 +184,7 @@ where
             &members,
             excluded,
             retained_service_pubkeys,
-            federation.holders,
+            holders,
             deadline,
             now,
             || fedimint_core::time::duration_since_epoch().as_secs(),
@@ -319,7 +332,7 @@ where
                     .into_iter()
                     .map(|seat| (Some(seat.mg_identity), seat.locator, seat.seat_id))
                     .collect(),
-                holders: BTreeSet::new(),
+                holders: self.inner.store.restored_seat_holders().await,
             }),
             FaRecovery::Idle | FaRecovery::Formation(_) => Err(FaError::NoActiveFormation),
         }
@@ -446,6 +459,7 @@ where
                     locator: purchase.locator,
                     seat_id: acceptance.seat_id,
                     guardian_fee_account: Some(acceptance.guardian_fee_account),
+                    holder: Some(purchase.holder),
                 };
                 lease
                     .write_seat_pool(SeatPoolWrite::Complete(spare.clone()))

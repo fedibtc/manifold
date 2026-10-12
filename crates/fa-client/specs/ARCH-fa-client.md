@@ -637,9 +637,10 @@ federation runs from the registry advertisements of the federation's own
 MGs: an MG runs one `fedimintd` build for all its seats. During an
 upgrade the line most of them advertise wins, then the newer line. The
 preview then selects one MG on that line outside the federation and the
-pool.
-After a restore the badge holders of the seats are unknown, so the preview
-excludes their MGs but not their holders. `buy_spare_seat` takes the
+pool, and with a badge holder that holds none of their seats. The FA keeps
+the verified holder of each bought spare and of each formed seat, also after
+a transfer. After a restore the badge holders of the seats are unknown, so
+the preview excludes their MGs but not their holders. `buy_spare_seat` takes the
 approved preview with a price cap and buys one seat with the normal
 `GetQuote` and `CreateSeat` for the federation's size. The purchase row keeps
 these terms, so a resume does not need the formation record. It
@@ -659,15 +660,21 @@ seat, by the contract in
 signs a grant that is valid for 14 days, records the transfer, and sends
 `PullSeat` with an optional completion callback. One transfer is open at a
 time, and the spare stays in the pool and the backup until consensus names
-it.
+it. A transfer and a liquidity request do not overlap: the liquidity
+commitment names the current seats, so each refuses to start while the other
+is live.
 
 `resume_guardian_transfer` continues from the recorded phase. While the
 destination is `AwaitingTransfer` it polls until the run ends and then
 reports `AwaitingSource`. A destination that is `New` again after expiry
 closes the transfer as `Expired`. When the destination is `Running`, the FA
-reads the destination's attestation and votes it through every guardian
-except the source, like a metadata update. It confirms by readback that
-consensus holds exactly the values from `rebind_transferred_seat`. In the
+reads the destination's attestation, saves it in the transfer, and votes it
+through every guardian except the source, like a metadata update. The
+destination signs a new attestation on each request, so a resume votes the
+saved one. It confirms by readback that consensus holds exactly the values
+from `rebind_transferred_seat`, for the saved attestation or another one of
+the destination for the same peer. This step does not need a reconciled
+seat list, because consensus may already name the destination. In the
 same transaction it replaces the source seat in the federation's seat list
 with the spare and takes the spare out of the pool. It then sends
 `RemoveSeat` to the source. An unreachable source leaves the transfer in
@@ -677,6 +684,12 @@ The first transfer turns a formation record into the post-formation record
 that a restore imports, with the same formation id: the formation record
 describes how the federation formed, not who hosts it now. The FA reports
 `FaStatus::Restored` from then on.
+
+A backup taken before the seat list changed still names the source. When a
+restored FA reconciles and consensus differs from its seat list by exactly
+one MG that is one of its spares, it puts that spare in place of the
+missing seat. The restored FA does not know the transfer, so it does not
+send `RemoveSeat` to the source.
 
 ## Modules
 

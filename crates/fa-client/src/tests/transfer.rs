@@ -41,6 +41,21 @@ fn guardian_arrives(state: &MgState) {
         .insert(SPARE_INDEX, MOVED);
 }
 
+/// Verified holders of the formation's seats.
+async fn formation_holders(client: &TestClient) -> BTreeSet<PublicKey> {
+    let fa_id = client.fa_id().unwrap();
+    let crate::db::FaRecovery::Formation(recovery) =
+        client.inner.store.load_recovery(fa_id).await.unwrap()
+    else {
+        panic!("formation record");
+    };
+    recovery
+        .seats
+        .iter()
+        .filter_map(|seat| seat.admission.holder())
+        .collect()
+}
+
 async fn buy_spare(client: &TestClient, state: &MgState) -> SpareSeat {
     let spare = client
         .buy_spare_seat(spare_approval(PAYMENT_AMOUNT_MSATS), long_request_options())
@@ -61,6 +76,9 @@ async fn a_guardian_moves_onto_a_spare_seat() {
     let spare = buy_spare(&client, &mg_state).await;
     let formation = formation(&client.status()).clone();
     let source_seat_id = formation.seats[MOVED].seat_id.clone().unwrap();
+    let holders_before = formation_holders(&client).await;
+    let moved_holder = test_mg_id(MOVED);
+    assert!(holders_before.contains(&moved_holder));
     let source_account = guardian_fee_account(32 + MOVED as u8);
     let destination_account = guardian_fee_account(32 + SPARE_INDEX as u8);
     assert!(
@@ -161,6 +179,15 @@ async fn a_guardian_moves_onto_a_spare_seat() {
     );
     assert!(client.spare_seats().await.unwrap().is_empty());
     assert_eq!(client.guardian_transfer().await.unwrap(), None);
+    // Selection still knows who holds every seat.
+    assert_eq!(
+        client.inner.store.restored_seat_holders().await,
+        holders_before
+            .into_iter()
+            .filter(|holder| *holder != moved_holder)
+            .chain([test_mg_id(SPARE_INDEX)])
+            .collect()
+    );
     let backup = client.inner.store.backup_payload().await.unwrap().payload;
     assert_eq!(backup.seats[MOVED].seat_id, spare.seat_id);
     assert!(backup.spare_seats.is_empty());
@@ -352,7 +379,7 @@ async fn a_destination_that_attests_another_guardian_is_refused() {
 
 #[tokio::test]
 async fn a_restored_fa_moves_a_guardian() {
-    let (payment_state, mg_state, restored) = restored_client(Vec::new()).await;
+    let (_, payment_state, mg_state, restored) = restored_client(Vec::new()).await;
     let spare = restored
         .buy_spare_seat(spare_approval(PAYMENT_AMOUNT_MSATS), long_request_options())
         .await
@@ -387,6 +414,231 @@ async fn a_restored_fa_moves_a_guardian() {
     };
     assert_eq!(snapshot.seats[MOVED].seat_id, spare.seat_id);
     assert_eq!(snapshot.seats[MOVED].locator, locator(SPARE_INDEX));
+}
+
+/// A run that gives up soon, for steps that cannot finish.
+fn short_options() -> MaintenanceRunOptions {
+    MaintenanceRunOptions::new(MaintenanceRunOptionsConfig {
+        poll_interval: Duration::from_millis(10),
+        run_timeout: Duration::from_millis(300),
+        request_timeout: Duration::from_millis(200),
+    })
+    .unwrap()
+}
+
+/// A restored FA with a spare, whose transfer of `MOVED` got its votes but
+/// whose run ended before it saw consensus adopt them.
+async fn transfer_adopted_but_unrecorded() -> (
+    fedimint_core::db::Database,
+    Arc<MgState>,
+    TestClient,
+    SpareSeat,
+    crate::backup::FaBackupPayload,
+) {
+    let (database, _payment_state, mg_state, restored) = restored_client(Vec::new()).await;
+    let spare = buy_spare(&restored, &mg_state).await;
+    restored.resume().await.unwrap();
+    restored
+        .start_guardian_transfer(
+            MOVED as u16,
+            spare.seat_id.clone(),
+            None,
+            transfer_options(),
+        )
+        .await
+        .unwrap();
+    let backup = restored.inner.store.backup_payload().await.unwrap().payload;
+    guardian_arrives(&mg_state);
+    mg_state
+        .attest_with_fresh_timestamps
+        .store(true, Ordering::SeqCst);
+    mg_state
+        .consensus_down_after_binding_votes
+        .store(true, Ordering::SeqCst);
+
+    let error = restored
+        .resume_guardian_transfer(short_options())
+        .await
+        .unwrap_err();
+
+    assert!(
+        matches!(error, FaError::MaintenanceConvergence { .. }),
+        "{error:?}"
+    );
+    assert_eq!(
+        restored.guardian_transfer().await.unwrap().unwrap().phase,
+        GuardianTransferPhase::PublishingBinding
+    );
+    mg_state
+        .consensus_down_after_binding_votes
+        .store(false, Ordering::SeqCst);
+    (database, mg_state, restored, spare, backup)
+}
+
+#[tokio::test]
+async fn a_reopened_fa_finishes_a_transfer_that_consensus_adopted() {
+    let (database, mg_state, restored, spare, _backup) = transfer_adopted_but_unrecorded().await;
+    let voted = mg_state
+        .binding_votes
+        .lock()
+        .expect("test lock")
+        .values()
+        .next()
+        .cloned()
+        .unwrap();
+    drop(restored);
+    let (payments, _payment_state) = TestPayments::new();
+    let reopened = open_client(database, payments, mg_state.clone(), MgConfig::paid()).await;
+    let FaStatus::Restored(before) = reopened.status() else {
+        panic!("restored status");
+    };
+    assert_eq!(before.freshness, FormationFreshness::Unsynced);
+
+    // The destination now signs a different binding for the same peer. The
+    // transfer still looks for the one it saved before the vote.
+    let attestations = mg_state.attestation_calls.load(Ordering::SeqCst);
+    let finished = reopened
+        .resume_guardian_transfer(transfer_options())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        mg_state.attestation_calls.load(Ordering::SeqCst),
+        attestations
+    );
+
+    assert_eq!(finished.phase, GuardianTransferPhase::Completed);
+    let directory = fedi_decentralized_domain::MgSeatBindings::parse_canonical(&consensus_field(
+        &reopened,
+        &mg_state,
+        fedi_decentralized_domain::MG_SEAT_BINDINGS_META_FIELD_KEY,
+    ))
+    .unwrap();
+    assert_eq!(directory.seat_bindings()[MOVED], voted);
+    let FaStatus::Restored(after) = reopened.status() else {
+        panic!("restored status");
+    };
+    assert_eq!(after.seats[MOVED].seat_id, spare.seat_id);
+    // The transfer checked only the moved seat, so the rest still needs a
+    // reconciliation, which now accepts the destination.
+    assert_eq!(after.freshness, FormationFreshness::Unsynced);
+    reopened.resume().await.unwrap();
+    let FaStatus::Restored(reconciled) = reopened.status() else {
+        panic!("restored status");
+    };
+    assert_eq!(reconciled.freshness, FormationFreshness::Fresh);
+}
+
+#[tokio::test]
+async fn a_backup_from_before_the_move_restores_onto_the_destination() {
+    let (_database, mg_state, _lost, spare, backup) = transfer_adopted_but_unrecorded().await;
+    assert_eq!(backup.spare_seats.len(), 1);
+    assert_ne!(backup.seats[MOVED].seat_id, spare.seat_id);
+    let (payments, _payment_state) = TestPayments::new();
+    let replacement = open_client(
+        MemDatabase::new().into_database(),
+        payments,
+        mg_state.clone(),
+        MgConfig::paid(),
+    )
+    .await;
+    let status = replacement
+        .inner
+        .store
+        .restore_backup_payload_with_completion(TestIdentity::fa_id(), backup, None)
+        .await
+        .unwrap();
+    replacement.inner.progress.send_replace(status);
+
+    replacement.resume().await.unwrap();
+
+    let FaStatus::Restored(restored) = replacement.status() else {
+        panic!("restored status");
+    };
+    assert_eq!(restored.freshness, FormationFreshness::Fresh);
+    assert_eq!(restored.seats[MOVED].seat_id, spare.seat_id);
+    assert_eq!(restored.seats[MOVED].mg_identity, spare.mg_id);
+    assert!(replacement.spare_seats().await.unwrap().is_empty());
+    let backup = replacement
+        .inner
+        .store
+        .backup_payload()
+        .await
+        .unwrap()
+        .payload;
+    assert_eq!(backup.seats[MOVED].seat_id, spare.seat_id);
+    assert!(backup.spare_seats.is_empty());
+}
+
+#[tokio::test]
+async fn a_live_liquidity_request_blocks_a_transfer() {
+    let (_database, _payments, _payment_state, mg_state, client) = formed_paid_client().await;
+    let spare = buy_spare(&client, &mg_state).await;
+    let operation = stored_liquidity_operation(1);
+    client
+        .inner
+        .store
+        .insert_liquidity_operation(operation.clone())
+        .await
+        .unwrap();
+
+    let error = client
+        .start_guardian_transfer(
+            MOVED as u16,
+            spare.seat_id.clone(),
+            None,
+            transfer_options(),
+        )
+        .await
+        .unwrap_err();
+
+    assert!(
+        matches!(&error, FaError::LiquidityOperationExists { operation_id }
+            if *operation_id == operation.operation_id),
+        "{error:?}"
+    );
+    assert_eq!(client.guardian_transfer().await.unwrap(), None);
+    assert!(mg_state.pull_requests.lock().expect("test lock").is_empty());
+}
+
+#[tokio::test]
+async fn an_open_transfer_blocks_a_liquidity_request() {
+    let (_database, _payments, _payment_state, mg_state, client) = formed_paid_client().await;
+    let spare = buy_spare(&client, &mg_state).await;
+    client
+        .start_guardian_transfer(
+            MOVED as u16,
+            spare.seat_id.clone(),
+            None,
+            transfer_options(),
+        )
+        .await
+        .unwrap();
+    let formation_id = formation(&client.status()).formation_id.clone();
+    let connector =
+        TestLiquidityConnector(TestLiquidityProviderState::new(client.inner.store.clone()));
+
+    let error = client
+        .start_liquidity_for_test(
+            &formation_id,
+            &liquidity_api::Pubkey(liquidity_provider_keys().public_key().to_string()),
+            LiquidityRequestIntent::gateway(300_000, None),
+            &connector,
+            &TestLiquidityVerifier,
+        )
+        .await
+        .unwrap_err();
+
+    assert!(matches!(error, FaError::InvalidIntent(_)), "{error:?}");
+    assert!(connector.0.requests.lock().expect("test lock").is_empty());
+    assert!(
+        client
+            .list_liquidity_operations(None, 10)
+            .await
+            .unwrap()
+            .operations
+            .is_empty()
+    );
 }
 
 #[test]
