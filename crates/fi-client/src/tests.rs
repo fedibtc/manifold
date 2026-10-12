@@ -1728,19 +1728,14 @@ impl FleetManagerService for TestFman {
 
     async fn get_fedimint_stats(
         &self,
-        request: SignedRequest<GetFedimintStatsRequest>,
+        _request: SignedRequest<GetFedimintStatsRequest>,
     ) -> FmResult<GetFedimintStatsResponse> {
-        request.verify(Timestamp(test_now_secs()))?;
-        Ok(GetFedimintStatsResponse {
-            stats: FedimintStats {
-                fedimintd_version: fedimintd_version(),
-                uptime_seconds: 0,
-                consensus_running: true,
-                connected_peers: 0,
-                num_backups: 0,
-            },
-        })
+        Err(unsupported())
     }
+}
+
+fn unsupported() -> FleetManagerError {
+    FleetManagerError::Other("test operation unavailable".to_owned())
 }
 
 /// The final config the test federation converges on.

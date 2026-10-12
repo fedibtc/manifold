@@ -30,8 +30,8 @@ use fedi_decentralized_peer_badge_verifier::{
     PeerBadgeVerificationError, PeerBadgeVerifier, PeerBadgeVerifierProvenance,
 };
 use fedi_decentralized_service_fleet_manager::{
-    FederationSize, FedimintdDkgVersion, FedimintdVersion, FmanName, GetAvailabilityRequest,
-    GetAvailabilityResponse, Locator, Plan, Timestamp,
+    FederationSize, FedimintdDkgVersion, FedimintdVersion, FedimintdVersionCore, FmanName,
+    GetAvailabilityRequest, GetAvailabilityResponse, Locator, Plan, Timestamp,
 };
 use fedimint_core::runtime::{Instant, sleep_until};
 use futures::future::{Either, select};
@@ -1219,15 +1219,37 @@ impl SpareSeatApproval {
     }
 }
 
+/// Every release of the Fedimint major/minor line a DKG identity names.
+pub(crate) fn dkg_line(dkg_version: &FedimintdDkgVersion) -> FiResult<FedimintdVersionRange> {
+    let (major, minor) = dkg_version.major_minor();
+    FedimintdVersionRange::from_cores(
+        FedimintdVersionCore {
+            major,
+            minor,
+            patch: 0,
+        },
+        FedimintdVersionCore {
+            major,
+            minor: minor.saturating_add(1),
+            patch: 0,
+        },
+    )
+}
+
 /// Select one fresh FMan that holds no seat of this FI yet.
+///
+/// The spare must run the Fedimint line the federation runs. The line comes
+/// from the advertisements of the federation's own FMans, because every FMan
+/// runs one `fedimintd` build for all its seats. When they disagree during an
+/// upgrade, the line most of them advertise wins, then the newer line.
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn preview_spare_seat_with(
     registry: &impl FiNostrClient,
     verifier: &impl SelectionBadgeVerifier,
     prober: &impl SelectionAvailabilityProber,
     verifier_provenance: PeerBadgeVerifierProvenance,
-    request: &FmanSelectionRequest,
-    fedimintd_dkg_version: FedimintdDkgVersion,
+    federation_size: FederationSize,
+    members: &BTreeSet<PublicKey>,
     excluded: BTreeSet<PublicKey>,
     retained_service_pubkeys: BTreeMap<secp256k1::XOnlyPublicKey, PublicKey>,
     retained_holders: BTreeSet<PublicKey>,
@@ -1235,21 +1257,58 @@ pub(crate) async fn preview_spare_seat_with(
     now: u64,
     completed_at: impl FnOnce() -> u64,
 ) -> FiResult<SpareSeatPreview> {
+    let every_version = FedimintdVersionRange::from_cores(
+        FedimintdVersionCore {
+            major: 0,
+            minor: 0,
+            patch: 0,
+        },
+        FedimintdVersionCore {
+            major: u64::MAX,
+            minor: u64::MAX,
+            patch: u64::MAX,
+        },
+    )?;
     let discovery_requirements = FmanCandidateRequirements {
-        federation_size: request.federation_size,
-        fedimintd_versions: request.fedimintd_versions.clone(),
+        federation_size,
+        fedimintd_versions: every_version,
     };
     let mut discovery =
         discover_fman_candidates_with(registry, &discovery_requirements, deadline, now).await?;
-    discovery
-        .candidates
-        .retain(|candidate| !excluded.contains(&candidate.fman_id));
+    let mut lines = BTreeMap::<FedimintdDkgVersion, usize>::new();
+    for candidate in &discovery.candidates {
+        if members.contains(&candidate.fman_id) {
+            *lines
+                .entry(candidate.fedimintd_dkg_version.clone())
+                .or_default() += 1;
+        }
+    }
+    let fedimintd_dkg_version = lines
+        .into_iter()
+        .max_by(|(left_line, left), (right_line, right)| {
+            left.cmp(right).then_with(|| left_line.cmp(right_line))
+        })
+        .map(|(line, _)| line)
+        .ok_or_else(|| {
+            FiError::Selection(
+                "no FMan of the federation advertises the Fedimint line it runs".to_owned(),
+            )
+        })?;
+    let request = FmanSelectionRequest::new(
+        federation_size,
+        dkg_line(&fedimintd_dkg_version)?,
+        PlanPreference::default(),
+    )?;
+    discovery.candidates.retain(|candidate| {
+        !excluded.contains(&candidate.fman_id)
+            && candidate.fedimintd_dkg_version == fedimintd_dkg_version
+    });
     let seen = discovery.seen();
     let eligible = discovery.candidates.len();
     let seat = select_fman_seats(
         verifier,
         prober,
-        request,
+        &request,
         &fedimintd_dkg_version,
         discovery.candidates,
         FederationSize(1),

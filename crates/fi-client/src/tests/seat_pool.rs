@@ -365,23 +365,20 @@ fn fman_ad(index: usize, price_msats: u64, version: &str) -> nostr_sdk::Event {
     )
 }
 
-#[tokio::test]
-async fn a_restored_fi_buys_a_spare_on_the_federation_line() {
+/// A fresh FI restored from the backup of a formed paid federation, with
+/// the given FMan advertisements in its registry.
+async fn restored_client(
+    advertisements: Vec<nostr_sdk::Event>,
+) -> (Arc<PaymentState>, Arc<FmanState>, TestClient) {
     let (_database, _payments, _payment_state, fman_state, source) = formed_paid_client().await;
     let backup = source.inner.store.backup_payload().await.unwrap().payload;
-
-    // Neither a guardian of the federation nor an FMan on another Fedimint
-    // line may hold a spare.
     let registry = TestRegistry::default();
     registry
         .candidates
         .lock()
         .expect("test lock")
         .push(setup_payment_event(test_now_secs(), &[PAYMENT_INVITE]));
-    registry.advertisements.lock().expect("test lock").extend([
-        fman_ad(0, PAYMENT_AMOUNT_MSATS, FEDIMINTD_VERSION_0_1),
-        fman_ad(20, PAYMENT_AMOUNT_MSATS, "0.13.0+fedi"),
-    ]);
+    *registry.advertisements.lock().expect("test lock") = advertisements;
     let (payments, payment_state) = TestPayments::new();
     let restored = open_client_with_registry(
         MemDatabase::new().into_database(),
@@ -399,15 +396,29 @@ async fn a_restored_fi_buys_a_spare_on_the_federation_line() {
         .unwrap();
     restored.inner.progress.send_replace(status);
     assert!(matches!(restored.status(), FiStatus::Restored(_)));
+    (payment_state, fman_state, restored)
+}
 
-    let error = restored
+async fn eligible_spare_fmans(client: &TestClient) -> usize {
+    match client
         .preview_spare_seat(crate::FmanDiscoveryOptions::default())
         .await
-        .unwrap_err();
-    assert!(
-        matches!(error, FiError::InsufficientFmanSeats { eligible: 0, .. }),
-        "{error:?}"
-    );
+    {
+        Err(FiError::InsufficientFmanSeats { eligible, .. }) => eligible,
+        other => panic!("the test registry cannot verify badges: {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn a_restored_fi_buys_a_spare_on_the_federation_line() {
+    // Neither a guardian of the federation nor an FMan on another Fedimint
+    // line may hold a spare.
+    let (payment_state, fman_state, restored) = restored_client(vec![
+        fman_ad(0, PAYMENT_AMOUNT_MSATS, FEDIMINTD_VERSION_0_1),
+        fman_ad(20, PAYMENT_AMOUNT_MSATS, "0.13.0+fedi"),
+    ])
+    .await;
+    assert_eq!(eligible_spare_fmans(&restored).await, 0);
 
     let spare = restored
         .buy_spare_seat(spare_approval(PAYMENT_AMOUNT_MSATS), long_request_options())
@@ -431,4 +442,27 @@ async fn a_restored_fi_buys_a_spare_on_the_federation_line() {
         fedimintd_version().dkg_version()
     );
     assert_eq!(restored.spare_seats().await.unwrap(), vec![spare]);
+}
+
+#[tokio::test]
+async fn the_spare_line_is_the_one_most_guardians_advertise() {
+    let newer = "0.13.0+fedi";
+    // A tie between lines picks the newer one.
+    let (_, _, restored) = restored_client(vec![
+        fman_ad(0, PAYMENT_AMOUNT_MSATS, FEDIMINTD_VERSION_0_1),
+        fman_ad(1, PAYMENT_AMOUNT_MSATS, newer),
+        fman_ad(20, PAYMENT_AMOUNT_MSATS, newer),
+    ])
+    .await;
+    assert_eq!(eligible_spare_fmans(&restored).await, 1);
+
+    // A majority outweighs the newer line.
+    let (_, _, restored) = restored_client(vec![
+        fman_ad(0, PAYMENT_AMOUNT_MSATS, FEDIMINTD_VERSION_0_1),
+        fman_ad(1, PAYMENT_AMOUNT_MSATS, newer),
+        fman_ad(2, PAYMENT_AMOUNT_MSATS, FEDIMINTD_VERSION_0_1),
+        fman_ad(20, PAYMENT_AMOUNT_MSATS, newer),
+    ])
+    .await;
+    assert_eq!(eligible_spare_fmans(&restored).await, 0);
 }
