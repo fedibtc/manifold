@@ -1,0 +1,17 @@
+[package]
+name = "fedi-decentralized-service-peerbadge-signing"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+fedi-iroh-rpc = { path = "../fedi-iroh-rpc" }
+serde = { workspace = true }
+serde_bytes = "0.11"
+serde_json = { workspace = true }
+sha2 = "0.10"
+thiserror = { workspace = true }
+
+[dev-dependencies]
+ciborium = { workspace = true }

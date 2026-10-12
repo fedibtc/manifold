@@ -32,6 +32,12 @@ It has no protocol, trust, signing, or lifecycle implementation of its own —
 `fi-client` owns every FMan verb, signature envelope, response verification,
 transition, and checkpoint.
 
+The command runner retains its opened FI client and awaits `FiClient::shutdown`
+after either command success or failure, before the Tokio runtime exits. This
+joins the background backup workers instead of racing their timers against
+runtime teardown; command errors remain the primary failure if shutdown also
+fails.
+
 The CLI implements the concrete Iroh connector and Fedimint wallet
 payment/refund port for both formation modes. As a development/test consumer,
 it is the only workspace package that enables fi-client's

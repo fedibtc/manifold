@@ -1,0 +1,38 @@
+[package]
+name = "fedi-decentralized-peerbadge-signing-server"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+version.workspace = true
+publish = false
+
+[[bin]]
+name = "peerbadge-signing-server"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1.0.103"
+clap.workspace = true
+fedi-decentralized-manifold-environment = { path = "../manifold-environment" }
+fedi-decentralized-nostr = { path = "../nostr" }
+fedi-decentralized-nostr-clients = { path = "../nostr-clients" }
+fedi-decentralized-service-peerbadge-signing = { path = "../service-peerbadge-signing" }
+fedi-iroh-rpc = { path = "../fedi-iroh-rpc" }
+hex = "0.4"
+hmac = "0.12"
+iroh.workspace = true
+iroh-tickets = "1.0"
+nostr-sdk = "0.44.1"
+peerbadge-protocol.workspace = true
+peerbadge-schemas.workspace = true
+rand = "0.8"
+rustls = { version = "0.23", default-features = false, features = ["ring"] }
+serde.workspace = true
+serde_json.workspace = true
+sha2 = "0.10"
+tokio = { workspace = true, features = ["full"] }
+
+[dev-dependencies]
+fedi-decentralized-domain = { path = "../domain" }
+fedi-decentralized-peer-badge-verifier = { path = "../peer-badge-verifier" }
+tempfile = "3"

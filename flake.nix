@@ -322,6 +322,11 @@
               cargoExtraArgs = "-p fedi-decentralized-cloud-fman-telemetry";
             };
 
+            peerbadgeSigningServer = craneLib.buildPackage {
+              cargoArtifacts = workspaceDeps;
+              cargoExtraArgs = "-p fedi-decentralized-peerbadge-signing-server";
+            };
+
             liquidityManagerDaemon = craneLib.buildPackage {
               cargoArtifacts = workspaceDeps;
               cargoExtraArgs = "-p fedi-decentralized-liquidity-manager-daemon --features embedded-operator-ui";
@@ -368,7 +373,7 @@
               # feature set embeds the dashboards. Enable those features on the
               # runtime bundle SelfCI already builds instead of adding another
               # Cargo derivation or profile solely for the OCI checks.
-              cargoExtraArgs = "-p defe --bin defe -p devmon --bin manifold-test-issuer -p fedi-decentralized-cloud-fman-telemetry --bin fedi-decentralized-cloud-fman-telemetry -p fedi-decentralized-push-gateway --bin fedi-decentralized-push-gateway -p fedi-decentralized-liquidity-manager-daemon --bin liquidity-manager-daemon -p fman --bin fleet-manager -p fman-cli --bin fman-cli -p fi-cli --bin fi-cli --features fedi-decentralized-liquidity-manager-daemon/embedded-operator-ui,fman/embedded-operator-ui";
+              cargoExtraArgs = "-p defe --bin defe -p devmon --bin manifold-test-issuer -p fedi-decentralized-peerbadge-signing-server --bin peerbadge-signing-server -p fedi-decentralized-cloud-fman-telemetry --bin fedi-decentralized-cloud-fman-telemetry -p fedi-decentralized-push-gateway --bin fedi-decentralized-push-gateway -p fedi-decentralized-liquidity-manager-daemon --bin liquidity-manager-daemon -p fman --bin fleet-manager -p fman-cli --bin fman-cli -p fi-cli --bin fi-cli --features fedi-decentralized-liquidity-manager-daemon/embedded-operator-ui,fman/embedded-operator-ui";
               env.FLIP_OPERATOR_UI_DIST_DIR = "${operatorUi}/srv/flip";
               env.FMAN_OPERATOR_UI_DIST_DIR = "${operatorUi}/srv/fman";
               env.FEDIMINT_BUILD_FORCE_GIT_HASH = fedimintSourceRev;
@@ -1810,6 +1815,7 @@
           inherit treefmt;
           cloud-fman-telemetry = multiBuild.cloudFmanTelemetry;
           push-gateway = multiBuild.pushGateway;
+          peerbadge-signing-server = multiBuild.peerbadgeSigningServer;
           fleet-manager = multiBuild.fleetManager;
           fman-cli = multiBuild.fleetManager;
           setup-payment-publisher = multiBuild.setupPaymentPublisher;

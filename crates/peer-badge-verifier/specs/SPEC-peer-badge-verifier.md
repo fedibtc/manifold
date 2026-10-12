@@ -137,6 +137,14 @@ trusted issuer issued the badge to the authorizing holder, not that the badge
 is currently acceptable, so relying parties must not use it in place of the
 complete verification.
 
+Server-issued badges use this same credential and authorization contract;
+the signing server's allowlist is not a relying-party trust input. Its
+Development/Staging fixture-backed issuance is checked against the unchanged
+pinned profile authority. The relay-free signing-server integration uses
+`verify_issuance_at` to prove issuance and holder binding, not current
+revocation status. See
+[SPEC-peerbadge-signing-protocol](../../service-peerbadge-signing/specs/SPEC-peerbadge-signing-protocol.md).
+
 Dropping verification cooperatively cancels its pending relay reads and leaves
 no verifier state. The relay layer can briefly retain its private ephemeral
 client in a detached best-effort unsubscribe task; that cleanup is not joined

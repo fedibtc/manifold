@@ -123,11 +123,26 @@ write buffers, not allocations performed inside a service handler or that
 initial service-return encoding. Custom response limits that are too small to
 hold a transport error may close a rejected stream without an error frame.
 
-The current implementation uses serde-compatible binary encoding internally for
-frames and bodies. Treat the Rust frame shapes and method semantics above as the
-calling convention; do not rely on a stable raw byte format unless this crate
-later promises one. Production protocols built on this transport must preserve
-their calling conventions in accordance with
+Wire version 1 promises CBOR (`ciborium`) frames and serde-compatible bodies.
+Frames are maps with text keys in declaration order: `version`, `method`, `body`.
+The version is the unsigned integer `1`; the method is a text string; the body
+is a CBOR byte string containing one encoded request value. `ResponseFrame`
+is an externally tagged, single-entry map: `{"Service": <byte string>}` or
+`{"Transport": <text string>}`. There is no length prefix: stream FIN delimits
+the frame.
+
+Bodies follow the service's serde contract: structs are maps with text keys in
+declaration order, unit enum variants are text strings, data-bearing variants
+are single-entry maps, `Result` is `{"Ok": value}` or `{"Err": error}`, and
+`Option` is a value or `null`. Byte vectors require `serde_bytes` annotations
+to encode as byte strings; unannotated `Vec<u8>` values encode as arrays.
+Unsigned integers use CBOR's shortest representation. Services own their field
+names, field order, annotations, and nested value representations.
+
+The PeerBadge signing service's cross-language fixtures in
+[`tests/golden`](../service-peerbadge-signing/tests/golden/) pin representative
+frame and body bytes for its TypeScript client. Frame-layout changes must not
+silently change wire version 1. Production protocols remain governed by
 [`GATE-production-compatibility`](../../specs/GATE-production-compatibility.md).
 
 ## Requirements
