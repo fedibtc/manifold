@@ -27,10 +27,12 @@ use fedi_decentralized_service_manifold_guardian::{
     GetInviteCodeResponse, GetMgTrustMaterialRequest, GetMgTrustMaterialResponse,
     GetPeerAttestationRequest, GetPeerAttestationResponse, GetStatusRequest, GetStatusResponse,
     GuardianFeeAccount, ManifoldGuardianError, ManifoldGuardianService, Plan,
-    ProposeFormationMetaRequest, ProposeFormationMetaResponse, QuoteTerms, RegisterGatewayRequest,
-    RegisterGatewayResponse, RestartDkgRequest, RestartDkgResponse, ServiceStatus,
-    SetMetaFieldRequest, SetMetaFieldResponse, SignedRequest, SignedResponse, StartDkgRequest,
-    StartDkgResponse, StatusDetail, Timestamp, VerifiedFaRequest,
+    ProposeFormationMetaRequest, ProposeFormationMetaResponse, PullSeatRequest, PullSeatResponse,
+    QuoteTerms, RegisterGatewayRequest, RegisterGatewayResponse, RemoveSeatRequest,
+    RemoveSeatResponse, ReplaceSeatBindingRequest, ReplaceSeatBindingResponse, RestartDkgRequest,
+    RestartDkgResponse, SeatTransferGrant, ServiceStatus, SetMetaFieldRequest,
+    SetMetaFieldResponse, SignedRequest, SignedResponse, StartDkgRequest, StartDkgResponse,
+    StatusDetail, Timestamp, TransferSeatResponse, VerifiedFaRequest,
 };
 use fedimint_core::util::SafeUrl;
 use secp256k1::Keypair;
@@ -259,6 +261,8 @@ fn manifold_guardian_error_kind(error: &ManifoldGuardianError) -> &'static str {
         ManifoldGuardianError::FormationMetaAlreadyPublished => "formation_meta_already_published",
         ManifoldGuardianError::MetaTargetConflict => "meta_target_conflict",
         ManifoldGuardianError::InvalidGatewayApiUrl => "invalid_gateway_api_url",
+        ManifoldGuardianError::SeatTransferGrantMismatch => "seat_transfer_grant_mismatch",
+        ManifoldGuardianError::FederationAlreadyHosted => "federation_already_hosted",
         ManifoldGuardianError::UnsupportedVerb { .. } => "unsupported_verb",
         ManifoldGuardianError::Other(_) => "internal_or_other",
     }
@@ -883,6 +887,34 @@ impl ManifoldGuardianService for ManifoldGuardianRpc {
             })
         })
         .await
+    }
+
+    async fn pull_seat(
+        &self,
+        _request: SignedRequest<PullSeatRequest>,
+    ) -> FmResult<PullSeatResponse> {
+        unsupported("PullSeat")
+    }
+
+    async fn transfer_seat(
+        &self,
+        _request: SignedRequest<SeatTransferGrant>,
+    ) -> FmResult<TransferSeatResponse> {
+        unsupported("TransferSeat")
+    }
+
+    async fn replace_seat_binding(
+        &self,
+        _request: SignedRequest<ReplaceSeatBindingRequest>,
+    ) -> FmResult<ReplaceSeatBindingResponse> {
+        unsupported("ReplaceSeatBinding")
+    }
+
+    async fn remove_seat(
+        &self,
+        _request: SignedRequest<RemoveSeatRequest>,
+    ) -> FmResult<RemoveSeatResponse> {
+        unsupported("RemoveSeat")
     }
 
     /// Serve this MG's current signed trust material.

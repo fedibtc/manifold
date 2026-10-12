@@ -28,6 +28,7 @@ mod service;
 pub mod signing;
 mod status;
 mod telemetry;
+mod transfer;
 mod types;
 
 pub use availability::{GetAvailabilityRequest, GetAvailabilityResponse};
@@ -95,6 +96,12 @@ pub use telemetry::{
     MAX_GUARDIAN_TELEMETRY_REGISTRATION_BYTES, MAX_SAFE_EVENT_BATCH_BYTES, SafeEventCursor,
     SafeEventJournal, SafeEventJournalIncarnation, SafeEventJournalInfo,
     ScrapeGuardianMetricsRequest, TelemetryCapability, TelemetryResult,
+};
+pub use transfer::{
+    PullSeatRequest, PullSeatResponse, RemoveSeatRequest, RemoveSeatResponse,
+    ReplaceSeatBindingRequest, ReplaceSeatBindingResponse, SEALED_SEAT_PACKAGE_MAX_BYTES,
+    SEAT_TRANSFER_GRANT_MAX_LIFETIME_SECS, SealedSeatPackage, SealedSeatPackageTooLarge,
+    SeatTransferGrant, TransferSeatResponse,
 };
 pub use types::{
     AvailabilityInfo, FEDERATION_ICON_URL_META_FIELD_KEY, FEDERATION_NAME_META_FIELD_KEY, FaId,

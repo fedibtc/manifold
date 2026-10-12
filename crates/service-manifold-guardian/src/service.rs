@@ -9,9 +9,11 @@ use crate::{
     GetInviteCodeRequest, GetInviteCodeResponse, GetMgTrustMaterialRequest,
     GetMgTrustMaterialResponse, GetPeerAttestationRequest, GetPeerAttestationResponse,
     GetQuoteRequest, GetQuoteResponse, GetStatusRequest, GetStatusResponse, ManifoldGuardianError,
-    ProposeFormationMetaRequest, ProposeFormationMetaResponse, RegisterGatewayRequest,
-    RegisterGatewayResponse, RestartDkgRequest, RestartDkgResponse, SetMetaFieldRequest,
-    SetMetaFieldResponse, SignedRequest, SignedResponse, StartDkgRequest, StartDkgResponse,
+    ProposeFormationMetaRequest, ProposeFormationMetaResponse, PullSeatRequest, PullSeatResponse,
+    RegisterGatewayRequest, RegisterGatewayResponse, RemoveSeatRequest, RemoveSeatResponse,
+    ReplaceSeatBindingRequest, ReplaceSeatBindingResponse, RestartDkgRequest, RestartDkgResponse,
+    SeatTransferGrant, SetMetaFieldRequest, SetMetaFieldResponse, SignedRequest, SignedResponse,
+    StartDkgRequest, StartDkgResponse, TransferSeatResponse,
 };
 
 /// Result type for Manifold Guardian protocol calls.
@@ -126,6 +128,31 @@ pub trait ManifoldGuardianService {
         &self,
         request: SignedRequest<DecommissionSeatRequest>,
     ) -> FmResult<DecommissionSeatResponse>;
+
+    /// Make a bought `New` seat pull a guardian from the grant's source MG.
+    async fn pull_seat(
+        &self,
+        request: SignedRequest<PullSeatRequest>,
+    ) -> FmResult<PullSeatResponse>;
+
+    /// Stop this MG's seat named by the grant and hand its guardian over,
+    /// sealed to the grant's destination. Called by the destination MG.
+    async fn transfer_seat(
+        &self,
+        request: SignedRequest<SeatTransferGrant>,
+    ) -> FmResult<TransferSeatResponse>;
+
+    /// Vote to replace one moved peer's directory entry and fee recipient.
+    async fn replace_seat_binding(
+        &self,
+        request: SignedRequest<ReplaceSeatBindingRequest>,
+    ) -> FmResult<ReplaceSeatBindingResponse>;
+
+    /// Delete a transferred seat's guardian data and backup.
+    async fn remove_seat(
+        &self,
+        request: SignedRequest<RemoveSeatRequest>,
+    ) -> FmResult<RemoveSeatResponse>;
 }
 
 #[cfg(test)]

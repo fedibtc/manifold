@@ -1003,6 +1003,12 @@ impl ManifoldGuardianConnector for TestConnector {
     }
 }
 
+fn unsupported_test_verb<T>(verb: &str) -> FmResult<T> {
+    Err(ManifoldGuardianError::UnsupportedVerb {
+        verb: verb.to_owned(),
+    })
+}
+
 struct TestMg {
     index: usize,
     manager_key: Keypair,
@@ -1329,6 +1335,36 @@ impl ManifoldGuardianService for TestMg {
                 already_decommissioned: false,
             },
         )
+    }
+
+    async fn pull_seat(
+        &self,
+        _request: SignedRequest<fedi_decentralized_service_manifold_guardian::PullSeatRequest>,
+    ) -> FmResult<fedi_decentralized_service_manifold_guardian::PullSeatResponse> {
+        unsupported_test_verb("PullSeat")
+    }
+
+    async fn transfer_seat(
+        &self,
+        _request: SignedRequest<fedi_decentralized_service_manifold_guardian::SeatTransferGrant>,
+    ) -> FmResult<fedi_decentralized_service_manifold_guardian::TransferSeatResponse> {
+        unsupported_test_verb("TransferSeat")
+    }
+
+    async fn replace_seat_binding(
+        &self,
+        _request: SignedRequest<
+            fedi_decentralized_service_manifold_guardian::ReplaceSeatBindingRequest,
+        >,
+    ) -> FmResult<fedi_decentralized_service_manifold_guardian::ReplaceSeatBindingResponse> {
+        unsupported_test_verb("ReplaceSeatBinding")
+    }
+
+    async fn remove_seat(
+        &self,
+        _request: SignedRequest<fedi_decentralized_service_manifold_guardian::RemoveSeatRequest>,
+    ) -> FmResult<fedi_decentralized_service_manifold_guardian::RemoveSeatResponse> {
+        unsupported_test_verb("RemoveSeat")
     }
 
     async fn restart_dkg(

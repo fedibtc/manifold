@@ -5011,9 +5011,11 @@ fn service_seat_phase(status: &ServiceStatus) -> Result<SeatPhase, MgCause> {
         ServiceStatus::New => Ok(SeatPhase::Created),
         ServiceStatus::DkgInProcess => Ok(SeatPhase::DkgUnderway),
         ServiceStatus::Running => Ok(SeatPhase::Running),
-        ServiceStatus::DataLoss | ServiceStatus::Decommissioned => {
-            Err(MgCause::TerminalStatus(status.clone()))
-        }
+        ServiceStatus::DataLoss
+        | ServiceStatus::Decommissioned
+        | ServiceStatus::AwaitingTransfer
+        | ServiceStatus::Transferred
+        | ServiceStatus::Removed => Err(MgCause::TerminalStatus(status.clone())),
     }
 }
 

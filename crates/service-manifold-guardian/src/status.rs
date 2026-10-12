@@ -56,6 +56,19 @@ pub enum ServiceStatus {
     /// never expires, so only the operator ends it).
     #[strum(serialize = "decommissioned")]
     Decommissioned,
+
+    /// Bought seat is pulling a guardian from another MG under an FA grant.
+    #[strum(serialize = "awaiting transfer")]
+    AwaitingTransfer,
+
+    /// The guardian moved to another MG; this seat is stopped for good and
+    /// still holds the guardian data.
+    #[strum(serialize = "transferred")]
+    Transferred,
+
+    /// A transferred seat whose guardian data and backup were deleted.
+    #[strum(serialize = "removed")]
+    Removed,
 }
 
 /// Extra status data specific to the current status. The MG projects its

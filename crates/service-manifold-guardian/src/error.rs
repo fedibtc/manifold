@@ -109,6 +109,15 @@ pub enum ManifoldGuardianError {
     #[error("invalid gateway API URL")]
     InvalidGatewayApiUrl,
 
+    /// A seat transfer grant does not name this seat, this MG, or the
+    /// seat's federation.
+    #[error("seat transfer grant does not match this seat")]
+    SeatTransferGrantMismatch,
+
+    /// The destination MG already hosts a guardian of the grant's federation.
+    #[error("this Manifold Guardian already hosts a guardian of that federation")]
+    FederationAlreadyHosted,
+
     /// The verb exists in the protocol crate but is intentionally not
     /// implemented by this daemon/profile version.
     #[error("{verb} unsupported in this Manifold Guardian profile")]
