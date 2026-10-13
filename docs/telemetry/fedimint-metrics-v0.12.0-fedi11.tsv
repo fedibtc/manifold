@@ -13,7 +13,7 @@
 # Cargo.lock edge fails the check rather than silently evading this boundary.
 release_tag	0.12.0-fedi11
 producer	fedimint	fedibtc/fedimint	v0.12.0-fedi11	61b3b02da228fbcdb185f70eb69e7f9093c4bba9
-producer	stability_pool	fedixyz/fedi	2f35ea4e3b2516d35b8ed315455718cd3b336758	2f35ea4e3b2516d35b8ed315455718cd3b336758
+producer	stability_pool	fedixyz/fedi	59e406974ccf7d0cd1d719a78e6cc46fd51870e6	59e406974ccf7d0cd1d719a78e6cc46fd51870e6
 package	stability_pool	stability-pool-common	crates/modules/stability-pool/common
 package	stability_pool	stability-pool-server	crates/modules/stability-pool/server
 revision	61b3b02da228fbcdb185f70eb69e7f9093c4bba9

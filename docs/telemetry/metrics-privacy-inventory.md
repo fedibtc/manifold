@@ -18,8 +18,8 @@ release-pin recheck found one new registration,
 `iroh_api_request_response_code_total` (`method`, `code`, `type` labels), and keeps it outside the current
 minimum telemetry surface. This
 telemetry stack includes the Fedi SPv2 server source at
-`2f35ea4e3b2516d35b8ed315455718cd3b336758`. Re-run the inventory against the
-exact combined integration tip, including `patches/fedi-stability-pool-fedimint-012.patch`, whenever either pin or the attached module set
+`59e406974ccf7d0cd1d719a78e6cc46fd51870e6`. Re-run the inventory against the
+exact combined integration tip whenever either pin or the attached module set
 changes.
 
 The Fedi SPv2 and legacy stability-pool server modules currently register no
