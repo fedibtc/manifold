@@ -3151,6 +3151,27 @@ async fn formed_client_for_liquidity() -> (
 }
 
 #[tokio::test]
+async fn formed_storage_from_before_the_federation_record_migrates() {
+    let (client, _, _, _) = formed_client_for_liquidity().await;
+    let before = client.inner.store.backup_payload().await.unwrap();
+    client
+        .inner
+        .store
+        .write_legacy_federation_storage_for_test()
+        .await;
+    assert!(client.inner.store.backup_payload().await.is_err());
+    client
+        .inner
+        .store
+        .migrate_federation_record(TestIdentity::fa_id())
+        .await
+        .unwrap();
+    let after = client.inner.store.backup_payload().await.unwrap();
+    assert_eq!(after.payload, before.payload);
+    assert!(matches!(client.status(), FaStatus::Formation(_)));
+}
+
+#[tokio::test]
 async fn backup_payload_is_lean_stable_and_requires_confirmed_formed_metadata() {
     let (client, _, _, _) = formed_client_for_liquidity().await;
     let first = client.inner.store.backup_payload().await.unwrap();
@@ -3693,6 +3714,12 @@ async fn restored_backup_reconciles_to_usable_authority_and_hydrates_liquidity()
         "the restored writer can publish its current lean authority",
     );
 
+    // Reopen from the storage that predates the federation record.
+    restored
+        .inner
+        .store
+        .write_legacy_federation_storage_for_test()
+        .await;
     drop(restored);
     let restored = open_client_with_registry(
         database,
@@ -3702,6 +3729,18 @@ async fn restored_backup_reconciles_to_usable_authority_and_hydrates_liquidity()
         registry,
     )
     .await;
+    assert_eq!(
+        restored
+            .inner
+            .store
+            .backup_payload()
+            .await
+            .unwrap()
+            .payload
+            .snapshot_generation,
+        restored_generation,
+        "a migrated import keeps its eligibility and generation baseline",
+    );
     restored
         .inner
         .ports

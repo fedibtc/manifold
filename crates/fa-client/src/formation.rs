@@ -4586,63 +4586,7 @@ where
     }
 
     pub(crate) async fn post_formed_authority(&self, fa_id: FaId) -> FaResult<PostFormedAuthority> {
-        match self.inner.store.load_recovery(fa_id).await? {
-            FaRecovery::Idle => Err(FaError::NoActiveFormation),
-            FaRecovery::Formation(recovery) => {
-                let recovery = *recovery;
-                if recovery.snapshot.phase != FormationPhase::Formed {
-                    return Err(FaError::NoActiveFormation);
-                }
-                let invite_code = recovery.snapshot.invite_code.clone().ok_or_else(|| {
-                    FaError::Storage("formed FA record has no federation invite".to_owned())
-                })?;
-                let seats = recovery
-                    .seats
-                    .into_iter()
-                    .map(|seat| {
-                        Ok(PostFormedSeat {
-                            index: seat.progress.index,
-                            mg_id: seat.admission.mg_id(),
-                            locator: seat.progress.locator,
-                            seat_id: seat.progress.seat_id.ok_or_else(|| {
-                                FaError::Storage("formed FA seat has no seat id".to_owned())
-                            })?,
-                        })
-                    })
-                    .collect::<FaResult<Vec<_>>>()?;
-                Ok(PostFormedAuthority {
-                    formation_id: recovery.snapshot.formation_id,
-                    invite_code,
-                    seats,
-                })
-            }
-            FaRecovery::Restored(snapshot) => {
-                if snapshot.phase != FormationPhase::Formed {
-                    return Err(FaError::NoActiveFormation);
-                }
-                let formation_id = snapshot.formation_id;
-                let seats = snapshot
-                    .seats
-                    .into_iter()
-                    .enumerate()
-                    .map(|(index, seat)| {
-                        Ok(PostFormedSeat {
-                            index: u16::try_from(index).map_err(|_| {
-                                FaError::Storage("restored FA seat index overflow".to_owned())
-                            })?,
-                            mg_id: seat.mg_identity,
-                            locator: seat.locator,
-                            seat_id: seat.seat_id,
-                        })
-                    })
-                    .collect::<FaResult<Vec<_>>>()?;
-                Ok(PostFormedAuthority {
-                    formation_id,
-                    invite_code: snapshot.federation_invite,
-                    seats,
-                })
-            }
-        }
+        self.inner.store.post_formed_authority(fa_id).await
     }
 
     fn publish_snapshot(&self, snapshot: FormationSnapshot) {
