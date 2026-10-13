@@ -1,8 +1,8 @@
 # CLAIM-cloud-mg-telemetry-collector-oci-archive-declarations: The checked collector OCI archive declares its defaults
 
 On Linux, successful evaluation of the explicitly invocable
-`cloudMgTelemetryOciImage` check establishes that the exact
-`cloudMgTelemetryContainerImage` archive selected by the repository release
+`cloudFmanTelemetryOciImage` check establishes that the exact
+`cloudFmanTelemetryContainerImage` archive selected by the repository release
 aggregate declares the collector entrypoint, null command, numeric
 `10001:10001` user, `/var/lib/cloud-fman-telemetry` working directory, two
 ports, one data volume, healthcheck, OCI labels, and exactly seven checked

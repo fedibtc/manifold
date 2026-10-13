@@ -25,8 +25,8 @@ delivery, network policy, and deployment selection are outside the claim.
 ## Argument
 
 1. **[test, code] Exact archive and process declaration.**
-   `cloudMgTelemetryContainerImageCheck` consumes
-   `cloudMgTelemetryContainerImage`, converts and unpacks it, and checks its
+   `cloudFmanTelemetryContainerImageCheck` consumes
+   `cloudFmanTelemetryContainerImage`, converts and unpacks it, and checks its
    entrypoint, null `Cmd`, `10001:10001` user, and working directory.
    `releaseContainerImages` selects that same derivation.
 2. **[test] Final-rootfs executables and data directory.** The check rejects

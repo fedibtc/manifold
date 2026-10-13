@@ -43,8 +43,8 @@ one-shot harness:
 The release packaging contracts are checked through Nix:
 
 ```console
-nix build .#ci.x86_64-linux.cloudMgTelemetryCliContract
-nix build .#ci.x86_64-linux.cloudMgTelemetryOciImage
+nix build .#ci.x86_64-linux.cloudFmanTelemetryCliContract
+nix build .#ci.x86_64-linux.cloudFmanTelemetryOciImage
 ```
 
 Deployment, Prometheus, backup, and archive-recovery procedures live in

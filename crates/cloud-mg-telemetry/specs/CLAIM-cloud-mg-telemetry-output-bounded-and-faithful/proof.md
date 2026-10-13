@@ -46,7 +46,7 @@ the payload fields inside each safe event.
    identity for current allowed
    families.
 2. **[test] Collector metrics inventory.** Snapshot parser tests accept exposition
-   containing the five named `cloud_mg_telemetry_*` families. The renderer
+   containing the five named `cloud_fman_telemetry_*` families. The renderer
    constructs only those generated families in addition to already-filtered
    forwarded samples. Admission diagnostics use only six fixed event labels;
    the rate-limited warning has one fixed reason and no source-derived field.
