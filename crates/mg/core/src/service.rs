@@ -895,7 +895,7 @@ impl ManifoldGuardianService for ManifoldGuardianRpc {
     /// The response is signed by the service Nostr key, the same identity that
     /// signs the kind-37701 advertisement and every peer attestation, because
     /// a verifier resolves this MG *by* that pubkey.
-    async fn get_mg_trust_material(
+    async fn get_fman_trust_material(
         &self,
         _request: GetMgTrustMaterialRequest,
     ) -> FmResult<GetMgTrustMaterialResponse> {

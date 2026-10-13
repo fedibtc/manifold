@@ -226,7 +226,7 @@ restart testing; it is not a production persistence boundary or hardened
 against hostile local filesystem behavior.
 
 `--json` is a stable, newline-delimited output contract. Successful `init`
-writes exactly one stdout object with `faPubkey` and `state`; `status`, `create`,
+writes exactly one stdout object with `fiPubkey` and `state`; `status`, `create`,
 `resume`, and successful `authorize-payments` write exactly one stdout `FaStatus`
 value. A formation intent carries `fedimintd_versions` as its inclusive-minimum,
 exclusive-maximum range and `fedimintd_dkg_version` as the selected

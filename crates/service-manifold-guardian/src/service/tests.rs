@@ -112,7 +112,7 @@ impl ManifoldGuardianService for TestManifoldGuardian {
     ) -> FmResult<GetPeerAttestationResponse> {
         unsupported()
     }
-    async fn get_mg_trust_material(
+    async fn get_fman_trust_material(
         &self,
         _: GetMgTrustMaterialRequest,
     ) -> FmResult<GetMgTrustMaterialResponse> {

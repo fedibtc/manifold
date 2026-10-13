@@ -26,15 +26,15 @@ fn init_and_idle_status_pin_json_stdout_and_empty_stderr() {
     let object = init_json.as_object().unwrap();
     assert_eq!(
         object.keys().map(String::as_str).collect::<Vec<_>>(),
-        ["faPubkey", "state"]
+        ["fiPubkey", "state"]
     );
     assert_eq!(object["state"], "idle");
-    let public_key = object["faPubkey"].as_str().unwrap();
+    let public_key = object["fiPubkey"].as_str().unwrap();
     assert_eq!(public_key.len(), 64);
     assert!(public_key.bytes().all(|byte| byte.is_ascii_hexdigit()));
     assert_eq!(
         String::from_utf8(init.stdout).unwrap(),
-        format!(r#"{{"faPubkey":"{public_key}","state":"idle"}}"#) + "\n"
+        format!(r#"{{"fiPubkey":"{public_key}","state":"idle"}}"#) + "\n"
     );
 
     let status = fa_cli(&state_dir, "status");

@@ -12,7 +12,7 @@ use crate::resource_manager::{
 };
 use crate::resource_process::{ResourceProcess, ResourceProcessConfig, log_tail};
 
-const LOCATOR_LOG_PREFIX: &str = "Manifold Guardian locator: ";
+const LOCATOR_LOG_PREFIX: &str = "Fleet Manager locator: ";
 const READY_TIMEOUT: Duration = Duration::from_secs(10);
 const READY_POLL_INTERVAL: Duration = Duration::from_millis(50);
 /// Setup-payment trust root every spawned Manifold Guardian accepts: a test that

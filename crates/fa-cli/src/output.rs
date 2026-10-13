@@ -195,7 +195,7 @@ impl<'a> CliOutput<'a> {
         serde_json::to_writer(
             &mut self.stdout,
             &serde_json::json!({
-                "faPubkey": hex::encode(fa_id.0.serialize()),
+                "fiPubkey": hex::encode(fa_id.0.serialize()),
                 "state": state,
             }),
         )?;

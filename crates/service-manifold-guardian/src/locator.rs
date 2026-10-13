@@ -39,7 +39,7 @@ impl Locator {
     /// Stdout line prefix the daemon prints the locator JSON behind and
     /// harnesses (e.g. the formation E2E test) scan for. Part of the
     /// locator's out-of-band contract, so it lives with the format.
-    pub const LOG_PREFIX: &'static str = "Manifold Guardian locator: ";
+    pub const LOG_PREFIX: &'static str = "Fleet Manager locator: ";
 
     pub fn new(endpoint_addr: EndpointAddr, service_pubkey: XOnlyPublicKey) -> Self {
         Self {

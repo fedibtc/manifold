@@ -849,7 +849,7 @@ async fn trust_material_is_unsupported_until_a_source_is_bound() {
     let rpc = rpc(&temp).await;
 
     let error = rpc
-        .get_mg_trust_material(trust_material_request())
+        .get_fman_trust_material(trust_material_request())
         .await
         .unwrap_err();
 
@@ -869,7 +869,7 @@ async fn trust_material_is_signed_for_the_mg_identity() {
     }));
 
     let response = rpc
-        .get_mg_trust_material(trust_material_request())
+        .get_fman_trust_material(trust_material_request())
         .await
         .unwrap();
     let expected = fedi_decentralized_domain::Pubkey(rpc.attestation_keys.public_key().to_string());

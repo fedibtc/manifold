@@ -248,7 +248,7 @@ impl ManifoldGuardianService for UnavailableManifoldGuardianClient {
         Err(unavailable())
     }
 
-    async fn get_mg_trust_material(
+    async fn get_fman_trust_material(
         &self,
         _request: GetMgTrustMaterialRequest,
     ) -> FmResult<GetMgTrustMaterialResponse> {

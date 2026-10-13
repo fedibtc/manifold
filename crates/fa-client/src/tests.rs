@@ -1411,7 +1411,7 @@ impl ManifoldGuardianService for TestMg {
         })
     }
 
-    async fn get_mg_trust_material(
+    async fn get_fman_trust_material(
         &self,
         _request: GetMgTrustMaterialRequest,
     ) -> FmResult<GetMgTrustMaterialResponse> {

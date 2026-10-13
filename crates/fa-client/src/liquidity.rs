@@ -1244,7 +1244,7 @@ where
                         FaError::Liquidity(format!("connecting to federation MG: {error}"))
                     })?;
                 let response = client
-                    .get_mg_trust_material(request.clone())
+                    .get_fman_trust_material(request.clone())
                     .await
                     .map_err(|error| {
                         FaError::Liquidity(format!("fetching MG trust material: {error}"))

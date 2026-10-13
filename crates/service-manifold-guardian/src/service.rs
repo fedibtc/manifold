@@ -86,7 +86,9 @@ pub trait ManifoldGuardianService {
     /// This unauthenticated read-only API is the FLIP/external-verifier source
     /// for holder authorizations and backing trust badges after consensus
     /// `fedi:fman_seat_bindings` metadata identifies this MG as an operator.
-    async fn get_mg_trust_material(
+    ///
+    /// The method name is the RPC wire name, so it keeps the old `fman` form.
+    async fn get_fman_trust_material(
         &self,
         request: GetMgTrustMaterialRequest,
     ) -> FmResult<GetMgTrustMaterialResponse>;
