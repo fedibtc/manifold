@@ -518,7 +518,7 @@ async fn run_setup_payment_refreshes(
     let Some(publisher) = inner.setup_payment_publisher else {
         return;
     };
-    let poll_interval = if std::env::var_os("FMAN_E2E_LOCAL_IROH").is_some() {
+    let poll_interval = if std::env::var_os("MG_E2E_LOCAL_IROH").is_some() {
         LOCAL_E2E_SETUP_PAYMENT_POLL_INTERVAL
     } else {
         SETUP_PAYMENT_POLL_INTERVAL
@@ -584,7 +584,7 @@ async fn advertise_once(
     tracing::info!(
         safe_to_share = true,
         holder_authorizations = document.payload.holder_authorizations.len(),
-        "published FMan advertisement"
+        "published MG advertisement"
     );
     Ok(())
 }

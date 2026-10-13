@@ -2050,7 +2050,7 @@ async fn configure_guardian_fees(
         .arg("configure-guardian-fees")
         .arg("--send-ppm")
         .arg(send_ppm.to_string())
-        .env("FMAN_E2E_LOCAL_IROH", "1")
+        .env("MG_E2E_LOCAL_IROH", "1")
         .env("FM_IROH_CONNECT_OVERRIDES_PLAIN", iroh_overrides);
     let output = run_expect_success(
         command,
@@ -2359,7 +2359,7 @@ async fn update_federation_name(
         .arg("set-name")
         .arg("--value")
         .arg(name)
-        .env("FMAN_E2E_LOCAL_IROH", "1")
+        .env("MG_E2E_LOCAL_IROH", "1")
         .env("FM_IROH_CONNECT_OVERRIDES_PLAIN", iroh_overrides);
     let output = run_expect_success(
         command,
@@ -2401,7 +2401,7 @@ async fn form_federation_in_state(
         .arg(GUARDIAN_COUNT.to_string())
         .arg("--poll-timeout-secs")
         .arg("120")
-        .env("FMAN_E2E_LOCAL_IROH", "1")
+        .env("MG_E2E_LOCAL_IROH", "1")
         .env("FM_IROH_CONNECT_OVERRIDES_PLAIN", iroh_overrides);
     if let Some((minimum, maximum)) = version_range {
         create.args([
@@ -2542,7 +2542,7 @@ async fn run_fa_crash_recovery() -> anyhow::Result<()> {
         .arg(&callback_url_file)
         .arg("--completion-callback-idempotency-key")
         .arg("fa-crash-recovery")
-        .env("FMAN_E2E_LOCAL_IROH", "1")
+        .env("MG_E2E_LOCAL_IROH", "1")
         .env("FM_IROH_CONNECT_OVERRIDES_PLAIN", &iroh_overrides)
         .env(
             fedi_decentralized_manifold_environment::DEV_NOSTR_RELAYS_ENV,
@@ -2622,7 +2622,7 @@ async fn run_fa_crash_recovery() -> anyhow::Result<()> {
         .arg("resume")
         .arg("--fa-spv2-account-file")
         .arg(&fa_fee_account_file)
-        .env("FMAN_E2E_LOCAL_IROH", "1")
+        .env("MG_E2E_LOCAL_IROH", "1")
         .env("FM_IROH_CONNECT_OVERRIDES_PLAIN", &iroh_overrides)
         .env(
             fedi_decentralized_manifold_environment::DEV_NOSTR_RELAYS_ENV,
@@ -2702,7 +2702,7 @@ fn assert_safe_event_journals(temp: &Path, guardian_count: usize) -> anyhow::Res
         assert_safe_event_journal(
             &mg_root.join("safe-events/fman"),
             &[
-                "created a new Fleet Manager identity",
+                "created a new Manifold Guardian identity",
                 "driven DKG start was observed",
                 "driven DKG configuration is durable",
             ],
@@ -3743,7 +3743,7 @@ fn write_sensitive_file(path: &Path, contents: &str) -> anyhow::Result<()> {
 /// federation. This reads it back through a `fedimint-cli` client that took no
 /// part in writing it.
 ///
-/// The daemons run with `FMAN_E2E_LOCAL_IROH=1`, so their fedimintd children
+/// The daemons run with `MG_E2E_LOCAL_IROH=1`, so their fedimintd children
 /// use the port-derived API keys rather than mnemonic-derived production keys.
 /// Directory consensus therefore also proves every MG verified the setup
 /// envelopes under the effective child keys for the real defe formation path.
@@ -3916,7 +3916,7 @@ async fn run_fa_payment_wallet(
         .arg("--wallet-secret-file")
         .arg(wallet_secret_file)
         .args(args)
-        .env("FMAN_E2E_LOCAL_IROH", "1")
+        .env("MG_E2E_LOCAL_IROH", "1")
         .env("FM_IROH_CONNECT_OVERRIDES_PLAIN", iroh_overrides)
         .stderr(Stdio::piped());
     let output = run_expect_success(
@@ -4157,7 +4157,7 @@ fn spawn_manifold_guardian(
         .arg(bitcoind_password)
         .arg("--first-port-base")
         .arg(first_port_base.to_string())
-        .env("FMAN_E2E_LOCAL_IROH", "1")
+        .env("MG_E2E_LOCAL_IROH", "1")
         // Seven fedimintd children otherwise emit tens of MiB of INFO logs,
         // swamping the CI runner and obscuring the test's own milestones.
         .env("RUST_LOG", "error")
@@ -4203,7 +4203,7 @@ fn spawn_manifold_guardian(
     }
     if data_dir.join(PAYOUT_CRASH_SEAM_ENABLE).is_file() {
         command.env(
-            "FMAN_E2E_PAUSE_AFTER_GUARDIAN_FEE_PAYOUT_START",
+            "MG_E2E_PAUSE_AFTER_GUARDIAN_FEE_PAYOUT_START",
             data_dir.join(PAYOUT_CRASH_SEAM_REACHED),
         );
     }
@@ -4274,7 +4274,7 @@ async fn run_fa_cli(
         .arg(guardian_count.to_string())
         .arg("--poll-timeout-secs")
         .arg(timeout.as_secs().to_string())
-        .env("FMAN_E2E_LOCAL_IROH", "1")
+        .env("MG_E2E_LOCAL_IROH", "1")
         .stderr(if invocation.output == FaCliOutput::JsonContract {
             Stdio::piped()
         } else {
@@ -4334,7 +4334,7 @@ async fn run_fa_cli(
                 .arg("resume")
                 .arg("--fa-spv2-account-file")
                 .arg(&fa_fee_account_file)
-                .env("FMAN_E2E_LOCAL_IROH", "1")
+                .env("MG_E2E_LOCAL_IROH", "1")
                 .args(resume_args)
                 .arg("--wallet-secret-file")
                 .arg(&wallet_secret_file)
@@ -4481,7 +4481,7 @@ fn local_iroh_overrides_for_grid(
 
 fn e2e_iroh_key(port: u16, role: &[u8]) -> [u8; 32] {
     Sha256::new()
-        .chain_update(b"fman-e2e-local-iroh-v1\0")
+        .chain_update(b"mg-e2e-local-iroh-v1\0")
         .chain_update(port.to_be_bytes())
         .chain_update(role)
         .finalize()

@@ -71,8 +71,8 @@ should not be exposed to untrusted networks. Treat paths, process binaries,
 environment variables, and resource descriptors as local trusted inputs from
 the same developer or CI job.
 
-`FMAN_E2E_PAUSE_AFTER_GUARDIAN_FEE_PAYOUT_START` is a local fault-injection
-seam honored only alongside `FMAN_E2E_LOCAL_IROH`: it writes a caller-selected
+`MG_E2E_PAUSE_AFTER_GUARDIAN_FEE_PAYOUT_START` is a local fault-injection
+seam honored only alongside `MG_E2E_LOCAL_IROH`: it writes a caller-selected
 marker after a native payout commit and then deliberately stops making
 progress before the MG database link. Never set either variable in a
 production Manifold Guardian process.

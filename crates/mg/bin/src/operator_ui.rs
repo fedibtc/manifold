@@ -3,7 +3,7 @@
 use axum::Router;
 
 #[derive(rust_embed::Embed)]
-#[folder = "$FMAN_OPERATOR_UI_DIST_DIR"]
+#[folder = "$MG_OPERATOR_UI_DIST_DIR"]
 struct Assets;
 
 pub fn router() -> Router {

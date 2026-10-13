@@ -66,7 +66,7 @@ async fn probe_with_builder(
                 Ok(Ok(connection)) => {
                     tracing::error!(
                         safe_to_share = true,
-                        "Another instance using this Fleet Manager identity is reachable. \
+                        "Another instance using this Manifold Guardian identity is reachable. \
                          Fleet startup is blocked. Stop the duplicate instance, verify that only \
                          one host will run this identity, then manually restart this process."
                     );

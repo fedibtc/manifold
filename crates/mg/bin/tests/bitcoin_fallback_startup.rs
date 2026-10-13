@@ -88,7 +88,7 @@ async fn assert_hello(primary: &Server, fallback_url: &str) {
         .arg0(mg_core::bundled_fedimintd::ARGV0)
         .env_clear()
         .env("FM_DKG_CTRL", "1")
-        .env("FMAN_E2E_LOCAL_IROH", "1")
+        .env("MG_E2E_LOCAL_IROH", "1")
         .args(["--bind-metrics", "127.0.0.1:0"])
         .args(["--data-dir", data.path().to_str().unwrap()])
         .args(["--bitcoind-url", &primary.url])

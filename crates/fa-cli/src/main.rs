@@ -1240,7 +1240,7 @@ async fn run(
         }
         Command::AuthorizePayments(authorize) => {
             let identity = CliIdentity::load_or_create(&args.state_dir, false)?;
-            let endpoint = if std::env::var_os("FMAN_E2E_LOCAL_IROH").is_some() {
+            let endpoint = if std::env::var_os("MG_E2E_LOCAL_IROH").is_some() {
                 Endpoint::bind(presets::N0DisableRelay).await?
             } else {
                 Endpoint::bind(presets::N0).await?
@@ -1705,7 +1705,7 @@ async fn connect_environment_registry(
 const REGISTRY_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
 async fn bind_iroh_endpoint() -> anyhow::Result<Endpoint> {
-    if std::env::var_os("FMAN_E2E_LOCAL_IROH").is_some() {
+    if std::env::var_os("MG_E2E_LOCAL_IROH").is_some() {
         Ok(Endpoint::bind(presets::N0DisableRelay).await?)
     } else {
         Ok(Endpoint::bind(presets::N0).await?)

@@ -53,7 +53,7 @@ fn log_mg_failure(formation_id: &FormationId, error: &FaError, outcome: &'static
     tracing::warn!(
         safe_to_share = true,
         formation_id = %formation_id.0,
-        fman_pubkey = %failure.mg,
+        mg_pubkey = %failure.mg,
         operation = %failure.operation,
         cause = %failure.cause,
         outcome,

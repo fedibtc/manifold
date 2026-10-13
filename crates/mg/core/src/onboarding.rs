@@ -45,7 +45,10 @@ pub struct NotOnboarded;
 pub(crate) async fn onboard_as_new(db: &Db) -> anyhow::Result<RootMnemonic> {
     let identity = RootMnemonic::generate()?;
     db.install_identity(&identity).await?;
-    tracing::info!(safe_to_share = true, "created a new Fleet Manager identity");
+    tracing::info!(
+        safe_to_share = true,
+        "created a new Manifold Guardian identity"
+    );
     Ok(identity)
 }
 
@@ -135,7 +138,7 @@ impl Onboarding {
                     safe_to_share = true,
                     seats = recovered.seats.len(),
                     formed = recovered.formed(),
-                    "restored a Fleet Manager identity and seats"
+                    "restored a Manifold Guardian identity and seats"
                 );
                 Ok(onboarded_restored_json(
                     recovered.seats.len(),

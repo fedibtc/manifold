@@ -373,7 +373,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     if db.onboarding_stage().await? != mg_core::db::OnboardingStage::Complete {
         tracing::info!(
             safe_to_share = true,
-            "this Fleet Manager has not completed onboarding; waiting for operator setup"
+            "this Manifold Guardian has not completed onboarding; waiting for operator setup"
         );
     }
     onboarding.completed().await?;
@@ -381,7 +381,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     // One check after onboarding (including restore) but before the wallet,
     // seats, and persistent-key endpoint can start. E2E uses isolated explicit
     // routes, so it skips production discovery and its startup delay.
-    let local_e2e = std::env::var_os("FMAN_E2E_LOCAL_IROH").is_some();
+    let local_e2e = std::env::var_os("MG_E2E_LOCAL_IROH").is_some();
     // Reuse this registration through fleet startup; dropping a polled signal
     // future here could swallow a stop request before the fleet starts serving.
     let mut shutdown = Box::pin(shutdown_signal());
@@ -625,7 +625,7 @@ fn manifold_stability_pool_init() -> StabilityPoolInit {
         // The local E2E environment is network-isolated, so its real
         // fedimintd processes use the module's deterministic oracle rather
         // than waiting forever on public price sources.
-        oracle_config: if std::env::var_os("FMAN_E2E_LOCAL_IROH").is_some() {
+        oracle_config: if std::env::var_os("MG_E2E_LOCAL_IROH").is_some() {
             OracleConfig::Mock
         } else {
             OracleConfig::Aggregate

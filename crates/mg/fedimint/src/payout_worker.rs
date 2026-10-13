@@ -661,10 +661,10 @@ impl PayoutNative for WalletPayoutNative {
 }
 
 async fn pause_after_guardian_fee_payout_start_for_e2e() -> anyhow::Result<()> {
-    if std::env::var_os("FMAN_E2E_LOCAL_IROH").is_none() {
+    if std::env::var_os("MG_E2E_LOCAL_IROH").is_none() {
         return Ok(());
     }
-    let Some(path) = std::env::var_os("FMAN_E2E_PAUSE_AFTER_GUARDIAN_FEE_PAYOUT_START") else {
+    let Some(path) = std::env::var_os("MG_E2E_PAUSE_AFTER_GUARDIAN_FEE_PAYOUT_START") else {
         return Ok(());
     };
     tokio::fs::write(&path, b"native payout committed\n").await?;

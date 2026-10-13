@@ -253,7 +253,7 @@ impl MgDriver {
                     fedi_decentralized_manifold_environment::DEV_SETUP_PAYMENT_PUBLISHER_ENV,
                     setup_payment_publisher(),
                 )
-                .env("FMAN_E2E_LOCAL_IROH", "1")
+                .env("MG_E2E_LOCAL_IROH", "1")
                 .env(
                     "FM_IROH_CONNECT_OVERRIDES_PLAIN",
                     stable.request.iroh_connect_overrides.clone(),

@@ -18,23 +18,23 @@ fn main() {
     let hash = std::env::var(FORCE_GIT_HASH_ENV).unwrap_or_else(|_| FEDIMINT_SOURCE_REV.to_owned());
     println!("cargo:rustc-env={FEDIMINT_BUILD_CODE_VERSION_ENV}={hash}");
 
-    println!("cargo:rerun-if-env-changed=FMAN_OPERATOR_UI_DIST_DIR");
+    println!("cargo:rerun-if-env-changed=MG_OPERATOR_UI_DIST_DIR");
     if std::env::var_os("CARGO_FEATURE_EMBEDDED_OPERATOR_UI").is_none() {
         return;
     }
 
     let dist = PathBuf::from(
-        std::env::var_os("FMAN_OPERATOR_UI_DIST_DIR")
-            .expect("embedded-operator-ui requires FMAN_OPERATOR_UI_DIST_DIR"),
+        std::env::var_os("MG_OPERATOR_UI_DIST_DIR")
+            .expect("embedded-operator-ui requires MG_OPERATOR_UI_DIST_DIR"),
     );
     assert!(
         dist.join("index.html").is_file(),
-        "FMAN_OPERATOR_UI_DIST_DIR does not contain index.html: {}",
+        "MG_OPERATOR_UI_DIST_DIR does not contain index.html: {}",
         dist.display()
     );
     assert!(
         dist.join("assets").is_dir(),
-        "FMAN_OPERATOR_UI_DIST_DIR does not contain assets/: {}",
+        "MG_OPERATOR_UI_DIST_DIR does not contain assets/: {}",
         dist.display()
     );
     println!("cargo:rerun-if-changed={}", dist.display());

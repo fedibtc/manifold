@@ -333,7 +333,7 @@
               # Shipped daemon builds consume their Vite output. Workspace,
               # test, and developer builds stay UI-free.
               cargoExtraArgs = "-p mg --bin fleet-manager -p mg-cli --bin fman-cli --features mg/embedded-operator-ui";
-              env.FMAN_OPERATOR_UI_DIST_DIR = "${operatorUi}/srv/mg";
+              env.MG_OPERATOR_UI_DIST_DIR = "${operatorUi}/srv/mg";
               # The bundled fedimintd reports this value in `app_start_ts`.
               # Keep it tied to the reviewed Fedimint input, not the Manifold
               # checkout or a source snapshot's missing `.git` fallback.
@@ -370,7 +370,7 @@
               # Cargo derivation or profile solely for the OCI checks.
               cargoExtraArgs = "-p defe --bin defe -p devmon --bin manifold-test-issuer -p fedi-decentralized-cloud-mg-telemetry --bin fedi-decentralized-cloud-fman-telemetry -p fedi-decentralized-push-gateway --bin fedi-decentralized-push-gateway -p fedi-decentralized-liquidity-manager-daemon --bin liquidity-manager-daemon -p mg --bin fleet-manager -p mg-cli --bin fman-cli -p fa-cli --bin fa-cli --features fedi-decentralized-liquidity-manager-daemon/embedded-operator-ui,mg/embedded-operator-ui";
               env.FLIP_OPERATOR_UI_DIST_DIR = "${operatorUi}/srv/flip";
-              env.FMAN_OPERATOR_UI_DIST_DIR = "${operatorUi}/srv/mg";
+              env.MG_OPERATOR_UI_DIST_DIR = "${operatorUi}/srv/mg";
               env.FEDIMINT_BUILD_FORCE_GIT_HASH = fedimintSourceRev;
             };
 

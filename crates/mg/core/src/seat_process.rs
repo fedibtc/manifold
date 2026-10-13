@@ -74,7 +74,7 @@ use crate::identity::SeatKeys;
 mod die_with_parent;
 
 /// Private parent-to-bundled-child path for the safe-event journal.
-pub const SAFE_EVENT_DIR_ENV: &str = "FMAN_SAFE_EVENT_DIR";
+pub const SAFE_EVENT_DIR_ENV: &str = "MG_SAFE_EVENT_DIR";
 
 const HELLO_TIMEOUT: Duration = Duration::from_secs(30);
 /// `RunDkg` is a local control handshake, not a ceremony patience limit.
@@ -506,7 +506,7 @@ async fn spawn_child(
     // children keep the old loopback binds: their discovery records then
     // carry only loopback and relay addresses, and the harness dials
     // loopback routes via FM_IROH_CONNECT_OVERRIDES_PLAIN.
-    let local_e2e = std::env::var_os("FMAN_E2E_LOCAL_IROH").is_some();
+    let local_e2e = std::env::var_os("MG_E2E_LOCAL_IROH").is_some();
     let iroh_bind_ip = if local_e2e { "127.0.0.1" } else { "0.0.0.0" };
     #[cfg(not(test))]
     let program =
@@ -562,9 +562,9 @@ async fn spawn_child(
         // The bundled child deliberately starts from an empty environment.
         // Forward only the explicit harness marker so its module registry can
         // select hermetic test dependencies too.
-        command.env("FMAN_E2E_LOCAL_IROH", "1");
+        command.env("MG_E2E_LOCAL_IROH", "1");
         // A per-seat marker lets the real-process test stop inside message exchange.
-        command.env("FMAN_E2E_DKG_PAUSE", data_dir.with_extension("pause-dkg"));
+        command.env("MG_E2E_DKG_PAUSE", data_dir.with_extension("pause-dkg"));
     }
     parent
         .set_nonblocking(true)
@@ -678,7 +678,7 @@ async fn spawn_child(
 
 fn e2e_iroh_key(port: u16, role: &[u8]) -> [u8; 32] {
     Sha256::new()
-        .chain_update(b"fman-e2e-local-iroh-v1\0")
+        .chain_update(b"mg-e2e-local-iroh-v1\0")
         .chain_update(port.to_be_bytes())
         .chain_update(role)
         .finalize()
@@ -686,7 +686,7 @@ fn e2e_iroh_key(port: u16, role: &[u8]) -> [u8; 32] {
 }
 
 pub(crate) fn effective_iroh_p2p_key(keys: &SeatKeys, ports: SeatPorts) -> [u8; 32] {
-    if std::env::var_os("FMAN_E2E_LOCAL_IROH").is_some() {
+    if std::env::var_os("MG_E2E_LOCAL_IROH").is_some() {
         e2e_iroh_key(ports.p2p(), b"p2p")
     } else {
         keys.iroh_p2p.to_bytes()
@@ -700,7 +700,7 @@ pub(crate) fn effective_iroh_p2p_key(keys: &SeatKeys, ports: SeatPorts) -> [u8; 
 /// can precompute; any daemon-side proof over the child's setup code must use
 /// this same effective key rather than assuming the production branch.
 pub(crate) fn effective_iroh_api_key(keys: &SeatKeys, ports: SeatPorts) -> iroh::SecretKey {
-    if std::env::var_os("FMAN_E2E_LOCAL_IROH").is_some() {
+    if std::env::var_os("MG_E2E_LOCAL_IROH").is_some() {
         iroh::SecretKey::from_bytes(&e2e_iroh_key(ports.api(), b"api"))
     } else {
         keys.iroh_api.clone()

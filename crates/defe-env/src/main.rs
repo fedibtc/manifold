@@ -918,7 +918,7 @@ async fn form_federation(
         .arg(GUARDIAN_COUNT.to_string())
         .arg("--poll-timeout-secs")
         .arg("120")
-        .env("FMAN_E2E_LOCAL_IROH", "1")
+        .env("MG_E2E_LOCAL_IROH", "1")
         .env("FM_IROH_CONNECT_OVERRIDES_PLAIN", routes);
     for mg in mgs {
         command.arg("--locator").arg(&mg.locator);
@@ -1080,7 +1080,7 @@ fn write_tools(
     write_wrapper(
         &locked_fa_cli,
         &format!(
-            "#!/bin/sh\nFMAN_E2E_LOCAL_IROH=1 FM_IROH_CONNECT_OVERRIDES_PLAIN={} exec {} --internal-with-lock --lock {} -- {} \"$@\"\n",
+            "#!/bin/sh\nMG_E2E_LOCAL_IROH=1 FM_IROH_CONNECT_OVERRIDES_PLAIN={} exec {} --internal-with-lock --lock {} -- {} \"$@\"\n",
             shell_escape(OsStr::new(routes)),
             shell_escape(defe_env.as_os_str()),
             shell_escape(args.root.join("fi-cli.lock").as_os_str()),
@@ -1455,7 +1455,7 @@ fn local_iroh_overrides(first_port_base: u16) -> String {
 
 fn iroh_key(port: u16, role: &[u8]) -> [u8; 32] {
     Sha256::new()
-        .chain_update(b"fman-e2e-local-iroh-v1\0")
+        .chain_update(b"mg-e2e-local-iroh-v1\0")
         .chain_update(port.to_be_bytes())
         .chain_update(role)
         .finalize()
@@ -1943,7 +1943,7 @@ mod tests {
         let recorder = root.join("record command");
         std::fs::write(
             &recorder,
-            "#!/bin/sh\nprintf 'args' >>\"$RECORD\"\nprevious=\nfailed=0\nfor arg in \"$@\"; do printf '[%s]' \"$arg\" >>\"$RECORD\"; [ \"$previous $arg\" = 'guardian-fees collect' ] && failed=1; previous=$arg; done\nprintf ' env=[%s][%s]\\n' \"${FMAN_E2E_LOCAL_IROH-}\" \"${FM_IROH_CONNECT_OVERRIDES_PLAIN-}\" >>\"$RECORD\"\nif [ \"$failed\" -eq 1 ]; then exit 23; fi\nexit 0\n",
+            "#!/bin/sh\nprintf 'args' >>\"$RECORD\"\nprevious=\nfailed=0\nfor arg in \"$@\"; do printf '[%s]' \"$arg\" >>\"$RECORD\"; [ \"$previous $arg\" = 'guardian-fees collect' ] && failed=1; previous=$arg; done\nprintf ' env=[%s][%s]\\n' \"${MG_E2E_LOCAL_IROH-}\" \"${FM_IROH_CONNECT_OVERRIDES_PLAIN-}\" >>\"$RECORD\"\nif [ \"$failed\" -eq 1 ]; then exit 23; fi\nexit 0\n",
         )
         .unwrap();
         std::fs::set_permissions(&recorder, std::fs::Permissions::from_mode(0o700)).unwrap();

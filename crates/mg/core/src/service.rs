@@ -941,7 +941,7 @@ impl ManifoldGuardianService for ManifoldGuardianRpc {
 }
 
 fn is_local_single_guardian_e2e(size: u16) -> bool {
-    size == 1 && std::env::var_os("FMAN_E2E_LOCAL_IROH").is_some()
+    size == 1 && std::env::var_os("MG_E2E_LOCAL_IROH").is_some()
 }
 
 #[cfg(test)]

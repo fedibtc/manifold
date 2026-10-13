@@ -153,7 +153,7 @@ async fn bitcoind_child_receives_esplora_fallback_with_core_credentials() {
 /// The iroh-carrying ports (p2p, api) must bind all interfaces — fedimintd
 /// places its iroh UDP sockets at those addresses, and loopback there forces
 /// relay-only peering — while ui and metrics stay private to the host.
-/// This pins the production arm only: under FMAN_E2E_LOCAL_IROH the spawn
+/// This pins the production arm only: under MG_E2E_LOCAL_IROH the spawn
 /// keeps all four ports on loopback (the harness's port-derived keys are
 /// publicly derivable), and this test assumes that variable is absent from
 /// the test process environment.

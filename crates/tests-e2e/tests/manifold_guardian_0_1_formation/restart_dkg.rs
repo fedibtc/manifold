@@ -61,7 +61,7 @@ async fn run_restart() -> anyhow::Result<()> {
             .arg(verb)
             .arg("--fa-spv2-account-file")
             .arg(&account_file)
-            .env("FMAN_E2E_LOCAL_IROH", "1")
+            .env("MG_E2E_LOCAL_IROH", "1")
             .env("FM_IROH_CONNECT_OVERRIDES_PLAIN", &overrides)
             .env(
                 fedi_decentralized_manifold_environment::DEV_NOSTR_RELAYS_ENV,
