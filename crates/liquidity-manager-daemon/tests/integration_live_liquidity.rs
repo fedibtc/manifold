@@ -2142,8 +2142,8 @@ struct LiveStabilityStack {
     _resources: DefeResources,
     _gateway: GatewayFixture,
     _target_fedimint: FedimintFixture,
-    /// Kept alive rather than read: dropping it stops the electrs the target
-    /// client watches the chain through.
+    /// Kept alive rather than read: dropping it stops the electrs FLIP's
+    /// configured chain observer reads.
     _esplora: EsploraFixture,
     bitcoin: BitcoinFixture,
     data_dir: TestDataDir,
@@ -2180,12 +2180,8 @@ impl LiveStabilityStack {
         )
         .await
         .context("stability-pool target fedimint fixture")?;
-        // The target-federation wallet client watches the chain only through an
-        // esplora; keep it alive for the whole test so the peg-in can be
-        // claimed. These tests reach it the way production must — as the
-        // daemon's own configured chain observer, handed to the target client —
-        // rather than through `FM_FORCE_BITCOIN_RPC_*`, which would prove
-        // nothing about the daemon since it overrides the backend from outside.
+        // FLIP's own chain observer. The target client needs no chain backend:
+        // its walletv2 module learns of deposits from the federation.
         let esplora = EsploraFixture::start(&bitcoin, data_dir.path())
             .await
             .context("esplora fixture")?;
@@ -3637,9 +3633,6 @@ fn live_setup_config(
     attester_pubkey_hex: &str,
     esplora_url: Option<&str>,
 ) -> Value {
-    // An esplora-configured FLIP is the deployment shape that can serve its
-    // target clients a chain backend of its own; bitcoind is the one that
-    // cannot, and leaves them on whatever the target federation advertises.
     let chain_observer = match esplora_url {
         Some(url) => json!({ "backend": { "type": "esplora", "url": url } }),
         None => json!({

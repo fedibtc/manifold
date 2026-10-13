@@ -1,5 +1,11 @@
 # Current argument
 
+> **Stale proof:** it argues from the wallet v1 client (`subscribe_deposit`,
+> `DepositStateV2`, `ClaimedPegInKey`). FLIP now observes the peg-in from the
+> target client's walletv2 receive events and primary-module outputs, so the
+> argument must be rewritten against
+> `FedimintStabilityPoolBackend::observe_peg_in`.
+
 ## Argument
 
 **L1 (enum + code) — the FLIP call path has one production observer.** A fresh

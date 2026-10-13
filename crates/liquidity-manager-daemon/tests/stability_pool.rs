@@ -51,46 +51,134 @@ fn the_config_hash_fence_is_an_exact_comparison() {
         "a prefix is not a match"
     );
 }
-use fedi_decentralized_service_liquidity_manager::Url;
+use fedimint_core::core::ModuleKind;
 
 use super::*;
 
-/// An esplora-configured daemon hands its own backend to target clients;
-/// a bitcoind-configured one has nothing the Fedimint wallet client can
-/// use and must leave it on what the target federation advertises. The
-/// second case reads like an oversight, so it is pinned deliberately.
-#[test]
-fn only_an_esplora_observer_can_back_a_target_client() {
-    let esplora = ChainObserverConfigView {
-        backend: ChainObserverBackendView::Esplora {
-            url: Url("http://127.0.0.1:3002".to_owned()),
-        },
-    };
-    assert_eq!(
-        target_client_esplora_url(&esplora).map(|url| url.to_string()),
-        Some("http://127.0.0.1:3002/".to_owned())
-    );
+const TXID: &str = "1111111111111111111111111111111111111111111111111111111111111111";
 
-    let bitcoind = ChainObserverConfigView {
-        backend: ChainObserverBackendView::Bitcoind {
-            url: Url("http://127.0.0.1:18443".to_owned()),
-            username: Some("user".to_owned()),
-            has_password: true,
-        },
-    };
-    assert_eq!(target_client_esplora_url(&bitcoind), None);
+fn address(text: &str) -> Address<NetworkUnchecked> {
+    text.parse().expect("valid test address")
 }
 
-/// A URL the client cannot parse is not a reason to refuse to fund: the
-/// target federation's advertised backend is still there to fall back on.
-#[test]
-fn an_unparsable_esplora_url_falls_back_rather_than_failing() {
-    let broken = ChainObserverConfigView {
-        backend: ChainObserverBackendView::Esplora {
-            url: Url("not a url".to_owned()),
+fn our_address() -> Address<NetworkUnchecked> {
+    address("bcrt1q0xcqpzrky6eff2g52qdye53xkk9jxkvrl4xfg5")
+}
+
+fn operation_id(byte: u8) -> OperationId {
+    OperationId([byte; 32])
+}
+
+/// Builds the entry the target client persists for one event logged by the
+/// module of kind `module`.
+fn log_entry<E: Event>(id: u64, module: Option<ModuleKind>, event: &E) -> PersistedLogEntry {
+    serde_json::from_value(serde_json::json!({
+        "id": id,
+        "kind": E::KIND,
+        "module": module.map(|kind| serde_json::json!({ "kind": kind, "id": 1 })),
+        "ts_usecs": 0,
+        "payload": serde_json::to_value(event).expect("event serializes"),
+    }))
+    .expect("entry deserializes")
+}
+
+fn receive(id: u64, operation: u8, to: Address<NetworkUnchecked>) -> PersistedLogEntry {
+    log_entry(
+        id,
+        ReceivePaymentEvent::MODULE,
+        &ReceivePaymentEvent {
+            operation_id: operation_id(operation),
+            value: bitcoin::Amount::from_sat(25_100),
+            fee: bitcoin::Amount::from_sat(600),
+            address: to,
+            outpoint: Some(bitcoin::OutPoint {
+                txid: TXID.parse().expect("valid test txid"),
+                vout: 0,
+            }),
         },
-    };
-    assert_eq!(target_client_esplora_url(&broken), None);
+    )
+}
+
+fn receive_update(id: u64, operation: u8, status: ReceivePaymentStatus) -> PersistedLogEntry {
+    log_entry(
+        id,
+        ReceivePaymentUpdateEvent::MODULE,
+        &ReceivePaymentUpdateEvent {
+            operation_id: operation_id(operation),
+            status,
+        },
+    )
+}
+
+/// The client's other addresses are not the item's, whatever their claims
+/// say.
+#[test]
+fn a_claim_into_another_address_is_not_the_peg_in() {
+    let other = address("bcrt1qw508d6qejxtdg4y5r3zarvary0c5xw7kygt080");
+    let entries = vec![
+        receive(1, 1, other),
+        receive_update(2, 1, ReceivePaymentStatus::Success),
+    ];
+
+    assert_eq!(peg_in_receive(&entries, &our_address()), None);
+}
+
+/// A submitted claim is not a peg-in until the federation accepts it, and
+/// what it credits is the output less the receive fee.
+#[test]
+fn a_submitted_claim_is_pending_at_its_credited_amount() {
+    let entries = vec![receive(1, 1, our_address())];
+
+    assert_eq!(
+        peg_in_receive(&entries, &our_address()),
+        Some(PegInReceive::Pending {
+            amount: Sats(24_500)
+        })
+    );
+}
+
+/// The scanner resubmits a rejected claim as a new receive, so a rejection
+/// is not final and the accepted resubmission is the one that counts.
+#[test]
+fn the_accepted_resubmission_of_a_rejected_claim_is_the_peg_in() {
+    let entries = vec![
+        receive(1, 1, our_address()),
+        receive_update(2, 1, ReceivePaymentStatus::Aborted),
+        receive(3, 2, our_address()),
+        receive_update(4, 2, ReceivePaymentStatus::Success),
+    ];
+
+    assert_eq!(
+        peg_in_receive(&entries, &our_address()),
+        Some(PegInReceive::Accepted {
+            operation_id: operation_id(2),
+            amount: Sats(24_500),
+        })
+    );
+}
+
+/// Event kinds are only unique within a module, so an acceptance another
+/// module logs under the same kind must not settle the walletv2 claim.
+#[test]
+fn an_acceptance_logged_by_another_module_is_not_the_walletv2_one() {
+    let entries = vec![
+        receive(1, 1, our_address()),
+        log_entry(
+            2,
+            Some(ModuleKind::from_static_str("lnv2")),
+            &ReceivePaymentUpdateEvent {
+                operation_id: operation_id(1),
+                status: ReceivePaymentStatus::Success,
+            },
+        ),
+    ];
+
+    assert_eq!(
+        peg_in_receive(&entries, &our_address()),
+        Some(PegInReceive::Pending {
+            amount: Sats(24_500)
+        })
+    );
 }
 
 /// The gate that keeps a stability allocation off a federation without the

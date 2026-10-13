@@ -18,10 +18,10 @@ Stranded is exactly this enumerable conjunction:
 1. SQLite durably has `allocation_items[I].status = failed`;
 2. the unique `wallet_operations` row `W` for `I` and operation type
    `stability_pool_funding` durably has `status = completed`;
-3. the peg-in operation id durably recorded in `I.step_json` identifies the
-   safe peg-in allocated by the FLIP-owned client for `I`'s exact
-   `funding_targets.target_json.federation_id`, and the pinned wallet client has
-   reached `DepositStateV2::Claimed` for that operation;
+3. the peg-in address durably recorded in `I.step_json` is the walletv2
+   address the FLIP-owned client returned for `I`'s exact
+   `funding_targets.target_json.federation_id`, and the target federation has
+   accepted that client's claim of the funding output paying it;
 4. at least `I.committed_amount_sats = C` from that claimed funding is again
    spendable mint e-cash in that same FLIP-owned target client's durable
    database, while the stability-pool provider account did not accept `C` for

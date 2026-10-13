@@ -1,5 +1,9 @@
 # Current argument
 
+> **Stale proof:** it names the wallet v1 allocation call. FLIP now allocates
+> the peg-in address with the walletv2 client's `receive`, still after
+> `usable_target` answers `Usable` on the same handle.
+
 ## Argument
 
 **L1 (`code` + `schema`) — acceptance persists a hash the requester did not

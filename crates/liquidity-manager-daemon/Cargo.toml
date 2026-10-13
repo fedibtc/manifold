@@ -68,6 +68,7 @@ fedimint-ln-client = { workspace = true }
 fedimint-ln-common = { workspace = true }
 fedimint-meta-client = { workspace = true }
 fedimint-mint-client = { workspace = true }
+fedimint-mintv2-client = { workspace = true }
 fedimint-rocksdb = { workspace = true }
 fedimint-wallet-client = { workspace = true }
 fedimint-walletv2-client = { workspace = true }

@@ -19,7 +19,6 @@ use super::*;
 use crate::allocation_store::{
     FundingTargetRecord, StabilityPoolAllocationStep, load_allocation_status_by_federation,
 };
-use crate::stability_pool::PegInAddress;
 use crate::test_support::{AllocationSeed, ItemSeed, test_sqlite_path};
 use crate::wallet::{SyncedWalletStatus, TestFundsWallet, WalletOperationSync};
 use crate::wallet::{WalletOperationInput, insert_wallet_operation_tx};
@@ -62,6 +61,7 @@ async fn stability_pool_allocation_completes_with_deposit_evidence() -> anyhow::
     backend
         .set_peg_in_status(PegInStatus::Claimed {
             amount: Sats(25_000),
+            operation_id: "peg-in-op-1".to_owned(),
         })
         .await;
 
@@ -107,17 +107,16 @@ async fn stability_pool_allocation_completes_with_deposit_evidence() -> anyhow::
 }
 
 /// A target allocation is already durable in the target client before the
-/// worker records its operation/address in SQLite. Model that window by
-/// dropping the worker between the two, then run the normal retry from the
-/// unchanged durable item.
+/// worker records its address in SQLite. Model that window by dropping the
+/// worker between the two, then run the normal retry from the unchanged
+/// durable item.
 ///
-/// The retry must recover the *same* target operation, not mint a second
-/// one. Upstream takes no caller-supplied operation id here, so the fence
-/// is the client's unused-address pool: an address nothing has claimed is
-/// reused rather than replaced.
+/// The retry must recover the *same* target address, not allocate a second
+/// one. Upstream takes no caller-supplied id here, so the fence is the
+/// client's current address: one nothing has paid is returned again rather
+/// than replaced.
 ///
-/// Two operation ids — `["peg-in-op-1", "peg-in-op-2"]` — is the failure this
-/// guards against.
+/// Two allocated addresses is the failure this guards against.
 #[tokio::test]
 async fn crash_after_target_peg_in_allocation_reuses_the_same_target_operation()
 -> anyhow::Result<()> {
@@ -151,7 +150,6 @@ async fn crash_after_target_peg_in_allocation_reuses_the_same_target_operation()
     }
 
     let before_retry = load_stability_step(&database).await?;
-    assert_eq!(before_retry.peg_in_operation_id, None);
     assert_eq!(before_retry.peg_in_address, None);
 
     // The retry runs to the wallet boundary, where a second test-only pause
@@ -167,22 +165,19 @@ async fn crash_after_target_peg_in_allocation_reuses_the_same_target_operation()
         }
     }
 
-    // One target operation exists, not two: the retry reused the address the
-    // lost call minted.
-    let allocated = backend.allocated_peg_in_operations().await;
+    // One target address exists, not two: the retry reused the address the
+    // lost call allocated.
+    let allocated = backend.allocated_peg_in_addresses().await;
     assert_eq!(
-        allocated
-            .iter()
-            .map(|peg_in| &peg_in.operation_id)
-            .collect::<Vec<_>>(),
-        vec!["peg-in-op-1"],
-        "the retry must recover the lost allocation, not mint a second one"
+        allocated.len(),
+        1,
+        "the retry must recover the lost allocation, not allocate a second one"
     );
     let persisted = load_stability_step(&database).await?;
     assert_eq!(
-        persisted.peg_in_operation_id.as_deref(),
-        Some("peg-in-op-1"),
-        "the item must record the operation the target client actually holds"
+        persisted.peg_in_address,
+        allocated.first().cloned(),
+        "the item must record the address the target client actually holds"
     );
     assert_eq!(wallet.submitted_count().await, 0);
     assert_eq!(backend.submitted_deposit_count().await, 0);
@@ -239,7 +234,7 @@ async fn a_spent_budget_stops_an_item_between_phases() -> anyhow::Result<()> {
         "a spent budget must not start the target check"
     );
     assert!(
-        backend.allocated_peg_in_operations().await.is_empty(),
+        backend.allocated_peg_in_addresses().await.is_empty(),
         "a spent budget must not mint a peg-in address"
     );
     assert!(
@@ -276,7 +271,7 @@ async fn a_spent_budget_stops_an_item_between_phases() -> anyhow::Result<()> {
         "the next pass must resume the item it stopped"
     );
     assert_eq!(
-        backend.allocated_peg_in_operations().await.len(),
+        backend.allocated_peg_in_addresses().await.len(),
         1,
         "the resumed pass must mint exactly one address"
     );
@@ -513,6 +508,7 @@ async fn a_terminal_deposit_is_recorded_even_when_the_report_hangs() -> anyhow::
     backend
         .set_peg_in_status(PegInStatus::Claimed {
             amount: Sats(25_000),
+            operation_id: "peg-in-op-1".to_owned(),
         })
         .await;
     backend
@@ -544,6 +540,52 @@ async fn a_terminal_deposit_is_recorded_even_when_the_report_hangs() -> anyhow::
         Some(SpDepositStatus::Success),
         "a drained deposit stream must commit its terminal state before the report gate"
     );
+    Ok(())
+}
+
+/// A claimed peg-in is final, so the worker builds on the recorded claim
+/// rather than observing it again. An item claimed through the wallet v1
+/// client, before FLIP moved to walletv2, has no walletv2 receive for the
+/// target client to report, and re-observing it would put it back to waiting
+/// for a transaction that was claimed long ago.
+#[tokio::test]
+async fn a_recorded_claim_is_not_observed_again() -> anyhow::Result<()> {
+    let database = Database::connect(test_sqlite_path("stability-recorded-claim")).await?;
+    let setup = test_setup_config();
+    let item_id = ItemId("federation-1:stability_pool".to_owned());
+    let (federation_id, _) = seed_stability_pool_allocation(
+        &database,
+        &setup,
+        Sats(25_000),
+        Some(StabilityPoolAllocationStep {
+            target_client_opened_at: Some(now_timestamp()),
+            peg_in_operation_id: Some(
+                "2222222222222222222222222222222222222222222222222222222222222222".to_owned(),
+            ),
+            peg_in_address: Some(regtest_address()),
+            wallet_operation_id: Some(
+                "wallet-stability-pool-funding-federation-1-stability_pool".to_owned(),
+            ),
+            peg_in_status: Some(PegInProgress::Claimed),
+            peg_in_amount: Some(Sats(25_000)),
+            ..StabilityPoolAllocationStep::default()
+        }),
+    )
+    .await?;
+    seed_completed_wallet_operation(&database, &federation_id, &item_id).await?;
+
+    let wallet = TestFundsWallet::new(setup.network, Sats(100_000), regtest_address());
+    // Left at its default: the target client reports no receive into the
+    // recorded address.
+    let backend = FakeStabilityPoolBackend::new(regtest_address());
+
+    process_stability_pool_allocations_with(&database, &setup, &wallet, &backend).await?;
+
+    assert_eq!(backend.submitted_deposit_count().await, 1);
+    let item = allocation_store::stability_pool_item(&database, &federation_id)
+        .await?
+        .expect("the item is still active");
+    assert_eq!(item.step.peg_in_status, Some(PegInProgress::Claimed));
     Ok(())
 }
 
@@ -738,6 +780,7 @@ async fn a_cancelled_item_does_not_submit_its_prepared_deposit() -> anyhow::Resu
     backend
         .set_peg_in_status(PegInStatus::Claimed {
             amount: Sats(25_000),
+            operation_id: "peg-in-op-1".to_owned(),
         })
         .await;
     backend.set_observed_provided_amount(Sats(0)).await;
@@ -816,6 +859,7 @@ async fn interrupted_submit_fixture(
     backend
         .set_peg_in_status(PegInStatus::Claimed {
             amount: Sats(25_000),
+            operation_id: "peg-in-op-1".to_owned(),
         })
         .await;
     backend.set_observed_provided_amount(Sats(0)).await;
@@ -932,6 +976,7 @@ async fn short_target_balance_after_peg_in_does_not_strand_ecash() -> anyhow::Re
     backend
         .set_peg_in_status(PegInStatus::Claimed {
             amount: Sats(25_000),
+            operation_id: "peg-in-op-1".to_owned(),
         })
         .await;
     // An in-flight transaction is holding the claimed notes.
@@ -989,6 +1034,7 @@ async fn unrelated_stability_balance_does_not_complete_submitting_item() -> anyh
     backend
         .set_peg_in_status(PegInStatus::Claimed {
             amount: Sats(25_000),
+            operation_id: "peg-in-op-1".to_owned(),
         })
         .await;
     // Unrelated provider-account activity already covers the committed amount.
@@ -1146,7 +1192,7 @@ struct PegInAllocationCrashPoint {
 #[derive(Clone, Debug)]
 struct FakeStabilityPoolState {
     peg_in_address: String,
-    allocated_peg_in_operations: Vec<PegInAddress>,
+    allocated_peg_in_addresses: Vec<String>,
     peg_in_status: PegInStatus,
     deposit_status: StabilityDepositStatus,
     wallet_balance: Sats,
@@ -1181,7 +1227,7 @@ impl FakeStabilityPoolBackend {
         Self {
             inner: Arc::new(Mutex::new(FakeStabilityPoolState {
                 peg_in_address,
-                allocated_peg_in_operations: Vec::new(),
+                allocated_peg_in_addresses: Vec::new(),
                 peg_in_status: PegInStatus::WaitingForTransaction,
                 deposit_status: StabilityDepositStatus::Initiated,
                 wallet_balance: Sats(25_000),
@@ -1294,8 +1340,8 @@ impl FakeStabilityPoolBackend {
             .map(StabilityDepositSubmission::amount)
     }
 
-    async fn allocated_peg_in_operations(&self) -> Vec<PegInAddress> {
-        self.inner.lock().await.allocated_peg_in_operations.clone()
+    async fn allocated_peg_in_addresses(&self) -> Vec<String> {
+        self.inner.lock().await.allocated_peg_in_addresses.clone()
     }
 
     /// Seeds what the target client would say it deposited, and whether its
@@ -1336,37 +1382,25 @@ impl StabilityPoolBackend for FakeStabilityPoolBackend {
         if let Some(reason) = self.inner.lock().await.peg_in_unusable.clone() {
             return Ok(PegInAllocation::Unusable(reason));
         }
-        // Models the unused-address pool the production backend allocates
-        // from, which is what makes the call idempotent for a caller that
-        // loses its result. Upstream reuses an allocated address whose
-        // `PegInTweakIndexData::claimed` is empty and mints fresh only when
-        // none is, taking the oldest by `creation_time`; here the fake's
-        // single `peg_in_status` stands for that claim state.
+        // Models what makes the production call idempotent for a caller that
+        // loses its result: the walletv2 client returns its current address
+        // until an output pays it, and moves to a fresh one only then. Here
+        // the fake's single `peg_in_status` stands for whether one has.
         //
-        // A fake that minted a distinct id per call would make the
+        // A fake that allocated a fresh address per call would make the
         // production reuse invisible, so a regression there would not fail
         // any test.
         let mut state = self.inner.lock().await;
-        let already_claimed = matches!(state.peg_in_status, PegInStatus::Claimed { .. });
-        let reusable = if already_claimed {
-            None
-        } else {
-            state.allocated_peg_in_operations.first().cloned()
-        };
-        let peg_in = match reusable {
-            Some(unused) => unused,
-            None => {
-                let peg_in = PegInAddress {
-                    operation_id: format!(
-                        "peg-in-op-{}",
-                        state.allocated_peg_in_operations.len() + 1
-                    ),
-                    address: state.peg_in_address.clone(),
-                };
-                state.allocated_peg_in_operations.push(peg_in.clone());
-                peg_in
-            }
-        };
+        let paid = !matches!(state.peg_in_status, PegInStatus::WaitingForTransaction);
+        if paid || state.allocated_peg_in_addresses.is_empty() {
+            let fresh = state.peg_in_address.clone();
+            state.allocated_peg_in_addresses.push(fresh);
+        }
+        let peg_in = state
+            .allocated_peg_in_addresses
+            .last()
+            .cloned()
+            .expect("an address was allocated");
         drop(state);
         if let Some(crash_point) = self.allocation_crash_point.lock().await.take() {
             crash_point.allocated.notify_one();
@@ -1378,17 +1412,9 @@ impl StabilityPoolBackend for FakeStabilityPoolBackend {
     async fn observe_peg_in(
         &self,
         _target: &FundingTargetRecord,
-        _operation_id: &str,
+        _address: &str,
     ) -> anyhow::Result<PegInStatus> {
         Ok(self.inner.lock().await.peg_in_status.clone())
-    }
-
-    async fn recheck_peg_in(
-        &self,
-        _target: &FundingTargetRecord,
-        _operation_id: &str,
-    ) -> anyhow::Result<()> {
-        Ok(())
     }
 
     async fn target_wallet_balance(&self, _target: &FundingTargetRecord) -> anyhow::Result<Sats> {

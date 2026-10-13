@@ -52,7 +52,7 @@ unavailable. Each of these must be reachable and answering:
 | Dependency | Used for | Timeout | Source |
 |---|---|---|---|
 | gatewayd Admin API | balance, deposit address, sends | 15 s validation | `setup_store.rs` — **derived** |
-| Chain observer (Esplora or Bitcoin Core) | settlement evidence, target-client peg-in | 2 s validation | `setup_store.rs` — **derived** |
+| Chain observer (Esplora or Bitcoin Core) | settlement evidence | 2 s validation | `setup_store.rs` — **derived** |
 | Nostr relays (issuer revocation) | fresh revocation checks | 5 s connect, 5 s fetch, 16 events | `nostr.rs`, `revocation.rs` — **derived** |
 | Target Fedimint federation | peg-in, stability deposit | 30 s per item per pass | `stability_allocation.rs` — **derived** |
 | SQLite data root and filesystem | everything durable | — | — |

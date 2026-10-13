@@ -53,8 +53,8 @@ use crate::{
 /// behind in the target client that FLIP must record, so abandoning it
 /// mid-flight is precisely the hazard this design removes.
 ///
-/// `ensure_client`, `allocate_peg_in_address`, and `recheck_peg_in` **are**
-/// bounded despite not being pure reads, each on its own safety argument stated
+/// `ensure_client` and `allocate_peg_in_address` **are** bounded despite not
+/// being pure reads, each on its own safety argument stated
 /// at its call site. See [`ItemBudget::bound_observation`].
 ///
 /// A `tokio::time::timeout` around the whole item would do the opposite: it
@@ -111,19 +111,14 @@ impl ItemBudget {
     /// the pass logs and steps past, exactly as it does for an unreachable
     /// target.
     ///
-    /// Three calls bounded here are not pure reads. Two carry their own argument
-    /// for why abandoning them is safe, at their call sites:
+    /// Two calls bounded here are not pure reads. Each carries its own argument
+    /// for why abandoning it is safe, at its call site:
     ///
     /// - `ensure_client` — the pool owns the open, so a cancelled one releases
     ///   the target client's RocksDB lock on the pool's schedule.
-    /// - `allocate_peg_in_address` — the mint is idempotent, because it
-    ///   allocates from the client's unused-address pool, so an abandoned call
-    ///   yields the same address on the next pass.
-    /// - `recheck_peg_in` — its only durable effect is a scheduling hint. The
-    ///   upstream autocommit writes `next_check_time = now` onto the existing
-    ///   tweak-index entry, preserving every other field, and wakes the peg-in
-    ///   monitor; it claims nothing and returns no data. A lost call costs
-    ///   promptness only, and the next pass repeats it.
+    /// - `allocate_peg_in_address` — the allocation is idempotent, because the
+    ///   client returns its current address until an output pays it, so an
+    ///   abandoned call yields the same address on the next pass.
     ///
     /// Do not read this helper as licence to bound an effectful call without
     /// such an argument. `submit_deposit_to_provide` moves money and is **not**
@@ -175,7 +170,6 @@ pub(crate) async fn process_stability_pool_allocations(
     let backend = FedimintStabilityPoolBackend::new(
         context.paths.federations_dir.clone(),
         context.target_fedimint_clients.clone(),
-        &setup.chain_observer,
     );
     process_stability_pool_allocations_with(&context.database, &setup, &wallet, &backend).await
 }
@@ -345,7 +339,7 @@ async fn process_stability_pool_item(
         }
     }
 
-    if item.step.peg_in_address.is_none() || item.step.peg_in_operation_id.is_none() {
+    if item.step.peg_in_address.is_none() {
         // Phase boundary, so a spent budget declines to start the mint rather
         // than reaching it with nothing left.
         if budget.is_spent() {
@@ -356,10 +350,10 @@ async fn process_stability_pool_item(
             ));
         }
         tracing::info!(%federation_id, "stability: allocating peg-in address");
-        // Bounded, which is safe only because the mint is idempotent: the
-        // backend allocates from the client's unused-address pool, so a call
+        // Bounded, which is safe only because the allocation is idempotent: the
+        // client returns its current address until an output pays it, so a call
         // abandoned here returns the same address on the next pass instead of
-        // minting a second one. Without that idempotence, bounding it would mint
+        // a second one. Without that idempotence, bounding it would allocate
         // a second peg-in address per abandoned call; leaving it unbounded would
         // let a target that never answers hold the pass open. See
         // `FedimintStabilityPoolBackend::allocate_peg_in_address`.
@@ -393,9 +387,8 @@ async fn process_stability_pool_item(
         // has not authorised. An operator who needs it has
         // `inspect_target_client` on the authenticated Admin API.
         tracing::info!(%federation_id, "stability: peg-in address allocated");
-        validate_deposit_address(&peg_in.address, setup.network).map_err(invalid_argument)?;
-        item.step.peg_in_operation_id = Some(peg_in.operation_id);
-        item.step.peg_in_address = Some(peg_in.address);
+        validate_deposit_address(&peg_in, setup.network).map_err(invalid_argument)?;
+        item.step.peg_in_address = Some(peg_in);
         item.step.peg_in_status = Some(PegInProgress::WaitingForTransaction);
         allocation_store::update_item_step(database, &item.item_id, &item.step).await?;
         advanced = true;
@@ -510,18 +503,33 @@ async fn advance_after_withdrawal_completed(
     mut item: StabilityPoolAllocationItem,
     budget: ItemBudget,
 ) -> ServiceResult<bool> {
-    let peg_in_operation_id = item
-        .step
-        .peg_in_operation_id
-        .clone()
-        .ok_or_else(|| internal_error("missing stability-pool peg-in operation id"))?;
-    let status = budget
-        .bound_observation(
-            "peg-in observation",
-            backend.observe_peg_in(&item.target, &peg_in_operation_id),
-        )
-        .await
-        .map_err(unavailable)?;
+    // A claimed peg-in is final, so the recorded claim stands rather than being
+    // observed again. That also keeps an item claimed through the wallet v1
+    // client, before FLIP moved to walletv2, progressing to its deposit.
+    let status = match &item.step {
+        allocation_store::StabilityPoolAllocationStep {
+            peg_in_status: Some(PegInProgress::Claimed),
+            peg_in_amount: Some(amount),
+            peg_in_operation_id: Some(operation_id),
+            ..
+        } => PegInStatus::Claimed {
+            amount: *amount,
+            operation_id: operation_id.clone(),
+        },
+        step => {
+            let peg_in_address = step
+                .peg_in_address
+                .clone()
+                .ok_or_else(|| internal_error("missing stability-pool peg-in address"))?;
+            budget
+                .bound_observation(
+                    "peg-in observation",
+                    backend.observe_peg_in(&item.target, &peg_in_address),
+                )
+                .await
+                .map_err(unavailable)?
+        }
+    };
     tracing::debug!(
         federation_id = %item.federation_id.0,
         ?status,
@@ -529,50 +537,10 @@ async fn advance_after_withdrawal_completed(
         "stability: peg-in observation"
     );
 
-    // Up to and including `WaitingForConfirmation`, the deposit is waiting on the
-    // wallet client's background peg-in monitor to claim it, and draining the
-    // stream does not drive that monitor — the stream *waits* on the monitor's
-    // `ClaimedPegInKey` write. The monitor was woken once when the address was
-    // allocated, before the funds existed, and otherwise polls on its own slow
-    // schedule, so nudge it while we wait (as aqueduct does). From `Confirmed`
-    // on, that key has already been written and the remaining wait is on the
-    // primary-module outputs, which the monitor has no part in.
-    if matches!(
-        status,
-        PegInStatus::WaitingForTransaction | PegInStatus::WaitingForConfirmation { .. }
-    ) {
-        // Bounded, and abandoning it is safe. Its only durable effect is a
-        // scheduling hint: `recheck_pegin_address` autocommits
-        // `next_check_time = now` onto the existing `PegInTweakIndexData` with
-        // `..db_val` preserving every other field, then wakes the monitor on
-        // commit. It claims nothing, moves no value, and mutates no operation
-        // state.
-        //
-        // So both abandonment points are safe. Before the commit, nothing is
-        // written and the monitor keeps its own slower schedule. After it,
-        // the write has landed and the call returns no data FLIP records —
-        // its result is `()`. It is idempotent besides: a repeat only writes a
-        // newer `now`. A lost call therefore costs promptness, and the next
-        // pass repeats it while the status still matches above.
-        budget
-            .bound_observation(
-                "peg-in recheck",
-                backend.recheck_peg_in(&item.target, &peg_in_operation_id),
-            )
-            .await
-            .map_err(unavailable)?;
-    }
-
     match status {
         PegInStatus::WaitingForTransaction => {
             item.step
                 .set_peg_in_status(PegInProgress::WaitingForTransaction, None);
-            allocation_store::update_item_step(database, &item.item_id, &item.step).await?;
-            Ok(true)
-        }
-        PegInStatus::WaitingForConfirmation { amount } => {
-            item.step
-                .set_peg_in_status(PegInProgress::WaitingForConfirmation, Some(amount));
             allocation_store::update_item_step(database, &item.item_id, &item.step).await?;
             Ok(true)
         }
@@ -582,9 +550,13 @@ async fn advance_after_withdrawal_completed(
             allocation_store::update_item_step(database, &item.item_id, &item.step).await?;
             Ok(true)
         }
-        PegInStatus::Claimed { amount } => {
+        PegInStatus::Claimed {
+            amount,
+            operation_id,
+        } => {
             item.step
                 .set_peg_in_status(PegInProgress::Claimed, Some(amount));
+            item.step.peg_in_operation_id = Some(operation_id);
             allocation_store::update_item_step(database, &item.item_id, &item.step).await?;
             advance_stability_deposit(database, setup, backend, item, amount, budget).await
         }
