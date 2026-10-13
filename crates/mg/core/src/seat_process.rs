@@ -677,8 +677,10 @@ async fn spawn_child(
 }
 
 fn e2e_iroh_key(port: u16, role: &[u8]) -> [u8; 32] {
+    // Keeps the pre-rename tag: after an upgrade, an E2E guardian must derive
+    // the iroh keys that its federation config already names.
     Sha256::new()
-        .chain_update(b"mg-e2e-local-iroh-v1\0")
+        .chain_update(b"fman-e2e-local-iroh-v1\0")
         .chain_update(port.to_be_bytes())
         .chain_update(role)
         .finalize()

@@ -4202,10 +4202,14 @@ fn spawn_manifold_guardian(
             .arg("--allow-insecure-push-gateway-origin");
     }
     if data_dir.join(PAYOUT_CRASH_SEAM_ENABLE).is_file() {
-        command.env(
+        // The upgrade qualification runs pre-rename executables, which read
+        // the FMAN_* name of this seam.
+        for name in [
             "MG_E2E_PAUSE_AFTER_GUARDIAN_FEE_PAYOUT_START",
-            data_dir.join(PAYOUT_CRASH_SEAM_REACHED),
-        );
+            "FMAN_E2E_PAUSE_AFTER_GUARDIAN_FEE_PAYOUT_START",
+        ] {
+            command.env(name, data_dir.join(PAYOUT_CRASH_SEAM_REACHED));
+        }
     }
     command.spawn()
 }
@@ -4481,7 +4485,7 @@ fn local_iroh_overrides_for_grid(
 
 fn e2e_iroh_key(port: u16, role: &[u8]) -> [u8; 32] {
     Sha256::new()
-        .chain_update(b"mg-e2e-local-iroh-v1\0")
+        .chain_update(b"fman-e2e-local-iroh-v1\0")
         .chain_update(port.to_be_bytes())
         .chain_update(role)
         .finalize()

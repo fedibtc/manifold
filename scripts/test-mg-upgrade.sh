@@ -39,6 +39,11 @@ bin_dir="${CARGO_TARGET_DIR:-target}/debug"
 bin_dir=$(realpath "$bin_dir")
 ln -s "$bin_dir/manifold-test-issuer" "$artifacts/manifold-test-issuer"
 export MG_E2E=1
+# The old executable predates the FMAN_* to MG_* rename of the E2E switches.
+# Set both names so the old and new executables, and the fedimintd children
+# they spawn, all run in local E2E mode.
+export FMAN_E2E_LOCAL_IROH=1
+export MG_E2E_LOCAL_IROH=1
 export MG_UPGRADE_FROM_BIN="$artifacts/$1"
 export MG_E2E_MANIFOLD_GUARDIAN_BIN="$artifacts/$2"
 export MG_E2E_FA_CLI_BIN="$bin_dir/fa-cli"

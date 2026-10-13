@@ -1455,7 +1455,7 @@ fn local_iroh_overrides(first_port_base: u16) -> String {
 
 fn iroh_key(port: u16, role: &[u8]) -> [u8; 32] {
     Sha256::new()
-        .chain_update(b"mg-e2e-local-iroh-v1\0")
+        .chain_update(b"fman-e2e-local-iroh-v1\0")
         .chain_update(port.to_be_bytes())
         .chain_update(role)
         .finalize()
