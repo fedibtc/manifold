@@ -42,19 +42,27 @@ const planPriceMsat = (plan: SeatSummary['plan']): number =>
 const dayOf = (atMs: number | null): string | null =>
   atMs === null ? null : new Date(atMs).toISOString().slice(0, 10);
 
-// `success` is the terminal result of fedimint's receive state machine
-// (crates/mg/core/src/wallet.rs), so a seat counts as sold once the buyer's
-// payment has been received — not merely claimed.
+// A seat counts as sold once its locked payment has been claimed. `success` is
+// fedimint's terminal receive result (crates/mg/core/src/wallet.rs).
+// `already_spent` counts too: the notes are spendable only by this host's
+// mnemonic, so their inputs being spent means this identity already claimed
+// them — after a restore, every sale the original host claimed reports this.
+// Its outcome time is when the restored host retried, so the sale is dated by
+// the seat's creation, which is when the payment was accepted.
 const seatSales = (seats: SeatSummary[]): EarningEvent[] =>
-  seats
-    .filter((seat) => seat.payment_claim.state === 'success')
-    .map((seat) => ({
-      key: `seat-sale:${seat.seat_id}`,
-      kind: 'seat-sale' as const,
-      amountMsat: planPriceMsat(seat.plan),
-      detail: seat.seat_id,
-      atMs: seat.payment_claim.state === 'success' ? seat.payment_claim.at_ms : null
-    }));
+  seats.flatMap((seat) => {
+    const claim = seat.payment_claim;
+    if (claim.state !== 'success' && claim.state !== 'already_spent') return [];
+    return [
+      {
+        key: `seat-sale:${seat.seat_id}`,
+        kind: 'seat-sale' as const,
+        amountMsat: planPriceMsat(seat.plan),
+        detail: seat.seat_id,
+        atMs: claim.state === 'success' ? claim.at_ms : seat.created_at_ms
+      }
+    ];
+  });
 
 // `remittances` is a display window: the daemon caps it (`limit.unwrap_or(20)`),
 // so this is the seat's recent fee activity and nothing older. It feeds the

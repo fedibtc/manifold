@@ -57,19 +57,37 @@ it('should report zero across the board with no seats and no fees', () => {
   });
 });
 
-it('should count a seat sale only once its payment claim succeeded', () => {
+it('should count a seat sale once its payment claim succeeded or was already spent', () => {
   const model = deriveEarnings({
     seats: [
       seat({ seat_id: 'sold' }),
       seat({ seat_id: 'pending', payment_claim: { state: 'pending' } }),
+      seat({ seat_id: 'not-paid', payment_claim: { state: 'not_paid' } }),
       seat({
-        seat_id: 'already-spent',
+        seat_id: 'restored',
+        plan: { InfiniteBestEffort: { price_msats: 2_000_000 } },
         payment_claim: { state: 'already_spent', at_ms: DAY_ONE }
       })
     ]
   });
 
-  expect(model.seatSalesMsat).toBe(50_000_000);
+  expect(model.seatSalesMsat).toBe(52_000_000);
+});
+
+// A restored host re-claims every sale and finds it already spent, at the
+// moment of the restore; the sale itself happened when the seat was created.
+it('should date an already-spent seat sale by the seat, not by the restore', () => {
+  const model = deriveEarnings({
+    seats: [
+      seat({
+        seat_id: 'restored',
+        created_at_ms: DAY_ONE,
+        payment_claim: { state: 'already_spent', at_ms: DAY_TWO }
+      })
+    ]
+  });
+
+  expect(model.days.map((day) => day.day)).toEqual([new Date(DAY_ONE).toISOString().slice(0, 10)]);
 });
 
 it('should price a seat sale from the plan the seat was sold under', () => {
