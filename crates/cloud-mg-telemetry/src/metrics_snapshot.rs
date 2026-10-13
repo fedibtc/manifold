@@ -28,6 +28,16 @@ pub(crate) struct MetricsTargetHealth {
     pub(crate) mg_id: String,
     pub(crate) mg_name: String,
     pub(crate) fresh: bool,
+    /// Newest seat capacity and its journal reception time in Unix milliseconds.
+    pub(crate) seat_capacity: Option<(i64, SeatCapacity)>,
+}
+
+/// Fields of the MG's `seat capacity` safe-journal event.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Deserialize)]
+pub(crate) struct SeatCapacity {
+    pub(crate) max_seats: u32,
+    pub(crate) available_seats: u32,
+    pub(crate) accepting_seats: bool,
 }
 
 /// Render durable sparse observations without changing their observation time.
@@ -49,14 +59,51 @@ pub(crate) fn render_metrics(
     let mut target_samples = String::new();
     let mut observation_samples = String::new();
     let mut stale_samples = String::new();
+    let mut max_seat_samples = String::new();
+    let mut available_seat_samples = String::new();
+    let mut accepting_seat_samples = String::new();
+    let mut seat_observation_samples = String::new();
     targets.sort_by(|left, right| left.mg_id.cmp(&right.mg_id));
     for target in targets {
-        writeln!(
-            target_samples,
-            "cloud_fman_telemetry_target_fresh{{fman_id=\"{}\",fman_name=\"{}\"}} {} {now_ms}",
+        let labels = format!(
+            "fman_id=\"{}\",fman_name=\"{}\"",
             escape(&target.mg_id),
             escape(&target.mg_name),
+        );
+        writeln!(
+            target_samples,
+            "cloud_fman_telemetry_target_fresh{{{labels}}} {} {now_ms}",
             i64::from(target.fresh),
+        )
+        .map_err(|_| ExpositionError)?;
+        let Some((observed_at_ms, capacity)) = target.seat_capacity else {
+            continue;
+        };
+        if observed_at_ms < 0 || observed_at_ms > now_ms {
+            return Err(ExpositionError);
+        }
+        writeln!(
+            max_seat_samples,
+            "cloud_fman_telemetry_seat_capacity_max_seats{{{labels}}} {} {observed_at_ms}",
+            capacity.max_seats,
+        )
+        .map_err(|_| ExpositionError)?;
+        writeln!(
+            available_seat_samples,
+            "cloud_fman_telemetry_seat_capacity_available_seats{{{labels}}} {} {observed_at_ms}",
+            capacity.available_seats,
+        )
+        .map_err(|_| ExpositionError)?;
+        writeln!(
+            accepting_seat_samples,
+            "cloud_fman_telemetry_seat_capacity_accepting_seats{{{labels}}} {} {observed_at_ms}",
+            i64::from(capacity.accepting_seats),
+        )
+        .map_err(|_| ExpositionError)?;
+        writeln!(
+            seat_observation_samples,
+            "cloud_fman_telemetry_seat_capacity_observation_timestamp_seconds{{{labels}}} {} {now_ms}",
+            observed_at_ms as f64 / 1000.0,
         )
         .map_err(|_| ExpositionError)?;
     }
@@ -95,6 +142,20 @@ pub(crate) fn render_metrics(
     output.push_str("# HELP cloud_fman_telemetry_target_fresh Whether the active MG completed a full metrics poll within two configured polling intervals.\n");
     output.push_str("# TYPE cloud_fman_telemetry_target_fresh gauge\n");
     output.push_str(&target_samples);
+    output.push_str("# HELP cloud_fman_telemetry_seat_capacity_max_seats Seats the MG offers at most, from its newest seat capacity event.\n");
+    output.push_str("# TYPE cloud_fman_telemetry_seat_capacity_max_seats gauge\n");
+    output.push_str(&max_seat_samples);
+    output.push_str("# HELP cloud_fman_telemetry_seat_capacity_available_seats Seats the MG can still fill, from its newest seat capacity event.\n");
+    output.push_str("# TYPE cloud_fman_telemetry_seat_capacity_available_seats gauge\n");
+    output.push_str(&available_seat_samples);
+    output.push_str("# HELP cloud_fman_telemetry_seat_capacity_accepting_seats Whether the MG accepts new seats, from its newest seat capacity event.\n");
+    output.push_str("# TYPE cloud_fman_telemetry_seat_capacity_accepting_seats gauge\n");
+    output.push_str(&accepting_seat_samples);
+    output.push_str("# HELP cloud_fman_telemetry_seat_capacity_observation_timestamp_seconds Unix time the collector received the MG's newest seat capacity event.\n");
+    output.push_str(
+        "# TYPE cloud_fman_telemetry_seat_capacity_observation_timestamp_seconds gauge\n",
+    );
+    output.push_str(&seat_observation_samples);
     output.push_str("# HELP cloud_fman_telemetry_snapshot_observation_timestamp_seconds Unix time of the latest admitted guardian observation.\n");
     output.push_str("# TYPE cloud_fman_telemetry_snapshot_observation_timestamp_seconds gauge\n");
     output.push_str(&observation_samples);

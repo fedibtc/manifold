@@ -31,6 +31,39 @@ fn accepts_exact_bounded_safe_jsonl() {
 }
 
 #[test]
+fn keeps_the_newest_well_formed_seat_capacity() {
+    let record = |counts: &str| {
+        format!(
+            "{{\"fields\":{{\"message\":\"seat capacity\",\"safe_to_share\":true,{counts}}}}}\n"
+        )
+    };
+    let batch = validate(
+        [
+            record("\"max_seats\":3,\"available_seats\":2,\"accepting_seats\":true"),
+            record("\"max_seats\":3,\"available_seats\":1,\"accepting_seats\":false"),
+            record("\"max_seats\":-1,\"available_seats\":1,\"accepting_seats\":false"),
+        ]
+        .concat()
+        .into_bytes(),
+    )
+    .unwrap();
+    assert_eq!(
+        batch.seat_capacity(),
+        Some(SeatCapacity {
+            max_seats: 3,
+            available_seats: 1,
+            accepting_seats: false,
+        })
+    );
+    assert_eq!(
+        validate(b"{\"fields\":{\"safe_to_share\":true}}\n".to_vec())
+            .unwrap()
+            .seat_capacity(),
+        None
+    );
+}
+
+#[test]
 fn cursor_coordinates_must_fit_the_durable_sqlite_domain() {
     let incarnation = incarnation();
     let batch = |segment, offset| {

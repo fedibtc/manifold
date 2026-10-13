@@ -164,6 +164,12 @@ on the exported stale/fresh metadata using the documented two-cadence
 threshold. Grafana queries Prometheus (or its remote-write backend), never this
 `/metrics` endpoint.
 
+The four `cloud_fman_telemetry_seat_capacity_*` gauges report each MG's newest
+`seat capacity` record from its safe journals. They follow the journal cadence,
+not the metrics cadence, and carry the time the collector received that record.
+Use `cloud_fman_telemetry_seat_capacity_observation_timestamp_seconds` to judge
+the reading's age.
+
 The collector exports
 `cloud_fman_telemetry_metrics_admission_total{event=...}` with exactly five
 events: `admitted`, `known_deny_discarded`, `unknown_discarded`,

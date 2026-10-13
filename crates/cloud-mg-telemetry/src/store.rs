@@ -7,7 +7,7 @@ use rand::RngCore as _;
 use serde::{Deserialize, Serialize};
 use sqlx::{
     Row as _, SqlitePool,
-    sqlite::{SqliteConnectOptions, SqlitePoolOptions},
+    sqlite::{SqliteConnectOptions, SqlitePoolOptions, SqliteRow},
 };
 
 use crate::{
@@ -16,7 +16,7 @@ use crate::{
     journal_target::{CollectionTarget, CommitOutcome, WorkTarget},
     journal_types::{JournalStreamId, ReceptionDay, ValidatedJournalBatch},
     metrics_policy::{MetricsIdentity, MetricsPolicy},
-    metrics_snapshot::{MetricsSnapshot, MetricsTargetHealth},
+    metrics_snapshot::{MetricsSnapshot, MetricsTargetHealth, SeatCapacity},
     metrics_types::MetricsCommit,
 };
 
@@ -1027,14 +1027,10 @@ impl Store {
         #[cfg(test)]
         wait_test_hook(&self.metric_exposition_hook);
         let cutoff = now.saturating_sub(stale_after);
-        let target_rows = sqlx::query(
-            "SELECT t.fman_pubkey,t.fman_name,p.last_complete_at
-             FROM targets t LEFT JOIN metric_poll_state p ON p.target_id=t.target_id
-             WHERE t.status='active' AND t.lease_until > ? ORDER BY t.fman_pubkey",
-        )
-        .bind(now)
-        .fetch_all(&mut *transaction)
-        .await?;
+        let target_rows = sqlx::query(TARGET_HEALTH_QUERY)
+            .bind(now)
+            .fetch_all(&mut *transaction)
+            .await?;
         transaction.commit().await?;
 
         let mut snapshots = Vec::new();
@@ -1145,16 +1141,9 @@ impl Store {
             rejected,
         };
         let targets = target_rows
-            .into_iter()
-            .map(|row| {
-                let completed: Option<i64> = row.get("last_complete_at");
-                MetricsTargetHealth {
-                    mg_id: row.get("fman_pubkey"),
-                    mg_name: row.get("fman_name"),
-                    fresh: completed.is_some_and(|value| value >= cutoff),
-                }
-            })
-            .collect();
+            .iter()
+            .map(|row| target_health(row, cutoff))
+            .collect::<Result<_, _>>()?;
         Ok(MetricExpositionView {
             version,
             snapshots,
@@ -1343,25 +1332,14 @@ impl Store {
         stale_after: i64,
     ) -> Result<Vec<MetricsTargetHealth>, StoreError> {
         let cutoff = now.saturating_sub(stale_after);
-        let rows = sqlx::query(
-            "SELECT t.fman_pubkey,t.fman_name,p.last_complete_at
-             FROM targets t LEFT JOIN metric_poll_state p ON p.target_id=t.target_id
-             WHERE t.status='active' AND t.lease_until > ? ORDER BY t.fman_pubkey",
-        )
-        .bind(now)
-        .fetch_all(&self.pool)
-        .await?;
+        let rows = sqlx::query(TARGET_HEALTH_QUERY)
+            .bind(now)
+            .fetch_all(&self.pool)
+            .await?;
         Ok(rows
-            .into_iter()
-            .map(|row| {
-                let completed: Option<i64> = row.get("last_complete_at");
-                MetricsTargetHealth {
-                    mg_id: row.get("fman_pubkey"),
-                    mg_name: row.get("fman_name"),
-                    fresh: completed.is_some_and(|value| value >= cutoff),
-                }
-            })
-            .collect())
+            .iter()
+            .map(|row| target_health(row, cutoff))
+            .collect::<Result<_, _>>()?)
     }
 
     /// Version of the immutable cached private exposition.
@@ -1602,6 +1580,30 @@ impl Store {
         .bind(expected.stream_id.as_str())
         .execute(&mut *transaction)
         .await?;
+        if let Some(capacity) = batch.seat_capacity() {
+            sqlx::query(
+                "INSERT INTO seat_capacity(
+                    target_id,observed_at_ms,max_seats,available_seats,accepting_seats
+                 ) VALUES(?,?,?,?,?)
+                 ON CONFLICT(target_id) DO UPDATE SET
+                    observed_at_ms=excluded.observed_at_ms,
+                    max_seats=excluded.max_seats,
+                    available_seats=excluded.available_seats,
+                    accepting_seats=excluded.accepting_seats",
+            )
+            .bind(target.target_id())
+            .bind(now.checked_mul(1000).ok_or(StoreError::Corrupt)?)
+            .bind(capacity.max_seats)
+            .bind(capacity.available_seats)
+            .bind(capacity.accepting_seats)
+            .execute(&mut *transaction)
+            .await?;
+            sqlx::query(
+                "UPDATE metric_exposition_revision SET revision=revision+1 WHERE singleton=1",
+            )
+            .execute(&mut *transaction)
+            .await?;
+        }
         #[cfg(test)]
         if let Some(hook) = &self.commit_hook
             && !hook
@@ -1703,6 +1705,35 @@ impl Store {
         transaction.commit().await?;
         Ok(())
     }
+}
+
+const TARGET_HEALTH_QUERY: &str =
+    "SELECT t.fman_pubkey,t.fman_name,p.last_complete_at,c.observed_at_ms,c.max_seats,
+            c.available_seats,c.accepting_seats
+     FROM targets t LEFT JOIN metric_poll_state p ON p.target_id=t.target_id
+     LEFT JOIN seat_capacity c ON c.target_id=t.target_id
+     WHERE t.status='active' AND t.lease_until > ? ORDER BY t.fman_pubkey";
+
+fn target_health(row: &SqliteRow, cutoff: i64) -> Result<MetricsTargetHealth, sqlx::Error> {
+    let completed: Option<i64> = row.try_get("last_complete_at")?;
+    let observed_at_ms: Option<i64> = row.try_get("observed_at_ms")?;
+    let seat_capacity = match observed_at_ms {
+        Some(observed_at_ms) => Some((
+            observed_at_ms,
+            SeatCapacity {
+                max_seats: row.try_get("max_seats")?,
+                available_seats: row.try_get("available_seats")?,
+                accepting_seats: row.try_get("accepting_seats")?,
+            },
+        )),
+        None => None,
+    };
+    Ok(MetricsTargetHealth {
+        mg_id: row.try_get("fman_pubkey")?,
+        mg_name: row.try_get("fman_name")?,
+        fresh: completed.is_some_and(|value| value >= cutoff),
+        seat_capacity,
+    })
 }
 
 async fn target_is_current(

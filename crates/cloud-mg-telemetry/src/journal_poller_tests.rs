@@ -22,6 +22,7 @@ use crate::{
     iroh_journal_source::{JournalSession, JournalSource},
     journal_target::WorkTarget,
     journal_types::{JournalStreamId, ReceptionDay, ValidatedJournalBatch},
+    metrics_snapshot::SeatCapacity,
     store::{JournalStreamState, TargetMaterial},
 };
 
@@ -1262,4 +1263,58 @@ async fn journal_listing_and_persisted_streams_share_the_configured_limit() {
             if accepted { MAX_BATCHES_PER_TARGET } else { 0 }
         );
     }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn newest_seat_capacity_is_stored_at_reception_time() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = store(&directory).await;
+    let received = now().unwrap();
+    let incarnation = incarnation();
+    let cursor = SafeEventCursor {
+        incarnation: incarnation.clone(),
+        segment: 1,
+        offset: 2,
+    };
+    let record = |available: u32| {
+        format!(
+            "{{\"fields\":{{\"message\":\"seat capacity\",\"safe_to_share\":true,\"max_seats\":5,\"available_seats\":{available},\"accepting_seats\":true}}}}\n"
+        )
+    };
+    let responses = VecDeque::from([
+        FetchSafeEventJournalResponse::Current {
+            incarnation: incarnation.clone(),
+            jsonl: [record(2), record(1)].concat().into_bytes(),
+            next_cursor: Some(cursor.clone()),
+            continuity_gap: false,
+        },
+        FetchSafeEventJournalResponse::Current {
+            incarnation: incarnation.clone(),
+            jsonl: Vec::new(),
+            next_cursor: Some(cursor),
+            continuity_gap: false,
+        },
+    ]);
+    let (poller, _) = clocked_poller(
+        store.clone(),
+        JournalArchive::open(directory.path(), 1024 * 1024).unwrap(),
+        responses,
+        Arc::new(TestClock(AtomicI64::new(received))),
+        None,
+        None,
+    );
+    let (_shutdown, receiver) = tokio::sync::watch::channel(false);
+    poller.poll_once(receiver).await.unwrap();
+
+    assert_eq!(
+        store.metric_target_health(received, 3600).await.unwrap()[0].seat_capacity,
+        Some((
+            received * 1000,
+            SeatCapacity {
+                max_seats: 5,
+                available_seats: 1,
+                accepting_seats: true,
+            },
+        ))
+    );
 }

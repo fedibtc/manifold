@@ -5,6 +5,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use fedi_decentralized_service_manifold_guardian::{
     MAX_SAFE_EVENT_BATCH_BYTES, SafeEventCursor, SafeEventJournalIncarnation,
 };
+use serde::Deserialize as _;
+
+use crate::metrics_snapshot::SeatCapacity;
 
 const MAX_RECORDS_PER_BATCH: usize = 4096;
 const MAX_RECORD_BYTES: usize = 64 * 1024;
@@ -103,6 +106,7 @@ pub(crate) struct ValidatedJournalBatch {
     jsonl: Vec<u8>,
     next_cursor: Option<SafeEventCursor>,
     continuity_gap: bool,
+    seat_capacity: Option<SeatCapacity>,
 }
 
 impl ValidatedJournalBatch {
@@ -138,6 +142,7 @@ impl ValidatedJournalBatch {
                 _ => {}
             }
         }
+        let mut seat_capacity = None;
         for (index, record) in jsonl.split_inclusive(|byte| *byte == b'\n').enumerate() {
             if index >= MAX_RECORDS_PER_BATCH || record.len() > MAX_RECORD_BYTES {
                 return Err(JournalValueError);
@@ -153,11 +158,17 @@ impl ValidatedJournalBatch {
             {
                 return Err(JournalValueError);
             }
+            if value["fields"]["message"] == "seat capacity" {
+                seat_capacity = SeatCapacity::deserialize(&value["fields"])
+                    .ok()
+                    .or(seat_capacity);
+            }
         }
         Ok(Self {
             jsonl,
             next_cursor,
             continuity_gap,
+            seat_capacity,
         })
     }
 
@@ -172,6 +183,9 @@ impl ValidatedJournalBatch {
     }
     pub(crate) fn is_empty(&self) -> bool {
         self.jsonl.is_empty()
+    }
+    pub(crate) fn seat_capacity(&self) -> Option<SeatCapacity> {
+        self.seat_capacity
     }
 }
 

@@ -133,7 +133,8 @@ request proof, Holder currentness, and durable/cryptographic operations below.
    Test-only quarantine/reactivation changes status and revision only. Metric and
    journal paths read fenced authority material and update their own tables; the
    transactional exposition read may delete ineligible metric snapshots and bump
-   their cache revision, but none writes a protected field.
+   their cache revision, and a journal commit may store the target's seat
+   capacity and bump the same revision, but none writes a protected field.
 
 8. **[code, test, assumption] Secret persistence binds deployment and row
    identity.** Startup accepts exactly 32 key bytes and, on Unix, rejects a key

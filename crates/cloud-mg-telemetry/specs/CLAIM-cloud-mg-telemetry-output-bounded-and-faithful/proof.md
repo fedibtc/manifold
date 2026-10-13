@@ -46,7 +46,7 @@ the payload fields inside each safe event.
    identity for current allowed
    families.
 2. **[test] Collector metrics inventory.** Snapshot parser tests accept exposition
-   containing the five named `cloud_fman_telemetry_*` families. The renderer
+   containing the nine named `cloud_fman_telemetry_*` families. The renderer
    constructs only those generated families in addition to already-filtered
    forwarded samples. Admission diagnostics use only six fixed event labels;
    the rate-limited warning has one fixed reason and no source-derived field.
@@ -54,13 +54,15 @@ the payload fields inside each safe event.
 3. **[test] Journal default deny.** Journal-type tests accept bounded complete
    safe JSONL and reject malformed, oversized, spanned, or unmarked records.
    Archive tests establish byte-exact concatenated-frame decoding after
-   validation. The collector neither interprets nor augments approved payload
-   fields before that byte-exact append.
+   validation. The collector does not augment approved payload fields before
+   that byte-exact append. Validation reads only the counts of `seat capacity`
+   records and never writes them back.
 4. **[test] Snapshot fidelity.** Snapshot tests cover colliding display names,
    preserved observation timestamps across repeated scrapes, stale state as
    metadata rather than retiming, exact-boundary freshness, bounded persisted-row
    rejection diagnostics, parser-valid exposition, and remote-failure isolation.
-   They do not cover a forward wall-clock step and correction spanning
+   Seat capacity gauges carry their batch reception time, and a reception time
+   later than the exposition clock fails closed. They do not cover a forward wall-clock step and correction spanning
    collection, durable scheduling, target health, and later exposition.
 5. **[test] Persisted metrics revalidation.** Metrics-policy and store tests
    require the exact MG/seat/federation identity labels, remove only those labels,
@@ -92,7 +94,7 @@ the payload fields inside each safe event.
 8. **[enum] Exit closure.** The 24 production Rust files contain four HTTP routes
    and 13 response shapes; six collector tracing call
    sites; the single validated archive content writer and its bounded path
-   constructors; 51 admitted source metric families plus exactly five generated
+   constructors; 51 admitted source metric families plus exactly nine generated
    families; two Iroh connection sites; and four typed capability-bearing RPC
    sends. They contain no additional concrete held-material output path. Startup
    `Result` termination and the panic hook remain weaker, unexercised exits, so

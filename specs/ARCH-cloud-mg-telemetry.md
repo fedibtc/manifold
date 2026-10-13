@@ -215,6 +215,35 @@ full archive also rejects their nonempty journal batches until retention or
 operator action frees capacity. Archive I/O, recovery, integrity, and
 indeterminate-write failures remain collector-fatal.
 
+## Seat capacity from safe journals
+
+Each MG journals a `seat capacity` event on every advertisement cycle with the
+seats it offers, the seats still free and whether it accepts new seats. While
+validating a batch, the collector keeps the newest record whose
+`fields.message` is `seat capacity` and whose `max_seats`, `available_seats` and
+`accepting_seats` decode as two unsigned 32-bit integers and a boolean. Other
+records are ignored. Reading never changes the archived bytes or rejects a
+batch.
+
+The commit that stores a batch's cursor also replaces the target's reading with
+that record and the batch's reception time, and bumps the exposition revision.
+Each active target with a reading gets four gauges labelled with the same
+`fman_id` and `fman_name` as `cloud_fman_telemetry_target_fresh`:
+
+```text
+cloud_fman_telemetry_seat_capacity_max_seats
+cloud_fman_telemetry_seat_capacity_available_seats
+cloud_fman_telemetry_seat_capacity_accepting_seats
+cloud_fman_telemetry_seat_capacity_observation_timestamp_seconds
+```
+
+The first three carry the reception time as their sample timestamp. The fourth
+carries the reception time in seconds as its value and the exposition time as
+its sample timestamp. A reception time later than the exposition clock fails
+the exposition closed, as a snapshot does. Quarantine and lease expiry hide the
+reading. A target renewed after expiry shows its last reading until its next
+batch with a `seat capacity` record.
+
 ## Deployment boundary
 
 The runtime is single-active. One process exclusively owns one SQLite

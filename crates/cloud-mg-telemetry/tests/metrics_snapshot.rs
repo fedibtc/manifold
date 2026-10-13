@@ -6,7 +6,7 @@ mod metrics_policy;
 #[path = "../src/metrics_snapshot.rs"]
 mod metrics_snapshot;
 
-use metrics_snapshot::{ExpositionError, MetricsSnapshot, MetricsTargetHealth};
+use metrics_snapshot::{ExpositionError, MetricsSnapshot, MetricsTargetHealth, SeatCapacity};
 
 fn render_metrics(
     snapshots: Vec<MetricsSnapshot>,
@@ -156,7 +156,7 @@ fn exposition_is_accepted_by_a_prometheus_text_parser() {
 
     let output = render_metrics(
         vec![snapshot("11", "aa", 1_000)],
-        vec![],
+        vec![seat_capacity_target(1_000)],
         0,
         2_000,
         60_000,
@@ -176,11 +176,13 @@ fn remote_failure_is_exposed_without_removing_healthy_targets() {
                 mg_id: "11".into(),
                 mg_name: "same".into(),
                 fresh: true,
+                seat_capacity: None,
             },
             MetricsTargetHealth {
                 mg_id: "22".into(),
                 mg_name: "same".into(),
                 fresh: false,
+                seat_capacity: None,
             },
         ],
         0,
@@ -191,6 +193,54 @@ fn remote_failure_is_exposed_without_removing_healthy_targets() {
     .unwrap();
     assert!(output.contains("fman_id=\"11\",fman_name=\"same\"} 1 2000"));
     assert!(output.contains("fman_id=\"22\",fman_name=\"same\"} 0 2000"));
+}
+
+fn seat_capacity_target(observed_at_ms: i64) -> MetricsTargetHealth {
+    MetricsTargetHealth {
+        mg_id: "11".into(),
+        mg_name: "same".into(),
+        fresh: true,
+        seat_capacity: Some((
+            observed_at_ms,
+            SeatCapacity {
+                max_seats: 3,
+                available_seats: 1,
+                accepting_seats: true,
+            },
+        )),
+    }
+}
+
+#[test]
+fn seat_capacity_keeps_its_reception_time() {
+    let output = render_metrics(
+        vec![],
+        vec![seat_capacity_target(1_500)],
+        0,
+        2_000,
+        60_000,
+        false,
+    )
+    .unwrap();
+    for line in [
+        "cloud_fman_telemetry_seat_capacity_max_seats{fman_id=\"11\",fman_name=\"same\"} 3 1500\n",
+        "cloud_fman_telemetry_seat_capacity_available_seats{fman_id=\"11\",fman_name=\"same\"} 1 1500\n",
+        "cloud_fman_telemetry_seat_capacity_accepting_seats{fman_id=\"11\",fman_name=\"same\"} 1 1500\n",
+        "cloud_fman_telemetry_seat_capacity_observation_timestamp_seconds{fman_id=\"11\",fman_name=\"same\"} 1.5 2000\n",
+    ] {
+        assert!(output.contains(line), "{line}");
+    }
+    assert!(
+        render_metrics(
+            vec![],
+            vec![seat_capacity_target(2_001)],
+            0,
+            2_000,
+            60_000,
+            false,
+        )
+        .is_err()
+    );
 }
 
 #[test]

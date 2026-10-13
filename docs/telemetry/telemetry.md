@@ -119,8 +119,9 @@ every five minutes by default, and polls vetted metrics every 30 minutes by
 default (15 minutes is the only other supported cadence). It preserves each bounded exact JSONL batch as an independently
 compressed frame under `logs/<opaque-stream>/<UTC-day>.jsonl.zst`, with its
 cursor and frame boundary committed together. It retains only the latest
-successful metrics observation per seat and exposes that state on its private
-`/metrics` listener with the original observation timestamp:
+successful metrics observation per seat and the newest `seat capacity` record
+from each MG's safe journals, and exposes both on its private `/metrics`
+listener with the original observation timestamp:
 
 1. **Trusted-federation note** — the signed kind-37707 setup-payment schema
    carries one deployment-owned HTTPS `telemetry_registration_url`; it never
