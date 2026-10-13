@@ -604,6 +604,10 @@ invocation waits on an unavailable minority. It reads consensus before
 connecting and after every partial wave, so an already-adopted value needs no
 live MG and a threshold-live subset may finish while minority seats remain
 offline.
+Formation's initial metadata proposal runs through the same write loop in
+`meta_write.rs`. Only its vote, target predicate, and error mapping differ:
+any guardian refusal other than a stale base ends formation unless readback
+shows adoption.
 
 The MG's per-seat single-owner loop adds a live-occurrence pin: before that
 process enters the fallible child submit RPC for one

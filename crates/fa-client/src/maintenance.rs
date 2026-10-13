@@ -6,17 +6,16 @@ use std::time::Duration;
 use fedi_decentralized_nostr_clients::FaNostrClient;
 use fedi_decentralized_service_manifold_guardian::{
     FaId, FederationMetadataUpdate, GatewayApiUrl, ManifoldGuardianError, ManifoldGuardianService,
-    MetaConsensusBase, MetaFieldKey, MetaFieldValue, RegisterGatewayRequest,
+    MetaFieldKey, MetaFieldValue, RegisterGatewayRequest,
 };
-use fedimint_core::runtime::Instant;
 use futures::stream::{FuturesUnordered, StreamExt as _};
 
 use crate::formation::{
     DriverRun, FormationRunOptions, FormationRunOptionsConfig, FormationTimingField,
     InvalidFormationRunOptions, MetaFieldSubmission, MetaFieldSubmissionError, SeatSession,
-    finish_driver_run, meta_field_matches, sleep_for_retry, snapshot_meta_consensus,
-    start_driver_run, validate_consensus_metadata_size,
+    finish_driver_run, meta_field_matches, sleep_for_retry, start_driver_run,
 };
+use crate::meta_write::{MetaWriteError, SeatVote, write_consensus_meta};
 use crate::{
     FaClient, FaError, FaIdentity, FaPayments, FaResult, FaStatus, FederationConsensusError,
     FederationConsensusReader, FederationConsensusSnapshot, FormationFreshness, FormationPhase,
@@ -401,185 +400,91 @@ where
     ) -> FaResult<()> {
         let authority = self.maintenance_authority(fa_id).await?;
         let invite = self.consensus_invite(&authority.invite_code).await;
-        let all_indices = authority
-            .seats
-            .iter()
-            .map(|seat| seat.index)
-            .collect::<BTreeSet<_>>();
-        let mut active_base = None;
-        let mut unresolved = all_indices.clone();
-        let mut guardian_errors = BTreeMap::new();
-        // Seats that answered `MetaTargetConflict` for the active base: their
-        // live target pin names a different value, so same-base retries
-        // are refused work. They stay unresolved (the diagnosis survives into
-        // the convergence result) but receive no further submissions until a
-        // fresh base clears the pin.
-        let mut pinned_conflicts: BTreeSet<u16> = BTreeSet::new();
-        let mut consensus_error = None;
-        let mut retry_delay = run.poll_interval();
-
-        loop {
-            if Instant::now() >= run.deadline() {
-                return Err(maintenance_convergence(
-                    &unresolved,
-                    &guardian_errors,
-                    consensus_error,
-                ));
-            }
-            let snapshot = match self.read_metadata_consensus(&invite, run).await {
-                Ok(Ok(snapshot)) => snapshot,
-                Ok(Err(error)) => {
-                    consensus_error = Some(error.to_string());
-                    sleep_for_maintenance_retry(
-                        run,
-                        &mut retry_delay,
-                        &unresolved,
-                        &guardian_errors,
-                        consensus_error.clone(),
-                    )
-                    .await?;
-                    continue;
-                }
-                Err(FaError::Timeout(message)) => {
-                    consensus_error = Some(message);
-                    sleep_for_maintenance_retry(
-                        run,
-                        &mut retry_delay,
-                        &unresolved,
-                        &guardian_errors,
-                        consensus_error.clone(),
-                    )
-                    .await?;
-                    continue;
-                }
-                Err(error) => return Err(error),
-            };
-            validate_consensus_metadata_size(snapshot.meta_value.as_deref()).map_err(|error| {
-                FaError::MaintenanceConsensusTooLarge {
-                    actual_bytes: error.actual_bytes,
-                    max_bytes: error.max_bytes,
-                }
-            })?;
-            if meta_field_matches(snapshot.meta_value.as_deref(), &key, &value)? {
-                return Ok(());
-            }
-
-            let expected_base = MetaConsensusBase::from_consensus(
-                snapshot_meta_consensus(&snapshot)
-                    .map_err(|reason| FaError::MaintenanceConsensusInvalid { reason })?,
-            );
-            if active_base != Some(expected_base) {
-                active_base = Some(expected_base);
-                unresolved.clone_from(&all_indices);
-                guardian_errors.clear();
-                pinned_conflicts.clear();
-                retry_delay = run.poll_interval();
-            }
-
-            let submit_rows = unresolved
-                .difference(&pinned_conflicts)
-                .copied()
-                .collect::<BTreeSet<_>>();
-            let mut sessions = Vec::with_capacity(submit_rows.len());
-            for outcome in self
-                .connect_unresolved_formed_sessions(&authority, &submit_rows, run)
-                .await?
-            {
-                match outcome {
-                    MaintenanceConnection::Connected(session) => sessions.push(session),
-                    MaintenanceConnection::Retryable { index, message } => {
-                        guardian_errors.insert(index, message);
+        let (authority, invite, key, value) = (&authority, &invite, &key, &value);
+        let seats = authority.seats.iter().map(|seat| seat.index).collect();
+        let written = write_consensus_meta(
+            run,
+            seats,
+            || self.read_metadata_consensus(invite, run),
+            |snapshot| meta_field_matches(snapshot.meta_value.as_deref(), key, value),
+            |rows, expected_base| async move {
+                let mut votes = Vec::with_capacity(rows.len());
+                let mut sessions = Vec::with_capacity(rows.len());
+                for outcome in self
+                    .connect_unresolved_formed_sessions(authority, &rows, run)
+                    .await?
+                {
+                    match outcome {
+                        MaintenanceConnection::Connected(session) => sessions.push(session),
+                        MaintenanceConnection::Retryable { index, message } => {
+                            votes.push((index, SeatVote::Retry(message)));
+                        }
                     }
                 }
-            }
-
-            let mut terminal_rejections = BTreeMap::new();
-            for (index, result) in self
-                .submit_meta_field_wave(&sessions, fa_id, expected_base, &key, &value, run)
-                .await
-            {
-                match result {
-                    Ok(MetaFieldSubmission::Accepted) => {
-                        unresolved.remove(&index);
-                        guardian_errors.remove(&index);
-                    }
-                    Ok(MetaFieldSubmission::BaseChanged) => {
-                        guardian_errors.insert(index, "consensus metadata base changed".to_owned());
-                    }
-                    // A lost or hung response is ambiguous, never proof of
-                    // refusal: it surfaces as the request timeout here (or as
-                    // a connector-layer retryable outcome before the wave).
-                    // A serialized `ManifoldGuardianError` can never prove local
-                    // transport failure (see `ManifoldGuardianCallError` in
-                    // `ports.rs`), so everything below is a wire-typed answer.
-                    Err(MetaFieldSubmissionError::Driver(FaError::Timeout(message))) => {
-                        guardian_errors.insert(index, message);
-                    }
-                    Err(MetaFieldSubmissionError::Driver(error)) => return Err(error),
-                    Err(MetaFieldSubmissionError::ManifoldGuardian(
-                        ManifoldGuardianError::SeatUnavailable,
-                    )) => {
-                        guardian_errors
-                            .insert(index, ManifoldGuardianError::SeatUnavailable.to_string());
-                    }
-                    // Not retryable for this base and not a policy refusal of
-                    // the value either: the guardian pinned this base to a
-                    // different admitted target. Stop submitting to that seat
-                    // and keep polling — the conflicting write converging (a
-                    // fresh base) or an operator restart is what clears it.
-                    Err(MetaFieldSubmissionError::ManifoldGuardian(
-                        ManifoldGuardianError::MetaTargetConflict,
-                    )) => {
-                        pinned_conflicts.insert(index);
-                        guardian_errors.insert(index, MAINTENANCE_TARGET_CONFLICT.to_owned());
-                    }
-                    Err(MetaFieldSubmissionError::ManifoldGuardian(error)) => {
-                        terminal_rejections.insert(index, error);
-                    }
+                for (index, result) in self
+                    .submit_meta_field_wave(&sessions, fa_id, expected_base, key, value, run)
+                    .await
+                {
+                    let vote = match result {
+                        Ok(MetaFieldSubmission::Accepted) => SeatVote::Accepted,
+                        Ok(MetaFieldSubmission::BaseChanged) => {
+                            SeatVote::Retry("consensus metadata base changed".to_owned())
+                        }
+                        // A lost or hung response is ambiguous, never proof of
+                        // refusal: it surfaces as the request timeout here (or
+                        // as a connector-layer retryable outcome before the
+                        // wave). A serialized `ManifoldGuardianError` can never
+                        // prove local transport failure (see
+                        // `ManifoldGuardianCallError` in `ports.rs`), so
+                        // everything below is a wire-typed answer.
+                        Err(MetaFieldSubmissionError::Driver(FaError::Timeout(message))) => {
+                            SeatVote::Retry(message)
+                        }
+                        Err(MetaFieldSubmissionError::Driver(error)) => return Err(error),
+                        Err(MetaFieldSubmissionError::ManifoldGuardian(
+                            ManifoldGuardianError::SeatUnavailable,
+                        )) => SeatVote::Retry(ManifoldGuardianError::SeatUnavailable.to_string()),
+                        // Not retryable for this base and not a policy refusal
+                        // of the value either: the guardian pinned this base
+                        // to a different admitted target. The conflicting
+                        // write converging (a fresh base) or an operator
+                        // restart is what clears it.
+                        Err(MetaFieldSubmissionError::ManifoldGuardian(
+                            ManifoldGuardianError::MetaTargetConflict,
+                        )) => SeatVote::Pinned(MAINTENANCE_TARGET_CONFLICT.to_owned()),
+                        Err(MetaFieldSubmissionError::ManifoldGuardian(error)) => {
+                            SeatVote::Rejected(error)
+                        }
+                    };
+                    votes.push((index, vote));
                 }
+                Ok(votes)
+            },
+        )
+        .await;
+        written.map(drop).map_err(|error| match error {
+            MetaWriteError::Fatal(error) => error,
+            MetaWriteError::Rejected { index, reason } => {
+                FaError::MaintenanceRejected { index, reason }
             }
-
-            // Read back immediately even when some connects/submissions
-            // failed. A threshold may already have adopted the value while a
-            // late sibling returned a terminal refusal or timeout.
-            match self.read_metadata_consensus(&invite, run).await {
-                Ok(Ok(snapshot)) => {
-                    consensus_error = None;
-                    validate_consensus_metadata_size(snapshot.meta_value.as_deref()).map_err(
-                        |error| FaError::MaintenanceConsensusTooLarge {
-                            actual_bytes: error.actual_bytes,
-                            max_bytes: error.max_bytes,
-                        },
-                    )?;
-                    if meta_field_matches(snapshot.meta_value.as_deref(), &key, &value)? {
-                        return Ok(());
-                    }
-                    let observed_base = MetaConsensusBase::from_consensus(
-                        snapshot_meta_consensus(&snapshot)
-                            .map_err(|reason| FaError::MaintenanceConsensusInvalid { reason })?,
-                    );
-                    if observed_base != expected_base {
-                        active_base = None;
-                        continue;
-                    }
-                }
-                Ok(Err(error)) => consensus_error = Some(error.to_string()),
-                Err(FaError::Timeout(message)) => consensus_error = Some(message),
-                Err(error) => return Err(error),
-            }
-
-            if let Some((index, reason)) = terminal_rejections.into_iter().next() {
-                return Err(FaError::MaintenanceRejected { index, reason });
-            }
-            sleep_for_maintenance_retry(
-                run,
-                &mut retry_delay,
-                &unresolved,
-                &guardian_errors,
-                consensus_error.clone(),
-            )
-            .await?;
-        }
+            MetaWriteError::TooLarge {
+                actual_bytes,
+                max_bytes,
+            } => FaError::MaintenanceConsensusTooLarge {
+                actual_bytes,
+                max_bytes,
+            },
+            MetaWriteError::InvalidBase(reason) => FaError::MaintenanceConsensusInvalid { reason },
+            MetaWriteError::Unconverged {
+                unresolved,
+                guardian_errors,
+                consensus_error,
+            } => FaError::MaintenanceConvergence {
+                unresolved,
+                guardian_errors,
+                consensus_error,
+            },
+        })
     }
 
     pub(crate) async fn read_metadata_consensus(
@@ -705,7 +610,10 @@ async fn sleep_for_maintenance_retry(
     Ok(())
 }
 
-fn next_maintenance_retry_delay(configured_poll_interval: Duration, delay: Duration) -> Duration {
+pub(crate) fn next_maintenance_retry_delay(
+    configured_poll_interval: Duration,
+    delay: Duration,
+) -> Duration {
     let maximum_delay = configured_poll_interval.max(MAINTENANCE_RETRY_MAX_DELAY);
     delay.saturating_mul(2).min(maximum_delay)
 }

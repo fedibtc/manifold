@@ -28,6 +28,7 @@ use crate::db::{
     FormationCreationMode, FormationMetaTarget, InitialSeat, MgAdmission, QuoteAuthorization,
     StoredVerifierProvenance,
 };
+use crate::meta_write::{MetaWriteError, SeatVote, write_consensus_meta};
 use crate::mg::MgClient;
 use crate::ports::FaIdentityExt as _;
 use crate::selection::AvailabilityMismatch;
@@ -4266,107 +4267,105 @@ where
             }
         };
 
-        if !confirmed {
-            recovery.snapshot.phase = FormationPhase::PublishingSeatBindings;
-            self.publish_snapshot(recovery.snapshot.clone());
+        if confirmed {
+            loop {
+                ensure_time_remaining(run.deadline, "reading the formation metadata")?;
+                let Ok(snapshot) = self.read_recovery_consensus(invite, run).await? else {
+                    sleep_for_retry(run.deadline, run.options.poll_interval).await?;
+                    continue;
+                };
+                verify_consensus_identity(&snapshot, invite)?;
+                validate_consensus_metadata_size(snapshot.meta_value.as_deref())
+                    .map_err(formation_metadata_too_large)?;
+                if !(self.seat_bindings_match(&snapshot, &target.seat_bindings)?
+                    && guardian_fee_recipients_match(
+                        snapshot.meta_value.as_deref(),
+                        &target.recipients,
+                    )?)
+                {
+                    return Err(FaError::InvalidManifoldGuardians(
+                        "formed federation changed its immutable directory or fee recipients"
+                            .to_owned(),
+                    ));
+                }
+                return self.remember_read_invite(invite, &snapshot).await;
+            }
         }
-        let mut pending_error = None;
 
-        loop {
-            ensure_time_remaining(run.deadline, "reading the formation metadata base")?;
-            let snapshot = if confirmed {
-                self.read_recovery_consensus(invite, run).await?
-            } else {
+        recovery.snapshot.phase = FormationPhase::PublishingSeatBindings;
+        self.publish_snapshot(recovery.snapshot.clone());
+        let formation_id = &recovery.snapshot.formation_id;
+        let target = &target;
+        let seats = sessions.iter().map(|session| session.index).collect();
+        let snapshot = write_consensus_meta(
+            run,
+            seats,
+            || {
                 run.call("reading the formation metadata base", || {
                     Ok(self.inner.ports.consensus_reader.read_consensus(invite))
                 })
-                .await?
-            };
-            let Ok(snapshot) = snapshot else {
-                sleep_for_retry(run.deadline, run.options.poll_interval).await?;
-                continue;
-            };
-            if confirmed {
-                verify_consensus_identity(&snapshot, invite)?;
-            }
-            validate_consensus_metadata_size(snapshot.meta_value.as_deref()).map_err(|error| {
-                FaError::InvalidManifoldGuardians(format!(
-                    "consensus metadata is {} bytes; formation permits at most {} bytes",
-                    error.actual_bytes, error.max_bytes
-                ))
-            })?;
-            let immutable_matches = self.seat_bindings_match(&snapshot, &target.seat_bindings)?
-                && guardian_fee_recipients_match(
-                    snapshot.meta_value.as_deref(),
-                    &target.recipients,
-                )?;
-            let exact_matches = immutable_matches
-                && guardian_fee_rate_matches(snapshot.meta_value.as_deref(), target.send_ppm)?;
-            if (confirmed && immutable_matches) || exact_matches {
-                if !confirmed {
-                    run.call("confirming formation metadata consensus", || {
-                        Ok(self
-                            .inner
-                            .store
-                            .confirm_formation_meta_target(&recovery.snapshot.formation_id))
-                    })
-                    .await??;
-                }
-                self.remember_read_invite(invite, &snapshot).await?;
-                return Ok(());
-            }
-            if confirmed {
-                return Err(FaError::InvalidManifoldGuardians(
-                    "formed federation changed its immutable directory or fee recipients"
-                        .to_owned(),
-                ));
-            }
-            if let Some(error) = pending_error.take() {
-                return Err(error);
-            }
-
-            let expected_base = MetaConsensusBase::from_consensus(
-                snapshot_meta_consensus(&snapshot).map_err(FaError::InvalidManifoldGuardians)?,
-            );
-            let results = self
-                .submit_formation_meta_wave(
-                    sessions,
-                    fa_id,
-                    expected_base,
-                    &target.binding_entries,
-                    &target.fa_fee_account,
-                    &target.guardian_verification_fee_account,
-                    target.send_ppm,
-                    run,
-                )
-                .await;
-            for result in results {
-                match result {
-                    Ok(_) => {}
-                    Err(FaError::Mg(MgFailure {
-                        cause: MgCause::MetaConsensusChanged,
-                        ..
-                    })) => {}
-                    Err(
-                        error @ FaError::Mg(MgFailure {
-                            cause:
-                                MgCause::GuardianVerificationFeeAccountUnavailable
-                                | MgCause::GuardianVerificationFeeAccountMismatch,
+            },
+            |snapshot| {
+                Ok(self.seat_bindings_match(snapshot, &target.seat_bindings)?
+                    && guardian_fee_recipients_match(
+                        snapshot.meta_value.as_deref(),
+                        &target.recipients,
+                    )?
+                    && guardian_fee_rate_matches(snapshot.meta_value.as_deref(), target.send_ppm)?)
+            },
+            |rows, expected_base| async move {
+                let mut votes = Vec::with_capacity(rows.len());
+                for (index, result) in self
+                    .submit_formation_meta_wave(sessions, &rows, fa_id, expected_base, target, run)
+                    .await
+                {
+                    let vote = match result {
+                        Ok(_) => SeatVote::Accepted,
+                        Err(FaError::Mg(MgFailure {
+                            cause: MgCause::MetaConsensusChanged,
                             ..
-                        }),
-                    ) => return Err(error),
-                    Err(error) => {
-                        log_mg_failure(
-                            &recovery.snapshot.formation_id,
-                            &error,
-                            "pending_consensus",
-                        );
-                        pending_error.get_or_insert(error);
-                    }
+                        })) => SeatVote::Retry("consensus metadata base changed".to_owned()),
+                        Err(
+                            error @ FaError::Mg(MgFailure {
+                                cause:
+                                    MgCause::GuardianVerificationFeeAccountUnavailable
+                                    | MgCause::GuardianVerificationFeeAccountMismatch,
+                                ..
+                            }),
+                        ) => return Err(error),
+                        Err(error) => {
+                            log_mg_failure(formation_id, &error, "pending_consensus");
+                            SeatVote::Rejected(error)
+                        }
+                    };
+                    votes.push((index, vote));
                 }
+                Ok(votes)
+            },
+        )
+        .await
+        .map_err(|error| match error {
+            MetaWriteError::Fatal(error) | MetaWriteError::Rejected { reason: error, .. } => error,
+            MetaWriteError::TooLarge {
+                actual_bytes,
+                max_bytes,
+            } => formation_metadata_too_large(ConsensusMetadataTooLarge {
+                actual_bytes,
+                max_bytes,
+            }),
+            MetaWriteError::InvalidBase(reason) => FaError::InvalidManifoldGuardians(reason),
+            MetaWriteError::Unconverged { .. } => {
+                FaError::Timeout("waiting for formation metadata consensus".to_owned())
             }
-            sleep_for_retry(run.deadline, run.options.poll_interval).await?;
-        }
+        })?;
+        run.call("confirming formation metadata consensus", || {
+            Ok(self
+                .inner
+                .store
+                .confirm_formation_meta_target(&recovery.snapshot.formation_id))
+        })
+        .await??;
+        self.remember_read_invite(invite, &snapshot).await
     }
 
     /// Collect one MG attestation and endpoint proof per seat.
@@ -4438,26 +4437,29 @@ where
     async fn submit_formation_meta_wave(
         &self,
         sessions: &[SeatSession<MgClient<F::Client>>],
+        rows: &BTreeSet<u16>,
         fa_id: FaId,
         expected_base: MetaConsensusBase,
-        seat_bindings: &[FormationSeatBinding],
-        fa_fee_account: &GuardianFeeAccount,
-        guardian_verification_fee_account: &GuardianFeeAccount,
-        send_ppm: u64,
+        target: &FormationMetaTarget,
         run: DriverRun<'_>,
-    ) -> Vec<FaResult<ProposeFormationMetaResponse>> {
+    ) -> Vec<(u16, FaResult<ProposeFormationMetaResponse>)> {
         let mut pending = FuturesUnordered::new();
-        for session in sessions {
-            pending.push(async move {
+        for session in sessions
+            .iter()
+            .filter(|session| rows.contains(&session.index))
+        {
+            let vote = async move {
                 let request = ProposeFormationMetaRequest {
                     ts: Timestamp(now_secs()?),
                     fa_id,
                     seat_id: session.seat_id.clone(),
                     expected_base,
-                    seat_bindings: seat_bindings.to_vec(),
-                    fa_fee_account: fa_fee_account.clone(),
-                    guardian_verification_fee_account: guardian_verification_fee_account.clone(),
-                    send_ppm,
+                    seat_bindings: target.binding_entries.clone(),
+                    fa_fee_account: target.fa_fee_account.clone(),
+                    guardian_verification_fee_account: target
+                        .guardian_verification_fee_account
+                        .clone(),
+                    send_ppm: target.send_ppm,
                 };
                 let request = run
                     .construct("signing ProposeFormationMeta request", || {
@@ -4470,9 +4472,10 @@ where
                         client.propose_formation_meta(request)
                     })
                     .await
-            });
+            };
+            pending.push(async move { (session.index, vote.await) });
         }
-        let mut results = Vec::with_capacity(sessions.len());
+        let mut results = Vec::with_capacity(rows.len());
         while let Some(result) = pending.next().await {
             results.push(result);
         }
@@ -5103,6 +5106,13 @@ pub(crate) fn snapshot_meta_consensus(
 pub(crate) struct ConsensusMetadataTooLarge {
     pub(crate) actual_bytes: usize,
     pub(crate) max_bytes: usize,
+}
+
+fn formation_metadata_too_large(error: ConsensusMetadataTooLarge) -> FaError {
+    FaError::InvalidManifoldGuardians(format!(
+        "consensus metadata is {} bytes; formation permits at most {} bytes",
+        error.actual_bytes, error.max_bytes
+    ))
 }
 
 pub(crate) fn validate_consensus_metadata_size(

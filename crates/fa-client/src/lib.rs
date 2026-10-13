@@ -12,6 +12,7 @@ mod formation;
 mod guardian_fee_ppm;
 mod liquidity;
 mod maintenance;
+mod meta_write;
 mod mg;
 mod ports;
 mod selection;
