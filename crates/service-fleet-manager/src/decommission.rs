@@ -1,12 +1,10 @@
-//! Testing-only FI seat release.
+//! Owner-authorized terminal FI seat release in every environment.
 //!
-//! The 0.1 product boundary is deliberately asymmetric: an FI buys a seat for
-//! as long as the operator keeps hosting it, and only the operator can end it
+//! The FI forfeits its own seat without a refund. Decommission retains the
+//! seat records and guardian data, exactly as operator decommission does
 //! ([`ARCH-fleet-manager-product-boundary`](../../fman/specs/ARCH-fleet-manager-product-boundary.md)).
-//! This verb exists solely so development and staging deployments can churn
-//! federations without an operator in the loop, and the daemon refuses it in
-//! production with [`crate::FleetManagerError::UnsupportedVerb`]. Nothing
-//! about it is a commercial commitment; do not build product behaviour on it.
+//! Older production daemons can refuse this verb with
+//! [`crate::FleetManagerError::UnsupportedVerb`].
 
 use crate::{FiId, SeatId, Timestamp};
 

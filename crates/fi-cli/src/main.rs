@@ -131,8 +131,8 @@ enum Command {
     PaymentWallet(PaymentWalletArgs),
     /// Ask every FMan to decommission this formation's seat (testing only).
     ///
-    /// Development and staging FMans alone accept the request, seats are
-    /// forfeited rather than refunded, and local FI state is left untouched.
+    /// Older production FMans can refuse the request. Seats are forfeited
+    /// rather than refunded, and local FI state is left untouched.
     Decommission,
 }
 

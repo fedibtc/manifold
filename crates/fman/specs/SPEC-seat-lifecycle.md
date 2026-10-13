@@ -76,9 +76,8 @@ replays the stored set with a bounded wait for `DkgStarted` and returns
 `AlreadyConfigured` repairs the formed record and returns `Running` without
 starting a second ceremony. Running, `DataLoss`, and decommissioned seats refuse
 restart before the child is touched. Restart never removes the final directory.
-There is no standalone FI cancellation verb. Operator decommission is the only
-release path in production; development and staging also let the seat's own FI
-request that same terminal decommission
+There is no standalone FI cancellation verb. All environments let the operator
+or the seat's own FI request the same terminal decommission
 ([SPEC-fi-rpc](./SPEC-fi-rpc.md)).
 
 ## Structural destruction invariant

@@ -4,9 +4,9 @@
 //! it sends one `DecommissionSeat` per seat of the recorded formation and
 //! reports what each FMan said. It takes no driver lease, records nothing, and
 //! leaves local FI state exactly as it found it — a decommissioned federation
-//! still reads as `Formed` until the caller abandons or overwrites it. Every
-//! FMan outside development and staging refuses the underlying verb, and the
-//! seat is forfeited, exactly as an operator decommission would leave it.
+//! still reads as `Formed` until the caller abandons or overwrites it. Older
+//! production FMans can refuse the underlying verb. An accepted request
+//! forfeits the seat, exactly as an operator decommission would leave it.
 
 use std::time::Duration;
 

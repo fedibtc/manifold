@@ -17,7 +17,6 @@ use fedi_decentralized_domain::{
     FmanPeerAttestationStatement, FmanTrustMaterial, HolderAuthorizationEnvelope, ProtocolV1,
     Pubkey, SchnorrSignatureProof, Url,
 };
-use fedi_decentralized_manifold_environment::ManifoldEnvironment;
 use fedi_decentralized_service_fleet_manager::{
     CreateSeatOutcome, CreateSeatRequest, CreateSeatResponse, DecommissionSeatRequest,
     DecommissionSeatResponse, DkgStatusInfo, EndedReason, EndedStatusInfo, FEDERATION_SIZES_0_1,
@@ -47,8 +46,8 @@ use crate::wallet::{LockedPaymentPrepareError, Msats};
 /// Seat access discipline: every verb naming an existing seat resolves it
 /// through `Fleet::authorize` — the fleet's only crate-visible seat getter —
 /// as its first fleet call, and the only verb here with an operator-shaped
-/// effect is `decommission_seat` — the FI's own seat release, refused outside
-/// development and staging. No verb reaches listing or shutdown. This file is
+/// effect is `decommission_seat` — the FI's own terminal seat release.
+/// No verb reaches listing or shutdown. This file is
 /// the entire FI surface; keep it scannable for those facts.
 #[derive(Clone)]
 pub struct FleetManagerRpc {
@@ -843,13 +842,11 @@ impl FleetManagerService for FleetManagerRpc {
         unsupported("GetFedimintStats")
     }
 
-    /// Decommission the caller's own seat, outside production only.
+    /// Decommission the caller's own seat in any environment.
     ///
-    /// This is the one FI verb with an operator-shaped effect, so it is fenced
-    /// twice: `authorize` first, so only the seat's owner can name it, and the
-    /// deployment environment second, so a production FMan answers
-    /// `UnsupportedVerb` no matter who asks. It exists to churn staging
-    /// federations without an operator in the loop
+    /// This is the one FI verb with an operator-shaped effect. `authorize`
+    /// restricts it to the immutable seat owner. It retains the terminal record
+    /// and guardian data, exactly as operator decommission does
     /// ([`ARCH-fleet-manager-product-boundary`](../../specs/ARCH-fleet-manager-product-boundary.md)).
     async fn decommission_seat(
         &self,
@@ -861,12 +858,6 @@ impl FleetManagerService for FleetManagerRpc {
                 .fleet
                 .authorize(&request)
                 .map_err(|err| map_seat_error("decommission_seat", err))?;
-            if !matches!(
-                self.fleet.config().manifold_environment,
-                ManifoldEnvironment::Development | ManifoldEnvironment::Staging
-            ) {
-                return unsupported("DecommissionSeat");
-            }
             let decommissioned = self
                 .fleet
                 .decommission(&seat)
