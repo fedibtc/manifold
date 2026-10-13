@@ -2,10 +2,10 @@ use std::path::PathBuf;
 
 use fedi_decentralized_service_liquidity_manager::{
     AcceptedAttesterPolicy, BitcoinNetwork, FederationId, FederationLiquidityDetails,
-    FederationName, FleetSeat, FleetSeatId, FmanEndorsement, FmanPeerAttestation,
-    FmanPeerAttestationStatement, FmanTrustMaterial, GetFmanTrustMaterialResponse,
-    GuardianIdentity, HashBytes, InviteCode, PeerId, ProtocolV1, ProtocolVersion, ProviderPolicy,
-    Sats, SchnorrSignatureProof, Sha256Digest, Url,
+    FederationName, FleetSeat, FleetSeatId, GetMgTrustMaterialResponse, GuardianIdentity,
+    HashBytes, InviteCode, MgEndorsement, MgPeerAttestation, MgPeerAttestationStatement,
+    MgTrustMaterial, PeerId, ProtocolV1, ProtocolVersion, ProviderPolicy, Sats,
+    SchnorrSignatureProof, Sha256Digest, Url,
 };
 use nostr_sdk::Keys;
 use nostr_sdk::secp256k1::Message;
@@ -46,27 +46,27 @@ fn test_invite(seed: u8) -> (String, String) {
     (invite.to_string(), federation_id.to_string())
 }
 
-struct Fman {
+struct Mg {
     keys: Keys,
     pubkey_hex: String,
     peers: Vec<usize>,
 }
 
-/// Sign a seat attestation for `fman` over `preview`'s federation.
+/// Sign a seat attestation for `mg` over `preview`'s federation.
 fn attestation_for(
     preview: &FederationPreview,
-    fman: &Fman,
+    mg: &Mg,
     peer_id: &str,
     guardian: &str,
-) -> FmanPeerAttestation {
+) -> MgPeerAttestation {
     let account_seed = peer_id.parse::<u8>().unwrap_or(0).saturating_add(1);
     let account_key = bitcoin::secp256k1::PublicKey::from_secret_key(
         bitcoin::secp256k1::SECP256K1,
         &bitcoin::secp256k1::SecretKey::from_slice(&[account_seed; 32])
             .expect("fixed test scalar is valid"),
     );
-    let statement = FmanPeerAttestationStatement {
-        fman_pubkey: Pubkey(fman.pubkey_hex.clone()),
+    let statement = MgPeerAttestationStatement {
+        mg_pubkey: Pubkey(mg.pubkey_hex.clone()),
         federation_id: preview.federation_id.clone(),
         federation_config_hash: preview.federation_config_hash.clone(),
         peer_id: PeerId(peer_id.to_owned()),
@@ -81,51 +81,51 @@ fn attestation_for(
     };
     let message = Message::from_digest(statement.digest().expect("statement digests"));
 
-    FmanPeerAttestation {
+    MgPeerAttestation {
         version: ProtocolV1,
         attestation: statement,
         proof: SchnorrSignatureProof {
-            signature: fman.keys.sign_schnorr(&message),
+            signature: mg.keys.sign_schnorr(&message),
         },
     }
 }
 
-/// Issue a badge to `fman` and bind it with a holder authorization.
+/// Issue a badge to `mg` and bind it with a holder authorization.
 fn envelope_for(
     issuer: &peerbadge_protocol::IssuerContext,
     authority: &peerbadge_protocol::IssuerAuthority,
-    fman: &Fman,
+    mg: &Mg,
 ) -> anyhow::Result<(peerbadge_protocol::HolderAuthorization, SdkSignedCredential)> {
     let holder = HolderContext::generate();
     let credential = issue_credential_for_holder(issuer, authority, &holder)?;
     let authorization =
-        holder_authorization_for_provider(&holder, &credential, &Pubkey(fman.pubkey_hex.clone()))?;
+        holder_authorization_for_provider(&holder, &credential, &Pubkey(mg.pubkey_hex.clone()))?;
 
     Ok((authorization, credential))
 }
 
-/// Signed trust material for `fman`, as that FMan's own daemon would serve
+/// Signed trust material for `mg`, as that MG's own daemon would serve
 /// it, with whatever holder authorizations the test wants it to carry.
 fn material_for(
-    fman: &Fman,
+    mg: &Mg,
     holder_authorizations: Vec<HolderAuthorizationEnvelope>,
-) -> GetFmanTrustMaterialResponse {
+) -> GetMgTrustMaterialResponse {
     let now = now_timestamp();
-    let material = FmanTrustMaterial {
-        fman_pubkey: Pubkey(fman.pubkey_hex.clone()),
+    let material = MgTrustMaterial {
+        mg_pubkey: Pubkey(mg.pubkey_hex.clone()),
         issued_at: now,
         expires_at: Timestamp(now.0 + 600),
-        public_api_urls: vec![Url(format!("iroh://{}", fman.pubkey_hex))],
+        public_api_urls: vec![Url(format!("iroh://{}", mg.pubkey_hex))],
         holder_authorizations,
     };
     let message = nostr_sdk::secp256k1::Message::from_digest(
         material.digest().expect("fixture material digests"),
     );
-    GetFmanTrustMaterialResponse {
+    GetMgTrustMaterialResponse {
         version: ProtocolV1,
         material,
         proof: SchnorrSignatureProof {
-            signature: fman.keys.sign_schnorr(&message),
+            signature: mg.keys.sign_schnorr(&message),
         },
     }
 }
@@ -135,14 +135,14 @@ fn endorsement_for(
     issuer: &peerbadge_protocol::IssuerContext,
     authority: &peerbadge_protocol::IssuerAuthority,
     preview: &FederationPreview,
-    fman: &Fman,
+    mg: &Mg,
     peer_id: &str,
     guardian: &str,
-) -> anyhow::Result<FmanEndorsement> {
-    let (holder_authorization, signed_credential) = envelope_for(issuer, authority, fman)?;
+) -> anyhow::Result<MgEndorsement> {
+    let (holder_authorization, signed_credential) = envelope_for(issuer, authority, mg)?;
 
-    Ok(FmanEndorsement {
-        attestation: attestation_for(preview, fman, peer_id, guardian),
+    Ok(MgEndorsement {
+        attestation: attestation_for(preview, mg, peer_id, guardian),
         trust: HolderAuthorizationEnvelope {
             holder_authorization,
             signed_credential,
@@ -163,15 +163,15 @@ struct Harness {
     authority: peerbadge_protocol::IssuerAuthority,
     attester_hex: String,
     preview: FederationPreview,
-    fmans: Vec<Fman>,
+    mgs: Vec<Mg>,
     preview_provider: std::sync::Arc<FakeFederationPreviewProvider>,
-    /// Trust material the requester will carry. Tests build it up per FMan; an
+    /// Trust material the requester will carry. Tests build it up per MG; an
     /// identity nothing programs is simply absent from the request, which is
     /// what "unresolvable" means.
-    trust_material: std::sync::Mutex<Vec<GetFmanTrustMaterialResponse>>,
+    trust_material: std::sync::Mutex<Vec<GetMgTrustMaterialResponse>>,
     revocation: std::sync::Arc<FakeRevocationFetcher>,
     invite: String,
-    endorsement: FmanEndorsement,
+    endorsement: MgEndorsement,
 }
 
 impl Harness {
@@ -193,13 +193,13 @@ impl Harness {
         )
         .await?;
 
-        let fmans: Vec<Fman> = assignments
+        let mgs: Vec<Mg> = assignments
             .iter()
             .enumerate()
             .map(|(index, peers)| {
                 let keys = Keys::generate();
                 let _ = index;
-                Fman {
+                Mg {
                     pubkey_hex: keys.public_key().to_string(),
                     keys,
                     peers: peers.to_vec(),
@@ -218,23 +218,18 @@ impl Harness {
                 })
                 .collect(),
             consensus_threshold,
-            fman_seat_bindings_metadata: None,
+            mg_seat_bindings_metadata: None,
             module_kinds: ["wallet", "mint", STABILITY_POOL_MODULE_KIND]
                 .into_iter()
                 .map(str::to_owned)
                 .collect(),
         };
-        // The directory the FI would have written: every previewed seat
-        // bound to the FMan the assignment gives it.
-        preview.fman_seat_bindings_metadata = Some(
-            FmanSeatBindings::new(fmans.iter().flat_map(|fman| {
-                fman.peers.iter().map(|peer| {
-                    attestation_for(
-                        &preview,
-                        fman,
-                        &peer.to_string(),
-                        &format!("guardian-{peer}"),
-                    )
+        // The directory the FA would have written: every previewed seat
+        // bound to the MG the assignment gives it.
+        preview.mg_seat_bindings_metadata = Some(
+            MgSeatBindings::new(mgs.iter().flat_map(|mg| {
+                mg.peers.iter().map(|peer| {
+                    attestation_for(&preview, mg, &peer.to_string(), &format!("guardian-{peer}"))
                 })
             }))
             .map_err(|error| anyhow::anyhow!("fixture seat bindings: {error}"))?
@@ -250,7 +245,7 @@ impl Harness {
         // the stages past the gate stay reachable. Gate rejections are
         // covered by replacing it deliberately.
         let endorsement =
-            endorsement_for(&issuer, &authority, &preview, &fmans[0], "0", "guardian-0")?;
+            endorsement_for(&issuer, &authority, &preview, &mgs[0], "0", "guardian-0")?;
 
         Ok(Self {
             database,
@@ -258,7 +253,7 @@ impl Harness {
             authority,
             attester_hex,
             preview,
-            fmans,
+            mgs,
             preview_provider,
             trust_material: std::sync::Mutex::new(Vec::new()),
             revocation,
@@ -268,18 +263,18 @@ impl Harness {
     }
 
     /// A valid endorsement naming `peer_id`/`guardian`, signed by
-    /// `fmans[fman_index]` and badged by the installed issuer.
+    /// `mgs[mg_index]` and badged by the installed issuer.
     fn endorsement_from(
         &self,
-        fman_index: usize,
+        mg_index: usize,
         peer_id: &str,
         guardian: &str,
-    ) -> anyhow::Result<FmanEndorsement> {
+    ) -> anyhow::Result<MgEndorsement> {
         endorsement_for(
             &self.issuer,
             &self.authority,
             &self.preview,
-            &self.fmans[fman_index],
+            &self.mgs[mg_index],
             peer_id,
             guardian,
         )
@@ -333,8 +328,8 @@ impl Harness {
                 stability_max_amount: None,
             },
             details_payload_hash: Sha256Digest([0; 32]),
-            fman_endorsement: Some(self.endorsement.clone()),
-            fman_trust_material: Some(
+            mg_endorsement: Some(self.endorsement.clone()),
+            mg_trust_material: Some(
                 self.trust_material
                     .lock()
                     .expect("fixture material lock")
@@ -354,14 +349,14 @@ impl Harness {
 
     fn trust_envelope_for(
         &self,
-        fman: &Fman,
+        mg: &Mg,
     ) -> anyhow::Result<(peerbadge_protocol::HolderAuthorization, SdkSignedCredential)> {
-        envelope_for(&self.issuer, &self.authority, fman)
+        envelope_for(&self.issuer, &self.authority, mg)
     }
 
     fn trust_envelope_for_at_level(
         &self,
-        fman: &Fman,
+        mg: &Mg,
         trust_level: u64,
     ) -> anyhow::Result<HolderAuthorizationEnvelope> {
         let holder = HolderContext::generate();
@@ -374,7 +369,7 @@ impl Harness {
         let holder_authorization = holder_authorization_for_provider(
             &holder,
             &signed_credential,
-            &Pubkey(fman.pubkey_hex.clone()),
+            &Pubkey(mg.pubkey_hex.clone()),
         )?;
         Ok(HolderAuthorizationEnvelope {
             holder_authorization,
@@ -382,13 +377,13 @@ impl Harness {
         })
     }
 
-    /// Carry trust material for this FMan holding one badge from the
+    /// Carry trust material for this MG holding one badge from the
     /// installed issuer, making the identity trustable.
-    fn program_trusted(&self, fman_index: usize) -> anyhow::Result<SdkSignedCredential> {
-        let fman = &self.fmans[fman_index];
-        let (holder_authorization, signed_credential) = self.trust_envelope_for(fman)?;
+    fn program_trusted(&self, mg_index: usize) -> anyhow::Result<SdkSignedCredential> {
+        let mg = &self.mgs[mg_index];
+        let (holder_authorization, signed_credential) = self.trust_envelope_for(mg)?;
         self.push_material(material_for(
-            fman,
+            mg,
             vec![HolderAuthorizationEnvelope {
                 holder_authorization,
                 signed_credential: signed_credential.clone(),
@@ -399,13 +394,13 @@ impl Harness {
 
     /// Carry trust material holding no badges: the identity is answered for
     /// but stays untrusted.
-    fn program_untrusted(&self, fman_index: usize) {
-        let fman = &self.fmans[fman_index];
-        self.push_material(material_for(fman, vec![]));
+    fn program_untrusted(&self, mg_index: usize) {
+        let mg = &self.mgs[mg_index];
+        self.push_material(material_for(mg, vec![]));
     }
 
     /// Install one more issuer authority, so a test can badge operators from
-    /// different issuers the way the FI's round-robin bucketing produces them.
+    /// different issuers the way the FA's round-robin bucketing produces them.
     ///
     /// `index` selects a distinct attester identity.
     async fn install_issuer(&self, index: u8) -> anyhow::Result<TestIssuer> {
@@ -426,13 +421,13 @@ impl Harness {
         })
     }
 
-    /// Carry trust material for this FMan holding one badge from `issuer`.
-    fn program_trusted_by(&self, fman_index: usize, issuer: &TestIssuer) -> anyhow::Result<()> {
-        let fman = &self.fmans[fman_index];
+    /// Carry trust material for this MG holding one badge from `issuer`.
+    fn program_trusted_by(&self, mg_index: usize, issuer: &TestIssuer) -> anyhow::Result<()> {
+        let mg = &self.mgs[mg_index];
         let (holder_authorization, signed_credential) =
-            envelope_for(&issuer.issuer, &issuer.authority, fman)?;
+            envelope_for(&issuer.issuer, &issuer.authority, mg)?;
         self.push_material(material_for(
-            fman,
+            mg,
             vec![HolderAuthorizationEnvelope {
                 holder_authorization,
                 signed_credential,
@@ -441,29 +436,29 @@ impl Harness {
         Ok(())
     }
 
-    /// Carry trust material for this FMan holding one badge from each issuer,
+    /// Carry trust material for this MG holding one badge from each issuer,
     /// the way an operator vouched for by several attesters serves them.
     fn program_trusted_by_each(
         &self,
-        fman_index: usize,
+        mg_index: usize,
         issuers: &[(
             &peerbadge_protocol::IssuerContext,
             &peerbadge_protocol::IssuerAuthority,
         )],
     ) -> anyhow::Result<()> {
-        let fman = &self.fmans[fman_index];
+        let mg = &self.mgs[mg_index];
         let envelopes = issuers
             .iter()
             .map(|(issuer, authority)| {
                 let (holder_authorization, signed_credential) =
-                    envelope_for(issuer, authority, fman)?;
+                    envelope_for(issuer, authority, mg)?;
                 Ok(HolderAuthorizationEnvelope {
                     holder_authorization,
                     signed_credential,
                 })
             })
             .collect::<anyhow::Result<Vec<_>>>()?;
-        self.push_material(material_for(fman, envelopes));
+        self.push_material(material_for(mg, envelopes));
         Ok(())
     }
 
@@ -506,12 +501,12 @@ impl Harness {
         config
     }
 
-    /// Replaces any existing entry for the same FMan: material is that
-    /// FMan's one current answer, so a test re-programming an identity is
+    /// Replaces any existing entry for the same MG: material is that
+    /// MG's one current answer, so a test re-programming an identity is
     /// changing what it serves, not adding a second opinion.
-    fn push_material(&self, response: GetFmanTrustMaterialResponse) {
+    fn push_material(&self, response: GetMgTrustMaterialResponse) {
         let mut material = self.trust_material.lock().expect("fixture material lock");
-        material.retain(|existing| existing.material.fman_pubkey != response.material.fman_pubkey);
+        material.retain(|existing| existing.material.mg_pubkey != response.material.mg_pubkey);
         material.push(response);
     }
 
@@ -650,7 +645,7 @@ fn test_data_dir(name: &str) -> PathBuf {
 }
 
 #[tokio::test]
-async fn happy_path_all_trusted_passes_with_duplicate_fman_seats() -> anyhow::Result<()> {
+async fn happy_path_all_trusted_passes_with_duplicate_mg_seats() -> anyhow::Result<()> {
     let harness = Harness::new("happy-path", 3, 2, &[&[0, 1], &[2]]).await?;
     harness.program_trusted(0)?;
     harness.program_trusted(1)?;
@@ -686,7 +681,7 @@ async fn happy_path_all_trusted_passes_with_duplicate_fman_seats() -> anyhow::Re
 ///
 /// Until this test, that number lived only in live-suite wall-clock. A
 /// change reintroducing a per-identity lookup would have run slower without
-/// failing anything. Widening the FMan set is the half that catches it: a
+/// failing anything. Widening the MG set is the half that catches it: a
 /// count that tracks the identity count is the regression, and asserting
 /// two on one fixed set alone would not see it.
 ///
@@ -711,7 +706,7 @@ async fn one_request_costs_two_revocation_round_trips() -> anyhow::Result<()> {
     // Twice the identities, twice the seats, four distinct badges, one
     // issuer. Still two round trips.
     let wide = Harness::new("round-trips-wide", 6, 4, &[&[0, 1], &[2], &[3], &[4, 5]]).await?;
-    for index in 0..wide.fmans.len() {
+    for index in 0..wide.mgs.len() {
         wide.program_trusted(index)?;
     }
 
@@ -735,7 +730,7 @@ async fn one_request_costs_two_revocation_round_trips() -> anyhow::Result<()> {
 }
 
 /// A federation formed without the optional stability-pool module is an
-/// ordinary valid federation, and its FMans can hold every credential this
+/// ordinary valid federation, and its MGs can hold every credential this
 /// pipeline checks. Nothing else in the pipeline reads the module map, so
 /// without this gate such a request is accepted, funded through an ordinary
 /// wallet peg-in, and fails only at the first stability-module lookup — which
@@ -797,11 +792,11 @@ async fn preview_unavailable_and_invalid_invite_map_to_codes() -> anyhow::Result
     other_preview.federation_id = FederationId(other_federation);
     let mut request = harness.request();
     request.federation_details.invite_code = InviteCode(other_invite);
-    request.fman_endorsement = Some(endorsement_for(
+    request.mg_endorsement = Some(endorsement_for(
         &harness.issuer,
         &harness.authority,
         &other_preview,
-        &harness.fmans[0],
+        &harness.mgs[0],
         "0",
         "guardian-0",
     )?);
@@ -839,7 +834,7 @@ async fn preview_hint_mismatches_reject_invalid_details() -> anyhow::Result<()> 
         seat_id: FleetSeatId("seat-1".to_owned()),
         peer_id: PeerId("0".to_owned()),
         guardian_identity: GuardianIdentity("guardian-wrong".to_owned()),
-        fleet_manager_pubkey: Pubkey(harness.fmans[0].pubkey_hex.clone()),
+        manifold_guardian_pubkey: Pubkey(harness.mgs[0].pubkey_hex.clone()),
         role_metadata: vec![],
     }];
     let outcome = harness.provider().verify(&request, &config).await;
@@ -857,7 +852,7 @@ async fn missing_or_malformed_directory_rejects_invalid_seat_binding() -> anyhow
     let config = harness.config(VerificationRequirement::AllTrusted);
 
     let mut preview = harness.preview.clone();
-    preview.fman_seat_bindings_metadata = None;
+    preview.mg_seat_bindings_metadata = None;
     harness
         .preview_provider
         .respond_ok(&harness.invite, preview);
@@ -865,7 +860,7 @@ async fn missing_or_malformed_directory_rejects_invalid_seat_binding() -> anyhow
     assert_rejects(&outcome, PublicRejectionCode::InvalidSeatBinding);
 
     let mut preview = harness.preview.clone();
-    preview.fman_seat_bindings_metadata = Some("{\"not\":\"canonical\"}".to_owned());
+    preview.mg_seat_bindings_metadata = Some("{\"not\":\"canonical\"}".to_owned());
     harness
         .preview_provider
         .respond_ok(&harness.invite, preview);
@@ -877,11 +872,11 @@ async fn missing_or_malformed_directory_rejects_invalid_seat_binding() -> anyhow
 /// Verify a request against a deliberately altered seat-binding directory.
 async fn verify_with_directory(
     harness: &Harness,
-    bindings: Vec<FmanPeerAttestation>,
+    bindings: Vec<MgPeerAttestation>,
 ) -> anyhow::Result<VerificationOutcome> {
     let mut preview = harness.preview.clone();
-    preview.fman_seat_bindings_metadata = Some(
-        FmanSeatBindings::new(bindings)
+    preview.mg_seat_bindings_metadata = Some(
+        MgSeatBindings::new(bindings)
             .map_err(|error| anyhow::anyhow!("{error}"))?
             .canonical_string()
             .map_err(|error| anyhow::anyhow!("{error}"))?,
@@ -907,7 +902,7 @@ async fn seat_binding_failures_reject_invalid_seat_binding() -> anyhow::Result<(
     let harness = Harness::new("seat-binding", 2, 2, &[&[0], &[1]]).await?;
     harness.program_trusted(0)?;
     harness.program_trusted(1)?;
-    let (a, b) = (&harness.fmans[0], &harness.fmans[1]);
+    let (a, b) = (&harness.mgs[0], &harness.mgs[1]);
 
     // A binding naming the wrong guardian for its seat.
     let outcome = verify_with_directory(
@@ -956,8 +951,8 @@ async fn seat_binding_for_another_config_revision_is_rejected() -> anyhow::Resul
     let outcome = verify_with_directory(
         &harness,
         vec![
-            attestation_for(&harness.preview, &harness.fmans[0], "0", "guardian-0"),
-            attestation_for(&other_revision, &harness.fmans[1], "1", "guardian-1"),
+            attestation_for(&harness.preview, &harness.mgs[0], "0", "guardian-0"),
+            attestation_for(&other_revision, &harness.mgs[1], "1", "guardian-1"),
         ],
     )
     .await?;
@@ -994,7 +989,7 @@ async fn a_request_carrying_no_trust_material_is_rejected() -> anyhow::Result<()
     harness.program_trusted(1)?;
 
     let mut request = harness.request();
-    request.fman_trust_material = None;
+    request.mg_trust_material = None;
     let outcome = harness
         .provider()
         .verify(
@@ -1008,15 +1003,14 @@ async fn a_request_carrying_no_trust_material_is_rejected() -> anyhow::Result<()
 }
 
 #[tokio::test]
-async fn fman_material_needs_no_federation_selector() -> anyhow::Result<()> {
-    // Live material is FMan-scoped. The verified consensus directory, not a
-    // field echoed by this response, decides which federation the FMan operates.
+async fn mg_material_needs_no_federation_selector() -> anyhow::Result<()> {
+    // Live material is MG-scoped. The verified consensus directory, not a
+    // field echoed by this response, decides which federation the MG operates.
     let harness = Harness::new("foreign-material", 2, 2, &[&[0], &[1]]).await?;
     harness.program_trusted(0)?;
-    let (holder_authorization, signed_credential) =
-        harness.trust_envelope_for(&harness.fmans[1])?;
+    let (holder_authorization, signed_credential) = harness.trust_envelope_for(&harness.mgs[1])?;
     harness.push_material(material_for(
-        &harness.fmans[1],
+        &harness.mgs[1],
         vec![HolderAuthorizationEnvelope {
             holder_authorization,
             signed_credential,
@@ -1026,7 +1020,7 @@ async fn fman_material_needs_no_federation_selector() -> anyhow::Result<()> {
     let outcome = harness.verify(VerificationRequirement::AllTrusted).await;
     assert!(
         outcome.rejection.is_none(),
-        "FMan-scoped material should pass"
+        "MG-scoped material should pass"
     );
     Ok(())
 }
@@ -1041,7 +1035,7 @@ async fn duplicate_material_for_one_identity_is_rejected() -> anyhow::Result<()>
 
     let mut request = harness.request();
     let material = request
-        .fman_trust_material
+        .mg_trust_material
         .as_mut()
         .expect("harness carries material");
     material.push(material[0].clone());
@@ -1064,18 +1058,18 @@ async fn duplicate_material_for_an_irrelevant_identity_is_ignored() -> anyhow::R
     harness.program_trusted(0)?;
     harness.program_trusted(1)?;
 
-    let outsider = Fman {
+    let outsider = Mg {
         keys: Keys::generate(),
         pubkey_hex: String::new(),
         peers: vec![],
     };
-    let outsider = Fman {
+    let outsider = Mg {
         pubkey_hex: outsider.keys.public_key().to_string(),
         ..outsider
     };
     let extra = material_for(&outsider, vec![]);
     let mut request = harness.request();
-    let material = request.fman_trust_material.as_mut().expect("material");
+    let material = request.mg_trust_material.as_mut().expect("material");
     material.push(extra.clone());
     material.push(extra);
 
@@ -1096,10 +1090,10 @@ async fn duplicate_material_for_an_irrelevant_identity_is_ignored() -> anyhow::R
 /// Verify a request whose only deviation is its endorsement.
 async fn verify_with_endorsement(
     harness: &Harness,
-    endorsement: Option<FmanEndorsement>,
+    endorsement: Option<MgEndorsement>,
 ) -> VerificationOutcome {
     let mut request = harness.request();
-    request.fman_endorsement = endorsement;
+    request.mg_endorsement = endorsement;
     harness
         .provider()
         .verify(
@@ -1147,13 +1141,13 @@ async fn gate_rejects_an_endorsement_for_another_federation() -> anyhow::Result<
         &harness.issuer,
         &harness.authority,
         &other_preview,
-        &harness.fmans[0],
+        &harness.mgs[0],
         "0",
         "guardian-0",
     )?;
 
     let mut request = harness.request();
-    request.fman_endorsement = Some(endorsement);
+    request.mg_endorsement = Some(endorsement);
     // Relabelling the self-declared hint does not help.
     request.federation_details.federation_id = FederationId(other_federation);
     let outcome = harness
@@ -1198,7 +1192,7 @@ async fn gate_rejects_a_badge_from_an_untrusted_issuer() -> anyhow::Result<()> {
         &foreign_issuer,
         &foreign_authority,
         &harness.preview,
-        &harness.fmans[0],
+        &harness.mgs[0],
         "0",
         "guardian-0",
     )?;
@@ -1214,7 +1208,7 @@ async fn gate_rejects_an_authentic_badge_below_the_profile_minimum() -> anyhow::
     harness.program_trusted(0)?;
     let mut endorsement = harness.endorsement_from(0, "0", "guardian-0")?;
     endorsement.trust = harness
-        .trust_envelope_for_at_level(&harness.fmans[0], UNIT_TEST_PEER_BADGE_TRUST_LEVEL - 1)?;
+        .trust_envelope_for_at_level(&harness.mgs[0], UNIT_TEST_PEER_BADGE_TRUST_LEVEL - 1)?;
 
     let outcome = verify_with_endorsement(&harness, Some(endorsement)).await;
     assert_rejects(&outcome, PublicRejectionCode::InvalidCredentials);
@@ -1229,7 +1223,7 @@ async fn gate_rejects_an_authentic_badge_below_the_profile_minimum() -> anyhow::
 }
 
 #[tokio::test]
-async fn gate_rejects_a_badge_bound_to_another_fman() -> anyhow::Result<()> {
+async fn gate_rejects_a_badge_bound_to_another_mg() -> anyhow::Result<()> {
     // The envelope's subject must be the identity that signed the seat
     // attestation, so an endorsement cannot pair one guardian's binding
     // with another guardian's badge.
@@ -1238,7 +1232,7 @@ async fn gate_rejects_a_badge_bound_to_another_fman() -> anyhow::Result<()> {
 
     let mut endorsement = harness.endorsement_from(0, "0", "guardian-0")?;
     let (holder_authorization, signed_credential) =
-        envelope_for(&harness.issuer, &harness.authority, &harness.fmans[1])?;
+        envelope_for(&harness.issuer, &harness.authority, &harness.mgs[1])?;
     endorsement.trust = HolderAuthorizationEnvelope {
         holder_authorization,
         signed_credential,
@@ -1268,11 +1262,11 @@ async fn gate_verifies_the_badge_before_spending_a_relay_lookup() -> anyhow::Res
         .revocation
         .respond_err(ISSUER_RELAY, "relay must not be reached");
 
-    // A real badge from the installed issuer, bound to the wrong FMan: the
+    // A real badge from the installed issuer, bound to the wrong MG: the
     // issuer-installed check passes and the cryptography is what fails.
     let mut endorsement = harness.endorsement_from(0, "0", "guardian-0")?;
     let (holder_authorization, signed_credential) =
-        envelope_for(&harness.issuer, &harness.authority, &harness.fmans[1])?;
+        envelope_for(&harness.issuer, &harness.authority, &harness.mgs[1])?;
     endorsement.trust = HolderAuthorizationEnvelope {
         holder_authorization,
         signed_credential,
@@ -1377,9 +1371,9 @@ async fn no_nostr_advertisement_authority_is_unavailable() -> anyhow::Result<()>
     )
     .await?;
     let (holder_authorization, signed_credential) =
-        envelope_for(&issuer, &authority, &harness.fmans[0])?;
+        envelope_for(&issuer, &authority, &harness.mgs[0])?;
     harness.push_material(material_for(
-        &harness.fmans[0],
+        &harness.mgs[0],
         vec![HolderAuthorizationEnvelope {
             holder_authorization,
             signed_credential,
@@ -1401,7 +1395,7 @@ async fn no_nostr_advertisement_authority_is_unavailable() -> anyhow::Result<()>
 }
 
 #[tokio::test]
-async fn revoked_fman_credential_rejects_invalid_credentials() -> anyhow::Result<()> {
+async fn revoked_mg_credential_rejects_invalid_credentials() -> anyhow::Result<()> {
     let harness = Harness::new("revoked-credential", 1, 1, &[&[0]]).await?;
     let credential = harness.program_trusted(0)?;
     let revocation = harness.issuer.revoke_credential(&credential)?;
@@ -1416,12 +1410,11 @@ async fn revoked_fman_credential_rejects_invalid_credentials() -> anyhow::Result
 }
 
 #[tokio::test]
-async fn below_minimum_fman_material_rejects_invalid_credentials() -> anyhow::Result<()> {
+async fn below_minimum_mg_material_rejects_invalid_credentials() -> anyhow::Result<()> {
     let harness = Harness::new("material-below-minimum", 1, 1, &[&[0]]).await?;
-    let fman = &harness.fmans[0];
-    let envelope =
-        harness.trust_envelope_for_at_level(fman, UNIT_TEST_PEER_BADGE_TRUST_LEVEL - 1)?;
-    harness.push_material(material_for(fman, vec![envelope]));
+    let mg = &harness.mgs[0];
+    let envelope = harness.trust_envelope_for_at_level(mg, UNIT_TEST_PEER_BADGE_TRUST_LEVEL - 1)?;
+    harness.push_material(material_for(mg, vec![envelope]));
 
     let outcome = harness.verify(VerificationRequirement::AllTrusted).await;
     assert_rejects(&outcome, PublicRejectionCode::InvalidCredentials);
@@ -1439,7 +1432,7 @@ async fn below_minimum_fman_material_rejects_invalid_credentials() -> anyhow::Re
 #[tokio::test]
 async fn a_badge_with_the_wrong_schema_rejects_invalid_credentials() -> anyhow::Result<()> {
     let harness = Harness::new("bad-badges", 1, 1, &[&[0]]).await?;
-    let fman = &harness.fmans[0];
+    let mg = &harness.mgs[0];
 
     // Credential under a different schema string.
     let holder = HolderContext::generate();
@@ -1459,10 +1452,10 @@ async fn a_badge_with_the_wrong_schema_rejects_invalid_credentials() -> anyhow::
     let authorization = holder_authorization_for_provider(
         &holder,
         &bad_credential,
-        &Pubkey(fman.pubkey_hex.clone()),
+        &Pubkey(mg.pubkey_hex.clone()),
     )?;
     harness.push_material(material_for(
-        fman,
+        mg,
         vec![HolderAuthorizationEnvelope {
             holder_authorization: authorization,
             signed_credential: bad_credential,
@@ -1478,8 +1471,8 @@ async fn a_badge_with_the_wrong_schema_rejects_invalid_credentials() -> anyhow::
 }
 
 #[tokio::test]
-async fn consensus_majority_counts_distinct_fman_identities_once() -> anyhow::Result<()> {
-    // Four peers with threshold 3: one trusted FMan operating two peers
+async fn consensus_majority_counts_distinct_mg_identities_once() -> anyhow::Result<()> {
+    // Four peers with threshold 3: one trusted MG operating two peers
     // still counts once, so two trusted identities of three fail the
     // threshold and a third trusted identity satisfies it.
     let harness = Harness::new("distinct-count", 4, 3, &[&[0, 1], &[2], &[3]]).await?;
@@ -1517,7 +1510,7 @@ async fn all_trusted_fails_with_any_untrusted_identity() -> anyhow::Result<()> {
 
 #[tokio::test]
 async fn all_trusted_pools_badges_across_accepted_attesters() -> anyhow::Result<()> {
-    // The shape the FI produces: it seats operators round-robin across issuer
+    // The shape the FA produces: it seats operators round-robin across issuer
     // buckets, so three seats commonly carry badges from more than one issuer
     // and no single issuer covers them all. Every operator is vouched for by
     // an accepted attester, so `all_trusted` is satisfied.
@@ -1637,7 +1630,7 @@ async fn all_trusted_passes_when_one_attester_covers_every_operator() -> anyhow:
 
 #[tokio::test]
 async fn all_trusted_pools_across_three_attesters() -> anyhow::Result<()> {
-    // Three operators, three issuers, one each: the most diverse cohort the FI
+    // Three operators, three issuers, one each: the most diverse cohort the FA
     // can seat at this size, and every identity is still covered.
     let harness = Harness::new("pooled-three-issuers", 3, 2, &[&[0], &[1], &[2]]).await?;
     let second = harness.install_issuer(2).await?;

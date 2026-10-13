@@ -11,7 +11,7 @@ FCM delivery is opt-in only.
 
 ## Production usage
 
-Management, registration, and legacy direct notification endpoints use `Authorization: Nostr <base64(event)>`, where the event is a NIP-98-style kind `27235` HTTP auth event. The gateway verifies the event signature, exact method, exact URL built from `PUSH_GATEWAY_PUBLIC_BASE_URL` plus request path/query, fresh timestamp, body `payload` hash for body methods, and one-time event-id replay cache. The authenticated `recipient_id` is always the canonical lowercase hex Nostr public key from the signed event; request body/path/query `recipient_id`, `npub`, NIP-21, or uppercase encodings are not identity proof. Client recipient keys are derived by the app from its root-secret model using label `fedi-push-gateway/recipient-auth-nostr/v1` and the same environment separation rule as `docs/fi-nostr-backups.md`. Key rotation/multi-device recovery are handled by that derivation model; server-side in-place recipient-key rotation is not an MVP feature.
+Management, registration, and legacy direct notification endpoints use `Authorization: Nostr <base64(event)>`, where the event is a NIP-98-style kind `27235` HTTP auth event. The gateway verifies the event signature, exact method, exact URL built from `PUSH_GATEWAY_PUBLIC_BASE_URL` plus request path/query, fresh timestamp, body `payload` hash for body methods, and one-time event-id replay cache. The authenticated `recipient_id` is always the canonical lowercase hex Nostr public key from the signed event; request body/path/query `recipient_id`, `npub`, NIP-21, or uppercase encodings are not identity proof. Client recipient keys are derived by the app from its root-secret model using label `fedi-push-gateway/recipient-auth-nostr/v1` and the same environment separation rule as `docs/fa-nostr-backups.md`. Key rotation/multi-device recovery are handled by that derivation model; server-side in-place recipient-key rotation is not an MVP feature.
 
 See [`OPERATIONS.md`](./OPERATIONS.md) for production configuration, operator
 listener/token guidance, readiness/metrics scraping, secret handling,
@@ -37,14 +37,14 @@ The crate currently provides an Axum HTTP service with health checks, legacy
 notification hook ingestion, persistent app installation registration, a
 stateful hook registry, public hook invocation, durable database-backed delivery
 outbox/retry worker, fake/no-op push delivery, and an opt-in FCM HTTP v1 provider.
-FI formation uses an installation-scoped hook so only the installation that
+FA formation uses an installation-scoped hook so only the installation that
 started formation receives the eventual generic update.
 
 When the complete telemetry configuration is supplied, the same deployment
-also exposes a verified FMan telemetry registration endpoint and an
+also exposes a verified MG telemetry registration endpoint and an
 operator-protected live guardian metrics adapter. This path is separate from
-mobile push: it stores one verified FMan endpoint and capability encrypted, lets
-Fedi discover that FMan's seats, and pulls a selected guardian's byte-preserved
+mobile push: it stores one verified MG endpoint and capability encrypted, lets
+Fedi discover that MG's seats, and pulls a selected guardian's byte-preserved
 Prometheus response through Iroh. See
 [`SPEC-guardian-telemetry-receiver`](./specs/SPEC-guardian-telemetry-receiver.md).
 
@@ -177,7 +177,7 @@ Basic flow:
    proxies or monitoring to log full hook URLs or query strings.
 
 These metrics describe the push-gateway process and delivery queue only. They
-are unrelated to the separately governed FI telemetry path that gives Fedi
+are unrelated to the separately governed FA telemetry path that gives Fedi
 access to guardian/fedimintd Prometheus responses.
 
 #### Guardian telemetry control plane
@@ -188,7 +188,7 @@ Endpoints:
   - public network route with exact-body NIP-98 authentication;
   - verifies the current Holder authorization against the selected environment
     and requires its subject to equal the NIP-98 signer;
-  - idempotently replaces one AES-256-GCM-encrypted FMan endpoint/capability.
+  - idempotently replaces one AES-256-GCM-encrypted MG endpoint/capability.
 - `GET /v1/telemetry/fmans/{fman_pubkey}/seats`
   - operator-only authenticated seat discovery, returning optional invites.
 - `GET /v1/telemetry/fmans/{fman_pubkey}/seats/{seat_id}/metrics`
@@ -197,7 +197,7 @@ Endpoints:
 Telemetry is disabled unless both
 `PUSH_GATEWAY_TELEMETRY_MANIFOLD_ENVIRONMENT` and
 `PUSH_GATEWAY_TELEMETRY_ENCRYPTION_KEY` are present and valid. It also
-requires an operator bind or token for the collector routes. FMan repeats its
+requires an operator bind or token for the collector routes. MG repeats its
 idempotent registration periodically, which recovers receiver state without
 acknowledgements or capability rotation.
 
@@ -455,16 +455,16 @@ variables. Command-line flags take precedence over environment variables; run
     the intended admission mode below.
 - `--open-self-registration-enabled` /
   `PUSH_GATEWAY_OPEN_SELF_REGISTRATION_ENABLED=true`
-  - explicitly enables the FI MVP admission model: any installation with a
+  - explicitly enables the FA MVP admission model: any installation with a
     valid NIP-98 signer may self-register before quote/formation.
   - defaults to `false`, so production fails closed unless this flag or the
     emergency static allowlist is set. Production rejects setting both. FCM validate-only plus the limits below
-    are admission/resource checks, not proof that a signer is a trusted FI.
+    are admission/resource checks, not proof that a signer is a trusted FA.
 - `--admission-allowed-recipients` /
   `PUSH_GATEWAY_ADMISSION_ALLOWED_RECIPIENTS`
   - optional emergency comma-separated canonical Nostr public-key restriction
     for management and registration APIs. It is an alternative to open
-    self-registration, not the normal FI MVP admission mechanism.
+    self-registration, not the normal FA MVP admission mechanism.
 - `--legacy-notification-hook-enabled` /
   `PUSH_GATEWAY_LEGACY_NOTIFICATION_HOOK_ENABLED`
   - controls `POST /hooks/notification`, which acknowledges legacy direct
@@ -718,7 +718,7 @@ against current TTL, revocation, max-use, and rate-limit policy.
 The marker table has an independent global fail-closed ceiling equal to the
 configured physical hook-row ceiling. Each new keyed invocation first reclaims a
 bounded expired batch, then returns `503 idempotency_capacity_exceeded` without
-mutating hook state if no marker headroom remains. FI formation hooks use an exact
+mutating hook state if no marker headroom remains. FA formation hooks use an exact
 30-day TTL, so a DKG or wallet-service completion key remains replay-safe across
 the whole formation callback window and its cleanup margin.
 

@@ -40,7 +40,7 @@ use crate::{
 
 /// Longest window one signed request may cover.
 ///
-/// Set to the FI client's own `FI_LIQUIDITY_REQUEST_VALIDITY`, which is one
+/// Set to the FA client's own `FA_LIQUIDITY_REQUEST_VALIDITY`, which is one
 /// hour. A ceiling below what the shipped consumer asks for would refuse every
 /// real request, so this is not a number FLIP gets to pick freely — it is the
 /// contract's, and the same hour `FLIP_TRUST_MATERIAL_MAX_VALIDITY_SECS`
@@ -364,7 +364,7 @@ enum ExistingAllocationDisclosure {
     RequesterOnly,
 
     /// The caller passed full verification for this federation, which means it
-    /// holds a valid unrevoked FMan endorsement for it. Naming the conflict is
+    /// holds a valid unrevoked MG endorsement for it. Naming the conflict is
     /// then the answer to the question it actually asked.
     Verified,
 }
@@ -447,7 +447,7 @@ async fn respond_from_existing_allocation(
 /// holds nothing, so the caller's own insert can take the federation.
 ///
 /// Reached only after full verification, so the caller holds a valid unrevoked
-/// FMan endorsement for this federation. That is the same standing
+/// MG endorsement for this federation. That is the same standing
 /// [`ExistingAllocationDisclosure::Verified`] already requires before a caller
 /// is told the allocation exists at all, so acting on it discloses nothing the
 /// `request_conflict` answer did not. **Do not reach this from the

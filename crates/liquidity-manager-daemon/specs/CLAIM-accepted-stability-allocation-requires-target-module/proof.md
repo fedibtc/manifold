@@ -4,7 +4,7 @@
 
 **L1 (`code`) — acceptance checks no source-module capability.**
 `VerificationPipeline::run_pipeline` authenticates the invite's federation id,
-network, FMan seats, metadata, advertisements, credentials, and policy. Its
+network, MG seats, metadata, advertisements, credentials, and policy. Its
 `FederationPreview` exposes federation id/config hash/network/seats/metadata,
 but neither it nor `public::plan_allocation` reads the authenticated
 client config's module kinds. The source-specific acceptance criterion is only
@@ -30,7 +30,7 @@ claimed e-cash is in the FLIP-owned target client.
 
 **L4 (`concrete execution`) — an endorsed non-stability federation reaches the
 outflow.** Let FLIP's trusted Admin enable `SourceType::StabilityPool`. Form an
-ordinary wallet/mint federation with endorsed FMan seats but no stability-pool
+ordinary wallet/mint federation with endorsed MG seats but no stability-pool
 module (A1), then request only a positive stability minimum. L1 accepts it.
 L2 sends the reserved provider amount and the target wallet claims it. L3 then
 fails every deposit attempt because the client has no stability module. By A2,
@@ -39,8 +39,8 @@ recovery path. This falsifies the claim.
 
 ## Residual windows
 
-- The FI does not receive the e-cash directly: it is held by FLIP's target
-  client. The impact is provider-fund lockup and capacity exhaustion, not an FI
+- The FA does not receive the e-cash directly: it is held by FLIP's target
+  client. The impact is provider-fund lockup and capacity exhaustion, not an FA
   key compromise.
 - A federation with a module of the right kind but hostile/economically
   unsuitable parameters is outside this narrower missing-module trace.
@@ -49,8 +49,8 @@ recovery path. This falsifies the claim.
 
 ## Weakest links
 
-1. **A1 (`code`/deployment)** — formation capability and endorsed-FMan policy
-   determine which valid configurations an FI can obtain.
+1. **A1 (`code`/deployment)** — formation capability and endorsed-MG policy
+   determine which valid configurations an FA can obtain.
 2. **L1 (`enum`/`code`)** — all public acceptance checks must remain free of a
    module-capability gate for the witness.
 3. **L2–L3 (`code`)** — worker ordering and target-client API behavior are the

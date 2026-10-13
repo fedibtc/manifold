@@ -5,9 +5,9 @@
 - **Level:** code
 - **Found by:** scanner, checker, ops-drill
 - **Where:**
-  - `operator-ui/apps/fleet-manager/src/features/seats/api/hooks/use-seat-status/useSeatStatus.ts:14-22`
-  - `operator-ui/apps/fleet-manager/src/features/seats/api/hooks/use-seat-reports/useSeatReports.ts:45-59`
-  - `operator-ui/apps/fleet-manager/src/pages/seat-detail/SeatDetailPage.tsx:22-33`
+  - `operator-ui/apps/manifold-guardian/src/features/seats/api/hooks/use-seat-status/useSeatStatus.ts:14-22`
+  - `operator-ui/apps/manifold-guardian/src/features/seats/api/hooks/use-seat-reports/useSeatReports.ts:45-59`
+  - `operator-ui/apps/manifold-guardian/src/pages/seat-detail/SeatDetailPage.tsx:22-33`
 
 **What happens:** Two hooks write the same cache key with two different policies. The list hook
 runs through the fan-out limiter, applies jittered per-seat backoff, and deliberately keeps

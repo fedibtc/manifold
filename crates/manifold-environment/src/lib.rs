@@ -102,7 +102,7 @@ const PRODUCTION_SETUP_PAYMENT_PUBLISHER: &str =
 const PRODUCTION_GUARDIAN_VERIFICATION_FEE_KEY: &str =
     "0255c6b0de21aa9d5da41cdbb53be23e73dc5b3697f10b13f806c5ee7d18bd604d";
 
-/// Fedi support identity FMan operators chat with, in x-only hex
+/// Fedi support identity MG operators chat with, in x-only hex
 /// (`npub105qfyekclhm4827wsuf233saa0d3gmf6rxrhhc5f72xhah4wfghszug5n6`).
 const PRODUCTION_SUPPORT: &str = "7d009266d8fdf753abce8712a8c61debdb146d3a19877be289f28d7edeae4a2f";
 
@@ -389,10 +389,10 @@ impl ManifoldEnvironmentProfile {
         &self.nostr_relays
     }
 
-    /// Complete relay reads required to report that no FI backup was found.
+    /// Complete relay reads required to report that no FA backup was found.
     /// A development relay override uses the same majority rule.
     #[must_use]
-    pub fn fi_backup_empty_read_quorum(&self) -> usize {
+    pub fn fa_backup_empty_read_quorum(&self) -> usize {
         self.nostr_relays.as_urls().len() / 2 + 1
     }
 

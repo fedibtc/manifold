@@ -311,8 +311,8 @@ fn bitcoind_request_and_response_round_trip() {
 }
 
 #[test]
-fn fman_request_and_response_round_trip() {
-    let request = Request::Allocate(ResourceRequest::Fman(crate::FmanRequest {
+fn mg_request_and_response_round_trip() {
+    let request = Request::Allocate(ResourceRequest::Mg(crate::MgRequest {
         sharing: crate::SharingMode::Exclusive,
         bitcoind: BitcoindInfo {
             rpc_url: "http://127.0.0.1:18443".to_owned(),
@@ -327,22 +327,22 @@ fn fman_request_and_response_round_trip() {
         first_port_base: 34000,
         iroh_connect_overrides: "routes".to_owned(),
     }));
-    let decoded: Request = decode_frame(&encode_frame(&request).expect("encode FMan request"))
-        .expect("decode FMan request");
+    let decoded: Request = decode_frame(&encode_frame(&request).expect("encode MG request"))
+        .expect("decode MG request");
     assert_eq!(decoded, request);
 
     let response = Response::Resource(ResourceLease {
         handle_id: ResourceHandleId(45),
-        descriptor: ResourceDescriptor::Fman(crate::FmanInfo {
+        descriptor: ResourceDescriptor::Mg(crate::MgInfo {
             locator: "locator".to_owned(),
-            data_dir: PathBuf::from("/tmp/defe/fman"),
+            data_dir: PathBuf::from("/tmp/defe/mg"),
             iroh_connect_overrides: "routes".to_owned(),
             admin_url: "http://127.0.0.1:10015".to_owned(),
             admin_password: "operator-password".to_owned(),
         }),
     });
-    let decoded: Response = decode_frame(&encode_frame(&response).expect("encode FMan response"))
-        .expect("decode FMan response");
+    let decoded: Response = decode_frame(&encode_frame(&response).expect("encode MG response"))
+        .expect("decode MG response");
     assert_eq!(decoded, response);
 }
 

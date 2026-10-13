@@ -6,7 +6,7 @@ boundaries retain only the compiled canonical core-method set or `unknown`.
 
 ## Release boundary
 
-FMan and the collector compile one default-deny source policy, so release review
+MG and the collector compile one default-deny source policy, so release review
 must inventory the actual `fedimintd` source before changing that policy. This baseline was
 read from Manifold's pinned `fedibtc/fedimint` source at
 `61b3b02da228fbcdb185f70eb69e7f9093c4bba9`. The machine-checked
@@ -58,9 +58,9 @@ All names below receive the registry's `fm_` prefix.
 | APIs | `iroh_api_request_duration_seconds` | histogram | `method` is exactly `unknown` or a source-coded core API method; an unrecognized value discards the family |
 | APIs | `jsonrpc_api_request_duration_seconds` | histogram | `method` is exactly `unknown` or a source-coded core API method; an unrecognized value discards the family |
 | APIs | `jsonrpc_api_request_response_code_total` | counter | `method` is exactly `unknown` or a source-coded core API method; `code` is `0`, `400`, `401`, `404`, `500`, or `-32700` through `-32603`; `type` is `subscription`, `batch`, or `default` |
-| API client | `client_api_request_duration_seconds`, `client_api_requests_total` | histogram, counter | denied intentionally: FMan's API-announcement and guardian-metadata tasks instantiate `DynGlobalApi`, which records raw request `method` labels |
+| API client | `client_api_request_duration_seconds`, `client_api_requests_total` | histogram, counter | denied intentionally: MG's API-announcement and guardian-metadata tasks instantiate `DynGlobalApi`, which records raw request `method` labels |
 | connectors | `connector_connection_duration_seconds`, `connector_connection_attempts_total` | histogram, counter | denied intentionally: routine client/connector output remains outside this minimum telemetry surface |
-| non-FMan Fedimint components | `bitcoind_rpc_request_duration_seconds`, `bitcoind_rpc_requests_total`, `gateway_htlc_handling_duration_seconds`, `gateway_htlc_lnv1_attempt_duration_seconds`, `gateway_htlc_lnv2_attempt_duration_seconds`, `ln_rpc_request_duration_seconds`, `ln_rpc_requests_total` | histogram, counter | denied: the exhaustive pinned-source scan includes these registrations, but the bundled FMan does not expose them |
+| non-MG Fedimint components | `bitcoind_rpc_request_duration_seconds`, `bitcoind_rpc_requests_total`, `gateway_htlc_handling_duration_seconds`, `gateway_htlc_lnv1_attempt_duration_seconds`, `gateway_htlc_lnv2_attempt_duration_seconds`, `ln_rpc_request_duration_seconds`, `ln_rpc_requests_total` | histogram, counter | denied: the exhaustive pinned-source scan includes these registrations, but the bundled MG does not expose them |
 | Bitcoin RPC | `server_bitcoin_rpc_request_duration_seconds` | histogram | `method` is exactly one of `get_block_count`, `get_block_hash`, `get_block`, `get_feerate`, `submit_transaction`, `get_sync_progress`, `get_chain_id`; `name` is exactly `server` |
 | Bitcoin RPC | `server_bitcoin_rpc_requests_total` | counter | the same exact `method`/`name`; `result` is exactly `success` or `error` |
 | mint | `mint_inout_sats`, `mint_inout_fees_sats` | histogram | `direction`, exactly `incoming` or `outgoing`; aggregate amount distribution |
@@ -149,8 +149,8 @@ use `fman_id`, `guardian_seat_id`, and the asserted `federation_id` for
 operational source identity and must not interpret
 these producer labels as configuration or federation membership proofs.
 
-The API families are admitted independently of FMan or Fedimint release only
-when `method` is `unknown` or one of the compiled `CORE_API_METHODS`. The FMan
+The API families are admitted independently of MG or Fedimint release only
+when `method` is `unknown` or one of the compiled `CORE_API_METHODS`. The MG
 and collector both apply that exact allowlist, so raw caller-controlled
 `ApiMethod::Core(String)` or `ApiMethod::Module(_, String)` values cannot create
 new label values or series: an unrecognized method taints and discards that
@@ -160,17 +160,17 @@ remain required for `jsonrpc_api_request_response_code_total`.
 
 Every admitted guardian series receives exactly these collector labels:
 
-- `fman_id`: lowercase hexadecimal canonical FMan Nostr public key verified by
+- `fman_id`: lowercase hexadecimal canonical MG Nostr public key verified by
   registration; this is the series identity;
-- `fman_name`: the deterministic bounded `FmanName` derived from `fman_id`, for
+- `fman_name`: the deterministic bounded `MgName` derived from `fman_id`, for
   display only; collisions must never merge series; and
 - `guardian_seat_id`: the canonical seat id returned by that authenticated
-  FMan, stable within its FMan identity; and
+  MG, stable within its MG identity; and
 - `federation_id`: the lowercase 64-hex id derived from the formed invite that
-  the authenticated FMan asserted for that exact seat.
+  the authenticated MG asserted for that exact seat.
 
 The federation id has one value per asserted federation and is intentionally
-groupable across seats. It is authenticated FMan-asserted attribution, not an
+groupable across seats. It is authenticated MG-asserted attribution, not an
 independent guardian-membership or child-config proof, and is insufficient for
 authorization, billing, or dispute resolution.
 These labels are operational identifiers in the private backend. The collector
@@ -181,9 +181,9 @@ other caller-controlled or unbounded values.
 Do not add user/account/transaction identifiers, URLs, free-form method/error
 strings, or unbounded labels to a source metric without a new privacy review.
 If a future source metric is unacceptable, change or disable it at the producer
-or discard it through the compiled source policy. FMan enforces the projection
-before transport; the collector repeats it so old raw-response FMans remain
-compatible during rollout and a faulty FMan cannot bypass collector admission.
+or discard it through the compiled source policy. MG enforces the projection
+before transport; the collector repeats it so old raw-response MGs remain
+compatible during rollout and a faulty MG cannot bypass collector admission.
 
 ## Collector resource and lifecycle bounds
 

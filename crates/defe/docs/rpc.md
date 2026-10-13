@@ -53,7 +53,7 @@ pub enum ResourceRequest {
     NostrRelay(NostrRelayRequest),
     PushGateway(PushGatewayRequest),
     Bitcoind(BitcoindRequest),
-    Fman(FmanRequest),
+    Mg(MgRequest),
     Flip(FlipRequest),
     Gatewayd(GatewaydRequest),
 }
@@ -91,7 +91,7 @@ pub enum ResourceDescriptor {
     NostrRelay(NostrRelayInfo),
     PushGateway(PushGatewayInfo),
     Bitcoind(BitcoindInfo),
-    Fman(FmanInfo),
+    Mg(MgInfo),
     Flip(FlipInfo),
     Gatewayd(GatewaydInfo),
 }

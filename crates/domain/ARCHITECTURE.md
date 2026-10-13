@@ -11,8 +11,8 @@ The crate owns:
   federation identifiers;
 - signed-object canonicalization and signature-domain constants that must be
   byte-compatible across services;
-- validation helpers for shared wire contracts such as `FmanApiUrlsMetadata` and
-  public FMan trust-material envelopes.
+- validation helpers for shared wire contracts such as `MgApiUrlsMetadata` and
+  public MG trust-material envelopes.
 - validated, deterministic policy mechanisms whose values are supplied by the
   relying component, such as the minimum PeerBadge trust-level check.
 

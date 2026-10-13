@@ -1866,10 +1866,10 @@ dependencies = [
  "fedi-decentralized-manifold-environment",
  "fedi-decentralized-nostr",
  "fedi-decentralized-service-liquidity-manager",
- "fman-core",
  "hex",
  "iroh-base 0.35.0",
  "libc",
+ "mg-core",
  "nostr-sdk",
  "peerbadge-protocol",
  "reqwest 0.12.28",
@@ -2378,6 +2378,97 @@ dependencies = [
 ]
 
 [[package]]
+name = "fa-cli"
+version = "0.1.3"
+dependencies = [
+ "anyhow",
+ "bitcoin_hashes",
+ "bls12_381",
+ "clap",
+ "fa-client",
+ "fedi-decentralized-domain",
+ "fedi-decentralized-federation-preview",
+ "fedi-decentralized-manifold-environment",
+ "fedi-decentralized-nostr-clients",
+ "fedi-decentralized-peer-badge-verifier",
+ "fedi-decentralized-service-liquidity-manager",
+ "fedi-decentralized-service-manifold-guardian",
+ "fedimint-api-client",
+ "fedimint-client",
+ "fedimint-client-module",
+ "fedimint-connectors",
+ "fedimint-core",
+ "fedimint-derive-secret",
+ "fedimint-ln-client",
+ "fedimint-lnv2-client",
+ "fedimint-mint-client",
+ "fedimint-mint-common",
+ "fedimint-mintv2-client",
+ "fedimint-mintv2-common",
+ "fedimint-rocksdb",
+ "fedimint-tbs",
+ "fedimint-wallet-client",
+ "fedimint-walletv2-client",
+ "futures",
+ "hex",
+ "iroh 1.0.3",
+ "libc",
+ "lightning-invoice",
+ "locked-payments",
+ "nostr-sdk",
+ "rand 0.8.6",
+ "rustls",
+ "secp256k1 0.30.0",
+ "serde",
+ "serde_json",
+ "stability-pool-client",
+ "stability-pool-common",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "toml",
+ "tracing",
+ "zeroize",
+]
+
+[[package]]
+name = "fa-client"
+version = "0.1.3"
+dependencies = [
+ "base64 0.22.1",
+ "bitcoin",
+ "bitcoin_hashes",
+ "blind-rsa-signatures",
+ "chacha20poly1305",
+ "ciborium",
+ "fedi-decentralized-domain",
+ "fedi-decentralized-manifold-environment",
+ "fedi-decentralized-nostr",
+ "fedi-decentralized-nostr-clients",
+ "fedi-decentralized-peer-badge-verifier",
+ "fedi-decentralized-service-liquidity-manager",
+ "fedi-decentralized-service-manifold-guardian",
+ "fedi-iroh-rpc",
+ "fedimint-core",
+ "fedimint-derive-secret",
+ "futures",
+ "hex",
+ "iroh-base 0.35.0",
+ "nostr-sdk",
+ "peerbadge-protocol",
+ "rand 0.8.6",
+ "secp256k1 0.30.0",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "stability-pool-common",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "fallible-iterator"
 version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2390,7 +2481,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9f1f227452a390804cdb637b74a86990f2a7d7ba4b7d5693aac9b4dd6defd8d6"
 
 [[package]]
-name = "fedi-decentralized-cloud-fman-telemetry"
+name = "fedi-decentralized-cloud-mg-telemetry"
 version = "0.1.3"
 dependencies = [
  "aes-gcm",
@@ -2407,7 +2498,7 @@ dependencies = [
  "fedi-decentralized-manifold-environment",
  "fedi-decentralized-nostr",
  "fedi-decentralized-peer-badge-verifier",
- "fedi-decentralized-service-fleet-manager",
+ "fedi-decentralized-service-manifold-guardian",
  "fedi-iroh-rpc",
  "fedimint-core",
  "fs2",
@@ -2569,7 +2660,7 @@ version = "0.1.3"
 dependencies = [
  "blind-rsa-signatures",
  "fedi-decentralized-domain",
- "fedi-decentralized-service-fleet-manager",
+ "fedi-decentralized-service-manifold-guardian",
  "nostr",
  "peerbadge-protocol",
  "serde",
@@ -2629,7 +2720,7 @@ dependencies = [
  "fedi-decentralized-push-gateway-provider-fcm",
  "fedi-decentralized-push-gateway-storage",
  "fedi-decentralized-push-gateway-types",
- "fedi-decentralized-service-fleet-manager",
+ "fedi-decentralized-service-manifold-guardian",
  "fedi-iroh-rpc",
  "hex",
  "nostr",
@@ -2691,7 +2782,22 @@ dependencies = [
 ]
 
 [[package]]
-name = "fedi-decentralized-service-fleet-manager"
+name = "fedi-decentralized-service-liquidity-manager"
+version = "0.1.3"
+dependencies = [
+ "ciborium",
+ "fedi-decentralized-services",
+ "fedi-iroh-rpc",
+ "peerbadge-protocol",
+ "serde",
+ "serde_json",
+ "serde_json_canonicalizer",
+ "sha2 0.10.9",
+ "strum 0.26.3",
+]
+
+[[package]]
+name = "fedi-decentralized-service-manifold-guardian"
 version = "0.1.3"
 dependencies = [
  "bitcoin",
@@ -2717,21 +2823,6 @@ dependencies = [
  "tokio",
  "url",
  "uuid",
-]
-
-[[package]]
-name = "fedi-decentralized-service-liquidity-manager"
-version = "0.1.3"
-dependencies = [
- "ciborium",
- "fedi-decentralized-services",
- "fedi-iroh-rpc",
- "peerbadge-protocol",
- "serde",
- "serde_json",
- "serde_json_canonicalizer",
- "sha2 0.10.9",
- "strum 0.26.3",
 ]
 
 [[package]]
@@ -3927,97 +4018,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "fi-cli"
-version = "0.1.3"
-dependencies = [
- "anyhow",
- "bitcoin_hashes",
- "bls12_381",
- "clap",
- "fedi-decentralized-domain",
- "fedi-decentralized-federation-preview",
- "fedi-decentralized-manifold-environment",
- "fedi-decentralized-nostr-clients",
- "fedi-decentralized-peer-badge-verifier",
- "fedi-decentralized-service-fleet-manager",
- "fedi-decentralized-service-liquidity-manager",
- "fedimint-api-client",
- "fedimint-client",
- "fedimint-client-module",
- "fedimint-connectors",
- "fedimint-core",
- "fedimint-derive-secret",
- "fedimint-ln-client",
- "fedimint-lnv2-client",
- "fedimint-mint-client",
- "fedimint-mint-common",
- "fedimint-mintv2-client",
- "fedimint-mintv2-common",
- "fedimint-rocksdb",
- "fedimint-tbs",
- "fedimint-wallet-client",
- "fedimint-walletv2-client",
- "fi-client",
- "futures",
- "hex",
- "iroh 1.0.3",
- "libc",
- "lightning-invoice",
- "locked-payments",
- "nostr-sdk",
- "rand 0.8.6",
- "rustls",
- "secp256k1 0.30.0",
- "serde",
- "serde_json",
- "stability-pool-client",
- "stability-pool-common",
- "tempfile",
- "thiserror 2.0.18",
- "tokio",
- "toml",
- "tracing",
- "zeroize",
-]
-
-[[package]]
-name = "fi-client"
-version = "0.1.3"
-dependencies = [
- "base64 0.22.1",
- "bitcoin",
- "bitcoin_hashes",
- "blind-rsa-signatures",
- "chacha20poly1305",
- "ciborium",
- "fedi-decentralized-domain",
- "fedi-decentralized-manifold-environment",
- "fedi-decentralized-nostr",
- "fedi-decentralized-nostr-clients",
- "fedi-decentralized-peer-badge-verifier",
- "fedi-decentralized-service-fleet-manager",
- "fedi-decentralized-service-liquidity-manager",
- "fedi-iroh-rpc",
- "fedimint-core",
- "fedimint-derive-secret",
- "futures",
- "hex",
- "iroh-base 0.35.0",
- "nostr-sdk",
- "peerbadge-protocol",
- "rand 0.8.6",
- "secp256k1 0.30.0",
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "stability-pool-common",
- "thiserror 2.0.18",
- "tokio",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
 name = "fiat-crypto"
 version = "0.2.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4073,241 +4073,6 @@ dependencies = [
  "futures-core",
  "futures-sink",
  "spin 0.9.8",
-]
-
-[[package]]
-name = "fman"
-version = "0.1.3"
-dependencies = [
- "anyhow",
- "async-trait",
- "axum 0.8.9",
- "bitcoin",
- "clap",
- "fedi-decentralized-domain",
- "fedi-decentralized-manifold-environment",
- "fedi-decentralized-push-gateway-types",
- "fedi-decentralized-service-fleet-manager",
- "fedi-iroh-rpc",
- "fedimint-build",
- "fedimint-core",
- "fedimint-server",
- "fedimint-server-bitcoin-rpc",
- "fedimint-server-core",
- "fedimintd",
- "fman-core",
- "fman-fedimint",
- "fman-nostr",
- "fman-telemetry",
- "futures",
- "hex",
- "iroh 1.0.3",
- "nostr-sdk",
- "operator-ui-static",
- "reqwest 0.12.28",
- "rust-embed",
- "safe-tracing",
- "serde_json",
- "stability-pool-server",
- "tempfile",
- "tikv-jemallocator",
- "tokio",
- "tower 0.5.3",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
-name = "fman-cli"
-version = "0.1.3"
-dependencies = [
- "anyhow",
- "clap",
- "fedi-decentralized-service-fleet-manager",
- "fman-core",
- "serde_json",
- "tokio",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
-name = "fman-core"
-version = "0.1.3"
-dependencies = [
- "anyhow",
- "async-trait",
- "axum 0.8.9",
- "axum-extra",
- "bip39",
- "bitcoin",
- "blind-rsa-signatures",
- "ciborium",
- "constant_time_eq",
- "fedi-decentralized-domain",
- "fedi-decentralized-manifold-environment",
- "fedi-decentralized-nostr",
- "fedi-decentralized-service-fleet-manager",
- "fedi-iroh-rpc",
- "fedimint-aead",
- "fedimint-api-client",
- "fedimint-build",
- "fedimint-connectors",
- "fedimint-core",
- "fedimint-derive-secret",
- "fedimint-lnv2-common",
- "fedimint-meta-client",
- "fedimint-meta-common",
- "fedimint-server",
- "fman-meta-fields",
- "hex",
- "hkdf",
- "iroh 1.0.3",
- "iroh-base 0.35.0",
- "jsonrpsee-server",
- "libc",
- "nostr-sdk",
- "operator-ui-auth",
- "rand 0.8.6",
- "reqwest 0.12.28",
- "secp256k1 0.30.0",
- "serde",
- "serde_json",
- "serde_json_canonicalizer",
- "sha2 0.10.9",
- "sqlx",
- "stability-pool-client",
- "tempfile",
- "thiserror 2.0.18",
- "tokio",
- "tower 0.5.3",
- "tracing",
- "tracing-subscriber",
- "ts-rs",
- "url",
-]
-
-[[package]]
-name = "fman-fedimint"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "async-trait",
- "bitcoin",
- "bitcoin_hashes",
- "fedi-decentralized-domain",
- "fedi-decentralized-service-fleet-manager",
- "fedimint-aead",
- "fedimint-api-client",
- "fedimint-client",
- "fedimint-client-module",
- "fedimint-connectors",
- "fedimint-core",
- "fedimint-derive-secret",
- "fedimint-ln-client",
- "fedimint-ln-common",
- "fedimint-lnv2-client",
- "fedimint-lnv2-common",
- "fedimint-meta-client",
- "fedimint-meta-common",
- "fedimint-mint-client",
- "fedimint-mint-common",
- "fedimint-mintv2-client",
- "fedimint-mintv2-common",
- "fedimint-rocksdb",
- "fedimint-tbs",
- "fman-core",
- "futures",
- "libc",
- "lightning-invoice",
- "lnurl-rs",
- "locked-payments",
- "rand 0.8.6",
- "serde",
- "serde_json",
- "sqlx",
- "stability-pool-client",
- "stability-pool-common",
- "tempfile",
- "thiserror 2.0.18",
- "tokio",
- "tracing",
- "tracing-subscriber",
- "zeroize",
-]
-
-[[package]]
-name = "fman-meta-fields"
-version = "0.1.3"
-dependencies = [
- "bitcoin",
- "fedi-decentralized-domain",
- "fedi-decentralized-service-fleet-manager",
- "nostr-sdk",
- "stability-pool-common",
-]
-
-[[package]]
-name = "fman-nostr"
-version = "0.1.3"
-dependencies = [
- "anyhow",
- "async-trait",
- "base64 0.22.1",
- "blind-rsa-signatures",
- "chacha20poly1305",
- "ciborium",
- "fedi-decentralized-domain",
- "fedi-decentralized-manifold-environment",
- "fedi-decentralized-nostr",
- "fedi-decentralized-nostr-clients",
- "fedi-decentralized-peer-badge-verifier",
- "fedi-decentralized-service-fleet-manager",
- "fman-core",
- "futures-util",
- "hex",
- "hmac",
- "nostr-sdk",
- "peerbadge-protocol",
- "secp256k1 0.30.0",
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "tempfile",
- "thiserror 2.0.18",
- "tokio",
- "tracing",
-]
-
-[[package]]
-name = "fman-telemetry"
-version = "0.1.3"
-dependencies = [
- "base64 0.22.1",
- "bounded-rolling-file",
- "fedi-decentralized-domain",
- "fedi-decentralized-guardian-metrics-policy",
- "fedi-decentralized-service-fleet-manager",
- "fman-core",
- "fman-nostr",
- "hex",
- "nostr-sdk",
- "rand 0.8.6",
- "reqwest 0.12.28",
- "serde_json",
- "sha2 0.10.9",
- "tempfile",
- "tokio",
- "tracing",
-]
-
-[[package]]
-name = "fman-ui-e2e-runner"
-version = "0.1.3"
-dependencies = [
- "anyhow",
- "defe-client",
- "tokio",
 ]
 
 [[package]]
@@ -6363,7 +6128,7 @@ dependencies = [
  "anyhow",
  "bitcoin_hashes",
  "bls12_381",
- "fedi-decentralized-service-fleet-manager",
+ "fedi-decentralized-service-manifold-guardian",
  "fedimint-client",
  "fedimint-client-module",
  "fedimint-core",
@@ -6564,6 +6329,241 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "488016bfae457b036d996092f6cb448677611ce4449e970ceaf42695203f218a"
 dependencies = [
  "autocfg",
+]
+
+[[package]]
+name = "mg"
+version = "0.1.3"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "axum 0.8.9",
+ "bitcoin",
+ "clap",
+ "fedi-decentralized-domain",
+ "fedi-decentralized-manifold-environment",
+ "fedi-decentralized-push-gateway-types",
+ "fedi-decentralized-service-manifold-guardian",
+ "fedi-iroh-rpc",
+ "fedimint-build",
+ "fedimint-core",
+ "fedimint-server",
+ "fedimint-server-bitcoin-rpc",
+ "fedimint-server-core",
+ "fedimintd",
+ "futures",
+ "hex",
+ "iroh 1.0.3",
+ "mg-core",
+ "mg-fedimint",
+ "mg-nostr",
+ "mg-telemetry",
+ "nostr-sdk",
+ "operator-ui-static",
+ "reqwest 0.12.28",
+ "rust-embed",
+ "safe-tracing",
+ "serde_json",
+ "stability-pool-server",
+ "tempfile",
+ "tikv-jemallocator",
+ "tokio",
+ "tower 0.5.3",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "mg-cli"
+version = "0.1.3"
+dependencies = [
+ "anyhow",
+ "clap",
+ "fedi-decentralized-service-manifold-guardian",
+ "mg-core",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "mg-core"
+version = "0.1.3"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "axum 0.8.9",
+ "axum-extra",
+ "bip39",
+ "bitcoin",
+ "blind-rsa-signatures",
+ "ciborium",
+ "constant_time_eq",
+ "fedi-decentralized-domain",
+ "fedi-decentralized-manifold-environment",
+ "fedi-decentralized-nostr",
+ "fedi-decentralized-service-manifold-guardian",
+ "fedi-iroh-rpc",
+ "fedimint-aead",
+ "fedimint-api-client",
+ "fedimint-build",
+ "fedimint-connectors",
+ "fedimint-core",
+ "fedimint-derive-secret",
+ "fedimint-lnv2-common",
+ "fedimint-meta-client",
+ "fedimint-meta-common",
+ "fedimint-server",
+ "hex",
+ "hkdf",
+ "iroh 1.0.3",
+ "iroh-base 0.35.0",
+ "jsonrpsee-server",
+ "libc",
+ "mg-meta-fields",
+ "nostr-sdk",
+ "operator-ui-auth",
+ "rand 0.8.6",
+ "reqwest 0.12.28",
+ "secp256k1 0.30.0",
+ "serde",
+ "serde_json",
+ "serde_json_canonicalizer",
+ "sha2 0.10.9",
+ "sqlx",
+ "stability-pool-client",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tower 0.5.3",
+ "tracing",
+ "tracing-subscriber",
+ "ts-rs",
+ "url",
+]
+
+[[package]]
+name = "mg-fedimint"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "bitcoin",
+ "bitcoin_hashes",
+ "fedi-decentralized-domain",
+ "fedi-decentralized-service-manifold-guardian",
+ "fedimint-aead",
+ "fedimint-api-client",
+ "fedimint-client",
+ "fedimint-client-module",
+ "fedimint-connectors",
+ "fedimint-core",
+ "fedimint-derive-secret",
+ "fedimint-ln-client",
+ "fedimint-ln-common",
+ "fedimint-lnv2-client",
+ "fedimint-lnv2-common",
+ "fedimint-meta-client",
+ "fedimint-meta-common",
+ "fedimint-mint-client",
+ "fedimint-mint-common",
+ "fedimint-mintv2-client",
+ "fedimint-mintv2-common",
+ "fedimint-rocksdb",
+ "fedimint-tbs",
+ "futures",
+ "libc",
+ "lightning-invoice",
+ "lnurl-rs",
+ "locked-payments",
+ "mg-core",
+ "rand 0.8.6",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "stability-pool-client",
+ "stability-pool-common",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "zeroize",
+]
+
+[[package]]
+name = "mg-meta-fields"
+version = "0.1.3"
+dependencies = [
+ "bitcoin",
+ "fedi-decentralized-domain",
+ "fedi-decentralized-service-manifold-guardian",
+ "nostr-sdk",
+ "stability-pool-common",
+]
+
+[[package]]
+name = "mg-nostr"
+version = "0.1.3"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "base64 0.22.1",
+ "blind-rsa-signatures",
+ "chacha20poly1305",
+ "ciborium",
+ "fedi-decentralized-domain",
+ "fedi-decentralized-manifold-environment",
+ "fedi-decentralized-nostr",
+ "fedi-decentralized-nostr-clients",
+ "fedi-decentralized-peer-badge-verifier",
+ "fedi-decentralized-service-manifold-guardian",
+ "futures-util",
+ "hex",
+ "hmac",
+ "mg-core",
+ "nostr-sdk",
+ "peerbadge-protocol",
+ "secp256k1 0.30.0",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "mg-telemetry"
+version = "0.1.3"
+dependencies = [
+ "base64 0.22.1",
+ "bounded-rolling-file",
+ "fedi-decentralized-domain",
+ "fedi-decentralized-guardian-metrics-policy",
+ "fedi-decentralized-service-manifold-guardian",
+ "hex",
+ "mg-core",
+ "mg-nostr",
+ "nostr-sdk",
+ "rand 0.8.6",
+ "reqwest 0.12.28",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "mg-ui-e2e-runner"
+version = "0.1.3"
+dependencies = [
+ "anyhow",
+ "defe-client",
+ "tokio",
 ]
 
 [[package]]
@@ -10213,25 +10213,25 @@ dependencies = [
  "defe-api",
  "defe-client",
  "defe-portalloc",
- "fedi-decentralized-cloud-fman-telemetry",
+ "fa-client",
+ "fedi-decentralized-cloud-mg-telemetry",
  "fedi-decentralized-domain",
  "fedi-decentralized-manifold-environment",
  "fedi-decentralized-nostr",
  "fedi-decentralized-nostr-clients",
  "fedi-decentralized-peer-badge-verifier",
- "fedi-decentralized-service-fleet-manager",
+ "fedi-decentralized-service-manifold-guardian",
  "fedi-iroh-rpc",
  "fedimint-core",
  "fedimint-derive-secret",
  "fedimint-mintv2-client",
- "fi-client",
- "fman-core",
- "fman-fedimint",
  "futures-util",
  "hex",
  "iroh-base 0.35.0",
  "libc",
  "lnurl-rs",
+ "mg-core",
+ "mg-fedimint",
  "nostr-sdk",
  "peerbadge-protocol",
  "reqwest 0.12.28",

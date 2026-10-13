@@ -1,9 +1,9 @@
-# Browser QA: dev mock panel (FLIP + FMan)
+# Browser QA: dev mock panel (FLIP + MG)
 
 Date: 2026-08-09
 Branch: `feat/msw-mock-migration`
 Method: real Chrome (Claude-in-Chrome extension), both Vite dev servers
-(`.claude/launch.json` → `flip-ui` :5173, `fman-ui` :5174), MSW in-browser.
+(`.claude/launch.json` → `flip-ui` :5173, `mg-ui` :5174), MSW in-browser.
 Executes Task 5 ("browser verification") of
 [`2026-08-09-mock-panel-completion.md`](./2026-08-09-mock-panel-completion.md).
 
@@ -30,7 +30,7 @@ shows the amber banner while the balance stays healthy (UI reads
 `Failed · relay handshake rejected`; `wallet-ops-review` humanizes to
 `in doubt` / `manual review required`; `ad-withdrawn` renders `—`, never `0`.
 
-**FMan (9/9)** — `fresh-fleet`, `not-onboarded`, `awaiting-authorization`,
+**MG (9/9)** — `fresh-fleet`, `not-onboarded`, `awaiting-authorization`,
 `seats-empty`, `seats-mixed`, `seat-unavailable`, `wallet-not-receivable`,
 `offer-without-payments`, `earnings`.
 
@@ -39,7 +39,7 @@ see dead end 3.
 
 ### Panel capabilities
 
-| Capability | FLIP | FMan | Note |
+| Capability | FLIP | MG | Note |
 | --- | --- | --- | --- |
 | Both tabs, per-page filtering | ✅ | ✅ | e.g. Setup "2 of 15", Overview "6 of 9" |
 | Route relabel on navigation | ✅ | ✅ | incl. `/seats/:id` → "Seat detail" over "Seats" |
@@ -117,7 +117,7 @@ threshold phase, and add those verbs to `deferredRoutes` so the "not available
 yet" screen becomes reachable. The second option is the one that buys test
 coverage.
 
-### 3. FMan `awaiting-authorization` is unobservable — **medium**
+### 3. MG `awaiting-authorization` is unobservable — **medium**
 
 The scenario builds `onboarded: true` with
 `onboarding.nostr.state = 'waiting_for_authorization'`, and its notes claim
@@ -138,7 +138,7 @@ what it actually demonstrates.
 Force `ListSeats` to fail, then load `/seats` cold under `seats-mixed`
 (4 seats). The page renders:
 
-> No seats yet. Seats are created by Federation Initiators after they pay for a
+> No seats yet. Seats are created by Federation Ambassadors after they pay for a
 > plan…
 
 An operator cannot tell a broken daemon from an empty fleet. The plan predicted
@@ -154,14 +154,14 @@ this; the browser confirms it. Two aggravating details found here:
 Pre-existing UI behaviour, out of scope for the panel work, but the panel is now
 the cheapest way to reproduce it.
 
-### 5. Patcher placeholder is FMan-specific in both apps — **low**
+### 5. Patcher placeholder is MG-specific in both apps — **low**
 
 `StatePatcher.tsx` hardcodes `placeholder="seats.0.report.health"` and
 `'"unavailable"'`. FLIP has no `seats` in its world, so its panel suggests a path
 that cannot work. **Fix**: move the example pair into `PanelConfig` next to
 `patch`.
 
-### 6. Stale copy in FMan's seats empty state — **low**
+### 6. Stale copy in MG's seats empty state — **low**
 
 "See **Plans** for the current offer" — Plans was removed in the MVP revision and
 is not in the nav. **Fix**: point at the offer/price surface that replaced it.
@@ -177,7 +177,7 @@ an initial misread.
 
 Stated so the gap is not mistaken for a pass:
 
-- FLIP `/settings` and FMan `/wallet/:fedId/withdraw`, `/offer`, `/backup/phrase`
+- FLIP `/settings` and MG `/wallet/:fedId/withdraw`, `/offer`, `/backup/phrase`
   were not walked individually in the browser; their route keys are covered by
   `apps/*/src/mocks/__tests__/routes.test.ts`.
 - FLIP's `tick()` (deterministic republish) not exercised.

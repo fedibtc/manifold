@@ -7,7 +7,7 @@ item-specific settlement attribution, crash and retry idempotency,
 recoverability, failure visibility, secret confinement, and the canonical
 service-adapter wire and signing contract. Durable allocation state grows by at
 most one `allocations` row per admitted federation, and each admission spends a
-valid unrevoked FMan endorsement for that federation. Incomplete RPC streams
+valid unrevoked MG endorsement for that federation. Incomplete RPC streams
 cannot starve new streams from frame decoding.
 
 This envelope does not bound the total number of qualifying federations or
@@ -48,7 +48,7 @@ Unverified.
 - The configured gateway, chain observer, target Fedimint federations, Nostr
   relays, issuers, SQLite, filesystem, clock, and cryptographic primitives
   return authentic results with the documented durability or fail detectably.
-- A supported FI supplies the required signed endorsement and trust material.
+- A supported FA supplies the required signed endorsement and trust material.
   FLIP's public RPC boundary verifies that material and binds the requester's
   signing key to the authenticated transport actor before admitting the request.
 - Production disables `--trust-fixtures` and uses only release-pinned supported
@@ -65,9 +65,9 @@ Unverified.
 - FLIP fails closed when it cannot perform a required fresh credential-revocation
   check
   ([claim](CLAIM-missing-nostr-revocation-fails-open.md)).
-- FI-supplied invite data cannot select an arbitrary method, path, body, header
+- FA-supplied invite data cannot select an arbitrary method, path, body, header
   set, or subsequent frame contents before target-federation authentication, or
-  expose the selected destination's response to the FI. Pinned Iroh's
+  expose the selected destination's response to the FA. Pinned Iroh's
   protocol-generated discovery/QUIC and relay handshake/framing traffic to
   node-owner-published destinations is included in the production envelope
   ([claim](CLAIM-endorsed-invite-endpoint-ssrf.md)).
@@ -84,7 +84,7 @@ Unverified.
 - [CLAIM-duplicate-stability-deposit](CLAIM-duplicate-stability-deposit.md).
 - FLIP does not admit a new request against capacity from a possibly debited
   wallet send until a durable observation is known to include that debit
-  ([claim](CLAIM-fi-stale-capacity-reuse.md)).
+  ([claim](CLAIM-fa-stale-capacity-reuse.md)).
 - At every commit that adds or reactivates a wallet liability, active allocation
   reservations, operator withdrawals, possibly spent uncovered sends, and the
   fee reserve do not exceed known spendable balance, and active allocation
@@ -117,16 +117,16 @@ Unverified.
 - One unresolved stability-pool target cannot prevent processing of later active
   allocations
   ([claim](CLAIM-stability-worker-single-target-starvation.md)).
-- FI input cannot make FLIP retain an unbounded number of target clients or
+- FA input cannot make FLIP retain an unbounded number of target clients or
   target-client databases
   ([claim](CLAIM-stability-target-client-retention-is-unbounded.md)).
-- FI input cannot grow durable public-request state without consuming a
+- FA input cannot grow durable public-request state without consuming a
   configured finite per-requester or global admission allowance
-  ([claim](CLAIM-fi-request-resource-exhaustion.md)).
+  ([claim](CLAIM-fa-request-resource-exhaustion.md)).
 - Within each runtime generation and configured verification window, one
   endorsed federation cannot exceed its configured outbound trust-verification
   run allowance, regardless of requester-authored request fields
-  ([claim](CLAIM-fi-rejected-request-verification-amplification.md)).
+  ([claim](CLAIM-fa-rejected-request-verification-amplification.md)).
 - Incomplete unauthenticated RPC streams cannot indefinitely prevent all new
   streams from reaching frame decoding
   ([claim](CLAIM-public-rpc-slow-stream-exhaustion.md)).

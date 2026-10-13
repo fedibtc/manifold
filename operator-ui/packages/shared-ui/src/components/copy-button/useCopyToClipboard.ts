@@ -4,7 +4,7 @@ const FEEDBACK_RESET_MS = 1_500;
 
 type CopyOutcome = 'idle' | 'copied' | 'failed';
 
-// A fleet manager is commonly reached over plain http at its host address, and
+// A manifold guardian is commonly reached over plain http at its host address, and
 // in that non-secure context `navigator.clipboard` is not defined at all. The
 // async API is tried first and this selection-based path carries the value when
 // it is missing or refuses, so the control is not dead on the exact deployment

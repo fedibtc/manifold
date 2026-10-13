@@ -1,7 +1,7 @@
 use defe::bitcoind::BitcoindDriver;
 use defe::flip::FlipDriver;
-use defe::fman::FmanDriver;
 use defe::gatewayd::GatewaydDriver;
+use defe::mg::MgDriver;
 use defe::nostr_relay::NostrRelayDriver;
 use defe::push_gateway::PushGatewayDriver;
 use defe::resource_manager::{
@@ -29,7 +29,7 @@ use defe_api::{
     Response, SharingMode,
 };
 
-const USAGE: &str = "Usage: defe [opts...] <command>\n\nCommands:\n  exec <cmd...>\n  env [--fedimint-load-test-tool-bin <path>] [--complete-liquidity] [-- COMMAND...]\n  serve --listenfd [--log-requests]\n\nOptions:\n  --tmp-dir <path>\n  --keep-temp\n  --no-keep-temp-on-failure\n  --log-dir <path>\n  --log-requests\n  --binary-path <dir>\n  --nostr-rs-relay-bin <path>\n  --push-gateway-bin <path>\n  --bitcoind-bin <path>\n  --fleet-manager-bin <path>\n  --fman-cli-bin <path>\n  --fi-cli-bin <path>\n  --liquidity-manager-daemon-bin <path>\n  --gatewayd-bin <path>\n  --gateway-cli-bin <path>\n  --defe-env-bin <path>";
+const USAGE: &str = "Usage: defe [opts...] <command>\n\nCommands:\n  exec <cmd...>\n  env [--fedimint-load-test-tool-bin <path>] [--complete-liquidity] [-- COMMAND...]\n  serve --listenfd [--log-requests]\n\nOptions:\n  --tmp-dir <path>\n  --keep-temp\n  --no-keep-temp-on-failure\n  --log-dir <path>\n  --log-requests\n  --binary-path <dir>\n  --nostr-rs-relay-bin <path>\n  --push-gateway-bin <path>\n  --bitcoind-bin <path>\n  --manifold-guardian-bin <path>\n  --mg-cli-bin <path>\n  --fa-cli-bin <path>\n  --liquidity-manager-daemon-bin <path>\n  --gatewayd-bin <path>\n  --gateway-cli-bin <path>\n  --defe-env-bin <path>";
 const SOCKET_FILE_NAME: &str = "s";
 const DEV_SERVER_TEMP_DIR_NAME: &str = "defe-dev-server";
 const DEFAULT_TEMP_DIR_ATTEMPTS: u16 = 256;
@@ -103,10 +103,10 @@ async fn run_exec(exec: ExecArgs) -> Result<ExitStatus, String> {
             config.temp_root.join("env").into_os_string(),
             "--logs-dir".into(),
             config.log_dir.clone().into_os_string(),
-            "--fi-cli".into(),
-            config.fi_cli_bin.clone(),
-            "--fman-cli".into(),
-            config.fman_cli_bin.clone(),
+            "--fa-cli".into(),
+            config.fa_cli_bin.clone(),
+            "--mg-cli".into(),
+            config.mg_cli_bin.clone(),
             "--gateway-cli".into(),
             config.gateway_cli_bin.clone(),
             "--bitcoin-cli".into(),
@@ -117,8 +117,8 @@ async fn run_exec(exec: ExecArgs) -> Result<ExitStatus, String> {
         command_args.extend(environment.args);
         for (label, binary) in [
             ("defe-env", &config.defe_env_bin),
-            ("fman-cli", &config.fman_cli_bin),
-            ("fi-cli", &config.fi_cli_bin),
+            ("fman-cli", &config.mg_cli_bin),
+            ("fa-cli", &config.fa_cli_bin),
             ("gateway-cli", &config.gateway_cli_bin),
             ("bitcoin-cli", &config.bitcoin_cli_bin),
             ("fedimint-load-test-tool", &load_test_tool_bin),
@@ -248,9 +248,9 @@ fn create_resource_manager(config: &ServerConfig) -> Arc<ResourceManager> {
             config.temp_root.join("resources"),
             config.log_dir.clone(),
         ),
-        fman: FmanDriver::new(
-            config.fleet_manager_bin.clone(),
-            config.fman_cli_bin.clone(),
+        mg: MgDriver::new(
+            config.manifold_guardian_bin.clone(),
+            config.mg_cli_bin.clone(),
             config.temp_root.join("resources"),
             config.log_dir.clone(),
         ),
@@ -272,7 +272,7 @@ struct DefeResourceDriver {
     nostr_relay: NostrRelayDriver,
     push_gateway: PushGatewayDriver,
     bitcoind: BitcoindDriver,
-    fman: FmanDriver,
+    mg: MgDriver,
     flip: FlipDriver,
     gatewayd: GatewaydDriver,
 }
@@ -283,7 +283,7 @@ impl ResourceDriver for DefeResourceDriver {
             ResourceKind::NostrRelay => self.nostr_relay.start(allocation),
             ResourceKind::PushGateway => self.push_gateway.start(allocation),
             ResourceKind::Bitcoind => self.bitcoind.start(allocation),
-            ResourceKind::Fman(_) => self.fman.start(allocation),
+            ResourceKind::Mg(_) => self.mg.start(allocation),
             ResourceKind::Flip(_) => self.flip.start(allocation),
             ResourceKind::Gatewayd(_) => self.gatewayd.start(allocation),
             ResourceKind::Fake => Err(ApiError::new(
@@ -335,13 +335,13 @@ where
     );
     let bitcoind_bin = resolve_binary(options.bitcoind_bin, &options.binary_paths, "bitcoind");
     let bitcoin_cli_bin = resolve_binary(None, &options.binary_paths, "bitcoin-cli");
-    let fleet_manager_bin = resolve_binary(
-        options.fleet_manager_bin,
+    let manifold_guardian_bin = resolve_binary(
+        options.manifold_guardian_bin,
         &options.binary_paths,
         "fleet-manager",
     );
-    let fman_cli_bin = resolve_binary(options.fman_cli_bin, &options.binary_paths, "fman-cli");
-    let fi_cli_bin = resolve_binary(options.fi_cli_bin, &options.binary_paths, "fi-cli");
+    let mg_cli_bin = resolve_binary(options.mg_cli_bin, &options.binary_paths, "fman-cli");
+    let fa_cli_bin = resolve_binary(options.fa_cli_bin, &options.binary_paths, "fa-cli");
     let liquidity_manager_daemon_bin = resolve_binary(
         options.liquidity_manager_daemon_bin,
         &options.binary_paths,
@@ -361,9 +361,9 @@ where
         push_gateway_bin,
         bitcoind_bin,
         bitcoin_cli_bin,
-        fleet_manager_bin,
-        fman_cli_bin,
-        fi_cli_bin,
+        manifold_guardian_bin,
+        mg_cli_bin,
+        fa_cli_bin,
         liquidity_manager_daemon_bin,
         gatewayd_bin,
         gateway_cli_bin,
@@ -593,8 +593,8 @@ fn request_log_label(request: &Request) -> String {
         Request::Allocate(ResourceRequest::Bitcoind(request)) => {
             format!("allocate bitcoind sharing={:?}", request.sharing)
         }
-        Request::Allocate(ResourceRequest::Fman(request)) => {
-            format!("allocate fman sharing={:?}", request.sharing)
+        Request::Allocate(ResourceRequest::Mg(request)) => {
+            format!("allocate mg sharing={:?}", request.sharing)
         }
         Request::Allocate(ResourceRequest::Flip(request)) => {
             format!("allocate flip sharing={:?}", request.sharing)
@@ -641,15 +641,15 @@ fn resource_spec_from_request(request: ResourceRequest) -> ResourceSpec {
                 sharing,
             }
         }
-        ResourceRequest::Fman(request) => {
+        ResourceRequest::Mg(request) => {
             let sharing = match request.sharing {
                 SharingMode::Shared => {
-                    ResourceSharing::Shared(SharedResourceKey::Fman(request.clone()))
+                    ResourceSharing::Shared(SharedResourceKey::Mg(request.clone()))
                 }
                 SharingMode::Exclusive => ResourceSharing::Exclusive,
             };
             ResourceSpec {
-                kind: ResourceKind::Fman(request),
+                kind: ResourceKind::Mg(request),
                 sharing,
             }
         }
@@ -939,17 +939,18 @@ fn parse_command(args: Vec<OsString>) -> Result<DefeCommand, String> {
             index += 1;
             options.bitcoind_bin = Some(take_path_arg(&args, index, "--bitcoind-bin")?);
             index += 1;
-        } else if arg == "--fleet-manager-bin" {
+        } else if arg == "--manifold-guardian-bin" {
             index += 1;
-            options.fleet_manager_bin = Some(take_path_arg(&args, index, "--fleet-manager-bin")?);
+            options.manifold_guardian_bin =
+                Some(take_path_arg(&args, index, "--manifold-guardian-bin")?);
             index += 1;
-        } else if arg == "--fman-cli-bin" {
+        } else if arg == "--mg-cli-bin" {
             index += 1;
-            options.fman_cli_bin = Some(take_path_arg(&args, index, "--fman-cli-bin")?);
+            options.mg_cli_bin = Some(take_path_arg(&args, index, "--mg-cli-bin")?);
             index += 1;
-        } else if arg == "--fi-cli-bin" {
+        } else if arg == "--fa-cli-bin" {
             index += 1;
-            options.fi_cli_bin = Some(take_path_arg(&args, index, "--fi-cli-bin")?);
+            options.fa_cli_bin = Some(take_path_arg(&args, index, "--fa-cli-bin")?);
             index += 1;
         } else if arg == "--liquidity-manager-daemon-bin" {
             index += 1;
@@ -1061,19 +1062,20 @@ fn parse_server_option(
         options.bitcoind_bin = Some(take_path_arg(args, *index, "--bitcoind-bin")?);
         *index += 1;
         Ok(true)
-    } else if arg == "--fleet-manager-bin" {
+    } else if arg == "--manifold-guardian-bin" {
         *index += 1;
-        options.fleet_manager_bin = Some(take_path_arg(args, *index, "--fleet-manager-bin")?);
-        *index += 1;
-        Ok(true)
-    } else if arg == "--fman-cli-bin" {
-        *index += 1;
-        options.fman_cli_bin = Some(take_path_arg(args, *index, "--fman-cli-bin")?);
+        options.manifold_guardian_bin =
+            Some(take_path_arg(args, *index, "--manifold-guardian-bin")?);
         *index += 1;
         Ok(true)
-    } else if arg == "--fi-cli-bin" {
+    } else if arg == "--mg-cli-bin" {
         *index += 1;
-        options.fi_cli_bin = Some(take_path_arg(args, *index, "--fi-cli-bin")?);
+        options.mg_cli_bin = Some(take_path_arg(args, *index, "--mg-cli-bin")?);
+        *index += 1;
+        Ok(true)
+    } else if arg == "--fa-cli-bin" {
+        *index += 1;
+        options.fa_cli_bin = Some(take_path_arg(args, *index, "--fa-cli-bin")?);
         *index += 1;
         Ok(true)
     } else if arg == "--liquidity-manager-daemon-bin" {
@@ -1162,9 +1164,9 @@ struct ServerOptions {
     nostr_rs_relay_bin: Option<PathBuf>,
     push_gateway_bin: Option<PathBuf>,
     bitcoind_bin: Option<PathBuf>,
-    fleet_manager_bin: Option<PathBuf>,
-    fman_cli_bin: Option<PathBuf>,
-    fi_cli_bin: Option<PathBuf>,
+    manifold_guardian_bin: Option<PathBuf>,
+    mg_cli_bin: Option<PathBuf>,
+    fa_cli_bin: Option<PathBuf>,
     liquidity_manager_daemon_bin: Option<PathBuf>,
     gatewayd_bin: Option<PathBuf>,
     gateway_cli_bin: Option<PathBuf>,
@@ -1179,9 +1181,9 @@ struct ServerConfig {
     push_gateway_bin: OsString,
     bitcoind_bin: OsString,
     bitcoin_cli_bin: OsString,
-    fleet_manager_bin: OsString,
-    fman_cli_bin: OsString,
-    fi_cli_bin: OsString,
+    manifold_guardian_bin: OsString,
+    mg_cli_bin: OsString,
+    fa_cli_bin: OsString,
     liquidity_manager_daemon_bin: OsString,
     gatewayd_bin: OsString,
     gateway_cli_bin: OsString,

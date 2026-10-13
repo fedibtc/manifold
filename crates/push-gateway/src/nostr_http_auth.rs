@@ -23,7 +23,7 @@ use axum::{
     http::{HeaderMap, Method, StatusCode, header, request::Parts},
 };
 use base64::{Engine, engine::general_purpose};
-use fedi_decentralized_service_fleet_manager::{
+use fedi_decentralized_service_manifold_guardian::{
     GuardianTelemetryRegistrationRequest, MAX_GUARDIAN_TELEMETRY_REGISTRATION_BYTES,
 };
 use serde_json::Value;
@@ -234,7 +234,7 @@ async fn verify_authorization(
 
 /// Common NIP-98 cryptographic/replay/source validation. This is private and
 /// the only non-mobile caller is the concrete telemetry extractor above,
-/// which immediately performs the stronger live FMan trust checks before
+/// which immediately performs the stronger live MG trust checks before
 /// returning any value to a handler.
 async fn verify_authorization_event(
     state: &AppState,

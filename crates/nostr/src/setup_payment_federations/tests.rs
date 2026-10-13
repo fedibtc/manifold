@@ -16,7 +16,7 @@ const SIGNED_EVENT_FIXTURE: &str = r#"{"id":"ee7d6ff74b9a89b0fe488a3aa124a24b00a
 fn content(invites: &[&str]) -> String {
     serde_json::to_string(&SetupPaymentFederationsContent {
         version: ProtocolV1,
-        fman_version: "0.1.0".parse().expect("valid FMan version"),
+        mg_version: "0.1.0".parse().expect("valid MG version"),
         federations: invites
             .iter()
             .map(|invite| InviteCode((*invite).to_owned()))
@@ -150,7 +150,7 @@ fn admits_unknown_fields_but_rejects_unknown_versions() {
             let admitted = result.expect("unknown fields do not prevent admission");
             assert_eq!(admitted.event(), &publication);
             assert_eq!(admitted.set().len(), 1);
-            assert_eq!(admitted.set().fman_version().to_string(), "0.1.0");
+            assert_eq!(admitted.set().mg_version().to_string(), "0.1.0");
             assert_eq!(admitted.set().min_fee_ppm(), 2_345);
             assert_eq!(
                 admitted.set().iter().next().unwrap().1,

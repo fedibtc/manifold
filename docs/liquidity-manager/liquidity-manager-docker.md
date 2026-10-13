@@ -81,7 +81,7 @@ waits rather than binding. Supply the key either at boot
 endpoint identity is derived from that key, so it is the same on every
 subsequent start and the advertised address never needs re-applying. Test
 deployments may substitute the federation preview and
-FMan trust-material verification inputs with local fixture files via
+MG trust-material verification inputs with local fixture files via
 `-e FLIP_TRUST_FIXTURES=<dir>` (`--trust-fixtures`); fixture mode refuses
 Bitcoin mainnet configurations.
 
@@ -284,7 +284,7 @@ unchanged. The same signal disables Iroh's public relay transport for these
 loopback-only tests, avoiding external relay selection and dependency.
 
 The Nix development shell supplies the relay, Bitcoin Core, gateway, and
-Fedimint binaries. CI gives each long FMan and FLIP test its own `defe exec`
+Fedimint binaries. CI gives each long MG and FLIP test its own `defe exec`
 runner. Linux Nix sandboxes isolate their loopback networks and run the
 partitions in parallel; Darwin shares host loopback, so CI orders its partitions
 to prevent independent port-allocation ledgers from racing. `just

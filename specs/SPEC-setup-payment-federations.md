@@ -3,35 +3,35 @@
 ## Status
 
 The reference content parser and complete Nostr admission helper implement this
-contract. FI consumes and durably retains the event for paid formation. FMan
+contract. FA consumes and durably retains the event for paid formation. MG
 consumes it as its only payment-federation policy source: the
-`fman-nostr` boundary authenticates and fetches publications, retains
+`mg-nostr` boundary authenticates and fetches publications, retains
 the admitted event through a daemon-owned store that also derives the accepted
 membership, and the daemon's quote acceptance, paid availability, and wallet
 join reconciliation all read that membership
-([SPEC-locked-payment](../crates/fman/specs/SPEC-locked-payment.md)).
+([SPEC-locked-payment](../crates/mg/specs/SPEC-locked-payment.md)).
 There is no operator-curated acceptance list or admin acceptance verb. The
 production environment profile pins its publisher identity, but Fedi does not
 yet publish kind 37707, so production paid setup remains unavailable until the
 first publication. Development and staging use their profile placeholder
 publishers.
 
-FMan's intended removed-member retention has a known restart deviation: its
+MG's intended removed-member retention has a known restart deviation: its
 durable client prefix and balance remain, but the restarted daemon does not
 reopen that scope. Its supported listing retains the scope with an unknown
 wallet projection, but configured-destination sweep cannot reach it. See the falsified
-[CLAIM-fleet-manager-payment-continuation-progresses](../crates/fman/specs/CLAIM-fleet-manager-payment-continuation-progresses.md).
+[CLAIM-manifold-guardian-payment-continuation-progresses](../crates/mg/specs/CLAIM-manifold-guardian-payment-continuation-progresses.md).
 
 ## Record justification
 
 This contract spans Fedi's publisher, the shared domain parser, Nostr event
-admission, and durable FI and FMan state. No one implementation area can define
+admission, and durable FA and MG state. No one implementation area can define
 the signed wire shape, semantic invite validation, and cross-restart replacement
 ordering coherently.
 
 Fedi publishes the common set chosen by
-[SPEC-locked-payment](../crates/fman/specs/SPEC-locked-payment.md)
-as one Nostr addressable event. FI and FMan pin the dedicated Fedi publisher key
+[SPEC-locked-payment](../crates/mg/specs/SPEC-locked-payment.md)
+as one Nostr addressable event. FA and MG pin the dedicated Fedi publisher key
 through deployment configuration.
 
 ## Event
@@ -107,19 +107,19 @@ replacement ordering as the new shared high-water mark.
 `content` is strict JSON with these known fields:
 
 - integer literal `version: 1`;
-- `fman_version`, the latest supported Fleet Manager release as a SemVer
+- `fman_version`, the latest supported Manifold Guardian release as a SemVer
   string;
 - `federations`, an unordered array of public Fedimint invite strings;
 - `telemetry_registration_url`, an absolute HTTPS URL with a host and no
   username, password, query, or fragment;
-- `min_fee_ppm`, the smallest guardian fee rate an FI may propose, in ppm.
+- `min_fee_ppm`, the smallest guardian fee rate an FA may propose, in ppm.
   Optional: absent means 1,500 (0.15%). It bounds *new* proposals
-  only — each FMan refuses one below it, while a rate a federation already
+  only — each MG refuses one below it, while a rate a federation already
   adopted stays valid to carry forward and still reports as configured
   ([REQ-guardian-fee-remittance](./REQ-guardian-fee-remittance.md)); and
-- `support_nostr_pubkey`, the Fedi support key FMan operators chat with
-  ([SPEC-fman-support-chat](../crates/fman/specs/SPEC-fman-support-chat.md)),
-  as a Nostr public key. Optional: absent means the FMan uses the key its
+- `support_nostr_pubkey`, the Fedi support key MG operators chat with
+  ([SPEC-mg-support-chat](../crates/mg/specs/SPEC-mg-support-chat.md)),
+  as a Nostr public key. Optional: absent means the MG uses the key its
   environment profile pins. A present key overrides the profile key, so a
   newer publication with a different key rotates it. Consumers older than
   this field reject a publication that sets it, so Fedi sets it only after
@@ -131,12 +131,12 @@ uses a new `version`; consumers reject versions they do not support. Duplicate
 known fields remain invalid.
 
 The telemetry URL is required in version 1. It is a policy locator, not a
-bearer capability. The event deliberately does not publish FMan Iroh endpoint
-ids, FMan capabilities, invite codes, or collector locations. Each verified
-FMan supplies its own current locator and capability
+bearer capability. The event deliberately does not publish MG Iroh endpoint
+ids, MG capabilities, invite codes, or collector locations. Each verified
+MG supplies its own current locator and capability
 to this URL under the separate authenticated registration contract. This keeps
-global policy stable when an FMan moves its endpoint and avoids making
-sensitive FMan access public Nostr data.
+global policy stable when an MG moves its endpoint and avoids making
+sensitive MG access public Nostr data.
 
 An empty array is valid and stops new paid setup. It does not itself erase
 wallet state or invalidate already-issued payment or seat artifacts, whose
@@ -165,7 +165,7 @@ Array position carries no preference or fallback meaning. A consumer uses the
 derived federation ID as the member identity and the signed invite as its join
 material.
 
-FMan compares its Cargo package version to `fman_version` using SemVer
+MG compares its Cargo package version to `fman_version` using SemVer
 ordering. Its operator API exposes the running version, the published version,
 and whether the running version is lower. An equal or newer local version is
 accepted, which permits staged rollouts and development builds ahead of the
@@ -196,37 +196,37 @@ publisher clock mistake. Publisher-key rotation and recovery are out-of-band
 deployment operations in version 1; the environment profile carries the
 canonical publisher, overridable only in the Development profile. Rotation
 invalidates every consumer's retained event: post-restart revalidation
-against the new publisher fails loudly (in the FMan daemon, startup refuses
+against the new publisher fails loudly (in the MG daemon, startup refuses
 before spawning its RPC router) until the retained publication is cleared as
 part of the rotation procedure — fail closed, never silently trusting a stored
-event the current profile no longer authenticates. FMan additionally binds a
+event the current profile no longer authenticates. MG additionally binds a
 data root to its first Manifold environment before onboarding and refuses a
 cross-environment restart before reading environment-derived policy
 ([SPEC-manifold-environment](../crates/manifold-environment/specs/SPEC-manifold-environment.md)).
 
 This helper bounds event content before signature verification. Relay and
 transport code must additionally bound the complete incoming event frame,
-including tags, before invoking admission. FI relay and CLI transports reject a
+including tags, before invoking admission. FA relay and CLI transports reject a
 normalized complete event larger than 256 KiB. Relay lookup observes at most 16
 candidates and retains at most 4 MiB across one common-set query.
 
 ## Convergence boundary
 
-Publication is one-way and eventually consistent. FI and FMan can temporarily
+Publication is one-way and eventually consistent. FA and MG can temporarily
 hold different admitted events during an update; this contract does not claim
 simultaneous activation or uninterrupted payability across a set change.
-FI retains last-known-good policy through fetch failures, treats an empty set as
+FA retains last-known-good policy through fetch failures, treats an empty set as
 a stop for new paid formation, filters the authenticated set by wallet
 capability, and submits the canonical selected federation ID to `GetQuote`.
-FMan-local rejection remains an actionable quote failure rather than a
-discovery-policy input. Joining, FMan reconciliation, and publisher deployment
+MG-local rejection remains an actionable quote failure rather than a
+discovery-policy input. Joining, MG reconciliation, and publisher deployment
 belong to their consuming components.
 
-FMan couples replacement to its quote pricing: it retains the admitted event,
+MG couples replacement to its quote pricing: it retains the admitted event,
 replaces its derived accepted membership, and — whenever any previously
 accepted member is no longer in the set — draws a fresh offer epoch, all in
 one database transaction. Every outstanding quote is thereby refused (with its
 refund) rather than settled against a removed federation, and a crash can
-never retain a replacement without that effect. The FMan wallet never leaves
+never retain a replacement without that effect. The MG wallet never leaves
 a removed federation: received balances stay sweepable, and in-flight
 refund settlement against it keeps working.

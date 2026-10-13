@@ -1,0 +1,171 @@
+# SPEC-guardian-telemetry-proxy: guardian telemetry over MG Iroh
+
+## Record justification
+
+No single artifact can own this contract because the MG journal and metrics
+producers, service wire types, Iroh server, registration worker, and independent
+collector must preserve one authorization and continuity boundary.
+
+## Decision
+
+An MG exposes one authenticated telemetry service over the fixed
+`fedi/fman/guardian-telemetry/1` Iroh ALPN. One 32-byte capability authorizes
+all three surfaces owned by that MG:
+
+- discovery of its known seats and their optional public invite codes;
+- default-deny projected access to a Running seat's loopback `fedimintd`
+  Prometheus endpoint; and
+- listing and incrementally reading the MG and retained seat safe-event
+  journals.
+
+The capability is global to the MG identity. It is derived with HKDF-SHA256
+from the protected root mnemonic using
+`fman/v1/telemetry/<generation>`. SQLite stores one nonnegative monotone
+generation for the whole MG, never bearer plaintext. There is no per-seat
+authorization or acknowledgement state.
+
+The `fedimintd` process remains the metrics producer. After authentication and
+seat selection, MG applies the exact compiled source profile and transports
+only independently valid allowlisted families. The collector repeats the same
+default-deny projection before adding collector-owned identity labels. During a
+mixed rollout, new collectors therefore accept old raw MG responses, while an
+old collector accepts a new MG response as a strict safe subset of source
+metrics.
+
+The collector does not require a matching MG, Fedimint, or build version.
+`app_start_ts` is optional bounded source metadata: an absent, duplicate, or
+locally invalid marker discards only that family, not independently valid metric
+families or safe journals. The fixed ALPN
+`fedi/fman/guardian-telemetry/1` is the protocol-version compatibility boundary.
+A future incompatible telemetry protocol must negotiate another ALPN/version;
+release metadata is not a substitute for that protocol negotiation.
+Protocol evolution is governed by
+[`GATE-production-compatibility`](../../../specs/GATE-production-compatibility.md).
+Method-labelled API families likewise use the same compiled canonical-method
+allowlist at both boundaries for every release; a raw or unrecognized method
+value discards its family.
+
+## Why this shape
+
+The stakeholder decision in
+[`docs/telemetry/telemetry.md`](../../../docs/telemetry/telemetry.md) chose
+MG-based enrollment and Prometheus endpoint access. A single MG capability
+matches that trust boundary: a party authorized to discover every seat on the
+MG is also authorized to scrape those seats and read explicitly shareable
+journals. Seat ids select resources; they are not separate authorization
+scopes.
+
+The collector dials the existing MG Iroh endpoint, so home-hosted deployments
+need no public port, DNS, certificate, or reverse proxy. Public HTTPS guardian
+endpoints, recurring metric uploads, FA relaying, and publishing Iroh bearer
+material in Nostr remain rejected alternatives.
+
+## Protocol and bounds
+
+All requests carry `TelemetryCapability`. `list_guardian_telemetry_seats`
+returns every seat known to the fleet, sorted by `SeatId`, as
+`{ seat_id, invite_code: Option<InviteCode> }`. An unavailable or
+not-yet-formed seat is still discoverable with no invite.
+
+`scrape_guardian_metrics` additionally names a `SeatId`. After global
+capability verification, MG permits only a Running seat, connects only to that
+child's fixed loopback metrics address, disables redirects, requires an
+unencoded successful Prometheus text response, and returns canonical projected
+text. Missing/wrong capability is `permission_denied`; an authorized request
+for a non-Running or temporarily unavailable child is the same coarse retryable
+`unavailable`.
+
+The Iroh request frame is capped at 4 KiB, with at most eight concurrent
+handlers and a five-second initial-frame deadline. Loopback connection and total
+request timeouts are two and ten seconds. Responses are streamed into a hard
+4 MiB maximum before serialization, and clients apply a bounded response limit
+with envelope headroom.
+
+`list_safe_event_journals` returns the global MG journal followed by every
+known retained seat journal. Each journal has a persisted UUIDv7 incarnation,
+stable across ordinary restart and segment rotation and regenerated when that
+journal's storage is recreated or replaced. Consumers compare the complete
+incarnation value for identity; its embedded timestamp has no ordering authority.
+
+Within one incarnation, cursor segment numbers form a durable monotone namespace:
+the journal reserves each next number durably before using it and never reuses a
+number after rotation, retention deletion, crash, or restart. After any reopen or
+crash-tail repair, the writer durably creates a fresh segment before accepting
+the first new record and never appends new bytes at offsets in a pre-reopen
+segment. It fails closed rather than guessing an incarnation or next segment.
+
+A supported restore excludes safe-event journals or creates a new incarnation
+before exposing a restored journal. Restoring an entire volume can roll back both
+the records and their in-volume incarnation/reservation state consistently; no
+token on that volume can detect this. The operational restore procedure must force
+a new incarnation after such a rollback.
+
+`fetch_safe_event_journal` accepts one listed journal, its incarnation, and an
+optional incarnation-bound `(segment, byte offset)` cursor, and echoes the
+current incarnation. A different request or cursor incarnation produces the
+typed `incarnation_changed` result with no data selected rather than applying
+its segment coordinates to new storage. A current fetch returns at most 768 KiB
+and ends only after a complete newline-terminated record. Missing segments,
+invalid offsets, and
+non-record-boundary offsets restart at the oldest retained record with
+`continuity_gap = true`. A changed incarnation likewise requires the collector
+to restart at the oldest retained record and record a continuity gap. An
+incomplete concurrent tail remains for a later pull.
+
+Capability comparison is constant-time and precedes seat lookup, child probing,
+journal enumeration, or filesystem access. Capabilities, raw bodies, invite
+codes, journal identifiers, incarnations, cursors, and seat identifiers never
+appear in logs or metrics labels.
+
+## Enrollment and recovery
+
+Fedi's signed setup-payment policy contains only the credential-free HTTPS
+registration URL. On startup, policy change, and every 15 minutes, MG sends
+one idempotent MG-level registration containing its Iroh endpoint id, durable
+capability generation, corresponding capability, and current Holder authorization.
+
+Registration uses NIP-98 bound to the exact method, public endpoint URL, and
+request body. The receiver performs current Holder credential, issuer-policy,
+and revocation verification and requires the NIP-98 signer to equal the Holder
+subject. No seat proof or federation preview is required: the Holder credential
+authorizes the MG, while the NIP-98 proof binds the submitted endpoint and
+capability to that identity.
+
+The strict standalone collector atomically admits the one encrypted target keyed
+by MG public key. A lower generation is rejected. The same generation is
+accepted only with the same capability, while its signed endpoint may change; a
+greater generation replaces both. Independently, an accepted NIP-98 `created_at`
+may not move backward. Thus a fresh, correctly signed old body cannot roll
+capability state back. Periodic idempotent registration recovers collector
+database loss and endpoint changes without acknowledgements. Generation is part
+of the exact NIP-98-bound body. Making it required was a deliberate historical
+wire incompatibility: receivers reject registrations from older MG builds
+rather than accepting a body without rollback ordering. The owner-only local
+`admin reenroll-telemetry` command durably advances the global generation,
+immediately invalidates the prior bearer for discovery, metrics, and journals,
+and wakes the worker to register the replacement. This is the explicit
+operator recovery path when existing collector access should be revoked or a
+receiver has lost its target. Downstream collectors first request the
+authenticated seat list and then decide which returned seats or invites to
+consume. The cloud collector derives a canonical federation id from each formed
+invite and binds it to the scrape of that exact seat for operational
+attribution. Authentication proves which MG made this assertion; it does not
+independently attest that the seat is a guardian of that federation or that the
+child uses its configuration. Consumers that need authorization, billing,
+dispute evidence, or membership proof must independently verify the
+invite-derived federation/config binding.
+
+The generation is durable only with the complete data root. Mnemonic-only
+restore starts from generation zero and can therefore re-derive a bearer used
+before the lost database. Operators must treat telemetry access as needing
+fresh recovery handling after such a restore; the mnemonic alone cannot prove
+the lost generation high-water mark.
+
+## Privacy inventory
+
+The checked inventory is compiled into MG and the collector. Each pinned
+`fedimintd` and Manifold module-set change must inventory emitted metric names
+and label dimensions before changing that profile. Both boundaries discard
+known-denied, unknown, and family-local invalid input; neither has a raw
+fallback. The current policy and the cloud ownership boundary are
+[documented together](../../../specs/ARCH-cloud-mg-telemetry.md).

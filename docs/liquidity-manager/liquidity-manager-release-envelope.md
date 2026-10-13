@@ -26,7 +26,7 @@ operator-controlled access enforcement.
 | Concurrent public RPC stream handlers | 128 | `fedi-iroh-rpc`, `iroh_protocol.rs` — **derived** |
 | Verification runs per federation per 5-minute window | 12 | `verification_budget.rs` — **derived** |
 | Federations tracked by that budget | 4096 | `verification_budget.rs` — **derived** |
-| Request lifetime (`expires_at - issued_at`) | ≤ 3600 s | `public.rs`, matching `FI_LIQUIDITY_REQUEST_VALIDITY` — **derived** |
+| Request lifetime (`expires_at - issued_at`) | ≤ 3600 s | `public.rs`, matching `FA_LIQUIDITY_REQUEST_VALIDITY` — **derived** |
 | `issued_at` clock skew tolerated | 120 s | `public.rs` — **derived** |
 | Trust material validity | 3600 s | `verification.rs` — **derived** |
 | Target federation clients held open | 8, configurable | `--max-open-target-clients` — **derived** |
@@ -39,8 +39,8 @@ verification budget bounds outbound trust work within each five-minute window,
 and the request lifetime bounds how long one signature stays deliverable. The
 renewable budget is a rate limit, not a lifetime cumulative bound.
 
-Nothing here bounds the number of *federations* an FI can get endorsed. That is
-an issuer and FMan question, not a FLIP one, and several FLIP bounds are
+Nothing here bounds the number of *federations* an FA can get endorsed. That is
+an issuer and MG question, not a FLIP one, and several FLIP bounds are
 per-federation, so the release's real workload ceiling is set by the endorsement
 policy of the issuers an operator installs.
 

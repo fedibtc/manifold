@@ -1,7 +1,7 @@
 //! Test-support fixtures for the canonical federation-config derivations.
 //!
 //! The config hash and peer-set derivation are a cross-component agreement:
-//! the FMan signs a hash the FI and FLIP must reproduce exactly. Tests in
+//! the MG signs a hash the FA and FLIP must reproduce exactly. Tests in
 //! other crates build against this one fixture rather than their own copy, so
 //! a change to the canonical shape cannot pass in one crate while failing in
 //! another.
@@ -21,7 +21,7 @@ use fedimint_core::util::SafeUrl;
 ///
 /// The first four are load-bearing — `test_config(4)` feeds the pinned
 /// config-hash vector and the committed conformance file — so extend this
-/// array only at the end. The rest exist because `fi-client` forms
+/// array only at the end. The rest exist because `fa-client` forms
 /// `MIN_FEDERATION_SIZE` (7) seat federations.
 pub const GUARDIAN_KEYS: [&str; 7] = [
     "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",

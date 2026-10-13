@@ -53,7 +53,7 @@ defe [opts...] serve --listenfd
 Supported options are `--tmp-dir <path>`, `--log-dir <path>`, `--log-requests`,
 `--binary-path <dir>`, `--nostr-rs-relay-bin <path>`,
 `--push-gateway-bin <path>`, `--bitcoind-bin <path>`,
-`--fleet-manager-bin <path>`, `--liquidity-manager-daemon-bin <path>`,
+`--manifold-guardian-bin <path>`, `--liquidity-manager-daemon-bin <path>`,
 `--gatewayd-bin <path>` and `--gateway-cli-bin <path>`.
 `--log-requests` writes simple client connection, disconnect, request, and error
 lines to stderr for persistent development servers. If `--tmp-dir` is omitted in
@@ -158,15 +158,15 @@ Normal exit codes and native terminating signals cross both the composer and
 outer `defe` boundaries unchanged.
 
 The child receives `DEFE_ENV=1`, `DEFE_ENV_SCHEMA_VERSION=1`, paths for the root,
-manifest, secrets, logs, invite, FI state, and Iroh routes, plus the stable local
+manifest, secrets, logs, invite, FA state, and Iroh routes, plus the stable local
 Nostr, gateway, and FLIP endpoint variables. `$DEFE_ENV_BIN_DIR` is prepended to
 `PATH`. Its private cross-shell tools include `defe-env-info`, `defe-list-commands`,
-`defe-connectivity`, `fman-1` through `fman-7`, `fi-cli`, `gateway`, `bitcoin-cli`,
-`fman-ui`, `fees`, and `traffic`. (`fi` is a POSIX shell keyword and therefore cannot
+`defe-connectivity`, `mg-1` through `mg-7`, `fa-cli`, `gateway`, `bitcoin-cli`,
+`mg-ui`, `fees`, and `traffic`. (`fi` is a POSIX shell keyword and therefore cannot
 be a cross-shell executable name.) Ready output remains concise and directs users to
 `defe-list-commands`, which describes each generated command. Run
 `defe-connectivity` when attaching to services: it prints the readiness query, paths,
-service URLs, FMan UI instructions and passwords, FMan API URLs and CLI examples, and
+service URLs, MG UI instructions and passwords, MG API URLs and CLI examples, and
 safe-journal locations. Every service wrapper selects the exact binary, state,
 endpoint, and dummy credential chosen by the composer and forwards its remaining
 arguments unchanged.
@@ -184,19 +184,19 @@ environment without an executable `direnv`, and active neutralization when `/`
 contains `.envrc` or `.env`; each case would make the runtime boundary
 ambiguous or execute an unexpected root environment. It also resolves an
 executable `pnpm` from the caller's pre-neutralization `PATH` for the generated
-`fman-ui` tool. A missing `pnpm` fails before service setup even when that tool
+`mg-ui` tool. A missing `pnpm` fails before service setup even when that tool
 would not be invoked, so every advertised runtime command remains usable after
 the development-toolchain overlay is removed.
 
-`fees show --guardian N` and `fees collect --guardian N|--all` invoke FMan's real
+`fees show --guardian N` and `fees collect --guardian N|--all` invoke MG's real
 guardian-fee admin path with the formed seat IDs. Collection prints a fresh
 post-collect status. These commands do not synthesize remittances or imply that
 traffic accrued production payer fees.
 
 `fees synthetic-remit --guardian N --amount-msats AMOUNT` prepares one
 collectable remittance through the real wallet-v2 and stability-pool path. It
-reuses a dedicated disposable `fi-cli payment-wallet`, funds it when needed,
-seals a mint/send breakdown to the FMan's actual remittance account, and waits
+reuses a dedicated disposable `fa-cli payment-wallet`, funds it when needed,
+seals a mint/send breakdown to the MG's actual remittance account, and waits
 for `fees show` to observe the result. It then prints the exact `fees show` and
 `fees collect` next steps. This is deliberately synthetic: production payer
 accrual was bypassed, so it does not validate Fedi app accrual, 4:1:1 splitting,

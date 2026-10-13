@@ -1,6 +1,6 @@
 # CLAIM-fresh-request-id-repeated-funding: One semantic request has one accepted allocation
 
-For one authenticated FI key and one semantic liquidity intent, FLIP accepts
+For one authenticated FA key and one semantic liquidity intent, FLIP accepts
 and creates at most one independent allocation, including when the operator
 uses the documented live restore operation.
 
@@ -11,5 +11,5 @@ uses the documented live restore operation.
   daemon owns the data root.
 - A configured deployment has one correctly signed request that passes every
   acceptance gate when it is first accepted.
-- The authenticated FI and Admin callers use only their documented interfaces,
+- The authenticated FA and Admin callers use only their documented interfaces,
   and canonical encoding, hashes, and Schnorr verification behave as documented.

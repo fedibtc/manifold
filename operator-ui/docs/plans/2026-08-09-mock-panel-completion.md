@@ -36,9 +36,9 @@ empty until the page's first fetch resolves, covered by an explicit
 "Listening for this page's calls…" state.
 
 **Error values are a select in both apps.** FLIP already selects a
-`ServiceErrorCode`. FMan's express panel had a free-text message field; it
+`ServiceErrorCode`. MG's express panel had a free-text message field; it
 becomes a small canned list so one `VerbErrorList` component serves both tabs in
-both apps. Arbitrary FMan messages stay reachable via
+both apps. Arbitrary MG messages stay reachable via
 `window.__mockControl.setError(verb, message)`.
 
 **The raw-MockState textarea is dropped; the path/value patcher is kept.** The
@@ -58,7 +58,7 @@ so that mutating *verbs* keep today's write-only behaviour and no e2e moves.
 `<MockPanelMount />`, and `BootGate.tsx` renders `RestoreConsolePage` *instead
 of* `<Outlet />` in restore mode. The moment the new `bootMode` control does its
 job the panel disappears with no way back. FLIP needs the `RootLayout` treatment
-FMan already got in `77a049c7`. This is a precondition of shipping the control,
+MG already got in `77a049c7`. This is a precondition of shipping the control,
 not a drive-by.
 
 **`GET /health` does not consult `forcedErrors`.** Only dispatched admin methods
@@ -88,7 +88,7 @@ list — it cannot drift from what is routed.
   └──────────────────────────────────────────────────────────────┘
 ```
 
-The package stays app-agnostic by taking descriptors rather than fields. FMan
+The package stays app-agnostic by taking descriptors rather than fields. MG
 supplies `latencyMs` + `authMode`; FLIP supplies `latencyMs` + `phase` +
 `bootMode`.
 
@@ -162,7 +162,7 @@ Tab behaviour:
 
 - Label reads `This page: <RouteKey>`.
 - Default tab is This-page when the route key resolves and at least one scenario
-  affects it; otherwise Global. This is also the graceful fallback for FMan's
+  affects it; otherwise Global. This is also the graceful fallback for MG's
   `setup`/`auth` and FLIP's `restore-console`, which are gate-rendered and have
   no pathname of their own.
 - The verb section's empty state is a spinner plus "Listening for this page's
@@ -180,7 +180,7 @@ Per app, under `src/mocks/`:
 
 - `routes.ts` — `routeToKey(pathname)`. Ordered patterns so `/seats/:id` →
   `seat-detail` wins over `/seats` → `seats`.
-  - FMan: `/` overview · `/seats` seats · `/seats/:id` seat-detail · `/wallet`
+  - MG: `/` overview · `/seats` seats · `/seats/:id` seat-detail · `/wallet`
     wallet · `/wallet/:fedId/withdraw` wallet-withdraw · `/offer` offer ·
     `/backup` backup · `/backup/phrase` backup-phrase
   - FLIP: `/` overview · `/setup` setup · `/funds` funds · `/allocations`
@@ -200,14 +200,14 @@ FLIP only: new `src/app/components/root-layout/RootLayout.tsx` (`Outlet` +
 `MockPanelMount`) as the router's top-level element; remove `MockPanelMount`
 from `AppShell.tsx`.
 
-Verify: both unit suites, five typechecks, `dist/` mock-marker grep, FMan e2e
+Verify: both unit suites, five typechecks, `dist/` mock-marker grep, MG e2e
 35/35, FLIP e2e 18/18 — all unchanged.
 
 ### Task 5 — browser verification
 
 - FLIP: set `bootMode: restore` from the Global tab → restore console renders →
   **panel is still present** → set back to `normal`.
-- FMan: inject an error on `ListSeats` → the Seats page shows it with no reload.
+- MG: inject an error on `ListSeats` → the Seats page shows it with no reload.
 - Both: walk the routes and confirm the This-page tab relabels, refilters, and
   populates its verb list from live traffic.
 
@@ -241,7 +241,7 @@ fail without the directive and pass with it.
 in place, so handing it back directly gives every reader an identity that never
 changes. Pinned in the `ErrorInjection` doc comment and done in both apps.
 
-**FMan's Seats page shows its empty state, not an error, when `ListSeats` fails.**
+**MG's Seats page shows its empty state, not an error, when `ListSeats` fails.**
 Pre-existing UI behaviour that the new injection control merely makes easy to
 reach. Not changed here.
 
@@ -252,7 +252,7 @@ defects in [`2026-08-09-mock-panel-browser-qa.md`](./2026-08-09-mock-panel-brows
 
 - [x] Panel has both tabs; the This-page tab filters scenarios on every route in
       both apps. *(Walked in-browser on FLIP setup/overview/funds/advertisement/
-      allocations and FMan overview/seats/seat-detail/wallet/backup; the
+      allocations and MG overview/seats/seat-detail/wallet/backup; the
       remaining route keys are covered by `mocks/__tests__/routes.test.ts`.)*
 - [x] Every `/__control` capability except the raw-state textarea is reachable
       from the browser, by hand (panel) and by script (`__mockControl`).

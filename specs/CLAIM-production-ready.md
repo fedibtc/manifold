@@ -16,11 +16,11 @@ actionable failure before the affected component serves traffic.
 
 ## Assumptions
 
-- [CLAIM-fleet-manager-production-ready](../crates/fman/specs/CLAIM-fleet-manager-production-ready.md)
-- [CLAIM-fi-client-production-ready](../crates/fi-client/specs/CLAIM-fi-client-production-ready.md)
+- [CLAIM-manifold-guardian-production-ready](../crates/mg/specs/CLAIM-manifold-guardian-production-ready.md)
+- [CLAIM-fa-client-production-ready](../crates/fa-client/specs/CLAIM-fa-client-production-ready.md)
 - [CLAIM-liquidity-manager-production-ready](../crates/liquidity-manager-daemon/specs/CLAIM-liquidity-manager-production-ready.md)
 - [CLAIM-push-gateway-production-ready](../crates/push-gateway/specs/CLAIM-push-gateway-production-ready.md)
-- Each production release identifies an exact supported combination of FI, FMan,
+- Each production release identifies an exact supported combination of FA, MG,
   FLIP, Push Gateway, wire protocols, database schemas, trust profiles, Fedimint,
   gatewayd, packaging, and upgrade paths. It also states workload limits,
   dependency-availability preconditions, operation deadlines, and recovery
@@ -28,13 +28,13 @@ actionable failure before the affected component serves traffic.
   packaging-compatible for every workflow the release designates as supported.
 - The production Fedi consumer supplies the identity, encrypted and namespaced
   durable storage, backup, wallet and payment ports, scheduling, and user
-  interaction required by the `fi-client` contract.
+  interaction required by the `fa-client` contract.
 - Within each supported release and workflow, the production Fedi consumer's
-  `fi-client` integration durably retains FI-client-owned state and credentials
+  `fa-client` integration durably retains FA-client-owned state and credentials
   or restores them from required backup, and discloses them only to
   authenticated, authorized recipients over protected interfaces.
 - Within each supported release and workflow, the production Fedi consumer's
-  wallet and payment integration preserves custody of every FI-client-directed
+  wallet and payment integration preserves custody of every FA-client-directed
   value amount until it either becomes the exact authorized quote-bound
   commitment of a successfully formed federation or returns through a signed
   refund. It durably retains or restores the payment and refund-recovery

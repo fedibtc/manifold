@@ -10,7 +10,7 @@ tracked open item).
 ## Record justification
 
 The contract spans the `service-liquidity-manager` wire types, the daemon's
-acceptance and status logic, and the `fi-client` and Fedi-app consumers, so no
+acceptance and status logic, and the `fa-client` and Fedi-app consumers, so no
 single implementation artifact can own it coherently.
 
 The Public Liquidity API is the app-facing surface advertised over Nostr
@@ -40,7 +40,7 @@ binding must be rejected before any allocation is created.
   bounds (`gateway_min/max_amount`, `stability_min/max_amount`), the private
   `federation_details` (invite code, federation id/name/config hash, optional
   non-authoritative `fleet_seat_hints` and `revocation_locations` hints), the
-  `fman_endorsement` admission gate, the `fman_trust_material` for every FMan
+  `fman_endorsement` admission gate, the `fman_trust_material` for every MG
   identity operating the federation, the `details_payload_hash` commitment,
   and `expires_at`. The endorsement and trust material are each `Option` on
   the wire only so a request without one still deserializes and is answered
@@ -113,7 +113,7 @@ a freshly signed statement about current state:
   contract. Admission now authenticates the invite-derived federation id before the
   per-federation verification budget is charged, so an endorsement-less caller
   cannot probe that budget. A caller that then passes
-  verification for that federation holds a valid unrevoked FMan endorsement for
+  verification for that federation holds a valid unrevoked MG endorsement for
   it, and may therefore learn that the federation has an allocation;
 - rejections are stateless — nothing is persisted, and a retried rejected
   request is re-evaluated from scratch;
@@ -137,7 +137,7 @@ statement.
 This model accepts that anyone with the federation invite and a self-generated
 requester key can obtain the public endorsement and race for the allocation.
 One allocation per federation bounds the exposure, but cannot identify the
-legitimate FI. A verified requester may atomically replace another requester's
+legitimate FA. A verified requester may atomically replace another requester's
 idle allocation; an authenticated operator may release an idle allocation with
 an audited reason. Both paths require no in-flight item, delivered value, or
 active wallet operation. They never cancel work or move capacity. Once an
@@ -168,7 +168,7 @@ gateway evidence additionally carries the shared canonical client-facing
 `GatewayApiUrl`. FLIP derives it from gatewayd's own registrations, preferring
 Iroh and otherwise accepting public HTTPS; it never publishes the admin URL.
 Gateway readiness fails when gatewayd has no suitable registration, so an
-allocation cannot be advertised and funded without an endpoint FI can later
+allocation cannot be advertised and funded without an endpoint FA can later
 register with guardians. The app verifies completion independently through its
 own federation access;
 app-side verification failure is not a FLIP protocol state. Completion

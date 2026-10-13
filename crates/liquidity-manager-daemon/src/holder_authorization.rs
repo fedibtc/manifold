@@ -2,10 +2,10 @@
 //!
 //! Enrollment is the Holder publishing an authorization naming this provider's
 //! pubkey, followed by the operator asking the daemon to reconcile against the
-//! relays its deployment environment pins. This mirrors FMan's flow
-//! deliberately (`crates/fman/nostr/src/lib.rs`): the two services run one
+//! relays its deployment environment pins. This mirrors MG's flow
+//! deliberately (`crates/mg/nostr/src/lib.rs`): the two services run one
 //! enrollment protocol, and [`verify_candidate`] is a close counterpart of
-//! FMan's so a reviewer can diff them.
+//! MG's so a reviewer can diff them.
 //!
 //! The relay set is the environment's, never the operator's advertisement relay
 //! config. Those answer different questions — where a Holder publishes, versus
@@ -43,7 +43,7 @@ use crate::internal_error;
 /// configured relay is black-holing rather than refusing.
 const FETCH_TIMEOUT: Duration = Duration::from_secs(15);
 
-/// Candidate cap per relay, matching FMan's. The relay chooses what to return,
+/// Candidate cap per relay, matching MG's. The relay chooses what to return,
 /// so this is a work bound on a hostile answer, not a completeness promise.
 const FETCH_LIMIT: usize = 64;
 
@@ -598,9 +598,9 @@ pub(crate) async fn run_initial_read_task(context: crate::DaemonContext) -> anyh
 /// Each envelope carries the three bindings [`verify_candidate`] establishes
 /// and nothing more. This provider does **not** judge the badge before
 /// publishing it: the credential's issuer proof, holder binding, schema, and
-/// revocation state are not consumed here, exactly as FMan's advertisement path
+/// revocation state are not consumed here, exactly as MG's advertisement path
 /// does not consume them
-/// ([SPEC-fman-nostr-events](../../nostr/specs/SPEC-fman-nostr-events.md)).
+/// ([SPEC-mg-nostr-events](../../nostr/specs/SPEC-mg-nostr-events.md)).
 /// Complete envelope verification belongs to the relying consumer, and
 /// [SPEC-flip-advertisement](../specs/SPEC-flip-advertisement.md) already
 /// requires the app to run it before sending private federation details.
@@ -610,7 +610,7 @@ pub(crate) async fn run_initial_read_task(context: crate::DaemonContext) -> anyh
 /// stays in this provider's advertisement until the retained authorization is
 /// replaced, and any key willing to sign can put an envelope here. Neither
 /// becomes trust: a consumer that skips its own verification was already
-/// unsafe against an FMan advertisement.
+/// unsafe against an MG advertisement.
 ///
 /// # Errors
 ///

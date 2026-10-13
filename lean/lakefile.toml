@@ -1,8 +1,8 @@
-defaultTargets = ["FMan"]
-name = "fman"
+defaultTargets = ["MG"]
+name = "mg"
 
 # Deliberately dependency-free: the models use only Lean core, so `lake build`
 # is offline and the Nix check needs no fetched packages.
 
 [[lean_lib]]
-name = "FMan"
+name = "MG"

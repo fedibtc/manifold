@@ -1,13 +1,13 @@
-# Fleet Manager secure-deployment checklist
+# Manifold Guardian secure-deployment checklist
 
-FMan's production-readiness property assumes this external host/operator
+MG's production-readiness property assumes this external host/operator
 envelope. This repository does not inspect or certify an Umbrel, StartOS, VPS,
 container runtime, or other live deployment. Record operator evidence for every
 item before calling a deployment production.
 
-- [ ] Run one active FMan for one tenant and one data root; prevent copied roots,
+- [ ] Run one active MG for one tenant and one data root; prevent copied roots,
   overlapping upgrades, and a second process from using its identity.
-- [ ] Pin the reviewed FMan artifact, including its bundled, pinned `fedimintd`
+- [ ] Pin the reviewed MG artifact, including its bundled, pinned `fedimintd`
   implementation; do not replace the artifact, linked child implementation,
   libraries, entrypoint, or runtime module set.
 - [ ] Restrict the data root, SQLite/WAL, seat directories, mnemonic, bitcoind
@@ -18,7 +18,7 @@ item before calling a deployment production.
   socket.
 - [ ] Provide durable storage, free-space monitoring, and capacity response
   before writes fail. Exercise a coupled backup and restore with the mnemonic.
-- [ ] Put public FI RPC behind deployment-owned abuse controls and expose the
+- [ ] Put public FA RPC behind deployment-owned abuse controls and expose the
   optional operator HTTP listener only behind its selected authenticated boundary.
 - [ ] Monitor process, disk, child, relay-publication, and wallet health and
   assign response ownership for each alert.

@@ -1,14 +1,14 @@
-//! Encrypted FMan-wide telemetry targets.
+//! Encrypted MG-wide telemetry targets.
 
 use sqlx::{AnyPool, Row};
 
 use crate::time::unix_timestamp;
 
-/// Encrypted-at-rest material for one verified FMan target.
+/// Encrypted-at-rest material for one verified MG target.
 ///
 /// This type deliberately has no `Debug`: the ciphertext contains a bearer.
 pub struct EncryptedTelemetryTarget {
-    pub fman_pubkey: String,
+    pub mg_pubkey: String,
     pub secret_nonce: Vec<u8>,
     pub secret_ciphertext: Vec<u8>,
 }
@@ -25,7 +25,7 @@ pub struct TelemetryStorageMetrics {
     pub targets: i64,
 }
 
-/// Durable FMan telemetry repository.
+/// Durable MG telemetry repository.
 #[derive(Clone, Debug)]
 pub struct TelemetryRepository {
     pool: AnyPool,
@@ -37,7 +37,7 @@ impl TelemetryRepository {
         Self { pool }
     }
 
-    /// Idempotently replace one FMan target.
+    /// Idempotently replace one MG target.
     pub async fn upsert_verified_target(
         &self,
         target: &EncryptedTelemetryTarget,
@@ -52,7 +52,7 @@ impl TelemetryRepository {
                 secret_ciphertext = EXCLUDED.secret_ciphertext,
                 updated_at = EXCLUDED.updated_at",
         )
-        .bind(&target.fman_pubkey)
+        .bind(&target.mg_pubkey)
         .bind(&target.secret_nonce)
         .bind(&target.secret_ciphertext)
         .bind(now)
@@ -63,13 +63,13 @@ impl TelemetryRepository {
 
     pub async fn target(
         &self,
-        fman_pubkey: &str,
+        mg_pubkey: &str,
     ) -> Result<Option<StoredTelemetryTarget>, sqlx::Error> {
         let row = sqlx::query(
             "SELECT secret_nonce, secret_ciphertext
              FROM guardian_telemetry_fmans WHERE fman_pubkey = $1",
         )
-        .bind(fman_pubkey)
+        .bind(mg_pubkey)
         .fetch_optional(&self.pool)
         .await?;
         Ok(row.map(|row| StoredTelemetryTarget {
@@ -103,14 +103,14 @@ mod tests {
 
     fn target() -> EncryptedTelemetryTarget {
         EncryptedTelemetryTarget {
-            fman_pubkey: "22".repeat(32),
+            mg_pubkey: "22".repeat(32),
             secret_nonce: vec![1; 12],
             secret_ciphertext: vec![2; 48],
         }
     }
 
     #[tokio::test]
-    async fn fman_target_is_idempotently_replaced() {
+    async fn mg_target_is_idempotently_replaced() {
         let (_dir, repository) = repository().await;
         repository.upsert_verified_target(&target()).await.unwrap();
         repository.upsert_verified_target(&target()).await.unwrap();

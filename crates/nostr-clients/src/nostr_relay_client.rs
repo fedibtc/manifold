@@ -207,7 +207,7 @@ impl NostrRelayClient {
         let bounds = CandidateBounds::for_limit(limit);
         // Boxed: this future is embedded (via role clients) inside already
         // enormous command futures, and inlining the collector state pushed
-        // fi-cli's test-thread stack over its limit.
+        // fa-cli's test-thread stack over its limit.
         Box::pin(subscribe_and_collect_capped(
             subscribed_relays(
                 &self.client,

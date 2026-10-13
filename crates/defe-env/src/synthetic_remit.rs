@@ -48,12 +48,12 @@ pub async fn run(raw_args: &[OsString]) -> Result<()> {
     .await?;
 
     let metadata_file = args.root.join("synthetic-remit-metadata");
-    let metadata = fman_core::remittance_metadata::encrypt(
+    let metadata = mg_core::remittance_metadata::encrypt(
         recipient,
-        &fman_core::remittance_metadata::RemittanceMetadata {
+        &mg_core::remittance_metadata::RemittanceMetadata {
             version: 1,
             total_msats: args.amount_msats,
-            breakdown: vec![fman_core::remittance_metadata::RemittanceBreakdownItem {
+            breakdown: vec![mg_core::remittance_metadata::RemittanceBreakdownItem {
                 module: "mint".to_owned(),
                 direction: "send".to_owned(),
                 amount_msats: args.amount_msats,
@@ -118,9 +118,9 @@ pub async fn run(raw_args: &[OsString]) -> Result<()> {
 #[derive(Debug)]
 struct Args {
     root: PathBuf,
-    fman_cli: PathBuf,
-    fman_data_dir: PathBuf,
-    fi_cli: PathBuf,
+    mg_cli: PathBuf,
+    mg_data_dir: PathBuf,
+    fa_cli: PathBuf,
     bitcoin_cli: PathBuf,
     invite_file: PathBuf,
     guardian: usize,
@@ -131,9 +131,9 @@ struct Args {
 impl Args {
     fn parse(raw_args: &[OsString]) -> Result<Self> {
         let mut root = None;
-        let mut fman_cli = None;
-        let mut fman_data_dir = None;
-        let mut fi_cli = None;
+        let mut mg_cli = None;
+        let mut mg_data_dir = None;
+        let mut fa_cli = None;
         let mut bitcoin_cli = None;
         let mut invite_file = None;
         let mut guardian = None;
@@ -147,9 +147,9 @@ impl Args {
             };
             match argument.to_str() {
                 Some("--root") => root = Some(PathBuf::from(value()?)),
-                Some("--fman-cli") => fman_cli = Some(PathBuf::from(value()?)),
-                Some("--fman-data-dir") => fman_data_dir = Some(PathBuf::from(value()?)),
-                Some("--fi-cli") => fi_cli = Some(PathBuf::from(value()?)),
+                Some("--mg-cli") => mg_cli = Some(PathBuf::from(value()?)),
+                Some("--mg-data-dir") => mg_data_dir = Some(PathBuf::from(value()?)),
+                Some("--fa-cli") => fa_cli = Some(PathBuf::from(value()?)),
                 Some("--bitcoin-cli") => bitcoin_cli = Some(PathBuf::from(value()?)),
                 Some("--invite-file") => invite_file = Some(PathBuf::from(value()?)),
                 Some("--guardian") => {
@@ -188,9 +188,9 @@ impl Args {
         );
         Ok(Self {
             root: root.context("--root is required")?,
-            fman_cli: fman_cli.context("--fman-cli is required")?,
-            fman_data_dir: fman_data_dir.context("--fman-data-dir is required")?,
-            fi_cli: fi_cli.context("--fi-cli is required")?,
+            mg_cli: mg_cli.context("--mg-cli is required")?,
+            mg_data_dir: mg_data_dir.context("--mg-data-dir is required")?,
+            fa_cli: fa_cli.context("--fa-cli is required")?,
             bitcoin_cli: bitcoin_cli.context("--bitcoin-cli is required")?,
             invite_file: invite_file.context("--invite-file is required")?,
             guardian: guardian.context("--guardian is required")?,
@@ -202,9 +202,9 @@ impl Args {
 
 async fn guardian_fees(args: &Args) -> Result<Value> {
     let output = run_command(
-        Command::new(&args.fman_cli)
+        Command::new(&args.mg_cli)
             .arg("--data-dir")
-            .arg(&args.fman_data_dir)
+            .arg(&args.mg_data_dir)
             .args(["guardian-fees", "show", &args.seat_id, "--limit", "1"]),
         "fman-cli guardian-fees show",
         Duration::from_secs(15),
@@ -364,7 +364,7 @@ async fn payment_wallet<const N: usize>(
     timeout: Duration,
 ) -> Result<Value> {
     let output = run_command(
-        Command::new(&args.fi_cli)
+        Command::new(&args.fa_cli)
             .arg("--json")
             .arg("payment-wallet")
             .arg("--wallet-data-dir")
@@ -372,11 +372,11 @@ async fn payment_wallet<const N: usize>(
             .arg("--wallet-secret-file")
             .arg(wallet_secret_file)
             .args(command_args),
-        "fi-cli payment-wallet",
+        "fa-cli payment-wallet",
         timeout,
     )
     .await?;
-    serde_json::from_str(&output).context("parse fi-cli payment-wallet response")
+    serde_json::from_str(&output).context("parse fa-cli payment-wallet response")
 }
 
 async fn wait_for_remittance(args: &Args, initial_lifetime: u64) -> Result<()> {
@@ -459,12 +459,12 @@ mod tests {
         [
             "--root",
             "/root",
-            "--fman-cli",
+            "--mg-cli",
             "/fman-cli",
-            "--fman-data-dir",
-            "/fman",
-            "--fi-cli",
-            "/fi-cli",
+            "--mg-data-dir",
+            "/mg",
+            "--fa-cli",
+            "/fa-cli",
             "--bitcoin-cli",
             "/bitcoin-cli",
             "--invite-file",
@@ -508,8 +508,8 @@ mod tests {
     #[tokio::test]
     async fn synthetic_remit_waits_for_readiness_then_funds_and_observes() {
         let root = tempfile::tempdir().unwrap();
-        let fman = root.path().join("fman");
-        let fi_cli = root.path().join("fi-cli");
+        let mg = root.path().join("mg");
+        let fa_cli = root.path().join("fa-cli");
         let bitcoin_cli = root.path().join("bitcoin-cli");
         let invite = root.path().join("invite");
         fs::write(&invite, "fed1test-invite").unwrap();
@@ -525,7 +525,7 @@ mod tests {
         fs::write(root.path().join("remitted.json"), remitted.to_string()).unwrap();
         let root_path = root.path().display().to_string();
         write_script(
-            &fman,
+            &mg,
             &r#"#!/bin/sh
 if [ ! -f "$TEST_ROOT/ready" ]; then touch "$TEST_ROOT/ready"; echo "not ready" >&2; exit 1; fi
 if [ -f "$TEST_ROOT/remitted" ] && [ ! -f "$TEST_ROOT/post-submit-show-retried" ]; then
@@ -536,16 +536,16 @@ if [ -f "$TEST_ROOT/remitted" ]; then cat "$TEST_ROOT/remitted.json"; else cat "
             .replace("$TEST_ROOT", &root_path),
         );
         write_script(
-            &fi_cli,
+            &fa_cli,
             &r#"#!/bin/sh
-printf '%s\n' "$*" >>"$TEST_ROOT/fi-args"
+printf '%s\n' "$*" >>"$TEST_ROOT/fa-args"
 case "$*" in
   *" join --payment-invite-code "*) printf '%s\n' '{"federationId":"fed"}' ;;
   *" balance --payment-federation-id "*) printf '%s\n' '{"balanceMsats":0}' ;;
   *" deposit-address --payment-federation-id "*) printf '%s\n' '{"address":"bcrt1qsynthetic"}' ;;
   *" wait-balance --payment-federation-id "*) printf '%s\n' '{"balanceMsats":1100000}' ;;
   *" remit-guardian-fee "*) touch "$TEST_ROOT/remitted"; printf '%s\n' '{"operationId":"synthetic"}' ;;
-  *) echo "unexpected fi-cli arguments: $*" >&2; exit 1 ;;
+  *) echo "unexpected fa-cli arguments: $*" >&2; exit 1 ;;
 esac
 "#
             .replace("$TEST_ROOT", &root_path),
@@ -566,12 +566,12 @@ esac
         let raw = [
             "--root",
             root.path().to_str().unwrap(),
-            "--fman-cli",
-            fman.to_str().unwrap(),
-            "--fman-data-dir",
+            "--mg-cli",
+            mg.to_str().unwrap(),
+            "--mg-data-dir",
             root.path().to_str().unwrap(),
-            "--fi-cli",
-            fi_cli.to_str().unwrap(),
+            "--fa-cli",
+            fa_cli.to_str().unwrap(),
             "--bitcoin-cli",
             bitcoin_cli.to_str().unwrap(),
             "--invite-file",
@@ -601,10 +601,10 @@ esac
                 & 0o777,
             0o600
         );
-        let fi_args = fs::read_to_string(root.path().join("fi-args")).unwrap();
-        assert!(fi_args.contains("deposit-address"));
-        assert!(fi_args.contains("remit-guardian-fee"));
-        assert!(fi_args.contains("--metadata-file"));
+        let fa_args = fs::read_to_string(root.path().join("fa-args")).unwrap();
+        assert!(fa_args.contains("deposit-address"));
+        assert!(fa_args.contains("remit-guardian-fee"));
+        assert!(fa_args.contains("--metadata-file"));
         let bitcoin_args = fs::read_to_string(root.path().join("bitcoin-args")).unwrap();
         assert!(bitcoin_args.contains("-rpcwallet=default getnewaddress"));
         assert!(bitcoin_args.contains("-rpcwallet=default sendtoaddress"));

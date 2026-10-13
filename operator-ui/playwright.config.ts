@@ -1,9 +1,9 @@
 import { defineConfig, devices } from '@playwright/test';
 
-// E2E_APP=flip (default) | fman — selects which operator app to drive.
+// E2E_APP=flip (default) | mg — selects which operator app to drive.
 // E2E_TARGET=mock (default) | daemon — both apps support both targets. In daemon
 // mode a real backend is provisioned outside Playwright by the matching Rust
-// runner (flip-ui-e2e-runner / fman-ui-e2e-runner) via defe.
+// runner (flip-ui-e2e-runner / mg-ui-e2e-runner) via defe.
 const app = process.env.E2E_APP ?? 'flip';
 const target = process.env.E2E_TARGET ?? 'mock';
 const isMock = target === 'mock';
@@ -59,9 +59,9 @@ const daemonWebServer = [
 
 const flipConfig = defineConfig({
   testDir: './e2e',
-  // fman specs live under e2e/fman and boot a different app/port — exclude them
+  // mg specs live under e2e/mg and boot a different app/port — exclude them
   // from the flip run.
-  testIgnore: '**/fman/**',
+  testIgnore: '**/mg/**',
   // Both target modes run serially: mock mode has one in-memory MSW world to
   // share, and daemon mode has one defe-leased FLIP daemon shared by every
   // @live spec in the run. live-writes.spec.ts drives the setup wizard to
@@ -90,29 +90,29 @@ const flipConfig = defineConfig({
   webServer: isMock ? mockWebServer : daemonWebServer
 });
 
-// The fman mock world lives in the browser (MSW + localStorage), so mock-target
+// The mg mock world lives in the browser (MSW + localStorage), so mock-target
 // tests run serially against that single in-memory state — no Express server to
 // boot. The Vite dev server is the only thing to wait on.
-const fmanMockWebServer = [
+const mgMockWebServer = [
   {
-    command: 'pnpm --filter fman dev',
+    command: 'pnpm --filter mg dev',
     url: 'http://localhost:5174',
     reuseExistingServer: !process.env.CI,
     timeout: 60_000
   }
 ];
 
-// In daemon mode a real Fleet Manager is provisioned outside Playwright (by the
-// fman-ui-e2e-runner via defe), so we only boot Vite. It inherits
-// FMAN_ADMIN_PROXY_TARGET from the runner's environment and proxies /api at it.
+// In daemon mode a real Manifold Guardian is provisioned outside Playwright (by the
+// mg-ui-e2e-runner via defe), so we only boot Vite. It inherits
+// MG_ADMIN_PROXY_TARGET from the runner's environment and proxies /api at it.
 // VITE_MOCKS=off is the kill switch: without it MSW would intercept /api/*
 // itself and mock the very daemon this mode just stood up.
 // reuseExistingServer is forced off here: Playwright's reuse check only probes
 // the URL, not the env, so a still-running mocked dev server on :5174 would
 // otherwise get reused and this "daemon" run would silently test against MSW.
-const fmanDaemonWebServer = [
+const mgDaemonWebServer = [
   {
-    command: 'pnpm --filter fman dev',
+    command: 'pnpm --filter mg dev',
     env: { VITE_MOCKS: 'off' },
     url: 'http://localhost:5174',
     reuseExistingServer: false,
@@ -120,11 +120,11 @@ const fmanDaemonWebServer = [
   }
 ];
 
-const fmanConfig = defineConfig({
-  testDir: './e2e/fman',
+const mgConfig = defineConfig({
+  testDir: './e2e/mg',
   // Serial in both target modes, same reasoning as flipConfig above: in
   // daemon mode this is the only thing stopping live-writes.spec.ts (which
-  // mutates the leased FMan's offer price) from racing live-daemon.spec.ts
+  // mutates the leased MG's offer price) from racing live-daemon.spec.ts
   // (which asserts a freshly unconfigured/empty fleet). workers:1 also
   // pins file execution to alphabetical order, so live-daemon.spec.ts runs
   // before live-writes.spec.ts — confirmed with `--list`.
@@ -137,13 +137,13 @@ const fmanConfig = defineConfig({
     baseURL: 'http://localhost:5174',
     trace: 'on-first-retry'
   },
-  metadata: { app: 'fman', target },
+  metadata: { app: 'mg', target },
   // @live specs need a real daemon: run them only in daemon mode, and never in
   // mock mode (a mock can't honestly exercise a write round-trip).
   grep: isMock ? undefined : /@live/,
   grepInvert: isMock ? /@live/ : undefined,
   projects: [{ name: 'chromium', use: { ...devices['Desktop Chrome'] } }, ...crossBrowserProjects],
-  webServer: isMock ? fmanMockWebServer : fmanDaemonWebServer
+  webServer: isMock ? mgMockWebServer : mgDaemonWebServer
 });
 
-export default app === 'fman' ? fmanConfig : flipConfig;
+export default app === 'mg' ? mgConfig : flipConfig;

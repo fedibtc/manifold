@@ -244,7 +244,7 @@ pub(crate) async fn metrics(State(state): State<AppState>) -> impl IntoResponse 
         state.config().provider_mode(),
     );
     body.push_str(&format!(
-        "# HELP push_gateway_guardian_telemetry_targets Verified FMan telemetry targets.\n\
+        "# HELP push_gateway_guardian_telemetry_targets Verified MG telemetry targets.\n\
          # TYPE push_gateway_guardian_telemetry_targets gauge\n\
          push_gateway_guardian_telemetry_targets {}\n\
          # HELP push_gateway_guardian_telemetry_enabled Whether complete telemetry receiver configuration is active.\n\

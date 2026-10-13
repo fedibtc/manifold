@@ -3,7 +3,7 @@ use std::ffi::{OsStr, OsString};
 use std::os::unix::process::ExitStatusExt;
 use std::process::ExitStatus;
 
-use defe_api::{BitcoindInfo, BitcoindRequest, FmanInfo};
+use defe_api::{BitcoindInfo, BitcoindRequest, MgInfo};
 use defe_api::{
     DEV_DEFE_SOCKET_PATH, NostrRelayInfo, NostrRelayRequest, PushGatewayInfo, PushGatewayRequest,
     ResourceDescriptor, ResourceLease, ResourceRequest, SharingMode,
@@ -24,8 +24,8 @@ const DEV_DEFE_BITCOIND_P2P_PORT: &str = "DEV_DEFE_BITCOIND_P2P_PORT";
 const DEV_DEFE_BITCOIND_RPC_USERNAME: &str = "DEV_DEFE_BITCOIND_RPC_USERNAME";
 const DEV_DEFE_BITCOIND_RPC_PASSWORD: &str = "DEV_DEFE_BITCOIND_RPC_PASSWORD";
 const DEV_DEFE_BITCOIND_DATA_DIR: &str = "DEV_DEFE_BITCOIND_DATA_DIR";
-const DEV_DEFE_FMAN_LOCATOR: &str = "DEV_DEFE_FMAN_LOCATOR";
-const DEV_DEFE_FMAN_DATA_DIR: &str = "DEV_DEFE_FMAN_DATA_DIR";
+const DEV_DEFE_MG_LOCATOR: &str = "DEV_DEFE_MG_LOCATOR";
+const DEV_DEFE_MG_DATA_DIR: &str = "DEV_DEFE_MG_DATA_DIR";
 
 const USAGE: &str = "Usage: defe-cli [opts...] <cmd...>\n       defe-cli --request-relay[=shared|exclusive] [--] <cmd...>\n       defe-cli --request-push-gateway[=shared|exclusive] [--] <cmd...>\n       defe-cli --request-bitcoind[=shared|exclusive] [--] <cmd...>\n       defe-cli ping";
 
@@ -211,7 +211,7 @@ fn add_resource_env(lease: &ResourceLease, child_env: &mut Vec<(&'static str, Os
         ResourceDescriptor::NostrRelay(info) => add_nostr_relay_env(info, child_env),
         ResourceDescriptor::PushGateway(info) => add_push_gateway_env(info, child_env),
         ResourceDescriptor::Bitcoind(info) => add_bitcoind_env(info, child_env),
-        ResourceDescriptor::Fman(info) => add_fman_env(info, child_env),
+        ResourceDescriptor::Mg(info) => add_mg_env(info, child_env),
         // FLIP needs no generic wrapper form: its fixture and setup inputs are
         // intentionally supplied by the consuming integration test.
         ResourceDescriptor::Flip(_) => {}
@@ -269,9 +269,9 @@ fn add_bitcoind_env(info: &BitcoindInfo, child_env: &mut Vec<(&'static str, OsSt
     ));
 }
 
-fn add_fman_env(info: &FmanInfo, child_env: &mut Vec<(&'static str, OsString)>) {
-    child_env.push((DEV_DEFE_FMAN_LOCATOR, OsString::from(&info.locator)));
-    child_env.push((DEV_DEFE_FMAN_DATA_DIR, info.data_dir.as_os_str().to_owned()));
+fn add_mg_env(info: &MgInfo, child_env: &mut Vec<(&'static str, OsString)>) {
+    child_env.push((DEV_DEFE_MG_LOCATOR, OsString::from(&info.locator)));
+    child_env.push((DEV_DEFE_MG_DATA_DIR, info.data_dir.as_os_str().to_owned()));
 }
 
 async fn ping() -> Result<(), String> {

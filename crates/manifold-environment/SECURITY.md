@@ -1,7 +1,7 @@
 # Manifold environment security and reliability boundaries
 
 `fedi-decentralized-manifold-environment` is a pure synchronous configuration
-library shared by browser/WASM FI code and native FMan/FLIP daemons plus the
+library shared by browser/WASM FA code and native MG/FLIP daemons plus the
 native push-gateway guardian-telemetry receiver. It
 performs no network I/O, starts no tasks, persists no state, and contains no
 secrets or private-key material.
@@ -14,7 +14,7 @@ Any relay, issuer-identity, issuer-authority, PeerBadge minimum-trust-level,
 setup-payment-publisher, Guardian Verification Fee account, Bitcoin-network,
 or default-Esplora
 mapping change must bump the public profile revision and be rolled out across
-FI, FMan, FLIP, and push-gateway telemetry as one coordinated deployment; mixed revisions can
+FA, MG, FLIP, and push-gateway telemetry as one coordinated deployment; mixed revisions can
 otherwise make components disagree while displaying the same environment
 name.
 
@@ -27,10 +27,10 @@ have no public default backend.
 
 Relay URLs are public routing configuration. This crate does not assign event
 authenticity, authority-currentness, negative-state completeness, publication,
-or availability semantics to them. Reusing the same endpoint set across FI,
-FMan, FLIP, and push-gateway telemetry does not make those consumers' relay
+or availability semantics to them. Reusing the same endpoint set across FA,
+MG, FLIP, and push-gateway telemetry does not make those consumers' relay
 policies interchangeable.
-FMan publishes to and reads from every canonical profile relay for
+MG publishes to and reads from every canonical profile relay for
 advertisements, holder authorizations, and setup-payment policy; backup and
 restore use the first canonical relay only. Development may replace that
 routing through the profile-owned `MANIFOLD_DEV_NOSTR_RELAYS` override;
@@ -67,7 +67,7 @@ the complete old issuer secret when possible; otherwise coordinate reissuance
 before rolling out the replacement.
 
 Loss, suspected compromise, or custodian offboarding triggers an emergency
-profile revision removing that root and a tracked rollout to every FI, FLIP,
+profile revision removing that root and a tracked rollout to every FA, FLIP,
 and push-gateway telemetry consumer. Older deployed binaries continue to trust the removed root until
 updated, so credential revocation alone does not contain a root compromise.
 Consumers must fail closed if either deployment-owned key is absent; they must
@@ -95,7 +95,7 @@ publisher at a time; the rationale is stated canonically in
 is the only source outside Development. Development may replace the publisher
 through the profile-owned
 `MANIFOLD_DEV_SETUP_PAYMENT_PUBLISHER` environment variable; Staging and
-Production refuse it. FMan consumes the resolved publisher directly to
+Production refuse it. MG consumes the resolved publisher directly to
 authenticate retained and fetched setup-payment policy. The Fedi app consumes
 the profile value only and must never expose a runtime publisher override:
 end-user devices carry no trust-root override surface, the same rule that keeps

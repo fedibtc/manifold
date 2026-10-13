@@ -3,7 +3,7 @@
 Source: Product policy, required for MVP.
 
 A paid seat is a one-time payment for an open-ended hosting obligation
-([ARCH-fleet-manager-product-boundary](../crates/fman/specs/ARCH-fleet-manager-product-boundary.md)), so an
+([ARCH-manifold-guardian-product-boundary](../crates/mg/specs/ARCH-manifold-guardian-product-boundary.md)), so an
 operator would otherwise price unbounded future disk, bandwidth, and
 availability into a single up-front charge. Operators must earn continuing
 revenue from the federations they guard. This is separate from setup pricing:
@@ -20,10 +20,10 @@ consensus.
   and `fedi:guardian_fee_remittance_account`. Both or
   neither; a rate of zero stops new accrual while remittance stays available to
   drain what already accrued. The payer's 210,000-ppm compatibility ceiling is
-  the one rate bound everywhere: Manifold FI
-  producers and every FMan validator enforce that same `0..=210,000` ppm —
+  the one rate bound everywhere: Manifold FA
+  producers and every MG validator enforce that same `0..=210,000` ppm —
   with a 5,000-ppm default. The payer also publishes a **minimum** rate that
-  every FMan enforces on new proposals
+  every MG enforces on new proposals
   ([SPEC-setup-payment-federations](./SPEC-setup-payment-federations.md)).
 - The payer accrues per guardian share and deposits a share into the
   **stability-pool BTC balance** of that share's recipient account once it
@@ -34,28 +34,28 @@ consensus.
   key.
 - Fees split by **weighted shares** using the versioned recipient list carried
   in consensus metadata.
-- In the MVP policy, FI receives four shares, every guardian receives one, and
+- In the MVP policy, FA receives four shares, every guardian receives one, and
   one share is the **Guardian Verification Fee**, paid to its deployment-owned
-  account. Setup payments and every other fee stream remain unchanged. The FI
+  account. Setup payments and every other fee stream remain unchanged. The FA
   account, every guardian account, and the Guardian Verification Fee account
   use distinct destinations.
 
 ## Obligations on this repository
 
-1. **The FI chooses the rate, not the recipient policy.** The FI may propose
+1. **The FA chooses the rate, not the recipient policy.** The FA may propose
    `0..=210,000` ppm (the payer ceiling). It cannot change the 4:1:1 split, drop a recipient,
-   duplicate an entitlement, or alter a weight; every FMan validates the
+   duplicate an entitlement, or alter a weight; every MG validates the
    canonical full-account vector before casting its guardian vote. Each
    accepted account is repeated in that seat's signed post-DKG attestation.
-   `fi-client` checks it against the durable signed acceptance before publishing
+   `fa-client` checks it against the durable signed acceptance before publishing
    the exact all-seat directory into consensus. A `SeatEndpointProof` by the
    final config's Iroh API key covers the complete attestation digest, including
-   FMan identity and account, so every later FMan vote can authenticate the
+   MG identity and account, so every later MG vote can authenticate the
    directory without a second pre-DKG account envelope or retained transcript.
-   `fi-client` derives the vector
-   only from a consumer capability resolving the formed federation FI's own
-   SPv2 `BtcDepositor` account, each durable FMan-signed seat acceptance, and
-   the deployment profile's Guardian Verification Fee account. `fi-client`, not
+   `fa-client` derives the vector
+   only from a consumer capability resolving the formed federation FA's own
+   SPv2 `BtcDepositor` account, each durable MG-signed seat acceptance, and
+   the deployment profile's Guardian Verification Fee account. `fa-client`, not
    the operation caller, chooses the exact lookup identity from its persisted formed invite;
    the fee-proposal operation accepts only the rate. A production consumer
    resolves that exact already joined federation client and returns
@@ -70,7 +70,7 @@ consensus.
    not cross-verify endpoint signatures on other peers' codes: Fedimint's DKG
    peer-to-peer handshake authenticates those endpoint keys.
    Later maintenance is authorized one field at a time. Although the upstream
-   module requires a whole-object vote, FMan validates the requested field and
+   module requires a whole-object vote, MG validates the requested field and
    carries all other fields from the exact observed consensus occurrence
    unchanged. The formation-owned directory and recipient keys cannot be
    targeted through ordinary maintenance. Detecting and stopping a guardian
@@ -85,35 +85,35 @@ consensus.
    what each payment was for, and swept amounts are visible to the operator, and
    the operator directs where swept value goes.
 
-4. **An FMan can tell when its revenue stops.** Consensus metadata stays
+4. **An MG can tell when its revenue stops.** Consensus metadata stays
    mutable, so a rate dropped to zero or an entry removed or reduced must
    surface. Silently hosting with no revenue and no signal is not acceptable.
 
 5. **Fee income is best-effort and load-bearing for nothing.** Because payers
-   enforce it, no FMan behaviour affecting federation correctness, guardian
+   enforce it, no MG behaviour affecting federation correctness, guardian
    availability, or an existing seat's obligations may depend on fee income
-   arriving. A federation that has stopped paying this FMan is reported to the
+   arriving. A federation that has stopped paying this MG is reported to the
    operator, who decides whether to keep hosting it; the daemon does not
    withdraw service on its own.
 
 6. **Production recipient configuration fails closed.** The Guardian
    Verification Fee account is deployment-owned public configuration in the
-   Manifold environment profile; no FI or FMan may substitute a generated
+   Manifold environment profile; no FA or MG may substitute a generated
    fallback.
 
-7. **The production FI recipient is selected by capability, not by request.**
-   The consumer capability receives the federation id `fi-client` parsed from
+7. **The production FA recipient is selected by capability, not by request.**
+   The consumer capability receives the federation id `fa-client` parsed from
    its durable formed invite and returns that joined client's own SPv2
    `BtcDepositor` account. Failure to resolve it is typed absence and reaches
-   no guardian vote. `fi-client` still validates account shape, account
+   no guardian vote. `fa-client` still validates account shape, account
    uniqueness, the complete canonical vector, and exact consensus readback;
    trusting a production consumer to implement its local capability honestly
    does not move recipient policy into that consumer.
 
 How this repository meets these is
-[SPEC-guardian-fee-policy](../crates/fman/specs/SPEC-guardian-fee-policy.md)
-and the `fman-fedimint` boundary in
-[ARCH-fleet-manager](../crates/fman/specs/ARCH-fleet-manager.md).
+[SPEC-guardian-fee-policy](../crates/mg/specs/SPEC-guardian-fee-policy.md)
+and the `mg-fedimint` boundary in
+[ARCH-manifold-guardian](../crates/mg/specs/ARCH-manifold-guardian.md).
 
 ## Not in scope here
 

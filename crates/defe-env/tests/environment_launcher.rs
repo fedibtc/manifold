@@ -11,22 +11,22 @@ fn environment_launcher_keeps_generated_wrapper_available_for_two_commands() {
     std::fs::create_dir(&bin).expect("create generated bin");
     std::fs::create_dir(&work).expect("create generated work directory");
     let record = root.path().join("record");
-    let fman_cli = root.path().join("fman-cli");
+    let mg_cli = root.path().join("fman-cli");
     std::fs::write(
-        &fman_cli,
+        &mg_cli,
         "#!/bin/sh\nprintf '%s\\n' \"$1\" >> \"$DEFE_ENV_WRAPPER_RECORD\"\n",
     )
-    .expect("write fake FMan CLI");
-    std::fs::set_permissions(&fman_cli, std::fs::Permissions::from_mode(0o700))
-        .expect("make fake FMan CLI executable");
-    let fman = bin.join("fman-1");
+    .expect("write fake MG CLI");
+    std::fs::set_permissions(&mg_cli, std::fs::Permissions::from_mode(0o700))
+        .expect("make fake MG CLI executable");
+    let mg = bin.join("mg-1");
     std::fs::write(
-        &fman,
-        format!("#!/bin/sh\nexec '{}' \"$@\"\n", fman_cli.display()),
+        &mg,
+        format!("#!/bin/sh\nexec '{}' \"$@\"\n", mg_cli.display()),
     )
-    .expect("write generated FMan wrapper");
-    std::fs::set_permissions(&fman, std::fs::Permissions::from_mode(0o700))
-        .expect("make generated FMan wrapper executable");
+    .expect("write generated MG wrapper");
+    std::fs::set_permissions(&mg, std::fs::Permissions::from_mode(0o700))
+        .expect("make generated MG wrapper executable");
     let status = std::process::Command::new(env!("CARGO_BIN_EXE_defe-env"))
         .args([
             "--internal-environment-launcher",
@@ -40,13 +40,13 @@ fn environment_launcher_keeps_generated_wrapper_available_for_two_commands() {
             "--",
             "/bin/sh",
             "-c",
-            "fman-1 seats; fman-1 plans",
+            "mg-1 seats; mg-1 plans",
         ])
         .status()
         .expect("run environment launcher");
     assert!(status.success());
     assert_eq!(
-        std::fs::read_to_string(record).expect("read delegated FMan calls"),
+        std::fs::read_to_string(record).expect("read delegated MG calls"),
         "seats\nplans\n"
     );
 }

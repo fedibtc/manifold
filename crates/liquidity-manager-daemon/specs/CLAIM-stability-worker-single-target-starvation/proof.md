@@ -129,7 +129,7 @@ every later item in the snapshot reachable. With A2 the claim holds.
 ## Residual windows
 
 - **Latency is not bounded.** A pass costs up to the number of active stability
-  items times the budget. That count is bounded by the federations an FI can get
+  items times the budget. That count is bounded by the federations an FA can get
   endorsed, which is a different quantity from the one this claim quantifies
   over — the claim is about reaching a later allocation, not about when.
 - Restarting the daemon is an operator intervention, not an in-process timeout.

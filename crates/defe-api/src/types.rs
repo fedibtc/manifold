@@ -33,33 +33,33 @@ pub enum ResourceRequest {
     PushGateway(PushGatewayRequest),
     /// Allocate a local Bitcoin Core regtest node.
     Bitcoind(BitcoindRequest),
-    /// Allocate one local Fleet Manager process.
-    Fman(FmanRequest),
+    /// Allocate one local Manifold Guardian process.
+    Mg(MgRequest),
     /// Allocate one local FLIP daemon process.
     Flip(FlipRequest),
     /// Allocate one local Fedimint gateway daemon process.
     Gatewayd(GatewaydRequest),
 }
 
-/// Inputs required to start one local Fleet Manager resource.
+/// Inputs required to start one local Manifold Guardian resource.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub struct FmanRequest {
+pub struct MgRequest {
     /// Whether Defe may reuse an identical manager slot.
     pub sharing: SharingMode,
-    /// Regtest Bitcoin Core instance the Fleet Manager uses for federation setup.
+    /// Regtest Bitcoin Core instance the Manifold Guardian uses for federation setup.
     ///
     /// This is a non-owning launch dependency. The client must keep its lease
-    /// alive for the FMan resource lifetime.
+    /// alive for the MG resource lifetime.
     pub bitcoind: BitcoindInfo,
-    /// Nostr relay on which the Fleet Manager publishes its advertisement.
+    /// Nostr relay on which the Manifold Guardian publishes its advertisement.
     ///
     /// This is a non-owning launch dependency. The client must keep its lease
-    /// alive for the FMan resource lifetime.
+    /// alive for the MG resource lifetime.
     pub nostr_relay_url: String,
     /// First port in the manager's dedicated four-port federation-seat grid.
     pub first_port_base: u16,
-    /// Complete direct Iroh route map used by this formation's managers and FI.
+    /// Complete direct Iroh route map used by this formation's managers and FA.
     pub iroh_connect_overrides: String,
 }
 
@@ -230,19 +230,19 @@ pub enum ResourceDescriptor {
     PushGateway(PushGatewayInfo),
     /// Connection details for a local Bitcoin Core regtest node.
     Bitcoind(BitcoindInfo),
-    /// Connection details for one local Fleet Manager.
-    Fman(FmanInfo),
+    /// Connection details for one local Manifold Guardian.
+    Mg(MgInfo),
     /// Connection details for one local FLIP stack.
     Flip(FlipInfo),
     /// Connection details for one local Fedimint gateway daemon.
     Gatewayd(GatewaydInfo),
 }
 
-/// Connection details for a local Fleet Manager resource.
+/// Connection details for a local Manifold Guardian resource.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub struct FmanInfo {
-    /// Locator passed to FI formation.
+pub struct MgInfo {
+    /// Locator passed to FA formation.
     pub locator: String,
     /// Persistent data directory for this manager slot.
     pub data_dir: PathBuf,

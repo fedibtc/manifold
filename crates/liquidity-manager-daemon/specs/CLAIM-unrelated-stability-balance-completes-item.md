@@ -6,7 +6,7 @@ staged-plus-locked balance large enough. Completion requires the same item's
 persisted `deposit_to_provide` operation to report success for the item's exact
 committed amount.
 
-The adversary is a hostile FI with an accepted federation. It may schedule
+The adversary is a hostile FA with an accepted federation. It may schedule
 ordinary third-party deposits to that federation, worker ticks, target API
 responses, and crashes at each await. It cannot compromise FLIP's database,
 the provider wallet, or the target federation/client's truthful operation

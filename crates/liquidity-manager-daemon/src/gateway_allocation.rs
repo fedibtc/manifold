@@ -211,7 +211,7 @@ async fn process_gateway_item(
         // The same endpoint policy the target-client join takes, applied before
         // the operator's gateway process dials on FLIP's behalf.
         //
-        // `connect_federation` posts the FI-supplied invite verbatim to that
+        // `connect_federation` posts the FA-supplied invite verbatim to that
         // process, which joins the federation from its API URLs. Unguarded that
         // is a dial on FLIP's production path to a host a requester chose, with
         // no policy anywhere along it. Being another process's dial does not

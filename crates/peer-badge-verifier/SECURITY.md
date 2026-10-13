@@ -1,7 +1,7 @@
 # PeerBadge verifier security and reliability boundaries
 
-`fedi-decentralized-peer-badge-verifier` is an async library used by FI, FLIP,
-and push-gateway guardian telemetry. FMan presents its own HolderAuthorization but does not evaluate its own
+`fedi-decentralized-peer-badge-verifier` is an async library used by FA, FLIP,
+and push-gateway guardian telemetry. MG presents its own HolderAuthorization but does not evaluate its own
 badge. The verifier receives untrusted holder-authorization envelopes and
 untrusted Nostr events, performs network lookups, and returns trusted typed
 facts only after complete cryptographic and schema admission.
@@ -17,7 +17,7 @@ signature, proof, digest, and schema checks.
 Trust-level policy is evaluated only after the credential and holder
 authorization authenticate and the PeerBadge schema parses. Every canonical
 environment currently requires level 9 or greater. A lower level remains a
-valid issuer credential but is rejected as insufficient for an FI, FLIP, or
+valid issuer credential but is rejected as insufficient for an FA, FLIP, or
 push-gateway guardian-telemetry trust decision.
 
 An authenticated `IssuerAuthority` delegates negative-state completeness trust

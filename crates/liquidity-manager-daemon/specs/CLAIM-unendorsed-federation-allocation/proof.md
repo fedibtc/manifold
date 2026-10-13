@@ -25,12 +25,12 @@ capability.** `VerificationPipeline::run_pipeline` calls `run_admission_gate`
 before preview or any later trust stage. The gate requires the optional
 endorsement, verifies its attestation, parses the federation id from the invite
 code and compares it to the statement, verifies the holder envelope against
-installed authorities with the attesting FMan as subject, requires the
+installed authorities with the attesting MG as subject, requires the
 authentic badge to meet the profile minimum, then reruns that verification with
 a fresh clock sample after a successful revocation lookup.
 Every failure returns a rejection, so it cannot reach L1's writer. The unit
 matrix covers absent,
-unverifiable, wrong-federation, untrusted-issuer, wrong-FMan, below-minimum, and
+unverifiable, wrong-federation, untrusted-issuer, wrong-MG, below-minimum, and
 revoked endorsements, including the gate-before-preview ordering
 ([`verification.rs`](../src/verification.rs)). A1 and A2 give these predicates
 their external meaning.
@@ -57,7 +57,7 @@ therefore preserves the claim at every durable state.
 ## Residual windows
 
 - A valid endorsement is transferable and has no expiry; a holder may use it
-  even if it is not the FI or current transport actor. `SPEC-flip-rpc` defines
+  even if it is not the FA or current transport actor. `SPEC-flip-rpc` defines
   this bearer-authorization boundary; this claim provides no requester-identity
   guarantee.
 - An allocation accepted before a later credential revocation remains durable

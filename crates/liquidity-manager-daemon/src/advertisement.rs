@@ -732,7 +732,7 @@ pub(crate) async fn judge_readiness(
     if reason.is_none() {
         // The spec requires the published advertisement to carry at least one
         // inline holder-authorization envelope. Enrolled, not verified: like
-        // FMan, this provider does not judge the badge before publishing it.
+        // MG, this provider does not judge the badge before publishing it.
         let provider_pubkey = identity::load_provider_identity(&context.database).await?;
         let envelopes = crate::holder_authorization::provider_trust_envelopes(
             &context.database,

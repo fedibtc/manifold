@@ -1,0 +1,95 @@
+//! The MG's presence in the world: what it publishes about itself, what it
+//! learns about who may onboard it, and what it is told about setup payments.
+//!
+//! Nostr is how all of that travels today, but none of it is stated in Nostr
+//! terms here — this module is the daemon's half of the contract, and
+//! `mg-nostr` is one runtime that fulfils it
+//! ([SPEC-advertisement](../../specs/SPEC-advertisement.md),
+//! [SPEC-mg-nostr-events](../../../nostr/specs/SPEC-mg-nostr-events.md)).
+//!
+//! Status reads borrow the runtime's latest watch value without relay I/O.
+//! Explicit authorization refreshes invoke the runtime capability instead.
+
+use fedi_decentralized_domain::MgVersion;
+use fedi_decentralized_service_manifold_guardian::Plan;
+use nostr_sdk::PublicKey;
+
+/// Dynamic daemon state needed to build an advertisement.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AdvertisementSnapshot {
+    pub iroh_endpoint_id: String,
+    /// The MG's commitment-signing service pubkey — the locator
+    /// `service_pubkey` FAs verify signed responses against, derived from
+    /// the daemon's root mnemonic (`fman/v1/service-sign`). Distinct from
+    /// the Nostr signing identity. Typed so an unparseable key cannot reach
+    /// the wire; the payload carries its canonical lowercase-hex rendering.
+    pub service_pubkey: secp256k1::XOnlyPublicKey,
+    pub plans: Vec<Plan>,
+}
+
+/// Current Holder-authorization discovery state.
+///
+/// Four states, not two. "No authorization was found" and "we have not looked
+/// yet" are different facts, and a dashboard that cannot tell them apart has to
+/// hedge every sentence it writes about either one. A relay that refused the
+/// read is a third fact, and it is the operator's to act on, not ours to hide.
+///
+/// [`Self::AuthorizationObserved`] outranks the other three. Retained
+/// authorizations are durable and are re-verified before reuse, so an empty or
+/// failed read never demotes a fleet that has one: the read failed, the
+/// authorization did not go away.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum OnboardingStatus {
+    /// No read has completed since this daemon started, and nothing is
+    /// retained. The honest answer to "is this fleet authorized" is "not known
+    /// yet".
+    Checking,
+    /// A read completed and found no authorization naming this MG. This is
+    /// the state a fleet sits in while it waits for a Holder to sign.
+    NotObserved {
+        /// When the read that found nothing completed, in seconds since the
+        /// epoch.
+        checked_at: u64,
+    },
+    AuthorizationObserved {
+        authorizations: usize,
+        holders: Vec<PublicKey>,
+        /// When the most recent successful read completed, or `None` when the
+        /// authorizations were loaded from the retained store and no read has
+        /// succeeded since. A dashboard showing "last checked" must be able to
+        /// say "not since this daemon started".
+        checked_at: Option<u64>,
+    },
+    /// The last read failed and nothing is retained, so nothing can be said
+    /// about this fleet's authorization until a read succeeds.
+    RelayError {
+        /// The failure, for the operator to read. Not for the dashboard to
+        /// match on.
+        error: String,
+    },
+}
+
+/// What the operator socket reports about this MG's directory presence: the
+/// identity an operator hands a Holder, and whether that Holder has authorized
+/// this MG yet ([SPEC-admin-socket](../../specs/SPEC-admin-socket.md)).
+///
+/// Published by the directory runtime on a watch channel; the socket reads the
+/// latest value, which is what the runtime last observed and never a relay
+/// round trip.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DirectoryPresence {
+    /// The pubkey a Holder authorizes to onboard this MG. Constant for an
+    /// install; it rides along so the socket has one value to read.
+    pub service_nostr_pubkey: PublicKey,
+    pub onboarding: OnboardingStatus,
+    /// Latest MG release in the last authenticated setup-payment
+    /// publication, or `None` before one has been admitted.
+    pub latest_mg_version: Option<MgVersion>,
+}
+
+/// Operator-triggered reconciliation of durable Holder authorization and its
+/// live public projection. Implemented by the Nostr runtime.
+#[async_trait::async_trait]
+pub trait HolderAuthorizationRefresher: Send + Sync {
+    async fn refresh(&self) -> anyhow::Result<()>;
+}

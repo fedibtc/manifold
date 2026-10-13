@@ -19,7 +19,7 @@ pub const ADMIN_TOKEN: &str = "flip-local-admin-token";
 
 /// Boot inputs shared by every spawn of one daemon instance: the imported
 /// provider Schnorr signing key and the `--trust-fixtures` directory
-/// substituting the federation preview and FMan trust-material inputs.
+/// substituting the federation preview and MG trust-material inputs.
 /// Restarts must reuse the same launch so the provider identity and fixture
 /// content stay stable across the daemon lifetime.
 pub struct DaemonLaunch {
@@ -124,7 +124,7 @@ impl DaemonProcess {
             .arg("--bootstrap-admin-token")
             .arg(ADMIN_TOKEN)
             // Single production flow: Schnorr auth with the imported provider
-            // key; only the federation preview and FMan trust-material inputs
+            // key; only the federation preview and MG trust-material inputs
             // are substituted with the harness-written fixture files.
             .arg("--trust-fixtures")
             .arg(&launch.trust_fixtures_dir)

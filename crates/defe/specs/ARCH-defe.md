@@ -24,15 +24,15 @@ groups and daemonization. Destroying and reaping namespace init is
 the kernel-owned completion boundary before lease release. The child's exit
 status crosses both composer and server boundaries unchanged.
 
-The generated `fees` tool exposes FMan's real fee show and collection commands.
+The generated `fees` tool exposes MG's real fee show and collection commands.
 Its `synthetic-remit` preparation action creates a metadata-bearing stability-pool
-deposit through a dedicated ordinary `fi-cli` payment wallet, then waits for the
-selected FMan to observe it. It exists to exercise the local remittance and
+deposit through a dedicated ordinary `fa-cli` payment wallet, then waits for the
+selected MG to observe it. It exists to exercise the local remittance and
 collection plumbing: it directly selects a recipient and amount and therefore
 does not model production Fedi payer accrual, share splitting, accumulation, or
-scheduling. The environment serializes its owned `fi-cli` calls, including that
+scheduling. The environment serializes its owned `fa-cli` calls, including that
 wallet, because the CLI is a single-developer test tool rather than a concurrent
-consumer ([GATE-fi-cli-test-tool-scope](../../fi-cli/specs/GATE-fi-cli-test-tool-scope.md)).
+consumer ([GATE-fa-cli-test-tool-scope](../../fa-cli/specs/GATE-fa-cli-test-tool-scope.md)).
 
 The generated `traffic` tool wraps the flake-pinned Fedimint load tester.
 Connection traffic repeatedly downloads client configuration through real client
@@ -44,7 +44,7 @@ of these ordinary operations models or causes production Fedi payer-fee accrual.
 
 The server supervises resource processes and owns their resource directories,
 ports, logs, and stable slot state. It provides local Nostr relays, push
-gateways, Bitcoin Core regtest nodes, Fleet Managers, FLIP daemons, and Fedimint
+gateways, Bitcoin Core regtest nodes, Manifold Guardians, FLIP daemons, and Fedimint
 gateway daemons. `defe-portalloc` coordinates temporary loopback port
 reservations across separate local processes; operating-system bindings remain
 the authority once a resource starts.

@@ -6,7 +6,7 @@ type QuerySurfaceProps = Omit<ComponentProps<typeof SharedQuerySurface>, 'descri
 
 /**
  * The shared four-state surface, bound to this dashboard's error vocabulary.
- * The rendering is shared with the fleet manager; only the sentence an operator
+ * The rendering is shared with the manifold guardian; only the sentence an operator
  * reads on a failure is app-specific, so that is the single thing bound here.
  */
 export const QuerySurface = (props: QuerySurfaceProps) => (

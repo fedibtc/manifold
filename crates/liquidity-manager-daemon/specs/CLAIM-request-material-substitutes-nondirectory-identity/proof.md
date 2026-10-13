@@ -3,19 +3,19 @@
 ## Argument
 
 **L1 (`code`) — the directory, not request material, selects identities.**
-`run_pipeline` parses and verifies consensus `fman_seat_bindings`, then derives a
+`run_pipeline` parses and verifies consensus `mg_seat_bindings`, then derives a
 distinct `BTreeSet` of operators from those verified bindings
 ([`verification.rs`](../src/verification.rs)).
 
 **L2 (`code`) — resolution consults only selected identities.**
 `resolve_trust_material` scans request material for duplicate public keys in
 L1's operator set and ignores extras. While iterating that operator set it finds
-material by the expected key and calls `verify_for_fman(expected)`, so missing
+material by the expected key and calls `verify_for_mg(expected)`, so missing
 identities remain untrusted and one operator's signed material cannot substitute
 for another's.
 
 **L3 (`code`) — policy counts resolved directory identities.** Candidate envelopes
-retain the resolved FMan key and the policy stage evaluates distinct resolved
+retain the resolved MG key and the policy stage evaluates distinct resolved
 identities, not arbitrary request entries ([`verification.rs`](../src/verification.rs)).
 
 ## Residual windows

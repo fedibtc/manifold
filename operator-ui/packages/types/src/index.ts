@@ -1,6 +1,6 @@
 // TypeScript types mirroring the service-* Rust crates (shared fields only).
 // Source of truth: crates/service-liquidity-manager (FLIP `OperatorAdminApi`)
-// and crates/service-fleet-manager (FMan `FleetManagerOperatorService`).
+// and crates/service-manifold-guardian (MG `ManifoldGuardianOperatorService`).
 // Spec/code sync rule applies: update these when the Rust APIs change.
 
 export * from './admin';

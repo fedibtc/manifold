@@ -17,7 +17,7 @@ details that do not need Linked Specs records.
 - `nostr-relay.md` — Nostr relay resource behavior.
 - `bitcoind.md` — Bitcoin Core regtest resource behavior.
 - `flip.md` — FLIP daemon resource behavior.
-- `fman.md` — exclusive Fleet Manager resource behavior.
+- `mg.md` — exclusive Manifold Guardian resource behavior.
 - `gatewayd.md` — shareable Fedimint gateway daemon behavior.
 - `cli.md` — `defe` and `defe-cli` command behavior.
 - `portalloc.md` — cross-process port allocator crate.
@@ -38,7 +38,7 @@ details that do not need Linked Specs records.
 - `PushGatewayInfo` includes URL, host, port, app id, and SQLite database path.
 - `BitcoindInfo` includes RPC URL/host/port, P2P port, RPC credentials, and data directory.
 - `FlipInfo` includes FLIP's Admin API, stable data and trust-fixture paths, and provider public key.
-- `FmanInfo` includes the Fleet Manager locator, Admin API, and stable data directory.
+- `MgInfo` includes the Manifold Guardian locator, Admin API, and stable data directory.
 - `GatewaydInfo` includes the gateway administrative API and credential.
 - Real external-process integration tests are opt-in or require `defe exec` / `just defe-serve`.
 - Temp data is cleaned after success and preserved after failure by default.

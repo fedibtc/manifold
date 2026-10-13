@@ -1,11 +1,11 @@
 //! App-facing Public Liquidity API messages.
 
 use crate::{
-    AcceptedAttesterPolicy, BitcoinNetwork, FederationId, FederationName, FleetSeat,
-    FmanPeerAttestation, GatewayApiUrl, GatewayId, GatewayName, GetFmanTrustMaterialResponse,
-    HashBytes, HolderAuthorizationEnvelope, InviteCode, ItemId, ProtocolVersion, ProviderDisplay,
-    ProviderPolicy, Pubkey, RevocationLocation, RpcEndpointId, Sats, Sha256Digest, SourceType,
-    Timestamp, Url, WalletOperationId,
+    AcceptedAttesterPolicy, BitcoinNetwork, FederationId, FederationName, FleetSeat, GatewayApiUrl,
+    GatewayId, GatewayName, GetMgTrustMaterialResponse, HashBytes, HolderAuthorizationEnvelope,
+    InviteCode, ItemId, MgPeerAttestation, ProtocolVersion, ProviderDisplay, ProviderPolicy,
+    Pubkey, RevocationLocation, RpcEndpointId, Sats, Sha256Digest, SourceType, Timestamp, Url,
+    WalletOperationId,
 };
 use serde::{Deserialize, Serialize};
 
@@ -33,7 +33,7 @@ pub struct LiquidityProviderAdvertisement {
     /// Inline trust envelopes binding holder-owned trust to this provider key.
     ///
     /// Each entry embeds the operator-signed holder authorization together
-    /// with the backing issuer credential, matching the FMan advertisement
+    /// with the backing issuer credential, matching the MG advertisement
     /// convention; apps verify provider trust from the advertisement content
     /// alone plus issuer-controlled inputs.
     pub holder_authorizations: Vec<HolderAuthorizationEnvelope>,
@@ -147,7 +147,7 @@ pub struct RequestLiquidityRequest {
 
     /// Hash binding all request-scoped private details carried in this request.
     ///
-    /// This hash commits to no FI-carried trust material. FLIP derives the
+    /// This hash commits to no FA-carried trust material. FLIP derives the
     /// federation config and its consensus metadata from `invite_code` and
     /// reads the seat bindings from `fedi:fman_seat_bindings` itself.
     /// `fman_endorsement` and `fman_trust_material` are both excluded, for the
@@ -169,12 +169,13 @@ pub struct RequestLiquidityRequest {
     /// with a freshly collected endorsement must hash identically and be
     /// answered from the existing allocation rather than treated as a
     /// conflicting request.
-    pub fman_endorsement: Option<FmanEndorsement>,
+    #[serde(rename = "fman_endorsement")]
+    pub mg_endorsement: Option<MgEndorsement>,
 
-    /// Signed trust material for every FMan identity operating this federation.
+    /// Signed trust material for every MG identity operating this federation.
     ///
-    /// Each entry is one FMan's own signed statement, collected by the
-    /// requester from that FMan directly. Requester-supplied carriage is safe
+    /// Each entry is one MG's own signed statement, collected by the
+    /// requester from that MG directly. Requester-supplied carriage is safe
     /// because it is not requester-*authored*: the seat-binding directory in
     /// consensus metadata pins which `fman_pubkey` operates each seat, and an
     /// entry is only ever consulted for the identity it is signed by, so
@@ -190,7 +191,8 @@ pub struct RequestLiquidityRequest {
     /// `fman_endorsement`: material is collected per attempt, so a retry
     /// carrying freshly fetched material must hash identically and resolve to
     /// the existing allocation.
-    pub fman_trust_material: Option<Vec<GetFmanTrustMaterialResponse>>,
+    #[serde(rename = "fman_trust_material")]
+    pub mg_trust_material: Option<Vec<GetMgTrustMaterialResponse>>,
 
     /// Request expiry.
     pub expires_at: Timestamp,
@@ -205,11 +207,11 @@ pub struct RequestLiquidityRequest {
 /// trust independently. See
 /// [`SPEC-flip-rpc`](https://github.com/fedibtc/manifold/blob/master/crates/liquidity-manager-daemon/specs/SPEC-flip-rpc.md).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct FmanEndorsement {
-    /// FMan-signed binding between one guardian seat and its FMan identity.
-    pub attestation: FmanPeerAttestation,
+pub struct MgEndorsement {
+    /// MG-signed binding between one guardian seat and its MG identity.
+    pub attestation: MgPeerAttestation,
 
-    /// Inline trust envelope binding an issuer badge to that FMan identity.
+    /// Inline trust envelope binding an issuer badge to that MG identity.
     pub trust: HolderAuthorizationEnvelope,
 }
 
@@ -264,7 +266,7 @@ pub struct FederationLiquidityDetails {
     /// Fedimint invite code.
     pub invite_code: InviteCode,
 
-    /// FI-observed Fedimint federation id.
+    /// FA-observed Fedimint federation id.
     ///
     /// The provider must derive the authoritative value from the invite code.
     pub federation_id: FederationId,
@@ -272,16 +274,16 @@ pub struct FederationLiquidityDetails {
     /// Federation display name.
     pub federation_name: FederationName,
 
-    /// FI-observed hash of final federation config or formation transcript.
+    /// FA-observed hash of final federation config or formation transcript.
     ///
     /// The provider must derive the authoritative value from the invite-code
     /// preview before matching the consensus seat-binding directory.
     pub federation_config_hash: HashBytes,
 
-    /// Optional FI-provided seat hints from formation.
+    /// Optional FA-provided seat hints from formation.
     ///
     /// The provider must preview the invite code, derive the authoritative peer
-    /// set itself, and fetch FMan-signed peer attestations from consensus
+    /// set itself, and fetch MG-signed peer attestations from consensus
     /// metadata. These hints are retained only for
     /// diagnostics, idempotency analysis, and operator support.
     pub fleet_seat_hints: Vec<FleetSeat>,
@@ -581,7 +583,7 @@ pub enum PublicRejectionCode {
     #[strum(serialize = "invalid_credentials")]
     InvalidCredentials,
 
-    /// FMan peer attestation is missing or invalid.
+    /// MG peer attestation is missing or invalid.
     #[strum(serialize = "invalid_seat_binding")]
     InvalidSeatBinding,
 

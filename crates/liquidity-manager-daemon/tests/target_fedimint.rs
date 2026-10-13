@@ -189,7 +189,7 @@ fn pending_opens_have_their_own_bound() {
 /// A pending open does not consume a client slot.
 ///
 /// This is the crowding that made the shared ceiling worse than no ceiling:
-/// an FI driving federations whose config download never completes filled
+/// an FA driving federations whose config download never completes filled
 /// the ceiling with opens that could not be evicted, so healthy federations
 /// that were already installed lost their slots to targets that had never
 /// answered.

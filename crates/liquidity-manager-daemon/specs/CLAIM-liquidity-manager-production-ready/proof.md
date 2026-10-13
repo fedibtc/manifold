@@ -61,7 +61,7 @@ assess them.
 3. The configured gateway, chain observer, target Fedimint federations, Nostr
    relays, issuers, SQLite, filesystem, clock, and cryptographic primitives
    return authentic results with the documented durability or fail detectably.
-4. A supported FI supplies the required signed endorsement and trust material.
+4. A supported FA supplies the required signed endorsement and trust material.
    FLIP's public RPC boundary verifies that material and binds the requester's
    signing key to the authenticated transport actor before admitting the
    request.
@@ -76,9 +76,9 @@ assess them.
 7. FLIP fails closed when it cannot perform a required fresh credential-revocation
    check
    ([claim](../CLAIM-missing-nostr-revocation-fails-open.md)).
-8. FI-supplied invite data cannot select an arbitrary method, path, body, header
+8. FA-supplied invite data cannot select an arbitrary method, path, body, header
    set, or subsequent frame contents before target-federation authentication, or
-   expose the selected destination's response to the FI. Pinned Iroh's
+   expose the selected destination's response to the FA. Pinned Iroh's
    protocol-generated discovery/QUIC and relay handshake/framing traffic to
    node-owner-published destinations is included in the production envelope
    ([claim](../CLAIM-endorsed-invite-endpoint-ssrf.md)).
@@ -95,7 +95,7 @@ assess them.
 13. [CLAIM-duplicate-stability-deposit](../CLAIM-duplicate-stability-deposit.md).
 14. FLIP does not admit a new request against capacity from a possibly debited
     wallet send until a durable observation is known to include that debit
-    ([claim](../CLAIM-fi-stale-capacity-reuse.md)).
+    ([claim](../CLAIM-fa-stale-capacity-reuse.md)).
 15. At every commit that adds or reactivates a wallet liability, active allocation
     reservations, operator withdrawals, possibly spent uncovered sends, and the
     fee reserve do not exceed known spendable balance, and active allocation
@@ -128,16 +128,16 @@ assess them.
 23. One unresolved stability-pool target cannot prevent processing of later active
     allocations
     ([claim](../CLAIM-stability-worker-single-target-starvation.md)).
-24. FI input cannot make FLIP retain an unbounded number of target clients or
+24. FA input cannot make FLIP retain an unbounded number of target clients or
     target-client databases
     ([claim](../CLAIM-stability-target-client-retention-is-unbounded.md)).
-25. FI input cannot grow durable public-request state without consuming a
+25. FA input cannot grow durable public-request state without consuming a
     configured finite per-requester or global admission allowance
-    ([claim](../CLAIM-fi-request-resource-exhaustion.md)).
+    ([claim](../CLAIM-fa-request-resource-exhaustion.md)).
 26. Within each runtime generation and configured verification window, one
     endorsed federation cannot exceed its outbound trust-verification run
     allowance, regardless of requester-authored fields
-    ([claim](../CLAIM-fi-rejected-request-verification-amplification.md)).
+    ([claim](../CLAIM-fa-rejected-request-verification-amplification.md)).
 27. Incomplete unauthenticated RPC streams cannot indefinitely prevent all new
     streams from reaching frame decoding
     ([claim](../CLAIM-public-rpc-slow-stream-exhaustion.md)).
@@ -199,9 +199,9 @@ assess them.
 1. **Envelope and authorized admission.** Assumptions 1 through 5 define the
    accountable owner, protected administration boundary, supported release, and
    authenticated dependency model. Assumptions 4, 6, 7, and 40 jointly make
-   admission authorization specific to the authenticated FI, the exact
+   admission authorization specific to the authenticated FA, the exact
    authenticated requester key, a valid unrevoked endorsement, its semantic
-   intent, and its exact federation. Assumption 8 prevents the admitted FI from
+   intent, and its exact federation. Assumption 8 prevents the admitted FA from
    selecting an arbitrary method, path, body, header set, or subsequent frame
    contents before authentication, or receiving the selected destination's
    response. It deliberately includes pinned Iroh's protocol-generated

@@ -38,7 +38,7 @@ use crate::endpoint_policy::{self, EndpointPolicy};
 /// table. Eight is well above the number of targets a provider funds
 /// concurrently and well below any host limit, which is the shape a default
 /// wants: operators who never think about it are unaffected, and the number
-/// exists so that FI-supplied federation ids cannot decide it.
+/// exists so that FA-supplied federation ids cannot decide it.
 pub(crate) const DEFAULT_MAX_OPEN_TARGET_CLIENTS: NonZeroUsize = NonZeroUsize::new(8).unwrap();
 
 /// How long one open may spend downloading a target federation's config before
@@ -284,7 +284,7 @@ impl TargetFedimintClientsInner {
     /// Pending opens have their own small budget rather than sharing the client
     /// ceiling. Sharing it would leave the set unbounded: because
     /// `least_recently_used_idle` can evict only *installed* clients, a pending
-    /// open occupies a slot it can never yield, so an FI driving federations
+    /// open occupies a slot it can never yield, so an FA driving federations
     /// whose config download never completes crowds healthy, already-open
     /// federations out of the ceiling and `make_room` opens anyway.
     ///
@@ -366,7 +366,7 @@ impl TargetFedimintClientsInner {
 
     /// Forgets per-federation lock entries nothing holds.
     ///
-    /// The lock map is the other half of this cache that FI input can grow: it
+    /// The lock map is the other half of this cache that FA input can grow: it
     /// gained an entry per distinct federation id and never lost one, so a
     /// stream of unique ids grew it without bound even when every client had
     /// been closed. An entry with a single reference is held only by this map,
@@ -440,7 +440,7 @@ impl TargetFedimintClients {
         // RocksDB and takes no file lock. It is not free: the cache reads,
         // `make_room`, and this federation's lock entry all precede it. The preview provider checks the
         // same invite at acceptance, but this is a separate dial on a path that
-        // does not go through it, and the FI can repoint a name between the two.
+        // does not go through it, and the FA can repoint a name between the two.
         let approved_invite =
             endpoint_policy::check_invite_endpoints(self.endpoint_policy, invite_code)
                 .await
@@ -633,7 +633,7 @@ impl TargetFedimintClients {
     /// Closes idle clients, least recently used first, until one more can open
     /// without exceeding the configured ceiling.
     ///
-    /// The pool is keyed by federation id, and FI-supplied invite data decides
+    /// The pool is keyed by federation id, and FA-supplied invite data decides
     /// which ids reach it, so without this every distinct target a requester
     /// named cost a RocksDB handle and a set of background tasks for the life
     /// of the process.

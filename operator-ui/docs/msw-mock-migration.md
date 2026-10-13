@@ -1,7 +1,7 @@
 # Design: migrate the operator-ui mock servers to MSW
 
 Status: proposed
-Branch: `feat/msw-mock-migration` (cut from `feat/fman-dashboard`)
+Branch: `feat/msw-mock-migration` (cut from `feat/mg-dashboard`)
 Date: 2026-08-08
 
 ## Objective
@@ -25,7 +25,7 @@ scenario model. Scenario names port **1:1**.
 
 ```
 operator-ui/
-├── apps/fleet-manager/            React SPA :5174 ─ vite proxy /api ───► fman-mock-server :8788
+├── apps/manifold-guardian/            React SPA :5174 ─ vite proxy /api ───► mg-mock-server :8788
 │   └── mock-server/               express, ~855 LOC, stateful, /__control panel (483-line HTML)
 ├── apps/liquidity-provider/       React SPA :5173 ─ vite proxy /admin ─► flip-mock-server :8787
 │   └── mock-server/               express, ~1478 LOC, stateful, /__control panel (505-line HTML)
@@ -36,8 +36,8 @@ operator-ui/
 
 ### 1.2 Transport contracts — the two apps are not alike
 
-**FMan is not REST.** One route, `POST /api/admin`, carrying an externally-tagged
-`AdminRequest` body mirroring `crates/fman/core/src/admin.rs`:
+**MG is not REST.** One route, `POST /api/admin`, carrying an externally-tagged
+`AdminRequest` body mirroring `crates/mg/core/src/admin.rs`:
 
 - unit variant → a bare JSON string, `"ListSeats"`
 - struct variant → a single-key object, `{"SeatStatus":{"seat_id":"…"}}`
@@ -50,7 +50,7 @@ HTTP 200. Dispatch is on the **body**, not the URL. Plus `POST /api/auth`
 plus an unauthenticated `GET /health` used by the SPA boot gate. Errors are a
 `ServiceError` body with a matching HTTP status.
 
-This asymmetry decides the handler shape: FMan gets **one** `http.post` handler
+This asymmetry decides the handler shape: MG gets **one** `http.post` handler
 with an internal verb map; FLIP gets a handler per method (or one `:method`
 handler, matching express).
 
@@ -60,12 +60,12 @@ They are not fixture lookups. Mutating verbs include:
 
 | App | Verb | Mutation |
 | --- | --- | --- |
-| FMan | `DecommissionSeat` | flips `decommissioned`, rewrites `report` |
-| FMan | `SetPrice` | writes `state.price` |
-| FMan | `SetPayoutDestination` | writes `state.payoutDestination` |
-| FMan | `CollectGuardianFees` | moves staged+idle → `collected_ecash_msat` |
-| FMan | `SweepGuardianFees` | empties `collected_ecash_msat` |
-| FMan | `OnboardAsNew` / `OnboardFromBackup` | flips `onboarded` |
+| MG | `DecommissionSeat` | flips `decommissioned`, rewrites `report` |
+| MG | `SetPrice` | writes `state.price` |
+| MG | `SetPayoutDestination` | writes `state.payoutDestination` |
+| MG | `CollectGuardianFees` | moves staged+idle → `collected_ecash_msat` |
+| MG | `SweepGuardianFees` | empties `collected_ecash_msat` |
+| MG | `OnboardAsNew` / `OnboardFromBackup` | flips `onboarded` |
 | FLIP | `apply_setup_config` / `update_provider_config` | writes setup config + status |
 | FLIP | `republish_advertisement` / `withdraw_advertisement` / `refresh_relays` | rewrites advertisement + relay states |
 | FLIP | `request_withdrawal` / `create_deposit_address` | appends wallet operations |
@@ -77,7 +77,7 @@ codebase.
 
 ### 1.4 Handler coupling
 
-- **FMan handlers are already transport-agnostic**: `type Handler = (payload: unknown) => unknown`.
+- **MG handlers are already transport-agnostic**: `type Handler = (payload: unknown) => unknown`.
   No express types leak in. They can move to MSW essentially untouched.
 - **FLIP handlers are express-coupled**: `(req: Request, res: Response) => void`,
   writing via `res.json(...)`. These need extraction to pure functions. This is
@@ -87,23 +87,23 @@ codebase.
 
 | App | Count | Names |
 | --- | --- | --- |
-| FMan | 9 | `fresh-fleet`, `not-onboarded`, `awaiting-authorization`, `seats-empty`, `seats-mixed`, `seat-unavailable`, `wallet-not-receivable`, `offer-without-payments`, `earnings` |
+| MG | 9 | `fresh-fleet`, `not-onboarded`, `awaiting-authorization`, `seats-empty`, `seats-mixed`, `seat-unavailable`, `wallet-not-receivable`, `offer-without-payments`, `earnings` |
 | FLIP | 15 | `setup-fresh`, `setup-pending`, `all-clear`, `funds-critical`, `funds-warning`, `ad-stale`, `ad-withdrawn`, `ad-failed`, `ad-relays-mixed`, `health-degraded`, `wallet-ops-broadcast-cancelled`, `wallet-ops-review`, `allocations-action-required`, `allocations-cancelled`, `allocations-mixed` |
 
-FMan carries a `notes` record (`desc` + `affects`) keyed off the builder map, so
+MG carries a `notes` record (`desc` + `affects`) keyed off the builder map, so
 adding an undocumented scenario is a type error. **FLIP has no notes at all.**
 
 ### 1.6 Fixtures
 
 `packages/mock-fixtures` is typed against `@operator-ui/types` and consumed only
-by the FLIP mock server. FMan's fixture data is inline in
+by the FLIP mock server. MG's fixture data is inline in
 `mock-server/src/scenarios.ts` with locally-defined `MockSeat`/`MockGuardianFees`
 types.
 
 ### 1.7 React Query / API client
 
 `@tanstack/react-query` with a bare `new QueryClient()`. The API client is a thin
-`fetch` wrapper: `adminCall.ts`, `authenticate.ts`, `errors.ts` for FMan; the
+`fetch` wrapper: `adminCall.ts`, `authenticate.ts`, `errors.ts` for MG; the
 equivalent under `apps/liquidity-provider/src/shared/api/`. **Nothing above
 `fetch` changes in this migration.**
 
@@ -129,25 +129,25 @@ Forms are hand-rolled hooks over `useState` exposing `onXChange` callbacks
   form starts with. Nothing to build there.
 - Fields with **no** API source have their values hardcoded in e2e helpers:
   `e2e/support/wizard.ts::completeWizard` carries 10 literals across the seven
-  FLIP wizard steps; `e2e/fman/setup.spec.ts` defines `PHRASE`;
-  `e2e/fman/support/auth.ts` defaults to `'test-password'` — which is *also*
-  hardcoded in the FMan scenario builders' `base()`. That duplication is the
+  FLIP wizard steps; `e2e/mg/setup.spec.ts` defines `PHRASE`;
+  `e2e/mg/support/auth.ts` defaults to `'test-password'` — which is *also*
+  hardcoded in the MG scenario builders' `base()`. That duplication is the
   real defect worth fixing.
 
 ### 1.10 Migration risks identified
 
-1. Daemon-mode dev servers (`E2E_TARGET=daemon`, `dev/fman-stack/up.sh`,
+1. Daemon-mode dev servers (`E2E_TARGET=daemon`, `dev/mg-stack/up.sh`,
    `dev/flip-stack/up.sh`) run the *same* Vite dev server against a real backend.
    If MSW starts there it will hijack live traffic. **Highest-consequence detail
    in the migration.**
-2. FMan's session is a module-level boolean in express, so it survives an SPA
+2. MG's session is a module-level boolean in express, so it survives an SPA
    reload. Naively moved to browser memory, every refresh bounces the operator to
    the login page.
 3. `mockServiceWorker.js` must exist in each app's `public/` and stay pinned to
    the installed msw version.
 4. Requests fired before the worker is ready are unmocked; the worker must be
    awaited before `createRoot().render()`.
-5. fman's Playwright readiness probe is `:8788/__control/scenarios`, which
+5. mg's Playwright readiness probe is `:8788/__control/scenarios`, which
    disappears.
 6. FLIP scenario documentation does not exist and must be authored for the
    per-page tab to have anything to filter on.
@@ -191,10 +191,10 @@ flowchart TD
 | `packages/mock-devtools/src/mock-panel/MockPanel.tsx` | two-tab panel, generic over a scenario catalog | new |
 | `packages/mock-devtools/src/start.ts` | dev-only MSW boot helper | new |
 | `packages/mock-devtools/src/types.ts` | `ScenarioCatalog`, `ScenarioNote`, `RouteKey` | new |
-| `packages/mock-fixtures/src/fman/*` | FMan fixture builders lifted out of `scenarios.ts` | new subtree |
+| `packages/mock-fixtures/src/mg/*` | MG fixture builders lifted out of `scenarios.ts` | new subtree |
 | `packages/mock-fixtures/src/flip/*` | existing fixtures, moved under a namespace | moved |
 | `apps/<app>/src/mocks/browser.ts` | `setupWorker(...handlers)` | new |
-| `apps/<app>/src/mocks/handlers.ts` | MSW handlers (FMan: one body-dispatch handler) | new |
+| `apps/<app>/src/mocks/handlers.ts` | MSW handlers (MG: one body-dispatch handler) | new |
 | `apps/<app>/src/mocks/state.ts` | `MockState` + accessors | moved from mock-server |
 | `apps/<app>/src/mocks/scenarios.ts` | named builders + notes | moved from mock-server |
 | `apps/<app>/src/mocks/world/*` | transport-agnostic verb handlers | moved/extracted |
@@ -219,11 +219,11 @@ stays per-app — only the generic machinery is lifted.
 
 The persisted blob is the mutated `MockState`, not a set of control inputs. This
 falls out cleanly because the control knobs are already fields on `MockState`
-(`latencyMs`, `forcedErrors`, `authMode`/`password` for FMan, `phase`/`bootMode`
+(`latencyMs`, `forcedErrors`, `authMode`/`password` for MG, `phase`/`bootMode`
 for FLIP), so there is no second "controls" object to reconcile.
 
 ```ts
-// localStorage["operator-ui:dev:mocks:fman"]
+// localStorage["operator-ui:dev:mocks:mg"]
 {
   v: 1,                        // store schema version
   scenario: "seats-mixed",     // which builder produced the starting world
@@ -256,7 +256,7 @@ Measured, by serialising the actual FLIP scenario builders:
 | `wallet-ops-review` | 5.2 KiB |
 | `setup-fresh` | 1.9 KiB |
 
-FMan's worlds are smaller. Against localStorage's ~5 MiB ceiling that is roughly
+MG's worlds are smaller. Against localStorage's ~5 MiB ceiling that is roughly
 500× headroom, so the capacity argument for IndexedDB does not apply here. What
 decides it is API shape, and it cuts against IndexedDB twice:
 
@@ -297,7 +297,7 @@ The trade this accepts: **changing the shape of `MockState` requires bumping
 behaviour until they reset. This becomes a documented step in the "adding a
 scenario / changing state shape" section of the developer docs (Phase 9).
 
-### 3.5 FMan session
+### 3.5 MG session
 
 `sessionActive` moves from an express module-level variable into `MockState` and
 persists with the world. This resolves risk 1.10.2 — refresh no longer logs the
@@ -322,7 +322,7 @@ solving for a dev tool; noted in the docs.
 │  ─────────────                    ──────────                  │
 │  scenarios whose `affects`        every scenario + desc        │
 │    includes route "seats"         latency                      │
-│  the verbs this page calls,       auth mode (FMan)             │
+│  the verbs this page calls,       auth mode (MG)             │
 │    each with error injection      phase + bootMode (FLIP)      │
 │  ● active scenario marked         all-verb error injection     │
 │                                   [ Reset to default ]         │
@@ -331,7 +331,7 @@ solving for a dev tool; noted in the docs.
 
 - Mounts inside the router (it needs `useLocation`), dev-only, `React.lazy`.
 - Replaces both `control-ui/index.html` panels (988 lines of hand-written HTML).
-- The per-page tab needs structured route keys, so FMan's `affects: string`
+- The per-page tab needs structured route keys, so MG's `affects: string`
   (prose: `'Overview, Seats, Wallet (all empty states), Offer'`) becomes
   `affects: RouteKey[]`. The existing `Record<ScenarioName, ScenarioNote>` typing
   keeps "undocumented scenario is a type error" intact.
@@ -342,7 +342,7 @@ Route keys:
 
 | App | Keys |
 | --- | --- |
-| FMan | `overview`, `seats`, `seat-detail`, `wallet`, `wallet-withdraw`, `offer`, `backup`, `backup-phrase`, `setup`, `auth` |
+| MG | `overview`, `seats`, `seat-detail`, `wallet`, `wallet-withdraw`, `offer`, `backup`, `backup-phrase`, `setup`, `auth` |
 | FLIP | `overview`, `funds`, `allocations`, `advertisement`, `settings`, `setup`, `restore-console`, `auth` |
 
 ### 4.1 Switching scenario must refresh the screen
@@ -400,12 +400,12 @@ production builds and in daemon mode.
 
 Changes required:
 
-- `e2e/support/mock.ts` and `e2e/fman/support/mock.ts`: rewrite the helper.
+- `e2e/support/mock.ts` and `e2e/mg/support/mock.ts`: rewrite the helper.
 - 69 call sites: mechanical `request` → `page`, plus `beforeEach` destructuring.
   Typecheck catches every miss.
-- `playwright.config.ts`: drop both mock `webServer` express entries; fman's
+- `playwright.config.ts`: drop both mock `webServer` express entries; mg's
   readiness probe becomes the Vite URL.
-- Daemon `webServer` entries and `dev/{fman,flip}-stack/up.sh`: add
+- Daemon `webServer` entries and `dev/{mg,flip}-stack/up.sh`: add
   `VITE_MOCKS=off`.
 
 **Payoff:** `workers: 1` exists only because express holds one shared world. MSW
@@ -436,25 +436,25 @@ if (import.meta.env.DEV && import.meta.env.VITE_MOCKS !== 'off') {
 
 ## 7. Endpoint migration matrix
 
-### FMan — `POST /api/admin`, dispatched on body
+### MG — `POST /api/admin`, dispatched on body
 
 | Verb | Kind | Fixture source | Status |
 | --- | --- | --- | --- |
-| `ListSeats` | read | `mock-fixtures/fman/seats` | pending |
-| `SeatStatus` | read | `mock-fixtures/fman/seats` | pending |
+| `ListSeats` | read | `mock-fixtures/mg/seats` | pending |
+| `SeatStatus` | read | `mock-fixtures/mg/seats` | pending |
 | `DecommissionSeat` | **mutating** | — | pending |
 | `ReenrollTelemetry` | read (schedules) | — | pending |
 | `ShowPlans` | read | derived from `state.price` | pending |
 | `SetPrice` | **mutating** | — | pending |
-| `ListPaymentFederations` | read | `mock-fixtures/fman/federations` | pending |
+| `ListPaymentFederations` | read | `mock-fixtures/mg/federations` | pending |
 | `PayoutDestination` | read | `state.payoutDestination` | pending |
 | `SetPayoutDestination` | **mutating** | — | pending |
 | `SweepPaymentFees` | **mutating** | — | pending |
 | `Withdraw` | **mutating** | — | retired in the daemon; mocked for the wallet screen only |
-| `GuardianFees` | read | `mock-fixtures/fman/fees` | pending |
+| `GuardianFees` | read | `mock-fixtures/mg/fees` | pending |
 | `CollectGuardianFees` | **mutating** | — | pending |
 | `SweepGuardianFees` | **mutating** | — | pending |
-| `Onboarding` | read | `mock-fixtures/fman/onboarding` | pending |
+| `Onboarding` | read | `mock-fixtures/mg/onboarding` | pending |
 | `RefreshHolderAuthorizations` | read (schedules) | — | pending |
 | `ShowMnemonic` | read | constant | pending |
 | `OnboardAsNew` | **mutating** | — | pending |
@@ -463,7 +463,7 @@ if (import.meta.env.DEV && import.meta.env.VITE_MOCKS !== 'off') {
 
 This table is documentation, not the gate. The catalogue itself is checked
 against the Rust request inventory in
-`apps/fleet-manager/src/mocks/__tests__/verb-catalogue.test.ts`.
+`apps/manifold-guardian/src/mocks/__tests__/verb-catalogue.test.ts`.
 
 ### FLIP — `POST /admin/v1/:method` + `GET /health`
 
@@ -486,15 +486,15 @@ Scenarios port 1:1 by name; the work is authoring `affects` for the per-page tab
 
 | App | Scenario | `affects` (to author/convert) |
 | --- | --- | --- |
-| FMan | `fresh-fleet` | overview, seats, wallet, offer |
-| FMan | `not-onboarded` | setup |
-| FMan | `awaiting-authorization` | setup, backup |
-| FMan | `seats-empty` | seats, wallet |
-| FMan | `seats-mixed` | seats, seat-detail, overview |
-| FMan | `seat-unavailable` | seats, overview |
-| FMan | `wallet-not-receivable` | wallet, overview |
-| FMan | `offer-without-payments` | offer, overview |
-| FMan | `earnings` | overview, wallet, seat-detail |
+| MG | `fresh-fleet` | overview, seats, wallet, offer |
+| MG | `not-onboarded` | setup |
+| MG | `awaiting-authorization` | setup, backup |
+| MG | `seats-empty` | seats, wallet |
+| MG | `seats-mixed` | seats, seat-detail, overview |
+| MG | `seat-unavailable` | seats, overview |
+| MG | `wallet-not-receivable` | wallet, overview |
+| MG | `offer-without-payments` | offer, overview |
+| MG | `earnings` | overview, wallet, seat-detail |
 | FLIP | all 15 | **to be authored in Phase 6** |
 
 ## 9. Form fixtures
@@ -514,8 +514,8 @@ between e2e helpers and the mock. They become typed fixtures in
 | --- | --- | --- |
 | FLIP wizard config (10 fields across 7 steps) | `e2e/support/wizard.ts` | — |
 | FLIP admin token `'e2e-token'` | `e2e/support/wizard.ts` | — |
-| FMan recovery phrase | `e2e/fman/setup.spec.ts::PHRASE` | FMan `ShowMnemonic` handler |
-| FMan password `'test-password'` | `e2e/fman/support/auth.ts` | FMan `scenarios.ts::base()` |
+| MG recovery phrase | `e2e/mg/setup.spec.ts::PHRASE` | MG `ShowMnemonic` handler |
+| MG password `'test-password'` | `e2e/mg/support/auth.ts` | MG `scenarios.ts::base()` |
 
 Two consumers, one source:
 
@@ -541,15 +541,15 @@ Nothing is deleted until the phase that verified its replacement has passed.
 | # | Work | Verified by |
 | --- | --- | --- |
 | 0 | This document; endpoint + scenario matrices | committed |
-| 1 | Add `msw`, generate `mockServiceWorker.js` per app, boot in FMan, intercept **one** verb | that verb answers from MSW while express still runs |
-| 2 | Move FMan world → `src/mocks/world/`; express imports it | `E2E_APP=fman` green, specs unchanged |
+| 1 | Add `msw`, generate `mockServiceWorker.js` per app, boot in MG, intercept **one** verb | that verb answers from MSW while express still runs |
+| 2 | Move MG world → `src/mocks/world/`; express imports it | `E2E_APP=mg` green, specs unchanged |
 | 3 | `packages/mock-devtools`: store + localStorage persistence + Global tab | mutation survives refresh; scenario switch discards; reset works |
-| 4 | FMan full cutover; swap fman e2e helper | `E2E_APP=fman` green with express **not running** |
+| 4 | MG full cutover; swap mg e2e helper | `E2E_APP=mg` green with express **not running** |
 | 5 | Extract FLIP `(req,res)` handlers → pure world fns | flip e2e green, express still serving |
 | 6 | FLIP MSW handlers + scenario notes authored; swap flip e2e helper | flip e2e green with express not running |
 | 7 | "This page" tab + route→key maps, both apps | manual pass over every route in both apps |
 | 8 | Form fixtures per §9: lift the wizard/phrase/password literals into `packages/mock-fixtures`; e2e imports them; panel renders click-to-copy chips | e2e green with no behaviour change; no duplicated literals remain |
-| 9 | Delete both express servers, `flip:be`/`fman:be` scripts, `express`/`tsx` deps, `/__control` vite proxies, `dev/menu/items.mjs` panel entry; docs; enable parallel workers; prod-bundle grep in CI | `selfci check`, full e2e both apps × both targets |
+| 9 | Delete both express servers, `flip:be`/`mg:be` scripts, `express`/`tsx` deps, `/__control` vite proxies, `dev/menu/items.mjs` panel entry; docs; enable parallel workers; prod-bundle grep in CI | `selfci check`, full e2e both apps × both targets |
 
 Phase 8 stays in this branch rather than splitting to a follow-up, consistent
 with the decision to migrate both apps together.
@@ -569,8 +569,8 @@ with the decision to migrate both apps together.
 ## 12. Acceptance criteria
 
 - [ ] Both apps run fully mocked with Vite alone; no express process required.
-- [ ] All 15 FMan + 25 FLIP endpoints answer from MSW.
-- [ ] All 9 FMan + 15 FLIP scenarios reproduce their express behaviour.
+- [ ] All 15 MG + 25 FLIP endpoints answer from MSW.
+- [ ] All 9 MG + 15 FLIP scenarios reproduce their express behaviour.
 - [ ] Fixtures are typed against `@operator-ui/types`; no duplicated hand-written types.
 - [ ] Form values with no API source live once in `packages/mock-fixtures`; no literal is duplicated between an e2e helper and a scenario builder.
 - [ ] Mutated mock state survives a browser refresh via localStorage.

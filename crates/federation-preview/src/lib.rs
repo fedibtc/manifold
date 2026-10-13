@@ -1,17 +1,17 @@
 //! Invite-code federation preview over the real Fedimint client API.
 //!
 //! Two components need the same consensus read and must not drift apart. FLIP
-//! previews a federation to decide liquidity eligibility; the FI reads
+//! previews a federation to decide liquidity eligibility; the FA reads
 //! consensus metadata back after writing the seat-binding directory. This
 //! crate owns the transport for both, so the `fedimint-api-client` dependency
 //! lives in exactly one place.
 //!
 //! [`read_consensus`] is the lower-level entry point, returning the downloaded
 //! config and the raw metadata value without interpreting either. It exists
-//! because `fi-client` must stay `wasm32-unknown-unknown`-compatible and
+//! because `fa-client` must stay `wasm32-unknown-unknown`-compatible and
 //! dependency-thin: its consumer performs this call and hands back the
 //! undigested result, leaving every derivation and every signature check
-//! inside `fi-client` ([`ARCH-fi-client`](../../fi-client/specs/ARCH-fi-client.md)).
+//! inside `fa-client` ([`ARCH-fa-client`](../../fa-client/specs/ARCH-fa-client.md)).
 //!
 //! [`preview`] builds FLIP's [`FederationPreview`] on top of the same read.
 
@@ -23,9 +23,8 @@ use std::str::FromStr as _;
 
 pub use fedi_decentralized_domain::federation_config_hash;
 use fedi_decentralized_domain::{
-    BitcoinNetwork, FMAN_SEAT_BINDINGS_META_FIELD_KEY, FederationId, FederationSeat,
-    FederationSeats, GatewayApiUrl, GuardianIdentity, HashBytes, InviteCode, PeerId,
-    federation_seats,
+    BitcoinNetwork, FederationId, FederationSeat, FederationSeats, GatewayApiUrl, GuardianIdentity,
+    HashBytes, InviteCode, MG_SEAT_BINDINGS_META_FIELD_KEY, PeerId, federation_seats,
 };
 use fedimint_api_client::api::{DynGlobalApi, FederationApiExt as _};
 use fedimint_api_client::download_from_invite_code;
@@ -129,7 +128,8 @@ pub struct FederationPreview {
 
     /// Raw canonical `fedi:fman_seat_bindings` consensus metadata value, when
     /// set.
-    pub fman_seat_bindings_metadata: Option<String>,
+    #[serde(rename = "fman_seat_bindings_metadata")]
+    pub mg_seat_bindings_metadata: Option<String>,
 
     /// Fedimint module kinds the final config carries.
     ///
@@ -278,7 +278,7 @@ pub async fn preview(
 ) -> Result<FederationPreview, FederationPreviewError> {
     let snapshot = read_consensus(connectors, invite_code).await?;
 
-    // Phase 0's derivation, never a local re-derivation: the FMan signs
+    // Phase 0's derivation, never a local re-derivation: the MG signs
     // this same config hash into every attestation.
     let seats = federation_seats(&snapshot.config).map_err(|error| {
         FederationPreviewError::InvalidInviteCode(format!(
@@ -299,7 +299,7 @@ pub async fn preview(
             })
             .collect(),
         consensus_threshold: seats.consensus_threshold(),
-        fman_seat_bindings_metadata: seat_bindings_field(snapshot.meta_value.as_deref())?,
+        mg_seat_bindings_metadata: seat_bindings_field(snapshot.meta_value.as_deref())?,
         module_kinds: module_kinds(&snapshot.config),
     })
 }
@@ -375,7 +375,7 @@ fn network_of(config: &ClientConfig) -> Result<BitcoinNetwork, FederationPreview
 ///
 /// The directory lives in the `meta` module's consensus state, not in the
 /// client config's `global.meta`: that is what lets the config hash the
-/// guardians signed survive the FI's write. The module holds a JSON object of
+/// guardians signed survive the FA's write. The module holds a JSON object of
 /// meta fields under [`DEFAULT_META_KEY`], matching Fedimint's own
 /// `ClientConfig::meta` convention. The revision comes from the same
 /// `get_consensus` response as the bytes, so the pair names exactly one
@@ -428,11 +428,11 @@ pub fn seat_bindings_field(
             ))
         })?;
 
-    match fields.get(FMAN_SEAT_BINDINGS_META_FIELD_KEY) {
+    match fields.get(MG_SEAT_BINDINGS_META_FIELD_KEY) {
         None => Ok(None),
         Some(serde_json::Value::String(value)) => Ok(Some(value.clone())),
         Some(_) => Err(FederationPreviewError::InvalidInviteCode(format!(
-            "{FMAN_SEAT_BINDINGS_META_FIELD_KEY} consensus metadata is not a string"
+            "{MG_SEAT_BINDINGS_META_FIELD_KEY} consensus metadata is not a string"
         ))),
     }
 }

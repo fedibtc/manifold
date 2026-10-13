@@ -5,10 +5,10 @@
 //! representations as the cross-component contracts settle.
 
 mod federation_config;
-mod fman_federation_directory;
-mod fman_peer_attestation;
-mod fman_seat_bindings;
 mod gateway;
+mod mg_federation_directory;
+mod mg_peer_attestation;
+mod mg_seat_bindings;
 mod setup_payment_federations;
 pub mod test_support;
 mod trust_score;
@@ -23,29 +23,28 @@ pub use federation_config::{
     FederationSeats, consensus_threshold, federation_config_hash, federation_id, federation_seats,
     parse_protocol_peer_id, protocol_peer_id,
 };
-pub use fman_federation_directory::{
-    FMAN_API_URL_MAX_BYTES, FMAN_API_URLS_MAX_COUNT, FMAN_API_URLS_MAX_VALUE_BYTES,
-    FMAN_API_URLS_META_FIELD_KEY, FMAN_HOLDER_AUTHORIZATION_MAX_FUTURE_SKEW_SECS,
-    FMAN_TRUST_MATERIAL_CANONICAL_TYPE, FMAN_TRUST_MATERIAL_MAX_FUTURE_SKEW_SECS,
-    FMAN_TRUST_MATERIAL_MAX_HOLDER_AUTHORIZATIONS, FMAN_TRUST_MATERIAL_MAX_RESPONSE_BYTES,
-    FMAN_TRUST_MATERIAL_SIGNATURE_DOMAIN_SEPARATOR, FmanApiUrlsMetadata, FmanApiUrlsMetadataError,
-    FmanTrustMaterial, FmanTrustMaterialVerificationError, GetFmanTrustMaterialRequest,
-    GetFmanTrustMaterialResponse, validate_fman_api_url,
-};
-pub use fman_peer_attestation::{
-    FMAN_PEER_ATTESTATION_CANONICAL_TYPE, FMAN_PEER_ATTESTATION_SIGNATURE_DOMAIN_SEPARATOR,
-    FMAN_SEAT_ENDPOINT_PROOF_DOMAIN, FmanPeerAttestation, FmanPeerAttestationStatement,
-    FmanPeerAttestationVerificationError, SeatEndpointProof,
-};
-pub use fman_seat_bindings::{
-    FMAN_SEAT_BINDINGS_MAX_COUNT, FMAN_SEAT_BINDINGS_MAX_VALUE_BYTES,
-    FMAN_SEAT_BINDINGS_META_FIELD_KEY, FmanSeatBindings, FmanSeatBindingsError,
-    VerifiedSeatBinding,
-};
 pub use gateway::{GatewayApiUrl, InvalidGatewayApiUrl};
+pub use mg_federation_directory::{
+    GetMgTrustMaterialRequest, GetMgTrustMaterialResponse, MG_API_URL_MAX_BYTES,
+    MG_API_URLS_MAX_COUNT, MG_API_URLS_MAX_VALUE_BYTES, MG_API_URLS_META_FIELD_KEY,
+    MG_HOLDER_AUTHORIZATION_MAX_FUTURE_SKEW_SECS, MG_TRUST_MATERIAL_CANONICAL_TYPE,
+    MG_TRUST_MATERIAL_MAX_FUTURE_SKEW_SECS, MG_TRUST_MATERIAL_MAX_HOLDER_AUTHORIZATIONS,
+    MG_TRUST_MATERIAL_MAX_RESPONSE_BYTES, MG_TRUST_MATERIAL_SIGNATURE_DOMAIN_SEPARATOR,
+    MgApiUrlsMetadata, MgApiUrlsMetadataError, MgTrustMaterial, MgTrustMaterialVerificationError,
+    validate_mg_api_url,
+};
+pub use mg_peer_attestation::{
+    MG_PEER_ATTESTATION_CANONICAL_TYPE, MG_PEER_ATTESTATION_SIGNATURE_DOMAIN_SEPARATOR,
+    MG_SEAT_ENDPOINT_PROOF_DOMAIN, MgPeerAttestation, MgPeerAttestationStatement,
+    MgPeerAttestationVerificationError, SeatEndpointProof,
+};
+pub use mg_seat_bindings::{
+    MG_SEAT_BINDINGS_MAX_COUNT, MG_SEAT_BINDINGS_MAX_VALUE_BYTES, MG_SEAT_BINDINGS_META_FIELD_KEY,
+    MgSeatBindings, MgSeatBindingsError, VerifiedSeatBinding,
+};
 pub use peerbadge_protocol::{ProtocolV1, SchnorrSignatureProof};
 pub use setup_payment_federations::{
-    AdmittedSetupPaymentFederations, DEFAULT_SETUP_PAYMENT_MIN_FEE_PPM, FmanVersion,
+    AdmittedSetupPaymentFederations, DEFAULT_SETUP_PAYMENT_MIN_FEE_PPM, MgVersion,
     SETUP_PAYMENT_FEDERATION_INVITE_MAX_BYTES, SETUP_PAYMENT_FEDERATIONS_MAX_CONTENT_BYTES,
     SETUP_PAYMENT_FEDERATIONS_MAX_COUNT, SETUP_PAYMENT_MAX_MIN_FEE_PPM,
     SetupPaymentFederationsContent, SetupPaymentFederationsContentError,
@@ -159,7 +158,7 @@ pub struct Signature(pub Vec<u8>);
 
 /// Signed deterministic protocol payload document.
 ///
-/// This follows the FMan Nostr convention: the signed document is portable
+/// This follows the MG Nostr convention: the signed document is portable
 /// outside Nostr, `proof.signature` signs canonical `payload`, and all version,
 /// freshness, and actor identity fields live inside the typed payload.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -193,7 +192,7 @@ pub struct Url(pub String);
 
 /// Legacy opaque proof binding a fleet-manager identity to a federation seat.
 ///
-/// New FLIP/FMan flows use [`FmanPeerAttestation`] instead. This wrapper remains
+/// New FLIP/MG flows use [`MgPeerAttestation`] instead. This wrapper remains
 /// only for old provisional call sites that have not yet been updated.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(transparent)]

@@ -24,7 +24,7 @@ fn hash_hex(config: &ClientConfig) -> String {
 
 #[test]
 fn config_hash_is_pinned_for_the_fixture_config() {
-    // Changing this value changes the protocol: every attestation an FMan has
+    // Changing this value changes the protocol: every attestation an MG has
     // already signed stops matching what a verifier derives.
     assert_eq!(
         hash_hex(&test_config(4)),
@@ -34,7 +34,7 @@ fn config_hash_is_pinned_for_the_fixture_config() {
 
 #[test]
 fn config_hash_ignores_consensus_metadata() {
-    // The whole protocol rests on this: guardians sign the hash before the FI
+    // The whole protocol rests on this: guardians sign the hash before the FA
     // publishes `fedi:fman_seat_bindings` into consensus metadata, so a hash
     // that moved when metadata moved would invalidate every attestation.
     let config = test_config(4);

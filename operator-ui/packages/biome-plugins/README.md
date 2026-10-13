@@ -28,7 +28,7 @@ Rejects a **fleet-manager screen branching on a query's raw `isError`**.
 React-query keeps `data` through a failed refresh, so "we hold an answer" and
 "the last attempt failed" are independent facts. A screen reading only `isError`
 collapses them and says something false — it deletes figures it still holds, or
-claims an empty fleet it was never told about. Six FMan screens each invented
+claims an empty fleet it was never told about. Six MG screens each invented
 their own answer to this before `useQueryDisposition` / `QuerySurface` existed
 (`reviews/underwriting/issues/no-disposition-for-answered-then-failed.md`). The
 rule is what stops a seventh.
@@ -37,7 +37,7 @@ rule is what stops a seventh.
   naming the replacement. No autofix — the correct shape is a judgement about
   what the screen claims, not a rewrite.
 - Registered in [`../../biome.json`](../../biome.json) under `plugins`, scoped
-  to `**/apps/fleet-manager/src/pages/**/*.tsx` minus `**/__tests__/**`.
+  to `**/apps/manifold-guardian/src/pages/**/*.tsx` minus `**/__tests__/**`.
   **The leading `**/` is load-bearing** — a plugin `includes` glob anchored at
   `apps/…` matches nothing, and the rule silently never fires.
 
@@ -49,7 +49,7 @@ Two exclusions, both deliberate:
   switched off. The cost is real: a screen can still push the branch down into a
   feature hook and escape. That residual gap is recorded on the issue.
 - **`apps/liquidity-provider` is out of scope.** The disposition primitive is an
-  FMan module; a rule may only require what exists. FLIP needs its own copy of
+  MG module; a rule may only require what exists. FLIP needs its own copy of
   the primitive before it can be held to the same standard.
 
 ## Fixtures & tests

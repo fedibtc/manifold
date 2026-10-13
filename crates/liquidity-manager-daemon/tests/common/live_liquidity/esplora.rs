@@ -15,7 +15,7 @@ use super::{ManagedProcess, locate_binary, process_log_path};
 /// HTTP API (its non-user RPC path is `create_esplora_rpc`), so the FLIP
 /// target-federation client cannot claim a peg-in against a bitcoind-only
 /// backend. This mirrors the `tests-e2e` fleet-manager harness, which spawns
-/// the same indexer for the FI wallet's peg-in.
+/// the same indexer for the FA wallet's peg-in.
 pub struct EsploraFixture {
     /// Base URL to give the client via `FM_FORCE_BITCOIN_RPC_URL`.
     pub http_url: String,

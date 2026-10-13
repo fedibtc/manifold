@@ -16,11 +16,11 @@ const MAX_OUTPUT_BYTES: usize = 2 * 1024 * 1024;
 
 /// Verified labels attached to every admitted guardian sample.
 pub struct MetricsIdentity<'a> {
-    /// Canonical registered FMan public key.
-    pub fman_id: &'a str,
+    /// Canonical registered MG public key.
+    pub mg_id: &'a str,
     /// Deterministic display-only name derived from the public key.
-    pub fman_name: &'a str,
-    /// Seat selected through the authenticated FMan connection.
+    pub mg_name: &'a str,
+    /// Seat selected through the authenticated MG connection.
     pub guardian_seat_id: &'a str,
     /// Canonical federation id derived from the invite asserted for that seat.
     pub federation_id: &'a str,
@@ -178,8 +178,8 @@ impl MetricsPolicy {
             let mut identity_collision = false;
             if let Some(identity) = &identity {
                 for (name, value) in [
-                    ("fman_id", identity.fman_id),
-                    ("fman_name", identity.fman_name),
+                    ("fman_id", identity.mg_id),
+                    ("fman_name", identity.mg_name),
                     ("guardian_seat_id", identity.guardian_seat_id),
                     ("federation_id", identity.federation_id),
                 ] {
@@ -257,8 +257,8 @@ impl MetricsPolicy {
                 value,
             } = ParsedSample::parse(sample)?;
             for (name, expected) in [
-                ("fman_id", identity.fman_id),
-                ("fman_name", identity.fman_name),
+                ("fman_id", identity.mg_id),
+                ("fman_name", identity.mg_name),
                 ("guardian_seat_id", identity.guardian_seat_id),
                 ("federation_id", identity.federation_id),
             ] {
@@ -675,7 +675,7 @@ fn bounded_release_label(value: &str) -> bool {
 }
 
 fn canonical_api_method(value: &str) -> bool {
-    // The FMan and collector enforce this static set independently of the
+    // The MG and collector enforce this static set independently of the
     // producer release. A compromised producer cannot turn a caller-supplied
     // method string into an unbounded label value or an admitted new family.
     value == "unknown" || CORE_API_METHODS.contains(&value)

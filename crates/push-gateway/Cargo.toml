@@ -17,7 +17,7 @@ fedi-decentralized-push-gateway-provider = { path = "../push-gateway-provider" }
 fedi-decentralized-push-gateway-provider-fcm = { path = "../push-gateway-provider-fcm" }
 fedi-decentralized-push-gateway-storage = { path = "../push-gateway-storage" }
 fedi-decentralized-push-gateway-types = { path = "../push-gateway-types" }
-fedi-decentralized-service-fleet-manager = { path = "../service-fleet-manager" }
+fedi-decentralized-service-manifold-guardian = { path = "../service-manifold-guardian" }
 fedi-iroh-rpc = { path = "../fedi-iroh-rpc" }
 hex = "0.4.3"
 nostr = "0.44.3"

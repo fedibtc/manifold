@@ -16,7 +16,7 @@ daemon internals. The canonical request/response shapes are the Rust DTOs in
 
 Nix release builds embed the FLIP dashboard in the daemon binary and serve it
 from the Admin API listener; other builds serve only the API. Static and SPA
-routing comes from the same `operator-ui-static` crate FMan uses, while the
+routing comes from the same `operator-ui-static` crate MG uses, while the
 FLIP daemon selects its own dashboard assets and reserves `/admin` and
 `/health` from SPA fallback. The static router is merged outside bearer-token
 middleware: `/`, `/index.html`, and `/assets/*` are public on this private

@@ -13,7 +13,7 @@
 //! This is the per-federation rate bound that closes it.
 //!
 //! It is keyed by the canonical federation id parsed from the invite and
-//! authenticated by the FMan endorsement. The verification pipeline charges it
+//! authenticated by the MG endorsement. The verification pipeline charges it
 //! inside the admission gate after local authentication but before its live
 //! revocation lookup or any other outbound stage. The requester-declared federation id is deliberately not a key: it is
 //! not trusted until the later preview join.
@@ -34,7 +34,7 @@ pub(crate) const DEFAULT_VERIFICATIONS_PER_WINDOW: u32 = 12;
 
 /// Federations tracked at once.
 ///
-/// The map is keyed by locally authenticated invite-derived ids, but an FI can
+/// The map is keyed by locally authenticated invite-derived ids, but an FA can
 /// hold endorsements for many federations, so the runtime map needs a ceiling.
 pub(crate) const DEFAULT_TRACKED_FEDERATIONS: usize = 4096;
 

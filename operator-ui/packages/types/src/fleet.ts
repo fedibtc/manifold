@@ -1,12 +1,12 @@
-// UI vocabulary derived from crates/fman/core/src/admin.rs
-// (+ crates/fman/core/src/seat.rs, crates/fman/core/src/guardian_fee.rs,
-// crates/service-fleet-manager/src/types.rs).
+// UI vocabulary derived from crates/mg/core/src/admin.rs
+// (+ crates/mg/core/src/seat.rs, crates/mg/core/src/guardian_fee.rs,
+// crates/service-manifold-guardian/src/types.rs).
 //
 // The request side is no longer written here at all: AdminRequest comes from
-// ./generated/adminRequest.ts, which crates/fman/core emits from the Rust enum.
+// ./generated/adminRequest.ts, which crates/mg/core emits from the Rust enum.
 //
-// The response side is still hand-maintained, but not unchecked: crates/fman/core
-// generates a fixture per response shape into ../fixtures/fman_*.json, and
+// The response side is still hand-maintained, but not unchecked: crates/mg/core
+// generates a fixture per response shape into ../fixtures/mg_*.json, and
 // __tests__/contractFixtures.test.ts mirrors each of them as a typed literal. A
 // rename on either side fails `tsc` or the Rust freshness test rather than
 // reaching a screen. Generating the responses too is blocked on admin.rs
@@ -27,14 +27,14 @@ import type { ReadinessReport } from './generated/seatReadiness';
 type InviteCode = string;
 
 export type SeatId = string;
-export type FiId = string;
+export type FaId = string;
 
 export type SeatHealth = 'healthy' | 'unavailable' | 'failed';
 
-// service-fleet-manager's Plan enum. `SubscriptionBased` is post-MVP wire
+// service-manifold-guardian's Plan enum. `SubscriptionBased` is post-MVP wire
 // vocabulary the v1 daemon refuses to offer — kept here because ShowPlans's type
 // is still Vec<Plan>. There is no free variant: free is a zero price
-// (crates/fman/core/src/db.rs::plans maps the stored price to one plan, and no
+// (crates/mg/core/src/db.rs::plans maps the stored price to one plan, and no
 // stored price to an empty list).
 export type Plan =
   | { InfiniteBestEffort: { price_msats: number } }
@@ -99,7 +99,7 @@ export type SeatReport =
 
 export interface SeatSummary {
   seat_id: SeatId;
-  fi_id: FiId;
+  fi_id: FaId;
   plan: Plan;
   created_at_ms: number;
   payment_claim: PaymentClaimStatus;
@@ -128,7 +128,7 @@ export type SeatGuardianFee =
   | { remittance_account: string; policy_error: string }
   | {
       remittance_account: string;
-      // True when the federation's recipient list still gives this FMan the
+      // True when the federation's recipient list still gives this MG the
       // weight the policy expects. Named for what admin.rs emits — the
       // `pays_us` this once declared exists nowhere in the daemon.
       share_matches_policy: boolean;
@@ -174,18 +174,18 @@ export interface WalletDrainStatus {
   drain_state: WalletDrainState;
 }
 
-// --- guardian fees (crates/fman/core/src/guardian_fee.rs) ---
+// --- guardian fees (crates/mg/core/src/guardian_fee.rs) ---
 
 export interface FeePolicy {
   // Both keys present, so payers will charge and remit.
   configured: boolean;
   send_ppm: number | null;
   // The raw recipient value, kept so an operator can see what the federation
-  // carries even when this FMan cannot make sense of it.
+  // carries even when this MG cannot make sense of it.
   recipients: string | null;
-  // FeePolicy::share_matches_policy() in crates/fman/core/src/guardian_fee.rs.
+  // FeePolicy::share_matches_policy() in crates/mg/core/src/guardian_fee.rs.
   share_matches_policy: boolean;
-  // Null when the recipient list does not provably name this FMan.
+  // Null when the recipient list does not provably name this MG.
   our_weight: number | null;
   total_weight: number | null;
 }
@@ -209,7 +209,7 @@ export interface Remittance {
   breakdown_error?: string;
 }
 
-// `authorizations` is a count, not a list: crates/fman/core/src/directory.rs
+// `authorizations` is a count, not a list: crates/mg/core/src/directory.rs
 // declares it `usize`. There is no `disabled` state — the daemon always has a
 // directory presence.
 //
@@ -243,7 +243,7 @@ export type OnboardingNostrStatus =
 // daemon that has not reached the relay yet — not an error. `update_required` is
 // the daemon's own SemVer comparison over the two; a consumer displays it rather
 // than re-deriving it, because string ordering is not SemVer ordering.
-export interface FmanVersionReport {
+export interface MgVersionReport {
   current: string;
   latest: string | null;
   update_required: boolean;
@@ -258,15 +258,15 @@ export interface OnboardingResponse {
   service_pubkey: string;
   service_nostr_pubkey: string;
   nostr: OnboardingNostrStatus;
-  fman_version: FmanVersionReport;
+  fman_version: MgVersionReport;
 }
 
 // --- requests ---
 //
 // The daemon's verbs are generated from the Rust enum, not transcribed beside
 // it: ./generated/adminRequest.ts is written by
-// crates/fman/core/src/bin/gen_fman_admin_request_ts.rs and kept honest by
-// crates/fman/core/tests/admin_request_ts.rs. Add a verb in Rust and it appears
+// crates/mg/core/src/bin/gen_mg_admin_request_ts.rs and kept honest by
+// crates/mg/core/tests/admin_request_ts.rs. Add a verb in Rust and it appears
 // here; reshape one and this file changes with it.
 //
 // There is no hand-written member: a verb the daemon does not declare cannot be
@@ -370,7 +370,7 @@ export interface ReenrollTelemetryResponse {
   telemetry_reenrollment: 'scheduled';
 }
 export type RefreshHolderAuthorizationsResponse = OnboardingResponse;
-// The operator's NIP-17 chat with Fedi support (SPEC-fman-support-chat).
+// The operator's NIP-17 chat with Fedi support (SPEC-mg-support-chat).
 export type SupportAuthor = 'operator' | 'fedi';
 export interface SupportMessage {
   // The rumor id, shared by every copy of the message.
@@ -438,7 +438,7 @@ export type CollectGuardianFeesResponse =
 export interface ShowMnemonicResponse {
   mnemonic: string;
 }
-// Answered only by a daemon that has not been onboarded (crates/fman/core/src/
+// Answered only by a daemon that has not been onboarded (crates/mg/core/src/
 // onboarding.rs), except for `OnboardAsNew { if_needed: true }`, which a running
 // fleet answers with "already".
 export type OnboardAsNewResponse = { onboarded: 'new'; seats: number } | { onboarded: 'already' };
@@ -514,13 +514,13 @@ export type AdminResponsesCoverEveryVerb = Assert<
     : false
 >;
 
-// --- transport envelope (crates/fman/core/src/admin.rs::answer_one and
-// crates/fman/core/src/admin_http.rs both wrap the same Result<Value, AdminError>
+// --- transport envelope (crates/mg/core/src/admin.rs::answer_one and
+// crates/mg/core/src/admin_http.rs both wrap the same Result<Value, AdminError>
 // over their respective transports) ---
 
-// Why the fleet manager refused, as a value rather than as English. Mirrors
-// `AdminErrorKind` in crates/fman/core/src/admin.rs, and is checked against the
-// committed `fman_admin_error_kinds` fixture — which Rust generates from an
+// Why the manifold guardian refused, as a value rather than as English. Mirrors
+// `AdminErrorKind` in crates/mg/core/src/admin.rs, and is checked against the
+// committed `mg_admin_error_kinds` fixture — which Rust generates from an
 // exhaustive walk over the enum, so a kind cannot reach the wire without
 // failing this mirror first.
 //

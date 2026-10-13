@@ -215,7 +215,7 @@ fn static_check(name: &str) -> VerificationCheck {
 
 /// Schnorr-sign a public RPC payload with the given keys.
 ///
-/// Provisional requester-side signing: the canonical FI signing byte layout
+/// Provisional requester-side signing: the canonical FA signing byte layout
 /// remains unpinned (open-items item 2); this mirrors the
 /// provider-side domain-tagged canonical CBOR hash the daemon verifies today.
 pub(crate) fn sign_public_rpc_with_keys<T>(

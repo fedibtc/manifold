@@ -2,11 +2,11 @@
 //!
 //! A quote's refund commitment is a deterministic function of the wallet
 //! secret, the federation's mint generation and fee schedules, the quoted
-//! price, and the FI-chosen refund nonce. The payer (FI) runs
+//! price, and the FA-chosen refund nonce. The payer (FA) runs
 //! [`prepare_quote_refund`] to build the commitment it sends with a signed
 //! quote request, and later re-runs [`prepare_refund_v1`] /
 //! [`prepare_refund_v2`] to reconstruct the secrets when presenting or
-//! refunding. The payee (FMan) runs the same preparation under its own
+//! refunding. The payee (MG) runs the same preparation under its own
 //! secrets as the validation oracle: the denomination amounts are
 //! wallet-independent, so comparing them (and nonce decodability) against a
 //! presented commitment proves the eventual refund transaction balances
@@ -35,7 +35,7 @@ use sha2::Sha256;
 
 use crate::denominations::{economical_mint_v2_denominations, quote_denominations};
 use crate::{locked_payment, locked_payment_v2};
-use fedi_decentralized_service_fleet_manager::{
+use fedi_decentralized_service_manifold_guardian::{
     LockedIssuanceRequest, LockedIssuanceRequestV2, RefundIssuance,
 };
 
@@ -53,7 +53,7 @@ pub enum RefundError {
     Client(#[from] anyhow::Error),
 }
 
-/// FI-owned secret material for one possible refund. It is intentionally not
+/// FA-owned secret material for one possible refund. It is intentionally not
 /// serializable or printable. A consumer keeps it only across one
 /// `CreateSeat` attempt; an interrupted consumer reconstructs it from the
 /// wallet secret and exact quote binding.
@@ -62,7 +62,7 @@ pub struct PreparedRefund {
     secrets: Vec<locked_payment::NoteSecrets>,
 }
 
-/// FI-owned mint-v2 refund requests, reconstructed for one presentation and
+/// FA-owned mint-v2 refund requests, reconstructed for one presentation and
 /// retained until acceptance or refund.
 pub struct PreparedRefundV2 {
     issuance: Vec<locked_payment_v2::IssuanceRequest>,
@@ -175,7 +175,7 @@ pub async fn prepare_quote_refund(
     }
 }
 
-/// Prepare FI-owned mint-v2 refund outputs. `refund_nonce` is the FI-chosen
+/// Prepare FA-owned mint-v2 refund outputs. `refund_nonce` is the FA-chosen
 /// binding carried in the signed quote request and must be identical on
 /// every retry. The refund keys are reproduced from the wallet secrets plus
 /// that refund nonce, so callers persist the public quote but no refund
@@ -259,9 +259,9 @@ pub fn prepare_refund_v2(
     Ok(PreparedRefundV2 { issuance, private })
 }
 
-/// Create FI-owned refund nonces that make the FMan's refund transaction
+/// Create FA-owned refund nonces that make the MG's refund transaction
 /// balance exactly after all configured mint input and output fees.
-/// `refund_nonce` is the FI-chosen binding carried in the signed quote
+/// `refund_nonce` is the FA-chosen binding carried in the signed quote
 /// request; the same wallet secret and binding reproduce the same refund
 /// without persistence.
 pub fn prepare_refund_v1(
@@ -322,7 +322,7 @@ pub fn prepare_refund_v1(
 }
 
 /// Derive public mint-v2 tweaks from secret wallet material and a fixed-size,
-/// domain-separated FI-chosen refund context. The
+/// domain-separated FA-chosen refund context. The
 /// tweaks reveal neither the wallet secret nor the quote binding, while an
 /// exact retry reproduces the private issuance requests through mint-v2's
 /// standard module-root derivation.

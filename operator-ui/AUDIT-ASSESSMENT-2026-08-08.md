@@ -14,7 +14,7 @@ that are snapshot-independent (for example the Requests deletion, which
 predates both snapshots) are distinguished from drift explicitly.
 **Subjects:** the split audit set —
 `PRODUCTION-READINESS-AUDIT-2026-08-08.md` (index),
-`PRODUCTION-READINESS-AUDIT-FMAN-2026-08-08.md`,
+`PRODUCTION-READINESS-AUDIT-MG-2026-08-08.md`,
 `PRODUCTION-READINESS-AUDIT-FLIP-2026-08-08.md`
 **Method:** every finding independently re-verified against the Rust and
 TypeScript source by five parallel code reviews; lint gates re-run; git
@@ -24,7 +24,7 @@ results carry over to the per-product documents.
 
 ## Per-product assessments
 
-- **FMan:** [AUDIT-ASSESSMENT-FMAN-2026-08-08.md](./AUDIT-ASSESSMENT-FMAN-2026-08-08.md)
+- **MG:** [AUDIT-ASSESSMENT-MG-2026-08-08.md](./AUDIT-ASSESSMENT-MG-2026-08-08.md)
   — verdict agreed (not production-ready). Onboarding P1 confirmed but it is a
   spec-tracked daemon ask, and the audit's fix is incomplete (the wizard's
   error-string trigger needs a setup-state verb; the packaged entrypoint never
@@ -59,8 +59,8 @@ results carry over to the per-product documents.
    stale.** Requests, `relay_cursors`, and the polling module all changed
    backend-side without the specs following. Either the MVP docs join the
    versioned contract or they stop being audit inputs.
-4. **Shared-UI accessibility** (assigned to FMan by the audit index — fine):
-   confirmed; see the FMan assessment for priorities (`FormField` needs an
+4. **Shared-UI accessibility** (assigned to MG by the audit index — fine):
+   confirmed; see the MG assessment for priorities (`FormField` needs an
    interface change; the others are mechanical).
 
 ## Assessment of the audit set
@@ -77,7 +77,7 @@ results carry over to the per-product documents.
   miscount — it indicts the missing CI gate, not the auditor. The Requests
   finding is different: it was wrong at the audit's own snapshot, because the
   deleting refactor (`e32a0a40`) predates it — git history was not consulted.
-- **Novelty: overstated in one place.** The FMan onboarding P1 restates a gap
+- **Novelty: overstated in one place.** The MG onboarding P1 restates a gap
   the MVP spec already documents with the same file references, without
   saying so.
 - **The split itself is reasonable** — ownership boundaries match the code —
@@ -95,7 +95,7 @@ valuable as the source of the raw findings and the Rust-team question banks
 ## Appendix — verification method and commands
 
 The "five parallel reviews" were five independent read-only code
-investigations, each assigned one cluster of audit claims (FMan onboarding;
+investigations, each assigned one cluster of audit claims (MG onboarding;
 FLIP backup + timestamps; FLIP requests/withdrawal/advertisement;
 auth/polling/binding; coverage/e2e/a11y/styling). Each review read the cited
 Rust and TypeScript sources, the relevant specs, and git history, and
@@ -111,7 +111,7 @@ Commands actually executed (at `e5923fd0`, re-run with identical results at
 | `npm run lint:boundaries` | `1 problem (1 error)` — `apps/liquidity-provider/src/features/settings/hooks/use-provider-config-form/useProviderConfigForm.ts:4` "feature may not import feature" |
 | `npm run lint:css-dupes` | `8 duplicate @apply group(s) found` (two 3× groups: `font-mono`, `text-error`; six 2× groups, one within `ReviewStep.module.css`) |
 | `node -e 'console.log(Date.parse("1721476800"))'` | `NaN` (confirms numeric-seconds strings fail `Date.parse`) |
-| `git log --oneline` / `git show` (repo root) | Confirmed `e32a0a40` (requests deletion), `8add6355` (relay-cursor deletion), `cb1e9db9` (last FMan `admin_http` change); no onboarding/admin work on this branch |
+| `git log --oneline` / `git show` (repo root) | Confirmed `e32a0a40` (requests deletion), `8add6355` (relay-cursor deletion), `cb1e9db9` (last MG `admin_http` change); no onboarding/admin work on this branch |
 | `git check-ignore -v docs/operator-dashboards/...` (repo root) | Resolves to the workstation's global gitignore, not a repo `.gitignore` |
 
 Unit-test, typecheck, and build results were not re-run; the audit's own

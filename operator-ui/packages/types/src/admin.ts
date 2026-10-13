@@ -430,7 +430,7 @@ export interface GetHolderAuthorizationStateResponse {
 }
 
 // Named with the `Provider` prefix `admin.ts` already uses for FLIP-side
-// concepts, because FMan's `fleet.ts` holds the bare
+// concepts, because MG's `fleet.ts` holds the bare
 // `RefreshHolderAuthorizationsResponse` for a verb of the same name and a
 // different shape — `{ holder_authorization_refresh: 'scheduled' }`. `index.ts`
 // re-exports every module flat, so the two cannot both be bare. The wire verb is

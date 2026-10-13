@@ -4,7 +4,7 @@
 //! real implementation is a tracked open item: the Fedimint invite-code
 //! preview. Every other stage of the verification pipeline (signature checks,
 //! seat binding, credential and revocation verification, policy evaluation)
-//! runs unchanged. FMan trust standing arrives as signed material inside the
+//! runs unchanged. MG trust standing arrives as signed material inside the
 //! request and is never substitutable, and the revocation fetch always uses
 //! the real relay path. Fixture mode is refused for Bitcoin mainnet (see
 //! `setup_store::ensure_trust_fixtures_allow_network`).

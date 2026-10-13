@@ -1,6 +1,6 @@
 # CLAIM-federation-capability-bounded-allocation: Federation capability bounded allocation
 
-A bearer FMan endorsement can cause at most one durable FLIP allocation for the
+A bearer MG endorsement can cause at most one durable FLIP allocation for the
 federation it names, containing at most one gateway item and at most one
 stability-pool item. No public request can create those durable rows without
 first passing the endorsement admission checks at its creation point.

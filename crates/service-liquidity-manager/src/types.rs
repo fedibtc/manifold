@@ -64,7 +64,7 @@ pub struct RpcProtocolName(pub String);
 ///
 /// Unlike [`HashBytes`](crate::HashBytes), which carries opaque
 /// foreign-produced hashes of unspecified length (for example the
-/// FMan-shaped `federation_config_hash`), every value of this type is a
+/// MG-shaped `federation_config_hash`), every value of this type is a
 /// digest this protocol computed itself, so the 32-byte shape is part of
 /// the type. Serialization is identical to a 32-byte `HashBytes`.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
@@ -210,18 +210,18 @@ pub enum CapacityMode {
 )]
 #[serde(rename_all = "snake_case")]
 pub enum VerificationRequirement {
-    /// Every distinct FMan identity operating at least one seat must be trusted.
+    /// Every distinct MG identity operating at least one seat must be trusted.
     ///
-    /// A single FMan may operate multiple peers in one federation; duplicate
+    /// A single MG may operate multiple peers in one federation; duplicate
     /// peers do not create additional trusted identities for policy counting.
     #[strum(serialize = "all_trusted")]
     AllTrusted,
 
-    /// Distinct trusted FMan identities must satisfy the consensus threshold.
+    /// Distinct trusted MG identities must satisfy the consensus threshold.
     ///
-    /// The verifier first matches consensus FMan peer attestations to config peers, then
+    /// The verifier first matches consensus MG peer attestations to config peers, then
     /// counts each trusted `fman_pubkey` once when evaluating the threshold,
-    /// regardless of how many peers that FMan operates.
+    /// regardless of how many peers that MG operates.
     #[strum(serialize = "consensus_majority_trusted")]
     ConsensusMajorityTrusted,
 }
@@ -417,9 +417,9 @@ pub struct RpcEndpoint {
 /// Configured fleet-manager seat in a target federation.
 ///
 /// FLIP treats this app-provided seat as an optional diagnostic hint. The
-/// authoritative peer list, guardian identities, consensus threshold, FMan API
+/// authoritative peer list, guardian identities, consensus threshold, MG API
 /// directory, and peer attestations are derived from the invite code and
-/// consensus metadata. Public FMan APIs supply only current identity trust.
+/// consensus metadata. Public MG APIs supply only current identity trust.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct FleetSeat {
     /// Seat identifier assigned by the app or formation protocol.
@@ -432,7 +432,8 @@ pub struct FleetSeat {
     pub guardian_identity: GuardianIdentity,
 
     /// Fleet-manager pubkey hint observed during formation.
-    pub fleet_manager_pubkey: Pubkey,
+    #[serde(rename = "fleet_manager_pubkey")]
+    pub manifold_guardian_pubkey: Pubkey,
 
     /// Future non-authoritative role metadata.
     ///

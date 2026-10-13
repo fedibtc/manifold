@@ -2,11 +2,11 @@
 
 ## Record justification
 
-FI, FLIP, push-gateway guardian telemetry, and the cloud FMan telemetry
+FA, FLIP, push-gateway guardian telemetry, and the cloud MG telemetry
 collector must authenticate the same
 credential and holder-authorization format. Keeping that security decision in one shared crate prevents relying
 programs from acquiring subtly different authority, revocation, proof, or
-schema rules. FMan verifies carriage integrity for its own HolderAuthorization
+schema rules. MG verifies carriage integrity for its own HolderAuthorization
 and uses the verifier's offline issuance check to admit only badges a trusted
 issuer issued to the authorizing holder, but does not judge its own badge's
 revocation or trust level.
@@ -17,12 +17,12 @@ identity and public configuration are governed by
 The credential and holder-authorization wire contract remains governed by
 [SPEC-holder-trust-envelope](../../domain/specs/SPEC-holder-trust-envelope.md);
 the authority and revocation Nostr event contract remains governed by
-[SPEC-fman-nostr-events](../../nostr/specs/SPEC-fman-nostr-events.md).
+[SPEC-mg-nostr-events](../../nostr/specs/SPEC-mg-nostr-events.md).
 
 ## Status
 
-The shared-verifier contract is unconfirmed while the multi-relay FMan
-transport amendment is consolidated. FMan's distinct advertisement and
+The shared-verifier contract is unconfirmed while the multi-relay MG
+transport amendment is consolidated. MG's distinct advertisement and
 authorization transport remains outside this record.
 
 ## Trust profile
@@ -91,11 +91,11 @@ The `test-support` feature exposes `PeerBadgeVerifier::new_for_test` solely for
 defe-backed component tests that need ephemeral roots, relays, and an explicit
 schema-valid minimum. Such values carry `ExplicitTestConfiguration` provenance
 and can never report themselves as a canonical Manifold profile. Production
-artifacts must not enable this feature or accept that provenance. FI receives the verifier directly in
-`FiClient::open`; push-gateway telemetry and the cloud collector construct it from their selected
+artifacts must not enable this feature or accept that provenance. FA receives the verifier directly in
+`FaClient::open`; push-gateway telemetry and the cloud collector construct it from their selected
 canonical profile; FLIP receives it in `run_daemon`, rejects non-matching
-canonical provenance, and retains it in `DaemonContext`. FMan receives only
-its resolved environment profile at `FleetManagerNostr::new` and does not
+canonical provenance, and retains it in `DaemonContext`. MG receives only
+its resolved environment profile at `ManifoldGuardianNostr::new` and does not
 depend on this crate.
 
 ## Verification algorithm
@@ -160,11 +160,11 @@ has no `expected_subject` parameter: authenticating an envelope establishes
 which subject the Holder authorized. A later complete advertisement verifier
 must separately verify its Nostr event and require the returned subject to
 equal that event's authenticated author before treating the advertisement as
-belonging to the FMan or FLIP.
+belonging to the MG or FLIP.
 
 All canonical environments currently require `trust_level >= 9`, admitting
 `9..=12` as Trusted-or-higher under the interpretation in
-[REQ-fman-trusted-peer-badge](../../../specs/REQ-fman-trusted-peer-badge.md).
+[REQ-mg-trusted-peer-badge](../../../specs/REQ-mg-trusted-peer-badge.md).
 A lower schema-valid level produces the typed `InsufficientTrustLevel` error.
 Explicit test verifiers
 must also supply a schema-valid minimum and cannot silently bypass this policy.
@@ -188,7 +188,7 @@ This currentness assumption does not make relay event content
 cryptographically trusted. Every returned event and embedded signed object
 still passes the complete admission checks above. Components must resolve the
 same canonical environment profile, while each component owns the semantics of
-its relay operations. FMan's own relay transport (pooled for its liveness
+its relay operations. MG's own relay transport (pooled for its liveness
 paths, single-relay for backup and restore) is unchanged by this verifier
 contract.
 
@@ -202,7 +202,7 @@ revocation locations requires a coordinated profile revision.
 
 ## Intentional omissions and change constraints
 
-This record does not introduce `FiTrustConfig`.
+This record does not introduce `FaTrustConfig`.
 
 Before changing all-relay completion to first-responder or quorum behavior,
 accepting partial results, adding a hardcoded revocation-relay allowlist, or
@@ -221,8 +221,8 @@ at and above the configured minimum. Nostr-client contract tests separately
 prove that only EOSE completes a negative result, timeout/stream end/`CLOSED`
 and cap exhaustion fail closed, and every revocation location contributes to
 the combined result. The `defe`-backed
-`holder_trust_badge_to_concrete_fi_selection_flow` component test publishes a
+`holder_trust_badge_to_concrete_fa_selection_flow` component test publishes a
 current authority, complete holder credentials/authorizations, and dialable
 advertisements to a real relay, then adds the concrete verifier to
-`FmanRegistryQuery` via `with_verifier` to obtain `FmanSelectionQuery`, and
+`MgRegistryQuery` via `with_verifier` to obtain `MgSelectionQuery`, and
 checks the selected issuer, subject, and badge facts.

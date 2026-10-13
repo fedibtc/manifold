@@ -2,8 +2,8 @@
 
 ## Record justification
 
-The eligibility contract spans the shared `domain` attestation types, FMan
-attestation issuance and metadata writes, the FI's post-DKG directory write,
+The eligibility contract spans the shared `domain` attestation types, MG
+attestation issuance and metadata writes, the FA's post-DKG directory write,
 this daemon's verification pipeline, and app-side gating, so no single
 implementation artifact can own it coherently.
 
@@ -13,7 +13,7 @@ Every deployment runs the same authentication and trust pipeline; there is no
 reduced-verification development mode in the acceptance path. Exactly one
 external trust input is substitutable by boot-time opt-in fixtures
 (`--trust-fixtures`, refused for Bitcoin mainnet): the invite-code federation
-preview. FMan trust material is never substitutable — it arrives signed inside
+preview. MG trust material is never substitutable — it arrives signed inside
 the request and is verified in full — and the revocation fetch is always the
 real relay path. Trust evaluation is local and fail-closed: signatures verify
 against configured trusted issuer authorities, revocation lookups run fresh at
@@ -22,10 +22,10 @@ provider unavailable — there is no stale soft-pass.
 
 ## Seat bindings
 
-A credential proves an attester trusts an FMan identity, not that the
+A credential proves an attester trusts an MG identity, not that the
 identity operates this federation's peers. The binding contract — the
-`FmanPeerAttestation` proof, the canonical `fedi:fman_seat_bindings`
-container, the FI write/readback, and the generic verifier algorithm — is
+`MgPeerAttestation` proof, the canonical `fedi:fman_seat_bindings`
+container, the FA write/readback, and the generic verifier algorithm — is
 [SPEC-federation-trust-directory](../../domain/specs/SPEC-federation-trust-directory.md).
 
 FLIP applies it per request: preview the invite code for the authoritative
@@ -45,7 +45,7 @@ identity are refused, because resolving them by position would let list order
 decide a trust outcome. Live documents carry no peer attestations; the verified
 consensus directory is the sole seat-membership source. FLIP bounds the accepted
 `expires_at - issued_at` window, which is the only remaining bound on how long
-a withdrawn FMan's material outlives it.
+a withdrawn MG's material outlives it.
 
 The requester also embeds one guardian's `fman_endorsement` (attestation plus
 holder-authorization envelope) in `RequestLiquidity`; FLIP verifies the
@@ -57,12 +57,12 @@ freshness window, as specified in
 `revocation_locations` are non-authoritative hints. Verification fails on any
 binding that does not verify against the preview, any config peer without a
 binding, extra bindings for non-peers, or missing/malformed/non-canonical
-metadata. One FMan may operate multiple peers.
+metadata. One MG may operate multiple peers.
 
 ## Request-carried trust material
 
-FLIP resolves every directory-selected FMan identity's standing from
-FMan-signed trust material carried inside `RequestLiquidity`; the request path
+FLIP resolves every directory-selected MG identity's standing from
+MG-signed trust material carried inside `RequestLiquidity`; the request path
 does not look up standing over Nostr. Missing material, or missing material for
 any identity selected by the directory, fails closed. Every document has a
 bounded `expires_at - issued_at` interval, and revocation is resolved live at
@@ -73,7 +73,7 @@ each document is signed by the identity it describes, and verification consults
 it only for that identity. The requester can omit an identity and be rejected,
 but cannot add an operator, substitute one operator's standing for another's, or
 forge standing. Material remains replayable until its bounded expiry, and an
-FMan that stops serving can remain trusted until then; live revocation can
+MG that stops serving can remain trusted until then; live revocation can
 withdraw it earlier.
 
 ## Policy evaluation
@@ -89,14 +89,14 @@ consensus-majority threshold derived from the final peer set, counting each
 identity once regardless of how many peers it operates. If the threshold cannot
 be determined, the request is rejected.
 
-Pooling is what keeps FLIP reachable for the federations the FI builds. The FI
+Pooling is what keeps FLIP reachable for the federations the FA builds. The FA
 admits a seat on a badge from any configured trusted issuer root, then fills
 seats round-robin across issuer buckets to spread operators across regions
-([ARCH-fi-client-discovery-selection](../../fi-client/specs/ARCH-fi-client-discovery-selection.md)).
+([ARCH-fa-client-discovery-selection](../../fa-client/specs/ARCH-fa-client-discovery-selection.md)).
 A federation it assembles therefore normally carries several issuers, and no
 single one covers every seat. Requiring one attester to cover the whole
 operator set would reject a federation for carrying the operator diversity the
-FI exists to produce, so provider and initiator share one notion of a trusted
+FA exists to produce, so provider and initiator share one notion of a trusted
 operator: vouched for by one of the trusted signers, not by the same one.
 
 `VerificationSummary.accepted_attester_policy` records the entry whose
@@ -168,7 +168,7 @@ wrong-subject, or wrong-federation credential material is
 `invalid_credentials`, as are a
 request carrying no trust material at all, duplicate documents for one
 identity, and material signed by an identity other than the expected
-consensus-listed FMan. Seat-binding or config mismatch, missing or extra
+consensus-listed MG. Seat-binding or config mismatch, missing or extra
 bindings, or malformed metadata is
 `invalid_seat_binding` (or `invalid_details_payload` for the details
 themselves). An invite endpoint refused by the transport policy is also

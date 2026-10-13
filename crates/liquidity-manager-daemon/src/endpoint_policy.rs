@@ -1,6 +1,6 @@
 //! Outbound address policy for requester-supplied federation endpoints.
 //!
-//! An FMan endorsement authenticates a federation *id*, not the guardian API
+//! An MG endorsement authenticates a federation *id*, not the guardian API
 //! URLs carried independently in its invite. A requester holding a valid
 //! endorsement can therefore substitute transport input while FLIP decides
 //! whether to trust the returned configuration, which would make FLIP dial

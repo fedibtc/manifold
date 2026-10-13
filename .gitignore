@@ -18,7 +18,7 @@
 .claude/launch.json
 
 # agent-harness generated workflow docs / CI (kept local)
-/docs/fleet-manager/
+/docs/manifold-guardian/
 /.github/workflows/agent-task.yml
 
 # Superpowers SDD working artifacts — execution ledgers, task briefs/reports and

@@ -11,17 +11,17 @@
 > Use the assessments as the remediation basis; this set remains the source
 > of the raw findings and Rust-team question banks.
 
-The audit is split by engineering ownership so FMan and FLIP developers can work
+The audit is split by engineering ownership so MG and FLIP developers can work
 from separate finding, remediation, Rust-question, and release-exit lists.
 
-## FMan dashboard
+## MG dashboard
 
-See [PRODUCTION-READINESS-AUDIT-FMAN-2026-08-08.md](./PRODUCTION-READINESS-AUDIT-FMAN-2026-08-08.md).
+See [PRODUCTION-READINESS-AUDIT-MG-2026-08-08.md](./PRODUCTION-READINESS-AUDIT-MG-2026-08-08.md).
 
 **Verdict:** Not production-ready.
 
 Primary blocker: a packaged fresh host cannot complete the browser onboarding
-flow because FMan exposes only Unix-socket onboarding before starting its HTTP
+flow because MG exposes only Unix-socket onboarding before starting its HTTP
 admin service.
 
 ## FLIP dashboard
@@ -40,7 +40,7 @@ Neither dashboard has measured frontend or Rust coverage thresholds enforced by
 CI. Passing unit tests alone therefore cannot support a production-ready coverage
 claim.
 
-Shared-package work should be assigned explicitly during planning. The FMan audit
+Shared-package work should be assigned explicitly during planning. The MG audit
 currently owns the detailed shared form/stepper accessibility findings because
 those controls are central to its setup workflow. Each product audit owns its own
 coverage, live-integration, and release criteria.

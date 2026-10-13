@@ -14,7 +14,7 @@ use std::time::Duration;
 
 use anyhow::{Context as _, Result, bail, ensure};
 use defe_client::{
-    AsyncDefeClient, FlipRequest, FmanInfo, FmanRequest, GatewaydInfo, GatewaydRequest,
+    AsyncDefeClient, FlipRequest, GatewaydInfo, GatewaydRequest, MgInfo, MgRequest,
     ResourceDescriptor, SharingMode,
 };
 use iroh_base_035::{NodeId, SecretKey};
@@ -47,16 +47,16 @@ mod traffic;
 use descendant_supervisor::{DescendantSupervisor, run_lease_guard, run_namespace_spawn};
 
 const GUARDIAN_COUNT: usize = 7;
-const FI_ACCOUNT: &[u8] = br#"{"acc_type":"BtcDepositor","pub_keys":["031b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f"],"threshold":1}"#;
-const FMAN_OPERATOR_UI_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../operator-ui");
-const FMAN_OPERATOR_UI_URL: &str = "http://127.0.0.1:5174";
+const FA_ACCOUNT: &[u8] = br#"{"acc_type":"BtcDepositor","pub_keys":["031b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f"],"threshold":1}"#;
+const MG_OPERATOR_UI_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../operator-ui");
+const MG_OPERATOR_UI_URL: &str = "http://127.0.0.1:5174";
 
 #[derive(Debug)]
 struct Args {
     root: PathBuf,
     logs_dir: PathBuf,
-    fi_cli: PathBuf,
-    fman_cli: PathBuf,
+    fa_cli: PathBuf,
+    mg_cli: PathBuf,
     gateway_cli: PathBuf,
     bitcoin_cli: PathBuf,
     load_test_tool: PathBuf,
@@ -71,7 +71,7 @@ struct Manifest<'a> {
     ready: bool,
     state: &'static str,
     federation: FederationManifest<'a>,
-    fmans: Vec<FmanManifest<'a>>,
+    mgs: Vec<MgManifest<'a>>,
     bitcoin: BitcoinManifest<'a>,
     nostr_relay_url: &'a str,
     gateway: GatewayManifest<'a>,
@@ -84,13 +84,13 @@ struct Manifest<'a> {
 #[serde(rename_all = "camelCase")]
 struct FederationManifest<'a> {
     invite_file: &'a Path,
-    fi_state_dir: &'a Path,
-    fi_account_file: &'a Path,
+    fa_state_dir: &'a Path,
+    fa_account_file: &'a Path,
 }
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-struct FmanManifest<'a> {
+struct MgManifest<'a> {
     number: usize,
     seat_id: &'a str,
     locator: &'a str,
@@ -498,8 +498,8 @@ async fn run_internal_pty_test(
     let args = Args {
         root: root.clone(),
         logs_dir: root.join("logs"),
-        fi_cli: "/bin/false".into(),
-        fman_cli: "/bin/false".into(),
+        fa_cli: "/bin/false".into(),
+        mg_cli: "/bin/false".into(),
         gateway_cli: "/bin/false".into(),
         bitcoin_cli: "/bin/false".into(),
         load_test_tool: "/bin/false".into(),
@@ -644,7 +644,7 @@ async fn run(args: Args, incoming_supervisor: Arc<DescendantSupervisor>) -> Resu
     set_private(&args.root)?;
     let launch_plan = environment_launcher::prepare(&args.command, &args.root)?;
     let pnpm = environment_launcher::resolve_required_executable("pnpm")
-        .context("defe env requires executable pnpm for the generated fman-ui tool")?;
+        .context("defe env requires executable pnpm for the generated mg-ui tool")?;
     // These owners are declared before the supervisor so Rust drops the
     // supervisor first on every error and async-cancellation path.
     let mut defe;
@@ -692,17 +692,17 @@ async fn run(args: Args, incoming_supervisor: Arc<DescendantSupervisor>) -> Resu
     };
     held_leases.push(relay_lease);
 
-    let first_port_base = defe_portalloc::port_alloc(607).context("reserve FMan port grid")?;
+    let first_port_base = defe_portalloc::port_alloc(607).context("reserve MG port grid")?;
     ensure!(
         first_port_base <= u16::MAX - 607,
-        "allocated FMan port grid exceeds u16"
+        "allocated MG port grid exceeds u16"
     );
     let routes = local_iroh_overrides(first_port_base);
-    let mut fmans = Vec::with_capacity(GUARDIAN_COUNT);
+    let mut mgs = Vec::with_capacity(GUARDIAN_COUNT);
     for guardian in 0..GUARDIAN_COUNT {
-        status(&format!("allocating Fleet Manager {}/7", guardian + 1));
+        status(&format!("allocating Manifold Guardian {}/7", guardian + 1));
         let lease = defe
-            .request_fman(FmanRequest {
+            .request_mg(MgRequest {
                 sharing: SharingMode::Exclusive,
                 bitcoind: bitcoin.clone(),
                 nostr_relay_url: relay.url.clone(),
@@ -710,18 +710,18 @@ async fn run(args: Args, incoming_supervisor: Arc<DescendantSupervisor>) -> Resu
                 iroh_connect_overrides: routes.clone(),
             })
             .await?;
-        let ResourceDescriptor::Fman(fman) = lease.descriptor.clone() else {
-            bail!("defe returned the wrong descriptor for FMan");
+        let ResourceDescriptor::Mg(mg) = lease.descriptor.clone() else {
+            bail!("defe returned the wrong descriptor for MG");
         };
         held_leases.push(lease);
-        fmans.push(fman);
+        mgs.push(mg);
     }
-    for fman in &fmans {
+    for mg in &mgs {
         run_command(
             &supervisor,
-            Command::new(&args.fman_cli)
+            Command::new(&args.mg_cli)
                 .arg("--data-dir")
-                .arg(&fman.data_dir)
+                .arg(&mg.data_dir)
                 .arg("plans")
                 .arg("set")
                 .arg("--price-msats")
@@ -733,12 +733,12 @@ async fn run(args: Args, incoming_supervisor: Arc<DescendantSupervisor>) -> Resu
     }
 
     status("forming seven-guardian federation");
-    let fi_state_dir = args.root.join("fi-state");
-    let invite = form_federation(&supervisor, &args.fi_cli, &fi_state_dir, &fmans, &routes).await?;
+    let fa_state_dir = args.root.join("fi-state");
+    let invite = form_federation(&supervisor, &args.fa_cli, &fa_state_dir, &mgs, &routes).await?;
     let invite_file = args.root.join("federation-invite");
     write_private(&invite_file, invite.as_bytes())?;
-    let fi_account_file = fi_state_dir.join("fi-spv2-account.json");
-    let seat_ids = read_seat_ids(&supervisor, &args.fman_cli, &fmans).await?;
+    let fa_account_file = fa_state_dir.join("fi-spv2-account.json");
+    let seat_ids = read_seat_ids(&supervisor, &args.mg_cli, &mgs).await?;
 
     status("starting and connecting gateway");
     let gateway_lease = defe
@@ -774,7 +774,7 @@ async fn run(args: Args, incoming_supervisor: Arc<DescendantSupervisor>) -> Resu
     write_private(
         &secrets_file,
         serde_json::to_vec_pretty(&serde_json::json!({
-            "fmans": fmans.iter().map(|fman| &fman.admin_password).collect::<Vec<_>>(),
+            "mgs": mgs.iter().map(|mg| &mg.admin_password).collect::<Vec<_>>(),
             "gateway_password": gateway.password,
             "flip_admin_token": flip.admin_token,
         }))?
@@ -786,22 +786,22 @@ async fn run(args: Args, incoming_supervisor: Arc<DescendantSupervisor>) -> Resu
         state: "ready",
         federation: FederationManifest {
             invite_file: &invite_file,
-            fi_state_dir: &fi_state_dir,
-            fi_account_file: &fi_account_file,
+            fa_state_dir: &fa_state_dir,
+            fa_account_file: &fa_account_file,
         },
-        fmans: fmans
+        mgs: mgs
             .iter()
             .zip(&seat_ids)
             .enumerate()
-            .map(|(index, (fman, seat_id))| FmanManifest {
+            .map(|(index, (mg, seat_id))| MgManifest {
                 number: index + 1,
                 seat_id,
-                locator: &fman.locator,
-                api_base_url: &fman.admin_url,
-                auth_url: fman_api_url(&fman.admin_url, "auth"),
-                admin_url: fman_api_url(&fman.admin_url, "admin"),
-                data_dir: &fman.data_dir,
-                safe_journal_dir: fman.data_dir.join("safe-events"),
+                locator: &mg.locator,
+                api_base_url: &mg.admin_url,
+                auth_url: mg_api_url(&mg.admin_url, "auth"),
+                admin_url: mg_api_url(&mg.admin_url, "admin"),
+                data_dir: &mg.data_dir,
+                safe_journal_dir: mg.data_dir.join("safe-events"),
             })
             .collect(),
         bitcoin: BitcoinManifest {
@@ -835,9 +835,9 @@ async fn run(args: Args, incoming_supervisor: Arc<DescendantSupervisor>) -> Resu
         &manifest_file,
         &secrets_file,
         &invite_file,
-        &fi_state_dir,
+        &fa_state_dir,
         &routes,
-        &fmans,
+        &mgs,
         &seat_ids,
         &gateway,
         &bitcoin,
@@ -861,7 +861,7 @@ async fn run(args: Args, incoming_supervisor: Arc<DescendantSupervisor>) -> Resu
         &manifest_file,
         &secrets_file,
         &invite_file,
-        &fi_state_dir,
+        &fa_state_dir,
         &routes_file,
         &bin_dir,
         &relay.url,
@@ -889,30 +889,30 @@ async fn run(args: Args, incoming_supervisor: Arc<DescendantSupervisor>) -> Resu
 
 async fn form_federation(
     supervisor: &DescendantSupervisor,
-    fi_cli: &Path,
+    fa_cli: &Path,
     state_dir: &Path,
-    fmans: &[FmanInfo],
+    mgs: &[MgInfo],
     routes: &str,
 ) -> Result<String> {
     run_command(
         supervisor,
-        Command::new(fi_cli)
+        Command::new(fa_cli)
             .arg("--state-dir")
             .arg(state_dir)
             .arg("init"),
-        "fi-cli init",
+        "fa-cli init",
         Duration::from_secs(15),
     )
     .await?;
     let account = state_dir.join("fi-spv2-account.json");
-    fs::write(&account, FI_ACCOUNT)?;
-    let mut command = Command::new(fi_cli);
+    fs::write(&account, FA_ACCOUNT)?;
+    let mut command = Command::new(fa_cli);
     command
         .arg("--state-dir")
         .arg(state_dir)
         .arg("--json")
         .arg("create")
-        .arg("--fi-spv2-account-file")
+        .arg("--fa-spv2-account-file")
         .arg(account)
         .arg("--federation-size")
         .arg(GUARDIAN_COUNT.to_string())
@@ -920,13 +920,13 @@ async fn form_federation(
         .arg("120")
         .env("FMAN_E2E_LOCAL_IROH", "1")
         .env("FM_IROH_CONNECT_OVERRIDES_PLAIN", routes);
-    for fman in fmans {
-        command.arg("--locator").arg(&fman.locator);
+    for mg in mgs {
+        command.arg("--locator").arg(&mg.locator);
     }
     let output = run_command(
         supervisor,
         &mut command,
-        "fi-cli create",
+        "fa-cli create",
         Duration::from_secs(150),
     )
     .await?;
@@ -938,7 +938,7 @@ async fn form_federation(
     json["formation"]["invite_code"]
         .as_str()
         .map(ToOwned::to_owned)
-        .context("formed FI response has no invite code")
+        .context("formed FA response has no invite code")
 }
 
 async fn connect_gateway(
@@ -978,16 +978,16 @@ async fn connect_gateway(
 
 async fn read_seat_ids(
     supervisor: &DescendantSupervisor,
-    fman_cli: &Path,
-    fmans: &[FmanInfo],
+    mg_cli: &Path,
+    mgs: &[MgInfo],
 ) -> Result<Vec<String>> {
-    let mut seat_ids = Vec::with_capacity(fmans.len());
-    for fman in fmans {
+    let mut seat_ids = Vec::with_capacity(mgs.len());
+    for mg in mgs {
         let output = run_command(
             supervisor,
-            Command::new(fman_cli)
+            Command::new(mg_cli)
                 .arg("--data-dir")
-                .arg(&fman.data_dir)
+                .arg(&mg.data_dir)
                 .arg("seats")
                 .arg("list"),
             "fman-cli seats list",
@@ -998,7 +998,7 @@ async fn read_seat_ids(
         seat_ids.push(
             value["seats"][0]["seat_id"]
                 .as_str()
-                .context("formed FMan has no recorded seat id")?
+                .context("formed MG has no recorded seat id")?
                 .to_owned(),
         );
     }
@@ -1014,9 +1014,9 @@ fn write_tools(
     manifest: &Path,
     secrets: &Path,
     invite: &Path,
-    fi_state_dir: &Path,
+    fa_state_dir: &Path,
     routes: &str,
-    fmans: &[FmanInfo],
+    mgs: &[MgInfo],
     seat_ids: &[String],
     gateway: &GatewaydInfo,
     bitcoin: &defe_client::BitcoindInfo,
@@ -1053,46 +1053,46 @@ fn write_tools(
                 manifest,
                 secrets,
                 &args.logs_dir,
-                &args.fman_cli,
+                &args.mg_cli,
                 pnpm,
-                fmans,
+                mgs,
                 gateway,
                 bitcoin,
                 relay_url,
                 flip_url,
                 public_endpoint_id,
                 invite,
-                fi_state_dir,
+                fa_state_dir,
             )))
         ),
     )?;
-    for (index, fman) in fmans.iter().enumerate() {
+    for (index, mg) in mgs.iter().enumerate() {
         write_wrapper(
-            &bin_dir.join(format!("fman-{}", index + 1)),
+            &bin_dir.join(format!("mg-{}", index + 1)),
             &format!(
                 "#!/bin/sh\nexec {} --data-dir {} \"$@\"\n",
-                shell_escape(args.fman_cli.as_os_str()),
-                shell_escape(fman.data_dir.as_os_str())
+                shell_escape(args.mg_cli.as_os_str()),
+                shell_escape(mg.data_dir.as_os_str())
             ),
         )?;
     }
-    let locked_fi_cli = bin_dir.join("fi-cli-locked");
+    let locked_fa_cli = bin_dir.join("fa-cli-locked");
     write_wrapper(
-        &locked_fi_cli,
+        &locked_fa_cli,
         &format!(
             "#!/bin/sh\nFMAN_E2E_LOCAL_IROH=1 FM_IROH_CONNECT_OVERRIDES_PLAIN={} exec {} --internal-with-lock --lock {} -- {} \"$@\"\n",
             shell_escape(OsStr::new(routes)),
             shell_escape(defe_env.as_os_str()),
             shell_escape(args.root.join("fi-cli.lock").as_os_str()),
-            shell_escape(args.fi_cli.as_os_str()),
+            shell_escape(args.fa_cli.as_os_str()),
         ),
     )?;
     write_wrapper(
-        &bin_dir.join("fi-cli"),
+        &bin_dir.join("fa-cli"),
         &format!(
             "#!/bin/sh\nexec {} --state-dir {} \"$@\"\n",
-            shell_escape(locked_fi_cli.as_os_str()),
-            shell_escape(fi_state_dir.as_os_str())
+            shell_escape(locked_fa_cli.as_os_str()),
+            shell_escape(fa_state_dir.as_os_str())
         ),
     )?;
     write_wrapper(
@@ -1117,25 +1117,25 @@ fn write_tools(
     )?;
 
     let mut ui = String::from("#!/bin/sh\ncase \"${1-}\" in\n");
-    for (index, fman) in fmans.iter().enumerate() {
+    for (index, mg) in mgs.iter().enumerate() {
         writeln!(
             ui,
             "  {}) target={}; password={} ;;",
             index + 1,
-            shell_escape(OsStr::new(&fman.admin_url)),
-            shell_escape(OsStr::new(&fman.admin_password))
+            shell_escape(OsStr::new(&mg.admin_url)),
+            shell_escape(OsStr::new(&mg.admin_password))
         )?;
     }
     ui.push_str(
-        "  *) echo 'usage: fman-ui GUARDIAN' >&2; exit 2 ;;\nesac\n\
-         echo \"FMan UI: http://127.0.0.1:5174  password: $password\" >&2\n\
-         VITE_MOCKS=off FMAN_ADMIN_PROXY_TARGET=\"$target\" exec ",
+        "  *) echo 'usage: mg-ui GUARDIAN' >&2; exit 2 ;;\nesac\n\
+         echo \"MG UI: http://127.0.0.1:5174  password: $password\" >&2\n\
+         VITE_MOCKS=off MG_ADMIN_PROXY_TARGET=\"$target\" exec ",
     );
     ui.push_str(&shell_escape(pnpm.as_os_str()));
     ui.push_str(" --dir ");
-    ui.push_str(&shell_escape(OsStr::new(FMAN_OPERATOR_UI_DIR)));
-    ui.push_str(" --filter fman exec vite --host 127.0.0.1\n");
-    write_wrapper(&bin_dir.join("fman-ui"), &ui)?;
+    ui.push_str(&shell_escape(OsStr::new(MG_OPERATOR_UI_DIR)));
+    ui.push_str(" --filter mg exec vite --host 127.0.0.1\n");
+    write_wrapper(&bin_dir.join("mg-ui"), &ui)?;
 
     let mut fees = String::from(
         "#!/bin/sh\nusage() { echo 'usage: fees show --guardian N [ARGS...] | fees collect (--guardian N | --all) | fees synthetic-remit --guardian N --amount-msats AMOUNT' >&2; exit 2; }\n\
@@ -1146,7 +1146,7 @@ fn write_tools(
             fees,
             "  {}) tool={}; seat={} ;;",
             index + 1,
-            shell_escape(bin_dir.join(format!("fman-{}", index + 1)).as_os_str()),
+            shell_escape(bin_dir.join(format!("mg-{}", index + 1)).as_os_str()),
             shell_escape(OsStr::new(seat_id))
         )?;
     }
@@ -1180,21 +1180,21 @@ fn write_tools(
             fees,
             "               {}) tool={}; data_dir={}; seat={} ;;",
             index + 1,
-            shell_escape(args.fman_cli.as_os_str()),
-            shell_escape(fmans[index].data_dir.as_os_str()),
+            shell_escape(args.mg_cli.as_os_str()),
+            shell_escape(mgs[index].data_dir.as_os_str()),
             shell_escape(OsStr::new(seat_id))
         )?;
     }
     fees.push_str(&format!(
         "               *) usage ;; esac\n\
-             exec {} --internal-with-lock --lock {} -- {} --internal-synthetic-remit --root {} --fman-cli \"$tool\" --fman-data-dir \"$data_dir\" --fi-cli {} --bitcoin-cli {} --invite-file {} --guardian \"$guardian\" --seat-id \"$seat\" --amount-msats \"$amount\" ;;\n\
+             exec {} --internal-with-lock --lock {} -- {} --internal-synthetic-remit --root {} --mg-cli \"$tool\" --mg-data-dir \"$data_dir\" --fa-cli {} --bitcoin-cli {} --invite-file {} --guardian \"$guardian\" --seat-id \"$seat\" --amount-msats \"$amount\" ;;\n\
            *) usage ;;\n\
          esac\n",
         shell_escape(defe_env.as_os_str()),
         shell_escape(args.root.join("synthetic-remit.lock").as_os_str()),
         shell_escape(defe_env.as_os_str()),
         shell_escape(args.root.as_os_str()),
-        shell_escape(locked_fi_cli.as_os_str()),
+        shell_escape(locked_fa_cli.as_os_str()),
         shell_escape(bin_dir.join("bitcoin-cli").as_os_str()),
         shell_escape(invite.as_os_str()),
     ));
@@ -1227,7 +1227,7 @@ async fn run_child(
     manifest: &Path,
     secrets: &Path,
     invite: &Path,
-    fi_state_dir: &Path,
+    fa_state_dir: &Path,
     routes_file: &Path,
     bin_dir: &Path,
     relay_url: &str,
@@ -1247,7 +1247,7 @@ async fn run_child(
             ("DEFE_ENV_LOG_DIR", args.logs_dir.clone().into_os_string()),
             ("DEFE_ENV_BIN_DIR", bin_dir.as_os_str().to_owned()),
             ("DEFE_ENV_INVITE_FILE", invite.as_os_str().to_owned()),
-            ("DEFE_ENV_FI_STATE_DIR", fi_state_dir.as_os_str().to_owned()),
+            ("DEFE_ENV_FA_STATE_DIR", fa_state_dir.as_os_str().to_owned()),
             (
                 "DEFE_ENV_IROH_CONNECT_OVERRIDES_FILE",
                 routes_file.as_os_str().to_owned(),
@@ -1541,16 +1541,16 @@ fn connectivity_output(
     manifest: &Path,
     secrets: &Path,
     logs: &Path,
-    fman_cli: &Path,
+    mg_cli: &Path,
     pnpm: &Path,
-    fmans: &[FmanInfo],
+    mgs: &[MgInfo],
     gateway: &GatewaydInfo,
     bitcoin: &defe_client::BitcoindInfo,
     relay_url: &str,
     flip_url: &str,
     public_endpoint_id: &str,
     invite: &Path,
-    fi_state_dir: &Path,
+    fa_state_dir: &Path,
 ) -> String {
     let mut output = String::from("Defe environment connectivity\n");
     writeln!(
@@ -1563,7 +1563,7 @@ fn connectivity_output(
     writeln!(output, "Secrets (0600): {}", secrets.display()).expect("write to string");
     writeln!(output, "Logs:          {}", logs.display()).expect("write to string");
     writeln!(output, "Federation invite: {}", invite.display()).expect("write to string");
-    writeln!(output, "FI state:      {}", fi_state_dir.display()).expect("write to string");
+    writeln!(output, "FA state:      {}", fa_state_dir.display()).expect("write to string");
     writeln!(output, "Nostr relay:   {relay_url}").expect("write to string");
     writeln!(output, "Bitcoin RPC:   {}", bitcoin.rpc_url).expect("write to string");
     writeln!(output, "Gateway admin: {}", gateway.api_url).expect("write to string");
@@ -1571,63 +1571,63 @@ fn connectivity_output(
     writeln!(output, "FLIP public endpoint ID: {public_endpoint_id}").expect("write to string");
     writeln!(
         output,
-        "FMan UI dependencies: {} --dir {} install --frozen-lockfile",
+        "MG UI dependencies: {} --dir {} install --frozen-lockfile",
         shell_escape(pnpm.as_os_str()),
-        shell_escape(OsStr::new(FMAN_OPERATOR_UI_DIR))
+        shell_escape(OsStr::new(MG_OPERATOR_UI_DIR))
     )
     .expect("write to string");
-    for (index, fman) in fmans.iter().enumerate() {
+    for (index, mg) in mgs.iter().enumerate() {
         let number = index + 1;
         writeln!(
             output,
-            "FMan {number} operator UI (start one at a time): {FMAN_OPERATOR_UI_URL}"
+            "MG {number} operator UI (start one at a time): {MG_OPERATOR_UI_URL}"
         )
         .expect("write to string");
         writeln!(
             output,
-        "        VITE_MOCKS=off FMAN_ADMIN_PROXY_TARGET={} {} --dir {} --filter fman exec vite --host 127.0.0.1",
-        shell_escape(std::ffi::OsStr::new(&fman.admin_url)),
+        "        VITE_MOCKS=off MG_ADMIN_PROXY_TARGET={} {} --dir {} --filter mg exec vite --host 127.0.0.1",
+        shell_escape(std::ffi::OsStr::new(&mg.admin_url)),
         shell_escape(pnpm.as_os_str()),
-            shell_escape(std::ffi::OsStr::new(FMAN_OPERATOR_UI_DIR))
+            shell_escape(std::ffi::OsStr::new(MG_OPERATOR_UI_DIR))
         )
         .expect("write to string");
         writeln!(
             output,
-            "        FMan {number} operator UI password: {}",
-            fman.admin_password
+            "        MG {number} operator UI password: {}",
+            mg.admin_password
         )
         .expect("write to string");
         writeln!(
             output,
-            "FMan {number} auth API (POST): {}",
-            fman_api_url(&fman.admin_url, "auth")
+            "MG {number} auth API (POST): {}",
+            mg_api_url(&mg.admin_url, "auth")
         )
         .expect("write to string");
         writeln!(
             output,
-            "FMan {number} admin API (POST): {}",
-            fman_api_url(&fman.admin_url, "admin")
+            "MG {number} admin API (POST): {}",
+            mg_api_url(&mg.admin_url, "admin")
         )
         .expect("write to string");
         writeln!(
             output,
-            "FMan {}: {} --data-dir {} seats list",
+            "MG {}: {} --data-dir {} seats list",
             number,
-            shell_escape(fman_cli.as_os_str()),
-            shell_escape(fman.data_dir.as_os_str())
+            shell_escape(mg_cli.as_os_str()),
+            shell_escape(mg.data_dir.as_os_str())
         )
         .expect("write to string");
         writeln!(
             output,
             "        {} --data-dir {} plans show",
-            shell_escape(fman_cli.as_os_str()),
-            shell_escape(fman.data_dir.as_os_str())
+            shell_escape(mg_cli.as_os_str()),
+            shell_escape(mg.data_dir.as_os_str())
         )
         .expect("write to string");
         writeln!(
             output,
             "        safe journal: {}",
-            fman.data_dir.join("safe-events").display()
+            mg.data_dir.join("safe-events").display()
         )
         .expect("write to string");
     }
@@ -1640,17 +1640,17 @@ Available Defe environment commands:
   defe-env-info                 Print the environment manifest and its protected paths.
   defe-connectivity             Print component URLs, local paths, credentials, and attach commands.
   defe-list-commands            Print this command list.
-  fman-1 … fman-7 [ARGS...]     Run fman-cli for one numbered FMan.
-  fi-cli [ARGS...]              Run fi-cli with this federation's state directory.
+  mg-1 … mg-7 [ARGS...]     Run fman-cli for one numbered MG.
+  fa-cli [ARGS...]              Run fa-cli with this federation's state directory.
   gateway [ARGS...]             Run gateway-cli connected to this environment's gateway.
   bitcoin-cli [ARGS...]         Run bitcoin-cli connected to this environment's regtest node.
-  fman-ui FMAN                  Launch one numbered FMan operator UI.
+  mg-ui MG                  Launch one numbered MG operator UI.
   fees show|collect|synthetic-remit
                                 Inspect/collect guardian fees or prepare a synthetic remittance.
   traffic [ARGS...]             Generate bounded federation connection traffic."
 }
 
-fn fman_api_url(base_url: &str, endpoint: &str) -> String {
+fn mg_api_url(base_url: &str, endpoint: &str) -> String {
     format!("{}/api/{endpoint}", base_url.trim_end_matches('/'))
 }
 
@@ -1690,11 +1690,11 @@ fn invalidate_ready_manifest(path: &Path) {
 fn parse_args(args: Vec<std::ffi::OsString>) -> Result<Args> {
     let mut root = None;
     let mut logs_dir = None;
-    let mut fi_cli = None;
+    let mut fa_cli = None;
     let mut gateway_cli = None;
     let mut bitcoin_cli = None;
     let mut load_test_tool = None;
-    let mut fman_cli = None;
+    let mut mg_cli = None;
     let mut complete_liquidity = false;
     let mut command = Vec::new();
     let mut args = args.into_iter();
@@ -1702,8 +1702,8 @@ fn parse_args(args: Vec<std::ffi::OsString>) -> Result<Args> {
         match arg.to_str() {
             Some("--root") => root = args.next().map(PathBuf::from),
             Some("--logs-dir") => logs_dir = args.next().map(PathBuf::from),
-            Some("--fi-cli") => fi_cli = args.next().map(PathBuf::from),
-            Some("--fman-cli") => fman_cli = args.next().map(PathBuf::from),
+            Some("--fa-cli") => fa_cli = args.next().map(PathBuf::from),
+            Some("--mg-cli") => mg_cli = args.next().map(PathBuf::from),
             Some("--gateway-cli") => gateway_cli = args.next().map(PathBuf::from),
             Some("--bitcoin-cli") => bitcoin_cli = args.next().map(PathBuf::from),
             Some("--load-test-tool") => load_test_tool = args.next().map(PathBuf::from),
@@ -1722,8 +1722,8 @@ fn parse_args(args: Vec<std::ffi::OsString>) -> Result<Args> {
     Ok(Args {
         root: root.context("internal --root argument is missing")?,
         logs_dir: logs_dir.context("internal --logs-dir argument is missing")?,
-        fi_cli: fi_cli.context("internal --fi-cli argument is missing")?,
-        fman_cli: fman_cli.context("internal --fman-cli argument is missing")?,
+        fa_cli: fa_cli.context("internal --fa-cli argument is missing")?,
+        mg_cli: mg_cli.context("internal --mg-cli argument is missing")?,
         gateway_cli: gateway_cli.context("internal --gateway-cli argument is missing")?,
         bitcoin_cli: bitcoin_cli.context("internal --bitcoin-cli argument is missing")?,
         load_test_tool: load_test_tool.context("internal --load-test-tool argument is missing")?,
@@ -1744,7 +1744,7 @@ mod tests {
 
     use super::{
         Args, BitcoinManifest, FederationManifest, FlipManifest, GatewayManifest, Manifest,
-        await_or_cleanup, command_list_output, connectivity_output, exit_code, fman_api_url,
+        await_or_cleanup, command_list_output, connectivity_output, exit_code, mg_api_url,
         ready_output, shell_escape, stopped_manifest, write_tools,
     };
     use defe_client::{BitcoindInfo, GatewaydInfo};
@@ -1804,10 +1804,10 @@ mod tests {
             state: "ready",
             federation: FederationManifest {
                 invite_file: Path::new("/invite"),
-                fi_state_dir: Path::new("/fi"),
-                fi_account_file: Path::new("/fi/account"),
+                fa_state_dir: Path::new("/fi"),
+                fa_account_file: Path::new("/fi/account"),
             },
-            fmans: vec![],
+            mgs: vec![],
             bitcoin: BitcoinManifest {
                 rpc_url: "http://bitcoin",
                 data_dir: Path::new("/bitcoin"),
@@ -1834,13 +1834,13 @@ mod tests {
     }
 
     #[test]
-    fn connectivity_output_gives_each_fman_an_attachable_ui_and_exact_api_routes() {
-        let fman = defe_client::FmanInfo {
+    fn connectivity_output_gives_each_mg_an_attachable_ui_and_exact_api_routes() {
+        let mg = defe_client::MgInfo {
             locator: "locator".to_owned(),
-            data_dir: PathBuf::from("/tmp/fman"),
+            data_dir: PathBuf::from("/tmp/mg"),
             iroh_connect_overrides: String::new(),
             admin_url: "http://127.0.0.1:10612".to_owned(),
-            admin_password: "fman-secret".to_owned(),
+            admin_password: "mg-secret".to_owned(),
         };
         let output = connectivity_output(
             Path::new("/tmp/env/env.json"),
@@ -1848,7 +1848,7 @@ mod tests {
             Path::new("/tmp/env/logs"),
             Path::new("/tmp/fman-cli"),
             Path::new("/tmp/exact-pnpm"),
-            &[fman],
+            &[mg],
             &GatewaydInfo {
                 api_url: "http://gateway".to_owned(),
                 password: "gateway-secret".to_owned(),
@@ -1869,15 +1869,15 @@ mod tests {
             Path::new("/tmp/env/fi-state"),
         );
 
-        assert!(output.contains("FMan 1 operator UI (start one at a time): http://127.0.0.1:5174"));
+        assert!(output.contains("MG 1 operator UI (start one at a time): http://127.0.0.1:5174"));
         assert!(output.contains(
-            "VITE_MOCKS=off FMAN_ADMIN_PROXY_TARGET='http://127.0.0.1:10612' '/tmp/exact-pnpm' --dir "
+            "VITE_MOCKS=off MG_ADMIN_PROXY_TARGET='http://127.0.0.1:10612' '/tmp/exact-pnpm' --dir "
         ));
-        assert!(output.contains("--filter fman exec vite --host 127.0.0.1"));
-        assert!(output.contains("FMan 1 operator UI password: fman-secret"));
-        assert!(output.contains("FMan 1 auth API (POST): http://127.0.0.1:10612/api/auth"));
-        assert!(output.contains("FMan 1 admin API (POST): http://127.0.0.1:10612/api/admin"));
-        assert!(!output.contains("FMan 1 admin: http://127.0.0.1:10612"));
+        assert!(output.contains("--filter mg exec vite --host 127.0.0.1"));
+        assert!(output.contains("MG 1 operator UI password: mg-secret"));
+        assert!(output.contains("MG 1 auth API (POST): http://127.0.0.1:10612/api/auth"));
+        assert!(output.contains("MG 1 admin API (POST): http://127.0.0.1:10612/api/admin"));
+        assert!(!output.contains("MG 1 admin: http://127.0.0.1:10612"));
         assert!(!output.contains("gateway-secret"));
     }
 
@@ -1896,7 +1896,7 @@ mod tests {
         );
 
         assert!(output.contains("Run defe-list-commands to see available environment commands."));
-        assert!(!output.contains("FMan 1 operator UI"));
+        assert!(!output.contains("MG 1 operator UI"));
         assert!(!output.contains("Machine readiness:"));
         assert!(!output.contains("gateway-secret"));
         assert!(output.lines().count() <= 10);
@@ -1910,11 +1910,11 @@ mod tests {
             "defe-env-info",
             "defe-connectivity",
             "defe-list-commands",
-            "fman-1 … fman-7",
-            "fi-cli",
+            "mg-1 … mg-7",
+            "fa-cli",
             "gateway",
             "bitcoin-cli",
-            "fman-ui",
+            "mg-ui",
             "fees",
             "traffic",
         ] {
@@ -1924,13 +1924,13 @@ mod tests {
     }
 
     #[test]
-    fn fman_api_urls_name_exact_post_endpoints() {
+    fn mg_api_urls_name_exact_post_endpoints() {
         assert_eq!(
-            fman_api_url("http://127.0.0.1:10612/", "auth"),
+            mg_api_url("http://127.0.0.1:10612/", "auth"),
             "http://127.0.0.1:10612/api/auth"
         );
         assert_eq!(
-            fman_api_url("http://127.0.0.1:10612", "admin"),
+            mg_api_url("http://127.0.0.1:10612", "admin"),
             "http://127.0.0.1:10612/api/admin"
         );
     }
@@ -1958,22 +1958,22 @@ mod tests {
         let args = Args {
             root: root.clone(),
             logs_dir: root.join("logs"),
-            fi_cli: recorder.clone(),
-            fman_cli: recorder.clone(),
+            fa_cli: recorder.clone(),
+            mg_cli: recorder.clone(),
             gateway_cli: recorder.clone(),
             bitcoin_cli: recorder.clone(),
             load_test_tool: recorder.clone(),
             complete_liquidity: false,
             command: vec![],
         };
-        let fman = defe_client::FmanInfo {
+        let mg = defe_client::MgInfo {
             locator: "locator".into(),
-            data_dir: root.join("fman data"),
+            data_dir: root.join("mg data"),
             iroh_connect_overrides: "routes".into(),
-            admin_url: "http://fman".into(),
-            admin_password: "fman-secret".into(),
+            admin_url: "http://mg".into(),
+            admin_password: "mg-secret".into(),
         };
-        let fmans = vec![fman];
+        let mgs = vec![mg];
         let gateway = GatewaydInfo {
             api_url: "http://gateway".into(),
             password: "gateway-secret".into(),
@@ -2005,7 +2005,7 @@ mod tests {
             &root.join("invite"),
             &root.join("fi state"),
             "route one,route two",
-            &fmans,
+            &mgs,
             &["seat-one".into()],
             &gateway,
             &bitcoin,
@@ -2029,7 +2029,7 @@ mod tests {
             .unwrap();
         assert!(connectivity.status.success());
         let connectivity = String::from_utf8(connectivity.stdout).unwrap();
-        assert!(connectivity.contains("FMan 1 operator UI password: fman-secret"));
+        assert!(connectivity.contains("MG 1 operator UI password: mg-secret"));
         assert!(connectivity.contains("Bitcoin RPC:   http://bitcoin"));
         assert!(connectivity.contains("Federation invite:"));
 
@@ -2041,11 +2041,11 @@ mod tests {
                 .status()
                 .unwrap()
         };
-        assert!(run("fman-1", &["alpha", "two words"]).success());
-        assert!(run("fi-cli", &["status", "two words"]).success());
+        assert!(run("mg-1", &["alpha", "two words"]).success());
+        assert!(run("fa-cli", &["status", "two words"]).success());
         assert!(run("gateway", &["info", "two words"]).success());
         assert!(run("bitcoin-cli", &["getblockchaininfo", "two words"]).success());
-        assert!(run("fman-ui", &["1"]).success());
+        assert!(run("mg-ui", &["1"]).success());
         let collect = run("fees", &["collect", "--guardian", "1"]);
         assert_eq!(collect.code(), Some(23));
         let before_mixed = std::fs::read(&record).unwrap();
@@ -2071,9 +2071,9 @@ mod tests {
         assert!(recorded.contains("][guardian-fees][collect][seat-one]"));
         assert!(recorded.contains("][guardian-fees][show][seat-one]"));
         assert!(recorded.contains("pnpm[--dir]"));
-        assert!(recorded.contains("[--filter][fman][exec][vite][--host][127.0.0.1]"));
+        assert!(recorded.contains("[--filter][mg][exec][vite][--host][127.0.0.1]"));
         assert!(
-            std::fs::read_to_string(bin.join("fi-cli-locked"))
+            std::fs::read_to_string(bin.join("fa-cli-locked"))
                 .unwrap()
                 .contains("--internal-with-lock --lock")
         );

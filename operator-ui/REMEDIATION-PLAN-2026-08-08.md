@@ -4,7 +4,7 @@
 
 **Basis:** the verified assessments —
 [AUDIT-ASSESSMENT-2026-08-08.md](./AUDIT-ASSESSMENT-2026-08-08.md) (index),
-[AUDIT-ASSESSMENT-FMAN-2026-08-08.md](./AUDIT-ASSESSMENT-FMAN-2026-08-08.md),
+[AUDIT-ASSESSMENT-MG-2026-08-08.md](./AUDIT-ASSESSMENT-MG-2026-08-08.md),
 [AUDIT-ASSESSMENT-FLIP-2026-08-08.md](./AUDIT-ASSESSMENT-FLIP-2026-08-08.md).
 Plan snapshot: `9b8e12b6`; re-reviewed at `362f04ad` and `8082ab74` (the
 latter shrank the biome debt to 5 errors and refactored
@@ -18,7 +18,7 @@ a real-daemon release gate.
 
 **Architecture:** four tracks. Track A (repo) wires the existing, already-written
 quality gates into CI and creates Rust-produced contract fixtures — it unblocks
-and protects everything else. Tracks B (FLIP) and C (FMan) are per-team frontend
+and protects everything else. Tracks B (FLIP) and C (MG) are per-team frontend
 fixes, ordered so each lands independently. Track D holds work gated on a
 backend decision; each entry names the exact question and owner, so answers can
 be chased in parallel instead of discovered mid-implementation.
@@ -26,14 +26,14 @@ be chased in parallel instead of discovered mid-implementation.
 **Tech stack:** React 19 + React Query + Vite + Vitest + Playwright
 (`operator-ui/`), Rust axum daemons (`crates/`), Nix/selfci CI.
 
-## Relationship to `tasks/fman-dashboard.md` (FMan plan of record)
+## Relationship to `tasks/mg-dashboard.md` (MG plan of record)
 
 That document stays authoritative for **product decisions and scope** (PM/maan
 answers, the payout-sweep question, done-means); this plan is the **execution
 plan** for remediation. Assessed 2026-08-08 for conflicts; resolutions, decided
 on current code with the backend as source of truth:
 
-1. **FMan live-data freshness** — its requirements section is *adopted verbatim*
+1. **MG live-data freshness** — its requirements section is *adopted verbatim*
    as Task C7 below. Verified still true at head: only
    `useOnboarding`/`useAuthorizationWatch` poll; `SEATS_KEY`,
    `seatStatusKey`, `PAYMENT_FEDERATIONS_KEY`, `guardianFeesKey` have no
@@ -59,7 +59,7 @@ on current code with the backend as source of truth:
    post-MVP unless the daemon side lands in time. This plan's release criteria
    deliberately exclude the sweep.
 6. **FLIP setup-gate placement** — its note that FLIP gates *inside* its shell
-   (nav visible during setup, unlike FMan) is adopted as Task B9.
+   (nav visible during setup, unlike MG) is adopted as Task B9.
 7. **Stale items in the plan of record** (`tasks/` is protected — operator UI developers update
    it, not agents): `90773ab7` **has** merged to master via `a0480018`, so §7's
    "A PR" bullet is satisfied; §6's harness invocation remains valid for
@@ -147,7 +147,7 @@ jobs:
               - 'operator-ui/**'
               - 'crates/service-liquidity-manager/**'
               - 'crates/liquidity-manager-daemon/**'
-              - 'crates/fman/**'
+              - 'crates/mg/**'
               - 'crates/operator-ui-auth/**'
               - 'crates/domain/**'
               - 'packages/fleet-manager/**'
@@ -334,7 +334,7 @@ test: {
   other actions) and paste the
   `json-summary` into the job summary (`$GITHUB_STEP_SUMMARY`).
 - [ ] **Step 4 (Rust):** `just rust-coverage` =
-  `cargo llvm-cov --package fedi-decentralized-service-liquidity-manager --package operator-ui-auth --package fman-core --lcov --output-path target/llvm-cov/lcov.info`
+  `cargo llvm-cov --package fedi-decentralized-service-liquidity-manager --package operator-ui-auth --package mg-core --lcov --output-path target/llvm-cov/lcov.info`
   (adjust package list to the actual crate names of the dashboard release
   surface — confirm with D-track answer on scope). Record the baseline the
   same way; wire into selfci as a non-blocking report first, blocking
@@ -346,13 +346,13 @@ test: {
 **Files:**
 - Modify: `operator-ui/playwright.config.ts` (both app configs)
 - Create: `operator-ui/e2e/flip/live-writes.spec.ts`,
-  `operator-ui/e2e/fman/live-writes.spec.ts`
+  `operator-ui/e2e/mg/live-writes.spec.ts`
 - Modify: `.github/workflows/operator-ui.yml` (or a separate
   `operator-ui-prerelease.yml`, same approval gate as A1)
 
 **Interfaces:**
 - Consumes: the `@live` tag convention and the existing live stack recipes
-  (`operator-ui/dev/flip-stack/`, `dev/fman-stack/up.sh`); defe for CI
+  (`operator-ui/dev/flip-stack/`, `dev/mg-stack/up.sh`); defe for CI
   daemons.
 
 - [ ] **Step 1: Add Firefox/WebKit projects** to both Playwright configs,
@@ -364,7 +364,7 @@ test: {
   after B3 lands, extend with publish → verify status → confirmed withdraw →
   verify hidden. Each test owns its data and asserts on round-tripped daemon
   state, not UI echoes.
-- [ ] **Step 3: FMan live write smoke** (`@live`): against the fman-stack
+- [ ] **Step 3: MG live write smoke** (`@live`): against the mg-stack
   daemon — the smallest available authenticated write (set the offer price
   via C1's fixed form, read it back). Fresh-onboarding live coverage stays
   gated on D1.
@@ -626,19 +626,19 @@ it('should refetch allocations every 5s while a non-terminal allocation exists',
 
 ### Task B9: Gate FLIP setup above the app shell (adopted from the plan of record)
 
-FMan gates setup **above** `AppShell`, so the sidebar never renders during
+MG gates setup **above** `AppShell`, so the sidebar never renders during
 setup; FLIP gates inside its shell, so its nav shows during an incomplete
-setup. Align FLIP with the FMan pattern.
+setup. Align FLIP with the MG pattern.
 
 **Files:**
 - Modify: `apps/liquidity-provider/src/app/App.tsx` (or the component
-  mounting the setup gate — follow the FMan reference:
-  `apps/fleet-manager/src/app/index.tsx` mounts `SetupGate` outside the shell)
+  mounting the setup gate — follow the MG reference:
+  `apps/manifold-guardian/src/app/index.tsx` mounts `SetupGate` outside the shell)
 - Test: the existing setup-gate/App tests plus the mocked setup e2e
 
 - [ ] **Step 1: Failing test** — with the mock in a not-set-up scenario, the
   navigation landmark is absent while the setup screen shows.
-- [ ] **Step 2:** move the gate above the shell, mirroring FMan's structure.
+- [ ] **Step 2:** move the gate above the shell, mirroring MG's structure.
 - [ ] **Step 3:** unit + mocked e2e green (update any spec that assumed nav
   exists during setup); commit —
   `fix(flip): gate setup above the app shell so the nav is hidden during setup`
@@ -662,15 +662,15 @@ workstation, and an in-place edit of an unversioned file is not a deliverable.
 
 ---
 
-## Track C — FMan (owner: FMan dev)
+## Track C — MG (owner: MG dev)
 
 Order: C1 first (smallest change, worst consequence), then C2, C3, C4, C5.
 
 ### Task C1: useOfferForm — surface load failure, block the destructive save
 
 **Files:**
-- Modify: `apps/fleet-manager/src/features/offer/hooks/use-offer-form/useOfferForm.ts:51-55`
-- Modify: `apps/fleet-manager/src/pages/offer/OfferPage.tsx:50` (disable condition)
+- Modify: `apps/manifold-guardian/src/features/offer/hooks/use-offer-form/useOfferForm.ts:51-55`
+- Modify: `apps/manifold-guardian/src/pages/offer/OfferPage.tsx:50` (disable condition)
 - Test: `features/offer/hooks/use-offer-form/__tests__/useOfferForm.test.ts`
 
 - [ ] **Step 1: Failing tests** — when the offer query errors: the hook
@@ -692,12 +692,12 @@ return {
 
   and in `OfferPage` add `|| !form.canSubmit` to the Save-disable condition.
 - [ ] **Step 3:** tests green; commit —
-  `fix(fman): a failed offer load can no longer be saved as a blank price`
+  `fix(mg): a failed offer load can no longer be saved as a blank price`
 
 ### Task C2: Cache-independent auth expiry
 
 **Files:**
-- Modify: `apps/fleet-manager/src/features/boot/hooks/use-boot-status/useBootStatus.ts:29-30`
+- Modify: `apps/manifold-guardian/src/features/boot/hooks/use-boot-status/useBootStatus.ts:29-30`
 - Test: colocated `__tests__/`
 
 - [ ] **Step 1: Failing test** — cached onboarding data + a refetch that
@@ -711,20 +711,20 @@ return {
   privileged queries (key-hash matching or explicit key list, per B7); after
   successful re-login, `queryClient.invalidateQueries()`.
 - [ ] **Step 3:** tests + mocked boot e2e green; commit —
-  `fix(fman): route to re-authentication on session expiry even with cached data`
+  `fix(mg): route to re-authentication on session expiry even with cached data`
 
-(No 403 work in FMan: the daemon's admin surface is 401-only cookie auth
+(No 403 work in MG: the daemon's admin surface is 401-only cookie auth
 today. The client folds non-401 into `NetworkError` — acceptable until the
 Rust team answers D4's 403 question.)
 
 ### Task C3: Overview must not render green on failure
 
 **Files:**
-- Modify: `apps/fleet-manager/src/pages/overview/OverviewPage.tsx:15-30`
-- Modify: `apps/fleet-manager/src/features/overview/` — `deriveOverview.ts` and `useOverviewEarnings.ts` consumers as needed
+- Modify: `apps/manifold-guardian/src/pages/overview/OverviewPage.tsx:15-30`
+- Modify: `apps/manifold-guardian/src/features/overview/` — `deriveOverview.ts` and `useOverviewEarnings.ts` consumers as needed
 - Test: `pages/overview/__tests__/OverviewPage.test.tsx`
 
-**Constraint (from the FMan plan of record):** the earnings presentation is
+**Constraint (from the MG plan of record):** the earnings presentation is
 PM-signed-off as-is — one gross headline figure with the asterisk/footnote
 caveats. This task adds loading/error *branches*; it must not change the
 signed-off copy, figure, or caveat structure in the populated state.
@@ -740,7 +740,7 @@ signed-off copy, figure, or caveat structure in the populated state.
   before calling `deriveOverview` — do not feed defaulted `[]` into the
   success-tone derivation on error.
 - [ ] **Step 3:** tests green; commit —
-  `fix(fman): overview distinguishes loading and failure from healthy-zero`
+  `fix(mg): overview distinguishes loading and failure from healthy-zero`
 
 ### Task C4: Shared-UI accessibility
 
@@ -782,8 +782,8 @@ interface FormFieldProps {
 ### Task C5: Honest async states on Backup and SetupAuthorization
 
 **Files:**
-- Modify: `apps/fleet-manager/src/pages/backup/BackupPage.tsx:25-45`
-- Modify: `apps/fleet-manager/src/features/setup/components/setup-authorization/SetupAuthorization.tsx:13-41`
+- Modify: `apps/manifold-guardian/src/pages/backup/BackupPage.tsx:25-45`
+- Modify: `apps/manifold-guardian/src/features/setup/components/setup-authorization/SetupAuthorization.tsx:13-41`
 - Tests: colocated
 
 - [ ] **Step 1: Failing tests** — BackupPage: loading shows a loading state and
@@ -793,19 +793,19 @@ interface FormFieldProps {
 - [ ] **Step 2:** implement the two branches (`isLoading` / `isError` before
   the data render), reusing the app's existing banner components.
 - [ ] **Step 3:** tests green; commit —
-  `fix(fman): backup and setup-authorization show loading and failure explicitly`
+  `fix(mg): backup and setup-authorization show loading and failure explicitly`
 
-### Task C7: FMan live-data freshness (adopted from the plan of record)
+### Task C7: MG live-data freshness (adopted from the plan of record)
 
-Requirements copied from `tasks/fman-dashboard.md` "Live data freshness" —
+Requirements copied from `tasks/mg-dashboard.md` "Live data freshness" —
 re-verified at head 2026-08-08 (only onboarding/authorization poll today; the
 `queryClient` is a bare `new QueryClient()`). The governing constraint:
 `useSeatReports`/`useGuardianFees` fan out **per seat**, so polling cost is
 `interval × seat count` — argue interval changes in seats, not milliseconds.
 
 **Files:**
-- Create: `apps/fleet-manager/src/shared/api/pollingIntervals.ts`
-- Modify: `apps/fleet-manager/src/shared/api/queryClient.ts`;
+- Create: `apps/manifold-guardian/src/shared/api/pollingIntervals.ts`
+- Modify: `apps/manifold-guardian/src/shared/api/queryClient.ts`;
   `features/seats/api/hooks/use-seat-status/useSeatStatus.ts` and
   `use-seat-reports/useSeatReports.ts` (whichever owns the per-seat fan-out);
   `shared/api/hooks/use-seats/useSeats.ts` (`SEATS_KEY`);
@@ -842,7 +842,7 @@ export const FEES_POLL_MS = 60_000;           // GuardianFees, display screens o
   `refetchIntervalInBackground` at its default `false`, stated in a comment
   (a hidden tab must stop polling; that default is load-bearing).
 - [ ] **Step 4:** all tests green; mocked e2e green; commit —
-  `feat(fman): poll seats, federations, and fees per the freshness contract`
+  `feat(mg): poll seats, federations, and fees per the freshness contract`
 
 ### Task C6: P3 housekeeping (tokens, price-form dedup, CSS dupes)
 
@@ -852,11 +852,11 @@ deliberately last — fold them into that pass rather than racing ahead of it;
 each sub-item is one small commit.
 
 **Files:**
-- Modify: `apps/fleet-manager/src/features/setup/components/setup-authorization/SetupAuthorization.tsx:7`
+- Modify: `apps/manifold-guardian/src/features/setup/components/setup-authorization/SetupAuthorization.tsx:7`
   (`QR_SIZE = 192` → a token or a documented component constant in the module CSS),
   `packages/shared-ui/src/components/stepper/Stepper.module.css:8` (`min-w-[5rem]` → preset token),
   `packages/shared-ui/styles/utilities.css:107-114` (`border-l-[3px]` ×3 → one token/utility)
-- Create: `apps/fleet-manager/src/features/offer/hooks/use-price-form/usePriceForm.ts` (+ `__tests__/`)
+- Create: `apps/manifold-guardian/src/features/offer/hooks/use-price-form/usePriceForm.ts` (+ `__tests__/`)
 - Modify: `features/offer/hooks/use-offer-form/useOfferForm.ts` and
   `features/setup/.../SetupPrice.tsx` to consume it
 - Modify: the 8 `lint:css-dupes` groups (start with the within-file dupe in
@@ -907,7 +907,7 @@ export const usePriceForm = (options: UsePriceFormOptions) => {
 Each entry: the gating question → what it unblocks. These come from the
 assessments' corrected question lists; full banks live in the audit docs.
 
-### D1: FMan onboarding transport
+### D1: MG onboarding transport
 
 **Questions:** Is fresh-host *browser* onboarding a committed requirement, or
 is CLI/socket bootstrap acceptable? If browser: what protects the pre-identity
@@ -916,7 +916,7 @@ UI currently string-matches `'has not been onboarded'`, which only the socket
 path emits — a listener alone fixes nothing)? Will
 `packages/fleet-manager/entrypoint.sh` enable `--admin-http-bind`/auth (today
 the packaged install has no dashboard in any state)?
-**Unblocks:** the FMan P1; a live e2e from an empty data dir.
+**Unblocks:** the MG P1; a live e2e from an empty data dir.
 **Do now regardless:** nothing frontend-side — the wizard is already built
 and mock-tested.
 
@@ -946,7 +946,7 @@ whack-a-mole.
 ### D4: Error contract confirmations
 
 **Questions:** FLIP — confirm token expiry always surfaces as 401 (B7 assumes
-it). FMan — does the admin API ever return 403? (Client folds non-401 into
+it). MG — does the admin API ever return 403? (Client folds non-401 into
 `NetworkError`; a permission denial would render as "daemon unreachable".)
 **Unblocks:** nothing today (B7/C2 proceed on the spec as written); answers
 either confirm or add one small follow-up task.
@@ -972,7 +972,7 @@ Week-0 parallel starts:
 Then:
   A4 fixtures (pairs with B1)    B2 backup honesty → B3 confirm → B4 funds
   C2 auth expiry → C3 overview   B5 polling → B6 withdrawal → B7 403/401
-  C7 FMan freshness (after C2 —  B9 FLIP gate placement
+  C7 MG freshness (after C2 —  B9 FLIP gate placement
   both touch the query layer)
 Later (answer-dependent):
   D1 → onboarding implementation + live e2e

@@ -1,13 +1,13 @@
 # An unauthorized Authorization tab drives 1,200 relay reads an hour, indefinitely
 
-- **Status:** fixed in `7e0318f3` ("fix(fman-ui): decay the authorization watch
+- **Status:** fixed in `7e0318f3` ("fix(mg-ui): decay the authorization watch
   and let the operator force it")
 - **Tier:** checked + blinded convergence (4 roles)
 - **Level:** code
 - **Found by:** scanner, checker, coroner, courier, ops-drill
 - **Where:**
-  - `operator-ui/apps/fleet-manager/src/shared/api/hooks/use-authorization-watch/useAuthorizationWatch.ts:7,37`
-  - mounted by `operator-ui/apps/fleet-manager/src/pages/authorization/AuthorizationPage.tsx:16`
+  - `operator-ui/apps/manifold-guardian/src/shared/api/hooks/use-authorization-watch/useAuthorizationWatch.ts:7,37`
+  - mounted by `operator-ui/apps/manifold-guardian/src/pages/authorization/AuthorizationPage.tsx:16`
     and `.../features/setup/components/setup-authorization/SetupAuthorization.tsx:15`
 
 **What happens:** The watch polls on a flat 3-second interval with no decay and no ceiling. Each

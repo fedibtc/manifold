@@ -1,6 +1,6 @@
-# Operator Dashboard E2E Testing Strategy (FLIP & FMan)
+# Operator Dashboard E2E Testing Strategy (FLIP & MG)
 
-> Audience: anyone touching the FLIP or FMan dashboards. This explains *how we
+> Audience: anyone touching the FLIP or MG dashboards. This explains *how we
 > test the UIs and why*, in plain terms. The detailed build plan and the
 > action-by-action test tables live in [`tasks/todo.md`](../../tasks/todo.md).
 
@@ -10,13 +10,13 @@ We test the dashboards two ways, for two different reasons:
 
 1. **Hermetic UI tests** — fast, many, run against the mock server. They prove
    the screen handles each supplied fixture state. FLIP targets recorded
-   backend-state breadth; FMan's hand-maintained fixtures are not exhaustive.
+   backend-state breadth; MG's hand-maintained fixtures are not exhaustive.
 2. **Live E2E tests** — few, run against **real** services started by `defe`.
    They prove that *actions actually work* and that *the pieces really connect*.
    This is our honesty.
 
 The intended end state records mock data from the real backend and checks it for
-freshness. That recording/freshness gate is not implemented for FMan today:
+freshness. That recording/freshness gate is not implemented for MG today:
 its world and TypeScript vocabulary remain hand-maintained and can drift.
 
 ## What we're actually trying to prove
@@ -56,19 +56,19 @@ ones that can't be fooled *and* the ones that can't fail on stale data.
 
 **Why reads can be mocked:** rendering a state doesn't change anything, so canned
 data lets us run dozens of cases quickly. Real-derived, freshness-checked
-fixtures add backend coverage evidence; FMan's current fixtures do not.
+fixtures add backend coverage evidence; MG's current fixtures do not.
 
 ## Tier 1 — Hermetic UI tests (the breadth)
 
 - Run the UI against the **mock server** (already exists, already the default).
-- FLIP targets data recorded from a real backend run. FMan's current mock is
+- FLIP targets data recorded from a real backend run. MG's current mock is
   hand-maintained.
 - Deterministic and repeatable; they run serially because the mock holds one
   shared state.
 
 **Target coverage rule:** derive the finite status/variant list from the backend
 and require one rendering test per value. FLIP is the proving ground for this
-workflow. FMan's hand-maintained `packages/types` vocabulary is not an exhaustive
+workflow. MG's hand-maintained `packages/types` vocabulary is not an exhaustive
 backend mirror, so its current hermetic suite proves only the cases it names.
 
 > every value the backend can emit → one hermetic test that shows the UI handles it.
@@ -112,21 +112,21 @@ meet), not the number of states. There are only a few:
 
 ```mermaid
 flowchart LR
-    B[Browser] -->|seam 1: UI ↔ its daemon| D[FLIP / FMan daemon]
+    B[Browser] -->|seam 1: UI ↔ its daemon| D[FLIP / MG daemon]
     D -->|seam 3: real settlement| X[gateway + federation + bitcoin]
     R[recorded mock data] -.->|seam 2: target freshness check| D
-    FM[FMan action] -->|seam 4: cross-service| D
+    FM[MG action] -->|seam 4: cross-service| D
 ```
 
 - **Seam 1 — UI ↔ its own daemon:** the UI really talks to a real daemon (login,
   real request/response shapes). Cheap (bare daemon).
 - **Seam 2 — recordings vs reality (freshness):** the target is to re-record
-  from the live stack and diff against committed mocks. FMan does not currently
+  from the live stack and diff against committed mocks. MG does not currently
   implement this seam.
 - **Seam 3 — action → real settlement:** the money path end to end. A small
   number of genuine journeys (needs gateway/federation/bitcoin).
-- **Seam 4 — cross-service (FMan ↔ FLIP):** an action on one shows up on the
-  other. One or two "they really talk" smoke tests — and only *after* FMan has
+- **Seam 4 — cross-service (MG ↔ FLIP):** an action on one shows up on the
+  other. One or two "they really talk" smoke tests — and only *after* MG has
   its own harness.
 
 ## Keeping it honest
@@ -135,22 +135,22 @@ Tier 1 is only as truthful as its recordings are fresh (**Seam 2**). The target
 is to re-record mock fixtures from the real backend on a schedule or in CI and
 diff against what is committed. A difference would mean "the backend changed —
 update the fixtures," caught in CI instead of production. Until that machinery
-lands, FMan has no such guarantee: reviewers must treat its mocks and
+lands, MG has no such guarantee: reviewers must treat its mocks and
 hand-maintained type vocabulary as UI fixtures, not protocol evidence.
 
 ## How the two apps differ
 
-| | FLIP | FMan |
+| | FLIP | MG |
 |---|---|---|
 | Playwright today | 9 specs + 1 `@live` tracer | 8 specs + 1 `@live` tracer |
-| Backend admin API | real **HTTP** (`admin_http.rs`) | **Unix socket** (JSON-lines) for the CLI, plus a browser-facing HTTP adapter over the same dispatcher (`fleet-manager/src/admin_http.rs`) |
+| Backend admin API | real **HTTP** (`admin_http.rs`) | **Unix socket** (JSON-lines) for the CLI, plus a browser-facing HTTP adapter over the same dispatcher (`manifold-guardian/src/admin_http.rs`) |
 | Live E2E ready? | yes | yes — the adapter landed; the ceremony still needs an Initiator harness |
 | Core multi-party flow | request → allocation | federation-setup ceremony — **the dashboard only observes it**; the Initiator drives it, so live ceremony tests need a separate signing harness |
 | Error model | structured `{code, message}` | bare `{Err: string}` — assert on strings |
 
 **Consequence:** FLIP is where we prove the whole pattern. Both apps now have a
 live tier reaching a real daemon; what separates them is *provisioning depth* —
-FMan's seat and wallet journeys need an Initiator-driven formation before there
+MG's seat and wallet journeys need an Initiator-driven formation before there
 is anything to act on. The action-by-action breakdown is in
 [`tasks/live-e2e-rubric.md`](../../tasks/live-e2e-rubric.md).
 
@@ -159,7 +159,7 @@ is anything to act on. The action-by-action breakdown is in
 - **Local:** `just defe-serve` running in one shell; a small runner acquires a
   daemon and points Playwright at it.
 - **CI:** the same runner wrapped in `defe exec`, sitting next to the existing
-  `FLIP_E2E` / `FMAN_E2E` jobs.
+  `FLIP_E2E` / `MG_E2E` jobs.
 
 `defe` is our own test-resource server: it allocates ports + a temp dir, spawns
 the real service binary, health-checks it, and returns its address — then tears

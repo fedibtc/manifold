@@ -7,12 +7,12 @@ storage-free, browser/WASM-safe leaf crate.
 
 ## Record justification
 
-The profile definition and its coordinated use by FI, FMan, FLIP, and telemetry
+The profile definition and its coordinated use by FA, MG, FLIP, and telemetry
 consumers form one distributed deployment contract that no consumer owns alone.
 
 `ManifoldEnvironment` accepts `development`/`dev`, `staging`, and
 `production`/`prod`. It has no `Default`; production-capable programs require
-an explicit value, while development-only `fi-cli` explicitly supplies its own
+an explicit value, while development-only `fa-cli` explicitly supplies its own
 development default.
 
 Each value resolves to a `ManifoldEnvironmentProfile` containing:
@@ -24,9 +24,9 @@ Each value resolves to a `ManifoldEnvironmentProfile` containing:
 - at most one typed setup-payment federation-list publisher public key;
 - at most one complete single-sig `BtcDepositor` Guardian Verification Fee
   account;
-- at most one typed Fedi support public key, the identity FMan operators chat
+- at most one typed Fedi support public key, the identity MG operators chat
   with over NIP-17 private messages
-  ([SPEC-fman-support-chat](../../fman/specs/SPEC-fman-support-chat.md));
+  ([SPEC-mg-support-chat](../../mg/specs/SPEC-mg-support-chat.md));
   development and staging use known-secret placeholders and production has
   none yet;
 - the Bitcoin network on which the environment forms federations;
@@ -37,7 +37,7 @@ Each value resolves to a `ManifoldEnvironmentProfile` containing:
 - one identity-signed public `IssuerAuthority` document per configured issuer
   (`pinned_issuer_authorities()`).
 
-The profile derives the FI empty-backup read quorum as a strict majority of
+The profile derives the FA empty-backup read quorum as a strict majority of
 its canonical relay URLs (one of one in staging, two of three in production);
 development relay overrides follow the same rule.
 
@@ -45,15 +45,15 @@ The profile exposes `profile_revision()`, currently `9`. Every change to an
 environment's relay, issuer identity or authority, committed issuer secret,
 PeerBadge minimum trust level, setup-payment publisher, Guardian Verification
 Fee account, Bitcoin network, or default Esplora mapping must increment the
-shared revision. The Fedi support key is outside the revision: only the FMan
+shared revision. The Fedi support key is outside the revision: only the MG
 reads it, so a mixed rollout cannot disagree about anything that another
 component checks.
 Operators must roll out such a change across
-independently released FI, FMan, FLIP, push-gateway telemetry, and cloud FMan
+independently released FA, MG, FLIP, push-gateway telemetry, and cloud MG
 telemetry collector components as one coordinated deployment and use the revision in diagnostics to identify a
-mixed-profile rollout. FMan and FLIP log the selected environment and revision
-at normal startup; the opaque verifier passed into FI and FLIP and the concrete
-verifier constructed by push-gateway and the cloud FMan telemetry collector
+mixed-profile rollout. MG and FLIP log the selected environment and revision
+at normal startup; the opaque verifier passed into FA and FLIP and the concrete
+verifier constructed by push-gateway and the cloud MG telemetry collector
 also exposes both values to embedding diagnostics.
 
 Development and staging use `wss://relay-staging.dev.fedibtc.com`.
@@ -104,10 +104,10 @@ PeerBadge trust level of at least `9`, admitting the schema range `9..=12` as
 Trusted-or-higher. The external credential app's exact-9 tier label is display
 metadata; Manifold treats the numeric schema value as an ordered relying-party
 minimum, as recorded in
-[REQ-fman-trusted-peer-badge](../../../specs/REQ-fman-trusted-peer-badge.md).
+[REQ-mg-trusted-peer-badge](../../../specs/REQ-mg-trusted-peer-badge.md).
 This is relying-party policy rather than credential-schema validation: lower
-schema-valid levels are authentic credentials but are not admitted by FI,
-FLIP, push-gateway guardian telemetry, or the cloud FMan telemetry collector.
+schema-valid levels are authentic credentials but are not admitted by FA,
+FLIP, push-gateway guardian telemetry, or the cloud MG telemetry collector.
 Keeping the minimum in the
 environment profile makes policy changes explicit coordinated profile
 revisions rather than consumer-local thresholds.
@@ -148,7 +148,7 @@ deployment-owned account.
 The canonical relay list does not itself define consumer policy. PeerBadge
 verification uses it only when resolving an unpinned authority; canonical
 profiles pin every authority and take revocation routing from those signed
-documents. FMan uses the canonical relays for advertisement,
+documents. MG uses the canonical relays for advertisement,
 HolderAuthorization discovery, and setup-payment publication refresh
 (currently through the first listed relay).
 

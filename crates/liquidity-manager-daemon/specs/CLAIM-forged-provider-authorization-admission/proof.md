@@ -2,7 +2,7 @@
 
 ## Current counterexample
 
-`allocations.request_json` durably stores each accepted `RequestLiquidityRequest`, including its FMan-subject `fman_endorsement`. The claim quantifies over every durably retained envelope but requires every envelope subject to equal this FLIP provider key. The retained FMan envelope violates that conclusion by construction.
+`allocations.request_json` durably stores each accepted `RequestLiquidityRequest`, including its MG-subject `fman_endorsement`. The claim quantifies over every durably retained envelope but requires every envelope subject to equal this FLIP provider key. The retained MG envelope violates that conclusion by construction.
 
 ## Argument
 

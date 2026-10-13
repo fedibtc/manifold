@@ -2,7 +2,7 @@
 
 The push gateway lets mobile app users create shareable HTTPS hook URLs that
 external callers invoke to trigger mobile push notifications. It is auxiliary
-callback transport used by the FI federation-formation flow, but it owns no
+callback transport used by the FA federation-formation flow, but it owns no
 authoritative formation state, progress, or success decision. Its durable state
 is limited to registrations, hook capabilities, accepted notification events,
 and delivery work; the app must reconcile authoritative formation state.
@@ -58,15 +58,15 @@ Three request classes share the server:
   traffic as described below.
 
 Production registration admission remains fail-closed at configuration time.
-Operators must choose exactly one of a restrictive emergency recipient allowlist or the FI
+Operators must choose exactly one of a restrictive emergency recipient allowlist or the FA
 MVP's explicit open-self-registration mode. Open mode accepts arbitrary NIP-98
 signers only after source/recipient/global capacity checks and provider
-validation; it is not device or FI attestation. The FCM provider uses HTTP v1
+validation; it is not device or FA attestation. The FCM provider uses HTTP v1
 `validate_only` to check project/token acceptance without notification delivery.
 Registration attestation is not part of the current wire contract.
 
 Hooks in every mode bind to one active installation and expire. This is
-the initiating-installation boundary used by FI formation callbacks. Registration
+the initiating-installation boundary used by FA formation callbacks. Registration
 freshness also expires unless refreshed by another signed registration request.
 Storage-owned admission transactions use portable database mutex rows, perform
 bounded stale/terminal reclamation, and enforce physical-row high-watermarks in
@@ -167,7 +167,7 @@ instead of reporting zero outbox rows. In-process counters reset on restart;
 the database remains the durable source of truth.
 
 Gateway `/metrics` is operator telemetry for this service and its outbox only.
-It is deliberately distinct from FI remote guardian telemetry and never exposes
+It is deliberately distinct from FA remote guardian telemetry and never exposes
 or proxies guardian/fedimintd Prometheus endpoint responses.
 
 The `outbox` admin CLI is an operator-only database tool: it connects by

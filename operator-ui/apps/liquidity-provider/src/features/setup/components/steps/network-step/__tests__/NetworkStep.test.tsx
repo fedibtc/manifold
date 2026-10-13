@@ -29,7 +29,7 @@ describe('NetworkStep', () => {
   });
 
   // The list gates every public request the daemon accepts and every
-  // advertisement an FI keeps. It has no editor: it used to be written as a
+  // advertisement an FA keeps. It has no editor: it used to be written as a
   // side effect of editing the accepted attesters, on another step, so changing
   // the network alone left the provider advertising one network and serving
   // another.

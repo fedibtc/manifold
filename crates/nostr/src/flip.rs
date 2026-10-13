@@ -12,13 +12,13 @@ pub const FLIP_PROVIDER_ADVERTISEMENT_HASHTAG: &str = "fedi-flip";
 
 /// Holder-published FLIP provider authorization event kind.
 ///
-/// Deliberately the same kind as [`crate::fman::HOLDER_AUTHORIZATION_EVENT_KIND`],
+/// Deliberately the same kind as [`crate::mg::HOLDER_AUTHORIZATION_EVENT_KIND`],
 /// and defined in terms of it so the two cannot drift apart. The document is
 /// one Holder authorization over a service subject; only the addressing
 /// differs. A FLIP-targeted event carries the FLIP `d` prefix and hashtag
-/// below and a `p` tag naming the provider, so an FMan's kind + `p` + `t`
-/// filter can never match one, and neither can this one match an FMan's.
-pub const HOLDER_AUTHORIZATION_EVENT_KIND: u16 = crate::fman::HOLDER_AUTHORIZATION_EVENT_KIND;
+/// below and a `p` tag naming the provider, so an MG's kind + `p` + `t`
+/// filter can never match one, and neither can this one match an MG's.
+pub const HOLDER_AUTHORIZATION_EVENT_KIND: u16 = crate::mg::HOLDER_AUTHORIZATION_EVENT_KIND;
 
 /// Hashtag used to index holder-published FLIP provider authorizations.
 pub const FLIP_AUTHORIZATION_HASHTAG: &str = "fedi-flip-authorization";
@@ -33,7 +33,7 @@ pub const FLIP_AUTHORIZATION_D_TAG_PREFIX: &str = "flip-authorization";
 /// provider rather than replacing its own previous authorization.
 ///
 /// `credential_digest` is the PeerBadge SDK `CredentialDigest` wire form, the
-/// same encoding the FMan variant and the attester revocation `d` tag use.
+/// same encoding the MG variant and the attester revocation `d` tag use.
 /// Publishers and fetchers must agree on it or addressable replacement
 /// diverges across components.
 #[must_use]
@@ -44,10 +44,10 @@ pub fn flip_authorization_d_tag(provider_pubkey: &str, credential_digest: &str) 
 /// Signed content of a Holder-published FLIP provider authorization event.
 ///
 /// Re-exported rather than redefined: the content schema names no service
-/// role, so FLIP and FMan share one typed rendering and cannot disagree on the
+/// role, so FLIP and MG share one typed rendering and cannot disagree on the
 /// wire shape. Only the addressing above is FLIP's own. The outer Nostr event
 /// author must still be checked against `holder_id_pubkey`.
-pub use crate::fman::HolderAuthorizationEventContent;
+pub use crate::mg::HolderAuthorizationEventContent;
 
 #[cfg(test)]
 mod tests {
@@ -67,18 +67,18 @@ mod tests {
     }
 
     #[test]
-    fn flip_and_fman_authorizations_share_a_kind_but_not_an_index() {
+    fn flip_and_mg_authorizations_share_a_kind_but_not_an_index() {
         assert_eq!(
             HOLDER_AUTHORIZATION_EVENT_KIND,
-            crate::fman::HOLDER_AUTHORIZATION_EVENT_KIND
+            crate::mg::HOLDER_AUTHORIZATION_EVENT_KIND
         );
         assert_ne!(
             FLIP_AUTHORIZATION_HASHTAG,
-            crate::fman::FMAN_AUTHORIZATION_HASHTAG
+            crate::mg::MG_AUTHORIZATION_HASHTAG
         );
         assert_ne!(
             FLIP_AUTHORIZATION_D_TAG_PREFIX,
-            crate::fman::FMAN_AUTHORIZATION_D_TAG_PREFIX
+            crate::mg::MG_AUTHORIZATION_D_TAG_PREFIX
         );
     }
 }

@@ -1,10 +1,10 @@
 //! Trust-material fabrication for the live single-flow harness.
 //!
 //! The live tests run the daemon's production verification pipeline for real;
-//! only the two `--trust-fixtures` inputs (federation preview, FMan trust
+//! only the two `--trust-fixtures` inputs (federation preview, MG trust
 //! material) are fabricated here. Every fabricated artifact is genuinely
-//! signed: FMan peer attestations and trust-material envelopes with fresh
-//! FMan Schnorr keys, credentials and holder authorizations with the shared
+//! signed: MG peer attestations and trust-material envelopes with fresh
+//! MG Schnorr keys, credentials and holder authorizations with the shared
 //! test issuer whose authority points revocation lookups at the live local
 //! Nostr relay.
 
@@ -17,10 +17,10 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use anyhow::Context;
 use fedi_decentralized_liquidity_manager_daemon::{FederationPreview, PreviewPeer, trust_fixtures};
 use fedi_decentralized_service_liquidity_manager::{
-    AttestationInstallRequest, BitcoinNetwork, FederationId, FmanEndorsement, FmanPeerAttestation,
-    FmanPeerAttestationStatement, FmanSeatBindings, FmanTrustMaterial,
-    GetFmanTrustMaterialResponse, GuardianIdentity, HashBytes, HolderAuthorizationEnvelope, PeerId,
-    ProtocolV1, Pubkey, SchnorrSignatureProof, Timestamp, Url,
+    AttestationInstallRequest, BitcoinNetwork, FederationId, GetMgTrustMaterialResponse,
+    GuardianIdentity, HashBytes, HolderAuthorizationEnvelope, MgEndorsement, MgPeerAttestation,
+    MgPeerAttestationStatement, MgSeatBindings, MgTrustMaterial, PeerId, ProtocolV1, Pubkey,
+    SchnorrSignatureProof, Timestamp, Url,
 };
 use nostr_sdk::Keys;
 use nostr_sdk::secp256k1::Message;
@@ -32,7 +32,7 @@ use crate::common::credentials;
 use super::daemon::{DaemonLaunch, admin_post_when_available};
 
 /// Trust-material validity window written into fixtures; must stay under the
-/// daemon's 3600s `FMAN_TRUST_MATERIAL_MAX_VALIDITY_SECS` bound while leaving
+/// daemon's 3600s `MG_TRUST_MATERIAL_MAX_VALIDITY_SECS` bound while leaving
 /// the harness enough runway between fixture writing and the request.
 const TRUST_MATERIAL_VALIDITY_SECS: u64 = 3_500;
 
@@ -195,20 +195,20 @@ async fn publish_holder_authorization(
     Ok(())
 }
 
-/// Signed FMan artifacts baked into the fixture files, kept so tests can
+/// Signed MG artifacts baked into the fixture files, kept so tests can
 /// exercise revocation against them later.
 pub struct TrustFixtureArtifacts {
-    /// Backing credential per fixture FMan, in fixture order.
-    pub fman_credentials: Vec<peerbadge_protocol::SignedCredential>,
+    /// Backing credential per fixture MG, in fixture order.
+    pub mg_credentials: Vec<peerbadge_protocol::SignedCredential>,
 
-    /// A valid admission endorsement from the first fixture FMan, for the
+    /// A valid admission endorsement from the first fixture MG, for the
     /// same federation the invite code names.
-    pub endorsement: FmanEndorsement,
+    pub endorsement: MgEndorsement,
 
-    /// Per-FMan signed trust material, in fixture order, as each FMan's own
+    /// Per-MG signed trust material, in fixture order, as each MG's own
     /// `get_fman_trust_material` would serve it. Requests carry these;
     /// withholding one is how a test makes an identity unanswered.
-    pub trust_material: Vec<GetFmanTrustMaterialResponse>,
+    pub trust_material: Vec<GetMgTrustMaterialResponse>,
 
     /// The coherent preview written to the fixture directory.
     pub preview: FederationPreview,
@@ -217,7 +217,7 @@ pub struct TrustFixtureArtifacts {
 /// Write the preview fixture for the real target federation invite code.
 ///
 /// The preview is the only fixture-substituted trust input; the seat-binding
-/// directory it carries and the per-FMan trust material that backs it are real
+/// directory it carries and the per-MG trust material that backs it are real
 /// signed material, and the material must be attached to the request before it
 /// can be accepted.
 /// `module_kinds` is what the previewed config claims the target federation
@@ -239,17 +239,17 @@ pub fn write_trust_fixtures(
         .context("system clock before UNIX epoch")?
         .as_secs();
 
-    // Two distinct FMan identities, one previewed peer each.
-    let fmans: Vec<(Keys, &str, &str)> = vec![
+    // Two distinct MG identities, one previewed peer each.
+    let mgs: Vec<(Keys, &str, &str)> = vec![
         (Keys::generate(), "0", "guardian-0"),
         (Keys::generate(), "1", "guardian-1"),
     ];
 
     let mut seat_attestations = Vec::new();
-    let mut fman_credentials = Vec::new();
+    let mut mg_credentials = Vec::new();
     let mut material_inputs = Vec::new();
     let mut endorsement = None;
-    for (keys, peer_id, guardian) in &fmans {
+    for (keys, peer_id, guardian) in &mgs {
         let (attestation, holder_authorization, signed_credential) = seat_material(
             trust,
             keys,
@@ -259,10 +259,10 @@ pub fn write_trust_fixtures(
             federation_config_hash,
             now,
         )?;
-        // The first FMan's consensus-bound attestation and matching holder
+        // The first MG's consensus-bound attestation and matching holder
         // envelope form the admission endorsement without a second identity.
         if endorsement.is_none() {
-            endorsement = Some(FmanEndorsement {
+            endorsement = Some(MgEndorsement {
                 attestation: attestation.clone(),
                 trust: HolderAuthorizationEnvelope {
                     holder_authorization: holder_authorization.clone(),
@@ -278,11 +278,11 @@ pub fn write_trust_fixtures(
             },
         ));
         seat_attestations.push(attestation);
-        fman_credentials.push(signed_credential);
+        mg_credentials.push(signed_credential);
     }
-    let endorsement = endorsement.context("fixture FMan list is empty")?;
+    let endorsement = endorsement.context("fixture MG list is empty")?;
 
-    let seat_bindings = FmanSeatBindings::new(seat_attestations)
+    let seat_bindings = MgSeatBindings::new(seat_attestations)
         .map_err(|error| anyhow::anyhow!("assemble fixture seat bindings: {error}"))?
         .canonical_string()
         .map_err(|error| anyhow::anyhow!("canonicalize fixture seat bindings: {error}"))?;
@@ -290,7 +290,7 @@ pub fn write_trust_fixtures(
         federation_id,
         federation_config_hash: federation_config_hash.clone(),
         network: BitcoinNetwork::Regtest,
-        peers: fmans
+        peers: mgs
             .iter()
             .map(|(_, peer_id, guardian)| PreviewPeer {
                 peer_id: PeerId((*peer_id).to_owned()),
@@ -298,7 +298,7 @@ pub fn write_trust_fixtures(
             })
             .collect(),
         consensus_threshold: 2,
-        fman_seat_bindings_metadata: Some(seat_bindings),
+        mg_seat_bindings_metadata: Some(seat_bindings),
         module_kinds: module_kinds.iter().copied().map(str::to_owned).collect(),
     };
     rewrite_preview_fixture(fixtures_dir, invite_code, &preview)?;
@@ -309,36 +309,36 @@ pub fn write_trust_fixtures(
         .collect::<anyhow::Result<Vec<_>>>()?;
 
     Ok(TrustFixtureArtifacts {
-        fman_credentials,
+        mg_credentials,
         endorsement,
         trust_material,
         preview,
     })
 }
 
-/// Sign one FMan's trust material exactly as its daemon would.
+/// Sign one MG's trust material exactly as its daemon would.
 ///
 /// Built here rather than fetched over RPC: the live harness stands up a real
-/// federation but not a real FMan fleet, so the fixture plays the FMan's
+/// federation but not a real MG fleet, so the fixture plays the MG's
 /// signing role while every byte the daemon verifies stays real.
 pub fn sign_trust_material(
-    fman_keys: &Keys,
+    mg_keys: &Keys,
     holder_authorizations: Vec<HolderAuthorizationEnvelope>,
     now: u64,
-) -> anyhow::Result<GetFmanTrustMaterialResponse> {
-    let material = FmanTrustMaterial {
-        fman_pubkey: Pubkey(fman_keys.public_key().to_hex()),
+) -> anyhow::Result<GetMgTrustMaterialResponse> {
+    let material = MgTrustMaterial {
+        mg_pubkey: Pubkey(mg_keys.public_key().to_hex()),
         issued_at: Timestamp(now),
         expires_at: Timestamp(now + 600),
-        public_api_urls: vec![Url(format!("iroh://{}", fman_keys.public_key().to_hex()))],
+        public_api_urls: vec![Url(format!("iroh://{}", mg_keys.public_key().to_hex()))],
         holder_authorizations,
     };
     let message = Message::from_digest(material.digest()?);
-    Ok(GetFmanTrustMaterialResponse {
+    Ok(GetMgTrustMaterialResponse {
         version: ProtocolV1,
         material,
         proof: SchnorrSignatureProof {
-            signature: fman_keys.sign_schnorr(&message),
+            signature: mg_keys.sign_schnorr(&message),
         },
     })
 }
@@ -346,7 +346,7 @@ pub fn sign_trust_material(
 /// Rewrite the preview fixture from an already-written artifact set.
 ///
 /// Deliberately does not call [`write_trust_fixtures`] again: that mints fresh
-/// FMan identities, and any advertisement already published to the relay would
+/// MG identities, and any advertisement already published to the relay would
 /// stop matching, turning a seat-binding test into a missing-advertisement one.
 pub fn rewrite_preview_fixture(
     fixtures_dir: &Path,
@@ -372,7 +372,7 @@ pub fn rewrite_preview_fixture(
     Ok(())
 }
 
-/// Publish the attester-authored kind-37704 revocation for one fixture FMan
+/// Publish the attester-authored kind-37704 revocation for one fixture MG
 /// credential to the live local relay, so the daemon's fresh request-time
 /// revocation lookup discovers it.
 pub async fn publish_revocation(
@@ -411,21 +411,21 @@ pub async fn publish_revocation(
 }
 
 #[allow(clippy::too_many_arguments)]
-/// Sign one seat attestation and issue the badge its FMan advertises.
+/// Sign one seat attestation and issue the badge its MG advertises.
 fn seat_material(
     trust: &LiveTrust,
-    fman_keys: &Keys,
+    mg_keys: &Keys,
     peer_id: &str,
     guardian: &str,
     federation_id: &FederationId,
     federation_config_hash: &HashBytes,
     now: u64,
 ) -> anyhow::Result<(
-    FmanPeerAttestation,
+    MgPeerAttestation,
     peerbadge_protocol::HolderAuthorization,
     peerbadge_protocol::SignedCredential,
 )> {
-    let fman_pubkey = Pubkey(fman_keys.public_key().to_hex());
+    let mg_pubkey = Pubkey(mg_keys.public_key().to_hex());
     let account_seed = peer_id.parse::<u8>().unwrap_or(0).saturating_add(1);
     let account_key = bitcoin::secp256k1::PublicKey::from_secret_key(
         bitcoin::secp256k1::SECP256K1,
@@ -433,8 +433,8 @@ fn seat_material(
             .expect("fixed test scalar is valid"),
     );
 
-    let statement = FmanPeerAttestationStatement {
-        fman_pubkey: fman_pubkey.clone(),
+    let statement = MgPeerAttestationStatement {
+        mg_pubkey: mg_pubkey.clone(),
         federation_id: federation_id.clone(),
         federation_config_hash: federation_config_hash.clone(),
         peer_id: PeerId(peer_id.to_owned()),
@@ -448,11 +448,11 @@ fn seat_material(
         issued_at: Timestamp(now),
     };
     let message = Message::from_digest(statement.digest()?);
-    let attestation = FmanPeerAttestation {
+    let attestation = MgPeerAttestation {
         version: ProtocolV1,
         attestation: statement,
         proof: SchnorrSignatureProof {
-            signature: fman_keys.sign_schnorr(&message),
+            signature: mg_keys.sign_schnorr(&message),
         },
     };
 
@@ -460,7 +460,7 @@ fn seat_material(
     let credential =
         credentials::issue_credential_for_holder(&trust.issuer, &trust.authority, &holder)?;
     let authorization =
-        credentials::holder_authorization_for_provider(&holder, &credential, &fman_pubkey)?;
+        credentials::holder_authorization_for_provider(&holder, &credential, &mg_pubkey)?;
 
     Ok((attestation, authorization, credential))
 }

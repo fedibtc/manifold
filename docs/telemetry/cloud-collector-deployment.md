@@ -1,6 +1,6 @@
-# Deploy the cloud FMan telemetry collector
+# Deploy the cloud MG telemetry collector
 
-This is the secure-deployment entry point for the cloud FMan telemetry
+This is the secure-deployment entry point for the cloud MG telemetry
 collector. The collector runs as one active process over one encrypted
 persistent volume.
 
@@ -48,8 +48,8 @@ checked box is an operator assertion, not evidence supplied by this repository.
   NetworkPolicy that admits only the Prometheus scraper and authorized probe
   source; prove the policy with negative reachability tests. Setting
   `PRIVATE_BIND_ISOLATED=true` asserts this control but does not provide it.
-- [ ] **Protocol compatibility:** deploy a collector that supports the FMan
-  telemetry ALPN `fedi/fman/guardian-telemetry/1`. Do not configure a FMan or
+- [ ] **Protocol compatibility:** deploy a collector that supports the MG
+  telemetry ALPN `fedi/fman/guardian-telemetry/1`. Do not configure a MG or
   Fedimint release allowlist: the collector retains every independently valid
   family from compatible targets and continues journal polling when metrics are
   absent or invalid.
@@ -119,7 +119,7 @@ authoritative CLI and environment-variable schema. In particular:
 - A non-loopback `PRIVATE_BIND` requires `PRIVATE_BIND_ISOLATED=true`. This is an
   explicit operator assertion, not an application check of NetworkPolicy.
 - `ENVIRONMENT` selects credential verification policy; it does not select an
-  FMan or Fedimint version. The telemetry ALPN is the wire-compatibility
+  MG or Fedimint version. The telemetry ALPN is the wire-compatibility
   boundary. A future incompatible protocol needs a new negotiated ALPN/version,
   not a release-version setting.
 - metrics cadence is exactly 900 or 1800 seconds. Production should begin at
@@ -130,7 +130,7 @@ authoritative CLI and environment-variable schema. In particular:
 The container healthcheck calls `GET /health`. Configure orchestration liveness
 to the same path and readiness to `GET /ready` on port 8176. Both return 204
 when healthy. Readiness reports local store and serving health; one unreachable
-FMan does not make the service unready. Send SIGTERM and use a 75-second
+MG does not make the service unready. Send SIGTERM and use a 75-second
 orchestrator termination grace period to leave margin for listener drain, the current
 60-second metrics target budget and final bounded durability work.
 
@@ -139,7 +139,7 @@ orchestrator termination grace period to leave margin for listener drain, the cu
 Port 8176 has no application-layer authentication. Bind it to loopback or an
 access-controlled telemetry network. Network policy must admit only the
 Prometheus scraper and health-probe source; never route it through public
-ingress. Stable FMan and seat identities appear in its vetted metrics. The
+ingress. Stable MG and seat identities appear in its vetted metrics. The
 collector refuses a non-loopback bind without the explicit isolation assertion,
 but it cannot prove that the asserted deployment policy exists or works.
 
@@ -190,11 +190,11 @@ or that staging qualifies as production.
 | --- | --- | --- |
 | Artifact correspondence | `overlays/us1/kustomization.yaml` pins the collector by digest. The manifest cannot establish that the registry blobs are the checked Nix archive, that the image came from this revision, or that the live runtime has no substitution. | Partial; correspondence remains unknown. |
 | Single-active coupled storage | The Deployment requests one replica, `Recreate`, and a RWO PVC; its data directory holds the coupled state. Live controller and storage behavior remain unknown. | Declared match; not live-verified. |
-| Encrypted, qualified storage | `patch-cloud-fman-telemetry-pvc.yaml` selects `us-east-1a-ebs-sc`; the adjacent staging documentation says it is unencrypted and accepts that only for Mutinynet test data. | **Intentional staging relaxation; not production-compatible.** |
+| Encrypted, qualified storage | `patch-cloud-mg-telemetry-pvc.yaml` selects `us-east-1a-ebs-sc`; the adjacent staging documentation says it is unencrypted and accepts that only for Mutinynet test data. | **Intentional staging relaxation; not production-compatible.** |
 | Data-root provisioning and custody | A digest-pinned UID-0 init container sets `10001:10001`/`0700`, verifies fsync as UID 10001, and copies a read-only projected key to memory. The init identity is consequently a source-key/data custodian. Secret-manager, RBAC, and actual access controls are unknown. | Declared match; custody enforcement unknown. |
 | Public registration boundary | A TLS Ingress routes only the exact registration path to the public Service. Certificate validity and live routing are unknown. | Declared match; live behavior unknown. |
 | Private-listener isolation | The private Service has no Ingress, but the staging documentation says these clusters do not enforce NetworkPolicy and any pod can reach TCP 8176. | **Intentional staging relaxation; not production-compatible.** |
-| Telemetry protocol compatibility | The manifest selects the collector image but cannot establish which live FMan releases support the collector's telemetry ALPN. Compatible targets are collected best-effort; an incompatible wire protocol cannot be inferred from release metadata. | Partial; live ALPN support unknown. |
+| Telemetry protocol compatibility | The manifest selects the collector image but cannot establish which live MG releases support the collector's telemetry ALPN. Compatible targets are collected best-effort; an incompatible wire protocol cannot be inferred from release metadata. | Partial; live ALPN support unknown. |
 | Prometheus backend | The ServiceMonitor preserves timestamps and staleness at 30 seconds. Backend WAL, remote write, Grafana query ownership, and actual scraping remain unknown. | Partial. |
 | Coupled backup and restore | The staging collector README says to exercise coupled backup/restore before treating it as durable; the manifest audit found no evidence of a completed rehearsal or encrypted backup custody. | Unknown. |
 | Capacity, traffic, and shutdown | The PVC requests 20 GiB for a 10 GiB archive quota; readiness/liveness use loopback and termination grace is 75 seconds. Free-space monitoring, capacity response, and live traffic gating remain unknown. | Declared partial match; operations unknown. |
@@ -264,25 +264,25 @@ volume, and restart from a coupled backup or from the unchanged volume. Startup
 reconciles files against SQLite and clears poison only after recovery succeeds.
 If it reports missing committed bytes or a committed-frame hash mismatch, do
 not delete the row or file to force startup. Preserve both, isolate the volume,
-restore the latest coupled backup, and re-register affected FMans if rollback
+restore the latest coupled backup, and re-register affected MGs if rollback
 expired their leases.
 
 ## Registration rate and co-located fleets
 
 The registration route admits a bounded number of requests per source network
 prefix each minute, set by `CLOUD_FMAN_TELEMETRY_SOURCE_BUDGET` and defaulting
-to `4`. Requests over the budget receive `503` and the FMan retries at its next
+to `4`. Requests over the budget receive `503` and the MG retries at its next
 reconcile.
 
-The default assumes one FMan per operator network, which is the deployment this
-receiver is designed for. It does not fit a deployment that places several FMans
+The default assumes one MG per operator network, which is the deployment this
+receiver is designed for. It does not fit a deployment that places several MGs
 behind one egress address: the receiver sees one client, so the whole group
 spends one budget. A reverse proxy in front of the collector changes which
 address is counted — without `CLOUD_FMAN_TELEMETRY_TRUSTED_PROXY` the proxy's
 own address is the source, and with it the forwarded address is. Neither can
-separate FMans that share an egress.
+separate MGs that share an egress.
 
-Raise the budget where the deployment knowingly co-locates FMans, and size it
+Raise the budget where the deployment knowingly co-locates MGs, and size it
 above the number of instances that share an address. Leave it at the default
 otherwise: it is the only limit here bound to a scarce resource, and the
 signature check in front of it does not stop an attacker who mints fresh keys.
@@ -291,7 +291,7 @@ signature check in front of it does not stop an attacker who mints fresh keys.
 
 A higher signed registration generation replaces the encrypted bearer
 capability and fences in-flight work without resetting journal cursors. Never
-edit capability ciphertext in SQLite. Ask the FMan operator to use its
+edit capability ciphertext in SQLite. Ask the MG operator to use its
 owner-only telemetry re-enrollment/rotation path, then confirm a newer
 registration before retiring the old capability.
 
@@ -299,7 +299,7 @@ The current collector deliberately has no in-place application-key re-encryption
 command. Rotate the storage/KMS wrapping key while keeping the mounted 32-byte
 data key stable. To replace that data key, deploy a fresh empty coupled volume
 with a new key identifier, retain the old encrypted backup through its policy,
-and require every FMan to register again. Do not start an existing database with
+and require every MG to register again. Do not start an existing database with
 a different key or key identifier; startup rejects it. Archive bytes are not
 encrypted by the application key, so encrypted-volume and backup encryption
 remain mandatory.

@@ -1,15 +1,15 @@
-# Underwriting verdict — `operator-ui/apps/fleet-manager`
+# Underwriting verdict — `operator-ui/apps/manifold-guardian`
 
 - Repo `/Users/kc/Projects/decentralized-federations`, branch `master`, HEAD `ae82da57`.
 - Date: 2026-08-13.
-- Scope: `apps/fleet-manager/src/`, excluding `src/mocks/` (development-only, kept out of
+- Scope: `apps/manifold-guardian/src/`, excluding `src/mocks/` (development-only, kept out of
   production bundles by a build-time guard). Calls followed into `operator-ui/packages/*`,
-  `@tanstack/query-core@5.101.2`, `crates/fman` and `crates/nostr-clients`.
+  `@tanstack/query-core@5.101.2`, `crates/mg` and `crates/nostr-clients`.
 - Crew: a scanner/checker pair, plus three blinded specialists (coroner, courier, ops-drill) who
   could not read the pair's record, each other's output, or the coordinator's reasoning. Prior
   audits of this app in `operator-ui/*.md` were placed off-limits to every role, so convergence
   below is genuine and not a shared prior.
-- Raw records (transport, not deliverable; safe to discard): `../fleet-manager-*-a2.md`.
+- Raw records (transport, not deliverable; safe to discard): `../manifold-guardian-*-a2.md`.
 
 **Would I underwrite this module?** Not as written. The engineering quality inside each file is
 high — the error taxonomy, the never-show-zero discipline for money, the boot gate and the
@@ -42,8 +42,8 @@ driving all five money verbs, with the payout destination gating both sweeps, th
 path shown as the two steps it actually is, and `awaiting_cycle_msat` stated on every collection.
 
 **Money-out is reachable again, and it is still not proven.** Every test behind it is mocked — the
-unit tests stub `adminCall`, and `e2e/fman/payouts.spec.ts` is mock-tier. The `@live` rung-M3 spec
-that would assert the balance changed **at the daemon** is **still open**, blocked on the FMan live
+unit tests stub `adminCall`, and `e2e/mg/payouts.spec.ts` is mock-tier. The `@live` rung-M3 spec
+that would assert the balance changed **at the daemon** is **still open**, blocked on the MG live
 e2e tier (W0.2), and was deliberately not faked. Read #1 as "the 422 is gone and the verbs the
 daemon declares are now called", not as "the operator can move money" — the reachability exclusion
 below still covers this path.
@@ -119,12 +119,12 @@ Flaw classes no fielded role examined. Residual uncertainty here is not covered 
   notes, no tab trapping.
 - **Design-system conformance.** No role checked the UI against the Fedi Design System or the MVP
   wireframes.
-- **The e2e suite.** `operator-ui/e2e/fman` sits outside the module path and was untouched. Given
+- **The e2e suite.** `operator-ui/e2e/mg` sits outside the module path and was untouched. Given
   #1 and #2, what the `@live` tier actually covers is an open question, not a settled one.
 - **Sibling app and shared packages.** `apps/liquidity-provider` was not examined;
   `packages/common-ui`, `packages/mock-devtools` and `packages/types` were read only where this
   module calls them.
-- **Daemon correctness.** `crates/fman` was consulted only for boundary facts (the verb list,
+- **Daemon correctness.** `crates/mg` was consulted only for boundary facts (the verb list,
   startup ordering, the guardian-fee limit default, the error-kind axis). Nothing about daemon
   behaviour beyond those points is underwritten here.
 - **Bundle size, render performance, and memory beyond the noted unevicted maps.**
@@ -137,7 +137,7 @@ Flaw classes no fielded role examined. Residual uncertainty here is not covered 
 
 Unpromoted; carried so a re-run inherits them rather than starting cold. Not convictions.
 
-**Auth surface (out of module — `crates/operator-ui-auth`, `crates/fman/core/src/admin.rs`;
+**Auth surface (out of module — `crates/operator-ui-auth`, `crates/mg/core/src/admin.rs`;
 found incidentally by the drill, never adversarially reviewed):**
 - No rate limiting, throttling or logging on password attempts; cost per attempt is one
   constant-time compare, so the rate is bounded by the HTTP server, not by policy.
@@ -173,7 +173,7 @@ found incidentally by the drill, never adversarially reviewed):**
   now make them convergeable into one shared describer.
 - `truncateMiddle`/`isTruncated` are called with hardcoded widths at four sites here; `common-ui`
   may want two named policies instead.
-- ~~`crates/fman` has seven verbs no dashboard calls (`DecommissionSeat`, `CollectGuardianFees`,
+- ~~`crates/mg` has seven verbs no dashboard calls (`DecommissionSeat`, `CollectGuardianFees`,
   `SweepGuardianFees`, `SweepPaymentFees`, `PayoutDestination`, `SetPayoutDestination`,
   `ReenrollTelemetry`).~~ Down to two after W1.1b: the five money verbs now have callers.
   `DecommissionSeat` and `ReenrollTelemetry` remain uncalled. The drift question stands — a verb

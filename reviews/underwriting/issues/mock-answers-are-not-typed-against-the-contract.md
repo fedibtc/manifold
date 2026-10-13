@@ -7,17 +7,17 @@
 - **Found by:** the W0.1b remediation scan, 2026-08-13, after the verdict was
   written
 - **Where:**
-  - `operator-ui/apps/fleet-manager/src/mocks/world/verbs.ts:4` (was
+  - `operator-ui/apps/manifold-guardian/src/mocks/world/verbs.ts:4` (was
     `export type Verb = (payload: unknown) => unknown`)
   - the same file at `:42,48,66,79,99,113,128,141,153,174,187` (eleven
     hand-cast payloads)
   - `operator-ui/packages/types/src/fleet.ts` (`GuardianFeesResponse` declares
     `lifetime_remitted_msat` required)
-  - `operator-ui/packages/types/fixtures/fman_guardian_fees.json` (the generated
+  - `operator-ui/packages/types/fixtures/mg_guardian_fees.json` (the generated
     fixture carries it)
 
 **What happens:** The contract has two edges and they were guarded very
-differently. Daemon to types is strong: `crates/fman/core` generates 27 response
+differently. Daemon to types is strong: `crates/mg/core` generates 27 response
 fixtures, `contractFixtures.test.ts` mirrors each as a typed literal with
 `satisfies`, and a runtime assertion stops the mirror drifting from the
 generator. Types to mock was guarded by nothing, in both directions. `Verb` was

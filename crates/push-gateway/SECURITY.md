@@ -54,24 +54,24 @@ Guardian telemetry adds a second sensitive capability boundary. The public
 registration route is not authorized by possession of the URL: it requires a
 fresh exact-body NIP-98 proof and accepts state only after complete Holder
 authorization verification. The NIP-98 signer must equal the verified Holder
-subject, binding the exact submitted FMan endpoint and capability to that
+subject, binding the exact submitted MG endpoint and capability to that
 credentialed identity. Never weaken this to signature-only admission.
 “Live Holder authorization” includes complete authority, revocation,
 credential, holder, subject, schema, issuer-policy, and minimum-trust checks.
 Telemetry startup fails closed when that policy cannot be constructed.
 
-The FMan-wide capability, Holder authorization envelope, encryption key, Iroh
-locator, FMan and seat identifiers, invites, and raw Prometheus bodies are
+The MG-wide capability, Holder authorization envelope, encryption key, Iroh
+locator, MG and seat identifiers, invites, and raw Prometheus bodies are
 sensitive. They must not appear in logs, errors, traces, debug output, or metric
 labels. The database stores the endpoint and capability only as AES-256-GCM
-ciphertext with a random nonce and FMan-specific associated data; the
+ciphertext with a random nonce and MG-specific associated data; the
 deployment key is separate and backed up outside the database.
 
 The seat-list and raw collector endpoints must remain on the protected operator
 router. Neither is a public discovery or Prometheus API.
 It mirrors source bytes and status without filtering, so its operator audience
 is trusted to see the complete pinned guardian metric surface. Reverse proxies
-must not cache or log collector response bodies. The current FMan capability authorizes all its seats and explicitly shareable
+must not cache or log collector response bodies. The current MG capability authorizes all its seats and explicitly shareable
 journals and is compared in constant time before resource selection.
 
 ## Current hook MVP controls
@@ -126,13 +126,13 @@ does not derive private keys. The effective recipient is the canonical lowercase
 hex Nostr public key from the event. Caller-supplied recipient strings, `npub`,
 NIP-21, and uppercase encodings are rejected as identity proof. Production
 admission is an exclusive explicit choice: an emergency static allowlist may be configured
-with `PUSH_GATEWAY_ADMISSION_ALLOWED_RECIPIENTS`, or FI deployments may set
+with `PUSH_GATEWAY_ADMISSION_ALLOWED_RECIPIENTS`, or FA deployments may set
 `PUSH_GATEWAY_OPEN_SELF_REGISTRATION_ENABLED=true` to accept any valid NIP-98
 signer. Both options default off in production, and startup rejects enabling
 both because an emergency restriction must not be silently bypassed by open
 mode. Open admission proves only
 control of a fresh signing key and a token accepted by Fedi's configured
-Firebase project; it does not prove that the signer is an FI, that the device is
+Firebase project; it does not prove that the signer is an FA, that the device is
 uncompromised, or that the registration is benign. Every otherwise-valid
 management auth event consumes a trusted-proxy-aware source budget before it
 can enter the replay cache. Per-source (including across

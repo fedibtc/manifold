@@ -31,7 +31,7 @@ succeed.
 
 Hook creation in every mode requires both a finite `policy.ttl_seconds` and an
 `installation_id` that is currently registered, active, non-stale, and owned by
-the authenticated recipient. This scopes FI formation completion to the
+the authenticated recipient. This scopes FA formation completion to the
 initiating installation.
 
 If the named target is missing, disabled, or stale, invocation returns retryable
@@ -74,7 +74,7 @@ carries hook-owned routing hints as reserved `pg.*` data fields
 payload so sensitive workflows avoid placing details in notification display
 text. Provider-specific background wake behavior is out of scope. The
 worker and FCM provider pass the snapshot through unchanged.
-FI formation uses a generic non-sensitive update notification. Its arrival is
+FA formation uses a generic non-sensitive update notification. Its arrival is
 not proof that DKG succeeded and carries no authoritative federation state; the
 app reopens the durable formation driver and reconciles from its closest hard
 state.
@@ -91,7 +91,7 @@ lookup, so a retained key does not authorize any response after either transitio
 Markers remain through the finite hook lifetime plus a seven-day cleanup margin.
 A new idempotency key is evaluated against current TTL, revocation,
 max-use, rate-limit, and marker-capacity state. Calls without `idempotency_key`
-are never deduplicated. FI formation creates its installation-scoped hook with an
+are never deduplicated. FA formation creates its installation-scoped hook with an
 exact 30-day TTL, covering DKG/wallet-service callback retry for that period.
 This uses the single-process topology in
 [`ARCH-push-gateway`](./ARCH-push-gateway.md), not a multi-replica coordination

@@ -1,6 +1,6 @@
-# Ask: fleet-level rollup verbs for the FMan operator API
+# Ask: fleet-level rollup verbs for the MG operator API
 
-Written for the FMan daemon owners. This records a client-side cost the
+Written for the MG daemon owners. This records a client-side cost the
 dashboard cannot remove on its own. Nothing here is implemented; it is a
 request, and the dashboard works without it.
 
@@ -47,7 +47,7 @@ find most useful, but the choice belongs to the daemon:
 2. **Live reports on `ListSeats`** — the Seats page needs each row's phase and
    health at list time. If `ListSeats` carried the report it already has to look
    up per seat, the second round of calls disappears.
-3. **One snapshot/watch verb** — FMan's internal watch channels may already
+3. **One snapshot/watch verb** — MG's internal watch channels may already
    support this. A snapshot plus a change stream would replace both polls and
    remove the cadence tuning from the client entirely.
 

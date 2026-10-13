@@ -1,7 +1,7 @@
 //! The key-locked ecash payment protocol shared by both of its roles.
 //!
-//! An FI (payer) funds mint outputs whose blinded nonces were derived by an
-//! FMan (payee); a refusal is clawed back through a refund transaction whose
+//! An FA (payer) funds mint outputs whose blinded nonces were derived by an
+//! MG (payee); a refusal is clawed back through a refund transaction whose
 //! outputs the payer committed to in advance. Everything the two programs
 //! must compute identically to stay in agreement lives here, and only here:
 //! the per-generation note cryptography ([`locked_payment`] for mint v1,
@@ -10,8 +10,8 @@
 //! and the payee re-runs as its validation oracle ([`refund`]).
 //!
 //! This crate holds no wallet state. Each role brings its own Fedimint
-//! client and secret material: the FMan side is `fman-fedimint`, the FI
-//! side is `fi-cli`'s wallet, and neither depends on the other.
+//! client and secret material: the MG side is `mg-fedimint`, the FA
+//! side is `fa-cli`'s wallet, and neither depends on the other.
 
 pub mod denominations;
 pub mod locked_payment;
