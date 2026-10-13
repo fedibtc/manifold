@@ -3094,7 +3094,7 @@ async fn formed_storage_from_before_the_federation_record_migrates() {
     client
         .inner
         .store
-        .write_legacy_federation_storage_for_test()
+        .write_legacy_federation_storage_for_test(None)
         .await;
     assert!(client.inner.store.backup_payload().await.is_err());
     client
@@ -3597,12 +3597,14 @@ async fn restored_backup_reconciles_to_usable_authority_and_hydrates_liquidity()
         registry.clone(),
     )
     .await;
-    let payload = keys.open(&encrypted).unwrap();
+    let mut payload = keys.open(&encrypted).unwrap();
+    // A generation the restored FA could not reach by counting from one.
+    payload.snapshot_generation = 7;
     let fa_id = restored.inner.ports.identity.public_key().unwrap();
     let status = restored
         .inner
         .store
-        .restore_backup_payload(fa_id, payload)
+        .restore_backup_payload(fa_id, payload.clone())
         .await
         .unwrap();
     restored.inner.progress.send_replace(status);
@@ -3655,7 +3657,7 @@ async fn restored_backup_reconciles_to_usable_authority_and_hydrates_liquidity()
     restored
         .inner
         .store
-        .write_legacy_federation_storage_for_test()
+        .write_legacy_federation_storage_for_test(Some(payload))
         .await;
     drop(restored);
     let restored = open_client_with_registry(
