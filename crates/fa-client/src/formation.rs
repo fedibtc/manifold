@@ -3900,8 +3900,12 @@ where
         fa_id: FaId,
         run: DriverRun<'_>,
     ) -> FaResult<()> {
-        let payload = self.inner.store.restored_backup_payload(fa_id).await?;
-        if payload.seats.is_empty() {
+        let (seats, liquidity) = self
+            .inner
+            .store
+            .restored_reconciliation_input(fa_id)
+            .await?;
+        if seats.is_empty() {
             return Err(FaError::InvalidManifoldGuardians(
                 "restored FA backup contains no seats".to_owned(),
             ));
@@ -3937,8 +3941,7 @@ where
         let validation_name = federation_name
             .clone()
             .or_else(|| {
-                payload
-                    .liquidity
+                liquidity
                     .as_ref()
                     .map(|value| value.federation_details.federation_name.clone())
             })
@@ -3949,8 +3952,7 @@ where
             network: consensus.network,
             federation,
             bindings,
-            seats: payload
-                .seats
+            seats: seats
                 .iter()
                 .map(|seat| crate::liquidity::FormedMgSeat {
                     mg_id: seat.mg_identity,
@@ -3964,7 +3966,7 @@ where
                 "restored seats do not match federation consensus: {error}"
             ))
         })?;
-        if let Some(commitment) = &payload.liquidity {
+        if let Some(commitment) = &liquidity {
             context.matches_commitment(commitment)?;
         }
 

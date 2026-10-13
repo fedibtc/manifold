@@ -120,22 +120,28 @@ impl FaStore {
         dbtx.commit_tx().await;
     }
 
-    /// Rewrite the federation record into the storage that predates it.
-    pub(crate) async fn write_legacy_federation_storage_for_test(&self) {
+    /// Rewrite the federation record into the storage that predates it. A
+    /// reconciled import was a restored-backup row marked eligible, and this
+    /// one has not published a backup yet.
+    pub(crate) async fn write_legacy_federation_storage_for_test(
+        &self,
+        imported: Option<crate::backup::FaBackupPayload>,
+    ) {
         let mut dbtx = self.database.begin_transaction().await;
         let federation = dbtx
             .get_value(&FederationKey)
             .await
             .expect("test federation exists");
         dbtx.remove_entry(&FederationKey).await;
-        if let Some(payload) = federation.imported {
+        if let Some(payload) = imported {
+            dbtx.remove_entry(&BackupGenerationKey).await;
             dbtx.insert_entry(
                 &RestoredBackupKey,
                 &RestoredBackupState {
                     fa_id: federation.fa_id,
                     payload,
                     formation_id: federation.formation_id,
-                    backup_eligible: federation.backup_eligible,
+                    backup_eligible: true,
                     federation_name: federation.federation_name,
                 },
             )
