@@ -1,8 +1,8 @@
-# Fleet Manager 0.1 packaging
+# Manifold Guardian 0.1 packaging
 
 This directory contains the smallest useful packaging artifact for the
-Fleet Manager daemon described by
-[`ARCH-fleet-manager`](../../crates/fman/specs/ARCH-fleet-manager.md):
+Manifold Guardian daemon described by
+[`ARCH-manifold-guardian`](../../crates/mg/specs/ARCH-manifold-guardian.md):
 
 - a Nix-built OCI image (`nix build .#fleet-manager-oci-image`) carrying the
   single `fleet-manager` binary, which is also the `fedimintd` its seats run;
@@ -18,10 +18,10 @@ see [production-releases.md](./production-releases.md). This directory owns
 the image entrypoint and operator deployment contract.
 
 The [secure-deployment checklist](./secure-deployment.md) is the authoritative
-operator contract for FMan's external production envelope. Nothing here
+operator contract for MG's external production envelope. Nothing here
 certifies an Umbrel, StartOS, VPS, or any other live deployment.
 
-Required SelfCI packages the real operator UI with a CI-profile Fleet Manager
+Required SelfCI packages the real operator UI with a CI-profile Manifold Guardian
 daemon and checks the OCI runtime contract. Publishing uses the same image
 constructor with the release-profile daemon through `release-container-images`;
 the optimized image is first built in the trusted publish workflow.
@@ -55,9 +55,9 @@ fleet-manager serve \
    --admin-http-password-file $FLEET_MANAGER_ADMIN_HTTP_PASSWORD_FILE]
 ```
 
-Seat capacity and price are configured durably during browser or admin-socket onboarding. The daemon presents the available-RAM recommendation from [REQ-seat-capacity-default](../../crates/fman/specs/REQ-seat-capacity-default.md); it is not a process-start argument.
+Seat capacity and price are configured durably during browser or admin-socket onboarding. The daemon presents the available-RAM recommendation from [REQ-seat-capacity-default](../../crates/mg/specs/REQ-seat-capacity-default.md); it is not a process-start argument.
 
-`FLEET_MANAGER_MANIFOLD_ENVIRONMENT` is required and must match the FI and
+`FLEET_MANAGER_MANIFOLD_ENVIRONMENT` is required and must match the FA and
 FLIP deployment (`development`, `staging`, or `production`).
 The profile supplies the Bitcoin network; this production package supplies an
 operator-owned Bitcoin Core backend instead of any profile Esplora default.
@@ -66,14 +66,14 @@ fallback for Core RPC errors, including requests for blocks Core has pruned.
 It requires the Core settings above; the image supplies no default endpoint.
 `FLEET_MANAGER_PUSH_GATEWAY_ORIGIN` is optional, including in production.
 When set, it must be the real public HTTPS origin of the deployed gateway.
-Without it, FMan runs but rejects requests for DKG completion callbacks.
+Without it, MG runs but rejects requests for DKG completion callbacks.
 Callback work restored under an absent or changed origin becomes
 `operator_blocked` until the matching origin is restored. Telemetry collection
-is independent: FMan registers with the collector named in the authenticated
+is independent: MG registers with the collector named in the authenticated
 setup-payment policy once it has its Holder authorization.
 
 The last three arguments are the operator dashboard and HTTP admin API
-([`SPEC-operator-http`](../../crates/fman/specs/SPEC-operator-http.md)). The Nix
+([`SPEC-operator-http`](../../crates/mg/specs/SPEC-operator-http.md)). The Nix
 release binary embeds the dashboard, so this listener is the only way to reach
 it in the image; there is no separate dashboard container. The entrypoint adds
 the arguments only when `FLEET_MANAGER_ADMIN_HTTP_BIND` is set, and there is no

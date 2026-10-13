@@ -30,10 +30,10 @@ fn parse_exec_keeps_existing_global_options() {
         "/bin/nostr-rs-relay".into(),
         "--push-gateway-bin".into(),
         "/bin/push-gateway".into(),
-        "--fman-cli-bin".into(),
+        "--mg-cli-bin".into(),
         "/bin/fman-cli".into(),
-        "--fi-cli-bin".into(),
-        "/bin/fi-cli".into(),
+        "--fa-cli-bin".into(),
+        "/bin/fa-cli".into(),
         "--liquidity-manager-daemon-bin".into(),
         "/bin/liquidity-manager-daemon".into(),
         "--keep-temp".into(),
@@ -66,10 +66,10 @@ fn parse_exec_keeps_existing_global_options() {
         Some(PathBuf::from("/bin/push-gateway"))
     );
     assert_eq!(
-        exec.options.fman_cli_bin,
+        exec.options.mg_cli_bin,
         Some(PathBuf::from("/bin/fman-cli"))
     );
-    assert_eq!(exec.options.fi_cli_bin, Some(PathBuf::from("/bin/fi-cli")));
+    assert_eq!(exec.options.fa_cli_bin, Some(PathBuf::from("/bin/fa-cli")));
     assert!(exec.policy.keep_temp);
     assert_eq!(exec.command, vec![OsString::from("true")]);
 }
@@ -150,7 +150,7 @@ fn parse_serve_requires_listenfd_and_keeps_server_options() {
         "/bin/nostr-rs-relay".into(),
         "--push-gateway-bin".into(),
         "/bin/push-gateway".into(),
-        "--fman-cli-bin".into(),
+        "--mg-cli-bin".into(),
         "/bin/fman-cli".into(),
         "--log-requests".into(),
         "serve".into(),
@@ -189,7 +189,7 @@ fn parse_serve_requires_listenfd_and_keeps_server_options() {
         Some(PathBuf::from("/bin/push-gateway"))
     );
     assert_eq!(
-        serve.options.fman_cli_bin,
+        serve.options.mg_cli_bin,
         Some(PathBuf::from("/bin/fman-cli"))
     );
 }
@@ -618,8 +618,8 @@ impl Drop for TestDir {
 }
 
 #[test]
-fn fman_request_preserves_requested_sharing() {
-    let request = defe_api::FmanRequest {
+fn mg_request_preserves_requested_sharing() {
+    let request = defe_api::MgRequest {
         sharing: SharingMode::Shared,
         bitcoind: defe_api::BitcoindInfo {
             rpc_url: "http://127.0.0.1:18443".to_owned(),
@@ -635,11 +635,11 @@ fn fman_request_preserves_requested_sharing() {
         iroh_connect_overrides: "routes".to_owned(),
     };
 
-    let spec = resource_spec_from_request(ResourceRequest::Fman(request.clone()));
-    assert_eq!(spec.kind, ResourceKind::Fman(request.clone()));
+    let spec = resource_spec_from_request(ResourceRequest::Mg(request.clone()));
+    assert_eq!(spec.kind, ResourceKind::Mg(request.clone()));
     assert_eq!(
         spec.sharing,
-        ResourceSharing::Shared(SharedResourceKey::Fman(request))
+        ResourceSharing::Shared(SharedResourceKey::Mg(request))
     );
 }
 

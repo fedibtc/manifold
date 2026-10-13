@@ -995,7 +995,7 @@ async fn build_generation(
     // process, while a restore ends only the generation.
     let shutdown = shell.shutdown.child_token();
     let background_tasks = TaskTracker::new();
-    // The FMan advertisement lookup is always the real relay path now; only
+    // The MG advertisement lookup is always the real relay path now; only
     // the invite-code preview is fixture-substitutable.
     let (preview_provider, trust_inputs): (
         std::sync::Arc<dyn crate::federation_preview::FederationPreviewProvider>,

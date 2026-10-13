@@ -1,7 +1,7 @@
 //! The federation trust pipeline.
 //!
 //! A `RequestLiquidity` is admitted only if the invite previews to the endorsed
-//! federation, the consensus seat bindings name FMans the request carries trust
+//! federation, the consensus seat bindings name MGs the request carries trust
 //! material for, that material verifies against a trusted issuer, and no
 //! required revocation lookup fails. A dependency that cannot be reached fails
 //! the request closed rather than being bypassed. See
@@ -13,11 +13,11 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use fedi_decentralized_service_liquidity_manager::{
-    CredentialDigest, FederationId, FmanSeatBindings, HolderAuthorizationEnvelope,
-    HolderTrustEnvelopeError, PeerBadgeTrustPolicy, PeerBadgeTrustPolicyError, Pubkey,
-    PublicRejection, PublicRejectionCode, RequestLiquidityRequest, SetupConfigView, Timestamp,
-    TrustScoreBadgeV1, VerificationCheck, VerificationCheckStatus, VerificationContext,
-    VerificationRequirement, VerificationSummary, verify_holder_trust_envelope,
+    CredentialDigest, FederationId, HolderAuthorizationEnvelope, HolderTrustEnvelopeError,
+    MgSeatBindings, PeerBadgeTrustPolicy, PeerBadgeTrustPolicyError, Pubkey, PublicRejection,
+    PublicRejectionCode, RequestLiquidityRequest, SetupConfigView, Timestamp, TrustScoreBadgeV1,
+    VerificationCheck, VerificationCheckStatus, VerificationContext, VerificationRequirement,
+    VerificationSummary, verify_holder_trust_envelope,
 };
 
 use crate::database::Database;
@@ -44,25 +44,25 @@ fn preview_error_rejection(error: FederationPreviewError) -> (PublicRejectionCod
     }
 }
 
-/// Longest `expires_at - issued_at` window FLIP accepts on FMan trust material.
+/// Longest `expires_at - issued_at` window FLIP accepts on MG trust material.
 ///
 /// The requester collects material for a request it is about to send, so a long
 /// window buys it nothing. What the bound is actually for: with the live
-/// advertisement lookup gone, nothing else tells FLIP that an FMan is *still*
-/// operating. An FMan that goes dark stays trusted until its last material
+/// advertisement lookup gone, nothing else tells FLIP that an MG is *still*
+/// operating. An MG that goes dark stays trusted until its last material
 /// expires, so this is how long that shadow lasts. Revocation still runs live,
 /// so a withdrawn badge is caught inside the window regardless.
 const FLIP_TRUST_MATERIAL_MAX_VALIDITY_SECS: u64 = 3600;
 
 /// One operating identity's verified trust material.
 struct ResolvedTrustMaterial {
-    fman_pubkey: Pubkey,
+    mg_pubkey: Pubkey,
     holder_authorizations: Vec<HolderAuthorizationEnvelope>,
 }
 
-/// Complete FMan badge authentication plus the selected relying-party policy.
+/// Complete MG badge authentication plus the selected relying-party policy.
 #[derive(Debug, thiserror::Error)]
-enum FmanPeerBadgeError {
+enum MgPeerBadgeError {
     #[error(transparent)]
     Envelope(#[from] HolderTrustEnvelopeError),
 
@@ -83,7 +83,7 @@ pub(crate) struct VerificationModeInfo {
     /// Stable machine-readable mode name.
     pub mode: &'static str,
 
-    /// Whether the pipeline's trust inputs (federation preview, FMan trust
+    /// Whether the pipeline's trust inputs (federation preview, MG trust
     /// material) can produce verification results.
     pub inputs_available: bool,
 
@@ -97,7 +97,7 @@ pub(crate) struct VerificationModeInfo {
 }
 
 /// Source of the pipeline's substitutable trust inputs (federation preview +
-/// FMan trust material). The revocation fetcher is never substituted.
+/// MG trust material). The revocation fetcher is never substituted.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum TrustInputs {
     /// Every trust input is the real network path.
@@ -124,7 +124,7 @@ pub(crate) struct VerificationOutcome {
 /// federation preview), so callers must never invoke it while holding an open
 /// database transaction. `Database::begin_write` takes SQLite's single write
 /// lock up front, so doing that would stall every other writer in the process
-/// for a relay round trip; that end carries the same rule. FMan trust material
+/// for a relay round trip; that end carries the same rule. MG trust material
 /// is carried in the request rather than fetched.
 #[async_trait]
 pub(crate) trait VerificationProvider: Send + Sync {
@@ -150,10 +150,10 @@ pub(crate) struct VerificationDeps {
 ///
 /// The pipeline implements the settled verification flow: admission gate,
 /// invite-code preview, seat bindings read from `fedi:fman_seat_bindings` and
-/// matched against the previewed config, request-carried FMan trust material
+/// matched against the previewed config, request-carried MG trust material
 /// verified per operating identity, holder trust envelope verification with
 /// fresh fail-closed revocation lookups, the selected environment's minimum
-/// badge policy, and accepted-attester policy evaluation over distinct FMan
+/// badge policy, and accepted-attester policy evaluation over distinct MG
 /// identities.
 ///
 /// Trust standing arrives as signed material inside the request rather than
@@ -185,13 +185,13 @@ impl VerificationPipeline {
         }
     }
 
-    fn verify_fman_peer_badge(
+    fn verify_mg_peer_badge(
         &self,
         verifier: &VerificationContext,
         envelope: &HolderAuthorizationEnvelope,
         expected_subject: &Pubkey,
         now: Timestamp,
-    ) -> Result<TrustScoreBadgeV1, FmanPeerBadgeError> {
+    ) -> Result<TrustScoreBadgeV1, MgPeerBadgeError> {
         let badge = verify_holder_trust_envelope(verifier, envelope, expected_subject, now)?;
         self.peer_badge_trust_policy.require(&badge)?;
         Ok(badge)
@@ -200,7 +200,7 @@ impl VerificationPipeline {
     /// Admit or reject a request on its `fman_endorsement`, before previewing.
     ///
     /// Five checks and deliberately no more: the attestation's own signature,
-    /// that it names the federation this request is about, that its FMan
+    /// that it names the federation this request is about, that its MG
     /// identity holds a badge from a trusted issuer, that the badge meets the
     /// selected environment's minimum level, and that the badge is not revoked.
     /// Possession of an endorsement is the authorization, so there is
@@ -220,17 +220,17 @@ impl VerificationPipeline {
         request: &RequestLiquidityRequest,
         checks: &mut PipelineChecks,
     ) -> Result<FederationId, (PublicRejectionCode, String)> {
-        let Some(endorsement) = request.fman_endorsement.as_ref() else {
+        let Some(endorsement) = request.mg_endorsement.as_ref() else {
             return Err((
                 PublicRejectionCode::InvalidCredentials,
-                "request carries no FMan endorsement".to_owned(),
+                "request carries no MG endorsement".to_owned(),
             ));
         };
 
         let statement = endorsement.attestation.verify().map_err(|error| {
             (
                 PublicRejectionCode::InvalidCredentials,
-                format!("FMan endorsement attestation failed verification: {error}"),
+                format!("MG endorsement attestation failed verification: {error}"),
             )
         })?;
 
@@ -246,7 +246,7 @@ impl VerificationPipeline {
         if statement.federation_id.0 != federation_id {
             return Err((
                 PublicRejectionCode::InvalidSeatBinding,
-                "FMan endorsement is for a different federation than the invite code".to_owned(),
+                "MG endorsement is for a different federation than the invite code".to_owned(),
             ));
         }
 
@@ -276,7 +276,7 @@ impl VerificationPipeline {
         {
             return Err((
                 PublicRejectionCode::InvalidCredentials,
-                format!("FMan endorsement badge issuer {issuer_hex} is not trusted here"),
+                format!("MG endorsement badge issuer {issuer_hex} is not trusted here"),
             ));
         }
 
@@ -299,15 +299,15 @@ impl VerificationPipeline {
         // cryptography rejected it.
         //
         // This binds the badge to the attestation too: the envelope's subject
-        // must be the FMan identity that signed the seat binding, so an
+        // must be the MG identity that signed the seat binding, so an
         // endorsement cannot pair one guardian's attestation with another's
         // badge.
         let verify = |verifier: &VerificationContext, now| {
-            self.verify_fman_peer_badge(verifier, &endorsement.trust, &statement.fman_pubkey, now)
+            self.verify_mg_peer_badge(verifier, &endorsement.trust, &statement.mg_pubkey, now)
                 .map_err(|error| {
                     (
                         PublicRejectionCode::InvalidCredentials,
-                        format!("FMan endorsement badge failed verification: {error}"),
+                        format!("MG endorsement badge failed verification: {error}"),
                     )
                 })
         };
@@ -342,7 +342,7 @@ impl VerificationPipeline {
         if stage.unavailable {
             return Err((
                 PublicRejectionCode::ProviderUnavailable,
-                "the FMan endorsement's revocation lookup could not complete freshly".to_owned(),
+                "the MG endorsement's revocation lookup could not complete freshly".to_owned(),
             ));
         }
         let badge = verify(&verifier, now_timestamp())?;
@@ -350,7 +350,7 @@ impl VerificationPipeline {
         checks.credential.push(check(
             "fman_endorsement",
             VerificationCheckStatus::Passed,
-            Some(statement.fman_pubkey.0.clone()),
+            Some(statement.mg_pubkey.0.clone()),
             format!(
                 "endorsement for peer {} verified against issuer {issuer_hex} with trust level {}",
                 statement.peer_id.0, badge.trust_level
@@ -379,67 +379,67 @@ impl VerificationPipeline {
         now: fedi_decentralized_service_liquidity_manager::Timestamp,
         checks: &mut PipelineChecks,
     ) -> Result<Vec<ResolvedTrustMaterial>, (PublicRejectionCode, String)> {
-        let Some(material) = request.fman_trust_material.as_deref() else {
+        let Some(material) = request.mg_trust_material.as_deref() else {
             return Err((
                 PublicRejectionCode::InvalidCredentials,
-                "request carries no FMan trust material".to_owned(),
+                "request carries no MG trust material".to_owned(),
             ));
         };
 
-        // Two entries for one identity would make "the material for this FMan"
+        // Two entries for one identity would make "the material for this MG"
         // ambiguous, and resolving that by position would let the ordering of a
         // requester-supplied list decide a trust outcome. Refuse it the way the
         // seat-binding container refuses a repeated peer id.
         let mut seen: BTreeSet<&str> = BTreeSet::new();
         for response in material {
-            let fman_pubkey = response.material.fman_pubkey.0.as_str();
-            if operators.contains(fman_pubkey) && !seen.insert(fman_pubkey) {
+            let mg_pubkey = response.material.mg_pubkey.0.as_str();
+            if operators.contains(mg_pubkey) && !seen.insert(mg_pubkey) {
                 return Err((
                     PublicRejectionCode::InvalidCredentials,
                     format!(
                         "request carries more than one trust material entry for {}",
-                        response.material.fman_pubkey.0
+                        response.material.mg_pubkey.0
                     ),
                 ));
             }
         }
 
         let mut resolved = Vec::new();
-        for fman_pubkey in operators {
+        for mg_pubkey in operators {
             let Some(response) = material
                 .iter()
-                .find(|response| response.material.fman_pubkey.0 == *fman_pubkey)
+                .find(|response| response.material.mg_pubkey.0 == *mg_pubkey)
             else {
                 checks.credential.push(check(
                     "fman_trust_material",
                     VerificationCheckStatus::Failed,
-                    Some(fman_pubkey.clone()),
-                    "request carries no trust material for this FMan identity",
+                    Some(mg_pubkey.clone()),
+                    "request carries no trust material for this MG identity",
                 ));
                 continue;
             };
 
             let verified = response
-                .verify_for_fman(
-                    &Pubkey(fman_pubkey.clone()),
+                .verify_for_mg(
+                    &Pubkey(mg_pubkey.clone()),
                     now,
                     FLIP_TRUST_MATERIAL_MAX_VALIDITY_SECS,
                 )
                 .map_err(|error| {
                     (
                         PublicRejectionCode::InvalidCredentials,
-                        format!("FMan trust material failed verification: {error}"),
+                        format!("MG trust material failed verification: {error}"),
                     )
                 })?;
 
             checks.credential.push(check(
                 "fman_trust_material",
                 VerificationCheckStatus::Passed,
-                Some(fman_pubkey.clone()),
-                "signed trust material verified for the consensus-listed FMan identity",
+                Some(mg_pubkey.clone()),
+                "signed trust material verified for the consensus-listed MG identity",
             ));
             resolved.push(ResolvedTrustMaterial {
-                fman_pubkey: Pubkey(fman_pubkey.clone()),
+                mg_pubkey: Pubkey(mg_pubkey.clone()),
                 holder_authorizations: verified.holder_authorizations,
             });
         }
@@ -468,7 +468,7 @@ impl VerificationPipeline {
             .await
             .map_err(preview_error_rejection)?;
 
-        // 2. FI-provided hints are non-authoritative but must not contradict
+        // 2. FA-provided hints are non-authoritative but must not contradict
         //    the preview.
         if preview.federation_id != admitted_federation_id
             || details.federation_id != preview.federation_id
@@ -517,13 +517,13 @@ impl VerificationPipeline {
         //    it to the previewed config. The shared container owns every
         //    structural and against-the-config rule, so this stage only maps
         //    its errors onto rejection codes.
-        let Some(metadata_value) = preview.fman_seat_bindings_metadata.as_deref() else {
+        let Some(metadata_value) = preview.mg_seat_bindings_metadata.as_deref() else {
             return Err((
                 PublicRejectionCode::InvalidSeatBinding,
                 "fedi:fman_seat_bindings consensus metadata is missing".to_owned(),
             ));
         };
-        let bindings = FmanSeatBindings::parse_canonical(metadata_value).map_err(|error| {
+        let bindings = MgSeatBindings::parse_canonical(metadata_value).map_err(|error| {
             (
                 PublicRejectionCode::InvalidSeatBinding,
                 format!("fedi:fman_seat_bindings consensus metadata is invalid: {error}"),
@@ -534,20 +534,20 @@ impl VerificationPipeline {
             .map_err(|error| {
                 (
                     PublicRejectionCode::InvalidSeatBinding,
-                    format!("FMan seat bindings do not match the previewed config: {error}"),
+                    format!("MG seat bindings do not match the previewed config: {error}"),
                 )
             })?;
         for binding in &verified_bindings {
             checks.seat.push(check(
                 "seat_binding",
                 VerificationCheckStatus::Passed,
-                Some(binding.fman_pubkey.0.clone()),
-                format!("peer {} is bound to this FMan identity", binding.peer_id.0),
+                Some(binding.mg_pubkey.0.clone()),
+                format!("peer {} is bound to this MG identity", binding.peer_id.0),
             ));
         }
 
         // 4. Resolve each distinct operating identity from the request-carried
-        //    trust material. One FMan may hold several seats; it is resolved
+        //    trust material. One MG may hold several seats; it is resolved
         //    once and counts once.
         //
         //    The identity set comes from the *meta* directory verified above,
@@ -557,11 +557,11 @@ impl VerificationPipeline {
         //    consulted for an identity the directory already named.
         let operators: BTreeSet<String> = verified_bindings
             .iter()
-            .map(|binding| binding.fman_pubkey.0.clone())
+            .map(|binding| binding.mg_pubkey.0.clone())
             .collect();
         let advertisements = self.resolve_trust_material(request, &operators, now, checks)?;
 
-        // 6. Pair and verify holder trust envelopes per distinct FMan
+        // 6. Pair and verify holder trust envelopes per distinct MG
         //    identity, with fresh fail-closed revocation lookups.
         let authorities = crate::attestation_store::trusted_issuer_authorities(&self.deps.database)
             .await
@@ -589,7 +589,7 @@ impl VerificationPipeline {
             HolderAuthorizationEnvelope,
         )> = Vec::new();
         for advertisement in &advertisements {
-            let fman_pubkey = advertisement.fman_pubkey.0.clone();
+            let mg_pubkey = advertisement.mg_pubkey.0.clone();
             for envelope in &advertisement.holder_authorizations {
                 // The envelope carries the authorization and its backing
                 // credential together, and `verify_holder_trust_envelope`
@@ -609,7 +609,7 @@ impl VerificationPipeline {
                     checks.credential.push(check(
                         "issuer_credential_policy",
                         VerificationCheckStatus::NotRun,
-                        Some(fman_pubkey.clone()),
+                        Some(mg_pubkey.clone()),
                         format!("issuer {issuer_hex} is not an accepted attester; ignored"),
                     ));
                     continue;
@@ -618,12 +618,12 @@ impl VerificationPipeline {
                     checks.credential.push(check(
                         "issuer_credential_policy",
                         VerificationCheckStatus::Failed,
-                        Some(fman_pubkey.clone()),
+                        Some(mg_pubkey.clone()),
                         format!("no trusted issuer authority is installed for {issuer_hex}"),
                     ));
                     continue;
                 }
-                candidates.push((fman_pubkey.clone(), issuer_hex, digest, envelope.clone()));
+                candidates.push((mg_pubkey.clone(), issuer_hex, digest, envelope.clone()));
             }
         }
 
@@ -659,22 +659,17 @@ impl VerificationPipeline {
         }
 
         let mut trusted: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
-        for (fman_pubkey, issuer_hex, digest, envelope) in &candidates {
-            match self.verify_fman_peer_badge(
-                &verifier,
-                envelope,
-                &Pubkey(fman_pubkey.clone()),
-                now,
-            ) {
+        for (mg_pubkey, issuer_hex, digest, envelope) in &candidates {
+            match self.verify_mg_peer_badge(&verifier, envelope, &Pubkey(mg_pubkey.clone()), now) {
                 Ok(badge) => {
                     trusted
                         .entry(issuer_hex.clone())
                         .or_default()
-                        .insert(fman_pubkey.clone());
+                        .insert(mg_pubkey.clone());
                     checks.credential.push(check(
                         "issuer_credential_policy",
                         VerificationCheckStatus::Passed,
-                        Some(fman_pubkey.clone()),
+                        Some(mg_pubkey.clone()),
                         format!(
                             "trust badge from {issuer_hex} verified with trust level {}",
                             badge.trust_level
@@ -685,7 +680,7 @@ impl VerificationPipeline {
                     checks.credential.push(check(
                         "issuer_credential_policy",
                         VerificationCheckStatus::Failed,
-                        Some(fman_pubkey.clone()),
+                        Some(mg_pubkey.clone()),
                         format!(
                             "trust badge {} failed verification: {error}",
                             credential_digest_wire_string(digest)
@@ -693,7 +688,7 @@ impl VerificationPipeline {
                     ));
                     return Err((
                         PublicRejectionCode::InvalidCredentials,
-                        format!("fetched FMan credential failed verification: {error}"),
+                        format!("fetched MG credential failed verification: {error}"),
                     ));
                 }
             }
@@ -705,13 +700,13 @@ impl VerificationPipeline {
         // any accepted attester vouches for it. `trusted` only ever holds
         // accepted, installed issuers, so its union is exactly that set.
         //
-        // Pooling is what keeps FLIP reachable for the federations the FI
-        // actually builds. The FI admits a seat on a badge from any configured
+        // Pooling is what keeps FLIP reachable for the federations the FA
+        // actually builds. The FA admits a seat on a badge from any configured
         // trusted issuer root and then fills seats round-robin across issuer
         // buckets to spread operators across regions, so a healthy federation
         // normally carries several issuers and no single one covers every seat.
         // Judging each attester alone would reject a federation precisely for
-        // having the operator diversity the FI is built to produce.
+        // having the operator diversity the FA is built to produce.
         let pooled: BTreeSet<&String> = trusted.values().flatten().collect();
         let trusted_operators = operators
             .iter()
@@ -733,7 +728,7 @@ impl VerificationPipeline {
 
         Err((
             PublicRejectionCode::PolicyMismatch,
-            "no accepted attester policy is satisfied by the distinct trusted FMan identities"
+            "no accepted attester policy is satisfied by the distinct trusted MG identities"
                 .to_owned(),
         ))
     }
@@ -747,13 +742,13 @@ impl VerificationProvider for VerificationPipeline {
                 mode: TRUST_PIPELINE_MODE,
                 inputs_available: true,
                 fixtures: false,
-                detail: "the production trust pipeline is running against the real invite-code preview, the FMan trust material the request carries, and revocation relays",
+                detail: "the production trust pipeline is running against the real invite-code preview, the MG trust material the request carries, and revocation relays",
             },
             TrustInputs::Fixtures => VerificationModeInfo {
                 mode: TRUST_PIPELINE_MODE,
                 inputs_available: true,
                 fixtures: true,
-                detail: "the production trust pipeline is running with a --trust-fixtures file substitute for the invite-code preview; request-carried FMan trust material is verified in full and revocations still use the real relays; test deployments only",
+                detail: "the production trust pipeline is running with a --trust-fixtures file substitute for the invite-code preview; request-carried MG trust material is verified in full and revocations still use the real relays; test deployments only",
             },
         }
     }

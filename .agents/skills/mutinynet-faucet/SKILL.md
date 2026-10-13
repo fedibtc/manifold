@@ -1,6 +1,6 @@
 ---
 name: mutinynet-faucet
-description: Run and use the persistent local Mutinynet treasury to receive test sats, fund on-chain addresses, pay Lightning invoices, or perform gateway wallet and ecash operations. Use for staging workflows that need Mutinynet money, including FI and FLIP testing.
+description: Run and use the persistent local Mutinynet treasury to receive test sats, fund on-chain addresses, pay Lightning invoices, or perform gateway wallet and ecash operations. Use for staging workflows that need Mutinynet money, including FA and FLIP testing.
 ---
 
 # Mutinynet faucet wallet

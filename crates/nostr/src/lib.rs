@@ -2,7 +2,7 @@
 
 pub mod attester;
 pub mod flip;
-pub mod fman;
+pub mod mg;
 pub mod setup_payment_federations;
 
 /// Whether `event` carries exactly one `d` tag whose one value is `expected`.

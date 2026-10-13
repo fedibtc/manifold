@@ -104,7 +104,7 @@ pub struct DaemonArgs {
     pub provider_nostr_secret_key: Option<String>,
 
     /// Optional test-deployment directory substituting the federation preview
-    /// and FMan trust-material verification inputs with fixture files.
+    /// and MG trust-material verification inputs with fixture files.
     /// Refused for Bitcoin mainnet.
     pub trust_fixtures_dir: Option<PathBuf>,
 
@@ -112,7 +112,7 @@ pub struct DaemonArgs {
     ///
     /// Boot-only rather than provider policy: it sizes a host resource pool —
     /// RocksDB handles, file locks, and per-client background tasks — not what
-    /// FLIP offers anyone. FI-supplied federation ids decide how many distinct
+    /// FLIP offers anyone. FA-supplied federation ids decide how many distinct
     /// targets ask for a client, so the ceiling must not come from them.
     pub max_open_target_clients: NonZeroUsize,
 
@@ -255,7 +255,7 @@ enum RunCommand {
 /// environment variables.
 #[derive(Args)]
 struct DaemonCliArgs {
-    /// Canonical environment trust profile shared with FI and FMan.
+    /// Canonical environment trust profile shared with FA and MG.
     #[arg(
         long,
         env = FLIP_MANIFOLD_ENVIRONMENT_ENV
@@ -335,7 +335,7 @@ struct DaemonCliArgs {
     provider_nostr_secret_key: Option<String>,
 
     /// Optional test-deployment directory substituting the federation preview
-    /// and FMan trust-material verification inputs with fixture files.
+    /// and MG trust-material verification inputs with fixture files.
     /// Refused for Bitcoin mainnet.
     #[arg(long = "trust-fixtures", env = FLIP_TRUST_FIXTURES_ENV, value_name = "DIR")]
     trust_fixtures_dir: Option<PathBuf>,

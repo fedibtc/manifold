@@ -22,7 +22,7 @@ pub const SETUP_PAYMENT_FEDERATIONS_MAX_COUNT: usize = 16;
 /// Maximum UTF-8 size of one event's JSON content.
 pub const SETUP_PAYMENT_FEDERATIONS_MAX_CONTENT_BYTES: usize = 128 * 1024;
 
-/// Smallest guardian fee rate an FI may propose, in parts per million, when a
+/// Smallest guardian fee rate an FA may propose, in parts per million, when a
 /// publication does not say: Fedi's 1,500-ppm (0.15%) product floor.
 ///
 /// This is the wire default rather than a consumer-local fallback so that a
@@ -40,13 +40,13 @@ fn default_min_fee_ppm() -> u64 {
     DEFAULT_SETUP_PAYMENT_MIN_FEE_PPM
 }
 
-/// SemVer release of the Fleet Manager daemon.
+/// SemVer release of the Manifold Guardian daemon.
 ///
 /// Parsing is the validity gate; the wire representation is a string.
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub struct FmanVersion(semver::Version);
+pub struct MgVersion(semver::Version);
 
-impl FromStr for FmanVersion {
+impl FromStr for MgVersion {
     type Err = semver::Error;
 
     fn from_str(value: &str) -> Result<Self, Self::Err> {
@@ -54,13 +54,13 @@ impl FromStr for FmanVersion {
     }
 }
 
-impl fmt::Display for FmanVersion {
+impl fmt::Display for MgVersion {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.0.fmt(formatter)
     }
 }
 
-impl serde::Serialize for FmanVersion {
+impl serde::Serialize for MgVersion {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: serde::Serializer,
@@ -69,7 +69,7 @@ impl serde::Serialize for FmanVersion {
     }
 }
 
-impl<'de> serde::Deserialize<'de> for FmanVersion {
+impl<'de> serde::Deserialize<'de> for MgVersion {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: serde::Deserializer<'de>,
@@ -88,13 +88,14 @@ pub struct SetupPaymentFederationsContent {
     /// Wire-format version.
     pub version: ProtocolV1,
 
-    /// Latest Fleet Manager release published by the authority.
-    pub fman_version: FmanVersion,
+    /// Latest Manifold Guardian release published by the authority.
+    #[serde(rename = "fman_version")]
+    pub mg_version: MgVersion,
 
     /// Public Fedimint invites forming the unordered common set.
     pub federations: Vec<InviteCode>,
 
-    /// Fedi-operated endpoint where verified FMans privately register
+    /// Fedi-operated endpoint where verified MGs privately register
     /// guardian telemetry access. This is the only telemetry locator carried
     /// by the public event; Iroh endpoint ids and bearer capabilities never
     /// appear on Nostr.
@@ -107,7 +108,7 @@ pub struct SetupPaymentFederationsContent {
     #[serde(default = "default_min_fee_ppm")]
     pub min_fee_ppm: u64,
 
-    /// Nostr public key of Fedi support, which FMan operators chat
+    /// Nostr public key of Fedi support, which MG operators chat
     /// with over NIP-17. Optional on the wire: absent, the environment
     /// profile's support key applies.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -117,8 +118,8 @@ pub struct SetupPaymentFederationsContent {
 /// Semantically admitted common payment-federation set.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AdmittedSetupPaymentFederations {
-    /// Latest Fleet Manager release published with this set.
-    fman_version: FmanVersion,
+    /// Latest Manifold Guardian release published with this set.
+    mg_version: MgVersion,
 
     /// Unique invites keyed by their canonical derived federation IDs.
     federations: BTreeMap<FederationId, InviteCode>,
@@ -164,7 +165,7 @@ impl AdmittedSetupPaymentFederations {
             return Err(SetupPaymentFederationsContentError::InvalidTelemetryRegistrationUrl);
         }
 
-        let fman_version = content.fman_version;
+        let mg_version = content.mg_version;
         let mut federations = BTreeMap::new();
         for invite_code in content.federations {
             if invite_code.0.is_empty() {
@@ -186,7 +187,7 @@ impl AdmittedSetupPaymentFederations {
         }
 
         Ok(Self {
-            fman_version,
+            mg_version,
             federations,
             telemetry_registration_url: content.telemetry_registration_url,
             min_fee_ppm: content.min_fee_ppm,
@@ -194,10 +195,10 @@ impl AdmittedSetupPaymentFederations {
         })
     }
 
-    /// Return the latest Fleet Manager release published with this set.
+    /// Return the latest Manifold Guardian release published with this set.
     #[must_use]
-    pub fn fman_version(&self) -> &FmanVersion {
-        &self.fman_version
+    pub fn mg_version(&self) -> &MgVersion {
+        &self.mg_version
     }
 
     /// Return the number of unique admitted federations.
@@ -238,7 +239,7 @@ impl AdmittedSetupPaymentFederations {
         self.min_fee_ppm
     }
 
-    /// Return the Fedi support key FMan operators chat with, if published.
+    /// Return the Fedi support key MG operators chat with, if published.
     #[must_use]
     pub fn support_nostr_pubkey(&self) -> Option<&nostr::PublicKey> {
         self.support_nostr_pubkey.as_ref()

@@ -11,7 +11,7 @@ not a multi-tenant service and must use only dummy credentials and test funds.
   launcher removes `DIRENV_DIFF`, `DIRENV_DIR`, `DIRENV_FILE`,
   `DIRENV_WATCHES`, and `DIRENV_IN_ENVRC`, then prepends generated tools.
 - Before setup, Defe requires and trusts the exact `pnpm` selected from the
-  caller's development `PATH`. Generated and advertised FMan UI commands pin
+  caller's development `PATH`. Generated and advertised MG UI commands pin
   that absolute path, so the restored neutral `PATH` cannot redirect them.
 - The default shell starts in a canonical private work directory only after Defe
   verifies that no cwd ancestor contains `.envrc` or `.env`. Explicit commands
@@ -20,18 +20,18 @@ not a multi-tenant service and must use only dummy credentials and test funds.
 - The environment deliberately connects loopback Admin APIs and a local Nostr
   relay. Do not treat those endpoints or their fabricated development trust
   material as production identities.
-- The environment root is mode 0700. `secrets.json` is mode 0600 and contains FMan
+- The environment root is mode 0700. `secrets.json` is mode 0600 and contains MG
   passwords, the gateway password, and the FLIP bootstrap token. The generated
-  `defe-connectivity` command prints each FMan password beside its operator-UI
+  `defe-connectivity` command prints each MG password beside its operator-UI
   attach command; this is intentional for the disposable, single-user workflow.
   Generated mode-0700 wrappers also contain the exact dummy credentials needed
   to select their service. `env.json` contains no credentials, and neither ready
   output nor `defe-connectivity` prints gateway or FLIP credentials.
 - `fees synthetic-remit` stores its dedicated payment-wallet root secret and
   sealed remittance metadata under that private root. It passes only their file
-  paths to `fi-cli`, never their contents, and prints no operation or wallet
+  paths to `fa-cli`, never their contents, and prints no operation or wallet
   secrets. Its wrapper serializes the complete preparation action and every
-  generated `fi-cli` invocation, so one owner accesses a wallet database at a
+  generated `fa-cli` invocation, so one owner accesses a wallet database at a
   time.
 - Synthetic preparation directly creates a remittance in the disposable
   federation. It is intentionally not evidence of production payer accrual,

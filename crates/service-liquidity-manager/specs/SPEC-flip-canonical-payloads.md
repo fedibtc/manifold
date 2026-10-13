@@ -6,7 +6,7 @@ The canonical byte and domain rules must produce identical results in this
 crate's helpers, the daemon, and app-side implementations outside this
 repository, so no single implementation artifact can own them coherently.
 
-FLIP follows the FMan split between publication and RPC signing, but signs
+FLIP follows the MG split between publication and RPC signing, but signs
 canonical protocol payload bytes rather than exact wire bytes: transport
 frame encoding (serde-compatible DTOs over `fedi-iroh-rpc` CBOR bodies) is
 never the signing input. Every signed document is a typed `payload` plus a

@@ -18,7 +18,8 @@ fedi-decentralized-nostr-clients = { path = "../nostr-clients" }
 anyhow = "1"
 axum = "0.8.4"
 base64 = "0.22"
-fedi-decentralized-cloud-fman-telemetry = { path = "../cloud-fman-telemetry", features = [
+fa-client = { path = "../fa-client" }
+fedi-decentralized-cloud-mg-telemetry = { path = "../cloud-mg-telemetry", features = [
   "test-support",
 ] }
 fedi-decentralized-domain = { path = "../domain" }
@@ -26,19 +27,18 @@ fedi-decentralized-manifold-environment = { path = "../manifold-environment" }
 fedi-decentralized-peer-badge-verifier = { path = "../peer-badge-verifier", features = [
   "test-support",
 ] }
-fedi-decentralized-service-fleet-manager = { path = "../service-fleet-manager" }
+fedi-decentralized-service-manifold-guardian = { path = "../service-manifold-guardian" }
 fedi-iroh-rpc = { path = "../fedi-iroh-rpc" }
 fedimint-core.workspace = true
 fedimint-derive-secret.workspace = true
 fedimint-mintv2-client.workspace = true
-fi-client = { path = "../fi-client" }
-fman-core = { path = "../fman/core" }
-fman-fedimint = { path = "../fman/fedimint" }
 futures-util = { version = "0.3", features = ["sink"] }
 hex = "0.4"
 iroh-base-035 = { package = "iroh-base", version = "=0.35.0" }
 libc = "0.2"
 lnurl-rs = { version = "0.9", default-features = false }
+mg-core = { path = "../mg/core" }
+mg-fedimint = { path = "../mg/fedimint" }
 nostr-sdk = { version = "0.44", features = ["nip59"] }
 peerbadge-protocol.workspace = true
 reqwest = { version = "0.12", default-features = false, features = ["json"] }

@@ -72,15 +72,15 @@ run_case () {
 }
 
 run_case 'screen gated on isError' \
-  gated-page.tsx apps/fleet-manager/src/pages/gated/GatedPage.tsx 1
+  gated-page.tsx apps/manifold-guardian/src/pages/gated/GatedPage.tsx 1
 run_case 'screen rendering through the surface' \
-  disposed-page.tsx apps/fleet-manager/src/pages/disposed/DisposedPage.tsx 0
+  disposed-page.tsx apps/manifold-guardian/src/pages/disposed/DisposedPage.tsx 0
 run_case 'a screens own unit test' \
-  gated-page.tsx apps/fleet-manager/src/pages/gated/__tests__/GatedPage.test.tsx 0
+  gated-page.tsx apps/manifold-guardian/src/pages/gated/__tests__/GatedPage.test.tsx 0
 run_case 'a mutation error in a feature component' \
-  save-action.tsx apps/fleet-manager/src/features/offer/components/save-action/SaveAction.tsx 0
+  save-action.tsx apps/manifold-guardian/src/features/offer/components/save-action/SaveAction.tsx 0
 run_case 'the same violation in a feature component' \
-  gated-page.tsx apps/fleet-manager/src/features/seats/components/seat-table/SeatTable.tsx 0
+  gated-page.tsx apps/manifold-guardian/src/features/seats/components/seat-table/SeatTable.tsx 0
 run_case 'another apps screen, which has no primitive' \
   gated-page.tsx apps/liquidity-provider/src/pages/funds/FundsPage.tsx 0
 

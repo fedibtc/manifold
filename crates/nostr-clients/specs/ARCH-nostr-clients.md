@@ -5,22 +5,22 @@ shared role-specific Nostr service traits for decentralized federation
 components. `fedi-decentralized-nostr`
 remains the protocol crate for event kinds, tag names, signature domains,
 and small deterministic helpers
-([SPEC-fman-nostr-events](../../nostr/specs/SPEC-fman-nostr-events.md));
+([SPEC-mg-nostr-events](../../nostr/specs/SPEC-mg-nostr-events.md));
 this crate owns relay I/O and the `nostr-sdk` implementation.
 
 The public boundary provides hardened relay connection, publishing, and
 hard-capped fetch primitives plus shared role clients. `HolderNostrClient`
-publishes holder authorization events, while `FiNostrClient` fetches FMan
+publishes holder authorization events, while `FaNostrClient` fetches MG
 advertisements for pre-formation selection — one pinned author's latest
 event, or the authorless kind-37701 enumeration bounded by
-`FMAN_ADVERTISEMENTS_CANDIDATE_LIMIT` and the explicit
-`FMAN_ADVERTISEMENTS_RETAINED_MAX_BYTES` aggregate byte cap —
-and a bounded common setup-payment candidate set. FMan-specific relay
-operations live in the deep `fman-nostr` component rather than
+`MG_ADVERTISEMENTS_CANDIDATE_LIMIT` and the explicit
+`MG_ADVERTISEMENTS_RETAINED_MAX_BYTES` aggregate byte cap —
+and a bounded common setup-payment candidate set. MG-specific relay
+operations live in the deep `mg-nostr` component rather than
 this shared crate.
-`FlipNostrClient` supports FMan-ad lookups. Current FLIP federation eligibility
+`FlipNostrClient` supports MG-ad lookups. Current FLIP federation eligibility
 starts from the invite code, reads Fedimint consensus metadata, and queries the
-public FMan APIs listed in `fedi:fman_api_urls`. Returning federation
+public MG APIs listed in `fedi:fman_api_urls`. Returning federation
 eligibility to Nostr-ad resolution remains work (see the status in
 [SPEC-flip-federation-trust](../../liquidity-manager-daemon/specs/SPEC-flip-federation-trust.md)).
 `NostrRelayClient` is a cloneable shared SDK wrapper used by role clients, deep
@@ -53,13 +53,13 @@ or named by the current authenticated authority.
 
 The shared SDK client uses a stateless event database. The candidate-batch
 fetches (holder-authorization candidates, setup-payment publications, the
-FMan advertisement enumeration) need every bounded verified candidate for
+MG advertisement enumeration) need every bounded verified candidate for
 semantic admission, so generic SDK replacement or deletion policy must not
 suppress an older valid candidate after a newer role-invalid event. In
 particular, the advertisement enumeration pins no author, so per-author
 newest-wins replacement is the consumer's admission decision
-([ARCH-fi-client](../../fi-client/specs/ARCH-fi-client.md)), not a
-transport policy. `FiNostrClient::fetch_fman_advertisement` is the
+([ARCH-fa-client](../../fa-client/specs/ARCH-fa-client.md)), not a
+transport policy. `FaNostrClient::fetch_mg_advertisement` is the
 exception: it requests a single latest event (`limit(1)`), so a newer
-role-invalid advertisement can hide an older valid one until the FMan
+role-invalid advertisement can hide an older valid one until the MG
 republishes.

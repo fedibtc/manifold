@@ -4,7 +4,7 @@ Portable entry point for any agent (Codex, Claude Code, or a human driving one).
 It routes work. It does not restate the coding rules.
 
 **pnpm workspace** inside the `decentralized-federations` monorepo.
-Apps: `apps/fleet-manager`, `apps/liquidity-provider`. Shared code: `packages/*`.
+Apps: `apps/manifold-guardian`, `apps/liquidity-provider`. Shared code: `packages/*`.
 
 ## Read before changing code
 

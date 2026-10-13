@@ -3,8 +3,8 @@
 ## Status
 
 Production deployments preview the Fedimint invite, read the consensus
-seat-binding directory, verify the FMan trust material the request carries, and
-perform fresh revocation lookups. FLIP does not resolve FMan advertisements
+seat-binding directory, verify the MG trust material the request carries, and
+perform fresh revocation lookups. FLIP does not resolve MG advertisements
 over Nostr. An unavailable required trust dependency fails the request closed
 with `provider_unavailable`; it is not substituted or bypassed.
 Test deployments may use `--trust-fixtures` only for invite-code preview, and
@@ -50,7 +50,7 @@ the daemon must not duplicate them.
   selected canonical environment constructs the shared `PeerBadgeVerifier`,
   which is passed into normal-mode `run_daemon` and retained in
   `DaemonContext`. The same selected profile constructs the shared domain
-  `PeerBadgeTrustPolicy` passed into the request-carried FMan verification
+  `PeerBadgeTrustPolicy` passed into the request-carried MG verification
   pipeline, so FLIP's direct envelope path cannot drift from verifier-backed
   minimum-level semantics. Isolated restore mode exposes no
   trust-verification surface and starts before verifier construction, so a
@@ -185,7 +185,7 @@ wallet settlement.
 - Federation eligibility is verified locally against configured trusted
   issuer authorities with fresh revocation lookups; there is exactly one
   verification profile, with only the invite-code preview fixture-substitutable
-  and never on mainnet. FMan trust standing arrives as signed material inside
+  and never on mainnet. MG trust standing arrives as signed material inside
   the request and is never substitutable
   ([SPEC-flip-federation-trust](./SPEC-flip-federation-trust.md),
   [SPEC-flip-federation-trust](./SPEC-flip-federation-trust.md)).

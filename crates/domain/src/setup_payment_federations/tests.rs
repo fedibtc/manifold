@@ -42,7 +42,7 @@ fn content(invites: Vec<String>) -> Vec<u8> {
 fn content_with_min_fee_ppm(invites: Vec<String>, min_fee_ppm: u64) -> Vec<u8> {
     serde_json::to_vec(&SetupPaymentFederationsContent {
         version: ProtocolV1,
-        fman_version: "0.1.0".parse().expect("valid FMan version"),
+        mg_version: "0.1.0".parse().expect("valid MG version"),
         federations: invites.into_iter().map(InviteCode).collect(),
         telemetry_registration_url: Url(
             "https://push.fedi.example/v1/telemetry/registrations".to_owned()
@@ -54,7 +54,7 @@ fn content_with_min_fee_ppm(invites: Vec<String>, min_fee_ppm: u64) -> Vec<u8> {
 }
 
 #[test]
-fn wire_shape_includes_fman_version_and_invite_array() {
+fn wire_shape_includes_mg_version_and_invite_array() {
     let invite = invite("https://one.example/");
     let encoded = content(vec![invite.clone()]);
 
@@ -160,7 +160,7 @@ fn admits_only_credential_free_https_telemetry_registration_urls() {
     ] {
         let raw = serde_json::to_vec(&SetupPaymentFederationsContent {
             version: ProtocolV1,
-            fman_version: "0.1.0".parse().unwrap(),
+            mg_version: "0.1.0".parse().unwrap(),
             federations: Vec::new(),
             telemetry_registration_url: Url(invalid.to_owned()),
             min_fee_ppm: DEFAULT_SETUP_PAYMENT_MIN_FEE_PPM,
@@ -199,7 +199,7 @@ fn admits_empty_set() {
     let admitted =
         AdmittedSetupPaymentFederations::parse(&content(vec![])).expect("empty set is valid");
     assert!(admitted.is_empty());
-    assert_eq!(admitted.fman_version().to_string(), "0.1.0");
+    assert_eq!(admitted.mg_version().to_string(), "0.1.0");
 }
 
 #[test]

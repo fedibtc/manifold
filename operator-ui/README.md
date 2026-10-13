@@ -1,6 +1,6 @@
 # operator-ui
 
-JS/TS workspace for the two operator dashboards (FLIP + FMan).
+JS/TS workspace for the two operator dashboards (FLIP + MG).
 
 Spec: [`docs/operator-dashboards/README.md`](../docs/operator-dashboards/README.md).
 
@@ -31,9 +31,9 @@ pnpm install
 
 ```bash
 pnpm flip:be       # :8787  FLIP Admin API mock (backend)
-pnpm fman:be       # :8788  FMan operator API mock (backend)
+pnpm mg:be       # :8788  MG operator API mock (backend)
 pnpm flip:fe       # :5173  → proxy /admin (frontend)
-pnpm fman:fe       # :5174  → proxy /fman (frontend)
+pnpm mg:fe       # :5174  → proxy /mg (frontend)
 ```
 
 ## Test

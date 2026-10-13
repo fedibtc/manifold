@@ -76,7 +76,7 @@ pub(crate) async fn get_provider_config(
 }
 
 /// Rejects fixture-mode/network combinations that must never reach persisted
-/// config: `--trust-fixtures` substitutes the federation preview and FMan
+/// config: `--trust-fixtures` substitutes the federation preview and MG
 /// trust-material verification inputs with local files, so a fixture-fed
 /// daemon must never operate against Bitcoin mainnet.
 pub(crate) fn ensure_trust_fixtures_allow_network(
@@ -1312,7 +1312,7 @@ fn provider_display_check(
 /// the provider is configured for.
 ///
 /// `policy.supported_networks` gates every public request: `public_service`
-/// refuses a request whose network is absent from it, and FIs discard the
+/// refuses a request whose network is absent from it, and FAs discard the
 /// advertisement earlier still, on the same list. Nothing kept it in agreement
 /// with `config.network`. The list has no editor of its own — the dashboard
 /// wrote it as a side effect of editing the accepted attesters — so changing
@@ -1372,7 +1372,7 @@ fn funding_policy_check(config: &FundingPolicyConfig) -> SetupValidationCheck {
 /// Refuses a republish interval of zero.
 ///
 /// A published advertisement expires at `issued_at + republish_interval * 2`,
-/// so at zero it expires in the instant it is issued and every FI discards it
+/// so at zero it expires in the instant it is issued and every FA discards it
 /// on `expires_at <= now` before reading anything else. The failure is silent
 /// in both directions: the daemon records the publication as successful and
 /// the operator's dashboard stays green, while no customer ever sees the

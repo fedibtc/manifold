@@ -1,15 +1,15 @@
 # Rewording one daemon sentence would silently break first-run setup, with every test green
 
-- **Status:** fixed — `c7e8b419` + `c3d9a6e3` (`feat/fman-pre-onboarding-http`)
+- **Status:** fixed — `c7e8b419` + `c3d9a6e3` (`feat/mg-pre-onboarding-http`)
 - **Tier:** checked
 - **Level:** code (client) + a one-variant daemon contract change
 - **Found by:** checker (regenerated inventory; the scanner never listed the file), courier
 - **Where:**
-  - `operator-ui/apps/fleet-manager/src/features/setup/utils/setupState.ts:7-10`
+  - `operator-ui/apps/manifold-guardian/src/features/setup/utils/setupState.ts:7-10`
   - consumed by `.../app/components/setup-gate/SetupGate.tsx:22` and
     `.../features/setup/components/setup-restore/SetupRestore.tsx:125`
-  - producer: `crates/fman/core/src/onboarding.rs:124`
-  - the axis it should use: `crates/fman/core/src/admin.rs:209-248`, mirrored at
+  - producer: `crates/mg/core/src/onboarding.rs:124`
+  - the axis it should use: `crates/mg/core/src/admin.rs:209-248`, mirrored at
     `operator-ui/packages/types/src/fleet.ts:335-343`
 
 **What happens:** The single branch deciding whether an operator ever sees the setup wizard is a
@@ -36,7 +36,7 @@ branch on the discriminant instead of the sentence.
 **How it was fixed.** Shipped with the daemon change that makes this branch reachable
 ([`setup-surface-unreachable-over-http`](setup-surface-unreachable-over-http.md)), because it goes
 live the day that lands. `AdminErrorKind::NotOnboarded` was added and the onboarding refusal became
-a type (`crates/fman/core/src/onboarding.rs::NotOnboarded`) so the discriminant survives the `?`
+a type (`crates/mg/core/src/onboarding.rs::NotOnboarded`) so the discriminant survives the `?`
 that boxes it into `anyhow`. The generated fixture and the TypeScript union followed;
 `setupState.ts` reads `error.reason === 'not_onboarded'` and nothing in the client matches daemon
 prose. The mock answers with the kind, and the tests that stand in for the daemon deliberately
@@ -44,14 +44,14 @@ carry a *different* sentence from the one it ships — a test that copies the pr
 coupling being removed.
 
 **Observed red, both sides of the fix.** The reword is the whole argument, so it was run twice with
-the same sentence — "nobody has set this Fleet Manager up; choose a new fleet or recover an old
+the same sentence — "nobody has set this Manifold Guardian up; choose a new fleet or recover an old
 one" — applied to the daemon and the mock together, as a reword commit would.
 
 *Before the fix,* on `819d149c` with that reword and the two by-name assertions updated alongside
 it (`tests/onboarding.rs`, `mocks/__tests__/handlers.test.ts`), the suite is **entirely green**: 6
 Rust onboarding tests, 561 client tests, 99 files. Nothing fails. But the wizard no longer opens:
 teaching `SetupGate`'s stub to say what the daemon now actually says turns 3 of its tests red with
-`TestingLibraryElementError: Unable to find role="heading" and name "Set up your fleet manager"` —
+`TestingLibraryElementError: Unable to find role="heading" and name "Set up your manifold guardian"` —
 a fresh host lands in a dashboard where every panel fails and no wizard appears.
 
 *After the fix,* the identical reword changes nothing: 9 Rust tests and 148 client tests across

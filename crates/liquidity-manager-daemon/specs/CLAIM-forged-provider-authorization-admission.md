@@ -34,7 +34,7 @@ consumer's acceptance of that material.
 
 ## Status
 
-Falsified: accepted requests durably retain FMan-subject authorization envelopes, so the claim’s provider-subject predicate does not hold for every retained envelope.
+Falsified: accepted requests durably retain MG-subject authorization envelopes, so the claim’s provider-subject predicate does not hold for every retained envelope.
 
 ## Assumptions
 

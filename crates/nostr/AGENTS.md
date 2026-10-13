@@ -1,6 +1,6 @@
 # Nostr protocol crate instructions
 
-- Read [`./specs/SPEC-fman-nostr-events.md`](./specs/SPEC-fman-nostr-events.md)
+- Read [`./specs/SPEC-mg-nostr-events.md`](./specs/SPEC-mg-nostr-events.md)
   before changing any event kind, tag, constant, or document schema in this
   crate: they are cross-program contracts shared with programs outside this
   repository, and byte-level changes must be coordinated, not made

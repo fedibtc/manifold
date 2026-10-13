@@ -4,8 +4,8 @@
 > scan — see the remainder section.
 
 - **Status:** fixed — primitive and first two sites in `37dd6f70`
-  (`fix/fman-ui-query-disposition`); remaining sites, a seventh the scan missed, and the rule in
-  `c1cf7b1e` + `24f178da` (`fix/fman-ui-disposition-remaining`). One site is deliberately left
+  (`fix/mg-ui-query-disposition`); remaining sites, a seventh the scan missed, and the rule in
+  `c1cf7b1e` + `24f178da` (`fix/mg-ui-disposition-remaining`). One site is deliberately left
   unconverted with a stated reason, below.
 - **Tier:** checked (systemic)
 - **Level:** code, at all sites
@@ -113,7 +113,7 @@ no retry. It surfaced only when the rule below was scoped to `pages/**` and land
 ## The rule — `24f178da`
 
 `packages/biome-plugins/screen-query-disposition.grit`, registered in `biome.json` and scoped to
-`apps/fleet-manager/src/pages/**/*.tsx` minus `__tests__`. Any `$read.isError` in a screen is an
+`apps/manifold-guardian/src/pages/**/*.tsx` minus `__tests__`. Any `$read.isError` in a screen is an
 error naming the file, the line, and the replacement.
 
 Biome rather than `check-structure.mjs`: check-structure is the folder-layout contract and reads

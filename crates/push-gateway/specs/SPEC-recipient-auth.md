@@ -49,7 +49,7 @@ by possession of the bearer-capability hook URL
 Clients derive the recipient auth key from their app root-secret model with
 label `fedi-push-gateway/recipient-auth-nostr/v1` and the same
 environment-separation rule as
-[`docs/fi-nostr-backups.md`](../../../docs/fi-nostr-backups.md). Key
+[`docs/fa-nostr-backups.md`](../../../docs/fa-nostr-backups.md). Key
 rotation and multi-device recovery are handled by that client derivation
 model; server-side in-place recipient-key rotation is not part of the server
 MVP.

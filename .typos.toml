@@ -18,7 +18,7 @@ WRONLY = "WRONLY"
 
 [files]
 extend-exclude = [
-  "docs/fleet-manager/archive",
-  "docs/fleet-manager/archive/**",
+  "docs/manifold-guardian/archive",
+  "docs/manifold-guardian/archive/**",
   "operator-ui/apps/*/public/mockServiceWorker.js", # MSW vendored service-worker; never hand-edited
 ]

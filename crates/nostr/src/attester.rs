@@ -1,6 +1,6 @@
 //! Shared attester Nostr event kinds and tags.
 //!
-//! These constants pin the shared FI/FMan/FLIP issuer publication profile:
+//! These constants pin the shared FA/MG/FLIP issuer publication profile:
 //! issuer authorities and credential revocations are issuer-authored
 //! addressable events that the shared verifier fetches from the relays
 //! selected by its environment and current authenticated authority.

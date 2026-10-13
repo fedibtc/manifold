@@ -1,0 +1,949 @@
+//! L6 RPC service: the thin boundary between the wire and the fleet.
+//!
+//! Everything here is mapping: verify the [`SignedRequest`] envelope into a
+//! `VerifiedFaRequest<T>` (the only unauthenticated code path is this one line),
+//! check the 0.1 policy gates, call the L4 [`Fleet`] verb, and translate its
+//! typed error into the wire [`ManifoldGuardianError`] vocabulary. Internal
+//! failures are logged with detail and answered with the generic
+//! `Other("internal error")`; envelope failures are logged with their
+//! [`AuthError`](fedi_decentralized_service_manifold_guardian::AuthError) detail
+//! and answered with the deliberately coarse `Unauthorized`.
+
+use std::sync::{Arc, OnceLock};
+use std::time::{SystemTime, UNIX_EPOCH};
+
+use fedi_decentralized_domain::{
+    AdmittedSetupPaymentFederations, DEFAULT_SETUP_PAYMENT_MIN_FEE_PPM,
+    HolderAuthorizationEnvelope, MgPeerAttestation, MgPeerAttestationStatement, MgTrustMaterial,
+    ProtocolV1, Pubkey, SchnorrSignatureProof, Url,
+};
+use fedi_decentralized_manifold_environment::ManifoldEnvironment;
+use fedi_decentralized_service_manifold_guardian::{
+    CreateSeatOutcome, CreateSeatRequest, CreateSeatResponse, DecommissionSeatRequest,
+    DecommissionSeatResponse, DkgStatusInfo, EndedReason, EndedStatusInfo, FEDERATION_SIZES_0_1,
+    FEDIMINTD_VERSION_0_1, FaSignedRequest, FederationSize, FederationStatusInfo, FedimintdVersion,
+    FmResult, GetAvailabilityRequest, GetAvailabilityResponse, GetDkgCodeRequest,
+    GetDkgCodeResponse, GetFedimintStatsRequest, GetFedimintStatsResponse, GetInviteCodeRequest,
+    GetInviteCodeResponse, GetMgTrustMaterialRequest, GetMgTrustMaterialResponse,
+    GetPeerAttestationRequest, GetPeerAttestationResponse, GetStatusRequest, GetStatusResponse,
+    GuardianFeeAccount, ManifoldGuardianError, ManifoldGuardianService, Plan,
+    ProposeFormationMetaRequest, ProposeFormationMetaResponse, QuoteTerms, RegisterGatewayRequest,
+    RegisterGatewayResponse, RestartDkgRequest, RestartDkgResponse, ServiceStatus,
+    SetMetaFieldRequest, SetMetaFieldResponse, SignedRequest, SignedResponse, StartDkgRequest,
+    StartDkgResponse, StatusDetail, Timestamp, VerifiedFaRequest,
+};
+use fedimint_core::util::SafeUrl;
+use secp256k1::Keypair;
+use stability_pool_client::common::Account;
+
+use crate::fleet::{Fleet, VerifiedCreateSeat, VerifiedPayment};
+use crate::push_callback::ValidatedDkgCompletionCallback;
+use crate::seat::{SeatFederationBinding, SeatPhase, SeatReport, SeatVerbError};
+use crate::wallet::{LockedPaymentPrepareError, Msats};
+
+/// The Manifold Guardian 0.1 RPC service: one [`Fleet`] plus the service signing
+/// key whose public half is advertised as the locator `service_pubkey`.
+///
+/// Seat access discipline: every verb naming an existing seat resolves it
+/// through `Fleet::authorize` — the fleet's only crate-visible seat getter —
+/// as its first fleet call, and the only verb here with an operator-shaped
+/// effect is `decommission_seat` — the FA's own seat release, refused outside
+/// development and staging. No verb reaches listing or shutdown. This file is
+/// the entire FA surface; keep it scannable for those facts.
+#[derive(Clone)]
+pub struct ManifoldGuardianRpc {
+    fleet: Arc<Fleet>,
+    signing_key: Keypair,
+    /// The MG's public service identity, which signs peer attestations.
+    ///
+    /// Deliberately the *same* key `mg-nostr` signs kind-37701
+    /// with, not the
+    /// commitment `signing_key` beside it: a verifier resolves an MG's live
+    /// trust by looking its advertisement up *by* this pubkey, so an
+    /// attestation naming any other key resolves to nothing
+    /// ([`ARCH-manifold-guardian-identity`](../../specs/ARCH-manifold-guardian-identity.md)).
+    attestation_keys: nostr_sdk::Keys,
+
+    /// Inputs `get_fman_trust_material` needs that do not exist yet when
+    /// this service is constructed.
+    ///
+    /// The daemon's wiring is genuinely circular: this service goes into the
+    /// Iroh router, the router owns the endpoint whose id the Nostr runtime
+    /// advertises, and the Nostr runtime is where holder authorizations come
+    /// from. Rather than unpick that ordering, the daemon binds the source once
+    /// both exist. Unbound is an explicit fail-closed construction state:
+    /// a request arriving before the runtime source is bound cannot serve trust
+    /// material from absent or partial inputs.
+    trust_material: Arc<OnceLock<Arc<dyn TrustMaterialSource>>>,
+
+    /// The Fedi-published setup-payment policy as the Nostr boundary last
+    /// admitted it, which is where the minimum guardian fee rate comes from
+    /// ([SPEC-setup-payment-federations](../../../../specs/SPEC-setup-payment-federations.md)).
+    ///
+    /// The Nostr boundary exists before the RPC router and supplies this
+    /// receiver at construction. An admitted event not yet seen falls back to
+    /// [`DEFAULT_SETUP_PAYMENT_MIN_FEE_PPM`] rather than to zero — a missing
+    /// publication must not read as "any rate is acceptable".
+    setup_payment_policy: tokio::sync::watch::Receiver<Option<AdmittedSetupPaymentFederations>>,
+}
+
+/// The late-bound inputs behind `get_fman_trust_material`.
+///
+/// A port rather than a direct `mg-nostr` handle so the RPC layer
+/// keeps depending only on what it uses, and so tests can serve trust material
+/// without standing up a relay.
+pub trait TrustMaterialSource: Send + Sync {
+    /// This MG's dialable Iroh endpoint, as an `iroh://` URL.
+    fn iroh_endpoint_url(&self) -> Url;
+
+    /// The verified holder authorizations durably enrolled by the operator.
+    fn holder_authorizations(&self) -> Vec<HolderAuthorizationEnvelope>;
+}
+
+impl ManifoldGuardianRpc {
+    /// Build the service with its deployment policy inputs.
+    pub fn new(
+        fleet: Arc<Fleet>,
+        setup_payment_policy: tokio::sync::watch::Receiver<Option<AdmittedSetupPaymentFederations>>,
+    ) -> Self {
+        let signing_key = fleet.identity().derive_service_signing_key();
+        let attestation_keys = nostr_sdk::Keys::new(
+            nostr_sdk::SecretKey::from_slice(
+                &fleet
+                    .identity()
+                    .derive_service_nostr_secret_key()
+                    .secret_bytes(),
+            )
+            .expect("HKDF-derived nostr key is valid"),
+        );
+        Self {
+            fleet,
+            signing_key,
+            attestation_keys,
+            trust_material: Arc::new(OnceLock::new()),
+            setup_payment_policy,
+        }
+    }
+
+    /// The minimum guardian fee rate an FA may propose right now, in ppm.
+    ///
+    /// With no admitted event this is the published default, never zero.
+    fn min_guardian_fee_ppm(&self) -> u64 {
+        self.setup_payment_policy
+            .borrow()
+            .as_ref()
+            .map(AdmittedSetupPaymentFederations::min_fee_ppm)
+            .unwrap_or(DEFAULT_SETUP_PAYMENT_MIN_FEE_PPM)
+    }
+
+    /// Supply the trust-material inputs once the endpoint and Nostr runtime
+    /// exist. Ignores a second call rather than panicking: binding twice is a
+    /// wiring mistake, not a reason to take the daemon down after it is
+    /// already serving.
+    pub fn bind_trust_material_source(&self, source: Arc<dyn TrustMaterialSource>) {
+        if self.trust_material.set(source).is_err() {
+            tracing::warn!(
+                safe_to_share = true,
+                "trust-material source was already bound; ignoring the second binding"
+            );
+        }
+    }
+
+    /// Verify a signed envelope; failures are logged and answered
+    /// `Unauthorized` without detail.
+    fn validate<T: FaSignedRequest>(
+        &self,
+        request: SignedRequest<T>,
+    ) -> FmResult<VerifiedFaRequest<T>> {
+        request.verify(now()).map_err(|err| {
+            tracing::warn!(verb = T::LABEL, error = %err, "rejecting unauthorized request");
+            ManifoldGuardianError::Unauthorized
+        })
+    }
+
+    fn prepare_completion_callback(
+        &self,
+        callback: Option<&fedi_decentralized_service_manifold_guardian::DkgCompletionCallback>,
+    ) -> FmResult<Option<ValidatedDkgCompletionCallback>> {
+        let Some(callback) = callback else {
+            return Ok(None);
+        };
+        let Some(origin) = self.fleet.config().push_gateway_origin.as_ref() else {
+            return Ok(None);
+        };
+        origin.validate(callback).map(Some).map_err(|error| {
+            ManifoldGuardianError::InvalidDkgInput(format!(
+                "invalid DKG completion callback: {error}"
+            ))
+        })
+    }
+}
+
+/// How long a signed trust-material response stays valid.
+///
+/// Deliberately short. The relying verifier applies its own upper bound on
+/// `expires_at - issued_at`, and this is the MG's side of that bargain: the
+/// FA collects material for a request it is about to make, so a long window
+/// buys nothing and only widens how far a withdrawn MG's material outlives
+/// it. One hour leaves room for a slow formation without becoming a standing
+/// credential.
+const TRUST_MATERIAL_VALIDITY_SECS: u64 = 3600;
+
+fn now() -> Timestamp {
+    Timestamp(
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock is after Unix epoch")
+            .as_secs(),
+    )
+}
+
+fn internal(verb: &'static str, err: impl std::fmt::Display) -> ManifoldGuardianError {
+    tracing::error!(verb, error = %err, "internal error");
+    ManifoldGuardianError::Other("internal error".to_owned())
+}
+
+/// This log line is the only place an internal failure's detail surfaces
+/// (the wire deliberately answers a bare "internal error"), so it must
+/// carry the whole cause chain — anyhow's `Display` alone prints only the
+/// top message.
+fn internal_chain(verb: &'static str, err: &anyhow::Error) -> ManifoldGuardianError {
+    internal(verb, format_args!("{err:#}"))
+}
+
+fn map_seat_error(verb: &'static str, err: SeatVerbError) -> ManifoldGuardianError {
+    match err {
+        SeatVerbError::UnknownSeat => ManifoldGuardianError::UnknownSeat,
+        SeatVerbError::SeatUnavailable => ManifoldGuardianError::SeatUnavailable,
+        SeatVerbError::FederationIsRunning => ManifoldGuardianError::FederationIsRunning,
+        SeatVerbError::WrongState { status } => ManifoldGuardianError::WrongState { status },
+        SeatVerbError::InvalidDkgInput(reason) => ManifoldGuardianError::InvalidDkgInput(reason),
+        // Both stay coarse on the wire: the refusal reason is daemon log
+        // material, and the compiled key set is not worth publishing to an
+        // unauthenticated prober.
+        SeatVerbError::MetaKeyRefused => ManifoldGuardianError::MetaKeyRefused,
+        SeatVerbError::MetaValueInvalid => ManifoldGuardianError::MetaValueInvalid,
+        SeatVerbError::MetaConsensusChanged => ManifoldGuardianError::MetaConsensusChanged,
+        SeatVerbError::FormationMetaAlreadyPublished => {
+            ManifoldGuardianError::FormationMetaAlreadyPublished
+        }
+        SeatVerbError::MetaTargetConflict => ManifoldGuardianError::MetaTargetConflict,
+        SeatVerbError::Internal(err) => internal_chain(verb, &err),
+    }
+}
+
+fn manifold_guardian_error_kind(error: &ManifoldGuardianError) -> &'static str {
+    match error {
+        ManifoldGuardianError::PlanNotOffered => "plan_not_offered",
+        ManifoldGuardianError::PaymentFederationNotAccepted => "payment_federation_not_accepted",
+        ManifoldGuardianError::PaymentFederationUnavailable => "payment_federation_unavailable",
+        ManifoldGuardianError::InvalidPayment => "invalid_payment",
+        ManifoldGuardianError::CapacityExhausted => "capacity_exhausted",
+        ManifoldGuardianError::UnknownSeat => "unknown_seat",
+        ManifoldGuardianError::UnsupportedVersion => "unsupported_version",
+        ManifoldGuardianError::UnsupportedFederationSize => "unsupported_federation_size",
+        ManifoldGuardianError::Unauthorized => "unauthorized",
+        ManifoldGuardianError::WrongState { .. } => "wrong_state",
+        ManifoldGuardianError::SeatUnavailable => "seat_unavailable",
+        ManifoldGuardianError::FederationIsRunning => "federation_is_running",
+        ManifoldGuardianError::InvalidDkgInput(_) => "invalid_dkg_input",
+        ManifoldGuardianError::MetaKeyRefused => "meta_key_refused",
+        ManifoldGuardianError::MetaValueInvalid => "meta_value_invalid",
+        ManifoldGuardianError::GuardianVerificationFeeAccountUnavailable => {
+            "guardian_verification_fee_account_unavailable"
+        }
+        ManifoldGuardianError::GuardianVerificationFeeAccountMismatch => {
+            "guardian_verification_fee_account_mismatch"
+        }
+        ManifoldGuardianError::MetaConsensusChanged => "meta_consensus_changed",
+        ManifoldGuardianError::FormationMetaAlreadyPublished => "formation_meta_already_published",
+        ManifoldGuardianError::MetaTargetConflict => "meta_target_conflict",
+        ManifoldGuardianError::InvalidGatewayApiUrl => "invalid_gateway_api_url",
+        ManifoldGuardianError::UnsupportedVerb { .. } => "unsupported_verb",
+        ManifoldGuardianError::Other(_) => "internal_or_other",
+    }
+}
+
+async fn trace_formation_rpc<T>(
+    verb: &'static str,
+    future: impl std::future::Future<Output = FmResult<T>>,
+) -> FmResult<T> {
+    let result = future.await;
+    if let Err(error) = &result {
+        tracing::warn!(verb, %error, "formation RPC failed");
+        tracing::warn!(
+            safe_to_share = true,
+            verb,
+            failure_kind = manifold_guardian_error_kind(error),
+            "formation RPC failed"
+        );
+    }
+    result
+}
+
+/// SPEC-fa-rpc's display-name rule, enforced at the boundary and answered as
+/// the typed policy error. The wire wrappers stay permissive so a malformed
+/// authenticated request reaches this check instead of failing decoding.
+fn validate_dkg_name(kind: &str, value: &str) -> FmResult<()> {
+    fedi_decentralized_service_manifold_guardian::validate_dkg_display_name(value)
+        .map_err(|err| ManifoldGuardianError::InvalidDkgInput(format!("{kind} {err}")))
+}
+
+fn unsupported<T>(verb: &str) -> FmResult<T> {
+    Err(ManifoldGuardianError::UnsupportedVerb {
+        verb: verb.to_owned(),
+    })
+}
+
+/// Sign this seat's binding as an [`MgPeerAttestation`].
+///
+/// Every field but `issued_at` comes from the seat's own live config through
+/// [`SeatFederationBinding`], and the digest is the shared statement's — the
+/// MG derives nothing here that a verifier re-derives independently, which
+/// is what keeps the two from disagreeing about the same federation
+/// ([`SPEC-federation-trust-directory`](../../../domain/specs/SPEC-federation-trust-directory.md)).
+pub(crate) fn sign_peer_attestation(
+    keys: &nostr_sdk::Keys,
+    binding: &SeatFederationBinding,
+    guardian_fee_account: Account,
+    issued_at: Timestamp,
+) -> Result<MgPeerAttestation, serde_json::Error> {
+    let attestation = MgPeerAttestationStatement {
+        mg_pubkey: Pubkey(keys.public_key().to_string()),
+        federation_id: binding.federation.federation_id().clone(),
+        federation_config_hash: binding.federation.federation_config_hash().clone(),
+        peer_id: binding.seat.peer_id.clone(),
+        guardian_identity: binding.seat.guardian_identity.clone(),
+        guardian_fee_account,
+        issued_at,
+    };
+    let signature = keys.sign_schnorr(&nostr_sdk::secp256k1::Message::from_digest(
+        attestation.digest()?,
+    ));
+
+    Ok(MgPeerAttestation {
+        version: ProtocolV1,
+        attestation,
+        proof: SchnorrSignatureProof { signature },
+    })
+}
+
+fn supported_fedimintd_version() -> FedimintdVersion {
+    FEDIMINTD_VERSION_0_1
+        .parse()
+        .expect("FEDIMINTD_VERSION_0_1 must be valid SemVer")
+}
+
+impl ManifoldGuardianService for ManifoldGuardianRpc {
+    async fn get_availability(
+        &self,
+        _request: GetAvailabilityRequest,
+    ) -> FmResult<GetAvailabilityResponse> {
+        let availability = self.fleet.availability_snapshot().await;
+        let mut federation_sizes: Vec<_> = FEDERATION_SIZES_0_1
+            .into_iter()
+            .map(FederationSize)
+            .collect();
+        if is_local_single_guardian_e2e(1) {
+            federation_sizes.push(FederationSize(1));
+        }
+        Ok(GetAvailabilityResponse {
+            // Use the same wallet-gated projection as advertising. Independent
+            // calls may observe different settings epochs or live state.
+            accepting_seats: availability.accepting_seats,
+            fedimintd_version: supported_fedimintd_version(),
+            federation_sizes,
+            plans: availability.plans,
+            additional_info: vec![],
+        })
+    }
+
+    async fn get_quote(
+        &self,
+        request: fedi_decentralized_service_manifold_guardian::GetQuoteRequest,
+    ) -> FmResult<SignedResponse<fedi_decentralized_service_manifold_guardian::GetQuoteResponse>>
+    {
+        trace_formation_rpc("get_quote", async {
+            if request.fedimintd_version != supported_fedimintd_version() {
+                return Err(ManifoldGuardianError::UnsupportedVersion);
+            }
+            if !FEDERATION_SIZES_0_1.contains(&request.federation_size.0)
+                && !is_local_single_guardian_e2e(request.federation_size.0)
+            {
+                return Err(ManifoldGuardianError::UnsupportedFederationSize);
+            }
+            let offer = self
+                .fleet
+                .quote_offer()
+                .await
+                .ok_or(ManifoldGuardianError::CapacityExhausted)?;
+            let offer_epoch = offer.epoch;
+            let settings = offer.settings;
+            if !settings.plans().contains(&request.plan) {
+                return Err(ManifoldGuardianError::PlanNotOffered);
+            }
+            let price = match &request.plan {
+                Plan::InfiniteBestEffort { price_msats } => *price_msats,
+                Plan::SubscriptionBased { .. } => {
+                    // The offer is stored as a price and rendered as the one
+                    // plan this daemon serves, so no stored offer can contain
+                    // this variant; quoting one would sell a subscription v1
+                    // has no renewal machinery for.
+                    return Err(internal(
+                        "get_quote",
+                        anyhow::anyhow!("SubscriptionBased plan in the stored offer"),
+                    ));
+                }
+            };
+            let quote_nonce: [u8; 32] = rand::random();
+            let payment = if price == 0 {
+                // A seat given away settles against nothing, so terms that name a
+                // payment federation or refund outputs are not expressible for it.
+                // Refuse rather than quote something the requester did not ask for.
+                if request.payment_federation_id.is_some() || request.refund_issuance.is_some() {
+                    return Err(ManifoldGuardianError::PlanNotOffered);
+                }
+                None
+            } else {
+                let selected = request
+                    .payment_federation_id
+                    .as_ref()
+                    .ok_or(ManifoldGuardianError::PaymentFederationNotAccepted)?;
+                if !settings.payment_federations.contains(selected) {
+                    return Err(ManifoldGuardianError::PaymentFederationNotAccepted);
+                }
+                let quoted = self
+                    .fleet
+                    .wallet()
+                    .quote_locked(selected, Msats(price), &quote_nonce)
+                    .await
+                    .map_err(|err| match err {
+                        LockedPaymentPrepareError::Invalid => {
+                            ManifoldGuardianError::PaymentFederationNotAccepted
+                        }
+                        LockedPaymentPrepareError::Unavailable => {
+                            ManifoldGuardianError::PaymentFederationUnavailable
+                        }
+                        LockedPaymentPrepareError::Internal(err) => {
+                            internal_chain("get_quote", &err)
+                        }
+                    })?;
+                let refund = request
+                    .refund_issuance
+                    .as_ref()
+                    .ok_or(ManifoldGuardianError::PlanNotOffered)?;
+                self.fleet
+                    .wallet()
+                    .validate_quote_refund(&quoted, refund)
+                    .await
+                    .map_err(|err| match err {
+                        LockedPaymentPrepareError::Invalid => ManifoldGuardianError::PlanNotOffered,
+                        LockedPaymentPrepareError::Unavailable => {
+                            ManifoldGuardianError::PaymentFederationUnavailable
+                        }
+                        LockedPaymentPrepareError::Internal(err) => {
+                            internal_chain("get_quote", &err)
+                        }
+                    })?;
+                Some(quoted)
+            };
+            let terms = QuoteTerms::compose(request, offer_epoch, price, quote_nonce, payment)
+                .map_err(|err| internal("get_quote", err))?;
+            let response = fedi_decentralized_service_manifold_guardian::GetQuoteResponse { terms };
+            SignedResponse::create(&response, &self.signing_key)
+                .map_err(|err| internal("get_quote", err))
+        })
+        .await
+    }
+
+    async fn create_seat(
+        &self,
+        request: SignedRequest<CreateSeatRequest>,
+    ) -> FmResult<SignedResponse<CreateSeatResponse>> {
+        trace_formation_rpc("create_seat", async {
+            let request = self.validate(request)?;
+            let signer = *request.signer();
+            let request = request.into_inner();
+            // Only a manager-signed quote can name an allocation decision; its
+            // embedded FA must be the verified request signer.
+            let quote = request
+                .quote
+                .verify(&self.signing_key.x_only_public_key().0)
+                .map_err(|_| ManifoldGuardianError::InvalidPayment)?;
+            quote
+                .terms
+                .check_coherent()
+                .map_err(|_| ManifoldGuardianError::InvalidPayment)?;
+            let quote_id = quote.quote_id();
+            if quote.terms.request.fa_id != signer {
+                return Err(ManifoldGuardianError::InvalidPayment);
+            }
+            let payment = match &quote.terms.payment {
+                None => {
+                    // A free quote priced nothing, so signatures presented against
+                    // it can only be confusion or an attempt to have them read as
+                    // evidence of something.
+                    if !request.payment_signatures.is_empty() {
+                        return Err(ManifoldGuardianError::InvalidPayment);
+                    }
+                    VerifiedPayment::Free
+                }
+                Some(terms) => {
+                    // Payment verification remains outside allocation; the fleet
+                    // receives only the opaque verified payment capability.
+                    let verified = self
+                        .fleet
+                        .wallet()
+                        .verify_locked(&quote_id, &quote.terms, &request.payment_signatures)
+                        .await
+                        .map_err(|err| match err {
+                            LockedPaymentPrepareError::Invalid => {
+                                ManifoldGuardianError::InvalidPayment
+                            }
+                            LockedPaymentPrepareError::Unavailable => {
+                                ManifoldGuardianError::PaymentFederationUnavailable
+                            }
+                            LockedPaymentPrepareError::Internal(err) => {
+                                internal_chain("create_seat", &err)
+                            }
+                        })?;
+                    VerifiedPayment::Locked {
+                        federation_id: terms.federation_id().clone(),
+                        payment: verified,
+                    }
+                }
+            };
+
+            let quote = quote.into_inner();
+            self.fleet
+                .create_seat(
+                    VerifiedCreateSeat {
+                        fa_id: signer,
+                        quote_id,
+                        quote_terms: quote.terms,
+                        payment,
+                    },
+                    |seat_id| {
+                        let guardian_fee_account = GuardianFeeAccount::try_from(
+                            self.fleet.guardian_fee_account_descriptor(seat_id),
+                        )
+                        .expect("mnemonic-derived guardian fee account is single-sig BtcDepositor");
+                        let response = CreateSeatResponse {
+                            quote_id,
+                            outcome: CreateSeatOutcome::Accepted {
+                                seat_id: seat_id.clone(),
+                                guardian_fee_account,
+                            },
+                        };
+                        Ok(SignedResponse::create(&response, &self.signing_key)?)
+                    },
+                    |reason, refund_transaction| {
+                        Ok(SignedResponse::create(
+                            &CreateSeatResponse {
+                                quote_id,
+                                outcome: CreateSeatOutcome::Refused {
+                                    reason,
+                                    refund_transaction: refund_transaction.cloned(),
+                                },
+                            },
+                            &self.signing_key,
+                        )?)
+                    },
+                )
+                .await
+                .map_err(|err| internal_chain("create_seat", &err))
+        })
+        .await
+    }
+
+    async fn get_dkg_code(
+        &self,
+        request: SignedRequest<GetDkgCodeRequest>,
+    ) -> FmResult<GetDkgCodeResponse> {
+        trace_formation_rpc("get_dkg_code", async {
+            let request = self.validate(request)?;
+            let seat = self
+                .fleet
+                .authorize(&request)
+                .map_err(|err| map_seat_error("get_dkg_code", err))?;
+            if let Some(name) = request.federation_name.as_ref() {
+                validate_dkg_name("federation name", &name.0)?;
+            }
+            seat.reject_decommissioned()
+                .map_err(|err| map_seat_error("get_dkg_code", err))?;
+            let guardian_code = seat
+                .dkg_code(request.federation_name.as_ref())
+                .await
+                .map_err(|err| map_seat_error("get_dkg_code", err))?;
+            Ok(GetDkgCodeResponse { guardian_code })
+        })
+        .await
+    }
+
+    async fn start_dkg(
+        &self,
+        request: SignedRequest<StartDkgRequest>,
+    ) -> FmResult<StartDkgResponse> {
+        trace_formation_rpc("start_dkg", async {
+            let request = self.validate(request)?;
+            let seat = self
+                .fleet
+                .authorize(&request)
+                .map_err(|err| map_seat_error("start_dkg", err))?;
+            seat.reject_decommissioned()
+                .map_err(|err| map_seat_error("start_dkg", err))?;
+            let callback =
+                self.prepare_completion_callback(request.completion_callback.as_ref())?;
+            seat.start_dkg(&request.guardian_codes, callback)
+                .await
+                .map_err(|err| map_seat_error("start_dkg", err))?;
+            Ok(StartDkgResponse)
+        })
+        .await
+    }
+
+    async fn restart_dkg(
+        &self,
+        request: SignedRequest<RestartDkgRequest>,
+    ) -> FmResult<RestartDkgResponse> {
+        trace_formation_rpc("restart_dkg", async {
+            let request = self.validate(request)?;
+            let seat = self
+                .fleet
+                .authorize(&request)
+                .map_err(|err| map_seat_error("restart_dkg", err))?;
+            let status = seat
+                .restart_dkg(&request.guardian_codes)
+                .await
+                .map_err(|err| map_seat_error("restart_dkg", err))?;
+            Ok(RestartDkgResponse { status })
+        })
+        .await
+    }
+
+    async fn get_status(
+        &self,
+        request: SignedRequest<GetStatusRequest>,
+    ) -> FmResult<GetStatusResponse> {
+        trace_formation_rpc("get_status", async {
+            let request = self.validate(request)?;
+            // No liveness gate: a decommissioned seat still answers status.
+            let seat = self
+                .fleet
+                .authorize(&request)
+                .map_err(|err| map_seat_error("get_status", err))?;
+            let report = seat
+                .report()
+                .await
+                .map_err(|err| map_seat_error("get_status", err))?;
+            // Project onto the canonical wire status. The payment placeholders
+            // (deadlines, grace) are 0.1 wire constants and live here, not in the
+            // fleet.
+            let (phase, health) = match report {
+                SeatReport::Active { phase, health } => (phase, health),
+                SeatReport::Decommissioned { at_ms } => {
+                    return Ok(GetStatusResponse {
+                        status: ServiceStatus::Decommissioned,
+                        detail: StatusDetail::Ended(EndedStatusInfo {
+                            reason: EndedReason::Decommissioned,
+                            at: Timestamp(u64::try_from(at_ms / 1000).unwrap_or(0)),
+                            note: None,
+                        }),
+                        seat_health: None,
+                    });
+                }
+            };
+            let (status, detail) = match phase {
+                SeatPhase::Created => (ServiceStatus::New, StatusDetail::None),
+                SeatPhase::DkgInProgress => (
+                    ServiceStatus::DkgInProcess,
+                    StatusDetail::Dkg(DkgStatusInfo {
+                        peer_connections: Vec::new(),
+                    }),
+                ),
+                SeatPhase::DataLoss { invite_code } => (
+                    ServiceStatus::DataLoss,
+                    StatusDetail::Federation(FederationStatusInfo {
+                        valid_until_date: None,
+                        invite_code: Some(invite_code),
+                        peer_connections: Vec::new(),
+                        in_grace: false,
+                        grace_deadline: None,
+                        stats: None,
+                    }),
+                ),
+                SeatPhase::Running { invite_code } => (
+                    ServiceStatus::Running,
+                    StatusDetail::Federation(FederationStatusInfo {
+                        valid_until_date: None,
+                        invite_code: Some(invite_code),
+                        peer_connections: Vec::new(),
+                        in_grace: false,
+                        grace_deadline: None,
+                        stats: None,
+                    }),
+                ),
+            };
+            Ok(GetStatusResponse {
+                status,
+                detail,
+                seat_health: Some(health),
+            })
+        })
+        .await
+    }
+
+    async fn get_invite_code(
+        &self,
+        request: SignedRequest<GetInviteCodeRequest>,
+    ) -> FmResult<GetInviteCodeResponse> {
+        trace_formation_rpc("get_invite_code", async {
+            let request = self.validate(request)?;
+            let seat = self
+                .fleet
+                .authorize(&request)
+                .map_err(|err| map_seat_error("get_invite_code", err))?;
+            seat.reject_decommissioned()
+                .map_err(|err| map_seat_error("get_invite_code", err))?;
+            let invite_code = seat
+                .invite_code()
+                .await
+                .map_err(|err| map_seat_error("get_invite_code", err))?;
+            Ok(GetInviteCodeResponse { invite_code })
+        })
+        .await
+    }
+
+    async fn get_peer_attestation(
+        &self,
+        request: SignedRequest<GetPeerAttestationRequest>,
+    ) -> FmResult<GetPeerAttestationResponse> {
+        trace_formation_rpc("get_peer_attestation", async {
+            let request = self.validate(request)?;
+            let seat = self
+                .fleet
+                .authorize(&request)
+                .map_err(|err| map_seat_error("get_peer_attestation", err))?;
+            seat.reject_decommissioned()
+                .map_err(|err| map_seat_error("get_peer_attestation", err))?;
+            let binding = seat
+                .federation_binding()
+                .await
+                .map_err(|err| map_seat_error("get_peer_attestation", err))?;
+
+            let guardian_fee_account = self.fleet.guardian_fee_account_descriptor(&request.seat_id);
+            let mg_peer_attestation = sign_peer_attestation(
+                &self.attestation_keys,
+                &binding,
+                guardian_fee_account,
+                now(),
+            )
+            .map_err(|err| internal("get_peer_attestation", err))?;
+            let seat_endpoint_proof = seat
+                .sign_endpoint_proof(mg_peer_attestation.attestation.clone())
+                .await
+                .map_err(|err| map_seat_error("get_peer_attestation", err))?;
+
+            Ok(GetPeerAttestationResponse {
+                mg_peer_attestation,
+                seat_endpoint_proof,
+            })
+        })
+        .await
+    }
+
+    async fn set_meta_field(
+        &self,
+        request: SignedRequest<SetMetaFieldRequest>,
+    ) -> FmResult<SetMetaFieldResponse> {
+        trace_formation_rpc("set_meta_field", async {
+            let request = self.validate(request)?;
+            let seat = self
+                .fleet
+                .authorize(&request)
+                .map_err(|err| map_seat_error("set_meta_field", err))?;
+            seat.reject_decommissioned()
+                .map_err(|err| map_seat_error("set_meta_field", err))?;
+            seat.submit_meta_field(
+                request.expected_base,
+                request.key.clone(),
+                request.value.clone(),
+                self.min_guardian_fee_ppm(),
+            )
+            .await
+            .map_err(|err| map_seat_error("set_meta_field", err))?;
+            Ok(SetMetaFieldResponse)
+        })
+        .await
+    }
+
+    async fn propose_formation_meta(
+        &self,
+        request: SignedRequest<ProposeFormationMetaRequest>,
+    ) -> FmResult<ProposeFormationMetaResponse> {
+        trace_formation_rpc("propose_formation_meta", async {
+            let request = self.validate(request)?;
+            let seat = self
+                .fleet
+                .authorize(&request)
+                .map_err(|err| map_seat_error("propose_formation_meta", err))?;
+            seat.reject_decommissioned()
+                .map_err(|err| map_seat_error("propose_formation_meta", err))?;
+            let guardian_verification_fee_account = self
+                .fleet
+                .config()
+                .guardian_verification_fee_account
+                .clone()
+                .ok_or(ManifoldGuardianError::GuardianVerificationFeeAccountUnavailable)?;
+            let guardian_verification_fee_account =
+                GuardianFeeAccount::try_from(guardian_verification_fee_account).map_err(|_| {
+                    ManifoldGuardianError::GuardianVerificationFeeAccountUnavailable
+                })?;
+            if request.guardian_verification_fee_account != guardian_verification_fee_account {
+                return Err(ManifoldGuardianError::GuardianVerificationFeeAccountMismatch);
+            }
+            seat.propose_formation_meta(
+                request.expected_base,
+                request.seat_bindings.clone(),
+                request.fa_fee_account.clone().into_account(),
+                request.send_ppm,
+                self.min_guardian_fee_ppm(),
+                guardian_verification_fee_account.as_account().clone(),
+            )
+            .await
+            .map_err(|err| map_seat_error("propose_formation_meta", err))?;
+            Ok(ProposeFormationMetaResponse)
+        })
+        .await
+    }
+
+    async fn register_gateway(
+        &self,
+        request: SignedRequest<RegisterGatewayRequest>,
+    ) -> FmResult<RegisterGatewayResponse> {
+        let request = self.validate(request)?;
+        let seat = self
+            .fleet
+            .authorize(&request)
+            .map_err(|err| map_seat_error("register_gateway", err))?;
+        seat.reject_decommissioned()
+            .map_err(|err| map_seat_error("register_gateway", err))?;
+        let gateway_api = SafeUrl::parse(request.gateway_api.as_str())
+            .map_err(|_| ManifoldGuardianError::InvalidGatewayApiUrl)?;
+        let was_added = seat
+            .register_gateway(gateway_api)
+            .await
+            .map_err(|err| map_seat_error("register_gateway", err))?;
+        Ok(RegisterGatewayResponse { was_added })
+    }
+
+    async fn get_fedimint_stats(
+        &self,
+        request: SignedRequest<GetFedimintStatsRequest>,
+    ) -> FmResult<GetFedimintStatsResponse> {
+        let request = self.validate(request)?;
+        let _seat = self
+            .fleet
+            .authorize(&request)
+            .map_err(|err| map_seat_error("get_fedimint_stats", err))?;
+        unsupported("GetFedimintStats")
+    }
+
+    /// Decommission the caller's own seat, outside production only.
+    ///
+    /// This is the one FA verb with an operator-shaped effect, so it is fenced
+    /// twice: `authorize` first, so only the seat's owner can name it, and the
+    /// deployment environment second, so a production MG answers
+    /// `UnsupportedVerb` no matter who asks. It exists to churn staging
+    /// federations without an operator in the loop
+    /// ([`ARCH-manifold-guardian-product-boundary`](../../specs/ARCH-manifold-guardian-product-boundary.md)).
+    async fn decommission_seat(
+        &self,
+        request: SignedRequest<DecommissionSeatRequest>,
+    ) -> FmResult<DecommissionSeatResponse> {
+        trace_formation_rpc("decommission_seat", async {
+            let request = self.validate(request)?;
+            let seat = self
+                .fleet
+                .authorize(&request)
+                .map_err(|err| map_seat_error("decommission_seat", err))?;
+            if !matches!(
+                self.fleet.config().manifold_environment,
+                ManifoldEnvironment::Development | ManifoldEnvironment::Staging
+            ) {
+                return unsupported("DecommissionSeat");
+            }
+            let decommissioned = self
+                .fleet
+                .decommission(&seat)
+                .await
+                .map_err(|err| internal_chain("decommission_seat", &err))?;
+            Ok(DecommissionSeatResponse {
+                already_decommissioned: !decommissioned,
+            })
+        })
+        .await
+    }
+
+    /// Serve this MG's current signed trust material.
+    ///
+    /// Unauthenticated by design: this is the material every verifier holding
+    /// an invite code is meant to be able to fetch, so there is no requester or
+    /// seat to authorize. Consensus metadata, not this response, establishes
+    /// which federations and guardian seats this MG operates.
+    ///
+    /// The response is signed by the service Nostr key, the same identity that
+    /// signs the kind-37701 advertisement and every peer attestation, because
+    /// a verifier resolves this MG *by* that pubkey.
+    async fn get_fman_trust_material(
+        &self,
+        _request: GetMgTrustMaterialRequest,
+    ) -> FmResult<GetMgTrustMaterialResponse> {
+        let Some(source) = self.trust_material.get() else {
+            // No Nostr relay is configured, so this MG has never learned a
+            // holder authorization and cannot produce trust material at all.
+            // Answering `unsupported` rather than an empty document keeps a
+            // verifier from reading "no authorizations" as "untrusted MG"
+            // when the truth is "this MG is not participating".
+            return unsupported("GetFmanTrustMaterial");
+        };
+
+        let issued_at = now();
+        let material = MgTrustMaterial {
+            mg_pubkey: Pubkey(self.attestation_keys.public_key().to_string()),
+            issued_at,
+            expires_at: Timestamp(issued_at.0.saturating_add(TRUST_MATERIAL_VALIDITY_SECS)),
+            public_api_urls: vec![source.iroh_endpoint_url()],
+            holder_authorizations: source.holder_authorizations(),
+        };
+
+        let digest = material
+            .digest()
+            .map_err(|err| internal("get_fman_trust_material", err))?;
+        let signature = self
+            .attestation_keys
+            .sign_schnorr(&nostr_sdk::secp256k1::Message::from_digest(digest));
+
+        let response = GetMgTrustMaterialResponse {
+            version: ProtocolV1,
+            material,
+            proof: SchnorrSignatureProof { signature },
+        };
+        response
+            .verify_for_mg(
+                &response.material.mg_pubkey,
+                issued_at,
+                TRUST_MATERIAL_VALIDITY_SECS,
+            )
+            .map_err(|err| internal("get_fman_trust_material", err))?;
+        Ok(response)
+    }
+}
+
+fn is_local_single_guardian_e2e(size: u16) -> bool {
+    size == 1 && std::env::var_os("MG_E2E_LOCAL_IROH").is_some()
+}
+
+#[cfg(test)]
+#[path = "../tests/service.rs"]
+mod tests;

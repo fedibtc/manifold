@@ -3,16 +3,16 @@
 ## Argument
 
 **L1 (`code`) — the endorsement authenticates only the federation id before
-preview.** `run_admission_gate` parses the federation id from the FI's invite,
-checks it against the FMan attestation, and verifies the endorsement badge. It
+preview.** `run_admission_gate` parses the federation id from the FA's invite,
+checks it against the MG attestation, and verifies the endorsement badge. It
 neither compares an API URL to an attested value nor obtains a trusted endpoint
-directory. The FMan attestation itself binds federation/config/seat identity,
+directory. The MG attestation itself binds federation/config/seat identity,
 not an invite API URL.
 
 **L2 (`code`) — a caller can alter the endpoint while retaining that id.** The
 pinned `InviteCode::new` accepts an arbitrary `SafeUrl`, peer id, and supplied
 `FederationId` as independent fields. `SafeUrl::parse` delegates directly to
-URL parsing and applies no loopback/private-address policy. Thus an FI can
+URL parsing and applies no loopback/private-address policy. Thus an FA can
 construct a valid invite whose federation-id part passes L1 while its API part
 is an attacker-selected globally routed `wss://` endpoint.
 
@@ -28,12 +28,12 @@ defaults have a small fixed exact-URL override map, so the witness chooses an
 unmapped attacker-controlled global endpoint; it reaches the enabled
 WebSocket connector unchanged. Only the response is later checked to calculate
 the same federation id. Therefore the request's altered API URL is used for a
-connection attempt before the configuration's identity, seat bindings, FMan
+connection attempt before the configuration's identity, seat bindings, MG
 advertisements, or policy are authenticated.
 
 The allocation fast path does not prevent the witness: it uses an
-unallocated endorsed federation. Alternatively, the FI can set the
-FI-supplied `federation_details.federation_id` to a fresh value; that field is
+unallocated endorsed federation. Alternatively, the FA can set the
+FA-supplied `federation_details.federation_id` to a fresh value; that field is
 not checked against the invite until after preview has already dialed. By
 A1–A2, this makes one valid endorsement an SSRF/network-probing capability and
 falsifies the claim.

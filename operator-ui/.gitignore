@@ -19,8 +19,8 @@ package-lock.json
 # flip:live local stack runtime state (daemon pid + logs)
 dev/flip-stack/.state/
 
-# fman:live local stack runtime state (daemon pid + logs + generated password)
-dev/fman-stack/.state/
+# mg:live local stack runtime state (daemon pid + logs + generated password)
+dev/mg-stack/.state/
 
 # agent task files (local only)
 tasks/

@@ -3,7 +3,7 @@
 The following classified values cannot escape through the following enumerated
 public exits: provider Nostr private key, bootstrap Admin bearer, secret-store
 key, gateway Admin credential, bitcoind password, request invite code, and
-request-carried FMan trust material/credential bundle, and target Fedimint peg-in
+request-carried MG trust material/credential bundle, and target Fedimint peg-in
 address; exits are the three public
 RPC response constructors (`get_provider_info`, `request_liquidity`,
 `get_allocation_status`), `LiquidityProviderAdvertisement`/`RelayPublishRequest`

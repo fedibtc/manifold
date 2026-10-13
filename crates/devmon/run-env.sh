@@ -13,7 +13,7 @@
 # Development tool. Run from inside `nix develop`.
 set -euo pipefail
 
-FMAN_COUNT="${FMAN_COUNT:-3}"
+MG_COUNT="${MG_COUNT:-3}"
 DASH_PORT="${DASH_PORT:-7777}"
 # Dev setup-payment publisher placeholder (public test secret 3), matching the
 # development profile default and distinct from the dev issuer placeholder key.
@@ -24,7 +24,7 @@ BIN="$REPO_ROOT/target/debug"
 
 for bin in defe defe-cli fleet-manager fman-cli devmon manifold-test-issuer; do
   [[ -x "$BIN/$bin" ]] || {
-    echo "missing $BIN/$bin, run: cargo build -p defe -p defe-client -p fman -p fman-cli -p devmon --bins"
+    echo "missing $BIN/$bin, run: cargo build -p defe -p defe-client -p mg -p mg-cli -p devmon --bins"
     exit 1
   }
 done
@@ -52,8 +52,8 @@ trap cleanup EXIT INT TERM
 echo "run dir:   $RUN_DIR"
 echo "relay:     $RELAY_URL (defe lease)"
 
-for i in $(seq 1 "$FMAN_COUNT"); do
-  data_dir="$RUN_DIR/fman$i"
+for i in $(seq 1 "$MG_COUNT"); do
+  data_dir="$RUN_DIR/mg$i"
   mkdir -p "$data_dir"
   # Seat port grids must be disjoint per host: the daemon allocates blocks of 4k from the base.
   MANIFOLD_DEV_NOSTR_RELAYS="$RELAY_URL" \
@@ -65,15 +65,15 @@ for i in $(seq 1 "$FMAN_COUNT"); do
     --bitcoind-username devmon \
     --bitcoind-password devmon \
     --first-port-base "$((30000 + (i - 1) * 4000))" \
-    > "$data_dir/fman.log" 2>&1 &
-  fman_pid=$!
-  pids+=("$fman_pid")
+    > "$data_dir/mg.log" 2>&1 &
+  mg_pid=$!
+  pids+=("$mg_pid")
 
   # This disposable demo completes the same mandatory stages as the UI.
   onboarded=false
   for _ in {1..200}; do
-    if ! kill -0 "$fman_pid" 2>/dev/null; then
-      echo "fman$i exited before onboarding; see $data_dir/fman.log" >&2
+    if ! kill -0 "$mg_pid" 2>/dev/null; then
+      echo "mg$i exited before onboarding; see $data_dir/mg.log" >&2
       exit 1
     fi
     if "$BIN/fman-cli" --data-dir "$data_dir" onboard new --if-needed \
@@ -84,16 +84,16 @@ for i in $(seq 1 "$FMAN_COUNT"); do
     sleep 0.05
   done
   if [[ "$onboarded" != true ]]; then
-    echo "fman$i did not accept onboarding; see $data_dir/fman.log" >&2
+    echo "mg$i did not accept onboarding; see $data_dir/mg.log" >&2
     exit 1
   fi
   onboarding="$($BIN/fman-cli --data-dir "$data_dir" onboarding)"
   authorization_request="$(python3 -c 'import json,sys; print(json.dumps({"subject_pubkey": json.load(sys.stdin)["service_nostr_pubkey"]}))' <<<"$onboarding")"
   "$BIN/manifold-test-issuer" --environment development --relay "$RELAY_URL" \
-    --authorization-request "$authorization_request" --publish-fman-authorization >/dev/null
+    --authorization-request "$authorization_request" --publish-mg-authorization >/dev/null
   "$BIN/fman-cli" --data-dir "$data_dir" refresh-holder-authorizations >/dev/null
   "$BIN/fman-cli" --data-dir "$data_dir" onboard offer --max-seats "$((i + 1))" >/dev/null
-  echo "fman$i      capacity=$((i + 1))  log: $data_dir/fman.log"
+  echo "mg$i      capacity=$((i + 1))  log: $data_dir/mg.log"
 done
 
 "$BIN/devmon" --relay "$RELAY_URL" --port "$DASH_PORT" &
@@ -101,5 +101,5 @@ pids+=($!)
 
 echo
 echo "dashboard  http://127.0.0.1:${DASH_PORT}"
-echo "FMans publish on startup and republish hourly. Ctrl-C to stop."
+echo "MGs publish on startup and republish hourly. Ctrl-C to stop."
 wait

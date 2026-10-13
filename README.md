@@ -6,16 +6,16 @@ Shared monorepo for the Federation Decentralization Scaling project. Contains co
 
 | Path | Description |
 | --- | --- |
-| `crates/fi-client/` | Consumer-neutral, stateful Federation Initiator library - [start here](./crates/fi-client/specs/ARCH-fi-client.md) |
-| `crates/fi-cli/` | Development/test-only terminal and E2E consumer of `fi-client` |
-| `crates/fman/` | Fleet Manager (FMan): `core` (the daemon and the capability traits it defines), `fedimint` and `nostr` (implementations of them), `bin` (the composition root) |
+| `crates/fa-client/` | Consumer-neutral, stateful Federation Ambassador library - [start here](./crates/fa-client/specs/ARCH-fa-client.md) |
+| `crates/fa-cli/` | Development/test-only terminal and E2E consumer of `fa-client` |
+| `crates/mg/` | Manifold Guardian (MG): `core` (the daemon and the capability traits it defines), `fedimint` and `nostr` (implementations of them), `bin` (the composition root) |
 | `crates/setup-payment-publisher/` | Production custodian tool for signing and publishing the common setup-payment federation policy |
 | `crates/` | Remaining Rust workspace crates: shared domain/service types, daemons, and test infrastructure |
-| `docs/fedi-app/` | Fedi app design (the primary `fi-client` consumer) |
+| `docs/fedi-app/` | Fedi app design (the primary `fa-client` consumer) |
 | `crates/liquidity-manager-daemon/` | FLIP (Federation Liquidity Provisioner) daemon - [start here](./crates/liquidity-manager-daemon/specs/ARCH-liquidity-manager.md) |
 | `docs/liquidity-manager/` | FLIP open-items tracker, trust-validation implementation guide, and Docker packaging notes |
-| `crates/fman/specs/` | Fleet Manager (FMan) design - [start here](./crates/fman/specs/ARCH-fleet-manager.md) |
-| `packages/fleet-manager/` | Fleet Manager 0.1 Umbrel/StartOS package skeletons |
+| `crates/mg/specs/` | Manifold Guardian (MG) design - [start here](./crates/mg/specs/ARCH-manifold-guardian.md) |
+| `packages/fleet-manager/` | Manifold Guardian 0.1 Umbrel/StartOS package skeletons |
 
 ## Development environment
 
@@ -78,7 +78,7 @@ target/debug/defe exec target/debug/defe-cli --request-push-gateway -- sh -c 'ec
 target/debug/defe exec target/debug/defe-cli --request-bitcoind -- sh -c 'echo "$DEV_DEFE_BITCOIND_URL"'
 ```
 
-`defe-cli --request-relay` exports `DEV_DEFE_NOSTR_RELAY_URL`, `DEV_DEFE_NOSTR_RELAY_PORT`, and `DEV_DEFE_NOSTR_RELAY_DATA_DIR` for the child command. `defe-cli --request-push-gateway` exports `DEV_DEFE_PUSH_GATEWAY_URL`, `DEV_DEFE_PUSH_GATEWAY_PORT`, `DEV_DEFE_PUSH_GATEWAY_APP_ID`, and `DEV_DEFE_PUSH_GATEWAY_DATABASE_PATH`. `defe-cli --request-bitcoind` starts Bitcoin Core in regtest mode and exports `DEV_DEFE_BITCOIND_URL`, `DEV_DEFE_BITCOIND_RPC_HOST`, `DEV_DEFE_BITCOIND_RPC_PORT`, `DEV_DEFE_BITCOIND_P2P_PORT`, `DEV_DEFE_BITCOIND_RPC_USERNAME`, `DEV_DEFE_BITCOIND_RPC_PASSWORD`, and `DEV_DEFE_BITCOIND_DATA_DIR`; Fleet Manager E2E tests pass these through to `--bitcoind-*` daemon args. In all cases the wrapper keeps the lease alive until the child exits. Regular workspace tests should use fake or lightweight resources and do not require `nostr-rs-relay` or `bitcoind`; the low-level `defe`/`defe-client` real relay probes are opt-in ignored tests gated by `DEV_DEFE_RUN_REAL_NOSTR_RELAY_TESTS=1`.
+`defe-cli --request-relay` exports `DEV_DEFE_NOSTR_RELAY_URL`, `DEV_DEFE_NOSTR_RELAY_PORT`, and `DEV_DEFE_NOSTR_RELAY_DATA_DIR` for the child command. `defe-cli --request-push-gateway` exports `DEV_DEFE_PUSH_GATEWAY_URL`, `DEV_DEFE_PUSH_GATEWAY_PORT`, `DEV_DEFE_PUSH_GATEWAY_APP_ID`, and `DEV_DEFE_PUSH_GATEWAY_DATABASE_PATH`. `defe-cli --request-bitcoind` starts Bitcoin Core in regtest mode and exports `DEV_DEFE_BITCOIND_URL`, `DEV_DEFE_BITCOIND_RPC_HOST`, `DEV_DEFE_BITCOIND_RPC_PORT`, `DEV_DEFE_BITCOIND_P2P_PORT`, `DEV_DEFE_BITCOIND_RPC_USERNAME`, `DEV_DEFE_BITCOIND_RPC_PASSWORD`, and `DEV_DEFE_BITCOIND_DATA_DIR`; Manifold Guardian E2E tests pass these through to `--bitcoind-*` daemon args. In all cases the wrapper keeps the lease alive until the child exits. Regular workspace tests should use fake or lightweight resources and do not require `nostr-rs-relay` or `bitcoind`; the low-level `defe`/`defe-client` real relay probes are opt-in ignored tests gated by `DEV_DEFE_RUN_REAL_NOSTR_RELAY_TESTS=1`.
 
 Build managed resource binaries before using a persistent server, or add the Cargo profile output directory to the managed-binary search path:
 
@@ -119,15 +119,15 @@ external-service nextest suite, formatting, lockfile freshness, dependency
 source hygiene, release metadata, and Lean proofs.
 
 On Linux, SelfCI builds CI-profile OCI runtime-contract checks for Push Gateway,
-Fleet Manager, and FLIP, including the Fleet Manager entrypoint CLI contract.
-The FMan and FLIP checks use their `embedded-operator-ui` feature, so Nix must
+Manifold Guardian, and FLIP, including the Manifold Guardian entrypoint CLI contract.
+The MG and FLIP checks use their `embedded-operator-ui` feature, so Nix must
 fetch and build the real operator UI and package it with each daemon. All Rust
 compilation remains on the CI profile.
 
 ## Image publishing
 
-`.github/workflows/publish.yml` pushes the Fleet Manager, FLIP
-liquidity-manager, cloud FMan telemetry and push gateway images to GHCR on
+`.github/workflows/publish.yml` pushes the Manifold Guardian, FLIP
+liquidity-manager, cloud MG telemetry and push gateway images to GHCR on
 every push to `master`, and on manual `workflow_dispatch`. Publishing remains
 separate from SelfCI so a fork pull request can never obtain registry
 credentials or write to the registry. Its build phase uses one
@@ -168,12 +168,12 @@ so publishing adds a destination rather than a new artifact shape.
 
 Each Nix-built daemon binary embeds its own operator dashboard, built from
 `operator-ui/`, and serves it from the listener that already carries its
-operator API: `/api` for Fleet Manager, `/admin` for FLIP. Ordinary Cargo builds
+operator API: `/api` for Manifold Guardian, `/admin` for FLIP. Ordinary Cargo builds
 omit those assets. There is no separate dashboard image and no reverse-proxy
 sidecar, because the daemon and its dashboard are one origin by construction —
-which is what FMan's same-origin session cookie and FLIP's bearer token need.
+which is what MG's same-origin session cookie and FLIP's bearer token need.
 The dashboard shell and its hashed assets load before authentication; the API
 namespaces keep their existing authentication.
 
-Fleet Manager serves the dashboard only when the deployment enables the operator
+Manifold Guardian serves the dashboard only when the deployment enables the operator
 HTTP listener; see [`packages/fleet-manager`](./packages/fleet-manager/README.md).

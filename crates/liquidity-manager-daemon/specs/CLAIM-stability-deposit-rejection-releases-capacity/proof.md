@@ -81,7 +81,7 @@ is durably recorded in the same transaction.
 
 ## Residual windows
 
-- The FI does not receive the e-cash; the loss is a provider operational lockup.
+- The FA does not receive the e-cash; the loss is a provider operational lockup.
 - Extracting FLIP's target-client secret and operating an external client is
   outside the official remediation surface.
 - The operation is operator-driven. Nothing releases the capacity automatically,

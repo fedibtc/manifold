@@ -8,7 +8,7 @@ federation.
 The adversary knows a target provider key and federation id, controls an
 arbitrary valid requester signing key and every request field, but has neither
 the accepted requester's signing key nor its `details_payload_hash`, **and holds
-no valid unrevoked FMan endorsement for the target federation**. The claim
+no valid unrevoked MG endorsement for the target federation**. The claim
 concerns allocation *existence*, not item status, and is the privacy boundary
 stated for status lookup in `SPEC-flip-rpc`. Timing and transport observations
 are not claimed.

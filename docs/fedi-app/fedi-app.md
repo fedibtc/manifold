@@ -1,13 +1,13 @@
-# Fedi app Federation Initiator integration
+# Fedi app Federation Ambassador integration
 
 ## Purpose and current scope
 
 The Fedi app is the primary consumer of
-[`fi-client`](../../crates/fi-client/specs/ARCH-fi-client.md). The bridge gives
-the library a root-derived FI identity, an isolated database namespace, an
+[`fa-client`](../../crates/fa-client/specs/ARCH-fa-client.md). The bridge gives
+the library a root-derived FA identity, an isolated database namespace, an
 Iroh adapter, and a typed RPC surface. The front end supplies formation intent,
 presents the library's verified advertisement preview, selects one eligible
-joined payer, and invokes Pay-and-create. `fi-client` owns the guardian set,
+joined payer, and invokes Pay-and-create. `fa-client` owns the guardian set,
 exact quotes, payment boundary, and formation transitions.
 
 The formation contract includes registry discovery, automatic verified
@@ -17,13 +17,13 @@ remain separate capabilities rather than app-side state machines.
 
 ```mermaid
 flowchart LR
-    User(("FI user"))
+    User(("FA user"))
     UI["Fedi setup UI"]
     Bridge["Fedi bridge adapters"]
-    Client["fi-client"]
+    Client["fa-client"]
     Store["prefixed bridge DB"]
     Wallet["Fedi wallet"]
-    FM["verified selected Fleet Managers"]
+    FM["verified selected Manifold Guardians"]
 
     User --> UI
     UI -- intent, preview handle, payer, cap --> Bridge
@@ -37,12 +37,12 @@ flowchart LR
 
 ## Ownership boundary
 
-| Concern | Fedi owns | `fi-client` owns |
+| Concern | Fedi owns | `fa-client` owns |
 | --- | --- | --- |
-| Identity | Derive and protect the stable FI key from the app root secret; sign requested digests | Construct every domain-separated protocol digest |
+| Identity | Derive and protect the stable FA key from the app root secret; sign requested digests | Construct every domain-separated protocol digest |
 | Storage | Allocate a dedicated encrypted bridge database prefix | Define and update formation recovery records |
 | Payments | Project joined/balance state, prove exact quote aggregate plus fees/reserve is fundable without outputs, recover exact wallet operations, settle refunds | Authenticate admitted payers, verify quote terms, and enforce commercial and output boundaries |
-| Transport | Bind and reuse an Iroh endpoint | Drive `FleetManagerService` and verify manager commitments against each locator |
+| Transport | Bind and reuse an Iroh endpoint | Drive `ManifoldGuardianService` and verify manager commitments against each locator |
 | UI | Collect intent, render the uncached preview and eligible joined wallets, return the sealed handle/payer/cap | Verify all seats, select operators, validate input, resolve defaults, and own lifecycle transitions |
 
 The bridge converts types and capabilities; it does not implement a second
@@ -60,7 +60,7 @@ The setup surface collects only the current `FormationIntent` fields:
 - the plan family, of which `InfiniteBestEffort` is currently the only one; and
 - the canonical supported fedimintd version.
 
-If the user leaves the name blank, `fi-client` generates a two-word name. The
+If the user leaves the name blank, `fa-client` generates a two-word name. The
 resolved value is persisted and returned in active status, so the UI displays
 one stable name across restart. The app does not collect per-seat DKG labels or
 custom ceremony configuration.
@@ -104,7 +104,7 @@ ambiguous siblings stay pinned. Sealing the replacement cap is the required
 fresh replacement authorization, and exact replacement quotes auto-authorize
 within it. If their checked total exceeds that cap, the post-output flow
 publishes an exact `AuthorizePayments` action that the bridge must render and
-submit before any replacement output starts. A definite FMan
+submit before any replacement output starts. A definite MG
 connection failure is retried with bounded exponential backoff for up to two
 minutes (clipped by the invocation deadline) before that result. Once outputs
 are armed the operation is non-abandonable and transport failure stays on exact
@@ -114,7 +114,7 @@ replay rather than suggesting replacement; recovery continues after crash.
 
 The bridge exposes four concepts:
 
-- current FI service health plus the typed `FiStatus`;
+- current FA service health plus the typed `FaStatus`;
 - an uncached verified preview command returning display DTOs plus an opaque
   five-minute handle;
 - authenticated admitted payer IDs (including zero-balance wallets), a
@@ -124,7 +124,7 @@ The bridge exposes four concepts:
   renewed cap; and
 - a stream of typed status snapshots.
 
-`FiStatus::Idle` means no active formation. An active formation always carries
+`FaStatus::Idle` means no active formation. An active formation always carries
 its id and fully resolved persisted intent. The front end does not reconstruct
 these values from nullable fields.
 
@@ -150,7 +150,7 @@ For each verified paid aggregate, the Fedi wallet adapter:
    journal; a different plan under the same id fails closed;
 3. only for a new journal, value-freely proves the complete verified locked
    issuance set is covered by balance after wallet fees and required reserve,
-   then atomically records the hold before FI arms output generation;
+   then atomically records the hold before FA arms output generation;
 4. carries the opaque aggregate capability into every exact member start and,
    under the wallet-wide spend guard, first recovers or atomically persists the
    deterministic quote-bound operation and its recovery metadata;
@@ -160,22 +160,22 @@ For each verified paid aggregate, the Fedi wallet adapter:
    operation without another spend, while a crash after partial aggregate
    consumption reconstructs the journal without charging consumed members
    again; dropping the capability is not release;
-6. returns only protocol payment evidence to `fi-client`; and
+6. returns only protocol payment evidence to `fa-client`; and
 7. issues an opaque terminal-release proof only after consensus proves funding
-   rejected or an FMan-signed refund settles. `fi-client` must present that
+   rejected or an MG-signed refund settles. `fa-client` must present that
    proof before invalidating the member for replacement; Prepared or ambiguous
    payments fail closed.
 
 The aggregate user cap and exact commercial authorization precede output
 generation, but do not themselves make the flow irreversible. After same-terms
-quote refresh, exact funding recheck, and FMan connection barriers, Manifold
+quote refresh, exact funding recheck, and MG connection barriers, Manifold
 durably projects `payment_outputs_started` immediately before polling the first
 output call. A wallet operation never authorizes another quote.
 
 Payment signatures, raw bearer ecash, refund secrets, and root-derived private
-material do not enter FI storage, RPC status, analytics, or logs. The bridge can
+material do not enter FA storage, RPC status, analytics, or logs. The bridge can
 be interrupted after a wallet or remote effect without losing correctness:
-reopening the same wallet and FI database and resuming reconstructs the exact
+reopening the same wallet and FA database and resuming reconstructs the exact
 operation.
 
 ## Progress and interruption
@@ -188,7 +188,7 @@ The next run resumes from durable state.
 
 If a selected operation returns a reauthorization error before outputs, the
 driver reconstructs and explicitly releases any wallet reservation before
-wiping FI state to `Idle`; release ambiguity retains the formation for retry.
+wiping FA state to `Idle`; release ambiguity retains the formation for retry.
 Only after the release-and-wipe transition succeeds does relaunch route to
 preview/payer choice. If `payment_outputs_started` is true, resume is mandatory
 and uses exact quote-bound wallet recovery.
@@ -196,19 +196,19 @@ and uses exact quote-bound wallet recovery.
 Reloaded service-derived state is marked unsynced until reconciliation. An
 already formed federation is verified through fresh guardian consensus; if its
 saved invite is unreachable, recovery may ask saved managers for alternatives.
-Unfinished formation retains its FMan checks. The UI may display reloaded state
+Unfinished formation retains its MG checks. The UI may display reloaded state
 as last known information but must not present it as a fresh remote observation.
 
 ## Testing responsibilities
 
 Bridge tests keep every library enum conversion exhaustive and verify the
-database namespace and stable FI identity. RPC tests cover typed command errors,
+database namespace and stable FA identity. RPC tests cover typed command errors,
 idle and active status, and stream registration/cancellation. TypeScript tests
 cover the normal `FedimintBridge` methods so application code never depends on
 raw generated RPC details.
 
 The app integration does not duplicate protocol E2E coverage. Manifold's
-`defe` suite covers a seven-FMan free formation and a separate seven-FMan real
+`defe` suite covers a seven-MG free formation and a separate seven-MG real
 payment formation. Focused Manifold wallet tests cover recovery and refund
 replay. Fedi-side tests focus on the consumer boundary,
 including backgrounding or cancellation followed by status reload and resume.
@@ -219,5 +219,5 @@ including backgrounding or cancellation followed by status reload and resume.
 - liquidity and fee-arrangement workflows; and
 - product analytics for formation completion.
 
-Each deferred capability should arrive first as a `fi-client` state or port
+Each deferred capability should arrive first as a `fa-client` state or port
 extension, followed by a thin bridge mapping and UI.

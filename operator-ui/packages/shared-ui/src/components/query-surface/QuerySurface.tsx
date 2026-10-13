@@ -11,7 +11,7 @@ interface QuerySurfaceProps {
   /**
    * Turns a thrown read error into operator-facing copy. Injected because each
    * dashboard has its own error taxonomy — FLIP's admin API carries service
-   * codes, the fleet manager's does not — and the sentence an operator reads
+   * codes, the manifold guardian's does not — and the sentence an operator reads
    * has to come from the vocabulary of the daemon they are talking to. Each app
    * binds its own in a one-line wrapper rather than passing this per screen.
    */

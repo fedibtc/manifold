@@ -13,7 +13,7 @@ changes are fine. Prefer re-engineering over patching.
 
 ## A session is passes run to a fixed point
 
-A session targets one system (e.g. "the fleet manager" — its crates and
+A session targets one system (e.g. "the manifold guardian" — its crates and
 spec chain). Organize all work within it as **passes**. A pass is one lens
 over the whole system: one question, the signals that answer it, and a clean
 condition ("this pass found nothing against the current code").

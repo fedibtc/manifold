@@ -19,7 +19,7 @@ and L2 gives the stated durable-row bound.
 ## Residual windows
 
 - A valid endorsement authorizes any holder, indefinitely, until an admission
-  lookup observes its FMan badge revoked. This is the accepted bearer-capability
+  lookup observes its MG badge revoked. This is the accepted bearer-capability
   tradeoff, not a gap in the composition.
 - Work already accepted is not cancelled on later revocation.
 - The bound is on allocation and item rows, not external financial effects;

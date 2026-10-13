@@ -52,7 +52,7 @@
     },
     {
       "path": "./packages/biome-plugins/screen-query-disposition.grit",
-      "includes": ["**/apps/fleet-manager/src/pages/**/*.tsx", "!**/__tests__/**"]
+      "includes": ["**/apps/manifold-guardian/src/pages/**/*.tsx", "!**/__tests__/**"]
     }
   ],
   "overrides": [

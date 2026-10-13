@@ -1,4 +1,4 @@
-// Shared Tailwind preset consumed by both apps (FLIP + FMan).
+// Shared Tailwind preset consumed by both apps (FLIP + MG).
 // Tokens mirror the Fedi Design System — source of truth is
 // fedi/ui/common/constants/theme.ts (HEX_COLORS + theme.colors). Visual
 // reference only; no shared runtime code. Token names track the Fedi names so

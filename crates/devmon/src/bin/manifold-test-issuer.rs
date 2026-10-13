@@ -11,7 +11,7 @@ use fedi_decentralized_nostr::attester::{
 };
 use fedi_decentralized_nostr_clients::{
     HolderNostrClient as _, NostrHolderClient, NostrRelayClient, PublishFlipAuthorizationRequest,
-    PublishFmanAuthorizationRequest,
+    PublishMgAuthorizationRequest,
 };
 use nostr_sdk::{EventBuilder, Keys, Kind, SecretKey, Tag};
 use peerbadge_protocol::{
@@ -48,15 +48,15 @@ struct Args {
     #[arg(long, required_unless_present = "mint_authority_document")]
     authorization_request: Option<String>,
 
-    /// Publish the holder authorization event that an FMan discovers.
+    /// Publish the holder authorization event that an MG discovers.
     #[arg(long)]
-    publish_fman_authorization: bool,
+    publish_mg_authorization: bool,
 
     /// Publish the holder authorization event that a FLIP provider discovers.
     ///
-    /// The same authorization as the FMan variant, with the same event kind and
+    /// The same authorization as the MG variant, with the same event kind and
     /// the same content — only the discovery coordinate differs. FLIP fetches
-    /// with `.hashtag(FLIP_AUTHORIZATION_HASHTAG)`, so an FMan-tagged event is
+    /// with `.hashtag(FLIP_AUTHORIZATION_HASHTAG)`, so an MG-tagged event is
     /// never a candidate for it however correctly it names the provider in `p`.
     #[arg(long)]
     publish_flip_authorization: bool,
@@ -175,7 +175,7 @@ async fn main() -> anyhow::Result<()> {
             .await?;
         authority_event_ids.push(event_id.to_string());
 
-        if args.publish_fman_authorization || args.publish_flip_authorization {
+        if args.publish_mg_authorization || args.publish_flip_authorization {
             let holder_keys = Keys::new(SecretKey::parse(&holder.export_secret_key())?);
             let holder_client = NostrHolderClient::new(
                 NostrRelayClient::connect(relay_url, holder_keys, RELAY_TIMEOUT).await?,
@@ -190,10 +190,10 @@ async fn main() -> anyhow::Result<()> {
             });
             let content = serde_json_canonicalizer::to_string(&envelope)?;
 
-            if args.publish_fman_authorization {
+            if args.publish_mg_authorization {
                 let event_id = holder_client
-                    .publish_fman_authorization(PublishFmanAuthorizationRequest {
-                        fman_pubkey: subject.0,
+                    .publish_mg_authorization(PublishMgAuthorizationRequest {
+                        mg_pubkey: subject.0,
                         issuer_pubkey: issuer_keys.public_key().to_string(),
                         credential_digest: credential_digest.clone(),
                         schema: TRUST_BADGE_SCHEMA.to_owned(),

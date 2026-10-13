@@ -13,7 +13,7 @@
 | Date | 2026-08-09 |
 | Plan of record | `operator-ui/REMEDIATION-PLAN-2026-08-08.md` |
 | Ledger | `.superpowers/sdd/REMEDIATION-PLAN-2026-08-08/progress.md` |
-| Assessment basis | `AUDIT-ASSESSMENT-2026-08-08.md` (+ FMAN/FLIP siblings) |
+| Assessment basis | `AUDIT-ASSESSMENT-2026-08-08.md` (+ MG/FLIP siblings) |
 
 Priority behaviour fixes at HEAD hold under code review and freshly run gates. The branch does **not** deliver a green operator-ui CI gate, and several assessment items remain open by design or omission. Ledger/self-reports were not trusted; claims were checked against code and commands.
 
@@ -48,11 +48,11 @@ Priority behaviour fixes at HEAD hold under code review and freshly run gates. T
 
 ## Observations
 
-- **Deferrals intact:** No B8 / C6 / Track D half-landings in the remediation diff. `flake.nix` still has `FLIP_ADMIN_BIND_ADDRESS=0.0.0.0:8173` (D3). FMan browser onboarding still D1. Backup remains path/honesty (B2), not byte transport (D2).
+- **Deferrals intact:** No B8 / C6 / Track D half-landings in the remediation diff. `flake.nix` still has `FLIP_ADMIN_BIND_ADDRESS=0.0.0.0:8173` (D3). MG browser onboarding still D1. Backup remains path/honesty (B2), not byte transport (D2).
 - **Stacking:** Remediation = 29 commits on `77a049c7`. That base is ~230 commits ahead of `master` (`feat/msw-mock-migration`). A PR to `master` is not remediation-only.
 - **Out-of-`operator-ui/` files in the delta:** `.github/workflows/operator-ui.yml`, `.typos.toml` (hygiene `a16ebc3a`), contract-fixture Rust under `crates/service-liquidity-manager/`, `justfile.custom.just` (gen fixtures + rust-coverage) — consistent with A1/A4/A5, not drive-by.
 - **A4 residuals:** MSW ready path uses generated JSON; some tests / alternate scenarios / backup MANIFEST in verbs remain hand-authored copies.
-- **`act(…)` warnings** in polling hook tests (FMan seat status/reports, FLIP health/funds) — noise; tests still pass.
+- **`act(…)` warnings** in polling hook tests (MG seat status/reports, FLIP health/funds) — noise; tests still pass.
 - **A5/A6 partial-by-design** matches ledger: thresholds proposal-only; `@live` not run against a daemon; firefox/webkit projects configured, not executed in this review.
 
 ---
@@ -63,9 +63,9 @@ Priority behaviour fixes at HEAD hold under code review and freshly run gates. T
 | --- | --- | --- |
 | **B1** timestamps | PASS | Rust `Timestamp(u64)` `crates/domain/src/lib.rs`; TS `Timestamp = number` in `packages/types`; FLIP formatters use seconds → `* 1000` for `Date` |
 | **A4** fixtures | PASS | `cargo test --package fedi-decentralized-service-liquidity-manager --test contract_fixtures` → 3/3; TS `contractFixtures.test.ts` → 12/12 |
-| **B7 / C2** auth | PASS | FLIP: `needsAuth` / `accessDenied` without `!data` gate; Rust bearer miss → 401 (`admin_http.rs`), policy `PermissionDenied` → 403; FMan 401 cache-independent re-auth |
+| **B7 / C2** auth | PASS | FLIP: `needsAuth` / `accessDenied` without `!data` gate; Rust bearer miss → 401 (`admin_http.rs`), policy `PermissionDenied` → 403; MG 401 cache-independent re-auth |
 | **C1 / B6** guards | PASS | Offer `canSubmit` + early return in `useOfferForm`; withdraw `isWithdrawValid` + early return in `FundsActions` (not button-only) |
-| **B5 / C7** polling | PASS* | FLIP constants + setup wiring; FMan list/fees/formation intervals present (*centralisation residual in Defect 3) |
+| **B5 / C7** polling | PASS* | FLIP constants + setup wiring; MG list/fees/formation intervals present (*centralisation residual in Defect 3) |
 | **B9** gate | PASS | BootGate → SetupGate → AppShell; `RootLayout` keeps `MockPanelMount` above gates |
 | **C3** overview | PASS | Loading/error branches added; populated gross earnings + caveats presentation unchanged vs base |
 
@@ -84,7 +84,7 @@ Priority behaviour fixes at HEAD hold under code review and freshly run gates. T
 | `pnpm run test` | exit 0 — types 12, mock-devtools 27, shared-ui 24, fleet-manager 243, liquidity-provider 349 |
 | `pnpm run build` | exit 0 (both apps) |
 | `pnpm exec playwright test` | **20/20**, exit 0 |
-| `E2E_APP=fman pnpm exec playwright test` | **35/35**, exit 0 |
+| `E2E_APP=mg pnpm exec playwright test` | **35/35**, exit 0 |
 
 ---
 
@@ -95,7 +95,7 @@ Priority behaviour fixes at HEAD hold under code review and freshly run gates. T
 | No frontend CI (P1) | Workflow exists but **red** on css-dupes |
 | Hand-authored mocks as contract | Largely fixed (A4); residuals remain |
 | `docs/operator-dashboards/` untracked/stale | Still globally ignored; D5 |
-| FMan fresh onboarding unreachable (P1) | Still D1 |
+| MG fresh onboarding unreachable (P1) | Still D1 |
 | FLIP backup byte transport (P1) | B2 honesty only; D2 |
 | OCI admin bind `0.0.0.0` (P2) | Still `flake.nix`; D3 |
 | Requests UI affordance | Dead link remains; B8/D5 |

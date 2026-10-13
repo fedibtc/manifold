@@ -1,7 +1,7 @@
 //! Cryptographic primitives for mint-v1 key-locked payments.
 //!
 //! This module deliberately does not allocate from fedimint-client's note
-//! index tree. A quote's note keys are a pure derivation from the FMan wallet
+//! index tree. A quote's note keys are a pure derivation from the MG wallet
 //! root and caller-provided canonical quote terms.
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -227,7 +227,7 @@ pub fn decode_blinded_signature(bytes: &[u8]) -> Result<BlindedSignature, Locked
 
 /// Turn quoted foreign nonces into a transaction-builder output bundle.
 ///
-/// The bundle intentionally has no client state machines: the FI relays and
+/// The bundle intentionally has no client state machines: the FA relays and
 /// aggregates outcomes itself after the transaction reaches consensus.
 pub fn foreign_output_bundle(
     mint_module: ModuleInstanceId,
@@ -245,8 +245,8 @@ pub fn foreign_output_bundle(
     .into_dyn(mint_module)
 }
 
-/// Aggregate the threshold shares collected by the FI for every foreign
-/// output and verify each aggregate before it is sent to the FMan.
+/// Aggregate the threshold shares collected by the FA for every foreign
+/// output and verify each aggregate before it is sent to the MG.
 pub fn aggregate_payment_signatures(
     issuance: &[IssuanceRequest],
     shares: &[BTreeMap<u64, BlindedSignatureShare>],
@@ -303,7 +303,7 @@ pub fn derive_issuance_requests(
         let spend_key: [u8; 32] = material[..32].try_into().expect("fixed slice");
         // Invalid with probability ~2^-128 (and the zero scalar below with
         // ~2^-256); treated as unreachable, like the identity derivations
-        // (ARCH-fleet-manager-identity).
+        // (ARCH-manifold-guardian-identity).
         let spend =
             SecretKey::from_slice(&spend_key).expect("HKDF output is a valid secp256k1 scalar");
         let wide: [u8; 64] = material[32..].try_into().expect("fixed slice");

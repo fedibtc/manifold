@@ -14,7 +14,7 @@ language js(typescript, jsx)
 // `QuerySurface` renders them. A screen asks for a disposition and wraps its
 // claims in the surface — it never reads the flag itself.
 //
-// Scope: `apps/fleet-manager/src/pages/**` (see the `includes` in biome.json).
+// Scope: `apps/manifold-guardian/src/pages/**` (see the `includes` in biome.json).
 // That is where a screen makes a claim about the fleet, and it is the app the
 // primitive lives in — a rule may only require what exists. Feature components
 // stay out on purpose: a *mutation's* `isError` is an action that failed, not a

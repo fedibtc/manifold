@@ -252,7 +252,7 @@
           # source or the test cannot see it: it passes against a full checkout
           # and fails in the sandbox with "missing committed fixture".
           "operator-ui/packages/types/fixtures"
-          # The same arrangement, one directory over: fman-core's
+          # The same arrangement, one directory over: mg-core's
           # admin_request_ts test re-generates the TypeScript AdminRequest union
           # and asserts it still equals the committed file.
           "operator-ui/packages/types/src/generated"
@@ -319,7 +319,7 @@
 
             cloudFmanTelemetry = craneLib.buildPackage {
               cargoArtifacts = workspaceDeps;
-              cargoExtraArgs = "-p fedi-decentralized-cloud-fman-telemetry";
+              cargoExtraArgs = "-p fedi-decentralized-cloud-mg-telemetry";
             };
 
             liquidityManagerDaemon = craneLib.buildPackage {
@@ -332,8 +332,8 @@
               cargoArtifacts = workspaceDeps;
               # Shipped daemon builds consume their Vite output. Workspace,
               # test, and developer builds stay UI-free.
-              cargoExtraArgs = "-p fman --bin fleet-manager -p fman-cli --bin fman-cli --features fman/embedded-operator-ui";
-              env.FMAN_OPERATOR_UI_DIST_DIR = "${operatorUi}/srv/fman";
+              cargoExtraArgs = "-p mg --bin fleet-manager -p mg-cli --bin fman-cli --features mg/embedded-operator-ui";
+              env.MG_OPERATOR_UI_DIST_DIR = "${operatorUi}/srv/mg";
               # The bundled fedimintd reports this value in `app_start_ts`.
               # Keep it tied to the reviewed Fedimint input, not the Manifold
               # checkout or a source snapshot's missing `.git` fallback.
@@ -357,20 +357,20 @@
               buildPhaseCargoCommand = ''
                 cargo nextest run --no-run \
                   ''${CARGO_PROFILE:+--cargo-profile $CARGO_PROFILE} \
-                  --features fedi-decentralized-cloud-fman-telemetry/defe-test-support \
+                  --features fedi-decentralized-cloud-mg-telemetry/defe-test-support \
                   --workspace
               '';
             };
 
             runtimeBins = craneLib.buildPackage {
               cargoArtifacts = testArtifacts;
-              # FMan and FLIP are the only published binaries whose release
+              # MG and FLIP are the only published binaries whose release
               # feature set embeds the dashboards. Enable those features on the
               # runtime bundle SelfCI already builds instead of adding another
               # Cargo derivation or profile solely for the OCI checks.
-              cargoExtraArgs = "-p defe --bin defe -p devmon --bin manifold-test-issuer -p fedi-decentralized-cloud-fman-telemetry --bin fedi-decentralized-cloud-fman-telemetry -p fedi-decentralized-push-gateway --bin fedi-decentralized-push-gateway -p fedi-decentralized-liquidity-manager-daemon --bin liquidity-manager-daemon -p fman --bin fleet-manager -p fman-cli --bin fman-cli -p fi-cli --bin fi-cli --features fedi-decentralized-liquidity-manager-daemon/embedded-operator-ui,fman/embedded-operator-ui";
+              cargoExtraArgs = "-p defe --bin defe -p devmon --bin manifold-test-issuer -p fedi-decentralized-cloud-mg-telemetry --bin fedi-decentralized-cloud-fman-telemetry -p fedi-decentralized-push-gateway --bin fedi-decentralized-push-gateway -p fedi-decentralized-liquidity-manager-daemon --bin liquidity-manager-daemon -p mg --bin fleet-manager -p mg-cli --bin fman-cli -p fa-cli --bin fa-cli --features fedi-decentralized-liquidity-manager-daemon/embedded-operator-ui,mg/embedded-operator-ui";
               env.FLIP_OPERATOR_UI_DIST_DIR = "${operatorUi}/srv/flip";
-              env.FMAN_OPERATOR_UI_DIST_DIR = "${operatorUi}/srv/fman";
+              env.MG_OPERATOR_UI_DIST_DIR = "${operatorUi}/srv/mg";
               env.FEDIMINT_BUILD_FORCE_GIT_HASH = fedimintSourceRev;
             };
 
@@ -379,7 +379,7 @@
 
                 # Keep every workspace runner on the artifact feature set.
                 # A mismatch makes Cargo recompile inside each isolated runner.
-                workspaceTestArgs = "--workspace --features fedi-decentralized-cloud-fman-telemetry/defe-test-support";
+                workspaceTestArgs = "--workspace --features fedi-decentralized-cloud-mg-telemetry/defe-test-support";
                 # Linux Nix sandboxes isolate each runner's loopback network.
                 # Darwin runners share host loopback while keeping independent
                 # $TMPDIR-backed defe-portalloc ledgers, so concurrent runners
@@ -413,14 +413,14 @@
                     checkPhaseCargoCommand = ''
                       ${darwinRunnerDependency previousRunner}
                       export DEV_DEFE_PORTALLOC_DATA_DIR="$TMPDIR/defe-portalloc"
-                      export FI_CLI_TEST_BIN=${bins}/bin/fi-cli
-                      export FMAN_E2E=1
-                      export FMAN_E2E_FLEET_MANAGER_BIN=${bins}/bin/fleet-manager
-                      export FMAN_E2E_FMAN_CLI_BIN=${bins}/bin/fman-cli
-                      export FMAN_E2E_FI_CLI_BIN=${bins}/bin/fi-cli
-                      export FMAN_E2E_FEDIMINT_CLI_BIN=${fedimint.packages.${system}.fedimint-cli}/bin/fedimint-cli
-                      export FMAN_E2E_BITCOIN_CLI_BIN=${pkgs.bitcoind}/bin/bitcoin-cli
-                      export FMAN_E2E_ESPLORA_BIN=${fedimintPkgs.esplora-electrs}/bin/esplora
+                      export FA_CLI_TEST_BIN=${bins}/bin/fa-cli
+                      export MG_E2E=1
+                      export MG_E2E_MANIFOLD_GUARDIAN_BIN=${bins}/bin/fleet-manager
+                      export MG_E2E_MG_CLI_BIN=${bins}/bin/fman-cli
+                      export MG_E2E_FA_CLI_BIN=${bins}/bin/fa-cli
+                      export MG_E2E_FEDIMINT_CLI_BIN=${fedimint.packages.${system}.fedimint-cli}/bin/fedimint-cli
+                      export MG_E2E_BITCOIN_CLI_BIN=${pkgs.bitcoind}/bin/bitcoin-cli
+                      export MG_E2E_ESPLORA_BIN=${fedimintPkgs.esplora-electrs}/bin/esplora
                       export FLIP_E2E_GATEWAYD_BIN=${fedimint.packages.${system}.gatewayd}/bin/gatewayd
                       export FLIP_E2E_GATEWAY_CLI_BIN=${fedimint.packages.${system}.gateway-cli}/bin/gateway-cli
                       export FLIP_E2E_FEDIMINTD_BIN=${fedimint.packages.${system}.fedimintd}/bin/fedimintd
@@ -444,40 +444,40 @@
 
                 ordinaryRunner =
                   runTests "ordinary" testArtifacts runtimeBins workspaceTestArgs
-                    "all() - binary(fleet_manager_0_1_formation) - binary(integration_live_liquidity) - binary(integration_flip_operator_e2e)"
+                    "all() - binary(manifold_guardian_0_1_formation) - binary(integration_live_liquidity) - binary(integration_flip_operator_e2e)"
                     null;
-                fmanFreeRunner =
-                  runTests "fman-free" testArtifacts runtimeBins workspaceTestArgs
-                    "binary(fleet_manager_0_1_formation) & test(fleet_manager_0_1_forms_seven_guardian_federation_under_defe)"
+                mgFreeRunner =
+                  runTests "mg-free" testArtifacts runtimeBins workspaceTestArgs
+                    "binary(manifold_guardian_0_1_formation) & test(manifold_guardian_0_1_forms_seven_guardian_federation_under_defe)"
                     ordinaryRunner;
-                fmanRestoreRunner =
-                  runTests "fman-restore" testArtifacts runtimeBins workspaceTestArgs
-                    "binary(fleet_manager_0_1_formation) & test(fman_restores_a_formed_fleet_from_mnemonic_and_nostr_under_defe)"
-                    fmanFreeRunner;
-                fiCrashRecoveryRunner =
-                  runTests "fi-crash-recovery" testArtifacts runtimeBins workspaceTestArgs
-                    "binary(fleet_manager_0_1_formation) & test(fi_client_resumes_real_dkg_after_sigkill_under_defe)"
-                    fmanRestoreRunner;
-                fmanSeatLifecycleRunner =
-                  runTests "fman-seat-lifecycle" testArtifacts runtimeBins workspaceTestArgs
-                    "binary(fleet_manager_0_1_formation) & test(fman_recovers_a_real_child_and_terminalizes_data_loss_under_defe)"
-                    fiCrashRecoveryRunner;
-                fmanPostFormationRunner =
-                  runTests "fman-post-formation" testArtifacts runtimeBins workspaceTestArgs
-                    "binary(fleet_manager_0_1_formation) & test(fman_remits_collects_and_recovers_guardian_fee_payout_under_defe)"
-                    fmanSeatLifecycleRunner;
-                fmanPaidRunner =
-                  runTests "fman-paid" testArtifacts runtimeBins workspaceTestArgs
-                    "binary(fleet_manager_0_1_formation) & test(fleet_manager_0_1_paid_formation_settles_real_ecash_under_defe)"
-                    fmanPostFormationRunner;
-                fmanMultiRelayRunner =
-                  runTests "fman-multi-relay" testArtifacts runtimeBins workspaceTestArgs
-                    "binary(fleet_manager_0_1_formation) & test(fman_advertises_and_onboards_with_first_relay_down_under_defe)"
-                    fmanPaidRunner;
+                mgRestoreRunner =
+                  runTests "mg-restore" testArtifacts runtimeBins workspaceTestArgs
+                    "binary(manifold_guardian_0_1_formation) & test(mg_restores_a_formed_fleet_from_mnemonic_and_nostr_under_defe)"
+                    mgFreeRunner;
+                faCrashRecoveryRunner =
+                  runTests "fa-crash-recovery" testArtifacts runtimeBins workspaceTestArgs
+                    "binary(manifold_guardian_0_1_formation) & test(fa_client_resumes_real_dkg_after_sigkill_under_defe)"
+                    mgRestoreRunner;
+                mgSeatLifecycleRunner =
+                  runTests "mg-seat-lifecycle" testArtifacts runtimeBins workspaceTestArgs
+                    "binary(manifold_guardian_0_1_formation) & test(mg_recovers_a_real_child_and_terminalizes_data_loss_under_defe)"
+                    faCrashRecoveryRunner;
+                mgPostFormationRunner =
+                  runTests "mg-post-formation" testArtifacts runtimeBins workspaceTestArgs
+                    "binary(manifold_guardian_0_1_formation) & test(mg_remits_collects_and_recovers_guardian_fee_payout_under_defe)"
+                    mgSeatLifecycleRunner;
+                mgPaidRunner =
+                  runTests "mg-paid" testArtifacts runtimeBins workspaceTestArgs
+                    "binary(manifold_guardian_0_1_formation) & test(manifold_guardian_0_1_paid_formation_settles_real_ecash_under_defe)"
+                    mgPostFormationRunner;
+                mgMultiRelayRunner =
+                  runTests "mg-multi-relay" testArtifacts runtimeBins workspaceTestArgs
+                    "binary(manifold_guardian_0_1_formation) & test(mg_advertises_and_onboards_with_first_relay_down_under_defe)"
+                    mgPaidRunner;
                 flipHappyRunner =
                   runTests "flip-happy" testArtifacts runtimeBins workspaceTestArgs
                     "binary(integration_live_liquidity) & test(live_liquidity_happy_path_publishes_nostr_and_allocates_over_iroh)"
-                    fmanMultiRelayRunner;
+                    mgMultiRelayRunner;
                 flipDepositRunner =
                   runTests "flip-deposit" testArtifacts runtimeBins workspaceTestArgs
                     "binary(integration_live_liquidity) & test(live_deposit_monitoring_restart_claims_funded_top_up)"
@@ -546,13 +546,13 @@
 
                 runners = [
                   ordinaryRunner
-                  fmanFreeRunner
-                  fmanRestoreRunner
-                  fiCrashRecoveryRunner
-                  fmanSeatLifecycleRunner
-                  fmanPostFormationRunner
-                  fmanPaidRunner
-                  fmanMultiRelayRunner
+                  mgFreeRunner
+                  mgRestoreRunner
+                  faCrashRecoveryRunner
+                  mgSeatLifecycleRunner
+                  mgPostFormationRunner
+                  mgPaidRunner
+                  mgMultiRelayRunner
                   flipHappyRunner
                   flipDepositRunner
                   flipWithdrawalRunner
@@ -727,7 +727,7 @@
               touch $out
             '';
 
-        # Published to a registry alongside the Fleet Manager image, so it carries
+        # Published to a registry alongside the Manifold Guardian image, so it carries
         # the same versioned tag and OCI provenance labels the other two images
         # do rather than a `latest` that never moves.
         #
@@ -856,7 +856,7 @@
               Labels = {
                 "org.opencontainers.image.title" = "cloud-fman-telemetry";
                 "org.opencontainers.image.description" =
-                  "Private cloud collector for registered Fleet Manager telemetry";
+                  "Private cloud collector for registered Manifold Guardian telemetry";
                 "org.opencontainers.image.version" = pushGatewayVersion;
                 "org.opencontainers.image.source" = "https://github.com/fedibtc/manifold";
                 "org.opencontainers.image.licenses" = "MIT";
@@ -1090,7 +1090,7 @@
             '';
 
         # Standalone fedimintd, still wanted by FLIP's E2E tests and
-        # `nix build .#fedimintd`. FMan runs its own bundled build.
+        # `nix build .#fedimintd`. MG runs its own bundled build.
         fleetManagerFedimintd = fedimint.packages.${system}.fedimintd;
 
         # Single source of truth for the bundled fedimintd's fork release.
@@ -1160,7 +1160,7 @@
                 "org.fedi.fedimintd.release" = fedimintdRelease;
                 "org.opencontainers.image.title" = "fleet-manager";
                 "org.opencontainers.image.description" =
-                  "Fleet Manager daemon hosting Fedimint guardians for decentralized federations";
+                  "Manifold Guardian daemon hosting Fedimint guardians for decentralized federations";
                 "org.opencontainers.image.version" = pushGatewayVersion;
                 "org.opencontainers.image.source" = "https://github.com/fedibtc/manifold";
                 "org.opencontainers.image.licenses" = "MIT";
@@ -1184,7 +1184,7 @@
         '';
 
         # Machine-checked models backing `claims/` records. `lake build` fails
-        # when a proof stops checking, and `FMan/Audit.lean` fails it when a
+        # when a proof stops checking, and `MG/Audit.lean` fails it when a
         # headline theorem starts depending on `sorryAx`, so a model whose
         # theorem breaks fails CI the way a broken test does. The project is
         # deliberately dependency-free (Lean core only), so this builds offline.
@@ -1198,7 +1198,7 @@
           # `lake` reports a failing `run_cmd` through its exit status, but the
           # regenerated axiom list is the artefact worth keeping in the log.
           grep -q 'depends on axioms' build.log \
-            || { echo "FMan/Audit.lean produced no axiom report" >&2; exit 1; }
+            || { echo "MG/Audit.lean produced no axiom report" >&2; exit 1; }
           ! grep -q 'sorryAx' build.log \
             || { echo "a headline theorem depends on sorryAx" >&2; exit 1; }
 
@@ -1229,7 +1229,7 @@
           touch "$out"
         '';
 
-        # Inspect a CI-profile Fleet Manager OCI image the way
+        # Inspect a CI-profile Manifold Guardian OCI image the way
         # `pushGatewayContainerImageCheck` inspects the push-gateway image. Its
         # daemon enables `embedded-operator-ui`, so the Nix operator UI fetch and
         # Vite output are part of this required packaging check without a second
@@ -1292,8 +1292,8 @@
           check ${./flake.nix} "fedibtc/fedimint/$tag"
           check ${./flake.lock} '"ref": "v${fedimintdRelease}"'
           check ${./flake.lock} '"rev": "${fedimintSourceRev}"'
-          check ${./crates/service-fleet-manager/src/lib.rs} "FEDIMINTD_VERSION_0_1: &str = \"${fedimintdDkgVersion}\""
-          check ${./crates/fman/bin/build.rs} "FEDIMINT_SOURCE_REV: &str = \"${fedimintSourceRev}\""
+          check ${./crates/service-manifold-guardian/src/lib.rs} "FEDIMINTD_VERSION_0_1: &str = \"${fedimintdDkgVersion}\""
+          check ${./crates/mg/bin/build.rs} "FEDIMINT_SOURCE_REV: &str = \"${fedimintSourceRev}\""
           check ${./packages/fleet-manager/README.md} "$tag"
 
           touch "$out"
@@ -1725,12 +1725,12 @@
               touch "$out"
             '';
 
-        # Operator dashboards (FMan + FLIP).
+        # Operator dashboards (MG + FLIP).
         #
         # Both apps are Vite SPAs that call relative URLs and must be served
-        # from the same origin as the daemon they operate: FMan's session is an
+        # from the same origin as the daemon they operate: MG's session is an
         # HttpOnly same-origin cookie set by `POST /api/auth`
-        # (crates/fman/core/src/admin_http.rs), and FLIP sends a bearer token to
+        # (crates/mg/core/src/admin_http.rs), and FLIP sends a bearer token to
         # `/admin/v1/*`. The release daemons above satisfy that by embedding
         # this output and serving it from their own listener, so there is no
         # second origin and no reverse proxy to keep in step.
@@ -1774,14 +1774,14 @@
           installPhase = ''
             runHook preInstall
             mkdir -p "$out/srv"
-            cp -r apps/fleet-manager/dist "$out/srv/fman"
+            cp -r apps/manifold-guardian/dist "$out/srv/mg"
             cp -r apps/liquidity-provider/dist "$out/srv/flip"
             runHook postInstall
           '';
         };
 
         # One release-artifact target for publishing. Keeping every named image
-        # link in one aggregate prevents the workflow's FMan, FLIP, cloud
+        # link in one aggregate prevents the workflow's MG, FLIP, cloud
         # collector and push gateway package selections from drifting apart.
         # Required CI uses the same image constructors with UI-enabled CI-profile
         # daemons above.
@@ -1814,7 +1814,7 @@
           fman-cli = multiBuild.fleetManager;
           setup-payment-publisher = multiBuild.setupPaymentPublisher;
           # The flake-pinned fedimint binaries, re-exposed so E2E runs can point
-          # FMAN_E2E_FEDIMINTD_BIN / FMAN_E2E_FEDIMINT_CLI_BIN at the exact build
+          # MG_E2E_FEDIMINTD_BIN / MG_E2E_FEDIMINT_CLI_BIN at the exact build
           # the CI test derivation and the OCI image use.
           fedimintd = fleetManagerFedimintd;
           fedimint-cli = fedimint.packages.${system}.fedimint-cli;
@@ -1874,7 +1874,7 @@
 
         ci = {
           # Keep ordinary Rust checks and OCI contract checks on the CI profile.
-          # The FMan and FLIP checks still compile their embedded operator UIs;
+          # The MG and FLIP checks still compile their embedded operator UIs;
           # only registry publishing builds the release-profile daemon graph.
           inherit (multiBuild.ci)
             clippy
@@ -1918,7 +1918,7 @@
             fedimint.packages.${system}.fedimintd
             fedimint.packages.${system}.fedimint-cli
             fedimint.packages.${system}.fedimint-load-test-tool
-            # esplora for the FMAN_E2E tier (scripts/test-e2e-local.sh); the
+            # esplora for the MG_E2E tier (scripts/test-e2e-local.sh); the
             # same flake-pinned build the CI tests derivation uses.
             fedimintPkgs.esplora-electrs
             pkgs.sqlx-cli

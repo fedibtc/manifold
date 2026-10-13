@@ -8,7 +8,7 @@ request's self-declared `requester_pubkey` and the configured provider key;
 the public Iroh router supplies no further caller authorization. The adversary
 therefore signs a request under its own fresh key, names the known target
 federation id, and supplies an arbitrary 32-byte `details_payload_hash`; no
-allocation requester credential, correct commitment, or FMan endorsement is
+allocation requester credential, correct commitment, or MG endorsement is
 required before the first allocation lookup.
 
 **L2 (`code`) — the federation-only lookup precedes privacy-relevant gates.**
@@ -30,7 +30,7 @@ This falsifies the claim.
 
 ## Residual windows
 
-Both disclosures below are open to any holder of a valid unrevoked FMan
+Both disclosures below are open to any holder of a valid unrevoked MG
 endorsement for the target federation and lie outside this claim's
 unauthenticated adversary.
 

@@ -74,14 +74,14 @@ token because its live target route is mounted only on the operator router.
   notification endpoint disabled, no `FCM_SEND_ENDPOINT_BASE` override, and the
   default Google OAuth service-account token URI.
 - `--open-self-registration-enabled` /
-  `PUSH_GATEWAY_OPEN_SELF_REGISTRATION_ENABLED=true`: normal FI MVP admission.
+  `PUSH_GATEWAY_OPEN_SELF_REGISTRATION_ENABLED=true`: normal FA MVP admission.
   Any correctly NIP-98-authenticated signer may attempt registration; FCM mode
   then validates the token against the configured Fedi Firebase project without
   delivery. Defaults off so missing production configuration fails closed.
 - `--admission-allowed-recipients` /
   `PUSH_GATEWAY_ADMISSION_ALLOWED_RECIPIENTS`: comma-separated canonical Nostr
   public keys admitted to management and registration APIs. This is an emergency
-  restrictive alternative to the open FI admission flag. Do not enable the open
+  restrictive alternative to the open FA admission flag. Do not enable the open
   flag when the allowlist is intended to restrict access. Production rejects
   both modes together as well as neither mode.
 
@@ -95,7 +95,7 @@ Admission incident switch procedure:
    two modes—the production config validator intentionally refuses to start.
 4. Restart, confirm `/ready`, and verify a non-allowlisted signed management
    request receives `403 recipient_not_admitted`.
-5. To restore normal FI admission, stop again, remove the allowlist completely,
+5. To restore normal FA admission, stop again, remove the allowlist completely,
    set `PUSH_GATEWAY_OPEN_SELF_REGISTRATION_ENABLED=true`, then restart and
    verify readiness. Existing registrations/hooks are not deleted by switching
    admission mode.
@@ -204,29 +204,29 @@ persisted hook rows. There is no distributed rate-limit backend.
 `event=metrics_scrape_error`; it does not report queue depths as zero.
 
 This `/metrics` surface is strictly push-gateway operator telemetry. It is not
-the FI guardian telemetry mechanism and does not expose or proxy guardian or
+the FA guardian telemetry mechanism and does not expose or proxy guardian or
 fedimintd Prometheus endpoints.
 
 Guardian telemetry adds low-cardinality state for whether the receiver is
-configured and the current admitted FMan-target count.
+configured and the current admitted MG-target count.
 
-Discover one FMan's seats, then pull a selected live guardian through the
+Discover one MG's seats, then pull a selected live guardian through the
 protected operator routes:
 
 ```sh
-curl --fail-with-body   -H "Authorization: Bearer $PUSH_GATEWAY_OPERATOR_TOKEN"   "https://operator.example/v1/telemetry/fmans/$FMAN_PUBKEY/seats"
+curl --fail-with-body   -H "Authorization: Bearer $PUSH_GATEWAY_OPERATOR_TOKEN"   "https://operator.example/v1/telemetry/fmans/$MG_PUBKEY/seats"
 
-curl --fail-with-body   -H "Authorization: Bearer $PUSH_GATEWAY_OPERATOR_TOKEN"   "https://operator.example/v1/telemetry/fmans/$FMAN_PUBKEY/seats/$SEAT_ID/metrics"
+curl --fail-with-body   -H "Authorization: Bearer $PUSH_GATEWAY_OPERATOR_TOKEN"   "https://operator.example/v1/telemetry/fmans/$MG_PUBKEY/seats/$SEAT_ID/metrics"
 ```
 
 The metrics response mirrors guardian status and content metadata. Do not log
 either response or promote identifiers into metric labels. A 404 means no
-current FMan target; 503 means the Iroh/FMan/guardian path is unavailable; 500
+current MG target; 503 means the Iroh/MG/guardian path is unavailable; 500
 can mean ciphertext authentication failed.
 
 Back up the telemetry database and AES key through separate protected channels.
 If receiver state or its key is lost, restore the matching pair or wait for the
-FMan's periodic idempotent registration to replace its target. Never bypass
+MG's periodic idempotent registration to replace its target. Never bypass
 credential verification or decryption.
 
 By default the public listener exposes `/health`, `/live`, and API/hook routes,

@@ -1,7 +1,7 @@
 # Resources
 
 A resource is anything the server can allocate, share, release, and clean up.
-Supported resources are `NostrRelay`, `PushGateway`, `Bitcoind`, `Fman`, `Flip`,
+Supported resources are `NostrRelay`, `PushGateway`, `Bitcoind`, `Mg`, `Flip`,
 and `Gatewayd`.
 
 
@@ -33,7 +33,7 @@ Shared resources:
 - Are terminated and removed when the last lease is released or its connection drops.
 - A later compatible request starts a new shared resource if the previous one was already released.
 
-Nostr relay, push gateway, and bitcoind use singleton shared keys. FMan, FLIP,
+Nostr relay, push gateway, and bitcoind use singleton shared keys. MG, FLIP,
 and gatewayd keys include their complete launch requests, so only identical
 requests share a slot:
 
@@ -41,7 +41,7 @@ requests share a slot:
 SharedResourceKey::NostrRelay
 SharedResourceKey::PushGateway
 SharedResourceKey::Bitcoind
-SharedResourceKey::Fman(request)
+SharedResourceKey::Mg(request)
 SharedResourceKey::Flip(request)
 SharedResourceKey::Gatewayd(request)
 ```

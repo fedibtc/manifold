@@ -312,9 +312,9 @@ async fn withdrawal_stops_a_real_relay_from_serving_the_advertisement() -> anyho
 /// the relay, and the envelope reaches the advertisement path.
 ///
 /// It also pins the service separation. An authorization published
-/// under the FMan hashtag, naming this same provider in its `p` tag and its
+/// under the MG hashtag, naming this same provider in its `p` tag and its
 /// signed statement, must not enrol here — otherwise the two services share one
-/// index and an FMan-targeted publication would leak into a FLIP.
+/// index and an MG-targeted publication would leak into a FLIP.
 #[tokio::test(flavor = "multi_thread")]
 async fn enrols_a_holder_authorization_from_a_real_nostr_relay() -> anyhow::Result<()> {
     use fedi_decentralized_liquidity_manager_daemon::Database;
@@ -374,7 +374,7 @@ async fn enrols_a_holder_authorization_from_a_real_nostr_relay() -> anyhow::Resu
         )
         .await?;
 
-    // The same authorization, indexed as an FMan one.
+    // The same authorization, indexed as an MG one.
     client
         .send_event_builder(
             nostr_sdk::EventBuilder::new(
@@ -384,7 +384,7 @@ async fn enrols_a_holder_authorization_from_a_real_nostr_relay() -> anyhow::Resu
             .tags([
                 nostr_sdk::Tag::parse([
                     "d",
-                    fedi_decentralized_nostr::fman::fman_authorization_d_tag(
+                    fedi_decentralized_nostr::mg::mg_authorization_d_tag(
                         &provider_pubkey.0,
                         &credential_digest,
                     )
@@ -392,7 +392,7 @@ async fn enrols_a_holder_authorization_from_a_real_nostr_relay() -> anyhow::Resu
                 ])?,
                 nostr_sdk::Tag::parse([
                     "t",
-                    fedi_decentralized_nostr::fman::FMAN_AUTHORIZATION_HASHTAG,
+                    fedi_decentralized_nostr::mg::MG_AUTHORIZATION_HASHTAG,
                 ])?,
                 nostr_sdk::Tag::parse(["p", provider_pubkey.0.as_str()])?,
             ]),

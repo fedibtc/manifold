@@ -18,9 +18,7 @@ use axum::response::sse::{Event as SseEvent, Sse};
 use axum::response::{Html, IntoResponse};
 use axum::routing::{get, post};
 use clap::Parser;
-use fedi_decentralized_nostr::fman::{
-    FMAN_ADVERTISEMENT_EVENT_KIND, HOLDER_AUTHORIZATION_EVENT_KIND,
-};
+use fedi_decentralized_nostr::mg::{HOLDER_AUTHORIZATION_EVENT_KIND, MG_ADVERTISEMENT_EVENT_KIND};
 use fedi_decentralized_nostr::setup_payment_federations::SETUP_PAYMENT_FEDERATIONS_EVENT_KIND;
 use futures::stream::{Stream, StreamExt as _};
 use nostr_sdk::{Client, Filter, RelayPoolNotification};
@@ -34,7 +32,7 @@ use tokio_stream::wrappers::BroadcastStream;
 /// and are named here so they render meaningfully when publishing begins.
 fn kind_name(kind: u16) -> &'static str {
     match kind {
-        k if k == FMAN_ADVERTISEMENT_EVENT_KIND => "FMan advertisement",
+        k if k == MG_ADVERTISEMENT_EVENT_KIND => "MG advertisement",
         k if k == HOLDER_AUTHORIZATION_EVENT_KIND => "Holder authorization",
         37702 => "FLIP advertisement (provisional)",
         37703 => "Attester issuer mirror (provisional)",
@@ -58,9 +56,9 @@ struct Args {
     port: u16,
 }
 
-/// One FMan as the dashboard understands it, derived purely from its advertisements.
+/// One MG as the dashboard understands it, derived purely from its advertisements.
 #[derive(Clone, serde::Serialize)]
-struct FmanRow {
+struct MgRow {
     pubkey: String,
     endpoints: Vec<String>,
     plans: Vec<String>,
@@ -72,9 +70,9 @@ struct FmanRow {
 /// Everything the dashboard knows, rebuilt from the event stream alone.
 #[derive(Default)]
 struct Dashboard {
-    /// Latest advertisement per FMan pubkey. 37701 is addressable, so one ad per author is
+    /// Latest advertisement per MG pubkey. 37701 is addressable, so one ad per author is
     /// current by construction; this map mirrors that.
-    fmans: BTreeMap<String, FmanRow>,
+    mgs: BTreeMap<String, MgRow>,
     kind_counts: BTreeMap<u16, u64>,
     total_events: u64,
 }
@@ -94,7 +92,7 @@ struct RelayWatch {
 }
 
 /// Point the dashboard at `url` (or at nothing when `None`): abort the current watch, forget the
-/// FMans and counts from the previous relay, and start watching the new one.
+/// MGs and counts from the previous relay, and start watching the new one.
 fn set_relay(state: &Arc<AppState>, url: Option<String>) {
     let mut relay = match state.relay.lock() {
         Ok(relay) => relay,
@@ -184,11 +182,11 @@ fn ingest(state: &AppState, event: &nostr_sdk::Event) {
     let content: serde_json::Value = serde_json::from_str(&event.content)
         .unwrap_or_else(|_| serde_json::Value::String(event.content.clone()));
 
-    if kind == FMAN_ADVERTISEMENT_EVENT_KIND
+    if kind == MG_ADVERTISEMENT_EVENT_KIND
         && let Some(row) = parse_advertisement(event, &content)
         && let Ok(mut dashboard) = state.dashboard.lock()
     {
-        dashboard.fmans.insert(row.pubkey.clone(), row);
+        dashboard.mgs.insert(row.pubkey.clone(), row);
     }
 
     if let Ok(mut dashboard) = state.dashboard.lock() {
@@ -215,7 +213,7 @@ fn ingest(state: &AppState, event: &nostr_sdk::Event) {
 /// The typed form (`AdvertisementDocument`) lives inside the fleet-manager daemon crate, so a
 /// read-only observer cannot reuse it without depending on the whole daemon. Parse structurally
 /// until that type gets a shared home.
-fn parse_advertisement(event: &nostr_sdk::Event, content: &serde_json::Value) -> Option<FmanRow> {
+fn parse_advertisement(event: &nostr_sdk::Event, content: &serde_json::Value) -> Option<MgRow> {
     let payload = content.get("payload")?;
 
     let endpoints = payload
@@ -238,7 +236,7 @@ fn parse_advertisement(event: &nostr_sdk::Event, content: &serde_json::Value) ->
         .map(|list| list.iter().map(compact_plan).collect())
         .unwrap_or_default();
 
-    Some(FmanRow {
+    Some(MgRow {
         pubkey: event.pubkey.to_hex(),
         endpoints,
         plans,
@@ -285,7 +283,7 @@ async fn api_state(State(state): State<Arc<AppState>>) -> impl IntoResponse {
 
     axum::Json(serde_json::json!({
         "relay": relay,
-        "fmans": dashboard.fmans.values().cloned().collect::<Vec<_>>(),
+        "mgs": dashboard.mgs.values().cloned().collect::<Vec<_>>(),
         "kind_counts": kind_counts,
         "total_events": dashboard.total_events,
         "now": now_secs(),

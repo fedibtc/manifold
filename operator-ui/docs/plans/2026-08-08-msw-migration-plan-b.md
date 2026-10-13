@@ -4,7 +4,7 @@
 
 **Goal:** Run the FLIP operator dashboard fully mocked in the browser via MSW, so `pnpm flip:be` is no longer needed for FLIP development or e2e — and harden the shared machinery first, now that it has a second consumer.
 
-**Architecture:** Same shape Plan A proved for FMan. The FLIP mock world moves out of `apps/liquidity-provider/mock-server/` into `apps/liquidity-provider/src/mocks/`, Express keeps importing it during the migration window so parity is structural, and `@operator-ui/mock-devtools` supplies the store, persistence and panel unchanged. The one genuinely new chunk of work is extracting FLIP's Express-coupled `(req, res)` handlers into pure functions — FMan's were already pure.
+**Architecture:** Same shape Plan A proved for MG. The FLIP mock world moves out of `apps/liquidity-provider/mock-server/` into `apps/liquidity-provider/src/mocks/`, Express keeps importing it during the migration window so parity is structural, and `@operator-ui/mock-devtools` supplies the store, persistence and panel unchanged. The one genuinely new chunk of work is extracting FLIP's Express-coupled `(req, res)` handlers into pure functions — MG's were already pure.
 
 **Tech Stack:** msw 2.15.0, Vite 6, React 19, TanStack Query 5, Vitest 2, Playwright 1.49, pnpm workspaces.
 
@@ -15,12 +15,12 @@
 - All paths relative to `operator-ui/`. Branch `feat/msw-mock-migration`, already checked out.
 - **Do not modify** `apps/liquidity-provider/src/shared/api/{adminCall,errors,queryClient,tokenStore,restoreMode}.ts`, or anything under `src/features` or `src/pages` in either app. Nothing above `fetch` changes.
 - **Do not delete** either `mock-server/` directory. Both die in Plan C.
-- **Do not regress FMan.** It is fully migrated and green: 213 unit, 35 e2e. Every task re-runs both.
+- **Do not regress MG.** It is fully migrated and green: 213 unit, 35 e2e. Every task re-runs both.
 - Components: arrow-function consts, named exports, declared `XProps` interface, no `React.FC`, no inline logic in JSX, one React unit per file, kebab folders with `__tests__/`.
 - Styling: no Tailwind strings in TSX; colocated `.module.css` with bare top-level `@apply`; tokens from `packages/shared-ui/tailwind-preset.cjs` only.
 - Tests: Vitest, every `it` starts with `should`. Restore overridden globals/env in `afterEach`.
-- **Node 25 quirk:** a built-in Web Storage global shadows jsdom's `window.localStorage` and its `setItem` is not a function. Any vitest test touching localStorage must `vi.stubGlobal('localStorage', <in-memory Storage>)` and restore with `vi.unstubAllGlobals()`. Pattern: `apps/fleet-manager/src/mocks/__tests__/handlers.test.ts`.
-- **Pre-commit hook:** this checkout lacks `typos`/`shellcheck`/`treefmt` and the hook fails on a pre-existing unrelated file (`crates/fman/claims/availability/disk-fault-kills-directory-recovery.md`). Commit with `--no-verify` and say so. Never edit an unrelated file to satisfy it.
+- **Node 25 quirk:** a built-in Web Storage global shadows jsdom's `window.localStorage` and its `setItem` is not a function. Any vitest test touching localStorage must `vi.stubGlobal('localStorage', <in-memory Storage>)` and restore with `vi.unstubAllGlobals()`. Pattern: `apps/manifold-guardian/src/mocks/__tests__/handlers.test.ts`.
+- **Pre-commit hook:** this checkout lacks `typos`/`shellcheck`/`treefmt` and the hook fails on a pre-existing unrelated file (`crates/mg/claims/availability/disk-fault-kills-directory-recovery.md`). Commit with `--no-verify` and say so. Never edit an unrelated file to satisfy it.
 - **Ports:** ensure 5173/5174/8787/8788 are free before any e2e run. A stale server produces misleading ECONNREFUSED failures — this cost real time in Plan A.
 
 ---
@@ -33,9 +33,9 @@
 - Modify: `packages/mock-devtools/src/storage.ts`
 - Modify: `packages/mock-devtools/src/index.ts`
 - Modify: `packages/mock-devtools/src/__tests__/scenarioStore.test.ts`
-- Modify: `apps/fleet-manager/src/mocks/store.ts`
-- Modify: `apps/fleet-manager/src/mocks/__tests__/handlers.test.ts`
-- Modify: `e2e/fman/support/mock.ts`
+- Modify: `apps/manifold-guardian/src/mocks/store.ts`
+- Modify: `apps/manifold-guardian/src/mocks/__tests__/handlers.test.ts`
+- Modify: `e2e/mg/support/mock.ts`
 
 **Interfaces:**
 - Consumes: the existing `createScenarioStore`, `WorldSource`, `ScenarioStore`, `StorageAdapter` from Plan A.
@@ -168,25 +168,25 @@ Every in-memory `StorageAdapter` in the test files also drops its `clear` proper
 
 - [ ] **Step 6: Use `storeKey` at the duplicated call sites**
 
-In `apps/fleet-manager/src/mocks/__tests__/handlers.test.ts`, replace the two hardcoded `'operator-ui:dev:mocks:fman'` strings with `storeKey('fman')`, importing it from `@operator-ui/mock-devtools`.
+In `apps/manifold-guardian/src/mocks/__tests__/handlers.test.ts`, replace the two hardcoded `'operator-ui:dev:mocks:mg'` strings with `storeKey('mg')`, importing it from `@operator-ui/mock-devtools`.
 
-In `e2e/fman/support/mock.ts`, replace `const STORE_KEY = 'operator-ui:dev:mocks:fman';` with an import:
+In `e2e/mg/support/mock.ts`, replace `const STORE_KEY = 'operator-ui:dev:mocks:mg';` with an import:
 
 ```ts
 import { storeKey } from '@operator-ui/mock-devtools';
 
-const STORE_KEY = storeKey('fman');
+const STORE_KEY = storeKey('mg');
 ```
 
 If the e2e file cannot resolve the workspace import (there is no tsconfig covering `e2e/`), leave the literal and say so in your report rather than adding build plumbing for it.
 
-- [ ] **Step 7: Carry the FMan session across a scenario switch**
+- [ ] **Step 7: Carry the MG session across a scenario switch**
 
-In `apps/fleet-manager/src/mocks/store.ts`, add `carryOver` to the source:
+In `apps/manifold-guardian/src/mocks/store.ts`, add `carryOver` to the source:
 
 ```ts
 const source: WorldSource<MockState> = {
-  appKey: 'fman',
+  appKey: 'mg',
   defaultScenario: 'fresh-fleet',
   has: hasScenario,
   build: scenario,
@@ -204,21 +204,21 @@ const source: WorldSource<MockState> = {
 ```bash
 pnpm --filter @operator-ui/mock-devtools test
 pnpm --filter @operator-ui/mock-devtools typecheck
-pnpm --filter fman test
-pnpm --filter fman typecheck
-pnpm --filter fman-mock-server typecheck
-E2E_APP=fman pnpm test:e2e
+pnpm --filter mg test
+pnpm --filter mg typecheck
+pnpm --filter mg-mock-server typecheck
+E2E_APP=mg pnpm test:e2e
 pnpm test:e2e
 ```
 
-Expected: mock-devtools 26, fman 213, FMan e2e 35, FLIP e2e 18. All typechecks clean.
+Expected: mock-devtools 26, mg 213, MG e2e 35, FLIP e2e 18. All typechecks clean.
 
-Note the FMan e2e specs set a scenario **before** signing in, so carrying the session over does not change what they exercise — they start with no session either way.
+Note the MG e2e specs set a scenario **before** signing in, so carrying the session over does not change what they exercise — they start with no session either way.
 
 - [ ] **Step 9: Commit**
 
 ```bash
-git add packages/mock-devtools apps/fleet-manager/src/mocks e2e/fman/support
+git add packages/mock-devtools apps/manifold-guardian/src/mocks e2e/mg/support
 git commit --no-verify -m "refactor(mock-devtools): harden the store before FLIP consumes it"
 ```
 
@@ -227,8 +227,8 @@ git commit --no-verify -m "refactor(mock-devtools): harden the store before FLIP
 ### Task 2: Invalidate the query cache when the scenario changes
 
 **Files:**
-- Modify: `apps/fleet-manager/src/app/components/mock-panel-mount/MockPanelMount.tsx`
-- Test: `apps/fleet-manager/src/app/components/mock-panel-mount/__tests__/MockPanelMount.test.tsx`
+- Modify: `apps/manifold-guardian/src/app/components/mock-panel-mount/MockPanelMount.tsx`
+- Test: `apps/manifold-guardian/src/app/components/mock-panel-mount/__tests__/MockPanelMount.test.tsx`
 
 **Interfaces:**
 - Consumes: `mockStore` from `@/mocks/store`, `MockPanel` from `@operator-ui/mock-devtools/panel`, `useQueryClient` from `@tanstack/react-query`.
@@ -238,7 +238,7 @@ Spec §4.1. Switching scenario swaps the world underneath TanStack Query, which 
 
 - [ ] **Step 1: Write the failing test**
 
-Add to `apps/fleet-manager/src/app/components/mock-panel-mount/__tests__/MockPanelMount.test.tsx`:
+Add to `apps/manifold-guardian/src/app/components/mock-panel-mount/__tests__/MockPanelMount.test.tsx`:
 
 ```tsx
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
@@ -269,7 +269,7 @@ it('should invalidate cached queries when the scenario changes', async () => {
 
 - [ ] **Step 2: Run to verify it fails**
 
-Run: `pnpm --filter fman test -- MockPanelMount`
+Run: `pnpm --filter mg test -- MockPanelMount`
 Expected: FAIL — `invalidateQueries` is never called.
 
 - [ ] **Step 3: Subscribe to the store**
@@ -330,15 +330,15 @@ export const MockPanelMount = () => {
 
 - [ ] **Step 4: Run to verify it passes**
 
-Run: `pnpm --filter fman test -- MockPanelMount`
+Run: `pnpm --filter mg test -- MockPanelMount`
 Expected: PASS.
 
 - [ ] **Step 5: Verify the production bundle is still clean**
 
 ```bash
-pnpm --filter fman build
-ls apps/fleet-manager/dist/
-grep -rn "Mock controls\|__mockControl\|seat-running-01\|mock-devtools\|fresh-fleet" apps/fleet-manager/dist/
+pnpm --filter mg build
+ls apps/manifold-guardian/dist/
+grep -rn "Mock controls\|__mockControl\|seat-running-01\|mock-devtools\|fresh-fleet" apps/manifold-guardian/dist/
 ```
 
 Expected: `dist/` holds only `assets/` and `index.html`; the grep returns nothing. **This is the check that matters most in this task** — a static import of `@/mocks/store` at the top of the file would pass the tests and leak the whole mock world into production.
@@ -346,18 +346,18 @@ Expected: `dist/` holds only `assets/` and `index.html`; the grep returns nothin
 - [ ] **Step 6: Verify in a browser**
 
 ```bash
-pnpm --filter fman dev
+pnpm --filter mg dev
 ```
 
-Open `http://localhost:5174` with no `fman:be` running. Sign in with `test-password`. Open **Mock controls**, switch to `seats-mixed`, and confirm the Seats page updates **without a reload**, and that you are **not** bounced to the login screen (Task 1's `carryOver`).
+Open `http://localhost:5174` with no `mg:be` running. Sign in with `test-password`. Open **Mock controls**, switch to `seats-mixed`, and confirm the Seats page updates **without a reload**, and that you are **not** bounced to the login screen (Task 1's `carryOver`).
 
 - [ ] **Step 7: Run the suites and commit**
 
 ```bash
-pnpm --filter fman test
-E2E_APP=fman pnpm test:e2e
-git add apps/fleet-manager/src/app/components/mock-panel-mount
-git commit --no-verify -m "fix(fman): refresh the screen when the mock scenario changes"
+pnpm --filter mg test
+E2E_APP=mg pnpm test:e2e
+git add apps/manifold-guardian/src/app/components/mock-panel-mount
+git commit --no-verify -m "fix(mg): refresh the screen when the mock scenario changes"
 ```
 
 ---
@@ -395,7 +395,7 @@ git commit --no-verify -m "fix(fman): refresh the screen when the mock scenario 
       typeof (value as ServiceErrorLike).message === 'string';
     ```
 
-This is the genuinely new work. FMan's handlers were already `(payload) => unknown`; FLIP's are `(req: Request, res: Response) => void` writing through `res.json()`. **This is a pure extraction — behaviour must not change.** The regression gate is FLIP's e2e suite passing with no spec edited.
+This is the genuinely new work. MG's handlers were already `(payload) => unknown`; FLIP's are `(req: Request, res: Response) => void` writing through `res.json()`. **This is a pure extraction — behaviour must not change.** The regression gate is FLIP's e2e suite passing with no spec edited.
 
 - [ ] **Step 1: Move state, scenarios and logic verbatim**
 
@@ -559,7 +559,7 @@ Add the alias so `@/mocks/*` resolves to `../src/mocks/*` for both `tsc --noEmit
   "exclude": ["../src/mocks/**/__tests__"]
 ```
 
-Merge these into whatever the file already contains rather than overwriting it — read it first. `apps/fleet-manager/mock-server/tsconfig.json` is the working reference if the merge is unclear.
+Merge these into whatever the file already contains rather than overwriting it — read it first. `apps/manifold-guardian/mock-server/tsconfig.json` is the working reference if the merge is unclear.
 
 - [ ] **Step 6: Run the regression gate**
 
@@ -599,7 +599,7 @@ git commit --no-verify -m "refactor(flip): lift the mock world out of the expres
 - Consumes: `createScenarioStore`, `storeKey`, `WorldSource` from `@operator-ui/mock-devtools` (Task 1); `dispatch`, `MUTATING_VERBS`, `isServiceErrorLike` from `@/mocks/world/verbs` (Task 3).
 - Produces: `mockStore: ScenarioStore<MockState>` from `@/mocks/store`; `handlers: RequestHandler[]` from `@/mocks/handlers`; `worker` from `@/mocks/browser`.
 
-**The critical risk, same as FMan's:** Express runs in Node where `window` is undefined, and it will now transitively import the store → `localStorageAdapter`. The adapter's try/catch is what stops that throwing. Do not "clean up" those catch blocks. Verify Express still boots before claiming done.
+**The critical risk, same as MG's:** Express runs in Node where `window` is undefined, and it will now transitively import the store → `localStorageAdapter`. The adapter's try/catch is what stops that throwing. Do not "clean up" those catch blocks. Verify Express still boots before claiming done.
 
 - [ ] **Step 1: Install and generate**
 
@@ -699,7 +699,7 @@ it('should persist a mutation to localStorage', async () => {
 });
 ```
 
-Add the Node-25 localStorage stub at the top of the file, copying the exact shape from `apps/fleet-manager/src/mocks/__tests__/handlers.test.ts`, and import `storeKey` from `@operator-ui/mock-devtools`.
+Add the Node-25 localStorage stub at the top of the file, copying the exact shape from `apps/manifold-guardian/src/mocks/__tests__/handlers.test.ts`, and import `storeKey` from `@operator-ui/mock-devtools`.
 
 - [ ] **Step 3: Run to verify they fail**
 
@@ -836,7 +836,7 @@ import { handlers } from '@/mocks/handlers';
 export const worker = setupWorker(...handlers);
 ```
 
-In `apps/liquidity-provider/src/app/App.tsx`, defer the render exactly the way `apps/fleet-manager/src/app/index.tsx` does — read that file first and mirror it:
+In `apps/liquidity-provider/src/app/App.tsx`, defer the render exactly the way `apps/manifold-guardian/src/app/index.tsx` does — read that file first and mirror it:
 
 ```tsx
 const render = () => {
@@ -871,7 +871,7 @@ Then confirm Express still boots (8787 free → `npx tsx src/index.ts` from the 
 
 Then run the app with **no** `flip:be`: `pnpm --filter flip dev`, open `http://localhost:5173`, and confirm the boot gate passes and the setup wizard appears for `setup-fresh`.
 
-FLIP's e2e will be **red** at this commit, exactly as FMan's was at the equivalent point: MSW now serves `/admin/v1/*` from the browser, so the Express-based `resetScenario` no longer controls what the browser sees. Task 5 fixes it. Do not chase it here, and do not edit `e2e/`.
+FLIP's e2e will be **red** at this commit, exactly as MG's was at the equivalent point: MSW now serves `/admin/v1/*` from the browser, so the Express-based `resetScenario` no longer controls what the browser sees. Task 5 fixes it. Do not chase it here, and do not edit `e2e/`.
 
 - [ ] **Step 9: Commit**
 
@@ -899,7 +899,7 @@ git commit --no-verify -m "feat(flip): serve the admin API from MSW handlers"
 
 - [ ] **Step 1: Author the scenario notes**
 
-FLIP has no `notes` record at all — this is new content, not a port. Add to `apps/liquidity-provider/src/mocks/scenarios.ts`, mirroring FMan's shape so an undocumented scenario is a type error:
+FLIP has no `notes` record at all — this is new content, not a port. Add to `apps/liquidity-provider/src/mocks/scenarios.ts`, mirroring MG's shape so an undocumented scenario is a type error:
 
 ```ts
 import type { ScenarioNote } from '@operator-ui/mock-devtools';
@@ -974,13 +974,13 @@ export const scenarioNames = Object.keys(builders) as ScenarioName[];
 export const scenarioCatalog = scenarioNames.map((name) => ({ name, ...notes[name] }));
 ```
 
-`builders` is currently typed `Record<string, () => MockState>`. Change it to a `satisfies Record<string, () => MockState>` so the keys stay literal and `ScenarioName` is a union — otherwise `notes` cannot be key-checked. Read FMan's `scenarios.ts` for the exact pattern.
+`builders` is currently typed `Record<string, () => MockState>`. Change it to a `satisfies Record<string, () => MockState>` so the keys stay literal and `ScenarioName` is a union — otherwise `notes` cannot be key-checked. Read MG's `scenarios.ts` for the exact pattern.
 
 **Verify each description against the builder it names** rather than trusting the list above — these were written from scenario names, and a description that lies is worse than none.
 
 - [ ] **Step 2: Create the control surface**
 
-Create `apps/liquidity-provider/src/mocks/start.ts`, mirroring `apps/fleet-manager/src/mocks/start.ts`:
+Create `apps/liquidity-provider/src/mocks/start.ts`, mirroring `apps/manifold-guardian/src/mocks/start.ts`:
 
 ```ts
 import { mockStore } from '@/mocks/store';
@@ -1076,7 +1076,7 @@ const mockWebServer = [
 ];
 ```
 
-and guard the daemon entry, mirroring what `fmanDaemonWebServer` already does:
+and guard the daemon entry, mirroring what `mgDaemonWebServer` already does:
 
 ```ts
 const daemonWebServer = [
@@ -1105,12 +1105,12 @@ Also add `strictPort: true` to `apps/liquidity-provider/vite.config.ts`'s `serve
 ```bash
 pkill -f flip-mock-server || true
 pnpm test:e2e
-E2E_APP=fman pnpm test:e2e
+E2E_APP=mg pnpm test:e2e
 pnpm --filter flip test
 pnpm --filter flip typecheck
 ```
 
-Expected: FLIP e2e 18/18 with `[WebServer]` showing only `vite --port 5173` — `flip-mock-server` must never start. FMan e2e still 35/35.
+Expected: FLIP e2e 18/18 with `[WebServer]` showing only `vite --port 5173` — `flip-mock-server` must never start. MG e2e still 35/35.
 
 - [ ] **Step 7: Commit**
 
@@ -1177,7 +1177,7 @@ it('should invalidate cached queries when the scenario changes', async () => {
 });
 ```
 
-Note this covers the mocks-**enabled** branch, which Plan A's FMan equivalent never tested. Testing the "off" branch requires `vi.resetModules()` plus a dynamic re-import, because the gate is evaluated at module scope — see Plan A's FMan test for that shape if you add it.
+Note this covers the mocks-**enabled** branch, which Plan A's MG equivalent never tested. Testing the "off" branch requires `vi.resetModules()` plus a dynamic re-import, because the gate is evaluated at module scope — see Plan A's MG test for that shape if you add it.
 
 - [ ] **Step 2: Run to verify it fails**
 
@@ -1252,13 +1252,13 @@ export const MockPanelMount = () => {
 
 **Keep the `mocksEnabled` gate at module scope.** A runtime-only guard leaks the mock world into the production bundle — a defect Plan A already paid for once. Keep the runtime `if (!mocksEnabled) return;` inside the effect as well: without it, production would still subscribe even though the panel never renders.
 
-Add a test for the unmount-during-pending-import path alongside the two above — render, unmount immediately, flush microtasks, then `setScenario` and assert `invalidateQueries` was **not** called. FMan's equivalent test is the reference.
+Add a test for the unmount-during-pending-import path alongside the two above — render, unmount immediately, flush microtasks, then `setScenario` and assert `invalidateQueries` was **not** called. MG's equivalent test is the reference.
 
 - [ ] **Step 4: Mount it in the shell**
 
 Render `<MockPanelMount />` as the last child of the root element in `apps/liquidity-provider/src/app/components/app-shell/AppShell.tsx`. Read the file first and match its structure; do not restructure it.
 
-Note FLIP's setup wizard renders **inside** the shell (unlike FMan's, which gates above it), so the panel will be available during setup too. That is correct and useful — `setup-fresh` and `setup-pending` are the scenarios a developer most wants to switch between.
+Note FLIP's setup wizard renders **inside** the shell (unlike MG's, which gates above it), so the panel will be available during setup too. That is correct and useful — `setup-fresh` and `setup-pending` are the scenarios a developer most wants to switch between.
 
 - [ ] **Step 5: Run to verify it passes**
 
@@ -1275,7 +1275,7 @@ grep -rn "Mock controls\|__mockControl\|mock-devtools\|setup-fresh\|all-clear" a
 
 Expected: no `mockServiceWorker.js` in `dist/`, and the grep returns nothing.
 
-**If `mockServiceWorker.js` is present**, port the fix FMan already has: an `apply: 'build'` Vite plugin with a `closeBundle` hook that removes the emitted file. Read `apps/fleet-manager/vite.config.ts` and mirror it.
+**If `mockServiceWorker.js` is present**, port the fix MG already has: an `apply: 'build'` Vite plugin with a `closeBundle` hook that removes the emitted file. Read `apps/manifold-guardian/vite.config.ts` and mirror it.
 
 - [ ] **Step 7: Verify in a browser**
 
@@ -1289,15 +1289,15 @@ With no `flip:be` running, open `http://localhost:5173`. Open **Mock controls**,
 
 ```bash
 pnpm --filter flip test
-pnpm --filter fman test
+pnpm --filter mg test
 pnpm --filter @operator-ui/mock-devtools test
 pnpm --filter flip typecheck
-pnpm --filter fman typecheck
+pnpm --filter mg typecheck
 pnpm --filter flip-mock-server typecheck
-pnpm --filter fman-mock-server typecheck
+pnpm --filter mg-mock-server typecheck
 pnpm lint
 pnpm test:e2e
-E2E_APP=fman pnpm test:e2e
+E2E_APP=mg pnpm test:e2e
 git add apps/liquidity-provider
 git commit --no-verify -m "feat(flip): add the dev mock control panel"
 ```
@@ -1310,7 +1310,7 @@ git commit --no-verify -m "feat(flip): add the dev mock control panel"
 - [ ] All 24 admin methods plus `GET /health` answer from MSW.
 - [ ] All 15 FLIP scenarios reproduce their Express behaviour, and each has a description verified against its builder.
 - [ ] `pnpm test:e2e` passes with no Express server running.
-- [ ] `E2E_APP=fman pnpm test:e2e` still passes — FMan is unregressed.
+- [ ] `E2E_APP=mg pnpm test:e2e` still passes — MG is unregressed.
 - [ ] `E2E_TARGET=daemon` and `dev/flip-stack/up.sh` both set `VITE_MOCKS=off`.
 - [ ] Switching scenario refreshes the screen in place in both apps, with no reload.
 - [ ] Neither production bundle contains mock code.
@@ -1318,7 +1318,7 @@ git commit --no-verify -m "feat(flip): add the dev mock control panel"
 
 ## Deferred to Plan C
 
-- Delete both Express servers, `flip:be`/`fman:be`, the `express`/`tsx` deps, the `/__control` vite proxies and the `dev/menu` entries.
+- Delete both Express servers, `flip:be`/`mg:be`, the `express`/`tsx` deps, the `/__control` vite proxies and the `dev/menu` entries.
 - Port `/__control`'s `patch`, `errors` and `state` routes onto `window.__mockControl`, or explicitly drop them. **Plan C cannot delete Express until this is decided** — `MockState.latencyMs` and `forcedErrors` are otherwise unreachable under MSW.
 - The per-page panel tab and route maps for both apps.
 - Form fixtures (spec §9).

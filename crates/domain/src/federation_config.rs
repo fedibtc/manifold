@@ -1,8 +1,8 @@
 //! Canonical derivations from a final Fedimint federation config.
 //!
 //! Every party that reasons about a federation's identity derives it here. The
-//! FMan signs [`federation_config_hash`] into each
-//! [`FmanPeerAttestation`](crate::FmanPeerAttestation) it issues, and FLIP
+//! MG signs [`federation_config_hash`] into each
+//! [`MgPeerAttestation`](crate::MgPeerAttestation) it issues, and FLIP
 //! re-derives the same hash from the invite-code preview before matching seat
 //! bindings against it. A one-byte disagreement between the two silently fails
 //! every liquidity request, so neither side may derive its own.
@@ -37,7 +37,7 @@ pub const FEDERATION_CONFIG_HASH_DOMAIN_SEPARATOR: &[u8] = b"fedi-federation-con
 /// keys, the core consensus version, and every module config.
 ///
 /// Consensus metadata is excluded because it is the federation's mutable,
-/// self-declared surface. The FI publishes `fedi:fman_seat_bindings` into it
+/// self-declared surface. The FA publishes `fedi:fman_seat_bindings` into it
 /// *after* the guardians have signed their attestations, so a hash that covered
 /// metadata would invalidate every attestation the moment the directory it
 /// belongs to is published. Fedimint 0.11 keeps post-DKG metadata writes in the
@@ -117,7 +117,7 @@ pub struct FederationSeat {
 
 /// Authoritative federation facts derived from a final federation config.
 ///
-/// Both the FMan issuing attestations and the verifier checking them build this
+/// Both the MG issuing attestations and the verifier checking them build this
 /// from the same config, so a mismatch anywhere in it is a real disagreement
 /// about which federation is being talked about.
 #[derive(Clone, Debug, Eq, PartialEq)]

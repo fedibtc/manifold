@@ -2,7 +2,7 @@
 exclude = [".nix-deps/fedi", ".nix-deps/fedimint", ".nix-deps/peerbadge-sdk"]
 members = [
   "crates/bounded-rolling-file",
-  "crates/cloud-fman-telemetry",
+  "crates/cloud-mg-telemetry",
   "crates/defe",
   "crates/defe-api",
   "crates/defe-client",
@@ -10,24 +10,24 @@ members = [
   "crates/defe-portalloc",
   "crates/devmon",
   "crates/domain",
+  "crates/fa-cli",
+  "crates/fa-client",
   "crates/federation-preview",
   "crates/fedi-iroh-rpc",
   "crates/fedi-iroh-rpc-macros",
-  "crates/fi-cli",
-  "crates/fi-client",
   "crates/flip-ui-e2e-runner",
-  "crates/fman-ui-e2e-runner",
-  "crates/fman/bin",
-  "crates/fman/cli",
-  "crates/fman/core",
-  "crates/fman/fedimint",
-  "crates/fman/meta-fields",
-  "crates/fman/nostr",
-  "crates/fman/telemetry",
   "crates/guardian-metrics-policy",
   "crates/liquidity-manager-daemon",
   "crates/locked-payments",
   "crates/manifold-environment",
+  "crates/mg-ui-e2e-runner",
+  "crates/mg/bin",
+  "crates/mg/cli",
+  "crates/mg/core",
+  "crates/mg/fedimint",
+  "crates/mg/meta-fields",
+  "crates/mg/nostr",
+  "crates/mg/telemetry",
   "crates/nostr",
   "crates/nostr-clients",
   "crates/operator-ui-auth",
@@ -39,8 +39,8 @@ members = [
   "crates/push-gateway-storage",
   "crates/push-gateway-types",
   "crates/safe-tracing",
-  "crates/service-fleet-manager",
   "crates/service-liquidity-manager",
+  "crates/service-manifold-guardian",
   "crates/services",
   "crates/setup-payment-publisher",
   "crates/tests-e2e",
@@ -153,11 +153,11 @@ peerbadge-schemas = { path = ".nix-deps/peerbadge-sdk/crates/schemas" }
 # declared once via the `fedimint` flake input, and `[patch.crates-io]` routes
 # every crate to the Nix-provided `.nix-deps/fedimint` source. Members reference
 # these via `{ workspace = true }` so the version is not duplicated per crate.
-# The FI embedding surface (fi-client, federation-preview, and their shared
+# The FA embedding surface (fa-client, federation-preview, and their shared
 # protocol crates) also supports Fedi's 0.11.2-fedi5 libraries. Its dependencies
 # accept both 0.11 and 0.12 so consumers can supply one shared Fedimint graph
 # through their own root patches, without rewriting this manifest. This does
-# not select the guardian version formed by FI or downgrade Manifold's pinned
+# not select the guardian version formed by FA or downgrade Manifold's pinned
 # 0.12 guardian/runtime; server-only dependencies remain on 0.12.
 # `default-features = false` is carried here (members cannot lower it): FLIP
 # depends on `fedimint-gateway-client` without its default `tor` feature, and
@@ -194,7 +194,7 @@ fedimint-tbs = { version = "0.12.0", default-features = false }
 fedimint-wallet-client = { version = ">=0.11.2, <0.13", default-features = false }
 fedimint-walletv2-client = { version = "0.12.0", default-features = false }
 fedimint-walletv2-common = { version = ">=0.11.2, <0.13", default-features = false }
-# Bundled into the FMan binary. Not on crates.io, so it is a path into the same
+# Bundled into the MG binary. Not on crates.io, so it is a path into the same
 # Nix-provided source the patches above point at.
 fedimintd = { path = ".nix-deps/fedimint/fedimintd", default-features = false }
 iroh = "1.0.0"
@@ -211,7 +211,7 @@ syn = { version = "2", features = ["full"] }
 thiserror = "2"
 tokio = "1"
 
-# Keep every Fedimint crate on the same pinned Nix-provided source. FMan uses
+# Keep every Fedimint crate on the same pinned Nix-provided source. MG uses
 # Fedimint packages that are not all published to crates.io, while FLIP and
 # stability-pool dependencies otherwise pull a mix of registry and git sources.
 # Workspace crates request Fedimint via source-neutral version requirements, so

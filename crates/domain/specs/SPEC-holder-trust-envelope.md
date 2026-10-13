@@ -3,8 +3,8 @@
 ## Record justification
 
 The envelope and badge schema bind the external PeerBadge SDK, FCS/Attester
-issuance, the Holder miniapp, the FMan and FLIP advertisers, and FI/FLIP
-selection plus the push-gateway guardian-telemetry and cloud FMan telemetry
+issuance, the Holder miniapp, the MG and FLIP advertisers, and FA/FLIP
+selection plus the push-gateway guardian-telemetry and cloud MG telemetry
 collector verifiers,
 so no single implementation
 artifact can own them coherently.
@@ -15,7 +15,7 @@ verifier-side parser, and golden vectors) is owned by
 `trust_score` module re-exports it and owns both the pure envelope helper
 against a caller-supplied PeerBadge SDK verification context and the generic,
 validated relying-party `PeerBadgeTrustPolicy`. `crates/peer-badge-verifier`
-owns the shared FI, FLIP, push-gateway guardian-telemetry, and cloud FMan
+owns the shared FA, FLIP, push-gateway guardian-telemetry, and cloud MG
 telemetry collector verifier that
 uses the selected authority and current revocation state, runs the complete
 envelope algorithm, and applies that policy
@@ -28,7 +28,7 @@ byte-level changes must be coordinated with them, not made unilaterally.
 
 ## Auxiliary service identity
 
-A service (FMan, FLIP provider) self-generates its long-lived identity key;
+A service (MG, FLIP provider) self-generates its long-lived identity key;
 the owner's Holder key never operates the service and the service never holds
 the Holder key. Trust attaches through an auxiliary-identity authorization:
 the Holder signs a `HolderAuthorization` whose statement
@@ -43,7 +43,7 @@ The authorization request shown to the Holder (QR/deep-link, not a Nostr
 event) is the SDK `HolderAuthorizationRequest` carrying only the subject
 pubkey; the Holder app selects the badge locally, signs, and publishes the
 kind-`37705` event
-([SPEC-fman-nostr-events](../../nostr/specs/SPEC-fman-nostr-events.md)).
+([SPEC-mg-nostr-events](../../nostr/specs/SPEC-mg-nostr-events.md)).
 
 ## Trust badge schema `fedi-trust-score-v1.0`
 
@@ -74,7 +74,7 @@ as a batch when epoch-aware policy arrives.
 ## Inline envelope and verifier semantics
 
 Advertisements carry trust inline as `{holder_authorization,
-signed_credential}` envelope entries — the FMan and FLIP carriage convention —
+signed_credential}` envelope entries — the MG and FLIP carriage convention —
 so verifiers need no separate credential fetch. An envelope is authentic only
 when all of:
 

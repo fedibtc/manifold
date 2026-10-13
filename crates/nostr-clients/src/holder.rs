@@ -4,16 +4,16 @@ use nostr_sdk::{EventId, Kind, PublicKey, Tag};
 
 use crate::{NostrClientResult, NostrRelayClient};
 
-/// Request for publishing a Holder-published FMan authorization event.
+/// Request for publishing a Holder-published MG authorization event.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct PublishFmanAuthorizationRequest {
-    /// FMan Nostr pubkey targeted by the authorization.
-    pub fman_pubkey: PublicKey,
+pub struct PublishMgAuthorizationRequest {
+    /// MG Nostr pubkey targeted by the authorization.
+    pub mg_pubkey: PublicKey,
 
     /// Credential issuer authority pubkey used as an indexing hint.
     pub issuer_pubkey: String,
 
-    /// Digest of the credential authorized for FMan use.
+    /// Digest of the credential authorized for MG use.
     pub credential_digest: String,
 
     /// Credential schema used as an indexing hint.
@@ -38,9 +38,9 @@ pub struct PublishFlipAuthorizationRequest {
 
 /// Nostr interactions performed by the Holder component.
 pub trait HolderNostrClient {
-    /// Publish an authorization event that allows an FMan to present a Holder credential.
+    /// Publish an authorization event that allows an MG to present a Holder credential.
     ///
-    /// The `d` tag is derived from the FMan pubkey and credential digest to keep the
+    /// The `d` tag is derived from the MG pubkey and credential digest to keep the
     /// addressable event index consistent with the explicit request fields. The
     /// published event is authored by the keys configured on the underlying relay
     /// client, and callers must keep the envelope content consistent with those keys.
@@ -50,17 +50,17 @@ pub trait HolderNostrClient {
     /// Returns an error if publishing fails or no configured relay accepts
     /// the event. On a pooled client one relay's acceptance is success;
     /// other relays' rejections are logged, not returned.
-    async fn publish_fman_authorization(
+    async fn publish_mg_authorization(
         &self,
-        request: PublishFmanAuthorizationRequest,
+        request: PublishMgAuthorizationRequest,
     ) -> NostrClientResult<EventId>;
 
     /// Publish an authorization event that allows a FLIP provider to present a
     /// Holder credential.
     ///
-    /// The authorization, event kind and envelope content are the FMan variant's;
+    /// The authorization, event kind and envelope content are the MG variant's;
     /// only the coordinate that addresses it differs. A FLIP provider fetches with
-    /// [`FLIP_AUTHORIZATION_HASHTAG`], so an FMan-tagged event is never a candidate
+    /// [`FLIP_AUTHORIZATION_HASHTAG`], so an MG-tagged event is never a candidate
     /// for it however correctly it names the provider in `p` — publishing both is
     /// what lets one Holder credential serve both components.
     ///
@@ -92,29 +92,26 @@ impl NostrHolderClient {
 }
 
 impl HolderNostrClient for NostrHolderClient {
-    async fn publish_fman_authorization(
+    async fn publish_mg_authorization(
         &self,
-        request: PublishFmanAuthorizationRequest,
+        request: PublishMgAuthorizationRequest,
     ) -> NostrClientResult<EventId> {
-        let fman_pubkey = request.fman_pubkey.to_string();
-        let authorization_d_tag = fedi_decentralized_nostr::fman::fman_authorization_d_tag(
-            &fman_pubkey,
+        let mg_pubkey = request.mg_pubkey.to_string();
+        let authorization_d_tag = fedi_decentralized_nostr::mg::mg_authorization_d_tag(
+            &mg_pubkey,
             &request.credential_digest,
         );
 
         self.relay
             .publish_event(
                 nostr_sdk::EventBuilder::new(
-                    Kind::Custom(fedi_decentralized_nostr::fman::HOLDER_AUTHORIZATION_EVENT_KIND),
+                    Kind::Custom(fedi_decentralized_nostr::mg::HOLDER_AUTHORIZATION_EVENT_KIND),
                     request.content,
                 )
                 .tags([
                     tag(["d", authorization_d_tag.as_str()]),
-                    tag([
-                        "t",
-                        fedi_decentralized_nostr::fman::FMAN_AUTHORIZATION_HASHTAG,
-                    ]),
-                    tag(["p", fman_pubkey.as_str()]),
+                    tag(["t", fedi_decentralized_nostr::mg::MG_AUTHORIZATION_HASHTAG]),
+                    tag(["p", mg_pubkey.as_str()]),
                     tag(["issuer", request.issuer_pubkey.as_str()]),
                     tag(["credential", request.credential_digest.as_str()]),
                     tag(["schema", request.schema.as_str()]),
@@ -135,7 +132,7 @@ impl HolderNostrClient for NostrHolderClient {
 
         // Only d/t/p: those are the coordinate a FLIP provider fetches on, and
         // its verification reads the envelope rather than any indexing hint. The
-        // FMan variant's issuer/credential/schema tags are not repeated here so
+        // MG variant's issuer/credential/schema tags are not repeated here so
         // this event carries nothing a consumer is not documented to read.
         self.relay
             .publish_event(

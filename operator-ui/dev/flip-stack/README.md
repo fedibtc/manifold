@@ -162,7 +162,7 @@ btc -generate 11             # mine blocks to confirm (harness uses 11 finality 
 
 This stack covers the admin/operator workflow (setup wizard, funds, health,
 backups). The full liquidity-request flow additionally needs a target Fedimint
-federation (fedimintd + DKG) and a signed FI request — that path is only
+federation (fedimintd + DKG) and a signed FA request — that path is only
 automated in the integration test:
 `just flip-test-integration` on the PR branch (requires docker).
 

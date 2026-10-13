@@ -21,8 +21,8 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::UnixStream as TokioUnixStream;
 
 pub use defe_api::{
-    ApiError, ApiErrorKind, DEV_DEFE_SOCKET_PATH, FlipInfo, FlipRequest, FmanInfo, FmanRequest,
-    FrameError, GatewaydInfo, GatewaydRequest, MAX_FRAME_SIZE, NostrRelayInfo, NostrRelayRequest,
+    ApiError, ApiErrorKind, DEV_DEFE_SOCKET_PATH, FlipInfo, FlipRequest, FrameError, GatewaydInfo,
+    GatewaydRequest, MAX_FRAME_SIZE, MgInfo, MgRequest, NostrRelayInfo, NostrRelayRequest,
     PushGatewayInfo, PushGatewayRequest, Request, ResourceDescriptor, ResourceHandleId,
     ResourceLease, ResourceRequest, Response, RestartMode, SharingMode,
 };
@@ -151,16 +151,16 @@ impl AsyncDefeClient {
         }
     }
 
-    /// Allocate one exclusive Fleet Manager resource.
-    pub async fn request_fman(
+    /// Allocate one exclusive Manifold Guardian resource.
+    pub async fn request_mg(
         &mut self,
-        request: FmanRequest,
+        request: MgRequest,
     ) -> Result<ResourceLease, DefeClientError> {
-        let lease = self.allocate(ResourceRequest::Fman(request)).await?;
+        let lease = self.allocate(ResourceRequest::Mg(request)).await?;
         match lease.descriptor {
-            ResourceDescriptor::Fman(_) => Ok(lease),
+            ResourceDescriptor::Mg(_) => Ok(lease),
             descriptor => Err(DefeClientError::UnexpectedDescriptor {
-                operation: "request_fman",
+                operation: "request_mg",
                 descriptor: Box::new(descriptor),
             }),
         }

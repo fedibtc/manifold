@@ -1,7 +1,7 @@
 # Bitcoind resource
 
 `Bitcoind` is a local Bitcoin Core regtest resource for integration tests that
-need a real Bitcoin RPC endpoint. It is primarily used by Fleet Manager 0.1 E2E
+need a real Bitcoin RPC endpoint. It is primarily used by Manifold Guardian 0.1 E2E
 work to feed `fleet-manager --manifold-environment development --bitcoind-*`
 arguments; the environment profile supplies regtest.
 
@@ -70,7 +70,7 @@ until the child exits and exports:
 - `DEV_DEFE_BITCOIND_RPC_PASSWORD`
 - `DEV_DEFE_BITCOIND_DATA_DIR`
 
-Fleet Manager E2E harnesses should pass these through to the daemon
+Manifold Guardian E2E harnesses should pass these through to the daemon
 `--bitcoind-url`, `--bitcoind-username`, and `--bitcoind-password` arguments.
 
 ## Tests

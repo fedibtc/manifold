@@ -14,14 +14,14 @@ mod types;
 pub use admin::*;
 pub use canonical::*;
 pub use fedi_decentralized_services::domain::{
-    BitcoinNetwork, CanonicalPayload, FMAN_API_URLS_META_FIELD_KEY,
-    FMAN_PEER_ATTESTATION_SIGNATURE_DOMAIN_SEPARATOR, FMAN_SEAT_BINDINGS_META_FIELD_KEY,
-    FMAN_TRUST_MATERIAL_MAX_RESPONSE_BYTES, FMAN_TRUST_MATERIAL_SIGNATURE_DOMAIN_SEPARATOR,
-    FederationId, FederationName, FederationSeat, FederationSeats, FleetSeatId,
-    FmanApiUrlsMetadata, FmanPeerAttestation, FmanPeerAttestationStatement, FmanSeatBindings,
-    FmanSeatBindingsError, FmanTrustMaterial, FmanTrustMaterialVerificationError, GatewayApiUrl,
-    GetFmanTrustMaterialRequest, GetFmanTrustMaterialResponse, GuardianIdentity, HashBytes,
-    HolderAuthorizationEnvelope, HolderTrustEnvelopeError, InviteCode, PayloadProof,
+    BitcoinNetwork, CanonicalPayload, FederationId, FederationName, FederationSeat,
+    FederationSeats, FleetSeatId, GatewayApiUrl, GetMgTrustMaterialRequest,
+    GetMgTrustMaterialResponse, GuardianIdentity, HashBytes, HolderAuthorizationEnvelope,
+    HolderTrustEnvelopeError, InviteCode, MG_API_URLS_META_FIELD_KEY,
+    MG_PEER_ATTESTATION_SIGNATURE_DOMAIN_SEPARATOR, MG_SEAT_BINDINGS_META_FIELD_KEY,
+    MG_TRUST_MATERIAL_MAX_RESPONSE_BYTES, MG_TRUST_MATERIAL_SIGNATURE_DOMAIN_SEPARATOR,
+    MgApiUrlsMetadata, MgPeerAttestation, MgPeerAttestationStatement, MgSeatBindings,
+    MgSeatBindingsError, MgTrustMaterial, MgTrustMaterialVerificationError, PayloadProof,
     PeerBadgeTrustPolicy, PeerBadgeTrustPolicyConfigError, PeerBadgeTrustPolicyError, PeerId,
     ProtocolVersion, Pubkey, Sats, SecretString, Signature, Signed, TRUST_SCORE_SCHEMA_V1,
     Timestamp, TrustScoreBadgeV1, TrustScoreSchemaError, Url, VerifiedSeatBinding,
@@ -193,8 +193,8 @@ mod tests {
                 stability_max_amount: None,
             },
             details_payload_hash: Sha256Digest([0; 32]),
-            fman_endorsement: None,
-            fman_trust_material: None,
+            mg_endorsement: None,
+            mg_trust_material: None,
             federation_details: FederationLiquidityDetails {
                 invite_code: InviteCode("target-invite".to_owned()),
                 federation_id: FederationId("federation-1".to_owned()),
@@ -204,7 +204,7 @@ mod tests {
                     seat_id: FleetSeatId("seat-1".to_owned()),
                     peer_id: PeerId("0".to_owned()),
                     guardian_identity: GuardianIdentity("guardian-identity".to_owned()),
-                    fleet_manager_pubkey: Pubkey("fman-pubkey".to_owned()),
+                    manifold_guardian_pubkey: Pubkey("fman-pubkey".to_owned()),
                     role_metadata: vec![],
                 }],
                 revocation_locations: vec![],
@@ -517,7 +517,7 @@ mod tests {
         // Trust material is collected per attempt, so a retry carrying freshly
         // fetched material must resolve to the same allocation rather than
         // read as a conflicting request.
-        request.fman_trust_material = Some(Vec::new());
+        request.mg_trust_material = Some(Vec::new());
         let changed_trust_material_only =
             request_liquidity_details_hash_for_request(&request).expect("request hashes");
         assert_eq!(original, changed_trust_material_only);

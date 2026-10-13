@@ -74,8 +74,8 @@ capacity and a distinct source remains serviceable.
 Production registration admission is fail-closed unless the operator chooses an
 emergency static recipient allowlist or explicitly enables open authenticated
 self-registration. Production rejects neither-selected and both-selected
-configurations: the modes are XOR. Open mode is required for the FI pre-quote
-flow, but NIP-98 key control and FCM project membership are not an FI-attestation
+configurations: the modes are XOR. Open mode is required for the FA pre-quote
+flow, but NIP-98 key control and FCM project membership are not an FA-attestation
 mechanism. The registration wire contract carries no attestation field.
 
 Registration eligibility expires after a configured signed-refresh horizon (30

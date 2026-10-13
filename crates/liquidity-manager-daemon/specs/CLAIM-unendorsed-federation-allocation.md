@@ -1,15 +1,15 @@
 # CLAIM-unendorsed-federation-allocation: Unendorsed federation allocation
 
 No production `RequestLiquidity` delivery can newly commit an `allocations` row
-unless, during that delivery before the commit, FLIP has accepted an FMan
+unless, during that delivery before the commit, FLIP has accepted an MG
 endorsement for the exact federation later stored in that row. "Accepted" means
 all of the following held at the admission point:
 
 1. the endorsement's signed seat attestation verified;
 2. the attestation's federation id equalled the federation id parsed from the
    request's invite code;
-3. its FMan held a cryptographically valid badge from an issuer in FLIP's
-   installed trust authorities, bound to that FMan identity; and
+3. its MG held a cryptographically valid badge from an issuer in FLIP's
+   installed trust authorities, bound to that MG identity; and
 4. that authentic badge's trust level met the selected environment profile's
    schema-valid minimum; and
 5. the required revocation lookup completed and did not report that badge
@@ -18,7 +18,7 @@ all of the following held at the admission point:
    that lookup completed.
 
 The minimum predicate is governed by
-[`REQ-fman-trusted-peer-badge`](../../../specs/REQ-fman-trusted-peer-badge.md),
+[`REQ-mg-trusted-peer-badge`](../../../specs/REQ-mg-trusted-peer-badge.md),
 [`SPEC-manifold-environment`](../../manifold-environment/specs/SPEC-manifold-environment.md),
 and the shared deterministic policy described by
 [`SPEC-holder-trust-envelope`](../../domain/specs/SPEC-holder-trust-envelope.md).

@@ -87,12 +87,12 @@
     <button id="relaySet">watch</button>
   </span>
   <span class="stat">events <b id="total">0</b></span>
-  <span class="stat">FMans <b id="fmanCount">0</b></span>
+  <span class="stat">MGs <b id="mgCount">0</b></span>
 </header>
 
 <main>
   <section>
-    <h2>FMan roster <span style="text-transform:none;letter-spacing:0">(from kind 37701 ads)</span></h2>
+    <h2>MG roster <span style="text-transform:none;letter-spacing:0">(from kind 37701 ads)</span></h2>
     <div id="roster"></div>
   </section>
 
@@ -191,21 +191,21 @@ async function refreshRoster() {
     const s = await (await fetch('/api/state')).json();
     // Don't clobber the field while the user is typing a new relay into it.
     if (document.activeElement !== relayInput) relayInput.value = s.relay || '';
-    document.getElementById('fmanCount').textContent = (s.fmans || []).length;
+    document.getElementById('mgCount').textContent = (s.mgs || []).length;
 
     if (!s.relay) {
       roster.innerHTML = '<div class="empty">No relay set. Enter a relay URL above and hit watch.</div>';
       return;
     }
-    if (!s.fmans || !s.fmans.length) {
+    if (!s.mgs || !s.mgs.length) {
       roster.innerHTML = `<div class="empty">
-        No FMan advertisements seen yet on this relay.<br>
+        No MG advertisements seen yet on this relay.<br>
         This is expected until a <code>fleet-manager</code> publishes through its selected Manifold environment profile.
       </div>`;
       return;
     }
     roster.innerHTML = '';
-    for (const f of s.fmans.sort((a, b) => a.pubkey.localeCompare(b.pubkey))) {
+    for (const f of s.mgs.sort((a, b) => a.pubkey.localeCompare(b.pubkey))) {
       const expired = f.expires_at && f.expires_at < s.now;
       const card = document.createElement('div');
       card.className = 'card';

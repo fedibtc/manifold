@@ -6,10 +6,10 @@
   than excuse it)
 - **Found by:** coroner
 - **Where:**
-  - `operator-ui/apps/fleet-manager/src/shared/utils/seatStatus.ts:37-45`
+  - `operator-ui/apps/manifold-guardian/src/shared/utils/seatStatus.ts:37-45`
     (`isSeatReportNonTerminal` returns `false` once `phase === 'running'`)
-  - `operator-ui/apps/fleet-manager/src/features/seats/api/hooks/use-seat-reports/useSeatReports.ts:49-55`
-  - `operator-ui/apps/fleet-manager/src/features/seats/api/hooks/use-seat-status/useSeatStatus.ts:17-20`
+  - `operator-ui/apps/manifold-guardian/src/features/seats/api/hooks/use-seat-reports/useSeatReports.ts:49-55`
+  - `operator-ui/apps/manifold-guardian/src/features/seats/api/hooks/use-seat-status/useSeatStatus.ts:17-20`
 
 **What happens:** Both seat pollers stop entirely when a seat's report reaches a terminal
 *phase*. `running` is treated as terminal, on the stated ground that a settled seat "is done

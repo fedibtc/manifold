@@ -14,7 +14,7 @@ const networkHint = 'The Bitcoin network this provider operates on.';
 
 export const NetworkStep = ({ draft, onChange, errors }: StepProps) => {
   // `policy.supported_networks` is derived, never asked for. It gates every
-  // public request the daemon accepts and every advertisement an FI keeps, and
+  // public request the daemon accepts and every advertisement an FA keeps, and
   // a provider serves the one network it is configured for, so there is nothing
   // for the operator to choose. Deriving it here keeps it in step with the
   // field it depends on; the daemon refuses a config where the two disagree.

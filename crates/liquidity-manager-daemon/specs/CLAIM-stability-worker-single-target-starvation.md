@@ -3,7 +3,7 @@
 One accepted stability-pool target whose client operation never resolves cannot
 prevent FLIP from processing a later active stability-pool allocation.
 
-The network may delay all responses from one accepted target. The FI cannot
+The network may delay all responses from one accepted target. The FA cannot
 write FLIP storage, forge an endorsement, or operate the provider wallet.
 
 ## Status

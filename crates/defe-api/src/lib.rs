@@ -10,8 +10,8 @@ pub use types::{
     RestartMode, SharingMode,
 };
 pub use types::{
-    BitcoindInfo, BitcoindRequest, FlipInfo, FlipRequest, FmanInfo, FmanRequest, GatewaydInfo,
-    GatewaydRequest,
+    BitcoindInfo, BitcoindRequest, FlipInfo, FlipRequest, GatewaydInfo, GatewaydRequest, MgInfo,
+    MgRequest,
 };
 
 /// Environment variable containing the path to the active `defe` Unix socket.

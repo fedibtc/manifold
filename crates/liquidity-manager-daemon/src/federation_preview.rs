@@ -5,7 +5,7 @@
 //! raw `fedi:fman_seat_bindings` consensus metadata value.
 //!
 //! The transport and the derivation live in
-//! [`fedi_decentralized_federation_preview`], shared with the FI's post-DKG
+//! [`fedi_decentralized_federation_preview`], shared with the FA's post-DKG
 //! readback so both components read consensus the same way. What stays here is
 //! FLIP's own boundary: the provider trait it injects, and the fixture and
 //! fake implementations its tests and non-mainnet deployments wire in.

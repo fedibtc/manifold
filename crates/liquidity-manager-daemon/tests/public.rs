@@ -1584,8 +1584,8 @@ fn test_request(
         network: BitcoinNetwork::Regtest,
         amounts,
         details_payload_hash: Sha256Digest([0; 32]),
-        fman_endorsement: None,
-        fman_trust_material: None,
+        mg_endorsement: None,
+        mg_trust_material: None,
         federation_details: test_federation_details(federation_id),
         expires_at: Timestamp(now_timestamp().0 + 600),
     };

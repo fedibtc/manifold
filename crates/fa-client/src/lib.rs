@@ -1,0 +1,535 @@
+//! Consumer-neutral Federation Ambassador state engine.
+
+#![allow(async_fn_in_trait)]
+
+mod backup;
+mod backup_worker;
+mod db;
+mod decommission;
+mod discovery;
+mod error;
+mod formation;
+mod guardian_fee_ppm;
+mod liquidity;
+mod maintenance;
+mod mg;
+mod ports;
+mod selection;
+mod setup_payment_federations;
+mod state;
+mod unavailable;
+
+use std::sync::Arc;
+
+use fedi_decentralized_manifold_environment::ManifoldEnvironmentProfile;
+use fedi_decentralized_nostr_clients::FaNostrClient;
+use fedi_decentralized_peer_badge_verifier::PeerBadgeVerifier;
+use fedimint_core::db::Database;
+use fedimint_core::task::TaskGroup;
+use nostr_sdk::PublicKey;
+use stability_pool_common::Account;
+use tokio::sync::{Mutex, watch};
+
+pub use decommission::DecommissionOutcome;
+pub use discovery::{
+    AdvertisementRejection, EligibleMgCandidate, MG_ADVERTISEMENT_MAX_AGE,
+    MG_ADVERTISEMENT_MAX_HOLDER_AUTHORIZATIONS, MG_DISCOVERY_TIMEOUT, MgCandidateRequirements,
+    MgDiscovery, MgDiscoveryOptions, MgRegistryQuery, RejectedAdvertisement,
+};
+#[cfg(any(test, feature = "dev-pinned-formation"))]
+pub use discovery::{InsecureUntrustedPinnedMg, InsecureUntrustedPinnedMgDiscovery};
+pub use error::{
+    AbandonUnavailableReason, Capability, FaError, FaErrorCode, FaResult, MgCause, MgFailure,
+    MgOperation, SelectionReauthorizationReason,
+};
+pub use fedi_decentralized_nostr::mg::{ApiEndpoint, Availability};
+pub use fedi_decentralized_service_liquidity_manager::{
+    AllocationItemStatus, LiquidityAmountBounds, Pubkey, Sats, Sha256Digest, SourceType,
+};
+pub use fedi_decentralized_service_manifold_guardian::{
+    DkgCompletionCallback, FaId, FaSignature, FederationId, FederationMetadataIconUrl,
+    FederationMetadataName, FederationMetadataTermsUrl, FederationMetadataUpdate,
+    FederationMetadataWelcomeMessage, FederationName, FederationSize, FedimintdDkgVersion,
+    FedimintdVersion, FedimintdVersionCore, GatewayApiUrl, GuardianCode,
+    InvalidFederationMetadataValue, InvalidGatewayApiUrl, InviteCode, Locator, MgName, QuoteId,
+    SeatId, Timestamp,
+};
+pub use fedimint_core::config::FederationId as FedimintFederationId;
+pub use formation::{
+    DkgRestartResult, FormationRunOptions, FormationRunOptionsConfig, FormationTimingField,
+    InvalidFormationRunOptions,
+};
+pub use guardian_fee_ppm::{GuardianFeePpm, InvalidGuardianFeePpm};
+pub use liquidity::{
+    AdmittedLiquidityProvider, FA_LIQUIDITY_DISCOVERY_TIMEOUT, FA_LIQUIDITY_MAX_ADVERTISEMENT_AGE,
+    FA_LIQUIDITY_MAX_HOLDER_AUTHORIZATIONS, FA_LIQUIDITY_OPERATION_PAGE_MAX,
+    FA_LIQUIDITY_REQUEST_VALIDITY, FA_LIQUIDITY_RPC_TIMEOUT, FA_LIQUIDITY_TRUST_MATERIAL_VALIDITY,
+    LiquidityDiscovery, LiquidityOperationId, LiquidityOperationPage, LiquidityOperationPhase,
+    LiquidityOperationSnapshot, LiquidityProviderRejection, LiquidityRequestIntent,
+};
+#[cfg(test)]
+pub(crate) use maintenance::first_three_maintenance_retry_delays;
+pub use maintenance::{
+    InvalidMaintenanceRunOptions, MaintenanceRunOptions, MaintenanceRunOptionsConfig,
+    MaintenanceTimingField,
+};
+pub use ports::{
+    ExactPaymentPreflight, ExactSeatPaymentPreflight, FaFeeAccountError, FaFeeAccountProvider,
+    FaIdentity, FaPaymentError, FaPayments, FederationConsensusError, FederationConsensusReader,
+    FederationConsensusSnapshot, LiquidityProviderConnector, LiquidityProviderConnectorError,
+    ManifoldGuardianCallError, ManifoldGuardianConnector, ManifoldGuardianConnectorError,
+    PaymentReservationRecovery, PreparedSeatPayment, SeatPaymentRecovery, SettledSeatRefund,
+};
+pub use selection::{
+    MG_SELECTION_PREVIEW_VALIDITY, MG_SELECTION_PROBE_TIMEOUT, MgReplacementApproval,
+    MgReplacementPreview, MgSelectionApproval, MgSelectionPreview, MgSelectionQuery,
+    MgSelectionRequest, SeatProvenance, SelectedMgSeat, VerifiedBadgeFacts, VerifiedCandidate,
+};
+pub use setup_payment_federations::AdmittedSetupPaymentFederation;
+/// Exact SPv2 account type returned by [`FaFeeAccountProvider`].
+///
+/// This re-export keeps the capability boundary on `fa-client`'s exact
+/// dependency identity even when the consumer workspace also contains another
+/// revision of `stability-pool-common`.
+pub use stability_pool_common::Account as GuardianFeeAccount;
+pub use state::{
+    FaStatus, FedimintdVersionRange, FormationActionRequired, FormationFreshness, FormationId,
+    FormationIntent, FormationPhase, FormationSnapshot, GuardianReplacementId,
+    GuardianReplacementRequirements, GuardianReplacementSeat, MAX_FEDERATION_SIZE,
+    MAX_FEDERATION_SIZE_EXCLUSIVE, MAX_GUARDIAN_FEE_PPM, MIN_FEDERATION_SIZE,
+    PaymentAuthorizationId, PaymentRequirements, PaymentReservationId, PlanPreference,
+    ResolvedFormationIntent, RestoredFormationSnapshot, RestoredSeat, SeatPaymentRequirement,
+    SeatPhase, SeatProgress,
+};
+pub use unavailable::{
+    UnavailableFaFeeAccountProvider, UnavailableFederationConsensusReader,
+    UnavailableManifoldGuardianConnector, UnavailablePayments, UnavailableRegistry,
+};
+
+use crate::db::{FaStore, RecoveryCompletedKey};
+use crate::ports::{FaClientPorts, FaIdentityExt as _};
+
+/// Whether this opening is a restored mnemonic whose FA backup needs checking.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum BackupRecoveryHint {
+    Skip,
+    RestoredMnemonic,
+}
+
+/// Stateful Federation Ambassador client.
+pub struct FaClient<I, P, N, F, C> {
+    inner: Arc<FaClientInner<I, P, N, F, C>>,
+}
+
+struct FaClientInner<I, P, N, F, C> {
+    store: FaStore,
+    ports: FaClientPorts<I, P, N, F, C>,
+    progress: watch::Sender<FaStatus>,
+    run_guard: Arc<Mutex<()>>,
+    // Connection hints only; consensus is still read and verified each time.
+    read_invite: Mutex<Option<(InviteCode, InviteCode)>>,
+    peer_badge_verifier: PeerBadgeVerifier,
+    setup_payment_publisher: Option<PublicKey>,
+    guardian_verification_fee_account: Option<Account>,
+    backup_tasks: TaskGroup,
+}
+
+impl<I, P, N, F, C> Drop for FaClientInner<I, P, N, F, C> {
+    fn drop(&mut self) {
+        self.backup_tasks.shutdown();
+    }
+}
+
+impl<I, P, N, F, C> Clone for FaClient<I, P, N, F, C> {
+    fn clone(&self) -> Self {
+        Self {
+            inner: self.inner.clone(),
+        }
+    }
+}
+
+impl<I, P, N, F, C> FaClient<I, P, N, F, C>
+where
+    I: FaIdentity,
+    P: FaPayments,
+    N: FaNostrClient,
+    F: ManifoldGuardianConnector,
+    C: FederationConsensusReader,
+{
+    /// Open FA state from a consumer-provided, already-namespaced database.
+    ///
+    /// The same stable identity must be supplied on every reopen. Durable
+    /// state is identity-bound before it is observed. Mutating operations also
+    /// acquire a database-wide expiring lease, so separately opened clients
+    /// cannot concurrently perform external effects.
+    ///
+    /// Because this API is pre-production, opening an older storage schema
+    /// atomically clears the complete supplied namespace and starts from Idle.
+    ///
+    /// The mandatory verifier authenticates every PeerBadge the selection
+    /// walk examines through [`Self::preview_mg_selection`]. The resulting
+    /// sealed approval is consumed by [`Self::pay_and_create`]. The fee-account
+    /// provider and Guardian Verification Fee account are explicit capabilities
+    /// for the formation fee arrangement.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "security-critical FA capability ports stay explicit at the public construction boundary"
+    )]
+    pub async fn open(
+        database: Database,
+        identity: I,
+        payments: P,
+        registry: N,
+        mg_connector: F,
+        peer_badge_verifier: PeerBadgeVerifier,
+        consensus_reader: C,
+        fa_fee_account_provider: impl FaFeeAccountProvider,
+    ) -> FaResult<Self> {
+        Self::open_inner(
+            database,
+            FaClientPorts {
+                identity,
+                payments,
+                registry,
+                mg_connector,
+                consensus_reader,
+                fa_fee_account_provider: Arc::new(fa_fee_account_provider),
+            },
+            peer_badge_verifier,
+            None,
+            None,
+        )
+        .await
+    }
+
+    /// Open FA state with a deployment-pinned setup-payment publisher.
+    ///
+    /// Paid quote selection authenticates kind-37707 publications against this
+    /// key. Free selected formation through
+    /// [`Self::create_without_payer`] does not require setup-payment policy.
+    ///
+    /// The mandatory verifier authenticates every PeerBadge the selection
+    /// walk examines through [`Self::preview_mg_selection`]. The resulting
+    /// sealed approval is consumed by [`Self::pay_and_create`]. The fee-account
+    /// provider is an explicit local capability even though this constructor
+    /// has no Guardian Verification Fee account and therefore cannot arrange
+    /// fees.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "security-critical FA capability ports stay explicit at the public construction boundary"
+    )]
+    pub async fn open_with_setup_payment_publisher(
+        database: Database,
+        identity: I,
+        payments: P,
+        registry: N,
+        mg_connector: F,
+        peer_badge_verifier: PeerBadgeVerifier,
+        consensus_reader: C,
+        fa_fee_account_provider: impl FaFeeAccountProvider,
+        setup_payment_publisher: PublicKey,
+        guardian_verification_fee_account: Option<Account>,
+    ) -> FaResult<Self> {
+        Self::open_inner(
+            database,
+            FaClientPorts {
+                identity,
+                payments,
+                registry,
+                mg_connector,
+                consensus_reader,
+                fa_fee_account_provider: Arc::new(fa_fee_account_provider),
+            },
+            peer_badge_verifier,
+            Some(setup_payment_publisher),
+            guardian_verification_fee_account,
+        )
+        .await
+    }
+
+    /// Open FA state from one canonical Manifold deployment profile.
+    ///
+    /// This is the production integration boundary: the same profile supplies
+    /// the setup-payment publisher and the deployment-owned Guardian
+    /// Verification Fee account. The separate fee-account provider resolves
+    /// the formed federation consumer's own local account. That lookup may be
+    /// absent until joined state exists; the dependent operation then fails
+    /// closed.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn open_with_manifold_profile(
+        database: Database,
+        identity: I,
+        payments: P,
+        registry: N,
+        mg_connector: F,
+        peer_badge_verifier: PeerBadgeVerifier,
+        consensus_reader: C,
+        fa_fee_account_provider: impl FaFeeAccountProvider,
+        profile: ManifoldEnvironmentProfile,
+    ) -> FaResult<Self> {
+        Self::open_with_manifold_profile_and_recovery(
+            database,
+            identity,
+            payments,
+            registry,
+            mg_connector,
+            peer_badge_verifier,
+            consensus_reader,
+            fa_fee_account_provider,
+            profile,
+            BackupRecoveryHint::Skip,
+        )
+        .await
+    }
+
+    /// Open with explicit restored-mnemonic provenance.
+    ///
+    /// A restored opening claims the mutation guard and publishes recovery
+    /// before returning. The client owns relay lookup and durable completion.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn open_with_manifold_profile_and_recovery(
+        database: Database,
+        identity: I,
+        payments: P,
+        registry: N,
+        mg_connector: F,
+        peer_badge_verifier: PeerBadgeVerifier,
+        consensus_reader: C,
+        fa_fee_account_provider: impl FaFeeAccountProvider,
+        profile: ManifoldEnvironmentProfile,
+        recovery_hint: BackupRecoveryHint,
+    ) -> FaResult<Self> {
+        let setup_payment_publisher = profile.setup_payment_publisher().copied();
+        let guardian_verification_fee_account =
+            profile.guardian_verification_fee_account().cloned();
+        let relays = profile.nostr_relays().as_urls().to_vec();
+        let client = Self::open_inner(
+            database,
+            FaClientPorts {
+                identity,
+                payments,
+                registry,
+                mg_connector,
+                consensus_reader,
+                fa_fee_account_provider: Arc::new(fa_fee_account_provider),
+            },
+            peer_badge_verifier,
+            setup_payment_publisher,
+            guardian_verification_fee_account,
+        )
+        .await?;
+        if recovery_hint == BackupRecoveryHint::RestoredMnemonic
+            && matches!(client.status(), FaStatus::Idle)
+            && !client
+                .inner
+                .store
+                .recovery_completed(&RecoveryCompletedKey::new(profile.environment()))
+                .await
+        {
+            let guard = client
+                .inner
+                .run_guard
+                .clone()
+                .try_lock_owned()
+                .expect("the newly opened FA client has no active operation");
+            client
+                .inner
+                .progress
+                .send_replace(FaStatus::Recovery { last_error: None });
+            backup_worker::spawn_recovery(
+                &client.inner.backup_tasks,
+                backup_worker::RecoveryWorker {
+                    store: client.inner.store.clone(),
+                    root: client.inner.ports.identity.scoped_root(),
+                    fa_id: client
+                        .inner
+                        .ports
+                        .identity
+                        .public_key()
+                        .map_err(FaError::Identity)?,
+                    profile,
+                    progress: client.inner.progress.clone(),
+                },
+                guard,
+            );
+        }
+        backup_worker::spawn_workers(
+            &client.inner.backup_tasks,
+            client.inner.store.clone(),
+            client.inner.ports.identity.scoped_root(),
+            relays,
+        );
+        Ok(client)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn open_inner(
+        database: Database,
+        ports: FaClientPorts<I, P, N, F, C>,
+        peer_badge_verifier: PeerBadgeVerifier,
+        setup_payment_publisher: Option<PublicKey>,
+        guardian_verification_fee_account: Option<Account>,
+    ) -> FaResult<Self> {
+        let store = FaStore::new(database);
+        let fa_id = ports.identity.public_key().map_err(FaError::Identity)?;
+        let status = store.load_status(fa_id).await?;
+        let (progress, _) = watch::channel(status);
+        let backup_tasks = TaskGroup::new();
+        Ok(Self {
+            inner: Arc::new(FaClientInner {
+                store,
+                ports,
+                progress,
+                run_guard: Arc::new(Mutex::new(())),
+                read_invite: Mutex::new(None),
+                peer_badge_verifier,
+                setup_payment_publisher,
+                guardian_verification_fee_account,
+                backup_tasks,
+            }),
+        })
+    }
+
+    /// Subscribe to the latest FA state.
+    #[must_use]
+    pub fn observe(&self) -> watch::Receiver<FaStatus> {
+        self.inner.progress.subscribe()
+    }
+
+    /// Return the latest FA state.
+    #[must_use]
+    pub fn status(&self) -> FaStatus {
+        self.inner.progress.borrow().clone()
+    }
+
+    /// Legacy registry-backed creation entry point.
+    ///
+    /// MVP automatic selection uses [`Self::preview_mg_selection`] followed
+    /// by [`Self::pay_and_create`]. This older unapproved registry-create shape
+    /// deliberately remains unavailable because it has no verified preview,
+    /// payer, spending cap, or sealed selection approval.
+    pub async fn create(&self, _intent: FormationIntent) -> FaResult<()> {
+        let _run = self.inner.run_guard.try_lock().map_err(|_| FaError::Busy)?;
+        let _fa_pubkey = self
+            .inner
+            .ports
+            .identity
+            .public_key()
+            .map_err(FaError::Identity)?;
+        let _ = (
+            &self.inner.ports.payments,
+            &self.inner.ports.registry,
+            &self.inner.ports.mg_connector,
+        );
+        self.publish_error(FaErrorCode::CapabilityUnavailable);
+        Err(FaError::CapabilityUnavailable(Capability::Registry))
+    }
+
+    /// Report that the legacy unapproved registry-create shape is unavailable
+    /// without accessing any consumer capability. Use the preview and
+    /// Pay-and-create APIs for MVP creation.
+    pub fn preflight_create(_intent: &FormationIntent) -> FaResult<()> {
+        Err(FaError::CapabilityUnavailable(Capability::Registry))
+    }
+
+    /// Continue the active formation from its durable recovery state.
+    ///
+    /// `Ok(())` does not necessarily mean that formation completed. In
+    /// particular, a successful call can stop at
+    /// [`FormationPhase::AwaitingPaymentReadiness`]. Read the aggregate
+    /// [`FormationActionRequired`] from [`Self::status`] or [`Self::observe`].
+    /// An [`FormationActionRequired::AuthorizePayments`] action requires the
+    /// displayed [`PaymentAuthorizationId`]. A
+    /// [`FormationActionRequired::ReplaceGuardians`] action requires a fresh
+    /// verified excluding-set preview and sealed replacement approval through
+    /// [`Self::apply_mg_replacements`].
+    ///
+    /// Resuming never grants payment authorization. It first recovers operations
+    /// for the exact stored authorized quotes. It can carry that authorization to
+    /// refreshed quote IDs only when every authorized commercial term is
+    /// unchanged; changed terms expose a new payment action, which needs a new
+    /// authorization.
+    ///
+    /// A stored [`FormationPhase::Formed`] state is also not treated as proof of
+    /// current remote state: resume reads fresh federation consensus and verifies
+    /// the saved identity, directory, and fee recipients. Restored backups likewise
+    /// verify their saved seats against the signed consensus directory. Neither
+    /// path requires every manager online; if the saved invite is unreachable,
+    /// recovery asks saved managers for alternative invites to the same federation.
+    /// Inspect [`FormationFreshness`] through status observation when presenting
+    /// persisted state before that reconciliation completes.
+    ///
+    /// After [`FormationPhase::DkgComplete`], resume finishes directory and
+    /// initial fee publication without repeating DKG. The exact target is saved
+    /// with [`FormationPhase::PublishingSeatBindings`] before submission, and
+    /// `Formed` is saved only after consensus confirms it. Reopening preserves
+    /// these checkpoints. Once confirmed, later checks keep `Formed` visible;
+    /// freshness and errors report the result separately.
+    ///
+    /// The returned [`std::future::Future`] owns no background task. Dropping it
+    /// cancels local work, but completed durable checkpoints remain recoverable:
+    /// reopen with the same database, identity, and wallet through
+    /// [`Self::open`] (or [`Self::open_with_setup_payment_publisher`]), then call
+    /// [`Self::resume`] again.
+    pub async fn resume(&self) -> FaResult<()> {
+        self.resume_with_options(FormationRunOptions::default())
+            .await
+    }
+
+    /// Resume with caller-selected time limits, using the same recovery path
+    /// and cancellation behavior as [`Self::resume`].
+    pub async fn resume_with_options(&self, options: FormationRunOptions) -> FaResult<()> {
+        let _run = self.inner.run_guard.try_lock().map_err(|_| FaError::Busy)?;
+        options.validate_for_start(&self.inner.store)?;
+        let fa_id = self
+            .inner
+            .ports
+            .identity
+            .public_key()
+            .map_err(FaError::Identity)?;
+        let (deadline, lease) = formation::start_driver_run(&self.inner.store, options).await?;
+        let result = async {
+            let recovery = self.inner.store.load_recovery(fa_id).await?;
+            match recovery {
+                db::FaRecovery::Idle => Err(FaError::NoActiveFormation),
+                db::FaRecovery::Formation(recovery) => {
+                    self.inner
+                        .progress
+                        .send_replace(FaStatus::Formation(recovery.snapshot.clone()));
+                    self.resume_pinned(*recovery, options, deadline, &lease)
+                        .await
+                }
+                db::FaRecovery::Restored(snapshot)
+                    if snapshot.freshness == FormationFreshness::Fresh =>
+                {
+                    Ok(())
+                }
+                db::FaRecovery::Restored(snapshot) => {
+                    self.inner
+                        .progress
+                        .send_replace(FaStatus::Restored(snapshot.clone()));
+                    self.reconcile_restored(
+                        snapshot,
+                        fa_id,
+                        formation::DriverRun::new(options, deadline, &lease),
+                    )
+                    .await
+                }
+            }
+        }
+        .await;
+        formation::finish_driver_run(result, self.inner.store.release_driver_lease(lease).await)
+    }
+
+    fn publish_error(&self, error: FaErrorCode) {
+        if let FaStatus::Formation(mut snapshot) = self.status() {
+            snapshot.last_error = Some(error);
+            self.inner
+                .progress
+                .send_replace(FaStatus::Formation(snapshot));
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests;

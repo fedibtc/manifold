@@ -1,4 +1,4 @@
-# Production FMan releases
+# Production MG releases
 
 Production releases are prepared manually in the Umbrel and StartOS packaging
 repositories. Manifold continues publishing images on master pushes or manual

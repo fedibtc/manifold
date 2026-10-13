@@ -9,10 +9,10 @@ until the process restarts.
 
 ## Practical impact
 
-A hostile FI needs four endorsements for federations it controls, and needs each
+A hostile FA needs four endorsements for federations it controls, and needs each
 target only to answer the config download and then go quiet. After that, FLIP
 allocates to no new federation — including federations belonging to other,
-honest FIs. Already-installed clients keep working, so allocations in progress
+honest FAs. Already-installed clients keep working, so allocations in progress
 complete.
 
 Recovery is a daemon restart. Nothing in the Admin surface reclaims a pending
@@ -59,8 +59,8 @@ The current mitigation makes the bounded fault visible and attributable:
   it, and choosing which federation to stop endorsing is the only action
   available before a restart.
 
-**A per-requester pending budget is insufficient.** It would stop one FI taking all
-four slots, which is the stated adversary, but four distinct endorsed FIs
+**A per-requester pending budget is insufficient.** It would stop one FA taking all
+four slots, which is the stated adversary, but four distinct endorsed FAs
 would still wedge it, and it needs requester identity threaded through all
 thirteen `StabilityPoolBackend` methods, which take a `FundingTargetRecord` that
 does not carry one. Reconsider it if the upstream change does not happen and a
@@ -70,7 +70,7 @@ measured deployment sees single-requester saturation.
 `Client::fetch_common_api_versions`
 is public and takes neither a `TaskGroup` nor a `Database`, so FLIP could probe
 under its own timeout before `join` and drop it safely. It would prevent the
-*accidental* case — a federation that is simply broken — but a hostile FI
+*accidental* case — a federation that is simply broken — but a hostile FA
 chooses when its target goes quiet, so it defeats the probe by answering it. A
 mitigation the stated adversary trivially defeats is not worth a
 duplicate config download and two more pinned-API dependencies.

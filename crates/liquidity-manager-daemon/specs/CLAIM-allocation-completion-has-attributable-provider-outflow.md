@@ -11,10 +11,10 @@ source-specific:
   the target-client peg-in, and that item's recorded `deposit_to_provide`
   operation.
 
-The adversary is a hostile FI with an accepted, endorsed federation, able to
+The adversary is a hostile FA with an accepted, endorsed federation, able to
 schedule deliveries, target-federation credit, ordinary third-party deposits,
 network responses, worker ticks, and crashes at every await. It cannot forge
-an issuer/FMan, write FLIP's database, or compromise the provider wallet,
+an issuer/MG, write FLIP's database, or compromise the provider wallet,
 gateway, chain observer, or target federation's consensus responses.
 
 ## Status

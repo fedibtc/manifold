@@ -34,7 +34,7 @@ explicit operator republish does. Withdrawal changes no configuration, so
 without this the operator's decision would be undone by the next reconciliation
 under a fresh signature, while the operator believed they had left the market.
 
-The signed document follows the shared FMan/FLIP publication convention: a
+The signed document follows the shared MG/FLIP publication convention: a
 typed `payload` (with `version`, `provider_pubkey`, `issued_at`,
 `expires_at`, `supported_sources`, `holder_authorizations`, `policy`,
 optional bounded `display` metadata, `api_endpoints` URLs, `api_versions`,
@@ -56,7 +56,7 @@ survives a restart — see
 
 Trust rides inline: each `holder_authorizations` entry embeds a
 holder-signed `HolderAuthorization` together with the backing Issuer
-`SignedCredential`, per the FMan carriage convention. Those entries are
+`SignedCredential`, per the MG carriage convention. Those entries are
 enrolled from Holder-published kind-`37705` events
 ([SPEC-flip-holder-authorization](./SPEC-flip-holder-authorization.md)), which
 carry the authorization and its badge together. The provider does not judge the

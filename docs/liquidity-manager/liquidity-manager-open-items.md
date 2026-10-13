@@ -15,13 +15,13 @@ do not transcribe it.
 
 ### Shared publication profile follow-ups
 
-FLIP follows the shared FMan-side registry and attester publication conventions
-([`SPEC-fman-nostr-events`](../../crates/nostr/specs/SPEC-fman-nostr-events.md),
+FLIP follows the shared MG-side registry and attester publication conventions
+([`SPEC-mg-nostr-events`](../../crates/nostr/specs/SPEC-mg-nostr-events.md),
 [`SPEC-holder-trust-envelope`](../../crates/domain/specs/SPEC-holder-trust-envelope.md),
-[`SPEC-advertisement`](../../crates/fman/specs/SPEC-advertisement.md)). Three
+[`SPEC-advertisement`](../../crates/mg/specs/SPEC-advertisement.md)). Three
 follow-ups remain. None blocks MVP.
 
-- Event kind numbers stay provisional across FMan and FLIP. FLIP tracks the
+- Event kind numbers stay provisional across MG and FLIP. FLIP tracks the
   shared decision and renumbers with it.
 - Cross-language conformance and test vectors for the adopted schema and
   publication profile. Tracked with the signing item below.
@@ -30,9 +30,9 @@ follow-ups remain. None blocks MVP.
   The SDK owner must either record the decision or record that the question is
   open, because the tree cannot answer it.
 
-### Canonical FI signing profile
+### Canonical FA signing profile
 
-FLIP's own signing profile is settled and implemented. The canonical FI signing
+FLIP's own signing profile is settled and implemented. The canonical FA signing
 byte layout and domain tags remain unpinned.
 
 - Add cross-language conformance fixtures with fixed expected byte strings,
@@ -63,9 +63,9 @@ records, and settlement evidence. `WalletClientModule::withdraw` mints its own
 operation id, so it inherits the same pre-submit crash window, and there the
 value moves outward: a lost id followed by a resubmit is a double send.
 
-**The accepted limitation, in operator terms.** Severity: High. An FI can use an
+**The accepted limitation, in operator terms.** Severity: High. An FA can use an
 endorsed federation whose stability pool rejects provision, and so lock
-FLIP-funded e-cash. What that FI cannot do is consume provider capacity
+FLIP-funded e-cash. What that FA cannot do is consume provider capacity
 permanently. Two records point here for this statement:
 [`failed-stability-allocation-strands-ecash`](../../crates/liquidity-manager-daemon/specs/CLAIM-failed-stability-allocation-strands-ecash.md)
 and
@@ -83,7 +83,7 @@ these paths fail closed against.
 ### Retained target-client databases are unbounded
 
 Nothing deletes `federations_dir/<federation_id>/`, so one RocksDB per distinct
-federation an FI gets endorsed accumulates on disk for the life of the
+federation an FA gets endorsed accumulates on disk for the life of the
 deployment.
 
 This is the accepted consequence of the decision above: that database is what
@@ -91,7 +91,7 @@ the manual recovery route reads after `abandon_target_client_value`, so deleting
 it is how abandoned value stops being recoverable at all.
 
 An operator sizing a FLIP host must plan for an on-disk set that never shrinks.
-The growth rate is set by how fast an FI can obtain endorsements for distinct
+The growth rate is set by how fast an FA can obtain endorsements for distinct
 qualifying federations, not by anything FLIP configures. **No verdict will go red
 if disk growth becomes the binding constraint.** Only this item carries it. If
 the release envelope ever measures the growth rate, that measurement is what

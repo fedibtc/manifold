@@ -1,11 +1,11 @@
-//! Verified FMan telemetry registration and durable target admission.
+//! Verified MG telemetry registration and durable target admission.
 
 use std::str::FromStr as _;
 
 use axum::Json;
 use fedi_decentralized_peer_badge_verifier::PeerBadgeVerifier;
 use fedi_decentralized_push_gateway_storage::{EncryptedTelemetryTarget, TelemetryRepository};
-use fedi_decentralized_service_fleet_manager::{
+use fedi_decentralized_service_manifold_guardian::{
     GuardianTelemetryRegistrationRequest, GuardianTelemetryRegistrationResponse,
 };
 use fedi_iroh_rpc::iroh::{Endpoint, EndpointId, endpoint::presets};
@@ -16,11 +16,11 @@ use crate::{
     nostr_http_auth::AuthenticatedTelemetryRegistration, telemetry_crypto::TelemetrySecretCipher,
 };
 
-/// Fully verified FMan target. Construction is private to the concrete NIP-98
+/// Fully verified MG target. Construction is private to the concrete NIP-98
 /// extractor, so no handler can persist a merely signed body.
 pub(crate) struct VerifiedTelemetryRegistration {
     request: GuardianTelemetryRegistrationRequest,
-    fman_pubkey: String,
+    mg_pubkey: String,
 }
 
 /// Receiver/collector dependencies instantiated only for complete config.
@@ -85,11 +85,11 @@ pub(crate) async fn verify_registration(
 
     Ok(VerifiedTelemetryRegistration {
         request,
-        fman_pubkey: signer.0,
+        mg_pubkey: signer.0,
     })
 }
 
-/// Persist one completely verified FMan target.
+/// Persist one completely verified MG target.
 pub(crate) async fn register_guardian_telemetry(
     state: axum::extract::State<AppState>,
     AuthenticatedTelemetryRegistration(verified): AuthenticatedTelemetryRegistration,
@@ -97,7 +97,7 @@ pub(crate) async fn register_guardian_telemetry(
     let runtime = state
         .telemetry_runtime()
         .ok_or_else(telemetry_unavailable)?;
-    let aad = format!("guardian-telemetry:{}", verified.fman_pubkey);
+    let aad = format!("guardian-telemetry:{}", verified.mg_pubkey);
     let plaintext = serde_json::to_vec(&(
         &verified.request.iroh_endpoint_id,
         verified.request.capability.as_bytes(),
@@ -110,7 +110,7 @@ pub(crate) async fn register_guardian_telemetry(
     runtime
         .repository
         .upsert_verified_target(&EncryptedTelemetryTarget {
-            fman_pubkey: verified.fman_pubkey,
+            mg_pubkey: verified.mg_pubkey,
             secret_nonce,
             secret_ciphertext,
         })

@@ -4,7 +4,7 @@
 **Subject:** `PRODUCTION-READINESS-AUDIT-FLIP-2026-08-08.md`
 **Audit snapshot:** `0539876b` · **Assessment snapshot:** `e5923fd0` ·
 **Re-checked at head `9b8e12b6`:** gate numbers and all cited code claims
-unchanged (the two intervening commits are FMan e2e/mock work and touch no
+unchanged (the two intervening commits are MG e2e/mock work and touch no
 FLIP code). Where re-run numbers differ from the audit's, the delta may
 reflect branch movement between snapshots, not audit error; such cases are
 called out explicitly.
@@ -191,7 +191,7 @@ explicit override, then document the boundary in SECURITY.md.
 
 ### P2 → P1 — No frontend verification runs in CI (shared finding)
 
-Same as the FMan assessment: no frontend check of any kind runs in CI — not
+Same as the MG assessment: no frontend check of any kind runs in CI — not
 coverage, *anything*. See the index; this should be owned once at repo level,
 and it is the root cause of the mock/backend divergences above (nothing
 compares the hand-authored mocks against `admin.rs`).

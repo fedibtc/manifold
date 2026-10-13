@@ -37,12 +37,13 @@ use fedi_decentralized_liquidity_manager_daemon::{
 };
 use fedi_decentralized_service_liquidity_manager::{
     AllocationItemTarget, BitcoinNetwork, FederationId, FederationLiquidityDetails, FederationName,
-    FmanEndorsement, FundingPolicyConfig, GetAllocationStatusRequest, GetAllocationStatusResponse,
-    GetFmanTrustMaterialResponse, HashBytes, InviteCode as ServiceInviteCode, ItemAllocationStatus,
-    LiquidityAmountBounds, LiquidityProviderAdvertisement, PayloadProof, ProtocolVersion, Pubkey,
-    PublicLiquidityApi, PublicLiquidityApiClient, PublicRejectionCode, PublicRpcPayloadDomain,
-    RequestLiquidityOutcome, RequestLiquidityRequest, Sats, Sha256Digest, Signature, Signed,
-    Timestamp, Url, public_rpc_payload_hash, request_liquidity_details_hash_for_request,
+    FundingPolicyConfig, GetAllocationStatusRequest, GetAllocationStatusResponse,
+    GetMgTrustMaterialResponse, HashBytes, InviteCode as ServiceInviteCode, ItemAllocationStatus,
+    LiquidityAmountBounds, LiquidityProviderAdvertisement, MgEndorsement, PayloadProof,
+    ProtocolVersion, Pubkey, PublicLiquidityApi, PublicLiquidityApiClient, PublicRejectionCode,
+    PublicRpcPayloadDomain, RequestLiquidityOutcome, RequestLiquidityRequest, Sats, Sha256Digest,
+    Signature, Signed, Timestamp, Url, public_rpc_payload_hash,
+    request_liquidity_details_hash_for_request,
 };
 use fedi_iroh_rpc::iroh::{Endpoint, EndpointAddr, TransportAddr, endpoint::presets};
 use nostr_sdk::secp256k1::Message;
@@ -254,8 +255,8 @@ impl LiveWalletStack {
 struct LiveLiquidityStack {
     wallet: LiveWalletStack,
     target_fedimint: FedimintFixture,
-    endorsement: FmanEndorsement,
-    trust_material: Vec<GetFmanTrustMaterialResponse>,
+    endorsement: MgEndorsement,
+    trust_material: Vec<GetMgTrustMaterialResponse>,
 }
 
 impl LiveLiquidityStack {
@@ -278,7 +279,7 @@ impl LiveLiquidityStack {
             &live_config_hash(),
             GATEWAY_TARGET_MODULE_KINDS,
         )?;
-        // The FMan advertisement transport is real, so every operating
+        // The MG advertisement transport is real, so every operating
         // identity must be resolvable on the leased relay before a request
         // can be accepted.
         Ok(Self {
@@ -322,7 +323,7 @@ impl LiveLiquidityStack {
 }
 
 /// A coherent archive from before acceptance cannot erase the allocation
-/// identity that makes an exact FI replay idempotent.
+/// identity that makes an exact FA replay idempotent.
 #[tokio::test(flavor = "multi_thread")]
 async fn live_restore_rejects_allocation_rollback_and_replay_stays_idempotent() -> anyhow::Result<()>
 {
@@ -546,7 +547,7 @@ async fn live_liquidity_happy_path_publishes_nostr_and_allocates_over_iroh() -> 
     // details commitment differ deterministically; a rebuilt request could
     // otherwise land in the same wall-clock second as the original and hash
     // identically, which is the idempotent-repeat case, not a conflict.
-    trust::publish_revocation(&relay_url, &trust, &artifacts.fman_credentials[0]).await?;
+    trust::publish_revocation(&relay_url, &trust, &artifacts.mg_credentials[0]).await?;
     let mut conflicting_details = live_liquidity_request(
         &advertisement.payload.provider_pubkey,
         &target_fedimint.invite_code,
@@ -1300,7 +1301,7 @@ async fn live_trust_reject_matrix_maps_each_failure_to_its_code() -> anyhow::Res
 
     // A request with no endorsement never reaches the preview.
     let mut ungated = request()?;
-    ungated.fman_endorsement = None;
+    ungated.mg_endorsement = None;
     assert_eq!(
         reject(ungated).await?,
         PublicRejectionCode::InvalidCredentials,
@@ -1310,7 +1311,7 @@ async fn live_trust_reject_matrix_maps_each_failure_to_its_code() -> anyhow::Res
     // A request carrying no trust material at all is a rejection, never a
     // bypass: it deserializes so it can be answered with a signed rejection.
     let mut unmaterialized = request()?;
-    unmaterialized.fman_trust_material = None;
+    unmaterialized.mg_trust_material = None;
     assert_eq!(
         reject(unmaterialized).await?,
         PublicRejectionCode::InvalidCredentials,
@@ -1321,7 +1322,7 @@ async fn live_trust_reject_matrix_maps_each_failure_to_its_code() -> anyhow::Res
     // therefore untrusted, and `all_trusted` cannot be satisfied. Nothing is
     // malformed, so this is a policy outcome rather than a credential failure.
     let mut withheld = request()?;
-    withheld.fman_trust_material = Some(vec![artifacts.trust_material[0].clone()]);
+    withheld.mg_trust_material = Some(vec![artifacts.trust_material[0].clone()]);
     assert_eq!(
         reject(withheld).await?,
         PublicRejectionCode::PolicyMismatch,
@@ -1335,7 +1336,7 @@ async fn live_trust_reject_matrix_maps_each_failure_to_its_code() -> anyhow::Res
     forged_material[1].material.issued_at = fedi_decentralized_service_liquidity_manager::Timestamp(
         forged_material[1].material.issued_at.0 + 1,
     );
-    forged.fman_trust_material = Some(forged_material);
+    forged.mg_trust_material = Some(forged_material);
     assert_eq!(
         reject(forged).await?,
         PublicRejectionCode::InvalidCredentials,
@@ -1347,7 +1348,7 @@ async fn live_trust_reject_matrix_maps_each_failure_to_its_code() -> anyhow::Res
     let mut duplicated = request()?;
     let mut duplicated_material = artifacts.trust_material.clone();
     duplicated_material.push(artifacts.trust_material[0].clone());
-    duplicated.fman_trust_material = Some(duplicated_material);
+    duplicated.mg_trust_material = Some(duplicated_material);
     assert_eq!(
         reject(duplicated).await?,
         PublicRejectionCode::InvalidCredentials,
@@ -1383,7 +1384,7 @@ async fn live_trust_reject_matrix_maps_each_failure_to_its_code() -> anyhow::Res
         &target_fedimint.invite_code,
         &artifacts.preview,
     )?;
-    trust::publish_revocation(&relay_url, &trust, &artifacts.fman_credentials[1]).await?;
+    trust::publish_revocation(&relay_url, &trust, &artifacts.mg_credentials[1]).await?;
     assert_eq!(
         reject(request()?).await?,
         PublicRejectionCode::InvalidCredentials,
@@ -1419,7 +1420,7 @@ async fn live_trust_reject_matrix_maps_each_failure_to_its_code() -> anyhow::Res
 /// withdrawal durable and lets no automatic pass undo one. The operator's
 /// explicit republish is what returns it.
 ///
-/// The middle transition is the one worth having a live test for: an FI holding
+/// The middle transition is the one worth having a live test for: an FA holding
 /// an advertisement can still transact against a provider that no relay is
 /// offering, and an operator reading only the relay would conclude the opposite.
 #[tokio::test(flavor = "multi_thread")]
@@ -1532,7 +1533,7 @@ async fn live_dependency_outage_withdraws_the_advertisement_until_the_operator_r
         "a repaired deployment must not re-advertise itself"
     );
 
-    // The RPC surface does not wait for the advertisement. An FI that already
+    // The RPC surface does not wait for the advertisement. An FA that already
     // holds one transacts again the moment validation passes.
     let accepted = rpc
         .client
@@ -3510,7 +3511,7 @@ async fn live_target_config_hash(invite_code: &str) -> anyhow::Result<HashBytes>
     Ok(preview.federation_config_hash)
 }
 
-/// Stable requester (FI-side) Schnorr keypair for the live tests.
+/// Stable requester (FA-side) Schnorr keypair for the live tests.
 fn requester_keys() -> nostr_sdk::Keys {
     nostr_sdk::Keys::parse(&"07".repeat(32)).expect("fixed requester secret key parses")
 }
@@ -3518,8 +3519,8 @@ fn requester_keys() -> nostr_sdk::Keys {
 fn live_liquidity_request(
     provider_pubkey: &Pubkey,
     invite_code: &str,
-    endorsement: &FmanEndorsement,
-    trust_material: &[GetFmanTrustMaterialResponse],
+    endorsement: &MgEndorsement,
+    trust_material: &[GetMgTrustMaterialResponse],
 ) -> anyhow::Result<RequestLiquidityRequest> {
     live_request_with_amounts(
         provider_pubkey,
@@ -3540,8 +3541,8 @@ fn live_liquidity_request(
 fn live_stability_request(
     provider_pubkey: &Pubkey,
     invite_code: &str,
-    endorsement: &FmanEndorsement,
-    trust_material: &[GetFmanTrustMaterialResponse],
+    endorsement: &MgEndorsement,
+    trust_material: &[GetMgTrustMaterialResponse],
     config_hash: &HashBytes,
 ) -> anyhow::Result<RequestLiquidityRequest> {
     live_request_with_amounts(
@@ -3562,8 +3563,8 @@ fn live_stability_request(
 fn live_request_with_amounts(
     provider_pubkey: &Pubkey,
     invite_code: &str,
-    endorsement: &FmanEndorsement,
-    trust_material: &[GetFmanTrustMaterialResponse],
+    endorsement: &MgEndorsement,
+    trust_material: &[GetMgTrustMaterialResponse],
     config_hash: &HashBytes,
     amounts: LiquidityAmountBounds,
 ) -> anyhow::Result<RequestLiquidityRequest> {
@@ -3577,8 +3578,8 @@ fn live_request_with_amounts(
         network: BitcoinNetwork::Regtest,
         amounts,
         details_payload_hash: Sha256Digest([0; 32]),
-        fman_endorsement: Some(endorsement.clone()),
-        fman_trust_material: Some(trust_material.to_vec()),
+        mg_endorsement: Some(endorsement.clone()),
+        mg_trust_material: Some(trust_material.to_vec()),
         federation_details: FederationLiquidityDetails {
             invite_code: ServiceInviteCode(invite_code.to_owned()),
             federation_id: FederationId(parsed_invite.federation_id().to_string()),
@@ -3587,7 +3588,7 @@ fn live_request_with_amounts(
             fleet_seat_hints: Vec::new(),
             revocation_locations: Vec::new(),
         },
-        // Inside the provider's request-lifetime ceiling, which is the FI
+        // Inside the provider's request-lifetime ceiling, which is the FA
         // client's own request validity. A live request has to respect it like
         // any other.
         expires_at: Timestamp(now_timestamp().0 + 1_800),

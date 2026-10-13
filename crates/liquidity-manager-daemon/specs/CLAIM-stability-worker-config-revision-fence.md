@@ -4,7 +4,7 @@ A stability-pool allocation that FLIP accepted for config hash `H` cannot cause
 provider-wallet outflow unless the address it funds was minted by a target
 client that had config hash `H` and a stability-pool module.
 
-The FI controls its endorsed federation's later consensus configuration and
+The FA controls its endorsed federation's later consensus configuration and
 scheduling. It cannot write FLIP storage or act as Admin.
 
 The claim does not require the target client to still carry `H` when the send
@@ -43,9 +43,9 @@ Unverified.
 
   *Why it is consistent with the other assumptions.* A1 and the
   module-addition residual decline to trust the target federation's
-  *configuration*, which the FI controls unilaterally and may change at will.
+  *configuration*, which the FA controls unilaterally and may change at will.
   A4 is a different kind of statement: it is about the guardian software, which
-  needs threshold-many guardians to agree, and the FI is one participant rather
+  needs threshold-many guardians to agree, and the FA is one participant rather
   than the threshold. A federation whose threshold runs modified `fedimintd` is
   outside the admitted trust envelope, and no property of FLIP's own code
   can substitute for that — the value being protected sits in a federation whose

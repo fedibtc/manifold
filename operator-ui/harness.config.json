@@ -3,7 +3,7 @@
   "$reconciled": "Adapted for the operator-ui pnpm workspace (biome + vitest, apps/*/src layout). Biome remains the linter/formatter; boundaries/compiler/fallow are enforced by operator-ui's own eslint.config.mjs + harness-gate.sh, so those checks here are advisory ('report') to avoid double-blocking. The harness eslint fragment (eslint/base.config.mjs) is installed as reference only (its id-denylist bans `data` and caps useState, which the react-query code would trip). relatedTests is 'off' — vitest is per-package (pnpm -r test), not resolvable from the workspace root. duplication is 'report' — fallow audit scopes against origin/master and would block on inherited in-flight-branch dead-code; operator-ui's fallow stage owns that gate. Only protectedDirs and gitleaks block. Post-install fix applied to .claude/hooks/*.sh: HOOK_DIR/../scripts -> ../../scripts (install.sh puts hooks under .claude/hooks but scripts at project root).",
   "formatter": "auto",
   "testCommand": "npx --no-install vitest related --run",
-  "e2eCommand": "npx --no-install playwright test && E2E_APP=fman npx --no-install playwright test",
+  "e2eCommand": "npx --no-install playwright test && E2E_APP=mg npx --no-install playwright test",
   "checks": {
     "eslint": "off",
     "filename": "report",

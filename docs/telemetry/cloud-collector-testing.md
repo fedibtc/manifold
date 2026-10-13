@@ -29,7 +29,7 @@ boundaries:
 Run the focused suite with:
 
 ```console
-cargo test -p fedi-decentralized-cloud-fman-telemetry
+cargo test -p fedi-decentralized-cloud-mg-telemetry
 ```
 
 That command runs the pure focused suite. The real-daemon test needs the

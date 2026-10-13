@@ -4,12 +4,12 @@ FLIP cannot insert a new allocation for a request when a credential it must
 freshly check comes from an issuer authority with no `nostr` revocation
 location in the immutable authority snapshot for that verification pass.
 
-The adversary is a hostile FI holding an otherwise valid FMan endorsement and
-an FMan credential that its issuer has revoked. It cannot forge an issuer,
+The adversary is a hostile FA holding an otherwise valid MG endorsement and
+an MG credential that its issuer has revoked. It cannot forge an issuer,
 change FLIP's installed issuer authority, or use Admin verbs. The
 issuer-signed authority in the verification pass's immutable snapshot lists
-only a non-Nostr location, such as HTTPS. The FI can keep the pre-revocation
-credential and live FMan advertisement available. The claim is about FLIP's
+only a non-Nostr location, such as HTTPS. The FA can keep the pre-revocation
+credential and live MG advertisement available. The claim is about FLIP's
 advertised Nostr fresh-revocation boundary, not a guarantee that every issuer
 supports Nostr.
 

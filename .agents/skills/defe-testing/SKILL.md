@@ -21,7 +21,7 @@ rebuild or restart it during a test run.
 
 ## One-shot full suite
 
-Run the full suite, including `FMAN_E2E` and `FLIP_E2E`, against the working
+Run the full suite, including `MG_E2E` and `FLIP_E2E`, against the working
 tree with:
 
 ```bash

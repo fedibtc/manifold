@@ -39,7 +39,7 @@ describe('CopyButton', () => {
     await waitFor(() => expect(button.getAttribute('data-copied')).toBe('true'));
   });
 
-  // A fleet manager is commonly reached over plain http, where
+  // A manifold guardian is commonly reached over plain http, where
   // `navigator.clipboard` does not exist. The control used to do nothing at all
   // there, which reads as broken.
   it('should fall back to a selection copy when the clipboard API is absent', async () => {

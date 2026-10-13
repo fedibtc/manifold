@@ -48,7 +48,7 @@ prove that a value is safe to share.
 
 At minimum, reject data derived from:
 
-- the FMan root mnemonic, seeds, or derived private keys;
+- the MG root mnemonic, seeds, or derived private keys;
 - seat API authentication or guardian private configuration and key shares;
 - bearer ecash, OOB tokens, notes, spend/blinding keys, private issuance
   material, or prepared refunds;
@@ -60,7 +60,7 @@ At minimum, reject data derived from:
 - hashes, fingerprints, encodings, truncations, or error text derived from a
   secret. Hashing is not redaction.
 
-Treat dependency errors, remote rejection text, FI-controlled strings, and
+Treat dependency errors, remote rejection text, FA-controlled strings, and
 fedimintd output as potentially sensitive until their complete provenance is
 audited. Verbatim child output does not become non-sensitive merely because the
 parent wraps it in another tracing event.
@@ -84,7 +84,7 @@ At minimum, reject:
 - names, contact details, physical locations, and other personal data;
 - operator names, identities, and operator-supplied free-form text;
 - identifiers that embed or derive from personal data or secrets;
-- free-form FI, peer, child, or dependency text whose complete provenance has
+- free-form FA, peer, child, or dependency text whose complete provenance has
   not been established;
 - private request or response bodies and other private payloads;
 - filesystem paths, usernames, process identifiers, environment values, private
@@ -128,7 +128,7 @@ Before finishing:
 - search the touched scope for every `safe_to_share = true` event affected by the
   change;
 - check the result against
-  `crates/fman/specs/CLAIM-fleet-manager-confines-secret-dependent-content.md`;
+  `crates/mg/specs/CLAIM-manifold-guardian-confines-secret-dependent-content.md`;
 - if the audit finds another current content exit, add focused falsification
   evidence beside that claim rather than weakening the security boundary; and
 - report any event left unannotated because its provenance could not be

@@ -1,6 +1,6 @@
 //! Operator-installed trust attestations, and the issuer authorities they name.
 //!
-//! An attestation states who FLIP trusts to attest an FMan. It describes an
+//! An attestation states who FLIP trusts to attest an MG. It describes an
 //! issuer rather than this provider, so it can be installed before a provider
 //! key exists. The trust pipeline reads the installed set through
 //! [`trusted_issuer_authorities`].

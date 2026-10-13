@@ -27,39 +27,39 @@ import { describe, expect, it } from 'vitest';
 import advertisementJson from '../../fixtures/advertisement.json';
 import attestationsJson from '../../fixtures/attestations.json';
 import backupManifestJson from '../../fixtures/backup_manifest.json';
-import fmanAdminErrorJson from '../../fixtures/fman_admin_error.json';
-import fmanAdminErrorKindsJson from '../../fixtures/fman_admin_error_kinds.json';
-import adminRequestsJson from '../../fixtures/fman_admin_requests.json';
-import fmanCollectGuardianFeesJson from '../../fixtures/fman_collect_guardian_fees.json';
-import fmanCollectGuardianFeesIncompleteJson from '../../fixtures/fman_collect_guardian_fees_incomplete.json';
-import fmanCollectGuardianFeesIncompleteIdleJson from '../../fixtures/fman_collect_guardian_fees_incomplete_idle.json';
-import fmanCollectGuardianFeesIncompleteRefreshJson from '../../fixtures/fman_collect_guardian_fees_incomplete_refresh.json';
-import fmanDecommissionSeatJson from '../../fixtures/fman_decommission_seat.json';
-import fmanGuardianFeesJson from '../../fixtures/fman_guardian_fees.json';
-import fmanGuardianFeesPolicyErrorJson from '../../fixtures/fman_guardian_fees_policy_error.json';
-import fmanHolderAuthorizationRefreshJson from '../../fixtures/fman_holder_authorization_refresh.json';
-import fmanMarkSupportReadJson from '../../fixtures/fman_mark_support_read.json';
-import fmanMnemonicJson from '../../fixtures/fman_mnemonic.json';
-import fmanOnboardAsNewJson from '../../fixtures/fman_onboard_as_new.json';
-import fmanOnboardAsNewAlreadyJson from '../../fixtures/fman_onboard_as_new_already.json';
-import fmanOnboardFromBackupJson from '../../fixtures/fman_onboard_from_backup.json';
-import fmanOnboardingJson from '../../fixtures/fman_onboarding.json';
-import fmanPaymentFederationsJson from '../../fixtures/fman_payment_federations.json';
-import fmanPayoutDestinationJson from '../../fixtures/fman_payout_destination.json';
-import fmanPayoutJobJson from '../../fixtures/fman_payout_job.json';
-import fmanPayoutJobCappedJson from '../../fixtures/fman_payout_job_capped.json';
-import fmanPayoutJobStatusJson from '../../fixtures/fman_payout_job_status.json';
-import fmanPlansJson from '../../fixtures/fman_plans.json';
-import fmanReenrollTelemetryJson from '../../fixtures/fman_reenroll_telemetry.json';
-import fmanSeatGuardianFeesJson from '../../fixtures/fman_seat_guardian_fees.json';
-import fmanSeatReadinessJson from '../../fixtures/fman_seat_readiness.json';
-import fmanSeatReportsJson from '../../fixtures/fman_seat_reports.json';
-import fmanSeatStatusJson from '../../fixtures/fman_seat_status.json';
-import fmanSeatsJson from '../../fixtures/fman_seats.json';
-import fmanSendSupportMessageJson from '../../fixtures/fman_send_support_message.json';
-import fmanSupportChatJson from '../../fixtures/fman_support_chat.json';
 import fundsJson from '../../fixtures/funds.json';
 import healthJson from '../../fixtures/health.json';
+import mgAdminErrorJson from '../../fixtures/mg_admin_error.json';
+import mgAdminErrorKindsJson from '../../fixtures/mg_admin_error_kinds.json';
+import adminRequestsJson from '../../fixtures/mg_admin_requests.json';
+import mgCollectGuardianFeesJson from '../../fixtures/mg_collect_guardian_fees.json';
+import mgCollectGuardianFeesIncompleteJson from '../../fixtures/mg_collect_guardian_fees_incomplete.json';
+import mgCollectGuardianFeesIncompleteIdleJson from '../../fixtures/mg_collect_guardian_fees_incomplete_idle.json';
+import mgCollectGuardianFeesIncompleteRefreshJson from '../../fixtures/mg_collect_guardian_fees_incomplete_refresh.json';
+import mgDecommissionSeatJson from '../../fixtures/mg_decommission_seat.json';
+import mgGuardianFeesJson from '../../fixtures/mg_guardian_fees.json';
+import mgGuardianFeesPolicyErrorJson from '../../fixtures/mg_guardian_fees_policy_error.json';
+import mgHolderAuthorizationRefreshJson from '../../fixtures/mg_holder_authorization_refresh.json';
+import mgMarkSupportReadJson from '../../fixtures/mg_mark_support_read.json';
+import mgMnemonicJson from '../../fixtures/mg_mnemonic.json';
+import mgOnboardAsNewJson from '../../fixtures/mg_onboard_as_new.json';
+import mgOnboardAsNewAlreadyJson from '../../fixtures/mg_onboard_as_new_already.json';
+import mgOnboardFromBackupJson from '../../fixtures/mg_onboard_from_backup.json';
+import mgOnboardingJson from '../../fixtures/mg_onboarding.json';
+import mgPaymentFederationsJson from '../../fixtures/mg_payment_federations.json';
+import mgPayoutDestinationJson from '../../fixtures/mg_payout_destination.json';
+import mgPayoutJobJson from '../../fixtures/mg_payout_job.json';
+import mgPayoutJobCappedJson from '../../fixtures/mg_payout_job_capped.json';
+import mgPayoutJobStatusJson from '../../fixtures/mg_payout_job_status.json';
+import mgPlansJson from '../../fixtures/mg_plans.json';
+import mgReenrollTelemetryJson from '../../fixtures/mg_reenroll_telemetry.json';
+import mgSeatGuardianFeesJson from '../../fixtures/mg_seat_guardian_fees.json';
+import mgSeatReadinessJson from '../../fixtures/mg_seat_readiness.json';
+import mgSeatReportsJson from '../../fixtures/mg_seat_reports.json';
+import mgSeatStatusJson from '../../fixtures/mg_seat_status.json';
+import mgSeatsJson from '../../fixtures/mg_seats.json';
+import mgSendSupportMessageJson from '../../fixtures/mg_send_support_message.json';
+import mgSupportChatJson from '../../fixtures/mg_support_chat.json';
 import pagingJson from '../../fixtures/paging.json';
 import type {
   AdminError,
@@ -246,17 +246,17 @@ const pagingMirror = {
   }
 } satisfies ListWalletOperationsResponse;
 
-// --- FMan (crates/fman/core/src/admin.rs) ---
+// --- MG (crates/mg/core/src/admin.rs) ---
 //
-// Almost none of the FMan admin surface is a serde-derived struct: admin.rs
+// Almost none of the MG admin surface is a serde-derived struct: admin.rs
 // hand-encodes the JSON, so these mirrors are the only compile-time statement
 // that the TypeScript vocabulary and the Rust encoder agree. Each fixture is
 // produced by the daemon's own shaper (see
-// crates/fman/core/tests/support/contract_fixtures.rs).
+// crates/mg/core/tests/support/contract_fixtures.rs).
 
 const SEAT_ID = '0707070707070707070707070707070707070707070707070707070707070707';
 const DECOMMISSIONED_SEAT_ID = '0808080808080808080808080808080808080808080808080808080808080808';
-const FI_ID = '79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798';
+const FA_ID = '79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798';
 const HOLDER_PUBKEY = 'c6047f9441ed7d6d3045406e95c07cd85c778e4b8cef3ca7abac09b95c709ee5';
 const MNEMONIC =
   'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about';
@@ -316,7 +316,7 @@ const adminRequestsMirror = {
 // this fixture by walking a `match` over the enum, so a kind added there and
 // not added here fails the equality assertion below — and a kind written here
 // that Rust does not have fails to type-check.
-const fmanAdminErrorKindsMirror = [
+const mgAdminErrorKindsMirror = [
   'unparsable_request',
   'not_onboarded',
   'already_onboarded',
@@ -328,15 +328,15 @@ const fmanAdminErrorKindsMirror = [
   'other'
 ] satisfies AdminErrorKind[];
 
-const fmanAdminErrorMirror = {
+const mgAdminErrorMirror = {
   kind: 'seat_directory_exists',
   message:
     'seat 0707070707070707070707070707070707070707070707070707070707070707 would be restored over an existing seat directory'
 } satisfies AdminError;
 
-const fmanPlansMirror = { plans: [PLAN] } satisfies ShowPlansResponse;
+const mgPlansMirror = { plans: [PLAN] } satisfies ShowPlansResponse;
 
-const fmanSeatReadinessMirror = {
+const mgSeatReadinessMirror = {
   ready_for_new_seats: false,
   report: {
     checked_at_ms: 1_700_000_000_000,
@@ -346,7 +346,7 @@ const fmanSeatReadinessMirror = {
   }
 } satisfies ShowSeatReadinessResponse;
 
-const fmanPaymentFederationsMirror = {
+const mgPaymentFederationsMirror = {
   federations: [
     {
       accepted: true,
@@ -403,11 +403,11 @@ const fmanPaymentFederationsMirror = {
   ]
 } satisfies ListPaymentFederationsResponse;
 
-const fmanPayoutDestinationMirror = {
+const mgPayoutDestinationMirror = {
   destination: 'operator@example.com'
 } satisfies PayoutDestinationResponse;
 
-const fmanPayoutJobMirror = {
+const mgPayoutJobMirror = {
   created_at_ms: 1_753_600_001_000,
   destination: 'operator@example.com',
   operation: {
@@ -420,16 +420,16 @@ const fmanPayoutJobMirror = {
   scope: { federation_id: 'fed1fixturepayment', kind: 'payment_federation' }
 } satisfies PayoutJob;
 
-const fmanPayoutJobCappedMirror = {
-  ...fmanPayoutJobMirror,
+const mgPayoutJobCappedMirror = {
+  ...mgPayoutJobMirror,
   operation: {
-    ...fmanPayoutJobMirror.operation,
+    ...mgPayoutJobMirror.operation,
     capped: { maximum_msat: 250_000, remaining_msat: 12_345_000 }
   }
 } satisfies PayoutJob;
 
-const fmanPayoutJobStatusMirror = {
-  job: fmanPayoutJobMirror,
+const mgPayoutJobStatusMirror = {
+  job: mgPayoutJobMirror,
   payout: {
     contract_amount_msat: 251_000,
     encumbered_msat: 0,
@@ -441,11 +441,11 @@ const fmanPayoutJobStatusMirror = {
   }
 } satisfies PayoutJobStatusResponse;
 
-const fmanSeatsMirror = {
+const mgSeatsMirror = {
   seats: [
     {
       seat_id: SEAT_ID,
-      fi_id: FI_ID,
+      fi_id: FA_ID,
       plan: PLAN,
       created_at_ms: CREATED_AT_MS,
       payment_claim: { state: 'not_paid' },
@@ -455,7 +455,7 @@ const fmanSeatsMirror = {
     },
     {
       seat_id: SEAT_ID,
-      fi_id: FI_ID,
+      fi_id: FA_ID,
       plan: PLAN,
       created_at_ms: CREATED_AT_MS,
       payment_claim: { state: 'pending' },
@@ -470,7 +470,7 @@ const fmanSeatsMirror = {
     },
     {
       seat_id: SEAT_ID,
-      fi_id: FI_ID,
+      fi_id: FA_ID,
       plan: PLAN,
       created_at_ms: CREATED_AT_MS,
       payment_claim: { state: 'success', at_ms: 1_753_600_000_000 },
@@ -480,7 +480,7 @@ const fmanSeatsMirror = {
     },
     {
       seat_id: SEAT_ID,
-      fi_id: FI_ID,
+      fi_id: FA_ID,
       plan: PLAN,
       created_at_ms: CREATED_AT_MS,
       payment_claim: { state: 'already_spent', at_ms: 1_753_599_000_000 },
@@ -494,7 +494,7 @@ const fmanSeatsMirror = {
     },
     {
       seat_id: DECOMMISSIONED_SEAT_ID,
-      fi_id: FI_ID,
+      fi_id: FA_ID,
       plan: PLAN,
       created_at_ms: CREATED_AT_MS,
       payment_claim: { state: 'not_paid' },
@@ -512,7 +512,7 @@ const fmanSeatsMirror = {
 } satisfies ListSeatsResponse;
 
 // Every SeatReport shape admin.rs::report_json can emit.
-const fmanSeatReportsMirror = [
+const mgSeatReportsMirror = [
   { state: 'decommissioned', at_ms: CREATED_AT_MS },
   { state: 'active', health: 'healthy', phase: 'created' },
   { state: 'active', health: 'failed', phase: 'dkg_in_progress' },
@@ -535,15 +535,15 @@ const readGuardianFee = {
 
 // The three distinct failures/successes: no derivable account, an account whose
 // policy read failed (there is no federation before DKG), and a full read.
-const fmanSeatGuardianFeesMirror = [
+const mgSeatGuardianFeesMirror = [
   { error: 'guardian-fee collection is unavailable' },
   { remittance_account: REMITTANCE_ACCOUNT, policy_error: 'seat has no federation yet' },
   readGuardianFee
 ] satisfies SeatGuardianFee[];
 
-const fmanSeatStatusMirror = {
+const mgSeatStatusMirror = {
   seat_id: SEAT_ID,
-  fi_id: FI_ID,
+  fi_id: FA_ID,
   plan: PLAN,
   created_at_ms: CREATED_AT_MS,
   payment_claim: { state: 'success', at_ms: 1_753_600_000_000 },
@@ -559,12 +559,12 @@ const fmanSeatStatusMirror = {
   guardian_fee: readGuardianFee
 } satisfies SeatStatusResponse;
 
-const fmanDecommissionSeatMirror = {
+const mgDecommissionSeatMirror = {
   decommissioned: true,
   already_decommissioned: false
 } satisfies DecommissionSeatResponse;
 
-const fmanReenrollTelemetryMirror = {
+const mgReenrollTelemetryMirror = {
   telemetry_reenrollment: 'scheduled'
 } satisfies ReenrollTelemetryResponse;
 
@@ -576,7 +576,7 @@ const supportOperatorMessage = {
   unread: false
 } satisfies SupportMessage;
 
-const fmanSupportChatMirror = {
+const mgSupportChatMirror = {
   available: true,
   messages: [
     supportOperatorMessage,
@@ -591,13 +591,13 @@ const fmanSupportChatMirror = {
   unread: 1
 } satisfies SupportChatResponse;
 
-const fmanSendSupportMessageMirror = {
+const mgSendSupportMessageMirror = {
   message: supportOperatorMessage
 } satisfies SendSupportMessageResponse;
 
-const fmanMarkSupportReadMirror = { unread: 0 } satisfies MarkSupportReadResponse;
+const mgMarkSupportReadMirror = { unread: 0 } satisfies MarkSupportReadResponse;
 
-const fmanGuardianFeesMirror = {
+const mgGuardianFeesMirror = {
   seat_id: SEAT_ID,
   federation_id: '2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a',
   remittance_account: REMITTANCE_ACCOUNT,
@@ -646,17 +646,17 @@ const fmanGuardianFeesMirror = {
   ]
 } satisfies GuardianFeesResponse;
 
-const fmanGuardianFeesPolicyErrorMirror = {
-  ...fmanGuardianFeesMirror,
+const mgGuardianFeesPolicyErrorMirror = {
+  ...mgGuardianFeesMirror,
   policy: { policy_error: 'malformed live guardian-fee metadata' }
 } satisfies GuardianFeesResponse;
 
-const fmanCollectGuardianFeesMirror = {
+const mgCollectGuardianFeesMirror = {
   claimed_msat: 1_750_000,
   awaiting_cycle_msat: 500_000
 } satisfies CollectGuardianFeesResponse;
 
-const fmanCollectGuardianFeesIncompleteMirror = {
+const mgCollectGuardianFeesIncompleteMirror = {
   claimed_msat: 1_750_000,
   awaiting_cycle_msat: null,
   incomplete: {
@@ -666,7 +666,7 @@ const fmanCollectGuardianFeesIncompleteMirror = {
   }
 } satisfies CollectGuardianFeesResponse;
 
-const fmanCollectGuardianFeesIncompleteIdleMirror = {
+const mgCollectGuardianFeesIncompleteIdleMirror = {
   claimed_msat: 0,
   awaiting_cycle_msat: 500_000,
   incomplete: {
@@ -677,7 +677,7 @@ const fmanCollectGuardianFeesIncompleteIdleMirror = {
   }
 } satisfies CollectGuardianFeesResponse;
 
-const fmanCollectGuardianFeesIncompleteRefreshMirror = {
+const mgCollectGuardianFeesIncompleteRefreshMirror = {
   claimed_msat: 1_750_000,
   awaiting_cycle_msat: null,
   incomplete: {
@@ -688,10 +688,10 @@ const fmanCollectGuardianFeesIncompleteRefreshMirror = {
   }
 } satisfies CollectGuardianFeesResponse;
 
-const fmanOnboardingMirror = {
+const mgOnboardingMirror = {
   fman_name: 'understood-markhor',
   service_pubkey: '02a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f9',
-  service_nostr_pubkey: FI_ID,
+  service_nostr_pubkey: FA_ID,
   nostr: {
     state: 'authorization_observed',
     authorizations: 1,
@@ -704,16 +704,16 @@ const fmanOnboardingMirror = {
 } satisfies OnboardingResponse;
 
 // Refresh answers the same onboarding view it just updated.
-const fmanHolderAuthorizationRefreshMirror =
-  fmanOnboardingMirror satisfies RefreshHolderAuthorizationsResponse;
+const mgHolderAuthorizationRefreshMirror =
+  mgOnboardingMirror satisfies RefreshHolderAuthorizationsResponse;
 
-const fmanMnemonicMirror = { mnemonic: MNEMONIC } satisfies ShowMnemonicResponse;
+const mgMnemonicMirror = { mnemonic: MNEMONIC } satisfies ShowMnemonicResponse;
 
-const fmanOnboardAsNewMirror = { onboarded: 'new', seats: 0 } satisfies OnboardAsNewResponse;
+const mgOnboardAsNewMirror = { onboarded: 'new', seats: 0 } satisfies OnboardAsNewResponse;
 
-const fmanOnboardAsNewAlreadyMirror = { onboarded: 'already' } satisfies OnboardAsNewResponse;
+const mgOnboardAsNewAlreadyMirror = { onboarded: 'already' } satisfies OnboardAsNewResponse;
 
-const fmanOnboardFromBackupMirror = {
+const mgOnboardFromBackupMirror = {
   onboarded: 'restored',
   seats: 2,
   formed: 1
@@ -745,119 +745,119 @@ describe('committed fixtures match their type-checked mirrors', () => {
   });
 });
 
-describe('committed FMan fixtures match their type-checked mirrors', () => {
-  it('should keep fman_admin_requests.json equal to the typed mirror', () => {
+describe('committed MG fixtures match their type-checked mirrors', () => {
+  it('should keep mg_admin_requests.json equal to the typed mirror', () => {
     expect(adminRequestsJson).toEqual(adminRequestsMirror);
   });
 
-  it('should keep fman_admin_error_kinds.json equal to the typed mirror', () => {
-    expect(fmanAdminErrorKindsJson).toEqual(fmanAdminErrorKindsMirror);
+  it('should keep mg_admin_error_kinds.json equal to the typed mirror', () => {
+    expect(mgAdminErrorKindsJson).toEqual(mgAdminErrorKindsMirror);
   });
 
-  it('should keep fman_admin_error.json equal to the typed mirror', () => {
-    expect(fmanAdminErrorJson).toEqual(fmanAdminErrorMirror);
+  it('should keep mg_admin_error.json equal to the typed mirror', () => {
+    expect(mgAdminErrorJson).toEqual(mgAdminErrorMirror);
   });
 
-  it('should keep fman_plans.json equal to the typed mirror', () => {
-    expect(fmanPlansJson).toEqual(fmanPlansMirror);
+  it('should keep mg_plans.json equal to the typed mirror', () => {
+    expect(mgPlansJson).toEqual(mgPlansMirror);
   });
 
-  it('should keep fman_seat_readiness.json equal to the typed mirror', () => {
-    expect(fmanSeatReadinessJson).toEqual(fmanSeatReadinessMirror);
+  it('should keep mg_seat_readiness.json equal to the typed mirror', () => {
+    expect(mgSeatReadinessJson).toEqual(mgSeatReadinessMirror);
   });
 
-  it('should keep fman_payment_federations.json equal to the typed mirror', () => {
-    expect(fmanPaymentFederationsJson).toEqual(fmanPaymentFederationsMirror);
+  it('should keep mg_payment_federations.json equal to the typed mirror', () => {
+    expect(mgPaymentFederationsJson).toEqual(mgPaymentFederationsMirror);
   });
 
-  it('should keep fman_payout_destination.json equal to the typed mirror', () => {
-    expect(fmanPayoutDestinationJson).toEqual(fmanPayoutDestinationMirror);
+  it('should keep mg_payout_destination.json equal to the typed mirror', () => {
+    expect(mgPayoutDestinationJson).toEqual(mgPayoutDestinationMirror);
   });
 
-  it('should keep fman payout job fixtures equal to the typed mirrors', () => {
-    expect(fmanPayoutJobJson).toEqual(fmanPayoutJobMirror);
-    expect(fmanPayoutJobCappedJson).toEqual(fmanPayoutJobCappedMirror);
-    expect(fmanPayoutJobStatusJson).toEqual(fmanPayoutJobStatusMirror);
+  it('should keep mg payout job fixtures equal to the typed mirrors', () => {
+    expect(mgPayoutJobJson).toEqual(mgPayoutJobMirror);
+    expect(mgPayoutJobCappedJson).toEqual(mgPayoutJobCappedMirror);
+    expect(mgPayoutJobStatusJson).toEqual(mgPayoutJobStatusMirror);
   });
 
-  it('should keep fman_seats.json equal to the typed mirror', () => {
-    expect(fmanSeatsJson).toEqual(fmanSeatsMirror);
+  it('should keep mg_seats.json equal to the typed mirror', () => {
+    expect(mgSeatsJson).toEqual(mgSeatsMirror);
   });
 
-  it('should keep fman_seat_reports.json equal to the typed mirror', () => {
-    expect(fmanSeatReportsJson).toEqual(fmanSeatReportsMirror);
+  it('should keep mg_seat_reports.json equal to the typed mirror', () => {
+    expect(mgSeatReportsJson).toEqual(mgSeatReportsMirror);
   });
 
-  it('should keep fman_seat_guardian_fees.json equal to the typed mirror', () => {
-    expect(fmanSeatGuardianFeesJson).toEqual(fmanSeatGuardianFeesMirror);
+  it('should keep mg_seat_guardian_fees.json equal to the typed mirror', () => {
+    expect(mgSeatGuardianFeesJson).toEqual(mgSeatGuardianFeesMirror);
   });
 
-  it('should keep fman_seat_status.json equal to the typed mirror', () => {
-    expect(fmanSeatStatusJson).toEqual(fmanSeatStatusMirror);
+  it('should keep mg_seat_status.json equal to the typed mirror', () => {
+    expect(mgSeatStatusJson).toEqual(mgSeatStatusMirror);
   });
 
-  it('should keep fman_decommission_seat.json equal to the typed mirror', () => {
-    expect(fmanDecommissionSeatJson).toEqual(fmanDecommissionSeatMirror);
+  it('should keep mg_decommission_seat.json equal to the typed mirror', () => {
+    expect(mgDecommissionSeatJson).toEqual(mgDecommissionSeatMirror);
   });
 
-  it('should keep fman_reenroll_telemetry.json equal to the typed mirror', () => {
-    expect(fmanReenrollTelemetryJson).toEqual(fmanReenrollTelemetryMirror);
-    expect(fmanSupportChatJson).toEqual(fmanSupportChatMirror);
-    expect(fmanSendSupportMessageJson).toEqual(fmanSendSupportMessageMirror);
-    expect(fmanMarkSupportReadJson).toEqual(fmanMarkSupportReadMirror);
+  it('should keep mg_reenroll_telemetry.json equal to the typed mirror', () => {
+    expect(mgReenrollTelemetryJson).toEqual(mgReenrollTelemetryMirror);
+    expect(mgSupportChatJson).toEqual(mgSupportChatMirror);
+    expect(mgSendSupportMessageJson).toEqual(mgSendSupportMessageMirror);
+    expect(mgMarkSupportReadJson).toEqual(mgMarkSupportReadMirror);
   });
 
-  it('should keep fman_guardian_fees.json equal to the typed mirror', () => {
-    expect(fmanGuardianFeesJson).toEqual(fmanGuardianFeesMirror);
+  it('should keep mg_guardian_fees.json equal to the typed mirror', () => {
+    expect(mgGuardianFeesJson).toEqual(mgGuardianFeesMirror);
   });
 
   it('should keep malformed guardian-fee policy reporting equal to the typed mirror', () => {
-    expect(fmanGuardianFeesPolicyErrorJson).toEqual(fmanGuardianFeesPolicyErrorMirror);
+    expect(mgGuardianFeesPolicyErrorJson).toEqual(mgGuardianFeesPolicyErrorMirror);
   });
 
-  it('should keep fman_collect_guardian_fees.json equal to the typed mirror', () => {
-    expect(fmanCollectGuardianFeesJson).toEqual(fmanCollectGuardianFeesMirror);
+  it('should keep mg_collect_guardian_fees.json equal to the typed mirror', () => {
+    expect(mgCollectGuardianFeesJson).toEqual(mgCollectGuardianFeesMirror);
   });
 
   it('should keep the incomplete guardian-fee fixture equal to the typed mirror', () => {
-    expect(fmanCollectGuardianFeesIncompleteJson).toEqual(fmanCollectGuardianFeesIncompleteMirror);
+    expect(mgCollectGuardianFeesIncompleteJson).toEqual(mgCollectGuardianFeesIncompleteMirror);
   });
 
   it('should pin idle and balance-refresh incomplete guardian-fee phases', () => {
-    expect(fmanCollectGuardianFeesIncompleteIdleJson).toEqual(
-      fmanCollectGuardianFeesIncompleteIdleMirror
+    expect(mgCollectGuardianFeesIncompleteIdleJson).toEqual(
+      mgCollectGuardianFeesIncompleteIdleMirror
     );
-    expect(fmanCollectGuardianFeesIncompleteRefreshJson).toEqual(
-      fmanCollectGuardianFeesIncompleteRefreshMirror
+    expect(mgCollectGuardianFeesIncompleteRefreshJson).toEqual(
+      mgCollectGuardianFeesIncompleteRefreshMirror
     );
   });
 
-  it('should keep fman_onboarding.json equal to the typed mirror', () => {
-    expect(fmanOnboardingJson).toEqual(fmanOnboardingMirror);
+  it('should keep mg_onboarding.json equal to the typed mirror', () => {
+    expect(mgOnboardingJson).toEqual(mgOnboardingMirror);
   });
 
-  it('should keep fman_holder_authorization_refresh.json equal to the typed mirror', () => {
-    expect(fmanHolderAuthorizationRefreshJson).toEqual(fmanHolderAuthorizationRefreshMirror);
+  it('should keep mg_holder_authorization_refresh.json equal to the typed mirror', () => {
+    expect(mgHolderAuthorizationRefreshJson).toEqual(mgHolderAuthorizationRefreshMirror);
   });
 
-  it('should keep fman_mnemonic.json equal to the typed mirror', () => {
-    expect(fmanMnemonicJson).toEqual(fmanMnemonicMirror);
+  it('should keep mg_mnemonic.json equal to the typed mirror', () => {
+    expect(mgMnemonicJson).toEqual(mgMnemonicMirror);
   });
 
-  it('should keep fman_onboard_as_new.json equal to the typed mirror', () => {
-    expect(fmanOnboardAsNewJson).toEqual(fmanOnboardAsNewMirror);
+  it('should keep mg_onboard_as_new.json equal to the typed mirror', () => {
+    expect(mgOnboardAsNewJson).toEqual(mgOnboardAsNewMirror);
   });
 
-  it('should keep fman_onboard_as_new_already.json equal to the typed mirror', () => {
-    expect(fmanOnboardAsNewAlreadyJson).toEqual(fmanOnboardAsNewAlreadyMirror);
+  it('should keep mg_onboard_as_new_already.json equal to the typed mirror', () => {
+    expect(mgOnboardAsNewAlreadyJson).toEqual(mgOnboardAsNewAlreadyMirror);
   });
 
-  it('should keep fman_onboard_from_backup.json equal to the typed mirror', () => {
-    expect(fmanOnboardFromBackupJson).toEqual(fmanOnboardFromBackupMirror);
+  it('should keep mg_onboard_from_backup.json equal to the typed mirror', () => {
+    expect(mgOnboardFromBackupJson).toEqual(mgOnboardFromBackupMirror);
   });
 });
 
-describe('the FMan request inventory covers the declared vocabulary', () => {
+describe('the MG request inventory covers the declared vocabulary', () => {
   // Together with `satisfies Record<CoveredRequestName, AdminRequest>` on the
   // mirror, this is the two-way check: `tsc` rejects a UI variant with no Rust
   // fixture, and this rejects a Rust variant the UI never declared.

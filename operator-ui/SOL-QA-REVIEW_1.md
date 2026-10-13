@@ -26,7 +26,7 @@ C6 owns the duplicate cleanup, but the execution deliberately deferred C6. The b
 Both apps derive their gate state from one boot query:
 
 - FLIP reads `setup.error` at `/Users/kc/Projects/decentralized-federations-remediation/operator-ui/apps/liquidity-provider/src/features/boot/hooks/use-boot-status/useBootStatus.ts:29-36`.
-- FMan reads `onboarding.error` at `/Users/kc/Projects/decentralized-federations-remediation/operator-ui/apps/fleet-manager/src/features/boot/hooks/use-boot-status/useBootStatus.ts:17-34`.
+- MG reads `onboarding.error` at `/Users/kc/Projects/decentralized-federations-remediation/operator-ui/apps/manifold-guardian/src/features/boot/hooks/use-boot-status/useBootStatus.ts:17-34`.
 
 A 401 from Funds, Advertisement, ListSeats, or another privileged query remains local until the boot query polls again. Both boot queries use a 60-second healthy interval. A route-specific FLIP 403 also stays local instead of opening the access-denied screen.
 
@@ -57,11 +57,11 @@ Funds implements the required last-good behavior. The other polled views do not.
 
 `useOverviewEarnings` mounts one GuardianFees query per live seat at:
 
-`/Users/kc/Projects/decentralized-federations-remediation/operator-ui/apps/fleet-manager/src/features/overview/hooks/use-overview-earnings/useOverviewEarnings.ts:18-25`
+`/Users/kc/Projects/decentralized-federations-remediation/operator-ui/apps/manifold-guardian/src/features/overview/hooks/use-overview-earnings/useOverviewEarnings.ts:18-25`
 
 Its `isLoading` result includes only seats and payment federations:
 
-`/Users/kc/Projects/decentralized-federations-remediation/operator-ui/apps/fleet-manager/src/features/overview/hooks/use-overview-earnings/useOverviewEarnings.ts:31-37`
+`/Users/kc/Projects/decentralized-federations-remediation/operator-ui/apps/manifold-guardian/src/features/overview/hooks/use-overview-earnings/useOverviewEarnings.ts:31-37`
 
 After `ListSeats` resolves, the fee queries mount in a pending state. During that window, `guardianFees` is empty and Overview renders zero earnings as populated data. The existing loading test holds all requests pending together and does not cover this dependent-query transition.
 
@@ -132,7 +132,7 @@ This violates the repository's keyboard and focus requirement at `operator-ui/do
 | `pnpm run test` | PASS, 157 test files and 655 tests. |
 | `pnpm run build` | PASS, both applications built. |
 | `pnpm exec playwright test` | PASS, FLIP 20/20. |
-| `E2E_APP=fman pnpm exec playwright test` | PASS, FMan 35/35. |
+| `E2E_APP=mg pnpm exec playwright test` | PASS, MG 35/35. |
 
 The first unit-test invocation hit a sandbox `EPERM` while Vite created temporary config bundles. The same command passed after the runner allowed temporary worktree writes. Polling tests emitted React `act(...)` warnings.
 
@@ -142,7 +142,7 @@ The first unit-test invocation hit a sandbox `EPERM` while Vite created temporar
 
 | Package | Statements |
 | --- | ---: |
-| Fleet Manager | 84.08% |
+| Manifold Guardian | 84.08% |
 | Liquidity Provider | 79.33% |
 | shared-ui | 81.30% |
 | mock-devtools | 90.00% |
@@ -226,7 +226,7 @@ No other unrelated behavioral regression was found in `77a049c7...3885fa65`.
 
 - B8 and D5 remain deferred. No stale Requests documentation changed.
 - C6 remains deferred. `QR_SIZE = 192`, `min-w-[5rem]`, the price-form duplication, and eight CSS duplicate groups remain.
-- Track D remains deferred. The branch does not change FLIP backup transport, OCI bind policy, `SECURITY.md`, the FMan packaged entrypoint, or backend onboarding transport.
+- Track D remains deferred. The branch does not change FLIP backup transport, OCI bind policy, `SECURITY.md`, the MG packaged entrypoint, or backend onboarding transport.
 - A5 remains partial as disclosed: collectors exist, thresholds and CI publication do not.
 - A6 remains partial: browser projects and live specs exist, but no pre-release job or real-daemon run exists. The missing advertisement cycle is an additional defect.
 

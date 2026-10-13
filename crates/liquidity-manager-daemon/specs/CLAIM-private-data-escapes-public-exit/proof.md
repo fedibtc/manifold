@@ -24,7 +24,7 @@ wallet observations, or invite-bearing targets
 An enrolled envelope is a Holder-published document whose whole purpose is
 public carriage, and it is the same `HolderAuthorizationEnvelope` shape the
 advertisement has always embedded, so moving its source does not widen this
-exit. The classified "request-carried FMan trust material" is a distinct
+exit. The classified "request-carried MG trust material" is a distinct
 object reaching a distinct surface and is unaffected.
 
 **L3 (`enum` + `code`) — health and the startup-argument log avoid classified

@@ -39,13 +39,13 @@ the `d` coordinate, so one Holder authorizing several providers with one badge
 publishes one event per provider rather than replacing its own previous
 authorization.
 
-This is the same event kind FMan uses
-([SPEC-fman-nostr-events](../../nostr/specs/SPEC-fman-nostr-events.md)): the
+This is the same event kind MG uses
+([SPEC-mg-nostr-events](../../nostr/specs/SPEC-mg-nostr-events.md)): the
 document is one Holder authorization over a service subject, and only the
 addressing differs. The FLIP `d` prefix, hashtag, and `p` tag keep the two
 indexes disjoint, so a filter for one service can never match the other's
 publication. `credential_digest` is the PeerBadge SDK `CredentialDigest` wire
-form, the same encoding the FMan variant and the attester revocation `d` tag
+form, the same encoding the MG variant and the attester revocation `d` tag
 use.
 
 Tags are indexing hints only. Admission parses and verifies event content, and
@@ -77,10 +77,10 @@ genuinely covers the attached credential. The comparison needs no issuer trust,
 so it does not draw the daemon into judging the badge.
 
 Two consequences follow and are accepted as the cost of one enrollment protocol
-shared with FMan. A badge revoked after enrollment stays in the advertisement
+shared with MG. A badge revoked after enrollment stays in the advertisement
 until its authorization is replaced. Any holder of a genuine badge can place an
 envelope there without being invited. Neither is trust: a consumer that skips
-its own verification is already unsafe against an FMan advertisement.
+its own verification is already unsafe against an MG advertisement.
 
 Event kind, timestamps, and tags are not admission checks. The fetch filter is
 an untrusted relay hint, so an off-kind or wrongly tagged event still has to

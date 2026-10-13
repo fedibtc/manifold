@@ -1,10 +1,10 @@
-# MSW Migration — Plan A: foundation + FMan cutover
+# MSW Migration — Plan A: foundation + MG cutover
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Run the FMan operator dashboard fully mocked in the browser via MSW, with a persisted scenario store and a dev control panel, so `pnpm fman:be` is no longer needed for FMan development or e2e.
+**Goal:** Run the MG operator dashboard fully mocked in the browser via MSW, with a persisted scenario store and a dev control panel, so `pnpm mg:be` is no longer needed for MG development or e2e.
 
-**Architecture:** The FMan mock world (state, scenarios, verb handlers) moves out of `apps/fleet-manager/mock-server/` into `apps/fleet-manager/src/mocks/` as transport-agnostic code. Express keeps working by importing it during the migration window, so parity is structural rather than eyeballed. A new shared package `@operator-ui/mock-devtools` owns the scenario store, its localStorage persistence, and the control panel; MSW handlers read the store synchronously and write it back after mutating verbs.
+**Architecture:** The MG mock world (state, scenarios, verb handlers) moves out of `apps/manifold-guardian/mock-server/` into `apps/manifold-guardian/src/mocks/` as transport-agnostic code. Express keeps working by importing it during the migration window, so parity is structural rather than eyeballed. A new shared package `@operator-ui/mock-devtools` owns the scenario store, its localStorage persistence, and the control panel; MSW handlers read the store synchronously and write it back after mutating verbs.
 
 **Tech Stack:** msw 2.15.0, Vite 6, React 19, TanStack Query 5, Vitest 2, Playwright 1.49, pnpm workspaces.
 
@@ -14,26 +14,26 @@
 
 - All paths are relative to `operator-ui/` unless stated otherwise. Work on branch `feat/msw-mock-migration`.
 - **Do not modify** `adminCall.ts`, `authenticate.ts`, `errors.ts`, `queryClient.ts`, or any hook/component under `src/features` or `src/pages`. Nothing above `fetch` changes.
-- **Do not delete** `apps/fleet-manager/mock-server/` in this plan. It is deleted in Plan C, after FLIP has migrated too.
+- **Do not delete** `apps/manifold-guardian/mock-server/` in this plan. It is deleted in Plan C, after FLIP has migrated too.
 - Component rules (`operator-ui/CLAUDE.md`): arrow-function consts with named exports, no `React.FC`, a declared `XProps` interface per component, no inline logic in JSX, one React unit per file, kebab-case component folders with a PascalCase file and a `__tests__/` sibling.
 - Styling: no Tailwind strings in TSX. `className` holds only `styles.*` refs from a colocated `.module.css` using bare top-level `@apply`.
 - Tests: Vitest, every `it` description starts with `should`. Restore any overridden global in `afterEach`.
-- The store schema version constant is `STORE_VERSION = 1`. localStorage keys are `operator-ui:dev:mocks:fman` and `operator-ui:dev:mocks:flip`.
+- The store schema version constant is `STORE_VERSION = 1`. localStorage keys are `operator-ui:dev:mocks:mg` and `operator-ui:dev:mocks:flip`.
 - Pre-commit hook: this checkout lacks `typos`/`shellcheck`/`treefmt` on PATH. If the hook fails on a file you did not touch, commit with `--no-verify` and say so; never edit an unrelated file to satisfy it.
-- `pnpm --filter fman test` must pass at the end of every task that touches app code. `E2E_APP=fman pnpm test:e2e` is the regression gate for tasks 1, 2, 5 and 6.
+- `pnpm --filter mg test` must pass at the end of every task that touches app code. `E2E_APP=mg pnpm test:e2e` is the regression gate for tasks 1, 2, 5 and 6.
 
 ---
 
-### Task 1: Bootstrap MSW in FMan and prove one interception
+### Task 1: Bootstrap MSW in MG and prove one interception
 
 **Files:**
-- Modify: `apps/fleet-manager/package.json` (add `msw` devDependency)
-- Create: `apps/fleet-manager/public/mockServiceWorker.js` (generated, do not hand-edit)
-- Create: `apps/fleet-manager/src/mocks/browser.ts`
-- Create: `apps/fleet-manager/src/mocks/start.ts`
-- Modify: `apps/fleet-manager/src/app/index.tsx`
+- Modify: `apps/manifold-guardian/package.json` (add `msw` devDependency)
+- Create: `apps/manifold-guardian/public/mockServiceWorker.js` (generated, do not hand-edit)
+- Create: `apps/manifold-guardian/src/mocks/browser.ts`
+- Create: `apps/manifold-guardian/src/mocks/start.ts`
+- Modify: `apps/manifold-guardian/src/app/index.tsx`
 - Modify: `agent-toolkit.json` (add the mocks dir to the `app` boundary layer)
-- Test: `e2e/fman/msw-bootstrap.spec.ts`
+- Test: `e2e/mg/msw-bootstrap.spec.ts`
 
 **Interfaces:**
 - Consumes: nothing.
@@ -42,15 +42,15 @@
 - [ ] **Step 1: Add msw and generate the service worker**
 
 ```bash
-pnpm --filter fman add -D msw@^2.15.0
-pnpm --filter fman exec msw init public --save
+pnpm --filter mg add -D msw@^2.15.0
+pnpm --filter mg exec msw init public --save
 ```
 
-`msw init` writes `apps/fleet-manager/public/mockServiceWorker.js` and records the path in `package.json` under a `msw.workerDirectory` key. Commit the generated file — it must be served at the app origin.
+`msw init` writes `apps/manifold-guardian/public/mockServiceWorker.js` and records the path in `package.json` under a `msw.workerDirectory` key. Commit the generated file — it must be served at the app origin.
 
 - [ ] **Step 2: Write the failing e2e test**
 
-Create `e2e/fman/msw-bootstrap.spec.ts`:
+Create `e2e/mg/msw-bootstrap.spec.ts`:
 
 ```ts
 import { expect, test } from '@playwright/test';
@@ -67,12 +67,12 @@ test('should expose the mock control surface once MSW has started', async ({ pag
 
 - [ ] **Step 3: Run it to verify it fails**
 
-Run: `E2E_APP=fman pnpm test:e2e -- msw-bootstrap`
+Run: `E2E_APP=mg pnpm test:e2e -- msw-bootstrap`
 Expected: FAIL — the poll never becomes `true` because `__mockControl` is undefined.
 
 - [ ] **Step 4: Create the worker module**
 
-Create `apps/fleet-manager/src/mocks/browser.ts`:
+Create `apps/manifold-guardian/src/mocks/browser.ts`:
 
 ```ts
 import { setupWorker } from 'msw/browser';
@@ -85,7 +85,7 @@ export const worker = setupWorker();
 
 - [ ] **Step 5: Create the dev-only start helper**
 
-Create `apps/fleet-manager/src/mocks/start.ts`:
+Create `apps/manifold-guardian/src/mocks/start.ts`:
 
 ```ts
 declare global {
@@ -108,7 +108,7 @@ export const startMocks = async (): Promise<void> => {
 
 - [ ] **Step 6: Start the worker before the app renders**
 
-In `apps/fleet-manager/src/app/index.tsx`, replace the final `createRoot(...).render(...)` call with:
+In `apps/manifold-guardian/src/app/index.tsx`, replace the final `createRoot(...).render(...)` call with:
 
 ```tsx
 const root = document.getElementById('root');
@@ -152,22 +152,22 @@ In `agent-toolkit.json`, extend the `app` layer so `src/mocks` is linted as app-
 
 - [ ] **Step 8: Run the test to verify it passes**
 
-Run: `E2E_APP=fman pnpm test:e2e -- msw-bootstrap`
+Run: `E2E_APP=mg pnpm test:e2e -- msw-bootstrap`
 Expected: PASS.
 
 Then confirm nothing regressed and the lint gates are clean:
 
 ```bash
-E2E_APP=fman pnpm test:e2e
-pnpm --filter fman typecheck
+E2E_APP=mg pnpm test:e2e
+pnpm --filter mg typecheck
 pnpm lint:boundaries
 ```
 
 - [ ] **Step 9: Verify the production bundle is clean**
 
 ```bash
-pnpm --filter fman build
-grep -r "__mockControl\|mockServiceWorker" apps/fleet-manager/dist/assets/ || echo "CLEAN"
+pnpm --filter mg build
+grep -r "__mockControl\|mockServiceWorker" apps/manifold-guardian/dist/assets/ || echo "CLEAN"
 ```
 
 Expected: `CLEAN`. If anything matches, the dynamic import is being statically pulled in — check that no module imports `@/mocks/*` at the top level.
@@ -175,24 +175,24 @@ Expected: `CLEAN`. If anything matches, the dynamic import is being statically p
 - [ ] **Step 10: Commit**
 
 ```bash
-git add apps/fleet-manager/package.json apps/fleet-manager/public/mockServiceWorker.js \
-        apps/fleet-manager/src/mocks apps/fleet-manager/src/app/index.tsx \
-        agent-toolkit.json e2e/fman/msw-bootstrap.spec.ts pnpm-lock.yaml
-git commit -m "feat(fman): start MSW in dev before the app renders"
+git add apps/manifold-guardian/package.json apps/manifold-guardian/public/mockServiceWorker.js \
+        apps/manifold-guardian/src/mocks apps/manifold-guardian/src/app/index.tsx \
+        agent-toolkit.json e2e/mg/msw-bootstrap.spec.ts pnpm-lock.yaml
+git commit -m "feat(mg): start MSW in dev before the app renders"
 ```
 
 ---
 
-### Task 2: Move the FMan mock world into the app, with express still driving it
+### Task 2: Move the MG mock world into the app, with express still driving it
 
 **Files:**
-- Create: `apps/fleet-manager/src/mocks/state.ts` (moved from `mock-server/src/state.ts`)
-- Create: `apps/fleet-manager/src/mocks/scenarios.ts` (moved from `mock-server/src/scenarios.ts`)
-- Create: `apps/fleet-manager/src/mocks/world/verbs.ts` (extracted from `mock-server/src/routes/admin.ts`)
-- Modify: `apps/fleet-manager/mock-server/src/routes/admin.ts`
-- Modify: `apps/fleet-manager/mock-server/src/index.ts`, `middleware.ts`, `routes/control.ts`, `routes/auth.ts` (import paths only)
-- Delete: `apps/fleet-manager/mock-server/src/state.ts`, `apps/fleet-manager/mock-server/src/scenarios.ts`
-- Modify: `apps/fleet-manager/mock-server/tsconfig.json` (allow reaching into the app's `src`)
+- Create: `apps/manifold-guardian/src/mocks/state.ts` (moved from `mock-server/src/state.ts`)
+- Create: `apps/manifold-guardian/src/mocks/scenarios.ts` (moved from `mock-server/src/scenarios.ts`)
+- Create: `apps/manifold-guardian/src/mocks/world/verbs.ts` (extracted from `mock-server/src/routes/admin.ts`)
+- Modify: `apps/manifold-guardian/mock-server/src/routes/admin.ts`
+- Modify: `apps/manifold-guardian/mock-server/src/index.ts`, `middleware.ts`, `routes/control.ts`, `routes/auth.ts` (import paths only)
+- Delete: `apps/manifold-guardian/mock-server/src/state.ts`, `apps/manifold-guardian/mock-server/src/scenarios.ts`
+- Modify: `apps/manifold-guardian/mock-server/tsconfig.json` (allow reaching into the app's `src`)
 
 **Interfaces:**
 - Consumes: nothing from Task 1.
@@ -207,8 +207,8 @@ This is a **pure move plus one extraction**. No behaviour changes. The regressio
 - [ ] **Step 1: Move state and scenarios verbatim**
 
 ```bash
-git mv apps/fleet-manager/mock-server/src/state.ts apps/fleet-manager/src/mocks/state.ts
-git mv apps/fleet-manager/mock-server/src/scenarios.ts apps/fleet-manager/src/mocks/scenarios.ts
+git mv apps/manifold-guardian/mock-server/src/state.ts apps/manifold-guardian/src/mocks/state.ts
+git mv apps/manifold-guardian/mock-server/src/scenarios.ts apps/manifold-guardian/src/mocks/scenarios.ts
 ```
 
 In `src/mocks/state.ts` change the scenarios import to the app alias:
@@ -240,7 +240,7 @@ In `src/mocks/scenarios.ts`, add `sessionActive: false` to the object returned b
 
 - [ ] **Step 3: Extract the verb map out of the express route**
 
-Create `apps/fleet-manager/src/mocks/world/verbs.ts`. Move the whole body of `mock-server/src/routes/admin.ts` across **except** the `adminRouter` declaration and the final `adminRouter.post` handler. Change the state import to `@/mocks/state`, and export the dispatch surface:
+Create `apps/manifold-guardian/src/mocks/world/verbs.ts`. Move the whole body of `mock-server/src/routes/admin.ts` across **except** the `adminRouter` declaration and the final `adminRouter.post` handler. Change the state import to `@/mocks/state`, and export the dispatch surface:
 
 ```ts
 export type Verb = (payload: unknown) => unknown;
@@ -290,10 +290,10 @@ export const dispatch = (body: unknown): AdminResult<unknown> => {
   if (!verb) return { Err: `unparsable admin request: unknown variant ${method}` };
 
   // An un-onboarded host has no fleet, so every other verb says so rather than
-  // inventing an empty one (crates/fman/core/src/onboarding.rs::dispatch).
+  // inventing an empty one (crates/mg/core/src/onboarding.rs::dispatch).
   if (!getState().onboarded && !isOnboardingVerb(method)) {
     return {
-      Err: 'this Fleet Manager has not been onboarded yet: run `admin onboard new` or `admin onboard restore`'
+      Err: 'this Manifold Guardian has not been onboarded yet: run `admin onboard new` or `admin onboard restore`'
     };
   }
 
@@ -342,7 +342,7 @@ and in `requireSession`, replace `sessionActive &&` with `getState().sessionActi
 
 - [ ] **Step 7: Let the mock-server tsconfig see the app source**
 
-In `apps/fleet-manager/mock-server/tsconfig.json`, add the alias so `@/mocks/*` resolves for `tsx` and `tsc`:
+In `apps/manifold-guardian/mock-server/tsconfig.json`, add the alias so `@/mocks/*` resolves for `tsx` and `tsc`:
 
 ```json
   "compilerOptions": {
@@ -352,15 +352,15 @@ In `apps/fleet-manager/mock-server/tsconfig.json`, add the alias so `@/mocks/*` 
   "include": ["src", "../src/mocks"]
 ```
 
-`tsx` honours tsconfig paths at runtime, so `pnpm fman:be` keeps working.
+`tsx` honours tsconfig paths at runtime, so `pnpm mg:be` keeps working.
 
 - [ ] **Step 8: Run the full regression gate**
 
 ```bash
-pnpm --filter fman typecheck
-pnpm --filter fman-mock-server typecheck
-pnpm --filter fman test
-E2E_APP=fman pnpm test:e2e
+pnpm --filter mg typecheck
+pnpm --filter mg-mock-server typecheck
+pnpm --filter mg test
+E2E_APP=mg pnpm test:e2e
 pnpm lint:boundaries
 ```
 
@@ -369,8 +369,8 @@ Expected: all pass, with **no spec file edited**. That is the whole point of thi
 - [ ] **Step 9: Commit**
 
 ```bash
-git add -A apps/fleet-manager agent-toolkit.json
-git commit -m "refactor(fman): lift the mock world out of the express server"
+git add -A apps/manifold-guardian agent-toolkit.json
+git commit -m "refactor(mg): lift the mock world out of the express server"
 ```
 
 ---
@@ -388,7 +388,7 @@ git commit -m "refactor(fman): lift the mock world out of the express server"
 - Test: `packages/mock-devtools/src/__tests__/scenarioStore.test.ts`
 
 **Interfaces:**
-- Consumes: nothing. This package is generic over the world type `W` and knows nothing about FMan or FLIP.
+- Consumes: nothing. This package is generic over the world type `W` and knows nothing about MG or FLIP.
 - Produces, from `@operator-ui/mock-devtools`:
   - `interface StorageAdapter { load(key: string): string | null; save(key: string, value: string): void; clear(key: string): void }`
   - `localStorageAdapter: StorageAdapter`
@@ -617,9 +617,9 @@ export interface StorageAdapter {
 }
 
 /** Everything the store needs to know about an app's world, so the store itself
- *  stays generic over FMan and FLIP. */
+ *  stays generic over MG and FLIP. */
 export interface WorldSource<W> {
-  /** Suffix of the localStorage key: 'fman' | 'flip'. */
+  /** Suffix of the localStorage key: 'mg' | 'flip'. */
   appKey: string;
   defaultScenario: string;
   has(name: string): boolean;
@@ -783,15 +783,15 @@ git commit -m "feat(mock-devtools): add a persisting scenario store"
 
 ---
 
-### Task 4: Wire FMan's world to the store and serve it from MSW
+### Task 4: Wire MG's world to the store and serve it from MSW
 
 **Files:**
-- Create: `apps/fleet-manager/src/mocks/store.ts`
-- Create: `apps/fleet-manager/src/mocks/handlers.ts`
-- Modify: `apps/fleet-manager/src/mocks/state.ts` (read the world from the store)
-- Modify: `apps/fleet-manager/src/mocks/browser.ts`
-- Modify: `apps/fleet-manager/package.json` (add the mock-devtools dependency)
-- Test: `apps/fleet-manager/src/mocks/__tests__/handlers.test.ts`
+- Create: `apps/manifold-guardian/src/mocks/store.ts`
+- Create: `apps/manifold-guardian/src/mocks/handlers.ts`
+- Modify: `apps/manifold-guardian/src/mocks/state.ts` (read the world from the store)
+- Modify: `apps/manifold-guardian/src/mocks/browser.ts`
+- Modify: `apps/manifold-guardian/package.json` (add the mock-devtools dependency)
+- Test: `apps/manifold-guardian/src/mocks/__tests__/handlers.test.ts`
 
 **Interfaces:**
 - Consumes: `createScenarioStore`, `WorldSource` from `@operator-ui/mock-devtools` (Task 3); `MockState`, `getState`, `setState` from `@/mocks/state` and `hasScenario`, `scenario`, `scenarioNames` from `@/mocks/scenarios` (Task 2); `dispatch`, `parseRequest`, `MUTATING_VERBS` from `@/mocks/world/verbs` (Task 2).
@@ -800,12 +800,12 @@ git commit -m "feat(mock-devtools): add a persisting scenario store"
 - [ ] **Step 1: Add the dependency**
 
 ```bash
-pnpm --filter fman add "@operator-ui/mock-devtools@workspace:*"
+pnpm --filter mg add "@operator-ui/mock-devtools@workspace:*"
 ```
 
 - [ ] **Step 2: Write the failing handler tests**
 
-MSW's Node entry point lets the handlers be tested without a browser. Create `apps/fleet-manager/src/mocks/__tests__/handlers.test.ts`:
+MSW's Node entry point lets the handlers be tested without a browser. Create `apps/manifold-guardian/src/mocks/__tests__/handlers.test.ts`:
 
 ```ts
 import { setupServer } from 'msw/node';
@@ -905,12 +905,12 @@ initialisation.
 
 - [ ] **Step 3: Run the tests to verify they fail**
 
-Run: `pnpm --filter fman test -- handlers`
+Run: `pnpm --filter mg test -- handlers`
 Expected: FAIL — cannot resolve `@/mocks/store`.
 
-- [ ] **Step 4: Create the FMan store binding**
+- [ ] **Step 4: Create the MG store binding**
 
-Create `apps/fleet-manager/src/mocks/store.ts`:
+Create `apps/manifold-guardian/src/mocks/store.ts`:
 
 ```ts
 import { createScenarioStore, type WorldSource } from '@operator-ui/mock-devtools';
@@ -918,7 +918,7 @@ import { hasScenario, scenario } from '@/mocks/scenarios';
 import type { MockState } from '@/mocks/state';
 
 const source: WorldSource<MockState> = {
-  appKey: 'fman',
+  appKey: 'mg',
   defaultScenario: 'fresh-fleet',
   has: hasScenario,
   build: scenario
@@ -953,7 +953,7 @@ Delete the now-unused `DEFAULT_SCENARIO` const and the `scenario` import if noth
 
 - [ ] **Step 6: Write the MSW handlers**
 
-Create `apps/fleet-manager/src/mocks/handlers.ts`:
+Create `apps/manifold-guardian/src/mocks/handlers.ts`:
 
 ```ts
 import { http, HttpResponse, type RequestHandler } from 'msw';
@@ -961,9 +961,9 @@ import { mockStore } from '@/mocks/store';
 import { getState } from '@/mocks/state';
 import { dispatch, MUTATING_VERBS, parseRequest } from '@/mocks/world/verbs';
 
-// Mirrors crates/fman/core/src/admin_http.rs. The real adapter names the cookie
+// Mirrors crates/mg/core/src/admin_http.rs. The real adapter names the cookie
 // randomly per process; a fixed name is fine for a dev mock and easier to debug.
-const SESSION_COOKIE_NAME = 'fman_mock_session';
+const SESSION_COOKIE_NAME = 'mg_mock_session';
 const SESSION_COOKIE_VALUE = 'mock-session-token';
 
 const delay = async (): Promise<void> => {
@@ -1019,7 +1019,7 @@ export const handlers: RequestHandler[] = [
 
 - [ ] **Step 7: Register the handlers with the worker**
 
-`apps/fleet-manager/src/mocks/browser.ts` becomes:
+`apps/manifold-guardian/src/mocks/browser.ts` becomes:
 
 ```ts
 import { setupWorker } from 'msw/browser';
@@ -1030,30 +1030,30 @@ export const worker = setupWorker(...handlers);
 
 - [ ] **Step 8: Run the tests to verify they pass**
 
-Run: `pnpm --filter fman test -- handlers`
+Run: `pnpm --filter mg test -- handlers`
 Expected: 7 passed.
 
 Then the whole app suite and typecheck:
 
 ```bash
-pnpm --filter fman test
-pnpm --filter fman typecheck
-pnpm --filter fman-mock-server typecheck
+pnpm --filter mg test
+pnpm --filter mg typecheck
+pnpm --filter mg-mock-server typecheck
 ```
 
 - [ ] **Step 9: Verify against a running app**
 
 ```bash
-pnpm --filter fman dev
+pnpm --filter mg dev
 ```
 
-Open `http://localhost:5174` with **no** `fman:be` process running. Expected: the login screen appears, `test-password` gets you in, Overview renders the `fresh-fleet` empty states, and the browser console shows MSW's activation notice with no unhandled-request warnings.
+Open `http://localhost:5174` with **no** `mg:be` process running. Expected: the login screen appears, `test-password` gets you in, Overview renders the `fresh-fleet` empty states, and the browser console shows MSW's activation notice with no unhandled-request warnings.
 
 - [ ] **Step 10: Commit**
 
 ```bash
-git add apps/fleet-manager pnpm-lock.yaml
-git commit -m "feat(fman): serve the operator API from MSW handlers"
+git add apps/manifold-guardian pnpm-lock.yaml
+git commit -m "feat(mg): serve the operator API from MSW handlers"
 ```
 
 ---
@@ -1061,19 +1061,19 @@ git commit -m "feat(fman): serve the operator API from MSW handlers"
 ### Task 5: Expose the control surface and move Playwright onto it
 
 **Files:**
-- Modify: `apps/fleet-manager/src/mocks/start.ts`
-- Rewrite: `e2e/fman/support/mock.ts`
-- Modify: 11 spec files under `e2e/fman/` (mechanical `request` → `page`)
+- Modify: `apps/manifold-guardian/src/mocks/start.ts`
+- Rewrite: `e2e/mg/support/mock.ts`
+- Modify: 11 spec files under `e2e/mg/` (mechanical `request` → `page`)
 - Modify: `playwright.config.ts`
-- Modify: `dev/fman-stack/up.sh`
+- Modify: `dev/mg-stack/up.sh`
 
 **Interfaces:**
 - Consumes: `mockStore` from `@/mocks/store` (Task 4).
-- Produces: `window.__mockControl = { active, setScenario(name), reset(), getScenario() }`; `resetScenario(page, name): Promise<void>` from `e2e/fman/support/mock`.
+- Produces: `window.__mockControl = { active, setScenario(name), reset(), getScenario() }`; `resetScenario(page, name): Promise<void>` from `e2e/mg/support/mock`.
 
 - [ ] **Step 1: Extend the control surface**
 
-Rewrite `apps/fleet-manager/src/mocks/start.ts`:
+Rewrite `apps/manifold-guardian/src/mocks/start.ts`:
 
 ```ts
 import { mockStore } from '@/mocks/store';
@@ -1111,12 +1111,12 @@ export const startMocks = async (): Promise<void> => {
 
 - [ ] **Step 2: Rewrite the Playwright helper**
 
-Replace `e2e/fman/support/mock.ts` entirely:
+Replace `e2e/mg/support/mock.ts` entirely:
 
 ```ts
 import type { Page } from '@playwright/test';
 
-const STORE_KEY = 'operator-ui:dev:mocks:fman';
+const STORE_KEY = 'operator-ui:dev:mocks:mg';
 
 // Two paths, because 20+ specs switch scenario after navigating and expect the
 // change to take effect the way the old express control route did.
@@ -1172,22 +1172,22 @@ Expected: 10 passed.
 
 ```bash
 cd operator-ui
-grep -rl "resetScenario(request" e2e/fman | xargs sed -i '' 's/resetScenario(request,/resetScenario(page,/g'
+grep -rl "resetScenario(request" e2e/mg | xargs sed -i '' 's/resetScenario(request,/resetScenario(page,/g'
 ```
 
 Then fix the destructuring by hand: any `async ({ request })` or `async ({ page, request })` whose body no longer references `request` must drop it. Typecheck finds them:
 
-Run: `pnpm exec tsc --noEmit -p tsconfig.json` (or `pnpm --filter fman typecheck` if e2e is covered there)
+Run: `pnpm exec tsc --noEmit -p tsconfig.json` (or `pnpm --filter mg typecheck` if e2e is covered there)
 Expected: no unused-binding or missing-name errors.
 
-- [ ] **Step 5: Stop booting the fman express server for e2e**
+- [ ] **Step 5: Stop booting the mg express server for e2e**
 
-In `playwright.config.ts`, delete the first entry of `fmanMockWebServer` (the `fman-mock-server` block) so only the Vite entry remains:
+In `playwright.config.ts`, delete the first entry of `mgMockWebServer` (the `mg-mock-server` block) so only the Vite entry remains:
 
 ```ts
-const fmanMockWebServer = [
+const mgMockWebServer = [
   {
-    command: 'pnpm --filter fman dev',
+    command: 'pnpm --filter mg dev',
     url: 'http://localhost:5174',
     reuseExistingServer: !process.env.CI,
     timeout: 60_000
@@ -1200,9 +1200,9 @@ The readiness probe was `:8788/__control/scenarios`, which no longer exists; the
 In the same file, add the kill switch to the daemon entry so MSW cannot hijack live traffic:
 
 ```ts
-const fmanDaemonWebServer = [
+const mgDaemonWebServer = [
   {
-    command: 'pnpm --filter fman dev',
+    command: 'pnpm --filter mg dev',
     env: { VITE_MOCKS: 'off' },
     url: 'http://localhost:5174',
     reuseExistingServer: !process.env.CI,
@@ -1213,10 +1213,10 @@ const fmanDaemonWebServer = [
 
 - [ ] **Step 6: Add the same kill switch to the local daemon stack**
 
-In `dev/fman-stack/up.sh`, line 106, add `VITE_MOCKS=off` to the exec env:
+In `dev/mg-stack/up.sh`, line 106, add `VITE_MOCKS=off` to the exec env:
 
 ```bash
-exec env FMAN_ADMIN_PROXY_TARGET="http://$ADMIN_ADDR" VITE_MOCKS=off pnpm --filter fman dev
+exec env MG_ADMIN_PROXY_TARGET="http://$ADMIN_ADDR" VITE_MOCKS=off pnpm --filter mg dev
 ```
 
 Without this the stack script boots a dev server that mocks the very daemon it just started — a failure that looks like a working system.
@@ -1224,17 +1224,17 @@ Without this the stack script boots a dev server that mocks the very daemon it j
 - [ ] **Step 7: Run the full e2e suite with no express server**
 
 ```bash
-pkill -f fman-mock-server || true
-E2E_APP=fman pnpm test:e2e
+pkill -f mg-mock-server || true
+E2E_APP=mg pnpm test:e2e
 ```
 
-Expected: the whole fman suite passes, with `fman-mock-server` never started.
+Expected: the whole mg suite passes, with `mg-mock-server` never started.
 
 - [ ] **Step 8: Commit**
 
 ```bash
-git add apps/fleet-manager/src/mocks/start.ts packages/mock-devtools e2e/fman playwright.config.ts dev/fman-stack/up.sh
-git commit -m "feat(fman): drive e2e scenarios through the in-browser mock control"
+git add apps/manifold-guardian/src/mocks/start.ts packages/mock-devtools e2e/mg playwright.config.ts dev/mg-stack/up.sh
+git commit -m "feat(mg): drive e2e scenarios through the in-browser mock control"
 ```
 
 ---
@@ -1247,10 +1247,10 @@ git commit -m "feat(fman): drive e2e scenarios through the in-browser mock contr
 - Create: `packages/mock-devtools/src/mock-panel/MockPanel.module.css`
 - Create: `packages/mock-devtools/src/mock-panel/__tests__/MockPanel.test.tsx`
 - Modify: `packages/mock-devtools/src/index.ts`
-- Modify: `apps/fleet-manager/src/mocks/scenarios.ts` (`affects` becomes `RouteKey[]`)
-- Create: `apps/fleet-manager/src/app/components/mock-panel-mount/MockPanelMount.tsx`
-- Create: `apps/fleet-manager/src/app/components/mock-panel-mount/__tests__/MockPanelMount.test.tsx`
-- Modify: `apps/fleet-manager/src/app/components/app-shell/AppShell.tsx`
+- Modify: `apps/manifold-guardian/src/mocks/scenarios.ts` (`affects` becomes `RouteKey[]`)
+- Create: `apps/manifold-guardian/src/app/components/mock-panel-mount/MockPanelMount.tsx`
+- Create: `apps/manifold-guardian/src/app/components/mock-panel-mount/__tests__/MockPanelMount.test.tsx`
+- Modify: `apps/manifold-guardian/src/app/components/app-shell/AppShell.tsx`
 
 **Interfaces:**
 - Consumes: `ScenarioStore`, `ScenarioCatalogEntry` from `@operator-ui/mock-devtools` (Task 3); `mockStore` (Task 4); `scenarioCatalog` (Task 2).
@@ -1260,7 +1260,7 @@ Only the Global tab ships here. The per-page tab is Plan C, once both apps have 
 
 - [ ] **Step 1: Convert `affects` to structured route keys**
 
-In `apps/fleet-manager/src/mocks/scenarios.ts`, change the `ScenarioNote` import to come from the package and rewrite each `affects` prose string as an array. The `Record<ScenarioName, ScenarioNote>` typing stays, so an undocumented scenario is still a type error:
+In `apps/manifold-guardian/src/mocks/scenarios.ts`, change the `ScenarioNote` import to come from the package and rewrite each `affects` prose string as an array. The `Record<ScenarioName, ScenarioNote>` typing stays, so an undocumented scenario is still a type error:
 
 ```ts
 import type { ScenarioNote } from '@operator-ui/mock-devtools';
@@ -1594,9 +1594,9 @@ export type { ScenarioControls } from './use-scenario/useScenario';
 Run: `pnpm --filter @operator-ui/mock-devtools test`
 Expected: 15 passed (10 store + 5 panel).
 
-- [ ] **Step 7: Mount it in FMan, dev-only**
+- [ ] **Step 7: Mount it in MG, dev-only**
 
-Create `apps/fleet-manager/src/app/components/mock-panel-mount/MockPanelMount.tsx`:
+Create `apps/manifold-guardian/src/app/components/mock-panel-mount/MockPanelMount.tsx`:
 
 ```tsx
 import { lazy, Suspense } from 'react';
@@ -1620,7 +1620,7 @@ export const MockPanelMount = () => {
 };
 ```
 
-Create `apps/fleet-manager/src/app/components/mock-panel-mount/__tests__/MockPanelMount.test.tsx`:
+Create `apps/manifold-guardian/src/app/components/mock-panel-mount/__tests__/MockPanelMount.test.tsx`:
 
 ```tsx
 import { render, screen } from '@testing-library/react';
@@ -1639,24 +1639,24 @@ it('should render nothing when mocks are switched off', () => {
 });
 ```
 
-In `apps/fleet-manager/src/app/components/app-shell/AppShell.tsx`, render `<MockPanelMount />` as the last child of the shell's root element.
+In `apps/manifold-guardian/src/app/components/app-shell/AppShell.tsx`, render `<MockPanelMount />` as the last child of the shell's root element.
 
 - [ ] **Step 8: Run everything**
 
 ```bash
-pnpm --filter fman test
-pnpm --filter fman typecheck
+pnpm --filter mg test
+pnpm --filter mg typecheck
 pnpm --filter @operator-ui/mock-devtools test
 pnpm lint:boundaries
 pnpm lint
-E2E_APP=fman pnpm test:e2e
+E2E_APP=mg pnpm test:e2e
 ```
 
 - [ ] **Step 9: Verify the production bundle again**
 
 ```bash
-pnpm --filter fman build
-grep -r "Mock controls\|__mockControl\|seat-running-01" apps/fleet-manager/dist/assets/ || echo "CLEAN"
+pnpm --filter mg build
+grep -r "Mock controls\|__mockControl\|seat-running-01" apps/manifold-guardian/dist/assets/ || echo "CLEAN"
 ```
 
 Expected: `CLEAN`. This is the check that catches a panel accidentally pulled into the main chunk by a static import.
@@ -1664,31 +1664,31 @@ Expected: `CLEAN`. This is the check that catches a panel accidentally pulled in
 - [ ] **Step 10: Verify in the browser**
 
 ```bash
-pnpm --filter fman dev
+pnpm --filter mg dev
 ```
 
-With no `fman:be` running: open `http://localhost:5174`, log in, open **Mock controls**, switch to `seats-mixed`, confirm the Seats page shows four seats. Decommission one, **refresh the page**, and confirm it is still decommissioned — that is the persistence requirement working end to end. Then hit **Reset mocks** and confirm it returns to `fresh-fleet`.
+With no `mg:be` running: open `http://localhost:5174`, log in, open **Mock controls**, switch to `seats-mixed`, confirm the Seats page shows four seats. Decommission one, **refresh the page**, and confirm it is still decommissioned — that is the persistence requirement working end to end. Then hit **Reset mocks** and confirm it returns to `fresh-fleet`.
 
 - [ ] **Step 11: Commit**
 
 ```bash
-git add packages/mock-devtools apps/fleet-manager
-git commit -m "feat(fman): add the dev mock control panel"
+git add packages/mock-devtools apps/manifold-guardian
+git commit -m "feat(mg): add the dev mock control panel"
 ```
 
 ---
 
 ## Definition of done for Plan A
 
-- [ ] FMan runs fully mocked with Vite alone; `pnpm fman:be` is not needed.
+- [ ] MG runs fully mocked with Vite alone; `pnpm mg:be` is not needed.
 - [ ] All 12 admin verbs plus `POST /api/auth` answer from MSW.
-- [ ] All 9 FMan scenarios reproduce their express behaviour.
+- [ ] All 9 MG scenarios reproduce their express behaviour.
 - [ ] A mutation survives a browser refresh; scenario switch and Reset both discard it.
 - [ ] A stale or version-mismatched blob falls back to `fresh-fleet` without crashing.
-- [ ] `E2E_APP=fman pnpm test:e2e` passes with no express server running.
-- [ ] `E2E_TARGET=daemon` and `dev/fman-stack/up.sh` both set `VITE_MOCKS=off`.
-- [ ] The FMan production bundle contains no mock code.
-- [ ] `apps/fleet-manager/mock-server/` still exists and still works (deleted in Plan C).
+- [ ] `E2E_APP=mg pnpm test:e2e` passes with no express server running.
+- [ ] `E2E_TARGET=daemon` and `dev/mg-stack/up.sh` both set `VITE_MOCKS=off`.
+- [ ] The MG production bundle contains no mock code.
+- [ ] `apps/manifold-guardian/mock-server/` still exists and still works (deleted in Plan C).
 
 ## Deferred to later plans
 

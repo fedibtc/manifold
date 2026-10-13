@@ -28,7 +28,7 @@ fn sample_preview() -> FederationPreview {
             guardian_identity: GuardianIdentity("guardian-0".to_owned()),
         }],
         consensus_threshold: 3,
-        fman_seat_bindings_metadata: Some("fman-api-urls-v1 iroh://fman-1".to_owned()),
+        mg_seat_bindings_metadata: Some("fman-api-urls-v1 iroh://mg-1".to_owned()),
         module_kinds: [
             "wallet",
             "mint",

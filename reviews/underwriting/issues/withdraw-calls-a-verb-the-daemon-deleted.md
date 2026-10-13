@@ -8,13 +8,13 @@
 - **Level:** code
 - **Found by:** scanner, checker, coroner, courier, ops-drill
 - **Where:**
-  - `operator-ui/apps/fleet-manager/src/features/wallet/api/hooks/use-withdraw/useWithdraw.ts:20-23`
-  - `operator-ui/apps/fleet-manager/src/features/wallet/components/federation-table/FederationTable.tsx:53`
-  - `operator-ui/apps/fleet-manager/src/pages/wallet-withdraw/WalletWithdrawPage.tsx`
+  - `operator-ui/apps/manifold-guardian/src/features/wallet/api/hooks/use-withdraw/useWithdraw.ts:20-23`
+  - `operator-ui/apps/manifold-guardian/src/features/wallet/components/federation-table/FederationTable.tsx:53`
+  - `operator-ui/apps/manifold-guardian/src/pages/wallet-withdraw/WalletWithdrawPage.tsx`
   - `operator-ui/packages/types/src/fleet.ts:227-236`
   - `operator-ui/packages/types/src/__tests__/contractFixtures.test.ts:257`
-  - `operator-ui/apps/fleet-manager/src/mocks/__tests__/verb-catalogue.test.ts:15`
-  - daemon side: `crates/fman/core/src/admin.rs` (no `Withdraw` variant), `crates/fman/core/src/admin.rs:128-132`
+  - `operator-ui/apps/manifold-guardian/src/mocks/__tests__/verb-catalogue.test.ts:15`
+  - daemon side: `crates/mg/core/src/admin.rs` (no `Withdraw` variant), `crates/mg/core/src/admin.rs:128-132`
 
 **What happens:** The withdraw screen POSTs `{ Withdraw: { federation_id, amount_msat } }` to
 `/api/admin`. The daemon's `AdminRequest` enum has no `Withdraw` variant — it was deleted in
@@ -76,20 +76,20 @@ The gate was falsified from every direction a fake verb could enter, then revert
    [ 'Bogus', …(18) ]`.
 3. `Bogus` added to the mock verb map → `verb-catalogue.test.ts` red with
    `expected [ 'Bogus' ] to deeply equal []`.
-4. `Bogus` written into the generated union instead → `cargo test -p fman-core --test
+4. `Bogus` written into the generated union instead → `cargo test -p mg-core --test
    admin_request_ts` red with `the committed TypeScript AdminRequest union is stale — run
    `just gen-contract-fixtures``.
 
 All four are green on the committed tree. Before this change, step 1 could not fail: the union
 carried the hand-written member and both tests named it in an exclusion.
 
-The mock-tier `e2e/fman/wallet.spec.ts` now asserts the federation row offers no add, remove or
+The mock-tier `e2e/mg/wallet.spec.ts` now asserts the federation row offers no add, remove or
 money-out control, so the dead link cannot come back unnoticed.
 
 ## Replacement (W1.1b)
 
 A `/payouts` screen now drives all five money verbs, in the order the daemon enforces:
-`operator-ui/apps/fleet-manager/src/pages/payouts/PayoutsPage.tsx` over
+`operator-ui/apps/manifold-guardian/src/pages/payouts/PayoutsPage.tsx` over
 `src/features/payouts/`. The two revenue sources are deliberately not one list, because they are
 not one shape.
 
@@ -117,11 +117,11 @@ not one shape.
 **What it does not cover — the exclusion still stands.**
 
 - **Nothing here has run against a real daemon.** The unit tests mock `adminCall`; the e2e spec
-  (`operator-ui/e2e/fman/payouts.spec.ts`) is mock-tier, driving MSW. A mock cannot falsify a
+  (`operator-ui/e2e/mg/payouts.spec.ts`) is mock-tier, driving MSW. A mock cannot falsify a
   request shape the daemon would reject, which is the exact failure mode this issue is about. The
-  request shapes were read off `crates/fman/core/src/admin.rs` by hand and are covered by the
+  request shapes were read off `crates/mg/core/src/admin.rs` by hand and are covered by the
   generated contract mirror, which is a weaker guarantee than a round trip.
-- **The `@live` rung-M3 spec this issue asks for is still open**, and is blocked on W0.2: the FMan
+- **The `@live` rung-M3 spec this issue asks for is still open**, and is blocked on W0.2: the MG
   live e2e tier does not exist yet. It must set a destination, sweep, and assert the balance
   changed **at the daemon** — not in the UI. Until it runs, treat the screen as "calls verbs the
   daemon declares", not as "moves money".

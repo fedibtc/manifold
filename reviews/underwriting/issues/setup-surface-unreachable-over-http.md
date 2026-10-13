@@ -1,16 +1,16 @@
 # First-run setup — phrase, restore, authorization — cannot be reached in a browser
 
-- **Status:** fixed — `c7e8b419` (`feat/fman-pre-onboarding-http`)
+- **Status:** fixed — `c7e8b419` (`feat/mg-pre-onboarding-http`)
 - **Tier:** blinded convergence (4 roles) + checked + coordinator-verified at the Rust source
 - **Level:** code (client), with a named daemon dependency (pre-onboarding HTTP)
 - **Found by:** checker (the scanner missed it), coroner, courier, ops-drill
 - **Where:**
-  - `operator-ui/apps/fleet-manager/src/app/components/setup-gate/SetupGate.tsx:22`
-  - `operator-ui/apps/fleet-manager/src/features/setup/**` (wizard, doors, phrase, restore + 3
+  - `operator-ui/apps/manifold-guardian/src/app/components/setup-gate/SetupGate.tsx:22`
+  - `operator-ui/apps/manifold-guardian/src/features/setup/**` (wizard, doors, phrase, restore + 3
     result screens, authorization, price, `useSetupWizard`, `refreshIdentity`, `restoreViewState`,
     `setupState`) — ~15 production files
-  - reachability decided by `crates/fman/bin/src/main.rs:487-502` and `:642-694`
-  - `crates/fman/core/src/fleet.rs:421-424`, `crates/fman/core/src/onboarding.rs:124`
+  - reachability decided by `crates/mg/bin/src/main.rs:487-502` and `:642-694`
+  - `crates/mg/core/src/fleet.rs:421-424`, `crates/mg/core/src/onboarding.rs:124`
 
 **What happens:** `SetupGate` opens the wizard only when a query fails with the daemon's
 "has not been onboarded" refusal. A host with no identity serves that refusal on the **unix
@@ -33,7 +33,7 @@ depends on.
 **Failed defense:** None was offered — the scanner's inventory rated this flow the
 best-reasoned code in the module without asking whether anything can run it. The available
 defense, "pre-onboarding HTTP is planned"
-(`operator-ui/docs/plans/2026-08-12-fman-dashboard-live-e2e-plan.md:226,492`), is the same
+(`operator-ui/docs/plans/2026-08-12-mg-dashboard-live-e2e-plan.md:226,492`), is the same
 provenance argument rejected for the withdraw verb, and it is not a defense of the tree at HEAD.
 
 **Fix direction:** Land pre-onboarding HTTP on the daemon before the client ships the surface
@@ -51,7 +51,7 @@ production files stay and become reachable.
 
 The daemon now binds the operator listener in the pre-identity phase, and hands it to the fleet
 **in place** rather than binding a second one. `OperatorPhase`
-(`crates/fman/core/src/admin.rs`) holds which dispatcher the listener answers from;
+(`crates/mg/core/src/admin.rs`) holds which dispatcher the listener answers from;
 `OperatorPhase::open_fleet` switches it when `Fleet::open` returns. The embedded dashboard is
 merged into that one router, so the wizard has something to load, and an operator who has just
 answered the last question does not reload against a port that went away. Authentication moved
@@ -70,5 +70,5 @@ a fleet, which is the fault exactly — stops `tests/admin.rs` compiling:
 `no associated function or constant named 'onboarding' found for struct 'admin::OperatorPhase'`.
 Making `open_fleet` a no-op instead leaves the listener answering, but the post-handover
 `ShowPlans` fails with
-`AdminError { kind: Other, message: "this Fleet Manager has been onboarded and is starting; its fleet is not open yet" }`
+`AdminError { kind: Other, message: "this Manifold Guardian has been onboarded and is starting; its fleet is not open yet" }`
 — the same address, no longer the fleet's. Both restored.

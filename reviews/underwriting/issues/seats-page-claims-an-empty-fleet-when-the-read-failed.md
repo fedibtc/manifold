@@ -1,11 +1,11 @@
 # The Seats page tells an operator their fleet is empty whenever the seat list fails to load
 
-- **Status:** fixed — `37dd6f70` (`fix/fman-ui-query-disposition`)
+- **Status:** fixed — `37dd6f70` (`fix/mg-ui-query-disposition`)
 - **Tier:** checked + blinded convergence (2 roles)
 - **Level:** code
 - **Where:**
-  - `operator-ui/apps/fleet-manager/src/features/seats/hooks/use-seat-rows/useSeatRows.ts:20,31-36`
-  - `operator-ui/apps/fleet-manager/src/pages/seats/SeatsPage.tsx:9-21`
+  - `operator-ui/apps/manifold-guardian/src/features/seats/hooks/use-seat-rows/useSeatRows.ts:20,31-36`
+  - `operator-ui/apps/manifold-guardian/src/pages/seats/SeatsPage.tsx:9-21`
 - **Found by:** scanner, checker, ops-drill
 
 **What happens:** The row model drops `isPending` and `isError` and exposes only the rows. The
@@ -40,7 +40,7 @@ already carried by its own row and must not blank the list around it.
 
 Covered by four unit tests in `pages/seats/__tests__/SeatsPage.test.tsx`, one per disposition.
 Observed red against the pre-fix row model and page: all four failed, and the dumped DOM showed
-"No seats yet. Seats are created by Federation Initiators…" on screen while `ListSeats` was
+"No seats yet. Seats are created by Federation Ambassadors…" on screen while `ListSeats` was
 rejecting.
 
 Still open from the parent issue: the `@live` spec that kills the daemon mid-session (needs the

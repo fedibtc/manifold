@@ -23,8 +23,8 @@ pub enum ResourceKind {
     PushGateway,
     /// A local Bitcoin Core regtest node.
     Bitcoind,
-    /// A local Fleet Manager process configured for one future federation seat.
-    Fman(defe_api::FmanRequest),
+    /// A local Manifold Guardian process configured for one future federation seat.
+    Mg(defe_api::MgRequest),
     /// A local FLIP daemon process.
     Flip(defe_api::FlipRequest),
     /// A local Fedimint gateway daemon process.
@@ -42,8 +42,8 @@ pub enum SharedResourceKey {
     PushGateway,
     /// Shared key for the default Bitcoin Core regtest resource.
     Bitcoind,
-    /// Shared key for a Fleet Manager with matching launch topology.
-    Fman(defe_api::FmanRequest),
+    /// Shared key for a Manifold Guardian with matching launch topology.
+    Mg(defe_api::MgRequest),
     /// Shared key for a FLIP daemon with matching launch inputs.
     Flip(defe_api::FlipRequest),
     /// Shared key for a gateway with matching launch inputs.

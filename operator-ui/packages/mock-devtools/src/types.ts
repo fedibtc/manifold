@@ -17,7 +17,7 @@ export interface StorageAdapter {
 }
 
 /** One knob on the Global tab. Apps describe their own world fields this way so
- *  the panel never learns that FMan has an `authMode` or FLIP a `bootMode`. */
+ *  the panel never learns that MG has an `authMode` or FLIP a `bootMode`. */
 export interface MockControl {
   id: string;
   label: string;
@@ -33,7 +33,7 @@ export interface ErrorInjection {
    *  drift from what is actually routed. */
   verbs: readonly string[];
   /** Selectable error values: `ServiceErrorCode`s for FLIP, canned messages for
-   *  FMan, whose forced errors are message strings. */
+   *  MG, whose forced errors are message strings. */
   codes: readonly string[];
   /** Must return a fresh object. The world's `forcedErrors` is mutated in
    *  place, so handing it back directly gives every reader an identity that
@@ -68,9 +68,9 @@ export interface VerbLog {
 }
 
 /** Everything the store needs to know about an app's world, so the store itself
- *  stays generic over FMan and FLIP. */
+ *  stays generic over MG and FLIP. */
 export interface WorldSource<W> {
-  /** Suffix of the localStorage key: 'fman' | 'flip'. */
+  /** Suffix of the localStorage key: 'mg' | 'flip'. */
   appKey: string;
   defaultScenario: string;
   has(name: string): boolean;

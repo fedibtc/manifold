@@ -1,12 +1,12 @@
 # A daemon blip empties the earnings dashboard and it stays empty until the daemon returns
 
-- **Status:** fixed — `37dd6f70` (`fix/fman-ui-query-disposition`)
+- **Status:** fixed — `37dd6f70` (`fix/mg-ui-query-disposition`)
 - **Tier:** checked + blinded convergence (3 roles)
 - **Level:** code
 - **Found by:** scanner, checker, coroner, ops-drill
 - **Where:**
-  - `operator-ui/apps/fleet-manager/src/pages/overview/OverviewPage.tsx:25-47`
-  - correct sibling for contrast: `operator-ui/apps/fleet-manager/src/pages/wallet/WalletPage.tsx:26-57`
+  - `operator-ui/apps/manifold-guardian/src/pages/overview/OverviewPage.tsx:25-47`
+  - correct sibling for contrast: `operator-ui/apps/manifold-guardian/src/pages/wallet/WalletPage.tsx:26-57`
 
 **What happens:** The Overview renders a banner *instead of* its content whenever `isError` is
 true. React-query retains `data` through a failed refresh — the error action keeps the previous

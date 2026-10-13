@@ -1,4 +1,4 @@
-# Frozen source-registration inventory for cloud FMan telemetry.
+# Frozen source-registration inventory for cloud MG telemetry.
 #
 # Regenerate this file from the exact Fedimint input when the pin or bundled
 # module set changes. `flake.nix` scans every Rust source in the entire pinned
@@ -9,7 +9,7 @@
 # the checkable source boundary.
 # `package` rows are the normal and target-specific dependency closure rooted at
 # stability-pool-server. Build and dev dependencies are intentionally excluded:
-# they do not link into the FMan runtime image. Any unaccounted same-source
+# they do not link into the MG runtime image. Any unaccounted same-source
 # Cargo.lock edge fails the check rather than silently evading this boundary.
 release_tag	0.12.0-fedi11
 producer	fedimint	fedibtc/fedimint	v0.12.0-fedi11	61b3b02da228fbcdb185f70eb69e7f9093c4bba9

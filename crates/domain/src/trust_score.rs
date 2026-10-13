@@ -1,5 +1,5 @@
 //! Shared `fedi-trust-score-v1.0` holder trust badge schema and the inline
-//! holder-authorization trust envelope carried in FMan and FLIP advertisements.
+//! holder-authorization trust envelope carried in MG and FLIP advertisements.
 //!
 //! The badge schema is owned by the PeerBadge SDK's `schemas` crate and
 //! re-exported here; this module adds inline envelope carriage plus the generic,
@@ -149,7 +149,7 @@ impl core::fmt::Display for PeerBadgeTrustPolicyError {
 
 impl std::error::Error for PeerBadgeTrustPolicyError {}
 
-/// Inline trust envelope shared by FMan and FLIP advertisements.
+/// Inline trust envelope shared by MG and FLIP advertisements.
 ///
 /// The wire shape is exactly
 /// `{ "holder_authorization": ..., "signed_credential": ... }`: the

@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# Run the full test suite -- including the FMAN_E2E / FLIP_E2E tiers --
+# Run the full test suite -- including the MG_E2E / FLIP_E2E tiers --
 # impurely against the working tree (issue #106).
 #
 # This mirrors what the `.#ci.<system>.tests` derivation does, with two
 # deliberate differences:
-#   * workspace binaries (defe, push-gateway, fleet-manager, fman-cli, fi-cli) come
+#   * workspace binaries (defe, push-gateway, fleet-manager, fman-cli, fa-cli) come
 #     from the incremental cargo target dir instead of Nix store paths, so
 #     an edit->test cycle reuses prior compilation;
 #   * the tree is used as-is (untracked files included) -- no git-filtered
@@ -53,9 +53,9 @@ bin_dir="$target_dir/$profile_dir"
 cargo build --locked "${build_args[@]}" \
   -p defe \
   -p fedi-decentralized-push-gateway \
-  -p fman \
-  -p fman-cli \
-  -p fi-cli \
+  -p mg \
+  -p mg-cli \
+  -p fa-cli \
   -p devmon
 
 # Resolve a service binary from the dev shell PATH, failing with a teaching
@@ -79,13 +79,13 @@ ESPLORA_BIN=$(require_on_path esplora)
 # with the variable name in the message.
 export DEV_DEFE_PORTALLOC_DATA_DIR="${DEV_DEFE_PORTALLOC_DATA_DIR:-${TMPDIR:-/tmp}/defe-portalloc}"
 mkdir -p "$DEV_DEFE_PORTALLOC_DATA_DIR"
-export FMAN_E2E=1
-export FMAN_E2E_FLEET_MANAGER_BIN="$bin_dir/fleet-manager"
-export FMAN_E2E_FMAN_CLI_BIN="$bin_dir/fman-cli"
-export FMAN_E2E_FI_CLI_BIN="$bin_dir/fi-cli"
-export FMAN_E2E_FEDIMINT_CLI_BIN="$FEDIMINT_CLI_BIN"
-export FMAN_E2E_BITCOIN_CLI_BIN="$BITCOIN_CLI_BIN"
-export FMAN_E2E_ESPLORA_BIN="$ESPLORA_BIN"
+export MG_E2E=1
+export MG_E2E_MANIFOLD_GUARDIAN_BIN="$bin_dir/fleet-manager"
+export MG_E2E_MG_CLI_BIN="$bin_dir/fman-cli"
+export MG_E2E_FA_CLI_BIN="$bin_dir/fa-cli"
+export MG_E2E_FEDIMINT_CLI_BIN="$FEDIMINT_CLI_BIN"
+export MG_E2E_BITCOIN_CLI_BIN="$BITCOIN_CLI_BIN"
+export MG_E2E_ESPLORA_BIN="$ESPLORA_BIN"
 export FLIP_E2E_GATEWAYD_BIN="$GATEWAYD_BIN"
 export FLIP_E2E_GATEWAY_CLI_BIN="$GATEWAY_CLI_BIN"
 export FLIP_E2E_FEDIMINTD_BIN="$FEDIMINTD_BIN"
@@ -94,7 +94,7 @@ export FLIP_E2E_BITCOIN_CLI_BIN="$BITCOIN_CLI_BIN"
 
 nextest_args=(
   nextest run
-  --features fedi-decentralized-cloud-fman-telemetry/defe-test-support
+  --features fedi-decentralized-cloud-mg-telemetry/defe-test-support
 )
 if [ -n "${CARGO_PROFILE:-}" ]; then
   nextest_args+=(--cargo-profile "$CARGO_PROFILE" --profile "$CARGO_PROFILE")

@@ -1,5 +1,5 @@
 # Complete Prometheus response captured from a running fedi15 fedimintd guardian
-# seat supervised by an FMan. It remains an actual legacy regression fixture for
+# seat supervised by an MG. It remains an actual legacy regression fixture for
 # the parser and allowlist when bound to its own fedi15 marker. Its old release
 # marker is intentional; it makes no production cross-release compatibility claim.
 #

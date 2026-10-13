@@ -2,9 +2,9 @@
   "version": "0.0.1",
   "configurations": [
     {
-      "name": "fman-ui",
+      "name": "mg-ui",
       "runtimeExecutable": "pnpm",
-      "runtimeArgs": ["--filter", "fman", "dev"],
+      "runtimeArgs": ["--filter", "mg", "dev"],
       "port": 5174
     },
     {

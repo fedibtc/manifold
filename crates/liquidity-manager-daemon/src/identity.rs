@@ -39,7 +39,7 @@ impl ProductionProviderIdentity {
     /// Derived, never generated: the resulting node id is the address FLIP
     /// advertises, and an endpoint identity regenerated on each boot would
     /// invalidate the published advertisement on every restart. Same
-    /// construction as the Fleet Manager's `derive_iroh_secret_key`.
+    /// construction as the Manifold Guardian's `derive_iroh_secret_key`.
     pub(crate) fn derive_iroh_secret_key(&self) -> anyhow::Result<fedi_iroh_rpc::iroh::SecretKey> {
         let keys = Keys::parse(&self.nostr_secret_key_hex)
             .context("provider Nostr secret key is invalid")?;

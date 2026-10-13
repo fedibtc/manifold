@@ -60,8 +60,8 @@ test-e2e-ui-flip *ARGS:
 
 # Run the operator-UI Playwright suite against a real, defe-provisioned Fleet
 # Manager. Extra args are forwarded to `playwright test`, e.g.
-#   just test-e2e-ui-fman -- -g "empty fleet" --headed
-test-e2e-ui-fman *ARGS:
+#   just test-e2e-ui-mg -- -g "empty fleet" --headed
+test-e2e-ui-mg *ARGS:
   #!/usr/bin/env bash
   set -euo pipefail
   if [ ! -f Cargo.toml ]; then
@@ -73,14 +73,14 @@ test-e2e-ui-fman *ARGS:
   # refuses to start ("-1 available, 160 required") when that limit is enormous,
   # as it is by default on macOS. Cap it at a sane value for the children.
   ulimit -n 4096 || true
-  # The FMan needs a bitcoind and a Nostr relay to start; defe resolves those
+  # The MG needs a bitcoind and a Nostr relay to start; defe resolves those
   # two from the dev shell's PATH and the manager and launcher from the build
   # directory.
-  # `fman` is the package; `fleet-manager` is only its [[bin]] name, so `-p
+  # `mg` is the package; `fleet-manager` is only its [[bin]] name, so `-p
   # fleet-manager` matches no package and this recipe cannot build.
-  cargo build -p fman -p fman-ui-e2e-runner
+  cargo build -p mg -p mg-ui-e2e-runner
   bin_dir="${CARGO_TARGET_DIR:-target}/debug"
-  cargo run -p defe -- --binary-path "$bin_dir" exec "$bin_dir/fman-ui-e2e-runner" {{ARGS}}
+  cargo run -p defe -- --binary-path "$bin_dir" exec "$bin_dir/mg-ui-e2e-runner" {{ARGS}}
 
 # Build and run the foreground disposable Defe environment.
 defe-env *ARGS:
@@ -94,9 +94,9 @@ defe-env *ARGS:
     -p defe \
     -p defe-env \
     -p devmon \
-    -p fman \
-    -p fi-cli \
-    -p fman-cli \
+    -p mg \
+    -p fa-cli \
+    -p mg-cli \
     -p fedi-decentralized-liquidity-manager-daemon
   bin_dir="${CARGO_TARGET_DIR:-target}/debug"
   "$bin_dir/defe" --binary-path "$bin_dir" env {{ARGS}}
@@ -134,7 +134,7 @@ defe-serve:
       -w \"\$DEFE_PUSH_GATEWAY_BIN\" \
       -s 'exec \"\$DEFE_SERVER_BIN\" --binary-path \"\$DEFE_RESOURCE_BIN_DIR\" serve --listenfd --log-requests'"
 
-# Run the FULL test suite (unit + FMAN_E2E + FLIP_E2E) impurely against the
+# Run the FULL test suite (unit + MG_E2E + FLIP_E2E) impurely against the
 # working tree: incremental target dir, no git snapshot, no commit required.
 test-e2e-local *ARGS:
   ./scripts/test-e2e-local.sh {{ARGS}}
@@ -144,15 +144,15 @@ lean-check:
   cd lean && lake build
 
 # Regenerate everything Rust produces for the TypeScript side: the contract
-# fixtures under operator-ui/packages/types/fixtures/, and the FMan
+# fixtures under operator-ui/packages/types/fixtures/, and the MG
 # `AdminRequest` union at operator-ui/packages/types/src/generated/. Both are
 # consumed by TS tests and MSW mocks so they cannot drift from the real
 # admin-API serde shapes. Review the diff and commit it. Four paired tests fail
 # CI if the committed files go stale:
 # `cargo test --package fedi-decentralized-service-liquidity-manager --test
-# contract_fixtures` (FLIP), `cargo test --package fman-core --test
-# contract_fixtures` and `--test admin_request_ts` (FMan), and `cargo test
-# --package fman-nostr --test contract_fixtures` (FMan support chat).
+# contract_fixtures` (FLIP), `cargo test --package mg-core --test
+# contract_fixtures` and `--test admin_request_ts` (MG), and `cargo test
+# --package mg-nostr --test contract_fixtures` (MG support chat).
 gen-contract-fixtures:
   #!/usr/bin/env bash
   set -euo pipefail
@@ -160,12 +160,12 @@ gen-contract-fixtures:
     cd {{invocation_directory()}}
   fi
   cargo run --package fedi-decentralized-service-liquidity-manager --bin gen_contract_fixtures
-  cargo run --package fman-core --bin gen_fman_contract_fixtures
-  cargo run --package fman-nostr --bin gen_support_contract_fixtures
-  cargo run --package fman-core --bin gen_fman_admin_request_ts
+  cargo run --package mg-core --bin gen_mg_contract_fixtures
+  cargo run --package mg-nostr --bin gen_support_contract_fixtures
+  cargo run --package mg-core --bin gen_mg_admin_request_ts
 
 # Measure Rust line coverage for the dashboard release surface (FLIP daemon,
-# FMan core, and the shared operator-ui-auth adapter). Deferred: a
+# MG core, and the shared operator-ui-auth adapter). Deferred: a
 # fully-instrumented cargo-llvm-cov build is long-running; not run as part of
 # task A5's measured-baseline scope. Requires `cargo llvm-cov` (cargo-llvm-cov).
 rust-coverage:
@@ -177,7 +177,7 @@ rust-coverage:
   cargo llvm-cov \
     --package fedi-decentralized-service-liquidity-manager \
     --package operator-ui-auth \
-    --package fman-core \
+    --package mg-core \
     --lcov --output-path target/llvm-cov/lcov.info
 
 # Run the Linux Nix CI checks locally in a `nixos/nix` Docker container, so a
@@ -189,8 +189,8 @@ rust-coverage:
 #   just ci-docker tests        # needs Docker Desktop memory >= ~24 GiB
 ci-docker *TARGETS:
   ./scripts/ci-in-docker.sh {{TARGETS}}
-# Run an indexed persistent staging FMan on Mutinynet with its loopback operator UI.
-staging-fman *ARGS:
+# Run an indexed persistent staging MG on Mutinynet with its loopback operator UI.
+staging-mg *ARGS:
   #!/usr/bin/env bash
   set -euo pipefail
   cd "{{justfile_directory()}}"
@@ -212,7 +212,7 @@ staging-fman *ARGS:
         shift
         ;;
       *)
-        echo "usage: just staging-fman [--instance N]" >&2
+        echo "usage: just staging-mg [--instance N]" >&2
         exit 2
         ;;
     esac
@@ -223,15 +223,15 @@ staging-fman *ARGS:
   fi
   instance=$((10#$instance))
 
-  data_dir_base="${FMAN_STAGING_DATA_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/manifold/fman-staging}"
+  data_dir_base="${MG_STAGING_DATA_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/manifold/fman-staging}"
   if ((instance == 0)); then
     data_dir="$data_dir_base"
   else
     data_dir="$data_dir_base-$instance"
   fi
-  max_seats="${FMAN_STAGING_MAX_SEATS:-3}"
+  max_seats="${MG_STAGING_MAX_SEATS:-3}"
   if [[ ! "$max_seats" =~ ^[0-9]+$ ]] || ((max_seats > 25)); then
-    echo "FMAN_STAGING_MAX_SEATS must be between 0 and 25" >&2
+    echo "MG_STAGING_MAX_SEATS must be between 0 and 25" >&2
     exit 2
   fi
   first_port_base=$((11060 + instance * 100))
@@ -245,7 +245,7 @@ staging-fman *ARGS:
   password_file="$data_dir/operator-password"
   bin="$PWD/target/debug/fleet-manager"
 
-  cargo build -p fman
+  cargo build -p mg
   (cd operator-ui && pnpm install --frozen-lockfile)
   mkdir -p "$data_dir"
   password="$(od -An -N24 -tx1 /dev/urandom | tr -d ' \n')"
@@ -259,22 +259,22 @@ staging-fman *ARGS:
     --admin-http-bind "$admin_addr" \
     --admin-http-auth password \
     --admin-http-password-file "$password_file" &
-  fman_pid=$!
+  mg_pid=$!
   ui_pid=""
   cleanup() {
     if [[ -n "$ui_pid" ]]; then
       kill "$ui_pid" 2>/dev/null || true
       wait "$ui_pid" 2>/dev/null || true
     fi
-    kill "$fman_pid" 2>/dev/null || true
-    wait "$fman_pid" 2>/dev/null || true
+    kill "$mg_pid" 2>/dev/null || true
+    wait "$mg_pid" 2>/dev/null || true
   }
   trap cleanup EXIT INT TERM
 
   onboarded=false
   for _ in {1..200}; do
-    if ! kill -0 "$fman_pid" 2>/dev/null; then
-      wait "$fman_pid"
+    if ! kill -0 "$mg_pid" 2>/dev/null; then
+      wait "$mg_pid"
     fi
     if "$bin" admin --data-dir "$data_dir" onboard new --if-needed >/dev/null 2>&1; then
       onboarded=true
@@ -307,8 +307,8 @@ staging-fman *ARGS:
 
   (
     cd operator-ui
-    exec env FMAN_ADMIN_PROXY_TARGET="http://$admin_addr" \
-      pnpm --filter fman exec vite --host 127.0.0.1 --port "$ui_port"
+    exec env MG_ADMIN_PROXY_TARGET="http://$admin_addr" \
+      pnpm --filter mg exec vite --host 127.0.0.1 --port "$ui_port"
   ) &
   ui_pid=$!
 
@@ -329,17 +329,17 @@ staging-fman *ARGS:
   fi
 
   echo
-  echo "FMan staging instance:    $instance"
+  echo "MG staging instance:    $instance"
   echo "Operator UI:              http://127.0.0.1:$ui_port"
   echo "Operator password:        $password"
   echo "Data directory:           $data_dir"
   echo "First seat port base:     $first_port_base"
   echo "Ctrl-C to stop."
-  while kill -0 "$fman_pid" 2>/dev/null && kill -0 "$ui_pid" 2>/dev/null; do
+  while kill -0 "$mg_pid" 2>/dev/null && kill -0 "$ui_pid" 2>/dev/null; do
     sleep 1
   done
-  if ! kill -0 "$fman_pid" 2>/dev/null; then
-    wait "$fman_pid"
+  if ! kill -0 "$mg_pid" 2>/dev/null; then
+    wait "$mg_pid"
   else
     wait "$ui_pid"
   fi
@@ -996,7 +996,7 @@ staging-flip-trust *ARGS:
   # reruns of this recipe accumulate holders, so require THIS run's holder to
   # be enrolled — anything weaker can exit 0 on stale trust material.
   # Publication and the refresh race relay propagation, so retry like
-  # staging-fman-trust does instead of failing confusingly at the republish
+  # staging-mg-trust does instead of failing confusingly at the republish
   # step when the first read comes back empty.
   holder="$(jq --exit-status --raw-output '.holder_pubkey' <<<"$bundle")"
   enrolled=""
@@ -1029,8 +1029,8 @@ staging-flip-trust *ARGS:
     "http://127.0.0.1:$admin_port/admin/v1/republish_advertisement" \
     | jq '{publication_status,relay_states}'
 
-# Issue staging trust material and publish the holder authorization an FMan discovers.
-staging-fman-trust *ARGS:
+# Issue staging trust material and publish the holder authorization an MG discovers.
+staging-mg-trust *ARGS:
   #!/usr/bin/env bash
   set -euo pipefail
   cd "{{justfile_directory()}}"
@@ -1052,7 +1052,7 @@ staging-fman-trust *ARGS:
         shift
         ;;
       *)
-        echo "usage: just staging-fman-trust [--instance N]" >&2
+        echo "usage: just staging-mg-trust [--instance N]" >&2
         exit 2
         ;;
     esac
@@ -1063,7 +1063,7 @@ staging-fman-trust *ARGS:
   fi
   instance=$((10#$instance))
 
-  data_dir_base="${FMAN_STAGING_DATA_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/manifold/fman-staging}"
+  data_dir_base="${MG_STAGING_DATA_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/manifold/fman-staging}"
   if ((instance == 0)); then
     data_dir="$data_dir_base"
   else
@@ -1071,22 +1071,22 @@ staging-fman-trust *ARGS:
   fi
   bin="$PWD/target/debug/fleet-manager"
   if [[ ! -x "$bin" ]]; then
-    cargo build -p fman
+    cargo build -p mg
   fi
   onboarding="$($bin admin --data-dir "$data_dir" onboarding)"
   subject="$(jq --exit-status --raw-output '.service_nostr_pubkey' <<<"$onboarding")"
   authorization_request="$(jq --compact-output --null-input \
     --arg subject_pubkey "$subject" '{subject_pubkey:$subject_pubkey}')"
-  echo "FMan holder-authorization request:" >&2
+  echo "MG holder-authorization request:" >&2
   jq . <<<"$authorization_request" >&2
   issued="$(cargo run --quiet -p devmon --bin manifold-test-issuer -- \
     --environment staging \
     --authorization-request "$authorization_request" \
-    --publish-fman-authorization)"
+    --publish-mg-authorization)"
   jq '{subject_pubkey,issuer_pubkey,holder_pubkey,authority_event_ids,authorization_event_ids}' \
     <<<"$issued"
 
-  echo "Waiting for FMan to observe the published authorization..." >&2
+  echo "Waiting for MG to observe the published authorization..." >&2
   holder="$(jq --exit-status --raw-output '.holder_pubkey' <<<"$issued")"
   for _ in {1..20}; do
     onboarding="$($bin admin --data-dir "$data_dir" onboarding)"
@@ -1097,5 +1097,5 @@ staging-fman-trust *ARGS:
     fi
     sleep 1
   done
-  echo "FMan did not observe its holder authorization within 20 seconds" >&2
+  echo "MG did not observe its holder authorization within 20 seconds" >&2
   exit 1

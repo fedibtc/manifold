@@ -1,4 +1,4 @@
-//! Operator-protected adapters for one registered FMan telemetry endpoint.
+//! Operator-protected adapters for one registered MG telemetry endpoint.
 
 use std::str::FromStr as _;
 
@@ -8,7 +8,7 @@ use axum::{
     extract::{Path, State},
     http::{HeaderValue, Response, StatusCode, header},
 };
-use fedi_decentralized_service_fleet_manager::{
+use fedi_decentralized_service_manifold_guardian::{
     GUARDIAN_TELEMETRY_ALPN, GuardianMetricsResponse, GuardianTelemetryApi as _,
     GuardianTelemetryApiClient, ListGuardianTelemetrySeatsRequest,
     ListGuardianTelemetrySeatsResponse, MAX_GUARDIAN_METRICS_BODY_BYTES,
@@ -23,9 +23,9 @@ use crate::{ApiError, AppState};
 
 pub(crate) async fn list_guardian_telemetry_seats(
     State(state): State<AppState>,
-    Path(fman_pubkey): Path<String>,
+    Path(mg_pubkey): Path<String>,
 ) -> Result<Json<ListGuardianTelemetrySeatsResponse>, ApiError> {
-    let (client, capability) = telemetry_client(&state, &fman_pubkey).await?;
+    let (client, capability) = telemetry_client(&state, &mg_pubkey).await?;
     let response = tokio::time::timeout(
         std::time::Duration::from_secs(15),
         client.list_guardian_telemetry_seats(ListGuardianTelemetrySeatsRequest { capability }),
@@ -42,10 +42,10 @@ pub(crate) async fn list_guardian_telemetry_seats(
 /// Pull one seat on demand. This route is mounted only on the operator router.
 pub(crate) async fn scrape_guardian_telemetry(
     State(state): State<AppState>,
-    Path((fman_pubkey, seat_id)): Path<(String, String)>,
+    Path((mg_pubkey, seat_id)): Path<(String, String)>,
 ) -> Result<Response<Body>, ApiError> {
     let seat_id = SeatId::new(seat_id).map_err(|_| not_found())?;
-    let (client, capability) = telemetry_client(&state, &fman_pubkey).await?;
+    let (client, capability) = telemetry_client(&state, &mg_pubkey).await?;
     let upstream = tokio::time::timeout(
         std::time::Duration::from_secs(15),
         client.scrape_guardian_metrics(ScrapeGuardianMetricsRequest {
@@ -65,9 +65,9 @@ pub(crate) async fn scrape_guardian_telemetry(
 
 async fn telemetry_client(
     state: &AppState,
-    fman_pubkey: &str,
+    mg_pubkey: &str,
 ) -> Result<(GuardianTelemetryApiClient, TelemetryCapability), ApiError> {
-    if !valid_fman_pubkey(fman_pubkey) {
+    if !valid_mg_pubkey(mg_pubkey) {
         return Err(not_found());
     }
     let runtime = state
@@ -75,14 +75,14 @@ async fn telemetry_client(
         .ok_or_else(telemetry_unavailable)?;
     let target = runtime
         .repository()
-        .target(fman_pubkey)
+        .target(mg_pubkey)
         .await
         .map_err(|error| {
             tracing::error!(error = %error, "telemetry target lookup failed");
             internal_error()
         })?
         .ok_or_else(not_found)?;
-    let aad = format!("guardian-telemetry:{fman_pubkey}");
+    let aad = format!("guardian-telemetry:{mg_pubkey}");
     let plaintext = runtime
         .cipher()
         .decrypt(
@@ -125,7 +125,7 @@ async fn telemetry_client(
     Ok((client, TelemetryCapability::from_bytes(capability)))
 }
 
-fn valid_fman_pubkey(value: &str) -> bool {
+fn valid_mg_pubkey(value: &str) -> bool {
     value.len() == 64
         && value
             .bytes()
@@ -206,9 +206,9 @@ mod tests {
     }
 
     #[test]
-    fn fman_identity_is_canonical_and_bounded() {
-        assert!(valid_fman_pubkey(&"ab".repeat(32)));
-        assert!(!valid_fman_pubkey(&"AB".repeat(32)));
-        assert!(!valid_fman_pubkey(&"ab".repeat(31)));
+    fn mg_identity_is_canonical_and_bounded() {
+        assert!(valid_mg_pubkey(&"ab".repeat(32)));
+        assert!(!valid_mg_pubkey(&"AB".repeat(32)));
+        assert!(!valid_mg_pubkey(&"ab".repeat(31)));
     }
 }

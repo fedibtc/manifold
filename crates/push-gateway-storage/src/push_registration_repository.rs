@@ -356,7 +356,7 @@ impl PushRegistrationRepository {
 
     /// Returns every active, non-stale installation for a recipient inside an
     /// existing transaction. This exists only for readable legacy hook rows;
-    /// newly admitted FI hooks name exactly one installation.
+    /// newly admitted FA hooks name exactly one installation.
     pub async fn eligible_installations_for_recipient_in_transaction(
         transaction: &mut Transaction<'_, Any>,
         recipient_id: &RecipientId,
