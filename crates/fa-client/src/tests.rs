@@ -9661,7 +9661,7 @@ async fn selected_connection_timeouts_retry_in_quote_and_acquisition_phases() {
             logs.lines().any(|line| {
                 line.contains("formation request failed")
                     && line.contains(&format!(
-                        "fman_pubkey={}",
+                        "mg_pubkey={}",
                         manager_key(3).x_only_public_key().0
                     ))
                     && line.contains("operation=connect")
@@ -13974,7 +13974,7 @@ async fn formation_request_logs_bind_concurrent_seats_and_exclude_remote_secrets
         let expected_key = manager_key(index).x_only_public_key().0.to_string();
         assert!(
             failures.iter().any(|line| {
-                line.contains(&format!("fman_pubkey={expected_key}"))
+                line.contains(&format!("mg_pubkey={expected_key}"))
                     && line.contains(&format!("formation_id={}", snapshot.formation_id.0))
                     && line.contains("operation=propose_formation_meta")
                     && line.contains(&format!("cause={cause}"))
@@ -13987,7 +13987,7 @@ async fn formation_request_logs_bind_concurrent_seats_and_exclude_remote_secrets
     for index in [0, 1, 3, 4, 6] {
         assert!(
             !failures.iter().any(|line| line.contains(&format!(
-                "fman_pubkey={}",
+                "mg_pubkey={}",
                 manager_key(index).x_only_public_key().0
             ))),
             "successful sibling was blamed: {logs}"
@@ -14038,7 +14038,7 @@ async fn formation_connect_timeout_logs_identity_without_unassigned_seat_id() {
         .unwrap_or_else(|| panic!("missing request event: {logs}"));
     assert!(
         line.contains(&format!(
-            "fman_pubkey={}",
+            "mg_pubkey={}",
             manager_key(3).x_only_public_key().0
         )),
         "{logs}"
@@ -14081,7 +14081,7 @@ async fn formation_quote_logs_both_nested_transport_and_service_errors() {
             logs.lines().any(|line| {
                 line.contains("formation request failed")
                     && line.contains(&format!(
-                        "fman_pubkey={}",
+                        "mg_pubkey={}",
                         manager_key(0).x_only_public_key().0
                     ))
                     && line.contains("operation=get_quote")
@@ -14147,7 +14147,7 @@ async fn formation_acquisition_reconnect_logs_mg_identity() {
         logs.lines().any(|line| {
             line.contains("formation request failed")
                 && line.contains(&format!(
-                    "fman_pubkey={}",
+                    "mg_pubkey={}",
                     manager_key(2).x_only_public_key().0
                 ))
                 && line.contains("operation=connect")
@@ -14214,7 +14214,7 @@ async fn formation_guardian_code_deadline_logs_only_the_never_ready_seat() {
     let line = deadline_events[0];
     assert!(
         line.contains(&format!(
-            "fman_pubkey={}",
+            "mg_pubkey={}",
             manager_key(5).x_only_public_key().0
         )),
         "{logs}"
