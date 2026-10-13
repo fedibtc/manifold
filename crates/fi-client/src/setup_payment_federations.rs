@@ -141,16 +141,7 @@ where
         requested: &FederationId,
         run: DriverRun<'_>,
     ) -> FiResult<FederationId> {
-        let (policy_ids, payable) =
-            self.payable_setup_payment_federations(run)
-                .await
-                .map_err(|error| match error {
-                    FiError::Payment(_) => FiError::SelectionReauthorizationRequired {
-                        reason: crate::SelectionReauthorizationReason::SelectedPayerUnavailable,
-                        failure: None,
-                    },
-                    error => error,
-                })?;
+        let (policy_ids, payable) = self.payable_setup_payment_federations(run).await?;
         if !policy_ids.contains(requested) || !payable.contains(requested) {
             return Err(FiError::SelectionReauthorizationRequired {
                 reason: crate::SelectionReauthorizationReason::SelectedPayerUnavailable,
@@ -171,9 +162,7 @@ where
             .map(|member| member.federation_id)
             .collect::<Vec<_>>();
         if policy_ids.is_empty() {
-            return Err(FiError::Payment(
-                "the authenticated setup-payment federation set is empty".to_owned(),
-            ));
+            return Ok((policy_ids, HashSet::new()));
         }
         let payable = run
             .call("selecting a payable federation", || {

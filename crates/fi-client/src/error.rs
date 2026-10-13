@@ -150,6 +150,37 @@ pub enum FiErrorCode {
     Timeout,
 }
 
+/// Whether an unchanged formation should resume without a user command.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FailureDisposition {
+    /// A later attempt can succeed without new authorization or state repair.
+    Retryable,
+    /// Stop automatic retries until an explicit command or a fresh launch.
+    ///
+    /// This does not authorize abandonment and does not mean funds are lost.
+    Terminal,
+}
+
+/// Runtime-only formation failure. Durable recovery remains the source of truth
+/// and a fresh launch rechecks it rather than persisting a failure verdict.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
+pub struct FormationFailure {
+    /// Stable progress-facing category.
+    pub code: FiErrorCode,
+    /// Manifold-owned automatic retry policy.
+    pub disposition: FailureDisposition,
+}
+
+impl From<&FiError> for FormationFailure {
+    fn from(error: &FiError) -> Self {
+        Self {
+            code: error.code(),
+            disposition: error.disposition(),
+        }
+    }
+}
+
 /// A failure produced by one identity-bound Fleet Manager operation.
 #[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
 #[error("FMan {fman} {operation}: {cause}")]
@@ -314,6 +345,10 @@ pub enum FiError {
     /// Durable state could not be read or written.
     #[error("FI storage failure: {0}")]
     Storage(String),
+    /// Durable or in-memory recovery facts violate an engine invariant.
+    /// Retrying unchanged facts cannot repair them; this is not database I/O.
+    #[error("FI storage invariant failure: {0}")]
+    StorageInvariant(String),
     /// The consumer-provided identity could not be used.
     #[error("FI identity failure: {0}")]
     Identity(String),
@@ -454,6 +489,47 @@ pub enum FiError {
 }
 
 impl FiError {
+    /// Classify automatic retries at the source, without parsing error text.
+    /// Unknown transport, wallet and storage failures remain retryable.
+    #[must_use]
+    pub fn disposition(&self) -> FailureDisposition {
+        match self {
+            Self::Fman(failure) => match failure.cause {
+                FmanCause::InvalidResponse
+                | FmanCause::FormationMetaAlreadyPublished
+                | FmanCause::OfferChanged
+                | FmanCause::TerminalStatus(_) => FailureDisposition::Terminal,
+                _ => FailureDisposition::Retryable,
+            },
+            Self::Storage(_)
+            | Self::Busy
+            | Self::Registry(_)
+            | Self::FleetManager { .. }
+            | Self::Payment(_)
+            | Self::Liquidity(_)
+            | Self::MaintenanceConvergence { .. }
+            | Self::Timeout(_) => FailureDisposition::Retryable,
+            Self::InvalidIntent(_)
+            | Self::InvalidOptions(_)
+            | Self::StorageInvariant(_)
+            | Self::Identity(_)
+            | Self::NoActiveFormation
+            | Self::AbandonUnavailable(_)
+            | Self::Selection(_)
+            | Self::InsufficientFmanSeats { .. }
+            | Self::SelectionPreviewTimeout
+            | Self::SelectionEstimateOverflow
+            | Self::SelectionReauthorizationRequired { .. }
+            | Self::CapabilityUnavailable(_)
+            | Self::InvalidFleetManagers(_)
+            | Self::LiquidityOperationExists { .. }
+            | Self::MaintenanceWrongState { .. }
+            | Self::MaintenanceRejected { .. }
+            | Self::MaintenanceConsensusTooLarge { .. }
+            | Self::MaintenanceConsensusInvalid { .. } => FailureDisposition::Terminal,
+        }
+    }
+
     /// Return the stable error category used by progress surfaces.
     #[must_use]
     pub fn code(&self) -> FiErrorCode {
@@ -467,7 +543,7 @@ impl FiError {
             },
             Self::InvalidIntent(_) => FiErrorCode::InvalidIntent,
             Self::InvalidOptions(_) => FiErrorCode::InvalidOptions,
-            Self::Storage(_) => FiErrorCode::Storage,
+            Self::Storage(_) | Self::StorageInvariant(_) => FiErrorCode::Storage,
             Self::Identity(_) => FiErrorCode::Identity,
             Self::Busy => FiErrorCode::Busy,
             Self::NoActiveFormation => FiErrorCode::NoActiveFormation,
