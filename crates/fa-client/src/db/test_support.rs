@@ -80,4 +80,28 @@ impl FaStore {
         dbtx.insert_entry(&ActiveFormationKey, &formation).await;
         dbtx.commit_tx().await;
     }
+
+    /// Rewrite the federation record into the storage that predates it.
+    pub(crate) async fn write_legacy_federation_storage_for_test(&self) {
+        let mut dbtx = self.database.begin_transaction().await;
+        let federation = dbtx
+            .get_value(&FederationKey)
+            .await
+            .expect("test federation exists");
+        dbtx.remove_entry(&FederationKey).await;
+        if let Some(payload) = federation.imported {
+            dbtx.insert_entry(
+                &RestoredBackupKey,
+                &RestoredBackupState {
+                    fa_id: federation.fa_id,
+                    payload,
+                    formation_id: federation.formation_id,
+                    backup_eligible: federation.backup_eligible,
+                    federation_name: federation.federation_name,
+                },
+            )
+            .await;
+        }
+        dbtx.commit_tx().await;
+    }
 }

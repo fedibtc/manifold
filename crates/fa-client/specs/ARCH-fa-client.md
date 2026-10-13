@@ -383,6 +383,12 @@ checkpoints their exact readback. An interrupted proposal replays the persisted
 target without re-resolving accounts or policy. Once confirmed, formed-state
 reconciliation requires the immutable directory and recipients to remain exact,
 accepts later rate changes, and needs no formation account provider.
+Formed state lives in one federation record: invite, seats, name, and backup
+eligibility. Confirming formation metadata writes it in the same transaction,
+and a backup import writes it with the imported payload as its generation
+baseline. Backups and post-formation workflows read only this record; formation
+rows remain the history of a local DKG. Opening migrates storage written before
+the record existed.
 On restart, both a local `Formed` record and a restored backup start unsynced.
 Fresh threshold consensus must match the saved federation identity and verified
 directory before either becomes fresh; restored seats and any saved liquidity
