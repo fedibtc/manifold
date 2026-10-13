@@ -146,7 +146,7 @@ async fn economically_sweepable(
     let lightning = client
         .get_first_module::<LightningClientModule>()
         .context("federation has no Lightning client module")?;
-    let gateway = crate::select_v1_gateway(client, &lightning).await?;
+    let gateway = crate::select_v1_gateway(client, &lightning, balance).await?;
     crate::payout_native::validate_v1_gateway_fees(balance, &gateway.fees)?;
     let minimum_recipient = Amount::from_msats(1);
     let minimum_contract = minimum_recipient + gateway.fees.to_amount(&minimum_recipient);

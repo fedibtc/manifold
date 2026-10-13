@@ -425,6 +425,145 @@ fn v1_gateway_diagnostic_separates_absence_from_expiry() {
     );
 }
 
+fn v1_announcement(
+    seed: u8,
+    base_msat: u32,
+    proportional_millionths: u32,
+    ttl: std::time::Duration,
+) -> fedimint_ln_common::LightningGatewayAnnouncement {
+    use bitcoin::secp256k1::{PublicKey, Secp256k1, SecretKey};
+    let key = PublicKey::from_secret_key(
+        &Secp256k1::new(),
+        &SecretKey::from_slice(&[seed; 32]).unwrap(),
+    );
+    fedimint_ln_common::LightningGatewayAnnouncement {
+        info: fedimint_ln_common::LightningGateway {
+            federation_index: 0,
+            gateway_redeem_key: key,
+            node_pub_key: key,
+            lightning_alias: String::new(),
+            api: "http://localhost:8175".parse().unwrap(),
+            route_hints: vec![],
+            fees: lightning_invoice::RoutingFees {
+                base_msat,
+                proportional_millionths,
+            },
+            gateway_id: key,
+            supports_private_payments: false,
+        },
+        vetted: false,
+        ttl,
+        auth: None,
+    }
+}
+
+#[test]
+fn v1_selection_filters_before_vetted_preference_and_key_order() {
+    let ttl = std::time::Duration::from_secs(60);
+    let mut candidates = [v1_announcement(1, 0, 0, ttl), v1_announcement(2, 0, 0, ttl)];
+    candidates.sort_by_key(|announcement| announcement.info.gateway_id);
+    let low = candidates[0].info.gateway_id;
+    let high = candidates[1].info.gateway_id;
+    let balance = Amount::from_msats(1_000_000);
+    let selected = |candidates: &[_], vetted: &HashSet<_>| {
+        select_v1_gateway_from_announcements(candidates, vetted, balance)
+            .unwrap()
+            .gateway_id
+    };
+    let unvetted = HashSet::new();
+    assert_eq!(selected(&candidates, &unvetted), low);
+    candidates.reverse();
+    assert_eq!(selected(&candidates, &unvetted), low);
+    assert_eq!(selected(&candidates, &HashSet::from([high])), high);
+    candidates.sort_by_key(|announcement| announcement.info.gateway_id);
+    for fees in [
+        lightning_invoice::RoutingFees {
+            base_msat: 100_001,
+            proportional_millionths: 0,
+        },
+        lightning_invoice::RoutingFees {
+            base_msat: 0,
+            proportional_millionths: 15_001,
+        },
+    ] {
+        candidates[0].info.fees = fees;
+        assert_eq!(selected(&candidates, &unvetted), high);
+        assert_eq!(selected(&candidates, &HashSet::from([low])), high);
+    }
+    candidates[1].info.fees.base_msat = 100_001;
+    for vetted in [unvetted, HashSet::from([low, high])] {
+        let route = select_v1_gateway_from_announcements(&candidates, &vetted, balance);
+        let error = route.as_ref().unwrap_err().to_string();
+        assert!(error.contains("eligible fee schedule"));
+        assert!(!error.contains("expired"));
+        let estimate = route
+            .map(|_| mg_core::wallet::Msats(0))
+            .map_err(|_| wallet_drain::WalletDrainQuery::EconomicallySweepable);
+        let status = wallet_drain::WalletDrainStatus::new(
+            Ok(mg_core::wallet::Msats(balance.msats)),
+            estimate,
+            Ok(vec![]),
+            0,
+        );
+        assert_eq!(status.drain_state, wallet_drain::DrainState::Unknown);
+        assert_eq!(
+            status.query_errors,
+            vec![wallet_drain::WalletDrainQuery::EconomicallySweepable]
+        );
+    }
+}
+
+#[test]
+fn v1_selection_checks_ttl_and_balance_before_returning_a_route() {
+    let mut candidate = v1_announcement(1, 1, 0, MINIMUM_V1_GATEWAY_TTL);
+    let vetted = HashSet::from([candidate.info.gateway_id]);
+    let select = |candidate| {
+        select_v1_gateway_from_announcements(&[candidate], &vetted, Amount::from_msats(100))
+    };
+    assert!(select(candidate.clone()).is_err());
+    candidate.ttl += std::time::Duration::from_nanos(1);
+    assert!(select(candidate.clone()).is_ok());
+    assert!(
+        select_v1_gateway_from_announcements(
+            &[candidate.clone()],
+            &vetted,
+            Amount::from_msats(u64::MAX)
+        )
+        .is_err()
+    );
+    candidate.info.fees.base_msat = 0;
+    assert!(
+        select_v1_gateway_from_announcements(&[candidate], &vetted, Amount::from_msats(u64::MAX))
+            .is_ok()
+    );
+}
+
+#[test]
+fn v1_selection_tolerates_missing_or_malformed_vetted_keys() {
+    let candidate = v1_announcement(1, 0, 0, std::time::Duration::from_secs(60));
+    for values in [vec![], vec!["not-a-key".to_owned()]] {
+        let vetted = vetted_v1_gateway_keys(values);
+        assert!(vetted.is_empty());
+        assert_eq!(
+            select_v1_gateway_from_announcements(
+                std::slice::from_ref(&candidate),
+                &vetted,
+                Amount::from_msats(1_000),
+            )
+            .unwrap()
+            .gateway_id,
+            candidate.info.gateway_id
+        );
+    }
+    assert_eq!(
+        vetted_v1_gateway_keys(vec![
+            "not-a-key".to_owned(),
+            candidate.info.gateway_id.to_string(),
+        ]),
+        HashSet::from([candidate.info.gateway_id])
+    );
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn same_scope_payout_starts_are_serialized() {
     use std::future::Future as _;
