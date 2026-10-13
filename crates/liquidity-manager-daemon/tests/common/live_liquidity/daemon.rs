@@ -140,8 +140,8 @@ impl DaemonProcess {
                 &launch.provider_secret_hex,
             )
             // The daemon hosts the target-federation Fedimint client, whose
-            // background peg-in monitor uses `is_running_in_test_env()` to pick
-            // aggressive (100ms) vs production (minutes) polling. Set it
+            // walletv2 output scanner uses `is_running_in_test_env()` to pick
+            // aggressive (1s) vs production (1 minute) polling. Set it
             // explicitly (as aqueduct's harness does) so it does not depend on
             // nextest's marker propagating across the spawn.
             .env("FM_IN_DEVIMINT", "1");

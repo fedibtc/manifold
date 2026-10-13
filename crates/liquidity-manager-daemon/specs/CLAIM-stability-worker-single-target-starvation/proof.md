@@ -1,5 +1,11 @@
 # Current argument
 
+> **Stale proof:** its list of permanent per-target errors cites wallet v1
+> calls (`recheck_peg_in`, the `WalletClientModule` lookup,
+> `btc_tx_has_no_size_limit`, `subscribe_deposit`). FLIP now pegs in through
+> walletv2, and a target without a walletv2 module is refused as unusable at
+> address allocation.
+
 ## Argument
 
 **L1 (`code`) — the worker drops an item's future on budget, and continues.**

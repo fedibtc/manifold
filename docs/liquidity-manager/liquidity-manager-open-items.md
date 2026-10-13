@@ -59,7 +59,7 @@ The capacity half is solved: `abandon_target_client_value` fails the item and
 releases its reservation. What the decision accepts is the value itself when a
 stability pool rejects provision permanently. Recovering it is a peg-out from
 the target federation, which needs its own send-once fence, durable operation
-records, and settlement evidence. `WalletClientModule::withdraw` mints its own
+records, and settlement evidence. walletv2 `WalletClientModule::send` mints its own
 operation id, so it inherits the same pre-submit crash window, and there the
 value moves outward: a lost id followed by a resubmit is a double send.
 
@@ -262,11 +262,11 @@ daemon serves one version and shapes nothing by it.
 ### A pin bump can silently reinstate a repaired defect
 
 `repeated-target-peg-in-allocation-after-crash` passes because upstream
-`allocate_deposit_address_pooled_stateless` reuses an address while
-`claimed.is_empty()`. Changing `<=` to `<` in `fedimint-wallet-client`'s
-pooled-address reuse is **one character, no compile error, no failing test**, and
-it reinstates the defect. The per-item budget ruling rests on that repair, so
-treat a pin bump touching that allocation as touching
+walletv2 `receive` returns the client's current address until its output scanner
+sees an output paying it. An upstream change that advances the address on every
+`receive` call compiles cleanly, fails no FLIP test, and reinstates the defect.
+The per-item budget ruling rests on that reuse, so treat a pin bump touching
+walletv2 address derivation as touching
 `stability-deposit-terminal-state-not-observed` too.
 
 ### A payment-log read can omit the oldest part of the log

@@ -13,17 +13,16 @@ use std::str::FromStr;
 use std::sync::Arc;
 
 use fedimint_bip39::Bip39RootSecretStrategy;
-use fedimint_bitcoind::create_esplora_rpc;
 use fedimint_client::secret::RootSecretStrategy;
 use fedimint_client::{Client, ClientHandleArc, RootSecret};
 use fedimint_connectors::ConnectorRegistry;
 use fedimint_core::db::Database as FedimintDatabase;
 use fedimint_core::invite_code::InviteCode;
-use fedimint_core::util::SafeUrl;
 use fedimint_ln_client::LightningClientInit;
 use fedimint_meta_client::MetaClientInit;
 use fedimint_mint_client::MintClientInit;
-use fedimint_wallet_client::WalletClientInit;
+use fedimint_mintv2_client::MintClientInit as MintV2ClientInit;
+use fedimint_walletv2_client::WalletClientInit;
 use thiserror::Error;
 use tokio::sync::Mutex;
 use tracing::{debug, warn};
@@ -387,18 +386,11 @@ impl TargetFedimintClients {
     }
 
     /// Opens (or returns the cached) client for one target federation.
-    ///
-    /// `esplora_url` is the chain backend the wallet client should watch, taken
-    /// from this daemon's own chain-observer configuration. A cached client
-    /// keeps the backend it was opened with, so a chain-observer change reaches
-    /// existing targets through `reopen_federation_client` like every other
-    /// client-affecting config change.
     pub(crate) async fn create_or_load(
         &self,
         federations_dir: &Path,
         federation_id: &str,
         invite_code: &str,
-        esplora_url: Option<&SafeUrl>,
     ) -> Result<ClientHandleArc, TargetFedimintError> {
         {
             let mut inner = self.inner.lock().await;
@@ -453,7 +445,6 @@ impl TargetFedimintClients {
                 federation_id,
                 invite_code,
                 federation_client_db_path(federations_dir, federation_id),
-                esplora_url.cloned(),
             )
             .await
         {
@@ -496,7 +487,6 @@ impl TargetFedimintClients {
         federation_id: &str,
         invite_code: InviteCode,
         db_path: PathBuf,
-        esplora_url: Option<SafeUrl>,
     ) -> OpenSlot {
         let mut inner = self.inner.lock().await;
         // Re-check the installed clients here, under the same guard that
@@ -551,7 +541,7 @@ impl TargetFedimintClients {
         let pool = self.clone();
         let id = federation_id.to_owned();
         tokio::spawn(async move {
-            let outcome = create_or_load_client(&invite_code, &db_path, esplora_url.as_ref())
+            let outcome = create_or_load_client(&invite_code, &db_path)
                 .await
                 .map_err(|error| error.to_string());
 
@@ -935,8 +925,6 @@ pub(crate) enum TargetFedimintError {
     ClientBuilder(#[source] anyhow::Error),
     #[error("failed to build fedimint connectors: {0}")]
     Connectors(#[source] anyhow::Error),
-    #[error("failed to build the target client's chain backend: {0}")]
-    ChainBackend(#[source] anyhow::Error),
     #[error("failed to open RocksDB at {path}: {source}")]
     OpenRocksDb {
         path: String,
@@ -985,28 +973,16 @@ async fn load_or_generate_mnemonic(
     Ok(mnemonic)
 }
 
-async fn make_client_builder(
-    esplora_url: Option<&SafeUrl>,
-) -> Result<(fedimint_client::ClientBuilder, ConnectorRegistry), TargetFedimintError> {
+async fn make_client_builder()
+-> Result<(fedimint_client::ClientBuilder, ConnectorRegistry), TargetFedimintError> {
     let mut client_builder = Client::builder()
         .await
         .map_err(TargetFedimintError::ClientBuilder)?;
     client_builder.with_module(MetaClientInit);
     client_builder.with_module(MintClientInit);
+    client_builder.with_module(MintV2ClientInit);
     client_builder.with_module(LightningClientInit::default());
-    // The Fedimint wallet client watches the chain over esplora and nothing
-    // else, and left to itself it builds one from whatever the target
-    // federation advertises as its `default_bitcoin_rpc`. That makes claiming a
-    // peg-in depend on a third party's endpoint being reachable and honest.
-    // Point it at the chain backend this daemon was configured with instead,
-    // when that backend is one the client can use.
-    let wallet = match esplora_url {
-        Some(url) => WalletClientInit::new(
-            create_esplora_rpc(url).map_err(TargetFedimintError::ChainBackend)?,
-        ),
-        None => WalletClientInit::default(),
-    };
-    client_builder.with_module(wallet);
+    client_builder.with_module(WalletClientInit);
     client_builder.with_module(stability_pool_client::StabilityPoolClientInit::default());
     let connectors = ConnectorRegistry::build_from_client_defaults()
         .bind()
@@ -1050,10 +1026,9 @@ async fn open_rocksdb(
 async fn create_or_load_client(
     invite_code: &InviteCode,
     rocksdb: &Path,
-    esplora_url: Option<&SafeUrl>,
 ) -> Result<ClientHandleArc, TargetFedimintError> {
     let db: FedimintDatabase = open_rocksdb(rocksdb).await?.into();
-    let (client_builder, connectors) = make_client_builder(esplora_url).await?;
+    let (client_builder, connectors) = make_client_builder().await?;
 
     let client = if Client::is_initialized(&db).await {
         debug!("target federation client is already initialized");

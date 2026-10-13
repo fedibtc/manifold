@@ -468,17 +468,15 @@ impl OperatorAdminApi for DaemonContext {
 
 /// Builds the stability-pool backend for an operator request.
 ///
-/// The reconciliation surfaces reach a target client, so they need the same
-/// chain backend the worker gives it — read per request, like every other
-/// dependency lookup, so a config change lands without a restart.
+/// The reconciliation surfaces reach a target client, so like the worker they
+/// require a configured deployment.
 async fn stability_pool_backend(
     context: &DaemonContext,
 ) -> ServiceResult<crate::stability_pool::FedimintStabilityPoolBackend> {
-    let (setup, _wallet) = funds_admin::configured_wallet(context).await?;
+    funds_admin::configured_wallet(context).await?;
     Ok(crate::stability_pool::FedimintStabilityPoolBackend::new(
         context.paths.federations_dir.clone(),
         context.target_fedimint_clients.clone(),
-        &setup.chain_observer,
     ))
 }
 

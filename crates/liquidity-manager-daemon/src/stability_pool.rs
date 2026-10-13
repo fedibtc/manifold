@@ -3,18 +3,23 @@
 //! [`StabilityPoolBackend`] is the seam over peg-in allocation, provider
 //! deposit submission, and the account report the worker observes.
 
-use std::str::FromStr;
+use std::collections::BTreeSet;
 use std::time::Duration;
 
+use anyhow::Context as _;
 use async_trait::async_trait;
-use fedi_decentralized_service_liquidity_manager::{
-    ChainObserverBackendView, ChainObserverConfigView, Sats,
-};
+use bitcoin::Address;
+use bitcoin::address::NetworkUnchecked;
+use fedi_decentralized_service_liquidity_manager::Sats;
 use fedimint_client::ClientHandleArc;
 use fedimint_core::Amount;
 use fedimint_core::core::OperationId;
-use fedimint_core::util::SafeUrl;
-use fedimint_wallet_client::{DepositStateV2, MaybeNewAddress, WalletClientModule};
+use fedimint_core::module::AmountUnit;
+use fedimint_eventlog::{Event, EventLogId, PersistedLogEntry};
+use fedimint_walletv2_client::events::{
+    ReceivePaymentEvent, ReceivePaymentStatus, ReceivePaymentUpdateEvent,
+};
+use fedimint_walletv2_client::{WalletClientModule, WalletOperationMeta};
 use futures_util::StreamExt;
 use stability_pool_client::common::{AccountType, ActiveDeposits, FeeRate};
 use stability_pool_client::{
@@ -31,19 +36,13 @@ use crate::target_fedimint::TargetFedimintClients;
 pub(crate) struct FedimintStabilityPoolBackend {
     federations_dir: std::path::PathBuf,
     clients: TargetFedimintClients,
-    esplora_url: Option<SafeUrl>,
 }
 
 impl FedimintStabilityPoolBackend {
-    pub(crate) fn new(
-        federations_dir: std::path::PathBuf,
-        clients: TargetFedimintClients,
-        chain_observer: &ChainObserverConfigView,
-    ) -> Self {
+    pub(crate) fn new(federations_dir: std::path::PathBuf, clients: TargetFedimintClients) -> Self {
         Self {
             federations_dir,
             clients,
-            esplora_url: target_client_esplora_url(chain_observer),
         }
     }
 
@@ -53,49 +52,31 @@ impl FedimintStabilityPoolBackend {
                 &self.federations_dir,
                 &target.federation_id.0,
                 &target.invite_code.0,
-                self.esplora_url.as_ref(),
             )
             .await
             .map_err(anyhow::Error::from)
     }
 }
 
-/// The chain backend to give a target federation's wallet client, from this
-/// daemon's own chain-observer configuration.
+/// Where the target client's peg-in into the item's deposit address stands.
 ///
-/// Only esplora qualifies. The Fedimint wallet client has no bitcoind path at
-/// all, so a bitcoind-configured FLIP has nothing to offer and the client falls
-/// back to the esplora the target federation advertises — which is the only way
-/// such a deployment can claim a peg-in, and a reason to prefer esplora here.
-fn target_client_esplora_url(chain_observer: &ChainObserverConfigView) -> Option<SafeUrl> {
-    match &chain_observer.backend {
-        ChainObserverBackendView::Esplora { url } => match SafeUrl::parse(&url.0) {
-            Ok(url) => Some(url),
-            Err(error) => {
-                tracing::warn!(
-                    %error,
-                    "configured esplora URL is unusable as a target-client chain backend; \
-                     falling back to the target federation's advertised backend"
-                );
-                None
-            }
-        },
-        ChainObserverBackendView::Bitcoind { .. } => None,
-    }
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct PegInAddress {
-    pub operation_id: String,
-    pub address: String,
-}
-
+/// Amounts are what the federation credits: the deposited output's value less
+/// the walletv2 receive fee.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum PegInStatus {
+    /// The client has not seen a confirmed output paying the address.
     WaitingForTransaction,
-    WaitingForConfirmation { amount: Sats },
-    Confirmed { amount: Sats },
-    Claimed { amount: Sats },
+    /// The client has submitted a claim for a confirmed output, and the claim
+    /// or the e-cash it issues is not final yet.
+    Confirmed {
+        amount: Sats,
+    },
+    /// The claim was accepted and its e-cash is spendable in the client.
+    /// `operation_id` is the client's operation that claimed the deposit.
+    Claimed {
+        amount: Sats,
+        operation_id: String,
+    },
     Failed(String),
 }
 
@@ -168,13 +149,13 @@ const TARGET_OPERATION_SCAN_LIMIT: usize = 50;
 /// Backend for the target federation's on-chain peg-in and stability-pool
 /// provider deposit.
 ///
-/// Progress is observed by *consuming* Fedimint operation update streams. Both
-/// `subscribe_deposit` and `subscribe_deposit_operation` build their stream with
+/// Provider-deposit progress is observed by *consuming* the Fedimint operation
+/// update stream. `subscribe_deposit_operation` builds its stream with
 /// `outcome_or_updates`, which returns the terminal state directly once the
 /// operation log has an outcome, and otherwise wraps a generator in
 /// `caching_operation_update_stream`. That wrapper writes the operation's
 /// outcome only after the inner stream *ends*, and the generator's first item is
-/// always the initial state (`WaitingForTransaction` / `Initiated`).
+/// always the initial state (`Initiated`).
 ///
 /// So the stream must be drained to completion: a subscriber that reads one item
 /// and drops the stream caches nothing and re-reads the initial state on every
@@ -188,25 +169,13 @@ pub(crate) trait StabilityPoolBackend: Send + Sync {
         &self,
         target: &FundingTargetRecord,
     ) -> anyhow::Result<PegInAllocation>;
-    /// Furthest peg-in state reachable this tick, from the deposit operation's
-    /// own update stream.
+    /// Furthest peg-in state into `address` reachable this tick, from the
+    /// target client's own record of its claims.
     async fn observe_peg_in(
         &self,
         target: &FundingTargetRecord,
-        operation_id: &str,
+        address: &str,
     ) -> anyhow::Result<PegInStatus>;
-    /// Prompt the wallet client's background peg-in monitor to re-scan the
-    /// deposit address and claim it if it is ready. The monitor is woken once
-    /// when the address is allocated (before the on-chain funds arrive) and
-    /// otherwise only polls on its own slow schedule, so it must be nudged
-    /// while the deposit confirms. Draining the deposit stream does not do this:
-    /// the stream *waits* on the monitor's `ClaimedPegInKey` write, it does not
-    /// drive it.
-    async fn recheck_peg_in(
-        &self,
-        target: &FundingTargetRecord,
-        operation_id: &str,
-    ) -> anyhow::Result<()>;
     /// Spendable BTC-denominated balance of the target client, in sats. Used to
     /// size the provider deposit against the e-cash actually on hand — never as
     /// a completion signal, since it is a client-wide total that any other
@@ -334,7 +303,7 @@ pub const STABILITY_POOL_MODULE_KIND: &str = "multi_sig_stability_pool";
 #[derive(Debug)]
 pub(crate) enum PegInAllocation {
     /// The target was the accepted one and this address is its deposit address.
-    Allocated(PegInAddress),
+    Allocated(String),
 
     /// The target the pool would have funded is not the accepted one, for the
     /// stated reason. No later tick reaches a different answer for it.
@@ -379,6 +348,79 @@ async fn drain_furthest_state<T>(updates: impl futures_util::Stream<Item = T>) -
     furthest
 }
 
+/// Target-client event-log entries read per page while looking for a peg-in.
+const EVENT_LOG_PAGE_SIZE: u64 = 1000;
+
+/// What the target client's event log records about its claims of outputs
+/// paying one address.
+#[derive(Debug, Eq, PartialEq)]
+enum PegInReceive {
+    /// The client has submitted a claim, and the federation has accepted none.
+    Pending { amount: Sats },
+
+    /// The federation accepted this operation's claim.
+    Accepted {
+        operation_id: OperationId,
+        amount: Sats,
+    },
+}
+
+/// Reduces a target client's event log to its claims into `address`.
+///
+/// The walletv2 client has no per-address operation. Its output scanner logs a
+/// [`ReceivePaymentEvent`] naming the address when it submits a claim for a
+/// confirmed output, and a [`ReceivePaymentUpdateEvent`] when the federation
+/// accepts or rejects that claim. A rejected claim leaves the output unspent,
+/// and the scanner submits it again as a new receive, so a rejection is not
+/// final and only an acceptance settles the peg-in.
+fn peg_in_receive(
+    entries: &[PersistedLogEntry],
+    address: &Address<NetworkUnchecked>,
+) -> Option<PegInReceive> {
+    let accepted: BTreeSet<OperationId> = entries
+        .iter()
+        .filter_map(walletv2_event::<ReceivePaymentUpdateEvent>)
+        .filter(|update| matches!(update.status, ReceivePaymentStatus::Success))
+        .map(|update| update.operation_id)
+        .collect();
+    let receives: Vec<ReceivePaymentEvent> = entries
+        .iter()
+        .filter_map(walletv2_event::<ReceivePaymentEvent>)
+        .filter(|receive| &receive.address == address)
+        .collect();
+    let credited = |receive: &ReceivePaymentEvent| {
+        Sats(
+            receive
+                .value
+                .checked_sub(receive.fee)
+                .unwrap_or(bitcoin::Amount::ZERO)
+                .to_sat(),
+        )
+    };
+
+    if let Some(receive) = receives
+        .iter()
+        .find(|receive| accepted.contains(&receive.operation_id))
+    {
+        return Some(PegInReceive::Accepted {
+            operation_id: receive.operation_id,
+            amount: credited(receive),
+        });
+    }
+    receives.last().map(|receive| PegInReceive::Pending {
+        amount: credited(receive),
+    })
+}
+
+/// The event `entry` records, when it is a walletv2 event of kind `E`.
+fn walletv2_event<E: Event>(entry: &PersistedLogEntry) -> Option<E> {
+    let raw = entry.as_raw();
+    if raw.kind != E::KIND || raw.module_kind() != E::MODULE.as_ref() {
+        return None;
+    }
+    raw.to_event()
+}
+
 #[async_trait]
 impl StabilityPoolBackend for FedimintStabilityPoolBackend {
     async fn ensure_client(&self, target: &FundingTargetRecord) -> anyhow::Result<()> {
@@ -407,102 +449,101 @@ impl StabilityPoolBackend for FedimintStabilityPoolBackend {
             return Ok(PegInAllocation::Unusable(reason));
         }
 
-        let wallet = client.get_first_module::<WalletClientModule>()?;
-        // Refuse to peg into a federation whose wallet module cannot process
-        // deposits above `ALEPH_BFT_UNIT_BYTE_LIMIT`, which would silently burn
-        // the funds. This is the same predicate `safe_allocate_deposit_address`
-        // enforces (`SAFE_DEPOSIT_MODULE_CONSENSUS_VERSION` is 2.2), but asked
-        // read-only.
-        //
-        // We cannot use `safe_allocate_deposit_address` itself: its
-        // `supports_safe_deposit` guard *caches* the answer through a
-        // non-autocommit write to `SupportsSafeDepositKey`, racing the wallet
-        // client's own background probe task on that same key. Both write with
-        // `insert_new_entry` + `commit_tx`, which panic on an already-present
-        // key and on a write conflict respectively, so whichever loses dies and
-        // the allocation hangs. `btc_tx_has_no_size_limit` reads the same
-        // consensus version without touching the cache, leaving the background
-        // probe as the single writer.
-        anyhow::ensure!(
-            wallet.btc_tx_has_no_size_limit().await?,
-            "target federation's wallet module consensus version does not support safe deposits"
-        );
-        // Pooled rather than `allocate_deposit_address_expert_only`, so that
-        // this call is idempotent for the caller that loses its result.
-        //
-        // The expert-only variant mints a fresh tweak index and operation id on
-        // every call. FLIP records what it returns *after* the call returns, so
-        // anything that stops the worker in between — a crash, or a budget that
-        // abandons the call — would leave the address minted in the target
-        // client and unknown to FLIP, and the ordinary retry would mint a second
-        // one. Upstream takes no caller-supplied operation id here, unlike
-        // `deposit_to_provide`, so the id cannot be fenced the way the provider
-        // deposit's is.
-        //
-        // `max_gap_size` of 1 makes the retry return the address the lost call
-        // minted instead of a new one: the pooled call reuses whenever at least
-        // one *unused* address exists — `PegInTweakIndexData::claimed` empty —
-        // and mints fresh only when none does. Reuse is safe here because a
-        // target client serves at most one stability item: the allocation schema
-        // permits one allocation per federation and one item per source type,
-        // and the target client is keyed by federation id. So the single unused
-        // address on this client is this item's own.
-        //
-        // An address that has already been claimed is not "unused", so a fresh
-        // one is minted for the next item that legitimately needs one, and a
-        // reused address is one no deposit has been claimed on.
-        let deposit = match wallet.allocate_deposit_address_pooled_stateless(1).await? {
-            MaybeNewAddress::NewAddress(deposit) => deposit,
-            MaybeNewAddress::TooManyUnusedAddresses(addresses) => addresses
-                .into_iter()
-                .next()
-                .ok_or_else(|| anyhow::anyhow!("pooled allocation reported no reusable address"))?,
+        // Refuse here rather than in `usable_target`: this runs only before the
+        // provider is funded, while `check_target` also runs after, where
+        // failing an item for a module it was funded without would hide the
+        // value on-chain at its address.
+        let Ok(wallet) = client.get_first_module::<WalletClientModule>() else {
+            return Ok(PegInAllocation::Unusable(
+                "target federation has no walletv2 module".to_owned(),
+            ));
         };
-        Ok(PegInAllocation::Allocated(PegInAddress {
-            operation_id: deposit.operation_id.fmt_full().to_string(),
-            address: deposit.address.to_string(),
-        }))
+        // Without a primary module the walletv2 client cannot build the claim,
+        // and it skips the output for good rather than retrying it, so the
+        // provider's deposit would sit unclaimed at the address.
+        if client
+            .primary_module_for_unit(AmountUnit::BITCOIN)
+            .is_none()
+        {
+            return Ok(PegInAllocation::Unusable(
+                "target federation has no mint module the target client supports".to_owned(),
+            ));
+        }
+        // Idempotent for the caller that loses its result, with no
+        // caller-supplied id to fence it: `receive` returns the client's current
+        // address, and the client moves to a fresh one only once its output
+        // scanner has seen an output paying that address. FLIP records the
+        // address *after* the call returns, so a crash or an abandoned call in
+        // between leaves nothing behind but an unfunded address, which the retry
+        // returns again.
+        //
+        // Reusing that address is safe because a target client serves at most
+        // one stability item: the allocation schema permits one allocation per
+        // federation and one item per source type, and the target client is
+        // keyed by federation id. So the current address of this client is this
+        // item's own.
+        Ok(PegInAllocation::Allocated(
+            wallet.receive().await.to_string(),
+        ))
     }
 
     async fn observe_peg_in(
         &self,
         target: &FundingTargetRecord,
-        operation_id: &str,
+        address: &str,
     ) -> anyhow::Result<PegInStatus> {
         let client = self.client(target).await?;
-        let wallet = client.get_first_module::<WalletClientModule>()?;
-        let operation_id = OperationId::from_str(operation_id)?;
-        let updates = wallet.subscribe_deposit(operation_id).await?.into_stream();
-        Ok(match drain_furthest_state(updates).await {
-            Some(DepositStateV2::Claimed { btc_deposited, .. }) => PegInStatus::Claimed {
-                amount: Sats(btc_deposited.to_sat()),
-            },
-            Some(DepositStateV2::Confirmed { btc_deposited, .. }) => PegInStatus::Confirmed {
-                amount: Sats(btc_deposited.to_sat()),
-            },
-            Some(DepositStateV2::WaitingForConfirmation { btc_deposited, .. }) => {
-                PegInStatus::WaitingForConfirmation {
-                    amount: Sats(btc_deposited.to_sat()),
-                }
-            }
-            Some(DepositStateV2::Failed(reason)) => PegInStatus::Failed(reason),
-            // An empty drain means the budget expired before even the generator's
-            // first item, which is indistinguishable from "not started yet".
-            Some(DepositStateV2::WaitingForTransaction) | None => {
-                PegInStatus::WaitingForTransaction
-            }
-        })
-    }
+        // Without the module its receive events never appear, and the peg-in
+        // would read as waiting forever rather than as an error.
+        client.get_first_module::<WalletClientModule>()?;
+        let address: Address<NetworkUnchecked> = address.parse()?;
 
-    async fn recheck_peg_in(
-        &self,
-        target: &FundingTargetRecord,
-        operation_id: &str,
-    ) -> anyhow::Result<()> {
-        let client = self.client(target).await?;
-        let wallet = client.get_first_module::<WalletClientModule>()?;
-        let operation_id = OperationId::from_str(operation_id)?;
-        wallet.recheck_pegin_address_by_op_id(operation_id).await
+        let mut entries = Vec::new();
+        let mut position = EventLogId::LOG_START;
+        loop {
+            let page = client
+                .get_event_log(Some(position), EVENT_LOG_PAGE_SIZE)
+                .await;
+            let Some(last) = page.last() else { break };
+            position = last.id().saturating_add(1);
+            entries.extend(page);
+        }
+
+        let (operation_id, amount) = match peg_in_receive(&entries, &address) {
+            None => return Ok(PegInStatus::WaitingForTransaction),
+            Some(PegInReceive::Pending { amount }) => return Ok(PegInStatus::Confirmed { amount }),
+            Some(PegInReceive::Accepted {
+                operation_id,
+                amount,
+            }) => (operation_id, amount),
+        };
+
+        // An accepted claim is not yet spendable e-cash: the primary module
+        // issues the claim's notes afterwards, and the provider deposit is
+        // sized against the spendable balance.
+        let operation = client
+            .operation_log()
+            .get_operation(operation_id)
+            .await
+            .context("accepted walletv2 receive has no operation log entry")?;
+        let WalletOperationMeta::Receive(receive) = operation.meta::<WalletOperationMeta>() else {
+            anyhow::bail!("accepted walletv2 receive is logged as a send");
+        };
+        let issued = client.await_primary_bitcoin_module_outputs(
+            operation_id,
+            receive.change_outpoint_range.into_iter().collect(),
+        );
+        Ok(
+            match tokio::time::timeout(STREAM_DRAIN_BUDGET, issued).await {
+                Ok(Ok(())) => PegInStatus::Claimed {
+                    amount,
+                    operation_id: operation_id.fmt_full().to_string(),
+                },
+                // Rejected or failed outputs are final for the mint client.
+                Ok(Err(error)) => PegInStatus::Failed(error.to_string()),
+                Err(_) => PegInStatus::Confirmed { amount },
+            },
+        )
     }
 
     async fn target_wallet_balance(&self, target: &FundingTargetRecord) -> anyhow::Result<Sats> {

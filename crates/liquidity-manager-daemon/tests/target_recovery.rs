@@ -513,17 +513,9 @@ impl StabilityPoolBackend for FakeBackend {
     async fn observe_peg_in(
         &self,
         _target: &FundingTargetRecord,
-        _operation_id: &str,
+        _address: &str,
     ) -> anyhow::Result<PegInStatus> {
         unreachable!("reconciliation never observes a peg-in")
-    }
-
-    async fn recheck_peg_in(
-        &self,
-        _target: &FundingTargetRecord,
-        _operation_id: &str,
-    ) -> anyhow::Result<()> {
-        unreachable!("reconciliation never drives a peg-in")
     }
 
     async fn target_wallet_balance(&self, _target: &FundingTargetRecord) -> anyhow::Result<Sats> {

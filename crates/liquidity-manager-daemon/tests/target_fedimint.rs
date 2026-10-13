@@ -1,3 +1,5 @@
+use fedimint_core::util::SafeUrl;
+
 use super::*;
 
 fn ids(values: &[&str]) -> Vec<String> {
@@ -332,7 +334,7 @@ async fn a_cancelled_open_stays_owned_by_the_pool() -> anyhow::Result<()> {
 
     let first = tokio::time::timeout(
         budget,
-        pool.create_or_load(&federations_dir, "federation-stuck", &invite, None),
+        pool.create_or_load(&federations_dir, "federation-stuck", &invite),
     )
     .await;
     assert!(
@@ -353,7 +355,7 @@ async fn a_cancelled_open_stays_owned_by_the_pool() -> anyhow::Result<()> {
     // uncancellable blocking section could not poll its own timeout.
     let second = tokio::time::timeout(
         budget,
-        pool.create_or_load(&federations_dir, "federation-stuck", &invite, None),
+        pool.create_or_load(&federations_dir, "federation-stuck", &invite),
     )
     .await;
     assert!(

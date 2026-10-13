@@ -111,6 +111,13 @@ impl FedimintFixture {
             command
                 .env("FEDI_STABILITY_POOL_V2_MODULE_ENABLE", "1")
                 .env("FEDI_STABILITY_POOL_MODULE_TEST_PARAMS", "1");
+            // The wallet and mint modules Manifold Guardian federations run,
+            // whichever ones this build defaults to.
+            command
+                .env("FM_ENABLE_MODULE_WALLET", "0")
+                .env("FM_ENABLE_MODULE_WALLETV2", "1")
+                .env("FM_ENABLE_MODULE_MINT", "0")
+                .env("FM_ENABLE_MODULE_MINTV2", "1");
         }
         use_devimint_if_under_defe(&mut command);
         // Labelled, like the data directory: a second federation writing into

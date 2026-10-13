@@ -1,5 +1,10 @@
 # Current argument
 
+> **Stale proof:** it argues from the wallet v1 allocation calls and an
+> operation id recorded per address. FLIP now allocates with the walletv2
+> client's `receive`, which returns the current address until an output pays
+> it, and records only the address.
+
 ## Argument
 
 **L1 (`enum` + `code`) — the target effect precedes every durable FLIP
