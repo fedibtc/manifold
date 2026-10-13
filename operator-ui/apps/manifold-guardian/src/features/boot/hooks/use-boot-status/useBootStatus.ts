@@ -1,5 +1,6 @@
 import { hashKey, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useRef, useState } from 'react';
+import { BUNDLE_VERSION, reloadIfBundleIsStale } from '@/features/boot/utils/staleBundle';
 import { AccessDeniedError, AuthError, isDaemonUnreachable } from '@/shared/api/errors';
 import { ONBOARDING_KEY, useOnboarding } from '@/shared/api/hooks/use-onboarding/useOnboarding';
 
@@ -86,6 +87,17 @@ export const useBootStatus = (): BootState => {
     }
     wasGated.current = gated;
   }, [gated, onboarding.isSuccess, queryClient]);
+
+  const daemonVersion = onboarding.data?.fman_version.current;
+  useEffect(() => {
+    const reload = () => window.location.reload();
+    try {
+      reloadIfBundleIsStale(BUNDLE_VERSION, daemonVersion, window.sessionStorage, reload);
+    } catch {
+      // Blocked storage cannot hold the once-per-version guard; skip the reload
+      // rather than risk a loop.
+    }
+  }, [daemonVersion]);
 
   const onRetry = () => {
     onboarding.refetch();

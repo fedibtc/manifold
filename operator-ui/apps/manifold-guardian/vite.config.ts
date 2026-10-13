@@ -1,5 +1,5 @@
 /// <reference types="vitest/config" />
-import { existsSync, rmSync } from 'node:fs';
+import { existsSync, readFileSync, rmSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { fileURLToPath, URL } from 'node:url';
 import react from '@vitejs/plugin-react';
@@ -32,7 +32,31 @@ const excludeMockServiceWorkerFromBuild = (): Plugin => {
   };
 };
 
-export default defineConfig({
+// A dashboard tab outlives the daemon that served it: after an upgrade it keeps
+// running the previous release's code until reloaded (#154). Production builds
+// carry the workspace version so the tab can notice the daemon moved on (see
+// features/boot/utils/staleBundle.ts). Nix builds only the operator-ui tree,
+// so it passes the version in MG_OPERATOR_UI_VERSION; a checkout build reads
+// it from the workspace manifest. Dev and test servers carry none, because
+// their mock daemons report fixture versions.
+const workspaceVersion = (): string => {
+  const manifest = readFileSync(
+    fileURLToPath(new URL('../../../Cargo.toml', import.meta.url)),
+    'utf8'
+  );
+  const version = /^\[workspace\.package\][^[]*?^version = "([^"]+)"/m.exec(manifest)?.[1];
+  if (!version) {
+    throw new Error('Cargo.toml has no [workspace.package] version');
+  }
+  return version;
+};
+
+export default defineConfig(({ command }) => ({
+  define: {
+    __MG_BUNDLE_VERSION__: JSON.stringify(
+      command === 'build' ? (process.env.MG_OPERATOR_UI_VERSION ?? workspaceVersion()) : null
+    )
+  },
   plugins: [
     react({ babel: { plugins: ['babel-plugin-react-compiler'] } }),
     excludeMockServiceWorkerFromBuild()
@@ -60,4 +84,4 @@ export default defineConfig({
       include: ['src/**']
     }
   }
-});
+}));

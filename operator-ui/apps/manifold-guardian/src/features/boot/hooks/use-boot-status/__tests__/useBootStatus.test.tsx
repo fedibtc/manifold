@@ -2,6 +2,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { renderHook, waitFor } from '@testing-library/react';
 import type { ReactNode } from 'react';
 import { vi } from 'vitest';
+import { reloadIfBundleIsStale } from '@/features/boot/utils/staleBundle';
 import { MOCK_SERVICE_NOSTR_PUBKEY } from '@/mocks/world/keys';
 import {
   AccessDeniedError,
@@ -21,7 +22,14 @@ vi.mock('@/shared/api/hooks/use-onboarding/useOnboarding', async (importOriginal
   useOnboarding: vi.fn()
 }));
 
+vi.mock('@/features/boot/utils/staleBundle', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/features/boot/utils/staleBundle')>()),
+  BUNDLE_VERSION: '0.1.3',
+  reloadIfBundleIsStale: vi.fn()
+}));
+
 const useOnboardingMock = vi.mocked(useOnboarding);
+const reloadIfBundleIsStaleMock = vi.mocked(reloadIfBundleIsStale);
 
 const makeClient = () => new QueryClient({ defaultOptions: { queries: { retry: false } } });
 
@@ -275,6 +283,37 @@ it('should stay out of booting once the daemon has answered, even if the query r
 
   arrangeQuery({ isPending: true });
   rerender();
+
+  expect(result.current.status).toBe('ready');
+});
+
+it('should check the bundle against the version the daemon reports', () => {
+  reloadIfBundleIsStaleMock.mockClear();
+  arrangeQuery({
+    data: {
+      ...onboardedData,
+      fman_version: { current: '0.1.4', latest: null, update_required: false }
+    },
+    isSuccess: true
+  });
+
+  renderBootStatus();
+
+  expect(reloadIfBundleIsStaleMock).toHaveBeenCalledWith(
+    '0.1.3',
+    '0.1.4',
+    window.sessionStorage,
+    expect.any(Function)
+  );
+});
+
+it('should keep booting normally when the stale-bundle check cannot use storage', () => {
+  reloadIfBundleIsStaleMock.mockImplementationOnce(() => {
+    throw new DOMException('storage is blocked', 'SecurityError');
+  });
+  arrangeQuery({ data: onboardedData, isSuccess: true });
+
+  const { result } = renderBootStatus();
 
   expect(result.current.status).toBe('ready');
 });
