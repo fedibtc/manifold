@@ -900,6 +900,7 @@ async fn advertisement_cycle_shares_seat_capacity() {
             [
                 ("message", "seat capacity"),
                 ("safe_to_share", "true"),
+                ("mg_version", concat!("\"", env!("CARGO_PKG_VERSION"), "\"")),
                 ("max_seats", max),
                 ("available_seats", available),
                 ("accepting_seats", accepting),

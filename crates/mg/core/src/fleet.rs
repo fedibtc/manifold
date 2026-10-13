@@ -206,9 +206,11 @@ impl FleetNostrHost {
     pub async fn advertisement(&self) -> Option<crate::directory::AdvertisementSnapshot> {
         let snapshot = self.fleet.availability_snapshot().await;
         // Each advertisement cycle reports capacity, including cycles that
-        // publish nothing, so telemetry can count free seats across hosts.
+        // publish nothing, so telemetry can count free seats across hosts and
+        // the release each host runs.
         tracing::info!(
             safe_to_share = true,
+            mg_version = env!("CARGO_PKG_VERSION"),
             max_seats = snapshot.max_seats,
             available_seats = snapshot.available_seats,
             accepting_seats = snapshot.accepting_seats,
