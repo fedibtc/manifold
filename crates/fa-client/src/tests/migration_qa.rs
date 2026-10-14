@@ -187,6 +187,7 @@ fn seeded_payments(probe: &serde_json::Value) -> (TestPayments, Arc<PaymentState
 /// The test MGs and federation as the old release left them.
 fn seeded_mgs(probe: &serde_json::Value) -> Arc<MgState> {
     let state = Arc::new(MgState::default());
+    state.quote_calls.store(1000, Ordering::SeqCst);
     if let Some(raw) = probe["meta_consensus_raw"].as_str() {
         *state.meta_consensus_raw.lock().unwrap() = Some(hex::decode(raw).unwrap());
     }
@@ -444,9 +445,8 @@ async fn drive_migrated<I: FaIdentity>(
         let result = client.drive_all_for_test(options()).await;
         runs.push(result.as_ref().err().map(|e| format!("{e:?}")));
         let status = client.status();
-        let needs_seats = status.creation.is_some()
-            && status.purchase.is_none()
-            && status.formation.is_none();
+        let needs_seats =
+            status.creation.is_some() && status.purchase.is_none() && status.formation.is_none();
         if needs_seats {
             let rebuy = rebuy_missing_seats(&client).await;
             runs.push(Some(format!("rebuy: {:?}", rebuy.as_ref().err())));
@@ -465,6 +465,10 @@ async fn drive_migrated<I: FaIdentity>(
         "new_funded": qa_hex_quotes(&funded.difference(&old_funded).copied().collect()),
         "settled": qa_hex_quotes(&wallet.settled_quotes.lock().unwrap()),
         "released": qa_hex_quotes(&wallet.released_quotes.lock().unwrap()),
+        "reservations": wallet.reservations.lock().unwrap().iter().map(|(id, r)| (id.clone(), serde_json::json!({
+            "quotes": qa_hex_quotes(&r.quote_ids.iter().copied().collect()),
+            "started": qa_hex_quotes(&r.started),
+        }))).collect::<serde_json::Map<_, _>>(),
         "create_records": mgs.create_records.lock().unwrap().iter().map(|r| serde_json::json!({
             "quote_id": hex::encode(r.quote_id.0),
             "seat_id": r.seat_id.to_string(),
@@ -618,6 +622,8 @@ const R269_INTERRUPTED_REPLACEMENT_RESTORE: &str =
     include_str!("../db/fixtures/qa/r269_interrupted_replacement_restore.json");
 const R269_APPLIED_REPLACEMENT: &str =
     include_str!("../db/fixtures/qa/r269_applied_replacement_awaiting_quote.json");
+const R269_MIXED_REPLACEMENT_WAVE: &str =
+    include_str!("../db/fixtures/qa/r269_mixed_replacement_wave_live_reservation.json");
 
 /// The effect-bound quote ids of the fixture's seats that schema 11 kept,
 /// that is, every seat that does not wait for a replacement.
@@ -677,5 +683,43 @@ async fn r269_applied_replacement_with_an_expired_preview_can_still_finish() {
     let status = client.status();
     assert!(status.purchase.is_none());
     assert_eq!(status.pool.len(), 6);
+    reload(&mem).await.expect("the FA still loads after a run");
+}
+
+/// Two applied replacements wait after payment outputs started. A live
+/// wallet reservation without release intent holds the quote of the first;
+/// the aggregate authorization does not name the second, whose preview has
+/// long expired. The run releases the reservation, both replacements leave
+/// without a payment, the five paid seats move to the pool, and the creation
+/// needs two seats.
+#[tokio::test]
+#[ignore = "the unreserved applied replacement stays and requires reauthorization"]
+async fn r269_mixed_replacement_wave_releases_its_hold_and_drops_both_replacements() {
+    let (client, mem, wallet, _) = open_fixture(R269_MIXED_REPLACEMENT_WAVE).await;
+    let held = wallet
+        .reservations
+        .lock()
+        .unwrap()
+        .keys()
+        .cloned()
+        .collect::<Vec<_>>();
+    assert!(
+        held.contains(
+            &"d3024ddd4d300a9650ca9848541b363116d42635f53d111f49803db1067bdf01".to_owned()
+        )
+    );
+    let funded = wallet.funded_quotes.lock().unwrap().clone();
+    client.drive_all_for_test(options()).await.unwrap();
+    let status = client.status();
+    assert!(status.purchase.is_none());
+    assert_eq!(status.pool.len(), 5);
+    assert!(
+        !wallet
+            .reservations
+            .lock()
+            .unwrap()
+            .contains_key("d3024ddd4d300a9650ca9848541b363116d42635f53d111f49803db1067bdf01")
+    );
+    assert_eq!(*wallet.funded_quotes.lock().unwrap(), funded);
     reload(&mem).await.expect("the FA still loads after a run");
 }
