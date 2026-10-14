@@ -4506,9 +4506,8 @@ async fn run_fa_cli(
                 .context("recoverable paid failure writes JSON status")?;
             let purchase = &failed_status["creating"]["stage"]["buying"];
             anyhow::ensure!(
-                purchase["purchase_id"].is_string()
-                    && purchase["payment_outputs_started"].as_bool() == Some(false),
-                "paid E2E may retry only before the wallet-output boundary: {failed_status}"
+                purchase["purchase_id"].is_string(),
+                "paid E2E retries only a running purchase: {failed_status}"
             );
             recovered_purchase = Some(seat_mg_ids(&purchase["seats"]));
             let mut resume = Command::new(fa_cli_bin);

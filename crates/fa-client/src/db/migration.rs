@@ -208,38 +208,24 @@ impl FaStore {
                 .map_err(|_| malformed())?
                 .flatten();
             // Schema 12 has no guardian replacement. A seat that waited for
-            // one ended after payment, so it leaves the purchase. An applied
-            // replacement has no effect yet, so it leaves too. While the
-            // wallet reservation may hold its payment, it stays until the run
-            // releases that reservation.
+            // one ended after payment, and an applied replacement has no
+            // effect yet, so both leave the purchase.
             let replacement = !seat_object
                 .get("replacement_for")
                 .unwrap_or(&serde_json::Value::Null)
                 .is_null();
-            let applied =
-                seat_object.get("replacement_approved") == Some(&serde_json::Value::Bool(true));
-            let seat: StoredPurchaseSeat = serde_json::from_value(seat).map_err(|_| malformed())?;
-            let reserved = applied
-                && purchase.payment_reservation_id.is_some()
-                && purchase
-                    .payment_authorization
-                    .as_ref()
-                    .is_some_and(|authorization| {
-                        authorization
-                            .quotes
-                            .iter()
-                            .any(|quote| quote.index == seat.index)
-                    });
-            if reserved {
-                purchase.payment_reservation_release_intended = true;
-            } else if applied && purchase.payment_reservation_id.is_none() {
-                purchase.payment_authorization = None;
-            }
-            if replacement && !reserved {
+            let mut seat: StoredPurchaseSeat =
+                serde_json::from_value(seat).map_err(|_| malformed())?;
+            if replacement {
                 dbtx.raw_remove_entry(&DatabaseKeyPrefix::to_bytes(&key))
                     .await
                     .map_err(|_| FaError::Storage("removing a schema 11 seat failed".to_owned()))?;
                 continue;
+            }
+            // Schema 12 keeps a quote only while its seat is bound to it.
+            // The payer wallet released every unbound quote's payment hold.
+            if seat.admission.requires_effect_authorization() {
+                seat.signed_quote = None;
             }
             seats.push((key, seat, guardian_code));
         }

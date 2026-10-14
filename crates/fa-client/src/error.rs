@@ -24,9 +24,8 @@ pub enum Capability {
 #[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AbandonUnavailableReason {
-    /// The wallet output-generation call was durably armed. The tombstone
-    /// survives quote or authorization replacement, and teardown now requires
-    /// exact payment recovery.
+    /// A seat payment started. The run loop buys or refunds that seat
+    /// first.
     PaymentOutputsStarted,
     /// Seats are already bought for this creation. They stay with it until
     /// its federation forms.
@@ -37,7 +36,7 @@ impl std::fmt::Display for AbandonUnavailableReason {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter.write_str(match self {
             Self::PaymentOutputsStarted => {
-                "payment output generation started; exact recovery must finish before teardown"
+                "a seat payment started; the seat must finish before teardown"
             }
             Self::SeatsBought => "seats are already bought for this federation",
         })
@@ -55,15 +54,14 @@ pub enum SelectionReauthorizationReason {
     SelectedMgUnavailable,
     /// A selected MG no longer offers the previewed price.
     PriceChanged,
-    /// An exact quote changed before output generation could begin.
-    QuoteTermsChanged,
-    /// The explicitly selected payer is no longer admitted and ready.
+    /// The explicitly selected payer is no longer admitted and ready, or it
+    /// rejected a seat payment.
     SelectedPayerUnavailable,
     /// The selected live offer requires payment, but this Pay-and-create
     /// attempt deliberately supplied no payer.
     PaymentFederationRequired,
-    /// The selected payer cannot cover the exact quote aggregate plus wallet
-    /// fees and required reserve without starting output generation.
+    /// The selected payer cannot cover a seat's quote plus wallet fees and
+    /// required reserve. No payment of that seat started.
     SelectedPayerInsufficientFunds,
     /// The active verifier profile differs from the one that admitted the
     /// approved guardian set.
@@ -80,9 +78,6 @@ impl std::fmt::Display for SelectionReauthorizationReason {
             Self::PriceChanged => {
                 "a selected Manifold Guardian no longer offers the previewed price"
             }
-            Self::QuoteTermsChanged => {
-                "an exact setup quote changed before payment output generation"
-            }
             Self::SelectedPayerUnavailable => {
                 "the selected payment federation is no longer admitted and ready"
             }
@@ -90,7 +85,7 @@ impl std::fmt::Display for SelectionReauthorizationReason {
                 "a selected Manifold Guardian requires a payment federation"
             }
             Self::SelectedPayerInsufficientFunds => {
-                "the selected payment federation cannot fund the exact aggregate and fees"
+                "the selected payment federation cannot fund a seat and its fees"
             }
             Self::VerifierEnvironmentChanged => {
                 "the PeerBadge verifier environment changed since guardian approval"
@@ -323,9 +318,8 @@ pub enum FaError {
     /// No active formation exists.
     #[error("no active formation")]
     NoActiveFormation,
-    /// The active formation is past its value-safe abandon window: wallet
-    /// output generation was durably armed or the federation already formed.
-    /// Commercial authorization alone does not close the window.
+    /// The active formation is past its value-safe abandon window: a seat
+    /// payment started or seats are already bought.
     #[error("formation cannot be abandoned: {0}")]
     AbandonUnavailable(AbandonUnavailableReason),
     /// A registry relay operation failed.

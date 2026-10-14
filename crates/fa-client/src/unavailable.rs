@@ -12,8 +12,8 @@ use crate::{
 };
 use crate::{
     FaPaymentError, FederationConsensusError, FederationConsensusSnapshot, GuardianFeeAccount,
-    ManifoldGuardianCallError, ManifoldGuardianConnectorError, PaymentReservationRecovery,
-    PreparedSeatPayment, SeatPaymentRecovery, SettledSeatRefund,
+    ManifoldGuardianCallError, ManifoldGuardianConnectorError, PreparedSeatPayment,
+    SeatPaymentRecovery,
 };
 
 /// FA fee-account capability that cannot resolve any formed federation.
@@ -37,8 +37,6 @@ pub struct UnavailablePayments;
 
 impl FaPayments for UnavailablePayments {
     type RefundContext = ();
-    type PaymentReservation = ();
-    type TerminalReleaseProof = ();
 
     async fn prepare_quote_refund(
         &self,
@@ -55,48 +53,15 @@ impl FaPayments for UnavailablePayments {
         Err(FaPaymentError::new("payment capability unavailable"))
     }
 
-    async fn recover_payment_reservation(
-        &self,
-        _reservation_id: &crate::PaymentReservationId,
-        _preflight: &crate::ExactPaymentPreflight<'_>,
-    ) -> Result<PaymentReservationRecovery<Self::PaymentReservation>, FaPaymentError> {
-        Err(FaPaymentError::new("payment capability unavailable"))
-    }
-
-    async fn reserve_payment_requirements(
-        &self,
-        _reservation_id: &crate::PaymentReservationId,
-        _preflight: &crate::ExactPaymentPreflight<'_>,
-    ) -> Result<Self::PaymentReservation, FaPaymentError> {
-        Err(FaPaymentError::new("payment capability unavailable"))
-    }
-
-    async fn release_payment_reservation(
-        &self,
-        _reservation: Self::PaymentReservation,
-    ) -> Result<(), FaPaymentError> {
-        Err(FaPaymentError::new("payment capability unavailable"))
-    }
-
-    async fn release_seat_payment_reservation(
-        &self,
-        _proof: Self::TerminalReleaseProof,
-    ) -> Result<(), FaPaymentError> {
-        Err(FaPaymentError::new("payment capability unavailable"))
-    }
-
     async fn recover_seat_payment(
         &self,
-        _reservation_id: &crate::PaymentReservationId,
         _quote: &SignatureVerified<GetQuoteResponse>,
-    ) -> Result<SeatPaymentRecovery<Self::RefundContext, Self::TerminalReleaseProof>, FaPaymentError>
-    {
+    ) -> Result<SeatPaymentRecovery<Self::RefundContext>, FaPaymentError> {
         Err(FaPaymentError::new("payment capability unavailable"))
     }
 
     async fn create_seat_payment(
         &self,
-        _reservation: &Self::PaymentReservation,
         _quote: &SignatureVerified<GetQuoteResponse>,
     ) -> Result<PreparedSeatPayment<Self::RefundContext>, FaPaymentError> {
         Err(FaPaymentError::new("payment capability unavailable"))
@@ -106,7 +71,7 @@ impl FaPayments for UnavailablePayments {
         &self,
         _context: Self::RefundContext,
         _refund: RefundTransaction,
-    ) -> Result<SettledSeatRefund<Self::TerminalReleaseProof>, FaPaymentError> {
+    ) -> Result<(), FaPaymentError> {
         Err(FaPaymentError::new("payment capability unavailable"))
     }
 }

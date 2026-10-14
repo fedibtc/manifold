@@ -160,26 +160,6 @@ fn seeded_payments(probe: &serde_json::Value) -> (TestPayments, Arc<PaymentState
         *state.funded_quotes.lock().unwrap() = quote_set(&probe["funded_quotes"]);
         *state.settled_quotes.lock().unwrap() = quote_set(&probe["settled_quotes"]);
         *state.rejected_quotes.lock().unwrap() = quote_set(&probe["rejected_quotes"]);
-        *state.released_quotes.lock().unwrap() = quote_set(&probe["released_quotes"]);
-        if let Some(reservations) = probe["reservations"].as_object() {
-            let mut stored = state.reservations.lock().unwrap();
-            for (id, reservation) in reservations {
-                stored.insert(
-                    id.clone(),
-                    TestReservation {
-                        quote_ids: reservation["quote_ids"]
-                            .as_array()
-                            .unwrap()
-                            .iter()
-                            .map(quote_id)
-                            .collect(),
-                        started: quote_set(&reservation["started"]),
-                        terminal: quote_set(&reservation["terminal"]),
-                        released: quote_set(&reservation["released"]),
-                    },
-                );
-            }
-        }
     }
     (payments, state)
 }
@@ -247,7 +227,6 @@ fn status_summary(status: &FaStatus) -> serde_json::Value {
         "purchase": status.purchase.as_ref().map(|p| serde_json::json!({
             "id": p.purchase_id.0,
             "phase": format!("{:?}", p.phase),
-            "outputs_started": p.payment_outputs_started,
             "seats": p.seats.iter().map(|s| serde_json::json!({
                 "index": s.index,
                 "mg": s.mg_id.to_hex(),
@@ -464,11 +443,6 @@ async fn drive_migrated<I: FaIdentity>(
         "old_funded": qa_hex_quotes(&old_funded),
         "new_funded": qa_hex_quotes(&funded.difference(&old_funded).copied().collect()),
         "settled": qa_hex_quotes(&wallet.settled_quotes.lock().unwrap()),
-        "released": qa_hex_quotes(&wallet.released_quotes.lock().unwrap()),
-        "reservations": wallet.reservations.lock().unwrap().iter().map(|(id, r)| (id.clone(), serde_json::json!({
-            "quotes": qa_hex_quotes(&r.quote_ids.iter().copied().collect()),
-            "started": qa_hex_quotes(&r.started),
-        }))).collect::<serde_json::Map<_, _>>(),
         "create_records": mgs.create_records.lock().unwrap().iter().map(|r| serde_json::json!({
             "quote_id": hex::encode(r.quote_id.0),
             "seat_id": r.seat_id.to_string(),
@@ -643,9 +617,9 @@ fn kept_bound_quotes(json: &str) -> HashSet<QuoteId> {
 }
 
 /// Seat 0 ended after payment outputs started and waits for a replacement;
-/// its six siblings hold effect-authorized quotes the cleared aggregate no
-/// longer names. The run pays exactly those quotes, the six seats move to
-/// the pool, and the creation needs one seat.
+/// its six siblings are bound to quotes whose payments never started. The
+/// run pays the six seats, they move to the pool, and the creation needs one
+/// seat.
 #[tokio::test]
 async fn r269_pending_replacement_buys_its_bound_siblings() {
     let (client, mem, wallet, _) = open_fixture(R269_PENDING_REPLACEMENT).await;
@@ -655,7 +629,10 @@ async fn r269_pending_replacement_buys_its_bound_siblings() {
     assert_eq!(status.pool.len(), 6);
     let bound = kept_bound_quotes(R269_PENDING_REPLACEMENT);
     assert_eq!(bound.len(), 6);
-    assert_eq!(*wallet.funded_quotes.lock().unwrap(), bound);
+    // No bound payment started, so each seat pays a fresh quote.
+    let funded = wallet.funded_quotes.lock().unwrap().clone();
+    assert_eq!(funded.len(), 6);
+    assert!(funded.is_disjoint(&bound));
     reload(&mem).await.expect("the FA still loads after a run");
 }
 
@@ -686,39 +663,18 @@ async fn r269_applied_replacement_with_an_expired_preview_can_still_finish() {
     reload(&mem).await.expect("the FA still loads after a run");
 }
 
-/// Two applied replacements wait after payment outputs started. A live
-/// wallet reservation without release intent holds the quote of the first;
-/// the aggregate authorization does not name the second, whose preview has
-/// long expired. The run releases the reservation, both replacements leave
-/// without a payment, the five paid seats move to the pool, and the creation
-/// needs two seats.
+/// Two applied replacements wait after payment outputs started, and their
+/// previews have long expired. The payer wallet released their hold before
+/// the FA opened. Both replacements leave without a payment, the five paid
+/// seats move to the pool, and the creation needs two seats.
 #[tokio::test]
-async fn r269_mixed_replacement_wave_releases_its_hold_and_drops_both_replacements() {
+async fn r269_mixed_replacement_wave_drops_both_replacements() {
     let (client, mem, wallet, _) = open_fixture(R269_MIXED_REPLACEMENT_WAVE).await;
-    let held = wallet
-        .reservations
-        .lock()
-        .unwrap()
-        .keys()
-        .cloned()
-        .collect::<Vec<_>>();
-    assert!(
-        held.contains(
-            &"d3024ddd4d300a9650ca9848541b363116d42635f53d111f49803db1067bdf01".to_owned()
-        )
-    );
     let funded = wallet.funded_quotes.lock().unwrap().clone();
     client.drive_all_for_test(options()).await.unwrap();
     let status = client.status();
     assert!(status.purchase.is_none());
     assert_eq!(status.pool.len(), 5);
-    assert!(
-        !wallet
-            .reservations
-            .lock()
-            .unwrap()
-            .contains_key("d3024ddd4d300a9650ca9848541b363116d42635f53d111f49803db1067bdf01")
-    );
     assert_eq!(*wallet.funded_quotes.lock().unwrap(), funded);
     reload(&mem).await.expect("the FA still loads after a run");
 }

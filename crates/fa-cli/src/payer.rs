@@ -1,13 +1,18 @@
-//! Crash-safe aggregate reservation and recovery for the development FA wallet.
+//! Crash-safe seat payment and recovery for the development FA wallet.
 //!
-//! Everything here acts on behalf of the Federation Ambassador paying a
+//! Everything here acts on behalf of the Federation Ambassador paying one
 //! quoted issuance set: fund the MG's quoted outputs and collect the
-//! aggregate blinded signatures ([`Wallet::pay_reserved_locked_v1`] /
-//! [`Wallet::pay_reserved_locked_v2`]), prepare the FA-owned refund outputs a paid
+//! aggregate blinded signatures ([`Wallet::pay_locked_v1`] /
+//! [`Wallet::pay_locked_v2`]), prepare the FA-owned refund outputs a paid
 //! presentation must carry ([`Wallet::prepare_refund_v1`] /
 //! [`Wallet::prepare_refund_v2`]), and — after a refusal — submit the
 //! MG-signed refund transaction and reissue its outputs into ordinary
 //! balance ([`Wallet::submit_refund_v1`] / [`Wallet::submit_refund_v2`]).
+//!
+//! The payment journal is the payment federation's Fedimint operation log.
+//! Each payment's operation id is derived from its exact quote id and
+//! issuance, and its recovery metadata commits atomically with the funding
+//! transaction, so the quote alone finds a started payment.
 //!
 //! The MG daemon never calls these; its payee side remains in
 //! `mg-fedimint`. This module is deliberately local to `fa-cli`, the
@@ -26,8 +31,6 @@ use fedimint_client_module::module::ClientModule as _;
 use fedimint_client_module::transaction::FeeQuoteRequest;
 use fedimint_core::config::FederationId;
 use fedimint_core::core::{DynOutput, ModuleInstanceId, OperationId};
-use fedimint_core::db::Database;
-use fedimint_core::db::IDatabaseTransactionOpsCore as _;
 use fedimint_core::encoding::{Decodable, Encodable};
 use fedimint_core::module::ApiRequestErased;
 use fedimint_core::module::{AmountUnit, Amounts};
@@ -42,226 +45,14 @@ use futures::StreamExt as _;
 use serde::{Deserialize, Serialize};
 
 use crate::wallet::{Wallet, WalletError};
-use fa_client::PaymentReservationId;
-use fedi_decentralized_service_manifold_guardian::QuoteId;
 use locked_payments::refund::{PreparedRefund, PreparedRefundV2};
 use locked_payments::{locked_payment, locked_payment_v2, mint_v2_module};
 
 const LOCKED_PAYMENT_V1_OPERATION_TYPE: &str = "fman-locked-payment";
 const LOCKED_PAYMENT_V2_OPERATION_TYPE: &str = "fman-locked-payment-v2";
 const LOCKED_PAYMENT_OPERATION_ID_DOMAIN: &[u8] = b"fman/locked-payment-operation";
-const PAYMENT_RESERVATION_KEY_PREFIX: u8 = 2;
-const PAYMENT_RESERVATION_VERSION: u16 = 4;
-const PAYMENT_RESERVATION_TX_MAX_ATTEMPTS: usize = 10;
+const LOCKED_PAYMENT_TX_MAX_ATTEMPTS: usize = 10;
 const REJECTED_INPUT_REFUND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
-
-/// Proof that exact aggregate reservation failed its balance comparison
-/// before the wallet created or observed a same-id journal.
-///
-/// The FA adapter downcasts this marker through `anyhow` context to distinguish
-/// the one error that may return selected formation to payer selection. Every
-/// other planning, binding, storage, or commit error remains ambiguous and
-/// therefore keeps the formation recoverable.
-#[derive(Debug, thiserror::Error)]
-#[error("payment wallet cannot preserve exact aggregate holds and required reserve")]
-pub(crate) struct InsufficientLockedPaymentFundsWithoutReservation;
-
-fn reservation_db(database: &Database) -> Database {
-    database.clone()
-}
-
-/// Wallet-owned durable capability for one exact aggregate of locked payments.
-///
-/// The opaque key is the hash of fa-client's deterministic reservation id.
-/// Debug output deliberately omits it.
-#[derive(Clone)]
-pub struct LockedPaymentReservation {
-    key: Vec<u8>,
-    reservation_id: PaymentReservationId,
-}
-
-impl std::fmt::Debug for LockedPaymentReservation {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter
-            .debug_struct("LockedPaymentReservation")
-            .finish_non_exhaustive()
-    }
-}
-
-#[derive(Clone, Debug, Decodable, Encodable, Eq, PartialEq)]
-struct StoredLockedPaymentReservation {
-    version: u16,
-    federation_id: FederationId,
-    required_reserve_msats: u64,
-    members: Vec<StoredLockedPaymentMember>,
-}
-
-#[derive(Clone, Copy, Debug, Decodable, Encodable, Eq, PartialEq)]
-struct StoredLockedPaymentMember {
-    quote_id: [u8; 32],
-    plan_hash: [u8; 32],
-    debit_msats: u64,
-    state: StoredLockedPaymentMemberState,
-}
-
-/// Canonical semantic identity of an aggregate before wallet debits are
-/// planned. This deliberately cannot be serialized as a reservation journal:
-/// a durable [`StoredLockedPaymentReservation`] must contain positive debit
-/// allocations for every member.
-#[derive(Clone, Debug, Eq, PartialEq)]
-struct LockedPaymentReservationBinding {
-    federation_id: FederationId,
-    required_reserve: Amount,
-    members: Vec<LockedPaymentMemberBinding>,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct LockedPaymentMemberBinding {
-    quote_id: QuoteId,
-    plan_hash: [u8; 32],
-}
-
-#[derive(Clone, Copy, Debug, Decodable, Encodable, Eq, PartialEq)]
-enum StoredLockedPaymentMemberState {
-    Held,
-    Started,
-    Terminal,
-    Released,
-}
-
-/// Wallet-issued proof that one exact reservation member is terminally safe
-/// to release.
-///
-/// Only successful funding-rejection recovery or signed-refund settlement can
-/// construct this value. Its opaque fields bind the durable aggregate journal
-/// and quote; caller-supplied ids alone are never release authority.
-pub struct LockedPaymentTerminalRelease {
-    key: Vec<u8>,
-    quote_id: QuoteId,
-    plan_hash: [u8; 32],
-    debit_msats: u64,
-}
-
-impl std::fmt::Debug for LockedPaymentTerminalRelease {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter
-            .debug_struct("LockedPaymentTerminalRelease")
-            .finish_non_exhaustive()
-    }
-}
-
-/// Result of reissuing one signed refund into the payer's ordinary balance.
-///
-/// The restored amount is informational. The opaque release proof is the
-/// authority that lets `fa-client` release exactly this aggregate member.
-pub struct SettledLockedPaymentRefund {
-    amount: Amount,
-    release_proof: LockedPaymentTerminalRelease,
-}
-
-impl SettledLockedPaymentRefund {
-    /// Split the settlement into its restored value and release authority.
-    #[must_use]
-    pub fn into_parts(self) -> (Amount, LockedPaymentTerminalRelease) {
-        (self.amount, self.release_proof)
-    }
-}
-
-impl LockedPaymentReservation {
-    /// Borrow the deterministic FA reservation id without exposing wallet
-    /// journal keys.
-    #[must_use]
-    pub fn reservation_id(&self) -> &PaymentReservationId {
-        &self.reservation_id
-    }
-}
-
-fn payment_reservation_key(reservation_id: &PaymentReservationId) -> Vec<u8> {
-    let digest = sha256::Hash::hash(reservation_id.as_str().as_bytes()).to_byte_array();
-    let mut key = vec![PAYMENT_RESERVATION_KEY_PREFIX];
-    key.extend_from_slice(&digest);
-    key
-}
-
-fn validate_payment_reservation(
-    existing: &StoredLockedPaymentReservation,
-    expected: &LockedPaymentReservationBinding,
-) -> anyhow::Result<()> {
-    validate_payment_reservation_shape(existing)?;
-    anyhow::ensure!(
-        existing.federation_id == expected.federation_id,
-        "payment reservation belongs to another federation"
-    );
-    anyhow::ensure!(
-        existing.required_reserve_msats == expected.required_reserve.msats,
-        "payment reservation required balance floor changed"
-    );
-    anyhow::ensure!(
-        existing.members.len() == expected.members.len(),
-        "payment reservation member count changed"
-    );
-    anyhow::ensure!(
-        existing
-            .members
-            .iter()
-            .zip(&expected.members)
-            .all(|(left, right)| left.quote_id == right.quote_id.0),
-        "payment reservation quote order changed"
-    );
-    anyhow::ensure!(
-        existing
-            .members
-            .iter()
-            .zip(&expected.members)
-            .all(|(left, right)| left.plan_hash == right.plan_hash),
-        "payment reservation output plan changed"
-    );
-    Ok(())
-}
-
-fn expected_payment_reservation(
-    federation_id: FederationId,
-    requirements: &[LockedPaymentPreflight],
-    required_reserve: Amount,
-) -> anyhow::Result<LockedPaymentReservationBinding> {
-    anyhow::ensure!(!requirements.is_empty(), "payment reservation is empty");
-    let mut unique_quotes = std::collections::BTreeSet::new();
-    anyhow::ensure!(
-        requirements
-            .iter()
-            .all(|requirement| unique_quotes.insert(requirement.quote_id().0)),
-        "payment reservation contains duplicate quote ids"
-    );
-    Ok(LockedPaymentReservationBinding {
-        federation_id,
-        required_reserve,
-        members: requirements
-            .iter()
-            .map(|requirement| LockedPaymentMemberBinding {
-                quote_id: requirement.quote_id(),
-                plan_hash: requirement.plan_hash(),
-            })
-            .collect(),
-    })
-}
-
-fn validate_payment_reservation_shape(
-    stored: &StoredLockedPaymentReservation,
-) -> anyhow::Result<()> {
-    anyhow::ensure!(
-        stored.version == PAYMENT_RESERVATION_VERSION && !stored.members.is_empty(),
-        "payment reservation journal is invalid"
-    );
-    let mut quote_ids = std::collections::BTreeSet::new();
-    anyhow::ensure!(
-        stored
-            .members
-            .iter()
-            .all(|member| member.debit_msats > 0 && quote_ids.insert(member.quote_id)),
-        "payment reservation members must have unique quote ids and nonzero debit allocations"
-    );
-    Ok(())
-}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 enum LockedPaymentGeneration {
@@ -371,7 +162,7 @@ pub enum LockedPaymentRecovery<T> {
     /// and its payment evidence is reconstructed in `T`.
     Funded(T),
     /// The original transaction was rejected and its inputs are spendable.
-    Rejected(LockedPaymentTerminalRelease),
+    Rejected,
 }
 
 /// Independently observed value movement from the reopened Fedimint operation
@@ -384,100 +175,6 @@ pub(crate) struct PaymentWalletAccounting {
     pub(crate) setup_output_msats: u64,
     pub(crate) setup_fee_msats: u64,
     pub(crate) setup_transaction_count: u64,
-}
-
-/// Exact value requirement for one quote-bound locked payment.
-///
-/// The quote id is used only as deterministic, per-payment operation context
-/// while the wallet asks its primary module to select inputs in a
-/// non-committable transaction. No operation or payment state is persisted.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct LockedPaymentPreflight {
-    quote_id: QuoteId,
-    outputs: LockedPaymentPreflightOutputs,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-enum LockedPaymentPreflightOutputs {
-    MintV1(Vec<locked_payment::IssuanceRequest>),
-    MintV2 {
-        module: ModuleInstanceId,
-        issuance: Vec<locked_payment_v2::IssuanceRequest>,
-    },
-}
-
-impl LockedPaymentPreflight {
-    /// Bind one mint-v1 foreign output bundle to its semantic quote id.
-    #[must_use]
-    pub fn mint_v1(quote_id: QuoteId, issuance: Vec<locked_payment::IssuanceRequest>) -> Self {
-        Self {
-            quote_id,
-            outputs: LockedPaymentPreflightOutputs::MintV1(issuance),
-        }
-    }
-
-    /// Bind one mint-v2 foreign output bundle to its semantic quote id.
-    #[must_use]
-    pub fn mint_v2(
-        quote_id: QuoteId,
-        module: ModuleInstanceId,
-        issuance: Vec<locked_payment_v2::IssuanceRequest>,
-    ) -> Self {
-        Self {
-            quote_id,
-            outputs: LockedPaymentPreflightOutputs::MintV2 { module, issuance },
-        }
-    }
-
-    /// Exact protocol quote whose future payment this check represents.
-    #[must_use]
-    pub fn quote_id(&self) -> QuoteId {
-        self.quote_id
-    }
-
-    fn plan_hash(&self) -> [u8; 32] {
-        let mut bytes = b"fman/locked-payment-plan/v1\0".to_vec();
-        bytes.extend_from_slice(&self.quote_id.0);
-        match &self.outputs {
-            LockedPaymentPreflightOutputs::MintV1(issuance) => {
-                bytes.push(1);
-                bytes.extend_from_slice(&(issuance.len() as u64).to_be_bytes());
-                for request in issuance {
-                    bytes.extend_from_slice(&request.amount.msats.to_be_bytes());
-                    append_plan_field(&mut bytes, &request.blind_nonce.consensus_encode_to_vec());
-                }
-            }
-            LockedPaymentPreflightOutputs::MintV2 { module, issuance } => {
-                bytes.push(2);
-                bytes.extend_from_slice(&module.consensus_encode_to_vec());
-                bytes.extend_from_slice(&(issuance.len() as u64).to_be_bytes());
-                for request in issuance {
-                    append_plan_field(&mut bytes, &request.denomination.consensus_encode_to_vec());
-                    append_plan_field(&mut bytes, &request.blind_nonce.consensus_encode_to_vec());
-                    bytes.extend_from_slice(&request.tweak);
-                }
-            }
-        }
-        sha256::Hash::hash(&bytes).to_byte_array()
-    }
-}
-
-fn append_plan_field(target: &mut Vec<u8>, field: &[u8]) {
-    target.extend_from_slice(&(field.len() as u64).to_be_bytes());
-    target.extend_from_slice(field);
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct PlannedLockedPayment {
-    /// Logical net cost of an independent dry run for the exact transaction.
-    /// Physical notes are not reserved and the cost is re-quoted at submission.
-    debit_msats: u64,
-}
-
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub(crate) struct LockedPaymentHoldSummary {
-    pub(crate) held_msats: u64,
-    pub(crate) required_reserve_msats: u64,
 }
 
 enum LockedPaymentTransactionStatus {
@@ -502,7 +199,7 @@ enum LockedPaymentOperation {
     },
 }
 
-async fn finalize_reserved_transaction(
+async fn finalize_locked_payment_transaction(
     client: &ClientHandleArc,
     operation_id: OperationId,
     operation_type: &str,
@@ -540,612 +237,24 @@ async fn finalize_reserved_transaction(
                     Ok::<_, anyhow::Error>(range)
                 })
             },
-            Some(PAYMENT_RESERVATION_TX_MAX_ATTEMPTS),
+            Some(LOCKED_PAYMENT_TX_MAX_ATTEMPTS),
         )
         .await
         .map_err(|error| anyhow::anyhow!("fund locked payment: {error:?}"))
 }
 
 impl Wallet {
-    async fn plan_locked_payments(
-        &self,
-        federation_id: FederationId,
-        requirements: &[LockedPaymentPreflight],
-    ) -> anyhow::Result<Vec<PlannedLockedPayment>> {
-        let client = self.client(federation_id).await?;
-        let mut planned = Vec::with_capacity(requirements.len());
-        for requirement in requirements {
-            let (output_amount, output_fee, operation_id) = match &requirement.outputs {
-                LockedPaymentPreflightOutputs::MintV1(issuance) => {
-                    let mint = client
-                        .get_first_module::<MintClientModule>()
-                        .context("mint module")?;
-                    let (output_amount, output_fee) =
-                        mint_v1_output_amount_and_fee(&mint, issuance)?;
-                    let binding_hash =
-                        sha256::Hash::hash(&requirement.quote_id().0).to_byte_array();
-                    (
-                        output_amount,
-                        output_fee,
-                        locked_payment_v1_operation_id(mint.id, issuance, binding_hash),
-                    )
-                }
-                LockedPaymentPreflightOutputs::MintV2 { module, issuance } => {
-                    let mint = mint_v2_module(&client, *module)?;
-                    let (output_amount, output_fee) =
-                        mint_v2_output_amount_and_fee(mint, issuance)?;
-                    let binding_hash =
-                        sha256::Hash::hash(&requirement.quote_id().0).to_byte_array();
-                    (
-                        output_amount,
-                        output_fee,
-                        locked_payment_v2_operation_id(*module, issuance, binding_hash),
-                    )
-                }
-            };
-            let debit =
-                locked_payment_net_debit(&client, operation_id, output_amount, output_fee).await?;
-            anyhow::ensure!(debit.msats > 0, "locked-payment debit is empty");
-            planned.push(PlannedLockedPayment {
-                debit_msats: debit.msats,
-            });
-        }
-        Ok(planned)
-    }
-
-    pub(crate) async fn locked_payment_hold_summary(
-        &self,
-        federation_id: FederationId,
-    ) -> anyhow::Result<LockedPaymentHoldSummary> {
-        let database = reservation_db(&self.database);
-        let mut dbtx = database.begin_transaction_nc().await;
-        let mut rows = dbtx
-            .raw_find_by_prefix(&[PAYMENT_RESERVATION_KEY_PREFIX])
-            .await?;
-        let mut summary = LockedPaymentHoldSummary::default();
-        while let Some((_key, bytes)) = rows.next().await {
-            let stored = StoredLockedPaymentReservation::consensus_decode_whole(
-                &bytes,
-                &fedimint_core::module::registry::ModuleDecoderRegistry::default(),
-            )?;
-            validate_payment_reservation_shape(&stored)?;
-            if stored.federation_id != federation_id {
-                continue;
-            }
-            let held_msats = stored
-                .members
-                .iter()
-                .filter(|member| member.state == StoredLockedPaymentMemberState::Held)
-                .try_fold(0u64, |sum, member| sum.checked_add(member.debit_msats))
-                .context("locked-payment hold total overflow")?;
-            summary.held_msats = summary
-                .held_msats
-                .checked_add(held_msats)
-                .context("wallet hold total overflow")?;
-            if held_msats > 0 {
-                summary.required_reserve_msats = summary
-                    .required_reserve_msats
-                    .max(stored.required_reserve_msats);
-            }
-        }
-        Ok(summary)
-    }
-
-    /// Idempotently journal one exact aggregate after proving it fundable.
-    ///
-    /// The wallet root is process-exclusive, and every locked payment started
-    /// through this wallet must present the returned capability. The record
-    /// survives a crash and binds the ordered quote set; reusing an id for a
-    /// different aggregate fails closed.
-    pub async fn reserve_locked_payments(
-        &self,
-        federation_id: FederationId,
-        reservation_id: &PaymentReservationId,
-        requirements: &[LockedPaymentPreflight],
-    ) -> anyhow::Result<LockedPaymentReservation> {
-        self.reserve_locked_payments_with_reserve(
-            federation_id,
-            reservation_id,
-            requirements,
-            Amount::ZERO,
-        )
-        .await
-    }
-
-    /// Reserve the exact aggregate while preserving a caller-owned wallet
-    /// floor. Existing same-id reservations are reconstructed without
-    /// re-planning already-started members; a new reservation independently
-    /// dry-runs every exact transaction under the wallet-wide spend guard and
-    /// persists those logical net-debit allocations without selecting notes.
-    pub async fn reserve_locked_payments_with_reserve(
-        &self,
-        federation_id: FederationId,
-        reservation_id: &PaymentReservationId,
-        requirements: &[LockedPaymentPreflight],
-        required_reserve: Amount,
-    ) -> anyhow::Result<LockedPaymentReservation> {
-        let _spend_guard = self.spend_guard.lock().await;
-        let key = payment_reservation_key(reservation_id);
-        let expected = expected_payment_reservation(federation_id, requirements, required_reserve)?;
-        let database = reservation_db(&self.database);
-        // Reconstruct a same-id durable journal before asking the wallet to
-        // fund the complete original aggregate. Some members may already have
-        // consumed their value; charging them again would strand an exactly
-        // funded recovery.
-        if let Some(bytes) = database
-            .begin_transaction_nc()
-            .await
-            .raw_get_bytes(&key)
-            .await?
-        {
-            let existing = StoredLockedPaymentReservation::consensus_decode_whole(
-                &bytes,
-                &fedimint_core::module::registry::ModuleDecoderRegistry::default(),
-            )?;
-            validate_payment_reservation(&existing, &expected)?;
-            return Ok(LockedPaymentReservation {
-                key,
-                reservation_id: reservation_id.clone(),
-            });
-        }
-
-        let planned = self
-            .plan_locked_payments(federation_id, requirements)
-            .await?;
-        let client = self.client(federation_id).await?;
-        let balance = client.get_balance_for_btc().await?;
-        let holds = self.locked_payment_hold_summary(federation_id).await?;
-        let new_debit_msats = planned
-            .iter()
-            .try_fold(0u64, |sum, member| sum.checked_add(member.debit_msats))
-            .context("locked-payment aggregate debit overflow")?;
-        let required_msats = holds
-            .held_msats
-            .checked_add(new_debit_msats)
-            .and_then(|value| {
-                value.checked_add(holds.required_reserve_msats.max(required_reserve.msats))
-            })
-            .context("locked-payment aggregate hold overflow")?;
-        if balance.msats < required_msats {
-            return Err(InsufficientLockedPaymentFundsWithoutReservation.into());
-        }
-        let stored = StoredLockedPaymentReservation {
-            version: PAYMENT_RESERVATION_VERSION,
-            federation_id: expected.federation_id,
-            required_reserve_msats: expected.required_reserve.msats,
-            members: expected
-                .members
-                .iter()
-                .zip(&planned)
-                .map(|(member, planned)| StoredLockedPaymentMember {
-                    quote_id: member.quote_id.0,
-                    plan_hash: member.plan_hash,
-                    debit_msats: planned.debit_msats,
-                    state: StoredLockedPaymentMemberState::Held,
-                })
-                .collect(),
-        };
-        let expected_for_tx = expected.clone();
-        let key_for_tx = key.clone();
-        database
-            .autocommit(
-                move |dbtx, _| {
-                    let key = key_for_tx.clone();
-                    let stored = stored.clone();
-                    let expected = expected_for_tx.clone();
-                    Box::pin(async move {
-                        if let Some(bytes) = dbtx.raw_get_bytes(&key).await? {
-                            let existing = StoredLockedPaymentReservation::consensus_decode_whole(
-                                &bytes,
-                                &fedimint_core::module::registry::ModuleDecoderRegistry::default(),
-                            )?;
-                            validate_payment_reservation(&existing, &expected)?;
-                        } else {
-                            dbtx.raw_insert_bytes(&key, &stored.consensus_encode_to_vec())
-                                .await?;
-                        }
-                        Ok::<_, anyhow::Error>(())
-                    })
-                },
-                Some(PAYMENT_RESERVATION_TX_MAX_ATTEMPTS),
-            )
-            .await
-            .map_err(|error| anyhow::anyhow!("persist payment reservation: {error:?}"))?;
-        Ok(LockedPaymentReservation {
-            key,
-            reservation_id: reservation_id.clone(),
-        })
-    }
-
-    /// Recover an exact aggregate journal without creating or funding one.
-    ///
-    /// `Ok(None)` is an authoritative local-database absence. Any existing
-    /// same-id row must match the payer, the caller's `required_reserve`
-    /// floor, ordered quote ids, and exact output-plan hashes or recovery
-    /// fails closed.
-    pub async fn recover_locked_payment_reservation(
-        &self,
-        federation_id: FederationId,
-        reservation_id: &PaymentReservationId,
-        requirements: &[LockedPaymentPreflight],
-        required_reserve: Amount,
-    ) -> anyhow::Result<Option<LockedPaymentReservation>> {
-        let _spend_guard = self.spend_guard.lock().await;
-        let key = payment_reservation_key(reservation_id);
-        let expected = expected_payment_reservation(federation_id, requirements, required_reserve)?;
-        let database = reservation_db(&self.database);
-        let Some(bytes) = database
-            .begin_transaction_nc()
-            .await
-            .raw_get_bytes(&key)
-            .await?
-        else {
-            return Ok(None);
-        };
-        let existing = StoredLockedPaymentReservation::consensus_decode_whole(
-            &bytes,
-            &fedimint_core::module::registry::ModuleDecoderRegistry::default(),
-        )?;
-        validate_payment_reservation(&existing, &expected)?;
-        Ok(Some(LockedPaymentReservation {
-            key,
-            reservation_id: reservation_id.clone(),
-        }))
-    }
-
-    /// Prove this aggregate has not started and release its held value.
-    ///
-    /// A value-free tombstone remains so a crash before the FA's matching
-    /// checkpoint can reconstruct and replay the release idempotently.
-    pub async fn release_locked_payment_reservation(
-        &self,
-        reservation: LockedPaymentReservation,
-    ) -> anyhow::Result<()> {
-        let _spend_guard = self.spend_guard.lock().await;
-        let database = reservation_db(&self.database);
-        database
-            .autocommit(
-                move |dbtx, _| {
-                    let key = reservation.key.clone();
-                    Box::pin(async move {
-                        let bytes = dbtx
-                            .raw_get_bytes(&key)
-                            .await?
-                            .context("payment reservation is missing")?;
-                        let mut stored = StoredLockedPaymentReservation::consensus_decode_whole(
-                            &bytes,
-                            &fedimint_core::module::registry::ModuleDecoderRegistry::default(),
-                        )?;
-                        validate_payment_reservation_shape(&stored)?;
-                        let all_held = stored
-                            .members
-                            .iter()
-                            .all(|member| member.state == StoredLockedPaymentMemberState::Held);
-                        let all_released = stored
-                            .members
-                            .iter()
-                            .all(|member| member.state == StoredLockedPaymentMemberState::Released);
-                        anyhow::ensure!(
-                            all_held || all_released,
-                            "payment reservation has started outputs"
-                        );
-                        if all_held {
-                            for member in &mut stored.members {
-                                member.state = StoredLockedPaymentMemberState::Released;
-                            }
-                        }
-                        // Retain a value-free tombstone. If the wallet commit
-                        // succeeds but the FA crashes before clearing its own
-                        // checkpoint, reconstruct-and-release must not create a
-                        // fresh hold or depend on the wallet still being funded.
-                        dbtx.raw_insert_bytes(&key, &stored.consensus_encode_to_vec())
-                            .await?;
-                        Ok::<_, anyhow::Error>(())
-                    })
-                },
-                Some(PAYMENT_RESERVATION_TX_MAX_ATTEMPTS),
-            )
-            .await
-            .map_err(|error| anyhow::anyhow!("release payment reservation: {error:?}"))?;
-        Ok(())
-    }
-
-    /// Atomically bind one output-starting call to its aggregate capability.
-    pub(crate) async fn start_reserved_locked_payment(
-        &self,
-        reservation: &LockedPaymentReservation,
-        quote_id: QuoteId,
-    ) -> anyhow::Result<()> {
-        let database = reservation_db(&self.database);
-        let key = reservation.key.clone();
-        database
-            .autocommit(
-                move |dbtx, _| {
-                    let key = key.clone();
-                    Box::pin(async move {
-                        let bytes = dbtx
-                            .raw_get_bytes(&key)
-                            .await?
-                            .context("payment reservation is missing")?;
-                        let mut stored = StoredLockedPaymentReservation::consensus_decode_whole(
-                            &bytes,
-                            &fedimint_core::module::registry::ModuleDecoderRegistry::default(),
-                        )?;
-                        validate_payment_reservation_shape(&stored)?;
-                        let member = stored
-                            .members
-                            .iter_mut()
-                            .find(|member| member.quote_id == quote_id.0)
-                            .context("quote does not belong to payment reservation")?;
-                        anyhow::ensure!(
-                            member.state != StoredLockedPaymentMemberState::Released,
-                            "quote was released from payment reservation"
-                        );
-                        if member.state == StoredLockedPaymentMemberState::Held {
-                            member.state = StoredLockedPaymentMemberState::Started;
-                        }
-                        dbtx.raw_insert_bytes(&key, &stored.consensus_encode_to_vec())
-                            .await?;
-                        Ok::<_, anyhow::Error>(())
-                    })
-                },
-                Some(PAYMENT_RESERVATION_TX_MAX_ATTEMPTS),
-            )
-            .await
-            .map_err(|error| anyhow::anyhow!("start reserved payment: {error:?}"))?;
-        Ok(())
-    }
-
-    /// Persist wallet-owned proof that one member reached terminal rejection
-    /// or completed signed-refund settlement.
-    async fn record_locked_payment_terminal(
-        &self,
-        reservation_id: &PaymentReservationId,
-        quote_id: QuoteId,
-    ) -> anyhow::Result<LockedPaymentTerminalRelease> {
-        let key = payment_reservation_key(reservation_id);
-        let database = reservation_db(&self.database);
-        let key_for_tx = key.clone();
-        let (plan_hash, debit_msats) = database
-            .autocommit(
-                move |dbtx, _| {
-                    let key = key_for_tx.clone();
-                    Box::pin(async move {
-                        let bytes = dbtx
-                            .raw_get_bytes(&key)
-                            .await?
-                            .context("payment reservation is missing")?;
-                        let mut stored = StoredLockedPaymentReservation::consensus_decode_whole(
-                            &bytes,
-                            &fedimint_core::module::registry::ModuleDecoderRegistry::default(),
-                        )?;
-                        validate_payment_reservation_shape(&stored)?;
-                        let member = stored
-                            .members
-                            .iter_mut()
-                            .find(|member| member.quote_id == quote_id.0)
-                            .context("quote does not belong to payment reservation")?;
-                        anyhow::ensure!(
-                            matches!(
-                                member.state,
-                                StoredLockedPaymentMemberState::Started
-                                    | StoredLockedPaymentMemberState::Terminal
-                                    | StoredLockedPaymentMemberState::Released
-                            ),
-                            "unstarted payment cannot have terminal wallet proof"
-                        );
-                        if member.state == StoredLockedPaymentMemberState::Started {
-                            member.state = StoredLockedPaymentMemberState::Terminal;
-                        }
-                        let binding = (member.plan_hash, member.debit_msats);
-                        dbtx.raw_insert_bytes(&key, &stored.consensus_encode_to_vec())
-                            .await?;
-                        Ok(binding)
-                    })
-                },
-                Some(PAYMENT_RESERVATION_TX_MAX_ATTEMPTS),
-            )
-            .await
-            .map_err(|error| anyhow::anyhow!("record terminal payment proof: {error:?}"))?;
-        Ok(LockedPaymentTerminalRelease {
-            key,
-            quote_id,
-            plan_hash,
-            debit_msats,
-        })
-    }
-
-    /// Reconstruct terminal release authority from one exact durable journal
-    /// member before recovery opens a joined client or performs network work.
-    async fn recover_terminal_locked_payment(
-        &self,
-        federation_id: FederationId,
-        reservation_id: &PaymentReservationId,
-        requirement: &LockedPaymentPreflight,
-    ) -> anyhow::Result<Option<LockedPaymentTerminalRelease>> {
-        let key = payment_reservation_key(reservation_id);
-        let bytes = reservation_db(&self.database)
-            .begin_transaction_nc()
-            .await
-            .raw_get_bytes(&key)
-            .await?
-            .context("payment reservation is missing")?;
-        let stored = StoredLockedPaymentReservation::consensus_decode_whole(
-            &bytes,
-            &fedimint_core::module::registry::ModuleDecoderRegistry::default(),
-        )?;
-        validate_payment_reservation_shape(&stored)?;
-        anyhow::ensure!(
-            stored.federation_id == federation_id,
-            "payment reservation belongs to another federation"
-        );
-        let member = stored
-            .members
-            .iter()
-            .find(|member| member.quote_id == requirement.quote_id().0)
-            .context("quote does not belong to payment reservation")?;
-        anyhow::ensure!(
-            member.plan_hash == requirement.plan_hash(),
-            "reserved payment output plan changed"
-        );
-
-        Ok(matches!(
-            member.state,
-            StoredLockedPaymentMemberState::Terminal | StoredLockedPaymentMemberState::Released
-        )
-        .then(|| LockedPaymentTerminalRelease {
-            key,
-            quote_id: requirement.quote_id(),
-            plan_hash: member.plan_hash,
-            debit_msats: member.debit_msats,
-        }))
-    }
-
-    /// Release one terminally rejected/refunded member without affecting
-    /// aggregate siblings. Repeating a completed release is harmless.
-    pub async fn release_locked_payment_member(
-        &self,
-        proof: LockedPaymentTerminalRelease,
-    ) -> anyhow::Result<()> {
-        let _spend_guard = self.spend_guard.lock().await;
-        let database = reservation_db(&self.database);
-        database
-            .autocommit(
-                move |dbtx, _| {
-                    let key = proof.key.clone();
-                    Box::pin(async move {
-                        let bytes = dbtx
-                            .raw_get_bytes(&key)
-                            .await?
-                            .context("payment reservation is missing")?;
-                        let mut stored = StoredLockedPaymentReservation::consensus_decode_whole(
-                            &bytes,
-                            &fedimint_core::module::registry::ModuleDecoderRegistry::default(),
-                        )?;
-                        validate_payment_reservation_shape(&stored)?;
-                        let member = stored
-                            .members
-                            .iter_mut()
-                            .find(|member| member.quote_id == proof.quote_id.0)
-                            .context("terminal proof does not belong to payment reservation")?;
-                        anyhow::ensure!(
-                            member.plan_hash == proof.plan_hash
-                                && member.debit_msats == proof.debit_msats,
-                            "terminal proof payment binding changed"
-                        );
-                        anyhow::ensure!(
-                            matches!(
-                                member.state,
-                                StoredLockedPaymentMemberState::Terminal
-                                    | StoredLockedPaymentMemberState::Released
-                            ),
-                            "payment is prepared or ambiguous, not terminally releasable"
-                        );
-                        member.state = StoredLockedPaymentMemberState::Released;
-                        // Started is not terminal: another member may still
-                        // be Prepared or ambiguous and needs this aggregate
-                        // journal for exact crash recovery. Journal rows remain
-                        // as value-free tombstones after every release.
-                        dbtx.raw_insert_bytes(&key, &stored.consensus_encode_to_vec())
-                            .await?;
-                        Ok(())
-                    })
-                },
-                Some(PAYMENT_RESERVATION_TX_MAX_ATTEMPTS),
-            )
-            .await
-            .map_err(|error| anyhow::anyhow!("release terminal payment member: {error:?}"))?;
-        Ok(())
-    }
-
-    async fn validate_reserved_payment_start(
-        &self,
-        reservation: &LockedPaymentReservation,
-        federation_id: FederationId,
-        requirement: &LockedPaymentPreflight,
-    ) -> anyhow::Result<u64> {
-        let database = reservation_db(&self.database);
-        let bytes = database
-            .begin_transaction_nc()
-            .await
-            .raw_get_bytes(&reservation.key)
-            .await?
-            .context("payment reservation is missing")?;
-        let stored = StoredLockedPaymentReservation::consensus_decode_whole(
-            &bytes,
-            &fedimint_core::module::registry::ModuleDecoderRegistry::default(),
-        )?;
-        validate_payment_reservation_shape(&stored)?;
-        anyhow::ensure!(
-            stored.federation_id == federation_id,
-            "payment reservation belongs to another federation"
-        );
-        let member = stored
-            .members
-            .iter()
-            .find(|member| member.quote_id == requirement.quote_id().0)
-            .context("quote does not belong to payment reservation")?;
-        anyhow::ensure!(
-            member.state == StoredLockedPaymentMemberState::Held,
-            "reserved payment already started or was released; recover it instead"
-        );
-        anyhow::ensure!(
-            member.plan_hash == requirement.plan_hash(),
-            "reserved payment output plan changed"
-        );
-        Ok(member.debit_msats)
-    }
-
-    async fn maximum_reserved_payment_net_debit(
-        &self,
-        federation_id: FederationId,
-        member_allocation_msats: u64,
-    ) -> anyhow::Result<u64> {
-        let client = self.client(federation_id).await?;
-        let balance = client.get_balance_for_btc().await?;
-        let holds = self.locked_payment_hold_summary(federation_id).await?;
-        let other_held_msats = holds
-            .held_msats
-            .checked_sub(member_allocation_msats)
-            .context("reserved payment is missing from the wallet hold total")?;
-        let protected_msats = other_held_msats
-            .checked_add(holds.required_reserve_msats)
-            .context("wallet hold total overflow")?;
-        anyhow::ensure!(
-            balance.msats >= protected_msats,
-            "payment wallet can no longer preserve exact holds and reserve"
-        );
-        Ok(balance.msats - protected_msats)
-    }
-
-    /// Pay mint-v1 outputs whose blinded nonces belong to another party.
-    /// The wallet auto-funds the output-only builder, waits for consensus,
-    /// then obtains and verifies a threshold of shares for every quoted
-    /// outpoint before returning aggregate signatures. `quote_id` is the
-    /// stable canonical quote identifier used for exact retry identity.
-    pub async fn pay_reserved_locked_v1(
-        &self,
-        reservation: &LockedPaymentReservation,
-        federation_id: FederationId,
-        issuance: &[locked_payment::IssuanceRequest],
-        quote_id: [u8; 32],
-    ) -> Result<Vec<tbs::BlindedSignature>, WalletError> {
-        self.submit_locked_v1(reservation, federation_id, issuance, quote_id)
-            .await
-    }
-
     /// A rejected funding transaction is replaceable only after Fedimint's
     /// automatic mint-input refund transactions have restored every exact
-    /// input as spendable wallet outputs. Until then the durable member stays
-    /// `Started`, so restart recovery cannot short-circuit into replacement.
+    /// input as spendable wallet outputs. Recovery replays the operation's
+    /// update history each time, so a restart never short-circuits into
+    /// replacement.
     async fn recover_rejected_locked_payment<T>(
         &self,
         client: &ClientHandleArc,
         operation_id: OperationId,
         rejected_txid: TransactionId,
         mint_module: ModuleInstanceId,
-        reservation_id: &PaymentReservationId,
-        quote_id: QuoteId,
     ) -> Result<LockedPaymentRecovery<T>, WalletError> {
         let original =
             locked_payment_created_transaction_by_txid(client, operation_id, rejected_txid).await?;
@@ -1166,10 +275,7 @@ impl Wallet {
         )
         .await
         .context("timed out waiting for rejected payment inputs to become spendable")??;
-        self.record_locked_payment_terminal(reservation_id, quote_id)
-            .await
-            .map(LockedPaymentRecovery::Rejected)
-            .map_err(Into::into)
+        Ok(LockedPaymentRecovery::Rejected)
     }
 
     /// Reopen and audit exact accepted setup-payment and mint-v2 receive
@@ -1286,21 +392,22 @@ impl Wallet {
         Ok(accounting)
     }
 
-    async fn submit_locked_v1(
+    /// Pay mint-v1 outputs whose blinded nonces belong to another party.
+    /// The wallet auto-funds the output-only builder, waits for consensus,
+    /// then obtains and verifies a threshold of shares for every quoted
+    /// outpoint before returning aggregate signatures. `quote_id` is the
+    /// stable canonical quote identifier used for exact retry identity.
+    ///
+    /// Returns [`WalletError::InsufficientLockedPaymentFunds`] only when no
+    /// operation exists for this payment and the balance cannot cover its
+    /// current net debit.
+    pub async fn pay_locked_v1(
         &self,
-        reservation: &LockedPaymentReservation,
         federation_id: FederationId,
         issuance: &[locked_payment::IssuanceRequest],
         quote_id: [u8; 32],
     ) -> Result<Vec<tbs::BlindedSignature>, WalletError> {
         let spend_guard = self.spend_guard.lock().await;
-        let member_allocation_msats = self
-            .validate_reserved_payment_start(
-                reservation,
-                federation_id,
-                &LockedPaymentPreflight::mint_v1(QuoteId(quote_id), issuance.to_vec()),
-            )
-            .await?;
         let client = self.client(federation_id).await?;
         let mint = client
             .get_first_module::<MintClientModule>()
@@ -1325,20 +432,16 @@ impl Wallet {
                 ranges,
             } => (operation_id, ranges),
             LockedPaymentOperation::New { operation_id } => {
-                let maximum_net_debit_msats = self
-                    .maximum_reserved_payment_net_debit(federation_id, member_allocation_msats)
-                    .await?;
                 let (output_amount, output_fee) = mint_v1_output_amount_and_fee(&mint, issuance)?;
                 let net_debit =
                     locked_payment_net_debit(&client, operation_id, output_amount, output_fee)
                         .await?;
-                if net_debit.msats > maximum_net_debit_msats {
-                    return Err(anyhow::anyhow!(
-                        "current locked-payment cost would consume another hold or the reserve"
-                    )
-                    .into());
+                // No operation exists under the spend guard, so this balance
+                // comparison proves that no funding began for this quote.
+                if client.get_balance_for_btc().await?.msats < net_debit.msats {
+                    return Err(WalletError::InsufficientLockedPaymentFunds);
                 }
-                let submit = finalize_reserved_transaction(
+                let submit = finalize_locked_payment_transaction(
                     &client,
                     operation_id,
                     LOCKED_PAYMENT_V1_OPERATION_TYPE,
@@ -1382,8 +485,6 @@ impl Wallet {
                 }
             }
         };
-        self.start_reserved_locked_payment(reservation, QuoteId(quote_id))
-            .await?;
         drop(spend_guard);
         // TransactionBuilder retains the explicitly supplied foreign-output
         // bundle first and finalize_transaction appends any balancing change,
@@ -1399,15 +500,7 @@ impl Wallet {
         federation_id: FederationId,
         issuance: &[locked_payment::IssuanceRequest],
         quote_id: [u8; 32],
-        reservation_id: &PaymentReservationId,
     ) -> Result<LockedPaymentRecovery<Vec<tbs::BlindedSignature>>, WalletError> {
-        let requirement = LockedPaymentPreflight::mint_v1(QuoteId(quote_id), issuance.to_vec());
-        if let Some(proof) = self
-            .recover_terminal_locked_payment(federation_id, reservation_id, &requirement)
-            .await?
-        {
-            return Ok(LockedPaymentRecovery::Rejected(proof));
-        }
         let client = self.client(federation_id).await?;
         let mint = client
             .get_first_module::<MintClientModule>()
@@ -1430,17 +523,6 @@ impl Wallet {
         else {
             return Ok(LockedPaymentRecovery::Absent);
         };
-        {
-            let _spend_guard = self.spend_guard.lock().await;
-            self.start_reserved_locked_payment(
-                &LockedPaymentReservation {
-                    key: payment_reservation_key(reservation_id),
-                    reservation_id: reservation_id.clone(),
-                },
-                QuoteId(quote_id),
-            )
-            .await?;
-        }
         match locked_payment_transaction_status(
             client.transaction_updates(operation_id).await,
             ranges.outputs.txid(),
@@ -1459,8 +541,6 @@ impl Wallet {
                     operation_id,
                     ranges.outputs.txid(),
                     mint.id,
-                    reservation_id,
-                    QuoteId(quote_id),
                 )
                 .await
             }
@@ -1471,34 +551,16 @@ impl Wallet {
     /// collect the aggregate blinded signatures needed by that party.
     /// `quote_id` is the stable canonical quote identifier used for exact
     /// retry identity.
-    pub async fn pay_reserved_locked_v2(
+    ///
+    /// Has the same insufficient-funds contract as [`Self::pay_locked_v1`].
+    pub async fn pay_locked_v2(
         &self,
-        reservation: &LockedPaymentReservation,
-        federation_id: FederationId,
-        mint_module: ModuleInstanceId,
-        issuance: &[locked_payment_v2::IssuanceRequest],
-        quote_id: [u8; 32],
-    ) -> Result<(Vec<tbs::BlindedSignature>, OutPointRange), WalletError> {
-        self.submit_locked_v2(reservation, federation_id, mint_module, issuance, quote_id)
-            .await
-    }
-
-    async fn submit_locked_v2(
-        &self,
-        reservation: &LockedPaymentReservation,
         federation_id: FederationId,
         mint_module: ModuleInstanceId,
         issuance: &[locked_payment_v2::IssuanceRequest],
         quote_id: [u8; 32],
     ) -> Result<(Vec<tbs::BlindedSignature>, OutPointRange), WalletError> {
         let spend_guard = self.spend_guard.lock().await;
-        let member_allocation_msats = self
-            .validate_reserved_payment_start(
-                reservation,
-                federation_id,
-                &LockedPaymentPreflight::mint_v2(QuoteId(quote_id), mint_module, issuance.to_vec()),
-            )
-            .await?;
         let client = self.client(federation_id).await?;
         let mint = mint_v2_module(&client, mint_module)?;
         let binding_hash = sha256::Hash::hash(&quote_id).to_byte_array();
@@ -1521,20 +583,16 @@ impl Wallet {
                 ranges,
             } => (operation_id, ranges),
             LockedPaymentOperation::New { operation_id } => {
-                let maximum_net_debit_msats = self
-                    .maximum_reserved_payment_net_debit(federation_id, member_allocation_msats)
-                    .await?;
                 let (output_amount, output_fee) = mint_v2_output_amount_and_fee(mint, issuance)?;
                 let net_debit =
                     locked_payment_net_debit(&client, operation_id, output_amount, output_fee)
                         .await?;
-                if net_debit.msats > maximum_net_debit_msats {
-                    return Err(anyhow::anyhow!(
-                        "current locked-payment cost would consume another hold or the reserve"
-                    )
-                    .into());
+                // No operation exists under the spend guard, so this balance
+                // comparison proves that no funding began for this quote.
+                if client.get_balance_for_btc().await?.msats < net_debit.msats {
+                    return Err(WalletError::InsufficientLockedPaymentFunds);
                 }
-                let submit = finalize_reserved_transaction(
+                let submit = finalize_locked_payment_transaction(
                     &client,
                     operation_id,
                     LOCKED_PAYMENT_V2_OPERATION_TYPE,
@@ -1578,8 +636,6 @@ impl Wallet {
                 }
             }
         };
-        self.start_reserved_locked_payment(reservation, QuoteId(quote_id))
-            .await?;
         drop(spend_guard);
         recover_accepted_locked_payment(&client, operation_id, ranges).await?;
         let signatures = collect_locked_v2_signatures(mint, ranges.outputs, issuance).await?;
@@ -1594,17 +650,8 @@ impl Wallet {
         mint_module: ModuleInstanceId,
         issuance: &[locked_payment_v2::IssuanceRequest],
         quote_id: [u8; 32],
-        reservation_id: &PaymentReservationId,
     ) -> Result<LockedPaymentRecovery<(Vec<tbs::BlindedSignature>, OutPointRange)>, WalletError>
     {
-        let requirement =
-            LockedPaymentPreflight::mint_v2(QuoteId(quote_id), mint_module, issuance.to_vec());
-        if let Some(proof) = self
-            .recover_terminal_locked_payment(federation_id, reservation_id, &requirement)
-            .await?
-        {
-            return Ok(LockedPaymentRecovery::Rejected(proof));
-        }
         let client = self.client(federation_id).await?;
         let mint = mint_v2_module(&client, mint_module)?;
         let binding_hash = sha256::Hash::hash(&quote_id).to_byte_array();
@@ -1625,17 +672,6 @@ impl Wallet {
         else {
             return Ok(LockedPaymentRecovery::Absent);
         };
-        {
-            let _spend_guard = self.spend_guard.lock().await;
-            self.start_reserved_locked_payment(
-                &LockedPaymentReservation {
-                    key: payment_reservation_key(reservation_id),
-                    reservation_id: reservation_id.clone(),
-                },
-                QuoteId(quote_id),
-            )
-            .await?;
-        }
         match locked_payment_transaction_status(
             client.transaction_updates(operation_id).await,
             ranges.outputs.txid(),
@@ -1654,8 +690,6 @@ impl Wallet {
                     operation_id,
                     ranges.outputs.txid(),
                     mint_module,
-                    reservation_id,
-                    QuoteId(quote_id),
                 )
                 .await
             }
@@ -1669,9 +703,7 @@ impl Wallet {
         federation_id: FederationId,
         raw_transaction: &[u8],
         prepared: PreparedRefund,
-        reservation_id: &PaymentReservationId,
-        quote_id: QuoteId,
-    ) -> Result<SettledLockedPaymentRefund, WalletError> {
+    ) -> Result<Amount, WalletError> {
         let client = self.client(federation_id).await?;
         let mint = client
             .get_first_module::<MintClientModule>()
@@ -1752,13 +784,7 @@ impl Wallet {
         let amount = tiered.total_amount();
         let oob = OOBNotes::new(federation_id.to_prefix(), tiered);
         self.receive(federation_id, &oob.to_string()).await?;
-        let proof = self
-            .record_locked_payment_terminal(reservation_id, quote_id)
-            .await?;
-        Ok(SettledLockedPaymentRefund {
-            amount,
-            release_proof: proof,
-        })
+        Ok(amount)
     }
 
     /// Submit a signed mint-v2 refund transaction and reissue the resulting
@@ -1769,9 +795,7 @@ impl Wallet {
         mint_module: ModuleInstanceId,
         raw_transaction: &[u8],
         prepared: PreparedRefundV2,
-        reservation_id: &PaymentReservationId,
-        quote_id: QuoteId,
-    ) -> Result<SettledLockedPaymentRefund, WalletError> {
+    ) -> Result<Amount, WalletError> {
         let client = self.client(federation_id).await?;
         let mint = mint_v2_module(&client, mint_module)?;
         let transaction = fedimint_core::transaction::Transaction::consensus_decode_whole(
@@ -1814,13 +838,7 @@ impl Wallet {
             .finalize_external_issuance(prepared.private(), &signatures)
             .context("verify mint-v2 refund notes")?;
         let amount = self.receive_v2_notes(federation_id, mint, notes).await?;
-        let proof = self
-            .record_locked_payment_terminal(reservation_id, quote_id)
-            .await?;
-        Ok(SettledLockedPaymentRefund {
-            amount,
-            release_proof: proof,
-        })
+        Ok(amount)
     }
 }
 
@@ -2511,798 +1529,6 @@ mod tests {
     use futures::StreamExt as _;
 
     use super::*;
-
-    fn reservation_preflight(byte: u8) -> LockedPaymentPreflight {
-        LockedPaymentPreflight::mint_v1(QuoteId([byte; 32]), Vec::new())
-    }
-
-    fn reservation_id(label: &str) -> PaymentReservationId {
-        let digest = sha256::Hash::hash(label.as_bytes()).to_byte_array();
-        let encoded = digest
-            .into_iter()
-            .map(|byte| format!("{byte:02x}"))
-            .collect::<String>();
-        serde_json::from_value(serde_json::json!(encoded))
-            .expect("test reservation id is a canonical digest")
-    }
-
-    async fn test_wallet() -> (tempfile::TempDir, Wallet) {
-        let temp = tempfile::tempdir().unwrap();
-        let wallet = Wallet::open(temp.path().to_owned(), &crate::WalletSecret([42; 64]))
-            .await
-            .unwrap();
-        (temp, wallet)
-    }
-
-    async fn seed_reservation(
-        wallet: &Wallet,
-        reservation_id: &PaymentReservationId,
-        quote_ids: Vec<[u8; 32]>,
-        started: Vec<bool>,
-    ) {
-        let stored = StoredLockedPaymentReservation {
-            version: PAYMENT_RESERVATION_VERSION,
-            federation_id: FederationId::dummy(),
-            required_reserve_msats: 0,
-            members: quote_ids
-                .into_iter()
-                .zip(started)
-                .map(|(quote_id, started)| StoredLockedPaymentMember {
-                    quote_id,
-                    plan_hash: reservation_preflight(quote_id[0]).plan_hash(),
-                    debit_msats: 1_000,
-                    state: if started {
-                        StoredLockedPaymentMemberState::Started
-                    } else {
-                        StoredLockedPaymentMemberState::Held
-                    },
-                })
-                .collect(),
-        };
-        let database = reservation_db(&wallet.database);
-        let mut tx = database.begin_transaction().await;
-        tx.raw_insert_bytes(
-            &payment_reservation_key(reservation_id),
-            &stored.consensus_encode_to_vec(),
-        )
-        .await
-        .unwrap();
-        tx.commit_tx().await;
-    }
-
-    async fn load_reservation(
-        wallet: &Wallet,
-        reservation_id: &PaymentReservationId,
-    ) -> Option<StoredLockedPaymentReservation> {
-        let database = reservation_db(&wallet.database);
-        let bytes = database
-            .begin_transaction_nc()
-            .await
-            .raw_get_bytes(&payment_reservation_key(reservation_id))
-            .await
-            .unwrap()?;
-        Some(
-            StoredLockedPaymentReservation::consensus_decode_whole(
-                &bytes,
-                &fedimint_core::module::registry::ModuleDecoderRegistry::default(),
-            )
-            .unwrap(),
-        )
-    }
-
-    async fn store_exact_reservation(
-        wallet: &Wallet,
-        reservation_id: &PaymentReservationId,
-        federation_id: FederationId,
-        members: Vec<(LockedPaymentPreflight, StoredLockedPaymentMemberState, u64)>,
-    ) {
-        let stored = StoredLockedPaymentReservation {
-            version: PAYMENT_RESERVATION_VERSION,
-            federation_id,
-            required_reserve_msats: 0,
-            members: members
-                .into_iter()
-                .map(
-                    |(preflight, state, debit_msats)| StoredLockedPaymentMember {
-                        quote_id: preflight.quote_id().0,
-                        plan_hash: preflight.plan_hash(),
-                        debit_msats,
-                        state,
-                    },
-                )
-                .collect(),
-        };
-        let database = reservation_db(&wallet.database);
-        let mut tx = database.begin_transaction().await;
-        tx.raw_insert_bytes(
-            &payment_reservation_key(reservation_id),
-            &stored.consensus_encode_to_vec(),
-        )
-        .await
-        .unwrap();
-        tx.commit_tx().await;
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
-    async fn terminal_recovery_survives_reopen_and_short_circuits_unjoined_v1_v2_clients() {
-        let temp = tempfile::tempdir().unwrap();
-        let federation_id = FederationId::dummy();
-        let v1_id = reservation_id("terminal-v1-reopen");
-        let v1 = reservation_preflight(1);
-        let wallet = Wallet::open(temp.path().to_owned(), &crate::WalletSecret([42; 64]))
-            .await
-            .unwrap();
-        store_exact_reservation(
-            &wallet,
-            &v1_id,
-            federation_id,
-            vec![(v1, StoredLockedPaymentMemberState::Terminal, 1_000)],
-        )
-        .await;
-        drop(wallet);
-
-        let reopened = Wallet::open(temp.path().to_owned(), &crate::WalletSecret([42; 64]))
-            .await
-            .unwrap();
-        let LockedPaymentRecovery::Rejected(proof) = reopened
-            .recover_locked_v1(federation_id, &[], [1; 32], &v1_id)
-            .await
-            .expect("terminal v1 journal recovers before opening an unjoined client")
-        else {
-            panic!("terminal v1 journal must return release authority");
-        };
-        reopened.release_locked_payment_member(proof).await.unwrap();
-        let LockedPaymentRecovery::Rejected(proof) = reopened
-            .recover_locked_v1(federation_id, &[], [1; 32], &v1_id)
-            .await
-            .expect("released v1 tombstone remains recoverable")
-        else {
-            panic!("released v1 journal must return release authority");
-        };
-        reopened.release_locked_payment_member(proof).await.unwrap();
-
-        let module = ModuleInstanceId::from(7u16);
-        let v2_id = reservation_id("terminal-v2-unjoined");
-        let v2_issuance = vec![locked_payment_v2::IssuanceRequest {
-            denomination: locked_payment_v2::denomination_from_amount(1_024).unwrap(),
-            blind_nonce: tbs::BlindedMessage(bls12_381::G1Affine::generator()),
-            tweak: [8; 16],
-        }];
-        store_exact_reservation(
-            &reopened,
-            &v2_id,
-            federation_id,
-            vec![(
-                LockedPaymentPreflight::mint_v2(QuoteId([2; 32]), module, v2_issuance.clone()),
-                StoredLockedPaymentMemberState::Released,
-                2_000,
-            )],
-        )
-        .await;
-        assert!(matches!(
-            reopened
-                .recover_locked_v2(federation_id, module, &v2_issuance, [2; 32], &v2_id)
-                .await
-                .expect("released v2 tombstone recovers without a joined client"),
-            LockedPaymentRecovery::Rejected(_)
-        ));
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
-    async fn terminal_recovery_rejects_v1_v2_plan_and_debit_binding_mismatches() {
-        let (_temp, wallet) = test_wallet().await;
-        let federation_id = FederationId::dummy();
-        let v1_id = reservation_id("terminal-v1-mismatch");
-        store_exact_reservation(
-            &wallet,
-            &v1_id,
-            federation_id,
-            vec![(
-                reservation_preflight(3),
-                StoredLockedPaymentMemberState::Terminal,
-                1_000,
-            )],
-        )
-        .await;
-        let changed_v1 = vec![locked_payment::IssuanceRequest {
-            amount: Amount::from_msats(1_000),
-            blind_nonce: BlindNonce(tbs::BlindedMessage(bls12_381::G1Affine::generator())),
-        }];
-        let error = match wallet
-            .recover_locked_v1(federation_id, &changed_v1, [3; 32], &v1_id)
-            .await
-        {
-            Err(error) => error,
-            Ok(_) => panic!("mismatched v1 recovery must fail closed"),
-        };
-        assert!(
-            error.to_string().contains("output plan changed"),
-            "{error:#}"
-        );
-
-        let module = ModuleInstanceId::from(7u16);
-        let v2_id = reservation_id("terminal-v2-mismatch");
-        let v2 = vec![locked_payment_v2::IssuanceRequest {
-            denomination: locked_payment_v2::denomination_from_amount(1_024).unwrap(),
-            blind_nonce: tbs::BlindedMessage(bls12_381::G1Affine::generator()),
-            tweak: [4; 16],
-        }];
-        store_exact_reservation(
-            &wallet,
-            &v2_id,
-            federation_id,
-            vec![(
-                LockedPaymentPreflight::mint_v2(QuoteId([4; 32]), module, v2.clone()),
-                StoredLockedPaymentMemberState::Terminal,
-                2_000,
-            )],
-        )
-        .await;
-        let mut changed_v2 = v2;
-        changed_v2[0].tweak = [5; 16];
-        let error = match wallet
-            .recover_locked_v2(federation_id, module, &changed_v2, [4; 32], &v2_id)
-            .await
-        {
-            Err(error) => error,
-            Ok(_) => panic!("mismatched v2 recovery must fail closed"),
-        };
-        assert!(
-            error.to_string().contains("output plan changed"),
-            "{error:#}"
-        );
-
-        let proof = wallet
-            .recover_terminal_locked_payment(federation_id, &v1_id, &reservation_preflight(3))
-            .await
-            .unwrap()
-            .unwrap();
-        let mut stored = load_reservation(&wallet, &v1_id).await.unwrap();
-        stored.members[0].debit_msats += 1;
-        let database = reservation_db(&wallet.database);
-        let mut tx = database.begin_transaction().await;
-        tx.raw_insert_bytes(
-            &payment_reservation_key(&v1_id),
-            &stored.consensus_encode_to_vec(),
-        )
-        .await
-        .unwrap();
-        tx.commit_tx().await;
-        let error = wallet
-            .release_locked_payment_member(proof)
-            .await
-            .unwrap_err();
-        assert!(
-            error.to_string().contains("payment binding changed"),
-            "{error:#}"
-        );
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
-    async fn existing_partial_reservation_reconstructs_before_full_fundability() {
-        let (_temp, wallet) = test_wallet().await;
-        for (reservation_id, started) in [
-            (reservation_id("one-consumed"), vec![true, false, false]),
-            (
-                reservation_id("n-minus-one-consumed"),
-                vec![true, true, false],
-            ),
-        ] {
-            seed_reservation(
-                &wallet,
-                &reservation_id,
-                vec![[1; 32], [2; 32], [3; 32]],
-                started,
-            )
-            .await;
-            let reservation = wallet
-                .reserve_locked_payments(
-                    FederationId::dummy(),
-                    &reservation_id,
-                    &[
-                        reservation_preflight(1),
-                        reservation_preflight(2),
-                        reservation_preflight(3),
-                    ],
-                )
-                .await
-                .expect("existing journal reconstructs without a joined/funded client");
-            assert_eq!(reservation.reservation_id(), &reservation_id);
-        }
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
-    async fn fee_bearing_reservation_reconstructs_and_releases_before_outputs() {
-        let (_temp, wallet) = test_wallet().await;
-        let reservation_id = reservation_id("fee-bearing-rollback");
-        let blind_nonce = BlindNonce(tbs::BlindedMessage(bls12_381::G1Affine::generator()));
-        let preflight = LockedPaymentPreflight::mint_v1(
-            QuoteId([1; 32]),
-            vec![locked_payment::IssuanceRequest {
-                amount: Amount::from_msats(1_000),
-                blind_nonce,
-            }],
-        );
-        let database = reservation_db(&wallet.database);
-        let mut tx = database.begin_transaction().await;
-        tx.raw_insert_bytes(
-            &payment_reservation_key(&reservation_id),
-            &StoredLockedPaymentReservation {
-                version: PAYMENT_RESERVATION_VERSION,
-                federation_id: FederationId::dummy(),
-                required_reserve_msats: 0,
-                members: vec![StoredLockedPaymentMember {
-                    quote_id: [1; 32],
-                    plan_hash: preflight.plan_hash(),
-                    debit_msats: 1_000,
-                    state: StoredLockedPaymentMemberState::Held,
-                }],
-            }
-            .consensus_encode_to_vec(),
-        )
-        .await
-        .unwrap();
-        tx.commit_tx().await;
-        let reservation = wallet
-            .reserve_locked_payments(FederationId::dummy(), &reservation_id, &[preflight])
-            .await
-            .expect("exact fee-bearing journal reconstructs");
-
-        wallet
-            .release_locked_payment_reservation(reservation)
-            .await
-            .expect("unstarted aggregate rolls back");
-        assert_eq!(
-            load_reservation(&wallet, &reservation_id)
-                .await
-                .unwrap()
-                .members[0]
-                .state,
-            StoredLockedPaymentMemberState::Released,
-        );
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
-    async fn same_reservation_id_with_different_exact_quotes_fails_closed() {
-        let (_temp, wallet) = test_wallet().await;
-        let reservation_id = reservation_id("reservation-mismatch");
-        seed_reservation(&wallet, &reservation_id, vec![[1; 32]], vec![false]).await;
-
-        assert!(
-            wallet
-                .reserve_locked_payments(
-                    FederationId::dummy(),
-                    &reservation_id,
-                    &[reservation_preflight(2)],
-                )
-                .await
-                .is_err()
-        );
-        assert_eq!(
-            load_reservation(&wallet, &reservation_id)
-                .await
-                .unwrap()
-                .members[0]
-                .quote_id,
-            [1; 32],
-        );
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
-    async fn recover_existing_reservation_is_exact_and_never_creates_a_journal() {
-        let (_temp, wallet) = test_wallet().await;
-        let absent_id = reservation_id("recover-reservation-absent");
-        assert!(
-            wallet
-                .recover_locked_payment_reservation(
-                    FederationId::dummy(),
-                    &absent_id,
-                    &[reservation_preflight(1)],
-                    Amount::ZERO,
-                )
-                .await
-                .unwrap()
-                .is_none()
-        );
-        assert!(load_reservation(&wallet, &absent_id).await.is_none());
-
-        let existing_id = reservation_id("recover-reservation-existing");
-        seed_reservation(&wallet, &existing_id, vec![[1; 32]], vec![false]).await;
-        assert!(
-            wallet
-                .recover_locked_payment_reservation(
-                    FederationId::dummy(),
-                    &existing_id,
-                    &[reservation_preflight(1)],
-                    Amount::ZERO,
-                )
-                .await
-                .unwrap()
-                .is_some()
-        );
-        assert_eq!(
-            load_reservation(&wallet, &existing_id)
-                .await
-                .unwrap()
-                .members[0]
-                .state,
-            StoredLockedPaymentMemberState::Held,
-        );
-
-        let error = wallet
-            .recover_locked_payment_reservation(
-                FederationId::dummy(),
-                &existing_id,
-                &[reservation_preflight(2)],
-                Amount::ZERO,
-            )
-            .await
-            .unwrap_err();
-        assert!(
-            error.to_string().contains("quote order changed"),
-            "{error:#}"
-        );
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
-    async fn duplicate_semantic_quote_ids_fail_before_wallet_planning() {
-        let (_temp, wallet) = test_wallet().await;
-        let reservation_id = reservation_id("duplicate-quotes");
-        let error = wallet
-            .reserve_locked_payments(
-                FederationId::dummy(),
-                &reservation_id,
-                &[reservation_preflight(1), reservation_preflight(1)],
-            )
-            .await
-            .unwrap_err();
-
-        assert!(
-            error.to_string().contains("duplicate quote ids"),
-            "{error:#}"
-        );
-        assert!(load_reservation(&wallet, &reservation_id).await.is_none());
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
-    async fn same_quote_with_a_different_output_plan_fails_closed() {
-        let (_temp, wallet) = test_wallet().await;
-        let reservation_id = reservation_id("plan-mismatch");
-        seed_reservation(&wallet, &reservation_id, vec![[1; 32]], vec![false]).await;
-        let blind_nonce = BlindNonce(tbs::BlindedMessage(bls12_381::G1Affine::generator()));
-        let changed = LockedPaymentPreflight::mint_v1(
-            QuoteId([1; 32]),
-            vec![locked_payment::IssuanceRequest {
-                amount: Amount::from_msats(1_000),
-                blind_nonce,
-            }],
-        );
-
-        let error = wallet
-            .reserve_locked_payments(FederationId::dummy(), &reservation_id, &[changed])
-            .await
-            .unwrap_err();
-        assert!(
-            error.to_string().contains("output plan changed"),
-            "{error:#}"
-        );
-        assert_eq!(
-            load_reservation(&wallet, &reservation_id)
-                .await
-                .unwrap()
-                .members[0]
-                .state,
-            StoredLockedPaymentMemberState::Held,
-        );
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
-    async fn partial_start_journal_survives_wallet_drop_and_reopen() {
-        let temp = tempfile::tempdir().unwrap();
-        let reservation_id = reservation_id("reopen-partial-start");
-        let wallet = Wallet::open(temp.path().to_owned(), &crate::WalletSecret([42; 64]))
-            .await
-            .unwrap();
-        seed_reservation(
-            &wallet,
-            &reservation_id,
-            vec![[1; 32], [2; 32]],
-            vec![false, false],
-        )
-        .await;
-        let reservation = LockedPaymentReservation {
-            key: payment_reservation_key(&reservation_id),
-            reservation_id: reservation_id.clone(),
-        };
-        wallet
-            .start_reserved_locked_payment(&reservation, QuoteId([1; 32]))
-            .await
-            .unwrap();
-        drop(wallet);
-
-        let reopened = Wallet::open(temp.path().to_owned(), &crate::WalletSecret([42; 64]))
-            .await
-            .unwrap();
-        let reconstructed = reopened
-            .reserve_locked_payments(
-                FederationId::dummy(),
-                &reservation_id,
-                &[reservation_preflight(1), reservation_preflight(2)],
-            )
-            .await
-            .expect("partial journal reconstructs without planning consumed value again");
-        reopened
-            .start_reserved_locked_payment(&reconstructed, QuoteId([2; 32]))
-            .await
-            .unwrap();
-        assert!(
-            load_reservation(&reopened, &reservation_id)
-                .await
-                .unwrap()
-                .members
-                .iter()
-                .all(|member| member.state == StoredLockedPaymentMemberState::Started)
-        );
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
-    async fn nonzero_reserve_floor_journal_recovers_after_wallet_drop_and_reopen() {
-        let temp = tempfile::tempdir().unwrap();
-        let reservation_id = reservation_id("reopen-nonzero-floor");
-        let required_reserve = Amount::from_msats(5_000);
-        let preflight = reservation_preflight(1);
-        let wallet = Wallet::open(temp.path().to_owned(), &crate::WalletSecret([42; 64]))
-            .await
-            .unwrap();
-        {
-            // Scope the derived handle so dropping the wallet below releases
-            // the reservation database before the same directory reopens.
-            let database = reservation_db(&wallet.database);
-            let mut tx = database.begin_transaction().await;
-            tx.raw_insert_bytes(
-                &payment_reservation_key(&reservation_id),
-                &StoredLockedPaymentReservation {
-                    version: PAYMENT_RESERVATION_VERSION,
-                    federation_id: FederationId::dummy(),
-                    required_reserve_msats: required_reserve.msats,
-                    members: vec![StoredLockedPaymentMember {
-                        quote_id: preflight.quote_id().0,
-                        plan_hash: preflight.plan_hash(),
-                        debit_msats: 1_000,
-                        state: StoredLockedPaymentMemberState::Held,
-                    }],
-                }
-                .consensus_encode_to_vec(),
-            )
-            .await
-            .unwrap();
-            tx.commit_tx().await;
-        }
-        wallet
-            .reserve_locked_payments_with_reserve(
-                FederationId::dummy(),
-                &reservation_id,
-                std::slice::from_ref(&preflight),
-                required_reserve,
-            )
-            .await
-            .expect("fee-bearing journal with a floor reconstructs");
-        drop(wallet);
-
-        let reopened = Wallet::open(temp.path().to_owned(), &crate::WalletSecret([42; 64]))
-            .await
-            .unwrap();
-        let recovered = reopened
-            .recover_locked_payment_reservation(
-                FederationId::dummy(),
-                &reservation_id,
-                std::slice::from_ref(&preflight),
-                required_reserve,
-            )
-            .await
-            .expect("matching floor recovers the durable journal")
-            .expect("journal exists after reopen");
-        assert_eq!(recovered.reservation_id(), &reservation_id);
-
-        let error = reopened
-            .recover_locked_payment_reservation(
-                FederationId::dummy(),
-                &reservation_id,
-                std::slice::from_ref(&preflight),
-                Amount::ZERO,
-            )
-            .await
-            .unwrap_err();
-        assert!(
-            error.to_string().contains("required balance floor changed"),
-            "{error:#}"
-        );
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
-    async fn guardian_fee_remittance_refuses_held_locked_payment_value() {
-        let (_temp, wallet) = test_wallet().await;
-        seed_reservation(
-            &wallet,
-            &reservation_id("remittance-hold"),
-            vec![[1; 32]],
-            vec![false],
-        )
-        .await;
-        let account: stability_pool_common::Account = serde_json::from_value(serde_json::json!({
-            "acc_type": "BtcDepositor",
-            "pub_keys": ["031b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f"],
-            "threshold": 1
-        }))
-        .unwrap();
-
-        let error = wallet
-            .deposit_to_btc_balance(
-                FederationId::dummy(),
-                account.id(),
-                Amount::from_msats(1_000),
-                Vec::new(),
-            )
-            .await
-            .unwrap_err();
-        assert!(
-            error
-                .to_string()
-                .contains("locked-payment value is reserved"),
-            "{error:#}"
-        );
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
-    async fn whole_release_tombstone_survives_a_lost_fa_checkpoint() {
-        let temp = tempfile::tempdir().unwrap();
-        let reservation_id = reservation_id("reopen-released-aggregate");
-        let wallet = Wallet::open(temp.path().to_owned(), &crate::WalletSecret([42; 64]))
-            .await
-            .unwrap();
-        seed_reservation(
-            &wallet,
-            &reservation_id,
-            vec![[1; 32], [2; 32]],
-            vec![false, false],
-        )
-        .await;
-        wallet
-            .release_locked_payment_reservation(LockedPaymentReservation {
-                key: payment_reservation_key(&reservation_id),
-                reservation_id: reservation_id.clone(),
-            })
-            .await
-            .unwrap();
-        drop(wallet);
-
-        let reopened = Wallet::open(temp.path().to_owned(), &crate::WalletSecret([42; 64]))
-            .await
-            .unwrap();
-        let reconstructed = reopened
-            .reserve_locked_payments(
-                FederationId::dummy(),
-                &reservation_id,
-                &[reservation_preflight(1), reservation_preflight(2)],
-            )
-            .await
-            .expect("released tombstone reconstructs without a joined or funded client");
-        reopened
-            .release_locked_payment_reservation(reconstructed)
-            .await
-            .expect("release replay is idempotent after lost FA checkpoint");
-        assert!(
-            load_reservation(&reopened, &reservation_id)
-                .await
-                .unwrap()
-                .members
-                .iter()
-                .all(|member| member.state == StoredLockedPaymentMemberState::Released)
-        );
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
-    async fn concurrent_member_starts_preserve_every_flag() {
-        let (_temp, wallet) = test_wallet().await;
-        let reservation_id = reservation_id("concurrent-starts");
-        seed_reservation(
-            &wallet,
-            &reservation_id,
-            vec![[1; 32], [2; 32]],
-            vec![false, false],
-        )
-        .await;
-        let reservation = LockedPaymentReservation {
-            key: payment_reservation_key(&reservation_id),
-            reservation_id: reservation_id.clone(),
-        };
-
-        let (first, second) = tokio::join!(
-            wallet.start_reserved_locked_payment(&reservation, QuoteId([1; 32])),
-            wallet.start_reserved_locked_payment(&reservation, QuoteId([2; 32])),
-        );
-        first.unwrap();
-        second.unwrap();
-        assert!(
-            load_reservation(&wallet, &reservation_id)
-                .await
-                .unwrap()
-                .members
-                .iter()
-                .all(|member| member.state == StoredLockedPaymentMemberState::Started)
-        );
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
-    async fn prepared_or_ambiguous_member_cannot_be_released_without_wallet_terminal_proof() {
-        let (_temp, wallet) = test_wallet().await;
-        let reservation_id = reservation_id("terminal-proof");
-        seed_reservation(
-            &wallet,
-            &reservation_id,
-            vec![[1; 32], [2; 32]],
-            vec![true, true],
-        )
-        .await;
-
-        let forged = LockedPaymentTerminalRelease {
-            key: payment_reservation_key(&reservation_id),
-            quote_id: QuoteId([1; 32]),
-            plan_hash: [0; 32],
-            debit_msats: 1,
-        };
-        assert!(wallet.release_locked_payment_member(forged).await.is_err());
-        assert!(
-            wallet
-                .release_locked_payment_reservation(LockedPaymentReservation {
-                    key: payment_reservation_key(&reservation_id),
-                    reservation_id: reservation_id.clone(),
-                })
-                .await
-                .is_err(),
-            "a started aggregate cannot be released wholesale",
-        );
-        assert!(
-            load_reservation(&wallet, &reservation_id)
-                .await
-                .unwrap()
-                .members
-                .iter()
-                .all(|member| member.state == StoredLockedPaymentMemberState::Started)
-        );
-
-        let proof = wallet
-            .record_locked_payment_terminal(&reservation_id, QuoteId([1; 32]))
-            .await
-            .unwrap();
-        wallet.release_locked_payment_member(proof).await.unwrap();
-        let stored = load_reservation(&wallet, &reservation_id).await.unwrap();
-        assert_eq!(
-            stored.members[0].state,
-            StoredLockedPaymentMemberState::Released
-        );
-        assert_eq!(
-            stored.members[1].state,
-            StoredLockedPaymentMemberState::Started
-        );
-        assert!(
-            wallet
-                .release_locked_payment_reservation(LockedPaymentReservation {
-                    key: payment_reservation_key(&reservation_id),
-                    reservation_id: reservation_id.clone(),
-                })
-                .await
-                .is_err(),
-            "a terminal sibling cannot turn a post-output journal into a whole release",
-        );
-
-        // Replaying terminal observation and release is idempotent.
-        let proof = wallet
-            .record_locked_payment_terminal(&reservation_id, QuoteId([1; 32]))
-            .await
-            .unwrap();
-        wallet.release_locked_payment_member(proof).await.unwrap();
-    }
 
     #[test]
     fn exact_preflight_cost_includes_every_foreign_output_fee() {

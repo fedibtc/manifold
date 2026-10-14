@@ -13,7 +13,7 @@ const CREATING_STATE: &str = concat!(
     r#"{"creating":{"federation_name":"Fed","federation_size":7,"pool":[],"stage":{"buying":{"purchase_id":"purchase-1","request":{"#,
     r#""federation_size":7,"plan":"infinite_best_effort","#,
     r#""fedimintd_versions":{"minimum":{"major":0,"minor":6,"patch":0},"maximum_exclusive":{"major":0,"minor":6,"patch":1}},"fedimintd_dkg_version":{"major":0,"minor":6,"vendor":"fedi"}},"phase":"acquiring_seats","seats":[],"#,
-    r#""freshness":"unsynced","payment_outputs_started":false,"last_error":null}}}}"#
+    r#""freshness":"unsynced","last_error":null}}}}"#
 );
 fn capture(operation: impl FnOnce(&mut CliOutput<'_>) -> anyhow::Result<()>) -> (String, String) {
     let mut stdout = Vec::new();
@@ -52,7 +52,7 @@ fn creating_state_json_has_exact_schema_on_stdout() {
     assert_eq!(
         stdout,
         concat!(
-            r#"{"creating":{"federation_name":"Fed","federation_size":7,"pool":[],"stage":{"buying":{"purchase_id":"purchase-1","request":{"federation_size":7,"plan":"infinite_best_effort","fedimintd_versions":{"minimum":{"major":0,"minor":6,"patch":0},"maximum_exclusive":{"major":0,"minor":6,"patch":1}},"fedimintd_dkg_version":{"major":0,"minor":6,"vendor":"fedi"}},"phase":"acquiring_seats","seats":[{"index":2,"fman_id":"aa4fc8665f5696e33db7e1a572e3b0f5b3d615837b0f362dcb1c8068b098c7b4","locator":{"version":1,"endpoint_addr":{"id":"8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c","addrs":[]},"service_pubkey":"4d4b6cd1361032ca9bd2aeb9d900aa4d45d9ead80ac9423374c451a7254d0766"},"seat_id":null,"guardian_code":null,"phase":"quote_ready","freshness":"unsynced"}],"freshness":"unsynced","payment_outputs_started":false,"last_error":null}}}}"#,
+            r#"{"creating":{"federation_name":"Fed","federation_size":7,"pool":[],"stage":{"buying":{"purchase_id":"purchase-1","request":{"federation_size":7,"plan":"infinite_best_effort","fedimintd_versions":{"minimum":{"major":0,"minor":6,"patch":0},"maximum_exclusive":{"major":0,"minor":6,"patch":1}},"fedimintd_dkg_version":{"major":0,"minor":6,"vendor":"fedi"}},"phase":"acquiring_seats","seats":[{"index":2,"fman_id":"aa4fc8665f5696e33db7e1a572e3b0f5b3d615837b0f362dcb1c8068b098c7b4","locator":{"version":1,"endpoint_addr":{"id":"8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c","addrs":[]},"service_pubkey":"4d4b6cd1361032ca9bd2aeb9d900aa4d45d9ead80ac9423374c451a7254d0766"},"seat_id":null,"guardian_code":null,"phase":"quote_ready","freshness":"unsynced"}],"freshness":"unsynced","last_error":null}}}}"#,
             "\n"
         )
     );

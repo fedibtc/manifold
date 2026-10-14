@@ -15,102 +15,7 @@ use fedimint_core::config::ClientConfig;
 use fedimint_core::task::{MaybeSend, MaybeSync};
 use fedimint_derive_secret::{ChildId, DerivableSecret};
 
-use crate::{
-    FaError, FaResult, FedimintFederationId, GuardianFeeAccount, PaymentRequirements,
-    PaymentReservationId, SeatPaymentRequirement,
-};
-
-/// One verified paid quote bound to its public requirement by `fa-client`.
-///
-/// The fields are intentionally sealed and the type is not serializable. A
-/// payment adapter cannot accidentally zip two independently ordered slices or
-/// substitute an unrelated 32-byte value for the protocol-owned quote id.
-pub struct ExactSeatPaymentPreflight<'a> {
-    requirement: &'a SeatPaymentRequirement,
-    quote: &'a SignatureVerified<GetQuoteResponse>,
-}
-
-impl ExactSeatPaymentPreflight<'_> {
-    /// Consumer-facing requirement for this exact quote.
-    #[must_use]
-    pub fn requirement(&self) -> &SeatPaymentRequirement {
-        self.requirement
-    }
-
-    /// Signature-verified quote whose locked outputs and fees must be checked.
-    #[must_use]
-    pub fn quote(&self) -> &SignatureVerified<GetQuoteResponse> {
-        self.quote
-    }
-
-    /// Semantic quote identity used only at the wallet operation boundary.
-    #[must_use]
-    pub fn quote_id(&self) -> fedi_decentralized_service_manifold_guardian::QuoteId {
-        self.requirement.quote_id
-    }
-}
-
-/// Exact aggregate funding preflight assembled by `fa-client`.
-///
-/// Each seat binds a requirement to the verified quote that generated it.
-/// The aggregate total remains available without reconstructing policy in a
-/// wallet adapter. This value is read-only and non-serializable.
-pub struct ExactPaymentPreflight<'a> {
-    seats: Vec<ExactSeatPaymentPreflight<'a>>,
-    total_msats: u64,
-}
-
-impl<'a> ExactPaymentPreflight<'a> {
-    pub(crate) fn new(
-        requirements: &'a PaymentRequirements,
-        quotes: &'a [SignatureVerified<GetQuoteResponse>],
-    ) -> FaResult<Self> {
-        if requirements.seats.len() != quotes.len() {
-            return Err(FaError::Storage(
-                "payment requirement and verified quote counts differ".to_owned(),
-            ));
-        }
-        let unique_quote_ids = requirements
-            .seats
-            .iter()
-            .map(|requirement| requirement.quote_id)
-            .collect::<std::collections::BTreeSet<_>>();
-        if unique_quote_ids.len() != requirements.seats.len() {
-            return Err(FaError::Storage(
-                "payment aggregate contains duplicate semantic quote ids".to_owned(),
-            ));
-        }
-        let seats = requirements
-            .seats
-            .iter()
-            .zip(quotes)
-            .map(|(requirement, quote)| {
-                if quote.quote_id() != requirement.quote_id {
-                    return Err(FaError::Storage(
-                        "payment requirement is not bound to its verified quote".to_owned(),
-                    ));
-                }
-                Ok(ExactSeatPaymentPreflight { requirement, quote })
-            })
-            .collect::<FaResult<Vec<_>>>()?;
-        Ok(Self {
-            seats,
-            total_msats: requirements.total_msats,
-        })
-    }
-
-    /// Exact paid seats in stable formation order.
-    #[must_use]
-    pub fn seats(&self) -> &[ExactSeatPaymentPreflight<'a>] {
-        &self.seats
-    }
-
-    /// Checked aggregate quote face value.
-    #[must_use]
-    pub fn total_msats(&self) -> u64 {
-        self.total_msats
-    }
-}
+use crate::{FedimintFederationId, GuardianFeeAccount};
 
 /// Consumer-owned stable root for the FA key family.
 ///
@@ -198,33 +103,17 @@ pub struct FaPaymentError {
     message: String,
 }
 
-/// Recover-only result for one exact aggregate wallet reservation.
-///
-/// `Absent` is authoritative: the wallet checked the deterministic id and
-/// exact preflight without creating a journal. Any binding mismatch, storage
-/// failure, or ambiguous read is an error instead.
-#[derive(Clone, Debug, Eq, PartialEq)]
-#[must_use]
-pub enum PaymentReservationRecovery<R> {
-    /// The exact durable reservation already exists and can be resumed.
-    Existing(R),
-    /// The exact deterministic reservation does not exist.
-    Absent,
-}
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum FaPaymentErrorKind {
     Other,
-    DefinitiveInsufficientFundsWithoutReservation,
+    InsufficientFunds,
 }
 
 impl FaPaymentError {
-    /// Create a sanitized payment error with no value-safe cleanup proof.
+    /// Create a sanitized payment error.
     ///
-    /// Reservation binding mismatches, storage failures, and ambiguous or
-    /// lost results after a same-id journal may have been persisted must use
-    /// this constructor. The formation remains durable so the exact reserve
-    /// operation can be retried or reconstructed.
+    /// Storage failures and ambiguous or lost results use this constructor.
+    /// The seat keeps its quote, and recovery asks the wallet again.
     #[must_use]
     pub fn new(message: impl Into<String>) -> Self {
         Self {
@@ -233,46 +122,34 @@ impl FaPaymentError {
         }
     }
 
-    /// Report definite insufficient funds before creating a reservation.
+    /// Report that the wallet cannot pay a seat, and proved that it started
+    /// no payment for it.
     ///
-    /// This classification is the wallet adapter's proof that the reserve
-    /// operation failed its balance check before it created or observed any
-    /// durable journal for this reservation id. It is the only reserve error
-    /// that permits selected formation to return to `Idle`. Never use it for
-    /// a same-id binding mismatch, a storage error, or any response whose loss
-    /// could hide a successfully persisted journal.
+    /// The purchase then ends with the seats it bought. Never use this for a
+    /// storage error or for a result whose loss could hide a started payment.
     #[must_use]
-    pub fn insufficient_funds_without_reservation(message: impl Into<String>) -> Self {
+    pub fn insufficient_funds(message: impl Into<String>) -> Self {
         Self {
-            kind: FaPaymentErrorKind::DefinitiveInsufficientFundsWithoutReservation,
+            kind: FaPaymentErrorKind::InsufficientFunds,
             message: message.into(),
         }
     }
 
-    pub(crate) fn proves_insufficient_funds_without_reservation(&self) -> bool {
-        self.kind == FaPaymentErrorKind::DefinitiveInsufficientFundsWithoutReservation
+    pub(crate) fn proves_insufficient_funds(&self) -> bool {
+        self.kind == FaPaymentErrorKind::InsufficientFunds
     }
 }
 
 /// Consumer wallet operations required by formation.
+///
+/// `fa-client` pays seats one at a time. Each payment is bound to one exact
+/// signed quote, and the wallet recovers it by that quote alone.
 pub trait FaPayments: Send + Sync + 'static {
     /// Consumer-owned state needed only if a paid presentation is refused.
     ///
     /// It deliberately has no serialization bound: refund secrets stay in
     /// the wallet implementation and never enter `fa-client` storage.
     type RefundContext: Send;
-
-    /// Wallet-private ownership proof for one exact aggregate reservation.
-    ///
-    /// The wallet reconstructs the same capability when the deterministic
-    /// reservation id is presented after a crash. `fa-client` carries it
-    /// across the aggregate but starts new per-seat value movement strictly
-    /// one member at a time.
-    type PaymentReservation: Clone + Send + Sync;
-
-    /// Wallet-owned proof that one exact aggregate member is terminally safe
-    /// to release. Callers cannot synthesize this from ids or quote bytes.
-    type TerminalReleaseProof: Send;
 
     /// Return admitted federation ids the consumer can currently pay from.
     ///
@@ -283,149 +160,64 @@ pub trait FaPayments: Send + Sync + 'static {
         admitted: &[FederationId],
     ) -> Result<Vec<FederationId>, FaPaymentError>;
 
-    /// Recover one exact aggregate reservation without creating wallet state.
-    ///
-    /// This probe runs before selected-admission freshness checks so a wallet
-    /// journal whose successful creation response was lost can still be
-    /// reconstructed and released after the preview expires or the verifier
-    /// environment changes. Implementations must validate an existing
-    /// journal against `reservation_id` and the complete exact preflight.
-    /// Return [`PaymentReservationRecovery::Absent`] only after an
-    /// authoritative lookup proves that no same-id journal exists. Binding
-    /// mismatch, storage failure, and ambiguous lookup use
-    /// [`FaPaymentError::new`]; this method must never create, fund, reserve,
-    /// or submit anything.
-    async fn recover_payment_reservation(
-        &self,
-        reservation_id: &PaymentReservationId,
-        preflight: &ExactPaymentPreflight<'_>,
-    ) -> Result<PaymentReservationRecovery<Self::PaymentReservation>, FaPaymentError>;
-
-    /// Durably reserve one exact aggregate without starting payment outputs.
-    ///
-    /// This value-free preflight runs after every signed quote has been
-    /// verified. Implementations must check the selected wallet can cover the
-    /// aggregate face value, transaction fees, and required reserve.
-    /// The verified quotes expose the exact locked-output generations and
-    /// issuance sets needed to calculate wallet fees; they correspond one for
-    /// one, in seat order, with `requirements.seats`. Implementations must not
-    /// generate outputs or spend. They journal an idempotent reservation under
-    /// `reservation_id`, binding the payer, exact signed quotes/output plans,
-    /// virtual value, fee-aware logical debit allocations, and required
-    /// reserve. An adapter may independently dry-run each exact member to
-    /// calculate those allocations, but the aggregate check must be based on
-    /// total spendable value and must not require disjoint physical notes for
-    /// members that `fa-client` settles sequentially. At submission it must
-    /// re-check the current transaction's net cost under its global spend
-    /// guard and must not commit a payment that would leave any sibling
-    /// allocation or required reserve unfunded after change. Repeating the
-    /// same id and exact
-    /// preflight reconstructs the reservation after a crash; the same id with
-    /// different terms fails closed. `fa-client` persists the id before it
-    /// arms the output boundary. Return
-    /// [`FaPaymentError::insufficient_funds_without_reservation`] only when a
-    /// balance shortfall was proven before creating or observing a durable
-    /// same-id journal. Binding mismatches, storage failures, and ambiguous or
-    /// lost post-journal results use [`FaPaymentError::new`] so recovery keeps
-    /// the formation and retries this exact id.
-    async fn reserve_payment_requirements(
-        &self,
-        reservation_id: &PaymentReservationId,
-        preflight: &ExactPaymentPreflight<'_>,
-    ) -> Result<Self::PaymentReservation, FaPaymentError>;
-
-    /// Release a reservation only after the wallet proves that no named
-    /// payment output started and no value or recovery entitlement depends on
-    /// it. A successful return is the consumer-owned wallet's authoritative
-    /// proof that the exact reconstructed reservation is gone; `fa-client`
-    /// may then clear only the matching durable reservation id An error, timeout, cancellation, or dropped future proves
-    /// nothing and must retain the id and exact recovery state. Dropping a
-    /// capability is never release; ambiguity fails closed.
-    async fn release_payment_reservation(
-        &self,
-        reservation: Self::PaymentReservation,
-    ) -> Result<(), FaPaymentError>;
-
-    /// Idempotently release one exact member after the wallet has proved its
-    /// funding operation rejected and every automatically refunded payer input
-    /// is spendable again, or its MG-signed refund was settled.
-    /// Other aggregate members remain consumed or reserved. This must finish
-    /// before `fa-client` drops the seat from its purchase.
-    async fn release_seat_payment_reservation(
-        &self,
-        proof: Self::TerminalReleaseProof,
-    ) -> Result<(), FaPaymentError>;
-
     /// Form the FA's mint-generation belief and quote-request refund outputs.
     ///
-    /// This runs while the formation is still value-safe — before wallet
-    /// output generation is durably armed — so it **must commit no
+    /// This runs before the seat's payment can start, so it **must commit no
     /// value and create no wallet state whose loss would strand funds**:
     /// generating blind nonces and reporting the mint generation is fine,
     /// but nothing may be spent, locked, or made unrecoverable-if-forgotten.
-    /// [`FaClient::cancel_creation`](crate::FaClient::cancel_creation)
-    /// wipes the FA purchase state without consulting the wallet whenever
-    /// output generation was never durably armed
-    /// (`specs/ARCH-fa-client.md`); an implementation that
-    /// committed value here would silently break that value-safety
-    /// boundary.
     async fn prepare_quote_refund(
         &self,
         federation_id: &FederationId,
         plan: &Plan,
     ) -> Result<RefundIssuance, FaPaymentError>;
 
-    /// Recover an existing payment attempt for an exact verified quote.
+    /// Recover the payment of an exact verified quote, if one started.
     ///
     /// This is a read/reconstruction-only operation: [`SeatPaymentRecovery::Prepared`]
     /// returns the exact payment evidence and matching refund context needed
     /// to replay `CreateSeat` when funding for this quote already exists.
-    /// Wallets must durably establish this recoverability before committing
-    /// any spend. `Prepared` may be returned only after consensus accepted the
-    /// exact transaction and every payer-owned primary-module change output is
-    /// final and spendable; recovery must await that same finality rather than
-    /// submit a replacement operation. A terminally rejected funding
-    /// operation must be distinguished from an operation that is still
-    /// pending or recoverable. `Rejected` is terminal only after all exact
-    /// inputs consumed by the rejected transaction have been restored by
-    /// accepted refund transactions and every resulting payer output is final
-    /// and spendable, so `fa-client` can safely replace that exact quote.
+    /// `Prepared` may be returned only after consensus accepted the exact
+    /// transaction and every payer-owned primary-module change output is
+    /// final and spendable; recovery must await that same finality rather
+    /// than submit a replacement operation. `Rejected` is terminal only after
+    /// all exact inputs consumed by the rejected transaction have been
+    /// restored by accepted refund transactions and every resulting payer
+    /// output is final and spendable. `NotStarted` proves that no funding
+    /// operation for this quote exists.
     async fn recover_seat_payment(
         &self,
-        reservation_id: &PaymentReservationId,
         quote: &SignatureVerified<GetQuoteResponse>,
-    ) -> Result<SeatPaymentRecovery<Self::RefundContext, Self::TerminalReleaseProof>, FaPaymentError>;
+    ) -> Result<SeatPaymentRecovery<Self::RefundContext>, FaPaymentError>;
 
-    /// Start funding a verified paid quote and prepare its `CreateSeat`
-    /// presentation.
+    /// Pay a verified paid quote and prepare its `CreateSeat` presentation.
     ///
-    /// `fa-client` handles free quotes itself and calls this method only for a
-    /// freshly journaled paid quote or after a recover-only probe proved that
-    /// no funding began. Before committing any spend, the wallet must make the
-    /// exact presentation and matching refund context recoverable through
+    /// `fa-client` calls this only after it durably bound the quote to its
+    /// seat, and only when the wallet proved that no funding began. Before
+    /// committing any spend, the wallet must make the exact presentation and
+    /// matching refund context recoverable through
     /// [`FaPayments::recover_seat_payment`]. A successful return has the same
     /// finality contract as recovered `Prepared`: the exact Fedimint
     /// transaction is accepted and its payer-owned change is already
-    /// spendable, so `fa-client` may durably checkpoint this member and start
-    /// the next one.
+    /// spendable. Return [`FaPaymentError::insufficient_funds`] only when the
+    /// balance check failed before any funding operation began.
     async fn create_seat_payment(
         &self,
-        reservation: &Self::PaymentReservation,
         quote: &SignatureVerified<GetQuoteResponse>,
     ) -> Result<PreparedSeatPayment<Self::RefundContext>, FaPaymentError>;
 
     /// Settle an MG-signed refusal into the consumer wallet.
     ///
     /// The exact same context/refund replay must be idempotent. Formation can
-    /// be interrupted after the wallet settles but before `fa-client` clears
-    /// its quote, and recovery will invoke this operation again. A successful
-    /// return means the recovered refund value is spendable, not merely
-    /// accepted by consensus.
+    /// be interrupted after the wallet settles but before `fa-client` drops
+    /// the seat, and recovery will invoke this operation again. A successful
+    /// return means the refunded value is spendable, not merely accepted by
+    /// consensus.
     async fn settle_seat_refund(
         &self,
         context: Self::RefundContext,
         refund: RefundTransaction,
-    ) -> Result<SettledSeatRefund<Self::TerminalReleaseProof>, FaPaymentError>;
+    ) -> Result<(), FaPaymentError>;
 }
 
 /// A paid `CreateSeat` presentation plus wallet-private refund state.
@@ -445,23 +237,14 @@ pub struct PreparedSeatPayment<R> {
 }
 
 /// Authoritative wallet recovery outcome for one exact quote.
-pub enum SeatPaymentRecovery<R, T> {
+pub enum SeatPaymentRecovery<R> {
     /// The wallet can prove no funding operation began.
     NotStarted,
     /// Funding exists and its exact presentation can be replayed.
     Prepared(PreparedSeatPayment<R>),
-    /// The funding operation was rejected, its original inputs were restored
-    /// by accepted refund transactions, and every restored payer output is
-    /// spendable, so the quote may safely be replaced.
-    Rejected(T),
-}
-
-/// A completed signed refund plus wallet-owned terminal release authority.
-pub struct SettledSeatRefund<T> {
-    /// Value restored to the payer wallet.
-    pub amount_msats: u64,
-    /// Opaque proof that the exact aggregate member may now be released.
-    pub release_proof: T,
+    /// The funding operation was rejected, and its original inputs were
+    /// restored and are spendable.
+    Rejected,
 }
 
 /// Sanitized MG connection failure.

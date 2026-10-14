@@ -13,8 +13,7 @@ use fa_client::{
     LiquidityProviderConnectorError, LiquidityRequestIntent, MaintenanceRunOptions,
     ManifoldGuardianCallError, ManifoldGuardianConnector, ManifoldGuardianConnectorError,
     MgCandidateRequirements, MgDiscoveryOptions, MgRegistryQuery, MgSelectionRequest,
-    PaymentReservationRecovery, PlanPreference, PreparedSeatPayment, SeatPaymentRecovery,
-    SeatPaymentRequirement, SettledSeatRefund,
+    PlanPreference, PreparedSeatPayment, SeatPaymentRecovery,
 };
 use fedi_decentralized_domain::BitcoinNetwork;
 use fedi_decentralized_manifold_environment::{ManifoldEnvironment, ManifoldEnvironmentProfile};
@@ -38,10 +37,7 @@ use locked_payments::locked_payment;
 use locked_payments::locked_payment_v2;
 use locked_payments::refund::{PreparedRefund, PreparedRefundV2};
 use nostr_sdk::{Event as NostrEvent, Keys as NostrKeys, PublicKey as NostrPublicKey};
-use payer::{
-    InsufficientLockedPaymentFundsWithoutReservation, LockedPaymentPreflight,
-    LockedPaymentRecovery, LockedPaymentReservation, LockedPaymentTerminalRelease,
-};
+use payer::LockedPaymentRecovery;
 use rand::rngs::OsRng;
 use secp256k1::{Keypair, Secp256k1, SecretKey};
 use wallet::{Wallet, WalletSecret};
@@ -1906,15 +1902,11 @@ enum PreparedRefundAny {
     V1 {
         federation_id: fedimint_core::config::FederationId,
         prepared: PreparedRefund,
-        reservation_id: fa_client::PaymentReservationId,
-        quote_id: QuoteId,
     },
     V2 {
         federation_id: fedimint_core::config::FederationId,
         module: fedimint_core::core::ModuleInstanceId,
         prepared: PreparedRefundV2,
-        reservation_id: fa_client::PaymentReservationId,
-        quote_id: QuoteId,
     },
 }
 
@@ -1936,9 +1928,9 @@ struct PaymentPreflight {
 }
 
 #[derive(Clone, Copy)]
-enum PaymentAttempt<'a> {
+enum PaymentAttempt {
     RecoverOnly,
-    Create(&'a LockedPaymentReservation),
+    Create,
 }
 
 /// A decoded wallet root secret that clears its storage when dropped.
@@ -2253,8 +2245,6 @@ async fn open_wallet(data_dir: PathBuf, secret: WalletRootSecret) -> anyhow::Res
 
 impl FaPayments for CliPayments {
     type RefundContext = PreparedRefundAny;
-    type PaymentReservation = LockedPaymentReservation;
-    type TerminalReleaseProof = LockedPaymentTerminalRelease;
 
     async fn payable_federations(
         &self,
@@ -2269,54 +2259,6 @@ impl FaPayments for CliPayments {
             .cloned()
             .into_iter()
             .collect())
-    }
-
-    async fn recover_payment_reservation(
-        &self,
-        reservation_id: &fa_client::PaymentReservationId,
-        preflight: &fa_client::ExactPaymentPreflight<'_>,
-    ) -> Result<PaymentReservationRecovery<Self::PaymentReservation>, FaPaymentError> {
-        self.recover_exact_payment_reservation(reservation_id, preflight)
-            .await
-            .map(|reservation| match reservation {
-                Some(reservation) => PaymentReservationRecovery::Existing(reservation),
-                None => PaymentReservationRecovery::Absent,
-            })
-            .map_err(|error| FaPaymentError::new(error.to_string()))
-    }
-
-    async fn reserve_payment_requirements(
-        &self,
-        reservation_id: &fa_client::PaymentReservationId,
-        preflight: &fa_client::ExactPaymentPreflight<'_>,
-    ) -> Result<Self::PaymentReservation, FaPaymentError> {
-        self.reserve_exact_payments(reservation_id, preflight)
-            .await
-            .map_err(map_reservation_error)
-    }
-
-    async fn release_payment_reservation(
-        &self,
-        reservation: Self::PaymentReservation,
-    ) -> Result<(), FaPaymentError> {
-        self.wallet
-            .as_ref()
-            .ok_or_else(|| FaPaymentError::new("payment wallet unavailable"))?
-            .release_locked_payment_reservation(reservation)
-            .await
-            .map_err(|error| FaPaymentError::new(error.to_string()))
-    }
-
-    async fn release_seat_payment_reservation(
-        &self,
-        proof: Self::TerminalReleaseProof,
-    ) -> Result<(), FaPaymentError> {
-        self.wallet
-            .as_ref()
-            .ok_or_else(|| FaPaymentError::new("payment wallet unavailable"))?
-            .release_locked_payment_member(proof)
-            .await
-            .map_err(|error| FaPaymentError::new(error.to_string()))
     }
 
     async fn prepare_quote_refund(
@@ -2343,33 +2285,26 @@ impl FaPayments for CliPayments {
 
     async fn recover_seat_payment(
         &self,
-        reservation_id: &fa_client::PaymentReservationId,
         quote: &SignatureVerified<GetQuoteResponse>,
-    ) -> Result<SeatPaymentRecovery<Self::RefundContext, Self::TerminalReleaseProof>, FaPaymentError>
-    {
-        self.prepare_seat_payment(reservation_id, quote, PaymentAttempt::RecoverOnly)
+    ) -> Result<SeatPaymentRecovery<Self::RefundContext>, FaPaymentError> {
+        self.prepare_seat_payment(quote, PaymentAttempt::RecoverOnly)
             .await
-            .map_err(|error| FaPaymentError::new(error.to_string()))
+            .map_err(map_payment_error)
     }
 
     async fn create_seat_payment(
         &self,
-        reservation: &Self::PaymentReservation,
         quote: &SignatureVerified<GetQuoteResponse>,
     ) -> Result<PreparedSeatPayment<Self::RefundContext>, FaPaymentError> {
         match self
-            .prepare_seat_payment(
-                reservation.reservation_id(),
-                quote,
-                PaymentAttempt::Create(reservation),
-            )
+            .prepare_seat_payment(quote, PaymentAttempt::Create)
             .await
         {
             Ok(SeatPaymentRecovery::Prepared(payment)) => Ok(payment),
-            Ok(SeatPaymentRecovery::NotStarted | SeatPaymentRecovery::Rejected(_)) => Err(
+            Ok(SeatPaymentRecovery::NotStarted | SeatPaymentRecovery::Rejected) => Err(
                 FaPaymentError::new("wallet did not start the requested payment"),
             ),
-            Err(error) => Err(FaPaymentError::new(error.to_string())),
+            Err(error) => Err(map_payment_error(error)),
         }
     }
 
@@ -2377,150 +2312,57 @@ impl FaPayments for CliPayments {
         &self,
         context: Self::RefundContext,
         refund: RefundTransaction,
-    ) -> Result<SettledSeatRefund<Self::TerminalReleaseProof>, FaPaymentError> {
+    ) -> Result<(), FaPaymentError> {
         let wallet = self
             .wallet
             .as_ref()
             .ok_or_else(|| FaPaymentError::new("payment wallet is not configured"))?;
-        let settled = match context {
+        // Both refund paths resubmit the exact transaction and resume the
+        // same deterministic reissue, so replay credits the wallet once.
+        match context {
             PreparedRefundAny::V1 {
                 federation_id,
                 prepared,
-                reservation_id,
-                quote_id,
             } => {
                 wallet
-                    .submit_refund_v1(
-                        federation_id,
-                        &refund.0,
-                        prepared,
-                        &reservation_id,
-                        quote_id,
-                    )
+                    .submit_refund_v1(federation_id, &refund.0, prepared)
                     .await
             }
             PreparedRefundAny::V2 {
                 federation_id,
                 module,
                 prepared,
-                reservation_id,
-                quote_id,
             } => {
                 wallet
-                    .submit_refund_v2(
-                        federation_id,
-                        module,
-                        &refund.0,
-                        prepared,
-                        &reservation_id,
-                        quote_id,
-                    )
+                    .submit_refund_v2(federation_id, module, &refund.0, prepared)
                     .await
             }
-        };
-        let (amount, release_proof) = settled
-            .map_err(|error| FaPaymentError::new(error.to_string()))?
-            .into_parts();
-        Ok(SettledSeatRefund {
-            amount_msats: amount.msats,
-            release_proof,
-        })
+        }
+        .map(|_| ())
+        .map_err(|error| FaPaymentError::new(error.to_string()))
     }
 }
 
-fn map_reservation_error(error: anyhow::Error) -> FaPaymentError {
+/// Mark only the wallet's pre-funding balance failure as insufficient funds;
+/// every other error may hide a started payment.
+fn map_payment_error(error: anyhow::Error) -> FaPaymentError {
     let message = error.to_string();
-    if error
-        .downcast_ref::<InsufficientLockedPaymentFundsWithoutReservation>()
-        .is_some()
-    {
-        FaPaymentError::insufficient_funds_without_reservation(message)
+    if matches!(
+        error.downcast_ref::<wallet::WalletError>(),
+        Some(wallet::WalletError::InsufficientLockedPaymentFunds)
+    ) {
+        FaPaymentError::insufficient_funds(message)
     } else {
         FaPaymentError::new(message)
     }
 }
 
 impl CliPayments {
-    async fn exact_wallet_preflights(
-        &self,
-        preflight: &fa_client::ExactPaymentPreflight<'_>,
-    ) -> anyhow::Result<(
-        fedimint_core::config::FederationId,
-        Vec<LockedPaymentPreflight>,
-    )> {
-        let wallet = self.wallet.as_ref().context("paid quote requires wallet")?;
-        let selected = self
-            .selected_federation
-            .as_ref()
-            .context("paid quote requires an explicit payment federation")?;
-        let selected_native: fedimint_core::config::FederationId = selected.0.parse()?;
-        let mut wallet_preflights = Vec::with_capacity(preflight.seats().len());
-        let mut checked_total_msats = 0u64;
-
-        for seat in preflight.seats() {
-            let requirement = seat.requirement();
-            let quote = seat.quote();
-            let mint_v2_module = match quote.terms.payment.as_ref() {
-                Some(PaymentTerms::MintV2 { .. }) => {
-                    // The module id is part of the exact v2 output-plan hash.
-                    Some(wallet.first_mint_v2_module_id(selected_native).await?)
-                }
-                _ => None,
-            };
-            let (amount_msats, wallet_preflight) = concrete_wallet_preflight(
-                selected,
-                requirement,
-                seat.quote_id(),
-                &quote.terms,
-                mint_v2_module,
-            )?;
-            checked_total_msats = add_payment_total(checked_total_msats, amount_msats)?;
-            wallet_preflights.push(wallet_preflight);
-        }
-        validate_aggregate_payment_total(checked_total_msats, preflight.total_msats())?;
-        Ok((selected_native, wallet_preflights))
-    }
-
-    async fn recover_exact_payment_reservation(
-        &self,
-        reservation_id: &fa_client::PaymentReservationId,
-        preflight: &fa_client::ExactPaymentPreflight<'_>,
-    ) -> anyhow::Result<Option<LockedPaymentReservation>> {
-        let wallet = self.wallet.as_ref().context("paid quote requires wallet")?;
-        let (selected, wallet_preflights) = self.exact_wallet_preflights(preflight).await?;
-        // The fa-client reservation path reserves without a caller-owned
-        // wallet floor (see `reserve_locked_payments`), so recovery expects
-        // the same zero floor in the journal.
-        wallet
-            .recover_locked_payment_reservation(
-                selected,
-                reservation_id,
-                &wallet_preflights,
-                fedimint_core::Amount::ZERO,
-            )
-            .await
-            .context("recover exact aggregate payment reservation")
-    }
-
-    async fn reserve_exact_payments(
-        &self,
-        reservation_id: &fa_client::PaymentReservationId,
-        preflight: &fa_client::ExactPaymentPreflight<'_>,
-    ) -> anyhow::Result<LockedPaymentReservation> {
-        let wallet = self.wallet.as_ref().context("paid quote requires wallet")?;
-        let (selected_native, wallet_preflights) = self.exact_wallet_preflights(preflight).await?;
-        wallet
-            .reserve_locked_payments(selected_native, reservation_id, &wallet_preflights)
-            .await
-            .context("exact aggregate payment is not ready")
-    }
-
     async fn prepare_seat_payment(
         &self,
-        reservation_id: &fa_client::PaymentReservationId,
         quote: &SignatureVerified<GetQuoteResponse>,
-        attempt: PaymentAttempt<'_>,
-    ) -> anyhow::Result<SeatPaymentRecovery<PreparedRefundAny, LockedPaymentTerminalRelease>> {
+        attempt: PaymentAttempt,
+    ) -> anyhow::Result<SeatPaymentRecovery<PreparedRefundAny>> {
         let wallet = self.wallet.as_ref().context("paid quote requires wallet")?;
         match quote
             .terms
@@ -2555,19 +2397,14 @@ impl CliPayments {
                 let (prepared, signatures) = match attempt {
                     PaymentAttempt::RecoverOnly => {
                         let signatures = match wallet
-                            .recover_locked_v1(
-                                federation_id,
-                                &issuance,
-                                quote.quote_id().0,
-                                reservation_id,
-                            )
+                            .recover_locked_v1(federation_id, &issuance, quote.quote_id().0)
                             .await?
                         {
                             LockedPaymentRecovery::Absent => {
                                 return Ok(SeatPaymentRecovery::NotStarted);
                             }
-                            LockedPaymentRecovery::Rejected(proof) => {
-                                return Ok(SeatPaymentRecovery::Rejected(proof));
+                            LockedPaymentRecovery::Rejected => {
+                                return Ok(SeatPaymentRecovery::Rejected);
                             }
                             LockedPaymentRecovery::Funded(signatures) => signatures,
                         };
@@ -2578,17 +2415,12 @@ impl CliPayments {
                             signatures,
                         )
                     }
-                    PaymentAttempt::Create(reservation) => {
+                    PaymentAttempt::Create => {
                         let prepared = wallet
                             .prepare_refund_v1(federation_id, &issuance, *refund_nonce)
                             .await?;
                         let signatures = wallet
-                            .pay_reserved_locked_v1(
-                                reservation,
-                                federation_id,
-                                &issuance,
-                                quote.quote_id().0,
-                            )
+                            .pay_locked_v1(federation_id, &issuance, quote.quote_id().0)
                             .await?;
                         (prepared, signatures)
                     }
@@ -2604,8 +2436,6 @@ impl CliPayments {
                     refund_context: PreparedRefundAny::V1 {
                         federation_id,
                         prepared,
-                        reservation_id: reservation_id.clone(),
-                        quote_id: quote.quote_id(),
                     },
                 }))
             }
@@ -2641,20 +2471,14 @@ impl CliPayments {
                 let (prepared, signatures) = match attempt {
                     PaymentAttempt::RecoverOnly => {
                         let signatures = match wallet
-                            .recover_locked_v2(
-                                federation_id,
-                                module,
-                                &issuance,
-                                quote.quote_id().0,
-                                reservation_id,
-                            )
+                            .recover_locked_v2(federation_id, module, &issuance, quote.quote_id().0)
                             .await?
                         {
                             LockedPaymentRecovery::Absent => {
                                 return Ok(SeatPaymentRecovery::NotStarted);
                             }
-                            LockedPaymentRecovery::Rejected(proof) => {
-                                return Ok(SeatPaymentRecovery::Rejected(proof));
+                            LockedPaymentRecovery::Rejected => {
+                                return Ok(SeatPaymentRecovery::Rejected);
                             }
                             LockedPaymentRecovery::Funded((signatures, _)) => signatures,
                         };
@@ -2665,18 +2489,12 @@ impl CliPayments {
                             signatures,
                         )
                     }
-                    PaymentAttempt::Create(reservation) => {
+                    PaymentAttempt::Create => {
                         let prepared = wallet
                             .prepare_refund_v2(federation_id, module, &issuance, *refund_nonce)
                             .await?;
                         let (signatures, _) = wallet
-                            .pay_reserved_locked_v2(
-                                reservation,
-                                federation_id,
-                                module,
-                                &issuance,
-                                quote.quote_id().0,
-                            )
+                            .pay_locked_v2(federation_id, module, &issuance, quote.quote_id().0)
                             .await?;
                         (prepared, signatures)
                     }
@@ -2693,130 +2511,11 @@ impl CliPayments {
                         federation_id,
                         module,
                         prepared,
-                        reservation_id: reservation_id.clone(),
-                        quote_id: quote.quote_id(),
                     },
                 }))
             }
         }
     }
-}
-
-fn concrete_wallet_preflight(
-    selected: &fa_client::FederationId,
-    requirement: &SeatPaymentRequirement,
-    quote_id: QuoteId,
-    terms: &QuoteTerms,
-    mint_v2_module: Option<fedimint_core::core::ModuleInstanceId>,
-) -> anyhow::Result<(u64, LockedPaymentPreflight)> {
-    ensure!(
-        &requirement.payment_federation_id == selected,
-        "payment requirement belongs to a different payment federation"
-    );
-    let payment = terms
-        .payment
-        .as_ref()
-        .context("paid quote has no payment terms")?;
-    let (amount_msats, wallet_preflight) = match payment {
-        PaymentTerms::MintV1 {
-            federation_id,
-            issuance,
-        } => {
-            ensure!(
-                federation_id == selected,
-                "paid quote belongs to a different payment federation"
-            );
-            ensure!(
-                matches!(
-                    terms.request.refund_issuance.as_ref(),
-                    Some(RefundIssuance::MintV1 { .. })
-                ),
-                "quote refund generation mismatch"
-            );
-            let issuance = issuance
-                .iter()
-                .map(|request| {
-                    let decoded = locked_payment::decode_issuance_request(
-                        request.amount_msats,
-                        &request.blind_nonce,
-                    )?;
-                    Ok(locked_payment::IssuanceRequest {
-                        amount: decoded.amount,
-                        blind_nonce: decoded.blind_nonce,
-                    })
-                })
-                .collect::<anyhow::Result<Vec<_>>>()?;
-            let amount_msats = issuance.iter().try_fold(0u64, |total, request| {
-                total
-                    .checked_add(request.amount.msats)
-                    .context("mint-v1 quote amount overflow")
-            })?;
-            (
-                amount_msats,
-                LockedPaymentPreflight::mint_v1(quote_id, issuance),
-            )
-        }
-        PaymentTerms::MintV2 {
-            federation_id,
-            issuance,
-        } => {
-            ensure!(
-                federation_id == selected,
-                "paid quote belongs to a different payment federation"
-            );
-            ensure!(
-                matches!(
-                    terms.request.refund_issuance.as_ref(),
-                    Some(RefundIssuance::MintV2 { .. })
-                ),
-                "quote refund generation mismatch"
-            );
-            let module = mint_v2_module
-                .context("quote requires mint-v2 but the selected wallet has no mint-v2 module")?;
-            let issuance = issuance
-                .iter()
-                .map(|request| {
-                    Ok(locked_payment_v2::IssuanceRequest {
-                        denomination: locked_payment_v2::denomination_from_amount(
-                            request.amount_msats,
-                        )?,
-                        blind_nonce: locked_payment_v2::decode_blinded_message(
-                            &request.blind_nonce,
-                        )?,
-                        tweak: request.tweak,
-                    })
-                })
-                .collect::<anyhow::Result<Vec<_>>>()?;
-            let amount_msats = issuance.iter().try_fold(0u64, |total, request| {
-                total
-                    .checked_add(request.denomination.amount().msats)
-                    .context("mint-v2 quote amount overflow")
-            })?;
-            (
-                amount_msats,
-                LockedPaymentPreflight::mint_v2(quote_id, module, issuance),
-            )
-        }
-    };
-    ensure!(
-        amount_msats == requirement.amount_msats,
-        "payment requirement amount differs from its quote"
-    );
-    Ok((amount_msats, wallet_preflight))
-}
-
-fn add_payment_total(total_msats: u64, amount_msats: u64) -> anyhow::Result<u64> {
-    total_msats
-        .checked_add(amount_msats)
-        .context("aggregate payment amount overflow")
-}
-
-fn validate_aggregate_payment_total(actual_msats: u64, expected_msats: u64) -> anyhow::Result<()> {
-    ensure!(
-        actual_msats == expected_msats,
-        "aggregate payment total differs from its quotes"
-    );
-    Ok(())
 }
 
 #[derive(Clone, Copy)]
@@ -2897,62 +2596,6 @@ mod tests {
     use clap::CommandFactory as _;
 
     use super::*;
-
-    fn test_payment_federation(byte: u8) -> fa_client::FederationId {
-        fa_client::FederationId(format!("{byte:02x}").repeat(32))
-    }
-
-    fn test_locked_request(amount_msats: u64, binding: u8) -> LockedIssuanceRequest {
-        let (issuance, _) = locked_payment::derive_issuance_requests(
-            &[binding; 64],
-            &[binding],
-            &[fedimint_core::Amount::from_msats(amount_msats)],
-        );
-        LockedIssuanceRequest {
-            amount_msats,
-            blind_nonce: issuance[0].blind_nonce.consensus_encode_to_vec(),
-        }
-    }
-
-    fn test_quote_terms(
-        payment_federation: fa_client::FederationId,
-        payment: PaymentTerms,
-        refund_issuance: RefundIssuance,
-        price_msats: u64,
-    ) -> QuoteTerms {
-        let secret = SecretKey::from_byte_array(&[5; 32]).unwrap();
-        let keypair = Keypair::from_secret_key(&Secp256k1::new(), &secret);
-        QuoteTerms {
-            quote_nonce: [7; 32],
-            offer_epoch: OfferEpoch::from_bytes([8; 32]),
-            request: GetQuoteRequest {
-                fa_id: FaId(keypair.x_only_public_key().0),
-                fedimintd_version: "0.11.1-fedi10".parse().unwrap(),
-                federation_size: FederationSize(7),
-                plan: Plan::InfiniteBestEffort { price_msats },
-                payment_federation_id: Some(payment_federation),
-                refund_issuance: Some(refund_issuance),
-            },
-            price_msats,
-            payment: Some(payment),
-        }
-    }
-
-    fn test_requirement(
-        federation_id: fa_client::FederationId,
-        amount_msats: u64,
-    ) -> SeatPaymentRequirement {
-        SeatPaymentRequirement {
-            index: 0,
-            mg_id: NostrPublicKey::parse(
-                "aa4fc8665f5696e33db7e1a572e3b0f5b3d615837b0f362dcb1c8068b098c7b4",
-            )
-            .expect("test MG id parses"),
-            quote_id: QuoteId([3; 32]),
-            payment_federation_id: federation_id,
-            amount_msats,
-        }
-    }
 
     #[test]
     fn registry_query_rejects_a_zero_timeout() {
@@ -3894,192 +3537,6 @@ guardian_fee_pmm = 100
     }
 
     #[test]
-    fn concrete_wallet_preflight_converts_both_mint_generations() {
-        let selected = test_payment_federation(0x11);
-        let v1_request = test_locked_request(128, 1);
-        let v1_terms = test_quote_terms(
-            selected.clone(),
-            PaymentTerms::MintV1 {
-                federation_id: selected.clone(),
-                issuance: vec![v1_request.clone()],
-            },
-            RefundIssuance::MintV1 {
-                refund_nonce: [1; 32],
-                issuance: vec![v1_request.clone()],
-            },
-            128,
-        );
-        let (v1_amount, _) = concrete_wallet_preflight(
-            &selected,
-            &test_requirement(selected.clone(), 128),
-            QuoteId([3; 32]),
-            &v1_terms,
-            None,
-        )
-        .unwrap();
-        assert_eq!(v1_amount, 128);
-
-        // Mint-v1 and mint-v2 use the same consensus-encoded TBS blinded
-        // message, so the generated nonce is valid input to the v2 decoder.
-        let v2_request = LockedIssuanceRequestV2 {
-            amount_msats: 128,
-            blind_nonce: v1_request.blind_nonce,
-            tweak: [9; 16],
-        };
-        let v2_terms = test_quote_terms(
-            selected.clone(),
-            PaymentTerms::MintV2 {
-                federation_id: selected.clone(),
-                issuance: vec![v2_request.clone()],
-            },
-            RefundIssuance::MintV2 {
-                refund_nonce: [2; 32],
-                issuance: vec![v2_request],
-            },
-            128,
-        );
-        let (v2_amount, _) = concrete_wallet_preflight(
-            &selected,
-            &test_requirement(selected.clone(), 128),
-            QuoteId([3; 32]),
-            &v2_terms,
-            Some(fedimint_core::core::ModuleInstanceId::from(7u16)),
-        )
-        .unwrap();
-        assert_eq!(v2_amount, 128);
-    }
-
-    #[test]
-    fn concrete_wallet_preflight_rejects_payer_refund_and_amount_mismatches() {
-        let selected = test_payment_federation(0x11);
-        let other = test_payment_federation(0x22);
-        let request = test_locked_request(128, 2);
-        let valid_terms = test_quote_terms(
-            selected.clone(),
-            PaymentTerms::MintV1 {
-                federation_id: selected.clone(),
-                issuance: vec![request.clone()],
-            },
-            RefundIssuance::MintV1 {
-                refund_nonce: [3; 32],
-                issuance: vec![request.clone()],
-            },
-            128,
-        );
-
-        let wrong_requirement = test_requirement(other.clone(), 128);
-        assert!(
-            concrete_wallet_preflight(
-                &selected,
-                &wrong_requirement,
-                wrong_requirement.quote_id,
-                &valid_terms,
-                None,
-            )
-            .unwrap_err()
-            .to_string()
-            .contains("different payment federation")
-        );
-
-        let wrong_quote_payer = test_quote_terms(
-            selected.clone(),
-            PaymentTerms::MintV1 {
-                federation_id: other,
-                issuance: vec![request.clone()],
-            },
-            RefundIssuance::MintV1 {
-                refund_nonce: [4; 32],
-                issuance: vec![request.clone()],
-            },
-            128,
-        );
-        assert!(
-            concrete_wallet_preflight(
-                &selected,
-                &test_requirement(selected.clone(), 128),
-                QuoteId([3; 32]),
-                &wrong_quote_payer,
-                None,
-            )
-            .unwrap_err()
-            .to_string()
-            .contains("paid quote belongs")
-        );
-
-        let wrong_refund = test_quote_terms(
-            selected.clone(),
-            PaymentTerms::MintV1 {
-                federation_id: selected.clone(),
-                issuance: vec![request.clone()],
-            },
-            RefundIssuance::MintV2 {
-                refund_nonce: [5; 32],
-                issuance: Vec::new(),
-            },
-            128,
-        );
-        assert!(
-            concrete_wallet_preflight(
-                &selected,
-                &test_requirement(selected.clone(), 128),
-                QuoteId([3; 32]),
-                &wrong_refund,
-                None,
-            )
-            .unwrap_err()
-            .to_string()
-            .contains("refund generation mismatch")
-        );
-
-        assert!(
-            concrete_wallet_preflight(
-                &selected,
-                &test_requirement(selected.clone(), 127),
-                QuoteId([3; 32]),
-                &valid_terms,
-                None,
-            )
-            .unwrap_err()
-            .to_string()
-            .contains("amount differs")
-        );
-    }
-
-    #[test]
-    fn concrete_wallet_preflight_checks_internal_and_aggregate_overflow() {
-        let selected = test_payment_federation(0x11);
-        let first = test_locked_request(u64::MAX, 3);
-        let second = test_locked_request(1, 4);
-        let overflowing_terms = test_quote_terms(
-            selected.clone(),
-            PaymentTerms::MintV1 {
-                federation_id: selected.clone(),
-                issuance: vec![first.clone(), second.clone()],
-            },
-            RefundIssuance::MintV1 {
-                refund_nonce: [6; 32],
-                issuance: vec![first, second],
-            },
-            u64::MAX,
-        );
-        assert!(
-            concrete_wallet_preflight(
-                &selected,
-                &test_requirement(selected.clone(), u64::MAX),
-                QuoteId([3; 32]),
-                &overflowing_terms,
-                None,
-            )
-            .unwrap_err()
-            .to_string()
-            .contains("mint-v1 quote amount overflow")
-        );
-        assert!(add_payment_total(u64::MAX, 1).is_err());
-        assert!(validate_aggregate_payment_total(100, 101).is_err());
-        assert!(validate_aggregate_payment_total(101, 101).is_ok());
-    }
-
-    #[test]
     fn static_discovery_does_not_require_peer_badge_trust_configuration() {
         let args = RegistryQueryArgs {
             federation_size: 7,
@@ -4103,21 +3560,21 @@ guardian_fee_pmm = 100
     }
 
     #[test]
-    fn reserve_error_mapping_only_marks_the_pre_journal_balance_proof() {
-        let insufficient = anyhow::Error::new(InsufficientLockedPaymentFundsWithoutReservation)
-            .context("exact aggregate payment is not ready");
+    fn payment_error_mapping_only_marks_the_pre_funding_balance_failure() {
+        let insufficient = anyhow::Error::new(wallet::WalletError::InsufficientLockedPaymentFunds);
         assert_eq!(
-            map_reservation_error(insufficient),
-            FaPaymentError::insufficient_funds_without_reservation(
-                "exact aggregate payment is not ready",
+            map_payment_error(insufficient),
+            FaPaymentError::insufficient_funds(
+                "payment wallet balance cannot cover the locked payment",
             ),
         );
 
-        let binding = anyhow::anyhow!("same reservation id belongs to another plan")
-            .context("exact aggregate payment is not ready");
+        let ambiguous = anyhow::Error::new(wallet::WalletError::Client(anyhow::anyhow!(
+            "fund and submit locked payment"
+        )));
         assert_eq!(
-            map_reservation_error(binding),
-            FaPaymentError::new("exact aggregate payment is not ready"),
+            map_payment_error(ambiguous),
+            FaPaymentError::new("fund and submit locked payment"),
         );
     }
 }

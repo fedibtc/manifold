@@ -417,7 +417,6 @@ async fn selected_verified_zero_price_bootstrap_needs_no_publisher_or_payer() {
 
     federation(&client.status());
     assert_eq!(payment_state.payable_calls.load(Ordering::SeqCst), 0);
-    assert_eq!(payment_state.readiness_calls.load(Ordering::SeqCst), 0);
     assert_eq!(payment_state.create_calls.load(Ordering::SeqCst), 0);
     assert_eq!(
         mg_state.quote_calls.load(Ordering::SeqCst),
@@ -463,7 +462,6 @@ async fn selected_without_payer_rejects_a_priced_offer_before_effects() {
     ));
     assert_needs_new_preview(&client);
     assert_eq!(payment_state.payable_calls.load(Ordering::SeqCst), 0);
-    assert_eq!(payment_state.readiness_calls.load(Ordering::SeqCst), 0);
     assert_eq!(payment_state.create_calls.load(Ordering::SeqCst), 0);
     assert_eq!(mg_state.quote_calls.load(Ordering::SeqCst), 0);
     assert_eq!(mg_state.create_calls.load(Ordering::SeqCst), 0);

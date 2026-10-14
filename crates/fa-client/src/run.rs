@@ -268,14 +268,10 @@ where
                 result
             }
             Work::Purchase(recovery) => match self.drive_purchase(recovery, fa_id, run).await {
-                // The purchase ended before it bought its seats, and the
-                // creation needs a new preview.
-                Err(FaError::SelectionReauthorizationRequired { reason, .. }) => {
-                    self.inner
-                        .progress
-                        .modify(|status| status.reauthorization = Some(reason));
-                    Ok(())
-                }
+                // The purchase ended without some of its seats. Each seat
+                // that left recorded why, and the creation needs a new
+                // preview.
+                Err(FaError::SelectionReauthorizationRequired { .. }) => Ok(()),
                 result => result,
             },
             Work::Formation(recovery) => self.drive_formation(recovery, fa_id, run).await,

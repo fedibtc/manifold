@@ -139,6 +139,11 @@ pub enum WalletError {
         federation_id: FederationId,
     },
 
+    /// No locked payment exists for the quote, and the balance cannot cover
+    /// its current net debit.
+    #[error("payment wallet balance cannot cover the locked payment")]
+    InsufficientLockedPaymentFunds,
+
     /// Any other client failure (open, join, receive).
     #[error(transparent)]
     Client(#[from] anyhow::Error),
@@ -173,14 +178,11 @@ impl From<RefundError> for WalletError {
 /// RocksDB under the wallet data directory, all derived from one root.
 pub struct Wallet {
     data_dir: PathBuf,
-    /// Wallet-wide FA aggregate reservation journal. This is separate from
-    /// every joined federation client database and contains no bearer ecash.
-    pub(crate) database: Database,
     root_secret: DerivableSecret,
     wallet_secret: Zeroizing<[u8; 64]>,
     federations: RwLock<BTreeMap<FederationId, ClientHandleArc>>,
-    /// Serializes aggregate planning, reservation transitions, and payment
-    /// submission for this process-exclusive development wallet.
+    /// Serializes payment balance checks and submission for this
+    /// process-exclusive development wallet.
     pub(crate) spend_guard: Mutex<()>,
     /// One join at a time; joins are rare and serialization keeps the
     /// per-federation database creation race-free.
@@ -209,15 +211,8 @@ impl Wallet {
         data_dir_lock
             .try_lock()
             .context("lock fedimint data directory")?;
-        let database: Database =
-            fedimint_rocksdb::RocksDb::build(data_dir.join("payment-reservations"))
-                .open()
-                .await
-                .context("open FA payment reservation journal")?
-                .into();
         Ok(Self {
             data_dir,
-            database,
             root_secret,
             wallet_secret: Zeroizing::new(secret.0),
             federations: RwLock::new(BTreeMap::new()),
@@ -415,13 +410,6 @@ impl Wallet {
         metadata: Vec<u8>,
     ) -> Result<OperationId, WalletError> {
         let spend_guard = self.spend_guard.lock().await;
-        let holds = self.locked_payment_hold_summary(federation_id).await?;
-        if holds.held_msats != 0 || holds.required_reserve_msats != 0 {
-            return Err(anyhow::anyhow!(
-                "guardian-fee remittance is unavailable while locked-payment value is reserved"
-            )
-            .into());
-        }
         let client = self.client(federation_id).await?;
         let stability_pool = client
             .get_first_module::<StabilityPoolClientModule>()

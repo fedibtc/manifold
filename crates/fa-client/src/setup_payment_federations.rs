@@ -64,7 +64,7 @@ where
     /// zero balance. Consumers can intersect the members with their own joined
     /// wallet projection to render payer/refill choices; Pay-and-create still
     /// validates the selected payer through [`FaPayments::payable_federations`]
-    /// and the exact aggregate funding preflight.
+    /// and the wallet's funding check for each seat.
     ///
     /// A consumer needs the invite to offer a member it has **not** joined: an
     /// id cannot be turned back into an invite.

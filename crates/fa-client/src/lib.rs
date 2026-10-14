@@ -76,11 +76,11 @@ pub use maintenance::{
     MaintenanceTimingField,
 };
 pub use ports::{
-    ExactPaymentPreflight, ExactSeatPaymentPreflight, FaFeeAccountError, FaFeeAccountProvider,
-    FaIdentity, FaPaymentError, FaPayments, FederationConsensusError, FederationConsensusReader,
-    FederationConsensusSnapshot, LiquidityProviderConnector, LiquidityProviderConnectorError,
-    ManifoldGuardianCallError, ManifoldGuardianConnector, ManifoldGuardianConnectorError,
-    PaymentReservationRecovery, PreparedSeatPayment, SeatPaymentRecovery, SettledSeatRefund,
+    FaFeeAccountError, FaFeeAccountProvider, FaIdentity, FaPaymentError, FaPayments,
+    FederationConsensusError, FederationConsensusReader, FederationConsensusSnapshot,
+    LiquidityProviderConnector, LiquidityProviderConnectorError, ManifoldGuardianCallError,
+    ManifoldGuardianConnector, ManifoldGuardianConnectorError, PreparedSeatPayment,
+    SeatPaymentRecovery,
 };
 pub use selection::{
     MG_SELECTION_PREVIEW_VALIDITY, MG_SELECTION_PROBE_TIMEOUT, MgSelectionPreview,
@@ -98,8 +98,7 @@ pub use state::{
     CreationSnapshot, CreationStage, FaState, FederationSeat, FederationSnapshot,
     FedimintdVersionRange, FormationFreshness, FormationId, FormationPhase, FormationSnapshot,
     MAX_FEDERATION_SIZE, MAX_FEDERATION_SIZE_EXCLUSIVE, MAX_GUARDIAN_FEE_PPM, MIN_FEDERATION_SIZE,
-    PaymentAuthorizationId, PaymentRequirements, PaymentReservationId, PlanPreference, PoolSeat,
-    PurchasePhase, RecoveryCheck, ResolvedSeatPurchase, SeatPaymentRequirement, SeatPhase,
+    PlanPreference, PoolSeat, PurchasePhase, RecoveryCheck, ResolvedSeatPurchase, SeatPhase,
     SeatProgress, SeatPurchaseSnapshot, validate_federation_name,
 };
 pub use unavailable::{

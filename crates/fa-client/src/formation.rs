@@ -22,8 +22,8 @@ use stability_pool_common::Account;
 use tokio::sync::OnceCell;
 
 use crate::db::{
-    AdmissionEffect, FormationMetaTarget, FormationRecovery, InitialSeat, MgAdmission, NewCreation,
-    PurchaseRecovery, QuoteAuthorization, StoredVerifierProvenance,
+    AdmissionEffect, AdmissionState, FormationMetaTarget, FormationRecovery, InitialSeat,
+    MgAdmission, NewCreation, PurchaseRecovery,
 };
 use crate::meta_write::{MetaWriteError, SeatVote, write_consensus_meta};
 use crate::mg::MgClient;
@@ -33,9 +33,9 @@ use crate::{
     FaClient, FaError, FaIdentity, FaPayments, FaResult, FederationConsensusReader,
     FederationConsensusSnapshot, FormationFreshness, FormationId, FormationPhase,
     FormationSnapshot, GuardianFeePpm, ManifoldGuardianConnector, MgCause, MgFailure, MgOperation,
-    MgSelectionPreview, MgSelectionRequest, PaymentRequirements, PaymentReservationId,
-    PaymentReservationRecovery, PurchasePhase, ResolvedSeatPurchase, SeatPaymentRecovery,
-    SeatPhase, SeatPurchaseSnapshot, SelectionReauthorizationReason,
+    MgSelectionPreview, MgSelectionRequest, PreparedSeatPayment, PurchasePhase,
+    ResolvedSeatPurchase, SeatPaymentRecovery, SeatPhase, SeatPurchaseSnapshot,
+    SelectionReauthorizationReason,
 };
 
 fn log_mg_failure(formation_id: &FormationId, error: &FaError, outcome: &'static str) {
@@ -65,31 +65,6 @@ pub(crate) const MAX_RUNTIME_TIMER_DURATION: Duration = Duration::from_millis(i3
 const SELECTED_MG_CONNECT_RETRY_BUDGET: Duration = Duration::from_secs(2 * 60);
 const SELECTED_MG_CONNECT_RETRY_MIN_DELAY: Duration = Duration::from_millis(100);
 const SELECTED_MG_CONNECT_RETRY_MAX_DELAY: Duration = Duration::from_secs(5);
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum QuoteAttemptPolicy {
-    /// The verified row has not crossed its output/acceptance boundary, so a
-    /// definite transport failure may be retried and eventually returned as
-    /// a fresh-selection requirement.
-    ReplaceableSelection,
-    /// The row is already value-bound; failures remain exact
-    /// recovery errors and never require a fresh selection.
-    ExactRecovery,
-}
-
-impl QuoteAttemptPolicy {
-    fn allows_selection_reauthorization(self) -> bool {
-        self == Self::ReplaceableSelection
-    }
-}
-
-fn quote_attempt_policy(admission: &MgAdmission) -> QuoteAttemptPolicy {
-    if admission.requires_effect_authorization() {
-        QuoteAttemptPolicy::ReplaceableSelection
-    } else {
-        QuoteAttemptPolicy::ExactRecovery
-    }
-}
 
 /// One field of [`FormationRunOptionsConfig`].
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -416,9 +391,9 @@ pub(crate) enum MetaFieldSubmissionError {
     ManifoldGuardian(ManifoldGuardianError),
 }
 
-enum SeatCreation<T> {
+enum SeatCreation {
     Accepted(SeatAcceptance),
-    Refused(SeatRefusal<T>),
+    Refused(MgFailure),
 }
 
 #[derive(Clone)]
@@ -427,127 +402,11 @@ struct SeatAcceptance {
     guardian_fee_account: Account,
 }
 
-struct FreeSeatQuote {
-    signed: SignedResponse<GetQuoteResponse>,
-    verified: SignatureVerified<GetQuoteResponse>,
-}
-
-struct PaidSeatQuote {
-    signed: SignedResponse<GetQuoteResponse>,
-    verified: SignatureVerified<GetQuoteResponse>,
-}
-
-enum SeatAcquisition<R> {
-    Free(FreeSeatQuote),
-    ReplayPrepared {
-        quote: PaidSeatQuote,
-        prepared: crate::PreparedSeatPayment<R>,
-    },
-}
-
-struct PendingSeatFunding<C, R> {
-    position: usize,
-    quote: PaidSeatQuote,
-    reservation: R,
-    timeout_budget: ValueCallTimeoutBudget,
-    client: C,
-    locator: Locator,
-}
-
-struct PendingSeatPresentation<C, R> {
-    position: usize,
-    client: C,
-    locator: Locator,
-    source: SeatPresentationSource<R>,
-}
-
-enum SeatPresentationSource<R> {
-    Existing(SeatAcceptance),
-    Acquire(Box<SeatAcquisition<R>>),
-}
-
-enum PendingSeatWork<C, Refund, Reservation> {
-    Funding(Box<PendingSeatFunding<C, Reservation>>),
-    Presentation(PendingSeatPresentation<C, Refund>),
-}
-
-struct CompletedSeatWork<C, T> {
-    position: usize,
-    client: C,
-    creation: SeatCreation<T>,
-    checkpoint: SeatCheckpoint,
-}
-
-enum SeatCheckpoint {
-    AlreadyDurable,
-    Required,
-}
-
-enum SeatPresentation<R> {
-    Free(FreeSeatQuote),
-    Paid {
-        quote: PaidSeatQuote,
-        prepared: crate::PreparedSeatPayment<R>,
-    },
-}
-
-struct SeatRefusal<T> {
-    error: MgFailure,
-    release_proof: Option<T>,
-}
-
-enum TerminalSeatOutcome {
-    PaymentRejected { position: usize },
-    SeatRefused(MgFailure),
-}
-
-impl TerminalSeatOutcome {
-    fn into_error(self) -> FaError {
-        match self {
-            Self::PaymentRejected { position } => FaError::Payment(format!(
-                "payment for Manifold Guardian {} was rejected; its quote was cleared",
-                position + 1
-            )),
-            Self::SeatRefused(error) => error.into(),
-        }
+fn reauthorization(reason: SelectionReauthorizationReason) -> FaError {
+    FaError::SelectionReauthorizationRequired {
+        reason,
+        failure: None,
     }
-
-    /// Classify a proven terminal outcome against the formation's value
-    /// boundary. A selected all-free formation has consumed its exact
-    /// quote-bound admission but has not armed wallet outputs; re-quoting that
-    /// same row would not carry authority for a second presentation. Return
-    /// the typed fresh-selection transition so the outer driver abandons the
-    /// purchase. Post-output refusals retain their exact recovery behavior.
-    fn into_formation_error(self, payment_outputs_started: bool) -> FaError {
-        match self {
-            Self::SeatRefused(failure) if !payment_outputs_started => {
-                FaError::SelectionReauthorizationRequired {
-                    reason: SelectionReauthorizationReason::SelectedMgUnavailable,
-                    failure: Some(failure),
-                }
-            }
-            outcome => outcome.into_error(),
-        }
-    }
-
-    fn requires_pre_output_reauthorization(&self, payment_outputs_started: bool) -> bool {
-        !payment_outputs_started && matches!(self, Self::SeatRefused(_))
-    }
-}
-
-fn apply_authorized_effect_in_memory(
-    recovery: &mut PurchaseRecovery,
-    position: usize,
-    quote_id: QuoteId,
-    effect: AdmissionEffect,
-) -> FaResult<()> {
-    let seat = recovery.seats.get_mut(position).ok_or_else(|| {
-        FaError::Storage(format!(
-            "authorized effect names missing FA seat row {position}"
-        ))
-    })?;
-    seat.admission.mark_effect_authorized(quote_id, effect)?;
-    Ok(())
 }
 
 impl<I, P, N, F, C> FaClient<I, P, N, F, C>
@@ -718,8 +577,7 @@ where
             if let Some(requested) = &payment_federation_id {
                 // A purchase must not obtain even its first exact quote until
                 // the explicitly selected payer is authenticated and currently
-                // Ready. Exact balance plus fee sufficiency is checked once
-                // the complete verified aggregate exists.
+                // Ready. The wallet checks its balance for each seat payment.
                 self.require_setup_payment_federation(requested, run)
                     .await?;
             }
@@ -756,12 +614,11 @@ where
 
     /// Stop creating a federation before any seat is bought.
     ///
-    /// A running purchase ends while it is still value-safe: until wallet
-    /// output generation is durably armed. Zero-price seats a Manifold
-    /// Guardian already accepted server-side are **forfeited**, not
-    /// released. Once seats are bought or payment outputs started, this
-    /// returns the typed [`FaError::AbandonUnavailable`]: the seats stay with
-    /// the creation until its federation forms.
+    /// A running purchase ends while no seat payment has started. Zero-price
+    /// seats a Manifold Guardian already accepted server-side are
+    /// **forfeited**, not released. Once seats are bought or a seat payment
+    /// started, this returns the typed [`FaError::AbandonUnavailable`]: the
+    /// seats stay with the creation until its federation forms.
     ///
     /// The authenticated setup-payment policy retention is deliberately
     /// preserved; it is deployment policy, not creation state.
@@ -770,29 +627,41 @@ where
         let _run = self.claim_run_guard().await?;
         options.validate_for_start()?;
         let fa_id = self.fa_id()?;
-        // The same bounded run fences reconstruction and explicit release of
-        // any exact pre-output wallet reservation before the local wipe.
         let run = DriverRun::start(options)?;
         async {
-            // Refuse before ending a running purchase of the missing seats.
-            if !self.inner.store.pool_seats().await.is_empty() {
-                return Err(FaError::AbandonUnavailable(
-                    crate::AbandonUnavailableReason::SeatsBought,
-                ));
-            }
-            if let Some(mut recovery) = self.inner.store.load_purchase(fa_id).await? {
-                self.release_and_abandon_pre_output(
-                    &mut recovery,
-                    fa_id,
-                    ReservationCleanup::ReconstructIfAuthorized,
-                    run,
-                )
-                .await?;
+            if let Some(recovery) = self.inner.store.load_purchase(fa_id).await? {
+                for (position, seat) in recovery.seats.iter().enumerate() {
+                    let Some(signed_quote) = &seat.signed_quote else {
+                        continue;
+                    };
+                    if seat.progress.seat_id.is_some() {
+                        continue;
+                    }
+                    let quote = self.verify_quote(
+                        position,
+                        signed_quote,
+                        &seat.progress.locator,
+                        &recovery.snapshot.request,
+                        fa_id,
+                        recovery.payment_federation_id.as_ref(),
+                    )?;
+                    if quote.terms.payment.is_some()
+                        && matches!(
+                            self.recover_seat_payment(&quote, run).await?,
+                            SeatPaymentRecovery::Prepared(_)
+                        )
+                    {
+                        return Err(FaError::AbandonUnavailable(
+                            crate::AbandonUnavailableReason::PaymentOutputsStarted,
+                        ));
+                    }
+                }
             }
             self.inner.store.cancel_creation().await?;
             self.inner.progress.modify(|status| {
                 status.creation = None;
                 status.reauthorization = None;
+                status.purchase = None;
             });
             Ok(())
         }
@@ -964,459 +833,79 @@ where
         fa_id: FaId,
         run: DriverRun,
     ) -> FaResult<()> {
-        let formation_id = recovery.snapshot.purchase_id.clone();
-
-        let result = async {
-            let validated_fallback = recovery.snapshot.clone();
-            let result = self.drive_purchase_inner(&mut recovery, fa_id, run).await;
-            if matches!(
-                result.as_ref(),
-                Err(FaError::SelectionReauthorizationRequired { .. })
-            ) && !recovery.payment_outputs_started
-            {
-                // A reserve-port error is the one reauthorization outcome that
-                // proves this invocation obtained no capability. Other outcomes
-                // may follow a wallet commit whose FA checkpoint was interrupted,
-                // so they must reconstruct the deterministic reservation before
-                // deleting the formation.
-                let cleanup = if matches!(
-                    result.as_ref(),
-                    Err(FaError::SelectionReauthorizationRequired {
-                        reason: SelectionReauthorizationReason::SelectedPayerInsufficientFunds,
-                        ..
-                    })
-                ) && recovery.payment_reservation_id.is_none()
-                {
-                    ReservationCleanup::DefinitivelyAbsent
-                } else {
-                    ReservationCleanup::ReconstructIfAuthorized
-                };
-                match self
-                    .release_and_abandon_pre_output(&mut recovery, fa_id, cleanup, run)
-                    .await
-                {
-                    Ok(()) => return result,
-                    Err(error) => return Err(error),
-                }
-            }
-            if let Err(error) = &result {
-                // Prefer the latest durable projection: another seat may have
-                // reached a checkpoint before a sibling failed.
-                let mut snapshot = self
-                    .active_recovery(fa_id)
-                    .await
-                    .map(|latest| latest.snapshot)
-                    .unwrap_or(validated_fallback);
-                snapshot.last_error = Some(error.code());
-                self.publish_purchase(snapshot);
-            }
-            result
-        }
-        .await;
-        if let Err(error) = &result {
-            log_mg_failure(&formation_id, error, "returned");
+        let result = self.drive_purchase_inner(&mut recovery, fa_id, run).await;
+        // A purchase that ended without some of its seats is complete.
+        if let Err(error) = &result
+            && !matches!(error, FaError::SelectionReauthorizationRequired { .. })
+        {
+            let formation_id = &recovery.snapshot.purchase_id;
+            log_mg_failure(formation_id, error, "returned");
             tracing::warn!(
                 formation_id = %formation_id.0,
                 phase = ?recovery.snapshot.phase,
                 %error,
                 "formation drive failed"
             );
+            let mut snapshot = recovery.snapshot.clone();
+            snapshot.last_error = Some(error.code());
+            self.publish_purchase(snapshot);
         }
         result
     }
 
-    /// Release any reconstructable exact wallet hold before deleting FA state.
-    ///
-    /// Both explicit abandon and automatic selected-flow reauthorization use
-    /// this transition. If reconstruction or release is ambiguous, the
-    /// formation is retained so a later invocation can retry; no path may drop
-    /// the durable reservation id as a substitute for wallet release.
-    async fn release_and_abandon_pre_output(
-        &self,
-        recovery: &mut PurchaseRecovery,
-        fa_id: FaId,
-        cleanup: ReservationCleanup,
-        run: DriverRun,
-    ) -> FaResult<()> {
-        if recovery.payment_outputs_started {
-            return Err(FaError::AbandonUnavailable(
-                crate::AbandonUnavailableReason::PaymentOutputsStarted,
-            ));
-        }
-        if cleanup == ReservationCleanup::DefinitivelyAbsent
-            && recovery.payment_reservation_id.is_some()
-        {
-            return Err(FaError::Storage(
-                "wallet reservation cannot be both durable and definitively absent".to_owned(),
-            ));
-        }
-        let requirements = recovery.payment_requirements(fa_id)?;
-        match requirements {
-            Some(requirements)
-                if cleanup == ReservationCleanup::ReconstructIfAuthorized
-                    && recovery.payments_authorized(&requirements) =>
-            {
-                // Reserve may have succeeded immediately before its FA DB
-                // checkpoint returned ambiguously. Probe the same id without
-                // creating a journal; this remains valid after selection
-                // freshness or verifier provenance changes.
-                let (reservation_id, recovered) = self
-                    .recover_payment_reservation(recovery, &requirements, fa_id, run)
-                    .await?;
-                match recovered {
-                    PaymentReservationRecovery::Existing(reservation) => {
-                        // Commit to the release before the wallet call so a
-                        // crash between the release and the wipe below makes
-                        // wallet absence an expected outcome on the next run
-                        // instead of retaining the formation forever.
-                        if recovery.payment_reservation_id.is_some() {
-                            self.inner
-                                .store
-                                .record_reservation_release_intent(
-                                    &recovery.snapshot.purchase_id,
-                                    &reservation_id,
-                                )
-                                .await?;
-                            recovery.payment_reservation_release_intended = true;
-                        }
-                        run.call("releasing pre-output payment reservation", || {
-                            Ok(self
-                                .inner
-                                .ports
-                                .payments
-                                .release_payment_reservation(reservation.clone()))
-                        })
-                        .await?
-                        .map_err(|error| FaError::Payment(error.to_string()))?;
-                    }
-                    PaymentReservationRecovery::Absent => {
-                        if recovery.payment_reservation_id.as_ref() == Some(&reservation_id)
-                            && !recovery.payment_reservation_release_intended
-                        {
-                            return Err(FaError::Storage(
-                                "durable FA reservation is absent from the payment wallet"
-                                    .to_owned(),
-                            ));
-                        }
-                        // Absence under the durable release commitment is the
-                        // completed wallet half of an interrupted abandon;
-                        // only the local wipe below remains.
-                    }
-                }
-            }
-            _ if recovery.payment_reservation_id.is_some() => {
-                return Err(FaError::Storage(
-                    "cannot wipe FA state while its wallet reservation cannot be reconstructed"
-                        .to_owned(),
-                ));
-            }
-            _ => {}
-        }
-
-        self.inner
-            .store
-            .abandon_purchase(&recovery.snapshot.purchase_id)
-            .await?;
-        self.inner.progress.modify(|status| status.purchase = None);
-        Ok(())
-    }
-
+    /// Buy the purchase's seats one at a time. A seat that cannot be bought
+    /// leaves the purchase, and the purchase completes with the seats it
+    /// bought. It then returns why the first seat left.
     async fn drive_purchase_inner(
         &self,
         recovery: &mut PurchaseRecovery,
         fa_id: FaId,
         run: DriverRun,
     ) -> FaResult<()> {
-        if recovery
-            .seats
-            .iter()
-            .all(|seat| seat.progress.seat_id.is_some())
-        {
-            return self.complete_purchase(recovery).await;
-        }
-
-        // Only a schema 11 replacement restore commits to a release after
-        // payment outputs started. Its reservation holds only the applied
-        // replacements, whose payments never started.
-        if recovery.payment_outputs_started && recovery.payment_reservation_release_intended {
-            let requirements = recovery
-                .reserved_payment_requirements(fa_id)?
-                .ok_or_else(|| {
-                    FaError::Storage(
-                        "replacement reservation has no exact payment requirements".to_owned(),
-                    )
-                })?;
-            let (reservation_id, recovered) = self
-                .recover_payment_reservation(recovery, &requirements, fa_id, run)
-                .await?;
-            if recovery.payment_reservation_id.as_ref() != Some(&reservation_id) {
-                return Err(FaError::Storage(
-                    "stored wallet reservation does not match exact payment requirements"
-                        .to_owned(),
-                ));
-            }
-            if let PaymentReservationRecovery::Existing(reservation) = recovered {
-                run.call("releasing schema 11 replacement reservation", || {
-                    Ok(self
-                        .inner
-                        .ports
-                        .payments
-                        .release_payment_reservation(reservation.clone()))
-                })
-                .await?
-                .map_err(|error| FaError::Payment(error.to_string()))?;
-            }
-            // The applied replacements that the reservation held leave the
-            // purchase, like seats that ended after payment.
-            let replacements = (0..recovery.seats.len())
-                .filter(|&position| {
-                    let seat = &recovery.seats[position];
-                    seat.progress.seat_id.is_none()
-                        && seat.admission.requires_effect_authorization()
-                        && seat.signed_quote.as_ref().is_some_and(|signed_quote| {
-                            signed_quote
-                                .verify(&seat.progress.locator.service_pubkey)
-                                .is_ok_and(|quote| {
-                                    recovery
-                                        .quote_is_authorized(seat.progress.index, quote.quote_id())
-                                })
-                        })
-                })
-                .collect::<Vec<_>>();
-            self.clear_terminal_quotes(recovery, &replacements).await?;
-            if recovery
-                .seats
-                .iter()
-                .all(|seat| seat.progress.seat_id.is_some())
-            {
-                return self.complete_purchase(recovery).await;
-            }
-        }
-
-        // A wallet commit may have succeeded immediately before the FA-side
-        // reservation checkpoint was interrupted. Recover that deterministic
-        // aggregate before consulting expiring admission policy: an expired
-        // preview or changed verifier provenance must not make an existing
-        // wallet journal unreachable.
-        let recovery_requirements = if recovery.payment_reservation_id.is_some() {
-            recovery.reserved_payment_requirements(fa_id)?
-        } else {
-            recovery.payment_requirements(fa_id)?
-        };
-        if let Some(requirements) = recovery_requirements.as_ref()
-            && recovery.payments_authorized(requirements)
-        {
-            let (reservation_id, recovered) = self
-                .recover_payment_reservation(recovery, requirements, fa_id, run)
-                .await?;
-            if recovery
-                .payment_reservation_id
-                .as_ref()
-                .is_some_and(|stored| stored != &reservation_id)
-            {
-                return Err(FaError::Storage(
-                    "stored wallet reservation does not match exact payment requirements"
-                        .to_owned(),
-                ));
-            }
-            match recovered {
-                PaymentReservationRecovery::Existing(_) => {
-                    self.inner
-                        .store
-                        .record_payment_reservation(&recovery.snapshot.purchase_id, &reservation_id)
-                        .await?;
-                    recovery.payment_reservation_id = Some(reservation_id);
-                    // Adoption also durably supersedes any interrupted
-                    // release commitment.
-                    recovery.payment_reservation_release_intended = false;
-                }
-                PaymentReservationRecovery::Absent if recovery.payment_reservation_id.is_some() => {
-                    if !recovery.payment_reservation_release_intended {
-                        return Err(FaError::Storage(
-                            "durable FA reservation is absent from the payment wallet".to_owned(),
-                        ));
-                    }
-                    // A prior abandon durably committed to this release and
-                    // the wallet completed it; only the local half of that
-                    // cleanup remains.
-                    if recovery.payment_outputs_started {
-                        return Err(FaError::Storage(
-                            "a released wallet reservation remains after payment outputs started"
-                                .to_owned(),
-                        ));
-                    }
-                    self.inner
-                        .store
-                        .abandon_purchase(&recovery.snapshot.purchase_id)
-                        .await?;
-                    self.inner.progress.modify(|status| status.purchase = None);
-                    return Ok(());
-                }
-                PaymentReservationRecovery::Absent => {}
-            }
-        }
-
-        validate_live_admissions(
-            recovery,
-            self.inner.peer_badge_verifier.provenance().into(),
-            Timestamp(now_secs()?),
-        )?;
-
-        self.prepare_quotes(recovery, fa_id, run).await?;
-        if let Some(requirements) = recovery.payment_requirements(fa_id)?
-            && !recovery.payments_authorized(&requirements)
-        {
-            // Every new quote is for its seat's previewed plan, so the
-            // approved preview already authorizes these exact quotes. The
-            // durable record binds the quote ids for recovery and abandon.
-            let authorizations = requirements
-                .seats
-                .iter()
-                .map(|requirement| QuoteAuthorization {
-                    index: requirement.index,
-                    quote_id: requirement.quote_id,
-                })
-                .collect::<Vec<_>>();
-            self.inner
-                .store
-                .authorize_payments(
-                    &recovery.snapshot.purchase_id,
-                    &requirements.authorization_id,
-                    &authorizations,
-                )
-                .await?;
-            recovery.apply_payment_authorization(requirements.authorization_id, authorizations);
-        }
-
+        let formation_id = recovery.snapshot.purchase_id.clone();
         recovery.snapshot.phase = PurchasePhase::AcquiringSeats;
         recovery.snapshot.freshness = FormationFreshness::Fresh;
         self.publish_purchase(recovery.snapshot.clone());
-        self.acquire_seats(recovery, fa_id, run).await?;
-        self.complete_purchase(recovery).await
-    }
-
-    async fn complete_purchase(&self, recovery: &PurchaseRecovery) -> FaResult<()> {
-        self.inner
-            .store
-            .complete_purchase(&recovery.snapshot.purchase_id)
-            .await?;
-        self.inner.progress.modify(|status| status.purchase = None);
-        self.publish_pool().await;
-        Ok(())
-    }
-
-    async fn prepare_quotes(
-        &self,
-        recovery: &mut PurchaseRecovery,
-        fa_id: FaId,
-        run: DriverRun,
-    ) -> FaResult<()> {
-        let formation_id = recovery.snapshot.purchase_id.clone();
-        let formation_id = &formation_id;
-        let intent = recovery.snapshot.request.clone();
-        let expected_payer = recovery.payment_federation_id.clone();
-
-        // Free quotes must be replayed exactly: CreateSeat may have succeeded
-        // even when its response was lost. Paid quotes are refreshed unless an
-        // authorization requires us to first ask the wallet whether payment
-        // has already started.
-        for position in 0..recovery.seats.len() {
-            let seat = &recovery.seats[position];
-            let is_free = seat.signed_quote.as_ref().is_some_and(|signed_quote| {
-                signed_quote
-                    .verify(&seat.progress.locator.service_pubkey)
-                    .is_ok_and(|quote| quote.terms.payment.is_none())
-            });
-            let is_authorized = seat.signed_quote.as_ref().is_some_and(|signed_quote| {
-                signed_quote
-                    .verify(&seat.progress.locator.service_pubkey)
-                    .is_ok_and(|quote| {
-                        recovery.quote_is_authorized(seat.progress.index, quote.quote_id())
-                    })
-            });
-            // A quote bound to its seat's effect is the only quote that seat
-            // may pay. Schema 11 could leave one without an aggregate
-            // authorization after a seat ended.
-            let is_bound = !seat.admission.requires_effect_authorization();
-            if seat.progress.seat_id.is_some() || is_free || is_authorized || is_bound {
-                continue;
-            }
-            let Some(signed_quote) = seat.signed_quote.clone() else {
-                continue;
-            };
-            self.verify_quote(
-                usize::from(seat.progress.index),
-                &signed_quote,
-                &seat.progress.locator,
-                &intent,
-                fa_id,
-                expected_payer.as_ref(),
-            )?;
-            self.inner
-                .store
-                .clear_quote(formation_id, seat.progress.index, &signed_quote)
-                .await?;
-            recovery.invalidate_payment_authorization();
-            recovery.seats[position].signed_quote = None;
-            recovery.seats[position].progress.phase = SeatPhase::Selected;
-        }
-
-        let needs_quote = recovery
+        // Resolved on first use, so one authenticated read serves every
+        // seat, and a purchase of free seats never reads a payer policy.
+        let payer = OnceCell::new();
+        let mut funds_exhausted = false;
+        let mut left = None;
+        let mut first_error = None;
+        let indexes = recovery
             .seats
             .iter()
-            .any(|seat| seat.progress.seat_id.is_none() && seat.signed_quote.is_none());
-        // Resolved on first use and shared by the whole batch, so one
-        // authenticated read serves every seat — and a formation that meets
-        // no priced seat never reads a setup-payment policy at all.
-        let payment_federation =
-            (needs_quote && recovery.payment_federation_id.is_some()).then(OnceCell::new);
-        let mut pending = FuturesUnordered::new();
-        for (position, seat) in recovery.seats.iter().enumerate() {
-            if seat.progress.seat_id.is_some() || seat.signed_quote.is_some() {
-                continue;
+            .filter(|seat| seat.progress.seat_id.is_none())
+            .map(|seat| seat.progress.index)
+            .collect::<Vec<_>>();
+        for index in indexes {
+            // A seat started after the run ended would only time out.
+            if let Err(error) = ensure_effective_time_remaining(run.deadline(), "buying a seat") {
+                first_error.get_or_insert(error);
+                break;
             }
-            let locator = seat.progress.locator.clone();
-            let intent = &intent;
-            let expected_payer = expected_payer.clone();
-            let payment_federation = payment_federation.as_ref();
-            let policy = quote_attempt_policy(&seat.admission);
-            let pinned_plan = seat.admission.plan().cloned();
-            pending.push(async move {
-                let (signed_quote, _) = self
-                    .request_quote_with_retry(
-                        formation_id,
-                        position,
-                        &locator,
-                        intent,
-                        pinned_plan.as_ref(),
-                        fa_id,
-                        policy,
-                        expected_payer.as_ref(),
-                        payment_federation,
-                        run,
-                    )
-                    .await?;
-                Ok::<_, FaError>((position, signed_quote))
-            });
-        }
-
-        let mut first_error = None;
-        while let Some(result) = pending.next().await {
+            let position = recovery
+                .seats
+                .iter()
+                .position(|seat| seat.progress.index == index)
+                .expect("seats leave the purchase only in this loop");
+            // A seat bound to its quote may hold a started payment, so it is
+            // still recovered after the payer ran out of funds.
+            let result = if funds_exhausted && recovery.seats[position].signed_quote.is_none() {
+                Err(reauthorization(
+                    SelectionReauthorizationReason::SelectedPayerInsufficientFunds,
+                ))
+            } else {
+                self.buy_seat(recovery, position, fa_id, &payer, run).await
+            };
             match result {
-                Ok((position, signed_quote)) => {
-                    let index = recovery.seats[position].progress.index;
-                    self.inner
-                        .store
-                        .store_quote(formation_id, index, signed_quote.clone())
-                        .await?;
-                    recovery.invalidate_payment_authorization();
-                    recovery.seats[position].signed_quote = Some(signed_quote);
-                    recovery.seats[position].progress.phase = SeatPhase::QuoteReady;
-                    recovery.seats[position].progress.freshness = FormationFreshness::Fresh;
-                    recovery.snapshot.seats[position] = recovery.seats[position].progress.clone();
-                    recovery.snapshot.phase = PurchasePhase::Preparing;
-                    recovery.snapshot.freshness = FormationFreshness::Fresh;
-                    self.publish_purchase(recovery.snapshot.clone());
+                Ok(()) => {}
+                Err(error @ FaError::SelectionReauthorizationRequired { reason, .. }) => {
+                    log_mg_failure(&formation_id, &error, "returned");
+                    funds_exhausted |=
+                        reason == SelectionReauthorizationReason::SelectedPayerInsufficientFunds;
+                    self.drop_seat(recovery, position, reason).await?;
+                    left.get_or_insert(error);
                 }
                 Err(error) => {
                     if first_error.is_some() {
@@ -1429,204 +918,259 @@ where
         if let Some(error) = first_error {
             return Err(error);
         }
+        self.complete_purchase(recovery).await?;
+        left.map_or(Ok(()), Err)
+    }
+
+    async fn complete_purchase(&self, recovery: &PurchaseRecovery) -> FaResult<()> {
+        self.inner
+            .store
+            .complete_purchase(&recovery.snapshot.purchase_id)
+            .await?;
+        self.inner.progress.modify(|status| status.purchase = None);
+        self.publish_pool().await;
         Ok(())
     }
 
-    async fn reserve_payment_requirements(
+    /// Buy one seat: bind a quote, pay it, and present it to its MG.
+    ///
+    /// A [`FaError::SelectionReauthorizationRequired`] error proves that the
+    /// seat cannot be bought and that no payment of it is outstanding.
+    async fn buy_seat(
         &self,
         recovery: &mut PurchaseRecovery,
-        requirements: &PaymentRequirements,
+        position: usize,
         fa_id: FaId,
+        payer: &OnceCell<FederationId>,
         run: DriverRun,
-    ) -> FaResult<P::PaymentReservation> {
-        let (reservation_id, recovered) = self
-            .recover_payment_reservation(recovery, requirements, fa_id, run)
-            .await?;
-        if recovery
-            .payment_reservation_id
-            .as_ref()
-            .is_some_and(|stored| stored != &reservation_id)
-        {
-            return Err(FaError::Storage(
-                "stored wallet reservation does not match exact payment requirements".to_owned(),
-            ));
-        }
-        if let PaymentReservationRecovery::Existing(reservation) = recovered {
-            self.inner
-                .store
-                .record_payment_reservation(&recovery.snapshot.purchase_id, &reservation_id)
-                .await?;
-            recovery.payment_reservation_id = Some(reservation_id);
-            return Ok(reservation);
-        }
-        if recovery.payment_reservation_id.is_some() {
-            return Err(FaError::Storage(
-                "durable FA reservation is absent from the payment wallet".to_owned(),
-            ));
-        }
-        validate_live_admissions(
-            recovery,
-            self.inner.peer_badge_verifier.provenance().into(),
-            Timestamp(now_secs()?),
-        )?;
-
-        let quotes = self.exact_payment_quotes(recovery, requirements, fa_id)?;
-        let preflight = crate::ExactPaymentPreflight::new(requirements, &quotes)?;
-        let reservation = run
-            .call("reserving exact payment aggregate", || {
-                Ok(self
-                    .inner
-                    .ports
-                    .payments
-                    .reserve_payment_requirements(&reservation_id, &preflight))
-            })
-            .await?
-            .map_err(|error| {
-                if error.proves_insufficient_funds_without_reservation() {
-                    FaError::SelectionReauthorizationRequired {
-                        reason: SelectionReauthorizationReason::SelectedPayerInsufficientFunds,
-                        failure: None,
-                    }
-                } else {
-                    FaError::Payment(error.to_string())
-                }
-            })?;
-        self.inner
-            .store
-            .record_payment_reservation(&recovery.snapshot.purchase_id, &reservation_id)
-            .await?;
-        recovery.payment_reservation_id = Some(reservation_id);
-        Ok(reservation)
-    }
-
-    /// Probe the deterministic aggregate id and exact quote/output binding
-    /// without creating wallet state or consulting expiring admission policy.
-    async fn recover_payment_reservation(
-        &self,
-        recovery: &PurchaseRecovery,
-        requirements: &PaymentRequirements,
-        fa_id: FaId,
-        run: DriverRun,
-    ) -> FaResult<(
-        PaymentReservationId,
-        PaymentReservationRecovery<P::PaymentReservation>,
-    )> {
-        let quotes = self.exact_payment_quotes(recovery, requirements, fa_id)?;
-        let preflight = crate::ExactPaymentPreflight::new(requirements, &quotes)?;
-        let reservation_id =
-            crate::db::payment_reservation_id(&recovery.snapshot.purchase_id, requirements);
-        let recovered = run
-            .call("recovering exact payment reservation", || {
-                Ok(self
-                    .inner
-                    .ports
-                    .payments
-                    .recover_payment_reservation(&reservation_id, &preflight))
-            })
-            .await?
-            .map_err(|error| FaError::Payment(error.to_string()))?;
-        Ok((reservation_id, recovered))
-    }
-
-    fn exact_payment_quotes(
-        &self,
-        recovery: &PurchaseRecovery,
-        requirements: &PaymentRequirements,
-        fa_id: FaId,
-    ) -> FaResult<Vec<SignatureVerified<GetQuoteResponse>>> {
+    ) -> FaResult<()> {
+        let formation_id = recovery.snapshot.purchase_id.clone();
+        let intent = recovery.snapshot.request.clone();
         let expected_payer = recovery.payment_federation_id.clone();
-        let mut quotes = Vec::with_capacity(requirements.seats.len());
-        for requirement in &requirements.seats {
-            let seat = recovery
-                .seats
-                .iter()
-                .find(|seat| seat.progress.index == requirement.index)
-                .ok_or_else(|| {
-                    FaError::Storage(format!(
-                        "payment requirement names missing FA seat row {}",
-                        requirement.index
-                    ))
-                })?;
-            let signed = seat.signed_quote.as_ref().ok_or_else(|| {
-                FaError::Storage(format!(
-                    "payment requirement has no quote for FA seat row {}",
-                    requirement.index
-                ))
-            })?;
+        let seat = &recovery.seats[position];
+        let locator = seat.progress.locator.clone();
+        let bound_quote = seat.signed_quote.clone();
+        let mut plan = seat.admission.plan().cloned();
+        if let Some(signed_quote) = &bound_quote {
             let quote = self.verify_quote(
-                usize::from(requirement.index),
-                signed,
-                &seat.progress.locator,
-                &recovery.snapshot.request,
+                position,
+                signed_quote,
+                &locator,
+                &intent,
                 fa_id,
                 expected_payer.as_ref(),
             )?;
-            if quote.quote_id() != requirement.quote_id || quote.terms.payment.is_none() {
-                return Err(FaError::Storage(format!(
-                    "payment requirement does not match FA seat row {}",
-                    requirement.index
-                )));
+            if quote.terms.payment.is_none() {
+                // CreateSeat may have accepted this quote and lost its reply,
+                // so the bound quote is presented again.
+                return self
+                    .present_bound_seat(
+                        recovery,
+                        position,
+                        fa_id,
+                        signed_quote.clone(),
+                        quote,
+                        None,
+                        run,
+                    )
+                    .await;
             }
-            quotes.push(quote);
+            match self.recover_seat_payment(&quote, run).await? {
+                SeatPaymentRecovery::Prepared(prepared) => {
+                    return self
+                        .present_bound_seat(
+                            recovery,
+                            position,
+                            fa_id,
+                            signed_quote.clone(),
+                            quote,
+                            Some(prepared),
+                            run,
+                        )
+                        .await;
+                }
+                SeatPaymentRecovery::Rejected => {
+                    return Err(reauthorization(
+                        SelectionReauthorizationReason::SelectedPayerUnavailable,
+                    ));
+                }
+                // The bound quote may have expired, so the seat pays a new
+                // quote at the same plan.
+                SeatPaymentRecovery::NotStarted => {
+                    plan.get_or_insert_with(|| quote.terms.request.plan.clone());
+                }
+            }
+        } else if recovery
+            .seats
+            .iter()
+            .all(|seat| seat.signed_quote.is_none())
+        {
+            // The preview approval must be fresh until the purchase binds its
+            // first seat.
+            seat.admission.validate_if_fresh(
+                self.inner.peer_badge_verifier.provenance().into(),
+                Timestamp(now_secs()?),
+            )?;
         }
-        Ok(quotes)
+
+        let (signed_quote, quote) = self
+            .request_quote_with_retry(
+                &formation_id,
+                position,
+                &locator,
+                &intent,
+                plan.as_ref(),
+                fa_id,
+                expected_payer.as_ref(),
+                expected_payer.is_some().then_some(payer),
+                run,
+            )
+            .await?;
+        ensure_effective_time_remaining(run.deadline(), "binding a seat quote")?;
+        self.inner
+            .store
+            .bind_quote(
+                &formation_id,
+                recovery.seats[position].progress.index,
+                bound_quote.as_ref(),
+                signed_quote.clone(),
+                self.inner.peer_badge_verifier.provenance().into(),
+            )
+            .await?;
+        let seat = &mut recovery.seats[position];
+        seat.admission.state = AdmissionState::EffectAuthorized {
+            quote_id: quote.quote_id(),
+            effect: if quote.terms.payment.is_some() {
+                AdmissionEffect::PaidOutput
+            } else {
+                AdmissionEffect::FreePresentation
+            },
+        };
+        seat.signed_quote = Some(signed_quote.clone());
+        seat.progress.phase = SeatPhase::QuoteReady;
+        seat.progress.freshness = FormationFreshness::Fresh;
+        recovery.snapshot.seats[position] = seat.progress.clone();
+        self.publish_purchase(recovery.snapshot.clone());
+
+        let prepared = if quote.terms.payment.is_some() {
+            let budget = run
+                .prepare_value_call_budget("funding seat payment")
+                .await?;
+            let prepared = budget
+                .poll_value_call(run, self.inner.ports.payments.create_seat_payment(&quote))
+                .await?
+                .map_err(|error| {
+                    if error.proves_insufficient_funds() {
+                        reauthorization(
+                            SelectionReauthorizationReason::SelectedPayerInsufficientFunds,
+                        )
+                    } else {
+                        FaError::Payment(error.to_string())
+                    }
+                })?;
+            Some(prepared)
+        } else {
+            None
+        };
+        self.present_bound_seat(
+            recovery,
+            position,
+            fa_id,
+            signed_quote,
+            quote,
+            prepared,
+            run,
+        )
+        .await
     }
 
-    /// Resolve a selected MG transport while a fresh selection is still
-    /// value-safe. A definite connection failure is retried with bounded
-    /// exponential backoff for at most two minutes (and never beyond this
-    /// driver invocation). After outputs start, the same failure remains an
-    /// exact-replay error and must never require a fresh selection.
-    async fn connect_with_selected_retry(
+    /// Present a seat's bound quote, with its payment if it is paid, and
+    /// record the accepted seat.
+    #[allow(clippy::too_many_arguments)]
+    async fn present_bound_seat(
         &self,
-        locator: &Locator,
-        formation_id: &FormationId,
-        policy: QuoteAttemptPolicy,
+        recovery: &mut PurchaseRecovery,
+        position: usize,
+        fa_id: FaId,
+        signed_quote: SignedResponse<GetQuoteResponse>,
+        quote: SignatureVerified<GetQuoteResponse>,
+        prepared: Option<PreparedSeatPayment<P::RefundContext>>,
         run: DriverRun,
-    ) -> FaResult<MgClient<F::Client>> {
-        let retry_deadline = Instant::now()
-            .checked_add(SELECTED_MG_CONNECT_RETRY_BUDGET)
-            .unwrap_or(run.deadline)
-            .min(run.deadline);
-        let mut retry_delay = run
-            .options
-            .poll_interval
-            .max(SELECTED_MG_CONNECT_RETRY_MIN_DELAY)
-            .min(SELECTED_MG_CONNECT_RETRY_MAX_DELAY);
-        loop {
-            let error = match MgClient::connect(&self.inner.ports.mg_connector, locator, run).await
-            {
-                Ok(client) => return Ok(client),
-                Err(error) => error,
-            };
-            let FaError::Mg(failure) = error else {
-                return Err(error);
-            };
-            if !policy.allows_selection_reauthorization()
-                || !matches!(failure.cause, MgCause::Timeout | MgCause::Transport)
-            {
-                return Err(failure.into());
+    ) -> FaResult<()> {
+        let formation_id = recovery.snapshot.purchase_id.clone();
+        let locator = recovery.seats[position].progress.locator.clone();
+        recovery.seats[position].progress.phase = SeatPhase::Acquiring;
+        recovery.snapshot.seats[position] = recovery.seats[position].progress.clone();
+        self.publish_purchase(recovery.snapshot.clone());
+        let client = MgClient::connect(&self.inner.ports.mg_connector, &locator, run).await?;
+        let creation = self
+            .present_seat(
+                &formation_id,
+                position,
+                &client,
+                &locator,
+                fa_id,
+                signed_quote,
+                quote,
+                prepared,
+                run,
+            )
+            .await?;
+        match creation {
+            SeatCreation::Accepted(acceptance) => {
+                self.checkpoint_accepted_seat(recovery, position, acceptance)
+                    .await
             }
-            if Instant::now() >= retry_deadline
-                || sleep_for_retry(retry_deadline, retry_delay).await.is_err()
-            {
-                return Err(FaError::SelectionReauthorizationRequired {
-                    reason: SelectionReauthorizationReason::SelectedMgUnavailable,
-                    failure: Some(failure),
-                });
-            }
-            log_mg_failure(formation_id, &FaError::Mg(failure), "retried");
-            retry_delay = retry_delay
-                .saturating_mul(2)
-                .min(SELECTED_MG_CONNECT_RETRY_MAX_DELAY);
+            // A refused payment was refunded before `present_seat` returned.
+            SeatCreation::Refused(failure) => Err(FaError::SelectionReauthorizationRequired {
+                reason: SelectionReauthorizationReason::SelectedMgUnavailable,
+                failure: Some(failure),
+            }),
         }
+    }
+
+    async fn recover_seat_payment(
+        &self,
+        quote: &SignatureVerified<GetQuoteResponse>,
+        run: DriverRun,
+    ) -> FaResult<SeatPaymentRecovery<P::RefundContext>> {
+        run.call_with_timeout("recovering seat payment", run.options.run_timeout, || {
+            Ok(self.inner.ports.payments.recover_seat_payment(quote))
+        })
+        .await?
+        .map_err(|error| FaError::Payment(error.to_string()))
+    }
+
+    /// Remove a seat that cannot be bought, and keep its reason for the
+    /// preview of the missing seats.
+    async fn drop_seat(
+        &self,
+        recovery: &mut PurchaseRecovery,
+        position: usize,
+        reason: SelectionReauthorizationReason,
+    ) -> FaResult<()> {
+        let seat = &recovery.seats[position];
+        self.inner
+            .store
+            .drop_seat(
+                &recovery.snapshot.purchase_id,
+                seat.progress.index,
+                seat.signed_quote.as_ref(),
+            )
+            .await?;
+        recovery.seats.remove(position);
+        recovery.snapshot.seats.remove(position);
+        let snapshot = recovery.snapshot.clone();
+        self.inner.progress.modify(|status| {
+            status.reauthorization.get_or_insert(reason);
+            status.purchase = Some(snapshot);
+        });
+        Ok(())
     }
 
     /// Connect, inspect availability, and request one quote as a single
-    /// bounded value-free attempt. A selected row whose authorization has not
-    /// been consumed may reconnect after definite transport loss; semantic
-    /// refusals return immediately and an already value-bound row never
-    /// requires a fresh selection after a transport failure.
+    /// bounded value-free attempt. A definite transport loss reconnects for
+    /// at most two minutes, and semantic refusals return immediately.
     #[allow(clippy::too_many_arguments)]
     async fn request_quote_with_retry(
         &self,
@@ -1636,7 +1180,6 @@ where
         intent: &ResolvedSeatPurchase,
         pinned_plan: Option<&Plan>,
         fa_id: FaId,
-        policy: QuoteAttemptPolicy,
         expected_payer: Option<&FederationId>,
         payment_federation: Option<&OnceCell<FederationId>>,
         run: DriverRun,
@@ -1658,14 +1201,7 @@ where
                 // A seat saved before the preview pinned its price has no
                 // approved price to request.
                 let pinned_plan = pinned_plan.ok_or_else(|| {
-                    if policy.allows_selection_reauthorization() {
-                        FaError::SelectionReauthorizationRequired {
-                            reason: SelectionReauthorizationReason::PreviewExpired,
-                            failure: None,
-                        }
-                    } else {
-                        mg_error(index, "seat has no previewed price to quote")
-                    }
+                    reauthorization(SelectionReauthorizationReason::PreviewExpired)
                 })?;
                 let client =
                     MgClient::connect(&self.inner.ports.mg_connector, locator, run).await?;
@@ -1676,7 +1212,6 @@ where
                     intent,
                     pinned_plan,
                     fa_id,
-                    policy,
                     expected_payer,
                     payment_federation,
                     run,
@@ -1691,9 +1226,7 @@ where
             let FaError::Mg(failure) = error else {
                 return Err(error);
             };
-            if !policy.allows_selection_reauthorization()
-                || !matches!(failure.cause, MgCause::Timeout | MgCause::Transport)
-            {
+            if !matches!(failure.cause, MgCause::Timeout | MgCause::Transport) {
                 return Err(failure.into());
             }
             if retry_quote_attempt(retry_deadline, &mut retry_delay)
@@ -1707,835 +1240,6 @@ where
             }
             log_mg_failure(formation_id, &FaError::Mg(failure), "retried");
         }
-    }
-
-    async fn acquire_seats(
-        &self,
-        recovery: &mut PurchaseRecovery,
-        fa_id: FaId,
-        run: DriverRun,
-    ) -> FaResult<Vec<SeatSession<MgClient<F::Client>>>> {
-        let formation_id = recovery.snapshot.purchase_id.clone();
-        let formation_id = &formation_id;
-        let intent = recovery.snapshot.request.clone();
-        let expected_payer = recovery.payment_federation_id.clone();
-        let payment_authorized = recovery
-            .seats
-            .iter()
-            .map(|seat| {
-                seat.signed_quote.as_ref().is_some_and(|signed_quote| {
-                    signed_quote
-                        .verify(&seat.progress.locator.service_pubkey)
-                        .is_ok_and(|quote| {
-                            recovery.quote_is_authorized(seat.progress.index, quote.quote_id())
-                        })
-                })
-            })
-            .collect::<Vec<_>>();
-        let mut recovered_payments = (0..recovery.seats.len())
-            .map(|_| None)
-            .collect::<Vec<Option<SeatPaymentRecovery<P::RefundContext, P::TerminalReleaseProof>>>>(
-            );
-        let mut first_barrier_error = None;
-        let mut first_terminal_outcome = None;
-        let mut terminal_quotes = Vec::new();
-        let mut pending_recoveries = FuturesUnordered::new();
-        let recovery_requirements = if recovery.payment_reservation_id.is_some() {
-            recovery.reserved_payment_requirements(fa_id)?
-        } else {
-            recovery.payment_requirements(fa_id)?
-        };
-        let recovery_reservation_id = recovery_requirements.as_ref().map(|requirements| {
-            crate::db::payment_reservation_id(&recovery.snapshot.purchase_id, requirements)
-        });
-        let mut payment_reservation = if let Some(requirements) = recovery_requirements.as_ref()
-            && recovery.payments_authorized(requirements)
-        {
-            Some(
-                self.reserve_payment_requirements(recovery, requirements, fa_id, run)
-                    .await?,
-            )
-        } else {
-            None
-        };
-        for (position, seat) in recovery.seats.iter().enumerate() {
-            if seat.progress.seat_id.is_some() || !payment_authorized[position] {
-                continue;
-            }
-            let Some(signed_quote) = seat.signed_quote.as_ref() else {
-                continue;
-            };
-            let quote = self.verify_quote(
-                position,
-                signed_quote,
-                &seat.progress.locator,
-                &intent,
-                fa_id,
-                expected_payer.as_ref(),
-            )?;
-            if quote.terms.payment.is_none() {
-                continue;
-            }
-            let reservation_id = recovery_reservation_id.clone().ok_or_else(|| {
-                FaError::Storage("authorized paid quote has no aggregate reservation id".to_owned())
-            })?;
-            pending_recoveries.push(async move {
-                let recovered = run
-                    .call_with_timeout("recovering seat payment", run.options.run_timeout, || {
-                        Ok(self
-                            .inner
-                            .ports
-                            .payments
-                            .recover_seat_payment(&reservation_id, &quote))
-                    })
-                    .await?
-                    .map_err(|error| FaError::Payment(error.to_string()))?;
-                Ok::<_, FaError>((position, recovered))
-            });
-        }
-        while let Some(result) = pending_recoveries.next().await {
-            match result {
-                Ok((position, SeatPaymentRecovery::Rejected(proof))) => {
-                    terminal_quotes.push((position, Some(proof)));
-                    first_terminal_outcome
-                        .get_or_insert(TerminalSeatOutcome::PaymentRejected { position });
-                }
-                Ok((position, recovered)) => recovered_payments[position] = Some(recovered),
-                Err(error) => {
-                    if first_barrier_error.is_some() {
-                        log_mg_failure(&formation_id, &error, "discarded");
-                    }
-                    first_barrier_error.get_or_insert(error);
-                }
-            }
-        }
-
-        let mut pending_replays = FuturesUnordered::new();
-        for (position, recovered_payment) in recovered_payments.iter_mut().enumerate() {
-            let prepared = match recovered_payment.take() {
-                Some(SeatPaymentRecovery::Prepared(prepared)) => prepared,
-                recovered => {
-                    *recovered_payment = recovered;
-                    continue;
-                }
-            };
-            let seat = &recovery.seats[position];
-            let locator = seat.progress.locator.clone();
-            let signed_quote = seat
-                .signed_quote
-                .clone()
-                .expect("prepared payment requires a stored quote");
-            let paid_quote = self.verify_paid_seat_quote(
-                position,
-                signed_quote,
-                &locator,
-                &intent,
-                fa_id,
-                expected_payer.as_ref(),
-            )?;
-            pending_replays.push(async move {
-                let client =
-                    MgClient::connect(&self.inner.ports.mg_connector, &locator, run).await?;
-                let creation = self
-                    .create_or_replay_seat(
-                        formation_id,
-                        position,
-                        &client,
-                        &locator,
-                        fa_id,
-                        SeatAcquisition::ReplayPrepared {
-                            quote: paid_quote,
-                            prepared,
-                        },
-                        run,
-                    )
-                    .await?;
-                Ok::<_, FaError>((position, creation))
-            });
-        }
-        while let Some(result) = pending_replays.next().await {
-            let (position, creation) = match result {
-                Ok(value) => value,
-                Err(error) => {
-                    if first_barrier_error.is_some() {
-                        log_mg_failure(&formation_id, &error, "discarded");
-                    }
-                    first_barrier_error.get_or_insert(error);
-                    continue;
-                }
-            };
-            match creation {
-                SeatCreation::Accepted(acceptance) => {
-                    if let Err(error) = self
-                        .checkpoint_accepted_seat(recovery, position, acceptance)
-                        .await
-                    {
-                        if first_barrier_error.is_some() {
-                            log_mg_failure(&formation_id, &error, "discarded");
-                        }
-                        first_barrier_error.get_or_insert(error);
-                    }
-                }
-                SeatCreation::Refused(refusal) => {
-                    terminal_quotes.push((position, refusal.release_proof));
-                    first_terminal_outcome
-                        .get_or_insert(TerminalSeatOutcome::SeatRefused(refusal.error));
-                }
-            }
-        }
-        // Keep every quote and the aggregate authorization intact when any
-        // sibling has not reached a durable recovery checkpoint. A later
-        // resume must still recognize that sibling's recovery entitlement.
-        if let Some(error) = first_barrier_error {
-            return Err(error);
-        }
-        if first_terminal_outcome.as_ref().is_some_and(|outcome| {
-            outcome.requires_pre_output_reauthorization(recovery.payment_outputs_started)
-        }) {
-            // Selected all-free refusal is itself the reauthorization proof.
-            // Keep its exact signed quote and consumed admission durable until
-            // the outer driver completes durable abandon. A failed abandon can
-            // then reopen and replay the same refusal safely.
-            return Err(first_terminal_outcome
-                .expect("checked terminal outcome exists")
-                .into_formation_error(recovery.payment_outputs_started));
-        }
-        // A terminal member can share its aggregate reservation with a paid
-        // sibling that the wallet still reports as Held/NotStarted. Keep the
-        // terminal quote, aggregate authorization, and reservation identity
-        // until every such sibling reaches an accepted checkpoint or its own
-        // terminal proof. Clearing only the terminal subset here would strand
-        // the sibling hold and erase the exact replay identity.
-        let terminal_positions = terminal_quotes
-            .iter()
-            .map(|(position, _)| *position)
-            .collect::<BTreeSet<_>>();
-        // A quote that no payment has started against is refreshed before
-        // funding, and the policy it was selected under is refreshed with it:
-        // re-quoting under a snapshot the FA never re-read would only be half
-        // a refresh. Selection is hoisted here, as it is for initial quoting,
-        // so one authenticated read serves the whole batch.
-        let needs_funding =
-            recovery
-                .seats
-                .iter()
-                .zip(&recovered_payments)
-                .any(|(seat, recovered)| {
-                    seat.progress.seat_id.is_none()
-                        && matches!(recovered, Some(SeatPaymentRecovery::NotStarted))
-                });
-        let payment_federation_id = if needs_funding {
-            let Some(requested) = expected_payer.as_ref() else {
-                return Err(FaError::SelectionReauthorizationRequired {
-                    reason: SelectionReauthorizationReason::PaymentFederationRequired,
-                    failure: None,
-                });
-            };
-            Some(
-                self.require_setup_payment_federation(requested, run)
-                    .await?,
-            )
-        } else {
-            None
-        };
-        let mut refreshed_payments = match payment_federation_id {
-            Some(payment_federation_id) => {
-                self.refresh_unstarted_payments(
-                    recovery,
-                    &recovered_payments,
-                    fa_id,
-                    &intent,
-                    payment_federation_id,
-                    run,
-                )
-                .await?
-            }
-            None => (0..recovery.seats.len()).map(|_| None).collect(),
-        };
-        let will_generate_outputs = refreshed_payments.iter().any(Option::is_some);
-        // Resolve every fallible MG connection before crossing the durable
-        // wallet-output boundary. Selected creation receives its bounded
-        // pre-output retry policy; after outputs start, failures remain exact
-        // recovery errors and never require a fresh selection.
-        let mut clients = (0..recovery.seats.len())
-            .map(|_| None)
-            .collect::<Vec<Option<MgClient<F::Client>>>>();
-        let mut pending_connections = FuturesUnordered::new();
-        for (position, seat) in recovery.seats.iter().enumerate() {
-            if terminal_positions.contains(&position) {
-                continue;
-            }
-            let locator = seat.progress.locator.clone();
-            let connection_policy = quote_attempt_policy(&seat.admission);
-            pending_connections.push(async move {
-                let client = self
-                    .connect_with_selected_retry(&locator, formation_id, connection_policy, run)
-                    .await?;
-                Ok::<_, FaError>((position, client))
-            });
-        }
-        let mut first_connection_error = None;
-        while let Some(result) = pending_connections.next().await {
-            match result {
-                Ok((position, client)) => clients[position] = Some(client),
-                Err(error) => {
-                    first_connection_error.get_or_insert(error);
-                }
-            }
-        }
-        if let Some(error) = first_connection_error {
-            return Err(error);
-        }
-
-        let payment_reservation = if will_generate_outputs {
-            let requirements = if recovery.payment_reservation_id.is_some() {
-                recovery.reserved_payment_requirements(fa_id)?
-            } else {
-                recovery.payment_requirements(fa_id)?
-            }
-            .ok_or_else(|| {
-                FaError::Storage(
-                    "paid output generation has no complete payment requirements".to_owned(),
-                )
-            })?;
-            match payment_reservation.take() {
-                Some(reservation) => Some(reservation),
-                None => Some(
-                    self.reserve_payment_requirements(recovery, &requirements, fa_id, run)
-                        .await?,
-                ),
-            }
-        } else {
-            None
-        };
-
-        // Validate every presentation and prepare effect-free payment work
-        // before arming outputs. No wallet call is polled here.
-        let mut funding = Vec::new();
-        let mut presentations = Vec::new();
-        for (position, seat) in recovery.seats.iter_mut().enumerate() {
-            if terminal_positions.contains(&position) {
-                continue;
-            }
-            let locator = seat.progress.locator.clone();
-            let existing = seat.progress.seat_id.clone().map(|seat_id| SeatAcceptance {
-                seat_id,
-                guardian_fee_account: seat
-                    .guardian_fee_account
-                    .clone()
-                    .expect("validated accepted seat has its signed fee account"),
-            });
-            let signed_quote = seat.signed_quote.clone();
-            let recovered_payment = recovered_payments[position].take();
-            let refreshed_payment = refreshed_payments[position].take();
-            let client = clients[position].take().ok_or_else(|| {
-                FaError::Storage(format!(
-                    "missing preflight MG connection for seat {position}"
-                ))
-            })?;
-            if existing.is_none() {
-                seat.progress.phase = SeatPhase::Acquiring;
-                recovery.snapshot.seats[position] = seat.progress.clone();
-            }
-            if let Some(existing) = existing {
-                presentations.push(PendingSeatPresentation {
-                    position,
-                    client,
-                    locator,
-                    source: SeatPresentationSource::Existing(existing),
-                });
-                continue;
-            }
-            let signed_quote = signed_quote
-                .ok_or_else(|| FaError::Storage(format!("FA seat row {position} has no quote")))?;
-            match recovered_payment {
-                None => {
-                    presentations.push(PendingSeatPresentation {
-                        position,
-                        client,
-                        locator: locator.clone(),
-                        source: SeatPresentationSource::Acquire(Box::new(SeatAcquisition::Free(
-                            self.verify_free_seat_quote(
-                                position,
-                                signed_quote,
-                                &locator,
-                                &intent,
-                                fa_id,
-                                expected_payer.as_ref(),
-                            )?,
-                        ))),
-                    });
-                }
-                Some(SeatPaymentRecovery::NotStarted) => {
-                    let quote = refreshed_payment.ok_or_else(|| {
-                        FaError::Storage(format!(
-                            "paid FA seat row {position} escaped the refresh barrier"
-                        ))
-                    })?;
-                    let reservation = payment_reservation.clone().ok_or_else(|| {
-                        FaError::Storage(format!(
-                            "paid FA seat row {position} has no aggregate reservation"
-                        ))
-                    })?;
-                    funding.push(PendingSeatFunding {
-                        position,
-                        quote,
-                        reservation,
-                        timeout_budget: run
-                            .prepare_value_call_budget("funding seat payment")
-                            .await?,
-                        client,
-                        locator,
-                    });
-                }
-                Some(SeatPaymentRecovery::Prepared(_)) => {
-                    return Err(FaError::Storage(format!(
-                        "prepared FA seat row {position} escaped the replay barrier"
-                    )));
-                }
-                Some(SeatPaymentRecovery::Rejected(_)) => {
-                    return Err(FaError::Storage(format!(
-                        "rejected FA seat row {position} escaped terminal clearing"
-                    )));
-                }
-            }
-        }
-        self.publish_purchase(recovery.snapshot.clone());
-
-        let free_effects = presentations
-            .iter()
-            .filter_map(|presentation| {
-                let SeatPresentationSource::Acquire(acquisition) = &presentation.source else {
-                    return None;
-                };
-                let SeatAcquisition::Free(quote) = acquisition.as_ref() else {
-                    return None;
-                };
-                Some((
-                    presentation.position,
-                    recovery.seats[presentation.position].progress.index,
-                    quote.verified.quote_id(),
-                    AdmissionEffect::FreePresentation,
-                ))
-            })
-            .collect::<Vec<_>>();
-        let paid_effects = funding
-            .iter()
-            .map(|pending_funding| {
-                (
-                    pending_funding.position,
-                    recovery.seats[pending_funding.position].progress.index,
-                    pending_funding.quote.verified.quote_id(),
-                    AdmissionEffect::PaidOutput,
-                )
-            })
-            .collect::<Vec<_>>();
-        let verifier_provenance = self.inner.peer_badge_verifier.provenance().into();
-        if !recovery.payment_outputs_started && !funding.is_empty() {
-            // Free effects are consumed before arming paid outputs, but no
-            // presentation is polled between these durable transactions.
-            // A failure therefore remains pre-effect and abandonable.
-            if !free_effects.is_empty() {
-                let effects = free_effects
-                    .iter()
-                    .map(|(_, index, quote_id, effect)| (*index, *quote_id, *effect))
-                    .collect::<Vec<_>>();
-                ensure_effective_time_remaining(
-                    run.deadline(),
-                    "authorizing selected-seat effect wave",
-                )?;
-                self.inner
-                    .store
-                    .record_seat_effects_authorized(
-                        &recovery.snapshot.purchase_id,
-                        &effects,
-                        verifier_provenance,
-                    )
-                    .await?;
-                for &(position, _, quote_id, effect) in &free_effects {
-                    apply_authorized_effect_in_memory(recovery, position, quote_id, effect)?;
-                }
-            }
-            ensure_effective_time_remaining(run.deadline(), "arming seat payment outputs")?;
-            self.inner
-                .store
-                .record_payment_outputs_started(&recovery.snapshot.purchase_id, verifier_provenance)
-                .await?;
-            recovery.payment_outputs_started = true;
-            recovery.snapshot.payment_outputs_started = true;
-            for &(position, _, quote_id, effect) in &paid_effects {
-                apply_authorized_effect_in_memory(recovery, position, quote_id, effect)?;
-            }
-            self.publish_purchase(recovery.snapshot.clone());
-        } else {
-            // Post-output rows can mix paid and free quotes. Consume the
-            // complete exact wave atomically before polling the first wallet
-            // or presentation effect so expiry cannot strand only part of
-            // the wave.
-            let effect_wave = paid_effects
-                .iter()
-                .chain(&free_effects)
-                .copied()
-                .collect::<Vec<_>>();
-            if !effect_wave.is_empty() {
-                let effects = effect_wave
-                    .iter()
-                    .map(|(_, index, quote_id, effect)| (*index, *quote_id, *effect))
-                    .collect::<Vec<_>>();
-                ensure_effective_time_remaining(
-                    run.deadline(),
-                    "authorizing selected-seat effect wave",
-                )?;
-                self.inner
-                    .store
-                    .record_seat_effects_authorized(
-                        &recovery.snapshot.purchase_id,
-                        &effects,
-                        verifier_provenance,
-                    )
-                    .await?;
-                for (position, _, quote_id, effect) in effect_wave {
-                    apply_authorized_effect_in_memory(recovery, position, quote_id, effect)?;
-                }
-            }
-        }
-
-        let mut sessions = (0..recovery.seats.len())
-            .map(|_| None)
-            .collect::<Vec<Option<SeatSession<MgClient<F::Client>>>>>();
-        let mut first_barrier_error = None;
-        // A payment wallet may need the change from one accepted Fedimint
-        // transaction to fund the next quote. Drive paid seats in stable seat
-        // order and durably checkpoint each acceptance before polling the next
-        // wallet future. Recovery enters through this same list, so every
-        // newly started value movement has the same boundary.
-        for funding in funding {
-            let result = self
-                .complete_pending_seat_work(
-                    formation_id,
-                    PendingSeatWork::Funding(Box::new(funding)),
-                    fa_id,
-                    run,
-                )
-                .await;
-            let CompletedSeatWork {
-                position,
-                client,
-                creation,
-                checkpoint,
-            } = match result {
-                Ok(value) => value,
-                Err(error) => {
-                    if first_barrier_error.is_some() {
-                        log_mg_failure(&formation_id, &error, "discarded");
-                    }
-                    first_barrier_error.get_or_insert(error);
-                    break;
-                }
-            };
-            let acceptance = match creation {
-                SeatCreation::Accepted(acceptance) => acceptance,
-                SeatCreation::Refused(refund) => {
-                    terminal_quotes.push((position, refund.release_proof));
-                    first_terminal_outcome
-                        .get_or_insert(TerminalSeatOutcome::SeatRefused(refund.error));
-                    continue;
-                }
-            };
-            if matches!(checkpoint, SeatCheckpoint::Required)
-                && let Err(error) = self
-                    .checkpoint_accepted_seat(recovery, position, acceptance)
-                    .await
-            {
-                first_barrier_error.get_or_insert(error);
-                break;
-            }
-            sessions[position] = Some(SeatSession {
-                index: recovery.seats[position].progress.index,
-                client,
-                seat_id: recovery.seats[position]
-                    .progress
-                    .seat_id
-                    .clone()
-                    .expect("accepted seat was checkpointed or already recovered"),
-            });
-        }
-        if let Some(error) = first_barrier_error {
-            return Err(error);
-        }
-
-        // Free and already durable presentations move no wallet value and do
-        // not consume change needed by a sibling, so they retain parallel
-        // transport progress after every new payment is safely checkpointed.
-        let mut pending = FuturesUnordered::new();
-        for presentation in presentations {
-            pending.push(self.complete_pending_seat_work(
-                formation_id,
-                PendingSeatWork::Presentation(presentation),
-                fa_id,
-                run,
-            ));
-        }
-        while let Some(result) = pending.next().await {
-            let CompletedSeatWork {
-                position,
-                client,
-                creation,
-                checkpoint,
-            } = match result {
-                Ok(value) => value,
-                Err(error) => {
-                    if first_barrier_error.is_some() {
-                        log_mg_failure(&formation_id, &error, "discarded");
-                    }
-                    first_barrier_error.get_or_insert(error);
-                    continue;
-                }
-            };
-            let acceptance = match creation {
-                SeatCreation::Accepted(acceptance) => acceptance,
-                SeatCreation::Refused(refund) => {
-                    terminal_quotes.push((position, refund.release_proof));
-                    first_terminal_outcome
-                        .get_or_insert(TerminalSeatOutcome::SeatRefused(refund.error));
-                    continue;
-                }
-            };
-            if matches!(checkpoint, SeatCheckpoint::Required)
-                && let Err(error) = self
-                    .checkpoint_accepted_seat(recovery, position, acceptance)
-                    .await
-            {
-                first_barrier_error.get_or_insert(error);
-                continue;
-            }
-            sessions[position] = Some(SeatSession {
-                index: recovery.seats[position].progress.index,
-                client,
-                seat_id: recovery.seats[position]
-                    .progress
-                    .seat_id
-                    .clone()
-                    .expect("accepted seat was checkpointed or already recovered"),
-            });
-        }
-        // A newly funded sibling with an ambiguous error still depends on the
-        // aggregate authorization. Preserve every terminal quote until all
-        // siblings have reached durable checkpoints.
-        if let Some(error) = first_barrier_error {
-            return Err(error);
-        }
-        if first_terminal_outcome.as_ref().is_some_and(|outcome| {
-            outcome.requires_pre_output_reauthorization(recovery.payment_outputs_started)
-        }) {
-            return Err(first_terminal_outcome
-                .expect("checked terminal outcome exists")
-                .into_formation_error(recovery.payment_outputs_started));
-        }
-        let terminal_positions = terminal_quotes
-            .iter()
-            .map(|(position, _)| *position)
-            .collect::<Vec<_>>();
-        for (position, proof) in terminal_quotes {
-            self.release_terminal_quote_reservation(recovery, position, fa_id, proof, run)
-                .await?;
-        }
-        if !terminal_positions.is_empty() {
-            self.clear_terminal_quotes(recovery, &terminal_positions)
-                .await?;
-        }
-        if let Some(outcome) = first_terminal_outcome {
-            return Err(outcome.into_formation_error(recovery.payment_outputs_started));
-        }
-        sessions
-            .into_iter()
-            .enumerate()
-            .map(|(position, session)| {
-                session.ok_or_else(|| {
-                    FaError::Storage(format!("missing live session for seat {position}"))
-                })
-            })
-            .collect()
-    }
-
-    async fn refresh_unstarted_payments(
-        &self,
-        recovery: &mut PurchaseRecovery,
-        recovered_payments: &[Option<
-            SeatPaymentRecovery<P::RefundContext, P::TerminalReleaseProof>,
-        >],
-        fa_id: FaId,
-        intent: &ResolvedSeatPurchase,
-        payment_federation_id: FederationId,
-        run: DriverRun,
-    ) -> FaResult<Vec<Option<PaidSeatQuote>>> {
-        let formation_id = recovery.snapshot.purchase_id.clone();
-        let formation_id = &formation_id;
-        let expected_payer = recovery.payment_federation_id.clone();
-        if recovery.payment_reservation_id.is_some() {
-            let requirements = recovery
-                .reserved_payment_requirements(fa_id)?
-                .ok_or_else(|| {
-                    FaError::Storage(
-                        "stored wallet reservation has no exact payment requirements".to_owned(),
-                    )
-                })?;
-            let expected = crate::db::payment_reservation_id(formation_id, &requirements);
-            if recovery.payment_reservation_id.as_ref() != Some(&expected) {
-                return Err(FaError::Storage(
-                    "stored wallet reservation no longer matches journaled quotes".to_owned(),
-                ));
-            }
-            return recovery
-                .seats
-                .iter()
-                .zip(recovered_payments)
-                .enumerate()
-                .map(|(position, (seat, recovered))| {
-                    if !matches!(recovered, Some(SeatPaymentRecovery::NotStarted)) {
-                        return Ok(None);
-                    }
-                    let signed = seat.signed_quote.clone().ok_or_else(|| {
-                        FaError::Storage(format!(
-                            "reserved FA seat row {position} has no signed quote"
-                        ))
-                    })?;
-                    let locator = seat.progress.locator.clone();
-                    self.verify_paid_seat_quote(
-                        position,
-                        signed,
-                        &locator,
-                        intent,
-                        fa_id,
-                        expected_payer.as_ref(),
-                    )
-                    .map(Some)
-                })
-                .collect();
-        }
-        // Already selected: every seat refreshed here is a paid one.
-        let payment_federation = OnceCell::new_with(Some(payment_federation_id));
-        let mut pending = FuturesUnordered::new();
-        for (position, (seat, recovered)) in
-            recovery.seats.iter().zip(recovered_payments).enumerate()
-        {
-            if !matches!(recovered, Some(SeatPaymentRecovery::NotStarted)) {
-                continue;
-            }
-            let locator = seat.progress.locator.clone();
-            let old_signed_quote = seat
-                .signed_quote
-                .clone()
-                .expect("not-started payment requires a stored quote");
-            let old_quote = self.verify_paid_seat_quote(
-                position,
-                old_signed_quote,
-                &locator,
-                intent,
-                fa_id,
-                expected_payer.as_ref(),
-            )?;
-            let intent = intent.clone();
-            let expected_payer = expected_payer.clone();
-            let payment_federation = Some(&payment_federation);
-            let policy = quote_attempt_policy(&seat.admission);
-            // A seat saved before the preview pinned its price was authorized
-            // at its stored quote's plan.
-            let pinned_plan = seat
-                .admission
-                .plan()
-                .unwrap_or(&old_quote.verified.terms.request.plan)
-                .clone();
-            pending.push(async move {
-                let (signed, verified) = self
-                    .request_quote_with_retry(
-                        formation_id,
-                        position,
-                        &locator,
-                        &intent,
-                        Some(&pinned_plan),
-                        fa_id,
-                        policy,
-                        expected_payer.as_ref(),
-                        payment_federation,
-                        run,
-                    )
-                    .await?;
-                Ok::<_, FaError>((position, old_quote, PaidSeatQuote { signed, verified }))
-            });
-        }
-
-        let mut refreshed = (0..recovery.seats.len()).map(|_| None).collect::<Vec<_>>();
-        let mut first_error = None;
-        let mut unchanged = Vec::new();
-        let mut changed = Vec::new();
-        while let Some(result) = pending.next().await {
-            match result {
-                Ok((position, old, fresh)) => {
-                    let same_payment = old
-                        .verified
-                        .terms
-                        .payment
-                        .as_ref()
-                        .zip(fresh.verified.terms.payment.as_ref())
-                        .is_some_and(|(old, fresh)| old.federation_id() == fresh.federation_id());
-                    if old.verified.terms.price_msats == fresh.verified.terms.price_msats
-                        && same_payment
-                    {
-                        unchanged.push((position, old, fresh));
-                    } else {
-                        changed.push((position, old, fresh));
-                    }
-                }
-                Err(error) => {
-                    if first_error.is_some() {
-                        log_mg_failure(&formation_id, &error, "discarded");
-                    }
-                    first_error.get_or_insert(error);
-                }
-            }
-        }
-        if let Some(error) = first_error {
-            return Err(error);
-        }
-
-        for (position, old, fresh) in unchanged {
-            let seat_index = recovery.seats[position].progress.index;
-            self.inner
-                .store
-                .refresh_authorized_quote(
-                    formation_id,
-                    seat_index,
-                    &old.signed,
-                    fresh.signed.clone(),
-                )
-                .await?;
-            recovery.seats[position].signed_quote = Some(fresh.signed.clone());
-            refreshed[position] = Some(fresh);
-        }
-        let any_changed = !changed.is_empty();
-        for (position, old, fresh) in changed {
-            let seat_index = recovery.seats[position].progress.index;
-            self.inner
-                .store
-                .clear_quote(formation_id, seat_index, &old.signed)
-                .await?;
-            self.inner
-                .store
-                .store_quote(formation_id, seat_index, fresh.signed.clone())
-                .await?;
-            recovery.invalidate_payment_authorization();
-            recovery.seats[position].signed_quote = Some(fresh.signed);
-            recovery.seats[position].progress.phase = SeatPhase::QuoteReady;
-            recovery.snapshot.seats[position] = recovery.seats[position].progress.clone();
-        }
-        if any_changed {
-            return Err(FaError::SelectionReauthorizationRequired {
-                reason: crate::SelectionReauthorizationReason::QuoteTermsChanged,
-                failure: None,
-            });
-        }
-        Ok(refreshed)
     }
 
     async fn run_dkg(
@@ -2711,220 +1415,6 @@ where
         Ok(())
     }
 
-    async fn release_terminal_quote_reservation(
-        &self,
-        recovery: &PurchaseRecovery,
-        position: usize,
-        fa_id: FaId,
-        release_proof: Option<P::TerminalReleaseProof>,
-        run: DriverRun,
-    ) -> FaResult<()> {
-        let signed_quote = recovery.seats[position]
-            .signed_quote
-            .as_ref()
-            .expect("terminal quote outcome requires a stored quote");
-        let verified = self.verify_quote(
-            position,
-            signed_quote,
-            &recovery.seats[position].progress.locator,
-            &recovery.snapshot.request,
-            fa_id,
-            recovery.payment_federation_id.as_ref(),
-        )?;
-        if verified.terms.payment.is_some() {
-            let release_proof = release_proof.ok_or_else(|| {
-                FaError::Payment(format!(
-                    "terminal paid FA seat row {position} has no wallet release proof"
-                ))
-            })?;
-            run.call("releasing terminal seat payment reservation", || {
-                Ok(self
-                    .inner
-                    .ports
-                    .payments
-                    .release_seat_payment_reservation(release_proof))
-            })
-            .await?
-            .map_err(|error| FaError::Payment(error.to_string()))?;
-        } else if release_proof.is_some() {
-            return Err(FaError::Storage(format!(
-                "free FA seat row {position} unexpectedly carried a wallet release proof"
-            )));
-        }
-        Ok(())
-    }
-
-    async fn clear_terminal_quotes(
-        &self,
-        recovery: &mut PurchaseRecovery,
-        positions: &[usize],
-    ) -> FaResult<()> {
-        // After payment outputs started, a terminal seat leaves the purchase.
-        // A new purchase buys any seat that is still missing.
-        let drop_seats = recovery.payment_outputs_started;
-        let expected_quotes = positions
-            .iter()
-            .map(|&position| {
-                (
-                    recovery.seats[position].progress.index,
-                    recovery.seats[position]
-                        .signed_quote
-                        .clone()
-                        .expect("terminal quote outcome requires a stored quote"),
-                )
-            })
-            .collect::<Vec<_>>();
-        self.inner
-            .store
-            .clear_terminal_quotes(&recovery.snapshot.purchase_id, &expected_quotes, drop_seats)
-            .await?;
-
-        recovery.invalidate_payment_authorization();
-        recovery.payment_reservation_id = None;
-        let mut positions = positions.to_vec();
-        positions.sort_unstable();
-        for &position in positions.iter().rev() {
-            if drop_seats {
-                recovery.seats.remove(position);
-                recovery.snapshot.seats.remove(position);
-            } else {
-                recovery.seats[position].signed_quote = None;
-                recovery.seats[position].progress.phase = SeatPhase::Selected;
-                recovery.snapshot.seats[position] = recovery.seats[position].progress.clone();
-            }
-        }
-        Ok(())
-    }
-
-    async fn complete_pending_seat_work(
-        &self,
-        formation_id: &FormationId,
-        work: PendingSeatWork<MgClient<F::Client>, P::RefundContext, P::PaymentReservation>,
-        fa_id: FaId,
-        run: DriverRun,
-    ) -> FaResult<CompletedSeatWork<MgClient<F::Client>, P::TerminalReleaseProof>> {
-        match work {
-            PendingSeatWork::Funding(funding) => {
-                let PendingSeatFunding {
-                    position,
-                    quote,
-                    reservation,
-                    timeout_budget,
-                    client,
-                    locator,
-                } = *funding;
-                // This is intentionally the first await in funded work after
-                // the durable boundary: the timeout wrapper immediately polls
-                // the wallet call passed to it.
-                let prepared = timeout_budget
-                    .poll_value_call(
-                        run,
-                        self.inner
-                            .ports
-                            .payments
-                            .create_seat_payment(&reservation, &quote.verified),
-                    )
-                    .await?
-                    .map_err(|error| FaError::Payment(error.to_string()))?;
-                let creation = self
-                    .create_or_replay_seat(
-                        formation_id,
-                        position,
-                        &client,
-                        &locator,
-                        fa_id,
-                        SeatAcquisition::ReplayPrepared { quote, prepared },
-                        run,
-                    )
-                    .await?;
-                Ok(CompletedSeatWork {
-                    position,
-                    client,
-                    creation,
-                    checkpoint: SeatCheckpoint::Required,
-                })
-            }
-            PendingSeatWork::Presentation(PendingSeatPresentation {
-                position,
-                client,
-                locator: _,
-                source: SeatPresentationSource::Existing(existing),
-            }) => Ok(CompletedSeatWork {
-                position,
-                client,
-                creation: SeatCreation::Accepted(existing),
-                checkpoint: SeatCheckpoint::AlreadyDurable,
-            }),
-            PendingSeatWork::Presentation(PendingSeatPresentation {
-                position,
-                client,
-                locator,
-                source: SeatPresentationSource::Acquire(acquisition),
-            }) => {
-                let creation = self
-                    .create_or_replay_seat(
-                        formation_id,
-                        position,
-                        &client,
-                        &locator,
-                        fa_id,
-                        *acquisition,
-                        run,
-                    )
-                    .await?;
-                Ok(CompletedSeatWork {
-                    position,
-                    client,
-                    creation,
-                    checkpoint: SeatCheckpoint::Required,
-                })
-            }
-        }
-    }
-
-    async fn create_or_replay_seat(
-        &self,
-        formation_id: &FormationId,
-        index: usize,
-        client: &MgClient<F::Client>,
-        locator: &Locator,
-        fa_id: FaId,
-        acquisition: SeatAcquisition<P::RefundContext>,
-        run: DriverRun,
-    ) -> FaResult<SeatCreation<P::TerminalReleaseProof>> {
-        // A stored quote is reused only when payment has already started
-        // against it. Otherwise obtain and persist a fresh quote before
-        // committing funds, so prepared blind nonces can never be stranded.
-        let presentation = match acquisition {
-            SeatAcquisition::Free(quote) => {
-                return self
-                    .present_seat(
-                        formation_id,
-                        index,
-                        client,
-                        locator,
-                        fa_id,
-                        SeatPresentation::Free(quote),
-                        run,
-                    )
-                    .await;
-            }
-            SeatAcquisition::ReplayPrepared { quote, prepared } => {
-                SeatPresentation::Paid { quote, prepared }
-            }
-        };
-        self.present_seat(
-            formation_id,
-            index,
-            client,
-            locator,
-            fa_id,
-            presentation,
-            run,
-        )
-        .await
-    }
-
     #[allow(clippy::too_many_arguments)]
     async fn request_new_quote(
         &self,
@@ -2934,7 +1424,6 @@ where
         intent: &ResolvedSeatPurchase,
         pinned_plan: &Plan,
         fa_id: FaId,
-        policy: QuoteAttemptPolicy,
         expected_payer: Option<&FederationId>,
         payment_federation: Option<&OnceCell<FederationId>>,
         run: DriverRun,
@@ -2986,13 +1475,9 @@ where
                     ),
                 };
                 let failure = client.failure(MgOperation::GetAvailability, cause);
-                return Err(if policy.allows_selection_reauthorization() {
-                    FaError::SelectionReauthorizationRequired {
-                        reason,
-                        failure: Some(failure),
-                    }
-                } else {
-                    failure.into()
+                return Err(FaError::SelectionReauthorizationRequired {
+                    reason,
+                    failure: Some(failure),
                 });
             }
         };
@@ -3007,18 +1492,7 @@ where
         };
         let payment_federation_id = if priced {
             let payment_federation = payment_federation.ok_or_else(|| {
-                if policy.allows_selection_reauthorization() {
-                    FaError::SelectionReauthorizationRequired {
-                        reason: SelectionReauthorizationReason::PaymentFederationRequired,
-                        failure: None,
-                    }
-                } else {
-                    mg_error(
-                        index,
-                        "Manifold Guardian charges for a seat, and this FA has no authenticated \
-                         payment policy to pay from",
-                    )
-                }
+                reauthorization(SelectionReauthorizationReason::PaymentFederationRequired)
             })?;
             Some(
                 payment_federation
@@ -3094,16 +1568,15 @@ where
         .await;
         result.map_err(|error| match error {
             FaError::Mg(failure)
-                if policy.allows_selection_reauthorization()
-                    && matches!(
-                        failure.cause,
-                        MgCause::CapacityExhausted
-                            | MgCause::PlanNotOffered
-                            | MgCause::PaymentFederationNotAccepted
-                            | MgCause::UnsupportedVersion
-                            | MgCause::UnsupportedFederationSize
-                            | MgCause::InvalidResponse
-                    ) =>
+                if matches!(
+                    failure.cause,
+                    MgCause::CapacityExhausted
+                        | MgCause::PlanNotOffered
+                        | MgCause::PaymentFederationNotAccepted
+                        | MgCause::UnsupportedVersion
+                        | MgCause::UnsupportedFederationSize
+                        | MgCause::InvalidResponse
+                ) =>
             {
                 FaError::SelectionReauthorizationRequired {
                     reason: SelectionReauthorizationReason::SelectedMgUnavailable,
@@ -3159,42 +1632,7 @@ where
         Ok(quote)
     }
 
-    fn verify_free_seat_quote(
-        &self,
-        index: usize,
-        signed: SignedResponse<GetQuoteResponse>,
-        locator: &Locator,
-        intent: &ResolvedSeatPurchase,
-        fa_id: FaId,
-        expected_payer: Option<&FederationId>,
-    ) -> FaResult<FreeSeatQuote> {
-        let verified = self.verify_quote(index, &signed, locator, intent, fa_id, expected_payer)?;
-        if verified.terms.payment.is_some() {
-            return Err(FaError::Storage(format!(
-                "paid FA seat row {index} had no authorized payment action"
-            )));
-        }
-        Ok(FreeSeatQuote { signed, verified })
-    }
-
-    fn verify_paid_seat_quote(
-        &self,
-        index: usize,
-        signed: SignedResponse<GetQuoteResponse>,
-        locator: &Locator,
-        intent: &ResolvedSeatPurchase,
-        fa_id: FaId,
-        expected_payer: Option<&FederationId>,
-    ) -> FaResult<PaidSeatQuote> {
-        let verified = self.verify_quote(index, &signed, locator, intent, fa_id, expected_payer)?;
-        if verified.terms.payment.is_none() {
-            return Err(FaError::Storage(format!(
-                "free FA seat row {index} had a paid acquisition action"
-            )));
-        }
-        Ok(PaidSeatQuote { signed, verified })
-    }
-
+    #[allow(clippy::too_many_arguments)]
     async fn present_seat(
         &self,
         formation_id: &FormationId,
@@ -3202,34 +1640,26 @@ where
         client: &MgClient<F::Client>,
         locator: &Locator,
         fa_id: FaId,
-        presentation: SeatPresentation<P::RefundContext>,
+        signed_quote: SignedResponse<GetQuoteResponse>,
+        quote: SignatureVerified<GetQuoteResponse>,
+        prepared: Option<PreparedSeatPayment<P::RefundContext>>,
         run: DriverRun,
-    ) -> FaResult<SeatCreation<P::TerminalReleaseProof>> {
-        let (signed_quote, quote, payment_signatures, refund_context) = match presentation {
-            SeatPresentation::Free(FreeSeatQuote { signed, verified }) => {
-                (signed, verified, Vec::new(), None)
-            }
-            SeatPresentation::Paid {
-                quote: PaidSeatQuote { signed, verified },
-                prepared,
-            } => {
-                let terms = verified
-                    .terms
-                    .payment
-                    .as_ref()
-                    .expect("paid quote type carries payment terms");
+    ) -> FaResult<SeatCreation> {
+        let (payment_signatures, refund_context) = match (&quote.terms.payment, prepared) {
+            (None, None) => (Vec::new(), None),
+            (Some(terms), Some(prepared)) => {
                 if prepared.settled_under != terms.generation() {
                     return Err(mg_error(
                         index,
                         "wallet payment generation did not match the quote",
                     ));
                 }
-                (
-                    signed,
-                    verified,
-                    prepared.payment_signatures,
-                    Some(prepared.refund_context),
-                )
+                (prepared.payment_signatures, Some(prepared.refund_context))
+            }
+            _ => {
+                return Err(FaError::Storage(format!(
+                    "FA seat row {index} payment does not match its quote"
+                )));
             }
         };
         let quote_id = quote.quote_id();
@@ -3278,8 +1708,8 @@ where
                 };
                 let error = client.failure(MgOperation::CreateSeat, cause);
                 log_mg_failure(formation_id, &FaError::Mg(error.clone()), "pending_refund");
-                let release_proof = match (refund_context, refund_transaction) {
-                    (Some(refund_context), Some(refund)) => Some(
+                match (refund_context, refund_transaction) {
+                    (Some(refund_context), Some(refund)) => {
                         run.call_with_timeout(
                             "settling refused seat refund",
                             run.options.run_timeout,
@@ -3292,21 +1722,17 @@ where
                             },
                         )
                         .await?
-                        .map_err(|error| FaError::Payment(error.to_string()))?
-                        .release_proof,
-                    ),
-                    (None, None) => None,
+                        .map_err(|error| FaError::Payment(error.to_string()))?;
+                    }
+                    (None, None) => {}
                     _ => {
                         return Err(mg_error(
                             index,
                             "refusal payment and refund material did not match the quote",
                         ));
                     }
-                };
-                Ok(SeatCreation::Refused(SeatRefusal {
-                    error,
-                    release_proof,
-                }))
+                }
+                Ok(SeatCreation::Refused(error))
             }
         }
     }
@@ -4361,14 +2787,6 @@ pub(crate) fn federation_name(
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum ReservationCleanup {
-    /// The wallet reserve call returned an error and no capability exists.
-    DefinitivelyAbsent,
-    /// A wallet commit may have preceded an interrupted FA checkpoint.
-    ReconstructIfAuthorized,
-}
-
 fn canonical_fee_recipients(
     config: &ClientConfig,
     seat_bindings: &str,
@@ -4655,17 +3073,6 @@ fn mg_error(index: usize, message: impl Into<String>) -> FaError {
 
 pub(crate) fn now_secs() -> FaResult<u64> {
     Ok(fedimint_core::time::duration_since_epoch().as_secs())
-}
-
-fn validate_live_admissions(
-    recovery: &PurchaseRecovery,
-    expected_provenance: StoredVerifierProvenance,
-    now: Timestamp,
-) -> FaResult<()> {
-    for seat in &recovery.seats {
-        seat.admission.validate_if_fresh(expected_provenance, now)?;
-    }
-    Ok(())
 }
 
 pub(crate) fn restored_formation_id(fa_id: FaId, invite: &InviteCode) -> FaResult<FormationId> {

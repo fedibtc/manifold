@@ -1,8 +1,8 @@
 //! Public FA intent and progress state.
 
 use fedi_decentralized_service_manifold_guardian::{
-    FederationId, FederationName, FederationSize, FedimintdDkgVersion, FedimintdVersion,
-    FedimintdVersionCore, GuardianCode, InviteCode, Locator, MgName, Plan, QuoteId, SeatId,
+    FederationName, FederationSize, FedimintdDkgVersion, FedimintdVersion, FedimintdVersionCore,
+    GuardianCode, InviteCode, Locator, MgName, Plan, SeatId,
 };
 use nostr_sdk::PublicKey;
 
@@ -258,135 +258,6 @@ pub enum SeatPhase {
     Running,
 }
 
-/// One exact paid quote included in an aggregate authorization prompt.
-#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
-pub struct SeatPaymentRequirement {
-    /// Stable selected-seat index.
-    pub index: u16,
-    /// Badge-vouched identity of the MG the quote pays. Presentation
-    /// material; the payment binds to the quote.
-    #[serde(rename = "fman_id")]
-    pub mg_id: PublicKey,
-    /// Exact quote the authorization applies to.
-    pub quote_id: QuoteId,
-    /// Federation whose wallet will fund the quote.
-    pub payment_federation_id: FederationId,
-    /// Exact face value requested by the quote.
-    pub amount_msats: u64,
-}
-
-impl SeatPaymentRequirement {
-    /// Stable two-word display name derived from the authenticated MG id.
-    ///
-    /// Names can collide and never substitute for [`Self::mg_id`] in
-    /// identity, trust, or deduplication.
-    #[must_use]
-    pub fn mg_name(&self) -> MgName {
-        MgName::from_mg_id(self.mg_id)
-    }
-}
-
-/// Opaque binding to the complete quote set displayed to the consumer.
-///
-/// The consumer must return this value when authorizing payment. A quote
-/// replacement changes the binding and invalidates the complete authorization,
-/// preventing a delayed UI command from authorizing a different set.
-#[derive(Clone, Debug, Eq, Hash, PartialEq, serde::Serialize)]
-pub struct PaymentAuthorizationId(String);
-
-impl PaymentAuthorizationId {
-    /// Parse the opaque binding displayed by a prior status response.
-    pub fn try_from_opaque(value: String) -> Result<Self, String> {
-        validate_canonical_digest(&value, "payment binding")?;
-        Ok(Self(value))
-    }
-
-    /// Stable opaque representation for an authorization RPC.
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-
-    pub(crate) fn from_digest(digest: [u8; 32]) -> Self {
-        Self(encode_canonical_digest(digest))
-    }
-}
-
-impl<'de> serde::Deserialize<'de> for PaymentAuthorizationId {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        let value = <String as serde::Deserialize>::deserialize(deserializer)?;
-        Self::try_from_opaque(value).map_err(serde::de::Error::custom)
-    }
-}
-
-/// Deterministic wallet reservation for one exact aggregate of paid quotes.
-///
-/// The string is deliberately private: consumers can compare, log, and pass
-/// this semantic identifier back to their wallet adapter, but cannot forge a
-/// reservation by reinterpreting an unrelated string. `fa-client` derives it
-/// from the formation identity and current exact requirements.
-#[derive(Clone, Debug, Eq, Hash, PartialEq, serde::Serialize)]
-pub struct PaymentReservationId(String);
-
-impl PaymentReservationId {
-    /// Stable opaque representation suitable for a wallet journal key.
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-
-    pub(crate) fn from_digest(digest: [u8; 32]) -> Self {
-        Self(encode_canonical_digest(digest))
-    }
-}
-
-impl<'de> serde::Deserialize<'de> for PaymentReservationId {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        let value = <String as serde::Deserialize>::deserialize(deserializer)?;
-        validate_canonical_digest(&value, "payment binding").map_err(serde::de::Error::custom)?;
-        Ok(Self(value))
-    }
-}
-
-fn encode_canonical_digest(bytes: [u8; 32]) -> String {
-    let mut encoded = String::with_capacity(bytes.len() * 2);
-    for byte in bytes {
-        use std::fmt::Write as _;
-        write!(encoded, "{byte:02x}").expect("writing to String is infallible");
-    }
-    encoded
-}
-
-fn validate_canonical_digest(value: &str, description: &str) -> Result<(), String> {
-    if value.len() != 64
-        || !value
-            .bytes()
-            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-    {
-        return Err(format!(
-            "{description} must be a 32-byte lowercase hexadecimal digest"
-        ));
-    }
-    Ok(())
-}
-
-/// Exact paid quotes of one purchase, authorized as one aggregate.
-#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
-pub struct PaymentRequirements {
-    /// Binding to this exact, complete set of quote requirements.
-    pub authorization_id: PaymentAuthorizationId,
-    /// Checked sum of every paid seat requirement.
-    pub total_msats: u64,
-    /// Per-seat, quote-bound requirements.
-    pub seats: Vec<SeatPaymentRequirement>,
-}
-
 /// Latest progress for one selected MG seat.
 #[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
 pub struct SeatProgress {
@@ -434,10 +305,6 @@ pub struct SeatPurchaseSnapshot {
     pub seats: Vec<SeatProgress>,
     /// Aggregate freshness.
     pub freshness: FormationFreshness,
-    /// Whether the durable wallet-output-generation boundary has been armed.
-    /// Once true, payer switching and value-destructive abandon are forbidden;
-    /// the run loop must recover the exact quote operations.
-    pub payment_outputs_started: bool,
     /// Most recent operation error category.
     pub last_error: Option<FaErrorCode>,
 }
