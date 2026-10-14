@@ -187,8 +187,8 @@ impl FaStore {
                 .flatten();
             // Schema 12 has no guardian replacement. A seat that waited for
             // one ended after payment, so it leaves the purchase. An applied
-            // replacement has no effect yet, so it leaves too. While a wallet
-            // reservation may hold its payment, it stays until the run
+            // replacement has no effect yet, so it leaves too. While the
+            // wallet reservation may hold its payment, it stays until the run
             // releases that reservation.
             let replacement = !seat_object
                 .get("replacement_for")
@@ -197,14 +197,23 @@ impl FaStore {
             let applied =
                 seat_object.get("replacement_approved") == Some(&serde_json::Value::Bool(true));
             let seat: StoredPurchaseSeat = serde_json::from_value(seat).map_err(|_| malformed())?;
-            if applied {
-                if purchase.payment_reservation_id.is_some() {
-                    purchase.payment_reservation_release_intended = true;
-                } else {
-                    purchase.payment_authorization = None;
-                }
+            let reserved = applied
+                && purchase.payment_reservation_id.is_some()
+                && purchase
+                    .payment_authorization
+                    .as_ref()
+                    .is_some_and(|authorization| {
+                        authorization
+                            .quotes
+                            .iter()
+                            .any(|quote| quote.index == seat.index)
+                    });
+            if reserved {
+                purchase.payment_reservation_release_intended = true;
+            } else if applied && purchase.payment_reservation_id.is_none() {
+                purchase.payment_authorization = None;
             }
-            if replacement && !(applied && purchase.payment_reservation_id.is_some()) {
+            if replacement && !reserved {
                 dbtx.raw_remove_entry(&DatabaseKeyPrefix::to_bytes(&key))
                     .await
                     .map_err(|_| FaError::Storage("removing a schema 11 seat failed".to_owned()))?;

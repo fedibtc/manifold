@@ -693,7 +693,6 @@ async fn r269_applied_replacement_with_an_expired_preview_can_still_finish() {
 /// without a payment, the five paid seats move to the pool, and the creation
 /// needs two seats.
 #[tokio::test]
-#[ignore = "the unreserved applied replacement stays and requires reauthorization"]
 async fn r269_mixed_replacement_wave_releases_its_hold_and_drops_both_replacements() {
     let (client, mem, wallet, _) = open_fixture(R269_MIXED_REPLACEMENT_WAVE).await;
     let held = wallet
