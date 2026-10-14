@@ -135,6 +135,7 @@ struct FakeSource {
     authority_calls: AtomicUsize,
     revocation_calls: AtomicUsize,
     last_revocation_relay_count: AtomicUsize,
+    last_revocation_relays: Mutex<Vec<RelayUrl>>,
     authority_unavailable: AtomicBool,
     revocation_unavailable: AtomicBool,
     authorities: Mutex<Vec<Event>>,
@@ -168,6 +169,7 @@ impl PeerBadgeEventSource for FakeSource {
         self.revocation_calls.fetch_add(1, Ordering::SeqCst);
         self.last_revocation_relay_count
             .store(relay_urls.len(), Ordering::SeqCst);
+        *self.last_revocation_relays.lock().expect("relay lock") = relay_urls.to_vec();
         if self.revocation_unavailable.load(Ordering::SeqCst) {
             return Err(NostrClientError::MissingEvent {
                 context: "fake revocation",
@@ -865,4 +867,49 @@ fn issuance_rejects_untrusted_and_unpinned_issuers() {
         development.verify_issuance_at(&fixture.envelope, VERIFY_AT),
         Err(PeerBadgeVerificationError::UntrustedIssuer { .. })
     ));
+}
+
+#[tokio::test]
+async fn development_reads_revocation_from_its_profile_relays() {
+    let fixture = fixture();
+    let profile_relay = RelayUrl::parse("ws://127.0.0.1:7777").expect("relay parses");
+    let root = fixture.authority.issuer.issuer_id_pubkey.0;
+    let construct = |environment| {
+        PeerBadgeVerifier::try_from_profile_parts(
+            environment,
+            1,
+            [root],
+            [profile_relay.clone()],
+            1,
+            [],
+        )
+        .expect("verifier constructs")
+    };
+    assert_eq!(
+        construct(ManifoldEnvironment::Development)
+            .inner
+            .development_revocation_relays,
+        Some(vec![profile_relay.clone()])
+    );
+    assert_eq!(
+        construct(ManifoldEnvironment::Staging)
+            .inner
+            .development_revocation_relays,
+        None
+    );
+
+    let source = Arc::new(FakeSource::default());
+    let mut verifier = verifier(&fixture, Arc::clone(&source));
+    Arc::get_mut(&mut verifier.inner)
+        .expect("unshared verifier")
+        .development_revocation_relays = Some(vec![profile_relay.clone()]);
+    verifier
+        .verify_at(&fixture.envelope, VERIFY_AT, verification_deadline())
+        .await
+        .expect("badge verifies");
+    assert_eq!(
+        *source.last_revocation_relays.lock().expect("relay lock"),
+        vec![profile_relay],
+        "the authority's signed location is not queried"
+    );
 }
