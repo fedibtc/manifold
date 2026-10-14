@@ -46,14 +46,18 @@ separate fail-closed schema. Schema 12 keeps one creation row, purchase rows,
 one pool row per bought seat, and one cached guardian code per formation seat.
 The creation row also holds the formation's progress: its id, invite, and
 metadata target. The purchase persists the selected
-major/minor/vendor DKG identity beside the optional explicit payer, durable
-verifier provenance, selected preview deadline, exact aggregate reservation
-identity, commercial-history tombstone, and wallet-output tombstone. Schema 11
+major/minor/vendor DKG identity beside the optional explicit payer. Each
+purchase seat persists its admission: the verifier provenance and preview
+deadline before its quote is bound, then the exact bound quote. Schema 11
 kept the purchase and the formation in one row; opening such an FA migrates it.
 A schema 11 pinned formation cannot be migrated, because its MGs have no
 authenticated identity; opening it fails with reset guidance.
 An unformed schema 11 row also yields a creation row with its name and
-callback. A purchase that has not created every seat stays a purchase. From
+callback. A purchase that has not created every seat stays a purchase. Its
+replacement seats are dropped, and a seat whose admission was never bound to
+an effect loses its stored quote. Aggregate authorization and reservation
+fields are ignored, so the wallet adapter must release any unstarted part of an
+old reservation before it opens the FA. From
 `seats_created` on, its seats move into the pool, their guardian codes move
 into the code cache, and its formation progress moves into the creation row.
 A formed row yields only the federation record, when none exists. Schema 11
@@ -78,42 +82,40 @@ reauthorization before requesting a quote if any selected MG's live offer is
 priced. When the MG's live offer no longer contains the previewed plan, the
 purchase returns typed `PriceChanged` reauthorization before outputs. A seat
 saved before prices were pinned has no previewed plan, so before outputs it
-returns `PreviewExpired` reauthorization; its authorized but unstarted payment
-is refreshed at its stored quote's plan. Once every exact quote exists, the
-engine records the durable quote-bound aggregate authorization. It refreshes every unpaid quote, connects every selected
-MG, and derives a deterministic reservation id from the formation and fresh
-exact quote set. The wallet first recover-probes that exact id without creating
-state; only authoritative absence plus live admission permits a new
-reservation. The wallet idempotently reserves the exact signed output plans,
-fee-aware logical debit allocations, required reserve, and virtual value
-without assigning disjoint physical notes to the members. It obtains the
-allocations by independently dry-running each exact transaction and re-quotes
-the current net debit when each member is submitted; any increase may consume
-only unreserved headroom. The engine persists that id before the independent
-`payment_outputs_started` tombstone and carries the reconstructed opaque
-capability into every new seat payment. Only the wallet's typed proof
-that an insufficient-balance check failed before creating or observing a
-same-id journal permits selected formation to discard that state and return to
-payer selection. Binding mismatches, storage errors, and lost or ambiguous
-results after journal persistence keep the exact formation durable and
-recover-probe the deterministic id before freshness or policy on restart.
+returns `PreviewExpired` reauthorization.
 
-A purchase never parks for a consumer authorization. Before any output
-generation, a changed price or unavailable MG or payer returns typed
-`SelectionReauthorizationRequired` and value-safely removes the purchase.
-If a process dies before cleanup, the purchase preserves its payer and preview
-expiry, and the run loop either continues the still-live exact set or performs the
-same typed cleanup. The same live preview can then retry a different ready
-payer. An unavailable MG always requires a fresh
-preview; selected guardians are never silently swapped.
-After outputs start, a seat whose wallet operation terminally rejected or
-whose MG-signed refund was settled leaves the purchase. Its wallet release
-completes first, and one transaction then deletes the row and invalidates the
-aggregate authorization and reservation id. Accepted, prepared, paid, and
-ambiguous siblings stay in the purchase. The purchase completes with the seats
-that remain, and a new purchase buys any seat still missing. A remaining
-unpaid quote set after the drop is authorized again at the same previewed
-prices.
+The purchase buys seats one at a time, in seat order. For each seat that has
+no seat id, the driver first binds a quote: one autocommit stores the exact
+signed quote and moves the seat's admission to an effect authorization for
+that quote, free or paid output. The selection preview must still be fresh,
+under the same verifier provenance, until the purchase binds its first seat.
+After that, slow sequential payments cannot expire the purchase. A bound free
+quote is presented again exactly. A bound paid quote is first given to the
+wallet's per-quote recovery:
+
+- `Prepared` — the wallet operation for that quote exists, so the driver
+  presents its payment without a new spend.
+- `Rejected` — the wallet operation terminally failed, so the seat leaves.
+- `NotStarted` — no value moved, so the driver requests a new quote at the
+  same previewed plan and binds it in place of the old one.
+
+A seat with a bound unpaid quote then asks the wallet to create the payment.
+The wallet returns only after the exact transaction is accepted and payer
+change is spendable. The driver presents the payment with `CreateSeat` and
+checkpoints the accepted seat before it starts the next seat. A signed
+refusal is settled in the wallet first, then the seat leaves. The FA replays
+a stored free quote exactly until the MG signs a refusal, so a lost acceptance
+response cannot allocate a second quote-derived seat.
+
+A seat leaves the purchase with a typed reason when its MG or payer becomes
+unavailable, its price changes, or it was refused. One transaction deletes
+the seat row. If the wallet proves that the payer cannot fund a seat, that
+seat and every seat without a bound quote leave with `InsufficientFunds`.
+Other errors keep the seat and end the run without completion, so the next run
+continues it. When every remaining seat is accepted, the purchase completes:
+its seats move into the pool. If a seat left, the creation returns to
+`NeedsSeats` with the first leave reason, and a new purchase buys any seat
+still missing. Selected guardians are never silently swapped.
 Definite connection failures are retried with bounded exponential backoff for
 up to two minutes, clipped by the current driver deadline, before the
 pre-output fresh-selection result is returned. After outputs start, transport
@@ -315,15 +317,13 @@ objects, trust conclusions, or lifecycle transitions:
   the purpose-built encrypted Nostr recovery document and imports only its
   lean authenticated facts as `Unsynced` state
   ([`SPEC-fa-backup-payload`](./SPEC-fa-backup-payload.md)).
-- **Payments** — a wallet adapter that reports Ready federations, performs a
-  value-free exact aggregate sufficiency check over a non-serializable typed
-  aggregate binding each requirement to its verified quote (foreign output
-  values/module fees, independently dry-run primary fees, and required
-  reserve), makes each quote-bound funding operation recoverable before
-  committing value, re-checks its current net cost against the aggregate's
-  remaining headroom, and returns `Prepared` only after the exact transaction
-  is accepted and payer change is spendable. It settles signed refunds
-  retry-safely. Wallet-private refund material never enters FA storage.
+- **Payments** — a wallet adapter that reports Ready federations and pays one
+  verified quote at a time. Its funding operation is recoverable from the quote
+  alone before it commits value. It reports insufficient funds only when the
+  payer cannot cover that quote's current net cost and no operation for it
+  exists. It returns `Prepared` only after the exact transaction is accepted
+  and payer change is spendable. Recovery of a quote reports `NotStarted`,
+  `Prepared`, or `Rejected`. It settles signed refunds retry-safely. Wallet-private refund material never enters FA storage.
 - **Transport** — an iroh connector dialing a protocol `Locator`. Its
   availability and quote calls retain local RPC failures in a non-serializable
   outer call error; the inner result is the Manifold Guardian's wire-domain
@@ -436,52 +436,12 @@ last error on `federation`. Inconsistent storage fails closed before status is p
 The seat/fee-account pairing is
 validated on load, so formation records persisted before signed fee-account
 acceptance existed fail closed and must be reset rather than migrated because
-they predate the production compatibility baseline. Payment readiness and
-authorization are aggregate formation state — one authorization covers the
-complete verified quote set. Immediately before funding, the FA refreshes every
-unpaid paid quote as one barrier and carries the authorization forward only
-after every sibling retains unchanged commercial terms. It then repeats the
-value-free exact funding preflight and resolves every MG transport before
-durably setting `payment_outputs_started`. The next fallible effect is the
-wallet output-generation poll. Changed terms remove the purchase for a fresh
-approval.
-The FA replays a stored free quote exactly until the MG signs a refusal, so a
-lost acceptance response cannot allocate a second quote-derived seat. In a
-selected all-free formation, that signed refusal consumes the exact admission
-without crossing the wallet-output boundary; the engine retains the terminal
-quote until abandon removes the purchase, then requires a fresh
-selection preview rather than re-quoting the same admission. If abandon fails,
-reopen replays the exact refusal before retrying cleanup. A paid
-quote whose wallet payment already started is likewise replayed exactly rather
-than refreshed, because its funds are locked to that quote's blind nonces.
-Every selected row persists a typed admission state. Initial paid admissions
-are bound to their exact quote and paid-output effect in the aggregate
-output-start transaction. Paid members re-authorized after that tombstone
-and sharing one exact reservation are bound by one atomic
-authorization update before the first new payment begins; an
-independent free admission is bound to its exact presentation before
-`CreateSeat`. Crash recovery therefore consults per-seat
-effect authority instead of inferring it from the formation-wide tombstone.
-Before the first payment, the driver completes quote refresh, resolves every
-final MG connection, prepares effect-free payment work, and durably sets
-`payment_outputs_started`. Newly started paid members then run in stable seat
-order. Each adapter return means the exact Fedimint transaction is accepted and
-its payer-owned change is spendable; the FA presents and durably checkpoints
-that member before starting the next payment. A later failure therefore
-preserves every prior seat. Initial formation and resume of `NotStarted`
-members use this same ordered path.
-Resume asks the wallet about every authorized stored quote before consulting
-current setup-payment policy. It completes the wallet probes as one concurrent
-read-only barrier, concurrently replays every already-submitted prepared
-payment, checkpoints successful
-siblings despite other failures, and clears terminally rejected or
-verified-refused quotes only when every sibling reached a durable recovery
-checkpoint. Those replays create no new wallet value movement; after the
-barrier, every newly started `NotStarted` member follows the same sequential
-checkpoint-before-next rule. Before invalidating the old aggregate, it
-explicitly releases each exact rejected/refunded member in the wallet;
-dropping a capability or reservation id is never release. Current policy
-drops only seats whose operations the wallet proves ended. Per-seat progress is
+they predate the production compatibility baseline. Every selected row
+persists a typed admission state, and a seat holds a signed quote exactly when
+its admission authorizes that quote's effect. Crash recovery therefore
+consults per-seat effect authority. A paid quote whose wallet payment already
+started is replayed exactly rather than refreshed, because its funds are
+locked to that quote's blind nonces. Per-seat progress is
 diagnostic and carries independent recovery facts. Public seat progress and
 payment requirements expose the badge-vouched identity of their assigned MG,
 and derive the two-word MG name from it locally
@@ -489,23 +449,15 @@ and derive the two-word MG name from it locally
 The identity is presentation material: the locator
 remains the protocol-owned dialing and verification binding.
 
-While the purchase is value-safe — before wallet output generation was
-durably armed — `cancel_creation`
-wipes the durable creation and purchase state under the run guard. Any exact
-pre-output wallet reservation is first reconstructed
-by a recover-existing-only id probe and explicitly released. Authoritative
-absence permits the wipe; mismatch, storage failure, or ambiguity retains the
-formation. The probe never creates a reservation and precedes admission
-freshness/provenance checks. It contacts no MG, so free seats already accepted
-server-side are forfeited, and the setup-payment policy retention is
-preserved. Outside that window it returns the typed
-`AbandonUnavailable` error. Commercial quote authorization alone does not
-close the window; `payment_outputs_started` is an independent monotone fact
-that survives authorization or quote replacement. The next await after that
-durable boundary starts the first payment.
-Post-output abandon remains deferred. Once output generation is armed, funds
-may be locked to quote-bound nonces; safe teardown needs recovery and refund
-handling before any state can be destroyed.
+`cancel_creation` wipes the durable creation and purchase state under the run
+guard while no seat is bought and no seat payment started. It asks the wallet
+to recover every bound paid quote first. A `Prepared` payment refuses the
+cancel with `AbandonUnavailable(PaymentOutputsStarted)`, because the run loop
+must buy or refund that seat. An accepted purchase seat or any pool seat
+refuses it with `AbandonUnavailable(SeatsBought)`: those seats stay with the
+creation until its federation forms. Cancel contacts no MG, so free seats
+already accepted server-side are forfeited, and the setup-payment policy
+retention is preserved.
 
 `decommission_seats` is a testing-only developer command sitting outside all of
 that, not a second abandon. It reads the recorded formation, asks every MG
@@ -534,8 +486,8 @@ recovery facts. The crate stays compatible with native mobile targets and
 
 ## Protocol ownership
 
-The driver owns availability checks, signed-quote verification, aggregate
-readiness, payment presentation, signed seat creation, DKG coordination,
+The driver owns availability checks, signed-quote verification, per-seat
+payment ordering, payment presentation, signed seat creation, DKG coordination,
 status polling, and invite recovery (rejecting bearer API secrets and
 requiring every MG's invite to identify the same federation before
 persisting the deliverable). Every ordinary resume repeats the idempotent
@@ -650,9 +602,8 @@ observes success or replays the idempotent typed mutation.
   verification, and the read-only selection preview.
 - `setup_payment_federations` — authenticated common-set refresh, durable
   high-water retention, and canonical selection.
-- `formation` — formation, durable aggregate reservation, exact recovery,
-  release-before-wipe cleanup, release-before-drop of ended seats,
-  and guardian-fee policy orchestration.
+- `formation` — formation, seat-by-seat purchase, exact per-quote recovery,
+  seat leave reasons, cancel, and guardian-fee policy orchestration.
 - `liquidity` — post-formation FLIP selection and signed allocation recovery,
   including exact-URL gateway attachment and its durable readback proof.
 - `maintenance` — typed post-formation consensus maintenance orchestration.
@@ -661,7 +612,7 @@ observes success or replays the idempotent typed mutation.
 ## Testing
 
 State-engine tests use fake ports to cover validation, default-name
-persistence, quote-set readiness, aggregate authorization, parallel narrow
+persistence, per-seat quote binding, parallel narrow
 writes with bounded conflict retries, cancellation, exact replay, refund retry,
 and reopen/resume; policy tests prove canonical kind-37707 selection and rollback
 rejection. Discovery tests cover one typed rejection per cheap admission
@@ -673,24 +624,15 @@ bucket ordering and the round-robin fill, lazy-verification call counts,
 deadline expiry, and the preview summary and typed shortfall; the
 selected-flow tests additionally cover preview expiry, explicit payer
 readiness, verified all-zero selected bootstrap without a publisher or wallet,
-typed priced-offer rejection, zero-balance admitted-payer listing, exact aggregate preflight,
-same-id reconstruction and mismatch refusal, capability carry and one-shot
-member consumption, drop-not-release, whole/member proven-safe release and
-crash ordering, changed-price and unavailable-seat release before the purchase is removed, and the
-independent output tombstone. A focused payer fixture gives the wallet one note
-covering several setup prices and fees, proves concurrent independent spends
-exhaust it, and proves ordered settlement forms successfully with exact final
-balance/change accounting. Post-output terminal tests cover the dropped row,
-reopen, accepted/ambiguous sibling preservation, re-authorization of the
-remaining quotes, completion into the pool, and non-repetition of prior
-outputs/payments. The
-fa-cli's concrete reference FA payer adapter separately covers logical
-aggregate debit reservation, current net-fee headroom checks, exact
-foreign-output fee aggregation, fee-bearing reservation reconstruction and
-rollback, same-id reconstruction after partial consumption, conflict-retried
-concurrent member mutations, unordered/duplicate rejected-input refund
-recovery through spendable outputs, mint-v1 per-note refund fallback, and
-terminal-proof enforcement. Its full funded-wallet path remains covered by the
+typed priced-offer rejection, zero-balance admitted-payer listing, freshness
+only until the first bound seat, re-binding of an unstarted paid quote, exact
+replay of a prepared payment, the seat that leaves after rejection, refusal, or
+insufficient funds, completion with the remaining seats into the pool, and the
+cancel rules. The fa-cli's concrete reference FA payer adapter separately
+covers exact foreign-output fee costing, quote-derived operation identity,
+exact payment and change range recovery, unordered/duplicate rejected-input
+refund recovery through spendable outputs, mint-v1 per-note refund fallback,
+and terminal-proof enforcement. Its full funded-wallet path remains covered by the
 paid `defe` E2E described below, which exports one large ecash note, reopens the
 wallet to recover exact current operations without resubmission, and
 independently reconciles setup prices, Fedimint transaction fees, and returned
@@ -700,7 +642,7 @@ its focused crate tests. The `defe`
 E2E split is intentional: a seven-MG free formation proves parallel ceremony
 scale, and a separate seven-MG paid formation proves the real quote-bound
 mint funding and claim path, including reuse of the same durable FA state and
-wallet when a recoverable pre-output reservation failure requires one resume.
+wallet when a recoverable purchase failure requires one resume.
 A third Linux `defe` E2E kills three real
 `fedimintd` children after DKG starts, kills the FA process, reopens its durable
 guardian-code preparation, and proves

@@ -54,11 +54,10 @@ proof re-derivation over the extended envelope.
 - The consumer supplies one stable FA signing identity, protects and namespaces
   the database, preserves it across supported restarts, and backs it up with the
   identity and wallet recovery material needed to resume.
-- The payment adapter durably reserves each exact aggregate by deterministic
-  id, makes each funding operation recoverable before committing value,
-  recovers before creating a replacement, replays exact quote-bound payments
-  and refund context, reports terminal rejection accurately, settles signed
-  refunds idempotently, and releases only wallet-proven-safe members.
+- The payment adapter makes each funding operation recoverable before
+  committing value, recovers before creating a replacement, replays exact
+  quote-bound payments and refund context, reports terminal rejection
+  accurately, and settles signed refunds idempotently.
 - The consensus-read adapter performs a genuine threshold Fedimint consensus
   read and does not substitute cached or fabricated configuration or metadata.
 - The transport and MG implementations honor the authenticated RPC, signed
@@ -96,8 +95,8 @@ proof re-derivation over the extended envelope.
   pool seats, optional authenticated setup-payment funding, DKG, seat-binding
   publication and readback, invite recovery, read-only verified MG discovery,
   strict PeerBadge selection at or above the environment minimum,
-  registry-backed seat purchase, exact aggregate
-  reservation, release and removal of wallet-proven ended seats,
+  registry-backed seat-by-seat purchase, removal of seats that cannot be
+  bought while no payment for them is outstanding,
   and typed post-formation name/icon-URL/welcome-message/terms-URL maintenance
   are included. Maintenance requires a genuine threshold consensus reader and
   threshold-live guardians before the caller's deadline unless the requested

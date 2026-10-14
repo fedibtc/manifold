@@ -11,16 +11,11 @@ MG provided**. A note's nonce is a public key and spending it requires
 a fedimint transaction signed by that key, so notes issued to MG-derived nonces
 can never be spent by the FA or anyone else. The MG verifies a payment
 entirely offline; a seat exists only after payment is complete; there
-are no MG seat or capacity reservations. The FA payer wallet does create a
-local, durable aggregate reservation before it authorizes outputs. That record
-holds fee-aware debit allocations and the caller's required balance floor, binds
-every semantic quote id to its exact foreign-output plan, and gates ordinary
-wallet spending. It is strictly payer-side crash/recovery state and gives the
-FA no claim on an MG slot. Before starting each member, the payer re-plans
-against the wallet's current note tiers and proves the resulting debit leaves
-every other held allocation and the balance floor funded; change returned by
-earlier members can therefore neither cause a false failure nor consume a
-sibling hold. Both mint generations are supported — the scheme
+are no MG seat or capacity reservations. The FA buys seats one at a time, so the payer
+wallet holds no reservation across seats. Before each payment it plans against
+the wallet's current note tiers, and it persists the quote-bound operation
+before value commits. That operation is strictly payer-side crash/recovery
+state and gives the FA no claim on an MG slot. Both mint generations are supported — the scheme
 relies only on note structure and on the mint signing whatever blinded
 nonce a transaction pays for — and no fedimintd server changes are
 required.

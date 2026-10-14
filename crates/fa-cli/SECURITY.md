@@ -123,10 +123,9 @@ stability-pool deposit. It does not authenticate the recipient, derive the
 guardian split, inspect the sealed payload, or enforce production payer policy.
 Supplying the wrong account irreversibly sends the test funds there. Use only
 isolated test federations, test account ids, test metadata, and test funds. The
-command shares the wallet spend guard and refuses while a locked-payment hold
-or its balance floor is active. If the recipient deposit commits but the
-wallet's change output fails, the error includes the committed operation id and
-must not be retried.
+command shares the wallet spend guard with seat payments. If the recipient
+deposit commits but the wallet's change output fails, the error includes the
+committed operation id and must not be retried.
 
 The previous `--wallet-secret-hex VALUE` and `--wallet-secret-stdin` interfaces
 are intentionally rejected. Store `VALUE` in a mode-`0600` file and pass its
@@ -142,62 +141,30 @@ remains outside this development/test tool's scope.
 
 The CLI's `fa-client` payment adapter is the development/reference FA payer;
 the MG wallet is payee-only. `fa-client`, not this adapter, schedules initial
-and resumed payments. Before `fa-client` starts those locked
-payments one at a time,
-the payer journals one deterministic aggregate reservation binding the payer,
-ordered unique quote ids, exact foreign-output plan hashes, fee-aware logical
-debit allocations, and the required balance floor. It derives each allocation
-by independently dry-running that exact transaction, so the total covers its
-quoted outputs and current Fedimint fees without pre-selecting disjoint physical
-notes. The reservation capability is
-required to start each member. Under the wallet-wide spend guard, the payer
-first locates or atomically persists the deterministic quote-bound Fedimint
-operation; it then durably advances the matching reservation member from
-`Held` to `Started` before releasing the guard or awaiting transaction
-consensus. A crash between those checkpoints leaves `Held` plus the exact
-operation identity, which recover-only adopts without another spend. An
-existing same-id journal is reconstructed and validated before any new
-fundability check so a partially consumed aggregate never charges
-already-started members again. Whole-aggregate release is allowed only while
-no member has started.
+and resumed payments. It buys seats one at a time and asks the payer to pay one
+exact signed quote per seat. The payer keeps no separate reservation or hold
+journal: its payment journal is the payment federation's Fedimint operation
+log, keyed by an operation id derived from the quote.
 
-Because one physical note may fund multiple members only through returned
-change, immediately before each new member the payer quotes that transaction's
-current net cost, including primary input/change fees and dust. It proceeds
-only when the post-change balance will still cover every other logical held
-allocation and the active balance floor; an increase over the dry-run
-allocation may use only unreserved headroom. The accepted transaction's exact
-change range is stored in operation metadata and awaited to primary-module
-finality before the adapter returns. A larger input may therefore supply the
-current member and return value for later members without consuming a sibling
-hold.
+Every locked-payment operation is identified by the exact canonical quote,
+mint generation and module, and quoted issuance set. Non-secret operation
+metadata, including the quoted-output and payer-change ranges, is committed
+atomically with funding, so the payment is recoverable by its quote before any
+value leaves the wallet. Recovery probes only that quote-bound identity and
+requires both ranges in its exact metadata. Any mismatched quote, module,
+generation, or output plan fails closed. Neither pay nor recovery reports a
+funded payment until consensus accepted that exact transaction and the primary
+module made its payer change spendable.
 
-The adapter exposes insufficient funds to `fa-client` as a value-safe selected
-payer retry only when the wallet's explicit balance comparison fails before a
-new journal is written. That proof is a private typed error marker carried
-through contextual errors. Planning failures, an existing same-id binding
-mismatch, database/commit failures, and any lost result after journal creation
-remain generic payment errors so `fa-client` retains the formation and retries
-the exact deterministic id.
-
-The adapter exposes a separate recover-existing-only aggregate probe. It reads
-the wallet journal under the spend guard, validates the payer, reserve floor,
-ordered quote ids, and exact output-plan hashes, and returns exact existing or
-authoritative absence without opening, funding, or creating a reservation.
-Mismatch, storage failure, and ambiguous lookup remain errors. This probe lets
-`fa-client` release a journal whose successful reserve response was lost even
-after selection freshness or verifier provenance changes.
-
-The wallet-wide spend guard serializes reservation creation, payment
-submission, recovery adoption, release, and ordinary out-of-band spending.
-Ordinary spending must leave every held debit allocation plus the active balance
-floor untouched. Every shared-row monetary mutation uses bounded database
-autocommit so concurrent member transitions reload and merge after conflicts;
-commit/backend failure is propagated. A member moves monotonically through
-Held, Started, Terminal, and Released. Only a wallet-issued terminal proof,
-bound to the journal, quote, output plan, and debit, can release it. Repeating
-exact terminal recovery and release is harmless; a Prepared or ambiguous
-member cannot be released.
+Under the wallet-wide spend guard, a new payment quotes its transaction's
+current net cost, including primary input/change fees, and compares it with
+the wallet balance. The adapter reports insufficient funds to `fa-client` only
+when that comparison fails while no operation exists for the quote, which
+proves that no funding began. The proof is a dedicated wallet error variant.
+Fee-quote, submission, database, and any lost result remain generic payment
+errors, so `fa-client` keeps the quote and recovers the exact payment.
+`remit-guardian-fee` shares the spend guard, so it cannot interleave with a
+payment's balance check and submission.
 
 Consensus rejection alone is not terminal ownership proof. Fedimint starts
 automatic mint-input refund transactions only after the original transaction
@@ -207,26 +174,17 @@ by txid, and requires accepted refund transactions to cover the original
 primary-input multiset exactly. Mint-v1's rejected bundle followed by per-note
 fallbacks is therefore handled without inspecting private mint state machines.
 Every output of the accepted covering transactions must become spendable before
-the member advances from `Started` to `Terminal`; timeout, partial coverage,
-overlap, malformed siblings, or output failure leaves `Started` for exact
-restart recovery and cannot let `fa-client` drop the seat.
+recovery reports `Rejected`; timeout, partial coverage, overlap, malformed
+siblings, or output failure is a generic error, and the next recovery replays
+the same update history, so `fa-client` cannot drop the seat early.
 
-Every locked-payment operation is identified by the exact canonical quote,
-mint generation and module, and quoted issuance set. Non-secret operation
-metadata, including the quoted-output and payer-change ranges, is committed
-atomically with funding. Recovery probes only that quote-bound identity and
-requires both ranges in its exact metadata. Any mismatched quote, module,
-generation, output plan, debit, or reservation fails closed. Neither pay nor
-recovery reports a funded member until consensus accepted that exact
-transaction and the primary module made its payer change spendable.
-
-Recover-only paths never create, fund, or submit a transaction. `Absent` is
+Recover-only paths never create, fund, or submit a transaction. `NotStarted` is
 safe only after the wallet authoritatively proves the exact operation does not
 exist. `Rejected` is safe only after terminal consensus rejection, exact
-automatic input-refund recovery, spendable refund outputs, and durable
-terminal-proof issuance. A pay path recovers first; ambiguous submission must
-inspect the deterministic operation before returning and must never authorize
-a second spend just because its caller lost the first result.
+automatic input-refund recovery, and spendable refund outputs. A pay path
+recovers first; ambiguous submission must inspect the deterministic operation
+before returning and must never authorize a second spend just because its
+caller lost the first result.
 
 Refund output secrets are reconstructed deterministically from the wallet root
 and exact quote binding and stay in non-serializable contexts. Repeating the
@@ -234,18 +192,16 @@ same MG-signed refund must converge on the same outputs and ordinary balance;
 the transaction, module, output count, and prepared issuance are validated
 before submission or finalization.
 
-Changes to this adapter require drop/reopen coverage for partially started
-aggregates and a whole release whose FA checkpoint was lost; exact-match and
-required-range recovery; unordered/duplicate rejected-input-refund replay,
-mint-v1 per-note fallback, and spendable refund outputs; duplicate quote,
-plan/debit
-mismatch, concurrency, and idempotent terminal replay; no-spend recover-only
-behavior; one-note sequential settlement; and repeated refund
-submission/finalization.
+Changes to this adapter require exact-match and required-range recovery;
+unordered/duplicate rejected-input-refund replay, mint-v1 per-note fallback,
+and spendable refund outputs; no-spend recover-only behavior; insufficient
+funds reported only before any operation exists; one-note sequential
+settlement; and repeated refund submission/finalization.
 
-This pre-production CLI accepts only its current reservation and operation
-metadata schemas. Older test state is not migrated; incompatible rows fail
-closed and require a fresh disposable test wallet.
+This pre-production CLI accepts only its current operation metadata schema.
+Older test state is not migrated; incompatible rows fail closed and require a
+fresh disposable test wallet. A wallet directory from the aggregate-reservation
+format keeps an unused `payment-reservations` database, which the CLI ignores.
 
 
 ## Registry selection and post-formation operations

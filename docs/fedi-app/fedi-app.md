@@ -41,9 +41,9 @@ flowchart LR
 | --- | --- | --- |
 | Identity | Derive and protect the stable FA key from the app root secret; sign requested digests | Construct every domain-separated protocol digest |
 | Storage | Allocate a dedicated encrypted bridge database prefix | Define and update formation recovery records |
-| Payments | Project joined/balance state, prove exact quote aggregate plus fees/reserve is fundable without outputs, recover exact wallet operations, settle refunds | Authenticate admitted payers, verify quote terms, and enforce commercial and output boundaries |
+| Payments | Project joined/balance state, pay one exact quote at a time, recover exact wallet operations by quote, settle refunds | Authenticate admitted payers, verify quote terms, and order seat payments |
 | Transport | Bind and reuse an Iroh endpoint | Drive `ManifoldGuardianService` and verify manager commitments against each locator |
-| UI | Collect intent, render the uncached preview and eligible joined wallets, return the sealed handle/payer/cap | Verify all seats, select operators, validate input, resolve defaults, and own lifecycle transitions |
+| UI | Collect intent, render the uncached preview and eligible joined wallets, return the sealed handle/payer | Verify all seats, select operators, validate input, resolve defaults, and own lifecycle transitions |
 
 The bridge converts types and capabilities; it does not implement a second
 formation state machine. The front end cannot mark registry data as trusted,
@@ -135,36 +135,27 @@ themselves.
 
 ## Payment adapter
 
-For each verified paid aggregate, the Fedi wallet adapter:
+`fa-client` buys seats one at a time and gives the wallet one verified quote
+at a time. The Fedi wallet adapter:
 
 1. reports which authenticated policy members are joined and Ready, while the
    admitted listing remains able to render a zero-balance refill choice;
-2. constructs a deterministic aggregate reservation id from the formation and
-   exact ordered quote plan, then first reconstructs any same-id durable wallet
-   journal; a different plan under the same id fails closed;
-3. only for a new journal, value-freely proves the complete verified locked
-   issuance set is covered by balance after wallet fees and required reserve,
-   then atomically records the hold before FA arms output generation;
-4. carries the opaque aggregate capability into every exact member start and,
-   under the wallet-wide spend guard, first recovers or atomically persists the
-   deterministic quote-bound operation and its recovery metadata;
-5. only after that exact operation is durable, atomically advances the member
-   from `Held` to `Started` before releasing the spend guard or awaiting
-   consensus. A crash between those checkpoints recovers the existing
-   operation without another spend, while a crash after partial aggregate
-   consumption reconstructs the journal without charging consumed members
-   again; dropping the capability is not release;
-6. returns only protocol payment evidence to `fa-client`; and
-7. issues an opaque terminal-release proof only after consensus proves funding
-   rejected or an MG-signed refund settles. `fa-client` must present that
-   proof before invalidating the member for replacement; Prepared or ambiguous
-   payments fail closed.
+2. recovers the operation for an exact quote without creating wallet state,
+   and reports `NotStarted`, `Prepared`, or `Rejected`;
+3. under the wallet-wide spend guard, checks that the balance covers the
+   quote's current net cost after wallet fees, and reports typed insufficient
+   funds only when it does not and no operation for the quote exists;
+4. atomically persists the deterministic quote-bound operation and its
+   recovery metadata before value commits, so a crash recovers that operation
+   without another spend;
+5. returns `Prepared` protocol payment evidence only after consensus accepts
+   the exact transaction and payer change is spendable; and
+6. settles an MG-signed refund retry-safely.
 
-The aggregate user cap and exact commercial authorization precede output
-generation, but do not themselves make the flow irreversible. After same-terms
-quote refresh, exact funding recheck, and MG connection barriers, Manifold
-durably projects `payment_outputs_started` immediately before polling the first
-output call. A wallet operation never authorizes another quote.
+The preview is the payment approval: every quote has exactly the previewed
+price. A wallet operation never authorizes another quote. A bridge that held
+funds for an earlier aggregate reservation must release every unstarted hold
+once, before it opens the FA. Started payments stay recoverable by quote.
 
 Payment signatures, raw bearer ecash, refund secrets, and root-derived private
 material do not enter FA storage, RPC status, analytics, or logs. The bridge can
@@ -181,13 +172,11 @@ reconnecting. Stopping the loop stops local work but cannot roll back a wallet
 transaction or remote request that already completed. The next run continues
 from durable state.
 
-If a selected operation returns a reauthorization error before outputs, the
-driver reconstructs and explicitly releases any wallet reservation before
-removing the purchase; the state then asks for a new preview of the missing
-seats. Release ambiguity retains the purchase for retry.
-Only after the release-and-wipe transition succeeds does relaunch route to
-preview/payer choice. If `payment_outputs_started` is true, the run loop must
-continue the purchase and uses exact quote-bound wallet recovery.
+A seat that cannot be bought leaves the purchase with a typed reason, for
+example a changed price, an unavailable MG or payer, or insufficient funds.
+The purchase completes with the seats it bought, and the state then asks for a
+new preview of the missing seats. A seat with a started payment stays in the
+purchase, and the run loop recovers it by quote.
 
 Reloaded service-derived state is marked unsynced until reconciliation. An
 already formed federation is verified through fresh guardian consensus; if its

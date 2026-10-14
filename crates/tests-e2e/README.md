@@ -90,8 +90,7 @@ before import and deletes only after the wallet confirms receipt;
 the same live client joins and receives, then repeats the ordered per-seat loop:
 submit one signed quote payment, wait for its payer change to become spendable,
 call `CreateSeat`, and checkpoint that accepted seat before starting the next
-payment. If the initial exact aggregate reservation reports the recoverable
-pre-output readiness failure, the harness preserves the FA state and wallet
+payment. If the purchase reports a recoverable failure, the harness preserves the FA state and wallet
 and proves one `resume` reaches the same formation rather than starting over.
 DKG begins only after every seat completes that loop. The gate reconciles the
 final payer balance as setup prices plus Fedimint fees plus returned spendable

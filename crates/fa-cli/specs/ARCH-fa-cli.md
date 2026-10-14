@@ -30,14 +30,17 @@ transition, and checkpoint.
 
 The CLI implements the concrete Iroh connector and Fedimint wallet
 payment/refund port. `fa-client` owns payment
-scheduling in its run loop: it starts one new
-member at a time and checkpoints the completed seat before the next. The CLI
-adapter provides only exact aggregate reservation and operation/recovery
-capabilities. Its aggregate holds independently dry-run logical net costs
-rather than disjoint notes, re-quotes each transaction's current net debit
-under the wallet spend guard, persists the exact Fedimint operation and change
-range atomically, and returns only after consensus acceptance and spendable
-payer change.
+scheduling in its run loop: it buys one seat at a time, binding and paying one
+exact signed quote and checkpointing the completed seat before the next. The
+CLI adapter provides only per-quote payment and recovery capabilities. Its
+payment journal is the payment federation's Fedimint operation log: each
+payment's operation id is derived from the exact quote id, issuance set, mint
+generation, and module, and the funding transaction commits atomically with
+its exact output and change ranges, so the quote alone recovers a started
+payment and an absent operation proves none began. Under the wallet spend
+guard the adapter quotes the transaction's current net debit and reports
+insufficient funds only when the balance cannot cover it and no operation
+exists; it returns only after consensus acceptance and spendable payer change.
 
 `create` uses verified selection: before opening identity, FA
 state, or the payment wallet, the CLI binds its Iroh endpoint, runs a fresh
@@ -117,8 +120,8 @@ that operation's durable module kind, and waits for its terminal state.
 explicit BtcDepositor account id, amount, and pre-sealed metadata, then awaits
 the real stability-pool deposit operation. It deliberately does not implement
 production payer accrual or recipient policy. It runs under the wallet-wide
-spend guard and refuses to consume any locked-payment hold or active reserve
-floor. Terminal streams are drained into Fedimint's durable outcome cache; a
+spend guard, so it cannot interleave with a seat payment's balance check and
+submission. Terminal streams are drained into Fedimint's durable outcome cache; a
 post-acceptance change-output failure reports the committed operation id and
 explicitly forbids retry. The wallet registers mint-v1,
 mint-v2, wallet-v1, wallet-v2, LN-v1, LN-v2, and stability-pool so a consumer
