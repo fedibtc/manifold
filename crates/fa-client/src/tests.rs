@@ -4260,6 +4260,35 @@ async fn restored_recovery_rejects_unverified_consensus_and_changed_seats() {
 }
 
 #[tokio::test]
+async fn restored_recovery_dials_saved_managers_when_the_invite_peers_are_down() {
+    let (source, _, state, _) = formed_client_for_liquidity().await;
+    let payload = source.inner.store.backup_payload().await.unwrap().payload;
+    let reader = TestConsensusReader::new(state.clone());
+    reader
+        .offline_peers
+        .lock()
+        .unwrap()
+        .extend((0..MIN_FEDERATION_SIZE - 1).map(PeerId::from));
+    let (payments, _) = TestPayments::new();
+    let restored = open_client_with_reader(
+        MemDatabase::new().into_database(),
+        payments,
+        state.clone(),
+        MgConfig::given_away(),
+        reader,
+    )
+    .await;
+    restored
+        .import_backup_for_test(Some(payload))
+        .await
+        .unwrap();
+    assert_eq!(
+        federation(&restored.status()).freshness,
+        FormationFreshness::Fresh
+    );
+}
+
+#[tokio::test]
 async fn backup_relay_progress_is_independent_and_workers_do_not_block_fa_operations() {
     let (client, _, _, _) = formed_client_for_liquidity().await;
     let hash = sha256::Hash::from_byte_array([9; 32]);

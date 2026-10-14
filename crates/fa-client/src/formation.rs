@@ -3608,7 +3608,7 @@ where
             ));
         }
         let consensus = self
-            .read_recovery_consensus(invite, run)
+            .read_recovery_consensus(invite, &seats, run)
             .await?
             .map_err(|error| {
                 FaError::InvalidManifoldGuardians(format!(
@@ -4091,14 +4091,15 @@ where
         Ok(())
     }
 
-    /// Read fresh consensus, trying saved managers' invites if the first read fails.
-    /// Alternative invites and returned configurations must name the saved
-    /// federation. Calls share the driver deadlines, and remaining attempts are
-    /// dropped once one succeeds. The caller must still verify the directory and
-    /// saved authority before marking recovery fresh.
+    /// Read fresh consensus, trying the invites of `seats` if the first read
+    /// fails. Alternative invites and returned configurations must name the
+    /// saved federation. Calls share the driver deadlines, and remaining
+    /// attempts are dropped once one succeeds. The caller must still verify the
+    /// directory and saved authority before marking recovery fresh.
     async fn read_recovery_consensus(
         &self,
         saved: &InviteCode,
+        seats: &[crate::liquidity::FormedMgSeat],
         run: DriverRun<'_>,
     ) -> FaResult<Result<FederationConsensusSnapshot, crate::FederationConsensusError>> {
         let invite = self.consensus_invite(saved).await;
@@ -4116,10 +4117,9 @@ where
         // A manager supplies another way to dial, never a trust verdict.
         // Race the saved managers so one unavailable manager cannot hold up the rest.
         let fa_id = self.fa_id()?;
-        let authority = self.post_formed_authority(fa_id).await?;
         let expected = invite_federation_id(saved)?;
         let mut pending = FuturesUnordered::new();
-        for seat in &authority.seats {
+        for seat in seats {
             pending.push(async move {
                 let client =
                     MgClient::connect(&self.inner.ports.mg_connector, &seat.locator, run).await?;
