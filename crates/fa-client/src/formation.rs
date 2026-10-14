@@ -3748,14 +3748,19 @@ where
         let formation_config = if recovery.formation_meta_target.is_none() {
             loop {
                 ensure_time_remaining(run.deadline, "reading the formation config")?;
+                // A guardian that restarts can leave a read unanswered until
+                // its request timeout. That is a reason to retry, as an error.
                 match run
                     .call("reading the formation config", || {
                         Ok(self.inner.ports.consensus_reader.read_consensus(invite))
                     })
-                    .await?
+                    .await
                 {
-                    Ok(snapshot) => break Some(snapshot.config),
-                    Err(_) => sleep_for_retry(run.deadline, run.options.poll_interval).await?,
+                    Ok(Ok(snapshot)) => break Some(snapshot.config),
+                    Ok(Err(_)) | Err(FaError::Timeout(_)) => {
+                        sleep_for_retry(run.deadline, run.options.poll_interval).await?
+                    }
+                    Err(error) => return Err(error),
                 }
             }
         } else {

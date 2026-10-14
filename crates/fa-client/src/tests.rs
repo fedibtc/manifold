@@ -1853,6 +1853,7 @@ struct TestConsensusReader {
     state: Arc<MgState>,
     config: fedimint_core::config::ClientConfig,
     failures: Arc<AtomicUsize>,
+    hangs: Arc<AtomicUsize>,
     offline_peers: Arc<Mutex<BTreeSet<PeerId>>>,
     forced_value: Arc<Mutex<Option<String>>>,
     advance_meta_after_next_read: Arc<Mutex<Option<Vec<u8>>>>,
@@ -1866,6 +1867,7 @@ impl TestConsensusReader {
             state,
             config: test_federation_config(),
             failures: Arc::new(AtomicUsize::new(0)),
+            hangs: Arc::new(AtomicUsize::new(0)),
             offline_peers: Arc::new(Mutex::new(BTreeSet::new())),
             forced_value: Arc::new(Mutex::new(None)),
             advance_meta_after_next_read: Arc::new(Mutex::new(None)),
@@ -1893,6 +1895,11 @@ impl TestConsensusReader {
     /// Fail the next `count` reads, as an unreachable federation would.
     fn fail_next(&self, count: usize) {
         self.failures.store(count, Ordering::SeqCst);
+    }
+
+    /// Never answer the next `count` reads, as a restarting guardian.
+    fn hang_next(&self, count: usize) {
+        self.hangs.store(count, Ordering::SeqCst);
     }
 
     /// Return `initial` once, while atomically advancing what every fake
@@ -2000,6 +2007,15 @@ impl FederationConsensusReader for TestConsensusReader {
             .is_ok()
         {
             return Err(FederationConsensusError::new("test federation unreachable"));
+        }
+        if self
+            .hangs
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |left| {
+                left.checked_sub(1)
+            })
+            .is_ok()
+        {
+            std::future::pending::<()>().await;
         }
         let current = self
             .state
@@ -8637,6 +8653,29 @@ async fn a_transient_consensus_read_failure_is_retried() {
     reader.fail_next(3);
     let client = open_client_with_reader(
         database,
+        payments,
+        mg_state.clone(),
+        MgConfig::given_away(),
+        reader,
+    )
+    .await;
+
+    client
+        .buy_and_form_at(intent(), locators(), options())
+        .await
+        .unwrap();
+
+    federation(&client.status());
+}
+
+#[tokio::test]
+async fn a_consensus_read_that_times_out_is_retried() {
+    let (payments, _) = TestPayments::new();
+    let mg_state = Arc::new(MgState::default());
+    let reader = TestConsensusReader::new(mg_state.clone());
+    reader.hang_next(1);
+    let client = open_client_with_reader(
+        MemDatabase::new().into_database(),
         payments,
         mg_state.clone(),
         MgConfig::given_away(),
