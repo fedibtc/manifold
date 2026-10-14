@@ -461,7 +461,7 @@ async fn selected_without_payer_rejects_a_priced_offer_before_effects() {
             failure: None
         }
     ));
-    assert_eq!(client.status(), FaStatus::default());
+    assert_needs_new_preview(&client);
     assert_eq!(payment_state.payable_calls.load(Ordering::SeqCst), 0);
     assert_eq!(payment_state.readiness_calls.load(Ordering::SeqCst), 0);
     assert_eq!(payment_state.create_calls.load(Ordering::SeqCst), 0);
@@ -1721,6 +1721,54 @@ async fn cheap_slow_spam_times_out_before_honest_badge_verification() {
             .iter()
             .all(|subject| spam.iter().any(|mg| mg.public_key() == *subject)),
         "every reached verification belongs to a spam candidate"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn missing_seat_preview_avoids_bought_mgs_and_fills_only_the_gap() {
+    let mgs = (1..=MIN_FEDERATION_SIZE)
+        .map(|index| mg_keys(u8::try_from(index).expect("small test index")))
+        .collect::<Vec<_>>();
+    let events = mgs
+        .iter()
+        .map(|mg| ad_event(mg, self_authorized_payload(mg)))
+        .collect::<Vec<_>>();
+    // Three seats are bought, from the first three MGs.
+    let bought = mgs[..3]
+        .iter()
+        .map(Keys::public_key)
+        .collect::<BTreeSet<_>>();
+    let request = preview_request(MIN_FEDERATION_SIZE).missing_seats(
+        crate::selection::BoughtSeats {
+            mg_ids: bought,
+            ..crate::selection::BoughtSeats::default()
+        },
+        3,
+    );
+
+    let preview = preview_mg_selection_until(
+        &registry(events),
+        &StubBadgeVerifier::default(),
+        &AdOnlySelection,
+        PeerBadgeVerifierProvenance::ExplicitTestConfiguration,
+        &request,
+        generous_deadline(),
+        NOW,
+        || NOW,
+    )
+    .await
+    .expect("four unbought MGs fill the gap");
+
+    assert_eq!(
+        preview
+            .seats()
+            .iter()
+            .map(|seat| seat.candidate.mg_id)
+            .collect::<BTreeSet<_>>(),
+        mgs[3..]
+            .iter()
+            .map(Keys::public_key)
+            .collect::<BTreeSet<_>>()
     );
 }
 

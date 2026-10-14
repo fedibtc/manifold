@@ -38,7 +38,7 @@ commitment. A restored provider hint is never current trust.
 
 ## Request construction
 
-Only a freshly reconciled `Formed` record can request liquidity. From the final
+Only a freshly reconciled formed federation can request liquidity. From the final
 invite and a real consensus read, the FA derives the authoritative federation
 id, config hash, network, peers, and `fedi:fman_seat_bindings` directory. The FA
 reconnects once to every distinct consensus-listed MG identity and fetches
@@ -79,8 +79,8 @@ runs: at most one formation or liquidity operation runs at a time, and a
 concurrent call observes `Busy` rather than queueing. The consumer scheduler
 must serialize its start/resume calls.
 
-Both also share the same preconditions: the operation's formation must be the
-active formation, `Formed`, and freshly reconciled, and resume additionally
+Both also share the same preconditions: the operation's federation must be
+the formed federation and freshly reconciled, and resume additionally
 requires a live consensus read still matching the persisted commitment
 (network, invite code, federation id, config hash, and seat hints; the display
 name is deliberately mutable). An accepted allocation is therefore not

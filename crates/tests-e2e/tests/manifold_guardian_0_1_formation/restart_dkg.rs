@@ -134,7 +134,7 @@ async fn run_restart() -> anyhow::Result<()> {
         tokio::time::timeout(Duration::from_secs(20), resume.kill_on_drop(true).output()).await??;
     let error = String::from_utf8_lossy(&failed.stderr);
     anyhow::ensure!(
-        !failed.status.success() && error.contains("formation timed out"),
+        !failed.status.success() && error.contains("FA run failed: Timeout"),
         "ordinary resume must time out on the broken ceremony: {error}"
     );
     anyhow::ensure!(

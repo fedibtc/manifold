@@ -164,7 +164,7 @@ impl PlanPreference {
     }
 }
 
-/// Reject a federation name that `form_federation` would refuse.
+/// Reject a federation name that `create_federation` would refuse.
 pub fn validate_federation_name(name: &FederationName) -> FaResult<()> {
     if name.0.is_empty()
         || name.0.len() > 128
@@ -436,13 +436,13 @@ pub struct SeatPurchaseSnapshot {
     pub freshness: FormationFreshness,
     /// Whether the durable wallet-output-generation boundary has been armed.
     /// Once true, payer switching and value-destructive abandon are forbidden;
-    /// resume must recover the exact quote operations.
+    /// the run loop must recover the exact quote operations.
     pub payment_outputs_started: bool,
     /// Most recent operation error category.
     pub last_error: Option<FaErrorCode>,
 }
 
-/// One bought seat that hosts no guardian yet.
+/// One seat bought for the federation being created.
 #[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
 pub struct PoolSeat {
     /// MG-minted seat id.
@@ -522,22 +522,100 @@ pub struct RecoveryCheck {
     pub last_error: Option<FaErrorCode>,
 }
 
-/// Complete FA state. Each part has its own machine and storage.
-#[derive(Clone, Debug, Default, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
-pub struct FaStatus {
+/// The internal parts of FA state, each with its own machine and storage.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub(crate) struct FaStatus {
     /// Present while a restored mnemonic waits for its backup check.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub recovery: Option<RecoveryCheck>,
+    pub(crate) recovery: Option<RecoveryCheck>,
+    /// The running federation creation.
+    pub(crate) creation: Option<crate::db::CreationIntent>,
+    /// Why the last purchase ended before it bought its seats.
+    pub(crate) reauthorization: Option<crate::SelectionReauthorizationReason>,
     /// The active seat purchase.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub purchase: Option<SeatPurchaseSnapshot>,
+    pub(crate) purchase: Option<SeatPurchaseSnapshot>,
     /// Bought seats that host no guardian yet.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub pool: Vec<PoolSeat>,
+    pub(crate) pool: Vec<PoolSeat>,
     /// The active formation, until it forms.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub formation: Option<FormationSnapshot>,
+    pub(crate) formation: Option<FormationSnapshot>,
     /// The formed or restored federation.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub federation: Option<FederationSnapshot>,
+    pub(crate) federation: Option<FederationSnapshot>,
+}
+
+impl FaStatus {
+    /// The single state a consumer observes.
+    pub(crate) fn state(&self) -> FaState {
+        if let Some(recovery) = &self.recovery {
+            return FaState::Restoring(recovery.clone());
+        }
+        if let Some(creation) = &self.creation {
+            let stage = if let Some(formation) = &self.formation {
+                CreationStage::Forming(formation.clone())
+            } else if let Some(purchase) = &self.purchase {
+                CreationStage::Buying(purchase.clone())
+            } else {
+                let pool = u16::try_from(self.pool.len()).unwrap_or(u16::MAX);
+                CreationStage::NeedsSeats {
+                    count: creation.federation_size.0.saturating_sub(pool),
+                    reauthorization: self.reauthorization,
+                }
+            };
+            return FaState::Creating(Box::new(CreationSnapshot {
+                federation_name: creation.federation_name.clone(),
+                federation_size: creation.federation_size,
+                pool: self.pool.clone(),
+                stage,
+            }));
+        }
+        match &self.federation {
+            Some(federation) => FaState::Active(Box::new(federation.clone())),
+            None => FaState::Idle,
+        }
+    }
+}
+
+/// What the FA is doing now. Exactly one state holds at a time, and
+/// [`FaClient::run`](crate::FaClient::run) moves the FA between them.
+#[derive(Clone, Debug, Default, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FaState {
+    /// No federation exists and none is being created.
+    #[default]
+    Idle,
+    /// A restored mnemonic waits for its backup check.
+    Restoring(RecoveryCheck),
+    /// A federation is being created.
+    Creating(Box<CreationSnapshot>),
+    /// The FA governs a formed or restored federation.
+    Active(Box<FederationSnapshot>),
+}
+
+/// A federation that is being created.
+#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
+pub struct CreationSnapshot {
+    /// Federation display name.
+    pub federation_name: FederationName,
+    /// Number of guardians the federation will have.
+    pub federation_size: FederationSize,
+    /// Seats bought for this federation. Formation uses them, and they stay
+    /// here until the federation forms.
+    pub pool: Vec<PoolSeat>,
+    /// What the creation does now.
+    pub stage: CreationStage,
+}
+
+/// The stage of a federation creation.
+#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CreationStage {
+    /// The user must approve a preview of this many more seats.
+    NeedsSeats {
+        /// Seats still missing.
+        count: u16,
+        /// Why the last purchase ended without its seats, if one did.
+        reauthorization: Option<crate::SelectionReauthorizationReason>,
+    },
+    /// A seat purchase runs.
+    Buying(SeatPurchaseSnapshot),
+    /// The bought seats run DKG and publish the federation metadata.
+    Forming(FormationSnapshot),
 }

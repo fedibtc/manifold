@@ -1,6 +1,6 @@
 use std::io::{self, Write};
 
-use fa_client::FaStatus;
+use fa_client::{CreationStage, FaState};
 use fedi_decentralized_service_manifold_guardian::{FaId, FedimintdVersion};
 use serde::Serialize;
 
@@ -191,7 +191,7 @@ impl<'a> CliOutput<'a> {
     }
 
     /// Writes the stable JSON initialization result to stdout.
-    pub(crate) fn init(&mut self, fa_id: FaId, state: &FaStatus) -> anyhow::Result<()> {
+    pub(crate) fn init(&mut self, fa_id: FaId, state: &FaState) -> anyhow::Result<()> {
         serde_json::to_writer(
             &mut self.stdout,
             &serde_json::json!({
@@ -206,7 +206,7 @@ impl<'a> CliOutput<'a> {
     /// Writes a status snapshot in the selected output format.
     pub(crate) fn snapshot(
         &mut self,
-        snapshot: &FaStatus,
+        snapshot: &FaState,
         format: OutputFormat,
     ) -> anyhow::Result<()> {
         if format == OutputFormat::Json {
@@ -218,41 +218,51 @@ impl<'a> CliOutput<'a> {
         Ok(())
     }
 
-    fn status_text(&mut self, status: &FaStatus) -> anyhow::Result<()> {
-        if *status == FaStatus::default() {
-            writeln!(self.stdout, "FA state: idle")?;
-        }
-        if let Some(recovery) = &status.recovery {
-            writeln!(self.stdout, "FA state: checking backup")?;
-            if let Some(error) = recovery.last_error {
-                writeln!(self.stdout, "last error: {error:?}")?;
+    fn status_text(&mut self, state: &FaState) -> anyhow::Result<()> {
+        let last_error = match state {
+            FaState::Idle => {
+                writeln!(self.stdout, "FA state: idle")?;
+                None
             }
-        }
-        if let Some(purchase) = &status.purchase {
-            writeln!(self.stdout, "purchase state: {:?}", purchase.phase)?;
-            if let Some(error) = purchase.last_error {
-                writeln!(self.stdout, "last error: {error:?}")?;
+            FaState::Restoring(recovery) => {
+                writeln!(self.stdout, "FA state: checking backup")?;
+                recovery.last_error
             }
-        }
-        if !status.pool.is_empty() {
-            writeln!(self.stdout, "pool seats: {}", status.pool.len())?;
-        }
-        if let Some(formation) = &status.formation {
-            writeln!(self.stdout, "formation state: {:?}", formation.phase)?;
-            if let Some(error) = formation.last_error {
-                writeln!(self.stdout, "last error: {error:?}")?;
+            FaState::Creating(creation) => {
+                writeln!(self.stdout, "pool seats: {}", creation.pool.len())?;
+                match &creation.stage {
+                    CreationStage::NeedsSeats {
+                        count,
+                        reauthorization,
+                    } => {
+                        writeln!(self.stdout, "creation state: needs {count} seats")?;
+                        if let Some(reason) = reauthorization {
+                            writeln!(self.stdout, "purchase ended: {reason:?}")?;
+                        }
+                        None
+                    }
+                    CreationStage::Buying(purchase) => {
+                        writeln!(self.stdout, "purchase state: {:?}", purchase.phase)?;
+                        purchase.last_error
+                    }
+                    CreationStage::Forming(formation) => {
+                        writeln!(self.stdout, "formation state: {:?}", formation.phase)?;
+                        formation.last_error
+                    }
+                }
             }
-        }
-        if let Some(federation) = &status.federation {
-            writeln!(self.stdout, "{}", federation.federation_invite.0)?;
-            let freshness = match federation.freshness {
-                fa_client::FormationFreshness::Fresh => "fresh",
-                fa_client::FormationFreshness::Unsynced => "unsynced",
-            };
-            writeln!(self.stdout, "federation state: {freshness}")?;
-            if let Some(error) = federation.last_error {
-                writeln!(self.stdout, "last error: {error:?}")?;
+            FaState::Active(federation) => {
+                writeln!(self.stdout, "{}", federation.federation_invite.0)?;
+                let freshness = match federation.freshness {
+                    fa_client::FormationFreshness::Fresh => "fresh",
+                    fa_client::FormationFreshness::Unsynced => "unsynced",
+                };
+                writeln!(self.stdout, "federation state: {freshness}")?;
+                federation.last_error
             }
+        };
+        if let Some(error) = last_error {
+            writeln!(self.stdout, "last error: {error:?}")?;
         }
         Ok(())
     }

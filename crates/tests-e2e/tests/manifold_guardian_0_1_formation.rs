@@ -2179,7 +2179,7 @@ async fn register_gateway_with_every_guardian(
     mg_locators: &[String],
 ) -> anyhow::Result<()> {
     let status = fa_status(&locate_binary(FA_CLI_BIN_ENV, "fa-cli")?, state_dir).await?;
-    let seats = status["federation"]["seats"]
+    let seats = status["active"]["seats"]
         .as_array()
         .context("formed FA status carries seats")?;
     anyhow::ensure!(
@@ -2514,7 +2514,7 @@ async fn form_federation_in_state(
 /// The invite of a formed `fa-cli --json` status, or `None` before formation
 /// completes.
 fn formed_invite(status: &serde_json::Value) -> Option<&str> {
-    status["federation"]["federation_invite"].as_str()
+    status["active"]["federation_invite"].as_str()
 }
 
 async fn wait_for_replacement_child(parent: u32, old_pid: u32) -> anyhow::Result<u32> {
@@ -2700,8 +2700,8 @@ async fn run_fa_crash_recovery() -> anyhow::Result<()> {
 
     let status = fa_status(&fa_cli_bin, &state_dir).await?;
     anyhow::ensure!(
-        status["formation"]["phase"] == "preparing_dkg"
-            && status["formation"]["seats"]
+        status["creating"]["stage"]["forming"]["phase"] == "preparing_dkg"
+            && status["creating"]["stage"]["forming"]["seats"]
                 .as_array()
                 .is_some_and(|seats| seats.iter().all(|seat| {
                     seat["phase"] == "guardian_code_ready" && seat["guardian_code"].is_string()
@@ -4497,7 +4497,7 @@ async fn run_fa_cli(
         {
             let failed_status: serde_json::Value = serde_json::from_slice(&output.stdout)
                 .context("recoverable paid failure writes JSON status")?;
-            let purchase = &failed_status["purchase"];
+            let purchase = &failed_status["creating"]["stage"]["buying"];
             anyhow::ensure!(
                 purchase["purchase_id"].is_string()
                     && purchase["payment_outputs_started"].as_bool() == Some(false),
@@ -4557,7 +4557,7 @@ async fn run_fa_cli(
                 .with_context(|| format!("paid formation did not reach Formed: {status}"))?;
             if let Some(purchased) = recovered_purchase {
                 anyhow::ensure!(
-                    seat_mg_ids(&status["federation"]["seats"]) == purchased,
+                    seat_mg_ids(&status["active"]["seats"]) == purchased,
                     "paid resume must form from the recovered purchase's MGs: {status}"
                 );
             }

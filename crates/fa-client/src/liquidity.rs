@@ -571,7 +571,7 @@ where
         L: LiquidityProviderConnector,
         V: LiquidityBadgeVerifier,
     {
-        let _run = self.inner.run_guard.try_lock().map_err(|_| FaError::Busy)?;
+        let _run = self.claim_run_guard().await?;
         let options = FormationRunOptions::default();
         options.validate_for_start(&self.inner.store)?;
         let (deadline, lease) =
@@ -695,7 +695,7 @@ where
         V: LiquidityBadgeVerifier,
     {
         operation_id.validate()?;
-        let _run = self.inner.run_guard.try_lock().map_err(|_| FaError::Busy)?;
+        let _run = self.claim_run_guard().await?;
         let operation = self
             .inner
             .store

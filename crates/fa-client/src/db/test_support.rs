@@ -17,6 +17,10 @@ pub(crate) enum Schema11Fixture {
     Purchase,
     /// Every seat exists and six of seven guardian codes arrived.
     Dkg,
+    /// DKG produced the invite; formation metadata is not yet proposed.
+    DkgComplete,
+    /// The formation metadata target was saved and is being proposed.
+    PublishingSeatBindings,
     /// Formed, with the federation record that #159 storage adds.
     Formed,
     /// Formed, as stored before the federation record existed.
@@ -45,17 +49,33 @@ impl FaStore {
         let rows = match fixture {
             Schema11Fixture::Purchase => SCHEMA_11_PURCHASE,
             Schema11Fixture::Dkg => SCHEMA_11_DKG,
-            Schema11Fixture::Formed | Schema11Fixture::FormedWithoutFederationRecord => {
-                SCHEMA_11_FORMED
-            }
+            Schema11Fixture::DkgComplete
+            | Schema11Fixture::PublishingSeatBindings
+            | Schema11Fixture::Formed
+            | Schema11Fixture::FormedWithoutFederationRecord => SCHEMA_11_FORMED,
         };
-        let rows: Vec<(String, serde_json::Value)> =
+        let mut rows: Vec<(String, serde_json::Value)> =
             serde_json::from_str(rows).expect("schema 11 fixture parses");
+        // The earlier phases of the formed fixture differ only in its header.
+        for (key, value) in &mut rows {
+            if key != "00" {
+                continue;
+            }
+            match fixture {
+                Schema11Fixture::DkgComplete => {
+                    value["phase"] = "dkg_complete".into();
+                    value["formation_meta_target"] = serde_json::Value::Null;
+                }
+                Schema11Fixture::PublishingSeatBindings => {
+                    value["phase"] = "publishing_seat_bindings".into();
+                }
+                _ => {}
+            }
+        }
         let mut dbtx = self.database.begin_transaction().await;
         for (key, value) in rows {
             let key = hex::decode(key).expect("fixture key is hex");
-            if matches!(fixture, Schema11Fixture::FormedWithoutFederationRecord)
-                && key[0] == FaDbPrefix::Federation as u8
+            if !matches!(fixture, Schema11Fixture::Formed) && key[0] == FaDbPrefix::Federation as u8
             {
                 continue;
             }
@@ -133,6 +153,30 @@ impl FaStore {
             .next()
             .await
             .is_none()
+    }
+
+    /// Whether any purchase, creation, pool or guardian-code row remains.
+    pub(crate) async fn holds_creation_rows_for_test(&self) -> bool {
+        let mut dbtx = self.database.begin_transaction_nc().await;
+        for prefix in [
+            FaDbPrefix::Purchase,
+            FaDbPrefix::PurchaseSeat,
+            FaDbPrefix::PoolSeat,
+            FaDbPrefix::Creation,
+            FaDbPrefix::GuardianCode,
+        ] {
+            if dbtx
+                .raw_find_by_prefix(&[prefix as u8])
+                .await
+                .expect("test raw scan succeeds")
+                .next()
+                .await
+                .is_some()
+            {
+                return true;
+            }
+        }
+        false
     }
 
     pub(crate) async fn set_schema_version_for_test(&self, schema_version: u16) {

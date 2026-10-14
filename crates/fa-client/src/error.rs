@@ -28,6 +28,9 @@ pub enum AbandonUnavailableReason {
     /// survives quote or authorization replacement, and teardown now requires
     /// exact payment recovery.
     PaymentOutputsStarted,
+    /// Seats are already bought for this creation. They stay with it until
+    /// its federation forms.
+    SeatsBought,
 }
 
 impl std::fmt::Display for AbandonUnavailableReason {
@@ -36,6 +39,7 @@ impl std::fmt::Display for AbandonUnavailableReason {
             Self::PaymentOutputsStarted => {
                 "payment output generation started; exact recovery must finish before teardown"
             }
+            Self::SeatsBought => "seats are already bought for this federation",
         })
     }
 }

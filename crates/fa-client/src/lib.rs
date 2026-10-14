@@ -15,6 +15,7 @@ mod maintenance;
 mod meta_write;
 mod mg;
 mod ports;
+mod run;
 mod selection;
 mod setup_payment_federations;
 mod state;
@@ -30,6 +31,8 @@ use fedimint_core::task::TaskGroup;
 use nostr_sdk::PublicKey;
 use stability_pool_common::Account;
 use tokio::sync::{Mutex, watch};
+
+use crate::state::FaStatus;
 
 pub use decommission::DecommissionOutcome;
 pub use discovery::{
@@ -92,9 +95,9 @@ pub use setup_payment_federations::AdmittedSetupPaymentFederation;
 /// revision of `stability-pool-common`.
 pub use stability_pool_common::Account as GuardianFeeAccount;
 pub use state::{
-    FaStatus, FederationSeat, FederationSnapshot, FedimintdVersionRange, FormationFreshness,
-    FormationId, FormationPhase, FormationSnapshot, MAX_FEDERATION_SIZE,
-    MAX_FEDERATION_SIZE_EXCLUSIVE, MAX_GUARDIAN_FEE_PPM, MIN_FEDERATION_SIZE,
+    CreationSnapshot, CreationStage, FaState, FederationSeat, FederationSnapshot,
+    FedimintdVersionRange, FormationFreshness, FormationId, FormationPhase, FormationSnapshot,
+    MAX_FEDERATION_SIZE, MAX_FEDERATION_SIZE_EXCLUSIVE, MAX_GUARDIAN_FEE_PPM, MIN_FEDERATION_SIZE,
     PaymentAuthorizationId, PaymentRequirements, PaymentReservationId, PlanPreference, PoolSeat,
     PurchasePhase, RecoveryCheck, ResolvedSeatPurchase, SeatPaymentRequirement, SeatPhase,
     SeatProgress, SeatPurchaseSnapshot, validate_federation_name,
@@ -122,7 +125,8 @@ pub struct FaClient<I, P, N, F, C> {
 struct FaClientInner<I, P, N, F, C> {
     store: FaStore,
     ports: FaClientPorts<I, P, N, F, C>,
-    progress: watch::Sender<FaStatus>,
+    progress: Arc<run::Progress>,
+    control: run::RunControl,
     run_guard: Arc<Mutex<()>>,
     // Connection hints only; consensus is still read and verified each time.
     read_invite: Mutex<Option<(InviteCode, InviteCode)>>,
@@ -330,7 +334,7 @@ where
                 .clone()
                 .try_lock_owned()
                 .expect("the newly opened FA client has no active operation");
-            client.inner.progress.send_replace(FaStatus {
+            client.inner.progress.replace(FaStatus {
                 recovery: Some(RecoveryCheck { last_error: None }),
                 ..FaStatus::default()
             });
@@ -372,13 +376,14 @@ where
         let fa_id = ports.identity.public_key().map_err(FaError::Identity)?;
         store.migrate_storage().await?;
         let status = store.load_status(fa_id).await?;
-        let (progress, _) = watch::channel(status);
+        let progress = Arc::new(run::Progress::new(status));
         let backup_tasks = TaskGroup::new();
         Ok(Self {
             inner: Arc::new(FaClientInner {
                 store,
                 ports,
                 progress,
+                control: run::RunControl::default(),
                 run_guard: Arc::new(Mutex::new(())),
                 read_invite: Mutex::new(None),
                 peer_badge_verifier,
@@ -389,95 +394,21 @@ where
         })
     }
 
-    /// Subscribe to the latest FA state.
+    /// Subscribe to the FA state.
     #[must_use]
-    pub fn observe(&self) -> watch::Receiver<FaStatus> {
+    pub fn observe(&self) -> watch::Receiver<FaState> {
         self.inner.progress.subscribe()
     }
 
-    /// Return the latest FA state.
+    /// Return the FA state.
     #[must_use]
-    pub fn status(&self) -> FaStatus {
-        self.inner.progress.borrow().clone()
+    pub fn state(&self) -> FaState {
+        self.inner.progress.state()
     }
 
-    /// Continue the active formation from its durable recovery state.
-    ///
-    /// `Ok(())` does not necessarily mean that formation completed.
-    ///
-    /// Resuming pays only the price the approved preview showed for each seat.
-    /// It first recovers operations for the exact stored authorized quotes. A
-    /// refreshed quote requests the same previewed plan, so its price cannot
-    /// change.
-    ///
-    /// A stored [`FormationPhase::Formed`] state is also not treated as proof of
-    /// current remote state: resume reads fresh federation consensus and verifies
-    /// the saved identity, directory, and fee recipients. Restored backups likewise
-    /// verify their saved seats against the signed consensus directory. Neither
-    /// path requires every manager online; if the saved invite is unreachable,
-    /// recovery asks saved managers for alternative invites to the same federation.
-    /// Inspect [`FormationFreshness`] through status observation when presenting
-    /// persisted state before that reconciliation completes.
-    ///
-    /// After [`FormationPhase::DkgComplete`], resume finishes directory and
-    /// initial fee publication without repeating DKG. The exact target is saved
-    /// with [`FormationPhase::PublishingSeatBindings`] before submission, and
-    /// `Formed` is saved only after consensus confirms it. Reopening preserves
-    /// these checkpoints. Once confirmed, later checks keep `Formed` visible;
-    /// freshness and errors report the result separately.
-    ///
-    /// The returned [`std::future::Future`] owns no background task. Dropping it
-    /// cancels local work, but completed durable checkpoints remain recoverable:
-    /// reopen with the same database, identity, and wallet through
-    /// [`Self::open`] (or [`Self::open_with_setup_payment_publisher`]), then call
-    /// [`Self::resume`] again.
-    pub async fn resume(&self) -> FaResult<()> {
-        self.resume_with_options(FormationRunOptions::default())
-            .await
-    }
-
-    /// Resume with caller-selected time limits, using the same recovery path
-    /// and cancellation behavior as [`Self::resume`].
-    pub async fn resume_with_options(&self, options: FormationRunOptions) -> FaResult<()> {
-        let _run = self.inner.run_guard.try_lock().map_err(|_| FaError::Busy)?;
-        options.validate_for_start(&self.inner.store)?;
-        let fa_id = self
-            .inner
-            .ports
-            .identity
-            .public_key()
-            .map_err(FaError::Identity)?;
-        let (deadline, lease) = formation::start_driver_run(&self.inner.store, options).await?;
-        let result = async {
-            if let Some(recovery) = self.inner.store.load_purchase(fa_id).await? {
-                self.inner
-                    .progress
-                    .send_modify(|status| status.purchase = Some(recovery.snapshot.clone()));
-                return self
-                    .resume_purchase(recovery, options, deadline, &lease)
-                    .await;
-            }
-            let run = formation::DriverRun::new(options, deadline, &lease);
-            // A formed formation keeps its record, so its recheck also runs
-            // through the formation driver.
-            if let Some(recovery) = self.inner.store.load_formation(fa_id).await? {
-                return self.drive_formation(recovery, fa_id, run).await;
-            }
-            let snapshot = self
-                .inner
-                .store
-                .load_federation(fa_id)
-                .await?
-                .ok_or(FaError::NoActiveFormation)?;
-            self.begin_recheck();
-            let result = self.reconcile_restored(snapshot, fa_id, run).await;
-            if let Err(error) = &result {
-                self.fail_recheck(error);
-            }
-            result
-        }
-        .await;
-        formation::finish_driver_run(result, self.inner.store.release_driver_lease(lease).await)
+    /// Return the internal parts of the FA state.
+    pub(crate) fn status(&self) -> FaStatus {
+        self.inner.progress.status()
     }
 }
 

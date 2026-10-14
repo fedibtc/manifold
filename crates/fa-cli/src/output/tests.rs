@@ -9,11 +9,11 @@ use nostr_sdk::PublicKey as NostrPublicKey;
 
 use super::*;
 
-const ACTIVE_STATUS: &str = concat!(
-    r#"{"purchase":{"purchase_id":"purchase-1","request":{"#,
+const CREATING_STATE: &str = concat!(
+    r#"{"creating":{"federation_name":"Fed","federation_size":7,"pool":[],"stage":{"buying":{"purchase_id":"purchase-1","request":{"#,
     r#""federation_size":7,"plan":"infinite_best_effort","#,
     r#""fedimintd_versions":{"minimum":{"major":0,"minor":6,"patch":0},"maximum_exclusive":{"major":0,"minor":6,"patch":1}},"fedimintd_dkg_version":{"major":0,"minor":6,"vendor":"fedi"}},"phase":"acquiring_seats","seats":[],"#,
-    r#""freshness":"unsynced","payment_outputs_started":false,"last_error":null}}"#
+    r#""freshness":"unsynced","payment_outputs_started":false,"last_error":null}}}}"#
 );
 fn capture(operation: impl FnOnce(&mut CliOutput<'_>) -> anyhow::Result<()>) -> (String, String) {
     let mut stdout = Vec::new();
@@ -29,15 +29,15 @@ fn capture(operation: impl FnOnce(&mut CliOutput<'_>) -> anyhow::Result<()>) -> 
 }
 
 #[test]
-fn active_status_json_has_exact_schema_on_stdout() {
+fn creating_state_json_has_exact_schema_on_stdout() {
     let endpoint_key = iroh::SecretKey::from_bytes(&[1; 32]);
     let service_key = secp256k1::SecretKey::from_byte_array(&[2; 32]).unwrap();
     let locator = fedi_decentralized_service_manifold_guardian::Locator::new(
         iroh::EndpointAddr::new(endpoint_key.public()),
         service_key.x_only_public_key(secp256k1::SECP256K1).0,
     );
-    let mut value: serde_json::Value = serde_json::from_str(ACTIVE_STATUS).unwrap();
-    value["purchase"]["seats"] = serde_json::json!([{
+    let mut value: serde_json::Value = serde_json::from_str(CREATING_STATE).unwrap();
+    value["creating"]["stage"]["buying"]["seats"] = serde_json::json!([{
         "index": 2,
         "fman_id": "aa4fc8665f5696e33db7e1a572e3b0f5b3d615837b0f362dcb1c8068b098c7b4",
         "locator": locator,
@@ -46,13 +46,13 @@ fn active_status_json_has_exact_schema_on_stdout() {
         "phase": "quote_ready",
         "freshness": "unsynced"
     }]);
-    let status: FaStatus = serde_json::from_value(value).unwrap();
-    let (stdout, stderr) = capture(|output| output.snapshot(&status, OutputFormat::Json));
+    let state: FaState = serde_json::from_value(value).unwrap();
+    let (stdout, stderr) = capture(|output| output.snapshot(&state, OutputFormat::Json));
 
     assert_eq!(
         stdout,
         concat!(
-            r#"{"purchase":{"purchase_id":"purchase-1","request":{"federation_size":7,"plan":"infinite_best_effort","fedimintd_versions":{"minimum":{"major":0,"minor":6,"patch":0},"maximum_exclusive":{"major":0,"minor":6,"patch":1}},"fedimintd_dkg_version":{"major":0,"minor":6,"vendor":"fedi"}},"phase":"acquiring_seats","seats":[{"index":2,"fman_id":"aa4fc8665f5696e33db7e1a572e3b0f5b3d615837b0f362dcb1c8068b098c7b4","locator":{"version":1,"endpoint_addr":{"id":"8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c","addrs":[]},"service_pubkey":"4d4b6cd1361032ca9bd2aeb9d900aa4d45d9ead80ac9423374c451a7254d0766"},"seat_id":null,"guardian_code":null,"phase":"quote_ready","freshness":"unsynced"}],"freshness":"unsynced","payment_outputs_started":false,"last_error":null}}"#,
+            r#"{"creating":{"federation_name":"Fed","federation_size":7,"pool":[],"stage":{"buying":{"purchase_id":"purchase-1","request":{"federation_size":7,"plan":"infinite_best_effort","fedimintd_versions":{"minimum":{"major":0,"minor":6,"patch":0},"maximum_exclusive":{"major":0,"minor":6,"patch":1}},"fedimintd_dkg_version":{"major":0,"minor":6,"vendor":"fedi"}},"phase":"acquiring_seats","seats":[{"index":2,"fman_id":"aa4fc8665f5696e33db7e1a572e3b0f5b3d615837b0f362dcb1c8068b098c7b4","locator":{"version":1,"endpoint_addr":{"id":"8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c","addrs":[]},"service_pubkey":"4d4b6cd1361032ca9bd2aeb9d900aa4d45d9ead80ac9423374c451a7254d0766"},"seat_id":null,"guardian_code":null,"phase":"quote_ready","freshness":"unsynced"}],"freshness":"unsynced","payment_outputs_started":false,"last_error":null}}}}"#,
             "\n"
         )
     );
@@ -65,19 +65,16 @@ fn restored_text_status_reports_current_freshness() {
         (fa_client::FormationFreshness::Unsynced, "unsynced"),
         (fa_client::FormationFreshness::Fresh, "fresh"),
     ] {
-        let status = FaStatus {
-            federation: Some(fa_client::FederationSnapshot {
-                formation_id: fa_client::FormationId("restored-formation".to_owned()),
-                federation_invite: fa_client::InviteCode("invite".to_owned()),
-                federation_name: None,
-                seats: Vec::new(),
-                freshness,
-                reconciled: false,
-                last_error: None,
-            }),
-            ..FaStatus::default()
-        };
-        let (stdout, stderr) = capture(|output| output.snapshot(&status, OutputFormat::Human));
+        let state = FaState::Active(Box::new(fa_client::FederationSnapshot {
+            formation_id: fa_client::FormationId("restored-formation".to_owned()),
+            federation_invite: fa_client::InviteCode("invite".to_owned()),
+            federation_name: None,
+            seats: Vec::new(),
+            freshness,
+            reconciled: false,
+            last_error: None,
+        }));
+        let (stdout, stderr) = capture(|output| output.snapshot(&state, OutputFormat::Human));
         assert_eq!(stdout, format!("invite\nfederation state: {expected}\n"));
         assert_eq!(stderr, "");
     }

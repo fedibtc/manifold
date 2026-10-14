@@ -137,7 +137,7 @@ async fn pre_formed_rejection_has_no_connector_or_metadata_effect() {
     client
         .inner
         .store
-        .initialize(
+        .initialize_for_test(
             TestIdentity::fa_id(),
             FormationId("maintenance-pre-formed".to_owned()),
             resolved_intent_with_size(FederationSize(1)),
@@ -1234,6 +1234,8 @@ async fn cancelled_partial_wave_reopens_and_replays_without_losing_unrelated_met
         reader,
     )
     .await;
+    // Maintenance waits for the reopened federation to reconcile.
+    reopened.drive().await.unwrap();
     tokio::time::timeout(Duration::from_secs(2), async {
         loop {
             match reopened

@@ -982,7 +982,7 @@ async fn form_federation(
     )
     .await?;
     let json: serde_json::Value = serde_json::from_str(output.trim())?;
-    json["federation"]["federation_invite"]
+    json["active"]["federation_invite"]
         .as_str()
         .map(ToOwned::to_owned)
         .with_context(|| format!("formation failed: {json}"))

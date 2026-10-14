@@ -364,8 +364,8 @@ pub trait FaPayments: Send + Sync + 'static {
     /// value and create no wallet state whose loss would strand funds**:
     /// generating blind nonces and reporting the mint generation is fine,
     /// but nothing may be spent, locked, or made unrecoverable-if-forgotten.
-    /// [`FaClient::abandon_purchase`](crate::FaClient::abandon_purchase)
-    /// wipes all FA formation state without consulting the wallet whenever
+    /// [`FaClient::cancel_creation`](crate::FaClient::cancel_creation)
+    /// wipes the FA purchase state without consulting the wallet whenever
     /// output generation was never durably armed
     /// (`specs/ARCH-fa-client.md`); an implementation that
     /// committed value here would silently break that value-safety

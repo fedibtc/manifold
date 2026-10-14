@@ -50,7 +50,7 @@ use crate::{
 };
 
 /// How long one freshly fetched advertisement selection may authorize the
-/// start of a Pay-and-create operation and each pre-effect resume. Once an
+/// start of a seat purchase and each pre-effect run. Once an
 /// admission is effect-authorized, this deadline no longer applies. This
 /// freshness allowance does not size the consumer's retry budget.
 pub const MG_SELECTION_PREVIEW_VALIDITY: Duration = Duration::from_secs(5 * 60);
@@ -308,6 +308,21 @@ pub struct MgSelectionRequest {
     federation_size: FederationSize,
     fedimintd_versions: FedimintdVersionRange,
     plan: PlanPreference,
+    /// Seats to select; the federation size unless some are already bought.
+    seat_count: u16,
+    /// Seats already bought for the same federation.
+    pub(crate) bought: BoughtSeats,
+}
+
+/// Seats already bought for a federation. A preview of its missing seats
+/// keeps their DKG line and avoids their MGs, service keys, and badge
+/// holders.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub(crate) struct BoughtSeats {
+    pub(crate) fedimintd_dkg_version: Option<FedimintdDkgVersion>,
+    pub(crate) mg_ids: BTreeSet<PublicKey>,
+    pub(crate) service_pubkeys: BTreeMap<secp256k1::XOnlyPublicKey, PublicKey>,
+    pub(crate) holders: BTreeSet<PublicKey>,
 }
 
 /// Read-only verified-selection capability.
@@ -391,7 +406,21 @@ impl MgSelectionRequest {
             federation_size,
             fedimintd_versions,
             plan,
+            seat_count: federation_size.0,
+            bought: BoughtSeats::default(),
         })
+    }
+
+    /// A request for the seats still missing beside `bought`.
+    pub(crate) fn missing_seats(mut self, bought: BoughtSeats, bought_count: u16) -> Self {
+        self.seat_count = self.federation_size.0.saturating_sub(bought_count);
+        self.bought = bought;
+        self
+    }
+
+    /// Number of seats this request selects.
+    pub(crate) fn seat_count(&self) -> u16 {
+        self.seat_count
     }
 
     /// Requested guardian count.
@@ -417,9 +446,10 @@ impl MgSelectionRequest {
 ///
 /// No durable state exists and no seat is reserved. Consumers can hold and
 /// return a preview but cannot construct or alter its verified seats.
-/// [`FaClient::buy_seats`](crate::FaClient::buy_seats) buys exactly this set
-/// for at most its advertised total: any later unavailability requires a
-/// fresh preview, and the FA never silently substitutes a different guardian.
+/// [`FaClient::create_federation`](crate::FaClient::create_federation) and
+/// [`FaClient::buy_seats`](crate::FaClient::buy_seats) buy exactly this set at
+/// its previewed prices: any later unavailability requires a fresh preview,
+/// and the FA never silently substitutes a different guardian.
 /// A preview is intentionally not serializable: a bridge keeps it only for the
 /// active five-minute screen flow and refetches when the user re-enters.
 #[derive(Debug)]
@@ -851,9 +881,22 @@ pub(crate) async fn preview_mg_selection_with(
     };
     let discovery = discover_mg_candidates_with(registry, &requirements, deadline, now).await?;
     let seen = discovery.seen();
-    let eligible = discovery.candidates.len();
+    let bought = &request.bought;
+    let candidates = discovery
+        .candidates
+        .into_iter()
+        .filter(|candidate| {
+            !bought.mg_ids.contains(&candidate.mg_id)
+                && bought
+                    .fedimintd_dkg_version
+                    .as_ref()
+                    .is_none_or(|dkg| *dkg == candidate.fedimintd_dkg_version)
+        })
+        .collect::<Vec<_>>();
+    let eligible = candidates.len();
+    let seats_to_fill = FederationSize(request.seat_count);
     let mut cohorts = BTreeMap::<FedimintdDkgVersion, Vec<EligibleMgCandidate>>::new();
-    for candidate in discovery.candidates {
+    for candidate in candidates {
         cohorts
             .entry(candidate.fedimintd_dkg_version.clone())
             .or_default()
@@ -870,15 +913,15 @@ pub(crate) async fn preview_mg_selection_with(
             request,
             &dkg_version,
             candidates,
-            request.federation_size,
-            BTreeMap::new(),
-            BTreeSet::new(),
+            seats_to_fill,
+            bought.service_pubkeys.clone(),
+            bought.holders.clone(),
             deadline,
             &mut cohort_rejected,
         )
         .await;
         largest_partial = largest_partial.max(seats.len());
-        if seats.len() < usize::from(request.federation_size.0) {
+        if seats.len() < usize::from(seats_to_fill.0) {
             continue;
         }
         let Some(total) = seats.iter().try_fold(0u64, |total, seat| {
@@ -900,7 +943,7 @@ pub(crate) async fn preview_mg_selection_with(
             return Err(FaError::SelectionEstimateOverflow);
         }
         return Err(FaError::InsufficientMgSeats {
-            requested: request.federation_size.0,
+            requested: seats_to_fill.0,
             selected: u16::try_from(largest_partial).expect("selected seats fit the requested u16"),
             seen,
             eligible,

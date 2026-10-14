@@ -1175,7 +1175,11 @@ impl ManifoldGuardianService for TestMg {
             .quote
             .verify(&self.manager_key.x_only_public_key().0)?;
         let quote_id = quote.quote_id();
-        let seat_id = SeatId::from(quote_id);
+        // Seat ids sort by MG, so formation numbers guardians in MG order as
+        // the fakes do.
+        let mut seat_bytes = quote_id.0;
+        seat_bytes[0] = u8::try_from(self.index).expect("small test index");
+        let seat_id = SeatId::from(QuoteId(seat_bytes));
         self.state.create_calls.fetch_add(1, Ordering::SeqCst);
         self.state
             .allocated_quotes
@@ -2302,51 +2306,97 @@ fn locator_index(seat_locator: &Locator) -> usize {
 
 impl TestClient {
     /// Buy one seat at each locator, as if a fresh preview had selected
-    /// them. A priced MG is paid from the test payment federation when this
-    /// FA can pay.
+    /// them, and drive only the purchase. A priced MG is paid from the test
+    /// payment federation when this FA can pay. Without a creation this
+    /// starts one for `intent`; with one, it buys the missing seats.
     async fn buy_seats_at(
         &self,
         intent: &TestIntent,
         locators: Vec<Locator>,
         options: FormationRunOptions,
     ) -> FaResult<()> {
+        self.request_seats_at(intent, locators, None).await?;
+        self.drive_purchase_for_test(options).await
+    }
+
+    /// Save the purchase of one seat at each locator without driving it.
+    async fn request_seats_at(
+        &self,
+        intent: &TestIntent,
+        locators: Vec<Locator>,
+        completion_callback: Option<DkgCompletionCallback>,
+    ) -> FaResult<()> {
         let payer = (self.inner.ports.mg_connector.config.price_msats > 0
             && self.inner.setup_payment_publisher.is_some())
         .then(payment_federation_id);
-        self.buy_seats(&self.preview_at(intent, locators), payer, options)
+        if self.status().creation.is_some() {
+            let preview = self.missing_preview_at(locators).await;
+            self.buy_seats(&preview, payer).await
+        } else {
+            self.create_federation(
+                intent.federation_name.clone(),
+                completion_callback,
+                &self.preview_at(intent, locators),
+                payer,
+            )
             .await
+        }
     }
 
     /// A fresh preview of one seat at each locator, at the price its test MG
     /// offers now.
     fn preview_at(&self, intent: &TestIntent, locators: Vec<Locator>) -> MgSelectionPreview {
+        preview_of(intent.request.clone(), self.live_prices(&locators))
+    }
+
+    /// A fresh preview of the creation's missing seats at `locators`.
+    async fn missing_preview_at(&self, locators: Vec<Locator>) -> MgSelectionPreview {
+        let creation = self
+            .inner
+            .store
+            .load_creation(TestIdentity::fa_id())
+            .await
+            .unwrap()
+            .expect("a creation needs seats");
+        let bought = u16::try_from(self.inner.store.pool_seats().await.len()).unwrap();
+        let request = MgSelectionRequest::new(
+            creation.federation_size,
+            creation.fedimintd_versions,
+            creation.plan,
+        )
+        .unwrap()
+        .missing_seats(self.inner.store.bought_seats().await, bought);
+        preview_of(request, self.live_prices(&locators))
+    }
+
+    fn live_prices(&self, locators: &[Locator]) -> Vec<(usize, u64)> {
         let connector = &self.inner.ports.mg_connector;
         let overrides = connector
             .state
             .price_overrides_msats
             .lock()
             .expect("test lock");
-        preview_of(
-            intent.request.clone(),
-            locators.iter().map(|seat_locator| {
+        locators
+            .iter()
+            .map(|seat_locator| {
                 let index = locator_index(seat_locator);
                 let price_msats = overrides
                     .get(&index)
                     .copied()
                     .unwrap_or(connector.config.price_msats);
                 (index, price_msats)
-            }),
-        )
+            })
+            .collect()
     }
+
     async fn buy_and_form_at(
         &self,
         intent: TestIntent,
         locators: Vec<Locator>,
         options: FormationRunOptions,
     ) -> FaResult<()> {
-        self.buy_seats_at(&intent, locators, options).await?;
-        self.form_from_pool(intent.federation_name, None, options)
-            .await
+        self.request_seats_at(&intent, locators, None).await?;
+        self.drive_all_for_test(options).await
     }
 
     async fn buy_and_form_at_with_callback(
@@ -2356,9 +2406,9 @@ impl TestClient {
         completion_callback: DkgCompletionCallback,
         options: FormationRunOptions,
     ) -> FaResult<()> {
-        self.buy_seats_at(&intent, locators, options).await?;
-        self.form_from_pool(intent.federation_name, Some(completion_callback), options)
-            .await
+        self.request_seats_at(&intent, locators, Some(completion_callback))
+            .await?;
+        self.drive_all_for_test(options).await
     }
 }
 
@@ -2410,10 +2460,14 @@ where
         payment_federation_id: FederationId,
         options: FormationRunOptions,
     ) -> FaResult<()> {
-        self.buy_seats(preview, Some(payment_federation_id), options)
-            .await?;
-        self.form_from_pool(intent.federation_name, None, options)
-            .await
+        self.create_federation(
+            intent.federation_name,
+            None,
+            preview,
+            Some(payment_federation_id),
+        )
+        .await?;
+        self.drive_all_for_test(options).await
     }
 
     async fn buy_and_form_with_callback(
@@ -2424,10 +2478,14 @@ where
         completion_callback: DkgCompletionCallback,
         options: FormationRunOptions,
     ) -> FaResult<()> {
-        self.buy_seats(preview, Some(payment_federation_id), options)
-            .await?;
-        self.form_from_pool(intent.federation_name, Some(completion_callback), options)
-            .await
+        self.create_federation(
+            intent.federation_name,
+            Some(completion_callback),
+            preview,
+            Some(payment_federation_id),
+        )
+        .await?;
+        self.drive_all_for_test(options).await
     }
 
     async fn buy_and_form_without_payer(
@@ -2436,32 +2494,117 @@ where
         preview: &MgSelectionPreview,
         options: FormationRunOptions,
     ) -> FaResult<()> {
-        self.buy_seats(preview, None, options).await?;
-        self.form_from_pool(intent.federation_name, None, options)
+        self.create_federation(intent.federation_name, None, preview, None)
+            .await?;
+        self.drive_all_for_test(options).await
+    }
+
+    /// Create the test federation from `preview` and drive only its
+    /// purchase.
+    async fn create_and_buy(
+        &self,
+        preview: &MgSelectionPreview,
+        payment_federation_id: Option<FederationId>,
+        options: FormationRunOptions,
+    ) -> FaResult<()> {
+        self.create_federation(
+            intent().federation_name,
+            None,
+            preview,
+            payment_federation_id,
+        )
+        .await?;
+        self.drive_purchase_for_test(options).await
+    }
+
+    /// [`Self::drive_with_options`] with the default options.
+    async fn drive(&self) -> FaResult<()> {
+        self.drive_with_options(FormationRunOptions::default())
             .await
     }
 
-    /// Form from every pool seat, unless a purchase still waits for payment.
-    async fn form_from_pool(
+    /// Drive the running purchase, or without one every later piece of
+    /// work, as [`Self::drive_all_for_test`] does.
+    async fn drive_with_options(&self, options: FormationRunOptions) -> FaResult<()> {
+        let purchase_only = self
+            .inner
+            .store
+            .load_purchase(self.fa_id()?)
+            .await?
+            .is_some();
+        self.drive_steps_for_test(options, purchase_only).await
+    }
+
+    /// Do the run loop's work until none is left, without its retries, and
+    /// return the first error. Each step is the work `run` would choose.
+    async fn drive_all_for_test(&self, options: FormationRunOptions) -> FaResult<()> {
+        self.drive_steps_for_test(options, false).await
+    }
+
+    /// [`Self::drive_with_options`], limited to the running purchase.
+    async fn drive_purchase_for_test(&self, options: FormationRunOptions) -> FaResult<()> {
+        self.drive_steps_for_test(options, true).await
+    }
+
+    async fn drive_steps_for_test(
         &self,
-        federation_name: Option<FederationName>,
-        completion_callback: Option<DkgCompletionCallback>,
         options: FormationRunOptions,
+        purchase_only: bool,
     ) -> FaResult<()> {
-        let status = self.status();
-        if status.purchase.is_some() || status.pool.is_empty() {
-            return Ok(());
+        let _run = self.inner.run_guard.try_lock().map_err(|_| FaError::Busy)?;
+        options.validate_for_start(&self.inner.store)?;
+        let fa_id = self.fa_id()?;
+        loop {
+            let status = self.status();
+            if status.recovery.is_some() {
+                return Ok(());
+            }
+            let purchase = self.inner.store.load_purchase(fa_id).await?;
+            if purchase.is_none() && purchase_only {
+                return Ok(());
+            }
+            let formation = match purchase {
+                Some(_) => None,
+                None => self.inner.store.load_formation(fa_id).await?,
+            };
+            let reconcile = status
+                .federation
+                .filter(|federation| federation.freshness == FormationFreshness::Unsynced)
+                .filter(|_| status.creation.is_none());
+            if purchase.is_none() && formation.is_none() && reconcile.is_none() {
+                return Ok(());
+            }
+            let (deadline, lease) =
+                crate::formation::start_driver_run(&self.inner.store, options).await?;
+            let run = crate::formation::DriverRun::new(options, deadline, &lease);
+            let result = async {
+                if let Some(recovery) = purchase {
+                    let result = self.drive_purchase(recovery, fa_id, run).await;
+                    if let Err(FaError::SelectionReauthorizationRequired { reason, .. }) = &result {
+                        let reason = *reason;
+                        self.inner
+                            .progress
+                            .modify(|status| status.reauthorization = Some(reason));
+                    }
+                    result
+                } else if let Some(recovery) = formation {
+                    self.drive_formation(recovery, fa_id, run).await
+                } else {
+                    let snapshot = reconcile.expect("one piece of work was chosen");
+                    self.begin_recheck();
+                    let result = self.reconcile_restored(snapshot, fa_id, run).await;
+                    if let Err(error) = &result {
+                        self.fail_recheck(error);
+                    }
+                    result
+                }
+            }
+            .await;
+            crate::formation::finish_driver_run(
+                result,
+                self.inner.store.release_driver_lease(lease).await,
+            )?;
         }
-        // Form in MG order, as the fakes number guardians by MG.
-        let mut pool = status.pool.clone();
-        pool.sort_by_key(|seat| {
-            (0..=usize::from(MAX_FEDERATION_SIZE)).find(|index| {
-                manager_key(*index).x_only_public_key().0 == seat.locator.service_pubkey
-            })
-        });
-        let seats = pool.into_iter().map(|seat| seat.seat_id).collect();
-        self.form_federation(federation_name, seats, completion_callback, options)
-            .await
     }
 }
 
@@ -3307,39 +3450,147 @@ async fn schema_11_dkg_moves_seats_into_a_formation_that_finishes() {
         .install_schema_11_fixture_for_test(crate::db::test_support::Schema11Fixture::Dkg)
         .await;
     let (payments, _) = TestPayments::new();
-    let client = open_client(
-        database,
-        payments,
-        Arc::new(MgState::default()),
-        MgConfig::paid(),
-    )
-    .await;
+    let mg_state = Arc::new(MgState::default());
+    let client = open_client(database, payments, mg_state.clone(), MgConfig::paid()).await;
 
     let status = client.status();
     assert!(status.purchase.is_none());
-    assert!(status.pool.is_empty());
+    let creation = status
+        .creation
+        .as_ref()
+        .expect("the migration keeps a creation");
+    assert_eq!(
+        creation.federation_name,
+        FederationName("Test Federation".to_owned())
+    );
+    assert_eq!(
+        creation.federation_size,
+        FederationSize(MIN_FEDERATION_SIZE)
+    );
+    // Every seat moved into the pool, which lists them in seat-id order.
+    let pool = status
+        .pool
+        .iter()
+        .map(|seat| seat.seat_id.to_string())
+        .collect::<Vec<_>>();
+    let mut sorted = pool.clone();
+    sorted.sort();
+    assert_eq!(pool, sorted);
+    assert_eq!(pool.len(), usize::from(MIN_FEDERATION_SIZE));
     let formation = formation(&status);
     assert_eq!(formation.phase, FormationPhase::PreparingDkg);
+    assert!(formation.invite_code.is_none());
     assert_eq!(
         formation.federation_name,
         FederationName("Test Federation".to_owned())
     );
-    assert_eq!(
-        formation
-            .seats
-            .iter()
-            .map(|seat| seat.guardian_code.is_some())
-            .collect::<Vec<_>>(),
-        [true, true, true, true, true, false, true]
-    );
+    // The six codes that arrived stay cached against their seats; only the
+    // seat stored at index 5 still needs its code.
+    for seat in &formation.seats {
+        let seat_id = seat.seat_id.as_ref().unwrap().to_string();
+        assert_eq!(
+            seat.guardian_code.is_none(),
+            seat_id.starts_with("bfd0b333"),
+            "seat {seat_id}"
+        );
+    }
 
-    client.resume().await.unwrap();
+    // The FA reads the invite from the first seat of the formation.
+    let first_mg = (0..usize::from(MIN_FEDERATION_SIZE))
+        .find(|index| test_mg_id(*index) == formation.seats[0].mg_id)
+        .unwrap();
+
+    // Each MG re-reports its deterministic code, so a cached code moved to
+    // the wrong seat fails the run.
+    client.drive().await.unwrap();
     let status = client.status();
     assert!(status.formation.is_none());
+    assert!(status.creation.is_none());
+    assert!(status.pool.is_empty());
     let federation = federation(&status);
-    assert_eq!(federation.federation_invite, test_invite(0));
+    assert_eq!(federation.federation_invite, test_invite(first_mg));
     assert_eq!(federation.freshness, FormationFreshness::Fresh);
     client.inner.store.backup_payload().await.unwrap();
+}
+
+#[tokio::test]
+async fn schema_11_dkg_complete_resumes_at_metadata_with_its_invite() {
+    for fixture in [
+        crate::db::test_support::Schema11Fixture::DkgComplete,
+        crate::db::test_support::Schema11Fixture::PublishingSeatBindings,
+    ] {
+        let database = MemDatabase::new().into_database();
+        crate::db::FaStore::new(database.clone())
+            .install_schema_11_fixture_for_test(fixture)
+            .await;
+        let (payments, _) = TestPayments::new();
+        let mg_state = Arc::new(MgState::default());
+        let client = open_client(database, payments, mg_state.clone(), MgConfig::paid()).await;
+
+        let status = client.status();
+        assert!(status.purchase.is_none(), "{fixture:?}");
+        assert!(status.federation.is_none(), "{fixture:?}");
+        assert!(status.creation.is_some(), "{fixture:?}");
+        assert_eq!(status.pool.len(), usize::from(MIN_FEDERATION_SIZE));
+        let formation = formation(&status);
+        assert_eq!(
+            formation.phase,
+            match fixture {
+                crate::db::test_support::Schema11Fixture::DkgComplete => {
+                    FormationPhase::DkgComplete
+                }
+                _ => FormationPhase::PublishingSeatBindings,
+            },
+            "{fixture:?}"
+        );
+        assert_eq!(formation.invite_code, Some(test_invite(0)), "{fixture:?}");
+        assert!(
+            formation
+                .seats
+                .iter()
+                .all(|seat| seat.guardian_code.is_some()),
+            "{fixture:?}"
+        );
+
+        client.drive().await.unwrap();
+        let status = client.status();
+        assert!(status.creation.is_none(), "{fixture:?}");
+        assert!(status.pool.is_empty(), "{fixture:?}");
+        assert_eq!(
+            federation(&status).federation_invite,
+            test_invite(0),
+            "{fixture:?}"
+        );
+        assert_eq!(
+            mg_state.start_callbacks.lock().unwrap().len(),
+            0,
+            "{fixture:?}"
+        );
+        assert_eq!(
+            mg_state.restart_calls.load(Ordering::SeqCst),
+            0,
+            "{fixture:?}"
+        );
+        if matches!(
+            fixture,
+            crate::db::test_support::Schema11Fixture::PublishingSeatBindings
+        ) {
+            // The saved target is proposed exactly, not rebuilt.
+            let consensus: serde_json::Value = serde_json::from_slice(
+                &crate::db::test_support::schema_11_formed_meta_consensus_for_test(),
+            )
+            .unwrap();
+            let saved = consensus[fedi_decentralized_domain::MG_SEAT_BINDINGS_META_FIELD_KEY]
+                .as_str()
+                .unwrap()
+                .to_owned();
+            let submissions = mg_state.meta_submissions.lock().unwrap();
+            assert!(!submissions.is_empty());
+            for (_, value) in submissions.values() {
+                assert_eq!(value, &saved);
+            }
+        }
+    }
 }
 
 #[tokio::test]
@@ -3365,10 +3616,19 @@ async fn schema_11_formed_federation_keeps_its_record_and_rechecks() {
         assert!(federation.reconciled, "{fixture:?}");
         assert_eq!(federation.federation_invite, test_invite(0), "{fixture:?}");
         assert_eq!(federation.seats.len(), usize::from(MIN_FEDERATION_SIZE));
+        // Only the federation record remains.
+        assert!(status.creation.is_none(), "{fixture:?}");
+        assert!(status.pool.is_empty(), "{fixture:?}");
+        let store = &client.inner.store;
+        let fa_id = TestIdentity::fa_id();
+        assert!(store.load_creation(fa_id).await.unwrap().is_none());
+        assert!(store.load_purchase(fa_id).await.unwrap().is_none());
+        assert!(store.pool_seats().await.is_empty());
+        assert!(!store.holds_creation_rows_for_test().await, "{fixture:?}");
         let backup = client.inner.store.backup_payload().await.unwrap();
         assert_eq!(backup.payload.federation_invite, test_invite(0));
 
-        client.resume().await.unwrap();
+        client.drive().await.unwrap();
         let status = client.status();
         assert_eq!(
             status
@@ -3428,13 +3688,6 @@ async fn backup_payload_is_lean_stable_and_requires_confirmed_formed_metadata() 
             "seat_id".to_owned(),
         ])
     );
-
-    client
-        .inner
-        .store
-        .unconfirm_formation_meta_target_for_test()
-        .await;
-    assert!(client.inner.store.backup_payload().await.is_err());
 }
 
 async fn open_with_backup_recovery_hint(
@@ -3511,7 +3764,7 @@ async fn backup_recovery_publishes_ready_only_after_releasing_the_guard() {
     )
     .await;
     let guard = client.inner.run_guard.clone().try_lock_owned().unwrap();
-    client.inner.progress.send_replace(recovering(None));
+    client.inner.progress.replace(recovering(None));
     let mut status = client.observe();
     crate::backup_worker::spawn_recovery(
         &client.inner.backup_tasks,
@@ -3613,7 +3866,7 @@ async fn encrypted_backup_restore_imports_unsynced_lean_state_and_blocks_create(
         )
         .await
         .unwrap();
-    restored.inner.progress.send_replace(status);
+    restored.inner.progress.replace(status);
     assert!(
         restored
             .inner
@@ -3723,7 +3976,7 @@ async fn restored_snapshot_reports_reconciled_after_reconcile() {
         .restore_backup_payload(fa_id, payload)
         .await
         .unwrap();
-    restored.inner.progress.send_replace(status);
+    restored.inner.progress.replace(status);
 
     let snapshot = restored
         .inner
@@ -3781,8 +4034,8 @@ async fn restored_federation_name_uses_consensus_without_a_liquidity_backup() {
             .restore_backup_payload(fa_id, payload.clone())
             .await
             .unwrap();
-        restored.inner.progress.send_replace(status);
-        restored.resume().await.unwrap();
+        restored.inner.progress.replace(status);
+        restored.drive().await.unwrap();
         let snapshot = restored.status().federation.expect("restored status");
         assert_eq!(
             snapshot.federation_name,
@@ -3876,7 +4129,7 @@ async fn restored_backup_reconciles_to_usable_authority_and_hydrates_liquidity()
         .restore_backup_payload(fa_id, payload.clone())
         .await
         .unwrap();
-    restored.inner.progress.send_replace(status);
+    restored.inner.progress.replace(status);
     let imported = restored.status().federation.expect("restored status");
     assert_eq!(imported.freshness, FormationFreshness::Unsynced);
     let restored_formation_id = imported.formation_id.clone();
@@ -3895,7 +4148,7 @@ async fn restored_backup_reconciles_to_usable_authority_and_hydrates_liquidity()
         .connect_failures_remaining
         .store(usize::MAX, Ordering::SeqCst);
     restored
-        .resume()
+        .drive()
         .await
         .expect("verify restored seats through consensus while managers are unreachable");
     let reconciled = restored
@@ -3967,7 +4220,7 @@ async fn restored_backup_reconciles_to_usable_authority_and_hydrates_liquidity()
         .unwrap_or(0)
         + 1;
     *mg_state.hang_connect_on_attempt.lock().unwrap() = Some((0, next));
-    tokio::time::timeout(Duration::from_secs(2), restored.resume())
+    tokio::time::timeout(Duration::from_secs(2), restored.drive())
         .await
         .unwrap()
         .unwrap();
@@ -4000,8 +4253,10 @@ async fn restored_backup_reconciles_to_usable_authority_and_hydrates_liquidity()
         .connect_failures_remaining
         .store(usize::MAX, Ordering::SeqCst);
     restored.inner.ports.consensus_reader.fail_next(1);
+    // Only an unsynced federation reconciles, as after a reopen.
+    restored.begin_recheck();
     restored
-        .resume()
+        .drive()
         .await
         .expect_err("a failed fresh reconciliation invalidates prior authority");
     let invalidated = restored
@@ -4070,9 +4325,9 @@ async fn restored_recovery_rejects_unverified_consensus_and_changed_seats() {
             .restore_backup_payload(TestIdentity::fa_id(), payload)
             .await
             .unwrap();
-        restored.inner.progress.send_replace(status);
+        restored.inner.progress.replace(status);
         let calls = state.connect_calls.load(Ordering::SeqCst);
-        let error = restored.resume().await.expect_err(fault);
+        let error = restored.drive().await.expect_err(fault);
         if fault == "identity" {
             assert!(
                 error
@@ -4496,7 +4751,7 @@ async fn open_client_with_store_and_registry(
     registry: TestRegistry,
 ) -> TestClient {
     let status = store.load_status(TestIdentity::fa_id()).await.unwrap();
-    let (progress, _) = tokio::sync::watch::channel(status);
+    let progress = Arc::new(crate::run::Progress::new(status));
     FaClient {
         inner: Arc::new(FaClientInner {
             read_invite: tokio::sync::Mutex::new(None),
@@ -4513,6 +4768,7 @@ async fn open_client_with_store_and_registry(
                 fa_fee_account_provider: Arc::new(TestFaFeeAccountProvider::default()),
             },
             progress,
+            control: crate::run::RunControl::default(),
             run_guard: Arc::new(tokio::sync::Mutex::new(())),
             peer_badge_verifier: test_peer_badge_verifier(),
             setup_payment_publisher: Some(setup_payment_keys().public_key()),
@@ -4541,6 +4797,47 @@ fn formation(status: &FaStatus) -> &FormationSnapshot {
         .formation
         .as_ref()
         .expect("expected an active formation")
+}
+
+/// The creation holds no seat and waits for a preview of all of them. The
+/// reason a purchase ended is not saved, so a reopened client shows none.
+fn assert_needs_every_seat(client: &TestClient) {
+    let status = client.status();
+    assert!(
+        status.creation.is_some()
+            && status.purchase.is_none()
+            && status.pool.is_empty()
+            && status.formation.is_none()
+            && status.federation.is_none(),
+        "{status:?}"
+    );
+}
+
+/// The purchase ended before it bought a seat, and the creation asks for a
+/// new preview of every seat.
+fn assert_needs_new_preview(client: &TestClient) {
+    let status = client.status();
+    assert!(
+        status.purchase.is_none()
+            && status.pool.is_empty()
+            && status.formation.is_none()
+            && status.federation.is_none(),
+        "{status:?}"
+    );
+    match client.state() {
+        FaState::Creating(creation) => assert!(
+            matches!(
+                creation.stage,
+                CreationStage::NeedsSeats {
+                    count,
+                    reauthorization: Some(_),
+                } if count == creation.federation_size.0
+            ),
+            "{:?}",
+            creation.stage
+        ),
+        state => panic!("expected a creation that needs seats, got {state:?}"),
+    }
 }
 
 /// The purchase finished and its seats wait in the pool.
@@ -4595,6 +4892,14 @@ async fn current_payment_requirements(store: &db::FaStore) -> PaymentRequirement
         .expect("unpaid quotes remain")
 }
 
+async fn active_formation(store: &db::FaStore) -> crate::db::FormationRecovery {
+    store
+        .load_formation(TestIdentity::fa_id())
+        .await
+        .unwrap()
+        .expect("expected a formation")
+}
+
 fn active_recovery(recovery: Option<crate::db::PurchaseRecovery>) -> crate::db::PurchaseRecovery {
     recovery.expect("expected an active purchase")
 }
@@ -4609,7 +4914,7 @@ async fn seed_quoted_selected_purchase(client: &TestClient) -> PaymentRequiremen
     let formation_id = FormationId(SEEDED_PURCHASE_ID.to_owned());
     let resolved = intent().resolve(fedimintd_version().dkg_version()).unwrap();
     store
-        .initialize(
+        .initialize_for_test(
             TestIdentity::fa_id(),
             formation_id.clone(),
             resolved.clone(),
@@ -5181,7 +5486,7 @@ async fn intent_and_locator_validation_precede_external_calls() {
         .dkg_version();
     assert!(matches!(
         client
-            .buy_seats(&outside_request, Some(payment_federation_id()), options())
+            .create_and_buy(&outside_request, Some(payment_federation_id()), options())
             .await,
         Err(FaError::InvalidIntent(_))
     ));
@@ -5293,13 +5598,26 @@ async fn default_name_final_status_and_formed_reconciliation_are_typed() {
     let generated_name = formed.federation_name.clone().expect("formed name");
     assert_eq!(generated_name.0.split_whitespace().count(), 2);
 
-    let json = serde_json::to_value(&formed_status).unwrap();
-    assert_eq!(json["federation"]["federation_name"], generated_name.0);
+    let formed_state = client.state();
+    let json = serde_json::to_value(&formed_state).unwrap();
+    assert_eq!(json["active"]["federation_name"], generated_name.0);
     assert_eq!(
-        serde_json::from_value::<FaStatus>(json).unwrap(),
-        formed_status
+        serde_json::from_value::<FaState>(json).unwrap(),
+        formed_state
     );
 
+    // Reconciliation adopts the consensus name, which a real federation took
+    // from DKG; the fake config has a fixed name, so set it in the metadata.
+    {
+        let mut raw = mg_state.meta_consensus_raw.lock().unwrap();
+        let mut meta: serde_json::Map<String, serde_json::Value> =
+            serde_json::from_slice(raw.as_deref().expect("formation published metadata")).unwrap();
+        meta.insert(
+            FEDERATION_NAME_META_FIELD_KEY.to_owned(),
+            generated_name.0.clone().into(),
+        );
+        *raw = Some(serde_json::to_vec(&meta).unwrap());
+    }
     let quote_calls = mg_state.quote_calls.load(Ordering::SeqCst);
     let create_calls = mg_state.create_calls.load(Ordering::SeqCst);
     let status_calls = mg_state.status_calls.load(Ordering::SeqCst);
@@ -5314,7 +5632,7 @@ async fn default_name_final_status_and_formed_reconciliation_are_typed() {
     assert_eq!(reloaded.freshness, FormationFreshness::Unsynced);
     assert_eq!(reloaded.federation_name, Some(generated_name.clone()));
 
-    reopened.resume().await.unwrap();
+    reopened.drive().await.unwrap();
     let reconciled_status = reopened.status();
     let reconciled = federation(&reconciled_status);
     assert_eq!(reconciled.freshness, FormationFreshness::Fresh);
@@ -5354,72 +5672,29 @@ async fn an_already_started_reply_resumes_through_status_instead_of_stranding_fo
 }
 
 #[tokio::test]
-async fn inconsistent_formed_storage_is_rejected_before_status_publication() {
-    use crate::db::FormedFact;
-
-    for missing_fact in [
-        FormedFact::SeatCount,
-        FormedFact::InviteCode,
-        FormedFact::GuardianCode,
-    ] {
-        let database = MemDatabase::new().into_database();
-        let (payments, _) = TestPayments::new();
-        let mg_state = Arc::new(MgState::default());
-        let client = open_client(
-            database.clone(),
-            payments.clone(),
-            mg_state.clone(),
-            MgConfig::given_away(),
-        )
-        .await;
-        client
-            .buy_and_form_at(intent(), locators(), options())
-            .await
-            .unwrap();
-
-        client
-            .inner
-            .store
-            .remove_formed_fact_for_test(missing_fact)
-            .await;
-
-        let reopened = FaClient::open(
-            database,
-            TestIdentity,
-            payments,
-            TestRegistry::default(),
-            TestConnector {
-                state: mg_state.clone(),
-                config: MgConfig::given_away(),
-            },
-            test_peer_badge_verifier(),
-            TestConsensusReader::new(mg_state),
-            TestFaFeeAccountProvider::default(),
-        )
-        .await;
-        assert!(
-            matches!(reopened, Err(FaError::Storage(_))),
-            "corrupted terminal fact {missing_fact:?} was accepted"
-        );
-    }
-}
-
-#[tokio::test]
 async fn record_dkg_complete_rejects_incomplete_seats_without_changing_recovery_state() {
     let database = MemDatabase::new().into_database();
     let (payments, _) = TestPayments::new();
     let mg_state = Arc::new(MgState::default());
     let client = open_client(database, payments, mg_state, MgConfig::given_away()).await;
     client
-        .buy_and_form_at(intent(), locators(), options())
+        .buy_seats_at(&intent(), locators(), options())
         .await
         .unwrap();
-    let formation_id = federation(&client.status()).formation_id.clone();
-    client
-        .inner
-        .store
-        .rewind_formed_without_guardian_for_test()
-        .await;
+    let store = &client.inner.store;
+    // The full pool is a formation that has not run yet.
+    let formation_id = active_formation(store).await.snapshot.formation_id;
+    // Every seat but the first has its guardian code.
+    for index in 1..MIN_FEDERATION_SIZE {
+        store
+            .record_guardian_code(
+                &formation_id,
+                index,
+                GuardianCode(format!("guardiancode{index}")),
+            )
+            .await
+            .unwrap();
+    }
 
     assert!(matches!(
         client
@@ -5477,7 +5752,7 @@ async fn concurrent_driver_is_rejected() {
     )
     .await;
     let _guard = client.inner.run_guard.lock().await;
-    assert!(matches!(client.resume().await, Err(FaError::Busy)));
+    assert!(matches!(client.drive().await, Err(FaError::Busy)));
 }
 
 #[tokio::test]
@@ -5502,7 +5777,7 @@ async fn separately_opened_clients_share_one_database_driver_lease() {
     });
     recovery_started.await;
 
-    assert!(matches!(second.resume().await, Err(FaError::Busy)));
+    assert!(matches!(second.drive().await, Err(FaError::Busy)));
     operation.abort();
     assert!(operation.await.unwrap_err().is_cancelled());
 }
@@ -5945,7 +6220,7 @@ async fn initialized_formation_reloads_as_unsynced_typed_status() {
     client
         .inner
         .store
-        .initialize(
+        .initialize_for_test(
             TestIdentity::fa_id(),
             FormationId("formation1".to_owned()),
             resolved_intent_with_size(FederationSize(1)),
@@ -5980,7 +6255,7 @@ async fn persisted_formation_rejects_a_different_identity_before_observation() {
     client
         .inner
         .store
-        .initialize(
+        .initialize_for_test(
             TestIdentity::fa_id(),
             FormationId("ownedformation".to_owned()),
             resolved_intent_with_size(FederationSize(1)),
@@ -6022,7 +6297,7 @@ async fn current_storage_requires_output_tombstone_fields() {
     client
         .inner
         .store
-        .initialize(
+        .initialize_for_test(
             TestIdentity::fa_id(),
             FormationId("required-schema-fields".to_owned()),
             resolved_intent_with_size(FederationSize(1)),
@@ -6084,7 +6359,7 @@ async fn accepting_one_seat_preserves_a_sibling_journaled_quote() {
     client
         .inner
         .store
-        .initialize(
+        .initialize_for_test(
             TestIdentity::fa_id(),
             formation_id.clone(),
             intent.clone(),
@@ -6166,7 +6441,7 @@ async fn concurrent_two_seat_acceptance_retries_and_derives_completion_from_dura
     let formation_id = FormationId("concurrentseatacceptance".to_owned());
     let intent = resolved_intent_with_size(FederationSize(2));
     store
-        .initialize(
+        .initialize_for_test(
             TestIdentity::fa_id(),
             formation_id.clone(),
             intent.clone(),
@@ -6248,7 +6523,7 @@ async fn concurrent_two_seat_clear_and_changed_term_store_retry_without_losing_s
     let formation_id = FormationId("concurrentquotereplacement".to_owned());
     let intent = resolved_intent_with_size(FederationSize(2));
     store
-        .initialize(
+        .initialize_for_test(
             TestIdentity::fa_id(),
             formation_id.clone(),
             intent.clone(),
@@ -6450,7 +6725,7 @@ async fn aggregate_authorization_blocks_spends_and_unpaid_quotes_refresh_on_reop
     // The unauthorized quotes were never paid, so reopen refreshes every one
     // of them at its previewed price before the run authorizes and spends.
     let reopened = open_client(database, payments, mg_state.clone(), MgConfig::paid()).await;
-    reopened.resume().await.unwrap();
+    reopened.drive().await.unwrap();
     bought(&reopened.status());
     let refreshed = quote_ids(&mg_state.quote_records.lock().expect("test lock"));
     assert_eq!(refreshed.len(), usize::from(MIN_FEDERATION_SIZE));
@@ -6544,7 +6819,7 @@ async fn partial_seat_recovery_keeps_the_remaining_payment_after_a_dropped_seat(
     let formation_id = FormationId("partialpaymentreadiness".to_owned());
     let intent = resolved_intent_with_size(FederationSize(3));
     store
-        .initialize(
+        .initialize_for_test(
             TestIdentity::fa_id(),
             formation_id.clone(),
             intent.clone(),
@@ -6645,7 +6920,7 @@ async fn authorized_reserved_recovery_replays_exact_quotes_before_funding() {
         purchase(&recovered_status).phase,
         PurchasePhase::AcquiringSeats
     );
-    reopened.resume().await.unwrap();
+    reopened.drive().await.unwrap();
     bought(&reopened.status());
     assert_eq!(
         payment_state.create_calls.load(Ordering::SeqCst),
@@ -6707,7 +6982,7 @@ async fn a_closed_mg_stops_before_quote_or_value_moving_payment_work() {
             }),
         })
     ));
-    assert_eq!(client.status(), FaStatus::default());
+    assert_needs_new_preview(&client);
     assert_eq!(
         mg_state.availability_calls.load(Ordering::SeqCst),
         usize::from(MIN_FEDERATION_SIZE)
@@ -6793,7 +7068,7 @@ async fn external_capability_calls_obey_request_timeout() {
             }),
         })
     ));
-    assert_eq!(client.status(), FaStatus::default());
+    assert_needs_new_preview(&client);
     assert_eq!(mg_state.quote_calls.load(Ordering::SeqCst), 0);
     assert_eq!(mg_state.create_calls.load(Ordering::SeqCst), 0);
     assert_eq!(payment_state.payable_calls.load(Ordering::SeqCst), 1);
@@ -6831,7 +7106,7 @@ async fn terminal_payment_rejection_clears_quotes_and_resume_requotes_at_the_pre
     // The preview approved each seat's price, not one set of quotes, so
     // resume quotes every seat again at that price and pays.
     payment_state.reject_recovery.store(false, Ordering::SeqCst);
-    client.resume().await.unwrap();
+    client.drive().await.unwrap();
     bought(&client.status());
     assert_eq!(
         mg_state.quote_calls.load(Ordering::SeqCst),
@@ -6878,7 +7153,7 @@ async fn lost_create_seat_response_replays_exact_quote_without_refunding_twice()
     );
 
     let reopened = open_client(database, payments, mg_state.clone(), config).await;
-    reopened.resume().await.unwrap();
+    reopened.drive().await.unwrap();
     bought(&reopened.status());
     assert_eq!(
         mg_state.quote_calls.load(Ordering::SeqCst),
@@ -6946,7 +7221,7 @@ async fn slow_refund_settlement_finishes_before_the_seat_is_dropped() {
     let dropped = dropped_index(purchase(&client.status()));
     let payments_before = payment_state.create_calls.load(Ordering::SeqCst);
     let quotes_before = mg_state.quote_calls.load(Ordering::SeqCst);
-    client.resume().await.unwrap();
+    client.drive().await.unwrap();
     bought_without(&client.status(), &[dropped]);
     assert_eq!(payment_state.refund_calls.load(Ordering::SeqCst), 1);
     assert_eq!(
@@ -6984,7 +7259,7 @@ async fn repeated_refund_settlement_replays_exact_context_before_the_seat_is_dro
     assert!(operation.await.unwrap_err().is_cancelled());
 
     let reopened = open_client(database, payments, mg_state.clone(), config).await;
-    let replay_error = reopened.resume().await.unwrap_err();
+    let replay_error = reopened.drive().await.unwrap_err();
     assert!(
         matches!(
             &replay_error,
@@ -7018,7 +7293,7 @@ async fn repeated_refund_settlement_replays_exact_context_before_the_seat_is_dro
     let payment_creates = payment_state.create_calls.load(Ordering::SeqCst);
     let seat_creates = mg_state.create_calls.load(Ordering::SeqCst);
     let quotes_before = mg_state.quote_calls.load(Ordering::SeqCst);
-    reopened.resume().await.unwrap();
+    reopened.drive().await.unwrap();
     bought_without(&reopened.status(), &[dropped]);
     assert_eq!(mg_state.quote_calls.load(Ordering::SeqCst), quotes_before);
     assert_eq!(
@@ -7055,7 +7330,7 @@ async fn lost_free_create_seat_response_replays_exact_quote_and_allocation() {
     let quote_calls_before_resume = mg_state.quote_calls.load(Ordering::SeqCst);
 
     let reopened = open_client(database, payments, mg_state.clone(), config).await;
-    reopened.resume().await.unwrap();
+    reopened.drive().await.unwrap();
     bought(&reopened.status());
     assert_eq!(
         mg_state.quote_calls.load(Ordering::SeqCst),
@@ -7626,7 +7901,7 @@ async fn selected_free_lost_create_seat_reopens_after_verifier_drift_with_exact_
         peer_badge_verifier(ManifoldEnvironment::Staging),
     )
     .await;
-    reopened.resume().await.unwrap();
+    reopened.drive().await.unwrap();
 
     bought(&reopened.status());
     assert_eq!(
@@ -7680,7 +7955,7 @@ async fn selected_free_refusal_returns_idle_and_requires_a_fresh_preview() {
             })
         }
     ));
-    assert_eq!(client.status(), FaStatus::default());
+    assert_needs_new_preview(&client);
     assert_eq!(payment_state.create_calls.load(Ordering::SeqCst), 0);
     let refused_quote = mg_state
         .refused_quote
@@ -7702,11 +7977,8 @@ async fn selected_free_refusal_returns_idle_and_requires_a_fresh_preview() {
     drop(client);
 
     let reopened = open_client(database, payments, mg_state.clone(), MgConfig::given_away()).await;
-    assert_eq!(reopened.status(), FaStatus::default());
-    assert!(matches!(
-        reopened.resume().await.as_ref(),
-        Err(FaError::NoActiveFormation)
-    ));
+    assert_needs_every_seat(&reopened);
+    reopened.drive().await.unwrap();
     assert_eq!(
         mg_state.create_calls.load(Ordering::SeqCst),
         presentations_before_reopen,
@@ -7714,14 +7986,9 @@ async fn selected_free_refusal_returns_idle_and_requires_a_fresh_preview() {
     );
 
     reopened
-        .buy_and_form(
-            intent(),
-            &reopened.preview_at(&intent(), locators()),
-            payment_federation_id(),
-            options(),
-        )
+        .buy_and_form_at(intent(), locators(), options())
         .await
-        .expect("a newly approved selection can start a fresh formation");
+        .expect("a newly approved selection buys the creation's seats");
     federation(&reopened.status());
     assert_eq!(
         mg_state
@@ -7771,6 +8038,153 @@ async fn consensus_carrying_a_different_directory_never_completes_formation() {
 }
 
 #[tokio::test]
+async fn run_loop_forms_a_creation_and_yields_to_a_user_action_mid_work() {
+    let (payments, _) = TestPayments::new();
+    let mg_state = Arc::new(MgState::default());
+    mg_state
+        .block_meta_indices
+        .lock()
+        .expect("test lock")
+        .extend(0..usize::from(MIN_FEDERATION_SIZE));
+    let client = open_client(
+        MemDatabase::new().into_database(),
+        payments,
+        mg_state.clone(),
+        MgConfig::given_away(),
+    )
+    .await;
+    let runner = client.clone();
+    let run = tokio::spawn(async move { runner.run(options()).await });
+    let mut observed = client.observe();
+
+    // Saving the creation wakes the idle loop, which buys and forms.
+    client
+        .create_federation(
+            intent().federation_name,
+            None,
+            &client.preview_at(&intent(), locators()),
+            None,
+        )
+        .await
+        .unwrap();
+    // The loop holds the run guard while the metadata vote is blocked.
+    mg_state.meta_call_blocked.notified().await;
+    let refused = tokio::time::timeout(Duration::from_secs(2), client.cancel_creation())
+        .await
+        .expect("the busy loop yields the run guard to a user action");
+    assert!(
+        matches!(
+            refused,
+            Err(FaError::AbandonUnavailable(
+                crate::AbandonUnavailableReason::SeatsBought
+            ))
+        ),
+        "{refused:?}"
+    );
+
+    // The loop takes the guard back and finishes the formation by itself.
+    mg_state.release_meta_calls.store(true, Ordering::SeqCst);
+    mg_state.meta_call_release.notify_waiters();
+    tokio::time::timeout(
+        Duration::from_secs(5),
+        observed.wait_for(|state| matches!(state, FaState::Active(_))),
+    )
+    .await
+    .expect("the loop continues after the user action")
+    .unwrap();
+    let status = client.status();
+    assert!(status.creation.is_none());
+    assert_eq!(federation(&status).freshness, FormationFreshness::Fresh);
+    run.abort();
+}
+
+#[tokio::test]
+async fn a_partial_pool_buys_only_its_gap_and_refuses_cancel() {
+    let database = MemDatabase::new().into_database();
+    let (payments, payment_state) = TestPayments::new();
+    let mg_state = Arc::new(MgState::default());
+    let config = MgConfig {
+        create_behavior: CreateBehavior::RefuseFirstQuote,
+        ..MgConfig::paid()
+    };
+    let client = open_client(database, payments, mg_state.clone(), config).await;
+    // One paid seat is refused after payment, so the purchase ends with six.
+    client
+        .create_and_buy(
+            &client.preview_at(&intent(), locators()),
+            Some(payment_federation_id()),
+            options(),
+        )
+        .await
+        .unwrap_err();
+    client.drive().await.unwrap();
+    let pool = client.status().pool;
+    assert_eq!(pool.len(), usize::from(MIN_FEDERATION_SIZE) - 1);
+    let dropped = (0..usize::from(MIN_FEDERATION_SIZE))
+        .find(|index| pool.iter().all(|seat| seat.mg_id != test_mg_id(*index)))
+        .unwrap();
+    // Only the one missing seat can be bought, not two, nor a full set.
+    let other = (dropped + 1) % usize::from(MIN_FEDERATION_SIZE);
+    for preview in [
+        client
+            .missing_preview_at(vec![locator(dropped), locator(other)])
+            .await,
+        client.preview_at(&intent(), locators()),
+    ] {
+        assert!(matches!(
+            client
+                .buy_seats(&preview, Some(payment_federation_id()))
+                .await,
+            Err(FaError::InvalidIntent(_))
+        ));
+    }
+    // A purchase of the missing seat has started but not paid.
+    client
+        .request_seats_at(&intent(), vec![locator(dropped)], None)
+        .await
+        .unwrap();
+    let running = purchase(&client.status()).clone();
+    assert!(!running.payment_outputs_started);
+    assert_eq!(running.seats.len(), 1);
+    let releases = payment_state.whole_release_calls.load(Ordering::SeqCst);
+
+    let error = client.cancel_creation().await.unwrap_err();
+
+    assert!(
+        matches!(
+            error,
+            FaError::AbandonUnavailable(crate::AbandonUnavailableReason::SeatsBought)
+        ),
+        "{error:?}"
+    );
+    // The refusal leaves the creation, its pool and its running purchase.
+    let status = client.status();
+    assert!(status.creation.is_some());
+    assert_eq!(status.pool, pool);
+    assert!(status.purchase.is_some());
+    assert!(
+        client
+            .inner
+            .store
+            .load_purchase(TestIdentity::fa_id())
+            .await
+            .unwrap()
+            .is_some()
+    );
+    assert_eq!(
+        payment_state.whole_release_calls.load(Ordering::SeqCst),
+        releases
+    );
+
+    client.drive_all_for_test(options()).await.unwrap();
+    federation(&client.status());
+    assert!(matches!(
+        client.cancel_creation().await,
+        Err(FaError::NoActiveFormation)
+    ));
+}
+
+#[tokio::test]
 async fn unfinished_setup_reopens_at_its_checkpoint_without_repeating_dkg() {
     for phase in [
         FormationPhase::DkgComplete,
@@ -7805,8 +8219,10 @@ async fn unfinished_setup_reopens_at_its_checkpoint_without_repeating_dkg() {
         let reopened = open_client(database, payments, state.clone(), MgConfig::given_away()).await;
         assert_eq!(formation(&reopened.status()).phase, phase);
         assert!(matches!(
-            reopened.abandon_purchase(options()).await,
-            Err(FaError::NoActiveFormation)
+            reopened.cancel_creation().await,
+            Err(FaError::AbandonUnavailable(
+                crate::AbandonUnavailableReason::SeatsBought
+            ))
         ));
         assert!(matches!(
             reopened.update_federation_metadata(
@@ -7819,7 +8235,7 @@ async fn unfinished_setup_reopens_at_its_checkpoint_without_repeating_dkg() {
         let seats = state.create_calls.load(Ordering::SeqCst);
         // Let the fake consensus adopt the submitted directory on the next read.
         *state.meta_consensus_raw.lock().unwrap() = None;
-        reopened.resume().await.unwrap();
+        reopened.drive().await.unwrap();
         federation(&reopened.status());
         assert_eq!(state.start_callbacks.lock().unwrap().len(), starts);
         assert_eq!(state.create_calls.load(Ordering::SeqCst), seats);
@@ -7855,10 +8271,10 @@ async fn completed_setup_stays_formed_through_rechecks_and_cancellation() {
         reader.clone(),
     )
     .await;
-    // Cancel after the first failed consensus read, while resume waits to retry.
+    // Cancel after the first failed consensus read, while the loop waits to retry.
     tokio::time::timeout(Duration::from_secs(2), async {
         tokio::select! {
-            result = client.resume() => panic!("recheck unexpectedly finished: {result:?}"),
+            () = client.run(options()) => panic!("the run loop returned"),
             () = async {
                 while reader.failures.load(Ordering::SeqCst) == usize::MAX {
                     tokio::task::yield_now().await;
@@ -7871,7 +8287,6 @@ async fn completed_setup_stays_formed_through_rechecks_and_cancellation() {
     let status = client.status();
     federation(&status);
     assert_eq!(federation(&status).freshness, FormationFreshness::Unsynced);
-    assert_eq!(federation(&status).last_error, None);
     drop(client);
     // Let the cancelled driver's lease cleanup finish before reopening.
     tokio::task::yield_now().await;
@@ -7907,14 +8322,14 @@ async fn completed_setup_stays_formed_through_rechecks_and_cancellation() {
         );
         let mut observed = client.observe();
         let result = {
-            let operation = client.resume();
+            let operation = client.drive();
             tokio::pin!(operation);
             loop {
                 tokio::select! {
                     biased;
                     changed = observed.changed() => {
                         changed.unwrap();
-                        federation(&observed.borrow_and_update());
+                        assert!(matches!(&*observed.borrow_and_update(), FaState::Active(_)));
                     }
                     result = &mut operation => break result,
                 }
@@ -7972,7 +8387,7 @@ async fn an_mg_claiming_a_foreign_peer_is_not_pinned_for_recovery() {
     );
 
     mg_state.attest_foreign_peer.store(false, Ordering::SeqCst);
-    client.resume().await.unwrap();
+    client.drive().await.unwrap();
     federation(&client.status());
 }
 
@@ -8027,7 +8442,7 @@ async fn resume_replays_the_persisted_directory_without_refetching_attestations(
     assert_eq!(after_formation, usize::from(MIN_FEDERATION_SIZE));
 
     let reopened = open_client(database, payments, mg_state.clone(), MgConfig::given_away()).await;
-    reopened.resume().await.unwrap();
+    reopened.drive().await.unwrap();
 
     assert_eq!(
         mg_state.attestation_calls.load(Ordering::SeqCst),
@@ -8066,7 +8481,7 @@ async fn formed_resume_accepts_a_later_rate_without_fee_account_capabilities() {
         TestFaFeeAccountProvider::unavailable(),
     )
     .await;
-    reopened.resume().await.unwrap();
+    reopened.drive().await.unwrap();
     federation(&reopened.status());
 }
 
@@ -8109,7 +8524,7 @@ async fn interrupted_formation_replays_its_persisted_fee_target() {
         replacement_provider.clone(),
     )
     .await;
-    reopened.resume().await.unwrap();
+    reopened.drive().await.unwrap();
 
     assert_eq!(original_provider.requested_federations().len(), 1);
     assert!(replacement_provider.requested_federations().is_empty());
@@ -8240,21 +8655,17 @@ async fn pre_payment_abandon_wipes_a_parked_paid_formation_to_idle() {
     .await;
     assert!(!purchase(&client.status()).payment_outputs_started);
 
-    client.abandon_purchase(options()).await.unwrap();
+    client.cancel_creation().await.unwrap();
 
     assert_eq!(client.status(), FaStatus::default());
     assert_eq!(payment_state.recover_calls.load(Ordering::SeqCst), 0);
     assert_eq!(payment_state.create_calls.load(Ordering::SeqCst), 0);
     assert_eq!(mg_state.create_calls.load(Ordering::SeqCst), 0);
 
-    // The wipe is durable: a reopened client sees no formation to resume,
-    // and a fresh creation is accepted.
+    // The wipe is durable: a reopened client sees nothing to resume, and a
+    // fresh creation is accepted.
     let reopened = open_client(database, payments, mg_state.clone(), MgConfig::paid()).await;
     assert_eq!(reopened.status(), FaStatus::default());
-    assert!(matches!(
-        reopened.resume().await,
-        Err(FaError::NoActiveFormation)
-    ));
     reopened
         .buy_seats_at(&intent(), locators(), options())
         .await
@@ -8298,10 +8709,10 @@ async fn pre_payment_abandon_forfeits_accepted_free_seats() {
         mg_state.create_calls.load(Ordering::SeqCst) > 1,
         "sibling free seats were accepted server-side before the refusal",
     );
-    assert_eq!(client.status(), FaStatus::default());
+    assert_needs_new_preview(&client);
 
     let reopened = open_client(database, payments, mg_state, MgConfig::given_away()).await;
-    assert_eq!(reopened.status(), FaStatus::default());
+    assert_needs_every_seat(&reopened);
 }
 
 #[tokio::test]
@@ -8312,7 +8723,7 @@ async fn abandon_after_commercial_authorization_before_outputs_is_value_safe() {
     let client = open_client(database, payments, mg_state, MgConfig::paid()).await;
     seed_authorized_selected_purchase(&client).await;
 
-    client.abandon_purchase(options()).await.unwrap();
+    client.cancel_creation().await.unwrap();
     assert_eq!(client.status(), FaStatus::default());
     assert!(
         client
@@ -8601,7 +9012,7 @@ async fn pre_output_cleanup_retains_formation_when_wallet_release_fails() {
         .store(true, Ordering::SeqCst);
 
     assert!(matches!(
-        client.abandon_purchase(options()).await,
+        client.cancel_creation().await,
         Err(FaError::Payment(message)) if message.contains("release failure")
     ));
     assert!(
@@ -8622,7 +9033,7 @@ async fn pre_output_cleanup_retains_formation_when_wallet_release_fails() {
     payment_state
         .fail_whole_release
         .store(false, Ordering::SeqCst);
-    client.abandon_purchase(options()).await.unwrap();
+    client.cancel_creation().await.unwrap();
     assert_eq!(client.status(), FaStatus::default());
     assert!(
         payment_state
@@ -8680,7 +9091,7 @@ async fn abandon_survives_authorization_invalidation() {
         "dropping a seat invalidated the aggregate authorization",
     );
 
-    let error = client.abandon_purchase(options()).await.unwrap_err();
+    let error = client.cancel_creation().await.unwrap_err();
     assert!(
         matches!(
             error,
@@ -8711,7 +9122,7 @@ async fn commercial_authorization_does_not_imply_the_output_tombstone() {
     );
     assert!(recovery.test_payment_authorization().is_some());
     assert!(!recovery.payment_outputs_started);
-    client.abandon_purchase(options()).await.unwrap();
+    client.cancel_creation().await.unwrap();
     assert_eq!(client.status(), FaStatus::default());
 }
 
@@ -8727,7 +9138,7 @@ async fn abandon_after_formed_is_a_typed_error() {
         .unwrap();
     federation(&client.status());
 
-    let error = client.abandon_purchase(options()).await.unwrap_err();
+    let error = client.cancel_creation().await.unwrap_err();
     assert!(matches!(error, FaError::NoActiveFormation), "{error}");
     federation(&client.status());
 }
@@ -8744,7 +9155,7 @@ async fn abandon_without_an_active_formation_is_a_typed_error() {
     )
     .await;
     assert!(matches!(
-        client.abandon_purchase(options()).await,
+        client.cancel_creation().await,
         Err(FaError::NoActiveFormation)
     ));
 }
@@ -8854,7 +9265,7 @@ async fn slow_payment_preparation_and_recovery_keep_the_exact_payment() {
             let reopened =
                 open_client_with_store(store, payments, mg_state, MgConfig::paid()).await;
             reopened
-                .resume()
+                .drive()
                 .await
                 .expect("recover signatures without another payment");
             bought(&reopened.status());
@@ -8943,7 +9354,7 @@ async fn selected_formation_persists_and_enforces_its_compatible_release() {
     let client = open_client(database, payments, mg_state.clone(), MgConfig::paid()).await;
 
     client
-        .buy_seats(
+        .create_and_buy(
             &compatible_selection_preview(),
             Some(payment_federation_id()),
             options(),
@@ -9004,7 +9415,7 @@ async fn selected_mg_minor_drift_requires_fresh_selection_before_payment() {
             })
         }
     ));
-    assert!(client.status() == FaStatus::default());
+    assert_needs_new_preview(&client);
     assert_eq!(payment_state.create_calls.load(Ordering::SeqCst), 0);
     assert!(
         mg_state
@@ -9037,7 +9448,7 @@ async fn assert_changed_live_price_requires_a_fresh_preview(live_price_msats: u6
         .insert(3, live_price_msats);
 
     let error = client
-        .buy_seats(&preview, Some(payment_federation_id()), options())
+        .create_and_buy(&preview, Some(payment_federation_id()), options())
         .await
         .expect_err("a changed live price invalidates the preview");
 
@@ -9055,7 +9466,7 @@ async fn assert_changed_live_price_requires_a_fresh_preview(live_price_msats: u6
         ),
         "{error:?}"
     );
-    assert_eq!(client.status(), FaStatus::default());
+    assert_needs_new_preview(&client);
     assert!(
         client
             .inner
@@ -9214,7 +9625,7 @@ async fn a_seat_saved_without_a_previewed_price_requires_a_fresh_preview() {
     client
         .inner
         .store
-        .initialize(
+        .initialize_for_test(
             TestIdentity::fa_id(),
             FormationId("unpinned-seat".to_owned()),
             intent().resolve(fedimintd_version().dkg_version()).unwrap(),
@@ -9224,7 +9635,7 @@ async fn a_seat_saved_without_a_previewed_price_requires_a_fresh_preview() {
         .await
         .unwrap();
 
-    let error = client.resume().await.unwrap_err();
+    let error = client.drive().await.unwrap_err();
 
     assert!(
         matches!(
@@ -9236,7 +9647,13 @@ async fn a_seat_saved_without_a_previewed_price_requires_a_fresh_preview() {
         ),
         "{error:?}"
     );
-    assert_eq!(client.status(), FaStatus::default());
+    // The seat was seeded under an open client, so its status never held the
+    // creation.
+    let status = client.status();
+    assert!(
+        status.purchase.is_none() && status.pool.is_empty() && status.reauthorization.is_some(),
+        "{status:?}"
+    );
     assert!(
         mg_state
             .quote_records
@@ -9267,7 +9684,7 @@ async fn reopen_preserves_the_selected_dkg_identity_and_accepts_patch_skew() {
     client
         .inner
         .store
-        .initialize(
+        .initialize_for_test(
             TestIdentity::fa_id(),
             FormationId("restart-range".to_owned()),
             resolved,
@@ -9296,7 +9713,7 @@ async fn reopen_preserves_the_selected_dkg_identity_and_accepts_patch_skew() {
         "0.12.3"
     );
     reopened
-        .resume()
+        .drive()
         .await
         .expect("reopen accepts patch skew inside the persisted DKG identity");
     bought(&reopened.status());
@@ -9561,7 +9978,7 @@ async fn exhausted_selected_connection_retry_is_typed_and_returns_idle() {
     assert_eq!(failure.operation, MgOperation::Connect);
     assert_eq!(failure.cause, MgCause::Transport);
     assert_eq!(error.code(), FaErrorCode::SelectionReauthorizationRequired);
-    assert_eq!(client.status(), FaStatus::default());
+    assert_needs_new_preview(&client);
     assert_eq!(payment_state.create_calls.load(Ordering::SeqCst), 0);
 }
 
@@ -9596,7 +10013,7 @@ async fn post_output_connection_failure_requires_exact_replay_not_replacement() 
     mg_state
         .connect_failures_remaining
         .store(1, Ordering::SeqCst);
-    let error = client.resume().await.unwrap_err();
+    let error = client.drive().await.unwrap_err();
 
     assert!(
         matches!(
@@ -9670,7 +10087,7 @@ async fn selected_free_refusal_survives_failed_abandon_and_replays_before_cleanu
 
     let reopened = open_client(database, payments, mg_state, config).await;
     let error = reopened
-        .resume()
+        .drive()
         .await
         .expect_err("replayed refusal returns fresh-selection guidance");
     assert!(matches!(
@@ -9684,7 +10101,7 @@ async fn selected_free_refusal_survives_failed_abandon_and_replays_before_cleanu
             })
         }
     ));
-    assert_eq!(reopened.status(), FaStatus::default());
+    assert_needs_new_preview(&reopened);
     assert_eq!(payment_state.create_calls.load(Ordering::SeqCst), 0);
 }
 
@@ -9700,7 +10117,7 @@ async fn post_output_paid_refusal_drops_only_that_seat_and_the_rest_complete() {
     let client = open_client(database.clone(), payments.clone(), mg_state.clone(), config).await;
 
     let error = client
-        .buy_seats(
+        .create_and_buy(
             &client.preview_at(&intent(), locators()),
             Some(payment_federation_id()),
             options(),
@@ -9760,7 +10177,7 @@ async fn post_output_paid_refusal_drops_only_that_seat_and_the_rest_complete() {
     assert!(recovery.payment_reservation_id.is_none());
 
     let presentations = mg_state.create_calls.load(Ordering::SeqCst);
-    client.resume().await.unwrap();
+    client.drive().await.unwrap();
     bought_without(&client.status(), &[dropped]);
     assert_eq!(
         payment_state.create_calls.load(Ordering::SeqCst),
@@ -9772,10 +10189,14 @@ async fn post_output_paid_refusal_drops_only_that_seat_and_the_rest_complete() {
         presentations,
         "completion presents no accepted or dropped seat again",
     );
-    assert!(matches!(
-        client.resume().await,
-        Err(FaError::NoActiveFormation)
-    ));
+    let FaState::Creating(creation) = client.state() else {
+        panic!("the creation still needs the dropped seat");
+    };
+    assert!(
+        matches!(creation.stage, CreationStage::NeedsSeats { count: 1, .. }),
+        "{:?}",
+        creation.stage
+    );
 }
 
 #[tokio::test]
@@ -9800,16 +10221,18 @@ async fn selected_payer_failure_returns_to_idle_and_live_approval_can_retry() {
             failure: None
         }
     ));
-    assert_eq!(client.status(), FaStatus::default());
+    assert_needs_new_preview(&client);
     assert_eq!(payment_state.create_calls.load(Ordering::SeqCst), 0);
 
     payment_state
         .insufficient_funds
         .store(false, Ordering::SeqCst);
+    // The creation stays, so the retry buys its seats with the same approval.
     client
-        .buy_and_form(intent(), &approval, payment_federation_id(), options())
+        .buy_seats(&approval, Some(payment_federation_id()))
         .await
         .unwrap();
+    client.drive_all_for_test(options()).await.unwrap();
     federation(&client.status());
 }
 
@@ -9868,7 +10291,7 @@ async fn selected_lost_reservation_result_reconstructs_the_same_wallet_journal()
 
     let reopened = open_client(database, payments, mg_state, MgConfig::paid()).await;
     reopened
-        .resume()
+        .drive()
         .await
         .expect("resume reconstructs the wallet capability under the same id");
     bought(&reopened.status());
@@ -9932,7 +10355,7 @@ async fn selected_same_id_reservation_binding_mismatch_never_returns_idle() {
     drop(client);
 
     let reopened = open_client(database, payments, mg_state, MgConfig::paid()).await;
-    let error = reopened.resume().await.unwrap_err();
+    let error = reopened.drive().await.unwrap_err();
     assert!(
         matches!(&error, FaError::Payment(message)
             if message.contains("different exact plan")),
@@ -9986,7 +10409,7 @@ async fn post_refresh_funding_failure_precedes_the_output_tombstone() {
     ));
     assert_eq!(payment_state.readiness_calls.load(Ordering::SeqCst), 1);
     assert_eq!(payment_state.create_calls.load(Ordering::SeqCst), 0);
-    assert_eq!(client.status(), FaStatus::default());
+    assert_needs_new_preview(&client);
 }
 
 #[tokio::test]
@@ -10005,7 +10428,7 @@ async fn crashed_selected_record_cannot_resume_after_its_preview_expires() {
     client
         .inner
         .store
-        .initialize(
+        .initialize_for_test(
             TestIdentity::fa_id(),
             FormationId("selected-expired-crash".to_owned()),
             resolved,
@@ -10019,7 +10442,7 @@ async fn crashed_selected_record_cannot_resume_after_its_preview_expires() {
     drop(client);
 
     let reopened = open_client(database, payments, mg_state, MgConfig::paid()).await;
-    let error = reopened.resume().await.unwrap_err();
+    let error = reopened.drive().await.unwrap_err();
     assert!(
         matches!(
             error,
@@ -10030,7 +10453,7 @@ async fn crashed_selected_record_cannot_resume_after_its_preview_expires() {
         ),
         "unexpected error: {error:?}"
     );
-    assert_eq!(reopened.status(), FaStatus::default());
+    assert_needs_new_preview(&reopened);
 }
 
 #[tokio::test]
@@ -10049,7 +10472,7 @@ async fn selected_reopen_under_changed_verifier_requires_fresh_pre_output_author
     client
         .inner
         .store
-        .initialize(
+        .initialize_for_test(
             TestIdentity::fa_id(),
             formation_id,
             intent().resolve(fedimintd_version().dkg_version()).unwrap(),
@@ -10070,7 +10493,7 @@ async fn selected_reopen_under_changed_verifier_requires_fresh_pre_output_author
         peer_badge_verifier(ManifoldEnvironment::Staging),
     )
     .await;
-    let error = reopened.resume().await.unwrap_err();
+    let error = reopened.drive().await.unwrap_err();
     assert!(matches!(
         error,
         FaError::SelectionReauthorizationRequired {
@@ -10099,7 +10522,7 @@ async fn selected_reopen_after_output_tombstone_uses_durable_admission_provenanc
     client
         .inner
         .store
-        .initialize(
+        .initialize_for_test(
             TestIdentity::fa_id(),
             formation_id.clone(),
             resolved.clone(),
@@ -10211,7 +10634,7 @@ async fn selected_reopen_after_output_tombstone_uses_durable_admission_provenanc
     )
     .await;
     reopened
-        .resume()
+        .drive()
         .await
         .expect("post-output recovery uses persisted admission facts");
     bought(&reopened.status());
@@ -10235,7 +10658,7 @@ async fn expired_selected_cleanup_reconstructs_and_releases_wallet_reservation_b
     client
         .inner
         .store
-        .initialize(
+        .initialize_for_test(
             TestIdentity::fa_id(),
             formation_id.clone(),
             resolved.clone(),
@@ -10319,7 +10742,7 @@ async fn expired_selected_cleanup_reconstructs_and_releases_wallet_reservation_b
     drop(client);
 
     let reopened = open_client(database, payments, mg_state, MgConfig::paid()).await;
-    let error = reopened.resume().await.unwrap_err();
+    let error = reopened.drive().await.unwrap_err();
     assert!(matches!(
         error,
         FaError::SelectionReauthorizationRequired {
@@ -10327,7 +10750,7 @@ async fn expired_selected_cleanup_reconstructs_and_releases_wallet_reservation_b
             failure: None
         }
     ));
-    assert_eq!(reopened.status(), FaStatus::default());
+    assert_needs_new_preview(&reopened);
     assert!(
         payment_state
             .reservations
@@ -10349,7 +10772,7 @@ async fn seed_lost_selected_reservation_result(
     client
         .inner
         .store
-        .initialize(
+        .initialize_for_test(
             TestIdentity::fa_id(),
             formation_id.clone(),
             resolved.clone(),
@@ -10459,7 +10882,7 @@ async fn lost_reserve_result_releases_after_preview_expiry_without_creating_a_jo
     drop(client);
 
     let reopened = open_client(database, payments, mg_state, MgConfig::paid()).await;
-    let error = reopened.resume().await.unwrap_err();
+    let error = reopened.drive().await.unwrap_err();
     assert!(matches!(
         error,
         FaError::SelectionReauthorizationRequired {
@@ -10467,7 +10890,7 @@ async fn lost_reserve_result_releases_after_preview_expiry_without_creating_a_jo
             failure: None
         }
     ));
-    assert_eq!(reopened.status(), FaStatus::default());
+    assert_needs_new_preview(&reopened);
     assert_eq!(payment_state.whole_release_calls.load(Ordering::SeqCst), 1);
     assert_eq!(payment_state.readiness_calls.load(Ordering::SeqCst), 0);
     assert!(
@@ -10509,7 +10932,7 @@ async fn lost_reserve_result_releases_after_verifier_drift_without_creating_a_jo
         peer_badge_verifier(ManifoldEnvironment::Staging),
     )
     .await;
-    let error = reopened.resume().await.unwrap_err();
+    let error = reopened.drive().await.unwrap_err();
     assert!(matches!(
         error,
         FaError::SelectionReauthorizationRequired {
@@ -10517,7 +10940,7 @@ async fn lost_reserve_result_releases_after_verifier_drift_without_creating_a_jo
             failure: None
         }
     ));
-    assert_eq!(reopened.status(), FaStatus::default());
+    assert_needs_new_preview(&reopened);
     assert_eq!(payment_state.whole_release_calls.load(Ordering::SeqCst), 1);
     assert_eq!(payment_state.readiness_calls.load(Ordering::SeqCst), 0);
     assert!(
@@ -10543,7 +10966,7 @@ async fn seed_selected_recorded_reservation(
     client
         .inner
         .store
-        .initialize(
+        .initialize_for_test(
             TestIdentity::fa_id(),
             formation_id.clone(),
             resolved.clone(),
@@ -10668,7 +11091,7 @@ async fn interrupted_pre_output_abandon_completes_after_wallet_release() {
     client.inner.store.fail_abandon_once();
 
     let error = client
-        .abandon_purchase(options())
+        .cancel_creation()
         .await
         .expect_err("the wipe is interrupted after the wallet release");
     assert!(
@@ -10705,7 +11128,7 @@ async fn interrupted_pre_output_abandon_completes_after_wallet_release() {
 
     let reopened = open_client(database, payments, mg_state, MgConfig::paid()).await;
     reopened
-        .abandon_purchase(options())
+        .cancel_creation()
         .await
         .expect("the abandon retry completes the interrupted wipe under the commitment");
     assert_eq!(reopened.status(), FaStatus::default());
@@ -10766,7 +11189,7 @@ async fn interrupted_pre_output_abandon_completes_on_resume() {
     .await;
     client.inner.store.fail_abandon_once();
     let error = client
-        .abandon_purchase(options())
+        .cancel_creation()
         .await
         .expect_err("the wipe is interrupted after the wallet release");
     assert!(
@@ -10790,10 +11213,11 @@ async fn interrupted_pre_output_abandon_completes_on_resume() {
 
     let reopened = open_client(database, payments, mg_state, MgConfig::paid()).await;
     reopened
-        .resume()
+        .drive()
         .await
         .expect("resume completes the interrupted abandon under the commitment");
-    assert_eq!(reopened.status(), FaStatus::default());
+    // The cancel returned an error, so the creation stays until it is retried.
+    assert_needs_every_seat(&reopened);
     assert!(
         reopened
             .inner
@@ -10860,7 +11284,7 @@ async fn absence_without_release_intent_still_never_returns_idle() {
     drop(client);
 
     let reopened = open_client(database, payments, mg_state, MgConfig::paid()).await;
-    let error = reopened.resume().await.unwrap_err();
+    let error = reopened.drive().await.unwrap_err();
     assert!(
         matches!(&error, FaError::Storage(message)
             if message.contains("durable FA reservation is absent from the payment wallet")),
@@ -10877,7 +11301,7 @@ async fn absence_without_release_intent_still_never_returns_idle() {
         "uncommitted wallet absence must retain the formation",
     );
 
-    let error = reopened.abandon_purchase(options()).await.unwrap_err();
+    let error = reopened.cancel_creation().await.unwrap_err();
     assert!(
         matches!(&error, FaError::Storage(message)
             if message.contains("durable FA reservation is absent from the payment wallet")),
@@ -10927,7 +11351,7 @@ async fn release_intent_is_superseded_by_reservation_adoption() {
     // The commitment becomes durable, but the wallet release itself fails:
     // the journal provably still exists.
     let error = client
-        .abandon_purchase(options())
+        .cancel_creation()
         .await
         .expect_err("the wallet refuses the committed release");
     assert!(
@@ -10967,7 +11391,7 @@ async fn release_intent_is_superseded_by_reservation_adoption() {
         .store(1, Ordering::SeqCst);
     let funding_started = payment_state.funding_started.notified();
     let running = client.clone();
-    let operation = tokio::spawn(async move { running.resume().await });
+    let operation = tokio::spawn(async move { running.drive().await });
     tokio::time::timeout(Duration::from_secs(5), funding_started)
         .await
         .expect("resume adopts the live reservation and continues into funding");
@@ -11002,7 +11426,7 @@ async fn release_intent_is_superseded_by_reservation_adoption() {
         .remove(reservation_id.as_str())
         .expect("the adopted journal is present before the loss");
     let reopened = open_client(database, payments, mg_state, MgConfig::paid()).await;
-    let error = reopened.resume().await.unwrap_err();
+    let error = reopened.drive().await.unwrap_err();
     assert!(
         matches!(&error, FaError::Storage(message)
             if message.contains("durable FA reservation is absent from the payment wallet")),
@@ -11156,7 +11580,7 @@ async fn selected_mg_unavailability_requires_a_fresh_set_and_returns_idle() {
             })
         }
     ));
-    assert_eq!(client.status(), FaStatus::default());
+    assert_needs_new_preview(&client);
     assert_eq!(payment_state.create_calls.load(Ordering::SeqCst), 0);
     assert_eq!(mg_state.quote_calls.load(Ordering::SeqCst), 0);
 }
@@ -11197,7 +11621,7 @@ async fn selected_quote_capacity_race_requires_a_fresh_set_and_returns_idle() {
             })
         }
     ));
-    assert_eq!(client.status(), FaStatus::default());
+    assert_needs_new_preview(&client);
     assert_eq!(payment_state.create_calls.load(Ordering::SeqCst), 0);
     assert_eq!(mg_state.quote_calls.load(Ordering::SeqCst), 7);
 }
@@ -11252,7 +11676,7 @@ async fn self_authorization_survives_reopen_and_resume() {
     drop(client);
 
     let reopened = open_client(database, payments, mg_state, MgConfig::paid()).await;
-    reopened.resume().await.unwrap();
+    reopened.drive().await.unwrap();
     let status = reopened.status();
     bought(&status);
 }
@@ -12337,7 +12761,7 @@ async fn liquidity_reopen_resumes_the_exact_persisted_commitment() {
     )
     .await;
     reopened
-        .resume()
+        .drive()
         .await
         .expect("reconcile the formed federation after reopen");
     assert_eq!(
@@ -12716,7 +13140,7 @@ async fn formation_acquisition_reconnect_logs_mg_identity() {
     let options = formation_log_options(Duration::from_millis(20));
     assert!(matches!(
         client
-            .resume_with_options(options)
+            .drive_with_options(options)
             .with_subscriber(capture.subscriber())
             .await
             .as_ref(),
@@ -12873,7 +13297,7 @@ async fn selected_connect_timeout_exhaustion_retains_blame_and_returns_idle() {
         failure: Some(MgFailure { mg, operation: MgOperation::Connect, cause: MgCause::Timeout }),
     } if mg == manager_key(0).x_only_public_key().0));
     assert!(state.connect_calls.load(Ordering::SeqCst) > usize::from(MIN_FEDERATION_SIZE));
-    assert_eq!(client.status(), FaStatus::default());
+    assert_needs_new_preview(&client);
     assert_eq!(payment_state.create_calls.load(Ordering::SeqCst), 0);
 }
 
@@ -12943,7 +13367,7 @@ async fn malformed_selected_quote_returns_to_selection_with_blame() {
         reason: SelectionReauthorizationReason::SelectedMgUnavailable,
         failure: Some(MgFailure { mg, operation: MgOperation::GetQuote, cause: MgCause::InvalidResponse }),
     } if mg == manager_key(0).x_only_public_key().0));
-    assert_eq!(client.status(), FaStatus::default());
+    assert_needs_new_preview(&client);
     assert_eq!(payment_state.create_calls.load(Ordering::SeqCst), 0);
     assert_eq!(state.create_calls.load(Ordering::SeqCst), 0);
 }

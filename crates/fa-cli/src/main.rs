@@ -6,15 +6,15 @@ use std::time::Duration;
 use anyhow::{Context as _, bail, ensure};
 use clap::{Args as ClapArgs, Parser, Subcommand};
 use fa_client::{
-    FaClient, FaFeeAccountError, FaFeeAccountProvider, FaIdentity, FaPaymentError, FaPayments,
-    FederationConsensusError, FederationConsensusReader, FederationConsensusSnapshot,
-    FedimintFederationId, FedimintdVersionRange, FormationRunOptions, GuardianFeePpm,
-    LiquidityOperationId, LiquidityProviderConnector, LiquidityProviderConnectorError,
-    LiquidityRequestIntent, MaintenanceRunOptions, ManifoldGuardianCallError,
-    ManifoldGuardianConnector, ManifoldGuardianConnectorError, MgCandidateRequirements,
-    MgDiscoveryOptions, MgRegistryQuery, MgSelectionRequest, PaymentReservationRecovery,
-    PlanPreference, PreparedSeatPayment, SeatPaymentRecovery, SeatPaymentRequirement,
-    SettledSeatRefund,
+    CreationStage, FaClient, FaFeeAccountError, FaFeeAccountProvider, FaIdentity, FaPaymentError,
+    FaPayments, FaState, FederationConsensusError, FederationConsensusReader,
+    FederationConsensusSnapshot, FedimintFederationId, FedimintdVersionRange, FormationRunOptions,
+    GuardianFeePpm, LiquidityOperationId, LiquidityProviderConnector,
+    LiquidityProviderConnectorError, LiquidityRequestIntent, MaintenanceRunOptions,
+    ManifoldGuardianCallError, ManifoldGuardianConnector, ManifoldGuardianConnectorError,
+    MgCandidateRequirements, MgDiscoveryOptions, MgRegistryQuery, MgSelectionRequest,
+    PaymentReservationRecovery, PlanPreference, PreparedSeatPayment, SeatPaymentRecovery,
+    SeatPaymentRequirement, SettledSeatRefund,
 };
 use fedi_decentralized_domain::BitcoinNetwork;
 use fedi_decentralized_manifold_environment::{ManifoldEnvironment, ManifoldEnvironmentProfile};
@@ -1021,7 +1021,7 @@ async fn run(
             .await?;
             let fa_pubkey = identity.public_key().map_err(anyhow::Error::msg)?;
             if args.json {
-                output.init(fa_pubkey, &client.status())?;
+                output.init(fa_pubkey, &client.state())?;
             } else {
                 println!("initialized FA {}", hex::encode(fa_pubkey.0.serialize()));
             }
@@ -1073,43 +1073,26 @@ async fn run(
                 fa_fee_account_provider,
             )
             .await?;
-            let mut observer = client.observe();
             let result = async {
                 client
-                    .buy_seats(&preview, payment_federation_id, options)
-                    .await?;
-                let status = client.status();
-                // A purchase still parked for payment forms later.
-                if status.purchase.is_some() {
-                    return Ok(());
-                }
-                let seats = status
-                    .pool
-                    .iter()
-                    .map(|seat| seat.seat_id.clone())
-                    .collect();
-                client
-                    .form_federation(
+                    .create_federation(
                         intent.federation_name.clone(),
-                        seats,
                         completion_callback,
-                        options,
+                        &preview,
+                        payment_federation_id,
                     )
-                    .await
-                    .map_err(anyhow::Error::from)
+                    .await?;
+                run_until_settled(&client, options).await
             }
             .await;
-            if observer.has_changed().unwrap_or(false) {
-                observer.borrow_and_update();
-            }
-            output.snapshot(&observer.borrow(), format)?;
+            output.snapshot(&client.state(), format)?;
             endpoint.close().await;
             result?;
         }
         Command::Resume { args: resume, .. } => {
             let (client, endpoint) = open_existing(&resume, wallet_secret).await?;
-            let result = client.resume_with_options(resume_options).await;
-            output.snapshot(&client.status(), format)?;
+            let result = run_until_settled(&client, resume_options).await;
+            output.snapshot(&client.state(), format)?;
             endpoint.close().await;
             result?;
         }
@@ -1152,7 +1135,7 @@ async fn run(
                 profile.clone(),
             )
             .await?;
-            output.snapshot(&client.status(), format)?;
+            output.snapshot(&client.state(), format)?;
         }
         Command::Discover(discover) => {
             let requirements = MgCandidateRequirements {
@@ -1214,22 +1197,22 @@ async fn run(
                     field,
                     value,
                     options,
-                } => reconcile_then_run_post_formation(
-                    client.resume(),
-                    client.update_federation_metadata(update, options),
-                )
+                } => async {
+                    run_until_settled(&client, FormationRunOptions::default()).await?;
+                    Ok::<_, anyhow::Error>(
+                        client.update_federation_metadata(update, options).await?,
+                    )
+                }
                 .await
                 .context("reconcile and update federation metadata")
                 .and_then(|()| output.metadata_consensus(&field, &value, format)),
-                MaintenancePreflight::GuardianFees { send_ppm, options } => {
-                    reconcile_then_run_post_formation(
-                        client.resume(),
-                        client.propose_guardian_fees(send_ppm, options),
-                    )
-                    .await
-                    .context("reconcile and configure guardian fees")
-                    .and_then(|()| output.guardian_fee_consensus(send_ppm.value(), format))
+                MaintenancePreflight::GuardianFees { send_ppm, options } => async {
+                    run_until_settled(&client, FormationRunOptions::default()).await?;
+                    Ok::<_, anyhow::Error>(client.propose_guardian_fees(send_ppm, options).await?)
                 }
+                .await
+                .context("reconcile and configure guardian fees")
+                .and_then(|()| output.guardian_fee_consensus(send_ppm.value(), format)),
             };
             endpoint.close().await;
             result?;
@@ -1425,17 +1408,14 @@ async fn run(
                 }
                 .provider_pubkey()
                 .clone();
-                let formation_id = client
-                    .status()
-                    .federation
-                    .context("liquidity requires a formed federation")?
-                    .formation_id;
+                let FaState::Active(federation) = client.state() else {
+                    bail!("liquidity requires a formed federation");
+                };
                 let connector = CliLiquidityConnector::new(endpoint.clone());
-                let snapshot = reconcile_then_run_post_formation(
-                    client.resume(),
-                    client.start_liquidity(&formation_id, &provider, intent, &connector),
-                )
-                .await?;
+                run_until_settled(&client, FormationRunOptions::default()).await?;
+                let snapshot = client
+                    .start_liquidity(&federation.formation_id, &provider, intent, &connector)
+                    .await?;
                 output.liquidity_snapshot(&snapshot, format)?;
                 endpoint.close().await;
             }
@@ -1459,11 +1439,8 @@ async fn run(
                 let operation_id = LiquidityOperationId(resume.operation_id);
                 client.liquidity_status(&operation_id).await?;
                 let connector = CliLiquidityConnector::new(endpoint.clone());
-                let snapshot = reconcile_then_run_post_formation(
-                    client.resume(),
-                    client.resume_liquidity(&operation_id, &connector),
-                )
-                .await?;
+                run_until_settled(&client, FormationRunOptions::default()).await?;
+                let snapshot = client.resume_liquidity(&operation_id, &connector).await?;
                 output.liquidity_snapshot(&snapshot, format)?;
                 endpoint.close().await;
             }
@@ -1511,12 +1488,70 @@ async fn run(
     Ok(())
 }
 
-async fn reconcile_then_run_post_formation<T, E>(
-    reconcile: impl std::future::Future<Output = Result<(), E>>,
-    operation: impl std::future::Future<Output = Result<T, E>>,
-) -> Result<T, E> {
-    reconcile.await?;
-    operation.await
+/// Run the FA until it needs the user, has failed, or has nothing to do.
+///
+/// A reopened federation is unsynced, so this also verifies it against
+/// consensus before post-formation work.
+async fn run_until_settled<I, P, N, F, C>(
+    client: &FaClient<I, P, N, F, C>,
+    options: FormationRunOptions,
+) -> anyhow::Result<()>
+where
+    I: FaIdentity,
+    P: FaPayments,
+    N: FaNostrClient,
+    F: ManifoldGuardianConnector,
+    C: FederationConsensusReader,
+{
+    let mut state = client.observe();
+    let settled = async {
+        loop {
+            if let Some(result) = settled(&state.borrow_and_update()) {
+                return result;
+            }
+            state.changed().await?;
+        }
+    };
+    tokio::select! {
+        () = client.run(options) => unreachable!("the FA run loop does not return"),
+        result = settled => result,
+    }
+}
+
+/// Whether one FA state ends a CLI run, and with which outcome.
+fn settled(state: &FaState) -> Option<anyhow::Result<()>> {
+    let last_error = match state {
+        FaState::Idle => return Some(Ok(())),
+        FaState::Restoring(recovery) => recovery.last_error,
+        FaState::Creating(creation) => match &creation.stage {
+            CreationStage::NeedsSeats {
+                reauthorization: Some(reason),
+                ..
+            } => {
+                return Some(Err(anyhow::anyhow!(
+                    "the seat purchase ended ({reason:?}); the creation needs a new preview"
+                )));
+            }
+            // A full pool forms next.
+            CreationStage::NeedsSeats { count: 0, .. } => None,
+            CreationStage::NeedsSeats { count, .. } => {
+                return Some(Err(anyhow::anyhow!(
+                    "the creation needs {count} more seats"
+                )));
+            }
+            CreationStage::Buying(purchase) => purchase.last_error,
+            CreationStage::Forming(formation) => formation.last_error,
+        },
+        FaState::Active(federation) => {
+            if federation.last_error.is_none()
+                && federation.freshness == fa_client::FormationFreshness::Fresh
+            {
+                return Some(Ok(()));
+            }
+            federation.last_error
+        }
+    };
+    last_error.map(|error| Err(anyhow::anyhow!("FA run failed: {error:?}")))
 }
 
 fn command_requires_peer_badge_verifier(command: &Command) -> bool {
@@ -3282,49 +3317,6 @@ mod tests {
             panic!("expected guardian-fee preflight")
         };
         assert_eq!(*send_ppm, GuardianFeePpm::MANIFOLD_DEFAULT);
-    }
-
-    #[tokio::test]
-    async fn post_formation_operation_is_polled_only_after_successful_reconciliation() {
-        // CLI liquidity and maintenance call sites use this helper after
-        // opening persisted Formed state, which fa-client restores unsynced.
-        let fresh = std::cell::Cell::new(false);
-        let operation_polled = std::cell::Cell::new(false);
-        let outcome = reconcile_then_run_post_formation(
-            async {
-                assert!(!fresh.get(), "the reopened formation starts unsynced");
-                fresh.set(true);
-                Ok::<(), &'static str>(())
-            },
-            async {
-                operation_polled.set(true);
-                if fresh.get() {
-                    Ok("liquidity operation ran")
-                } else {
-                    Err("formation is unsynced")
-                }
-            },
-        )
-        .await;
-
-        assert_eq!(outcome, Ok("liquidity operation ran"));
-        assert!(operation_polled.get());
-
-        operation_polled.set(false);
-        let outcome = reconcile_then_run_post_formation(
-            async { Err::<(), &'static str>("reconciliation failed") },
-            async {
-                operation_polled.set(true);
-                Ok("liquidity operation ran")
-            },
-        )
-        .await;
-
-        assert_eq!(outcome, Err("reconciliation failed"));
-        assert!(
-            !operation_polled.get(),
-            "a failed reconciliation must not start a post-formation operation"
-        );
     }
 
     struct ChunkedReader {

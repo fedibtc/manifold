@@ -72,7 +72,7 @@ where
         &self,
         options: crate::FormationRunOptions,
     ) -> FaResult<Vec<AdmittedSetupPaymentFederation>> {
-        let _run = self.inner.run_guard.try_lock().map_err(|_| FaError::Busy)?;
+        let _run = self.claim_run_guard().await?;
         options.validate_for_start(&self.inner.store)?;
         let (deadline, lease) = start_driver_run(&self.inner.store, options).await?;
         let run = DriverRun::new(options, deadline, &lease);

@@ -27,7 +27,7 @@ async fn durable_reservation_suppresses_quote_refresh_and_pins_exact_set() {
     *mg_state.changed_quote_index.lock().expect("test lock") = Some(0);
 
     client
-        .resume_with_options(long_request_options())
+        .drive_with_options(long_request_options())
         .await
         .unwrap();
 
@@ -72,7 +72,7 @@ async fn terminal_clear_failure_preserves_quote_and_returns_storage_error() {
     client.inner.store.fail_quote_clear(0);
 
     assert!(matches!(
-        client.resume_with_options(options()).await,
+        client.drive_with_options(options()).await,
         Err(FaError::Storage(_))
     ));
     let recovery = active_recovery(
@@ -121,7 +121,7 @@ async fn multi_terminal_release_failure_preserves_the_complete_aggregate_for_reo
         .insert(terminal_quotes[1]);
 
     assert!(matches!(
-        client.resume_with_options(options()).await,
+        client.drive_with_options(options()).await,
         Err(FaError::Payment(_))
     ));
     let interrupted = active_recovery(
@@ -158,7 +158,7 @@ async fn multi_terminal_release_failure_preserves_the_complete_aggregate_for_reo
     );
 
     let reopened = open_client(database, payments, mg_state, config).await;
-    assert!(reopened.resume().await.is_err());
+    assert!(reopened.drive().await.is_err());
     let recovered = active_recovery(
         reopened
             .inner
@@ -250,7 +250,7 @@ async fn mixed_prepared_and_rejected_recovery_waits_for_concurrent_replay_barrie
 
     let running = client.clone();
     let operation =
-        tokio::spawn(async move { running.resume_with_options(long_request_options()).await });
+        tokio::spawn(async move { running.drive_with_options(long_request_options()).await });
     wait_for_count(
         &payment_state.recover_calls,
         usize::from(MIN_FEDERATION_SIZE),
@@ -284,7 +284,7 @@ async fn mixed_prepared_and_rejected_recovery_waits_for_concurrent_replay_barrie
     mg_state.release_accepts.store(true, Ordering::SeqCst);
     mg_state.create_release.notify_waiters();
     let reopened = open_client(database, payments, mg_state, config).await;
-    assert!(matches!(reopened.resume().await, Err(FaError::Payment(_))));
+    assert!(matches!(reopened.drive().await, Err(FaError::Payment(_))));
     let recovered = active_recovery(
         reopened
             .inner
@@ -364,7 +364,7 @@ async fn transient_sibling_failure_preserves_rejected_quote_recovery_entitlement
         let funding_calls = payment_state.create_calls.load(Ordering::SeqCst);
         let payable_calls = payment_state.payable_calls.load(Ordering::SeqCst);
 
-        assert!(client.resume_with_options(options()).await.is_err());
+        assert!(client.drive_with_options(options()).await.is_err());
         let interrupted = active_recovery(
             client
                 .inner
@@ -406,7 +406,7 @@ async fn transient_sibling_failure_preserves_rejected_quote_recovery_entitlement
             .expect("test lock")
             .clear();
         let reopened = open_client(database, payments, mg_state.clone(), config).await;
-        assert!(matches!(reopened.resume().await, Err(FaError::Payment(_))));
+        assert!(matches!(reopened.drive().await, Err(FaError::Payment(_))));
         assert_eq!(
             payment_state.create_calls.load(Ordering::SeqCst),
             funding_calls
@@ -486,7 +486,7 @@ async fn fund_new_failure_preserves_signed_refusal_quote_and_authorization_for_r
             FundNewFailure::Checkpoint => client.inner.store.fail_seat_checkpoint(0),
         }
 
-        assert!(client.resume_with_options(options()).await.is_err());
+        assert!(client.drive_with_options(options()).await.is_err());
         let interrupted = active_recovery(
             client
                 .inner
@@ -576,7 +576,7 @@ async fn fund_new_failure_preserves_signed_refusal_quote_and_authorization_for_r
         )
         .await;
         assert!(matches!(
-            reopened.resume().await,
+            reopened.drive().await,
             Err(FaError::SelectionReauthorizationRequired {
                 reason: SelectionReauthorizationReason::SelectedPayerUnavailable,
                 failure: None,
@@ -612,7 +612,7 @@ async fn fund_new_failure_preserves_signed_refusal_quote_and_authorization_for_r
         *registry.candidates.lock().expect("test lock") =
             vec![setup_payment_event(now + 2, &[PAYMENT_INVITE])];
         assert!(matches!(
-            reopened.resume().await.as_ref(),
+            reopened.drive().await.as_ref(),
             Err(FaError::Mg(MgFailure {
                 cause: MgCause::OfferChanged,
                 ..
@@ -673,7 +673,7 @@ async fn mixed_prepared_and_signed_refusal_survives_interrupted_replay_wave() {
         .extend(quote_ids.iter().copied());
     mg_state.block_accepts.store(true, Ordering::SeqCst);
 
-    let mut operation = Box::pin(client.resume_with_options(long_request_options()));
+    let mut operation = Box::pin(client.drive_with_options(long_request_options()));
     assert!(futures::poll!(&mut operation).is_pending());
     assert_eq!(
         mg_state.create_calls.load(Ordering::SeqCst),
@@ -706,7 +706,7 @@ async fn mixed_prepared_and_signed_refusal_survives_interrupted_replay_wave() {
     let reopened = open_client(database, payments, mg_state, config).await;
     let resume = tokio::time::timeout(Duration::from_secs(2), async {
         loop {
-            match reopened.resume().await {
+            match reopened.drive().await {
                 Err(FaError::Busy) => tokio::task::yield_now().await,
                 result => break result,
             }
@@ -789,7 +789,7 @@ async fn funded_recovery_ignores_removed_or_empty_current_policy() {
         let create_started = mg_state.create_started.notified();
         let running = client.clone();
         let operation =
-            tokio::spawn(async move { running.resume_with_options(long_request_options()).await });
+            tokio::spawn(async move { running.drive_with_options(long_request_options()).await });
         create_started.await;
         operation.abort();
         assert!(operation.await.unwrap_err().is_cancelled());
@@ -802,7 +802,7 @@ async fn funded_recovery_ignores_removed_or_empty_current_policy() {
 
         let reopened =
             open_client_with_registry(database, payments, mg_state, config, registry).await;
-        reopened.resume().await.unwrap();
+        reopened.drive().await.unwrap();
         bought(&reopened.status());
         assert_eq!(
             payment_state.payable_calls.load(Ordering::SeqCst),
@@ -849,7 +849,7 @@ async fn mixed_funded_recovery_replays_before_empty_policy_stops_unfunded_seats(
     let reopened =
         open_client_with_registry(database, payments, mg_state.clone(), config, registry).await;
     assert!(matches!(
-        reopened.resume().await,
+        reopened.drive().await,
         Err(FaError::SelectionReauthorizationRequired {
             reason: SelectionReauthorizationReason::SelectedPayerUnavailable,
             failure: None,
@@ -908,7 +908,7 @@ async fn terminal_paid_member_waits_for_held_siblings_before_clearing_aggregate(
 
     let reopened = open_client(database, payments, mg_state.clone(), config).await;
     let error = reopened
-        .resume()
+        .drive()
         .await
         .expect_err("the exact terminal member leaves the purchase");
     assert!(matches!(error, FaError::Payment(_)), "{error:?}");
@@ -952,7 +952,7 @@ async fn terminal_paid_member_waits_for_held_siblings_before_clearing_aggregate(
 
     let presentations = mg_state.create_calls.load(Ordering::SeqCst);
 
-    reopened.resume().await.unwrap();
+    reopened.drive().await.unwrap();
     bought_without(&reopened.status(), &[dropped]);
     assert_eq!(
         payment_state.funded_quotes.lock().expect("test lock").len(),
@@ -1011,7 +1011,7 @@ async fn post_output_free_refusal_drops_only_that_seat_and_the_rest_complete() {
 
     let reopened = open_client(database, payments, mg_state.clone(), config).await;
     let presentations = mg_state.create_calls.load(Ordering::SeqCst);
-    reopened.resume().await.unwrap();
+    reopened.drive().await.unwrap();
     bought_without(&reopened.status(), &[u16::try_from(free).unwrap()]);
     assert_eq!(
         payment_state.create_calls.load(Ordering::SeqCst),

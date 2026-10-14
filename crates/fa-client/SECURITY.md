@@ -43,8 +43,8 @@ generating outputs or creating recovery state. The MG's availability response
 never establishes federation-specific payment policy for FA selection.
 
 Validate the complete formation intent before durable or remote side effects.
-`form_federation` resolves an absent display name exactly once, validates it,
-and persists it before DKG.
+`create_federation` resolves an absent display name exactly once, validates
+it, and persists it before any purchase or DKG.
 Unsupported future fields must be rejected or absent from the public intent,
 never silently ignored.
 
@@ -254,7 +254,7 @@ The following ordering is part of the monetary safety boundary:
 9. present and durably checkpoint that completed payment, using its exact quote
    and evidence in `CreateSeat`, and atomically persist the MG-signed seat id
    and complete guardian-fee account before polling the next member's wallet
-   future; initial formation and resume of `NotStarted` rows both use this
+   future; the first run and a restarted run of `NotStarted` rows both use this
    same ordered path; and
 10. persist later DKG facts with narrow row updates.
 
@@ -264,7 +264,7 @@ balance check failed before the wallet created or observed a same-id journal.
 A binding mismatch, wallet-storage failure, FA checkpoint failure, or lost or
 ambiguous post-journal response has no such cleanup proof: it remains a payment
 error, retains the formation, and recover-probes the deterministic reservation
-id before freshness or policy on resume. The probe may report exact existing
+id before freshness or policy on restart. The probe may report exact existing
 or authoritative absence without creating a journal; mismatch, storage error,
 or ambiguity fails closed. Never infer journal absence from an error message.
 This pre-policy recovery ordering applies equally to a post-output
@@ -280,11 +280,11 @@ combinations that bind an admission to another
 quote/effect, authorize paid output before the aggregate tombstone, or record an
 accepted selected seat without pre-effect authorization fail closed.
 
-Commercial authorization is not the money boundary. `abandon_purchase` may
+Commercial authorization is not the money boundary. `cancel_creation` may
 remove the purchase while `payment_outputs_started` is false and DKG is not complete;
 selected-flow reauthorization errors must do so before returning.
 If a crash interrupts that cleanup, the durable selected discriminator and
-preview deadline prevent legacy authorization reuse on resume.
+preview deadline prevent legacy authorization reuse on restart.
 Once the output tombstone is true,
 it survives authorization and quote replacement and abandon is forbidden until
 a refund-safe teardown exists
@@ -397,7 +397,7 @@ remain unchanged; liquidity and gateway verification use the read invite.
 
 Dropping a driving future cannot undo a wallet transaction or remote request
 already accepted. Every await between a durable write and its response is a
-possible interruption point. Reopen and `resume` must be sufficient after any
+possible interruption point. Reopen and `run` must be sufficient after any
 such interruption.
 
 Liquidity recovery revalidates the formed federation and exact request against

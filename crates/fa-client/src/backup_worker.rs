@@ -13,8 +13,9 @@ use tokio::sync::{OwnedMutexGuard, watch};
 
 use crate::backup::{EncryptedFaBackup, FA_BACKUP_D_TAG, FA_BACKUP_EVENT_KIND, FaBackupKeys};
 use crate::{
-    FaError, FaId, FaResult, FaStatus, RecoveryCheck,
+    FaError, FaId, FaResult, RecoveryCheck,
     db::{BACKUP_REFRESH_INTERVAL_SECS, BackupRelayConfirmation, FaStore, RecoveryCompletedKey},
+    state::FaStatus,
 };
 
 const SCAN_INTERVAL: Duration = Duration::from_secs(30);
@@ -187,7 +188,7 @@ pub(crate) struct RecoveryWorker {
     pub(crate) root: DerivableSecret,
     pub(crate) fa_id: FaId,
     pub(crate) profile: ManifoldEnvironmentProfile,
-    pub(crate) progress: watch::Sender<FaStatus>,
+    pub(crate) progress: Arc<crate::run::Progress>,
 }
 
 pub(crate) fn spawn_recovery(
@@ -228,12 +229,12 @@ pub(crate) fn spawn_recovery(
                     // The first ready status must be published only after the
                     // mutation guard is released.
                     drop(guard);
-                    progress.send_replace(status.unwrap_or_default());
+                    progress.replace(status.unwrap_or_default());
                     break;
                 }
                 Err(error) => {
                     tracing::warn!(error_code = ?error.code(), "FA backup lookup will retry");
-                    progress.send_replace(FaStatus {
+                    progress.replace(FaStatus {
                         recovery: Some(RecoveryCheck {
                             last_error: Some(error.code()),
                         }),
@@ -245,7 +246,7 @@ pub(crate) fn spawn_recovery(
                         delay.saturating_mul(2).min(Duration::from_secs(5 * 60))
                     };
                     sleep(delay).await;
-                    progress.send_replace(FaStatus {
+                    progress.replace(FaStatus {
                         recovery: Some(RecoveryCheck { last_error: None }),
                         ..FaStatus::default()
                     });

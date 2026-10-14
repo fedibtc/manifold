@@ -93,7 +93,7 @@ presentation, or output effect.
 
 Before wallet output generation, stale or drifted terms, a changed price, payer failure,
 or selected-seat unavailability return a typed reauthorization error and
-durable `Idle`. If a crash interrupts cleanup, resume recognizes the explicit
+a request for a new preview. If a crash interrupts cleanup, the run loop recognizes the explicit
 selected-flow record, exposes no second-authorization action before outputs,
 and either
 continues a still-live preview or completes cleanup. The same still-live preview may retry another payer.
@@ -110,16 +110,16 @@ replay rather than suggesting replacement; recovery continues after crash.
 
 The bridge exposes four concepts:
 
-- current FA service health plus the typed `FaStatus`;
+- current FA service health plus the typed `FaState`;
 - an uncached verified preview command returning display DTOs plus an opaque
   five-minute handle;
-- authenticated admitted payer IDs (including zero-balance wallets), a
-  Pay-and-create command with an explicit payer, the no-payer all-zero
-  bootstrap command; and
+- authenticated admitted payer IDs (including zero-balance wallets), and a
+  `create_federation` command with an explicit payer or no payer for the
+  all-zero bootstrap; and
 - a stream of typed status snapshots.
 
-`FaStatus::Idle` means no active formation. An active formation always carries
-its id and fully resolved persisted intent. The front end does not reconstruct
+`FaState::Idle` means no creation and no federation. A creation always carries
+its name, size, pool, and stage. The front end does not reconstruct
 these values from nullable fields.
 
 The active phase is one of `Preparing`,
@@ -174,18 +174,20 @@ operation.
 
 ## Progress and interruption
 
-The status stream is independent of the command future driving the formation.
-The UI subscribes when it needs live updates and can always query current
-status after reconnecting. Dropping an app/RPC future stops local work but
-cannot roll back a wallet transaction or remote request that already completed.
-The next run resumes from durable state.
+The bridge spawns `FaClient::run` once after open. Commands save their input
+and return. The state stream is independent of that loop. The UI subscribes
+when it needs live updates and can always query current state after
+reconnecting. Stopping the loop stops local work but cannot roll back a wallet
+transaction or remote request that already completed. The next run continues
+from durable state.
 
 If a selected operation returns a reauthorization error before outputs, the
 driver reconstructs and explicitly releases any wallet reservation before
-wiping FA state to `Idle`; release ambiguity retains the formation for retry.
+removing the purchase; the state then asks for a new preview of the missing
+seats. Release ambiguity retains the purchase for retry.
 Only after the release-and-wipe transition succeeds does relaunch route to
-preview/payer choice. If `payment_outputs_started` is true, resume is mandatory
-and uses exact quote-bound wallet recovery.
+preview/payer choice. If `payment_outputs_started` is true, the run loop must
+continue the purchase and uses exact quote-bound wallet recovery.
 
 Reloaded service-derived state is marked unsynced until reconciliation. An
 already formed federation is verified through fresh guardian consensus; if its
@@ -205,7 +207,7 @@ The app integration does not duplicate protocol E2E coverage. Manifold's
 `defe` suite covers a seven-MG free formation and a separate seven-MG real
 payment formation. Focused Manifold wallet tests cover recovery and refund
 replay. Fedi-side tests focus on the consumer boundary,
-including backgrounding or cancellation followed by status reload and resume.
+including backgrounding or cancellation followed by state reload and a new run.
 
 ## Deferred product work
 

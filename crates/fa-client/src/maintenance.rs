@@ -191,7 +191,7 @@ where
         gateway_api: GatewayApiUrl,
         options: MaintenanceRunOptions,
     ) -> FaResult<()> {
-        let _guard = self.inner.run_guard.try_lock().map_err(|_| FaError::Busy)?;
+        let _guard = self.claim_run_guard().await?;
         let options = options.0;
         options.validate_for_start(&self.inner.store)?;
         let fa_id = self.fa_id()?;
@@ -380,7 +380,7 @@ where
         update: FederationMetadataUpdate,
         options: MaintenanceRunOptions,
     ) -> FaResult<()> {
-        let _guard = self.inner.run_guard.try_lock().map_err(|_| FaError::Busy)?;
+        let _guard = self.claim_run_guard().await?;
         let options = options.0;
         options.validate_for_start(&self.inner.store)?;
         let fa_id = self.fa_id()?;
@@ -548,11 +548,9 @@ where
         fa_id: FaId,
     ) -> FaResult<crate::formation::PostFormedAuthority> {
         if let Some(recovery) = self.inner.store.load_formation(fa_id).await? {
-            if !recovery.formed {
-                return Err(FaError::MaintenanceWrongState {
-                    phase: Some(recovery.snapshot.phase),
-                });
-            }
+            return Err(FaError::MaintenanceWrongState {
+                phase: Some(recovery.snapshot.phase),
+            });
         } else if self.inner.store.load_federation(fa_id).await?.is_none() {
             return Err(FaError::NoActiveFormation);
         } else if !self

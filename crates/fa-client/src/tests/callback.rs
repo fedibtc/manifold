@@ -41,15 +41,27 @@ async fn one_durable_completion_callback_is_sent_to_every_guardian() {
         MgConfig::given_away(),
     )
     .await;
-    let recovery = reopened
-        .inner
-        .store
-        .load_formation(TestIdentity::fa_id())
-        .await
-        .unwrap()
-        .expect("formed recovery remains available");
-    assert!(recovery.formed);
-    assert!(recovery.dkg_completion_callback.is_none());
+    assert_callback_dropped_with_formation(&reopened).await;
+}
+
+/// The formed federation keeps no record that held the callback.
+async fn assert_callback_dropped_with_formation(client: &TestClient) {
+    let store = &client.inner.store;
+    assert!(federation(&client.status()).federation_name.is_some());
+    assert!(
+        store
+            .load_formation(TestIdentity::fa_id())
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        store
+            .load_creation(TestIdentity::fa_id())
+            .await
+            .unwrap()
+            .is_none()
+    );
 }
 
 #[tokio::test]
@@ -90,15 +102,7 @@ async fn paid_selection_sends_the_callback_to_every_guardian_and_clears_it_at_fo
                 .all(|observed| observed.as_ref() == Some(&callback))
         );
     }
-    let recovery = client
-        .inner
-        .store
-        .load_formation(TestIdentity::fa_id())
-        .await
-        .unwrap()
-        .expect("formed recovery remains available");
-    assert!(recovery.formed);
-    assert!(recovery.dkg_completion_callback.is_none());
+    assert_callback_dropped_with_formation(&client).await;
 }
 
 #[tokio::test]
@@ -118,27 +122,10 @@ async fn callback_is_durable_private_state_and_old_schema_resets() {
     })
     .unwrap();
     client
-        .buy_seats_at(&intent(), locators(), options())
+        .request_seats_at(&intent(), locators(), Some(callback.clone()))
         .await
         .unwrap();
-    let seats = client
-        .status()
-        .pool
-        .iter()
-        .map(|seat| seat.seat_id.clone())
-        .collect::<Vec<_>>();
-    client
-        .inner
-        .store
-        .start_formation(
-            TestIdentity::fa_id(),
-            FormationId("callback-formation".to_owned()),
-            FederationName("Callback Federation".to_owned()),
-            &seats,
-            Some(callback.clone()),
-        )
-        .await
-        .unwrap();
+    client.drive_purchase_for_test(options()).await.unwrap();
     drop(client);
     let (payments, _) = TestPayments::new();
     let reopened = open_client(
@@ -185,7 +172,7 @@ async fn callback_is_durable_private_state_and_old_schema_resets() {
     future_client
         .inner
         .store
-        .initialize(
+        .initialize_for_test(
             TestIdentity::fa_id(),
             FormationId("schema-future".to_owned()),
             resolved_intent_with_size(FederationSize(1)),

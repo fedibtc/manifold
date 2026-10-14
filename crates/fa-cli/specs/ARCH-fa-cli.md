@@ -30,7 +30,7 @@ transition, and checkpoint.
 
 The CLI implements the concrete Iroh connector and Fedimint wallet
 payment/refund port. `fa-client` owns payment
-scheduling for initial formation and resume: it starts one new
+scheduling in its run loop: it starts one new
 member at a time and checkpoints the completed seat before the next. The CLI
 adapter provides only exact aggregate reservation and operation/recovery
 capabilities. Its aggregate holds independently dry-run logical net costs
@@ -43,13 +43,13 @@ payer change.
 state, or the payment wallet, the CLI binds its Iroh endpoint, runs a fresh
 verified preview against the selected environment with live availability
 probing over that endpoint, retains the non-serializable preview in-process,
-and immediately passes it to `buy_seats`. After the purchase completes, `create`
-forms the federation from every pool seat through `form_federation`. Passing
-no wallet coordinates explicitly selects
-`buy_seats` without a payer, which succeeds only when the advertised and live exact
-offers are all zero. `create` accepts a paired 0600
-completion-callback URL file and idempotency key, pass it to
-`form_federation`, and delegate protocol validation, durable ownership, and
+and immediately passes it to `create_federation`. `create` then runs the
+`fa-client` run loop until the federation forms, the creation needs another
+preview, or the loop reports an error. Passing no wallet coordinates explicitly
+selects `create_federation` without a payer, which succeeds only when the
+advertised and live exact offers are all zero. `create` accepts a paired 0600
+completion-callback URL file and idempotency key, passes it to
+`create_federation`, and delegates protocol validation, durable ownership, and
 delivery entirely to `fa-client` and the MGs; the CLI never places the URL bearer in argv, persists it, or
 emits it. `--poll-interval-secs` and `--poll-timeout-secs` set the driver
 timing of every `create`.
@@ -130,11 +130,12 @@ consumer-owned payer are capability preparation, not FA formation policy.
 Registry `preview` remains wallet-free and read-only. Registry-backed `create`
 performs a new verified preview, retains it only in-process, reopens
 the already-funded payer by federation id, and supplies it to
-`FaClient::buy_seats`.
+`FaClient::create_federation`.
 
 The preview is the only payment authorization: `fa-client` pays exactly the
 previewed price of each seat and removes the purchase when a price changed
-before outputs. `resume` pays only those previewed prices. Paid resume reopens the same wallet database and root
+before outputs. `resume` runs the same loop on the stored state and pays only
+those previewed prices. Paid resume reopens the same wallet database and root
 secret; the wallet recovers the exact quote-bound Fedimint operation and its
 required persisted change range before waiting for finality. It
 deterministically reconstructs refund material, so `fa-cli` persists no payment
@@ -164,12 +165,13 @@ guardian, or Guardian Verification Fee account input. Omitting the rate uses
 5,000 ppm; fa-client also enforces the admitted published minimum with a
 1,500-ppm fallback.
 
-Every maintenance command reopens the existing active formation, reconciles it
-through `fa-client::resume`, and invokes the typed library operation through the
+Every maintenance command reopens the existing federation, runs the
+`fa-client` run loop until it has verified the federation against consensus,
+stops the loop, and invokes the typed library operation through the
 same open client and real consensus reader. A failed reconciliation prevents
 the mutation future from being polled. Reopening does not connect the live
 registry because neither reconciliation nor these operations uses it. The
-commands require a durable `Formed` record and return only after fa-client
+commands require a formed federation and return only after fa-client
 rereads threshold consensus and observes the exact metadata value or requested guardian-fee rate. They do not persist a second CLI-side operation record.
 
 fa-client does not expose a standalone projection of arbitrary consensus
@@ -187,8 +189,8 @@ capability.
 `liquidity discover` performs the complete no-private-data FLIP admission walk
 for an explicit Bitcoin network and gateway amount range. `liquidity request`
 repeats that fresh discovery, chooses either the named admitted provider or the
-first deterministic provider, requires the active formation to be `Formed`,
-reconciles it through `fa-client::resume`, and invokes
+first deterministic provider, requires a formed federation, verifies it
+through the `fa-client` run loop, and invokes
 `fa-client::start_liquidity` in the same process through a generated Iroh
 public-RPC client. The CLI never constructs provider trust or sends the invite
 itself.
@@ -212,8 +214,8 @@ against hostile local filesystem behavior.
 
 `--json` is a stable, newline-delimited output contract. Successful `init`
 writes exactly one stdout object with `fiPubkey` and `state`; `status`, `create`,
-and `resume` write exactly one stdout `FaStatus`
-value. `FaStatus` omits absent parts, so an idle FA writes `{}`. A formation intent carries `fedimintd_versions` as its inclusive-minimum,
+and `resume` write exactly one stdout `FaState`
+value, for example `"idle"` or `{"creating":{...}}`. A formation intent carries `fedimintd_versions` as its inclusive-minimum,
 exclusive-maximum range and `fedimintd_dkg_version` as the selected
 major/minor/vendor identity. Successful `discover` and `preview`
 write exactly one stdout object carrying the `seen`/`eligible` (and, for

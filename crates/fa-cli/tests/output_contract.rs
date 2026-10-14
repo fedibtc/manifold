@@ -28,17 +28,17 @@ fn init_and_idle_status_pin_json_stdout_and_empty_stderr() {
         object.keys().map(String::as_str).collect::<Vec<_>>(),
         ["fiPubkey", "state"]
     );
-    assert_eq!(object["state"], serde_json::json!({}));
+    assert_eq!(object["state"], serde_json::json!("idle"));
     let public_key = object["fiPubkey"].as_str().unwrap();
     assert_eq!(public_key.len(), 64);
     assert!(public_key.bytes().all(|byte| byte.is_ascii_hexdigit()));
     assert_eq!(
         String::from_utf8(init.stdout).unwrap(),
-        format!(r#"{{"fiPubkey":"{public_key}","state":{{}}}}"#) + "\n"
+        format!(r#"{{"fiPubkey":"{public_key}","state":"idle"}}"#) + "\n"
     );
 
     let status = fa_cli(&state_dir, "status");
     assert!(status.status.success());
-    assert_eq!(status.stdout, b"{}\n");
+    assert_eq!(status.stdout, b"\"idle\"\n");
     assert_eq!(status.stderr, b"");
 }

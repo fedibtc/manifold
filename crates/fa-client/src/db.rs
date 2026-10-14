@@ -21,18 +21,18 @@ use tokio::sync::Mutex;
 use fedi_decentralized_manifold_environment::ManifoldEnvironment;
 use fedi_decentralized_peer_badge_verifier::PeerBadgeVerifierProvenance;
 use fedi_decentralized_service_manifold_guardian::{
-    DkgCompletionCallback, FaId, FederationId, FederationName, FederationSize, FedimintdDkgVersion,
-    FedimintdVersion, FormationSeatBinding, GetQuoteResponse, GuardianCode, GuardianFeeAccount,
-    InviteCode, Locator, Plan, QuoteId, SeatId, SignedResponse, Timestamp,
+    DkgCompletionCallback, FaId, FederationId, FederationName, FederationSize, FedimintdVersion,
+    FormationSeatBinding, GetQuoteResponse, GuardianCode, GuardianFeeAccount, InviteCode, Locator,
+    Plan, QuoteId, SeatId, SignedResponse, Timestamp,
 };
 use nostr_sdk::{Event, PublicKey};
 use stability_pool_common::Account;
 
 use crate::{
-    FaError, FaResult, FaStatus, FormationFreshness, FormationId, FormationPhase,
-    FormationSnapshot, PaymentAuthorizationId, PaymentRequirements, PaymentReservationId,
-    PurchasePhase, ResolvedSeatPurchase, SeatPaymentRequirement, SeatPhase, SeatProgress,
-    SeatPurchaseSnapshot,
+    FaError, FaResult, FormationFreshness, FormationId, FormationPhase, FormationSnapshot,
+    PaymentAuthorizationId, PaymentRequirements, PaymentReservationId, PurchasePhase,
+    ResolvedSeatPurchase, SeatPaymentRequirement, SeatPhase, SeatProgress, SeatPurchaseSnapshot,
+    state::FaStatus,
 };
 
 // Persisted-format changes are governed by GATE-production-compatibility
@@ -62,7 +62,8 @@ enum FaDbPrefix {
     RecoveryCompleted = 0x08,
     Federation = 0x09,
     PoolSeat = 0x0a,
-    Formation = 0x0b,
+    Creation = 0x0b,
+    GuardianCode = 0x0c,
 }
 
 #[derive(Debug, Decodable, Encodable)]
@@ -258,7 +259,8 @@ impl_db_record!(
 
 impl_db_lookup!(key = PurchaseSeatKey, query_prefix = PurchaseSeatKeyPrefix);
 
-/// One bought seat that hosts no guardian yet, keyed by its seat id.
+/// One bought seat of the current creation, keyed by its seat id. It stays
+/// here until its federation forms.
 #[derive(Debug, Decodable, Encodable)]
 struct PoolSeatKey {
     seat_id: String,
@@ -302,48 +304,54 @@ impl StoredPoolSeat {
     }
 }
 
-/// The formation that turns pool seats into a federation. It stays after
-/// formation as the record of the local DKG and its metadata target.
+/// The federation the user asked to create. It exists from the first
+/// purchase until the federation forms, and it keeps the inputs every later
+/// purchase and the formation need. The formation runs once the pool holds
+/// every seat, and its progress lives here.
 #[derive(Debug, Decodable, Encodable)]
-struct FormationKey;
+struct CreationKey;
 
 impl_db_record!(
-    key = FormationKey,
-    value = StoredFormation,
-    db_prefix = FaDbPrefix::Formation,
+    key = CreationKey,
+    value = StoredCreation,
+    db_prefix = FaDbPrefix::Creation,
+);
+
+/// The guardian code an MG returned for one pool seat, kept until the
+/// federation forms. MGs refuse the code request once DKG starts, and a DKG
+/// restart needs every code again.
+// TODO: remove once MGs return the code in every state.
+#[derive(Debug, Decodable, Encodable)]
+struct GuardianCodeKey {
+    seat_id: String,
+}
+
+#[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
+struct StoredGuardianCode(GuardianCode);
+
+impl_db_record!(
+    key = GuardianCodeKey,
+    value = StoredGuardianCode,
+    db_prefix = FaDbPrefix::GuardianCode,
 );
 
 #[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
-struct StoredFormation {
-    #[serde(rename = "fi_id")]
+struct StoredCreation {
     fa_id: FaId,
-    formation_id: FormationId,
     federation_name: FederationName,
-    fedimintd_dkg_version: FedimintdDkgVersion,
-    phase: StoredFormationPhase,
-    seats: Vec<StoredFormationSeat>,
-    invite_code: Option<InviteCode>,
-    /// Exact formation metadata target, persisted before its first vote.
-    formation_meta_target: Option<FormationMetaTarget>,
+    federation_size: FederationSize,
+    fedimintd_versions: crate::FedimintdVersionRange,
+    plan: crate::PlanPreference,
     /// Installation-scoped bearer callback reused verbatim for every MG,
     /// dropped with the DKG checkpoint. Its semantic type redacts `Debug`;
     /// database copies remain sensitive.
     dkg_completion_callback: Option<DkgCompletionCallback>,
-}
-
-#[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
-struct StoredFormationSeat {
-    seat: StoredPoolSeat,
-    guardian_code: Option<GuardianCode>,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
-#[serde(rename_all = "snake_case")]
-enum StoredFormationPhase {
-    Dkg,
-    DkgComplete,
-    PublishingSeatBindings,
-    Formed,
+    /// Stable local handle of the federation: the id of the first purchase.
+    formation_id: FormationId,
+    /// Federation invite, saved when DKG completes.
+    invite_code: Option<InviteCode>,
+    /// Exact formation metadata target, persisted before its first vote.
+    formation_meta_target: Option<FormationMetaTarget>,
 }
 
 #[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
@@ -409,7 +417,7 @@ struct Schema11Intent {
     federation_name: FederationName,
 }
 
-#[derive(serde::Deserialize)]
+#[derive(PartialEq, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 enum Schema11Phase {
     Initialized,
@@ -640,19 +648,9 @@ struct StoredPurchaseSeat {
     guardian_fee_account: Option<Account>,
 }
 
-/// One terminal recovery fact corrupted by a storage-corruption test.
-#[derive(Clone, Copy, Debug)]
-#[cfg(test)]
-pub(crate) enum FormedFact {
-    /// The aggregate seat count.
-    SeatCount,
-    /// The common federation invite.
-    InviteCode,
-    /// The guardian recovery code for the first seat.
-    GuardianCode,
-}
-
 json_database_value!(StoredPurchaseSeat);
+json_database_value!(StoredCreation);
+json_database_value!(StoredGuardianCode);
 
 #[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
 struct StoredPaymentAuthorization {
@@ -678,7 +676,6 @@ json_database_value!(BackupRelayConfirmation);
 json_database_value!(RestoredBackupState);
 json_database_value!(StoredFederation);
 json_database_value!(StoredPoolSeat);
-json_database_value!(StoredFormation);
 
 /// One seat's public projection and its private recovery-only quote facts.
 pub(crate) struct PurchaseSeatRecovery {
@@ -712,9 +709,6 @@ pub(crate) struct FormationSeatRecovery {
 pub(crate) struct FormationRecovery {
     pub(crate) snapshot: FormationSnapshot,
     pub(crate) seats: Vec<FormationSeatRecovery>,
-    /// Whether consensus confirmed the metadata target and the federation
-    /// record exists.
-    pub(crate) formed: bool,
     /// Exact formation metadata target saved before publication.
     pub(crate) formation_meta_target: Option<FormationMetaTarget>,
     /// Bearer callback handed to every MG only at `StartDkg`.
@@ -760,6 +754,24 @@ impl InitialSeat {
             admission,
         }
     }
+}
+
+/// The inputs of a new federation creation.
+pub(crate) struct NewCreation {
+    pub(crate) federation_name: FederationName,
+    pub(crate) federation_size: FederationSize,
+    pub(crate) fedimintd_versions: crate::FedimintdVersionRange,
+    pub(crate) plan: crate::PlanPreference,
+    pub(crate) dkg_completion_callback: Option<DkgCompletionCallback>,
+}
+
+/// The stored inputs of the running federation creation.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct CreationIntent {
+    pub(crate) federation_name: FederationName,
+    pub(crate) federation_size: FederationSize,
+    pub(crate) fedimintd_versions: crate::FedimintdVersionRange,
+    pub(crate) plan: crate::PlanPreference,
 }
 
 #[cfg(test)]
@@ -1463,25 +1475,6 @@ impl FaStore {
     async fn wait_before_hooked_formation_commit(&self) {}
 
     #[cfg(test)]
-    /// Corrupt one required terminal fact to exercise fail-closed loading.
-    pub(crate) async fn remove_formed_fact_for_test(&self, fact: FormedFact) {
-        let mut dbtx = self.database.begin_transaction().await;
-        let mut formation = dbtx
-            .get_value(&FormationKey)
-            .await
-            .expect("test formation exists");
-        match fact {
-            FormedFact::SeatCount => {
-                formation.seats.pop();
-            }
-            FormedFact::InviteCode => formation.invite_code = None,
-            FormedFact::GuardianCode => formation.seats[0].guardian_code = None,
-        }
-        dbtx.insert_entry(&FormationKey, &formation).await;
-        dbtx.commit_tx().await;
-    }
-
-    #[cfg(test)]
     /// Return whether the current schema fails closed when one required JSON
     /// recovery discriminator is removed.
     pub(crate) async fn rejects_missing_recovery_field_for_test(&self, field: &str) -> bool {
@@ -1499,32 +1492,34 @@ impl FaStore {
     }
 
     #[cfg(test)]
-    /// Rewind a complete formation while omitting one guardian recovery fact.
-    pub(crate) async fn rewind_formed_without_guardian_for_test(&self) {
-        let mut dbtx = self.database.begin_transaction().await;
-        let mut formation = dbtx
-            .get_value(&FormationKey)
-            .await
-            .expect("test formation exists");
-        formation.phase = StoredFormationPhase::Dkg;
-        formation.invite_code = None;
-        formation.formation_meta_target = None;
-        formation.seats[0].guardian_code = None;
-        dbtx.insert_entry(&FormationKey, &formation).await;
-        dbtx.commit_tx().await;
-    }
-
-    #[cfg(test)]
-    pub(crate) async fn unconfirm_formation_meta_target_for_test(&self) {
-        let mut dbtx = self.database.begin_transaction().await;
-        let mut formation = dbtx
-            .get_value(&FormationKey)
-            .await
-            .expect("test formation exists");
-        formation.phase = StoredFormationPhase::PublishingSeatBindings;
-        dbtx.insert_entry(&FormationKey, &formation).await;
-        dbtx.remove_entry(&FederationKey).await;
-        dbtx.commit_tx().await;
+    /// Start a purchase and, when none exists, the creation it belongs to.
+    pub(crate) async fn initialize_for_test(
+        &self,
+        fa_id: FaId,
+        formation_id: FormationId,
+        intent: ResolvedSeatPurchase,
+        seats: Vec<InitialSeat>,
+        payment_federation_id: Option<FederationId>,
+    ) -> FaResult<()> {
+        let creation = match self.load_creation(fa_id).await? {
+            Some(_) => None,
+            None => Some(NewCreation {
+                federation_name: FederationName("Test Federation".to_owned()),
+                federation_size: intent.federation_size,
+                fedimintd_versions: intent.fedimintd_versions.clone(),
+                plan: intent.plan,
+                dkg_completion_callback: None,
+            }),
+        };
+        self.initialize(
+            fa_id,
+            formation_id,
+            intent,
+            seats,
+            payment_federation_id,
+            creation,
+        )
+        .await
     }
 
     /// Bring storage written by older releases to the current schema.
@@ -1549,7 +1544,8 @@ impl FaStore {
 
     /// Schema 11 kept a formation and its seat purchase in one row. A
     /// purchase that has not created every seat stays a purchase. From
-    /// `seats_created` on, the seats move into the formation record.
+    /// `seats_created` on, the seats move into the pool and the formation
+    /// progress into the creation record.
     async fn split_schema_11_formation(&self) -> FaResult<()> {
         let malformed =
             || FaError::Storage("persisted schema 11 FA formation is malformed".to_owned());
@@ -1656,6 +1652,19 @@ impl FaStore {
             }
             seats.push((key, seat, guardian_code));
         }
+        // Schema 12 keeps the user's creation inputs and formation progress
+        // in their own record until the federation forms.
+        let creation = StoredCreation {
+            fa_id: purchase.fa_id.ok_or_else(malformed)?,
+            federation_name: legacy.intent.federation_name,
+            federation_size: purchase.intent.federation_size,
+            fedimintd_versions: purchase.intent.fedimintd_versions.clone(),
+            plan: purchase.intent.plan,
+            dkg_completion_callback: legacy.dkg_completion_callback,
+            formation_id: purchase.formation_id.clone(),
+            invite_code: legacy.invite_code,
+            formation_meta_target: legacy.formation_meta_target,
+        };
         if in_purchase {
             purchase.seat_count =
                 u16::try_from(seats.len()).expect("kept seats fit the stored count");
@@ -1677,16 +1686,14 @@ impl FaStore {
                     .map_err(|_| FaError::Storage("removing a schema 11 seat failed".to_owned()))?;
                 dbtx.insert_new_entry(&key, &seat).await;
             }
+            dbtx.insert_new_entry(&CreationKey, &creation).await;
         } else {
             let mut formation_seats = Vec::with_capacity(seats.len());
             for (key, seat, guardian_code) in seats {
                 dbtx.raw_remove_entry(&DatabaseKeyPrefix::to_bytes(&key))
                     .await
                     .map_err(|_| FaError::Storage("removing a schema 11 seat failed".to_owned()))?;
-                formation_seats.push(StoredFormationSeat {
-                    seat: pool_seat(seat)?,
-                    guardian_code,
-                });
+                formation_seats.push((pool_seat(seat)?, guardian_code));
             }
             // The schema 11 row may hold a phase the purchase type cannot
             // decode, so it is removed without decoding.
@@ -1695,36 +1702,29 @@ impl FaStore {
                 .map_err(|_| {
                     FaError::Storage("removing a schema 11 formation failed".to_owned())
                 })?;
-            let formation = StoredFormation {
-                fa_id: purchase.fa_id.ok_or_else(malformed)?,
-                formation_id: purchase.formation_id,
-                federation_name: legacy.intent.federation_name,
-                fedimintd_dkg_version: purchase.intent.fedimintd_dkg_version,
-                phase: match legacy.phase {
-                    Schema11Phase::Initialized | Schema11Phase::SeatsPartiallyCreated => {
-                        unreachable!("handled as a purchase above")
+            validate_formation(&creation, &formation_seats)?;
+            if legacy.phase == Schema11Phase::Formed {
+                // A formed federation keeps only its federation record.
+                if dbtx.get_value(&FederationKey).await.is_none() {
+                    insert_formed_federation(&mut dbtx.to_ref_nc(), &creation, &formation_seats)
+                        .await?;
+                }
+            } else {
+                for (seat, guardian_code) in formation_seats {
+                    let seat_id = seat.seat_id.to_string();
+                    if let Some(guardian_code) = guardian_code {
+                        dbtx.insert_new_entry(
+                            &GuardianCodeKey {
+                                seat_id: seat_id.clone(),
+                            },
+                            &StoredGuardianCode(guardian_code),
+                        )
+                        .await;
                     }
-                    Schema11Phase::SeatsCreated => StoredFormationPhase::Dkg,
-                    Schema11Phase::DkgComplete => StoredFormationPhase::DkgComplete,
-                    Schema11Phase::PublishingSeatBindings => {
-                        StoredFormationPhase::PublishingSeatBindings
-                    }
-                    Schema11Phase::Formed => StoredFormationPhase::Formed,
-                },
-                seats: formation_seats,
-                invite_code: legacy.invite_code,
-                formation_meta_target: legacy.formation_meta_target,
-                dkg_completion_callback: legacy.dkg_completion_callback,
-            };
-            validate_formation(&formation)?;
-            // Releases before the federation record kept a formed
-            // federation only in its formation row.
-            if formation.phase == StoredFormationPhase::Formed
-                && dbtx.get_value(&FederationKey).await.is_none()
-            {
-                insert_formed_federation(&mut dbtx.to_ref_nc(), &formation).await?;
+                    dbtx.insert_new_entry(&PoolSeatKey { seat_id }, &seat).await;
+                }
+                dbtx.insert_new_entry(&CreationKey, &creation).await;
             }
-            dbtx.insert_entry(&FormationKey, &formation).await;
         }
         dbtx.commit_tx_result()
             .await
@@ -1773,16 +1773,88 @@ impl FaStore {
         let formation = self.load_formation(fa_id).await?;
         Ok(FaStatus {
             recovery: None,
+            creation: self.load_creation(fa_id).await?,
+            reauthorization: None,
             purchase: self
                 .load_purchase(fa_id)
                 .await?
                 .map(|purchase| purchase.snapshot),
             pool: self.pool_seats().await,
-            formation: formation
-                .filter(|formation| !formation.formed)
-                .map(|formation| formation.snapshot),
+            formation: formation.map(|formation| formation.snapshot),
             federation: self.load_federation(fa_id).await?,
         })
+    }
+
+    /// The running federation creation, if any.
+    pub(crate) async fn load_creation(&self, fa_id: FaId) -> FaResult<Option<CreationIntent>> {
+        let Some(creation) = self
+            .database
+            .begin_transaction_nc()
+            .await
+            .get_value(&CreationKey)
+            .await
+        else {
+            return Ok(None);
+        };
+        if creation.fa_id != fa_id {
+            return Err(FaError::Storage(
+                "FA federation creation belongs to another scoped root".to_owned(),
+            ));
+        }
+        Ok(Some(CreationIntent {
+            federation_name: creation.federation_name,
+            federation_size: creation.federation_size,
+            fedimintd_versions: creation.fedimintd_versions,
+            plan: creation.plan,
+        }))
+    }
+
+    /// End a federation creation that holds no purchase, seat, or formation.
+    pub(crate) async fn cancel_creation(&self) -> FaResult<()> {
+        let mut dbtx = self.database.begin_transaction().await;
+        if dbtx.get_value(&CreationKey).await.is_none() {
+            return Err(FaError::NoActiveFormation);
+        }
+        if dbtx.get_value(&PurchaseKey).await.is_some()
+            || dbtx
+                .find_by_prefix(&PoolSeatKeyPrefix)
+                .await
+                .next()
+                .await
+                .is_some()
+        {
+            return Err(FaError::AbandonUnavailable(
+                crate::AbandonUnavailableReason::SeatsBought,
+            ));
+        }
+        dbtx.remove_entry(&CreationKey).await;
+        dbtx.commit_tx_result()
+            .await
+            .map_err(|_| FaError::Storage("cancelling FA federation creation failed".to_owned()))
+    }
+
+    /// What a preview of the missing seats must avoid and keep.
+    pub(crate) async fn bought_seats(&self) -> crate::selection::BoughtSeats {
+        let seats: Vec<StoredPoolSeat> = self
+            .database
+            .begin_transaction_nc()
+            .await
+            .find_by_prefix(&PoolSeatKeyPrefix)
+            .await
+            .map(|(_, seat)| seat)
+            .collect()
+            .await;
+        crate::selection::BoughtSeats {
+            fedimintd_dkg_version: seats
+                .first()
+                .map(|seat| seat.fedimintd_version.dkg_version()),
+            mg_ids: seats.iter().map(|seat| seat.mg_id).collect(),
+            service_pubkeys: seats
+                .iter()
+                .map(|seat| (seat.locator.service_pubkey, seat.mg_id))
+                .collect(),
+            holders: seats.iter().filter_map(|seat| seat.holder).collect(),
+        }
     }
 
     /// Bought seats that host no guardian yet.
@@ -1856,69 +1928,65 @@ impl FaStore {
         }))
     }
 
-    /// The formation record, including one that already formed.
+    /// The running formation, with the name and callback of its creation.
     pub(crate) async fn load_formation(&self, fa_id: FaId) -> FaResult<Option<FormationRecovery>> {
-        let Some(stored) = self
-            .database
-            .begin_transaction_nc()
-            .await
-            .get_value(&FormationKey)
-            .await
-        else {
+        let mut dbtx = self.database.begin_transaction_nc().await;
+        let Some(creation) = dbtx.get_value(&CreationKey).await else {
             return Ok(None);
         };
-        if stored.fa_id != fa_id {
+        if creation.fa_id != fa_id {
             return Err(FaError::Storage(
-                "persisted FA formation belongs to a different identity".to_owned(),
+                "persisted FA creation belongs to a different identity".to_owned(),
             ));
         }
-        validate_formation(&stored)?;
-        let dkg_complete = stored.phase != StoredFormationPhase::Dkg;
-        let seats = stored
-            .seats
+        let Some(seats) = formation_seats(&mut dbtx.to_ref_nc(), &creation).await? else {
+            return Ok(None);
+        };
+        let fedimintd_dkg_version = seats[0].0.fedimintd_version.dkg_version();
+        let dkg_complete = creation.invite_code.is_some();
+        let seats = seats
             .into_iter()
             .enumerate()
-            .map(|(position, seat)| FormationSeatRecovery {
+            .map(|(position, (seat, guardian_code))| FormationSeatRecovery {
                 progress: SeatProgress {
                     index: u16::try_from(position).expect("validated formation size fits u16"),
-                    mg_id: seat.seat.mg_id,
-                    locator: seat.seat.locator,
-                    seat_id: Some(seat.seat.seat_id),
+                    mg_id: seat.mg_id,
+                    locator: seat.locator,
+                    seat_id: Some(seat.seat_id),
                     phase: if dkg_complete {
                         SeatPhase::Running
-                    } else if seat.guardian_code.is_some() {
+                    } else if guardian_code.is_some() {
                         SeatPhase::GuardianCodeReady
                     } else {
                         SeatPhase::Created
                     },
-                    guardian_code: seat.guardian_code,
+                    guardian_code,
                     freshness: FormationFreshness::Unsynced,
                 },
-                guardian_fee_account: seat.seat.guardian_fee_account,
+                guardian_fee_account: seat.guardian_fee_account,
             })
             .collect::<Vec<_>>();
-        let phase = match stored.phase {
-            StoredFormationPhase::Dkg => FormationPhase::PreparingDkg,
-            StoredFormationPhase::DkgComplete => FormationPhase::DkgComplete,
-            StoredFormationPhase::PublishingSeatBindings | StoredFormationPhase::Formed => {
-                FormationPhase::PublishingSeatBindings
-            }
+        let phase = if creation.formation_meta_target.is_some() {
+            FormationPhase::PublishingSeatBindings
+        } else if dkg_complete {
+            FormationPhase::DkgComplete
+        } else {
+            FormationPhase::PreparingDkg
         };
         Ok(Some(FormationRecovery {
             snapshot: FormationSnapshot {
-                formation_id: stored.formation_id,
-                federation_name: stored.federation_name,
-                fedimintd_dkg_version: stored.fedimintd_dkg_version,
+                formation_id: creation.formation_id,
+                federation_name: creation.federation_name,
+                fedimintd_dkg_version,
                 phase,
                 seats: seats.iter().map(|seat| seat.progress.clone()).collect(),
                 freshness: FormationFreshness::Unsynced,
-                invite_code: stored.invite_code,
+                invite_code: creation.invite_code,
                 last_error: None,
             },
             seats,
-            formed: stored.phase == StoredFormationPhase::Formed,
-            formation_meta_target: stored.formation_meta_target,
-            dkg_completion_callback: stored.dkg_completion_callback,
+            formation_meta_target: creation.formation_meta_target,
+            dkg_completion_callback: creation.dkg_completion_callback,
         }))
     }
 
@@ -2077,14 +2145,49 @@ impl FaStore {
         intent: ResolvedSeatPurchase,
         seats: Vec<InitialSeat>,
         payment_federation_id: Option<FederationId>,
+        creation: Option<NewCreation>,
     ) -> FaResult<()> {
         let seat_count = u16::try_from(seats.len())
             .map_err(|_| FaError::Storage("too many FA seat rows".to_owned()))?;
         let mut dbtx = self.database.begin_transaction().await;
         if dbtx.get_value(&PurchaseKey).await.is_some() {
-            return Err(FaError::Storage(
-                "cannot initialize over an active FA purchase".to_owned(),
+            return Err(FaError::InvalidIntent(
+                "a seat purchase is already running".to_owned(),
             ));
+        }
+        match creation {
+            Some(creation) => {
+                if dbtx.get_value(&CreationKey).await.is_some()
+                    || dbtx.get_value(&FederationKey).await.is_some()
+                    || dbtx.get_value(&RestoredBackupKey).await.is_some()
+                {
+                    return Err(FaError::InvalidIntent(
+                        "this FA already creates or governs a federation".to_owned(),
+                    ));
+                }
+                dbtx.insert_new_entry(
+                    &CreationKey,
+                    &StoredCreation {
+                        fa_id,
+                        federation_name: creation.federation_name,
+                        federation_size: creation.federation_size,
+                        fedimintd_versions: creation.fedimintd_versions,
+                        plan: creation.plan,
+                        dkg_completion_callback: creation.dkg_completion_callback,
+                        formation_id: formation_id.clone(),
+                        invite_code: None,
+                        formation_meta_target: None,
+                    },
+                )
+                .await;
+            }
+            None => {
+                if dbtx.get_value(&CreationKey).await.is_none() {
+                    return Err(FaError::InvalidIntent(
+                        "no federation creation needs seats".to_owned(),
+                    ));
+                }
+            }
         }
         dbtx.insert_entry(
             &PurchaseKey,
@@ -2276,83 +2379,12 @@ impl FaStore {
             .map_err(map_formation_tx_error)
     }
 
-    /// Take seats out of the pool into a new formation.
-    pub(crate) async fn start_formation(
-        &self,
-        fa_id: FaId,
-        formation_id: FormationId,
-        federation_name: FederationName,
-        seat_ids: &[SeatId],
-        dkg_completion_callback: Option<DkgCompletionCallback>,
-    ) -> FaResult<()> {
-        let mut dbtx = self.database.begin_transaction().await;
-        if dbtx.get_value(&FormationKey).await.is_some()
-            || dbtx.get_value(&FederationKey).await.is_some()
-            || dbtx.get_value(&RestoredBackupKey).await.is_some()
-        {
-            return Err(FaError::InvalidIntent(
-                "this FA already has a formation or federation".to_owned(),
-            ));
-        }
-        let mut seats = Vec::with_capacity(seat_ids.len());
-        let mut unique = BTreeSet::new();
-        for seat_id in seat_ids {
-            let key = PoolSeatKey {
-                seat_id: seat_id.to_string(),
-            };
-            if !unique.insert(key.seat_id.clone()) {
-                return Err(FaError::InvalidIntent(
-                    "a formation names one pool seat twice".to_owned(),
-                ));
-            }
-            let seat = dbtx.get_value(&key).await.ok_or_else(|| {
-                FaError::InvalidIntent(format!("seat {seat_id} is not in the pool"))
-            })?;
-            dbtx.remove_entry(&key).await;
-            seats.push(StoredFormationSeat {
-                seat,
-                guardian_code: None,
-            });
-        }
-        let size = u16::try_from(seats.len())
-            .map_err(|_| FaError::InvalidIntent("too many formation seats".to_owned()))?;
-        let fedimintd_dkg_version = seats
-            .first()
-            .map(|seat| seat.seat.fedimintd_version.dkg_version())
-            .ok_or_else(|| FaError::InvalidIntent("a formation needs seats".to_owned()))?;
-        if seats.iter().any(|seat| {
-            seat.seat.federation_size.0 != size
-                || seat.seat.fedimintd_version.dkg_version() != fedimintd_dkg_version
-        }) {
-            return Err(FaError::InvalidIntent(
-                "every formation seat must be bought for this federation size and DKG line"
-                    .to_owned(),
-            ));
-        }
-        let formation = StoredFormation {
-            fa_id,
-            formation_id,
-            federation_name,
-            fedimintd_dkg_version,
-            phase: StoredFormationPhase::Dkg,
-            seats,
-            invite_code: None,
-            formation_meta_target: None,
-            dkg_completion_callback,
-        };
-        validate_formation(&formation)?;
-        dbtx.insert_entry(&FormationKey, &formation).await;
-        dbtx.commit_tx_result()
-            .await
-            .map_err(|_| FaError::Storage("starting FA formation failed".to_owned()))
-    }
-
-    /// Change the formation record in one transaction.
+    /// Change the formation progress in one transaction.
     async fn update_formation(
         &self,
         formation_id: &FormationId,
-        update: impl Fn(&mut StoredFormation) -> FaResult<()> + Send + Sync,
-    ) -> FaResult<StoredFormation> {
+        update: impl Fn(&mut StoredCreation) + Send + Sync,
+    ) -> FaResult<()> {
         let formation_id = formation_id.clone();
         let update = &update;
         self.database
@@ -2360,22 +2392,11 @@ impl FaStore {
                 move |dbtx, _| {
                     let formation_id = formation_id.clone();
                     Box::pin(async move {
-                        let mut formation =
-                            dbtx.get_value(&FormationKey).await.ok_or_else(|| {
-                                FaError::Storage("the FA formation is missing".to_owned())
-                            })?;
-                        if formation.formation_id != formation_id {
-                            return Err(FaError::Storage(
-                                "active FA formation changed during an operation".to_owned(),
-                            ));
-                        }
-                        update(&mut formation)?;
-                        validate_formation(&formation)?;
-                        dbtx.insert_entry(&FormationKey, &formation).await;
-                        if formation.phase == StoredFormationPhase::Formed {
-                            insert_formed_federation(dbtx, &formation).await?;
-                        }
-                        Ok(formation)
+                        let (mut creation, _) = active_formation(dbtx, &formation_id).await?;
+                        update(&mut creation);
+                        active_formation_seats(dbtx, &creation).await?;
+                        dbtx.insert_entry(&CreationKey, &creation).await;
+                        Ok(())
                     })
                 },
                 Some(FORMATION_TX_MAX_ATTEMPTS),
@@ -2391,25 +2412,39 @@ impl FaStore {
         index: u16,
         guardian_code: GuardianCode,
     ) -> FaResult<()> {
-        self.update_formation(formation_id, |formation| {
-            let seat = formation
-                .seats
-                .get_mut(usize::from(index))
-                .ok_or_else(|| FaError::Storage(format!("missing FA formation seat {index}")))?;
-            if seat
-                .guardian_code
-                .as_ref()
-                .is_some_and(|existing| existing != &guardian_code)
-            {
-                return Err(FaError::Storage(format!(
-                    "FA formation seat {index} changed guardian code"
-                )));
-            }
-            seat.guardian_code = Some(guardian_code.clone());
-            Ok(())
-        })
-        .await
-        .map(drop)
+        let formation_id = formation_id.clone();
+        self.database
+            .autocommit(
+                move |dbtx, _| {
+                    let formation_id = formation_id.clone();
+                    let guardian_code = guardian_code.clone();
+                    Box::pin(async move {
+                        let (_, seats) = active_formation(dbtx, &formation_id).await?;
+                        let (seat, existing) = seats.get(usize::from(index)).ok_or_else(|| {
+                            FaError::Storage(format!("missing FA formation seat {index}"))
+                        })?;
+                        if existing
+                            .as_ref()
+                            .is_some_and(|existing| existing != &guardian_code)
+                        {
+                            return Err(FaError::Storage(format!(
+                                "FA formation seat {index} changed guardian code"
+                            )));
+                        }
+                        dbtx.insert_entry(
+                            &GuardianCodeKey {
+                                seat_id: seat.seat_id.to_string(),
+                            },
+                            &StoredGuardianCode(guardian_code),
+                        )
+                        .await;
+                        Ok(())
+                    })
+                },
+                Some(FORMATION_TX_MAX_ATTEMPTS),
+            )
+            .await
+            .map_err(map_formation_tx_error)
     }
 
     /// Save completed DKG and its invite.
@@ -2418,17 +2453,14 @@ impl FaStore {
         formation_id: &FormationId,
         invite_code: InviteCode,
     ) -> FaResult<()> {
-        self.update_formation(formation_id, |formation| {
-            formation.phase = StoredFormationPhase::DkgComplete;
-            formation.invite_code = Some(invite_code.clone());
+        self.update_formation(formation_id, |creation| {
+            creation.invite_code = Some(invite_code.clone());
             // Every MG now owns durable delivery retry. Drop the FA-side
             // bearer with the DKG checkpoint, retaining it through every
-            // earlier crash and resume.
-            formation.dkg_completion_callback = None;
-            Ok(())
+            // earlier crash and restart.
+            creation.dkg_completion_callback = None;
         })
         .await
-        .map(drop)
     }
 
     /// Persist the complete formation metadata target before it is submitted.
@@ -2437,32 +2469,44 @@ impl FaStore {
         formation_id: &FormationId,
         target: FormationMetaTarget,
     ) -> FaResult<()> {
-        self.update_formation(formation_id, |formation| {
-            formation.phase = StoredFormationPhase::PublishingSeatBindings;
-            formation.formation_meta_target = Some(target.clone());
-            Ok(())
+        self.update_formation(formation_id, |creation| {
+            creation.formation_meta_target = Some(target.clone());
         })
         .await
-        .map(drop)
     }
 
-    /// Checkpoint exact consensus readback of the persisted formation target,
-    /// and record the federation it formed.
-    pub(crate) async fn confirm_formation_meta_target(
-        &self,
-        formation_id: &FormationId,
-    ) -> FaResult<()> {
-        self.update_formation(formation_id, |formation| {
-            if formation.phase != StoredFormationPhase::PublishingSeatBindings {
-                return Err(FaError::Storage(
-                    "cannot complete formation before publishing metadata".to_owned(),
-                ));
-            }
-            formation.phase = StoredFormationPhase::Formed;
-            Ok(())
-        })
-        .await
-        .map(drop)
+    /// Checkpoint exact consensus readback of the persisted formation target:
+    /// record the federation it formed, and end the creation and its pool.
+    pub(crate) async fn finish_formation(&self, formation_id: &FormationId) -> FaResult<()> {
+        let formation_id = formation_id.clone();
+        self.database
+            .autocommit(
+                move |dbtx, _| {
+                    let formation_id = formation_id.clone();
+                    Box::pin(async move {
+                        let (creation, seats) = active_formation(dbtx, &formation_id).await?;
+                        if creation.formation_meta_target.is_none() {
+                            return Err(FaError::Storage(
+                                "cannot complete formation before publishing metadata".to_owned(),
+                            ));
+                        }
+                        insert_formed_federation(dbtx, &creation, &seats).await?;
+                        for (seat, _) in &seats {
+                            let seat_id = seat.seat_id.to_string();
+                            dbtx.remove_entry(&GuardianCodeKey {
+                                seat_id: seat_id.clone(),
+                            })
+                            .await;
+                            dbtx.remove_entry(&PoolSeatKey { seat_id }).await;
+                        }
+                        dbtx.remove_entry(&CreationKey).await;
+                        Ok(())
+                    })
+                },
+                Some(FORMATION_TX_MAX_ATTEMPTS),
+            )
+            .await
+            .map_err(map_formation_tx_error)
     }
 
     /// Persist an exact verified quote before any payment or `CreateSeat`
@@ -3770,55 +3814,98 @@ fn validate_formation_progress(
     Ok(())
 }
 
-/// Reject a formation record whose seats or phase disagree.
-fn validate_formation(formation: &StoredFormation) -> FaResult<()> {
-    let size = u16::try_from(formation.seats.len())
-        .map_err(|_| FaError::Storage("too many FA formation seats".to_owned()))?;
-    if !(crate::MIN_FEDERATION_SIZE..crate::MAX_FEDERATION_SIZE_EXCLUSIVE).contains(&size) {
+/// A pool seat and its cached guardian code.
+type FormationSeat = (StoredPoolSeat, Option<GuardianCode>);
+
+/// The seats of the creation's formation, in pool order with their cached
+/// guardian codes. The formation runs once the pool holds every seat.
+async fn formation_seats(
+    dbtx: &mut DatabaseTransaction<'_>,
+    creation: &StoredCreation,
+) -> FaResult<Option<Vec<FormationSeat>>> {
+    let pool: Vec<StoredPoolSeat> = dbtx
+        .find_by_prefix(&PoolSeatKeyPrefix)
+        .await
+        .map(|(_, seat)| seat)
+        .collect()
+        .await;
+    if pool.len() < usize::from(creation.federation_size.0) {
+        if creation.invite_code.is_some() {
+            return Err(FaError::Storage(
+                "persisted FA formation lacks pool seats".to_owned(),
+            ));
+        }
+        return Ok(None);
+    }
+    let mut seats = Vec::with_capacity(pool.len());
+    for seat in pool {
+        let guardian_code = dbtx
+            .get_value(&GuardianCodeKey {
+                seat_id: seat.seat_id.to_string(),
+            })
+            .await
+            .map(|code| code.0);
+        seats.push((seat, guardian_code));
+    }
+    validate_formation(creation, &seats)?;
+    Ok(Some(seats))
+}
+
+/// The seats of the running formation.
+async fn active_formation_seats(
+    dbtx: &mut DatabaseTransaction<'_>,
+    creation: &StoredCreation,
+) -> FaResult<Vec<FormationSeat>> {
+    formation_seats(dbtx, creation)
+        .await?
+        .ok_or_else(|| FaError::Storage("the FA formation is missing".to_owned()))
+}
+
+/// The creation whose formation `formation_id` names, and its seats.
+async fn active_formation(
+    dbtx: &mut DatabaseTransaction<'_>,
+    formation_id: &FormationId,
+) -> FaResult<(StoredCreation, Vec<FormationSeat>)> {
+    let creation = dbtx
+        .get_value(&CreationKey)
+        .await
+        .filter(|creation| &creation.formation_id == formation_id)
+        .ok_or_else(|| {
+            FaError::Storage("active FA formation changed during an operation".to_owned())
+        })?;
+    let seats = active_formation_seats(dbtx, &creation).await?;
+    Ok((creation, seats))
+}
+
+/// Reject formation progress that disagrees with its seats.
+fn validate_formation(creation: &StoredCreation, seats: &[FormationSeat]) -> FaResult<()> {
+    let size = creation.federation_size.0;
+    if usize::from(size) != seats.len()
+        || !(crate::MIN_FEDERATION_SIZE..crate::MAX_FEDERATION_SIZE_EXCLUSIVE).contains(&size)
+    {
         return Err(FaError::Storage(
             "persisted FA formation has an unsupported seat count".to_owned(),
         ));
     }
-    if formation
-        .seats
-        .iter()
-        .any(|seat| seat.seat.federation_size.0 != size)
-    {
+    let dkg_version = seats[0].0.fedimintd_version.dkg_version();
+    if seats.iter().any(|(seat, _)| {
+        seat.federation_size.0 != size || seat.fedimintd_version.dkg_version() != dkg_version
+    }) {
         return Err(FaError::Storage(
-            "persisted FA formation seat count disagrees with its seats".to_owned(),
+            "FA formation seats must be bought for its size and DKG line".to_owned(),
         ));
     }
-    let needs_target = matches!(
-        formation.phase,
-        StoredFormationPhase::PublishingSeatBindings | StoredFormationPhase::Formed
-    );
-    if needs_target != formation.formation_meta_target.is_some() {
-        return Err(FaError::Storage(
-            "persisted formation phase disagrees with its metadata target".to_owned(),
-        ));
-    }
-    if formation.phase == StoredFormationPhase::Dkg {
-        if formation.invite_code.is_some() {
+    if creation.invite_code.is_none() {
+        if creation.formation_meta_target.is_some() {
             return Err(FaError::Storage(
-                "persisted nonterminal FA formation contains an invite code".to_owned(),
+                "persisted FA formation has a metadata target before its invite".to_owned(),
             ));
         }
-    } else {
-        if formation.invite_code.is_none() {
-            return Err(FaError::Storage(
-                "persisted formed FA formation lacks its invite code".to_owned(),
-            ));
-        }
-        if let Some(position) = formation
-            .seats
-            .iter()
-            .position(|seat| seat.guardian_code.is_none())
-        {
-            return Err(FaError::Storage(format!(
-                "persisted formed FA formation lacks guardian recovery facts for seat row \
-                 {position}"
-            )));
-        }
+    } else if let Some(position) = seats.iter().position(|(_, code)| code.is_none()) {
+        return Err(FaError::Storage(format!(
+            "persisted formed FA formation lacks guardian recovery facts for seat row \
+             {position}"
+        )));
     }
     Ok(())
 }
@@ -3939,26 +4026,26 @@ async fn adopt_restored_backup(
 /// confirms its metadata.
 async fn insert_formed_federation(
     dbtx: &mut DatabaseTransaction<'_>,
-    formation: &StoredFormation,
+    creation: &StoredCreation,
+    seats: &[FormationSeat],
 ) -> FaResult<()> {
-    let federation_invite = formation
+    let federation_invite = creation
         .invite_code
         .clone()
         .ok_or_else(formed_backup_required)?;
     dbtx.insert_entry(
         &FederationKey,
         &StoredFederation {
-            fa_id: formation.fa_id,
-            formation_id: formation.formation_id.clone(),
+            fa_id: creation.fa_id,
+            formation_id: creation.formation_id.clone(),
             federation_invite,
-            federation_name: Some(formation.federation_name.clone()),
-            seats: formation
-                .seats
+            federation_name: Some(creation.federation_name.clone()),
+            seats: seats
                 .iter()
-                .map(|seat| StoredFederationSeat {
-                    mg_identity: seat.seat.mg_id,
-                    seat_id: seat.seat.seat_id.clone(),
-                    locator: seat.seat.locator.clone(),
+                .map(|(seat, _)| StoredFederationSeat {
+                    mg_identity: seat.mg_id,
+                    seat_id: seat.seat_id.clone(),
+                    locator: seat.locator.clone(),
                 })
                 .collect(),
         },
