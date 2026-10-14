@@ -289,6 +289,34 @@ impl ManifoldGuardianService for UnavailableManifoldGuardianClient {
     ) -> FmResult<DecommissionSeatResponse> {
         Err(unavailable())
     }
+
+    async fn pull_seat(
+        &self,
+        _request: SignedRequest<PullSeatRequest>,
+    ) -> FmResult<PullSeatResponse> {
+        Err(unavailable())
+    }
+
+    async fn transfer_seat(
+        &self,
+        _request: SignedRequest<SeatTransferGrant>,
+    ) -> FmResult<TransferSeatResponse> {
+        Err(unavailable())
+    }
+
+    async fn replace_seat_binding(
+        &self,
+        _request: SignedRequest<ReplaceSeatBindingRequest>,
+    ) -> FmResult<ReplaceSeatBindingResponse> {
+        Err(unavailable())
+    }
+
+    async fn remove_seat(
+        &self,
+        _request: SignedRequest<RemoveSeatRequest>,
+    ) -> FmResult<RemoveSeatResponse> {
+        Err(unavailable())
+    }
 }
 
 /// Consensus reader that performs no federation query.

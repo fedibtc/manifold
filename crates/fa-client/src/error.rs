@@ -259,6 +259,10 @@ pub enum MgCause {
     MetaTargetConflict,
     #[error("invalid_gateway_api_url")]
     InvalidGatewayApiUrl,
+    #[error("seat_transfer_grant_mismatch")]
+    SeatTransferGrantMismatch,
+    #[error("federation_already_hosted")]
+    FederationAlreadyHosted,
     #[error("unsupported_verb")]
     UnsupportedVerb,
     #[error("other")]
@@ -296,6 +300,8 @@ impl From<fedi_decentralized_service_manifold_guardian::ManifoldGuardianError> f
             E::FormationMetaAlreadyPublished => Self::FormationMetaAlreadyPublished,
             E::MetaTargetConflict => Self::MetaTargetConflict,
             E::InvalidGatewayApiUrl => Self::InvalidGatewayApiUrl,
+            E::SeatTransferGrantMismatch => Self::SeatTransferGrantMismatch,
+            E::FederationAlreadyHosted => Self::FederationAlreadyHosted,
             E::WrongState { status } => Self::WrongState(status),
             E::InvalidDkgInput(_) => Self::InvalidDkgInput,
             E::UnsupportedVerb { .. } => Self::UnsupportedVerb,

@@ -113,7 +113,11 @@ separator, and received bytes, parse the typed payload, require its inner
 
 The accepted freshness interval is inclusive `|request.ts - now| <= 3600`
 seconds. This bounds replay but does not prevent it; there is no nonce or replay
-store. The daemon's seat lookup separately enforces that `fi_id` equals the
+store. The one exception is `SeatTransferGrant`, which a destination MG
+presents repeatedly to a source MG that may be offline: it is accepted from
+`ts - 3600` through its own `expires_at`, and never when `expires_at` is more
+than 30 days after `ts`
+([SPEC-guardian-transfer](../../mg/specs/SPEC-guardian-transfer.md)). The daemon's seat lookup separately enforces that `fi_id` equals the
 identity bound at seat creation, since that recorded identity is not available
 at envelope verification time.
 

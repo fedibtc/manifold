@@ -33,7 +33,8 @@ use crate::{
     CreateSeatRequest, CreateSeatResponse, DecommissionSeatRequest, FaId, FaSignature,
     GetDkgCodeRequest, GetFedimintStatsRequest, GetInviteCodeRequest, GetPeerAttestationRequest,
     GetQuoteResponse, GetStatusRequest, ManagerSignature, ProposeFormationMetaRequest,
-    RegisterGatewayRequest, RestartDkgRequest, SetMetaFieldRequest, StartDkgRequest, Timestamp,
+    PullSeatRequest, RegisterGatewayRequest, RemoveSeatRequest, ReplaceSeatBindingRequest,
+    RestartDkgRequest, SeatTransferGrant, SetMetaFieldRequest, StartDkgRequest, Timestamp,
 };
 
 /// Domain separator for FA-signed requests. `v1` versions the signing
@@ -84,6 +85,12 @@ pub trait FaSignedRequest: Serialize + DeserializeOwned {
 
     /// Signer identity: the hex-encoded x-only secp256k1 public key.
     fn fa_id(&self) -> &FaId;
+
+    /// Whether the request is still acceptable at `now`. Requests are
+    /// one-hour challenges unless the verb defines its own validity.
+    fn is_fresh(&self, now: Timestamp) -> bool {
+        now.0.abs_diff(self.ts().0) <= FA_REQUEST_FRESHNESS_WINDOW_SECS
+    }
 }
 
 /// An FA-signed verb that targets an already-created seat. The daemon's only
@@ -103,7 +110,7 @@ pub trait ManagerSignedResponse: Serialize + DeserializeOwned {
 /// One entry per FA-signed verb. Also emits the test-only label roster so
 /// the uniqueness/NUL-freedom test below can never miss a verb added here.
 macro_rules! fa_signed_requests {
-    ($($ty:ty => $label:literal,)+) => {
+    ($($ty:ty => $label:literal $((fresh: $fresh:path))?,)+) => {
         $(impl FaSignedRequest for $ty {
             const LABEL: &'static str = $label;
 
@@ -114,6 +121,10 @@ macro_rules! fa_signed_requests {
             fn fa_id(&self) -> &FaId {
                 &self.fa_id
             }
+
+            $(fn is_fresh(&self, now: Timestamp) -> bool {
+                $fresh(self, now)
+            })?
         })+
 
         #[cfg(test)]
@@ -134,6 +145,10 @@ fa_signed_requests! {
     RegisterGatewayRequest => "register_gateway",
     GetFedimintStatsRequest => "get_fedimint_stats",
     DecommissionSeatRequest => "decommission_seat",
+    SeatTransferGrant => "seat_transfer_grant" (fresh: SeatTransferGrant::is_valid_at),
+    PullSeatRequest => "pull_seat",
+    ReplaceSeatBindingRequest => "replace_seat_binding",
+    RemoveSeatRequest => "remove_seat",
 }
 
 /// Seat-scoped grants. `CreateSeatRequest` is deliberately absent: it
@@ -160,6 +175,17 @@ seat_scoped_fa_requests! {
     RegisterGatewayRequest,
     GetFedimintStatsRequest,
     DecommissionSeatRequest,
+    PullSeatRequest,
+    ReplaceSeatBindingRequest,
+    RemoveSeatRequest,
+}
+
+/// The source MG resolves a transfer grant to its own seat, through the
+/// same ownership check as every other seat-scoped verb.
+impl SeatScopedFaRequest for SeatTransferGrant {
+    fn seat_id(&self) -> &crate::SeatId {
+        &self.source_seat_id
+    }
 }
 
 /// One entry per MG-signed commitment response; same roster trick as
@@ -266,7 +292,7 @@ impl<T: FaSignedRequest> SignedRequest<T> {
         if request.fa_id() != &self.fa_id {
             return Err(AuthError::SignerMismatch);
         }
-        if FA_REQUEST_FRESHNESS_WINDOW_SECS < now.0.abs_diff(request.ts().0) {
+        if !request.is_fresh(now) {
             return Err(AuthError::Stale);
         }
         Ok(VerifiedFaRequest { inner: request })
