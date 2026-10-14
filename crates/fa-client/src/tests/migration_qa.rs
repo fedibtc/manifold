@@ -446,6 +446,7 @@ async fn drive_migrated<I: FaIdentity>(
         "old_funded": qa_hex_quotes(&old_funded),
         "new_funded": qa_hex_quotes(&funded.difference(&old_funded).copied().collect()),
         "settled": qa_hex_quotes(&wallet.settled_quotes.lock().unwrap()),
+        "payment_calls": wallet.created_quotes.lock().unwrap().iter().map(|q| hex::encode(q.0)).collect::<Vec<_>>(),
         "create_records": mgs.create_records.lock().unwrap().iter().map(|r| serde_json::json!({
             "quote_id": hex::encode(r.quote_id.0),
             "seat_id": r.seat_id.to_string(),
