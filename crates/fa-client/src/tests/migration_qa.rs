@@ -608,6 +608,8 @@ const R269_UNVERIFIED_RESTORE: &str =
     include_str!("../db/fixtures/qa/r269_unverified_restored_backup.json");
 const R269_PUBLISHING_SEAT_BINDINGS: &str =
     include_str!("../db/fixtures/qa/r269_publishing_seat_bindings.json");
+const R269_BOUND_REPLACEMENT_PAID: &str =
+    include_str!("../db/fixtures/qa/r269_bound_replacement_payment_started.json");
 const R269_MIXED_REPLACEMENT_WAVE: &str =
     include_str!("../db/fixtures/qa/r269_mixed_replacement_wave_live_reservation.json");
 
@@ -819,4 +821,131 @@ async fn r269_old_guardian_fee_field_name_migrates_after_the_bridge_rewrite() {
     );
     client.drive_all_for_test(options()).await.unwrap();
     assert!(client.status().federation.is_some());
+}
+
+/// The quote that the fixture's replacement seat 0 was bound to when its
+/// payment started. The binding cleared `replacement_for`, so the row is an
+/// ordinary bound paid seat; the other six seats exist.
+fn bound_replacement_quote() -> QuoteId {
+    let fixture: serde_json::Value = serde_json::from_str(R269_BOUND_REPLACEMENT_PAID).unwrap();
+    let seat = fixture["rows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row[0].as_str().unwrap().starts_with("01") && row[1]["index"] == 0)
+        .unwrap();
+    assert!(seat[1]["replacement_for"].is_null());
+    assert!(seat[1]["seat_id"].is_null());
+    serde_json::from_value(
+        seat[1]["admission"]["peer_badge"]["state"]["effect_authorized"]["quote_id"].clone(),
+    )
+    .unwrap()
+}
+
+/// The wallet prepared the replacement's payment before the crash. The run
+/// presents that payment once, pays nothing new, and all seven seats reach
+/// the pool.
+#[tokio::test]
+async fn r269_bound_replacement_with_a_prepared_payment_presents_it_once() {
+    let quote = bound_replacement_quote();
+    let (client, mem, wallet, mgs) = open_fixture(R269_BOUND_REPLACEMENT_PAID).await;
+    assert!(wallet.funded_quotes.lock().unwrap().contains(&quote));
+    client.drive_all_for_test(options()).await.unwrap();
+    let status = client.status();
+    assert!(status.purchase.is_none());
+    assert_eq!(federation(&status).seats.len(), 7);
+    assert!(wallet.created_quotes.lock().unwrap().is_empty());
+    let presented = mgs
+        .create_records
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|record| record.quote_id == quote)
+        .count();
+    assert_eq!(presented, 1);
+    reload(&mem).await.expect("the FA still loads after a run");
+}
+
+/// The wallet rejected the replacement's payment. The seat leaves without a
+/// payment, the six other seats reach the pool, and the creation needs one
+/// seat.
+#[tokio::test]
+async fn r269_bound_replacement_with_a_rejected_payment_leaves() {
+    let quote = bound_replacement_quote();
+    let (client, mem, wallet, mgs) = open_fixture(R269_BOUND_REPLACEMENT_PAID).await;
+    wallet.funded_quotes.lock().unwrap().remove(&quote);
+    wallet.rejected_quotes.lock().unwrap().insert(quote);
+    let result = client.drive_all_for_test(options()).await;
+    assert!(
+        matches!(
+            result,
+            Err(FaError::SelectionReauthorizationRequired {
+                reason: SelectionReauthorizationReason::SelectedPayerUnavailable,
+                ..
+            })
+        ),
+        "{result:?}"
+    );
+    let status = client.status();
+    assert!(status.purchase.is_none());
+    assert_eq!(status.pool.len(), 6);
+    assert!(status.creation.is_some());
+    assert!(wallet.created_quotes.lock().unwrap().is_empty());
+    assert!(
+        mgs.create_records
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|record| record.quote_id != quote)
+    );
+    reload(&mem).await.expect("the FA still loads after a run");
+
+    rebuy_missing_seats(&client).await.unwrap();
+    client.drive_all_for_test(options()).await.unwrap();
+    assert_eq!(federation(&client.status()).seats.len(), 7);
+    assert_eq!(wallet.created_quotes.lock().unwrap().len(), 1);
+}
+
+/// The wallet never started the replacement's payment. The run pays one new
+/// quote from the same MG at the previewed plan, and all seven seats reach
+/// the pool.
+#[tokio::test]
+async fn r269_bound_replacement_without_a_started_payment_pays_one_new_quote() {
+    let quote = bound_replacement_quote();
+    let (client, mem, wallet, mgs) = open_fixture(R269_BOUND_REPLACEMENT_PAID).await;
+    wallet.funded_quotes.lock().unwrap().remove(&quote);
+    client.drive_all_for_test(options()).await.unwrap();
+    let status = client.status();
+    assert!(status.purchase.is_none());
+    assert_eq!(federation(&status).seats.len(), 7);
+    let paid = wallet.created_quotes.lock().unwrap().clone();
+    assert_eq!(paid.len(), 1);
+    assert_ne!(paid[0], quote);
+    let fixture: serde_json::Value = serde_json::from_str(R269_BOUND_REPLACEMENT_PAID).unwrap();
+    let old_seat = fixture["rows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row[0].as_str().unwrap().starts_with("01") && row[1]["index"] == 0)
+        .unwrap()[1]
+        .clone();
+    let old_quote: SignedResponse<GetQuoteResponse> =
+        serde_json::from_value(old_seat["signed_quote"].clone()).unwrap();
+    let records = mgs.quote_records.lock().unwrap();
+    let new_quote = records
+        .iter()
+        .find(|record| record.quote_id == paid[0])
+        .expect("the new quote came from a test MG");
+    let locator: Locator = serde_json::from_value(old_seat["locator"].clone()).unwrap();
+    let old_quote = old_quote.verify(&locator.service_pubkey).unwrap();
+    assert_eq!(new_quote.plan, old_quote.terms.request.plan);
+    drop(records);
+    let presented = mgs.create_records.lock().unwrap();
+    assert_eq!(
+        presented.iter().filter(|r| r.quote_id == paid[0]).count(),
+        1
+    );
+    assert!(presented.iter().all(|r| r.quote_id != quote));
+    drop(presented);
+    reload(&mem).await.expect("the FA still loads after a run");
 }
