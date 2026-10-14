@@ -3183,6 +3183,122 @@ async fn formed_client_for_liquidity() -> (
 }
 
 #[tokio::test]
+async fn schema_11_partial_purchase_stays_a_purchase() {
+    let database = MemDatabase::new().into_database();
+    crate::db::FaStore::new(database.clone())
+        .install_schema_11_fixture_for_test(crate::db::test_support::Schema11Fixture::Purchase)
+        .await;
+    let (payments, _) = TestPayments::new();
+    let client = open_client(
+        database,
+        payments,
+        Arc::new(MgState::default()),
+        MgConfig::paid(),
+    )
+    .await;
+
+    let status = client.status();
+    let purchase = purchase(&status);
+    assert!(purchase.payment_outputs_started);
+    assert_eq!(
+        purchase.request.federation_size,
+        FederationSize(MIN_FEDERATION_SIZE)
+    );
+    assert_eq!(
+        purchase
+            .seats
+            .iter()
+            .map(|seat| seat.seat_id.is_some())
+            .collect::<Vec<_>>(),
+        [true, true, true, false, false, false, false]
+    );
+    assert!(status.pool.is_empty());
+    assert!(status.formation.is_none());
+    assert!(status.federation.is_none());
+}
+
+#[tokio::test]
+async fn schema_11_dkg_moves_seats_into_a_formation_that_finishes() {
+    let database = MemDatabase::new().into_database();
+    crate::db::FaStore::new(database.clone())
+        .install_schema_11_fixture_for_test(crate::db::test_support::Schema11Fixture::Dkg)
+        .await;
+    let (payments, _) = TestPayments::new();
+    let client = open_client(
+        database,
+        payments,
+        Arc::new(MgState::default()),
+        MgConfig::paid(),
+    )
+    .await;
+
+    let status = client.status();
+    assert!(status.purchase.is_none());
+    assert!(status.pool.is_empty());
+    let formation = formation(&status);
+    assert_eq!(formation.phase, FormationPhase::PreparingDkg);
+    assert_eq!(
+        formation.federation_name,
+        FederationName("Test Federation".to_owned())
+    );
+    assert_eq!(
+        formation
+            .seats
+            .iter()
+            .map(|seat| seat.guardian_code.is_some())
+            .collect::<Vec<_>>(),
+        [true, true, true, true, true, false, true]
+    );
+
+    client.resume().await.unwrap();
+    let status = client.status();
+    assert!(status.formation.is_none());
+    let federation = federation(&status);
+    assert_eq!(federation.federation_invite, test_invite(0));
+    assert_eq!(federation.freshness, FormationFreshness::Fresh);
+    client.inner.store.backup_payload().await.unwrap();
+}
+
+#[tokio::test]
+async fn schema_11_formed_federation_keeps_its_record_and_rechecks() {
+    for fixture in [
+        crate::db::test_support::Schema11Fixture::Formed,
+        crate::db::test_support::Schema11Fixture::FormedWithoutFederationRecord,
+    ] {
+        let database = MemDatabase::new().into_database();
+        crate::db::FaStore::new(database.clone())
+            .install_schema_11_fixture_for_test(fixture)
+            .await;
+        let (payments, _) = TestPayments::new();
+        let state = Arc::new(MgState::default());
+        *state.meta_consensus_raw.lock().unwrap() =
+            Some(crate::db::test_support::schema_11_formed_meta_consensus_for_test());
+        let client = open_client(database, payments, state, MgConfig::paid()).await;
+
+        let status = client.status();
+        assert!(status.purchase.is_none(), "{fixture:?}");
+        assert!(status.formation.is_none(), "{fixture:?}");
+        let federation = federation(&status);
+        assert!(federation.reconciled, "{fixture:?}");
+        assert_eq!(federation.federation_invite, test_invite(0), "{fixture:?}");
+        assert_eq!(federation.seats.len(), usize::from(MIN_FEDERATION_SIZE));
+        let backup = client.inner.store.backup_payload().await.unwrap();
+        assert_eq!(backup.payload.federation_invite, test_invite(0));
+
+        client.resume().await.unwrap();
+        let status = client.status();
+        assert_eq!(
+            status
+                .federation
+                .as_ref()
+                .map(|federation| federation.freshness),
+            Some(FormationFreshness::Fresh),
+            "{fixture:?}"
+        );
+    }
+}
+
+#[tokio::test]
 async fn backup_payload_is_lean_stable_and_requires_confirmed_formed_metadata() {
     let (client, _, _, _) = formed_client_for_liquidity().await;
     let first = client.inner.store.backup_payload().await.unwrap();

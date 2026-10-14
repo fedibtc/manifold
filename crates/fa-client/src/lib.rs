@@ -372,7 +372,7 @@ where
     ) -> FaResult<Self> {
         let store = FaStore::new(database);
         let fa_id = ports.identity.public_key().map_err(FaError::Identity)?;
-        store.migrate_federation_record(fa_id).await?;
+        store.migrate_storage().await?;
         let status = store.load_status(fa_id).await?;
         let (progress, _) = watch::channel(status);
         let backup_tasks = TaskGroup::new();
