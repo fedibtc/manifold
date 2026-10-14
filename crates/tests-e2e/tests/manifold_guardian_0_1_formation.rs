@@ -2707,22 +2707,34 @@ async fn run_fa_crash_recovery() -> anyhow::Result<()> {
         "killed FA must reopen its durable guardian-code preparation, got {status}"
     );
 
-    let mut resume = Command::new(&fa_cli_bin);
-    resume
-        .arg("--state-dir")
-        .arg(&state_dir)
-        .arg("--json")
-        .arg("resume")
-        .arg("--fa-spv2-account-file")
-        .arg(&fa_fee_account_file)
-        .env("MG_E2E_LOCAL_IROH", "1")
-        .env(MG_ENDPOINT_ADDRS_ENV, &mg_endpoints)
-        .env("FM_IROH_CONNECT_OVERRIDES_PLAIN", &iroh_overrides)
-        .env(
-            fedi_decentralized_manifold_environment::DEV_NOSTR_RELAYS_ENV,
-            &nostr_relay.url,
-        );
-    let resumed = run_expect_success(resume, "fa-cli resume", Duration::from_secs(90)).await?;
+    // The killed guardians are still restarting fedimintd, so a resume can
+    // fail on them. The app's run loop retries; this test retries the CLI.
+    let resume_deadline = tokio::time::Instant::now() + Duration::from_secs(150);
+    let resumed = loop {
+        let mut resume = Command::new(&fa_cli_bin);
+        resume
+            .arg("--state-dir")
+            .arg(&state_dir)
+            .arg("--json")
+            .arg("resume")
+            .arg("--fa-spv2-account-file")
+            .arg(&fa_fee_account_file)
+            .env("MG_E2E_LOCAL_IROH", "1")
+            .env(MG_ENDPOINT_ADDRS_ENV, &mg_endpoints)
+            .env("FM_IROH_CONNECT_OVERRIDES_PLAIN", &iroh_overrides)
+            .env(
+                fedi_decentralized_manifold_environment::DEV_NOSTR_RELAYS_ENV,
+                &nostr_relay.url,
+            );
+        match run_expect_success(resume, "fa-cli resume", Duration::from_secs(90)).await {
+            Ok(resumed) => break resumed,
+            Err(error) if tokio::time::Instant::now() < resume_deadline => {
+                eprintln!("retrying fa-cli resume: {error:#}");
+                tokio::time::sleep(Duration::from_secs(5)).await;
+            }
+            Err(error) => return Err(error),
+        }
+    };
     let resumed: serde_json::Value = serde_json::from_str(resumed.trim())?;
     anyhow::ensure!(
         formed_invite(&resumed).is_some(),
