@@ -264,6 +264,10 @@ struct PeerBadgeVerifierInner {
     /// lookup happens for it, so a replaceable-event overwrite cannot rotate
     /// its trust (`SPEC-peer-badge-verifier`).
     pinned_authorities: BTreeMap<PublicKey, IssuerAuthority>,
+    /// Development reads revocation state from its profile relays rather
+    /// than the authority's signed locations. Without an override these are
+    /// the same relays; with one, an offline harness can serve them.
+    development_revocation_relays: Option<Vec<RelayUrl>>,
     source: Arc<dyn PeerBadgeEventSource>,
 }
 
@@ -337,6 +341,8 @@ impl PeerBadgeVerifier {
                 other => other,
             })?;
         let authority_relays = PeerBadgeAuthorityRelays::new(authority_relays)?;
+        let development_revocation_relays =
+            (environment == ManifoldEnvironment::Development).then(|| authority_relays.0.clone());
         let trust_policy = PeerBadgeTrustPolicy::try_new(minimum_trust_level)?;
         let mut pinned_authorities = BTreeMap::new();
         for document in committed_authorities {
@@ -347,7 +353,7 @@ impl PeerBadgeVerifier {
                 });
             }
         }
-        Ok(Self::new_with_provenance(
+        let mut verifier = Self::new_with_provenance(
             issuer_roots,
             authority_relays,
             trust_policy,
@@ -356,7 +362,11 @@ impl PeerBadgeVerifier {
                 environment,
                 profile_revision,
             },
-        ))
+        );
+        Arc::get_mut(&mut verifier.inner)
+            .expect("a new verifier is not shared")
+            .development_revocation_relays = development_revocation_relays;
+        Ok(verifier)
     }
 
     fn new_with_provenance(
@@ -412,6 +422,7 @@ impl PeerBadgeVerifier {
                 issuer_roots,
                 trust_policy,
                 pinned_authorities,
+                development_revocation_relays: None,
                 source,
             }),
         }
@@ -590,6 +601,11 @@ impl PeerBadgeVerifier {
         if relay_urls.is_empty() {
             return Err(PeerBadgeVerificationError::MissingRevocationLocation);
         }
+        let relay_urls = self
+            .inner
+            .development_revocation_relays
+            .clone()
+            .unwrap_or(relay_urls);
 
         let digest = credential_digest_wire_string(credential_digest)?;
         let candidates = self

@@ -62,6 +62,13 @@ configuration error for any environment whose issuer list is empty or whose
 committed document fails to parse, verify, respect bounds, or match a
 configured root.
 
+The development profile reads revocation state from its profile relays instead
+of the authority's signed revocation locations. Without a relay override the
+two are the same canonical relays. With the development relay override, an
+offline test harness serves revocation state from its own relay. Development
+trust is already public test trust, so this adds no trust. Staging and
+production always use the signed locations.
+
 ## Authority and revocation visibility
 
 Revocations, and authority replacements for unpinned issuers, are not
