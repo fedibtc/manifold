@@ -1256,11 +1256,24 @@ where
                 .await?
                 .map_err(|error| FaError::Payment(error.to_string()))?;
             }
-            self.inner
-                .store
-                .drop_released_replacements(&recovery.snapshot.purchase_id, &reservation_id)
-                .await?;
-            *recovery = self.active_recovery(fa_id).await?;
+            // The applied replacements that the reservation held leave the
+            // purchase, like seats that ended after payment.
+            let replacements = (0..recovery.seats.len())
+                .filter(|&position| {
+                    let seat = &recovery.seats[position];
+                    seat.progress.seat_id.is_none()
+                        && seat.admission.requires_effect_authorization()
+                        && seat.signed_quote.as_ref().is_some_and(|signed_quote| {
+                            signed_quote
+                                .verify(&seat.progress.locator.service_pubkey)
+                                .is_ok_and(|quote| {
+                                    recovery
+                                        .quote_is_authorized(seat.progress.index, quote.quote_id())
+                                })
+                        })
+                })
+                .collect::<Vec<_>>();
+            self.clear_terminal_quotes(recovery, &replacements).await?;
             if recovery
                 .seats
                 .iter()
