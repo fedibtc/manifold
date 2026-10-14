@@ -461,6 +461,25 @@ async fn run_formed_fleet_restore() -> anyhow::Result<()> {
     })
     .await
     .map_err(|_| anyhow::anyhow!("formed guardian archive was not confirmed on Nostr"))??;
+    // The FA delivers one guardian's invite; this guardian serves its own.
+    let seat_invite = manifold_guardian_admin(
+        &manifold_guardian_bin,
+        &original_dir,
+        &["seats", "status", &seat_id],
+    )
+    .await?["report"]["invite_code"]
+        .as_str()
+        .context("formed seat reports its invite")?
+        .to_owned();
+    anyhow::ensure!(
+        seat_invite
+            .parse::<fedimint_core::invite_code::InviteCode>()?
+            .federation_id()
+            == invite
+                .parse::<fedimint_core::invite_code::InviteCode>()?
+                .federation_id(),
+        "formed seat must join the FA's federation"
+    );
 
     // The acknowledgement is truthful only after the original guardian is
     // down. Keep its old data root untouched: restore must need only the
@@ -516,7 +535,7 @@ async fn run_formed_fleet_restore() -> anyhow::Result<()> {
             .await?;
             if status["report"]["phase"] == "running" && status["report"]["health"] == "healthy" {
                 anyhow::ensure!(
-                    status["report"]["invite_code"] == invite,
+                    status["report"]["invite_code"] == seat_invite,
                     "restored guardian must retain the exact formed invite: {status}"
                 );
                 return Ok::<_, anyhow::Error>(());
