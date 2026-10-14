@@ -141,8 +141,8 @@ remains outside this development/test tool's scope.
 ## Reference FA payer recovery
 
 The CLI's `fa-client` payment adapter is the development/reference FA payer;
-the MG wallet is payee-only. `fa-client`, not this adapter, schedules initial,
-resumed, and replacement payments. Before `fa-client` starts those locked
+the MG wallet is payee-only. `fa-client`, not this adapter, schedules initial
+and resumed payments. Before `fa-client` starts those locked
 payments one at a time,
 the payer journals one deterministic aggregate reservation binding the payer,
 ordered unique quote ids, exact foreign-output plan hashes, fee-aware logical
@@ -209,7 +209,7 @@ fallbacks is therefore handled without inspecting private mint state machines.
 Every output of the accepted covering transactions must become spendable before
 the member advances from `Started` to `Terminal`; timeout, partial coverage,
 overlap, malformed siblings, or output failure leaves `Started` for exact
-restart recovery and cannot authorize replacement.
+restart recovery and cannot let `fa-client` drop the seat.
 
 Every locked-payment operation is identified by the exact canonical quote,
 mint generation and module, and quoted issuance set. Non-secret operation

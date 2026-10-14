@@ -66,6 +66,47 @@ impl FaStore {
         dbtx.commit_tx().await;
     }
 
+    /// Install the schema 11 purchase fixture with seat `index` ended after
+    /// payment, as the removed guardian replacement flow stored it: waiting
+    /// for a replacement, or with one applied to the MG in `replaced_by`.
+    pub(crate) async fn install_schema_11_replacement_for_test(
+        &self,
+        index: u16,
+        replaced_by: Option<(Locator, PublicKey)>,
+    ) {
+        let mut rows: Vec<(String, serde_json::Value)> =
+            serde_json::from_str(SCHEMA_11_PURCHASE).expect("schema 11 fixture parses");
+        for (key, value) in &mut rows {
+            if key == "00" {
+                // Marking a seat for replacement invalidated the aggregate.
+                value["payment_authorization"] = serde_json::Value::Null;
+                value["payment_reservation_id"] = serde_json::Value::Null;
+            } else if key.starts_with("01") && value["index"] == index {
+                let badge = value["admission"]["peer_badge"].clone();
+                value["replacement_for"] = badge["state"]["effect_authorized"]["quote_id"].clone();
+                value["replacement_previous_fman_id"] = badge["fman_id"].clone();
+                value["replacement_previous_locator"] = value["locator"].clone();
+                value["signed_quote"] = serde_json::Value::Null;
+                if let Some((locator, mg_id)) = &replaced_by {
+                    value["replacement_approved"] = true.into();
+                    value["locator"] = serde_json::to_value(locator).expect("locator serializes");
+                    let badge = &mut value["admission"]["peer_badge"];
+                    badge["fman_id"] = mg_id.to_hex().into();
+                    badge["holder"] = mg_id.to_hex().into();
+                    badge["state"] = "fresh".into();
+                }
+            }
+        }
+        let mut dbtx = self.database.begin_transaction().await;
+        for (key, value) in rows {
+            let key = hex::decode(key).expect("fixture key is hex");
+            dbtx.raw_insert_bytes(&key, &serde_json::to_vec(&value).expect("fixture value"))
+                .await
+                .expect("test raw write succeeds");
+        }
+        dbtx.commit_tx().await;
+    }
+
     pub(crate) async fn install_schema_9_fixture_for_test(&self) {
         self.install_raw_formation_for_test(SCHEMA_9_FORMATION)
             .await;

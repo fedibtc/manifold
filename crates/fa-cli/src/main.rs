@@ -663,8 +663,8 @@ struct CreateArgs {
     /// Aggregate spending cap in millisatoshis for paid seats.
     ///
     /// `fa-client` self-authorizes only the initial aggregate when it is
-    /// within the cap. Any later replacement always requires the explicit
-    /// `authorize-payments` command.
+    /// within the cap. Any later re-quoted aggregate always requires the
+    /// explicit `authorize-payments` command.
     #[arg(long)]
     max_total_msats: Option<u64>,
     /// Inclusive lower three-number Fedimint release bound.

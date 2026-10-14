@@ -30,8 +30,7 @@ use stability_pool_common::Account;
 
 use crate::{
     FaError, FaResult, FaStatus, FormationFreshness, FormationId, FormationPhase,
-    FormationSnapshot, GuardianReplacementId, GuardianReplacementRequirements,
-    GuardianReplacementSeat, PaymentAuthorizationId, PaymentRequirements, PaymentReservationId,
+    FormationSnapshot, PaymentAuthorizationId, PaymentRequirements, PaymentReservationId,
     PurchaseActionRequired, PurchasePhase, ResolvedSeatPurchase, SeatPaymentRequirement, SeatPhase,
     SeatProgress, SeatPurchaseSnapshot,
 };
@@ -46,7 +45,7 @@ const FORMATION_TX_MAX_ATTEMPTS: usize = 10;
 #[derive(Clone, Copy)]
 enum QuoteClearDisposition {
     RefreshSameGuardian,
-    TerminalReplacement,
+    DropSeat,
 }
 
 #[repr(u8)]
@@ -248,11 +247,16 @@ struct PurchaseSeatKey {
     index: u16,
 }
 
+#[derive(Debug, Decodable, Encodable)]
+struct PurchaseSeatKeyPrefix;
+
 impl_db_record!(
     key = PurchaseSeatKey,
     value = StoredPurchaseSeat,
     db_prefix = FaDbPrefix::PurchaseSeat,
 );
+
+impl_db_lookup!(key = PurchaseSeatKey, query_prefix = PurchaseSeatKeyPrefix);
 
 /// One bought seat that hosts no guardian yet, keyed by its seat id.
 #[derive(Debug, Decodable, Encodable)]
@@ -369,9 +373,8 @@ struct StoredPurchase {
     /// Whether the driver durably committed to releasing the reservation
     /// above immediately before calling the wallet. While set, authoritative
     /// wallet absence is the expected outcome of that release rather than
-    /// proof of an orphaned journal, so an interrupted abandon or
-    /// provisional-replacement restore completes on a later run instead of
-    /// retaining the formation forever. Meaningful only beside a durable
+    /// proof of an orphaned journal, so an interrupted abandon completes on a
+    /// later run instead of retaining the formation forever. Meaningful only beside a durable
     /// reservation id; adopting a live reservation clears it. Like the
     /// spending cap, a record persisted before this field decodes to the
     /// absent commitment.
@@ -380,7 +383,7 @@ struct StoredPurchase {
     /// Whether an aggregate payment authorization was ever durably recorded.
     ///
     /// `payment_authorization` is cleared whenever the quote set changes, but
-    /// the initial spending cap must never silently authorize a replacement
+    /// the initial spending cap must never silently authorize a re-quoted
     /// aggregate, so this commercial-history tombstone never clears. It is
     /// independent of the wallet-output value-safety boundary below.
     payment_authorization_recorded: bool,
@@ -469,8 +472,7 @@ impl From<PeerBadgeVerifierProvenance> for StoredVerifierProvenance {
 ///
 /// `fman_id` is the badge-vouched Nostr author.  The locator's service key is
 /// deliberately not identity: it is rotatable commitment/dialing material.
-/// A fresh replacement writes a fresh unconsumed proof for only its row; the
-/// output-boundary transaction consumes every currently live proof before any
+/// The output-boundary transaction consumes every currently live proof before any
 /// corresponding wallet future is polled.
 #[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
 pub(crate) struct MgAdmission {
@@ -634,25 +636,6 @@ struct StoredPurchaseSeat {
     seat_id: Option<SeatId>,
     #[serde(default)]
     guardian_fee_account: Option<Account>,
-    /// Exact terminal quote proving this row, and only this row, is safe to
-    /// replace after payment outputs started.
-    #[serde(default)]
-    replacement_for: Option<QuoteId>,
-    /// Locator that produced `replacement_for`. Once a fresh replacement is
-    /// applied, `locator` advances to that provisional guardian while this
-    /// field keeps the terminal safety proof stable across another preview.
-    #[serde(default)]
-    replacement_previous_locator: Option<Locator>,
-    /// Badge-vouched identity that produced `replacement_for`, kept beside
-    /// the previous locator so the exposed replacement row keeps naming the
-    /// outgoing MG after a provisional swap advances `admission`.
-    #[serde(default)]
-    #[serde(rename = "replacement_previous_fman_id")]
-    replacement_previous_mg_id: Option<PublicKey>,
-    /// Whether a fresh replacement approval has been applied but its exact
-    /// paid-output or free-presentation effect is not authorized yet.
-    #[serde(default)]
-    replacement_approved: bool,
 }
 
 /// One terminal recovery fact corrupted by a storage-corruption test.
@@ -700,10 +683,6 @@ pub(crate) struct PurchaseSeatRecovery {
     pub(crate) progress: SeatProgress,
     pub(crate) admission: MgAdmission,
     pub(crate) signed_quote: Option<SignedResponse<GetQuoteResponse>>,
-    pub(crate) replacement_for: Option<QuoteId>,
-    pub(crate) replacement_previous_locator: Option<Locator>,
-    pub(crate) replacement_previous_mg_id: Option<PublicKey>,
-    pub(crate) replacement_approved: bool,
     pub(crate) guardian_fee_account: Option<Account>,
 }
 
@@ -845,19 +824,6 @@ impl DriverLease {
             .await
     }
 
-    /// Renew this owner while returning an unapplied, unreserved replacement
-    /// wave to its durable fresh-preview boundary.
-    pub(crate) async fn restore_provisional_replacements(
-        &self,
-        formation_id: &FormationId,
-        released_reservation: Option<&crate::formation::ReleasedReplacementReservation>,
-    ) -> FaResult<()> {
-        let _guard = self.renewal_lock.lock().await;
-        self.store
-            .restore_provisional_replacements(formation_id, released_reservation, self)
-            .await
-    }
-
     /// Renew this owner while atomically wiping a still-abandonable formation.
     pub(crate) async fn abandon_purchase(&self, formation_id: &FormationId) -> FaResult<()> {
         let _guard = self.renewal_lock.lock().await;
@@ -899,8 +865,6 @@ pub(crate) struct FaStore {
     failed_quote_clear: Arc<std::sync::Mutex<Option<u16>>>,
     #[cfg(test)]
     failed_abandon: Arc<AtomicBool>,
-    #[cfg(test)]
-    failed_restore: Arc<AtomicBool>,
 }
 
 impl FaStore {
@@ -924,8 +888,6 @@ impl FaStore {
             failed_quote_clear: Arc::new(std::sync::Mutex::new(None)),
             #[cfg(test)]
             failed_abandon: Arc::new(AtomicBool::new(false)),
-            #[cfg(test)]
-            failed_restore: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -1396,7 +1358,6 @@ impl FaStore {
             failed_seat_checkpoint: Arc::new(std::sync::Mutex::new(None)),
             failed_quote_clear: Arc::new(std::sync::Mutex::new(None)),
             failed_abandon: Arc::new(AtomicBool::new(false)),
-            failed_restore: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -1416,13 +1377,6 @@ impl FaStore {
     /// Fail the next lease-fenced abandon before its durable transaction.
     pub(crate) fn fail_abandon_once(&self) {
         self.failed_abandon.store(true, Ordering::SeqCst);
-    }
-
-    #[cfg(test)]
-    /// Fail the next lease-fenced provisional-replacement restore before its
-    /// durable transaction.
-    pub(crate) fn fail_restore_once(&self) {
-        self.failed_restore.store(true, Ordering::SeqCst);
     }
 
     #[cfg(test)]
@@ -1524,31 +1478,6 @@ impl FaStore {
             FormedFact::GuardianCode => formation.seats[0].guardian_code = None,
         }
         dbtx.insert_entry(&FormationKey, &formation).await;
-        dbtx.commit_tx().await;
-    }
-
-    #[cfg(test)]
-    /// Corrupt one seat into the forbidden quote-plus-replacement state.
-    pub(crate) async fn mix_quote_with_replacement_for_test(&self, index: u16) {
-        let mut dbtx = self.database.begin_transaction().await;
-        let formation = dbtx
-            .get_value(&PurchaseKey)
-            .await
-            .expect("test formation exists");
-        let key = PurchaseSeatKey {
-            formation_id: formation.formation_id.0,
-            index,
-        };
-        let mut seat = dbtx.get_value(&key).await.expect("test seat exists");
-        let quote_id = seat
-            .signed_quote
-            .as_ref()
-            .expect("test seat has quote")
-            .verify(&seat.locator.service_pubkey)
-            .expect("test quote verifies")
-            .quote_id();
-        seat.replacement_for = Some(quote_id);
-        dbtx.insert_entry(&key, &seat).await;
         dbtx.commit_tx().await;
     }
 
@@ -1695,7 +1624,8 @@ impl FaStore {
         if !in_purchase {
             object.insert("phase".to_owned(), "seats_created".into());
         }
-        let purchase: StoredPurchase = serde_json::from_value(header).map_err(|_| malformed())?;
+        let mut purchase: StoredPurchase =
+            serde_json::from_value(header).map_err(|_| malformed())?;
         let mut seats = Vec::with_capacity(usize::from(purchase.seat_count));
         for index in 0..purchase.seat_count {
             let key = PurchaseSeatKey {
@@ -1724,10 +1654,32 @@ impl FaStore {
                 .transpose()
                 .map_err(|_| malformed())?
                 .flatten();
+            // Schema 12 has no guardian replacement. A seat that waited for
+            // one ended after payment, so it leaves the purchase. An applied
+            // replacement is an ordinary seat of its new MG.
+            let ended = !seat_object
+                .get("replacement_for")
+                .unwrap_or(&serde_json::Value::Null)
+                .is_null()
+                && seat_object.get("replacement_approved") != Some(&serde_json::Value::Bool(true));
             let seat: StoredPurchaseSeat = serde_json::from_value(seat).map_err(|_| malformed())?;
+            if ended {
+                dbtx.raw_remove_entry(&DatabaseKeyPrefix::to_bytes(&key))
+                    .await
+                    .map_err(|_| FaError::Storage("removing a schema 11 seat failed".to_owned()))?;
+                continue;
+            }
             seats.push((key, seat, guardian_code));
         }
         if in_purchase {
+            purchase.seat_count =
+                u16::try_from(seats.len()).expect("kept seats fit the stored count");
+            purchase.phase = purchase_phase(
+                &seats
+                    .iter()
+                    .map(|(_, seat, _)| seat.clone())
+                    .collect::<Vec<_>>(),
+            );
             // The schema 11 rows no longer decode, so they are replaced
             // without decoding.
             dbtx.raw_remove_entry(&DatabaseKeyPrefix::to_bytes(&PurchaseKey))
@@ -2017,31 +1969,17 @@ impl FaStore {
         };
         validate_schema_and_owner(&stored, fa_id)?;
 
-        let mut seats = Vec::with_capacity(usize::from(stored.seat_count));
-        for index in 0..stored.seat_count {
-            let key = PurchaseSeatKey {
-                formation_id: stored.formation_id.0.clone(),
-                index,
-            };
-            let seat = dbtx.get_value(&key).await.ok_or_else(|| {
-                FaError::Storage(format!("missing persisted FA seat row {index}"))
-            })?;
-            if seat.index != index {
-                return Err(FaError::Storage(format!(
-                    "persisted FA seat row {index} contains index {}",
-                    seat.index
-                )));
-            }
-            seats.push(seat);
-        }
+        let seats = purchase_seat_rows(&mut dbtx.to_ref_nc(), &stored.formation_id)
+            .await?
+            .into_iter()
+            .map(|(_, seat)| seat)
+            .collect::<Vec<_>>();
         validate_formation_progress(&stored, &seats)?;
 
         let mut recoveries = Vec::with_capacity(seats.len());
         for seat in seats {
             let phase = if seat.seat_id.is_some() {
                 SeatPhase::Created
-            } else if seat.replacement_for.is_some() && !seat.replacement_approved {
-                SeatPhase::ReplacementRequired
             } else if seat.signed_quote.is_some() {
                 SeatPhase::QuoteReady
             } else {
@@ -2059,10 +1997,6 @@ impl FaStore {
                 },
                 admission: seat.admission,
                 signed_quote: seat.signed_quote,
-                replacement_for: seat.replacement_for,
-                replacement_previous_locator: seat.replacement_previous_locator,
-                replacement_previous_mg_id: seat.replacement_previous_mg_id,
-                replacement_approved: seat.replacement_approved,
                 guardian_fee_account: seat.guardian_fee_account,
             });
         }
@@ -2088,7 +2022,6 @@ impl FaStore {
         });
         let expose_payment_action = payment_required && stored.payment_outputs_started;
         let phase = public_phase(stored.phase, &recoveries, expose_payment_action);
-        let replacements = replacement_requirements(&stored.formation_id, &recoveries);
         let snapshot = SeatPurchaseSnapshot {
             purchase_id: stored.formation_id,
             request: stored.intent,
@@ -2098,15 +2031,11 @@ impl FaStore {
                 .map(|recovery| recovery.progress.clone())
                 .collect(),
             freshness: FormationFreshness::Unsynced,
-            action_required: replacements
-                .map(PurchaseActionRequired::ReplaceGuardians)
-                .or_else(|| {
-                    expose_payment_action.then(|| {
-                        PurchaseActionRequired::AuthorizePayments(
-                            payment_requirements.expect("payment readiness implies requirements"),
-                        )
-                    })
-                }),
+            action_required: expose_payment_action.then(|| {
+                PurchaseActionRequired::AuthorizePayments(
+                    payment_requirements.expect("payment readiness implies requirements"),
+                )
+            }),
             payment_outputs_started: stored.payment_outputs_started,
             last_error: None,
         };
@@ -2220,10 +2149,6 @@ impl FaStore {
                     signed_quote: None,
                     seat_id: None,
                     guardian_fee_account: None,
-                    replacement_for: None,
-                    replacement_previous_locator: None,
-                    replacement_previous_mg_id: None,
-                    replacement_approved: false,
                 },
             )
             .await;
@@ -2313,29 +2238,13 @@ impl FaStore {
                         seat.guardian_fee_account = Some(guardian_fee_account);
                         dbtx.insert_entry(&key, &seat).await;
 
-                        let mut all_created = true;
-                        for sibling_index in 0..formation.seat_count {
-                            if sibling_index == index {
-                                continue;
-                            }
-                            let sibling = dbtx
-                                .get_value(&PurchaseSeatKey {
-                                    formation_id: formation_id.0.clone(),
-                                    index: sibling_index,
-                                })
-                                .await
-                                .ok_or_else(|| {
-                                    FaError::Storage(format!(
-                                        "missing persisted FA seat row {sibling_index}"
-                                    ))
-                                })?;
-                            all_created &= sibling.seat_id.is_some();
-                        }
-                        formation.phase = if all_created {
-                            StoredPurchasePhase::SeatsCreated
-                        } else {
-                            StoredPurchasePhase::SeatsPartiallyCreated
-                        };
+                        formation.phase = purchase_phase(
+                            &purchase_seat_rows(dbtx, &formation_id)
+                                .await?
+                                .into_iter()
+                                .map(|(_, seat)| seat)
+                                .collect::<Vec<_>>(),
+                        );
                         dbtx.insert_entry(&PurchaseKey, &formation).await;
                         store.wait_before_hooked_formation_commit().await;
                         Ok(())
@@ -2375,14 +2284,7 @@ impl FaStore {
                                 "cannot complete a purchase before every seat exists".to_owned(),
                             ));
                         }
-                        for index in 0..purchase.seat_count {
-                            let key = PurchaseSeatKey {
-                                formation_id: purchase_id.0.clone(),
-                                index,
-                            };
-                            let seat = dbtx.get_value(&key).await.ok_or_else(|| {
-                                FaError::Storage(format!("missing persisted FA seat row {index}"))
-                            })?;
+                        for (key, seat) in purchase_seat_rows(dbtx, &purchase_id).await? {
                             let pool_seat = pool_seat(seat)?;
                             dbtx.insert_entry(
                                 &PoolSeatKey {
@@ -2623,11 +2525,6 @@ impl FaStore {
                         let mut seat = dbtx.get_value(&key).await.ok_or_else(|| {
                             FaError::Storage(format!("missing persisted FA seat row {index}"))
                         })?;
-                        if seat.replacement_for.is_some() && !seat.replacement_approved {
-                            return Err(FaError::Storage(format!(
-                                "cannot store a quote while FA seat row {index} requires replacement"
-                            )));
-                        }
                         if let Some(existing) = &seat.signed_quote
                             && existing != &signed_quote
                         {
@@ -2769,14 +2666,9 @@ impl FaStore {
                             })?;
                         validate_active_formation(&formation, &formation_id)?;
                         let mut current = Vec::new();
-                        for index in 0..formation.seat_count {
-                            let key = PurchaseSeatKey {
-                                formation_id: formation_id.0.clone(),
-                                index,
-                            };
-                            let seat = dbtx.get_value(&key).await.ok_or_else(|| {
-                                FaError::Storage(format!("missing persisted FA seat row {index}"))
-                            })?;
+                        for (PurchaseSeatKey { index, .. }, seat) in
+                            purchase_seat_rows(dbtx, &formation_id).await?
+                        {
                             if seat.seat_id.is_some() {
                                 continue;
                             }
@@ -2807,7 +2699,7 @@ impl FaStore {
                             quotes: current,
                         });
                         // Never cleared: one-shot cap authorization must not
-                        // silently cover a later replacement aggregate.
+                        // silently cover a later re-quoted aggregate.
                         formation.payment_authorization_recorded = true;
                         dbtx.insert_entry(&PurchaseKey, &formation).await;
                         Ok(())
@@ -2990,139 +2882,8 @@ impl FaStore {
             }
             validate_fresh_admission(&seat.admission, verifier_provenance, Timestamp(now))?;
             seat.admission.authorize_effect(quote_id, effect)?;
-            if seat.replacement_for.is_some() {
-                if !seat.replacement_approved {
-                    return Err(FaError::Storage(format!(
-                        "FA seat row {index} requires a fresh guardian replacement approval"
-                    )));
-                }
-                // The replacement safety proof remains durable until this
-                // exact admission and quote are atomically bound to their
-                // irreversible effect. From this point onward the new
-                // guardian is pinned to exact recovery.
-                seat.replacement_for = None;
-                seat.replacement_previous_locator = None;
-                seat.replacement_previous_mg_id = None;
-                seat.replacement_approved = false;
-            }
             dbtx.insert_entry(&key, &seat).await;
         }
-        dbtx.insert_entry(
-            &DriverLeaseKey,
-            &StoredDriverLease {
-                owner: lease.owner,
-                expires_at,
-            },
-        )
-        .await;
-        dbtx.commit_tx_result()
-            .await
-            .map_err(map_lease_commit_error)?;
-        (expires_at > (self.lease_clock)())
-            .then_some(())
-            .ok_or(FaError::Busy)
-    }
-
-    /// Restore every still-unconsumed replacement approval as one atomic
-    /// fresh-preview requirement. A durable wallet reservation is cleared
-    /// only with the matching witness created after authoritative wallet
-    /// release.
-    async fn restore_provisional_replacements(
-        &self,
-        formation_id: &FormationId,
-        released_reservation: Option<&crate::formation::ReleasedReplacementReservation>,
-        lease: &DriverLease,
-    ) -> FaResult<()> {
-        #[cfg(test)]
-        if self.failed_restore.swap(false, Ordering::SeqCst) {
-            return Err(FaError::Storage(
-                "injected lease-fenced restore failure".to_owned(),
-            ));
-        }
-        let mut dbtx = self.database.begin_transaction().await;
-        let Some(current) = dbtx.get_value(&DriverLeaseKey).await else {
-            return Err(FaError::Busy);
-        };
-        let now = (self.lease_clock)();
-        let expires_at = now
-            .checked_add(lease.renewal_duration.as_secs())
-            .map(|expires_at| expires_at.min(lease.max_expires_at))
-            .ok_or_else(|| FaError::Storage("FA driver lease renewal overflow".to_owned()))?;
-        if current.owner != lease.owner || current.expires_at <= now || expires_at <= now {
-            return Err(FaError::Busy);
-        }
-
-        let mut formation = dbtx.get_value(&PurchaseKey).await.ok_or_else(|| {
-            FaError::Storage(
-                "cannot restore guardian replacement without an active formation".to_owned(),
-            )
-        })?;
-        validate_active_formation(&formation, formation_id)?;
-        if !formation.payment_outputs_started {
-            return Err(FaError::Storage(
-                "provisional guardian restoration requires a selected post-output formation"
-                    .to_owned(),
-            ));
-        }
-        match (
-            formation.payment_reservation_id.as_ref(),
-            released_reservation,
-        ) {
-            (None, None) => {}
-            (Some(stored), Some(released)) if stored == released.reservation_id() => {
-                // An absence-based witness proves only that no journal
-                // exists now; it clears the reservation solely under the
-                // durable commitment written before that release began.
-                if released.witnesses_absence() && !formation.payment_reservation_release_intended {
-                    return Err(FaError::Storage(
-                        "wallet absence without a durable release commitment cannot clear the \
-                         reservation"
-                            .to_owned(),
-                    ));
-                }
-            }
-            _ => {
-                return Err(FaError::Storage(
-                    "replacement wallet release does not match the durable reservation".to_owned(),
-                ));
-            }
-        }
-
-        let mut restored = 0usize;
-        for index in 0..formation.seat_count {
-            let key = PurchaseSeatKey {
-                formation_id: formation_id.0.clone(),
-                index,
-            };
-            let mut seat = dbtx.get_value(&key).await.ok_or_else(|| {
-                FaError::Storage(format!("missing persisted FA seat row {index}"))
-            })?;
-            if !seat.replacement_approved {
-                continue;
-            }
-            if seat.replacement_for.is_none()
-                || seat.replacement_previous_locator.is_none()
-                || seat.seat_id.is_some()
-                || !seat.admission.requires_effect_authorization()
-            {
-                return Err(FaError::Storage(format!(
-                    "provisional replacement state is inconsistent for FA seat row {index}"
-                )));
-            }
-            seat.signed_quote = None;
-            seat.replacement_approved = false;
-            dbtx.insert_entry(&key, &seat).await;
-            restored += 1;
-        }
-        if restored == 0 {
-            return Err(FaError::Storage(
-                "no provisional guardian replacement remains recoverable".to_owned(),
-            ));
-        }
-        formation.payment_authorization = None;
-        formation.payment_reservation_id = None;
-        formation.payment_reservation_release_intended = false;
-        dbtx.insert_entry(&PurchaseKey, &formation).await;
         dbtx.insert_entry(
             &DriverLeaseKey,
             &StoredDriverLease {
@@ -3286,12 +3047,9 @@ impl FaStore {
                 crate::AbandonUnavailableReason::PaymentOutputsStarted,
             ));
         }
-        for index in 0..formation.seat_count {
-            dbtx.remove_entry(&PurchaseSeatKey {
-                formation_id: formation_id.0.clone(),
-                index,
-            })
-            .await;
+        let rows = purchase_seat_rows(&mut dbtx.to_ref_nc(), formation_id).await?;
+        for (key, _) in rows {
+            dbtx.remove_entry(&key).await;
         }
         dbtx.remove_entry(&PurchaseKey).await;
         dbtx.insert_entry(
@@ -3312,8 +3070,7 @@ impl FaStore {
 
     /// Clear one exact quote for a refresh on the same MG.
     ///
-    /// This generic transition never manufactures a guardian-replacement
-    /// fact. Any authorization for the old quote is cleared atomically.
+    /// Any authorization for the old quote is cleared atomically.
     pub(crate) async fn clear_quote(
         &self,
         formation_id: &FormationId,
@@ -3325,29 +3082,6 @@ impl FaStore {
             index,
             expected_quote,
             QuoteClearDisposition::RefreshSameGuardian,
-        )
-        .await
-    }
-
-    /// Mark one exact terminally refused/rejected quote for FA-owned selected
-    /// guardian replacement.
-    ///
-    /// Callers may enter this transition only after the wallet's terminal
-    /// release proof has been accepted. The store additionally requires the
-    /// selected flow's payment-output tombstone, preventing generic quote
-    /// refresh from being projected as replacement authority.
-    #[cfg(test)]
-    pub(crate) async fn mark_replacement_required(
-        &self,
-        formation_id: &FormationId,
-        index: u16,
-        expected_quote: &SignedResponse<GetQuoteResponse>,
-    ) -> FaResult<()> {
-        self.clear_quote_with_disposition(
-            formation_id,
-            index,
-            expected_quote,
-            QuoteClearDisposition::TerminalReplacement,
         )
         .await
     }
@@ -3373,14 +3107,16 @@ impl FaStore {
     /// release succeeds, all old quote and aggregate facts therefore remain
     /// recoverable. Once they have all succeeded, this transaction clears the
     /// complete terminal subset before invalidating its aggregate reservation.
+    /// After payment outputs started, the terminal seats leave the purchase:
+    /// a new purchase buys any seats still missing.
     pub(crate) async fn clear_terminal_quotes(
         &self,
         formation_id: &FormationId,
         expected_quotes: &[(u16, SignedResponse<GetQuoteResponse>)],
-        mark_replacements: bool,
+        drop_seats: bool,
     ) -> FaResult<()> {
-        let disposition = if mark_replacements {
-            QuoteClearDisposition::TerminalReplacement
+        let disposition = if drop_seats {
+            QuoteClearDisposition::DropSeat
         } else {
             QuoteClearDisposition::RefreshSameGuardian
         };
@@ -3450,38 +3186,30 @@ impl FaStore {
                                     "persisted quote changed before clearing FA seat row {index}"
                                 )));
                             }
-                            seat.replacement_for = match disposition {
+                            match disposition {
                                 QuoteClearDisposition::RefreshSameGuardian => {
-                                    if !seat.replacement_approved {
-                                        seat.replacement_previous_locator = None;
-                                        seat.replacement_previous_mg_id = None;
-                                    }
-                                    seat.replacement_for
-                                        .filter(|_| seat.replacement_approved)
+                                    seat.signed_quote = None;
+                                    dbtx.insert_entry(&key, &seat).await;
                                 }
-                                QuoteClearDisposition::TerminalReplacement => {
+                                QuoteClearDisposition::DropSeat => {
                                     if !formation.payment_outputs_started {
                                         return Err(FaError::Storage(format!(
-                                            "cannot mark FA seat row {index} for replacement outside a selected post-output formation"
+                                            "cannot drop FA seat row {index} before payment outputs started"
                                         )));
                                     }
-                                    let previous_quote_id = expected_quote
-                                            .verify(&seat.locator.service_pubkey)
-                                            .map(|quote| quote.quote_id())
-                                            .map_err(|error| {
-                                                FaError::Storage(format!(
-                                                    "invalid terminal quote for replacement row {index}: {error}"
-                                                ))
-                                            })?;
-                                    seat.replacement_previous_locator =
-                                        Some(seat.locator.clone());
-                                    seat.replacement_previous_mg_id = Some(seat.admission.mg_id());
-                                    seat.replacement_approved = false;
-                                    Some(previous_quote_id)
+                                    dbtx.remove_entry(&key).await;
                                 }
-                            };
-                            seat.signed_quote = None;
-                            dbtx.insert_entry(&key, &seat).await;
+                            }
+                        }
+                        if matches!(disposition, QuoteClearDisposition::DropSeat) {
+                            let seats = purchase_seat_rows(dbtx, &formation_id)
+                                .await?
+                                .into_iter()
+                                .map(|(_, seat)| seat)
+                                .collect::<Vec<_>>();
+                            formation.seat_count = u16::try_from(seats.len())
+                                .expect("remaining seats fit the stored count");
+                            formation.phase = purchase_phase(&seats);
                         }
                         // Invalidate the aggregate only after every exact
                         // terminal member is durably advanced in this tx.
@@ -3490,156 +3218,6 @@ impl FaStore {
                         formation.payment_reservation_release_intended = false;
                         dbtx.insert_entry(&PurchaseKey, &formation).await;
                         store.wait_before_hooked_formation_commit().await;
-                        Ok(())
-                    })
-                },
-                Some(FORMATION_TX_MAX_ATTEMPTS),
-            )
-            .await
-            .map_err(map_formation_tx_error)
-    }
-
-    /// Atomically replace only rows carrying the exact proven-safe
-    /// replacement facts. Accepted and every other sibling are immutable.
-    pub(crate) async fn replace_guardians(
-        &self,
-        formation_id: &FormationId,
-        requirements: &GuardianReplacementRequirements,
-        replacements: &[(Locator, MgAdmission)],
-        max_total_msats: u64,
-    ) -> FaResult<()> {
-        if requirements.seats.len() != replacements.len() || requirements.seats.is_empty() {
-            return Err(FaError::Storage(
-                "replacement rows and verified locators differ".to_owned(),
-            ));
-        }
-        let formation_id = formation_id.clone();
-        let requirements = requirements.clone();
-        let replacements = replacements.to_vec();
-        self.database
-            .autocommit(
-                move |dbtx, _| {
-                    let formation_id = formation_id.clone();
-                    let requirements = requirements.clone();
-                    let replacements = replacements.clone();
-                    Box::pin(async move {
-                        let mut formation = dbtx
-                            .get_value(&PurchaseKey)
-                            .await
-                            .ok_or_else(|| FaError::Storage("no active formation".to_owned()))?;
-                        validate_active_formation(&formation, &formation_id)?;
-                        if !formation.payment_outputs_started {
-                            return Err(FaError::Storage(
-                                "guardian replacement requires a selected post-output formation"
-                                    .to_owned(),
-                            ));
-                        }
-                        if formation.payment_reservation_id.is_some() {
-                            return Err(FaError::Storage(
-                                "guardian replacement cannot discard a live wallet reservation"
-                                    .to_owned(),
-                            ));
-                        }
-                        let replacement_indices = requirements
-                            .seats
-                            .iter()
-                            .map(|requirement| requirement.index)
-                            .collect::<BTreeSet<_>>();
-                        if replacement_indices.len() != requirements.seats.len() {
-                            return Err(FaError::Storage(
-                                "guardian replacement repeats a seat row".to_owned(),
-                            ));
-                        }
-                        let mut service_pubkeys = BTreeMap::new();
-                        let mut holders = BTreeSet::new();
-                        for index in 0..formation.seat_count {
-                            if replacement_indices.contains(&index) {
-                                continue;
-                            }
-                            let key = PurchaseSeatKey {
-                                formation_id: formation_id.0.clone(),
-                                index,
-                            };
-                            let seat = dbtx.get_value(&key).await.ok_or_else(|| {
-                                FaError::Storage(format!("missing retained FA seat row {index}"))
-                            })?;
-                            holders.extend(seat.admission.holder());
-                            if service_pubkeys
-                                .insert(seat.locator.service_pubkey, index)
-                                .is_some()
-                            {
-                                return Err(FaError::Storage(
-                                    "selected formation contains duplicate retained service \
-                                     signing keys"
-                                        .to_owned(),
-                                ));
-                            }
-                        }
-                        for (requirement, (locator, admission)) in
-                            requirements.seats.iter().zip(&replacements)
-                        {
-                            let key = PurchaseSeatKey {
-                                formation_id: formation_id.0.clone(),
-                                index: requirement.index,
-                            };
-                            let mut seat = dbtx.get_value(&key).await.ok_or_else(|| {
-                                FaError::Storage(format!(
-                                    "missing replacement FA seat row {}",
-                                    requirement.index
-                                ))
-                            })?;
-                            let previous_locator = seat
-                                .replacement_previous_locator
-                                .as_ref()
-                                .unwrap_or(&seat.locator);
-                            let previous_mg_id = seat
-                                .replacement_previous_mg_id
-                                .unwrap_or_else(|| seat.admission.mg_id());
-                            if seat.seat_id.is_some()
-                                || seat.signed_quote.is_some()
-                                || seat.replacement_approved
-                                || seat.replacement_for != Some(requirement.previous_quote_id)
-                                || previous_locator != &requirement.previous_locator
-                                || previous_mg_id != requirement.previous_mg_id
-                            {
-                                return Err(FaError::Storage(format!(
-                                    "replacement fact changed for FA seat row {}",
-                                    requirement.index
-                                )));
-                            }
-                            seat.replacement_previous_locator =
-                                Some(requirement.previous_locator.clone());
-                            seat.replacement_previous_mg_id = Some(previous_mg_id);
-                            if let Some(existing_index) =
-                                service_pubkeys.insert(locator.service_pubkey, requirement.index)
-                            {
-                                return Err(FaError::InvalidManifoldGuardians(format!(
-                                    "replacement FA seat row {} duplicates the service signing \
-                                     key of seat row {existing_index}",
-                                    requirement.index
-                                )));
-                            }
-                            if let Some(holder) = admission.holder()
-                                && !holders.insert(holder)
-                            {
-                                return Err(FaError::InvalidManifoldGuardians(
-                                    "replacement guardian duplicates a retained or replacement badge holder".to_owned(),
-                                ));
-                            }
-                            seat.locator = locator.clone();
-                            seat.admission = admission.clone();
-                            seat.replacement_approved = true;
-                            dbtx.insert_entry(&key, &seat).await;
-                        }
-                        formation.payment_authorization = None;
-                        formation.payment_reservation_id = None;
-                        formation.payment_reservation_release_intended = false;
-                        // The fresh sealed replacement approval supplies one
-                        // new cap-bound authorization opportunity for exactly
-                        // the newly quoted subset.
-                        formation.payment_authorization_recorded = false;
-                        formation.intent.max_total_msats = Some(max_total_msats);
-                        dbtx.insert_entry(&PurchaseKey, &formation).await;
                         Ok(())
                     })
                 },
@@ -3987,59 +3565,6 @@ fn payment_requirements(
     }))
 }
 
-pub(crate) fn replacement_requirements(
-    formation_id: &FormationId,
-    recoveries: &[PurchaseSeatRecovery],
-) -> Option<GuardianReplacementRequirements> {
-    use fedimint_core::bitcoin::hashes::{Hash as _, sha256};
-
-    let seats = recoveries
-        .iter()
-        .filter_map(|recovery| {
-            if recovery.replacement_approved {
-                return None;
-            }
-            recovery
-                .replacement_for
-                .map(|previous_quote_id| GuardianReplacementSeat {
-                    index: recovery.progress.index,
-                    // The durable field keeps the outgoing identity stable
-                    // after a provisional swap advances the row's admission;
-                    // the fallback covers rows persisted before it existed.
-                    previous_mg_id: recovery
-                        .replacement_previous_mg_id
-                        .unwrap_or_else(|| recovery.admission.mg_id()),
-                    previous_quote_id,
-                    previous_locator: recovery
-                        .replacement_previous_locator
-                        .clone()
-                        // Backward compatibility for the first persisted
-                        // replacement rows, written before the locator was a
-                        // distinct durable field.
-                        .unwrap_or_else(|| recovery.progress.locator.clone()),
-                })
-        })
-        .collect::<Vec<_>>();
-    if seats.is_empty() {
-        return None;
-    }
-    let mut preimage = Vec::new();
-    preimage.extend_from_slice(b"fedi:fi-client:guardian-replacement:v1\0");
-    preimage.extend_from_slice(&(formation_id.0.len() as u64).to_be_bytes());
-    preimage.extend_from_slice(formation_id.0.as_bytes());
-    for seat in &seats {
-        preimage.extend_from_slice(&seat.index.to_be_bytes());
-        preimage.extend_from_slice(&seat.previous_quote_id.0);
-        preimage.extend_from_slice(&seat.previous_locator.service_pubkey.serialize());
-    }
-    Some(GuardianReplacementRequirements {
-        replacement_id: GuardianReplacementId::from_digest(
-            sha256::Hash::hash(&preimage).to_byte_array(),
-        ),
-        seats,
-    })
-}
-
 fn payment_authorization_id(
     formation_id: &FormationId,
     total_msats: u64,
@@ -4117,11 +3642,47 @@ fn validate_fresh_admission(
     Ok(())
 }
 
+/// The seat rows of one purchase, in index order. A seat that ended after
+/// payment outputs started leaves its row, so indexes can have gaps.
+async fn purchase_seat_rows(
+    dbtx: &mut DatabaseTransaction<'_>,
+    formation_id: &FormationId,
+) -> FaResult<Vec<(PurchaseSeatKey, StoredPurchaseSeat)>> {
+    let mut rows = dbtx
+        .find_by_prefix(&PurchaseSeatKeyPrefix)
+        .await
+        .filter(|(key, _)| std::future::ready(key.formation_id == formation_id.0))
+        .collect::<Vec<_>>()
+        .await;
+    rows.sort_by_key(|(key, _)| key.index);
+    for (key, seat) in &rows {
+        if seat.index != key.index {
+            return Err(FaError::Storage(format!(
+                "persisted FA seat row {} contains index {}",
+                key.index, seat.index
+            )));
+        }
+    }
+    Ok(rows)
+}
+
+/// The purchase phase that its seat rows imply.
+fn purchase_phase(seats: &[StoredPurchaseSeat]) -> StoredPurchasePhase {
+    let created = seats.iter().filter(|seat| seat.seat_id.is_some()).count();
+    if created == seats.len() {
+        StoredPurchasePhase::SeatsCreated
+    } else if created == 0 {
+        StoredPurchasePhase::Initialized
+    } else {
+        StoredPurchasePhase::SeatsPartiallyCreated
+    }
+}
+
 fn validate_formation_progress(
     formation: &StoredPurchase,
     seats: &[StoredPurchaseSeat],
 ) -> FaResult<()> {
-    if formation.seat_count != formation.intent.federation_size.0
+    if formation.seat_count > formation.intent.federation_size.0
         || seats.len() != usize::from(formation.seat_count)
     {
         return Err(FaError::Storage(
@@ -4129,7 +3690,6 @@ fn validate_formation_progress(
         ));
     }
 
-    let mut created = 0;
     let mut mg_ids = BTreeSet::new();
     let mut holders = BTreeSet::new();
     let mut service_pubkeys = BTreeMap::new();
@@ -4180,7 +3740,6 @@ fn validate_formation_progress(
                     }
                     quote.quote_id()
                 }
-                None if seat.replacement_for == Some(authorized_quote_id) => authorized_quote_id,
                 None => {
                     return Err(FaError::Storage(format!(
                         "persisted FA seat row {} authorized an effect without its exact quote",
@@ -4206,40 +3765,7 @@ fn validate_formation_progress(
                 seat.index
             )));
         }
-        if seat.replacement_for.is_none()
-            && (seat.replacement_previous_locator.is_some() || seat.replacement_approved)
-        {
-            return Err(FaError::Storage(format!(
-                "persisted FA seat row {} has incomplete replacement recovery state",
-                seat.index
-            )));
-        }
-        if seat.replacement_approved
-            && (seat.replacement_previous_locator.is_none()
-                || !seat.admission.requires_effect_authorization())
-        {
-            return Err(FaError::Storage(format!(
-                "persisted FA seat row {} has invalid provisional replacement state",
-                seat.index
-            )));
-        }
-        if seat.signed_quote.is_some()
-            && seat.replacement_for.is_some()
-            && !seat.replacement_approved
-        {
-            return Err(FaError::Storage(format!(
-                "persisted FA seat row {} mixes a quote with replacement authority",
-                seat.index
-            )));
-        }
-        if seat.seat_id.is_some() && seat.replacement_for.is_some() {
-            return Err(FaError::Storage(format!(
-                "persisted accepted FA seat row {} retains replacement authority",
-                seat.index
-            )));
-        }
         if seat.seat_id.is_some() {
-            created += 1;
             if seat.signed_quote.is_none() {
                 return Err(FaError::Storage(format!(
                     "persisted FA seat row {} has a seat without its recovery quote",
@@ -4270,13 +3796,7 @@ fn validate_formation_progress(
         }
     }
 
-    let seat_count = usize::from(formation.seat_count);
-    let phase_matches = match formation.phase {
-        StoredPurchasePhase::Initialized => created == 0,
-        StoredPurchasePhase::SeatsPartiallyCreated => 0 < created && created < seat_count,
-        StoredPurchasePhase::SeatsCreated => created == seat_count,
-    };
-    if !phase_matches {
+    if formation.phase != purchase_phase(seats) {
         return Err(FaError::Storage(
             "persisted FA purchase phase disagrees with accepted-seat rows".to_owned(),
         ));

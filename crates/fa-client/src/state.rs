@@ -250,10 +250,6 @@ pub enum FormationFreshness {
 pub enum SeatPhase {
     /// Locator selected; a quote has not yet been durably recorded.
     Selected,
-    /// A paid/refunded or wallet-proven-unstarted row awaits a fresh verified
-    /// guardian approval. Its original locator and quote identity remain
-    /// durable until the replacement is atomically applied.
-    ReplacementRequired,
     /// An exact signed quote is durably recorded.
     QuoteReady,
     /// Payment recovery/funding or `CreateSeat` is in progress.
@@ -402,79 +398,12 @@ pub struct PaymentRequirements {
     pub seats: Vec<SeatPaymentRequirement>,
 }
 
-/// Opaque binding to the exact rows that are safe and required to replace.
-#[derive(Clone, Debug, Eq, Hash, PartialEq, serde::Serialize)]
-pub struct GuardianReplacementId(String);
-
-impl GuardianReplacementId {
-    /// Stable opaque representation for an RPC action token.
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-
-    pub(crate) fn from_digest(digest: [u8; 32]) -> Self {
-        Self(encode_canonical_digest(digest))
-    }
-}
-
-impl<'de> serde::Deserialize<'de> for GuardianReplacementId {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        let value = <String as serde::Deserialize>::deserialize(deserializer)?;
-        validate_canonical_digest(&value, "guardian replacement binding")
-            .map_err(serde::de::Error::custom)?;
-        Ok(Self(value))
-    }
-}
-
-/// One proven-safe seat row included in a replacement action.
-#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
-pub struct GuardianReplacementSeat {
-    /// Stable formation seat index.
-    pub index: u16,
-    /// Badge-vouched identity of the outgoing MG. Presentation material; the
-    /// replacement binds to the quote and locator.
-    #[serde(rename = "previous_fman_id")]
-    pub previous_mg_id: PublicKey,
-    /// Exact terminal quote whose payment was released or refunded.
-    pub previous_quote_id: QuoteId,
-    /// Original locator retained for audit and exclusion from fresh selection.
-    pub previous_locator: Locator,
-}
-
-impl GuardianReplacementSeat {
-    /// Stable two-word display name derived from the outgoing MG's
-    /// authenticated id.
-    ///
-    /// Names can collide and never substitute for
-    /// [`Self::previous_mg_id`] in identity, trust, or deduplication.
-    #[must_use]
-    pub fn previous_mg_name(&self) -> MgName {
-        MgName::from_mg_id(self.previous_mg_id)
-    }
-}
-
-/// Complete post-output subset that requires renewed guardian approval.
-#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
-pub struct GuardianReplacementRequirements {
-    /// Binding to the exact durable replacement rows.
-    pub replacement_id: GuardianReplacementId,
-    /// Rows safe to replace; accepted, paid, prepared, and ambiguous siblings
-    /// are never included.
-    pub seats: Vec<GuardianReplacementSeat>,
-}
-
 /// Explicit consumer action required before a purchase can continue.
 #[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PurchaseActionRequired {
     /// Authorize all exact paid quotes as one decision.
     AuthorizePayments(PaymentRequirements),
-    /// Select and approve fresh verified guardians for only proven-safe rows.
-    ReplaceGuardians(GuardianReplacementRequirements),
 }
 
 /// Latest progress for one selected MG seat.

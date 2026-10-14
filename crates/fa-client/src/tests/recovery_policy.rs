@@ -167,11 +167,10 @@ async fn multi_terminal_release_failure_preserves_the_complete_aggregate_for_reo
             .await
             .unwrap(),
     );
-    assert!(
-        recovered.seats[..2]
-            .iter()
-            .all(|seat| seat.signed_quote.is_none()),
-        "reopen repeats idempotent releases and atomically advances the full subset"
+    assert_eq!(
+        seat_indices(&recovered),
+        (2..MIN_FEDERATION_SIZE).collect::<Vec<_>>(),
+        "reopen repeats idempotent releases and atomically drops the full subset"
     );
     assert!(terminal_quotes.iter().all(|quote_id| {
         payment_state
@@ -212,7 +211,10 @@ async fn freshly_funded_signed_refusal_clears_the_presented_quote_in_one_run() {
             .await
             .unwrap(),
     );
-    assert!(recovery.seats[0].signed_quote.is_none());
+    assert_eq!(
+        seat_indices(&recovery),
+        (1..MIN_FEDERATION_SIZE).collect::<Vec<_>>()
+    );
     assert_eq!(
         payment_state.create_calls.load(Ordering::SeqCst),
         usize::from(MIN_FEDERATION_SIZE)
@@ -291,12 +293,16 @@ async fn mixed_prepared_and_rejected_recovery_waits_for_concurrent_replay_barrie
             .await
             .unwrap(),
     );
+    assert_eq!(
+        seat_indices(&recovered),
+        (0..MIN_FEDERATION_SIZE - 1).collect::<Vec<_>>()
+    );
     assert!(
-        recovered.seats[..quote_ids.len() - 1]
+        recovered
+            .seats
             .iter()
             .all(|seat| seat.progress.seat_id.is_some())
     );
-    assert!(recovered.seats[quote_ids.len() - 1].signed_quote.is_none());
 }
 
 #[tokio::test]
@@ -430,7 +436,10 @@ async fn transient_sibling_failure_preserves_rejected_quote_recovery_entitlement
                 .unwrap(),
         );
         assert!(recovered.seats[0].progress.seat_id.is_some());
-        assert!(recovered.seats[quote_ids.len() - 1].signed_quote.is_none());
+        assert_eq!(
+            seat_indices(&recovered),
+            (0..MIN_FEDERATION_SIZE - 1).collect::<Vec<_>>()
+        );
     }
 }
 
@@ -617,14 +626,16 @@ async fn fund_new_failure_preserves_signed_refusal_quote_and_authorization_for_r
                 .await
                 .unwrap(),
         );
-        assert!(recovered.seats[refused_position].signed_quote.is_none());
+        assert_eq!(
+            seat_indices(&recovered),
+            (0..MIN_FEDERATION_SIZE - 1).collect::<Vec<_>>(),
+            "the refused seat left the purchase",
+        );
         assert!(
             recovered
                 .seats
                 .iter()
-                .enumerate()
-                .all(|(position, seat)| position == refused_position
-                    || seat.progress.seat_id.is_some())
+                .all(|seat| seat.progress.seat_id.is_some())
         );
         let create_records = mg_state.create_records.lock().expect("test lock");
         let failed_presentations = create_records
@@ -725,12 +736,19 @@ async fn mixed_prepared_and_signed_refusal_survives_interrupted_replay_wave() {
         .iter()
         .position(|quote_id| *quote_id == refused_quote)
         .expect("refused quote belongs to formation");
-    assert!(recovered.seats[refused_position].signed_quote.is_none());
-    assert!(recovered
-        .seats
-        .iter()
-        .enumerate()
-        .all(|(position, seat)| position == refused_position || seat.progress.seat_id.is_some()));
+    assert_eq!(
+        seat_indices(&recovered),
+        (0..MIN_FEDERATION_SIZE)
+            .filter(|index| usize::from(*index) != refused_position)
+            .collect::<Vec<_>>(),
+        "the refused seat left the purchase",
+    );
+    assert!(
+        recovered
+            .seats
+            .iter()
+            .all(|seat| seat.progress.seat_id.is_some())
+    );
 }
 
 #[tokio::test]
@@ -892,7 +910,7 @@ async fn terminal_paid_member_waits_for_held_siblings_before_clearing_aggregate(
     let error = reopened
         .resume()
         .await
-        .expect_err("the exact terminal member requires a replacement");
+        .expect_err("the exact terminal member leaves the purchase");
     assert!(matches!(error, FaError::Payment(_)), "{error:?}");
     assert_eq!(
         payment_state.funded_quotes.lock().expect("test lock").len(),
@@ -907,17 +925,18 @@ async fn terminal_paid_member_waits_for_held_siblings_before_clearing_aggregate(
             .await
             .unwrap(),
     );
-    let terminal_position = interrupted
-        .seats
-        .iter()
-        .position(|seat| seat.replacement_for == Some(terminal_quote))
-        .expect("the terminal member alone requires replacement");
-    assert!(interrupted.seats[terminal_position].signed_quote.is_none());
+    let dropped = dropped_index(&interrupted.snapshot);
+    assert_eq!(
+        interrupted.seats.len(),
+        usize::from(MIN_FEDERATION_SIZE) - 1,
+        "the terminal member alone leaves the purchase",
+    );
     assert!(
-        interrupted.seats.iter().enumerate().all(
-            |(position, seat)| position == terminal_position || seat.progress.seat_id.is_some()
-        ),
-        "no held sibling is stranded when the terminal subset is cleared",
+        interrupted
+            .seats
+            .iter()
+            .all(|seat| seat.progress.seat_id.is_some()),
+        "no held sibling is stranded when the terminal subset is dropped",
     );
     assert!(interrupted.test_payment_authorization().is_none());
     assert!(interrupted.payment_reservation_id.is_none());
@@ -931,60 +950,43 @@ async fn terminal_paid_member_waits_for_held_siblings_before_clearing_aggregate(
         assert_eq!(journal.released, HashSet::from([terminal_quote]));
     }
 
-    let requirements = match purchase(&reopened.status())
-        .action_required
-        .clone()
-        .expect("terminal member exposes replacement requirements")
-    {
-        PurchaseActionRequired::ReplaceGuardians(requirements) => requirements,
-        action => panic!("unexpected terminal action: {action:?}"),
-    };
-    reopened
-        .apply_mg_replacements(
-            MgReplacementApproval {
-                requirements,
-                verifier_provenance: test_peer_badge_verifier().provenance(),
-                seats: vec![crate::selection::ApprovedMgSeat {
-                    mg_id: test_mg_id(usize::from(MAX_FEDERATION_SIZE)),
-                    holder: test_mg_id(usize::from(MAX_FEDERATION_SIZE)),
-                    locator: locator(usize::from(MAX_FEDERATION_SIZE)),
-                }],
-                max_total_msats: PAYMENT_AMOUNT_MSATS,
-                valid_until: Timestamp(test_now_secs() + 120),
-            },
-            options(),
-        )
-        .await
-        .unwrap();
-    bought(&reopened.status());
+    assert!(purchase(&reopened.status()).action_required.is_none());
+    let presentations = mg_state.create_calls.load(Ordering::SeqCst);
+
+    reopened.resume().await.unwrap();
+    bought_without(&reopened.status(), &[dropped]);
     assert_eq!(
         payment_state.funded_quotes.lock().expect("test lock").len(),
-        usize::from(MIN_FEDERATION_SIZE) + 1,
-        "only the renewed replacement adds a wallet output",
+        usize::from(MIN_FEDERATION_SIZE),
+        "the dropped member never gets a second wallet output",
     );
+    assert_eq!(mg_state.create_calls.load(Ordering::SeqCst), presentations);
 }
 
 #[tokio::test]
-async fn mixed_replacement_wave_survives_paid_result_loss_and_preview_expiry() {
+async fn post_output_free_refusal_drops_only_that_seat_and_the_rest_complete() {
     let database = MemDatabase::new().into_database();
     let (payments, payment_state) = TestPayments::new();
     let mg_state = Arc::new(MgState::default());
+    let free = usize::from(MIN_FEDERATION_SIZE) - 1;
+    mg_state
+        .price_overrides_msats
+        .lock()
+        .expect("test lock")
+        .insert(free, 0);
     mg_state
         .refused_create_indices
         .lock()
         .expect("test lock")
-        .extend([0, 1]);
+        .insert(free);
     let config = MgConfig::paid();
     let client = open_client(database.clone(), payments.clone(), mg_state.clone(), config).await;
+    let paid_seats = usize::from(MIN_FEDERATION_SIZE) - 1;
+
     let error = client
-        .buy_and_form(
-            intent(),
-            selection_approval(PAYMENT_AMOUNT_MSATS * u64::from(MIN_FEDERATION_SIZE)),
-            payment_federation_id(),
-            options(),
-        )
+        .buy_seats_at(&intent(), locators(), options())
         .await
-        .expect_err("two paid members refuse their initial presentations");
+        .expect_err("the free member refuses its presentation");
     assert!(
         matches!(
             &error,
@@ -995,153 +997,26 @@ async fn mixed_replacement_wave_survives_paid_result_loss_and_preview_expiry() {
         ),
         "{error:?}"
     );
-    let requirements = match purchase(&client.status())
-        .action_required
-        .clone()
-        .expect("the refused members require replacement")
-    {
-        PurchaseActionRequired::ReplaceGuardians(requirements) => requirements,
-        action => panic!("unexpected refusal action: {action:?}"),
-    };
-    assert_eq!(requirements.seats.len(), 2);
-
-    let paid_replacement = usize::from(MAX_FEDERATION_SIZE) - 1;
-    let free_replacement = usize::from(MAX_FEDERATION_SIZE);
-    mg_state
-        .price_overrides_msats
-        .lock()
-        .expect("test lock")
-        .insert(free_replacement, 0);
-    mg_state
-        .attested_peer_overrides
-        .lock()
-        .expect("test lock")
-        .extend([(paid_replacement, 0), (free_replacement, 1)]);
-    let next_funding_call = payment_state.create_calls.load(Ordering::SeqCst) + 1;
-    payment_state
-        .hang_funding_on_call
-        .store(next_funding_call, Ordering::SeqCst);
-    let funding_started = payment_state.funding_started.notified();
-    let replacement_valid_until = test_now_secs() + 1;
-    let approval = MgReplacementApproval {
-        requirements,
-        verifier_provenance: test_peer_badge_verifier().provenance(),
-        seats: vec![
-            crate::selection::ApprovedMgSeat {
-                mg_id: test_mg_id(paid_replacement),
-                holder: test_mg_id(paid_replacement),
-                locator: locator(paid_replacement),
-            },
-            crate::selection::ApprovedMgSeat {
-                mg_id: test_mg_id(free_replacement),
-                holder: test_mg_id(free_replacement),
-                locator: locator(free_replacement),
-            },
-        ],
-        max_total_msats: PAYMENT_AMOUNT_MSATS,
-        valid_until: Timestamp(replacement_valid_until),
-    };
-    let running = client.clone();
-    let operation = tokio::spawn(async move {
-        running
-            .apply_mg_replacements(approval, long_request_options())
-            .await
-    });
-    tokio::time::timeout(Duration::from_secs(5), funding_started)
-        .await
-        .expect("the paid replacement output is journaled after the mixed wave is authorized");
-
-    let interrupted = active_recovery(
-        client
-            .inner
-            .store
-            .load_purchase(TestIdentity::fa_id())
-            .await
-            .unwrap(),
-    );
-    let replacement_rows = interrupted
-        .seats
-        .iter()
-        .filter(|seat| {
-            [paid_replacement, free_replacement]
-                .iter()
-                .any(|index| seat.progress.locator == locator(*index))
-        })
-        .collect::<Vec<_>>();
-    assert_eq!(replacement_rows.len(), 2);
-    assert!(replacement_rows.iter().all(|seat| {
-        seat.replacement_for.is_none()
-            && !seat.replacement_approved
-            && matches!(
-                &seat.admission,
-                crate::db::MgAdmission {
-                    state: crate::db::AdmissionState::EffectAuthorized { .. },
-                    ..
-                }
-            )
-    }));
-    let paid_quote = *payment_state
-        .created_quotes
-        .lock()
-        .expect("test lock")
-        .last()
-        .expect("the replacement payment is journaled");
+    let interrupted = purchase(&client.status()).clone();
+    assert!(interrupted.payment_outputs_started);
+    assert_eq!(dropped_index(&interrupted), u16::try_from(free).unwrap());
     assert!(
-        mg_state
-            .create_records
-            .lock()
-            .expect("test lock")
-            .iter()
-            .all(|record| record.quote_id != paid_quote),
-        "the lost wallet response precedes both replacement presentations",
+        interrupted.seats.iter().all(|seat| seat.seat_id.is_some()),
+        "every paid sibling was accepted",
     );
-
-    tokio::time::timeout(Duration::from_millis(1_500), async {
-        while test_now_secs() < replacement_valid_until {
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .expect("the replacement preview expires before the driver run deadline");
-    operation.abort();
-    assert!(operation.await.unwrap_err().is_cancelled());
-    let spends_before_reopen = payment_state.create_calls.load(Ordering::SeqCst);
-    let quote_calls_before_reopen = mg_state.quote_calls.load(Ordering::SeqCst);
+    assert_eq!(
+        payment_state.create_calls.load(Ordering::SeqCst),
+        paid_seats
+    );
     drop(client);
 
     let reopened = open_client(database, payments, mg_state.clone(), config).await;
+    let presentations = mg_state.create_calls.load(Ordering::SeqCst);
     reopened.resume().await.unwrap();
-    bought(&reopened.status());
+    bought_without(&reopened.status(), &[u16::try_from(free).unwrap()]);
     assert_eq!(
         payment_state.create_calls.load(Ordering::SeqCst),
-        spends_before_reopen,
-        "the journaled paid replacement is replayed without a second spend",
+        paid_seats
     );
-    assert_eq!(
-        mg_state.quote_calls.load(Ordering::SeqCst),
-        quote_calls_before_reopen,
-        "effect-authorized replacement quotes are not refreshed after expiry",
-    );
-    let records = mg_state.create_records.lock().expect("test lock");
-    assert_eq!(
-        records
-            .iter()
-            .filter(|record| record.quote_id == paid_quote)
-            .count(),
-        1,
-        "the exact paid replacement is presented once after recovery",
-    );
-    assert_eq!(
-        records
-            .iter()
-            .filter(|record| {
-                record
-                    .signed_quote
-                    .verify(&manager_key(free_replacement).x_only_public_key().0)
-                    .is_ok_and(|quote| quote.terms.payment.is_none())
-            })
-            .count(),
-        1,
-        "the free replacement is presented once from the same authorized wave",
-    );
+    assert_eq!(mg_state.create_calls.load(Ordering::SeqCst), presentations);
 }

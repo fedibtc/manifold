@@ -80,9 +80,9 @@ pub use ports::{
     PaymentReservationRecovery, PreparedSeatPayment, SeatPaymentRecovery, SettledSeatRefund,
 };
 pub use selection::{
-    MG_SELECTION_PREVIEW_VALIDITY, MG_SELECTION_PROBE_TIMEOUT, MgReplacementApproval,
-    MgReplacementPreview, MgSelectionApproval, MgSelectionPreview, MgSelectionQuery,
-    MgSelectionRequest, SeatProvenance, SelectedMgSeat, VerifiedBadgeFacts, VerifiedCandidate,
+    MG_SELECTION_PREVIEW_VALIDITY, MG_SELECTION_PROBE_TIMEOUT, MgSelectionApproval,
+    MgSelectionPreview, MgSelectionQuery, MgSelectionRequest, SeatProvenance, SelectedMgSeat,
+    VerifiedBadgeFacts, VerifiedCandidate,
 };
 pub use setup_payment_federations::AdmittedSetupPaymentFederation;
 /// Exact SPv2 account type returned by [`FaFeeAccountProvider`].
@@ -93,8 +93,7 @@ pub use setup_payment_federations::AdmittedSetupPaymentFederation;
 pub use stability_pool_common::Account as GuardianFeeAccount;
 pub use state::{
     FaStatus, FederationSeat, FederationSnapshot, FedimintdVersionRange, FormationFreshness,
-    FormationId, FormationPhase, FormationSnapshot, GuardianReplacementId,
-    GuardianReplacementRequirements, GuardianReplacementSeat, MAX_FEDERATION_SIZE,
+    FormationId, FormationPhase, FormationSnapshot, MAX_FEDERATION_SIZE,
     MAX_FEDERATION_SIZE_EXCLUSIVE, MAX_GUARDIAN_FEE_PPM, MIN_FEDERATION_SIZE,
     PaymentAuthorizationId, PaymentRequirements, PaymentReservationId, PlanPreference, PoolSeat,
     PurchaseActionRequired, PurchasePhase, RecoveryCheck, ResolvedSeatPurchase,
@@ -410,10 +409,7 @@ where
     /// [`FormationPhase::AwaitingPaymentReadiness`]. Read the aggregate
     /// [`PurchaseActionRequired`] from [`Self::status`] or [`Self::observe`].
     /// An [`PurchaseActionRequired::AuthorizePayments`] action requires the
-    /// displayed [`PaymentAuthorizationId`]. A
-    /// [`PurchaseActionRequired::ReplaceGuardians`] action requires a fresh
-    /// verified excluding-set preview and sealed replacement approval through
-    /// [`Self::apply_mg_replacements`].
+    /// displayed [`PaymentAuthorizationId`].
     ///
     /// Resuming never grants payment authorization. It first recovers operations
     /// for the exact stored authorized quotes. It can carry that authorization to

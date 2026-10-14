@@ -4,7 +4,7 @@ For an initial `FaClient` or `MgSelectionQuery` selection preview, publisher
 controlled cheap advertisements cannot make the API return
 `FaError::InsufficientMgSeats` after its absolute deadline before it starts
 verification of enough retained, statically eligible, badge-valid honest
-advertisements. The distinct replacement-preview API is outside this claim.
+advertisements.
 
 ## Status
 

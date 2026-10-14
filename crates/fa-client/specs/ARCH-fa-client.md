@@ -89,45 +89,27 @@ results after journal persistence keep the exact formation durable and
 recover-probe the deterministic id before freshness or policy on resume.
 
 A purchase parks for explicit authorization only after output generation, for
-a replacement aggregate after its one-shot authorization. Before any output
+a re-quoted aggregate after its one-shot authorization. Before any output
 generation it never publishes or accepts an exact-quote authorization action.
 It instead returns typed
 `SelectionReauthorizationRequired` and value-safely removes the purchase.
 If a process dies before cleanup, the purchase preserves its payer and approval
 expiry: reopen exposes no superseded authorization action, and resume either continues the still-live
 exact set or performs the same typed cleanup. A cloned live approval can then
-retry a different ready payer. An unavailable or replacement MG always
-requires a fresh preview; selected guardians are never silently swapped.
-After outputs start, only a row whose wallet operation terminally rejected or
-whose MG-signed refund was settled becomes `replacement_required`. Its prior
-quote and locator remain durable; accepted, prepared, paid, and ambiguous
-siblings remain pinned. A replacement preview excludes every current MG and
-is verified under the current profile. Sealing it with a renewed cap is the
-replacement's required fresh user authorization. Applying it
-advances the candidate locator and admission provisionally while retaining the
-terminal quote/locator proof. Before exact new effect authorization, expiry,
-verifier drift, or definite unavailability restores that proof for another
-fresh preview. An unstarted exact replacement reservation is reconstructed and
-authoritatively released first; a durable release commitment is written
-immediately before the wallet call, and only a successful release — or the
-exact id's authoritative absence under that prior commitment, which completes
-an interrupted restore on a later run — permits the durable store transition
-to clear the matching id. Exact replacement quotes
-recover their deterministic subset id before freshness and policy even when a
-lost reserve response preceded the FA-side id checkpoint. Exact presence is
-durably adopted and released before restore; authoritative absence may restore
-directly, while mismatch, storage failure, or ambiguity retains the formation.
-Within the renewed cap, those replacement quotes self-authorize and receive the
-new subset-only reservation id.
-If their checked total exceeds the renewed cap, the already non-abandonable
-post-output formation publishes `AuthorizePayments` for that exact replacement
-subset; the consumer must render and explicitly authorize those terms before
-another output can start. This differs from a pre-output selected cap failure,
-which removes the purchase and needs a new preview and purchase.
+retry a different ready payer. An unavailable MG always requires a fresh
+preview; selected guardians are never silently swapped.
+After outputs start, a seat whose wallet operation terminally rejected or
+whose MG-signed refund was settled leaves the purchase. Its wallet release
+completes first, and one transaction then deletes the row and invalidates the
+aggregate authorization and reservation id. Accepted, prepared, paid, and
+ambiguous siblings stay in the purchase. The purchase completes with the seats
+that remain, and a new purchase buys any seat still missing. A remaining
+unpaid quote set after the drop is a re-quoted aggregate, so it parks for
+`AuthorizePayments`.
 Definite connection failures are retried with bounded exponential backoff for
-up to two minutes, clipped by the current driver deadline, before that
-pre-output replacement result is returned. After outputs start, transport
-failure is an exact-replay error instead and never replacement advice.
+up to two minutes, clipped by the current driver deadline, before the
+pre-output fresh-selection result is returned. After outputs start, transport
+failure is an exact-replay error instead and never requires a fresh selection.
 The product range does not imply that every MG release supports every admitted
 size. Before requesting a quote from an MG, the FA requires that MG's live
 availability to advertise the intent's exact size. Concurrently processed
@@ -135,7 +117,7 @@ siblings may already have supplied quotes, but formation can proceed only where
 product policy and every selected operator's release capabilities overlap.
 Selected formation persists the original FA range and the chosen
 major/minor/vendor DKG identity. Quote-time checks accept patch or prerelease
-differences inside both; replacements and restart recovery remain fixed to that
+differences inside both; restart recovery remains fixed to that
 identity. Stored quotes must name an exact build inside both persisted constraints.
 
 `form_federation` accepts one optional `DkgCompletionCallback` created by the
@@ -227,9 +209,7 @@ a valid badge presented on another identity's advertisement must fail. One
 commitment-signing `service_pubkey` may likewise occupy at most one selected
 seat: after badge verification, a later verified author sharing a selected
 key receives a typed rejection and its bucket continues to its next candidate.
-Replacement walks begin with retained siblings' keys already occupied, and the
-same final-set uniqueness is checked atomically when the approved rows are
-applied. The same rule applies to verified badge holders, which are saved with
+The same rule applies to verified badge holders, which are saved with
 new seats and checked again on recovery. Older saved seats without holder
 identities keep their existing behavior without a holder-uniqueness guarantee.
 Each reached, verified, non-duplicate candidate is then probed live
@@ -461,8 +441,8 @@ quote whose wallet payment already started is likewise replayed exactly rather
 than refreshed, because its funds are locked to that quote's blind nonces.
 Every selected row persists a typed admission state. Initial paid admissions
 are bound to their exact quote and paid-output effect in the aggregate
-output-start transaction. Paid replacements whose formation already crossed
-that tombstone and share one exact reservation are bound by one atomic
+output-start transaction. Paid members re-authorized after that tombstone
+and sharing one exact reservation are bound by one atomic
 authorization update before the first new payment begins; an
 independent free admission is bound to its exact presentation before
 `CreateSeat`. Crash recovery therefore consults per-seat
@@ -473,8 +453,8 @@ final MG connection, prepares effect-free payment work, and durably sets
 order. Each adapter return means the exact Fedimint transaction is accepted and
 its payer-owned change is spendable; the FA presents and durably checkpoints
 that member before starting the next payment. A later failure therefore
-preserves every prior seat. Initial formation, resume of `NotStarted` members,
-and paid replacements use this same ordered path.
+preserves every prior seat. Initial formation and resume of `NotStarted`
+members use this same ordered path.
 Resume asks the wallet about every authorized stored quote before consulting
 current setup-payment policy. It completes the wallet probes as one concurrent
 read-only barrier, concurrently replays every already-submitted prepared
@@ -486,16 +466,13 @@ barrier, every newly started `NotStarted` member follows the same sequential
 checkpoint-before-next rule. Before invalidating the old aggregate, it
 explicitly releases each exact rejected/refunded member in the wallet;
 dropping a capability or reservation id is never release. Current policy
-replaces only operations the wallet proves safe. Per-seat progress is
-diagnostic and carries independent recovery facts. Public seat progress,
-payment requirement, and replacement rows expose the badge-vouched identity
-of their assigned — for a replacement row, outgoing — MG,
+drops only seats whose operations the wallet proves ended. Per-seat progress is
+diagnostic and carries independent recovery facts. Public seat progress and
+payment requirements expose the badge-vouched identity of their assigned MG,
 and derive the two-word MG name from it locally
 ([ARCH-service-manifold-guardian](../../service-manifold-guardian/specs/ARCH-service-manifold-guardian.md)).
 The identity is presentation material: the locator
-remains the protocol-owned dialing and verification binding, and a
-replacement approval swaps a row's exposed identity together with its
-admission.
+remains the protocol-owned dialing and verification binding.
 
 While the purchase is value-safe — before wallet output generation was
 durably armed — `abandon_purchase`
@@ -660,7 +637,7 @@ observes success or replays the idempotent typed mutation.
 - `setup_payment_federations` — authenticated common-set refresh, durable
   high-water retention, and canonical selection.
 - `formation` — formation, durable aggregate reservation, exact recovery,
-  release-before-wipe cleanup, proven-safe subset replacement transitions,
+  release-before-wipe cleanup, release-before-drop of ended seats,
   and guardian-fee policy orchestration.
 - `liquidity` — post-formation FLIP selection and signed allocation recovery,
   including exact-URL gateway attachment and its durable readback proof.
@@ -689,10 +666,10 @@ crash ordering, over-cap and unavailable-seat release before the purchase is rem
 independent output tombstone. A focused payer fixture gives the wallet one note
 covering several setup prices and fees, proves concurrent independent spends
 exhaust it, and proves ordered settlement forms successfully with exact final
-balance/change accounting. Replacement tests use the verified excluding-set
-and retained-signing-key preview and cover apply-time key-collision refusal,
-reopen, accepted/ambiguous sibling preservation, renewed
-authorization, completion, and non-repetition of prior outputs/payments. The
+balance/change accounting. Post-output terminal tests cover the dropped row,
+reopen, accepted/ambiguous sibling preservation, re-authorization of the
+remaining quotes, completion into the pool, and non-repetition of prior
+outputs/payments. The
 fa-cli's concrete reference FA payer adapter separately covers logical
 aggregate debit reservation, current net-fee headroom checks, exact
 foreign-output fee aggregation, fee-bearing reservation reconstruction and

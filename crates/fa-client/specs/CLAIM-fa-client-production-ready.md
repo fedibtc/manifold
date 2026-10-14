@@ -97,7 +97,7 @@ proof re-derivation over the extended envelope.
   publication and readback, invite recovery, read-only verified MG discovery,
   strict PeerBadge selection at or above the environment minimum,
   registry-backed seat purchase, exact aggregate
-  reservation, proven-safe subset replacement,
+  reservation, release and removal of wallet-proven ended seats,
   and typed post-formation name/icon-URL/welcome-message/terms-URL maintenance
   are included. Maintenance requires a genuine threshold consensus reader and
   threshold-live guardians before the caller's deadline unless the requested

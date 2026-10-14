@@ -46,8 +46,7 @@ use crate::state::{
 };
 use crate::{
     FaClient, FaError, FaIdentity, FaPayments, FaResult, FederationConsensusReader,
-    GuardianReplacementRequirements, ManifoldGuardianConnector, PlanPreference,
-    SelectionReauthorizationReason,
+    ManifoldGuardianConnector, PlanPreference, SelectionReauthorizationReason,
 };
 
 /// How long one freshly fetched advertisement selection may authorize the
@@ -250,7 +249,7 @@ pub struct SelectedMgSeat {
 ///
 /// The Nostr event author is the identity vouched for by PeerBadge.  The
 /// locator's service key is only the currently advertised commitment key and
-/// can rotate, so replacement identity exclusion uses `fman_id` rather than
+/// can rotate, so identity exclusion uses `fman_id` rather than
 /// deriving identity from `locator`. Service-key uniqueness is checked
 /// independently to prevent two distinct authors from occupying seats as one
 /// commitment-signing authority.
@@ -558,99 +557,6 @@ impl MgSelectionApproval {
     }
 
     /// Unix timestamp at which Pay-and-create must reject this approval.
-    #[must_use]
-    pub fn valid_until(&self) -> Timestamp {
-        self.valid_until
-    }
-
-    pub(crate) fn into_seats_at(self, now: Timestamp) -> FaResult<Vec<ApprovedMgSeat>> {
-        if self.valid_until <= now {
-            return Err(FaError::SelectionReauthorizationRequired {
-                reason: SelectionReauthorizationReason::PreviewExpired,
-                failure: None,
-            });
-        }
-        Ok(self.seats)
-    }
-}
-
-/// Read-only verified selection for only the rows proven safe to replace.
-#[derive(Debug)]
-pub struct MgReplacementPreview {
-    requirements: GuardianReplacementRequirements,
-    verifier_provenance: PeerBadgeVerifierProvenance,
-    seats: Vec<SelectedMgSeat>,
-    total_advertised_msats: u64,
-    valid_until: Timestamp,
-}
-
-impl MgReplacementPreview {
-    /// Exact durable rows this preview replaces.
-    #[must_use]
-    pub fn requirements(&self) -> &GuardianReplacementRequirements {
-        &self.requirements
-    }
-
-    /// Fresh verified replacements in stable row order.
-    #[must_use]
-    pub fn seats(&self) -> &[SelectedMgSeat] {
-        &self.seats
-    }
-
-    /// Aggregate advertisement estimate for the replacement subset.
-    #[must_use]
-    pub fn total_advertised_msats(&self) -> u64 {
-        self.total_advertised_msats
-    }
-
-    /// Unix timestamp at which this uncached replacement preview becomes stale.
-    #[must_use]
-    pub fn valid_until(&self) -> Timestamp {
-        self.valid_until
-    }
-
-    /// Seal this exact subset to renewed user authorization.
-    pub fn approve(self, max_total_msats: u64) -> FaResult<MgReplacementApproval> {
-        if max_total_msats == 0 || max_total_msats < self.total_advertised_msats {
-            return Err(FaError::SelectionReauthorizationRequired {
-                reason: SelectionReauthorizationReason::AdvertisementEstimateExceedsLimit,
-                failure: None,
-            });
-        }
-        Ok(MgReplacementApproval {
-            requirements: self.requirements,
-            verifier_provenance: self.verifier_provenance,
-            seats: self.seats.into_iter().map(ApprovedMgSeat::from).collect(),
-            max_total_msats,
-            valid_until: self.valid_until,
-        })
-    }
-}
-
-/// Sealed renewed approval for a proven-safe replacement subset.
-#[derive(Clone, Debug)]
-pub struct MgReplacementApproval {
-    pub(crate) requirements: GuardianReplacementRequirements,
-    pub(crate) verifier_provenance: PeerBadgeVerifierProvenance,
-    pub(crate) seats: Vec<ApprovedMgSeat>,
-    pub(crate) max_total_msats: u64,
-    pub(crate) valid_until: Timestamp,
-}
-
-impl MgReplacementApproval {
-    /// Exact replacement action this approval satisfies.
-    #[must_use]
-    pub fn requirements(&self) -> &GuardianReplacementRequirements {
-        &self.requirements
-    }
-
-    /// Approved maximum aggregate spend for the replacement subset.
-    #[must_use]
-    pub fn max_total_msats(&self) -> u64 {
-        self.max_total_msats
-    }
-
-    /// Unix timestamp at which applying this replacement approval must fail.
     #[must_use]
     pub fn valid_until(&self) -> Timestamp {
         self.valid_until
@@ -1079,74 +985,6 @@ pub(crate) async fn preview_mg_selection_with(
     })
 }
 
-#[allow(clippy::too_many_arguments)]
-pub(crate) async fn preview_mg_replacements_with(
-    registry: &impl FaNostrClient,
-    verifier: &impl SelectionBadgeVerifier,
-    prober: &impl SelectionAvailabilityProber,
-    verifier_provenance: PeerBadgeVerifierProvenance,
-    request: &MgSelectionRequest,
-    fedimintd_dkg_version: &FedimintdDkgVersion,
-    requirements: GuardianReplacementRequirements,
-    excluded: BTreeSet<PublicKey>,
-    retained_service_pubkeys: BTreeMap<secp256k1::XOnlyPublicKey, PublicKey>,
-    retained_holders: BTreeSet<PublicKey>,
-    deadline: Instant,
-    now: u64,
-    completed_at: impl FnOnce() -> u64,
-) -> FaResult<MgReplacementPreview> {
-    let discovery_requirements = MgCandidateRequirements {
-        federation_size: request.federation_size,
-        fedimintd_versions: request.fedimintd_versions.clone(),
-    };
-    let mut discovery =
-        discover_mg_candidates_with(registry, &discovery_requirements, deadline, now).await?;
-    discovery
-        .candidates
-        .retain(|candidate| !excluded.contains(&candidate.mg_id));
-    let seen = discovery.seen();
-    let eligible = discovery.candidates.len();
-    let requested = u16::try_from(requirements.seats.len())
-        .map_err(|_| FaError::Selection("too many replacement rows".to_owned()))?;
-    let seats = select_mg_seats(
-        verifier,
-        prober,
-        request,
-        fedimintd_dkg_version,
-        discovery.candidates,
-        FederationSize(requested),
-        retained_service_pubkeys,
-        retained_holders,
-        deadline,
-        &mut discovery.rejected,
-    )
-    .await;
-    if seats.len() != usize::from(requested) {
-        return Err(FaError::InsufficientMgSeats {
-            requested,
-            selected: u16::try_from(seats.len()).expect("selected replacements fit u16"),
-            seen,
-            eligible,
-        });
-    }
-    let total_advertised_msats = seats.iter().try_fold(0u64, |total, seat| {
-        total.checked_add(seat.advertised_price_msats())
-    });
-    let total_advertised_msats = total_advertised_msats.ok_or_else(|| {
-        FaError::Selection("replacement advertisement estimate overflows".to_owned())
-    })?;
-    let valid_until = completed_at()
-        .checked_add(MG_SELECTION_PREVIEW_VALIDITY.as_secs())
-        .ok_or_else(|| FaError::Selection("replacement preview expiry overflows".to_owned()))?;
-    Ok(MgReplacementPreview {
-        requirements,
-        verifier_provenance,
-        seats,
-        total_advertised_msats,
-        valid_until: Timestamp(valid_until),
-    })
-}
-
 /// Fill seats round-robin across claimed-issuer buckets, verifying lazily.
 ///
 /// Buckets iterate in issuer-key order; within a bucket candidates rank by
@@ -1162,11 +1000,9 @@ pub(crate) async fn preview_mg_replacements_with(
 /// the requested seat count is verified-filled, the pool is exhausted, or
 /// the deadline expires; the caller turns a shortfall into the typed
 /// partial-failure error. `selected_service_pubkeys` contains signing
-/// authorities already occupied by retained seats during replacement; initial
-/// selection supplies an empty map. `seats_to_fill` is the number of seats
-/// to fill, which during replacement is smaller than the request's
-/// federation size.
-/// `selected_holders` likewise reserves every known retained badge holder.
+/// authorities already occupied by other seats; initial selection supplies an
+/// empty map. `seats_to_fill` is the number of seats to fill.
+/// `selected_holders` likewise reserves every known badge holder.
 pub(crate) async fn select_mg_seats(
     verifier: &impl SelectionBadgeVerifier,
     prober: &impl SelectionAvailabilityProber,

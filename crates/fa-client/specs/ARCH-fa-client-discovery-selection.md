@@ -97,9 +97,7 @@ exception in the product path.
 Each verified badge holder may occupy only one seat, regardless of issuer or
 MG service key. Later candidates sharing that holder are rejected as
 `DuplicateBadgeHolder` before live probing. Only a seated candidate reserves
-its holder. Approvals and saved seats retain the holder, and replacement walks
-exclude holders belonging to retained seats. The replacement write also checks
-holder uniqueness in its database transaction. Older saved seats without holder
+its holder. Approvals and saved seats retain the holder. Older saved seats without holder
 identities remain usable but cannot provide this guarantee; FA does not fetch
 their missing identities.
 
@@ -120,7 +118,7 @@ accepting-seats, and plan-family predicate as quoting. Incompatible responses ge
 RPC, and per-candidate-budget failures get `ProbeFailed`. The probe is
 price-blind: a live price change is resolved only by the signed quote. The
 transport-less `MgSelectionQuery` intentionally uses advertised claims alone;
-the full `FaClient` and replacement preview always probe.
+the full `FaClient` preview always probes.
 
 One absolute deadline covers enumeration, admission, badge verification, and
 live probes. Expiry wins simultaneous readiness, drops in-flight async work, and
@@ -128,7 +126,7 @@ returns `SelectionPreviewTimeout`; it cannot preempt synchronous verifier work
 between yield points or executor starvation. Pool exhaustion before expiry is
 the typed `InsufficientMgSeats` partial failure.
 
-## Approval and replacement
+## Approval
 
 The preview is read-only: it returns selected seats, their locators, advertised
 prices, verified provenance, estimate, and seen/eligible/selected summary. Its
@@ -149,16 +147,9 @@ not one exact build. Quote-time availability must name a typed version inside
 both; patch and prerelease changes are accepted, while a minor or vendor change
 requires fresh selection before payment.
 
-A terminal payment rejection or settled signed refund makes only that row a
-replacement requirement. `preview_mg_replacements` excludes current MG
-identities, treats retained siblings' service keys as occupied, verifies the
-fresh subset under the current profile, and seals the row binding and renewed
-cap. Applying it preserves the old terminal quote and locator until the new
-effect is authorized. It releases an unstarted exact reservation before clearing
-its durable id. Siblings that are accepted, paid, prepared, or ambiguous are
-never reselected or repaid. A post-output replacement that exceeds its renewed
-cap exposes exact `AuthorizePayments`; a pre-output cap failure instead returns
-to `Idle`.
-Replacement discovery keeps the original FA range but admits only the persisted
-DKG identity. Recovery accepts stored or refreshed quotes only when their exact
-build remains inside that range and major/minor/vendor identity.
+A terminal payment rejection or settled signed refund after outputs start
+removes only that seat from the purchase. Siblings that are accepted, paid,
+prepared, or ambiguous are never reselected or repaid. A new purchase with a
+fresh preview buys any seat still missing.
+Recovery accepts stored or refreshed quotes only when their exact build remains
+inside the persisted FA range and major/minor/vendor identity.

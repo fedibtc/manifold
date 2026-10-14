@@ -33,10 +33,10 @@ use crate::{
     FaClient, FaError, FaIdentity, FaPayments, FaResult, FederationConsensusReader,
     FederationConsensusSnapshot, FormationFreshness, FormationId, FormationPhase,
     FormationSnapshot, GuardianFeePpm, ManifoldGuardianConnector, MgCause, MgFailure, MgOperation,
-    MgReplacementApproval, MgReplacementPreview, MgSelectionApproval, MgSelectionRequest,
-    PaymentAuthorizationId, PaymentRequirements, PaymentReservationId, PaymentReservationRecovery,
-    PurchaseActionRequired, PurchasePhase, ResolvedSeatPurchase, SeatPaymentRecovery, SeatPhase,
-    SeatPurchaseSnapshot, SelectionReauthorizationReason,
+    MgSelectionApproval, MgSelectionRequest, PaymentAuthorizationId, PaymentRequirements,
+    PaymentReservationId, PaymentReservationRecovery, PurchaseActionRequired, PurchasePhase,
+    ResolvedSeatPurchase, SeatPaymentRecovery, SeatPhase, SeatPurchaseSnapshot,
+    SelectionReauthorizationReason,
 };
 
 fn log_mg_failure(formation_id: &FormationId, error: &FaError, outcome: &'static str) {
@@ -74,7 +74,7 @@ enum QuoteAttemptPolicy {
     /// a fresh-selection requirement.
     ReplaceableSelection,
     /// The row is already value-bound; failures remain exact
-    /// recovery errors and never manufacture replacement authority.
+    /// recovery errors and never require a fresh selection.
     ExactRecovery,
 }
 
@@ -631,20 +631,6 @@ fn apply_authorized_effect_in_memory(
         ))
     })?;
     seat.admission.mark_effect_authorized(quote_id, effect)?;
-    if seat.replacement_for.is_some() {
-        if !seat.replacement_approved {
-            return Err(FaError::Storage(format!(
-                "authorized replacement FA seat row {position} lacks its approval"
-            )));
-        }
-        // Mirror the atomic DB transition. Once this exact admission/effect
-        // wave commits, the row is pinned to recovery and is no longer a
-        // provisional replacement that outer error handling may restore.
-        seat.replacement_for = None;
-        seat.replacement_previous_locator = None;
-        seat.replacement_previous_mg_id = None;
-        seat.replacement_approved = false;
-    }
     Ok(())
 }
 
@@ -774,188 +760,6 @@ where
         finish_driver_run(result, self.inner.store.release_driver_lease(lease).await)
     }
 
-    /// Fetch a fresh verified guardian subset for rows whose exact payment
-    /// was proven safe to replace after outputs started.
-    pub async fn preview_mg_replacements(
-        &self,
-        options: crate::MgDiscoveryOptions,
-    ) -> FaResult<MgReplacementPreview> {
-        let fa_id = self.fa_id()?;
-        let recovery = self.active_recovery(fa_id).await?;
-        let requirements =
-            crate::db::replacement_requirements(&recovery.snapshot.purchase_id, &recovery.seats)
-                .ok_or_else(|| {
-                    FaError::InvalidIntent("no guardian replacement is required".to_owned())
-                })?;
-        let request = MgSelectionRequest::new(
-            recovery.snapshot.request.federation_size,
-            recovery.snapshot.request.fedimintd_versions.clone(),
-            recovery.snapshot.request.plan,
-        )?;
-        let excluded = recovery
-            .seats
-            .iter()
-            .map(|seat| seat.admission.mg_id())
-            .collect::<BTreeSet<_>>();
-        let replacement_indices = requirements
-            .seats
-            .iter()
-            .map(|seat| seat.index)
-            .collect::<BTreeSet<_>>();
-        let mut retained_service_pubkeys = BTreeMap::new();
-        let mut retained_holders = BTreeSet::new();
-        for seat in &recovery.seats {
-            if replacement_indices.contains(&seat.progress.index) {
-                continue;
-            }
-            retained_holders.extend(seat.admission.holder());
-            let mg_id = seat.admission.mg_id();
-            if retained_service_pubkeys
-                .insert(seat.progress.locator.service_pubkey, mg_id)
-                .is_some()
-            {
-                return Err(FaError::Storage(
-                    "selected formation contains duplicate retained service signing keys"
-                        .to_owned(),
-                ));
-            }
-        }
-        let now = fedimint_core::time::duration_since_epoch().as_secs();
-        let deadline = Instant::now()
-            .checked_add(options.timeout())
-            .expect("clamped discovery timeout fits the monotonic deadline domain");
-        crate::selection::preview_mg_replacements_with(
-            &self.inner.ports.registry,
-            &self.inner.peer_badge_verifier,
-            &crate::selection::LiveAvailabilityProber {
-                connector: Some(&self.inner.ports.mg_connector),
-            },
-            self.inner.peer_badge_verifier.provenance(),
-            &request,
-            &recovery.snapshot.request.fedimintd_dkg_version,
-            requirements,
-            excluded,
-            retained_service_pubkeys,
-            retained_holders,
-            deadline,
-            now,
-            || fedimint_core::time::duration_since_epoch().as_secs(),
-        )
-        .await
-    }
-
-    /// Atomically apply one renewed, verified replacement approval and
-    /// continue through exact replacement quoting and automatic aggregate
-    /// authorization only while the renewed sealed cap covers the total.
-    pub async fn apply_mg_replacements(
-        &self,
-        approval: MgReplacementApproval,
-        options: FormationRunOptions,
-    ) -> FaResult<()> {
-        let _guard = self.inner.run_guard.try_lock().map_err(|_| FaError::Busy)?;
-        options.validate_for_start(&self.inner.store)?;
-        let fa_id = self.fa_id()?;
-        let (deadline, lease) = start_driver_run(&self.inner.store, options).await?;
-        let run = DriverRun::new(options, deadline, &lease);
-        let result = async {
-            let recovery = self.active_recovery(fa_id).await?;
-            let current = crate::db::replacement_requirements(
-                &recovery.snapshot.purchase_id,
-                &recovery.seats,
-            )
-            .ok_or_else(|| {
-                FaError::InvalidIntent("no guardian replacement is required".to_owned())
-            })?;
-            if current != approval.requirements {
-                return Err(FaError::InvalidIntent(
-                    "guardian replacement requirements changed after preview".to_owned(),
-                ));
-            }
-            if approval.verifier_provenance != self.inner.peer_badge_verifier.provenance() {
-                return Err(FaError::SelectionReauthorizationRequired {
-                    reason: SelectionReauthorizationReason::VerifierEnvironmentChanged,
-                    failure: None,
-                });
-            }
-            let valid_until = approval.valid_until;
-            let verifier_provenance = approval.verifier_provenance.into();
-            let max_total_msats = approval.max_total_msats;
-            let requirements = approval.requirements.clone();
-            let approved_seats = approval.into_seats_at(Timestamp(now_secs()?))?;
-            let mut mg_ids = recovery
-                .seats
-                .iter()
-                .map(|seat| seat.admission.mg_id())
-                .collect::<BTreeSet<_>>();
-            if approved_seats.iter().any(|seat| !mg_ids.insert(seat.mg_id)) {
-                return Err(FaError::InvalidManifoldGuardians(
-                    "replacement guardian duplicates an existing or replacement MG".to_owned(),
-                ));
-            }
-            let replacement_indices = requirements
-                .seats
-                .iter()
-                .map(|seat| seat.index)
-                .collect::<BTreeSet<_>>();
-            let mut service_pubkeys = BTreeMap::new();
-            for seat in &recovery.seats {
-                if replacement_indices.contains(&seat.progress.index) {
-                    continue;
-                }
-                let mg_id = seat.admission.mg_id();
-                if service_pubkeys
-                    .insert(seat.progress.locator.service_pubkey, mg_id)
-                    .is_some()
-                {
-                    return Err(FaError::Storage(
-                        "selected formation contains duplicate retained service signing keys"
-                            .to_owned(),
-                    ));
-                }
-            }
-            for seat in &approved_seats {
-                if service_pubkeys
-                    .insert(seat.locator.service_pubkey, seat.mg_id)
-                    .is_some()
-                {
-                    return Err(FaError::InvalidManifoldGuardians(
-                        "replacement guardian duplicates a retained or replacement service \
-                         signing key"
-                            .to_owned(),
-                    ));
-                }
-            }
-            let replacements = approved_seats
-                .into_iter()
-                .map(|seat| {
-                    (
-                        seat.locator,
-                        MgAdmission::fresh_peer_badge(
-                            seat.mg_id,
-                            seat.holder,
-                            verifier_provenance,
-                            valid_until,
-                        ),
-                    )
-                })
-                .collect::<Vec<_>>();
-            self.inner
-                .store
-                .replace_guardians(
-                    &recovery.snapshot.purchase_id,
-                    &requirements,
-                    &replacements,
-                    max_total_msats,
-                )
-                .await?;
-            let recovery = self.active_recovery(fa_id).await?;
-            self.publish_purchase(recovery.snapshot.clone());
-            self.drive_purchase(recovery, fa_id, run).await
-        }
-        .await;
-        finish_driver_run(result, self.inner.store.release_driver_lease(lease).await)
-    }
-
     async fn start_purchase(
         &self,
         request: &MgSelectionRequest,
@@ -1029,9 +833,8 @@ where
     /// wallet operation that already started.
     ///
     /// The initial selected Pay-and-create aggregate cannot use this entry
-    /// point: its sealed cap is the only authorization. A post-output guardian
-    /// replacement may expose a fresh exact aggregate here when its real quote
-    /// total exceeds the renewed replacement cap.
+    /// point: its sealed cap is the only authorization. After payment outputs
+    /// started, a re-quoted aggregate needs this explicit authorization.
     pub async fn authorize_payments(
         &self,
         authorization_id: PaymentAuthorizationId,
@@ -1054,13 +857,7 @@ where
                     FaError::InvalidIntent(
                         "formation is not awaiting payment authorization".to_owned(),
                     )
-                })?
-            else {
-                return Err(FaError::InvalidIntent(
-                    "formation is awaiting guardian replacement, not payment authorization"
-                        .to_owned(),
-                ));
-            };
+                })?;
             if requirements.authorization_id != authorization_id {
                 return Err(FaError::InvalidIntent(
                     "payment requirements changed after they were displayed; review the new set"
@@ -1317,23 +1114,6 @@ where
             if matches!(
                 result.as_ref(),
                 Err(FaError::SelectionReauthorizationRequired { .. })
-            ) && recovery.payment_outputs_started
-                && recovery.seats.iter().any(|seat| seat.replacement_approved)
-            {
-                // The replacement approval is still value-free: its exact effect
-                // was never authorized and no wallet reservation may be erased by
-                // this transition. Return the whole provisional wave to a fresh
-                // preview boundary under the same driver lease.
-                self.restore_provisional_replacements_after_reauthorization(
-                    &mut recovery,
-                    fa_id,
-                    run,
-                )
-                .await?;
-            }
-            if matches!(
-                result.as_ref(),
-                Err(FaError::SelectionReauthorizationRequired { .. })
             ) && !recovery.payment_outputs_started
             {
                 // A reserve-port error is the one reauthorization outcome that
@@ -1484,67 +1264,6 @@ where
         Ok(())
     }
 
-    /// Release an exact unstarted replacement hold, then atomically return
-    /// its still-unconsumed approval wave to the fresh-preview boundary.
-    async fn restore_provisional_replacements_after_reauthorization(
-        &self,
-        recovery: &mut PurchaseRecovery,
-        fa_id: FaId,
-        run: DriverRun<'_>,
-    ) -> FaResult<()> {
-        let released_reservation = if let Some(reservation_id) =
-            recovery.payment_reservation_id.clone()
-        {
-            let requirements = recovery
-                .reserved_payment_requirements(fa_id)?
-                .ok_or_else(|| {
-                    FaError::Storage(
-                        "replacement reservation has no exact payment requirements".to_owned(),
-                    )
-                })?;
-            if !recovery.payments_authorized(&requirements)
-                || crate::db::payment_reservation_id(&recovery.snapshot.purchase_id, &requirements)
-                    != reservation_id
-            {
-                return Err(FaError::Storage(
-                    "replacement reservation no longer matches its exact authorization".to_owned(),
-                ));
-            }
-            let reservation = self
-                .reserve_payment_requirements(recovery, &requirements, fa_id, run)
-                .await?;
-            // Commit to the release before the wallet call so a crash between
-            // the release and the atomic restore below makes wallet absence
-            // an expected outcome on the next run instead of retaining the
-            // formation forever.
-            self.inner
-                .store
-                .record_reservation_release_intent(&recovery.snapshot.purchase_id, &reservation_id)
-                .await?;
-            recovery.payment_reservation_release_intended = true;
-            run.call("releasing unstarted replacement reservation", || {
-                Ok(self
-                    .inner
-                    .ports
-                    .payments
-                    .release_payment_reservation(reservation.clone()))
-            })
-            .await?
-            .map_err(|error| FaError::Payment(error.to_string()))?;
-            Some(ReleasedReplacementReservation::after_wallet_release(
-                reservation_id,
-            ))
-        } else {
-            None
-        };
-        run.lease
-            .restore_provisional_replacements(
-                &recovery.snapshot.purchase_id,
-                released_reservation.as_ref(),
-            )
-            .await
-    }
-
     async fn drive_purchase_inner(
         &self,
         recovery: &mut PurchaseRecovery,
@@ -1602,33 +1321,22 @@ where
                             "durable FA reservation is absent from the payment wallet".to_owned(),
                         ));
                     }
-                    // A prior run durably committed to this release and the
-                    // wallet completed it; only the local half of that
-                    // cleanup remains. Which half is identified by the
-                    // value-safety boundary: pre-output commitments come
-                    // from abandon, post-output commitments from a
-                    // provisional-replacement restore.
+                    // A prior abandon durably committed to this release and
+                    // the wallet completed it; only the local half of that
+                    // cleanup remains.
                     if recovery.payment_outputs_started {
-                        let witness =
-                            ReleasedReplacementReservation::after_absence_under_release_intent(
-                                reservation_id,
-                            );
-                        run.lease
-                            .restore_provisional_replacements(
-                                &recovery.snapshot.purchase_id,
-                                Some(&witness),
-                            )
-                            .await?;
-                        *recovery = self.active_recovery(fa_id).await?;
-                    } else {
-                        run.lease
-                            .abandon_purchase(&recovery.snapshot.purchase_id)
-                            .await?;
-                        self.inner
-                            .progress
-                            .send_modify(|status| status.purchase = None);
-                        return Ok(());
+                        return Err(FaError::Storage(
+                            "a released wallet reservation remains after payment outputs started"
+                                .to_owned(),
+                        ));
                     }
+                    run.lease
+                        .abandon_purchase(&recovery.snapshot.purchase_id)
+                        .await?;
+                    self.inner
+                        .progress
+                        .send_modify(|status| status.purchase = None);
+                    return Ok(());
                 }
                 PaymentReservationRecovery::Absent => {}
             }
@@ -1639,17 +1347,6 @@ where
             self.inner.peer_badge_verifier.provenance().into(),
             Timestamp(now_secs()?),
         )?;
-
-        if let Some(requirements) =
-            crate::db::replacement_requirements(&recovery.snapshot.purchase_id, &recovery.seats)
-        {
-            recovery.snapshot.phase = PurchasePhase::AwaitingPaymentReadiness;
-            recovery.snapshot.action_required =
-                Some(PurchaseActionRequired::ReplaceGuardians(requirements));
-            recovery.snapshot.freshness = FormationFreshness::Fresh;
-            self.publish_purchase(recovery.snapshot.clone());
-            return Ok(());
-        }
 
         self.prepare_quotes(recovery, fa_id, run).await?;
         if let Some(requirements) = recovery.payment_requirements(fa_id)?
@@ -1662,8 +1359,8 @@ where
             // identical. The cap is the consumer's approval of the *initial*
             // aggregate only, so self-authorization is gated on the durable
             // `payment_authorization_recorded` tombstone: once any aggregate
-            // authorization was ever recorded, a replaced quote set (for
-            // example re-quoted after a verified refusal cleared a member)
+            // authorization was ever recorded, a changed quote set (for
+            // example re-quoted after a verified refusal dropped a member)
             // parks for explicit authorization even when the fresh total is
             // still under the cap. A cap that is absent or exceeded likewise
             // parks the formation with the aggregate action carrying both
@@ -1991,11 +1688,11 @@ where
         Ok(quotes)
     }
 
-    /// Resolve a selected MG transport while replacement is still
+    /// Resolve a selected MG transport while a fresh selection is still
     /// value-safe. A definite connection failure is retried with bounded
     /// exponential backoff for at most two minutes (and never beyond this
     /// driver invocation). After outputs start, the same failure remains an
-    /// exact-replay error and must never be projected as replacement advice.
+    /// exact-replay error and must never require a fresh selection.
     async fn connect_with_selected_retry(
         &self,
         locator: &Locator,
@@ -2044,8 +1741,8 @@ where
     /// Connect, inspect availability, and request one quote as a single
     /// bounded value-free attempt. A selected row whose authorization has not
     /// been consumed may reconnect after definite transport loss; semantic
-    /// refusals return immediately and an already value-bound row never gains
-    /// replacement authority from a transport failure.
+    /// refusals return immediately and an already value-bound row never
+    /// requires a fresh selection after a transport failure.
     #[allow(clippy::too_many_arguments)]
     async fn request_quote_with_retry(
         &self,
@@ -2361,7 +2058,7 @@ where
         // Resolve every fallible MG connection before crossing the durable
         // wallet-output boundary. Selected creation receives its bounded
         // pre-output retry policy; after outputs start, failures remain exact
-        // recovery errors and never become replacement advice.
+        // recovery errors and never require a fresh selection.
         let mut clients = (0..recovery.seats.len())
             .map(|_| None)
             .collect::<Vec<Option<MgClient<F::Client>>>>();
@@ -2564,10 +2261,10 @@ where
             }
             self.publish_purchase(recovery.snapshot.clone());
         } else {
-            // Post-output replacement can mix paid and free rows. Consume
-            // the complete exact wave atomically before polling the first
-            // wallet or presentation effect so expiry cannot strand only
-            // the still-provisional half of the wave.
+            // Post-output rows can mix paid and free quotes. Consume the
+            // complete exact wave atomically before polling the first wallet
+            // or presentation effect so expiry cannot strand only part of
+            // the wave.
             let effect_wave = paid_effects
                 .iter()
                 .chain(&free_effects)
@@ -2597,8 +2294,8 @@ where
         // A payment wallet may need the change from one accepted Fedimint
         // transaction to fund the next quote. Drive paid seats in stable seat
         // order and durably checkpoint each acceptance before polling the next
-        // wallet future. Recovery and replacements enter through this same
-        // list, so every newly started value movement has the same boundary.
+        // wallet future. Recovery enters through this same list, so every
+        // newly started value movement has the same boundary.
         for funding in funding {
             let result = self
                 .complete_pending_seat_work(
@@ -3141,69 +2838,39 @@ where
         recovery: &mut PurchaseRecovery,
         positions: &[usize],
     ) -> FaResult<()> {
-        let mark_replacements = recovery.payment_outputs_started;
-        let mut cleared = Vec::with_capacity(positions.len());
-        for &position in positions {
-            let signed_quote = recovery.seats[position]
-                .signed_quote
-                .as_ref()
-                .expect("terminal quote outcome requires a stored quote")
-                .clone();
-            let replacement_for = mark_replacements
-                .then(|| {
-                    signed_quote
-                        .verify(&recovery.seats[position].progress.locator.service_pubkey)
-                        .map(|quote| quote.quote_id())
-                        .map_err(|error| {
-                            FaError::Storage(format!(
-                                "invalid terminal quote for replacement row {position}: {error}"
-                            ))
-                        })
-                })
-                .transpose()?;
-            cleared.push((position, signed_quote, replacement_for));
-        }
-
-        let expected_quotes = cleared
+        // After payment outputs started, a terminal seat leaves the purchase.
+        // A new purchase buys any seat that is still missing.
+        let drop_seats = recovery.payment_outputs_started;
+        let expected_quotes = positions
             .iter()
-            .map(|(position, signed_quote, _)| {
+            .map(|&position| {
                 (
-                    recovery.seats[*position].progress.index,
-                    signed_quote.clone(),
+                    recovery.seats[position].progress.index,
+                    recovery.seats[position]
+                        .signed_quote
+                        .clone()
+                        .expect("terminal quote outcome requires a stored quote"),
                 )
             })
             .collect::<Vec<_>>();
         self.inner
             .store
-            .clear_terminal_quotes(
-                &recovery.snapshot.purchase_id,
-                &expected_quotes,
-                mark_replacements,
-            )
+            .clear_terminal_quotes(&recovery.snapshot.purchase_id, &expected_quotes, drop_seats)
             .await?;
 
         recovery.invalidate_payment_authorization();
         recovery.payment_reservation_id = None;
-        for (position, _, replacement_for) in cleared {
-            recovery.seats[position].signed_quote = None;
-            recovery.seats[position].replacement_for = replacement_for;
-            recovery.seats[position].replacement_previous_locator =
-                replacement_for.map(|_| recovery.seats[position].progress.locator.clone());
-            recovery.seats[position].replacement_previous_mg_id =
-                replacement_for.map(|_| recovery.seats[position].admission.mg_id());
-            recovery.seats[position].replacement_approved = false;
-            recovery.seats[position].progress.phase = if replacement_for.is_some() {
-                SeatPhase::ReplacementRequired
+        let mut positions = positions.to_vec();
+        positions.sort_unstable();
+        for &position in positions.iter().rev() {
+            if drop_seats {
+                recovery.seats.remove(position);
+                recovery.snapshot.seats.remove(position);
             } else {
-                SeatPhase::Selected
-            };
-            recovery.snapshot.seats[position] = recovery.seats[position].progress.clone();
-        }
-        if let Some(requirements) =
-            crate::db::replacement_requirements(&recovery.snapshot.purchase_id, &recovery.seats)
-        {
-            recovery.snapshot.action_required =
-                Some(PurchaseActionRequired::ReplaceGuardians(requirements));
+                recovery.seats[position].signed_quote = None;
+                recovery.seats[position].progress.phase = SeatPhase::Selected;
+                recovery.snapshot.seats[position] = recovery.seats[position].progress.clone();
+            }
         }
         Ok(())
     }
@@ -4717,43 +4384,6 @@ enum ReservationCleanup {
     DefinitivelyAbsent,
     /// A wallet commit may have preceded an interrupted FA checkpoint.
     ReconstructIfAuthorized,
-}
-
-/// Non-serializable witness created only by the replacement cleanup paths:
-/// either the consumer wallet authoritatively reported that the exact
-/// reconstructed reservation was released in this run, or it reported the
-/// reservation authoritatively absent after a durable release commitment
-/// from an interrupted earlier run.
-pub(crate) struct ReleasedReplacementReservation {
-    reservation_id: PaymentReservationId,
-    witnesses_absence: bool,
-}
-
-impl ReleasedReplacementReservation {
-    fn after_wallet_release(reservation_id: PaymentReservationId) -> Self {
-        Self {
-            reservation_id,
-            witnesses_absence: false,
-        }
-    }
-
-    fn after_absence_under_release_intent(reservation_id: PaymentReservationId) -> Self {
-        Self {
-            reservation_id,
-            witnesses_absence: true,
-        }
-    }
-
-    pub(crate) fn reservation_id(&self) -> &PaymentReservationId {
-        &self.reservation_id
-    }
-
-    /// Whether this witness proves current absence rather than a release
-    /// performed in this run; such a witness is honored only under the
-    /// durable release commitment persisted before that release began.
-    pub(crate) fn witnesses_absence(&self) -> bool {
-        self.witnesses_absence
-    }
 }
 
 fn canonical_fee_recipients(

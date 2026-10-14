@@ -2490,7 +2490,6 @@ fn exact_payment_preflight_rejects_duplicate_semantic_quote_ids() {
 fn opaque_payment_bindings_reject_noncanonical_deserialization() {
     let authorization = PaymentAuthorizationId::from_digest([1; 32]);
     let reservation = PaymentReservationId::from_digest([2; 32]);
-    let replacement = GuardianReplacementId::from_digest([3; 32]);
     assert_eq!(
         serde_json::from_value::<PaymentAuthorizationId>(
             serde_json::to_value(&authorization).unwrap()
@@ -2503,22 +2502,12 @@ fn opaque_payment_bindings_reject_noncanonical_deserialization() {
             .unwrap(),
         reservation,
     );
-    assert_eq!(
-        serde_json::from_value::<GuardianReplacementId>(
-            serde_json::to_value(&replacement).unwrap()
-        )
-        .unwrap(),
-        replacement,
-    );
     for invalid in ["arbitrary".to_owned(), "AA".repeat(32), "0".repeat(63)] {
         assert!(
             serde_json::from_value::<PaymentAuthorizationId>(serde_json::json!(&invalid)).is_err()
         );
         assert!(
             serde_json::from_value::<PaymentReservationId>(serde_json::json!(&invalid)).is_err()
-        );
-        assert!(
-            serde_json::from_value::<GuardianReplacementId>(serde_json::json!(&invalid)).is_err()
         );
     }
 }
@@ -2635,33 +2624,6 @@ fn signed_quote_at_price(
         &manager_key(manager_index),
     )
     .expect("valid signed test quote")
-}
-
-fn signed_free_quote(
-    manager_index: usize,
-    intent: &ResolvedSeatPurchase,
-    quote_nonce: [u8; 32],
-) -> SignedResponse<GetQuoteResponse> {
-    SignedResponse::create(
-        &GetQuoteResponse {
-            terms: QuoteTerms {
-                quote_nonce,
-                offer_epoch: OfferEpoch::from_bytes([0; 32]),
-                request: GetQuoteRequest {
-                    fa_id: TestIdentity::fa_id(),
-                    fedimintd_version: fedimintd_version(),
-                    federation_size: intent.federation_size,
-                    plan: Plan::InfiniteBestEffort { price_msats: 0 },
-                    payment_federation_id: None,
-                    refund_issuance: None,
-                },
-                price_msats: 0,
-                payment: None,
-            },
-        },
-        &manager_key(manager_index),
-    )
-    .expect("valid signed free test quote")
 }
 
 fn test_now_secs() -> u64 {
@@ -3215,6 +3177,93 @@ async fn schema_11_partial_purchase_stays_a_purchase() {
     assert!(status.pool.is_empty());
     assert!(status.formation.is_none());
     assert!(status.federation.is_none());
+}
+
+#[tokio::test]
+async fn schema_11_seat_waiting_for_replacement_leaves_the_purchase() {
+    let database = MemDatabase::new().into_database();
+    crate::db::FaStore::new(database.clone())
+        .install_schema_11_replacement_for_test(3, None)
+        .await;
+    let (payments, _) = TestPayments::new();
+    let client = open_client(
+        database.clone(),
+        payments,
+        Arc::new(MgState::default()),
+        MgConfig::paid(),
+    )
+    .await;
+
+    let status = client.status();
+    let purchase = purchase(&status);
+    assert!(purchase.payment_outputs_started);
+    assert_eq!(purchase.phase, PurchasePhase::AwaitingPaymentReadiness);
+    assert_eq!(
+        payment_requirements(&status)
+            .seats
+            .iter()
+            .map(|seat| seat.index)
+            .collect::<Vec<_>>(),
+        [4, 5, 6],
+        "the remaining unpaid quotes park for explicit authorization",
+    );
+    assert_eq!(
+        purchase
+            .seats
+            .iter()
+            .map(|seat| (seat.index, seat.seat_id.is_some()))
+            .collect::<Vec<_>>(),
+        [
+            (0, true),
+            (1, true),
+            (2, true),
+            (4, false),
+            (5, false),
+            (6, false)
+        ]
+    );
+    let recovery = active_recovery(
+        crate::db::FaStore::new(database)
+            .load_purchase(TestIdentity::fa_id())
+            .await
+            .unwrap(),
+    );
+    assert_eq!(seat_indices(&recovery), [0, 1, 2, 4, 5, 6]);
+    assert!(status.pool.is_empty());
+}
+
+#[tokio::test]
+async fn schema_11_applied_replacement_stays_a_seat_of_its_new_mg() {
+    let database = MemDatabase::new().into_database();
+    crate::db::FaStore::new(database.clone())
+        .install_schema_11_replacement_for_test(3, Some((locator(7), test_mg_id(7))))
+        .await;
+    let (payments, _) = TestPayments::new();
+    let client = open_client(
+        database,
+        payments,
+        Arc::new(MgState::default()),
+        MgConfig::paid(),
+    )
+    .await;
+
+    let status = client.status();
+    let purchase = purchase(&status);
+    // Payment waits until the new MG quotes on resume.
+    assert_eq!(purchase.phase, PurchasePhase::AcquiringSeats);
+    assert!(purchase.action_required.is_none());
+    assert_eq!(
+        purchase
+            .seats
+            .iter()
+            .map(|seat| seat.index)
+            .collect::<Vec<_>>(),
+        [0, 1, 2, 3, 4, 5, 6]
+    );
+    let replaced = &purchase.seats[3];
+    assert_eq!(replaced.mg_id, test_mg_id(7));
+    assert_eq!(replaced.locator, locator(7));
+    assert!(replaced.seat_id.is_none());
 }
 
 #[tokio::test]
@@ -4466,6 +4515,40 @@ fn bought(status: &FaStatus) {
     assert_eq!(status.pool.len(), usize::from(MIN_FEDERATION_SIZE));
 }
 
+/// The purchase finished without the rows at `dropped`, and exactly the
+/// other selected MGs' seats wait in the pool.
+fn bought_without(status: &FaStatus, dropped: &[u16]) {
+    assert!(status.purchase.is_none(), "purchase still active");
+    let expected = (0..MIN_FEDERATION_SIZE)
+        .filter(|index| !dropped.contains(index))
+        .map(|index| locator(usize::from(index)))
+        .collect::<Vec<_>>();
+    let mut pooled = status
+        .pool
+        .iter()
+        .map(|seat| seat.locator.clone())
+        .collect::<Vec<_>>();
+    pooled.sort_by_key(|pooled| expected.iter().position(|locator| locator == pooled));
+    assert_eq!(pooled, expected);
+}
+
+/// The one row missing from a purchase snapshot after a seat left it.
+fn dropped_index(snapshot: &SeatPurchaseSnapshot) -> u16 {
+    let missing = (0..MIN_FEDERATION_SIZE)
+        .filter(|index| !snapshot.seats.iter().any(|seat| seat.index == *index))
+        .collect::<Vec<_>>();
+    assert_eq!(missing.len(), 1, "exactly one seat left the purchase");
+    missing[0]
+}
+
+fn seat_indices(recovery: &crate::db::PurchaseRecovery) -> Vec<u16> {
+    recovery
+        .seats
+        .iter()
+        .map(|seat| seat.progress.index)
+        .collect()
+}
+
 fn federation(status: &FaStatus) -> &FederationSnapshot {
     status.federation.as_ref().expect("expected a federation")
 }
@@ -4473,17 +4556,7 @@ fn federation(status: &FaStatus) -> &FederationSnapshot {
 fn payment_requirements(status: &FaStatus) -> &PaymentRequirements {
     match purchase(status).action_required.as_ref() {
         Some(PurchaseActionRequired::AuthorizePayments(requirements)) => requirements,
-        Some(PurchaseActionRequired::ReplaceGuardians(_)) => {
-            panic!("expected payment authorization, found guardian replacement")
-        }
         None => panic!("expected aggregate payment authorization"),
-    }
-}
-
-fn guardian_replacements(status: &FaStatus) -> &GuardianReplacementRequirements {
-    match purchase(status).action_required.as_ref() {
-        Some(PurchaseActionRequired::ReplaceGuardians(requirements)) => requirements,
-        other => panic!("expected guardian replacement, found {other:?}"),
     }
 }
 
@@ -4601,41 +4674,6 @@ async fn authorize_requirements(
                     quote_id: requirement.quote_id,
                 })
                 .collect::<Vec<_>>(),
-        )
-        .await
-        .unwrap();
-}
-
-/// Mark one post-output row terminal and durably assign it the fresh guardian
-/// at `locator(replacement)`, as an applied replacement approval does.
-async fn replace_guardian_for_test(
-    store: &db::FaStore,
-    formation_id: &FormationId,
-    index: u16,
-    terminal_quote: &SignedResponse<GetQuoteResponse>,
-    replacement: usize,
-) {
-    store
-        .mark_replacement_required(formation_id, index, terminal_quote)
-        .await
-        .unwrap();
-    let recovery = active_recovery(store.load_purchase(TestIdentity::fa_id()).await.unwrap());
-    let requirements = crate::db::replacement_requirements(formation_id, &recovery.seats)
-        .expect("the terminal row requires replacement");
-    store
-        .replace_guardians(
-            formation_id,
-            &requirements,
-            &[(
-                locator(replacement),
-                crate::db::MgAdmission::fresh_peer_badge(
-                    test_mg_id(replacement),
-                    test_mg_id(replacement),
-                    test_peer_badge_verifier().provenance().into(),
-                    Timestamp(test_now_secs() + 120),
-                ),
-            )],
-            1,
         )
         .await
         .unwrap();
@@ -6251,12 +6289,10 @@ async fn concurrent_two_seat_clear_and_changed_term_store_retry_without_losing_s
     second_clear.unwrap();
     let cleared = active_recovery(store.load_purchase(TestIdentity::fa_id()).await.unwrap());
     assert!(cleared.seats.iter().all(|seat| seat.signed_quote.is_none()));
-    assert!(
-        cleared
-            .seats
-            .iter()
-            .all(|seat| seat.replacement_for.is_none()),
-        "a generic quote refresh must not manufacture replacement authority",
+    assert_eq!(
+        cleared.seats.len(),
+        2,
+        "a generic quote refresh must not drop a seat",
     );
     assert!(authorizations.iter().all(|authorization| {
         !cleared.quote_is_authorized(authorization.index, authorization.quote_id)
@@ -6304,7 +6340,7 @@ async fn concurrent_two_seat_clear_and_changed_term_store_retry_without_losing_s
 }
 
 #[tokio::test]
-async fn replacement_authority_requires_selected_post_output_terminal_transition() {
+async fn terminal_seat_drop_requires_payment_outputs_started() {
     let database = MemDatabase::new().into_database();
     let (payments, _) = TestPayments::new();
     let client = open_client(
@@ -6315,165 +6351,62 @@ async fn replacement_authority_requires_selected_post_output_terminal_transition
     )
     .await;
     let store = &client.inner.store;
-    let formation_id = FormationId("terminal-replacement-gate".to_owned());
-    let resolved = intent()
-        .with_max_total_msats(1_000)
-        .unwrap()
-        .resolve(fedimintd_version().dkg_version())
-        .unwrap();
-    store
-        .initialize(
-            TestIdentity::fa_id(),
-            formation_id.clone(),
-            resolved.clone(),
-            (0..MIN_FEDERATION_SIZE)
-                .map(|index| selected_initial_seat(index, test_now_secs() + 120))
-                .collect(),
-            Some(payment_federation_id()),
-        )
-        .await
-        .unwrap();
-    let quote = signed_quote(0, &resolved, [71; 32]);
-    for index in 0..MIN_FEDERATION_SIZE {
-        store
-            .store_quote(
-                &formation_id,
-                index,
-                if index == 0 {
-                    quote.clone()
-                } else {
-                    signed_quote(
-                        usize::from(index),
-                        &resolved,
-                        [71 + u8::try_from(index).unwrap(); 32],
-                    )
-                },
-            )
-            .await
-            .unwrap();
-    }
+    let requirements = seed_quoted_selected_purchase(&client).await;
+    let recovery = active_recovery(store.load_purchase(TestIdentity::fa_id()).await.unwrap());
+    let formation_id = recovery.snapshot.purchase_id.clone();
+    let quote = recovery.seats[0]
+        .signed_quote
+        .clone()
+        .expect("seeded paid quote");
 
     let error = store
-        .mark_replacement_required(&formation_id, 0, &quote)
+        .clear_terminal_quotes(&formation_id, &[(0, quote.clone())], true)
         .await
         .unwrap_err();
-    assert!(matches!(error, FaError::Storage(message) if message.contains("post-output")));
+    assert!(
+        matches!(&error, FaError::Storage(message) if message.contains("before payment outputs started")),
+        "{error:?}"
+    );
+    let unchanged = active_recovery(store.load_purchase(TestIdentity::fa_id()).await.unwrap());
+    assert_eq!(unchanged.seats.len(), usize::from(MIN_FEDERATION_SIZE));
     assert_eq!(
-        active_recovery(store.load_purchase(TestIdentity::fa_id()).await.unwrap()).seats[0]
-            .signed_quote,
+        unchanged.seats[0].signed_quote,
         Some(quote.clone()),
-        "a rejected transition must preserve the exact quote",
+        "a rejected drop must preserve the exact quote",
     );
 
-    let requirements = active_recovery(store.load_purchase(TestIdentity::fa_id()).await.unwrap())
-        .payment_requirements(TestIdentity::fa_id())
-        .unwrap()
-        .expect("complete exact paid aggregate");
+    arm_payment_outputs_for_test(store, &formation_id, &requirements).await;
     store
-        .authorize_payments(
-            &formation_id,
-            &requirements.authorization_id,
-            &requirements
-                .seats
-                .iter()
-                .map(|requirement| QuoteAuthorization {
-                    index: requirement.index,
-                    quote_id: requirement.quote_id,
-                })
-                .collect::<Vec<_>>(),
-        )
-        .await
-        .unwrap();
-    let reservation_id = crate::db::payment_reservation_id(&formation_id, &requirements);
-    store
-        .record_payment_reservation(&formation_id, &reservation_id)
-        .await
-        .unwrap();
-    let lease = store
-        .acquire_driver_lease(
-            options().lease_duration(),
-            options().lease_renewal_duration(),
-        )
-        .await
-        .unwrap();
-    lease
-        .arm_payment_outputs_started(
-            &formation_id,
-            test_peer_badge_verifier().provenance().into(),
-        )
-        .await
-        .unwrap();
-    store.release_driver_lease(lease).await.unwrap();
-    store
-        .mark_replacement_required(&formation_id, 0, &quote)
+        .clear_terminal_quotes(&formation_id, &[(0, quote.clone())], true)
         .await
         .unwrap();
 
     let recovery = active_recovery(store.load_purchase(TestIdentity::fa_id()).await.unwrap());
-    assert!(recovery.seats[0].signed_quote.is_none());
     assert_eq!(
-        recovery.seats[0].replacement_for,
-        Some(requirements.seats[0].quote_id)
+        recovery
+            .seats
+            .iter()
+            .map(|seat| seat.progress.index)
+            .collect::<Vec<_>>(),
+        (1..MIN_FEDERATION_SIZE).collect::<Vec<_>>(),
+    );
+    assert_eq!(recovery.snapshot.seats.len(), recovery.seats.len());
+    assert!(recovery.test_payment_authorization().is_none());
+    assert!(recovery.payment_reservation_id.is_none());
+    let remaining =
+        payment_requirements(&store.load_status(TestIdentity::fa_id()).await.unwrap()).clone();
+    assert_eq!(
+        remaining
+            .seats
+            .iter()
+            .map(|seat| seat.index)
+            .collect::<Vec<_>>(),
+        (1..MIN_FEDERATION_SIZE).collect::<Vec<_>>(),
+        "the remaining unpaid quotes park for explicit authorization",
     );
     assert!(
-        store
-            .store_quote(&formation_id, 0, quote)
-            .await
-            .unwrap_err()
-            .to_string()
-            .contains("requires replacement"),
-        "replacement authority cannot be silently collapsed back into a quote refresh",
-    );
-}
-
-#[tokio::test]
-async fn recovery_rejects_mixed_quote_and_replacement_authority() {
-    let database = MemDatabase::new().into_database();
-    let (payments, _) = TestPayments::new();
-    let client = open_client(
-        database,
-        payments,
-        Arc::new(MgState::default()),
-        MgConfig::paid(),
-    )
-    .await;
-    let formation_id = FormationId("mixed-replacement-corruption".to_owned());
-    let resolved = resolved_intent_with_size(FederationSize(1));
-    client
-        .inner
-        .store
-        .initialize(
-            TestIdentity::fa_id(),
-            formation_id.clone(),
-            resolved.clone(),
-            vec![selected_initial_seat(0, test_now_secs() + 120)],
-            None,
-        )
-        .await
-        .unwrap();
-    client
-        .inner
-        .store
-        .store_quote(&formation_id, 0, signed_quote(0, &resolved, [72; 32]))
-        .await
-        .unwrap();
-    client
-        .inner
-        .store
-        .mix_quote_with_replacement_for_test(0)
-        .await;
-
-    let error = match client
-        .inner
-        .store
-        .load_purchase(TestIdentity::fa_id())
-        .await
-    {
-        Err(error) => error,
-        Ok(_) => panic!("mixed replacement authority was accepted"),
-    };
-    assert!(
-        matches!(error, FaError::Storage(message) if message.contains("mixes a quote with replacement authority"))
+        store.store_quote(&formation_id, 0, quote).await.is_err(),
+        "a dropped row cannot be quoted again",
     );
 }
 
@@ -6590,62 +6523,27 @@ async fn stale_payment_authorization_cannot_approve_a_replaced_quote_set() {
     let (payments, payment_state) = TestPayments::new();
     let mg_state = Arc::new(MgState::default());
     let client = open_client(database, payments, mg_state.clone(), MgConfig::paid()).await;
+    let store = &client.inner.store;
     let requirements = seed_quoted_selected_purchase(&client).await;
-    let recovery = active_recovery(
-        client
-            .inner
-            .store
-            .load_purchase(TestIdentity::fa_id())
-            .await
-            .unwrap(),
-    );
+    let recovery = active_recovery(store.load_purchase(TestIdentity::fa_id()).await.unwrap());
     let purchase_id = recovery.snapshot.purchase_id.clone();
-    arm_payment_outputs_for_test(&client.inner.store, &purchase_id, &requirements).await;
-    // Only a replacement aggregate after outputs started is displayed for
-    // explicit authorization.
-    let replacement = usize::from(MAX_FEDERATION_SIZE);
-    let old_quote = recovery.seats[0]
-        .signed_quote
-        .clone()
-        .expect("journaled paid quote");
-    replace_guardian_for_test(
-        &client.inner.store,
-        &purchase_id,
-        0,
-        &old_quote,
-        replacement,
-    )
-    .await;
-    let displayed_quote = signed_quote(replacement, &recovery.snapshot.request, [98; 32]);
-    client
-        .inner
-        .store
-        .store_quote(&purchase_id, 0, displayed_quote.clone())
+    arm_payment_outputs_for_test(store, &purchase_id, &requirements).await;
+    // Only an aggregate changed after outputs started is displayed for
+    // explicit authorization: here, the rest after a terminal seat left.
+    let quote = |position: usize| {
+        recovery.seats[position]
+            .signed_quote
+            .clone()
+            .expect("seeded paid quote")
+    };
+    store
+        .clear_terminal_quotes(&purchase_id, &[(0, quote(0))], true)
         .await
         .unwrap();
-    let observed = payment_requirements(
-        &client
-            .inner
-            .store
-            .load_status(TestIdentity::fa_id())
-            .await
-            .unwrap(),
-    )
-    .clone();
-    client
-        .inner
-        .store
-        .clear_quote(&purchase_id, 0, &displayed_quote)
-        .await
-        .unwrap();
-    client
-        .inner
-        .store
-        .store_quote(
-            &purchase_id,
-            0,
-            signed_quote(replacement, &recovery.snapshot.request, [99; 32]),
-        )
+    let observed =
+        payment_requirements(&store.load_status(TestIdentity::fa_id()).await.unwrap()).clone();
+    store
+        .clear_terminal_quotes(&purchase_id, &[(1, quote(1))], true)
         .await
         .unwrap();
 
@@ -6657,20 +6555,15 @@ async fn stale_payment_authorization_cannot_approve_a_replaced_quote_set() {
     ));
     assert_eq!(payment_state.recover_calls.load(Ordering::SeqCst), 0);
     assert_eq!(payment_state.create_calls.load(Ordering::SeqCst), 0);
-    let current = client
-        .inner
-        .store
-        .load_status(TestIdentity::fa_id())
-        .await
-        .unwrap();
+    let current = store.load_status(TestIdentity::fa_id()).await.unwrap();
     assert_eq!(
         payment_requirements(&current).seats.len(),
-        usize::from(MIN_FEDERATION_SIZE)
+        usize::from(MIN_FEDERATION_SIZE) - 2
     );
 }
 
 #[tokio::test]
-async fn partial_seat_recovery_projects_payment_readiness_after_replacement() {
+async fn partial_seat_recovery_projects_payment_readiness_after_a_dropped_seat() {
     let database = MemDatabase::new().into_database();
     let (payments, _) = TestPayments::new();
     let client = open_client(
@@ -6680,55 +6573,39 @@ async fn partial_seat_recovery_projects_payment_readiness_after_replacement() {
         MgConfig::paid(),
     )
     .await;
+    let store = &client.inner.store;
     let formation_id = FormationId("partialpaymentreadiness".to_owned());
     let intent = ResolvedSeatPurchase {
         max_total_msats: Some(1_000),
-        ..resolved_intent_with_size(FederationSize(2))
+        ..resolved_intent_with_size(FederationSize(3))
     };
-    client
-        .inner
-        .store
+    store
         .initialize(
             TestIdentity::fa_id(),
             formation_id.clone(),
             intent.clone(),
-            vec![
-                selected_initial_seat(0, test_now_secs() + 120),
-                selected_initial_seat(1, test_now_secs() + 120),
-            ],
+            (0..3)
+                .map(|index| selected_initial_seat(index, test_now_secs() + 120))
+                .collect(),
             Some(payment_federation_id()),
         )
         .await
         .unwrap();
-    let first_quote = signed_quote(0, &intent, [51; 32]);
-    let second_quote = signed_quote(1, &intent, [52; 32]);
-    client
-        .inner
-        .store
-        .store_quote(&formation_id, 0, first_quote)
-        .await
-        .unwrap();
-    client
-        .inner
-        .store
-        .store_quote(&formation_id, 1, second_quote.clone())
-        .await
-        .unwrap();
-    let requirements = active_recovery(
-        client
-            .inner
-            .store
-            .load_purchase(TestIdentity::fa_id())
+    let quotes = (0..3)
+        .map(|index| signed_quote(index, &intent, [51 + u8::try_from(index).unwrap(); 32]))
+        .collect::<Vec<_>>();
+    for (index, quote) in (0..).zip(&quotes) {
+        store
+            .store_quote(&formation_id, index, quote.clone())
             .await
-            .unwrap(),
-    )
-    .payment_requirements(TestIdentity::fa_id())
-    .unwrap()
-    .expect("exact paid aggregate");
-    arm_payment_outputs_for_test(&client.inner.store, &formation_id, &requirements).await;
-    client
-        .inner
-        .store
+            .unwrap();
+    }
+    let requirements = active_recovery(store.load_purchase(TestIdentity::fa_id()).await.unwrap())
+        .payment_requirements(TestIdentity::fa_id())
+        .unwrap()
+        .expect("exact paid aggregate");
+    arm_payment_outputs_for_test(store, &formation_id, &requirements).await;
+    store
         .record_seat_accepted(
             &formation_id,
             0,
@@ -6737,25 +6614,30 @@ async fn partial_seat_recovery_projects_payment_readiness_after_replacement() {
         )
         .await
         .unwrap();
-    replace_guardian_for_test(&client.inner.store, &formation_id, 1, &second_quote, 2).await;
-    client
-        .inner
-        .store
-        .store_quote(&formation_id, 1, signed_quote(2, &intent, [53; 32]))
+    store
+        .clear_terminal_quotes(&formation_id, &[(1, quotes[1].clone())], true)
         .await
         .unwrap();
 
-    let recovered = client
-        .inner
-        .store
-        .load_status(TestIdentity::fa_id())
-        .await
-        .unwrap();
+    let recovered = store.load_status(TestIdentity::fa_id()).await.unwrap();
+    let snapshot = purchase(&recovered);
+    assert_eq!(snapshot.phase, PurchasePhase::AwaitingPaymentReadiness);
     assert_eq!(
-        purchase(&recovered).phase,
-        PurchasePhase::AwaitingPaymentReadiness
+        snapshot
+            .seats
+            .iter()
+            .map(|seat| (seat.index, seat.seat_id.clone()))
+            .collect::<Vec<_>>(),
+        vec![(0, Some(SeatId::from(QuoteId([0x04; 32])))), (2, None)],
     );
-    assert_eq!(payment_requirements(&recovered).seats.len(), 1);
+    assert_eq!(
+        payment_requirements(&recovered)
+            .seats
+            .iter()
+            .map(|seat| seat.index)
+            .collect::<Vec<_>>(),
+        vec![2],
+    );
 }
 
 #[tokio::test]
@@ -7062,7 +6944,7 @@ async fn lost_create_seat_response_replays_exact_quote_without_refunding_twice()
 }
 
 #[tokio::test(start_paused = true)]
-async fn slow_refund_settlement_finishes_before_guardian_replacement() {
+async fn slow_refund_settlement_finishes_before_the_seat_is_dropped() {
     let (payments, payment_state) = TestPayments::new();
     *payment_state.refund_delay.lock().expect("test lock") = Duration::from_secs(95);
     let mg_state = Arc::new(MgState::default());
@@ -7105,13 +6987,11 @@ async fn slow_refund_settlement_finishes_before_guardian_replacement() {
             .as_slice(),
         &[refused_quote],
     );
+    let dropped = dropped_index(purchase(&client.status()));
     let payments_before = payment_state.create_calls.load(Ordering::SeqCst);
     let quotes_before = mg_state.quote_calls.load(Ordering::SeqCst);
     client.resume().await.unwrap();
-    let status = client.status();
-    let requirements = guardian_replacements(&status);
-    assert_eq!(requirements.seats.len(), 1);
-    assert_eq!(requirements.seats[0].previous_quote_id, refused_quote);
+    bought_without(&client.status(), &[dropped]);
     assert_eq!(payment_state.refund_calls.load(Ordering::SeqCst), 1);
     assert_eq!(
         payment_state.create_calls.load(Ordering::SeqCst),
@@ -7121,7 +7001,7 @@ async fn slow_refund_settlement_finishes_before_guardian_replacement() {
 }
 
 #[tokio::test]
-async fn repeated_refund_settlement_replays_exact_context_before_guardian_replacement() {
+async fn repeated_refund_settlement_replays_exact_context_before_the_seat_is_dropped() {
     let database = MemDatabase::new().into_database();
     let (payments, payment_state) = TestPayments::new();
     let mg_state = Arc::new(MgState::default());
@@ -7178,24 +7058,19 @@ async fn repeated_refund_settlement_replays_exact_context_before_guardian_replac
         assert_eq!(replayed[0].signed_quote, replayed[1].signed_quote);
     }
 
+    let dropped = dropped_index(purchase(&reopened.status()));
     let payment_creates = payment_state.create_calls.load(Ordering::SeqCst);
     let seat_creates = mg_state.create_calls.load(Ordering::SeqCst);
     let quotes_before = mg_state.quote_calls.load(Ordering::SeqCst);
     reopened.resume().await.unwrap();
-    let status = reopened.status();
-    let requirements = guardian_replacements(&status);
-    assert_eq!(requirements.seats.len(), 1);
-    assert_eq!(requirements.seats[0].previous_quote_id, refused_quote);
+    bought_without(&reopened.status(), &[dropped]);
     assert_eq!(mg_state.quote_calls.load(Ordering::SeqCst), quotes_before);
-    assert_eq!(
-        purchase(&status).phase,
-        PurchasePhase::AwaitingPaymentReadiness
-    );
     assert_eq!(
         payment_state.create_calls.load(Ordering::SeqCst),
         payment_creates
     );
     assert_eq!(mg_state.create_calls.load(Ordering::SeqCst), seat_creates);
+    assert_eq!(payment_state.refund_calls.load(Ordering::SeqCst), 2);
 }
 
 #[tokio::test]
@@ -8804,7 +8679,7 @@ async fn pre_output_cleanup_retains_formation_when_wallet_release_fails() {
 
 #[tokio::test]
 async fn abandon_survives_authorization_invalidation() {
-    // Clearing a terminal quote invalidates the aggregate commercial authorization,
+    // Dropping a terminal seat invalidates the aggregate commercial authorization,
     // but the independent output-generation tombstone must keep gating
     // abandon after the authorization itself is gone.
     let database = MemDatabase::new().into_database();
@@ -8833,7 +8708,7 @@ async fn abandon_survives_authorization_invalidation() {
     client
         .inner
         .store
-        .mark_replacement_required(&recovery.snapshot.purchase_id, 0, &old_quote)
+        .clear_terminal_quotes(&recovery.snapshot.purchase_id, &[(0, old_quote)], true)
         .await
         .unwrap();
     let recovery = active_recovery(
@@ -8846,7 +8721,7 @@ async fn abandon_survives_authorization_invalidation() {
     );
     assert!(
         recovery.test_payment_authorization().is_none(),
-        "clearing a quote invalidated the aggregate authorization",
+        "dropping a seat invalidated the aggregate authorization",
     );
 
     let error = client.abandon_purchase(options()).await.unwrap_err();
@@ -9272,77 +9147,6 @@ async fn reopen_preserves_the_selected_dkg_identity_and_accepts_patch_skew() {
 }
 
 #[tokio::test]
-async fn persisted_formation_rejects_a_cross_minor_replacement() {
-    let registry = TestRegistry::default();
-    registry
-        .candidates
-        .lock()
-        .expect("test lock")
-        .push(setup_payment_event(test_now_secs(), &[PAYMENT_INVITE]));
-    registry.advertisements.lock().expect("test lock").push(
-        selection::issuer_ad_for_version_and_service_key_at(
-            &mg_keys(20),
-            &discovery::issuer_keys(0),
-            PAYMENT_AMOUNT_MSATS,
-            "0.13.0+fedi",
-            manager_key(20).x_only_public_key().0,
-            test_now_secs(),
-        ),
-    );
-    let (payments, _) = TestPayments::new();
-    let client = open_client_with_registry(
-        MemDatabase::new().into_database(),
-        payments,
-        Arc::new(MgState::default()),
-        MgConfig {
-            create_behavior: CreateBehavior::RefuseFirstQuote,
-            ..MgConfig::paid()
-        },
-        registry,
-    )
-    .await;
-
-    let error = client
-        .buy_and_form(
-            compatible_intent(),
-            compatible_selection_approval(PAYMENT_AMOUNT_MSATS * u64::from(MIN_FEDERATION_SIZE)),
-            payment_federation_id(),
-            options(),
-        )
-        .await
-        .expect_err("the original selected guardian refuses its paid presentation");
-    assert!(matches!(
-        &error,
-        FaError::Mg(MgFailure {
-            cause: MgCause::OfferChanged,
-            ..
-        })
-    ));
-    let persisted = purchase(&client.status()).clone();
-    assert_eq!(
-        persisted.request.fedimintd_dkg_version,
-        fedimintd_version().dkg_version()
-    );
-    assert!(matches!(
-        persisted.action_required,
-        Some(PurchaseActionRequired::ReplaceGuardians(_))
-    ));
-
-    let error = client
-        .preview_mg_replacements(crate::MgDiscoveryOptions::default())
-        .await
-        .expect_err("replacement discovery keeps the persisted DKG identity");
-    assert!(matches!(
-        &error,
-        FaError::InsufficientMgSeats {
-            selected: 0,
-            eligible: 0,
-            ..
-        }
-    ));
-}
-
-#[tokio::test]
 async fn selected_connection_failure_retries_before_requesting_replacement() {
     let database = MemDatabase::new().into_database();
     let (payments, _payment_state) = TestPayments::new();
@@ -9653,337 +9457,6 @@ async fn post_output_connection_failure_requires_exact_replay_not_replacement() 
     assert!(purchase(&client.status()).payment_outputs_started);
 }
 
-#[derive(Clone, Copy)]
-enum ProvisionalReplacementQuote {
-    None,
-    Paid,
-    Free,
-}
-
-async fn persist_provisional_replacement_for_test(
-    client: &TestClient,
-    valid_until: Timestamp,
-    quote: ProvisionalReplacementQuote,
-) -> (GuardianReplacementRequirements, u16) {
-    let error = client
-        .buy_and_form(
-            intent(),
-            selection_approval(PAYMENT_AMOUNT_MSATS * u64::from(MIN_FEDERATION_SIZE)),
-            payment_federation_id(),
-            options(),
-        )
-        .await
-        .expect_err("the original selected guardian refuses its paid presentation");
-    assert!(
-        matches!(
-            &error,
-            FaError::Mg(MgFailure {
-                cause: MgCause::OfferChanged,
-                ..
-            })
-        ),
-        "{error:?}"
-    );
-    let status = client.status();
-    let formation = purchase(&status).clone();
-    let PurchaseActionRequired::ReplaceGuardians(requirements) = formation
-        .action_required
-        .clone()
-        .expect("terminal refusal requires one replacement")
-    else {
-        panic!("terminal refusal exposed the wrong recovery action")
-    };
-    let index = requirements.seats[0].index;
-    let replacement_index = usize::from(MAX_FEDERATION_SIZE);
-    client
-        .inner
-        .store
-        .replace_guardians(
-            &formation.purchase_id,
-            &requirements,
-            &[(
-                locator(replacement_index),
-                crate::db::MgAdmission::fresh_peer_badge(
-                    test_mg_id(replacement_index),
-                    test_mg_id(replacement_index),
-                    test_peer_badge_verifier().provenance().into(),
-                    valid_until,
-                ),
-            )],
-            PAYMENT_AMOUNT_MSATS,
-        )
-        .await
-        .expect("fresh replacement approval is persisted provisionally");
-
-    let signed_quote = match quote {
-        ProvisionalReplacementQuote::None => None,
-        ProvisionalReplacementQuote::Paid => Some(signed_quote(
-            replacement_index,
-            &formation.request,
-            [91; 32],
-        )),
-        ProvisionalReplacementQuote::Free => Some(signed_free_quote(
-            replacement_index,
-            &formation.request,
-            [92; 32],
-        )),
-    };
-    if let Some(signed_quote) = signed_quote {
-        client
-            .inner
-            .store
-            .store_quote(&formation.purchase_id, index, signed_quote)
-            .await
-            .expect("provisional replacement quote is durable before its effect");
-    }
-    (requirements, index)
-}
-
-async fn assert_replacement_preview_still_reachable(
-    client: &TestClient,
-    requirements: &GuardianReplacementRequirements,
-) {
-    assert_eq!(
-        purchase(&client.status()).action_required,
-        Some(PurchaseActionRequired::ReplaceGuardians(
-            requirements.clone()
-        ))
-    );
-    match client
-        .preview_mg_replacements(crate::MgDiscoveryOptions::default())
-        .await
-    {
-        Err(FaError::InsufficientMgSeats { .. }) => {}
-        Err(error) => panic!("fresh replacement preview was not reachable: {error:?}"),
-        Ok(_) => panic!("empty test registry unexpectedly filled a replacement preview"),
-    }
-}
-
-#[tokio::test]
-async fn unavailable_provisional_replacement_reopens_with_fresh_preview_before_quote() {
-    let database = MemDatabase::new().into_database();
-    let (payments, payment_state) = TestPayments::new();
-    let mg_state = Arc::new(MgState::default());
-    let config = MgConfig {
-        create_behavior: CreateBehavior::RefuseFirstQuote,
-        ..MgConfig::paid()
-    };
-    let client = open_client(database.clone(), payments.clone(), mg_state.clone(), config).await;
-    let (requirements, _) = persist_provisional_replacement_for_test(
-        &client,
-        Timestamp(test_now_secs() + 120),
-        ProvisionalReplacementQuote::None,
-    )
-    .await;
-    let payment_calls = payment_state.create_calls.load(Ordering::SeqCst);
-    let presentation_calls = mg_state.create_calls.load(Ordering::SeqCst);
-    drop(client);
-
-    let reopened = open_client(
-        database.clone(),
-        payments.clone(),
-        mg_state.clone(),
-        MgConfig {
-            accepting_seats: false,
-            ..config
-        },
-    )
-    .await;
-    let error = reopened
-        .resume()
-        .await
-        .expect_err("replacement is unavailable");
-    assert!(matches!(
-        &error,
-        FaError::SelectionReauthorizationRequired {
-            reason: SelectionReauthorizationReason::SelectedMgUnavailable,
-            failure: Some(MgFailure {
-                operation: MgOperation::GetAvailability,
-                cause: MgCause::NotAcceptingSeats,
-                ..
-            })
-        }
-    ));
-    drop(reopened);
-
-    let reopened = open_client(database, payments, mg_state.clone(), config).await;
-    assert_replacement_preview_still_reachable(&reopened, &requirements).await;
-    assert_eq!(
-        payment_state.create_calls.load(Ordering::SeqCst),
-        payment_calls
-    );
-    assert_eq!(
-        mg_state.create_calls.load(Ordering::SeqCst),
-        presentation_calls
-    );
-}
-
-#[tokio::test]
-async fn expired_paid_replacement_releases_exact_hold_and_reopens_with_fresh_preview() {
-    let database = MemDatabase::new().into_database();
-    let (payments, payment_state) = TestPayments::new();
-    let mg_state = Arc::new(MgState::default());
-    let config = MgConfig {
-        create_behavior: CreateBehavior::RefuseFirstQuote,
-        ..MgConfig::paid()
-    };
-    let client = open_client(database.clone(), payments.clone(), mg_state.clone(), config).await;
-    let (replacement_requirements, _) = persist_provisional_replacement_for_test(
-        &client,
-        Timestamp(test_now_secs().saturating_sub(1)),
-        ProvisionalReplacementQuote::Paid,
-    )
-    .await;
-    let recovery = active_recovery(
-        client
-            .inner
-            .store
-            .load_purchase(TestIdentity::fa_id())
-            .await
-            .unwrap(),
-    );
-    let requirements = recovery
-        .payment_requirements(TestIdentity::fa_id())
-        .unwrap()
-        .expect("the provisional paid quote has exact requirements");
-    let authorizations = requirements
-        .seats
-        .iter()
-        .map(|seat| QuoteAuthorization {
-            index: seat.index,
-            quote_id: seat.quote_id,
-        })
-        .collect::<Vec<_>>();
-    client
-        .inner
-        .store
-        .authorize_payments(
-            &recovery.snapshot.purchase_id,
-            &requirements.authorization_id,
-            &authorizations,
-        )
-        .await
-        .unwrap();
-    let verified_quotes = requirements
-        .seats
-        .iter()
-        .map(|requirement| {
-            let seat = recovery
-                .seats
-                .iter()
-                .find(|seat| seat.progress.index == requirement.index)
-                .expect("payment requirement names its seat");
-            seat.signed_quote
-                .as_ref()
-                .expect("paid replacement quote is durable")
-                .verify(&seat.progress.locator.service_pubkey)
-                .expect("paid replacement quote verifies")
-        })
-        .collect::<Vec<_>>();
-    let preflight = crate::ExactPaymentPreflight::new(&requirements, &verified_quotes).unwrap();
-    let reservation_id =
-        crate::db::payment_reservation_id(&recovery.snapshot.purchase_id, &requirements);
-    payments
-        .reserve_payment_requirements(&reservation_id, &preflight)
-        .await
-        .unwrap();
-    client
-        .inner
-        .store
-        .record_payment_reservation(&recovery.snapshot.purchase_id, &reservation_id)
-        .await
-        .unwrap();
-    let payment_calls = payment_state.create_calls.load(Ordering::SeqCst);
-    let presentation_calls = mg_state.create_calls.load(Ordering::SeqCst);
-
-    let error = client
-        .resume()
-        .await
-        .expect_err("replacement approval expired");
-    assert!(matches!(
-        &error,
-        FaError::SelectionReauthorizationRequired {
-            reason: SelectionReauthorizationReason::PreviewExpired,
-            failure: None
-        }
-    ));
-    assert!(
-        !payment_state
-            .reservations
-            .lock()
-            .expect("test lock")
-            .contains_key(reservation_id.as_str()),
-        "fresh preview is exposed only after the exact unstarted hold is released"
-    );
-    drop(client);
-
-    let reopened = open_client(database, payments, mg_state.clone(), config).await;
-    assert_replacement_preview_still_reachable(&reopened, &replacement_requirements).await;
-    assert_eq!(
-        payment_state.create_calls.load(Ordering::SeqCst),
-        payment_calls
-    );
-    assert_eq!(
-        mg_state.create_calls.load(Ordering::SeqCst),
-        presentation_calls
-    );
-}
-
-#[tokio::test]
-async fn verifier_drifted_free_replacement_reopens_with_fresh_preview_before_presentation() {
-    let database = MemDatabase::new().into_database();
-    let (payments, payment_state) = TestPayments::new();
-    let mg_state = Arc::new(MgState::default());
-    let config = MgConfig {
-        create_behavior: CreateBehavior::RefuseFirstQuote,
-        ..MgConfig::paid()
-    };
-    let client = open_client(database.clone(), payments.clone(), mg_state.clone(), config).await;
-    let (requirements, _) = persist_provisional_replacement_for_test(
-        &client,
-        Timestamp(test_now_secs() + 120),
-        ProvisionalReplacementQuote::Free,
-    )
-    .await;
-    let payment_calls = payment_state.create_calls.load(Ordering::SeqCst);
-    let presentation_calls = mg_state.create_calls.load(Ordering::SeqCst);
-    drop(client);
-
-    let staging = peer_badge_verifier(ManifoldEnvironment::Staging);
-    let reopened = open_client_with_verifier(
-        database.clone(),
-        payments.clone(),
-        mg_state.clone(),
-        config,
-        staging.clone(),
-    )
-    .await;
-    let error = reopened
-        .resume()
-        .await
-        .expect_err("verifier provenance drifted");
-    assert!(matches!(
-        &error,
-        FaError::SelectionReauthorizationRequired {
-            reason: SelectionReauthorizationReason::VerifierEnvironmentChanged,
-            failure: None
-        }
-    ));
-    drop(reopened);
-
-    let reopened =
-        open_client_with_verifier(database, payments, mg_state.clone(), config, staging).await;
-    assert_replacement_preview_still_reachable(&reopened, &requirements).await;
-    assert_eq!(
-        payment_state.create_calls.load(Ordering::SeqCst),
-        payment_calls
-    );
-    assert_eq!(
-        mg_state.create_calls.load(Ordering::SeqCst),
-        presentation_calls
-    );
-}
-
 #[tokio::test]
 async fn selected_free_refusal_survives_failed_abandon_and_replays_before_cleanup() {
     let database = MemDatabase::new().into_database();
@@ -10061,7 +9534,7 @@ async fn selected_free_refusal_survives_failed_abandon_and_replays_before_cleanu
 }
 
 #[tokio::test]
-async fn selected_refusal_changes_only_the_proven_unsecured_guardian() {
+async fn post_output_paid_refusal_drops_only_that_seat_and_the_rest_complete() {
     let database = MemDatabase::new().into_database();
     let (payments, payment_state) = TestPayments::new();
     let mg_state = Arc::new(MgState::default());
@@ -10073,10 +9546,9 @@ async fn selected_refusal_changes_only_the_proven_unsecured_guardian() {
     let original_cap = PAYMENT_AMOUNT_MSATS * u64::from(MIN_FEDERATION_SIZE);
 
     let error = client
-        .buy_and_form(
-            intent(),
+        .buy_seats(
             selection_approval(original_cap),
-            payment_federation_id(),
+            Some(payment_federation_id()),
             options(),
         )
         .await
@@ -10092,16 +9564,19 @@ async fn selected_refusal_changes_only_the_proven_unsecured_guardian() {
         "{error:?}"
     );
     let interrupted = purchase(&client.status()).clone();
-    let PurchaseActionRequired::ReplaceGuardians(requirements) = interrupted
-        .action_required
-        .clone()
-        .expect("a verified refusal requires subset replacement")
-    else {
-        panic!("selected refusal exposed the wrong recovery action")
-    };
-    assert_eq!(requirements.seats.len(), 1);
-    let replaced_index = requirements.seats[0].index;
+    assert!(interrupted.payment_outputs_started);
+    assert!(interrupted.action_required.is_none());
+    let dropped = dropped_index(&interrupted);
+    assert_eq!(
+        interrupted.seats.len(),
+        usize::from(MIN_FEDERATION_SIZE) - 1
+    );
     for seat in &interrupted.seats {
+        assert!(
+            seat.seat_id.is_some(),
+            "sibling {} was accepted",
+            seat.index
+        );
         assert_eq!(
             seat.mg_name(),
             MgName::from_mg_id(test_mg_id(usize::from(seat.index))),
@@ -10109,237 +9584,16 @@ async fn selected_refusal_changes_only_the_proven_unsecured_guardian() {
             seat.index,
         );
     }
-    assert_eq!(
-        requirements.seats[0].previous_mg_id,
-        test_mg_id(usize::from(replaced_index)),
-        "the replacement row names the outgoing MG",
-    );
-    let accepted_before = interrupted
-        .seats
-        .iter()
-        .filter_map(|seat| seat.seat_id.clone().map(|seat_id| (seat.index, seat_id)))
-        .collect::<BTreeMap<_, _>>();
-    assert_eq!(
-        accepted_before.len(),
-        usize::from(MIN_FEDERATION_SIZE) - 1,
-        "every paid and accepted sibling is pinned"
-    );
+    assert_eq!(payment_state.refund_calls.load(Ordering::SeqCst), 1);
 
     drop(client);
     let client = open_client(database, payments, mg_state.clone(), config).await;
     let reopened_status = client.status();
     let reopened = purchase(&reopened_status);
     assert_eq!(
-        reopened.action_required,
-        Some(PurchaseActionRequired::ReplaceGuardians(
-            requirements.clone()
-        )),
-        "the exact subset-replacement requirement survives process restart",
+        reopened.seats, interrupted.seats,
+        "the dropped row stays gone across process restart",
     );
-    for (index, seat_id) in &accepted_before {
-        assert_eq!(
-            reopened.seats[usize::from(*index)].seat_id.as_ref(),
-            Some(seat_id),
-            "restart lost accepted sibling {index}",
-        );
-    }
-
-    let retained_index = *accepted_before
-        .keys()
-        .next()
-        .expect("one accepted sibling remains");
-    let mut colliding_approval = MgReplacementApproval {
-        requirements: requirements.clone(),
-        verifier_provenance: test_peer_badge_verifier().provenance(),
-        seats: vec![crate::selection::ApprovedMgSeat {
-            mg_id: test_mg_id(usize::from(MAX_FEDERATION_SIZE)),
-            holder: test_mg_id(usize::from(MAX_FEDERATION_SIZE)),
-            locator: reopened.seats[usize::from(retained_index)].locator.clone(),
-        }],
-        max_total_msats: PAYMENT_AMOUNT_MSATS,
-        valid_until: Timestamp(test_now_secs() + 120),
-    };
-    let error = client
-        .apply_mg_replacements(colliding_approval.clone(), options())
-        .await
-        .expect_err("a distinct author cannot reuse a retained signing authority");
-    assert!(
-        matches!(&error, FaError::InvalidManifoldGuardians(message)
-            if message.contains("service signing key")),
-        "unexpected collision error: {error:?}",
-    );
-    colliding_approval.seats[0].locator = locator(usize::from(MAX_FEDERATION_SIZE));
-    colliding_approval.seats[0].holder = test_mg_id(usize::from(retained_index));
-    let error = client
-        .apply_mg_replacements(colliding_approval, options())
-        .await
-        .expect_err("a new service key cannot reuse a retained badge holder after restart");
-    assert!(
-        matches!(&error, FaError::InvalidManifoldGuardians(message) if message.contains("badge holder"))
-    );
-    assert_eq!(
-        purchase(&client.status()).action_required,
-        Some(PurchaseActionRequired::ReplaceGuardians(
-            requirements.clone()
-        )),
-        "rejected apply must leave the exact replacement requirement intact",
-    );
-
-    let approval = MgReplacementApproval {
-        requirements,
-        verifier_provenance: test_peer_badge_verifier().provenance(),
-        seats: vec![crate::selection::ApprovedMgSeat {
-            mg_id: test_mg_id(usize::from(MAX_FEDERATION_SIZE)),
-            holder: test_mg_id(usize::from(MAX_FEDERATION_SIZE)),
-            locator: locator(usize::from(MAX_FEDERATION_SIZE)),
-        }],
-        // Model an advertisement below the eventual real quote so the test
-        // also exercises the exact post-replacement authorization action.
-        max_total_msats: 1,
-        valid_until: Timestamp(test_now_secs() + 120),
-    };
-    client
-        .apply_mg_replacements(approval, options())
-        .await
-        .unwrap();
-
-    let replaced_status = client.status();
-    let replaced = purchase(&replaced_status);
-    assert_eq!(replaced.phase, PurchasePhase::AwaitingPaymentReadiness);
-    let Some(PurchaseActionRequired::AuthorizePayments(parked_payment)) =
-        replaced.action_required.clone()
-    else {
-        panic!("over-cap replacement quote must park an authorization action")
-    };
-    assert_eq!(
-        parked_payment
-            .seats
-            .iter()
-            .map(|seat| seat.mg_id)
-            .collect::<Vec<_>>(),
-        vec![test_mg_id(usize::from(MAX_FEDERATION_SIZE))],
-        "the parked payment names the incoming MG",
-    );
-    assert_eq!(
-        replaced.seats[usize::from(replaced_index)].locator,
-        locator(usize::from(MAX_FEDERATION_SIZE))
-    );
-    assert_eq!(
-        replaced.seats[usize::from(replaced_index)].mg_id,
-        test_mg_id(usize::from(MAX_FEDERATION_SIZE)),
-        "the replaced row exposes the incoming MG's identity",
-    );
-    for (index, seat_id) in accepted_before {
-        assert_eq!(
-            replaced.seats[usize::from(index)].seat_id.as_ref(),
-            Some(&seat_id),
-            "an accepted sibling changed while replacing row {replaced_index}"
-        );
-    }
-    assert_eq!(
-        payment_state.create_calls.load(Ordering::SeqCst),
-        usize::from(MIN_FEDERATION_SIZE),
-        "the exact over-cap replacement quote moves no additional value"
-    );
-
-    let authorization_id = payment_requirements(&replaced_status)
-        .authorization_id
-        .clone();
-    client
-        .authorize_payments(authorization_id, options())
-        .await
-        .unwrap();
-    bought(&client.status());
-    assert_eq!(
-        payment_state.create_calls.load(Ordering::SeqCst),
-        usize::from(MIN_FEDERATION_SIZE) + 1,
-        "only the renewed replacement quote may generate another payment output",
-    );
-    let calls_after_completion = mg_state.create_calls.load(Ordering::SeqCst);
-    assert!(matches!(
-        client.resume().await,
-        Err(FaError::NoActiveFormation)
-    ));
-    assert_eq!(
-        mg_state.create_calls.load(Ordering::SeqCst),
-        calls_after_completion,
-        "a completed purchase replay must not repeat any accepted or replacement CreateSeat",
-    );
-}
-
-#[tokio::test]
-async fn selected_paid_replacement_reopens_after_authorized_output_without_new_spend() {
-    let database = MemDatabase::new().into_database();
-    let (payments, payment_state) = TestPayments::new();
-    let mg_state = Arc::new(MgState::default());
-    let config = MgConfig {
-        create_behavior: CreateBehavior::RefuseFirstQuote,
-        ..MgConfig::paid()
-    };
-    let client = open_client(database.clone(), payments.clone(), mg_state.clone(), config).await;
-    let initial_cap = PAYMENT_AMOUNT_MSATS * u64::from(MIN_FEDERATION_SIZE);
-
-    let error = client
-        .buy_and_form(
-            intent(),
-            selection_approval(initial_cap),
-            payment_federation_id(),
-            options(),
-        )
-        .await
-        .unwrap_err();
-    assert!(
-        matches!(
-            &error,
-            FaError::Mg(MgFailure {
-                cause: MgCause::OfferChanged,
-                ..
-            })
-        ),
-        "{error:?}"
-    );
-    let PurchaseActionRequired::ReplaceGuardians(requirements) = purchase(&client.status())
-        .action_required
-        .clone()
-        .expect("the refused selected seat requires replacement")
-    else {
-        panic!("selected refusal exposed the wrong recovery action")
-    };
-    assert_eq!(requirements.seats.len(), 1);
-    let replaced_index = requirements.seats[0].index;
-
-    let next_funding_call = payment_state.create_calls.load(Ordering::SeqCst) + 1;
-    payment_state
-        .hang_funding_on_call
-        .store(next_funding_call, Ordering::SeqCst);
-    let funding_started = payment_state.funding_started.notified();
-    let approval = MgReplacementApproval {
-        requirements,
-        verifier_provenance: test_peer_badge_verifier().provenance(),
-        seats: vec![crate::selection::ApprovedMgSeat {
-            mg_id: test_mg_id(usize::from(MAX_FEDERATION_SIZE)),
-            holder: test_mg_id(usize::from(MAX_FEDERATION_SIZE)),
-            locator: locator(usize::from(MAX_FEDERATION_SIZE)),
-        }],
-        max_total_msats: PAYMENT_AMOUNT_MSATS,
-        valid_until: Timestamp(test_now_secs() + 120),
-    };
-    let running = client.clone();
-    let operation = tokio::spawn(async move {
-        running
-            .apply_mg_replacements(approval, long_request_options())
-            .await
-    });
-    tokio::time::timeout(Duration::from_secs(5), funding_started)
-        .await
-        .expect("selected replacement reaches the injected lost wallet result");
-
-    let replacement_quote = *payment_state
-        .created_quotes
-        .lock()
-        .expect("test lock")
-        .last()
-        .expect("the replacement wallet output is journaled");
     let recovery = active_recovery(
         client
             .inner
@@ -10348,70 +9602,27 @@ async fn selected_paid_replacement_reopens_after_authorized_output_without_new_s
             .await
             .unwrap(),
     );
-    let interrupted = &recovery.seats[usize::from(replaced_index)];
-    assert!(interrupted.progress.seat_id.is_none());
-    assert!(matches!(
-        &interrupted.admission,
-        crate::db::MgAdmission {
-            state: crate::db::AdmissionState::EffectAuthorized {
-                quote_id,
-                effect: crate::db::AdmissionEffect::PaidOutput,
-            },
-            ..
-        } if *quote_id == replacement_quote
-    ));
-    let replacement_signed_quote = interrupted
-        .signed_quote
-        .clone()
-        .expect("the exact replacement quote remains durable");
-    assert!(
-        mg_state
-            .create_records
-            .lock()
-            .expect("test lock")
-            .iter()
-            .all(|record| record.quote_id != replacement_quote),
-        "the crash point precedes replacement-seat presentation",
-    );
+    assert_eq!(recovery.seats.len(), usize::from(MIN_FEDERATION_SIZE) - 1);
+    assert!(recovery.test_payment_authorization().is_none());
+    assert!(recovery.payment_reservation_id.is_none());
 
-    operation.abort();
-    assert!(operation.await.unwrap_err().is_cancelled());
-    let spends_before_resume = payment_state.create_calls.load(Ordering::SeqCst);
-    assert_eq!(spends_before_resume, next_funding_call);
-    let quote_calls_before_resume = mg_state.quote_calls.load(Ordering::SeqCst);
-    drop(client);
-
-    let reopened = open_client_with_verifier(
-        database,
-        payments,
-        mg_state.clone(),
-        config,
-        peer_badge_verifier(ManifoldEnvironment::Staging),
-    )
-    .await;
-    reopened.resume().await.unwrap();
-
-    bought(&reopened.status());
+    let presentations = mg_state.create_calls.load(Ordering::SeqCst);
+    client.resume().await.unwrap();
+    bought_without(&client.status(), &[dropped]);
     assert_eq!(
         payment_state.create_calls.load(Ordering::SeqCst),
-        spends_before_resume,
-        "recovering a journaled replacement output must not spend again",
+        usize::from(MIN_FEDERATION_SIZE),
+        "the dropped seat is never paid again",
     );
     assert_eq!(
-        mg_state.quote_calls.load(Ordering::SeqCst),
-        quote_calls_before_resume,
-        "authorized recovery must not obtain a fresh replacement quote",
+        mg_state.create_calls.load(Ordering::SeqCst),
+        presentations,
+        "completion presents no accepted or dropped seat again",
     );
-    let records = mg_state.create_records.lock().expect("test lock");
-    let replacement_presentations = records
-        .iter()
-        .filter(|record| record.quote_id == replacement_quote)
-        .collect::<Vec<_>>();
-    assert_eq!(replacement_presentations.len(), 1);
-    assert_eq!(
-        replacement_presentations[0].signed_quote,
-        replacement_signed_quote,
-    );
+    assert!(matches!(
+        client.resume().await,
+        Err(FaError::NoActiveFormation)
+    ));
 }
 
 #[tokio::test]
@@ -11229,84 +10440,6 @@ async fn seed_lost_selected_reservation_result(
     );
 }
 
-async fn seed_lost_post_output_replacement_reservation_result(
-    client: &TestClient,
-    payment_state: &Arc<PaymentState>,
-    valid_until: Timestamp,
-    wallet_journal_present: bool,
-) -> (GuardianReplacementRequirements, crate::PaymentReservationId) {
-    let (replacement_requirements, _) = persist_provisional_replacement_for_test(
-        client,
-        valid_until,
-        ProvisionalReplacementQuote::Paid,
-    )
-    .await;
-    let recovery = active_recovery(
-        client
-            .inner
-            .store
-            .load_purchase(TestIdentity::fa_id())
-            .await
-            .unwrap(),
-    );
-    assert!(recovery.payment_outputs_started);
-    let requirements = recovery
-        .payment_requirements(TestIdentity::fa_id())
-        .unwrap()
-        .expect("the provisional paid replacement has exact requirements");
-    client
-        .inner
-        .store
-        .authorize_payments(
-            &recovery.snapshot.purchase_id,
-            &requirements.authorization_id,
-            &requirements
-                .seats
-                .iter()
-                .map(|seat| QuoteAuthorization {
-                    index: seat.index,
-                    quote_id: seat.quote_id,
-                })
-                .collect::<Vec<_>>(),
-        )
-        .await
-        .unwrap();
-    let reservation_id =
-        crate::db::payment_reservation_id(&recovery.snapshot.purchase_id, &requirements);
-    if wallet_journal_present {
-        payment_state
-            .reservations
-            .lock()
-            .expect("test lock")
-            .insert(
-                reservation_id.as_str().to_owned(),
-                TestReservation {
-                    quote_ids: requirements
-                        .seats
-                        .iter()
-                        .map(|seat| seat.quote_id)
-                        .collect(),
-                    started: HashSet::new(),
-                    terminal: HashSet::new(),
-                    released: HashSet::new(),
-                },
-            );
-    }
-    let persisted = active_recovery(
-        client
-            .inner
-            .store
-            .load_purchase(TestIdentity::fa_id())
-            .await
-            .unwrap(),
-    );
-    assert!(
-        persisted.payment_reservation_id.is_none(),
-        "the replacement wallet commit is lost before the FA reservation-id checkpoint",
-    );
-    (replacement_requirements, reservation_id)
-}
-
 #[tokio::test]
 async fn lost_reserve_result_releases_after_preview_expiry_without_creating_a_journal() {
     let database = MemDatabase::new().into_database();
@@ -11397,151 +10530,6 @@ async fn lost_reserve_result_releases_after_verifier_drift_without_creating_a_jo
             .expect("test lock")
             .is_empty(),
         "verifier drift cannot strand an ambiguously committed wallet journal",
-    );
-}
-
-#[tokio::test]
-async fn lost_replacement_reserve_result_releases_after_preview_expiry() {
-    let database = MemDatabase::new().into_database();
-    let (payments, payment_state) = TestPayments::new();
-    let mg_state = Arc::new(MgState::default());
-    let config = MgConfig {
-        create_behavior: CreateBehavior::RefuseFirstQuote,
-        ..MgConfig::paid()
-    };
-    let client = open_client(database.clone(), payments.clone(), mg_state.clone(), config).await;
-    let (requirements, replacement_reservation_id) =
-        seed_lost_post_output_replacement_reservation_result(
-            &client,
-            &payment_state,
-            Timestamp(test_now_secs().saturating_sub(1)),
-            true,
-        )
-        .await;
-    let readiness_calls = payment_state.readiness_calls.load(Ordering::SeqCst);
-    drop(client);
-
-    let reopened = open_client(database, payments, mg_state, config).await;
-    let error = reopened.resume().await.unwrap_err();
-    assert!(matches!(
-        &error,
-        FaError::SelectionReauthorizationRequired {
-            reason: SelectionReauthorizationReason::PreviewExpired,
-            failure: None
-        }
-    ));
-    assert_replacement_preview_still_reachable(&reopened, &requirements).await;
-    assert_eq!(payment_state.whole_release_calls.load(Ordering::SeqCst), 1);
-    assert_eq!(
-        payment_state.readiness_calls.load(Ordering::SeqCst),
-        readiness_calls,
-        "recovery probes but never recreates the replacement wallet journal",
-    );
-    assert!(
-        !payment_state
-            .reservations
-            .lock()
-            .expect("test lock")
-            .contains_key(replacement_reservation_id.as_str()),
-        "the exact replacement hold is released before fresh preview",
-    );
-}
-
-#[tokio::test]
-async fn lost_replacement_reserve_result_releases_after_verifier_drift() {
-    let database = MemDatabase::new().into_database();
-    let (payments, payment_state) = TestPayments::new();
-    let mg_state = Arc::new(MgState::default());
-    let config = MgConfig {
-        create_behavior: CreateBehavior::RefuseFirstQuote,
-        ..MgConfig::paid()
-    };
-    let client = open_client(database.clone(), payments.clone(), mg_state.clone(), config).await;
-    let (requirements, replacement_reservation_id) =
-        seed_lost_post_output_replacement_reservation_result(
-            &client,
-            &payment_state,
-            Timestamp(test_now_secs() + 120),
-            true,
-        )
-        .await;
-    let readiness_calls = payment_state.readiness_calls.load(Ordering::SeqCst);
-    drop(client);
-
-    let reopened = open_client_with_verifier(
-        database,
-        payments,
-        mg_state,
-        config,
-        peer_badge_verifier(ManifoldEnvironment::Staging),
-    )
-    .await;
-    let error = reopened.resume().await.unwrap_err();
-    assert!(matches!(
-        &error,
-        FaError::SelectionReauthorizationRequired {
-            reason: SelectionReauthorizationReason::VerifierEnvironmentChanged,
-            failure: None
-        }
-    ));
-    assert_replacement_preview_still_reachable(&reopened, &requirements).await;
-    assert_eq!(payment_state.whole_release_calls.load(Ordering::SeqCst), 1);
-    assert_eq!(
-        payment_state.readiness_calls.load(Ordering::SeqCst),
-        readiness_calls,
-    );
-    assert!(
-        !payment_state
-            .reservations
-            .lock()
-            .expect("test lock")
-            .contains_key(replacement_reservation_id.as_str()),
-    );
-}
-
-#[tokio::test]
-async fn absent_replacement_reservation_restores_without_wallet_release() {
-    let database = MemDatabase::new().into_database();
-    let (payments, payment_state) = TestPayments::new();
-    let mg_state = Arc::new(MgState::default());
-    let config = MgConfig {
-        create_behavior: CreateBehavior::RefuseFirstQuote,
-        ..MgConfig::paid()
-    };
-    let client = open_client(database.clone(), payments.clone(), mg_state.clone(), config).await;
-    let (requirements, replacement_reservation_id) =
-        seed_lost_post_output_replacement_reservation_result(
-            &client,
-            &payment_state,
-            Timestamp(test_now_secs().saturating_sub(1)),
-            false,
-        )
-        .await;
-    let readiness_calls = payment_state.readiness_calls.load(Ordering::SeqCst);
-    drop(client);
-
-    let reopened = open_client(database, payments, mg_state, config).await;
-    let error = reopened.resume().await.unwrap_err();
-    assert!(matches!(
-        &error,
-        FaError::SelectionReauthorizationRequired {
-            reason: SelectionReauthorizationReason::PreviewExpired,
-            failure: None
-        }
-    ));
-    assert_replacement_preview_still_reachable(&reopened, &requirements).await;
-    assert_eq!(payment_state.whole_release_calls.load(Ordering::SeqCst), 0);
-    assert_eq!(
-        payment_state.readiness_calls.load(Ordering::SeqCst),
-        readiness_calls,
-    );
-    assert!(
-        !payment_state
-            .reservations
-            .lock()
-            .expect("test lock")
-            .contains_key(replacement_reservation_id.as_str()),
-        "an absent replacement reservation remains absent",
     );
 }
 
@@ -11851,170 +10839,6 @@ async fn interrupted_pre_output_abandon_completes_on_resume() {
             .is_empty()
     );
     assert_eq!(payment_state.create_calls.load(Ordering::SeqCst), 0);
-}
-
-#[tokio::test]
-async fn interrupted_replacement_restore_completes_on_resume() {
-    let database = MemDatabase::new().into_database();
-    let (payments, payment_state) = TestPayments::new();
-    let mg_state = Arc::new(MgState::default());
-    let config = MgConfig {
-        create_behavior: CreateBehavior::RefuseFirstQuote,
-        ..MgConfig::paid()
-    };
-    let client = open_client(database.clone(), payments.clone(), mg_state.clone(), config).await;
-    let (replacement_requirements, _) = persist_provisional_replacement_for_test(
-        &client,
-        Timestamp(test_now_secs().saturating_sub(1)),
-        ProvisionalReplacementQuote::Paid,
-    )
-    .await;
-    let recovery = active_recovery(
-        client
-            .inner
-            .store
-            .load_purchase(TestIdentity::fa_id())
-            .await
-            .unwrap(),
-    );
-    let requirements = recovery
-        .payment_requirements(TestIdentity::fa_id())
-        .unwrap()
-        .expect("the provisional paid quote has exact requirements");
-    let authorizations = requirements
-        .seats
-        .iter()
-        .map(|seat| QuoteAuthorization {
-            index: seat.index,
-            quote_id: seat.quote_id,
-        })
-        .collect::<Vec<_>>();
-    client
-        .inner
-        .store
-        .authorize_payments(
-            &recovery.snapshot.purchase_id,
-            &requirements.authorization_id,
-            &authorizations,
-        )
-        .await
-        .unwrap();
-    let verified_quotes = requirements
-        .seats
-        .iter()
-        .map(|requirement| {
-            let seat = recovery
-                .seats
-                .iter()
-                .find(|seat| seat.progress.index == requirement.index)
-                .expect("payment requirement names its seat");
-            seat.signed_quote
-                .as_ref()
-                .expect("paid replacement quote is durable")
-                .verify(&seat.progress.locator.service_pubkey)
-                .expect("paid replacement quote verifies")
-        })
-        .collect::<Vec<_>>();
-    let preflight = crate::ExactPaymentPreflight::new(&requirements, &verified_quotes).unwrap();
-    let reservation_id =
-        crate::db::payment_reservation_id(&recovery.snapshot.purchase_id, &requirements);
-    payments
-        .reserve_payment_requirements(&reservation_id, &preflight)
-        .await
-        .unwrap();
-    client
-        .inner
-        .store
-        .record_payment_reservation(&recovery.snapshot.purchase_id, &reservation_id)
-        .await
-        .unwrap();
-    let releases_before = payment_state.whole_release_calls.load(Ordering::SeqCst);
-    let readiness_before = payment_state.readiness_calls.load(Ordering::SeqCst);
-    let spends_before = payment_state.create_calls.load(Ordering::SeqCst);
-    // The injected restore failure returns after the wallet release committed,
-    // which is exactly the state a crash between the two would leave behind.
-    client.inner.store.fail_restore_once();
-
-    let error = client
-        .resume()
-        .await
-        .expect_err("the atomic restore is interrupted after the wallet release");
-    assert!(
-        matches!(&error, FaError::Storage(message) if message.contains("restore failure")),
-        "{error:?}"
-    );
-    assert_eq!(
-        payment_state.whole_release_calls.load(Ordering::SeqCst),
-        releases_before + 1,
-    );
-    assert!(
-        !payment_state
-            .reservations
-            .lock()
-            .expect("test lock")
-            .contains_key(reservation_id.as_str()),
-        "the wallet half of the restore completed before the interruption",
-    );
-    let interrupted = active_recovery(
-        client
-            .inner
-            .store
-            .load_purchase(TestIdentity::fa_id())
-            .await
-            .unwrap(),
-    );
-    assert_eq!(
-        interrupted.payment_reservation_id.as_ref(),
-        Some(&reservation_id),
-        "the interrupted restore retains the durable reservation id",
-    );
-    assert!(
-        interrupted.payment_reservation_release_intended,
-        "the release commitment was durably recorded before the wallet call",
-    );
-    drop(client);
-
-    let reopened = open_client(database, payments, mg_state, config).await;
-    let error = reopened.resume().await.unwrap_err();
-    assert!(matches!(
-        &error,
-        FaError::SelectionReauthorizationRequired {
-            reason: SelectionReauthorizationReason::PreviewExpired,
-            failure: None
-        }
-    ));
-    assert_replacement_preview_still_reachable(&reopened, &replacement_requirements).await;
-    let restored = active_recovery(
-        reopened
-            .inner
-            .store
-            .load_purchase(TestIdentity::fa_id())
-            .await
-            .unwrap(),
-    );
-    assert!(
-        restored.payment_reservation_id.is_none(),
-        "the completed restore clears the released reservation id",
-    );
-    assert!(
-        !restored.payment_reservation_release_intended,
-        "the completed restore clears the consumed release commitment",
-    );
-    assert_eq!(
-        payment_state.whole_release_calls.load(Ordering::SeqCst),
-        releases_before + 1,
-        "expected wallet absence completes the restore without a second release",
-    );
-    assert_eq!(
-        payment_state.readiness_calls.load(Ordering::SeqCst),
-        readiness_before,
-        "no restore path may recreate the released replacement journal",
-    );
-    assert_eq!(
-        payment_state.create_calls.load(Ordering::SeqCst),
-        spends_before,
-        "completing the interrupted restore moves no additional value",
-    );
 }
 
 #[tokio::test]

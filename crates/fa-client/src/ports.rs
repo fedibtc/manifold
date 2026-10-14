@@ -359,7 +359,7 @@ pub trait FaPayments: Send + Sync + 'static {
     /// funding operation rejected and every automatically refunded payer input
     /// is spendable again, or its MG-signed refund was settled.
     /// Other aggregate members remain consumed or reserved. This must finish
-    /// before `fa-client` invalidates the old reservation id for replacement.
+    /// before `fa-client` drops the seat from its purchase.
     async fn release_seat_payment_reservation(
         &self,
         proof: Self::TerminalReleaseProof,

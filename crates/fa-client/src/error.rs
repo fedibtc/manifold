@@ -339,9 +339,8 @@ pub enum FaError {
     /// The selection walk could not verified-fill the requested seat count.
     ///
     /// Initial public preview maps its absolute deadline to
-    /// [`Self::SelectionPreviewTimeout`]. Lower-level and replacement walks can
-    /// also produce this shortfall when their pool or walk deadline is
-    /// exhausted.
+    /// [`Self::SelectionPreviewTimeout`]. Lower-level walks can also produce
+    /// this shortfall when their pool or walk deadline is exhausted.
     #[error(
         "selected only {selected} of {requested} MG seats ({seen} advertisements seen, \
          {eligible} eligible)"

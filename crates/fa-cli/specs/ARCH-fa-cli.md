@@ -16,8 +16,8 @@ before the CLI accesses local identity or durable FA state, or opens payment and
 network capabilities. `--max-total-msats` (or the TOML `max_total_msats`)
 sets the intent's aggregate spending cap; under it `fa-client`
 self-authorizes only the initial paid quote set when its checked total fits.
-An absent or exceeded cap parks that initial set, and every replacement after
-any prior authorization parks regardless of its total.
+An absent or exceeded cap removes that initial purchase, and every re-quoted
+set after any prior authorization parks regardless of its total.
 The global `--manifold-environment` option selects the canonical shared
 PeerBadge issuer-root, authority-relay, and minimum-trust-level profile.
 Commands that make trust decisions construct its concrete verifier and pass it
@@ -34,7 +34,7 @@ transition, and checkpoint.
 
 The CLI implements the concrete Iroh connector and Fedimint wallet
 payment/refund port. `fa-client` owns payment
-scheduling for initial formation, resume, and replacement: it starts one new
+scheduling for initial formation and resume: it starts one new
 member at a time and checkpoints the completed seat before the next. The CLI
 adapter provides only exact aggregate reservation and operation/recovery
 capabilities. Its aggregate holds independently dry-run logical net costs
@@ -139,7 +139,7 @@ the already-funded payer by federation id, and supplies it to
 
 The approved cap is the only authorization of the initial aggregate:
 `fa-client` self-authorizes it under the cap and removes the purchase over it.
-A replacement aggregate after any authorization remains parked for a distinct
+A re-quoted aggregate after any authorization remains parked for a distinct
 `authorize-payments` command carrying the displayed authorization id and the
 same wallet coordinates. `resume` never
 infers fresh payment authorization — it only continues work covered by an

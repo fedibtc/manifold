@@ -167,12 +167,8 @@ verify, a key already held by a selected seat rejects the later author with a
 typed diagnostic and the same bucket continues. Endpoint differences cannot
 turn one signing authority into independent guardians, and an unverified key
 claim cannot exclude a candidate because deduplication follows badge binding.
-Replacement preview seeds this verified walk with every retained sibling's
-service key, and replacement apply revalidates the complete final key set in
-the same database transaction that changes the rows. A distinct advertised
-author therefore cannot reintroduce a retained signing authority.
 Verified badge holders also occupy at most one seat, even across issuers and
-service keys. FA saves each selected holder for replacement checks and recovery.
+service keys. FA saves each selected holder for recovery.
 Only successfully seated candidates reserve a holder. Older saved seats lacking
 holder identities retain their existing behavior without this guarantee.
 Because the claimed price and claimed issuer are both publisher-
@@ -197,33 +193,17 @@ transport, as `fa-cli` does. Every product-path seat must pass the complete veri
 is no pinned/BYO exception. The sealed five-minute preview approval is the only input
 to selected creation. Its usable window begins after the verified walk and it
 binds the complete request plus canonical verifier/environment provenance. The
-stable provenance is persisted separately on every selected or replacement
-seat. Reopening under a different profile requires fresh approval for every
+stable provenance is persisted separately on every selected seat. Reopening under a different profile requires fresh approval for every
 unconsumed seat before an irreversible effect. Each admission has a private
 monotone state: `Fresh`, or `EffectAuthorized` bound to the exact quote and to
 either paid output generation or free `CreateSeat` presentation. Initial paid
 rows transition in the aggregate output-start transaction; every post-output
-paid replacement sharing a reservation transitions in one atomic authorization
+re-authorized paid member sharing a reservation transitions in one atomic authorization
 update before the first new payment begins; the newly started paid members are
 then driven one at a time. An independent free row transitions before its first
 presentation. Exact recovery therefore retains historical authority after a
 crash without treating
-the formation-wide output tombstone as replacement authorization. Replacement
-approval always creates new per-seat provenance; it never inherits authority
-from the displaced guardian. Until the exact effect-authorization transition,
-the displaced guardian's terminal quote and locator remain as a durable
-provisional-replacement proof. Expiry, verifier drift, or definite
-unavailability before that boundary restores the proof for a fresh preview;
-if an exact replacement reservation exists, its successful wallet release is
-authoritative and the durable restore clears only the matching reservation id.
-That release is preceded by a durable release commitment, so the exact id's
-authoritative absence under the persisted commitment completes an interrupted
-restore on a later run; absence without the commitment retains the formation.
-Resume recover-probes an authorized replacement aggregate before freshness or
-verifier policy even when the wallet reserve result was lost before FA could
-persist that id. Exact presence is checkpointed and released once before
-restore; authoritative absence permits restore without a wallet call, while a
-binding mismatch, storage error, or ambiguous probe retains the full state.
+the formation-wide output tombstone as authorization.
 A failed, timed-out, cancelled, or dropped release retains the entire exact
 state. The preview approval itself is intentionally not serializable or cached.
 Discovery is now multi-relay (this section's revisit): with the pooled
@@ -252,7 +232,7 @@ The following ordering is part of the monetary safety boundary:
    replacing a selected guardian;
 4. check the complete exact total against the original cap and persist one
    aggregate commercial authorization bound to that complete quote set. Cap
-   self-authorization is one-shot; every later replacement set needs explicit
+   self-authorization is one-shot; every later re-quoted set needs explicit
    renewed authorization;
 5. ask the wallet to recover every exact quote operation, refresh every proven
    `NotStarted` quote as one barrier, preserve authorization only for unchanged
@@ -273,8 +253,8 @@ The following ordering is part of the monetary safety boundary:
 9. present and durably checkpoint that completed payment, using its exact quote
    and evidence in `CreateSeat`, and atomically persist the MG-signed seat id
    and complete guardian-fee account before polling the next member's wallet
-   future; initial formation, resume of `NotStarted` rows, and paid replacement
-   all use this same ordered path; and
+   future; initial formation and resume of `NotStarted` rows both use this
+   same ordered path; and
 10. persist later DKG facts with narrow row updates.
 
 The reserve adapter may request selected-flow payer retry only through the
@@ -286,11 +266,11 @@ error, retains the formation, and recover-probes the deterministic reservation
 id before freshness or policy on resume. The probe may report exact existing
 or authoritative absence without creating a journal; mismatch, storage error,
 or ambiguity fails closed. Never infer journal absence from an error message.
-This pre-policy recovery ordering applies equally to a post-output replacement
-aggregate: the formation-wide output tombstone does not prove that its newer
-subset reservation id was checkpointed.
+This pre-policy recovery ordering applies equally to a post-output
+re-authorized aggregate: the formation-wide output tombstone does not prove
+that its newer reservation id was checkpointed.
 
-After step 7, newly approved paid replacements sharing an exact reservation use
+After step 7, newly re-authorized paid members sharing an exact reservation use
 one aggregate authorization transition before the first new payment, then start
 value movement one member at a time because the formation tombstone is already
 true. A free seat uses the corresponding exact per-seat transition before
@@ -316,18 +296,13 @@ Refresh every `NotStarted` sibling as one barrier and validate the complete
 refreshed set before funding any sibling. Do not arm the output tombstone before
 the exact wallet and transport barriers complete, and do not poll a wallet output
 call before the tombstone commit. Do not replace a quote after an ambiguous
-request merely because it expired. Do not substitute a selected MG without a
-fresh preview and renewed user authorization. After outputs, only a terminally
-rejected or settled-refund row may enter the typed replacement state; release
-that exact aggregate member with the wallet-issued opaque terminal proof before
-invalidating the old id. A generic quote refresh cannot manufacture replacement
-authority. A required-but-unapproved row may not carry a new quote; only a
-freshly approved provisional row may combine its new quote with the retained
-old terminal proof, and every other mixed state fails closed. Accepted,
-prepared, paid, and ambiguous siblings remain pinned. The fresh verified subset
-approval is the one renewed cap authorization and a new reservation covers only
-its replacement quotes. Applying that approval is provisional: the old terminal
-quote/locator proof is removed only when the exact new effect is authorized.
+request merely because it expired. Do not substitute a selected MG. After
+outputs, only a terminally rejected or settled-refund seat may leave the
+purchase; release that exact aggregate member with the wallet-issued opaque
+terminal proof before the transaction that deletes its row and invalidates the
+old id. Accepted, prepared, paid, and ambiguous siblings remain in the
+purchase. A new purchase with a fresh preview and its own cap buys any seat
+still missing.
 
 Transport retry authority comes only from the consumer connector's local,
 non-serializable outer call error. A serialized `ManifoldGuardianError` is an
@@ -467,15 +442,14 @@ matching refund context. Settlement of the same MG-signed refund must be safe
 to repeat after a lost result.
 
 Free `CreateSeat` is also ambiguous on interruption. Replay the exact stored
-free quote until a verified signed refusal establishes a safe replacement
-boundary. If that refusal occurs in a selected all-free formation before any
+free quote until a verified signed refusal proves that the seat ended. If that refusal occurs in a selected all-free formation before any
 wallet output boundary exists, the consumed quote-bound admission cannot
 authorize a generic re-quote or second presentation. Retain the exact quote and
 admission while returning through selected reauthorization cleanup; only the
 durable transition to `Idle` removes them. If cleanup fails or is
 interrupted, reopen replays the same signed refusal before retrying cleanup. The
-next attempt requires a fresh selection preview. Post-output purchases retain
-their exact refusal/replacement behavior.
+next attempt requires a fresh selection preview. After outputs start, the
+refused seat leaves the purchase instead.
 
 ## Concurrency and hosting
 
