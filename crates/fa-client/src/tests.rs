@@ -4266,7 +4266,7 @@ fn payment_requirements(status: &FaStatus) -> &PaymentRequirements {
     }
 }
 
-fn active_recovery(recovery: FaRecovery) -> crate::db::ActiveFormationRecovery {
+fn active_recovery(recovery: FaRecovery) -> crate::db::PurchaseRecovery {
     match recovery {
         FaRecovery::Formation(recovery) => *recovery,
         FaRecovery::Idle | FaRecovery::Restored(_) => panic!("expected active formation"),
