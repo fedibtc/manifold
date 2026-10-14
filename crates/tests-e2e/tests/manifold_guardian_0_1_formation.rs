@@ -4381,10 +4381,17 @@ async fn run_fa_cli(
                 .context("paid formation did not reach a formed federation")
                 .map(ToOwned::to_owned);
         }
-        Ok(String::from_utf8(output.stdout)?.trim().to_owned())
+        Ok(first_line(&String::from_utf8(output.stdout)?))
     } else {
-        run_expect_success(command, "fa-cli formation run", timeout).await
+        Ok(first_line(
+            &run_expect_success(command, "fa-cli formation run", timeout).await?,
+        ))
     }
+}
+
+/// Human formed status prints the invite on its first line.
+fn first_line(stdout: &str) -> String {
+    stdout.lines().next().unwrap_or_default().trim().to_owned()
 }
 
 fn write_fa_fee_account_fixture(state_dir: &Path) -> anyhow::Result<PathBuf> {
