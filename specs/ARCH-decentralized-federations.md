@@ -23,7 +23,7 @@ TLS certificate.
   side of the MG key-locked payment protocol (its own wallet plus a
   `payer` module) on the shared `crates/locked-payments` protocol crate. The
   library implements consumer-neutral state, registry discovery, a verified advertisement-only
-  preview, explicit-payer Pay-and-create, selected all-zero bootstrap without a
+  preview, explicit-payer seat purchase into a pool, formation from pool seats, selected all-zero bootstrap without a
   payer, exact
   payment recovery, DKG, invite-code recovery, post-DKG seat-binding
   publication, typed post-formation metadata maintenance, and post-formation

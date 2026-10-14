@@ -31,8 +31,8 @@ event.
 
 Wallet holdings are capability, not policy. The admitted-payer query may expose
 the complete authenticated set, including zero-balance members. Paid
-Pay-and-create must require the explicit payer to remain both admitted and
-wallet-Ready before persisting selected formation state or requesting a quote.
+`buy_seats` must require the explicit payer to remain both admitted and
+wallet-Ready before persisting selected purchase state or requesting a quote.
 The selected deployment-bootstrap entry may persist without a payer only when
 it is expressly invoked without one; it requests only zero-price quotes and a
 priced live offer returns typed payer-required reauthorization before any quote,
@@ -43,8 +43,8 @@ generating outputs or creating recovery state. The MG's availability response
 never establishes federation-specific payment policy for FA selection.
 
 Validate the complete formation intent before durable or remote side effects.
-Resolve an absent display name exactly once, validate it, and persist it with
-the selected DKG identity before quotes, payments, seat creation, or DKG.
+`form_federation` resolves an absent display name exactly once, validates it,
+and persists it before DKG.
 Unsupported future fields must be rejected or absent from the public intent,
 never silently ignored.
 
@@ -241,7 +241,7 @@ The following ordering is part of the monetary safety boundary:
 
 1. verify every selected seat and seal its advertisement-only preview for five
    minutes from completion of the verified walk; request no quote before
-   Pay-and-create;
+   `buy_seats`;
 2. for paid creation, authenticate the explicit setup payer and require wallet
    Ready state before persisting the resolved intent, formation id, FA identity,
    and exact selected locators. The explicit no-payer bootstrap persists that
@@ -299,8 +299,8 @@ combinations that bind an admission to another
 quote/effect, authorize paid output before the aggregate tombstone, or record an
 accepted selected seat without pre-effect authorization fail closed.
 
-Commercial authorization is not the money boundary. `abandon_formation` may
-wipe state while `payment_outputs_started` is false and DKG is not complete;
+Commercial authorization is not the money boundary. `abandon_purchase` may
+remove the purchase while `payment_outputs_started` is false and DKG is not complete;
 selected-flow reauthorization errors must do so before returning.
 If a crash interrupts that cleanup, the durable selected discriminator and
 preview deadline prevent legacy authorization or stale cap reuse on resume.
@@ -474,7 +474,7 @@ authorize a generic re-quote or second presentation. Retain the exact quote and
 admission while returning through selected reauthorization cleanup; only the
 durable transition to `Idle` removes them. If cleanup fails or is
 interrupted, reopen replays the same signed refusal before retrying cleanup. The
-next attempt requires a fresh selection preview. Post-output formations retain
+next attempt requires a fresh selection preview. Post-output purchases retain
 their exact refusal/replacement behavior.
 
 ## Concurrency and hosting

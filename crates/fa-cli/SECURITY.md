@@ -61,8 +61,7 @@ use.
 
 The paired idempotency key is a deduplication identifier rather than the hook's
 authorization secret. The resulting typed callback redacts both fields and is
-handed only to `pay_and_create_with_callback` or
-`create_without_payer_with_callback`.
+handed only to `form_federation`.
 
 
 ## Wallet root secret input
