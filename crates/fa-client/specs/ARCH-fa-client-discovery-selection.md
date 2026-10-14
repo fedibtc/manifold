@@ -10,7 +10,7 @@ and the badge chain by
 
 ## Discovery
 
-`discover_mg_candidates` does not write durable state, take a driver lease, or
+`discover_mg_candidates` does not write durable state, take the run guard, or
 change formation status. For each kind-37701 event it checks the event role and
 signature, payload proof, `fman_id_pubkey == event author`, newest event per
 author (with the NIP-01 lowest-id tie break), freshness, and caller eligibility.

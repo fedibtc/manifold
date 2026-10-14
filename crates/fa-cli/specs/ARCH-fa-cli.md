@@ -77,7 +77,7 @@ same `--timeout-secs` flag, mapped to the library's clamped
 rejected at the argument boundary like the driver timing flags. Both
 render the candidates or selected seats plus the library's
 typed rejection summary; neither writes durable formation state nor takes the
-driver lease. `discover` contacts no MG; `preview`'s only MG contact is
+run guard. `discover` contacts no MG; `preview`'s only MG contact is
 the walk's value-free availability probe. `preview` targets the
 `InfiniteBestEffort` plan, matching what discovery eligibility surfaces.
 
@@ -87,7 +87,7 @@ run the matching operation-specific library preflight, validate wallet
 coordinates and the payment invite's federation identity, and complete the
 selected path's verified preview. A failure from checks before the preview
 stage cannot create or read identity, join or fund a wallet, move a funding
-token into its journal, initialize FA durable state, acquire the driver lease,
+token into its journal, initialize FA durable state,
 bind the network endpoint, or contact an MG. The selected path's preview
 itself runs after the ephemeral endpoint is bound and contacts MGs only
 through the walk's value-free availability probe; a preview failure still

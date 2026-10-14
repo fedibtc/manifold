@@ -66,7 +66,29 @@ impl FaStore {
     pub(crate) async fn migrate_storage(&self) -> FaResult<()> {
         self.reset_before_schema_11().await?;
         self.split_schema_11_formation().await?;
-        self.adopt_schema_11_restored_backup().await
+        self.adopt_schema_11_restored_backup().await?;
+        self.remove_driver_lease().await
+    }
+
+    /// Schema 11 kept a database-wide driver lease. One client per database
+    /// owns all work now, so a remaining lease row is stale.
+    async fn remove_driver_lease(&self) -> FaResult<()> {
+        let mut dbtx = self.database.begin_transaction().await;
+        let key = [FaDbPrefix::DriverLease as u8];
+        if dbtx
+            .raw_get_bytes(&key)
+            .await
+            .map_err(|_| FaError::Storage("reading FA storage failed".to_owned()))?
+            .is_none()
+        {
+            return Ok(());
+        }
+        dbtx.raw_remove_entry(&key)
+            .await
+            .map_err(|_| FaError::Storage("removing the FA driver lease failed".to_owned()))?;
+        dbtx.commit_tx_result().await.map_err(|_| {
+            FaError::Storage("committing the FA driver lease removal failed".to_owned())
+        })
     }
 
     async fn reset_before_schema_11(&self) -> FaResult<()> {

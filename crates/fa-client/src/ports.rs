@@ -338,8 +338,7 @@ pub trait FaPayments: Send + Sync + 'static {
     /// payment output started and no value or recovery entitlement depends on
     /// it. A successful return is the consumer-owned wallet's authoritative
     /// proof that the exact reconstructed reservation is gone; `fa-client`
-    /// may then clear only the matching durable reservation id under its
-    /// driver lease. An error, timeout, cancellation, or dropped future proves
+    /// may then clear only the matching durable reservation id An error, timeout, cancellation, or dropped future proves
     /// nothing and must retain the id and exact recovery state. Dropping a
     /// capability is never release; ambiguity fails closed.
     async fn release_payment_reservation(

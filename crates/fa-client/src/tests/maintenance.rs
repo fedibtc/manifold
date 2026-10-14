@@ -1014,103 +1014,6 @@ async fn pinned_target_conflict_stops_same_base_retries_and_is_distinguishable()
     }
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn expired_maintenance_driver_is_fenced_after_in_flight_vote() {
-    let database = MemDatabase::new().into_database();
-    let now = Arc::new(AtomicU64::new(20_000));
-    let clock = {
-        let now = now.clone();
-        Arc::new(move || now.load(Ordering::SeqCst)) as Arc<dyn Fn() -> u64 + Send + Sync>
-    };
-    let store = db::FaStore::new_with_lease_clock(database, clock);
-    let (payments, _) = TestPayments::new();
-    let mg_state = Arc::new(MgState::default());
-    let client = open_client_with_store(
-        store.clone(),
-        payments,
-        mg_state.clone(),
-        MgConfig::given_away(),
-    )
-    .await;
-    client
-        .buy_and_form_at(intent(), locators(), options())
-        .await
-        .unwrap();
-
-    mg_state.meta_submissions.lock().expect("test lock").clear();
-    mg_state
-        .meta_request_bases
-        .lock()
-        .expect("test lock")
-        .clear();
-    mg_state
-        .block_meta_indices
-        .lock()
-        .expect("test lock")
-        .insert(0);
-    let bounded = MaintenanceRunOptions::new(MaintenanceRunOptionsConfig {
-        poll_interval: Duration::from_millis(1),
-        run_timeout: Duration::from_secs(5),
-        request_timeout: Duration::from_secs(2),
-    })
-    .unwrap();
-    let operation_client = client.clone();
-    let operation = tokio::spawn(async move {
-        operation_client
-            .update_federation_metadata(
-                FederationMetadataUpdate::welcome_message("Lease fenced").unwrap(),
-                bounded,
-            )
-            .await
-    });
-    mg_state.meta_call_blocked.notified().await;
-    tokio::time::timeout(Duration::from_secs(2), async {
-        loop {
-            if mg_state.meta_request_bases.lock().expect("test lock").len()
-                == usize::from(MIN_FEDERATION_SIZE)
-            {
-                break;
-            }
-            tokio::task::yield_now().await;
-        }
-    })
-    .await
-    .expect("every first-wave vote started before takeover");
-
-    now.store(
-        20_000 + bounded.lease_duration().as_secs() + 1,
-        Ordering::SeqCst,
-    );
-    let replacement = store
-        .acquire_driver_lease(bounded.lease_duration(), bounded.lease_renewal_duration())
-        .await
-        .expect("expired maintenance lease can be taken over");
-    mg_state.release_meta_calls.store(true, Ordering::SeqCst);
-    mg_state.meta_call_release.notify_waiters();
-
-    assert!(matches!(operation.await.unwrap(), Err(FaError::Busy)));
-    assert_eq!(
-        mg_state.meta_request_bases.lock().expect("test lock").len(),
-        usize::from(MIN_FEDERATION_SIZE),
-        "the stale driver cannot begin a second wave after takeover"
-    );
-    store.release_driver_lease(replacement).await.unwrap();
-
-    let connects_before_readback = mg_state.connect_calls.load(Ordering::SeqCst);
-    client
-        .update_federation_metadata(
-            FederationMetadataUpdate::welcome_message("Lease fenced").unwrap(),
-            maintenance_options(),
-        )
-        .await
-        .expect("a fresh driver observes the already-adopted wave");
-    assert_eq!(
-        mg_state.connect_calls.load(Ordering::SeqCst),
-        connects_before_readback,
-        "recovery readback does not replay an already adopted mutation"
-    );
-}
-
 #[tokio::test]
 async fn transient_read_failure_is_retried_without_changing_the_mutation() {
     let database = MemDatabase::new().into_database();
@@ -1219,10 +1122,8 @@ async fn cancelled_partial_wave_reopens_and_replays_without_losing_unrelated_met
     assert!(operation.await.unwrap_err().is_cancelled());
     let connects_before_replay = mg_state.connect_calls.load(Ordering::SeqCst);
 
-    // Reopen from the same durable namespace. The dropped driver's lease is
-    // released asynchronously, so Busy is a bounded and expected handoff
-    // result. Once acquired, the replay reads the threshold-adopted value and
-    // needs no live MG connection.
+    // Reopen from the same durable namespace. The replay reads the
+    // threshold-adopted value and needs no live MG connection.
     drop(client);
     *mg_state.offline_indices.lock().expect("test lock") =
         (0..usize::from(MIN_FEDERATION_SIZE)).collect();
@@ -1236,23 +1137,13 @@ async fn cancelled_partial_wave_reopens_and_replays_without_losing_unrelated_met
     .await;
     // Maintenance waits for the reopened federation to reconcile.
     reopened.drive().await.unwrap();
-    tokio::time::timeout(Duration::from_secs(2), async {
-        loop {
-            match reopened
-                .update_federation_metadata(
-                    FederationMetadataUpdate::welcome_message("Survives cancellation").unwrap(),
-                    maintenance_options(),
-                )
-                .await
-            {
-                Err(FaError::Busy) => tokio::task::yield_now().await,
-                result => break result,
-            }
-        }
-    })
-    .await
-    .expect("cancelled driver released its lease")
-    .unwrap();
+    reopened
+        .update_federation_metadata(
+            FederationMetadataUpdate::welcome_message("Survives cancellation").unwrap(),
+            maintenance_options(),
+        )
+        .await
+        .unwrap();
     assert_eq!(
         mg_state.connect_calls.load(Ordering::SeqCst),
         connects_before_replay

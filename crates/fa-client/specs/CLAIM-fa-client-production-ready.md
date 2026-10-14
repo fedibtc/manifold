@@ -19,7 +19,7 @@ the exact typed value in fresh consensus before reporting success or returns a
 maintenance-specific wrong-state, terminal-refusal, or bounded convergence
 failure. Concurrent whole-object changes are preserved by exact-base rebasing;
 within one live invocation, same-base retries do not resubmit to guardians that
-already acknowledged the mutation. Cancellation, lease takeover, and restart
+already acknowledged the mutation. Cancellation and restart
 cannot let a stale driver begin another wave or turn one guardian
 acknowledgement into consensus; reopen is safe exact replay and may resubmit
 rows. Each MG also pins the one target admitted for the live consensus

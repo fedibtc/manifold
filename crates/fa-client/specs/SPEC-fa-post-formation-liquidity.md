@@ -74,8 +74,7 @@ At most one operation per federation may be non-terminal: `start` refuses with
 a typed error naming the resumable operation while one exists, so a lost
 response is resumed rather than shadowed by a second commitment.
 
-Start and resume take the same run guard and durable driver lease as formation
-runs: at most one formation or liquidity operation runs at a time, and a
+Start and resume take the same run guard as formation runs: at most one formation or liquidity operation runs at a time, and a
 concurrent call observes `Busy` rather than queueing. The consumer scheduler
 must serialize its start/resume calls.
 

@@ -5,9 +5,8 @@ pub(crate) mod test_support;
 
 use bitcoin_hashes::sha256;
 use fedimint_core::db::{
-    AutocommitError, Database, DatabaseError, DatabaseKeyPrefix, DatabaseTransaction,
-    DatabaseValue, DecodingError, IDatabaseTransactionOpsCore as _,
-    IDatabaseTransactionOpsCoreTyped as _,
+    AutocommitError, Database, DatabaseKeyPrefix, DatabaseTransaction, DatabaseValue,
+    DecodingError, IDatabaseTransactionOpsCore as _, IDatabaseTransactionOpsCoreTyped as _,
 };
 use fedimint_core::encoding::{Decodable, Encodable};
 use fedimint_core::module::registry::ModuleDecoderRegistry;
@@ -15,8 +14,8 @@ use fedimint_core::{impl_db_lookup, impl_db_record};
 use futures::StreamExt as _;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
+#[cfg(test)]
 use std::sync::atomic::{AtomicBool, Ordering};
-use tokio::sync::Mutex;
 
 use fedi_decentralized_manifold_environment::ManifoldEnvironment;
 use fedi_decentralized_peer_badge_verifier::PeerBadgeVerifierProvenance;
@@ -50,6 +49,7 @@ enum QuoteClearDisposition {
 enum FaDbPrefix {
     Purchase = 0x00,
     PurchaseSeat = 0x01,
+    /// Legacy: the database-wide driver lease. Only migration removes it.
     DriverLease = 0x02,
     SetupPaymentFederations = 0x03,
     LiquidityOperation = 0x04,
@@ -206,15 +206,6 @@ impl_db_record!(
 impl_db_lookup!(
     key = LiquidityOperationKey,
     query_prefix = LiquidityOperationKeyPrefix
-);
-
-#[derive(Debug, Decodable, Encodable)]
-struct DriverLeaseKey;
-
-impl_db_record!(
-    key = DriverLeaseKey,
-    value = StoredDriverLease,
-    db_prefix = FaDbPrefix::DriverLease,
 );
 
 #[derive(Debug, Decodable, Encodable)]
@@ -619,14 +610,6 @@ struct StoredPaymentAuthorization {
 }
 
 #[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
-struct StoredDriverLease {
-    owner: [u8; 32],
-    expires_at: u64,
-}
-
-json_database_value!(StoredDriverLease);
-
-#[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
 struct StoredSetupPaymentFederationsEvent(Event);
 
 json_database_value!(StoredSetupPaymentFederationsEvent);
@@ -754,58 +737,6 @@ pub(crate) struct QuoteAuthorization {
     pub(crate) quote_id: QuoteId,
 }
 
-pub(crate) struct DriverLease {
-    owner: [u8; 32],
-    max_expires_at: u64,
-    renewal_duration: std::time::Duration,
-    store: FaStore,
-    renewal_lock: Mutex<()>,
-    released: AtomicBool,
-}
-
-impl DriverLease {
-    /// Renew this driver's ownership before an external effect.
-    pub(crate) async fn renew(&self) -> FaResult<()> {
-        let _guard = self.renewal_lock.lock().await;
-        self.store.renew_driver_lease(self).await
-    }
-
-    /// Atomically renew this owner while arming the wallet-output boundary.
-    pub(crate) async fn arm_payment_outputs_started(
-        &self,
-        formation_id: &FormationId,
-        verifier_provenance: StoredVerifierProvenance,
-    ) -> FaResult<()> {
-        let _guard = self.renewal_lock.lock().await;
-        self.store
-            .record_payment_outputs_started(formation_id, verifier_provenance, self)
-            .await
-    }
-
-    /// Atomically renew this owner and consume one exact selected effect wave.
-    pub(crate) async fn authorize_seat_effects(
-        &self,
-        formation_id: &FormationId,
-        effects: &[(u16, QuoteId, AdmissionEffect)],
-        verifier_provenance: StoredVerifierProvenance,
-    ) -> FaResult<()> {
-        let _guard = self.renewal_lock.lock().await;
-        self.store
-            .record_seat_effects_authorized(formation_id, effects, verifier_provenance, self)
-            .await
-    }
-
-    /// Renew this owner while atomically wiping a still-abandonable formation.
-    pub(crate) async fn abandon_purchase(&self, formation_id: &FormationId) -> FaResult<()> {
-        let _guard = self.renewal_lock.lock().await;
-        self.store.abandon_purchase(formation_id, self).await
-    }
-}
-
-#[cfg(test)]
-type LeaseTestHook =
-    Arc<std::sync::Mutex<Option<(Arc<tokio::sync::Notify>, Arc<tokio::sync::Notify>)>>>;
-
 #[cfg(test)]
 type SeatCheckpointTestHook =
     Arc<std::sync::Mutex<Option<Arc<dyn Fn(u16) + Send + Sync + 'static>>>>;
@@ -819,13 +750,8 @@ struct FormationTestHook {
 #[derive(Clone)]
 pub(crate) struct FaStore {
     database: Database,
-    lease_clock: Arc<dyn Fn() -> u64 + Send + Sync>,
-    #[cfg(test)]
-    lease_acquisition_hook: LeaseTestHook,
-    #[cfg(test)]
-    lease_renewal_commit_hook: LeaseTestHook,
-    #[cfg(test)]
-    lease_release_commit_hook: LeaseTestHook,
+    /// Wall-clock seconds for admission freshness. Tests inject their own.
+    clock: Arc<dyn Fn() -> u64 + Send + Sync>,
     #[cfg(test)]
     formation_commit_hook: Arc<std::sync::Mutex<Option<Arc<FormationTestHook>>>>,
     #[cfg(test)]
@@ -842,13 +768,7 @@ impl FaStore {
     pub(crate) fn new(database: Database) -> Self {
         Self {
             database,
-            lease_clock: Arc::new(|| fedimint_core::time::duration_since_epoch().as_secs()),
-            #[cfg(test)]
-            lease_acquisition_hook: Arc::new(std::sync::Mutex::new(None)),
-            #[cfg(test)]
-            lease_renewal_commit_hook: Arc::new(std::sync::Mutex::new(None)),
-            #[cfg(test)]
-            lease_release_commit_hook: Arc::new(std::sync::Mutex::new(None)),
+            clock: Arc::new(|| fedimint_core::time::duration_since_epoch().as_secs()),
             #[cfg(test)]
             formation_commit_hook: Arc::new(std::sync::Mutex::new(None)),
             #[cfg(test)]
@@ -1248,16 +1168,13 @@ impl FaStore {
     }
 
     #[cfg(test)]
-    pub(crate) fn new_with_lease_clock(
+    pub(crate) fn new_with_clock(
         database: Database,
-        lease_clock: Arc<dyn Fn() -> u64 + Send + Sync>,
+        clock: Arc<dyn Fn() -> u64 + Send + Sync>,
     ) -> Self {
         Self {
             database,
-            lease_clock,
-            lease_acquisition_hook: Arc::new(std::sync::Mutex::new(None)),
-            lease_renewal_commit_hook: Arc::new(std::sync::Mutex::new(None)),
-            lease_release_commit_hook: Arc::new(std::sync::Mutex::new(None)),
+            clock,
             formation_commit_hook: Arc::new(std::sync::Mutex::new(None)),
             seat_checkpoint_hook: Arc::new(std::sync::Mutex::new(None)),
             failed_seat_checkpoint: Arc::new(std::sync::Mutex::new(None)),
@@ -1279,45 +1196,9 @@ impl FaStore {
     }
 
     #[cfg(test)]
-    /// Fail the next lease-fenced abandon before its durable transaction.
+    /// Fail the next abandon before its durable transaction.
     pub(crate) fn fail_abandon_once(&self) {
         self.failed_abandon.store(true, Ordering::SeqCst);
-    }
-
-    #[cfg(test)]
-    pub(crate) fn set_lease_acquisition_hook(
-        &self,
-        reached: Arc<tokio::sync::Notify>,
-        proceed: Arc<tokio::sync::Notify>,
-    ) {
-        *self
-            .lease_acquisition_hook
-            .lock()
-            .expect("test lease hook lock") = Some((reached, proceed));
-    }
-
-    #[cfg(test)]
-    pub(crate) fn set_lease_renewal_commit_hook(
-        &self,
-        reached: Arc<tokio::sync::Notify>,
-        proceed: Arc<tokio::sync::Notify>,
-    ) {
-        *self
-            .lease_renewal_commit_hook
-            .lock()
-            .expect("test lease hook lock") = Some((reached, proceed));
-    }
-
-    #[cfg(test)]
-    pub(crate) fn set_lease_release_commit_hook(
-        &self,
-        reached: Arc<tokio::sync::Notify>,
-        proceed: Arc<tokio::sync::Notify>,
-    ) {
-        *self
-            .lease_release_commit_hook
-            .lock()
-            .expect("test lease hook lock") = Some((reached, proceed));
     }
 
     #[cfg(test)]
@@ -1875,7 +1756,7 @@ impl FaStore {
             )
             .await;
         }
-        // Lease acquisition serializes initialization before any seat work can
+        // The run guard serializes initialization before any seat work can
         // run, so this transaction cannot encounter an expected formation RMW
         // conflict.
         dbtx.commit_tx_result().await.map_err(|_| {
@@ -2373,25 +2254,13 @@ impl FaStore {
 
     /// Arm the irreversible wallet-output boundary before polling the first
     /// value-moving payment call.
-    async fn record_payment_outputs_started(
+    pub(crate) async fn record_payment_outputs_started(
         &self,
         formation_id: &FormationId,
         verifier_provenance: StoredVerifierProvenance,
-        lease: &DriverLease,
     ) -> FaResult<()> {
         let mut dbtx = self.database.begin_transaction().await;
-        let Some(current) = dbtx.get_value(&DriverLeaseKey).await else {
-            return Err(FaError::Busy);
-        };
-        let now = (self.lease_clock)();
-        let expires_at = now
-            .checked_add(lease.renewal_duration.as_secs())
-            .map(|expires_at| expires_at.min(lease.max_expires_at))
-            .ok_or_else(|| FaError::Storage("FA driver lease renewal overflow".to_owned()))?;
-        if current.owner != lease.owner || current.expires_at <= now || expires_at <= now {
-            return Err(FaError::Busy);
-        }
-
+        let now = (self.clock)();
         let mut formation = dbtx.get_value(&PurchaseKey).await.ok_or_else(|| {
             FaError::Storage("cannot arm payment outputs without an active formation".to_owned())
         })?;
@@ -2448,29 +2317,17 @@ impl FaStore {
             dbtx.insert_entry(&key, &seat).await;
         }
         formation.payment_outputs_started = true;
-        dbtx.insert_entry(
-            &DriverLeaseKey,
-            &StoredDriverLease {
-                owner: lease.owner,
-                expires_at,
-            },
-        )
-        .await;
         dbtx.insert_entry(&PurchaseKey, &formation).await;
         dbtx.commit_tx_result()
             .await
-            .map_err(map_lease_commit_error)?;
-        (expires_at > (self.lease_clock)())
-            .then_some(())
-            .ok_or(FaError::Busy)
+            .map_err(|_| FaError::Storage("committing FA purchase state failed".to_owned()))
     }
 
-    async fn record_seat_effects_authorized(
+    pub(crate) async fn record_seat_effects_authorized(
         &self,
         formation_id: &FormationId,
         effects: &[(u16, QuoteId, AdmissionEffect)],
         verifier_provenance: StoredVerifierProvenance,
-        lease: &DriverLease,
     ) -> FaResult<()> {
         if effects.is_empty() {
             return Err(FaError::Storage(
@@ -2478,18 +2335,7 @@ impl FaStore {
             ));
         }
         let mut dbtx = self.database.begin_transaction().await;
-        let Some(current) = dbtx.get_value(&DriverLeaseKey).await else {
-            return Err(FaError::Busy);
-        };
-        let now = (self.lease_clock)();
-        let expires_at = now
-            .checked_add(lease.renewal_duration.as_secs())
-            .map(|expires_at| expires_at.min(lease.max_expires_at))
-            .ok_or_else(|| FaError::Storage("FA driver lease renewal overflow".to_owned()))?;
-        if current.owner != lease.owner || current.expires_at <= now || expires_at <= now {
-            return Err(FaError::Busy);
-        }
-
+        let now = (self.clock)();
         let formation = dbtx.get_value(&PurchaseKey).await.ok_or_else(|| {
             FaError::Storage(
                 "cannot authorize a seat effect without an active formation".to_owned(),
@@ -2544,20 +2390,9 @@ impl FaStore {
             seat.admission.authorize_effect(quote_id, effect)?;
             dbtx.insert_entry(&key, &seat).await;
         }
-        dbtx.insert_entry(
-            &DriverLeaseKey,
-            &StoredDriverLease {
-                owner: lease.owner,
-                expires_at,
-            },
-        )
-        .await;
         dbtx.commit_tx_result()
             .await
-            .map_err(map_lease_commit_error)?;
-        (expires_at > (self.lease_clock)())
-            .then_some(())
-            .ok_or(FaError::Busy)
+            .map_err(|_| FaError::Storage("committing FA purchase state failed".to_owned()))
     }
 
     /// Persist the wallet's idempotent aggregate reservation before the
@@ -2673,30 +2508,12 @@ impl FaStore {
     /// have completed DKG. Commercial authorization alone does not close the window.
     /// Free seats accepted server-side are forfeited, not released; the
     /// authenticated setup-payment policy retention is deliberately kept.
-    async fn abandon_purchase(
-        &self,
-        formation_id: &FormationId,
-        lease: &DriverLease,
-    ) -> FaResult<()> {
+    pub(crate) async fn abandon_purchase(&self, formation_id: &FormationId) -> FaResult<()> {
         #[cfg(test)]
         if self.failed_abandon.swap(false, Ordering::SeqCst) {
-            return Err(FaError::Storage(
-                "injected lease-fenced abandon failure".to_owned(),
-            ));
+            return Err(FaError::Storage("injected abandon failure".to_owned()));
         }
         let mut dbtx = self.database.begin_transaction().await;
-        let Some(current) = dbtx.get_value(&DriverLeaseKey).await else {
-            return Err(FaError::Busy);
-        };
-        let now = (self.lease_clock)();
-        let expires_at = now
-            .checked_add(lease.renewal_duration.as_secs())
-            .map(|expires_at| expires_at.min(lease.max_expires_at))
-            .ok_or_else(|| FaError::Storage("FA driver lease renewal overflow".to_owned()))?;
-        if current.owner != lease.owner || current.expires_at <= now || expires_at <= now {
-            return Err(FaError::Busy);
-        }
-
         let formation = dbtx
             .get_value(&PurchaseKey)
             .await
@@ -2712,20 +2529,9 @@ impl FaStore {
             dbtx.remove_entry(&key).await;
         }
         dbtx.remove_entry(&PurchaseKey).await;
-        dbtx.insert_entry(
-            &DriverLeaseKey,
-            &StoredDriverLease {
-                owner: lease.owner,
-                expires_at,
-            },
-        )
-        .await;
         dbtx.commit_tx_result()
             .await
-            .map_err(map_lease_commit_error)?;
-        (expires_at > (self.lease_clock)())
-            .then_some(())
-            .ok_or(FaError::Busy)
+            .map_err(|_| FaError::Storage("committing FA purchase state failed".to_owned()))
     }
 
     /// Clear one exact quote for a refresh on the same MG.
@@ -2886,167 +2692,6 @@ impl FaStore {
             .await
             .map_err(map_formation_tx_error)
     }
-
-    /// Acquire the database-wide mutation lease for one bounded driver run.
-    ///
-    /// Graceful completion releases the lease. Cancellation schedules
-    /// best-effort release, while a crash leaves the current bounded renewal
-    /// interval in place; no renewal can exceed the run's maximum deadline.
-    pub(crate) async fn acquire_driver_lease(
-        &self,
-        max_duration: std::time::Duration,
-        renewal_duration: std::time::Duration,
-    ) -> FaResult<DriverLease> {
-        let now = (self.lease_clock)();
-        let max_expires_at = now
-            .checked_add(max_duration.as_secs())
-            .ok_or_else(|| FaError::Storage("FA driver lease expiry overflow".to_owned()))?;
-        let expires_at = now
-            .checked_add(renewal_duration.as_secs())
-            .map(|expires_at| expires_at.min(max_expires_at))
-            .ok_or_else(|| FaError::Storage("FA driver lease renewal overflow".to_owned()))?;
-        let owner = fedimint_core::secp256k1::rand::random();
-        #[cfg(test)]
-        let acquisition_hook = self
-            .lease_acquisition_hook
-            .lock()
-            .expect("test lease hook lock")
-            .take();
-        #[cfg(test)]
-        if let Some((reached, proceed)) = acquisition_hook {
-            reached.notify_one();
-            proceed.notified().await;
-        }
-        let mut dbtx = self.database.begin_transaction().await;
-        if dbtx
-            .get_value(&DriverLeaseKey)
-            .await
-            .is_some_and(|lease| lease.expires_at > now)
-        {
-            return Err(FaError::Busy);
-        }
-        dbtx.insert_entry(&DriverLeaseKey, &StoredDriverLease { owner, expires_at })
-            .await;
-        dbtx.commit_tx_result()
-            .await
-            .map_err(map_lease_commit_error)?;
-        Ok(DriverLease {
-            owner,
-            max_expires_at,
-            renewal_duration,
-            store: self.clone(),
-            renewal_lock: Mutex::new(()),
-            released: AtomicBool::new(false),
-        })
-    }
-
-    pub(crate) fn validate_driver_lease_durations(
-        &self,
-        max_duration: std::time::Duration,
-        renewal_duration: std::time::Duration,
-    ) -> FaResult<()> {
-        let now = (self.lease_clock)();
-        now.checked_add(max_duration.as_secs())
-            .and_then(|_| now.checked_add(renewal_duration.as_secs()))
-            .map(drop)
-            .ok_or_else(|| FaError::InvalidIntent("formation lease bound is too large".to_owned()))
-    }
-
-    /// Renew the lease only while the database still recognizes this owner.
-    pub(crate) async fn renew_driver_lease(&self, lease: &DriverLease) -> FaResult<()> {
-        let mut dbtx = self.database.begin_transaction().await;
-        let Some(current) = dbtx.get_value(&DriverLeaseKey).await else {
-            return Err(FaError::Busy);
-        };
-        let now = (self.lease_clock)();
-        let expires_at = now
-            .checked_add(lease.renewal_duration.as_secs())
-            .map(|expires_at| expires_at.min(lease.max_expires_at))
-            .ok_or_else(|| FaError::Storage("FA driver lease renewal overflow".to_owned()))?;
-        let renewal_threshold = now
-            .checked_add(lease.renewal_duration.as_secs() / 2)
-            .ok_or_else(|| FaError::Storage("FA driver lease renewal overflow".to_owned()))?;
-        if current.owner != lease.owner || current.expires_at <= now || expires_at <= now {
-            return Err(FaError::Busy);
-        }
-        if renewal_threshold < current.expires_at || current.expires_at == expires_at {
-            return (current.expires_at > (self.lease_clock)())
-                .then_some(())
-                .ok_or(FaError::Busy);
-        }
-        #[cfg(test)]
-        let commit_hook = {
-            self.lease_renewal_commit_hook
-                .lock()
-                .expect("test lease hook lock")
-                .clone()
-        };
-        #[cfg(test)]
-        if let Some((reached, proceed)) = commit_hook {
-            reached.notify_one();
-            proceed.notified().await;
-        }
-        dbtx.insert_entry(
-            &DriverLeaseKey,
-            &StoredDriverLease {
-                owner: lease.owner,
-                expires_at,
-            },
-        )
-        .await;
-        dbtx.commit_tx_result()
-            .await
-            .map_err(map_lease_commit_error)?;
-        (expires_at > (self.lease_clock)())
-            .then_some(())
-            .ok_or(FaError::Busy)
-    }
-
-    /// Release a lease only if it still belongs to this driver.
-    pub(crate) async fn release_driver_lease(&self, lease: DriverLease) -> FaResult<()> {
-        let result = self.release_driver_lease_owner(lease.owner).await;
-        if result.is_ok() {
-            lease.released.store(true, Ordering::Release);
-        }
-        result
-    }
-
-    async fn release_driver_lease_owner(&self, owner: [u8; 32]) -> FaResult<()> {
-        let mut dbtx = self.database.begin_transaction().await;
-        if dbtx
-            .get_value(&DriverLeaseKey)
-            .await
-            .is_some_and(|stored| stored.owner == owner)
-        {
-            #[cfg(test)]
-            let release_hook = self
-                .lease_release_commit_hook
-                .lock()
-                .expect("test lease hook lock")
-                .take();
-            #[cfg(test)]
-            if let Some((reached, proceed)) = release_hook {
-                reached.notify_one();
-                proceed.notified().await;
-            }
-            dbtx.remove_entry(&DriverLeaseKey).await;
-            dbtx.commit_tx_result()
-                .await
-                .map_err(map_lease_commit_error)?;
-        }
-        Ok(())
-    }
-}
-
-pub(crate) fn map_lease_commit_error(error: DatabaseError) -> FaError {
-    match error {
-        DatabaseError::WriteConflict | DatabaseError::SnapshotTooOld(_) => FaError::Busy,
-        DatabaseError::TransactionConsumed
-        | DatabaseError::DatabaseBackend(_)
-        | DatabaseError::Other(_) => {
-            FaError::Storage("FA driver lease database commit failed".to_owned())
-        }
-    }
 }
 
 /// Map a formation autocommit failure without exposing backend details.
@@ -3062,19 +2707,6 @@ pub(crate) fn map_formation_tx_error(error: AutocommitError<FaError>) -> FaError
 fn setup_payment_event_is_newer(candidate: &Event, current: &Event) -> bool {
     current.created_at < candidate.created_at
         || (candidate.created_at == current.created_at && candidate.id < current.id)
-}
-
-impl Drop for DriverLease {
-    fn drop(&mut self) {
-        if self.released.swap(true, Ordering::AcqRel) {
-            return;
-        }
-        let store = self.store.clone();
-        let owner = self.owner;
-        fedimint_core::runtime::spawn("release cancelled FA driver lease", async move {
-            let _ = store.release_driver_lease_owner(owner).await;
-        });
-    }
 }
 
 impl PurchaseRecovery {

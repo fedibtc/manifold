@@ -22,8 +22,8 @@ use stability_pool_common::Account;
 use tokio::sync::OnceCell;
 
 use crate::db::{
-    AdmissionEffect, DriverLease, FaStore, FormationMetaTarget, FormationRecovery, InitialSeat,
-    MgAdmission, NewCreation, PurchaseRecovery, QuoteAuthorization, StoredVerifierProvenance,
+    AdmissionEffect, FormationMetaTarget, FormationRecovery, InitialSeat, MgAdmission, NewCreation,
+    PurchaseRecovery, QuoteAuthorization, StoredVerifierProvenance,
 };
 use crate::meta_write::{MetaWriteError, SeatVote, write_consensus_meta};
 use crate::mg::MgClient;
@@ -133,9 +133,6 @@ pub enum InvalidFormationRunOptions {
         /// Invalid configuration field.
         field: FormationTimingField,
     },
-    /// A derived durable lease duration overflowed.
-    #[error("invalid formation options: formation deadline is too large")]
-    LeaseOverflow,
     /// A runtime monotonic deadline could not represent the value.
     #[error("invalid formation options: formation {field} is too large")]
     DeadlineOverflow {
@@ -153,10 +150,6 @@ pub struct FormationRunOptions {
     run_timeout: Duration,
     /// Runtime-representable maximum time for one ordinary capability call.
     request_timeout: Duration,
-    /// Precomputed maximum durable lease duration.
-    lease_duration: Duration,
-    /// Precomputed durable lease renewal duration.
-    lease_renewal_duration: Duration,
 }
 
 /// Named inputs for checked formation timing bounds.
@@ -184,9 +177,9 @@ impl FormationRunOptions {
     /// Construct timing options that are valid on native and WASM runtimes.
     ///
     /// Every value must be an integral number of milliseconds in the inclusive
-    /// 1..=2,147,483,647 range and fit the derived lease sums. Invalid values return
-    /// [`InvalidFormationRunOptions`] before lease, durable-state, wallet, or
-    /// RPC effects.
+    /// 1..=2,147,483,647 range. Invalid values return
+    /// [`InvalidFormationRunOptions`] before durable-state, wallet, or RPC
+    /// effects.
     pub fn new(config: FormationRunOptionsConfig) -> Result<Self, InvalidFormationRunOptions> {
         let timings = [
             (FormationTimingField::PollInterval, config.poll_interval),
@@ -204,15 +197,6 @@ impl FormationRunOptions {
                 return Err(InvalidFormationRunOptions::NonIntegral { field: name });
             }
         }
-        let lease_duration = config
-            .run_timeout
-            .checked_add(Duration::from_secs(60))
-            .ok_or(InvalidFormationRunOptions::LeaseOverflow)?;
-        let lease_renewal_duration = config
-            .request_timeout
-            .min(config.run_timeout)
-            .checked_add(Duration::from_secs(60))
-            .ok_or(InvalidFormationRunOptions::LeaseOverflow)?;
         let now = Instant::now();
         for (name, duration) in timings {
             now.checked_add(duration)
@@ -222,8 +206,6 @@ impl FormationRunOptions {
             poll_interval: config.poll_interval,
             run_timeout: config.run_timeout,
             request_timeout: config.request_timeout,
-            lease_duration,
-            lease_renewal_duration,
         })
     }
 
@@ -237,24 +219,9 @@ impl FormationRunOptions {
         self.poll_interval
     }
 
-    /// Return the maximum persisted lease horizon.
-    pub(crate) fn lease_duration(self) -> Duration {
-        self.lease_duration
-    }
-
-    /// Return the persisted lease renewal duration.
-    pub(crate) fn lease_renewal_duration(self) -> Duration {
-        self.lease_renewal_duration
-    }
-
-    /// Recheck time-dependent runtime and store-clock bounds before any effect.
-    pub(crate) fn validate_for_start(self, store: &FaStore) -> FaResult<()> {
-        checked_deadline(
-            Instant::now(),
-            self.run_timeout,
-            FormationTimingField::RunTimeout,
-        )?;
-        store.validate_driver_lease_durations(self.lease_duration, self.lease_renewal_duration)
+    /// Recheck the time-dependent runtime bound before any effect.
+    pub(crate) fn validate_for_start(self) -> FaResult<()> {
+        formation_deadline(self).map(|_| ())
     }
 }
 
@@ -266,28 +233,27 @@ impl Default for FormationRunOptions {
 }
 
 #[derive(Clone, Copy)]
-/// One bounded driver's deadline, ownership fence, and call timeout policy.
-pub(crate) struct DriverRun<'a> {
+/// One bounded driver's deadline and call timeout policy.
+pub(crate) struct DriverRun {
     options: FormationRunOptions,
     deadline: Instant,
-    lease: &'a DriverLease,
 }
 
-impl<'a> DriverRun<'a> {
-    /// Bind an acquired lease to the absolute deadline established before acquisition.
-    pub(crate) fn new(
-        options: FormationRunOptions,
-        deadline: Instant,
-        lease: &'a DriverLease,
-    ) -> Self {
-        Self {
+impl DriverRun {
+    /// Start a run whose absolute deadline begins now.
+    pub(crate) fn start(options: FormationRunOptions) -> FaResult<Self> {
+        Ok(Self {
             options,
-            deadline,
-            lease,
-        }
+            deadline: formation_deadline(options)?,
+        })
     }
 
-    /// Return the per-capability timeout for composite fenced operations.
+    #[cfg(test)]
+    pub(crate) fn with_deadline(options: FormationRunOptions, deadline: Instant) -> Self {
+        Self { options, deadline }
+    }
+
+    /// Return the per-capability timeout for composite operations.
     pub(crate) fn request_timeout(self) -> Duration {
         self.options.request_timeout()
     }
@@ -302,11 +268,8 @@ impl<'a> DriverRun<'a> {
         self.options.poll_interval()
     }
 
-    /// Fence deferred capability construction and polling independently.
-    ///
-    /// The sequence is monotonic deadline check, backend owner renewal, deferred
-    /// construction, a second deadline check and renewal, then polling under the
-    /// original absolute deadline.
+    /// Check the deadline around deferred capability construction, then poll
+    /// it under the request timeout and the original absolute deadline.
     pub(crate) async fn call<T, Fut>(
         &self,
         operation: &'static str,
@@ -329,40 +292,14 @@ impl<'a> DriverRun<'a> {
         Fut: Future<Output = T>,
     {
         ensure_effective_time_remaining(self.deadline, operation)?;
-        self.lease.renew().await?;
-        ensure_effective_time_remaining(self.deadline, operation)?;
         let future = make_future()?;
         ensure_effective_time_remaining(self.deadline, operation)?;
-        self.lease.renew().await?;
         let duration = select_timer_duration(
             call_timeout,
             self.deadline.saturating_duration_since(Instant::now()),
             operation,
         )?;
-        self.poll_with_lease(operation, duration, future).await
-    }
-
-    /// Keep ownership live while a capability is pending, without spawning a
-    /// task or extending either its timeout or the invocation deadline.
-    async fn poll_with_lease<T>(
-        &self,
-        operation: &'static str,
-        duration: Duration,
-        future: impl Future<Output = T>,
-    ) -> FaResult<T> {
-        timeout(duration, async {
-            futures::pin_mut!(future);
-            loop {
-                tokio::select! {
-                    result = &mut future => return Ok(result),
-                    _ = sleep(self.options.lease_renewal_duration() / 4) => {
-                        self.lease.renew().await?;
-                    }
-                }
-            }
-        })
-        .await
-        .map_err(|_| FaError::Timeout(operation.to_owned()))?
+        poll_with_timeout(operation, duration, future).await
     }
 
     /// Prepare the timeout budget for a value-moving wallet call.
@@ -370,7 +307,6 @@ impl<'a> DriverRun<'a> {
     /// Acceptance, spendable change, and signature collection share the remaining
     /// invocation budget rather than the timeout for one network request.
     ///
-    /// This refreshes the coarse run guard and captures the call's time budget.
     /// Constructing the future remains effect-free; the wallet body starts only
     /// when `poll_value_call` polls it.
     async fn prepare_value_call_budget(
@@ -378,47 +314,18 @@ impl<'a> DriverRun<'a> {
         operation: &'static str,
     ) -> FaResult<ValueCallTimeoutBudget> {
         ensure_effective_time_remaining(self.deadline, operation)?;
-        self.lease.renew().await?;
-        ensure_effective_time_remaining(self.deadline, operation)?;
         Ok(ValueCallTimeoutBudget {
             operation,
             deadline: self.deadline,
         })
     }
 
-    /// Atomically record the durable output-start boundary.
-    async fn arm_payment_outputs_started(
-        &self,
-        formation_id: &FormationId,
-        verifier_provenance: StoredVerifierProvenance,
-    ) -> FaResult<()> {
-        ensure_effective_time_remaining(self.deadline, "arming seat payment outputs")?;
-        self.lease
-            .arm_payment_outputs_started(formation_id, verifier_provenance)
-            .await
-    }
-
-    /// Atomically authorize exact selected effects before their first poll.
-    async fn authorize_seat_effects(
-        &self,
-        formation_id: &FormationId,
-        effects: &[(u16, QuoteId, AdmissionEffect)],
-        verifier_provenance: StoredVerifierProvenance,
-    ) -> FaResult<()> {
-        ensure_effective_time_remaining(self.deadline, "authorizing selected-seat effect wave")?;
-        self.lease
-            .authorize_seat_effects(formation_id, effects, verifier_provenance)
-            .await
-    }
-
-    /// Construct a synchronous request under the current run guard.
+    /// Construct a synchronous request within the run deadline.
     pub(crate) async fn construct<T>(
         &self,
         operation: &'static str,
         construct: impl FnOnce() -> FaResult<T>,
     ) -> FaResult<T> {
-        ensure_effective_time_remaining(self.deadline, operation)?;
-        self.lease.renew().await?;
         ensure_effective_time_remaining(self.deadline, operation)?;
         construct()
     }
@@ -433,7 +340,7 @@ struct ValueCallTimeoutBudget {
 impl ValueCallTimeoutBudget {
     async fn poll_value_call<T>(
         self,
-        run: DriverRun<'_>,
+        run: DriverRun,
         future: impl Future<Output = T>,
     ) -> FaResult<T> {
         // Preflight can precede the atomic output-start boundary and other
@@ -446,8 +353,18 @@ impl ValueCallTimeoutBudget {
             self.deadline.saturating_duration_since(Instant::now()),
             self.operation,
         )?;
-        run.poll_with_lease(self.operation, duration, future).await
+        poll_with_timeout(self.operation, duration, future).await
     }
+}
+
+async fn poll_with_timeout<T>(
+    operation: &'static str,
+    duration: Duration,
+    future: impl Future<Output = T>,
+) -> FaResult<T> {
+    timeout(duration, future)
+        .await
+        .map_err(|_| FaError::Timeout(operation.to_owned()))
 }
 
 pub(crate) struct SeatSession<C> {
@@ -493,7 +410,7 @@ pub(crate) enum MetaFieldSubmission {
 
 /// Failure from the shared guarded metadata-vote primitive.
 pub(crate) enum MetaFieldSubmissionError {
-    /// Local identity, lease, storage, or request-timeout failure.
+    /// Local identity, storage, or request-timeout failure.
     Driver(FaError),
     /// Typed refusal returned by the MG protocol.
     ManifoldGuardian(ManifoldGuardianError),
@@ -794,11 +711,10 @@ where
             .collect();
         let options = FormationRunOptions::default();
         let _run = self.claim_run_guard().await?;
-        options.validate_for_start(&self.inner.store)?;
+        options.validate_for_start()?;
         let fa_id = self.fa_id()?;
-        let (deadline, lease) = start_driver_run(&self.inner.store, options).await?;
-        let run = DriverRun::new(options, deadline, &lease);
-        let result = async {
+        let run = DriverRun::start(options)?;
+        async {
             if let Some(requested) = &payment_federation_id {
                 // A purchase must not obtain even its first exact quote until
                 // the explicitly selected payer is authenticated and currently
@@ -835,8 +751,7 @@ where
             });
             Ok(())
         }
-        .await;
-        finish_driver_run(result, self.inner.store.release_driver_lease(lease).await)
+        .await
     }
 
     /// Stop creating a federation before any seat is bought.
@@ -853,13 +768,12 @@ where
     pub async fn cancel_creation(&self) -> FaResult<()> {
         let options = FormationRunOptions::default();
         let _run = self.claim_run_guard().await?;
-        options.validate_for_start(&self.inner.store)?;
+        options.validate_for_start()?;
         let fa_id = self.fa_id()?;
         // The same bounded run fences reconstruction and explicit release of
         // any exact pre-output wallet reservation before the local wipe.
-        let (deadline, lease) = start_driver_run(&self.inner.store, options).await?;
-        let run = DriverRun::new(options, deadline, &lease);
-        let result = async {
+        let run = DriverRun::start(options)?;
+        async {
             // Refuse before ending a running purchase of the missing seats.
             if !self.inner.store.pool_seats().await.is_empty() {
                 return Err(FaError::AbandonUnavailable(
@@ -882,8 +796,7 @@ where
             });
             Ok(())
         }
-        .await;
-        finish_driver_run(result, self.inner.store.release_driver_lease(lease).await)
+        .await
     }
 
     /// Propose a new guardian-fee rate after formation.
@@ -912,7 +825,7 @@ where
         options: FormationRunOptions,
     ) -> FaResult<()> {
         let _run = self.claim_run_guard().await?;
-        options.validate_for_start(&self.inner.store)?;
+        options.validate_for_start()?;
         if send_ppm.value() > crate::MAX_GUARDIAN_FEE_PPM {
             return Err(FaError::InvalidIntent(format!(
                 "guardian fee ppm exceeds the payer ceiling of {}",
@@ -926,15 +839,13 @@ where
             )));
         }
         let fa_id = self.fa_id()?;
-        let (deadline, lease) = start_driver_run(&self.inner.store, options).await?;
-        let run = DriverRun::new(options, deadline, &lease);
+        let run = DriverRun::start(options)?;
         let key = MetaFieldKey(
             fedi_decentralized_service_manifold_guardian::GUARDIAN_FEE_SEND_PPM_META_FIELD_KEY
                 .to_owned(),
         );
         let value = MetaFieldValue(send_ppm.value().to_string());
-        let result = self.update_meta_field_pinned(key, value, fa_id, run).await;
-        finish_driver_run(result, self.inner.store.release_driver_lease(lease).await)
+        self.update_meta_field_pinned(key, value, fa_id, run).await
     }
 
     /// Explicitly replace every unfinished guardian ceremony, without paying
@@ -949,11 +860,10 @@ where
         options: FormationRunOptions,
     ) -> FaResult<Vec<DkgRestartResult>> {
         let _guard = self.claim_run_guard().await?;
-        options.validate_for_start(&self.inner.store)?;
+        options.validate_for_start()?;
         let fa_id = self.fa_id()?;
-        let (deadline, lease) = start_driver_run(&self.inner.store, options).await?;
-        let run = DriverRun::new(options, deadline, &lease);
-        let result = async {
+        let run = DriverRun::start(options)?;
+        async {
             let mut recovery = self.active_formation(fa_id).await?;
             let formation_id = recovery.snapshot.formation_id.clone();
             let formation_id = &formation_id;
@@ -1045,15 +955,14 @@ where
             results.sort_by_key(|result| result.index);
             Ok(results)
         }
-        .await;
-        finish_driver_run(result, self.inner.store.release_driver_lease(lease).await)
+        .await
     }
 
     pub(crate) async fn drive_purchase(
         &self,
         mut recovery: PurchaseRecovery,
         fa_id: FaId,
-        run: DriverRun<'_>,
+        run: DriverRun,
     ) -> FaResult<()> {
         let formation_id = recovery.snapshot.purchase_id.clone();
 
@@ -1127,7 +1036,7 @@ where
         recovery: &mut PurchaseRecovery,
         fa_id: FaId,
         cleanup: ReservationCleanup,
-        run: DriverRun<'_>,
+        run: DriverRun,
     ) -> FaResult<()> {
         if recovery.payment_outputs_started {
             return Err(FaError::AbandonUnavailable(
@@ -1204,7 +1113,8 @@ where
             _ => {}
         }
 
-        run.lease
+        self.inner
+            .store
             .abandon_purchase(&recovery.snapshot.purchase_id)
             .await?;
         self.inner.progress.modify(|status| status.purchase = None);
@@ -1215,7 +1125,7 @@ where
         &self,
         recovery: &mut PurchaseRecovery,
         fa_id: FaId,
-        run: DriverRun<'_>,
+        run: DriverRun,
     ) -> FaResult<()> {
         if recovery
             .seats
@@ -1335,7 +1245,8 @@ where
                                 .to_owned(),
                         ));
                     }
-                    run.lease
+                    self.inner
+                        .store
                         .abandon_purchase(&recovery.snapshot.purchase_id)
                         .await?;
                     self.inner.progress.modify(|status| status.purchase = None);
@@ -1398,7 +1309,7 @@ where
         &self,
         recovery: &mut PurchaseRecovery,
         fa_id: FaId,
-        run: DriverRun<'_>,
+        run: DriverRun,
     ) -> FaResult<()> {
         let formation_id = recovery.snapshot.purchase_id.clone();
         let formation_id = &formation_id;
@@ -1526,7 +1437,7 @@ where
         recovery: &mut PurchaseRecovery,
         requirements: &PaymentRequirements,
         fa_id: FaId,
-        run: DriverRun<'_>,
+        run: DriverRun,
     ) -> FaResult<P::PaymentReservation> {
         let (reservation_id, recovered) = self
             .recover_payment_reservation(recovery, requirements, fa_id, run)
@@ -1595,7 +1506,7 @@ where
         recovery: &PurchaseRecovery,
         requirements: &PaymentRequirements,
         fa_id: FaId,
-        run: DriverRun<'_>,
+        run: DriverRun,
     ) -> FaResult<(
         PaymentReservationId,
         PaymentReservationRecovery<P::PaymentReservation>,
@@ -1671,7 +1582,7 @@ where
         locator: &Locator,
         formation_id: &FormationId,
         policy: QuoteAttemptPolicy,
-        run: DriverRun<'_>,
+        run: DriverRun,
     ) -> FaResult<MgClient<F::Client>> {
         let retry_deadline = Instant::now()
             .checked_add(SELECTED_MG_CONNECT_RETRY_BUDGET)
@@ -1728,7 +1639,7 @@ where
         policy: QuoteAttemptPolicy,
         expected_payer: Option<&FederationId>,
         payment_federation: Option<&OnceCell<FederationId>>,
-        run: DriverRun<'_>,
+        run: DriverRun,
     ) -> FaResult<(
         SignedResponse<GetQuoteResponse>,
         SignatureVerified<GetQuoteResponse>,
@@ -1802,7 +1713,7 @@ where
         &self,
         recovery: &mut PurchaseRecovery,
         fa_id: FaId,
-        run: DriverRun<'_>,
+        run: DriverRun,
     ) -> FaResult<Vec<SeatSession<MgClient<F::Client>>>> {
         let formation_id = recovery.snapshot.purchase_id.clone();
         let formation_id = &formation_id;
@@ -2229,17 +2140,26 @@ where
                     .iter()
                     .map(|(_, index, quote_id, effect)| (*index, *quote_id, *effect))
                     .collect::<Vec<_>>();
-                run.authorize_seat_effects(
-                    &recovery.snapshot.purchase_id,
-                    &effects,
-                    verifier_provenance,
-                )
-                .await?;
+                ensure_effective_time_remaining(
+                    run.deadline(),
+                    "authorizing selected-seat effect wave",
+                )?;
+                self.inner
+                    .store
+                    .record_seat_effects_authorized(
+                        &recovery.snapshot.purchase_id,
+                        &effects,
+                        verifier_provenance,
+                    )
+                    .await?;
                 for &(position, _, quote_id, effect) in &free_effects {
                     apply_authorized_effect_in_memory(recovery, position, quote_id, effect)?;
                 }
             }
-            run.arm_payment_outputs_started(&recovery.snapshot.purchase_id, verifier_provenance)
+            ensure_effective_time_remaining(run.deadline(), "arming seat payment outputs")?;
+            self.inner
+                .store
+                .record_payment_outputs_started(&recovery.snapshot.purchase_id, verifier_provenance)
                 .await?;
             recovery.payment_outputs_started = true;
             recovery.snapshot.payment_outputs_started = true;
@@ -2262,12 +2182,18 @@ where
                     .iter()
                     .map(|(_, index, quote_id, effect)| (*index, *quote_id, *effect))
                     .collect::<Vec<_>>();
-                run.authorize_seat_effects(
-                    &recovery.snapshot.purchase_id,
-                    &effects,
-                    verifier_provenance,
-                )
-                .await?;
+                ensure_effective_time_remaining(
+                    run.deadline(),
+                    "authorizing selected-seat effect wave",
+                )?;
+                self.inner
+                    .store
+                    .record_seat_effects_authorized(
+                        &recovery.snapshot.purchase_id,
+                        &effects,
+                        verifier_provenance,
+                    )
+                    .await?;
                 for (position, _, quote_id, effect) in effect_wave {
                     apply_authorized_effect_in_memory(recovery, position, quote_id, effect)?;
                 }
@@ -2441,7 +2367,7 @@ where
         fa_id: FaId,
         intent: &ResolvedSeatPurchase,
         payment_federation_id: FederationId,
-        run: DriverRun<'_>,
+        run: DriverRun,
     ) -> FaResult<Vec<Option<PaidSeatQuote>>> {
         let formation_id = recovery.snapshot.purchase_id.clone();
         let formation_id = &formation_id;
@@ -2617,7 +2543,7 @@ where
         recovery: &mut FormationRecovery,
         sessions: &[SeatSession<MgClient<F::Client>>],
         fa_id: FaId,
-        run: DriverRun<'_>,
+        run: DriverRun,
     ) -> FaResult<()> {
         let formation_id = recovery.snapshot.formation_id.clone();
         let formation_id = &formation_id;
@@ -2791,7 +2717,7 @@ where
         position: usize,
         fa_id: FaId,
         release_proof: Option<P::TerminalReleaseProof>,
-        run: DriverRun<'_>,
+        run: DriverRun,
     ) -> FaResult<()> {
         let signed_quote = recovery.seats[position]
             .signed_quote
@@ -2875,7 +2801,7 @@ where
         formation_id: &FormationId,
         work: PendingSeatWork<MgClient<F::Client>, P::RefundContext, P::PaymentReservation>,
         fa_id: FaId,
-        run: DriverRun<'_>,
+        run: DriverRun,
     ) -> FaResult<CompletedSeatWork<MgClient<F::Client>, P::TerminalReleaseProof>> {
         match work {
             PendingSeatWork::Funding(funding) => {
@@ -2964,7 +2890,7 @@ where
         locator: &Locator,
         fa_id: FaId,
         acquisition: SeatAcquisition<P::RefundContext>,
-        run: DriverRun<'_>,
+        run: DriverRun,
     ) -> FaResult<SeatCreation<P::TerminalReleaseProof>> {
         // A stored quote is reused only when payment has already started
         // against it. Otherwise obtain and persist a fresh quote before
@@ -3011,7 +2937,7 @@ where
         policy: QuoteAttemptPolicy,
         expected_payer: Option<&FederationId>,
         payment_federation: Option<&OnceCell<FederationId>>,
-        run: DriverRun<'_>,
+        run: DriverRun,
     ) -> FaResult<(
         SignedResponse<GetQuoteResponse>,
         SignatureVerified<GetQuoteResponse>,
@@ -3277,7 +3203,7 @@ where
         locator: &Locator,
         fa_id: FaId,
         presentation: SeatPresentation<P::RefundContext>,
-        run: DriverRun<'_>,
+        run: DriverRun,
     ) -> FaResult<SeatCreation<P::TerminalReleaseProof>> {
         let (signed_quote, quote, payment_signatures, refund_context) = match presentation {
             SeatPresentation::Free(FreeSeatQuote { signed, verified }) => {
@@ -3392,7 +3318,7 @@ where
         fa_id: FaId,
         federation_name: Option<FederationName>,
         recorded_code: Option<GuardianCode>,
-        run: DriverRun<'_>,
+        run: DriverRun,
     ) -> FaResult<GuardianCode> {
         loop {
             ensure_time_remaining(run.deadline, "waiting for MG child readiness")?;
@@ -3444,7 +3370,7 @@ where
         sessions: &[SeatSession<MgClient<F::Client>>],
         recovery: &mut FormationRecovery,
         fa_id: FaId,
-        run: DriverRun<'_>,
+        run: DriverRun,
     ) -> FaResult<()> {
         let formation_id = recovery.snapshot.formation_id.clone();
         let formation_id = &formation_id;
@@ -3516,7 +3442,7 @@ where
         &self,
         recovery: &mut FormationRecovery,
         fa_id: FaId,
-        run: DriverRun<'_>,
+        run: DriverRun,
     ) -> FaResult<()> {
         let stored = recovery.snapshot.invite_code.clone().ok_or_else(|| {
             FaError::Storage("formed FA record contains no persisted invite".to_owned())
@@ -3557,7 +3483,7 @@ where
         &self,
         snapshot: crate::FederationSnapshot,
         fa_id: FaId,
-        run: DriverRun<'_>,
+        run: DriverRun,
     ) -> FaResult<()> {
         let seats = snapshot
             .seats
@@ -3584,7 +3510,7 @@ where
     }
 
     /// Look up the backup of a restored mnemonic and import it.
-    pub(crate) async fn recover_backup(&self, fa_id: FaId, run: DriverRun<'_>) -> FaResult<()> {
+    pub(crate) async fn recover_backup(&self, fa_id: FaId, run: DriverRun) -> FaResult<()> {
         let source = self
             .inner
             .backup_source
@@ -3612,7 +3538,7 @@ where
         payload: Option<crate::backup::FaBackupPayload>,
         completed: &crate::db::RecoveryCompletedKey,
         fa_id: FaId,
-        run: DriverRun<'_>,
+        run: DriverRun,
     ) -> FaResult<()> {
         let Some(payload) = payload else {
             self.inner.store.complete_empty_recovery(completed).await?;
@@ -3662,7 +3588,7 @@ where
         liquidity: Option<
             &fedi_decentralized_service_liquidity_manager::RequestLiquidityDetailsCommitmentV1,
         >,
-        run: DriverRun<'_>,
+        run: DriverRun,
     ) -> FaResult<Option<crate::FederationName>> {
         if seats.is_empty() {
             return Err(FaError::InvalidManifoldGuardians(
@@ -3725,7 +3651,7 @@ where
     async fn seat_sessions(
         &self,
         recovery: &FormationRecovery,
-        run: DriverRun<'_>,
+        run: DriverRun,
     ) -> FaResult<Vec<SeatSession<MgClient<F::Client>>>> {
         let mut sessions = Vec::with_capacity(recovery.seats.len());
         for (position, seat) in recovery.seats.iter().enumerate() {
@@ -3752,7 +3678,7 @@ where
         recovery: &mut FormationRecovery,
         fa_id: FaId,
         invite: &InviteCode,
-        run: DriverRun<'_>,
+        run: DriverRun,
     ) -> FaResult<()> {
         // A new target must be validated against the final config before it is
         // durable: recovery replays its exact bytes and cannot repair an
@@ -3925,7 +3851,7 @@ where
         sessions: &[SeatSession<MgClient<F::Client>>],
         recovery: &FormationRecovery,
         fa_id: FaId,
-        run: DriverRun<'_>,
+        run: DriverRun,
     ) -> FaResult<(String, Vec<FormationSeatBinding>)> {
         let mut pending = FuturesUnordered::new();
         for (position, session) in sessions.iter().enumerate() {
@@ -3986,7 +3912,7 @@ where
         fa_id: FaId,
         expected_base: MetaConsensusBase,
         target: &FormationMetaTarget,
-        run: DriverRun<'_>,
+        run: DriverRun,
     ) -> Vec<(u16, FaResult<ProposeFormationMetaResponse>)> {
         let mut pending = FuturesUnordered::new();
         for session in sessions
@@ -4040,7 +3966,7 @@ where
         expected_base: MetaConsensusBase,
         key: &MetaFieldKey,
         value: &MetaFieldValue,
-        run: DriverRun<'_>,
+        run: DriverRun,
     ) -> Vec<(u16, Result<MetaFieldSubmission, MetaFieldSubmissionError>)> {
         let mut pending = FuturesUnordered::new();
         for session in sessions {
@@ -4167,7 +4093,7 @@ where
         &self,
         saved: &InviteCode,
         seats: &[crate::liquidity::FormedMgSeat],
-        run: DriverRun<'_>,
+        run: DriverRun,
     ) -> FaResult<Result<FederationConsensusSnapshot, crate::FederationConsensusError>> {
         let invite = self.consensus_invite(saved).await;
         let first = run
@@ -4232,7 +4158,7 @@ where
         &self,
         sessions: &[SeatSession<MgClient<F::Client>>],
         fa_id: FaId,
-        run: DriverRun<'_>,
+        run: DriverRun,
     ) -> FaResult<InviteCode> {
         if sessions.is_empty() {
             return Err(FaError::InvalidManifoldGuardians(
@@ -4341,7 +4267,7 @@ where
         &self,
         mut recovery: FormationRecovery,
         fa_id: FaId,
-        run: DriverRun<'_>,
+        run: DriverRun,
     ) -> FaResult<()> {
         self.publish_formation(recovery.snapshot.clone());
         let result = if recovery.snapshot.phase.dkg_complete() {
@@ -4785,23 +4711,4 @@ fn checked_deadline(
     now.checked_add(duration)
         .ok_or(InvalidFormationRunOptions::DeadlineOverflow { field })
         .map_err(FaError::from)
-}
-
-/// Establish the absolute monotonic deadline before awaiting lease acquisition.
-pub(crate) async fn start_driver_run(
-    store: &FaStore,
-    options: FormationRunOptions,
-) -> FaResult<(Instant, DriverLease)> {
-    let deadline = formation_deadline(options)?;
-    let lease = store
-        .acquire_driver_lease(options.lease_duration(), options.lease_renewal_duration())
-        .await?;
-    Ok((deadline, lease))
-}
-
-pub(crate) fn finish_driver_run<T>(result: FaResult<T>, release: FaResult<()>) -> FaResult<T> {
-    match result {
-        Err(error) => Err(error),
-        Ok(value) => release.map(|()| value),
-    }
 }

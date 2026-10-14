@@ -65,7 +65,7 @@ impl<R> From<FaError> for MetaWriteError<R> {
 /// guardian must sign a rebased mutation. A readback follows every wave, so a
 /// threshold can adopt the target while a late sibling fails.
 pub(crate) async fn write_consensus_meta<R, ReadFut, SubmitFut>(
-    run: DriverRun<'_>,
+    run: DriverRun,
     seats: BTreeSet<u16>,
     read: impl Fn() -> ReadFut,
     adopted: impl Fn(&FederationConsensusSnapshot) -> FaResult<bool>,

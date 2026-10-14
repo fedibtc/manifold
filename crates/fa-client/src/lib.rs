@@ -163,12 +163,15 @@ where
     /// Open FA state from a consumer-provided, already-namespaced database.
     ///
     /// The same stable identity must be supplied on every reopen. Durable
-    /// state is identity-bound before it is observed. Mutating operations also
-    /// acquire a database-wide expiring lease, so separately opened clients
-    /// cannot concurrently perform external effects.
+    /// state is identity-bound before it is observed.
     ///
-    /// Because this API is pre-production, opening an older storage schema
-    /// atomically clears the complete supplied namespace and starts from Idle.
+    /// Open at most one client for a database. The client serializes all of
+    /// its work in memory, and nothing guards against a second client on the
+    /// same database. A RocksDB-backed database already refuses a second
+    /// open of the same path.
+    ///
+    /// Opening storage older than schema 11 clears the complete supplied
+    /// namespace and starts from Idle.
     ///
     /// The mandatory verifier authenticates every PeerBadge the selection
     /// walk examines through [`Self::preview_mg_selection`]. The resulting

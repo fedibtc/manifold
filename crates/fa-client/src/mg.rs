@@ -16,7 +16,7 @@ impl<C: ManifoldGuardianService> MgClient<C> {
     pub(crate) async fn connect<F: ManifoldGuardianConnector<Client = C>>(
         connector: &F,
         locator: &Locator,
-        run: DriverRun<'_>,
+        run: DriverRun,
     ) -> FaResult<Self> {
         let failure = |cause| MgFailure {
             mg: locator.service_pubkey,
@@ -50,7 +50,7 @@ impl<C: ManifoldGuardianService> MgClient<C> {
     /// Construct the service future only after the driver's ownership fence.
     pub(crate) async fn call<'s, T, E, Fut>(
         &'s self,
-        run: DriverRun<'_>,
+        run: DriverRun,
         operation: MgOperation,
         request: impl FnOnce(&'s C) -> Fut,
     ) -> FaResult<T>

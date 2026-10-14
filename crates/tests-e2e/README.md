@@ -106,8 +106,7 @@ The Linux-only
 crash-during-DKG coverage into the same Rust/`defe` runtime. It kills three
 validated `fedimintd` child PIDs after their safe journals show DKG began,
 sends SIGKILL to the exact live `fa-cli` PID, confirms a fresh CLI process
-reopens durable guardian-code preparation, waits for the abandoned database
-lease, and resumes the same formation through an idempotent `StartDkg` replay
+reopens durable guardian-code preparation, and resumes the same formation through an idempotent `StartDkg` replay
 to a persisted invite. It then requires each killed guardian to have observed
 both its original and replacement starts while every intact guardian has
 observed at least its original start. The same run

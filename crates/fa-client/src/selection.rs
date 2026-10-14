@@ -330,7 +330,7 @@ pub(crate) struct BoughtSeats {
 /// This purpose-specific client owns exactly the registry transport and
 /// concrete PeerBadge verifier required for lazy verified selection. It has no
 /// FA identity, durable database, payment capability, consensus reader,
-/// driver lease, or formation state. Without an MG connector its preview
+/// or formation state. Without an MG connector its preview
 /// seats candidates on advertised claims alone; [`Self::with_mg_connector`]
 /// adds the transport capability that lets the walk probe each reached
 /// candidate's live availability before seating it.
@@ -711,8 +711,8 @@ where
 {
     /// Preview the verified seat set one formation intent would select.
     ///
-    /// This is a read-only query: it writes no durable state, takes no
-    /// driver lease, reserves no seat, and publishes no status. It runs the
+    /// This is a read-only query: it writes no durable state, takes reserves
+    /// no seat, and publishes no status. It runs the
     /// bounded enumeration, static admission, and the ranked round-robin
     /// selection walk with lazy badge verification, and returns the selected
     /// seats, the aggregate advertised estimate, and an honest
@@ -727,8 +727,8 @@ where
     /// an in-flight badge verification or live availability probe. The
     /// preview must complete strictly
     /// before that deadline; expiry wins simultaneous readiness and cancels the
-    /// preview. It deliberately does not take formation run options — no lease
-    /// or driver timing applies to a read-only query.
+    /// preview. It deliberately does not take formation run options — no driver
+    /// timing applies to a read-only query.
     ///
     /// The walk probes each reached, verified, non-duplicate candidate's live
     /// availability over the consumer's MG connector before seating it, so

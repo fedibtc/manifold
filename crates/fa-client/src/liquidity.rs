@@ -573,16 +573,13 @@ where
     {
         let _run = self.claim_run_guard().await?;
         let options = FormationRunOptions::default();
-        options.validate_for_start(&self.inner.store)?;
-        let (deadline, lease) =
-            crate::formation::start_driver_run(&self.inner.store, options).await?;
-        let result = async {
+        options.validate_for_start()?;
+        let run = DriverRun::start(options)?;
+        async {
             intent.validate()?;
-            lease.renew().await?;
             let context = self.formed_liquidity_context(formation_id).await?;
             self.ensure_no_live_liquidity_operation(context.federation.federation_id())
                 .await?;
-            lease.renew().await?;
             let provider = self
                 .refresh_provider_with_verifier(
                     provider_pubkey,
@@ -623,28 +620,17 @@ where
                 status: None,
                 verified_gateway_api: None,
             };
-
-            lease.renew().await?;
             self.inner
                 .store
                 .insert_liquidity_operation(operation.clone())
                 .await?;
             let snapshot = self
-                .submit_prepared_liquidity(
-                    operation, context, provider, connector, verifier, &lease,
-                )
+                .submit_prepared_liquidity(operation, context, provider, connector, verifier)
                 .await?;
-            self.attach_completed_gateway(
-                &snapshot.operation_id,
-                DriverRun::new(options, deadline, &lease),
-            )
-            .await
+            self.attach_completed_gateway(&snapshot.operation_id, run)
+                .await
         }
-        .await;
-        crate::formation::finish_driver_run(
-            result,
-            self.inner.store.release_driver_lease(lease).await,
-        )
+        .await
     }
 
     /// Resume one exact request by querying status before any exact replay.
@@ -710,25 +696,20 @@ where
             return operation.snapshot();
         }
         let options = FormationRunOptions::default();
-        options.validate_for_start(&self.inner.store)?;
-        let (deadline, lease) =
-            crate::formation::start_driver_run(&self.inner.store, options).await?;
-        let result = async {
-            lease.renew().await?;
+        options.validate_for_start()?;
+        let run = DriverRun::start(options)?;
+        async {
             let context = self
                 .formed_liquidity_context(&operation.formation_id)
                 .await?;
             context.matches_commitment(&operation.commitment)?;
-            let durable_snapshot = self
-                .attach_completed_gateway(operation_id, DriverRun::new(options, deadline, &lease))
-                .await?;
+            let durable_snapshot = self.attach_completed_gateway(operation_id, run).await?;
             if durable_snapshot.is_complete() {
                 return Ok(durable_snapshot);
             }
             let intent = LiquidityRequestIntent {
                 amounts: operation.commitment.amounts.clone(),
             };
-            lease.renew().await?;
             let provider = self
                 .refresh_provider_with_verifier(
                     &operation.commitment.provider_pubkey,
@@ -738,7 +719,6 @@ where
                     verifier,
                 )
                 .await?;
-            lease.renew().await?;
             let client = timeout(
                 FA_LIQUIDITY_RPC_TIMEOUT,
                 connector.connect(provider.endpoint()),
@@ -757,7 +737,6 @@ where
                 PublicRpcPayloadDomain::GetAllocationStatusRequest,
                 status_request,
             )?;
-            lease.renew().await?;
             let snapshot = match timeout(
                 FA_LIQUIDITY_RPC_TIMEOUT,
                 client.get_allocation_status(status_request),
@@ -767,7 +746,6 @@ where
             {
                 Ok(response) => {
                     self.verify_status_response(&operation, &response)?;
-                    lease.renew().await?;
                     self.inner
                         .store
                         .store_liquidity_status(operation_id, response)
@@ -793,7 +771,7 @@ where
                         ));
                     }
                     self.submit_prepared_liquidity(
-                        operation, context, provider, connector, verifier, &lease,
+                        operation, context, provider, connector, verifier,
                     )
                     .await
                 }
@@ -803,17 +781,10 @@ where
                     error.message()
                 ))),
             }?;
-            self.attach_completed_gateway(
-                &snapshot.operation_id,
-                DriverRun::new(options, deadline, &lease),
-            )
-            .await
+            self.attach_completed_gateway(&snapshot.operation_id, run)
+                .await
         }
-        .await;
-        crate::formation::finish_driver_run(
-            result,
-            self.inner.store.release_driver_lease(lease).await,
-        )
+        .await
     }
 
     /// Read the latest durable projection without performing network work.
@@ -832,7 +803,7 @@ where
     async fn attach_completed_gateway(
         &self,
         operation_id: &LiquidityOperationId,
-        run: DriverRun<'_>,
+        run: DriverRun,
     ) -> FaResult<LiquidityOperationSnapshot> {
         let operation = self
             .inner
@@ -1124,14 +1095,12 @@ where
         provider: AdmittedLiquidityProvider,
         connector: &L,
         verifier: &V,
-        lease: &crate::db::DriverLease,
     ) -> FaResult<LiquidityOperationSnapshot>
     where
         L: LiquidityProviderConnector,
         V: LiquidityBadgeVerifier,
     {
         context.matches_commitment(&operation.commitment)?;
-        lease.renew().await?;
         let (endorsement, trust_material) = self.collect_mg_trust(&context, verifier).await?;
         let request = RequestLiquidityRequest {
             version: operation.commitment.version,
@@ -1155,7 +1124,6 @@ where
         }
         let request =
             self.sign_public_rpc(PublicRpcPayloadDomain::RequestLiquidityRequest, request)?;
-        lease.renew().await?;
         let client = timeout(
             FA_LIQUIDITY_RPC_TIMEOUT,
             connector.connect(provider.endpoint()),
@@ -1163,7 +1131,6 @@ where
         .await
         .map_err(|_| FaError::Timeout("connecting to liquidity provider".to_owned()))?
         .map_err(|error| FaError::Liquidity(format!("connecting to provider: {error}")))?;
-        lease.renew().await?;
         let response = timeout(FA_LIQUIDITY_RPC_TIMEOUT, client.request_liquidity(request))
             .await
             .map_err(|_| FaError::Timeout("requesting federation liquidity".to_owned()))?
@@ -1175,7 +1142,6 @@ where
                 ))
             })?;
         self.verify_request_response(&operation, &response)?;
-        lease.renew().await?;
         self.inner
             .store
             .store_liquidity_response(&operation.operation_id, response)

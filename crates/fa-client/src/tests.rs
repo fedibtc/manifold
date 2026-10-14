@@ -2576,16 +2576,9 @@ where
     ) -> FaResult<()> {
         let options = FormationRunOptions::default();
         let fa_id = self.fa_id()?;
-        let (deadline, lease) =
-            crate::formation::start_driver_run(&self.inner.store, options).await?;
-        let run = crate::formation::DriverRun::new(options, deadline, &lease);
-        let result = self
-            .import_backup(payload, &staging_recovery(), fa_id, run)
-            .await;
-        crate::formation::finish_driver_run(
-            result,
-            self.inner.store.release_driver_lease(lease).await,
-        )
+        let run = crate::formation::DriverRun::start(options)?;
+        self.import_backup(payload, &staging_recovery(), fa_id, run)
+            .await
     }
 
     /// Drive the running purchase, or without one every later piece of
@@ -2617,7 +2610,7 @@ where
         purchase_only: bool,
     ) -> FaResult<()> {
         let _run = self.inner.run_guard.try_lock().map_err(|_| FaError::Busy)?;
-        options.validate_for_start(&self.inner.store)?;
+        options.validate_for_start()?;
         let fa_id = self.fa_id()?;
         loop {
             let status = self.status();
@@ -2639,10 +2632,8 @@ where
             if purchase.is_none() && formation.is_none() && reconcile.is_none() {
                 return Ok(());
             }
-            let (deadline, lease) =
-                crate::formation::start_driver_run(&self.inner.store, options).await?;
-            let run = crate::formation::DriverRun::new(options, deadline, &lease);
-            let result = async {
+            let run = crate::formation::DriverRun::start(options)?;
+            async {
                 if let Some(recovery) = purchase {
                     let result = self.drive_purchase(recovery, fa_id, run).await;
                     if let Err(FaError::SelectionReauthorizationRequired { reason, .. }) = &result {
@@ -2664,11 +2655,7 @@ where
                     result
                 }
             }
-            .await;
-            crate::formation::finish_driver_run(
-                result,
-                self.inner.store.release_driver_lease(lease).await,
-            )?;
+            .await?;
         }
     }
 }
@@ -3418,6 +3405,33 @@ async fn schema_11_partial_purchase_stays_a_purchase() {
     assert!(status.pool.is_empty());
     assert!(status.formation.is_none());
     assert!(status.federation.is_none());
+}
+
+#[tokio::test]
+async fn schema_11_driver_lease_row_is_removed() {
+    use fedimint_core::db::IDatabaseTransactionOpsCore;
+
+    let database = MemDatabase::new().into_database();
+    crate::db::FaStore::new(database.clone())
+        .install_schema_11_fixture_for_test(crate::db::test_support::Schema11Fixture::Purchase)
+        .await;
+    let mut dbtx = database.begin_transaction().await;
+    dbtx.raw_insert_bytes(&[0x02], b"stale lease")
+        .await
+        .unwrap();
+    dbtx.commit_tx().await;
+    let (payments, _) = TestPayments::new();
+    let client = open_client(
+        database.clone(),
+        payments,
+        Arc::new(MgState::default()),
+        MgConfig::paid(),
+    )
+    .await;
+
+    assert!(purchase(&client.status()).payment_outputs_started);
+    let mut dbtx = database.begin_transaction_nc().await;
+    assert_eq!(dbtx.raw_get_bytes(&[0x02]).await.unwrap(), None);
 }
 
 #[tokio::test]
@@ -4493,10 +4507,9 @@ fn formation_run_options_enforce_boundaries_and_lease_horizon() {
         request_timeout: Duration::from_millis(i32::MAX as u64),
     })
     .unwrap();
-    assert_eq!(bounded.lease_duration(), Duration::from_secs(60) + valid);
     assert_eq!(
-        bounded.lease_renewal_duration(),
-        Duration::from_secs(60) + valid
+        bounded.request_timeout(),
+        Duration::from_millis(i32::MAX as u64)
     );
 }
 
@@ -4520,22 +4533,15 @@ impl TestSetupPaymentSelection for TestClient {
             run_timeout: Duration::from_secs(2),
             request_timeout,
         })?;
-        let (deadline, lease) =
-            crate::formation::start_driver_run(&self.inner.store, options).await?;
-        let run = crate::formation::DriverRun::new(options, deadline, &lease);
-        let result =
-            self.payable_setup_payment_federations(run)
-                .await
-                .and_then(|(policy_ids, payable)| {
-                    policy_ids
-                        .into_iter()
-                        .find(|federation_id| payable.contains(federation_id))
-                        .ok_or_else(|| FaError::Payment("no payable policy member".to_owned()))
-                });
-        crate::formation::finish_driver_run(
-            result,
-            self.inner.store.release_driver_lease(lease).await,
-        )
+        let run = crate::formation::DriverRun::start(options)?;
+        self.payable_setup_payment_federations(run)
+            .await
+            .and_then(|(policy_ids, payable)| {
+                policy_ids
+                    .into_iter()
+                    .find(|federation_id| payable.contains(federation_id))
+                    .ok_or_else(|| FaError::Payment("no payable policy member".to_owned()))
+            })
     }
 }
 
@@ -5032,18 +5038,13 @@ async fn arm_payment_outputs_for_test(
         )
         .await
         .unwrap();
-    let lease = store
-        .acquire_driver_lease(
-            options().lease_duration(),
-            options().lease_renewal_duration(),
+    store
+        .record_payment_outputs_started(
+            formation_id,
+            test_peer_badge_verifier().provenance().into(),
         )
         .await
         .unwrap();
-    lease
-        .arm_payment_outputs_started(formation_id, test_peer_badge_verifier().provenance().into())
-        .await
-        .unwrap();
-    store.release_driver_lease(lease).await.unwrap();
 }
 
 fn quote_ids(records: &[QuoteRecord]) -> HashSet<QuoteId> {
@@ -5472,14 +5473,6 @@ async fn intent_and_locator_validation_precede_external_calls() {
         MgConfig::paid(),
     )
     .await;
-    let acquisition_started = Arc::new(Notify::new());
-    let acquisition_proceed = Arc::new(Notify::new());
-    client
-        .inner
-        .store
-        .set_lease_acquisition_hook(acquisition_started.clone(), acquisition_proceed.clone());
-    acquisition_proceed.notify_one();
-
     let mut outside_request = client.preview_at(&intent(), locators());
     outside_request.fedimintd_dkg_version = "0.11.0+fedi"
         .parse::<FedimintdVersion>()
@@ -5500,12 +5493,6 @@ async fn intent_and_locator_validation_precede_external_calls() {
             .await
             .unwrap()
             .is_none()
-    );
-    assert!(
-        tokio::time::timeout(Duration::from_millis(10), acquisition_started.notified())
-            .await
-            .is_err(),
-        "pure validation must not attempt lease acquisition"
     );
     assert_eq!(payment_state.payable_calls.load(Ordering::SeqCst), 0);
     assert_eq!(payment_state.create_calls.load(Ordering::SeqCst), 0);
@@ -5756,289 +5743,6 @@ async fn concurrent_driver_is_rejected() {
     assert!(matches!(client.drive().await, Err(FaError::Busy)));
 }
 
-#[tokio::test]
-async fn separately_opened_clients_share_one_database_driver_lease() {
-    let database = MemDatabase::new().into_database();
-    let (payments, payment_state) = TestPayments::new();
-    let mg_state = Arc::new(MgState::default());
-    let first = open_client(
-        database.clone(),
-        payments.clone(),
-        mg_state.clone(),
-        MgConfig::paid(),
-    )
-    .await;
-    let second = open_client(database, payments, mg_state, MgConfig::paid()).await;
-    payment_state.block_recovery.store(true, Ordering::SeqCst);
-    let recovery_started = payment_state.recovery_started.notified();
-    let operation = tokio::spawn(async move {
-        first
-            .buy_seats_at(&intent(), locators(), long_request_options())
-            .await
-    });
-    recovery_started.await;
-
-    assert!(matches!(second.drive().await, Err(FaError::Busy)));
-    operation.abort();
-    assert!(operation.await.unwrap_err().is_cancelled());
-}
-
-fn test_driver_run<'a>(
-    lease: &'a db::DriverLease,
-    deadline: fedimint_core::runtime::Instant,
-    request_timeout: Duration,
-) -> crate::formation::DriverRun<'a> {
-    crate::formation::DriverRun::new(
-        FormationRunOptions::new(crate::FormationRunOptionsConfig {
-            poll_interval: Duration::from_millis(1),
-            run_timeout: Duration::from_secs(2),
-            request_timeout,
-        })
-        .unwrap(),
-        deadline,
-        lease,
-    )
-}
-
-#[tokio::test]
-async fn stalled_driver_is_fenced_after_lease_takeover() {
-    let database = MemDatabase::new().into_database();
-    let now = Arc::new(AtomicU64::new(1_000));
-    let clock = {
-        let now = now.clone();
-        Arc::new(move || now.load(Ordering::SeqCst)) as Arc<dyn Fn() -> u64 + Send + Sync>
-    };
-    let store = db::FaStore::new_with_lease_clock(database, clock);
-    let old = store
-        .acquire_driver_lease(Duration::from_secs(30), Duration::from_secs(5))
-        .await
-        .unwrap();
-
-    // Model a suspended future: its monotonic deadline can be recreated by
-    // buggy caller code, but its database lease expires while it is not running.
-    now.store(1_006, Ordering::SeqCst);
-    let _replacement = store
-        .acquire_driver_lease(Duration::from_secs(30), Duration::from_secs(5))
-        .await
-        .unwrap();
-    let factories = AtomicUsize::new(0);
-    let effects = AtomicUsize::new(0);
-    let result = test_driver_run(
-        &old,
-        fedimint_core::runtime::Instant::now() + Duration::from_secs(30),
-        Duration::from_secs(5),
-    )
-    .call("test external effect", || {
-        factories.fetch_add(1, Ordering::SeqCst);
-        Ok(async {
-            effects.fetch_add(1, Ordering::SeqCst);
-        })
-    })
-    .await;
-
-    assert!(matches!(result, Err(FaError::Busy)));
-    assert_eq!(factories.load(Ordering::SeqCst), 0);
-    assert_eq!(effects.load(Ordering::SeqCst), 0);
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn takeover_after_factory_is_fenced_before_future_polling() {
-    let database = MemDatabase::new().into_database();
-    let now = Arc::new(AtomicU64::new(7_000));
-    let clock = {
-        let now = now.clone();
-        Arc::new(move || now.load(Ordering::SeqCst)) as Arc<dyn Fn() -> u64 + Send + Sync>
-    };
-    let store = db::FaStore::new_with_lease_clock(database, clock);
-    let old = store
-        .acquire_driver_lease(Duration::from_secs(30), Duration::from_secs(5))
-        .await
-        .unwrap();
-    let factory_started = Arc::new(Notify::new());
-    let (takeover_done_tx, takeover_done_rx) = std::sync::mpsc::channel();
-    let takeover = {
-        let factory_started = factory_started.clone();
-        let now = now.clone();
-        let store = store.clone();
-        tokio::spawn(async move {
-            factory_started.notified().await;
-            now.store(7_006, Ordering::SeqCst);
-            let replacement = store
-                .acquire_driver_lease(Duration::from_secs(30), Duration::from_secs(5))
-                .await
-                .unwrap();
-            takeover_done_tx.send(()).unwrap();
-            replacement
-        })
-    };
-    let factories = AtomicUsize::new(0);
-    let effects = AtomicUsize::new(0);
-    let run = test_driver_run(
-        &old,
-        fedimint_core::runtime::Instant::now() + Duration::from_secs(30),
-        Duration::from_secs(5),
-    );
-
-    let result = run
-        .call("test construction-to-poll fence", || {
-            factories.fetch_add(1, Ordering::SeqCst);
-            factory_started.notify_one();
-            takeover_done_rx.recv().unwrap();
-            Ok(async {
-                effects.fetch_add(1, Ordering::SeqCst);
-            })
-        })
-        .await;
-
-    assert!(matches!(result, Err(FaError::Busy)));
-    assert_eq!(factories.load(Ordering::SeqCst), 1);
-    assert_eq!(effects.load(Ordering::SeqCst), 0);
-    takeover.await.unwrap().renew().await.unwrap();
-}
-
-#[tokio::test]
-async fn forward_clock_jump_fences_old_driver_before_external_effect() {
-    let database = MemDatabase::new().into_database();
-    let now = Arc::new(AtomicU64::new(2_000));
-    let clock = {
-        let now = now.clone();
-        Arc::new(move || now.load(Ordering::SeqCst)) as Arc<dyn Fn() -> u64 + Send + Sync>
-    };
-    let store = db::FaStore::new_with_lease_clock(database, clock);
-    let old = store
-        .acquire_driver_lease(Duration::from_secs(600), Duration::from_secs(90))
-        .await
-        .unwrap();
-
-    // Cross the current 2,090 expiry without crossing the 2,600 maximum.
-    now.store(2_200, Ordering::SeqCst);
-    let factories = AtomicUsize::new(0);
-    let effects = AtomicUsize::new(0);
-    let result = test_driver_run(
-        &old,
-        fedimint_core::runtime::Instant::now() + Duration::from_secs(600),
-        Duration::from_secs(30),
-    )
-    .call("test value-moving effect", || {
-        factories.fetch_add(1, Ordering::SeqCst);
-        Ok(async {
-            effects.fetch_add(1, Ordering::SeqCst);
-        })
-    })
-    .await;
-
-    assert!(matches!(result, Err(FaError::Busy)));
-    assert_eq!(factories.load(Ordering::SeqCst), 0);
-    assert_eq!(effects.load(Ordering::SeqCst), 0);
-
-    let replacement = store
-        .acquire_driver_lease(Duration::from_secs(600), Duration::from_secs(90))
-        .await
-        .unwrap();
-    store.release_driver_lease(old).await.unwrap();
-    replacement.renew().await.unwrap();
-}
-
-#[tokio::test]
-async fn takeover_during_lease_renewal_returns_busy_without_polling_effect() {
-    let database = MemDatabase::new().into_database();
-    let now = Arc::new(AtomicU64::new(4_000));
-    let clock = {
-        let now = now.clone();
-        Arc::new(move || now.load(Ordering::SeqCst)) as Arc<dyn Fn() -> u64 + Send + Sync>
-    };
-    let store = db::FaStore::new_with_lease_clock(database, clock);
-    let old = store
-        .acquire_driver_lease(Duration::from_secs(30), Duration::from_secs(4))
-        .await
-        .unwrap();
-    now.store(4_003, Ordering::SeqCst);
-    let renewal_read = Arc::new(Notify::new());
-    let allow_commit = Arc::new(Notify::new());
-    store.set_lease_renewal_commit_hook(renewal_read.clone(), allow_commit.clone());
-    let factories = Arc::new(AtomicUsize::new(0));
-    let effects = Arc::new(AtomicUsize::new(0));
-    let operation = {
-        let factories = factories.clone();
-        let effects = effects.clone();
-        tokio::spawn(async move {
-            test_driver_run(
-                &old,
-                fedimint_core::runtime::Instant::now() + Duration::from_secs(30),
-                Duration::from_secs(5),
-            )
-            .call("test conflicting takeover", || {
-                factories.fetch_add(1, Ordering::SeqCst);
-                Ok(async move {
-                    effects.fetch_add(1, Ordering::SeqCst);
-                })
-            })
-            .await
-        })
-    };
-    renewal_read.notified().await;
-
-    now.store(4_005, Ordering::SeqCst);
-    let replacement = store
-        .acquire_driver_lease(Duration::from_secs(30), Duration::from_secs(4))
-        .await
-        .unwrap();
-    allow_commit.notify_one();
-
-    assert!(matches!(operation.await.unwrap(), Err(FaError::Busy)));
-    assert_eq!(factories.load(Ordering::SeqCst), 0);
-    assert_eq!(effects.load(Ordering::SeqCst), 0);
-    tokio::task::yield_now().await;
-    replacement.renew().await.unwrap();
-}
-
-#[tokio::test]
-async fn takeover_during_lease_release_returns_busy_without_removing_replacement() {
-    let database = MemDatabase::new().into_database();
-    let now = Arc::new(AtomicU64::new(5_000));
-    let clock = {
-        let now = now.clone();
-        Arc::new(move || now.load(Ordering::SeqCst)) as Arc<dyn Fn() -> u64 + Send + Sync>
-    };
-    let store = db::FaStore::new_with_lease_clock(database, clock);
-    let old = store
-        .acquire_driver_lease(Duration::from_secs(30), Duration::from_secs(4))
-        .await
-        .unwrap();
-    let release_read = Arc::new(Notify::new());
-    let allow_release = Arc::new(Notify::new());
-    store.set_lease_release_commit_hook(release_read.clone(), allow_release.clone());
-    let release = {
-        let store = store.clone();
-        tokio::spawn(async move { store.release_driver_lease(old).await })
-    };
-    release_read.notified().await;
-
-    now.store(5_005, Ordering::SeqCst);
-    let replacement = store
-        .acquire_driver_lease(Duration::from_secs(30), Duration::from_secs(4))
-        .await
-        .unwrap();
-    allow_release.notify_one();
-
-    assert!(matches!(release.await.unwrap(), Err(FaError::Busy)));
-    replacement.renew().await.unwrap();
-}
-
-#[test]
-fn lease_commit_errors_are_mapped_by_retryability() {
-    assert!(matches!(
-        db::map_lease_commit_error(fedimint_core::db::DatabaseError::SnapshotTooOld(Box::new(
-            std::io::Error::other("test snapshot")
-        ))),
-        FaError::Busy
-    ));
-    assert!(matches!(
-        db::map_lease_commit_error(fedimint_core::db::DatabaseError::TransactionConsumed),
-        FaError::Storage(message) if message == "FA driver lease database commit failed"
-    ));
-}
-
 #[test]
 fn formation_autocommit_errors_are_mapped_by_failure_kind() {
     assert!(matches!(
@@ -6062,148 +5766,6 @@ fn formation_autocommit_errors_are_mapped_by_failure_kind() {
         }),
         FaError::Busy
     ));
-}
-
-#[tokio::test]
-async fn setup_policy_takeover_between_registry_and_wallet_fences_wallet_call() {
-    let database = MemDatabase::new().into_database();
-    let now = Arc::new(AtomicU64::new(6_000));
-    let clock = {
-        let now = now.clone();
-        Arc::new(move || now.load(Ordering::SeqCst)) as Arc<dyn Fn() -> u64 + Send + Sync>
-    };
-    let store = db::FaStore::new_with_lease_clock(database, clock);
-    let (payments, payment_state) = TestPayments::new();
-    let registry = TestRegistry::default();
-    registry
-        .candidates
-        .lock()
-        .expect("test lock")
-        .push(setup_payment_event(test_now_secs(), &[PAYMENT_INVITE]));
-    registry.block_fetch.store(true, Ordering::SeqCst);
-    let fetch_started = registry.fetch_started.clone();
-    let fetch_continue = registry.fetch_continue.clone();
-    let client = open_client_with_store_and_registry(
-        store.clone(),
-        payments,
-        Arc::new(MgState::default()),
-        MgConfig::paid(),
-        registry,
-    )
-    .await;
-    let old = store
-        .acquire_driver_lease(Duration::from_secs(600), Duration::from_secs(90))
-        .await
-        .unwrap();
-    let operation = tokio::spawn(async move {
-        let run = crate::formation::DriverRun::new(
-            options(),
-            fedimint_core::runtime::Instant::now() + Duration::from_secs(600),
-            &old,
-        );
-        client
-            .payable_setup_payment_federations(run)
-            .await
-            .map(|_| ())
-    });
-    fetch_started.notified().await;
-
-    now.store(6_100, Ordering::SeqCst);
-    let replacement = store
-        .acquire_driver_lease(Duration::from_secs(600), Duration::from_secs(90))
-        .await
-        .unwrap();
-    let newer_event = setup_payment_event(test_now_secs() + 1, &[]);
-    store
-        .store_setup_payment_federations_event(newer_event.clone())
-        .await
-        .unwrap();
-    fetch_continue.notify_one();
-
-    assert!(matches!(operation.await.unwrap(), Err(FaError::Busy)));
-    assert_eq!(payment_state.payable_calls.load(Ordering::SeqCst), 0);
-    assert_eq!(
-        store
-            .load_setup_payment_federations_event()
-            .await
-            .expect("durable setup-payment high-water")
-            .id,
-        newer_event.id
-    );
-    replacement.renew().await.unwrap();
-}
-
-#[tokio::test]
-async fn taken_over_client_cannot_continue_from_a_stalled_wallet_call() {
-    let database = MemDatabase::new().into_database();
-    let now = Arc::new(AtomicU64::new(10_000));
-    let clock = {
-        let now = now.clone();
-        Arc::new(move || now.load(Ordering::SeqCst)) as Arc<dyn Fn() -> u64 + Send + Sync>
-    };
-    let store = db::FaStore::new_with_lease_clock(database, clock);
-    let (payments, payment_state) = TestPayments::new();
-    let client = open_client_with_store(
-        store.clone(),
-        payments,
-        Arc::new(MgState::default()),
-        MgConfig::paid(),
-    )
-    .await;
-    payment_state.block_recovery.store(true, Ordering::SeqCst);
-    let recovery_started = payment_state.recovery_started.notified();
-    let operation =
-        tokio::spawn(async move { client.buy_seats_at(&intent(), locators(), options()).await });
-    recovery_started.await;
-
-    now.store(10_100, Ordering::SeqCst);
-    let replacement = store
-        .acquire_driver_lease(
-            options().lease_duration(),
-            options().lease_renewal_duration(),
-        )
-        .await
-        .unwrap();
-    payment_state.block_recovery.store(false, Ordering::SeqCst);
-    payment_state.recovery_continue.notify_waiters();
-
-    assert!(matches!(operation.await.unwrap(), Err(FaError::Busy)));
-    assert_eq!(payment_state.create_calls.load(Ordering::SeqCst), 0);
-    tokio::task::yield_now().await;
-    replacement.renew().await.unwrap();
-}
-
-#[tokio::test]
-async fn lease_acquisition_delay_consumes_the_existing_run_deadline() {
-    let options = FormationRunOptions::new(crate::FormationRunOptionsConfig {
-        poll_interval: Duration::from_millis(1),
-        run_timeout: Duration::from_millis(1),
-        request_timeout: Duration::from_secs(1),
-    })
-    .unwrap();
-    let store = db::FaStore::new(MemDatabase::new().into_database());
-    let acquisition_started = Arc::new(Notify::new());
-    let allow_acquisition = Arc::new(Notify::new());
-    store.set_lease_acquisition_hook(acquisition_started.clone(), allow_acquisition.clone());
-    let operation = {
-        let store = store.clone();
-        tokio::spawn(async move { crate::formation::start_driver_run(&store, options).await })
-    };
-    acquisition_started.notified().await;
-    tokio::time::sleep(Duration::from_millis(5)).await;
-    allow_acquisition.notify_one();
-    let (deadline, lease) = operation.await.unwrap().unwrap();
-    let factories = AtomicUsize::new(0);
-
-    let result = test_driver_run(&lease, deadline, options.request_timeout())
-        .call("test delayed acquisition", || {
-            factories.fetch_add(1, Ordering::SeqCst);
-            Ok(async {})
-        })
-        .await;
-
-    assert!(matches!(result, Err(FaError::Timeout(_))));
-    assert_eq!(factories.load(Ordering::SeqCst), 0);
 }
 
 #[tokio::test]
@@ -8334,8 +7896,6 @@ async fn completed_setup_stays_formed_through_rechecks_and_cancellation() {
     federation(&status);
     assert_eq!(federation(&status).freshness, FormationFreshness::Unsynced);
     drop(client);
-    // Let the cancelled driver's lease cleanup finish before reopening.
-    tokio::task::yield_now().await;
 
     for fault in ["none", "identity", "directory"] {
         let fail = fault != "none";
@@ -8895,149 +8455,6 @@ async fn completed_payment_is_durable_before_the_next_funding_call_starts() {
 }
 
 #[tokio::test]
-async fn stale_lease_cannot_arm_payment_outputs_after_takeover() {
-    let database = MemDatabase::new().into_database();
-    let now = Arc::new(AtomicU64::new(12_000));
-    let clock = {
-        let now = now.clone();
-        Arc::new(move || now.load(Ordering::SeqCst)) as Arc<dyn Fn() -> u64 + Send + Sync>
-    };
-    let store = db::FaStore::new_with_lease_clock(database, clock);
-    let (payments, payment_state) = TestPayments::new();
-    let client = open_client_with_store(
-        store.clone(),
-        payments,
-        Arc::new(MgState::default()),
-        MgConfig::paid(),
-    )
-    .await;
-    let requirements = seed_authorized_selected_purchase(&client).await;
-    let recovery = active_recovery(store.load_purchase(TestIdentity::fa_id()).await.unwrap());
-    // Everything but the lease fence would let this arm succeed.
-    store
-        .record_payment_reservation(
-            &recovery.snapshot.purchase_id,
-            &crate::db::payment_reservation_id(&recovery.snapshot.purchase_id, &requirements),
-        )
-        .await
-        .unwrap();
-
-    let stale = store
-        .acquire_driver_lease(Duration::from_secs(30), Duration::from_secs(5))
-        .await
-        .unwrap();
-    stale.renew().await.unwrap();
-    now.store(12_006, Ordering::SeqCst);
-    let replacement = store
-        .acquire_driver_lease(Duration::from_secs(30), Duration::from_secs(5))
-        .await
-        .unwrap();
-
-    let error = stale
-        .arm_payment_outputs_started(
-            &recovery.snapshot.purchase_id,
-            test_peer_badge_verifier().provenance().into(),
-        )
-        .await
-        .expect_err("a replaced driver cannot arm wallet output generation");
-    assert!(matches!(error, FaError::Busy), "{error}");
-    let recovery = active_recovery(store.load_purchase(TestIdentity::fa_id()).await.unwrap());
-    assert!(!recovery.payment_outputs_started);
-    assert_eq!(payment_state.create_calls.load(Ordering::SeqCst), 0);
-    replacement.renew().await.unwrap();
-}
-
-#[tokio::test]
-async fn stale_lease_cannot_abandon_purchase_after_takeover() {
-    let database = MemDatabase::new().into_database();
-    let now = Arc::new(AtomicU64::new(13_000));
-    let clock = {
-        let now = now.clone();
-        Arc::new(move || now.load(Ordering::SeqCst)) as Arc<dyn Fn() -> u64 + Send + Sync>
-    };
-    let store = db::FaStore::new_with_lease_clock(database, clock);
-    let (payments, _) = TestPayments::new();
-    let client = open_client_with_store(
-        store.clone(),
-        payments,
-        Arc::new(MgState::default()),
-        MgConfig::paid(),
-    )
-    .await;
-    seed_quoted_selected_purchase(&client).await;
-    let recovery = active_recovery(store.load_purchase(TestIdentity::fa_id()).await.unwrap());
-
-    let stale = store
-        .acquire_driver_lease(Duration::from_secs(30), Duration::from_secs(5))
-        .await
-        .unwrap();
-    now.store(13_006, Ordering::SeqCst);
-    let replacement = store
-        .acquire_driver_lease(Duration::from_secs(30), Duration::from_secs(5))
-        .await
-        .unwrap();
-
-    let error = stale
-        .abandon_purchase(&recovery.snapshot.purchase_id)
-        .await
-        .expect_err("a replaced driver cannot wipe formation state");
-    assert!(matches!(error, FaError::Busy), "{error}");
-    assert!(
-        store
-            .load_purchase(TestIdentity::fa_id())
-            .await
-            .unwrap()
-            .is_some()
-    );
-    replacement.renew().await.unwrap();
-}
-
-#[tokio::test]
-async fn expired_lease_cannot_abandon_purchase_after_forward_clock_jump() {
-    let database = MemDatabase::new().into_database();
-    let now = Arc::new(AtomicU64::new(14_000));
-    let clock = {
-        let now = now.clone();
-        Arc::new(move || now.load(Ordering::SeqCst)) as Arc<dyn Fn() -> u64 + Send + Sync>
-    };
-    let store = db::FaStore::new_with_lease_clock(database, clock);
-    let (payments, _) = TestPayments::new();
-    let client = open_client_with_store(
-        store.clone(),
-        payments,
-        Arc::new(MgState::default()),
-        MgConfig::paid(),
-    )
-    .await;
-    seed_quoted_selected_purchase(&client).await;
-    let recovery = active_recovery(store.load_purchase(TestIdentity::fa_id()).await.unwrap());
-
-    let stale = store
-        .acquire_driver_lease(Duration::from_secs(30), Duration::from_secs(5))
-        .await
-        .unwrap();
-    now.store(14_006, Ordering::SeqCst);
-
-    let error = stale
-        .abandon_purchase(&recovery.snapshot.purchase_id)
-        .await
-        .expect_err("an expired driver cannot wipe formation state");
-    assert!(matches!(error, FaError::Busy), "{error}");
-    assert!(
-        store
-            .load_purchase(TestIdentity::fa_id())
-            .await
-            .unwrap()
-            .is_some()
-    );
-    let replacement = store
-        .acquire_driver_lease(Duration::from_secs(30), Duration::from_secs(5))
-        .await
-        .unwrap();
-    replacement.renew().await.unwrap();
-}
-
-#[tokio::test]
 async fn pre_output_cleanup_retains_formation_when_wallet_release_fails() {
     let database = MemDatabase::new().into_database();
     let (payments, payment_state) = TestPayments::new();
@@ -9312,7 +8729,7 @@ async fn slow_payment_preparation_and_recovery_keep_the_exact_payment() {
         let mg_state = Arc::new(MgState::default());
         let started = tokio::time::Instant::now();
         let clock = Arc::new(move || 10_000 + started.elapsed().as_secs());
-        let store = db::FaStore::new_with_lease_clock(database, clock);
+        let store = db::FaStore::new_with_clock(database, clock);
         let client = open_client_with_store(
             store.clone(),
             payments.clone(),
@@ -10670,26 +10087,13 @@ async fn selected_reopen_after_output_tombstone_uses_durable_admission_provenanc
         .record_payment_reservation(&formation_id, &reservation_id)
         .await
         .unwrap();
-    let lease = client
-        .inner
-        .store
-        .acquire_driver_lease(
-            options().lease_duration(),
-            options().lease_renewal_duration(),
-        )
-        .await
-        .unwrap();
-    lease
-        .arm_payment_outputs_started(
-            &formation_id,
-            test_peer_badge_verifier().provenance().into(),
-        )
-        .await
-        .unwrap();
     client
         .inner
         .store
-        .release_driver_lease(lease)
+        .record_payment_outputs_started(
+            &formation_id,
+            test_peer_badge_verifier().provenance().into(),
+        )
         .await
         .unwrap();
     drop(client);
@@ -13368,45 +12772,6 @@ async fn selected_connect_timeout_exhaustion_retains_blame_and_returns_idle() {
     assert!(state.connect_calls.load(Ordering::SeqCst) > usize::from(MIN_FEDERATION_SIZE));
     assert_needs_new_preview(&client);
     assert_eq!(payment_state.create_calls.load(Ordering::SeqCst), 0);
-}
-
-#[tokio::test(start_paused = true)]
-async fn mg_connect_lease_loss_is_busy_not_remote_failure() {
-    let now = Arc::new(AtomicU64::new(1_000));
-    let clock = {
-        let now = now.clone();
-        Arc::new(move || now.load(Ordering::SeqCst)) as Arc<dyn Fn() -> u64 + Send + Sync>
-    };
-    let store = db::FaStore::new_with_lease_clock(MemDatabase::new().into_database(), clock);
-    let old = store
-        .acquire_driver_lease(Duration::from_secs(30), Duration::from_secs(5))
-        .await
-        .unwrap();
-    let state = Arc::new(MgState::default());
-    state.hang_connect.store(true, Ordering::SeqCst);
-    let connector = TestConnector {
-        state: state.clone(),
-        config: MgConfig::given_away(),
-    };
-    let locator = locators().remove(0);
-    let run = test_driver_run(
-        &old,
-        fedimint_core::runtime::Instant::now() + Duration::from_secs(30),
-        Duration::from_secs(25),
-    );
-    let call = crate::mg::MgClient::connect(&connector, &locator, run);
-    let takeover = async {
-        while state.connect_calls.load(Ordering::SeqCst) == 0 {
-            tokio::task::yield_now().await;
-        }
-        now.store(1_006, Ordering::SeqCst);
-        store
-            .acquire_driver_lease(Duration::from_secs(30), Duration::from_secs(5))
-            .await
-            .unwrap()
-    };
-    let (result, _replacement) = tokio::join!(call, takeover);
-    assert!(matches!(result, Err(FaError::Busy)));
 }
 
 #[tokio::test]

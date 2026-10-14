@@ -704,16 +704,7 @@ async fn mixed_prepared_and_signed_refusal_survives_interrupted_replay_wave() {
     mg_state.release_accepts.store(true, Ordering::SeqCst);
     mg_state.create_release.notify_waiters();
     let reopened = open_client(database, payments, mg_state, config).await;
-    let resume = tokio::time::timeout(Duration::from_secs(2), async {
-        loop {
-            match reopened.drive().await {
-                Err(FaError::Busy) => tokio::task::yield_now().await,
-                result => break result,
-            }
-        }
-    })
-    .await
-    .expect("cancelled driver released its lease");
+    let resume = reopened.drive().await;
     assert!(
         matches!(
             resume.as_ref(),

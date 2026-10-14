@@ -10,7 +10,7 @@ use fedi_decentralized_nostr_clients::{FaNostrClient, SETUP_PAYMENT_FEDERATIONS_
 use fedi_decentralized_service_manifold_guardian::{FederationId, InviteCode};
 use nostr_sdk::Timestamp;
 
-use crate::formation::{DriverRun, finish_driver_run, start_driver_run};
+use crate::formation::DriverRun;
 use crate::{
     FaClient, FaError, FaIdentity, FaPayments, FaResult, FederationConsensusReader,
     ManifoldGuardianConnector,
@@ -73,11 +73,9 @@ where
         options: crate::FormationRunOptions,
     ) -> FaResult<Vec<AdmittedSetupPaymentFederation>> {
         let _run = self.claim_run_guard().await?;
-        options.validate_for_start(&self.inner.store)?;
-        let (deadline, lease) = start_driver_run(&self.inner.store, options).await?;
-        let run = DriverRun::new(options, deadline, &lease);
-        let result = self.refresh_setup_payment_federations(run).await;
-        finish_driver_run(result, self.inner.store.release_driver_lease(lease).await)
+        options.validate_for_start()?;
+        let run = DriverRun::start(options)?;
+        self.refresh_setup_payment_federations(run).await
     }
 
     /// The smallest guardian fee rate this FA may propose right now, in ppm.
@@ -110,7 +108,7 @@ where
     pub(crate) async fn require_setup_payment_federation(
         &self,
         requested: &FederationId,
-        run: DriverRun<'_>,
+        run: DriverRun,
     ) -> FaResult<FederationId> {
         let (policy_ids, payable) =
             self.payable_setup_payment_federations(run)
@@ -133,7 +131,7 @@ where
 
     pub(crate) async fn payable_setup_payment_federations(
         &self,
-        run: DriverRun<'_>,
+        run: DriverRun,
     ) -> FaResult<(Vec<FederationId>, HashSet<FederationId>)> {
         let policy_ids = self
             .refresh_setup_payment_federations(run)
@@ -159,7 +157,7 @@ where
 
     async fn refresh_setup_payment_federations(
         &self,
-        run: DriverRun<'_>,
+        run: DriverRun,
     ) -> FaResult<Vec<AdmittedSetupPaymentFederation>> {
         let request_timeout = run.request_timeout();
         let publisher = self.inner.setup_payment_publisher.ok_or_else(|| {

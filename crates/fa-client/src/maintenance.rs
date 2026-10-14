@@ -13,7 +13,7 @@ use futures::stream::{FuturesUnordered, StreamExt as _};
 use crate::formation::{
     DriverRun, FormationRunOptions, FormationRunOptionsConfig, FormationTimingField,
     InvalidFormationRunOptions, MetaFieldSubmission, MetaFieldSubmissionError, SeatSession,
-    finish_driver_run, meta_field_matches, sleep_for_retry, start_driver_run,
+    meta_field_matches, sleep_for_retry,
 };
 use crate::meta_write::{MetaWriteError, SeatVote, write_consensus_meta};
 use crate::{
@@ -71,9 +71,6 @@ pub enum InvalidMaintenanceRunOptions {
         /// Invalid configuration field.
         field: MaintenanceTimingField,
     },
-    /// A derived durable lease duration overflowed.
-    #[error("invalid maintenance options: deadline is too large")]
-    LeaseOverflow,
     /// A runtime monotonic deadline could not represent the value.
     #[error("invalid maintenance options: {field} is too large")]
     DeadlineOverflow {
@@ -118,16 +115,6 @@ impl MaintenanceRunOptions {
         .map(Self)
         .map_err(InvalidMaintenanceRunOptions::from)
     }
-
-    #[cfg(test)]
-    pub(crate) fn lease_duration(self) -> Duration {
-        self.0.lease_duration()
-    }
-
-    #[cfg(test)]
-    pub(crate) fn lease_renewal_duration(self) -> Duration {
-        self.0.lease_renewal_duration()
-    }
 }
 
 impl Default for MaintenanceRunOptions {
@@ -157,7 +144,6 @@ impl From<InvalidFormationRunOptions> for InvalidMaintenanceRunOptions {
             InvalidFormationRunOptions::NonIntegral { field: invalid } => Self::NonIntegral {
                 field: field(invalid),
             },
-            InvalidFormationRunOptions::LeaseOverflow => Self::LeaseOverflow,
             InvalidFormationRunOptions::DeadlineOverflow { field: invalid } => {
                 Self::DeadlineOverflow {
                     field: field(invalid),
@@ -193,19 +179,17 @@ where
     ) -> FaResult<()> {
         let _guard = self.claim_run_guard().await?;
         let options = options.0;
-        options.validate_for_start(&self.inner.store)?;
+        options.validate_for_start()?;
         let fa_id = self.fa_id()?;
-        let (deadline, lease) = start_driver_run(&self.inner.store, options).await?;
-        let run = DriverRun::new(options, deadline, &lease);
-        let result = self.register_gateway_pinned(gateway_api, fa_id, run).await;
-        finish_driver_run(result, self.inner.store.release_driver_lease(lease).await)
+        let run = DriverRun::start(options)?;
+        self.register_gateway_pinned(gateway_api, fa_id, run).await
     }
 
     pub(crate) async fn register_gateway_pinned(
         &self,
         gateway_api: GatewayApiUrl,
         fa_id: FaId,
-        run: DriverRun<'_>,
+        run: DriverRun,
     ) -> FaResult<()> {
         let authority = self.maintenance_authority(fa_id).await?;
         let invite = self.consensus_invite(&authority.invite_code).await;
@@ -349,7 +333,7 @@ where
     /// Propose one supported metadata change through threshold-live guardians.
     ///
     /// Values are constructed with the shared Guardianito-compatible protocol
-    /// types before this method can acquire a lease or touch the network. The
+    /// types before this method can touch the network. The
     /// MG repeats the same validation and remains the authoritative
     /// authorization boundary. This operation first reads live consensus, so
     /// an already-adopted update succeeds even when every MG is offline.
@@ -382,13 +366,11 @@ where
     ) -> FaResult<()> {
         let _guard = self.claim_run_guard().await?;
         let options = options.0;
-        options.validate_for_start(&self.inner.store)?;
+        options.validate_for_start()?;
         let fa_id = self.fa_id()?;
-        let (deadline, lease) = start_driver_run(&self.inner.store, options).await?;
-        let run = DriverRun::new(options, deadline, &lease);
+        let run = DriverRun::start(options)?;
         let (key, value) = update.into_field();
-        let result = self.update_meta_field_pinned(key, value, fa_id, run).await;
-        finish_driver_run(result, self.inner.store.release_driver_lease(lease).await)
+        self.update_meta_field_pinned(key, value, fa_id, run).await
     }
 
     pub(crate) async fn update_meta_field_pinned(
@@ -396,7 +378,7 @@ where
         key: MetaFieldKey,
         value: MetaFieldValue,
         fa_id: FaId,
-        run: DriverRun<'_>,
+        run: DriverRun,
     ) -> FaResult<()> {
         let authority = self.maintenance_authority(fa_id).await?;
         let invite = self.consensus_invite(&authority.invite_code).await;
@@ -490,7 +472,7 @@ where
     pub(crate) async fn read_metadata_consensus(
         &self,
         invite: &fedi_decentralized_service_manifold_guardian::InviteCode,
-        run: DriverRun<'_>,
+        run: DriverRun,
     ) -> FaResult<Result<FederationConsensusSnapshot, FederationConsensusError>> {
         run.call("reading federation consensus metadata", || {
             Ok(self.inner.ports.consensus_reader.read_consensus(invite))
@@ -502,7 +484,7 @@ where
         &self,
         authority: &crate::formation::PostFormedAuthority,
         unresolved: &BTreeSet<u16>,
-        run: DriverRun<'_>,
+        run: DriverRun,
     ) -> FaResult<Vec<MaintenanceConnection<F::Client>>> {
         let mut pending = FuturesUnordered::new();
         for seat in &authority.seats {
@@ -580,7 +562,7 @@ fn maintenance_convergence(
 }
 
 async fn sleep_for_maintenance_retry(
-    run: DriverRun<'_>,
+    run: DriverRun,
     delay: &mut Duration,
     unresolved: &BTreeSet<u16>,
     guardian_errors: &BTreeMap<u16, String>,

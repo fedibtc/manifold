@@ -74,9 +74,8 @@ const FEDIMINT_META_CONSENSUS_TIMEOUT: Duration = Duration::from_secs(60);
 const FEDIMINT_CLI_WALLETV2_TIMEOUT: Duration = Duration::from_secs(120);
 /// Covers startup, formation, client join, metadata readiness, and clean shutdown.
 const FORMATION_TIMEOUT: Duration = Duration::from_secs(180);
-/// A killed 15-second FA invocation retains its lease for at most another 60
-/// seconds. Guardians now form without waiting for FA resume, so callback
-/// retries may already be in exponential backoff when the test unblocks them.
+/// Guardians form without waiting for FA resume, so callback retries may
+/// already be in exponential backoff when the test unblocks them.
 const FA_CRASH_RECOVERY_TIMEOUT: Duration = Duration::from_secs(320);
 /// One real formation, child replacement, daemon restart, data-loss
 /// projection, and terminal decommission.
@@ -2635,7 +2634,6 @@ async fn run_fa_crash_recovery() -> anyhow::Result<()> {
         .arg(GUARDIAN_COUNT.to_string())
         .arg("--poll-interval-secs")
         .arg("1")
-        // The durable lease horizon is this invocation timeout plus 60s.
         .arg("--poll-timeout-secs")
         .arg("15")
         .arg("--completion-callback-url-file")
@@ -2709,9 +2707,6 @@ async fn run_fa_crash_recovery() -> anyhow::Result<()> {
         "killed FA must reopen its durable guardian-code preparation, got {status}"
     );
 
-    // The killed invocation cannot release its lease. The kill follows lease
-    // acquisition, so waiting from here covers the full 15s + 60s horizon.
-    tokio::time::sleep(Duration::from_secs(76)).await;
     let mut resume = Command::new(&fa_cli_bin);
     resume
         .arg("--state-dir")
@@ -3251,11 +3246,11 @@ async fn wait_for_callbacks_delivered(
     temp: &Path,
     guardian_count: usize,
 ) -> anyhow::Result<()> {
-    // Automatic guardian replay can finish formation while the FA's 76-second
-    // lease is still held. Callbacks start failing against the deliberately
-    // unavailable gateway then, so their durable backoff may already be at
-    // 60-120 seconds by the time this test allows delivery. Wait for that
-    // scheduled retry; do not weaken the requirement that every seat delivers.
+    // Automatic guardian replay can finish formation before the FA resumes.
+    // Callbacks start failing against the deliberately unavailable gateway
+    // then, so their durable backoff may already be at 60-120 seconds by the
+    // time this test allows delivery. Wait for that scheduled retry; do not
+    // weaken the requirement that every seat delivers.
     tokio::time::timeout(Duration::from_secs(180), async {
         loop {
             let mut delivered = true;

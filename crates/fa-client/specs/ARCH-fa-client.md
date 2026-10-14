@@ -183,7 +183,7 @@ authenticated set; canonical selection uses canonical set order.
 `discover_mg_candidates` turns one bounded, authorless kind-37701
 enumeration ([ARCH-nostr-clients](../../nostr-clients/specs/ARCH-nostr-clients.md))
 into a statically admitted candidate set without writing durable state,
-taking the driver lease, or touching formation status. Per advertisement,
+taking the run guard, or touching formation status. Per advertisement,
 admission runs in a fixed order — event role and signature, the document's
 own payload proof and the `fman_id_pubkey == event author` identity rule,
 per-author newest-`created_at` replacement (NIP-01 lowest-id tie-break),
@@ -257,8 +257,8 @@ aggregate advertised estimate, and the seen/eligible/selected summary plus
 static non-admissions and chosen-cohort failures for the consumer's estimate
 screen. It takes the same
 `MgDiscoveryOptions` clamped-timeout bound as `discover_mg_candidates`
-— not formation run options, since no lease or driver timing applies to a
-read-only query. It has no durable state and no lease. The result carries a
+— not formation run options, since no driver timing applies to a
+read-only query. It has no durable state. The result carries a
 five-minute validity bound anchored after enumeration and verification;
 leaving and re-entering the flow refetches instead of caching it. The preview
 binds the complete selection request, each seat's advertised plan, and
@@ -366,7 +366,7 @@ purchase APIs additionally expose side-effect-free, operation-specific preflight
 consumers: the purchase validates the preview's seat count, preview age, and
 explicit payer.
 Timing options likewise have private fields and checked construction; invalid
-runtime or lease bounds cannot reach identity, durable state, lease, wallet, or
+runtime bounds cannot reach identity, durable state, wallet, or
 network access.
 
 Formation installs guardian-fee arrangement on the same state engine. Opening
@@ -511,7 +511,7 @@ handling before any state can be destroyed.
 that, not a second abandon. It reads the recorded formation, asks every MG
 that accepted a seat to decommission it in one pass, and reports per seat
 whether the MG decommissioned it, had already done so, or refused. It takes
-no driver lease and writes nothing, so durable FA state is unchanged and a
+no run guard and writes nothing, so durable FA state is unchanged and a
 decommissioned federation still reads as formed. Seats are forfeited, never refunded,
 and only development and staging MGs accept the underlying verb
 ([SPEC-fa-rpc](../../mg/specs/SPEC-fa-rpc.md)).
@@ -519,12 +519,12 @@ and only development and staging MGs accept the underlying verb
 Formation operations return run futures; dropping one cancels local work only,
 and reopening the same database, identity, and wallet then calling the
 continuation API is the supported resume. Backup recovery and publication are
-client-owned background tasks, separate from those formation runs. A
-process-local guard serializes clones. The primary Fedi host runs one active formation driver
-in one app process; a process restart ends that driver before persisted state is
-reopened. A renewable database lease is a coarse guard against accidentally
-opening a second mutating driver, but sequential payment safety does not depend
-on renewing it immediately before each payment or on cross-process takeover.
+client-owned background tasks, separate from those formation runs. The
+consumer opens at most one client for a database, and the client's in-memory
+run guard serializes clones, the run loop, and user actions. A RocksDB-backed
+database refuses a second open of the same path. A process restart ends the
+old driver before persisted state is reopened. Schema 11 also kept a
+database-wide driver lease; opening such an FA deletes it.
 Exact durable operation recovery prevents a restarted consumer from submitting
 a payment twice. Each invocation has one monotonic deadline, and prepared
 payment work remains effect-free until it is polled. Parallel non-value seat
@@ -557,13 +557,12 @@ authentication is
 fallibly constructed semantic values: display name, HTTP(S) icon URL, welcome
 message/description, and a caller-supplied public HTTP(S) terms URL. The shared types
 apply Guardianito's trim-for-validation/raw-for-submission rules and the
-65,536-byte absolute raw resource cap before lease, signing, connection, or
+65,536-byte absolute raw resource cap before signing, connection, or
 network effects; every MG repeats the same authoritative validation. The API
 does not accept raw metadata keys, clear fields, upload image bytes, or widen
 the MG allowlist. The operation requires
 a formed federation record, reconstructs every FA-owned seat from
-that record, and shares the formation driver's process guard, database lease,
-deadline, connector, identity, and real consensus-reader capabilities.
+that record, and shares the formation driver's run guard, deadline, connector, identity, and real consensus-reader capabilities.
 
 Fedi constructs `FederationMetadataUpdate::terms_of_service_url(url)` and passes
 it to `FaClient::update_federation_metadata(update, options)`, with checked
@@ -590,7 +589,7 @@ formation rather than amplifying an oversized pre-existing object.
 
 The public operation accepts `MaintenanceRunOptions`, whose checked native/WASM
 timers and errors use maintenance vocabulary. Its private representation reuses
-the formation driver's generic deadline, lease, and request-timeout machinery;
+the formation driver's generic deadline and request-timeout machinery;
 that implementation sharing is not exposed as formation policy in the
 maintenance API.
 
@@ -644,7 +643,7 @@ observes success or replays the idempotent typed mutation.
 
 - `state` — public intent, status, and phase types.
 - `ports` — consumer and transport capability traits.
-- `db` — Fedimint-database recovery facts, checkpoints, and the driver lease.
+- `db` — Fedimint-database recovery facts and checkpoints.
 - `discovery` — read-only MG advertisement discovery and static
   admission.
 - `selection` — ranked round-robin seat selection with lazy badge
@@ -704,7 +703,7 @@ mint funding and claim path, including reuse of the same durable FA state and
 wallet when a recoverable pre-output reservation failure requires one resume.
 A third Linux `defe` E2E kills three real
 `fedimintd` children after DKG starts, kills the FA process, reopens its durable
-guardian-code preparation, waits out the abandoned driver lease, and proves
+guardian-code preparation, and proves
 that a fresh process repeats the idempotent `StartDkg` wave and resumes the
 same seven-guardian formation; each killed guardian records its replacement
 start while intact guardians may retain the first ceremony. The crash-recovery

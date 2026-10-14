@@ -11,8 +11,8 @@
 //! round-robin walk actually reaches cost verifier round trips. A candidate
 //! returned by discovery therefore carries *claims*, not trust conclusions;
 //! the sealed [`crate::VerifiedCandidate`] type only exists on the far side
-//! of the selection walk. Discovery performs no durable writes, takes no
-//! driver lease, and mutates no formation state. The approved verification
+//! of the selection walk. Discovery performs no durable writes, and mutates
+//! no formation state. The approved verification
 //! order, freshness policy, eligibility policy, and locator construction are
 //! recorded in `specs/ARCH-fa-client-discovery-selection.md`.
 
@@ -128,7 +128,7 @@ impl Default for MgDiscoveryOptions {
 ///
 /// This purpose-specific client owns only the registry transport needed for
 /// static discovery. It has no trust verifier, FA identity, durable database,
-/// payment capability, MG connector, consensus reader, driver lease, or
+/// payment capability, MG connector, consensus reader, or
 /// formation state. Call [`MgRegistryQuery::with_verifier`] to obtain the
 /// stronger read-only capability required for verified selection preview.
 #[derive(Clone)]
@@ -461,8 +461,7 @@ where
 {
     /// Discover, statically admit, and filter current MG advertisements.
     ///
-    /// This is a read-only query: it writes no durable state, takes no driver
-    /// lease, and publishes no status. Fetched events are untrusted relay
+    /// This is a read-only query: it writes no durable state and publishes no status. Fetched events are untrusted relay
     /// data; a returned [`EligibleMgCandidate`] has passed, in order, event
     /// role and signature authentication, advertisement document proof and
     /// author binding, per-author newest-`created_at` replacement, the

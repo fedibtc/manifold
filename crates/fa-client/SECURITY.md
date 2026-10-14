@@ -86,8 +86,8 @@ badge-vouched author that asserted it — no independent vouching exists or
 is claimed (mirrored in `crates/nostr/SECURITY.md`).
 
 Discovery and the selection preview are read-only: they perform no durable
-writes, take no driver lease, reserve no seats, and publish no status, so
-they sit outside the durable-ordering and lease invariants below. Consumers
+writes, take no run guard, reserve no seats, and publish no status, so
+they sit outside the durable-ordering and run-guard invariants below. Consumers
 can construct registry-only `MgRegistryQuery` for static discovery without
 any trust capability, then add a concrete verifier with `with_verifier` to
 obtain `MgSelectionQuery` for verified preview. Neither query surface has an
@@ -121,7 +121,7 @@ the caller-owned relay pool. Its unique subscription id prevents it from
 unsubscribing a later query, though the cleanup can briefly contend with later
 shared-pool use. Badge verification can leave the same cleanup on its private
 ephemeral client. These detached cleanup tasks are not joined by the preview
-deadline, but neither owns durable state, a lease, a reservation, or selection
+deadline, but neither owns durable state, a reservation, or selection
 authority.
 The bounds are 2048 observed candidates, 256 KiB per normalized event, 16
 MiB aggregate, and 4 examined trust envelopes per walked advertisement
@@ -374,7 +374,7 @@ every delayed and in-flight handler it fences. The target is pinned before
 the fallible child submit call, so a
 lost or error response cannot reopen the occurrence to a conflicting target;
 exact replay is still allowed.
-Combined with FA lease serialization, fresh readback, and exact-base rebasing,
+Combined with FA run-guard serialization, fresh readback, and exact-base rebasing,
 this prevents a late old handler from restoring an object after a newer target
 was submitted. Pinning a live occurrence to its first target until consensus
 moves or the process restarts is the explicit availability cost of avoiding
@@ -454,12 +454,13 @@ refused seat leaves the purchase instead.
 
 ## Concurrency and hosting
 
-The primary Fedi consumer runs one active formation driver in one app process,
-and a process-local guard serializes clones. A process restart ends the old
-driver before persisted state is reopened. A renewable database lease coarsely
-rejects a second mutating driver, but payment safety does not depend on renewing
-it immediately before each member or on cross-process takeover. Restart safety
-comes from exact durable payment recovery. Cancellation retains the same
+The consumer opens at most one client for a database, and the client's
+in-memory run guard serializes the run loop and every user action. A
+RocksDB-backed database refuses a second open of the same path, so two
+processes cannot share FA state. Nothing guards against a second client on
+the same database handle; opening one breaks the payment-safety argument
+below. A process restart ends the old driver before persisted state is
+reopened. Restart safety comes from exact durable payment recovery. Cancellation retains the same
 durable recovery facts, and parallel non-value seat work must not rewrite
 sibling facts from stale snapshots.
 
@@ -469,16 +470,15 @@ rechecks formation identity and exact expected quote or recovery facts, and
 recomputes aggregate authorization and completion state before writing. These
 transaction closures contain no wallet, signing, or network effects. Exhausted
 or non-conflict commit failures return a sanitized storage error rather than
-unwinding. Initialization remains single-attempt because the driver lease
+unwinding. Initialization remains single-attempt because the run guard
 serializes it before parallel seat work. Setup-payment policy retention is a
 separate bounded read/modify/write transaction: every retry compares the
 candidate against the durable NIP-01 high-water so a residual replaced driver
 cannot roll policy back.
 
-Lease-key write conflicts during acquire, renewal, or release return `Busy`;
-other commit failures return a sanitized storage error and never panic. Tests
-pin deferred effect construction and polling, the registry-to-wallet composite
-boundary, and coarse run-lease conflict handling.
+Commit failures return a sanitized storage error and never panic. Tests pin
+deferred effect construction and polling, and the registry-to-wallet
+composite boundary.
 
 The durable root is bound to the FA public identity before any status is
 published. Storage schema changes fail closed. Schemas 4 through 8 predate one
@@ -505,9 +505,9 @@ operations because both mutate one opaque meta value and the upstream module
 offers no atomic CAS. MG's per-key raw caps and the shared
 1,048,576-byte complete-object cap bound each retry wave before child work.
 Metadata maintenance and guardian-fee arrangement share the formation driver's
-process guard and renewable database lease, accept no arbitrary key, and expose only shared semantic
+process guard, accept no arbitrary key, and expose only shared semantic
 values whose fallible constructors enforce Guardianito validation plus the
-65,536-byte absolute raw cap before lease, signing, connection, or network
+65,536-byte absolute raw cap before signing, connection, or network
 effects. It reads consensus before connecting, binds every non-short-circuiting
 best-effort submission wave to the exact raw base, treats stale-base and
 per-seat availability failures as reread/retry signals, and returns only after
@@ -553,30 +553,23 @@ The driver uses Fedimint's native/WASM runtime abstraction for deadlines and
 retry wakeups. The WASM adapter represents timer milliseconds as `i32`, so every
 public formation timing is limited to the inclusive range from one through
 `i32::MAX` integral milliseconds on all targets. Private fields and fallible construction
-prevent fractional-millisecond values and derived lease-duration overflow, returning
-`InvalidFormationRunOptions` before lease, formation-state, wallet, signing, or network
+prevent fractional-millisecond values and deadline overflow, returning
+`InvalidFormationRunOptions` before formation-state, wallet, signing, or network
 effects. Runtime request and retry timers pass the limiting configured duration
 directly, or otherwise pass a checked one-millisecond-or-greater driver-invocation
 remainder. A smaller remainder returns `Timeout` before another effect rather
 than reaching the WASM adapter as zero. Tests pin the
 effective one-millisecond quantum, maximum accepted, and first cross-platform-unsafe values,
-observe lease acquisition directly, and exercise both option-consuming public
+and exercise both option-consuming public
 operations. Re-check this bound and its regressions whenever the runtime timer
 implementation or supported WASM target changes.
 
 Payment creation, recovery, and refund settlement may use the remaining
 invocation deadline rather than the shorter request timeout. These wallet
-operations include multiple bounded stages. The driver renews its lease while
-a capability future is pending, within the same timeout and without a spawned
-task. A failed renewal cancels the call and leaves exact payment recovery intact.
+operations include multiple bounded stages. A timeout cancels the call and
+leaves exact payment recovery intact.
 
-The persisted maximum lease expires no later than the invocation timeout plus
-60 seconds; each renewal uses the smaller of request and invocation timeout plus
-60 seconds. Abandoned drivers therefore cannot inherit a request timeout longer
-than their run horizon.
-
-Apart from best-effort cleanup of a cancelled database lease,
-the crate does not spawn unmanaged tasks. Consumers own execution and
+The crate does not spawn unmanaged tasks. Consumers own execution and
 cancellation. Keep dependencies compatible with native mobile targets and
 `wasm32-unknown-unknown`; platform-specific adapters belong in the consumer.
 

@@ -11,7 +11,7 @@ use futures::future::{Either, select};
 use tokio::sync::{MutexGuard, Notify, futures::Notified, watch};
 
 use crate::db::FormationRecovery;
-use crate::formation::{DriverRun, finish_driver_run, start_driver_run};
+use crate::formation::DriverRun;
 use crate::{
     FaClient, FaError, FaIdentity, FaPayments, FaResult, FaState, FederationConsensusReader,
     FederationSnapshot, FormationFreshness, FormationRunOptions, ManifoldGuardianConnector,
@@ -221,14 +221,12 @@ where
             let Some(work) = self.next_work(fa_id).await? else {
                 return Ok(Step::Idle);
             };
-            options.validate_for_start(&self.inner.store)?;
-            let (deadline, lease) = start_driver_run(&self.inner.store, options).await?;
-            let run = DriverRun::new(options, deadline, &lease);
-            let result = match select(pin!(self.do_work(work, fa_id, run)), interrupt).await {
+            options.validate_for_start()?;
+            let run = DriverRun::start(options)?;
+            match select(pin!(self.do_work(work, fa_id, run)), interrupt).await {
                 Either::Left((result, _)) => result.map(|()| Step::Progressed),
                 Either::Right(((), _)) => Ok(Step::Yielded),
-            };
-            finish_driver_run(result, self.inner.store.release_driver_lease(lease).await)
+            }
         }
         .await;
         result.unwrap_or_else(|error| {
@@ -257,7 +255,7 @@ where
             .map(Work::Reconcile))
     }
 
-    async fn do_work(&self, work: Work, fa_id: FaId, run: DriverRun<'_>) -> FaResult<()> {
+    async fn do_work(&self, work: Work, fa_id: FaId, run: DriverRun) -> FaResult<()> {
         match work {
             Work::Recover => {
                 let result = self.recover_backup(fa_id, run).await;
