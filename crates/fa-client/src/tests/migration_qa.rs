@@ -418,6 +418,9 @@ async fn drive_migrated<I: FaIdentity>(
         Ok(opened) => opened,
         Err(error) => return serde_json::json!({"open": error.to_string()}),
     };
+    if snapshot.path.to_string_lossy().contains("name_sensitive") {
+        mgs.name_sensitive_codes.store(true, Ordering::SeqCst);
+    }
     let old_funded = wallet.funded_quotes.lock().unwrap().clone();
     let mut runs = Vec::new();
     for _ in 0..6 {
@@ -596,6 +599,10 @@ const R269_INTERRUPTED_REPLACEMENT_RESTORE: &str =
     include_str!("../db/fixtures/qa/r269_interrupted_replacement_restore.json");
 const R269_APPLIED_REPLACEMENT: &str =
     include_str!("../db/fixtures/qa/r269_applied_replacement_awaiting_quote.json");
+const R269_NAMED_SEAT_NOT_LOWEST: &str =
+    include_str!("../db/fixtures/qa/r269_dkg_preparation_named_seat_not_lowest.json");
+const R269_NAMED_CODE_CACHED: &str =
+    include_str!("../db/fixtures/qa/r269_dkg_preparation_named_code_cached.json");
 const R269_MIXED_REPLACEMENT_WAVE: &str =
     include_str!("../db/fixtures/qa/r269_mixed_replacement_wave_live_reservation.json");
 
@@ -677,4 +684,35 @@ async fn r269_mixed_replacement_wave_drops_both_replacements() {
     assert_eq!(status.pool.len(), 5);
     assert_eq!(*wallet.funded_quotes.lock().unwrap(), funded);
     reload(&mem).await.expect("the FA still loads after a run");
+}
+
+/// All seven seats exist and no guardian code is cached. Seat index 0 is on
+/// MG 0, but MG 3 holds the lowest seat id. MGs whose code depends on the
+/// federation name must be asked for the named code at MG 0, as schema 11
+/// would have, and the federation forms.
+#[tokio::test]
+async fn r269_dkg_preparation_asks_the_index_zero_seat_for_the_named_code() {
+    let (client, _, _, mgs) = open_fixture(R269_NAMED_SEAT_NOT_LOWEST).await;
+    mgs.name_sensitive_codes.store(true, Ordering::SeqCst);
+    client.drive_all_for_test(options()).await.unwrap();
+    assert!(client.status().federation.is_some());
+    assert_eq!(*mgs.named_dkg_code_indices.lock().unwrap(), vec![0]);
+}
+
+/// Schema 11 cached the named code of MG 0 and the plain code of MG 1. The
+/// cached codes still match, so the run asks no MG for a named code again
+/// and the federation forms.
+#[tokio::test]
+async fn r269_dkg_preparation_keeps_a_cached_named_code() {
+    let (client, _, _, mgs) = open_fixture(R269_NAMED_CODE_CACHED).await;
+    mgs.name_sensitive_codes.store(true, Ordering::SeqCst);
+    client.drive_all_for_test(options()).await.unwrap();
+    assert!(client.status().federation.is_some());
+    assert!(
+        mgs.named_dkg_code_indices
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|index| *index == 0)
+    );
 }
