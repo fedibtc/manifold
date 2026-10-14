@@ -1,6 +1,7 @@
 mod callback;
 mod discovery;
 mod maintenance;
+mod migration_qa;
 mod recovery_policy;
 mod selection;
 
