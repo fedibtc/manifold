@@ -5,11 +5,6 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 
-[features]
-# Development-only escape hatch for fa-cli protocol tests. Product consumers
-# use verified selection and must not enable this feature.
-dev-pinned-formation = []
-
 [dependencies]
 base64 = "0.22"
 bitcoin_hashes = { version = "0.14", features = ["serde"] }

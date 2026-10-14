@@ -3,8 +3,6 @@
 #[cfg(test)]
 mod tests;
 
-#[cfg(any(test, feature = "dev-pinned-formation"))]
-use std::collections::HashSet;
 use std::collections::{BTreeMap, BTreeSet};
 use std::future::Future;
 use std::str::FromStr as _;
@@ -24,9 +22,8 @@ use stability_pool_common::Account;
 use tokio::sync::OnceCell;
 
 use crate::db::{
-    AdmissionEffect, DriverLease, FaStore, FormationCreationMode, FormationMetaTarget,
-    FormationRecovery, InitialSeat, MgAdmission, PurchaseRecovery, QuoteAuthorization,
-    StoredVerifierProvenance,
+    AdmissionEffect, DriverLease, FaStore, FormationMetaTarget, FormationRecovery, InitialSeat,
+    MgAdmission, PurchaseRecovery, QuoteAuthorization, StoredVerifierProvenance,
 };
 use crate::meta_write::{MetaWriteError, SeatVote, write_consensus_meta};
 use crate::mg::MgClient;
@@ -76,7 +73,7 @@ enum QuoteAttemptPolicy {
     /// definite transport failure may be retried and eventually returned as
     /// a fresh-selection requirement.
     ReplaceableSelection,
-    /// The row is pinned or already value-bound; failures remain exact
+    /// The row is already value-bound; failures remain exact
     /// recovery errors and never manufacture replacement authority.
     ExactRecovery,
 }
@@ -87,17 +84,11 @@ impl QuoteAttemptPolicy {
     }
 }
 
-fn quote_attempt_policy(
-    creation_mode: &FormationCreationMode,
-    admission: &MgAdmission,
-) -> QuoteAttemptPolicy {
-    match creation_mode {
-        FormationCreationMode::Selected { .. } if admission.requires_effect_authorization() => {
-            QuoteAttemptPolicy::ReplaceableSelection
-        }
-        FormationCreationMode::Pinned | FormationCreationMode::Selected { .. } => {
-            QuoteAttemptPolicy::ExactRecovery
-        }
+fn quote_attempt_policy(admission: &MgAdmission) -> QuoteAttemptPolicy {
+    if admission.requires_effect_authorization() {
+        QuoteAttemptPolicy::ReplaceableSelection
+    } else {
+        QuoteAttemptPolicy::ExactRecovery
     }
 }
 
@@ -482,7 +473,7 @@ pub struct DkgRestartResult {
 #[derive(Clone)]
 pub(crate) struct PostFormedSeat {
     pub(crate) index: u16,
-    pub(crate) mg_id: Option<nostr_sdk::PublicKey>,
+    pub(crate) mg_id: nostr_sdk::PublicKey,
     pub(crate) locator: Locator,
     pub(crate) seat_id: SeatId,
 }
@@ -609,18 +600,11 @@ impl TerminalSeatOutcome {
     /// boundary. A selected all-free formation has consumed its exact
     /// quote-bound admission but has not armed wallet outputs; re-quoting that
     /// same row would not carry authority for a second presentation. Return
-    /// the typed fresh-selection transition so the outer driver abandons to
-    /// `Idle`. Pinned or post-output refusals retain their exact recovery
-    /// behavior.
-    fn into_formation_error(
-        self,
-        creation_mode: &FormationCreationMode,
-        payment_outputs_started: bool,
-    ) -> FaError {
+    /// the typed fresh-selection transition so the outer driver abandons the
+    /// purchase. Post-output refusals retain their exact recovery behavior.
+    fn into_formation_error(self, payment_outputs_started: bool) -> FaError {
         match self {
-            Self::SeatRefused(failure)
-                if creation_mode.is_selected() && !payment_outputs_started =>
-            {
+            Self::SeatRefused(failure) if !payment_outputs_started => {
                 FaError::SelectionReauthorizationRequired {
                     reason: SelectionReauthorizationReason::SelectedMgUnavailable,
                     failure: Some(failure),
@@ -630,14 +614,8 @@ impl TerminalSeatOutcome {
         }
     }
 
-    fn requires_pre_output_reauthorization(
-        &self,
-        creation_mode: &FormationCreationMode,
-        payment_outputs_started: bool,
-    ) -> bool {
-        creation_mode.is_selected()
-            && !payment_outputs_started
-            && matches!(self, Self::SeatRefused(_))
+    fn requires_pre_output_reauthorization(&self, payment_outputs_started: bool) -> bool {
+        !payment_outputs_started && matches!(self, Self::SeatRefused(_))
     }
 }
 
@@ -678,45 +656,6 @@ where
     F: ManifoldGuardianConnector,
     C: FederationConsensusReader,
 {
-    /// Buy one seat from each explicitly pinned MG into the pool.
-    ///
-    /// This development/test-only entry point requires a version range that
-    /// contains exactly one patch release. Pinned MGs have no authenticated
-    /// identity.
-    ///
-    /// The returned future owns no background task. Dropping it cancels
-    /// in-flight work, while every completed durable checkpoint remains
-    /// resumable through [`FaClient::resume`]. If paid quotes are selected,
-    /// this method returns `Ok(())` at
-    /// [`crate::PurchasePhase::AwaitingPaymentReadiness`] without spending;
-    /// the consumer must inspect the aggregate requirements and explicitly
-    /// call [`FaClient::authorize_payments`].
-    #[cfg(any(test, feature = "dev-pinned-formation"))]
-    pub async fn buy_pinned_seats(
-        &self,
-        request: MgSelectionRequest,
-        max_total_msats: Option<u64>,
-        locators: Vec<Locator>,
-        options: FormationRunOptions,
-    ) -> FaResult<()> {
-        Self::preflight_buy_pinned_seats(&request, &locators)?;
-        let fedimintd_dkg_version = pinned_dkg_version(&request)?;
-        let seats = locators
-            .into_iter()
-            .enumerate()
-            .map(|(index, locator)| InitialSeat::new(index, locator, MgAdmission::Pinned))
-            .collect();
-        self.start_purchase(
-            &request,
-            max_total_msats,
-            seats,
-            FormationCreationMode::Pinned,
-            fedimintd_dkg_version,
-            options,
-        )
-        .await
-    }
-
     /// Buy the seats of one fresh, verified selection into the pool.
     ///
     /// The approval comes only from [`crate::MgSelectionPreview::approve`] and
@@ -780,9 +719,7 @@ where
             &request,
             max_total_msats,
             seats,
-            FormationCreationMode::Selected {
-                payment_federation_id,
-            },
+            payment_federation_id,
             fedimintd_dkg_version,
             options,
         )
@@ -858,12 +795,8 @@ where
         let excluded = recovery
             .seats
             .iter()
-            .map(|seat| {
-                seat.admission.mg_id().ok_or_else(|| {
-                    FaError::Storage("selected formation contains a pinned MG admission".to_owned())
-                })
-            })
-            .collect::<FaResult<BTreeSet<_>>>()?;
+            .map(|seat| seat.admission.mg_id())
+            .collect::<BTreeSet<_>>();
         let replacement_indices = requirements
             .seats
             .iter()
@@ -876,9 +809,7 @@ where
                 continue;
             }
             retained_holders.extend(seat.admission.holder());
-            let mg_id = seat.admission.mg_id().ok_or_else(|| {
-                FaError::Storage("selected formation contains a pinned MG admission".to_owned())
-            })?;
+            let mg_id = seat.admission.mg_id();
             if retained_service_pubkeys
                 .insert(seat.progress.locator.service_pubkey, mg_id)
                 .is_some()
@@ -954,7 +885,7 @@ where
             let mut mg_ids = recovery
                 .seats
                 .iter()
-                .filter_map(|seat| seat.admission.mg_id())
+                .map(|seat| seat.admission.mg_id())
                 .collect::<BTreeSet<_>>();
             if approved_seats.iter().any(|seat| !mg_ids.insert(seat.mg_id)) {
                 return Err(FaError::InvalidManifoldGuardians(
@@ -971,9 +902,7 @@ where
                 if replacement_indices.contains(&seat.progress.index) {
                     continue;
                 }
-                let mg_id = seat.admission.mg_id().ok_or_else(|| {
-                    FaError::Storage("selected formation contains a pinned MG admission".to_owned())
-                })?;
+                let mg_id = seat.admission.mg_id();
                 if service_pubkeys
                     .insert(seat.progress.locator.service_pubkey, mg_id)
                     .is_some()
@@ -1032,7 +961,7 @@ where
         request: &MgSelectionRequest,
         max_total_msats: Option<u64>,
         seats: Vec<InitialSeat>,
-        creation_mode: FormationCreationMode,
+        payment_federation_id: Option<FederationId>,
         fedimintd_dkg_version: crate::FedimintdDkgVersion,
         options: FormationRunOptions,
     ) -> FaResult<()> {
@@ -1061,7 +990,7 @@ where
                     "an active seat purchase already exists; resume it instead".to_owned(),
                 ));
             }
-            if let Some(requested) = creation_mode.selected_payment_federation() {
+            if let Some(requested) = &payment_federation_id {
                 // A purchase must not obtain even its first exact quote until
                 // the explicitly selected payer is authenticated and currently
                 // Ready. Exact balance plus fee sufficiency is checked once
@@ -1080,7 +1009,7 @@ where
             };
             self.inner
                 .store
-                .initialize(fa_id, purchase_id, request, seats, creation_mode)
+                .initialize(fa_id, purchase_id, request, seats, payment_federation_id)
                 .await?;
             let recovery = self.active_recovery(fa_id).await?;
             self.publish_purchase(recovery.snapshot.clone());
@@ -1088,17 +1017,6 @@ where
         }
         .await;
         finish_driver_run(result, self.inner.store.release_driver_lease(lease).await)
-    }
-
-    /// Validate the development-only pinned path's single-patch range and
-    /// locators without accessing identity, storage, wallets, or the network.
-    #[cfg(any(test, feature = "dev-pinned-formation"))]
-    pub fn preflight_buy_pinned_seats(
-        request: &MgSelectionRequest,
-        locators: &[Locator],
-    ) -> FaResult<()> {
-        validate_locators(request, locators)?;
-        pinned_dkg_version(request).map(|_| ())
     }
 
     /// Explicitly authorize the paid terms currently exposed by the aggregate
@@ -1126,7 +1044,7 @@ where
         let run = DriverRun::new(options, deadline, &lease);
         let result = async {
             let recovery = self.active_recovery(fa_id).await?;
-            if recovery.creation_mode.is_selected() && !recovery.payment_outputs_started {
+            if !recovery.payment_outputs_started {
                 return Err(FaError::InvalidIntent(
                     "selected Pay-and-create uses only its sealed cap authorization".to_owned(),
                 ));
@@ -1399,8 +1317,7 @@ where
             if matches!(
                 result.as_ref(),
                 Err(FaError::SelectionReauthorizationRequired { .. })
-            ) && recovery.creation_mode.is_selected()
-                && recovery.payment_outputs_started
+            ) && recovery.payment_outputs_started
                 && recovery.seats.iter().any(|seat| seat.replacement_approved)
             {
                 // The replacement approval is still value-free: its exact effect
@@ -1417,8 +1334,7 @@ where
             if matches!(
                 result.as_ref(),
                 Err(FaError::SelectionReauthorizationRequired { .. })
-            ) && recovery.creation_mode.is_selected()
-                && !recovery.payment_outputs_started
+            ) && !recovery.payment_outputs_started
             {
                 // A reserve-port error is the one reauthorization outcome that
                 // proves this invocation obtained no capability. Other outcomes
@@ -1779,7 +1695,7 @@ where
                     requirements.authorization_id.clone(),
                     authorizations,
                 );
-            } else if recovery.creation_mode.is_selected() && !recovery.payment_outputs_started {
+            } else if !recovery.payment_outputs_started {
                 return Err(FaError::SelectionReauthorizationRequired {
                     reason: SelectionReauthorizationReason::QuoteTotalExceedsLimit,
                     failure: None,
@@ -1823,10 +1739,7 @@ where
         let formation_id = recovery.snapshot.purchase_id.clone();
         let formation_id = &formation_id;
         let intent = recovery.snapshot.request.clone();
-        let expected_payer = recovery
-            .creation_mode
-            .selected_payment_federation()
-            .cloned();
+        let expected_payer = recovery.payment_federation_id.clone();
 
         // Free quotes must be replayed exactly: CreateSeat may have succeeded
         // even when its response was lost. Paid quotes are refreshed unless an
@@ -1876,13 +1789,8 @@ where
         // Resolved on first use and shared by the whole batch, so one
         // authenticated read serves every seat — and a formation that meets
         // no priced seat never reads a setup-payment policy at all.
-        let can_pay_for_formation = match &recovery.creation_mode {
-            FormationCreationMode::Pinned => self.can_pay(),
-            FormationCreationMode::Selected {
-                payment_federation_id,
-            } => payment_federation_id.is_some(),
-        };
-        let payment_federation = (needs_quote && can_pay_for_formation).then(OnceCell::new);
+        let payment_federation =
+            (needs_quote && recovery.payment_federation_id.is_some()).then(OnceCell::new);
         let mut pending = FuturesUnordered::new();
         for (position, seat) in recovery.seats.iter().enumerate() {
             if seat.progress.seat_id.is_some() || seat.signed_quote.is_some() {
@@ -1892,7 +1800,7 @@ where
             let intent = &intent;
             let expected_payer = expected_payer.clone();
             let payment_federation = payment_federation.as_ref();
-            let policy = quote_attempt_policy(&recovery.creation_mode, &seat.admission);
+            let policy = quote_attempt_policy(&seat.admission);
             pending.push(async move {
                 let (signed_quote, _) = self
                     .request_quote_with_retry(
@@ -1975,13 +1883,11 @@ where
                 "durable FA reservation is absent from the payment wallet".to_owned(),
             ));
         }
-        if recovery.creation_mode.is_selected() {
-            validate_live_admissions(
-                recovery,
-                self.inner.peer_badge_verifier.provenance().into(),
-                Timestamp(now_secs()?),
-            )?;
-        }
+        validate_live_admissions(
+            recovery,
+            self.inner.peer_badge_verifier.provenance().into(),
+            Timestamp(now_secs()?),
+        )?;
 
         let quotes = self.exact_payment_quotes(recovery, requirements, fa_id)?;
         let preflight = crate::ExactPaymentPreflight::new(requirements, &quotes)?;
@@ -1994,16 +1900,13 @@ where
                     .reserve_payment_requirements(&reservation_id, &preflight))
             })
             .await?
-            .map_err(|error| match &recovery.creation_mode {
-                FormationCreationMode::Selected { .. }
-                    if error.proves_insufficient_funds_without_reservation() =>
-                {
+            .map_err(|error| {
+                if error.proves_insufficient_funds_without_reservation() {
                     FaError::SelectionReauthorizationRequired {
                         reason: SelectionReauthorizationReason::SelectedPayerInsufficientFunds,
                         failure: None,
                     }
-                }
-                FormationCreationMode::Selected { .. } | FormationCreationMode::Pinned => {
+                } else {
                     FaError::Payment(error.to_string())
                 }
             })?;
@@ -2050,10 +1953,7 @@ where
         requirements: &PaymentRequirements,
         fa_id: FaId,
     ) -> FaResult<Vec<SignatureVerified<GetQuoteResponse>>> {
-        let expected_payer = recovery
-            .creation_mode
-            .selected_payment_federation()
-            .cloned();
+        let expected_payer = recovery.payment_federation_id.clone();
         let mut quotes = Vec::with_capacity(requirements.seats.len());
         for requirement in &requirements.seats {
             let seat = recovery
@@ -2223,10 +2123,7 @@ where
         let formation_id = recovery.snapshot.purchase_id.clone();
         let formation_id = &formation_id;
         let intent = recovery.snapshot.request.clone();
-        let expected_payer = recovery
-            .creation_mode
-            .selected_payment_federation()
-            .cloned();
+        let expected_payer = recovery.payment_federation_id.clone();
         let payment_authorized = recovery
             .seats
             .iter()
@@ -2398,10 +2295,7 @@ where
             return Err(error);
         }
         if first_terminal_outcome.as_ref().is_some_and(|outcome| {
-            outcome.requires_pre_output_reauthorization(
-                &recovery.creation_mode,
-                recovery.payment_outputs_started,
-            )
+            outcome.requires_pre_output_reauthorization(recovery.payment_outputs_started)
         }) {
             // Selected all-free refusal is itself the reauthorization proof.
             // Keep its exact signed quote and consumed admission durable until
@@ -2409,7 +2303,7 @@ where
             // then reopen and replay the same refusal safely.
             return Err(first_terminal_outcome
                 .expect("checked terminal outcome exists")
-                .into_formation_error(&recovery.creation_mode, recovery.payment_outputs_started));
+                .into_formation_error(recovery.payment_outputs_started));
         }
         // A terminal member can share its aggregate reservation with a paid
         // sibling that the wallet still reports as Held/NotStarted. Keep the
@@ -2436,22 +2330,16 @@ where
                         && matches!(recovered, Some(SeatPaymentRecovery::NotStarted))
                 });
         let payment_federation_id = if needs_funding {
-            match (&recovery.creation_mode, expected_payer.as_ref()) {
-                (FormationCreationMode::Selected { .. }, Some(requested)) => Some(
-                    self.require_setup_payment_federation(requested, run)
-                        .await?,
-                ),
-                (FormationCreationMode::Selected { .. }, None) => {
-                    return Err(FaError::SelectionReauthorizationRequired {
-                        reason: SelectionReauthorizationReason::PaymentFederationRequired,
-                        failure: None,
-                    });
-                }
-                (FormationCreationMode::Pinned, _) if self.can_pay() => {
-                    Some(self.select_setup_payment_federation(run).await?)
-                }
-                (FormationCreationMode::Pinned, _) => None,
-            }
+            let Some(requested) = expected_payer.as_ref() else {
+                return Err(FaError::SelectionReauthorizationRequired {
+                    reason: SelectionReauthorizationReason::PaymentFederationRequired,
+                    failure: None,
+                });
+            };
+            Some(
+                self.require_setup_payment_federation(requested, run)
+                    .await?,
+            )
         } else {
             None
         };
@@ -2483,7 +2371,7 @@ where
                 continue;
             }
             let locator = seat.progress.locator.clone();
-            let connection_policy = quote_attempt_policy(&recovery.creation_mode, &seat.admission);
+            let connection_policy = quote_attempt_policy(&seat.admission);
             pending_connections.push(async move {
                 let client = self
                     .connect_with_selected_retry(&locator, formation_id, connection_policy, run)
@@ -2647,77 +2535,58 @@ where
                 )
             })
             .collect::<Vec<_>>();
-        if recovery.creation_mode.is_selected() {
-            let verifier_provenance = self.inner.peer_badge_verifier.provenance().into();
-            if !recovery.payment_outputs_started && !funding.is_empty() {
-                // Free effects are consumed before arming paid outputs, but no
-                // presentation is polled between these durable transactions.
-                // A failure therefore remains pre-effect and abandonable.
-                if !free_effects.is_empty() {
-                    let effects = free_effects
-                        .iter()
-                        .map(|(_, index, quote_id, effect)| (*index, *quote_id, *effect))
-                        .collect::<Vec<_>>();
-                    run.authorize_seat_effects(
-                        &recovery.snapshot.purchase_id,
-                        &effects,
-                        verifier_provenance,
-                    )
-                    .await?;
-                    for &(position, _, quote_id, effect) in &free_effects {
-                        apply_authorized_effect_in_memory(recovery, position, quote_id, effect)?;
-                    }
-                }
-                run.arm_payment_outputs_started(
+        let verifier_provenance = self.inner.peer_badge_verifier.provenance().into();
+        if !recovery.payment_outputs_started && !funding.is_empty() {
+            // Free effects are consumed before arming paid outputs, but no
+            // presentation is polled between these durable transactions.
+            // A failure therefore remains pre-effect and abandonable.
+            if !free_effects.is_empty() {
+                let effects = free_effects
+                    .iter()
+                    .map(|(_, index, quote_id, effect)| (*index, *quote_id, *effect))
+                    .collect::<Vec<_>>();
+                run.authorize_seat_effects(
                     &recovery.snapshot.purchase_id,
+                    &effects,
                     verifier_provenance,
                 )
                 .await?;
-                recovery.payment_outputs_started = true;
-                recovery.snapshot.payment_outputs_started = true;
-                for &(position, _, quote_id, effect) in &paid_effects {
+                for &(position, _, quote_id, effect) in &free_effects {
                     apply_authorized_effect_in_memory(recovery, position, quote_id, effect)?;
                 }
-                self.publish_purchase(recovery.snapshot.clone());
-            } else {
-                // Post-output replacement can mix paid and free rows. Consume
-                // the complete exact wave atomically before polling the first
-                // wallet or presentation effect so expiry cannot strand only
-                // the still-provisional half of the wave.
-                let effect_wave = paid_effects
-                    .iter()
-                    .chain(&free_effects)
-                    .copied()
-                    .collect::<Vec<_>>();
-                if !effect_wave.is_empty() {
-                    let effects = effect_wave
-                        .iter()
-                        .map(|(_, index, quote_id, effect)| (*index, *quote_id, *effect))
-                        .collect::<Vec<_>>();
-                    run.authorize_seat_effects(
-                        &recovery.snapshot.purchase_id,
-                        &effects,
-                        verifier_provenance,
-                    )
-                    .await?;
-                    for (position, _, quote_id, effect) in effect_wave {
-                        apply_authorized_effect_in_memory(recovery, position, quote_id, effect)?;
-                    }
-                }
             }
-        }
-        if !funding.is_empty() {
-            if !recovery.payment_outputs_started {
-                // Pinned formation carries no selected admission wave, but it
-                // still needs the aggregate output tombstone before polling.
-                run.arm_payment_outputs_started(
+            run.arm_payment_outputs_started(&recovery.snapshot.purchase_id, verifier_provenance)
+                .await?;
+            recovery.payment_outputs_started = true;
+            recovery.snapshot.payment_outputs_started = true;
+            for &(position, _, quote_id, effect) in &paid_effects {
+                apply_authorized_effect_in_memory(recovery, position, quote_id, effect)?;
+            }
+            self.publish_purchase(recovery.snapshot.clone());
+        } else {
+            // Post-output replacement can mix paid and free rows. Consume
+            // the complete exact wave atomically before polling the first
+            // wallet or presentation effect so expiry cannot strand only
+            // the still-provisional half of the wave.
+            let effect_wave = paid_effects
+                .iter()
+                .chain(&free_effects)
+                .copied()
+                .collect::<Vec<_>>();
+            if !effect_wave.is_empty() {
+                let effects = effect_wave
+                    .iter()
+                    .map(|(_, index, quote_id, effect)| (*index, *quote_id, *effect))
+                    .collect::<Vec<_>>();
+                run.authorize_seat_effects(
                     &recovery.snapshot.purchase_id,
-                    self.inner.peer_badge_verifier.provenance().into(),
+                    &effects,
+                    verifier_provenance,
                 )
                 .await?;
-                recovery.payment_outputs_started = true;
-                recovery.snapshot.payment_outputs_started = true;
-                self.publish_purchase(recovery.snapshot.clone());
+                for (position, _, quote_id, effect) in effect_wave {
+                    apply_authorized_effect_in_memory(recovery, position, quote_id, effect)?;
+                }
             }
         }
 
@@ -2847,14 +2716,11 @@ where
             return Err(error);
         }
         if first_terminal_outcome.as_ref().is_some_and(|outcome| {
-            outcome.requires_pre_output_reauthorization(
-                &recovery.creation_mode,
-                recovery.payment_outputs_started,
-            )
+            outcome.requires_pre_output_reauthorization(recovery.payment_outputs_started)
         }) {
             return Err(first_terminal_outcome
                 .expect("checked terminal outcome exists")
-                .into_formation_error(&recovery.creation_mode, recovery.payment_outputs_started));
+                .into_formation_error(recovery.payment_outputs_started));
         }
         let terminal_positions = terminal_quotes
             .iter()
@@ -2869,8 +2735,7 @@ where
                 .await?;
         }
         if let Some(outcome) = first_terminal_outcome {
-            return Err(outcome
-                .into_formation_error(&recovery.creation_mode, recovery.payment_outputs_started));
+            return Err(outcome.into_formation_error(recovery.payment_outputs_started));
         }
         sessions
             .into_iter()
@@ -2896,10 +2761,7 @@ where
     ) -> FaResult<Vec<Option<PaidSeatQuote>>> {
         let formation_id = recovery.snapshot.purchase_id.clone();
         let formation_id = &formation_id;
-        let expected_payer = recovery
-            .creation_mode
-            .selected_payment_federation()
-            .cloned();
+        let expected_payer = recovery.payment_federation_id.clone();
         if recovery.payment_reservation_id.is_some() {
             let requirements = recovery
                 .reserved_payment_requirements(fa_id)?
@@ -2966,7 +2828,7 @@ where
             let intent = intent.clone();
             let expected_payer = expected_payer.clone();
             let payment_federation = Some(&payment_federation);
-            let policy = quote_attempt_policy(&recovery.creation_mode, &seat.admission);
+            let policy = quote_attempt_policy(&seat.admission);
             pending.push(async move {
                 let (signed, verified) = self
                     .request_quote_with_retry(
@@ -3033,7 +2895,7 @@ where
             recovery.seats[position].signed_quote = Some(fresh.signed.clone());
             refreshed[position] = Some(fresh);
         }
-        let first_changed_position = changed.first().map(|(position, _, _)| *position);
+        let any_changed = !changed.is_empty();
         for (position, old, fresh) in changed {
             let seat_index = recovery.seats[position].progress.index;
             self.inner
@@ -3049,17 +2911,11 @@ where
             recovery.seats[position].progress.phase = SeatPhase::QuoteReady;
             recovery.snapshot.seats[position] = recovery.seats[position].progress.clone();
         }
-        if let Some(position) = first_changed_position {
-            if recovery.creation_mode.is_selected() {
-                return Err(FaError::SelectionReauthorizationRequired {
-                    reason: crate::SelectionReauthorizationReason::QuoteTermsChanged,
-                    failure: None,
-                });
-            }
-            return Err(FaError::Payment(format!(
-                "payment terms for Manifold Guardian {} changed; review the fresh quote",
-                position + 1
-            )));
+        if any_changed {
+            return Err(FaError::SelectionReauthorizationRequired {
+                reason: crate::SelectionReauthorizationReason::QuoteTermsChanged,
+                failure: None,
+            });
         }
         Ok(refreshed)
     }
@@ -3255,7 +3111,7 @@ where
             &recovery.seats[position].progress.locator,
             &recovery.snapshot.request,
             fa_id,
-            recovery.creation_mode.selected_payment_federation(),
+            recovery.payment_federation_id.as_ref(),
         )?;
         if verified.terms.payment.is_some() {
             let release_proof = release_proof.ok_or_else(|| {
@@ -3285,8 +3141,7 @@ where
         recovery: &mut PurchaseRecovery,
         positions: &[usize],
     ) -> FaResult<()> {
-        let mark_replacements =
-            recovery.payment_outputs_started && recovery.creation_mode.is_selected();
+        let mark_replacements = recovery.payment_outputs_started;
         let mut cleared = Vec::with_capacity(positions.len());
         for &position in positions {
             let signed_quote = recovery.seats[position]
@@ -3335,7 +3190,7 @@ where
             recovery.seats[position].replacement_previous_locator =
                 replacement_for.map(|_| recovery.seats[position].progress.locator.clone());
             recovery.seats[position].replacement_previous_mg_id =
-                replacement_for.and_then(|_| recovery.seats[position].admission.mg_id());
+                replacement_for.map(|_| recovery.seats[position].admission.mg_id());
             recovery.seats[position].replacement_approved = false;
             recovery.seats[position].progress.phase = if replacement_for.is_some() {
                 SeatPhase::ReplacementRequired
@@ -3570,7 +3425,10 @@ where
                             Some(requested) => {
                                 self.require_setup_payment_federation(requested, run).await
                             }
-                            None => self.select_setup_payment_federation(run).await,
+                            None => Err(FaError::SelectionReauthorizationRequired {
+                                reason: SelectionReauthorizationReason::PaymentFederationRequired,
+                                failure: None,
+                            }),
                         }
                     })
                     .await?
@@ -4950,39 +4808,6 @@ fn canonical_fee_recipients(
         ))
     })?;
     Ok(recipients)
-}
-
-#[cfg(any(test, feature = "dev-pinned-formation"))]
-fn pinned_dkg_version(request: &MgSelectionRequest) -> FaResult<FedimintdDkgVersion> {
-    let core = request.fedimintd_versions().only_core().ok_or_else(|| {
-        FaError::InvalidIntent("pinned formation requires one fedimintd patch release".to_owned())
-    })?;
-    Ok(format!("{core}+fedi")
-        .parse::<FedimintdVersion>()
-        .expect("a release core with the fixed Fedi vendor is valid SemVer")
-        .dkg_version())
-}
-
-#[cfg(any(test, feature = "dev-pinned-formation"))]
-fn validate_locators(request: &MgSelectionRequest, locators: &[Locator]) -> FaResult<()> {
-    if locators.len() != usize::from(request.federation_size().0) {
-        return Err(FaError::InvalidManifoldGuardians(format!(
-            "expected {} pinned locators, got {}",
-            request.federation_size().0,
-            locators.len()
-        )));
-    }
-    let mut keys = HashSet::new();
-    if let Some(duplicate) = locators
-        .iter()
-        .map(|locator| locator.service_pubkey)
-        .find(|key| !keys.insert(*key))
-    {
-        return Err(FaError::InvalidManifoldGuardians(format!(
-            "duplicate MG service key {duplicate}"
-        )));
-    }
-    Ok(())
 }
 
 fn service_seat_phase(status: &ServiceStatus) -> Result<SeatPhase, MgCause> {

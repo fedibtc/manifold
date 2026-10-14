@@ -284,7 +284,7 @@ async fn replacement_preview_excludes_every_persisted_sibling_locator() {
         replacement_id: GuardianReplacementId::from_digest([17; 32]),
         seats: vec![GuardianReplacementSeat {
             index: 3,
-            previous_mg_id: None,
+            previous_mg_id: test_mg_id(0),
             previous_quote_id: QuoteId([41; 32]),
             previous_locator,
         }],
@@ -348,7 +348,7 @@ async fn replacement_preview_skips_a_retained_service_key_and_continues_the_buck
             .expect("canonical replacement digest parses"),
         seats: vec![GuardianReplacementSeat {
             index: 3,
-            previous_mg_id: None,
+            previous_mg_id: test_mg_id(3),
             previous_quote_id: QuoteId([42; 32]),
             previous_locator: locator(3),
         }],
@@ -466,7 +466,7 @@ async fn replacement_preview_accepts_patch_skew_in_the_selected_dkg_identity() {
         replacement_id: GuardianReplacementId::from_digest([99; 32]),
         seats: vec![GuardianReplacementSeat {
             index: 3,
-            previous_mg_id: None,
+            previous_mg_id: test_mg_id(0),
             previous_quote_id: QuoteId([42; 32]),
             previous_locator: locator(0),
         }],

@@ -1097,19 +1097,12 @@ where
         let seats = authority
             .seats
             .into_iter()
-            .map(|seat| {
-                Ok(FormedMgSeat {
-                    mg_id: seat.mg_id.ok_or_else(|| {
-                        FaError::Liquidity(
-                            "post-formation liquidity requires authenticated MG identities"
-                                .to_owned(),
-                        )
-                    })?,
-                    locator: seat.locator,
-                    seat_id: seat.seat_id,
-                })
+            .map(|seat| FormedMgSeat {
+                mg_id: seat.mg_id,
+                locator: seat.locator,
+                seat_id: seat.seat_id,
             })
-            .collect::<FaResult<Vec<_>>>()?;
+            .collect();
         Ok(FormedLiquidityContext {
             federation_name: federation_name(&consensus)?.ok_or_else(|| {
                 FaError::Liquidity(

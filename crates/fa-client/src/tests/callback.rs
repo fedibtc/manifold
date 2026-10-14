@@ -19,7 +19,7 @@ async fn one_durable_completion_callback_is_sent_to_every_guardian() {
     .unwrap();
 
     client
-        .buy_and_form_pinned_with_callback(intent(), locators(), callback.clone(), options())
+        .buy_and_form_at_with_callback(intent(), locators(), callback.clone(), options())
         .await
         .unwrap();
 
@@ -118,7 +118,7 @@ async fn callback_is_durable_private_state_and_old_schema_resets() {
     })
     .unwrap();
     client
-        .buy_pinned_seats(intent().request, None, locators(), options())
+        .buy_seats_at(&intent(), locators(), options())
         .await
         .unwrap();
     let seats = client
@@ -189,8 +189,8 @@ async fn callback_is_durable_private_state_and_old_schema_resets() {
             TestIdentity::fa_id(),
             FormationId("schema-future".to_owned()),
             resolved_intent_with_size(FederationSize(1)),
-            vec![seat_progress(0)],
-            crate::db::FormationCreationMode::Pinned,
+            vec![selected_initial_seat(0, test_now_secs() + 120)],
+            None,
         )
         .await
         .unwrap();

@@ -37,8 +37,6 @@ pub use discovery::{
     MG_ADVERTISEMENT_MAX_HOLDER_AUTHORIZATIONS, MG_DISCOVERY_TIMEOUT, MgCandidateRequirements,
     MgDiscovery, MgDiscoveryOptions, MgRegistryQuery, RejectedAdvertisement,
 };
-#[cfg(any(test, feature = "dev-pinned-formation"))]
-pub use discovery::{InsecureUntrustedPinnedMg, InsecureUntrustedPinnedMgDiscovery};
 pub use error::{
     AbandonUnavailableReason, Capability, FaError, FaErrorCode, FaResult, MgCause, MgFailure,
     MgOperation, SelectionReauthorizationReason,

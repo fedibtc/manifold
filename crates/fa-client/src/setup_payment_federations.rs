@@ -80,17 +80,6 @@ where
         finish_driver_run(result, self.inner.store.release_driver_lease(lease).await)
     }
 
-    /// Whether this FA is configured to pay at all.
-    ///
-    /// Paying needs a deployment-pinned setup-payment publisher: without one
-    /// there is no authenticated set of federations to fund from, so the FA
-    /// can only form seats an MG gives away (a quote priced at zero). This
-    /// is what makes the first federation in a deployment formable, before
-    /// any ecash to pay with exists.
-    pub(crate) fn can_pay(&self) -> bool {
-        self.inner.setup_payment_publisher.is_some()
-    }
-
     /// The smallest guardian fee rate this FA may propose right now, in ppm.
     ///
     /// Reads the durably admitted publication rather than refreshing it: the
@@ -113,24 +102,6 @@ where
             })
             .map_or(DEFAULT_SETUP_PAYMENT_MIN_FEE_PPM, |admitted| {
                 admitted.set().min_fee_ppm()
-            })
-    }
-
-    /// Refresh authenticated policy and select the canonical first
-    /// wallet-capable member for the lower-level pinned formation path.
-    pub(crate) async fn select_setup_payment_federation(
-        &self,
-        run: DriverRun<'_>,
-    ) -> FaResult<FederationId> {
-        let (policy_ids, payable) = self.payable_setup_payment_federations(run).await?;
-        policy_ids
-            .into_iter()
-            .find(|federation_id| payable.contains(federation_id))
-            .ok_or_else(|| {
-                FaError::Payment(
-                    "the consumer wallet can pay from no authenticated setup-payment federation"
-                        .to_owned(),
-                )
             })
     }
 
@@ -160,7 +131,7 @@ where
         Ok(requested.clone())
     }
 
-    async fn payable_setup_payment_federations(
+    pub(crate) async fn payable_setup_payment_federations(
         &self,
         run: DriverRun<'_>,
     ) -> FaResult<(Vec<FederationId>, HashSet<FederationId>)> {

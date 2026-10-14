@@ -273,11 +273,10 @@ pub enum SeatPhase {
 pub struct SeatPaymentRequirement {
     /// Stable selected-seat index.
     pub index: u16,
-    /// Badge-vouched identity of the MG the quote pays, absent for a
-    /// pinned MG. Presentation material; the payment binds to the quote.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// Badge-vouched identity of the MG the quote pays. Presentation
+    /// material; the payment binds to the quote.
     #[serde(rename = "fman_id")]
-    pub mg_id: Option<PublicKey>,
+    pub mg_id: PublicKey,
     /// Exact quote the authorization applies to.
     pub quote_id: QuoteId,
     /// Federation whose wallet will fund the quote.
@@ -287,14 +286,13 @@ pub struct SeatPaymentRequirement {
 }
 
 impl SeatPaymentRequirement {
-    /// Stable two-word display name derived from the authenticated MG id,
-    /// when one exists.
+    /// Stable two-word display name derived from the authenticated MG id.
     ///
     /// Names can collide and never substitute for [`Self::mg_id`] in
     /// identity, trust, or deduplication.
     #[must_use]
-    pub fn mg_name(&self) -> Option<MgName> {
-        self.mg_id.map(MgName::from_mg_id)
+    pub fn mg_name(&self) -> MgName {
+        MgName::from_mg_id(self.mg_id)
     }
 }
 
@@ -437,11 +435,10 @@ impl<'de> serde::Deserialize<'de> for GuardianReplacementId {
 pub struct GuardianReplacementSeat {
     /// Stable formation seat index.
     pub index: u16,
-    /// Badge-vouched identity of the outgoing MG, absent for a pinned MG.
-    /// Presentation material; the replacement binds to the quote and locator.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// Badge-vouched identity of the outgoing MG. Presentation material; the
+    /// replacement binds to the quote and locator.
     #[serde(rename = "previous_fman_id")]
-    pub previous_mg_id: Option<PublicKey>,
+    pub previous_mg_id: PublicKey,
     /// Exact terminal quote whose payment was released or refunded.
     pub previous_quote_id: QuoteId,
     /// Original locator retained for audit and exclusion from fresh selection.
@@ -450,13 +447,13 @@ pub struct GuardianReplacementSeat {
 
 impl GuardianReplacementSeat {
     /// Stable two-word display name derived from the outgoing MG's
-    /// authenticated id, when one exists.
+    /// authenticated id.
     ///
     /// Names can collide and never substitute for
     /// [`Self::previous_mg_id`] in identity, trust, or deduplication.
     #[must_use]
-    pub fn previous_mg_name(&self) -> Option<MgName> {
-        self.previous_mg_id.map(MgName::from_mg_id)
+    pub fn previous_mg_name(&self) -> MgName {
+        MgName::from_mg_id(self.previous_mg_id)
     }
 }
 
@@ -485,12 +482,11 @@ pub enum PurchaseActionRequired {
 pub struct SeatProgress {
     /// Stable selected-seat index.
     pub index: u16,
-    /// Badge-vouched identity of the currently assigned MG, absent for a
-    /// pinned MG. Presentation material only: the locator remains the
-    /// protocol-owned dialing and verification binding.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// Badge-vouched identity of the currently assigned MG. Presentation
+    /// material only: the locator remains the protocol-owned dialing and
+    /// verification binding.
     #[serde(rename = "fman_id")]
-    pub mg_id: Option<PublicKey>,
+    pub mg_id: PublicKey,
     /// Protocol-owned locator retained for reconnect and signature
     /// verification.
     pub locator: Locator,
@@ -505,14 +501,13 @@ pub struct SeatProgress {
 }
 
 impl SeatProgress {
-    /// Stable two-word display name derived from the authenticated MG id,
-    /// when one exists.
+    /// Stable two-word display name derived from the authenticated MG id.
     ///
     /// Names can collide and never substitute for [`Self::mg_id`] in
     /// identity, trust, or deduplication.
     #[must_use]
-    pub fn mg_name(&self) -> Option<MgName> {
-        self.mg_id.map(MgName::from_mg_id)
+    pub fn mg_name(&self) -> MgName {
+        MgName::from_mg_id(self.mg_id)
     }
 }
 
@@ -544,11 +539,9 @@ pub struct SeatPurchaseSnapshot {
 pub struct PoolSeat {
     /// MG-minted seat id.
     pub seat_id: SeatId,
-    /// Badge-vouched identity of the MG that hosts the seat, absent for a
-    /// pinned MG.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// Badge-vouched identity of the MG that hosts the seat.
     #[serde(rename = "fman_id")]
-    pub mg_id: Option<PublicKey>,
+    pub mg_id: PublicKey,
     /// Protocol-owned locator for the MG.
     pub locator: Locator,
     /// Exact Fedimint build the seat was bought for.
@@ -558,11 +551,10 @@ pub struct PoolSeat {
 }
 
 impl PoolSeat {
-    /// Stable two-word display name derived from the authenticated MG id,
-    /// when one exists.
+    /// Stable two-word display name derived from the authenticated MG id.
     #[must_use]
-    pub fn mg_name(&self) -> Option<MgName> {
-        self.mg_id.map(MgName::from_mg_id)
+    pub fn mg_name(&self) -> MgName {
+        MgName::from_mg_id(self.mg_id)
     }
 }
 
@@ -608,10 +600,9 @@ pub struct FederationSnapshot {
 /// One guardian seat of the federation.
 #[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
 pub struct FederationSeat {
-    /// Badge-vouched identity of the MG, absent for a pinned MG.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// Badge-vouched identity of the MG.
     #[serde(rename = "fman_id")]
-    pub mg_id: Option<PublicKey>,
+    pub mg_id: PublicKey,
     pub seat_id: SeatId,
     pub locator: Locator,
 }
