@@ -275,3 +275,263 @@ fn check_url_hosts(
         );
     }
 }
+
+fn app(setting: FederationAppSetting, value: &str) -> Result<(), InvalidFederationMetadataValue> {
+    FederationMetadataUpdate::app_setting(setting, value).map(|_| ())
+}
+
+fn community_invite(hrp: &str, payload: &str) -> String {
+    bech32::encode::<bech32::Bech32m>(bech32::Hrp::parse(hrp).unwrap(), payload.as_bytes()).unwrap()
+}
+
+#[test]
+fn app_setting_keys_are_distinct_prefixed_and_round_trip() {
+    let keys = FederationAppSetting::ALL
+        .into_iter()
+        .map(FederationAppSetting::key)
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(keys.len(), FederationAppSetting::ALL.len());
+    for setting in FederationAppSetting::ALL {
+        assert!(setting.key().starts_with("fedi:"), "{setting:?}");
+        assert_eq!(FederationAppSetting::from_key(setting.key()), Some(setting));
+    }
+    // Unprefixed aliases and Fedi-operated keys are not settings.
+    for key in [
+        "stability_pool_disabled",
+        "vetted_gateways",
+        "fedi:fixed_exchange_rate",
+    ] {
+        assert_eq!(FederationAppSetting::from_key(key), None);
+    }
+}
+
+#[test]
+fn app_setting_update_submits_the_exact_value_under_its_key() {
+    let (key, value) =
+        FederationMetadataUpdate::app_setting(FederationAppSetting::StabilityPoolDisabled, "false")
+            .unwrap()
+            .into_field();
+    assert_eq!(key.0, "fedi:stability_pool_disabled");
+    assert_eq!(value.0, "false");
+}
+
+#[test]
+fn flags_accept_only_the_exact_strings_the_app_compares() {
+    for setting in [
+        FederationAppSetting::StabilityPoolDisabled,
+        FederationAppSetting::NewMembersDisabled,
+    ] {
+        assert!(app(setting, "true").is_ok());
+        assert!(app(setting, "false").is_ok());
+        for value in ["True", "FALSE", "1", "0", "", " false", "false "] {
+            assert!(
+                app(setting, value).is_err(),
+                "{setting:?} accepted {value:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn msat_limits_are_canonical_and_bounded_by_the_bitcoin_supply() {
+    let setting = FederationAppSetting::MaxInvoiceMsats;
+    // Zero is meaningful to the app: it blocks every invoice.
+    for value in ["0", "1", "1000", "2100000000000000000"] {
+        assert!(app(setting, value).is_ok(), "{value}");
+    }
+    for value in [
+        "",
+        "00",
+        "01",
+        "+1",
+        "-1",
+        "1.5",
+        "1e3",
+        " 1",
+        "2100000000000000001",
+        "18446744073709551616",
+    ] {
+        assert!(app(setting, value).is_err(), "{value:?}");
+    }
+}
+
+#[test]
+fn currency_accepts_iso_codes_and_app_aliases_only() {
+    let setting = FederationAppSetting::DefaultCurrency;
+    for value in ["USD", "XAF", "cameroon", "cote_d_ivoire"] {
+        assert!(app(setting, value).is_ok(), "{value}");
+    }
+    for value in ["", "US", "USDT", "Usd", "_niger", "côte", "US D", "usd1"] {
+        assert!(app(setting, value).is_err(), "{value:?}");
+    }
+    assert!(app(setting, &"a".repeat(33)).is_err());
+}
+
+#[test]
+fn pinned_message_clears_with_empty_and_otherwise_matches_welcome_rules() {
+    let setting = FederationAppSetting::PinnedMessage;
+    assert!(app(setting, "").is_ok());
+    assert!(app(setting, " Maintenance on Friday ").is_ok());
+    assert!(
+        app(
+            setting,
+            &"a".repeat(FEDERATION_METADATA_WELCOME_MESSAGE_MAX_BYTES)
+        )
+        .is_ok()
+    );
+    // Whitespace alone would render an empty pinned card.
+    assert!(app(setting, "   ").is_err());
+    assert!(
+        app(
+            setting,
+            &"a".repeat(FEDERATION_METADATA_WELCOME_MESSAGE_MAX_BYTES + 1)
+        )
+        .is_err()
+    );
+    assert!(app(setting, "safe\u{202E}txt").is_err());
+    assert!(app(setting, "line\nbreak").is_err());
+}
+
+#[test]
+fn linked_communities_accept_v1_and_v2_invites_and_reject_lookalikes() {
+    let setting = FederationAppSetting::AutojoinCommunities;
+    let v1 = community_invite(
+        "fedi:community",
+        r#"{"community_meta_url":"https://example.com/c.json"}"#,
+    );
+    let v2 = community_invite("fedi:community2", r#"{"community_uuid_hex":"ab"}"#);
+    assert!(app(setting, "[]").is_ok());
+    assert!(app(setting, &serde_json::json!([v1, v2]).to_string()).is_ok());
+    // Fedi lowercases before decoding, so an uppercase code still joins.
+    assert!(app(setting, &serde_json::json!([v2.to_uppercase()]).to_string()).is_ok());
+
+    let wrong_hrp = community_invite("fedi:group", r#"{"id":"x"}"#);
+    let not_json = community_invite("fedi:community2", "not json");
+    let mut bad_checksum = v2.clone();
+    let last = bad_checksum.pop().unwrap();
+    bad_checksum.push(if last == 'q' { 'p' } else { 'q' });
+    for value in [
+        serde_json::json!([wrong_hrp]).to_string(),
+        serde_json::json!([not_json]).to_string(),
+        serde_json::json!([bad_checksum]).to_string(),
+        // The same community twice, differing only in case.
+        serde_json::json!([v2, v2.to_uppercase()]).to_string(),
+        serde_json::json!(v2).to_string(),
+        format!("[{}]", serde_json::json!({ "code": v2 })),
+        String::new(),
+    ] {
+        assert!(app(setting, &value).is_err(), "{value}");
+    }
+
+    let at_limit = (0..FEDERATION_APP_SETTING_MAX_COMMUNITIES)
+        .map(|index| {
+            community_invite(
+                "fedi:community",
+                &format!(r#"{{"community_meta_url":"https://example.com/{index}"}}"#),
+            )
+        })
+        .collect::<Vec<_>>();
+    assert!(app(setting, &serde_json::json!(at_limit).to_string()).is_ok());
+    let mut over_limit = at_limit;
+    over_limit.push(v2);
+    assert!(app(setting, &serde_json::json!(over_limit).to_string()).is_err());
+}
+
+#[test]
+fn group_chats_require_unique_matrix_room_ids() {
+    let setting = FederationAppSetting::DefaultGroupChats;
+    assert!(app(setting, "[]").is_ok());
+    assert!(app(setting, r#"["!abc:matrix.org","!def:matrix.org"]"#).is_ok());
+    for value in [
+        r#"["abc:matrix.org"]"#,
+        r#"["!abc"]"#,
+        r#"["!:matrix.org"]"#,
+        r#"["!abc:"]"#,
+        r#"["!a b:matrix.org"]"#,
+        r#"["!abc:matrix.org","!abc:matrix.org"]"#,
+        r#"[1]"#,
+        r#"{"room":"!abc:matrix.org"}"#,
+    ] {
+        assert!(app(setting, value).is_err(), "{value}");
+    }
+    // Matrix caps room ids at 255 bytes.
+    let longest = format!("!{}:s", "a".repeat(252));
+    assert!(app(setting, &serde_json::json!([longest]).to_string()).is_ok());
+    let too_long = format!("!{}:s", "a".repeat(253));
+    assert!(app(setting, &serde_json::json!([too_long]).to_string()).is_err());
+    let over_limit = (0..=FEDERATION_APP_SETTING_MAX_GROUP_CHATS)
+        .map(|index| format!("!room{index}:matrix.org"))
+        .collect::<Vec<_>>();
+    assert!(app(setting, &serde_json::json!(over_limit).to_string()).is_err());
+}
+
+#[test]
+fn fedimods_accept_the_app_shape_with_public_urls_only() {
+    let setting = FederationAppSetting::FediMods;
+    let full = serde_json::json!({
+        "id": "btcmap",
+        "title": "BTC Map",
+        "url": "https://btcmap.org/map",
+        "imageUrl": "https://example.com/btcmap.png",
+        "description": "Find merchants",
+        "color": "#ff9900",
+    });
+    let minimal = serde_json::json!({
+        "id": "faucet",
+        "title": "Faucet",
+        "url": "https://faucet.example.com/",
+    });
+    assert!(app(setting, "[]").is_ok());
+    assert!(app(setting, &serde_json::json!([full, minimal]).to_string()).is_ok());
+
+    let with = |key: &str, value: serde_json::Value| {
+        let mut entry = minimal.clone();
+        entry[key] = value;
+        serde_json::json!([entry]).to_string()
+    };
+    let without_url = {
+        let mut entry = minimal.clone();
+        entry.as_object_mut().unwrap().remove("url");
+        serde_json::json!([entry]).to_string()
+    };
+    for value in [
+        with("url", "javascript:alert(1)".into()),
+        with("url", "http://localhost:8080/".into()),
+        with("imageUrl", "http://192.168.1.1/x.png".into()),
+        with("title", "".into()),
+        with("title", "a\u{200B}b".into()),
+        with("id", " ".into()),
+        with("unexpected", "field".into()),
+        // The app's field is camelCase; a snake_case key would be ignored.
+        with("image_url", "https://example.com/x.png".into()),
+        without_url,
+        serde_json::json!([minimal, minimal]).to_string(),
+    ] {
+        assert!(app(setting, &value).is_err(), "{value}");
+    }
+    let over_limit = (0..=FEDERATION_APP_SETTING_MAX_FEDIMODS)
+        .map(|index| {
+            serde_json::json!({
+                "id": format!("mod{index}"),
+                "title": "Mod",
+                "url": "https://example.com/",
+            })
+        })
+        .collect::<Vec<_>>();
+    assert!(app(setting, &serde_json::json!(over_limit).to_string()).is_err());
+}
+
+#[test]
+fn app_settings_check_the_raw_cap_before_parsing() {
+    for setting in FederationAppSetting::ALL {
+        let max_bytes = setting.raw_max_bytes();
+        assert_eq!(
+            app(setting, &" ".repeat(max_bytes + 1)),
+            Err(InvalidFederationMetadataValue::RawTooLarge {
+                field: setting.key(),
+                max_bytes,
+            }),
+            "{setting:?}",
+        );
+    }
+}

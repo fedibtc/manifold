@@ -54,11 +54,14 @@ pub use locked_payment::{
     RefundTransaction, RefusalReason, SeatId,
 };
 pub use maintenance::{
+    FEDERATION_APP_SETTING_MAX_COMMUNITIES, FEDERATION_APP_SETTING_MAX_FEDIMODS,
+    FEDERATION_APP_SETTING_MAX_GROUP_CHATS, FEDERATION_APP_SETTING_MAX_MSATS,
     FEDERATION_METADATA_ICON_URL_MAX_BYTES, FEDERATION_METADATA_NAME_MAX_BYTES,
     FEDERATION_METADATA_OBJECT_MAX_BYTES, FEDERATION_METADATA_RAW_MAX_BYTES,
     FEDERATION_METADATA_TERMS_URL_MAX_BYTES, FEDERATION_METADATA_WELCOME_MESSAGE_MAX_BYTES,
-    FederationMetadataIconUrl, FederationMetadataName, FederationMetadataTermsUrl,
-    FederationMetadataUpdate, FederationMetadataWelcomeMessage, InvalidFederationMetadataValue,
+    FederationAppSetting, FederationAppSettingValue, FederationMetadataIconUrl,
+    FederationMetadataName, FederationMetadataTermsUrl, FederationMetadataUpdate,
+    FederationMetadataWelcomeMessage, InvalidFederationMetadataValue,
 };
 pub use mg_name::MgName;
 pub use service::{

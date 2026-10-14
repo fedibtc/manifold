@@ -8,16 +8,17 @@
 //! the declared cross-component surface*). Adding a key here is the decision
 //! to serve it; there is no runtime allowlist to widen.
 //!
-//! The narrow maintenance keys served here mirror Guardianito's existing
-//! automatic-approval behavior, with caller-supplied terms URLs. The directory,
-//! privacy-policy keys, and formation-owned guardian-fee remittance value are
-//! deliberately absent. The guardian-fee rate is the only fee field served
-//! here after formation.
+//! The name, icon, welcome, and terms keys mirror Guardianito's existing
+//! automatic-approval behavior, with caller-supplied terms URLs. The Fedi app
+//! settings are the [`FederationAppSetting`] keys. The directory,
+//! privacy-policy keys, formation-owned guardian-fee remittance value, and
+//! Fedi-operated keys such as `vetted_gateways` are deliberately absent. The
+//! guardian-fee rate is the only fee field served here after formation.
 
 use fedi_decentralized_service_manifold_guardian::{
     FEDERATION_ICON_URL_META_FIELD_KEY, FEDERATION_METADATA_RAW_MAX_BYTES,
-    FEDERATION_NAME_META_FIELD_KEY, FederationMetadataIconUrl, FederationMetadataName,
-    FederationMetadataTermsUrl, FederationMetadataWelcomeMessage,
+    FEDERATION_NAME_META_FIELD_KEY, FederationAppSetting, FederationMetadataIconUrl,
+    FederationMetadataName, FederationMetadataTermsUrl, FederationMetadataWelcomeMessage,
     GUARDIAN_FEE_SEND_PPM_META_FIELD_KEY, MetaFieldKey, MetaFieldValue,
     TERMS_OF_SERVICE_URL_META_FIELD_KEY, WELCOME_MESSAGE_META_FIELD_KEY,
 };
@@ -54,6 +55,20 @@ const VALIDATORS: &[&dyn MetaFieldValidator] = &[
     &FederationIconUrlValidator,
     &WelcomeMessageValidator,
     &TermsOfServiceUrlValidator,
+    &FederationAppSetting::AutojoinCommunities,
+    &FederationAppSetting::DefaultGroupChats,
+    &FederationAppSetting::FediMods,
+    &FederationAppSetting::PinnedMessage,
+    &FederationAppSetting::DefaultCurrency,
+    &FederationAppSetting::StabilityPoolDisabled,
+    &FederationAppSetting::MultispendDisabled,
+    &FederationAppSetting::InviteCodesDisabled,
+    &FederationAppSetting::NewMembersDisabled,
+    &FederationAppSetting::OfflineWalletDisabled,
+    &FederationAppSetting::OnchainDepositsDisabled,
+    &FederationAppSetting::MaxBalanceMsats,
+    &FederationAppSetting::MaxInvoiceMsats,
+    &FederationAppSetting::MaxStableBalanceMsats,
 ];
 
 fn validator_for(key: &str) -> Option<&'static dyn MetaFieldValidator> {
@@ -173,6 +188,22 @@ impl MetaFieldValidator for TermsOfServiceUrlValidator {
     fn validate(&self, value: &str) -> Result<(), MetaFieldError> {
         FederationMetadataTermsUrl::try_from(value.to_owned())
             .map(|_| ())
+            .map_err(|error| MetaFieldError::InvalidValue(error.to_string()))
+    }
+}
+
+/// Delegate to the shared Fedi app setting rules the FA pre-validates with.
+impl MetaFieldValidator for FederationAppSetting {
+    fn key(&self) -> &'static str {
+        FederationAppSetting::key(*self)
+    }
+
+    fn raw_value_max_bytes(&self) -> usize {
+        FederationAppSetting::raw_max_bytes(*self)
+    }
+
+    fn validate(&self, value: &str) -> Result<(), MetaFieldError> {
+        FederationAppSetting::validate(*self, value)
             .map_err(|error| MetaFieldError::InvalidValue(error.to_string()))
     }
 }
