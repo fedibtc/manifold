@@ -219,4 +219,27 @@ impl FaStore {
         }
         dbtx.commit_tx().await;
     }
+
+    /// Write an import that waits for reconciliation, as schema 11 did.
+    pub(crate) async fn write_pending_import_for_test(
+        &self,
+        fa_id: FaId,
+        payload: crate::backup::FaBackupPayload,
+    ) {
+        let formation_id =
+            crate::formation::restored_formation_id(fa_id, &payload.federation_invite).unwrap();
+        let mut dbtx = self.database.begin_transaction().await;
+        dbtx.insert_entry(
+            &RestoredBackupKey,
+            &RestoredBackupState {
+                fa_id,
+                payload,
+                formation_id,
+                backup_eligible: false,
+                federation_name: None,
+            },
+        )
+        .await;
+        dbtx.commit_tx().await;
+    }
 }

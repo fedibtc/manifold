@@ -3,19 +3,19 @@
 use std::{sync::Arc, time::Duration};
 
 use bitcoin_hashes::sha256;
-use fedi_decentralized_manifold_environment::ManifoldEnvironmentProfile;
 use fedi_decentralized_nostr_clients::NostrRelayClient;
 use fedimint_core::runtime::{Instant, sleep};
 use fedimint_core::task::TaskGroup;
 use fedimint_derive_secret::DerivableSecret;
 use nostr_sdk::{Event, EventBuilder, Filter, Kind, RelayUrl, Tag, Timestamp};
-use tokio::sync::{OwnedMutexGuard, watch};
+use tokio::sync::watch;
 
-use crate::backup::{EncryptedFaBackup, FA_BACKUP_D_TAG, FA_BACKUP_EVENT_KIND, FaBackupKeys};
+use crate::backup::{
+    EncryptedFaBackup, FA_BACKUP_D_TAG, FA_BACKUP_EVENT_KIND, FaBackupKeys, FaBackupPayload,
+};
 use crate::{
-    FaError, FaId, FaResult, RecoveryCheck,
+    FaError, FaResult,
     db::{BACKUP_REFRESH_INTERVAL_SECS, BackupRelayConfirmation, FaStore, RecoveryCompletedKey},
-    state::FaStatus,
 };
 
 const SCAN_INTERVAL: Duration = Duration::from_secs(30);
@@ -177,93 +177,18 @@ async fn deliver(relay: &RelayUrl, desired: &Desired) -> Result<(), FaError> {
     Ok(())
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum BackupRestoreOutcome {
-    Restored,
-    NoBackup,
-}
-
-pub(crate) struct RecoveryWorker {
-    pub(crate) store: FaStore,
-    pub(crate) root: DerivableSecret,
-    pub(crate) fa_id: FaId,
-    pub(crate) profile: ManifoldEnvironmentProfile,
-    pub(crate) progress: Arc<crate::run::Progress>,
-}
-
-pub(crate) fn spawn_recovery(
-    task_group: &TaskGroup,
-    worker: RecoveryWorker,
-    guard: OwnedMutexGuard<()>,
-) {
-    let RecoveryWorker {
-        store,
-        root,
-        fa_id,
-        profile,
-        progress,
-    } = worker;
-    let key = RecoveryCompletedKey::new(profile.environment());
-    // Capture independent state rather than FaClient: the task group is owned
-    // by FaClient, so capturing it here would keep the client alive forever.
-    task_group.spawn_cancellable("FA backup recovery", async move {
-        let guard = guard;
-        let mut delay = Duration::ZERO;
-        loop {
-            let result = restore_from_relays(
-                &store,
-                &root,
-                fa_id,
-                profile.nostr_relays().as_urls(),
-                profile.fa_backup_empty_read_quorum(),
-                &key,
-            )
-            .await;
-            let result = match result {
-                Ok(BackupRestoreOutcome::Restored) => store.load_status(fa_id).await.map(Some),
-                Ok(BackupRestoreOutcome::NoBackup) => Ok(None),
-                Err(error) => Err(error),
-            };
-            match result {
-                Ok(status) => {
-                    // The first ready status must be published only after the
-                    // mutation guard is released.
-                    drop(guard);
-                    progress.replace(status.unwrap_or_default());
-                    break;
-                }
-                Err(error) => {
-                    tracing::warn!(error_code = ?error.code(), "FA backup lookup will retry");
-                    progress.replace(FaStatus {
-                        recovery: Some(RecoveryCheck {
-                            last_error: Some(error.code()),
-                        }),
-                        ..FaStatus::default()
-                    });
-                    delay = if delay.is_zero() {
-                        Duration::from_secs(1)
-                    } else {
-                        delay.saturating_mul(2).min(Duration::from_secs(5 * 60))
-                    };
-                    sleep(delay).await;
-                    progress.replace(FaStatus {
-                        recovery: Some(RecoveryCheck { last_error: None }),
-                        ..FaStatus::default()
-                    });
-                }
-            }
-        }
-    });
+/// Where a restored mnemonic looks for its FA backup.
+pub(crate) struct BackupSource {
+    pub(crate) relays: Vec<RelayUrl>,
+    pub(crate) required_reads: usize,
+    pub(crate) completed: RecoveryCompletedKey,
 }
 
 // Empty is admitted only after a majority completed. The remaining relays
 // are still queried until their deadlines to find a possible backup.
-fn no_backup_or_unavailable(
-    successful_reads: usize,
-    required_reads: usize,
-) -> FaResult<BackupRestoreOutcome> {
+fn no_backup_or_unavailable(successful_reads: usize, required_reads: usize) -> FaResult<()> {
     if required_reads > 0 && successful_reads >= required_reads {
-        Ok(BackupRestoreOutcome::NoBackup)
+        Ok(())
     } else {
         Err(FaError::Registry(
             "FA backup relay lookup incomplete".to_owned(),
@@ -271,27 +196,13 @@ fn no_backup_or_unavailable(
     }
 }
 
-pub(crate) async fn restore_from_relays(
-    store: &FaStore,
+/// Fetch the newest backup this root can open, or `None` when a read quorum
+/// holds no backup.
+pub(crate) async fn fetch_backup(
     root: &DerivableSecret,
-    fa_id: FaId,
     relays: &[RelayUrl],
     required_reads: usize,
-    recovery: &RecoveryCompletedKey,
-) -> FaResult<BackupRestoreOutcome> {
-    if store.recovery_completed(recovery).await {
-        return Ok(
-            if store
-                .load_federation(fa_id)
-                .await?
-                .is_some_and(|federation| !federation.reconciled)
-            {
-                BackupRestoreOutcome::Restored
-            } else {
-                BackupRestoreOutcome::NoBackup
-            },
-        );
-    }
+) -> FaResult<Option<FaBackupPayload>> {
     let keys = FaBackupKeys::derive(root);
     let queries = relays.iter().cloned().map(|relay| {
         let author = keys.public_key();
@@ -330,25 +241,17 @@ pub(crate) async fn restore_from_relays(
             let Ok(payload) = keys.open(&candidate) else {
                 continue;
             };
-            if best
-                .as_ref()
-                .is_none_or(|current: &crate::backup::FaBackupPayload| {
-                    payload.snapshot_generation > current.snapshot_generation
-                })
-            {
+            if best.as_ref().is_none_or(|current: &FaBackupPayload| {
+                payload.snapshot_generation > current.snapshot_generation
+            }) {
                 best = Some(payload);
             }
         }
     }
-    let Some(payload) = best else {
-        let outcome = no_backup_or_unavailable(successful_reads, required_reads)?;
-        store.complete_empty_recovery(recovery).await?;
-        return Ok(outcome);
-    };
-    store
-        .restore_backup_payload_with_completion(fa_id, payload, Some(recovery))
-        .await?;
-    Ok(BackupRestoreOutcome::Restored)
+    if best.is_none() {
+        no_backup_or_unavailable(successful_reads, required_reads)?;
+    }
+    Ok(best)
 }
 
 #[cfg(test)]
@@ -359,14 +262,8 @@ mod tests {
 
     #[test]
     fn empty_restore_requires_a_complete_read_quorum() {
-        assert_eq!(
-            no_backup_or_unavailable(2, 2).unwrap(),
-            BackupRestoreOutcome::NoBackup
-        );
-        assert_eq!(
-            no_backup_or_unavailable(3, 2).unwrap(),
-            BackupRestoreOutcome::NoBackup
-        );
+        no_backup_or_unavailable(2, 2).unwrap();
+        no_backup_or_unavailable(3, 2).unwrap();
         for (completed, required) in [(0, 1), (1, 2), (0, 2)] {
             assert!(matches!(
                 no_backup_or_unavailable(completed, required),

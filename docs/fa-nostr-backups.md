@@ -13,8 +13,8 @@ relay failures never block FA operations.
 
 Restore enumerates the configured relays under the derived author and stable
 `d` tag, rejects foreign signatures, ignores malformed or undecryptable event
-content, and imports the highest authenticated `snapshot_generation` as local
-`Unsynced` recovery facts. Fedi supplies one active writer; the protocol has no
+content, and imports the highest authenticated `snapshot_generation` once
+federation consensus confirms it. Fedi supplies one active writer; the protocol has no
 delete event, tombstone, writer fork, or conflict-resolution machinery.
 
 The encrypted payload contains only the permanent formed federation invite,

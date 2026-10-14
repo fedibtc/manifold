@@ -3490,31 +3490,132 @@ where
         Ok(())
     }
 
-    pub(crate) async fn reconcile_restored(
+    /// Recheck the stored federation against consensus.
+    pub(crate) async fn reconcile_federation(
         &self,
         snapshot: crate::FederationSnapshot,
         fa_id: FaId,
         run: DriverRun<'_>,
     ) -> FaResult<()> {
-        let (seats, liquidity) = self
-            .inner
-            .store
-            .restored_reconciliation_input(fa_id)
+        let seats = snapshot
+            .seats
+            .iter()
+            .map(|seat| crate::liquidity::FormedMgSeat {
+                mg_id: seat.mg_id,
+                locator: seat.locator.clone(),
+                seat_id: seat.seat_id.clone(),
+            })
+            .collect();
+        let federation_name = self
+            .verify_federation(&snapshot.federation_invite, seats, None, run)
             .await?;
+        self.inner
+            .store
+            .record_federation_name(fa_id, federation_name)
+            .await?;
+        let mut federation = self.inner.store.load_federation(fa_id).await?;
+        if let Some(federation) = federation.as_mut() {
+            federation.freshness = FormationFreshness::Fresh;
+        }
+        self.publish_federation(federation);
+        Ok(())
+    }
+
+    /// Look up the backup of a restored mnemonic and import it.
+    pub(crate) async fn recover_backup(&self, fa_id: FaId, run: DriverRun<'_>) -> FaResult<()> {
+        let source = self
+            .inner
+            .backup_source
+            .as_ref()
+            .expect("only a client with a backup source starts in recovery");
+        let root = self.inner.ports.identity.scoped_root();
+        let payload = run
+            .call_with_timeout("reading FA backup relays", run.options.run_timeout, || {
+                Ok(crate::backup_worker::fetch_backup(
+                    &root,
+                    &source.relays,
+                    source.required_reads,
+                ))
+            })
+            .await??;
+        self.import_backup(payload, &source.completed, fa_id, run)
+            .await
+    }
+
+    /// Import a fetched backup once consensus confirms it, and mark the
+    /// lookup done. The backup stays in memory until then, so a failed check
+    /// leaves nothing behind.
+    pub(crate) async fn import_backup(
+        &self,
+        payload: Option<crate::backup::FaBackupPayload>,
+        completed: &crate::db::RecoveryCompletedKey,
+        fa_id: FaId,
+        run: DriverRun<'_>,
+    ) -> FaResult<()> {
+        let Some(payload) = payload else {
+            self.inner.store.complete_empty_recovery(completed).await?;
+            self.inner
+                .progress
+                .replace(crate::state::FaStatus::default());
+            return Ok(());
+        };
+        let seats = payload
+            .seats
+            .iter()
+            .map(|seat| crate::liquidity::FormedMgSeat {
+                mg_id: seat.mg_identity,
+                locator: seat.locator.clone(),
+                seat_id: seat.seat_id.clone(),
+            })
+            .collect();
+        let federation_name = self
+            .verify_federation(
+                &payload.federation_invite,
+                seats,
+                payload.liquidity.as_ref(),
+                run,
+            )
+            .await?;
+        self.inner
+            .store
+            .import_backup(fa_id, payload, federation_name, completed)
+            .await?;
+        let mut federation = self.inner.store.load_federation(fa_id).await?;
+        if let Some(federation) = federation.as_mut() {
+            federation.freshness = FormationFreshness::Fresh;
+        }
+        self.inner.progress.replace(crate::state::FaStatus {
+            federation,
+            ..crate::state::FaStatus::default()
+        });
+        Ok(())
+    }
+
+    /// Check a federation against consensus: its identity, seat-binding
+    /// directory, seats, and liquidity commitment. Return its consensus name.
+    async fn verify_federation(
+        &self,
+        invite: &InviteCode,
+        seats: Vec<crate::liquidity::FormedMgSeat>,
+        liquidity: Option<
+            &fedi_decentralized_service_liquidity_manager::RequestLiquidityDetailsCommitmentV1,
+        >,
+        run: DriverRun<'_>,
+    ) -> FaResult<Option<crate::FederationName>> {
         if seats.is_empty() {
             return Err(FaError::InvalidManifoldGuardians(
                 "restored FA backup contains no seats".to_owned(),
             ));
         }
         let consensus = self
-            .read_recovery_consensus(&snapshot.federation_invite, run)
+            .read_recovery_consensus(invite, run)
             .await?
             .map_err(|error| {
                 FaError::InvalidManifoldGuardians(format!(
                     "reading restored federation consensus failed: {error}"
                 ))
             })?;
-        verify_consensus_identity(&consensus, &snapshot.federation_invite)?;
+        verify_consensus_identity(&consensus, invite)?;
         let federation = federation_seats(&consensus.config).map_err(|error| {
             FaError::InvalidManifoldGuardians(format!(
                 "restored federation config is not usable: {error}"
@@ -3536,48 +3637,27 @@ where
         let federation_name = federation_name(&consensus)?;
         let validation_name = federation_name
             .clone()
-            .or_else(|| {
-                liquidity
-                    .as_ref()
-                    .map(|value| value.federation_details.federation_name.clone())
-            })
+            .or_else(|| liquidity.map(|value| value.federation_details.federation_name.clone()))
             .unwrap_or_else(|| crate::FederationName(String::new()));
         let context = crate::liquidity::FormedLiquidityContext {
             federation_name: validation_name,
-            invite_code: snapshot.federation_invite.clone(),
+            invite_code: invite.clone(),
             network: consensus.network,
             federation,
             bindings,
-            seats: seats
-                .iter()
-                .map(|seat| crate::liquidity::FormedMgSeat {
-                    mg_id: seat.mg_identity,
-                    locator: seat.locator.clone(),
-                    seat_id: seat.seat_id.clone(),
-                })
-                .collect(),
+            seats,
         };
         context.fleet_seat_hints().map_err(|error| {
             FaError::InvalidManifoldGuardians(format!(
                 "restored seats do not match federation consensus: {error}"
             ))
         })?;
-        if let Some(commitment) = &liquidity {
+        if let Some(commitment) = liquidity {
             context.matches_commitment(commitment)?;
         }
 
-        self.remember_read_invite(&snapshot.federation_invite, &consensus)
-            .await?;
-        self.inner
-            .store
-            .reconcile_restored_backup(fa_id, federation_name)
-            .await?;
-        let mut federation = self.inner.store.load_federation(fa_id).await?;
-        if let Some(federation) = federation.as_mut() {
-            federation.freshness = FormationFreshness::Fresh;
-        }
-        self.publish_federation(federation);
-        Ok(())
+        self.remember_read_invite(invite, &consensus).await?;
+        Ok(federation_name)
     }
 
     async fn seat_sessions(

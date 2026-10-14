@@ -2523,6 +2523,25 @@ where
             .await
     }
 
+    /// The import step of a backup lookup, on a payload the relays returned.
+    async fn import_backup_for_test(
+        &self,
+        payload: Option<crate::backup::FaBackupPayload>,
+    ) -> FaResult<()> {
+        let options = FormationRunOptions::default();
+        let fa_id = self.fa_id()?;
+        let (deadline, lease) =
+            crate::formation::start_driver_run(&self.inner.store, options).await?;
+        let run = crate::formation::DriverRun::new(options, deadline, &lease);
+        let result = self
+            .import_backup(payload, &staging_recovery(), fa_id, run)
+            .await;
+        crate::formation::finish_driver_run(
+            result,
+            self.inner.store.release_driver_lease(lease).await,
+        )
+    }
+
     /// Drive the running purchase, or without one every later piece of
     /// work, as [`Self::drive_all_for_test`] does.
     async fn drive_with_options(&self, options: FormationRunOptions) -> FaResult<()> {
@@ -2592,7 +2611,7 @@ where
                 } else {
                     let snapshot = reconcile.expect("one piece of work was chosen");
                     self.begin_recheck();
-                    let result = self.reconcile_restored(snapshot, fa_id, run).await;
+                    let result = self.reconcile_federation(snapshot, fa_id, run).await;
                     if let Err(error) = &result {
                         self.fail_recheck(error);
                     }
@@ -3613,7 +3632,6 @@ async fn schema_11_formed_federation_keeps_its_record_and_rechecks() {
         assert!(status.purchase.is_none(), "{fixture:?}");
         assert!(status.formation.is_none(), "{fixture:?}");
         let federation = federation(&status);
-        assert!(federation.reconciled, "{fixture:?}");
         assert_eq!(federation.federation_invite, test_invite(0), "{fixture:?}");
         assert_eq!(federation.seats.len(), usize::from(MIN_FEDERATION_SIZE));
         // Only the federation record remains.
@@ -3716,7 +3734,7 @@ async fn open_with_backup_recovery_hint(
 }
 
 #[tokio::test]
-async fn automatic_backup_recovery_claims_mutations_before_open_returns() {
+async fn backup_lookup_blocks_actions_until_it_ends() {
     let database = MemDatabase::new().into_database();
     let fresh = open_with_backup_recovery_hint(database.clone(), BackupRecoveryHint::Skip).await;
     assert_eq!(fresh.status(), FaStatus::default());
@@ -3726,66 +3744,67 @@ async fn automatic_backup_recovery_claims_mutations_before_open_returns() {
         open_with_backup_recovery_hint(database.clone(), BackupRecoveryHint::RestoredMnemonic)
             .await;
     assert_eq!(restored.status(), recovering(None));
-    assert!(
-        restored.inner.run_guard.try_lock().is_err(),
-        "lookup holds the FA mutation guard before open returns"
-    );
+    assert!(matches!(
+        restored.claim_run_guard().await,
+        Err(FaError::Busy)
+    ));
+    // A relay quorum without a backup ends the lookup for good.
+    restored.import_backup_for_test(None).await.unwrap();
+    assert_eq!(restored.status(), FaStatus::default());
+    assert!(restored.claim_run_guard().await.is_ok());
     drop(restored);
 
-    let store = crate::db::FaStore::new(database.clone());
-    store
-        .complete_empty_recovery(&crate::db::RecoveryCompletedKey::new(
-            ManifoldEnvironment::Staging,
-        ))
-        .await
-        .unwrap();
     let checked =
         open_with_backup_recovery_hint(database, BackupRecoveryHint::RestoredMnemonic).await;
     assert_eq!(checked.status(), FaStatus::default());
-    assert!(checked.inner.run_guard.try_lock().is_ok());
 }
 
 #[tokio::test]
-async fn backup_recovery_publishes_ready_only_after_releasing_the_guard() {
-    let database = MemDatabase::new().into_database();
-    let store = crate::db::FaStore::new(database.clone());
-    store
-        .complete_empty_recovery(&crate::db::RecoveryCompletedKey::new(
-            ManifoldEnvironment::Staging,
-        ))
-        .await
-        .unwrap();
+async fn run_loop_retries_a_backup_lookup_without_a_relay_quorum() {
+    let state = Arc::new(MgState::default());
     let (payments, _) = TestPayments::new();
-    let client = open_client(
-        database,
-        payments,
-        Arc::new(MgState::default()),
-        MgConfig::given_away(),
-    )
-    .await;
-    let guard = client.inner.run_guard.clone().try_lock_owned().unwrap();
-    client.inner.progress.replace(recovering(None));
-    let mut status = client.observe();
-    crate::backup_worker::spawn_recovery(
-        &client.inner.backup_tasks,
-        crate::backup_worker::RecoveryWorker {
-            store: client.inner.store.clone(),
-            root: client.inner.ports.identity.scoped_root(),
-            fa_id: TestIdentity::fa_id(),
-            profile: ManifoldEnvironment::Staging.profile().unwrap(),
-            progress: client.inner.progress.clone(),
+    let client = FaClient::open_inner(
+        MemDatabase::new().into_database(),
+        FaClientPorts {
+            identity: TestIdentity,
+            payments,
+            registry: TestRegistry::default(),
+            mg_connector: TestConnector {
+                state: state.clone(),
+                config: MgConfig::given_away(),
+            },
+            consensus_reader: TestConsensusReader::new(state),
+            fa_fee_account_provider: Arc::new(TestFaFeeAccountProvider::default()),
         },
-        guard,
-    );
-    tokio::time::timeout(std::time::Duration::from_secs(2), status.changed())
-        .await
-        .expect("completed check publishes a ready status")
-        .unwrap();
-    assert_eq!(client.status(), FaStatus::default());
+        test_peer_badge_verifier(),
+        None,
+        None,
+        Some(crate::backup_worker::BackupSource {
+            relays: Vec::new(),
+            required_reads: 1,
+            completed: staging_recovery(),
+        }),
+    )
+    .await
+    .unwrap();
+    assert_eq!(client.status(), recovering(None));
+    let mut state = client.observe();
+    let failed = state.wait_for(|state| *state != FaState::Restoring(RecoveryCheck::default()));
+    tokio::select! {
+        () = client.run(options()) => unreachable!("the run loop does not return"),
+        result = tokio::time::timeout(Duration::from_secs(5), failed) => {
+            result.expect("the loop runs the lookup").unwrap();
+        }
+    }
+    assert_eq!(client.status(), recovering(Some(FaErrorCode::Registry)));
     assert!(
-        client.inner.run_guard.try_lock().is_ok(),
-        "ready status never precedes release of the mutation guard"
+        !client
+            .inner
+            .store
+            .recovery_completed(&staging_recovery())
+            .await
     );
+    assert!(matches!(client.claim_run_guard().await, Err(FaError::Busy)));
 }
 
 #[tokio::test]
@@ -3796,39 +3815,15 @@ async fn empty_backup_recovery_completion_survives_reopen_and_is_environment_sco
     let different_environment = crate::db::RecoveryCompletedKey::new(ManifoldEnvironment::Staging);
     assert!(!store.recovery_completed(&completed).await);
     store.complete_empty_recovery(&completed).await.unwrap();
-    let reopened = crate::db::FaStore::new(database.clone());
+    let reopened = crate::db::FaStore::new(database);
     assert!(reopened.recovery_completed(&completed).await);
     assert!(!reopened.recovery_completed(&different_environment).await);
     assert!(reopened.load_status(TestIdentity::fa_id()).await.unwrap() == FaStatus::default());
-    let (payments, _) = TestPayments::new();
-    let client = open_client(
-        database,
-        payments,
-        Arc::new(MgState::default()),
-        MgConfig::given_away(),
-    )
-    .await;
-    let profile = ManifoldEnvironment::Production.profile().unwrap();
-    assert_eq!(client.status(), FaStatus::default());
-    assert_eq!(
-        crate::backup_worker::restore_from_relays(
-            &client.inner.store,
-            &client.inner.ports.identity.scoped_root(),
-            TestIdentity::fa_id(),
-            profile.nostr_relays().as_urls(),
-            profile.fa_backup_empty_read_quorum(),
-            &completed,
-        )
-        .await
-        .unwrap(),
-        crate::backup_worker::BackupRestoreOutcome::NoBackup,
-        "a completed empty check returns without contacting relays"
-    );
 }
 
 #[tokio::test]
-async fn encrypted_backup_restore_imports_unsynced_lean_state_and_blocks_create() {
-    let (source, _, _, _) = formed_client_for_liquidity().await;
+async fn verified_backup_import_commits_federation_and_lookup_together() {
+    let (source, _, state, _) = formed_client_for_liquidity().await;
     let keys = crate::backup::FaBackupKeys::derive(&source.inner.ports.identity.scoped_root());
     let encrypted = keys
         .seal(&source.inner.store.backup_payload().await.unwrap().payload)
@@ -3838,12 +3833,11 @@ async fn encrypted_backup_restore_imports_unsynced_lean_state_and_blocks_create(
     let newer = keys.seal(&newer_payload).unwrap();
     let invalid = crate::backup::EncryptedFaBackup::from_bytes(b"not base64".to_vec()).err();
     assert!(invalid.is_some());
-    let database = MemDatabase::new().into_database();
     let (payments, _) = TestPayments::new();
     let restored = open_client(
-        database,
+        MemDatabase::new().into_database(),
         payments,
-        Arc::new(MgState::default()),
+        state,
         MgConfig::given_away(),
     )
     .await;
@@ -3853,47 +3847,20 @@ async fn encrypted_backup_restore_imports_unsynced_lean_state_and_blocks_create(
         .max_by_key(|payload| payload.snapshot_generation)
         .unwrap();
     assert_eq!(payload.snapshot_generation, 4);
-    let fa_id = restored.inner.ports.identity.public_key().unwrap();
-    let status = restored
-        .inner
-        .store
-        .restore_backup_payload_with_completion(
-            fa_id,
-            payload,
-            Some(&crate::db::RecoveryCompletedKey::new(
-                ManifoldEnvironment::Production,
-            )),
-        )
+    restored
+        .import_backup_for_test(Some(payload))
         .await
         .unwrap();
-    restored.inner.progress.replace(status);
     assert!(
         restored
             .inner
             .store
-            .recovery_completed(&crate::db::RecoveryCompletedKey::new(
-                ManifoldEnvironment::Production
-            ))
+            .recovery_completed(&staging_recovery())
             .await,
-        "the authenticated import and completion record commit together"
+        "the import and the completed lookup commit together"
     );
     let snapshot = restored.status().federation.expect("restored status");
-    assert_eq!(snapshot.freshness, FormationFreshness::Unsynced);
-    let profile = ManifoldEnvironment::Production.profile().unwrap();
-    assert_eq!(
-        crate::backup_worker::restore_from_relays(
-            &restored.inner.store,
-            &restored.inner.ports.identity.scoped_root(),
-            fa_id,
-            profile.nostr_relays().as_urls(),
-            profile.fa_backup_empty_read_quorum(),
-            &crate::db::RecoveryCompletedKey::new(ManifoldEnvironment::Production),
-        )
-        .await
-        .unwrap(),
-        crate::backup_worker::BackupRestoreOutcome::Restored,
-        "the committed import completes recovery without a second relay read"
-    );
+    assert_eq!(snapshot.freshness, FormationFreshness::Fresh);
     assert_eq!(snapshot.seats.len(), usize::from(MIN_FEDERATION_SIZE));
     assert!(
         restored
@@ -3901,46 +3868,27 @@ async fn encrypted_backup_restore_imports_unsynced_lean_state_and_blocks_create(
             .await
             .is_err()
     );
+    assert!(matches!(
+        restored.import_backup_for_test(Some(newer_payload)).await,
+        Err(FaError::Storage(_))
+    ));
 }
 
 #[tokio::test]
-async fn backup_import_keeps_cached_policy_and_waits_only_for_live_lease() {
+async fn backup_import_keeps_cached_setup_payment_policy() {
     let (source, _, _, _) = formed_client_for_liquidity().await;
     let payload = source.inner.store.backup_payload().await.unwrap().payload;
-    let database = MemDatabase::new().into_database();
-    let clock = Arc::new(AtomicU64::new(100));
-    let store = db::FaStore::new_with_lease_clock(database.clone(), {
-        let clock = clock.clone();
-        Arc::new(move || clock.load(Ordering::SeqCst))
-    });
+    let store = db::FaStore::new(MemDatabase::new().into_database());
     let cached = setup_payment_event(test_now_secs(), &[PAYMENT_INVITE]);
     store
         .store_setup_payment_federations_event(cached.clone())
         .await
         .unwrap();
-    let lease = store
-        .acquire_driver_lease(Duration::from_secs(30), Duration::from_secs(5))
+    store
+        .import_backup(TestIdentity::fa_id(), payload, None, &staging_recovery())
         .await
         .unwrap();
-    let key = db::RecoveryCompletedKey::new(ManifoldEnvironment::Staging);
-    assert!(matches!(
-        store
-            .restore_backup_payload_with_completion(
-                TestIdentity::fa_id(),
-                payload.clone(),
-                Some(&key)
-            )
-            .await,
-        Err(FaError::Storage(_))
-    ));
-    assert!(!store.recovery_completed(&key).await);
-    clock.store(106, Ordering::SeqCst);
-    let status = store
-        .restore_backup_payload_with_completion(TestIdentity::fa_id(), payload, Some(&key))
-        .await
-        .unwrap();
-    assert!(status.federation.is_some());
-    assert!(store.recovery_completed(&key).await);
+    assert!(store.recovery_completed(&staging_recovery()).await);
     assert_eq!(
         store
             .load_setup_payment_federations_event()
@@ -3949,59 +3897,33 @@ async fn backup_import_keeps_cached_policy_and_waits_only_for_live_lease() {
             .id,
         cached.id
     );
-    drop(lease);
 }
 
 #[tokio::test]
-async fn restored_snapshot_reports_reconciled_after_reconcile() {
+async fn legacy_pending_backup_import_is_looked_up_again() {
     let (source, _, _, _) = formed_client_for_liquidity().await;
-    let keys = crate::backup::FaBackupKeys::derive(&source.inner.ports.identity.scoped_root());
-    let encrypted = keys
-        .seal(&source.inner.store.backup_payload().await.unwrap().payload)
-        .unwrap();
+    let payload = source.inner.store.backup_payload().await.unwrap().payload;
     let database = MemDatabase::new().into_database();
-    let (payments, _) = TestPayments::new();
-    let restored = open_client(
-        database,
-        payments,
-        Arc::new(MgState::default()),
-        MgConfig::given_away(),
-    )
-    .await;
-    let payload = keys.open(&encrypted).unwrap();
-    let fa_id = restored.inner.ports.identity.public_key().unwrap();
-    let status = restored
-        .inner
-        .store
-        .restore_backup_payload(fa_id, payload)
+    let store = db::FaStore::new(database.clone());
+    store
+        .write_pending_import_for_test(TestIdentity::fa_id(), payload)
+        .await;
+    store
+        .complete_empty_recovery(&staging_recovery())
         .await
         .unwrap();
-    restored.inner.progress.replace(status);
-
-    let snapshot = restored
-        .inner
-        .store
-        .load_federation(fa_id)
-        .await
-        .unwrap()
-        .expect("expected restored recovery");
-    assert!(!snapshot.reconciled);
-
-    restored
-        .inner
-        .store
-        .reconcile_restored_backup(fa_id, None)
-        .await
-        .unwrap();
-
-    let snapshot = restored
-        .inner
-        .store
-        .load_federation(fa_id)
-        .await
-        .unwrap()
-        .expect("expected restored recovery");
-    assert!(snapshot.reconciled);
+    let reopened =
+        open_with_backup_recovery_hint(database, BackupRecoveryHint::RestoredMnemonic).await;
+    assert_eq!(reopened.status(), recovering(None));
+    assert!(
+        reopened
+            .inner
+            .store
+            .load_federation(TestIdentity::fa_id())
+            .await
+            .unwrap()
+            .is_none()
+    );
 }
 
 #[tokio::test]
@@ -4027,15 +3949,10 @@ async fn restored_federation_name_uses_consensus_without_a_liquidity_backup() {
             MgConfig::given_away(),
         )
         .await;
-        let fa_id = restored.inner.ports.identity.public_key().unwrap();
-        let status = restored
-            .inner
-            .store
-            .restore_backup_payload(fa_id, payload.clone())
+        restored
+            .import_backup_for_test(Some(payload.clone()))
             .await
             .unwrap();
-        restored.inner.progress.replace(status);
-        restored.drive().await.unwrap();
         let snapshot = restored.status().federation.expect("restored status");
         assert_eq!(
             snapshot.federation_name,
@@ -4123,32 +4040,16 @@ async fn restored_backup_reconciles_to_usable_authority_and_hydrates_liquidity()
     // A generation the restored FA could not reach by counting from one.
     payload.snapshot_generation = 7;
     let fa_id = restored.inner.ports.identity.public_key().unwrap();
-    let status = restored
-        .inner
-        .store
-        .restore_backup_payload(fa_id, payload.clone())
-        .await
-        .unwrap();
-    restored.inner.progress.replace(status);
-    let imported = restored.status().federation.expect("restored status");
-    assert_eq!(imported.freshness, FormationFreshness::Unsynced);
-    let restored_formation_id = imported.formation_id.clone();
+    let restored_formation_id =
+        crate::formation::restored_formation_id(fa_id, &payload.federation_invite).unwrap();
     let restored_generation = payload.snapshot_generation;
-    assert!(
-        !imported.reconciled,
-        "restored snapshot is not backup-eligible before reconciliation"
-    );
-    assert!(
-        restored.inner.store.backup_payload().await.is_err(),
-        "an imported snapshot is not backup-eligible before authority reconciliation",
-    );
 
     let connect_calls = mg_state.connect_calls.load(Ordering::SeqCst);
     mg_state
         .connect_failures_remaining
         .store(usize::MAX, Ordering::SeqCst);
     restored
-        .drive()
+        .import_backup_for_test(Some(payload.clone()))
         .await
         .expect("verify restored seats through consensus while managers are unreachable");
     let reconciled = restored
@@ -4156,10 +4057,6 @@ async fn restored_backup_reconciles_to_usable_authority_and_hydrates_liquidity()
         .federation
         .expect("reconciled restored status");
     assert_eq!(reconciled.freshness, FormationFreshness::Fresh);
-    assert!(
-        reconciled.reconciled,
-        "reconciliation must publish reconciled on the live status"
-    );
     assert_eq!(reconciled.formation_id, restored_formation_id);
     assert_eq!(mg_state.connect_calls.load(Ordering::SeqCst), connect_calls);
     let republished = restored.inner.store.backup_payload().await.unwrap();
@@ -4319,15 +4216,11 @@ async fn restored_recovery_rejects_unverified_consensus_and_changed_seats() {
             reader,
         )
         .await;
-        let status = restored
-            .inner
-            .store
-            .restore_backup_payload(TestIdentity::fa_id(), payload)
-            .await
-            .unwrap();
-        restored.inner.progress.replace(status);
         let calls = state.connect_calls.load(Ordering::SeqCst);
-        let error = restored.drive().await.expect_err(fault);
+        let error = restored
+            .import_backup_for_test(Some(payload))
+            .await
+            .expect_err(fault);
         if fault == "identity" {
             assert!(
                 error
@@ -4335,12 +4228,24 @@ async fn restored_recovery_rejects_unverified_consensus_and_changed_seats() {
                     .contains("identity differs from the saved invite")
             );
         }
-        let snapshot = restored
-            .status()
-            .federation
-            .expect("expected restored status");
-        assert_eq!(snapshot.freshness, FormationFreshness::Unsynced);
-        assert!(!snapshot.reconciled);
+        // A rejected backup leaves nothing behind, and the lookup retries.
+        assert!(restored.status().federation.is_none());
+        assert!(
+            restored
+                .inner
+                .store
+                .load_federation(TestIdentity::fa_id())
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            !restored
+                .inner
+                .store
+                .recovery_completed(&staging_recovery())
+                .await
+        );
         assert!(
             restored
                 .current_liquidity_operation()
@@ -4586,6 +4491,7 @@ async fn open_client_that_cannot_pay(
         test_peer_badge_verifier(),
         None,
         Some(guardian_fee_account(31)),
+        None,
     )
     .await
     .expect("open test FA client")
@@ -4689,6 +4595,7 @@ async fn open_client_with_registry_reader_and_fee_account(
         test_peer_badge_verifier(),
         Some(setup_payment_keys().public_key()),
         Some(guardian_fee_account(31)),
+        None,
     )
     .await
     .expect("open test FA client")
@@ -4723,6 +4630,7 @@ async fn open_client_with_verifier(
         verifier,
         Some(setup_payment_keys().public_key()),
         Some(guardian_fee_account(31)),
+        None,
     )
     .await
     .expect("open test FA client with explicit verifier")
@@ -4770,12 +4678,17 @@ async fn open_client_with_store_and_registry(
             progress,
             control: crate::run::RunControl::default(),
             run_guard: Arc::new(tokio::sync::Mutex::new(())),
+            backup_source: None,
             peer_badge_verifier: test_peer_badge_verifier(),
             setup_payment_publisher: Some(setup_payment_keys().public_key()),
             guardian_verification_fee_account: Some(guardian_fee_account(31)),
             backup_tasks: fedimint_core::task::TaskGroup::new(),
         }),
     }
+}
+
+fn staging_recovery() -> crate::db::RecoveryCompletedKey {
+    crate::db::RecoveryCompletedKey::new(ManifoldEnvironment::Staging)
 }
 
 fn recovering(last_error: Option<FaErrorCode>) -> FaStatus {

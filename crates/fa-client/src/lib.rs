@@ -133,6 +133,8 @@ struct FaClientInner<I, P, N, F, C> {
     peer_badge_verifier: PeerBadgeVerifier,
     setup_payment_publisher: Option<PublicKey>,
     guardian_verification_fee_account: Option<Account>,
+    /// Set while a restored mnemonic still looks for its backup.
+    backup_source: Option<backup_worker::BackupSource>,
     backup_tasks: TaskGroup,
 }
 
@@ -200,6 +202,7 @@ where
             peer_badge_verifier,
             None,
             None,
+            None,
         )
         .await
     }
@@ -245,6 +248,7 @@ where
             peer_badge_verifier,
             Some(setup_payment_publisher),
             guardian_verification_fee_account,
+            None,
         )
         .await
     }
@@ -286,8 +290,9 @@ where
 
     /// Open with explicit restored-mnemonic provenance.
     ///
-    /// A restored opening claims the mutation guard and publishes recovery
-    /// before returning. The client owns relay lookup and durable completion.
+    /// A restored mnemonic with no FA state starts in
+    /// [`FaState::Restoring`] until the run loop finds its backup, or a relay
+    /// quorum shows there is none.
     #[allow(clippy::too_many_arguments)]
     pub async fn open_with_manifold_profile_and_recovery(
         database: Database,
@@ -305,6 +310,13 @@ where
         let guardian_verification_fee_account =
             profile.guardian_verification_fee_account().cloned();
         let relays = profile.nostr_relays().as_urls().to_vec();
+        let backup_source = (recovery_hint == BackupRecoveryHint::RestoredMnemonic).then(|| {
+            backup_worker::BackupSource {
+                relays: relays.clone(),
+                required_reads: profile.fa_backup_empty_read_quorum(),
+                completed: RecoveryCompletedKey::new(profile.environment()),
+            }
+        });
         let client = Self::open_inner(
             database,
             FaClientPorts {
@@ -318,43 +330,9 @@ where
             peer_badge_verifier,
             setup_payment_publisher,
             guardian_verification_fee_account,
+            backup_source,
         )
         .await?;
-        if recovery_hint == BackupRecoveryHint::RestoredMnemonic
-            && client.status() == FaStatus::default()
-            && !client
-                .inner
-                .store
-                .recovery_completed(&RecoveryCompletedKey::new(profile.environment()))
-                .await
-        {
-            let guard = client
-                .inner
-                .run_guard
-                .clone()
-                .try_lock_owned()
-                .expect("the newly opened FA client has no active operation");
-            client.inner.progress.replace(FaStatus {
-                recovery: Some(RecoveryCheck { last_error: None }),
-                ..FaStatus::default()
-            });
-            backup_worker::spawn_recovery(
-                &client.inner.backup_tasks,
-                backup_worker::RecoveryWorker {
-                    store: client.inner.store.clone(),
-                    root: client.inner.ports.identity.scoped_root(),
-                    fa_id: client
-                        .inner
-                        .ports
-                        .identity
-                        .public_key()
-                        .map_err(FaError::Identity)?,
-                    profile,
-                    progress: client.inner.progress.clone(),
-                },
-                guard,
-            );
-        }
         backup_worker::spawn_workers(
             &client.inner.backup_tasks,
             client.inner.store.clone(),
@@ -371,11 +349,23 @@ where
         peer_badge_verifier: PeerBadgeVerifier,
         setup_payment_publisher: Option<PublicKey>,
         guardian_verification_fee_account: Option<Account>,
+        backup_source: Option<backup_worker::BackupSource>,
     ) -> FaResult<Self> {
         let store = FaStore::new(database);
         let fa_id = ports.identity.public_key().map_err(FaError::Identity)?;
         store.migrate_storage().await?;
-        let status = store.load_status(fa_id).await?;
+        let mut status = store.load_status(fa_id).await?;
+        // Only an empty FA looks for its backup, and only once.
+        let backup_source = match backup_source {
+            Some(source)
+                if status == FaStatus::default()
+                    && !store.recovery_completed(&source.completed).await =>
+            {
+                status.recovery = Some(RecoveryCheck { last_error: None });
+                Some(source)
+            }
+            _ => None,
+        };
         let progress = Arc::new(run::Progress::new(status));
         let backup_tasks = TaskGroup::new();
         Ok(Self {
@@ -389,6 +379,7 @@ where
                 peer_badge_verifier,
                 setup_payment_publisher,
                 guardian_verification_fee_account,
+                backup_source,
                 backup_tasks,
             }),
         })

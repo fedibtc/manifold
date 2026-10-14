@@ -57,7 +57,8 @@ enum FaDbPrefix {
     LiquidityOperation = 0x04,
     BackupGeneration = 0x05,
     BackupRelayConfirmation = 0x06,
-    /// Imported backup awaiting reconciliation.
+    /// Legacy: an imported backup that waited for reconciliation. Only
+    /// migration reads it.
     RestoredBackup = 0x07,
     RecoveryCompleted = 0x08,
     Federation = 0x09,
@@ -104,6 +105,13 @@ impl_db_record!(
     key = RecoveryCompletedKey,
     value = (),
     db_prefix = FaDbPrefix::RecoveryCompleted
+);
+
+#[derive(Debug, Decodable, Encodable)]
+struct RecoveryCompletedKeyPrefix;
+impl_db_lookup!(
+    key = RecoveryCompletedKey,
+    query_prefix = RecoveryCompletedKeyPrefix
 );
 
 #[derive(Debug, Decodable, Encodable)]
@@ -182,10 +190,9 @@ impl From<crate::backup::FaBackupSeat> for StoredFederationSeat {
     }
 }
 
-/// An authenticated backup imported but not yet reconciled against
-/// consensus. Reconciliation replaces it with the federation record.
-/// `backup_eligible` and `federation_name` are set only by rows written
-/// before the federation record existed.
+/// Legacy: an authenticated backup imported but not yet reconciled against
+/// consensus. `backup_eligible` marks one that was reconciled before the
+/// federation record existed.
 #[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
 struct RestoredBackupState {
     #[serde(rename = "fi_id")]
@@ -996,22 +1003,15 @@ impl FaStore {
         })
     }
 
-    #[cfg(test)]
-    pub(crate) async fn restore_backup_payload(
+    /// Import a backup that consensus confirmed as this FA's federation, and
+    /// mark the backup lookup done.
+    pub(crate) async fn import_backup(
         &self,
         fa_id: FaId,
         payload: crate::backup::FaBackupPayload,
-    ) -> FaResult<FaStatus> {
-        self.restore_backup_payload_with_completion(fa_id, payload, None)
-            .await
-    }
-
-    pub(crate) async fn restore_backup_payload_with_completion(
-        &self,
-        fa_id: FaId,
-        payload: crate::backup::FaBackupPayload,
-        recovery: Option<&RecoveryCompletedKey>,
-    ) -> FaResult<FaStatus> {
+        federation_name: Option<crate::FederationName>,
+        completed: &RecoveryCompletedKey,
+    ) -> FaResult<()> {
         if let Some(commitment) = &payload.liquidity {
             if commitment.requester_pubkey.0 != fa_id.0.to_string() {
                 return Err(FaError::Storage(
@@ -1030,13 +1030,9 @@ impl FaStore {
         let formation_id =
             crate::formation::restored_formation_id(fa_id, &payload.federation_invite)?;
         let mut dbtx = self.database.begin_transaction().await;
-        let lease = dbtx.get_value(&DriverLeaseKey).await;
         if dbtx.get_value(&PurchaseKey).await.is_some()
+            || dbtx.get_value(&CreationKey).await.is_some()
             || dbtx.get_value(&FederationKey).await.is_some()
-            || dbtx.get_value(&RestoredBackupKey).await.is_some()
-            || lease
-                .as_ref()
-                .is_some_and(|lease| lease.expires_at > (self.lease_clock)())
             || dbtx
                 .find_by_prefix(&LiquidityOperationKeyPrefix)
                 .await
@@ -1048,29 +1044,18 @@ impl FaStore {
                 "FA restore requires an empty database namespace".to_owned(),
             ));
         }
-        // An expired driver lease is not a formation. Keep independently
-        // authenticated setup-payment policy; its publisher is revalidated on use.
-        if lease.is_some() {
-            dbtx.remove_entry(&DriverLeaseKey).await;
-        }
-        dbtx.insert_entry(
-            &RestoredBackupKey,
-            &RestoredBackupState {
-                fa_id,
-                payload,
-                formation_id,
-                backup_eligible: false,
-                federation_name: None,
-            },
+        adopt_backup(
+            &mut dbtx.to_ref_nc(),
+            fa_id,
+            formation_id,
+            payload,
+            federation_name,
         )
-        .await;
-        if let Some(recovery) = recovery {
-            dbtx.insert_entry(recovery, &()).await;
-        }
-        dbtx.commit_tx_result().await.map_err(|_| {
-            FaError::Storage("committing authenticated FA restore failed".to_owned())
-        })?;
-        self.load_status(fa_id).await
+        .await?;
+        dbtx.insert_entry(completed, &()).await;
+        dbtx.commit_tx_result()
+            .await
+            .map_err(|_| FaError::Storage("committing authenticated FA restore failed".to_owned()))
     }
 
     pub(crate) async fn backup_confirmation(&self, relay: &str) -> Option<BackupRelayConfirmation> {
@@ -1083,57 +1068,14 @@ impl FaStore {
             .await
     }
 
-    /// Replace a reconciled import with the federation record, or refresh the
-    /// record's name when an earlier run already did.
-    pub(crate) async fn reconcile_restored_backup(
+    /// Refresh the federation name from a consensus recheck.
+    pub(crate) async fn record_federation_name(
         &self,
         fa_id: FaId,
         federation_name: Option<crate::FederationName>,
     ) -> FaResult<()> {
         let mut dbtx = self.database.begin_transaction().await;
-        if let Some(restored) = dbtx.get_value(&RestoredBackupKey).await {
-            if restored.fa_id != fa_id {
-                return Err(FaError::Storage(
-                    "restored FA backup belongs to another scoped root".to_owned(),
-                ));
-            }
-            adopt_restored_backup(&mut dbtx.to_ref_nc(), restored, federation_name).await?;
-        } else {
-            let mut federation = dbtx.get_value(&FederationKey).await.ok_or_else(|| {
-                FaError::Storage("restored FA backup disappeared during reconciliation".to_owned())
-            })?;
-            if federation.fa_id != fa_id {
-                return Err(FaError::Storage(
-                    "FA federation record belongs to another scoped root".to_owned(),
-                ));
-            }
-            federation.federation_name = federation_name;
-            dbtx.insert_entry(&FederationKey, &federation).await;
-        }
-        dbtx.commit_tx_result().await.map_err(|_| {
-            FaError::Storage("committing restored FA reconciliation failed".to_owned())
-        })
-    }
-
-    /// Seats to reconcile against consensus, and the imported liquidity
-    /// commitment while the import is still pending.
-    pub(crate) async fn restored_reconciliation_input(
-        &self,
-        fa_id: FaId,
-    ) -> FaResult<(
-        Vec<crate::backup::FaBackupSeat>,
-        Option<fedi_decentralized_service_liquidity_manager::RequestLiquidityDetailsCommitmentV1>,
-    )> {
-        let mut dbtx = self.database.begin_transaction_nc().await;
-        if let Some(restored) = dbtx.get_value(&RestoredBackupKey).await {
-            if restored.fa_id != fa_id {
-                return Err(FaError::Storage(
-                    "restored FA backup belongs to another scoped root".to_owned(),
-                ));
-            }
-            return Ok((restored.payload.seats, restored.payload.liquidity));
-        }
-        let federation = dbtx
+        let mut federation = dbtx
             .get_value(&FederationKey)
             .await
             .ok_or(FaError::NoActiveFormation)?;
@@ -1142,12 +1084,11 @@ impl FaStore {
                 "FA federation record belongs to another scoped root".to_owned(),
             ));
         }
-        let seats = federation
-            .seats
-            .into_iter()
-            .map(StoredFederationSeat::into_backup_seat)
-            .collect::<FaResult<_>>()?;
-        Ok((seats, None))
+        federation.federation_name = federation_name;
+        dbtx.insert_entry(&FederationKey, &federation).await;
+        dbtx.commit_tx_result()
+            .await
+            .map_err(|_| FaError::Storage("committing FA federation recheck failed".to_owned()))
     }
 
     pub(crate) async fn record_backup_confirmation(
@@ -1526,20 +1467,27 @@ impl FaStore {
     pub(crate) async fn migrate_storage(&self) -> FaResult<()> {
         self.split_schema_11_formation().await?;
         let mut dbtx = self.database.begin_transaction().await;
+        let Some(restored) = dbtx.get_value(&RestoredBackupKey).await else {
+            return Ok(());
+        };
+        dbtx.remove_entry(&RestoredBackupKey).await;
         // A reconciled legacy import becomes the record. An unreconciled one
-        // is already a pending import.
-        if let Some(restored) = dbtx
-            .get_value(&RestoredBackupKey)
-            .await
-            .filter(|restored| restored.backup_eligible)
-        {
-            let federation_name = restored.federation_name.clone();
-            adopt_restored_backup(&mut dbtx.to_ref_nc(), restored, federation_name).await?;
-            dbtx.commit_tx_result()
-                .await
-                .map_err(|_| FaError::Storage("migrating restored FA backup failed".to_owned()))?;
+        // is dropped, and the next restored open looks it up again.
+        if restored.backup_eligible {
+            adopt_backup(
+                &mut dbtx.to_ref_nc(),
+                restored.fa_id,
+                restored.formation_id,
+                restored.payload,
+                restored.federation_name,
+            )
+            .await?;
+        } else {
+            dbtx.remove_by_prefix(&RecoveryCompletedKeyPrefix).await;
         }
-        Ok(())
+        dbtx.commit_tx_result()
+            .await
+            .map_err(|_| FaError::Storage("migrating restored FA backup failed".to_owned()))
     }
 
     /// Schema 11 kept a formation and its seat purchase in one row. A
@@ -1869,38 +1817,12 @@ impl FaStore {
             .await
     }
 
-    /// The formed federation, or an imported backup that waits for
-    /// reconciliation, as stored.
+    /// The federation this FA governs, as stored.
     pub(crate) async fn load_federation(
         &self,
         fa_id: FaId,
     ) -> FaResult<Option<crate::FederationSnapshot>> {
         let mut dbtx = self.database.begin_transaction_nc().await;
-        if let Some(restored) = dbtx.get_value(&RestoredBackupKey).await {
-            if restored.fa_id != fa_id {
-                return Err(FaError::Storage(
-                    "restored FA backup belongs to another scoped root".to_owned(),
-                ));
-            }
-            return Ok(Some(crate::FederationSnapshot {
-                formation_id: restored.formation_id,
-                federation_invite: restored.payload.federation_invite,
-                federation_name: None,
-                seats: restored
-                    .payload
-                    .seats
-                    .into_iter()
-                    .map(|seat| crate::FederationSeat {
-                        mg_id: seat.mg_identity,
-                        seat_id: seat.seat_id,
-                        locator: seat.locator,
-                    })
-                    .collect(),
-                freshness: FormationFreshness::Unsynced,
-                reconciled: false,
-                last_error: None,
-            }));
-        }
         let Some(federation) = dbtx.get_value(&FederationKey).await else {
             return Ok(None);
         };
@@ -1923,7 +1845,6 @@ impl FaStore {
                 })
                 .collect(),
             freshness: FormationFreshness::Unsynced,
-            reconciled: true,
             last_error: None,
         }))
     }
@@ -2159,7 +2080,6 @@ impl FaStore {
             Some(creation) => {
                 if dbtx.get_value(&CreationKey).await.is_some()
                     || dbtx.get_value(&FederationKey).await.is_some()
-                    || dbtx.get_value(&RestoredBackupKey).await.is_some()
                 {
                     return Err(FaError::InvalidIntent(
                         "this FA already creates or governs a federation".to_owned(),
@@ -3953,27 +3873,29 @@ fn validate_payment_authorization(
     Ok(())
 }
 
-/// Replace a reconciled import with the federation record. The imported
-/// backup becomes the last published generation, so unchanged facts reuse
-/// its generation and changed facts advance it.
-async fn adopt_restored_backup(
+/// Record the federation of a verified backup. The backup becomes the last
+/// published generation, so unchanged facts reuse its generation and changed
+/// facts advance it.
+async fn adopt_backup(
     dbtx: &mut DatabaseTransaction<'_>,
-    restored: RestoredBackupState,
+    fa_id: FaId,
+    formation_id: FormationId,
+    payload: crate::backup::FaBackupPayload,
     federation_name: Option<crate::FederationName>,
 ) -> FaResult<()> {
     if dbtx.get_value(&BackupGenerationKey).await.is_none() {
         dbtx.insert_entry(
             &BackupGenerationKey,
             &BackupGenerationState {
-                generation: restored.payload.snapshot_generation,
-                semantic_hash: crate::backup::semantic_hash(&restored.payload)?,
-                document_hash: crate::backup::document_hash(&restored.payload)?,
+                generation: payload.snapshot_generation,
+                semantic_hash: crate::backup::semantic_hash(&payload)?,
+                document_hash: crate::backup::document_hash(&payload)?,
                 nostr_created_at: fedimint_core::time::duration_since_epoch().as_secs(),
             },
         )
         .await;
     }
-    if let Some(commitment) = restored.payload.liquidity.clone() {
+    if let Some(commitment) = payload.liquidity.clone() {
         let details_payload_hash =
             fedi_decentralized_service_liquidity_manager::request_liquidity_details_hash(
                 &commitment,
@@ -3993,7 +3915,7 @@ async fn adopt_restored_backup(
                 &crate::liquidity::StoredLiquidityOperation {
                     schema_version: 3,
                     operation_id,
-                    formation_id: restored.formation_id.clone(),
+                    formation_id: formation_id.clone(),
                     commitment,
                     endpoint_hint: None,
                     details_payload_hash,
@@ -4008,15 +3930,14 @@ async fn adopt_restored_backup(
     dbtx.insert_entry(
         &FederationKey,
         &StoredFederation {
-            fa_id: restored.fa_id,
-            formation_id: restored.formation_id,
-            federation_invite: restored.payload.federation_invite,
+            fa_id,
+            formation_id,
+            federation_invite: payload.federation_invite,
             federation_name,
-            seats: restored.payload.seats.into_iter().map(Into::into).collect(),
+            seats: payload.seats.into_iter().map(Into::into).collect(),
         },
     )
     .await;
-    dbtx.remove_entry(&RestoredBackupKey).await;
     Ok(())
 }
 

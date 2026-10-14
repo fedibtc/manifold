@@ -71,7 +71,6 @@ fn restored_text_status_reports_current_freshness() {
             federation_name: None,
             seats: Vec::new(),
             freshness,
-            reconciled: false,
             last_error: None,
         }));
         let (stdout, stderr) = capture(|output| output.snapshot(&state, OutputFormat::Human));

@@ -50,25 +50,25 @@ relays must complete their queries before FA reports no backup; fewer complete
 reads report an incomplete lookup for retry. This is an availability policy,
 not proof that the remaining relays hold no backup. FA records a successful
 restored-or-empty lookup in its own FA database by Manifold environment.
-An authenticated import and its completion record commit in one transaction;
-an incomplete read commits neither. Reopening the same FA database skips a
-completed lookup; a fresh database or a different environment checks again.
-When opened with a restored-mnemonic hint, `fa-client` starts the lookup and
-retries failures in its own task group while holding its mutation guard.
-New-seed openings skip recovery.
+A verified import and its completion record commit in one transaction; an
+incomplete read or a rejected payload commits neither. Reopening the same FA
+database skips a completed lookup; a fresh database or a different environment
+checks again. When opened with a restored-mnemonic hint, the `fa-client` run
+loop does the lookup before any other work and retries failures; user actions
+fail as busy until it ends. New-seed openings skip recovery.
 
-A restored payload imports local recovery state as `Unsynced`; reconciliation
-gates mutations until fresh guardian consensus confirms the saved federation
-identity and complete signed seat-binding directory. It checks the saved MG
-identities and any liquidity commitment against that directory. If the saved
+The fetched payload stays in memory until fresh guardian consensus confirms
+the saved federation identity and complete signed seat-binding directory. It
+checks the saved MG identities and any liquidity commitment against that
+directory. If the saved
 invite cannot reach consensus, recovery signs invite requests through the saved
 manager locators and tries alternatives for the same federation without
 requiring every manager online or every seat healthy. Verified guardian
 addresses are remembered only in memory for subsequent reads; the backup and
 signed liquidity commitment remain unchanged.
 Import derives a stable local formation handle
-without reconstructing omitted formation transcript rows. Only after
-reconciliation does FA expose fresh post-formed authority and hydrate the
-optional liquidity commitment under its recomputed operation id and payload
-hash. Reopen returns that authority to `Unsynced` until reconciliation runs
-again.
+without reconstructing omitted formation transcript rows. Only a verified
+payload is written: the federation record, the optional liquidity commitment
+under its recomputed operation id and payload hash, and the payload as the last
+published generation. Reopen returns that authority to `Unsynced` until a
+consensus recheck runs again.

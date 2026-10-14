@@ -56,7 +56,11 @@ An unformed schema 11 row also yields a creation row with its name and
 callback. A purchase that has not created every seat stays a purchase. From
 `seats_created` on, its seats move into the pool, their guardian codes move
 into the code cache, and its formation progress moves into the creation row.
-A formed row yields only the federation record, when none exists. Records older than
+A formed row yields only the federation record, when none exists. Schema 11
+also kept an imported backup in its own row until consensus verified it. A
+verified one becomes the federation record. An unverified one is dropped with
+the completed-lookup markers, so the next restored open looks it up again.
+Records older than
 schema 11 are reset because they predate the production compatibility
 baseline. Subsequent schema changes are governed by
 [`GATE-production-compatibility`](../../../specs/GATE-production-compatibility.md).
@@ -388,10 +392,9 @@ reconciliation requires the immutable directory and recipients to remain exact,
 accepts later rate changes, and needs no formation account provider.
 Formed state lives in one federation record: invite, seats, and name.
 Confirming formation metadata writes it and deletes the creation, its pool
-seats, and their cached codes in the same transaction. A backup
-import waits in its own row until its seats are reconciled against consensus;
-reconciliation then writes the record and makes the imported backup the last
-published generation. Backups and post-formation workflows read only this
+seats, and their cached codes in the same transaction. A fetched backup stays
+in memory until its seats are verified against consensus; the import then
+writes the record and makes the backup the last published generation. Backups and post-formation workflows read only this
 record. Opening migrates storage written before the record existed.
 On restart, both a locally formed federation and a restored backup start unsynced.
 Fresh threshold consensus must match the saved federation identity and verified
@@ -415,11 +418,10 @@ the stored signed directory and compiled split before voting.
 check; `Creating` with the name, size, pool, and one stage (`NeedsSeats` with
 a count and any typed reauthorization reason, `Buying` with the purchase, or
 `Forming` with the formation); and `Active` for a formed or imported
-federation. Recovery lookup failures remain retryable;
-the state watch publishes the ready state only after releasing the mutation
-guard. The recovery requirement is reconstructed on reopen from the caller's
-persisted mnemonic provenance and the FA database's environment-scoped
-completion marker.
+federation. The run loop does the backup lookup as its first work and retries
+failures; user actions fail as busy until it ends. The recovery requirement is
+reconstructed on reopen from the caller's persisted mnemonic provenance and the
+FA database's environment-scoped completion marker.
 
 Purchase phases are `Preparing` and `AcquiringSeats`.
 Formation phases are `PreparingDkg`, `DkgUnderway`, `DkgComplete`,

@@ -15,7 +15,7 @@ use crate::formation::{DriverRun, finish_driver_run, start_driver_run};
 use crate::{
     FaClient, FaError, FaIdentity, FaPayments, FaResult, FaState, FederationConsensusReader,
     FederationSnapshot, FormationFreshness, FormationRunOptions, ManifoldGuardianConnector,
-    db::PurchaseRecovery, state::FaStatus,
+    RecoveryCheck, db::PurchaseRecovery, state::FaStatus,
 };
 
 /// Longest wait before the loop retries failed work.
@@ -88,6 +88,8 @@ impl Drop for ActionGuard<'_> {
 
 /// The next work the loop does under the run guard.
 enum Work {
+    /// Look up and verify the backup of a restored mnemonic.
+    Recover,
     Purchase(PurchaseRecovery),
     Formation(FormationRecovery),
     Reconcile(FederationSnapshot),
@@ -117,7 +119,8 @@ where
     ///
     /// The consumer spawns this once after [`Self::open`]. It buys the seats
     /// of an approved preview, forms the federation once every seat is
-    /// bought, and verifies a stored federation against consensus. User
+    /// bought, restores the backup of a restored mnemonic, and verifies a
+    /// stored federation against consensus. User
     /// actions such as [`Self::create_federation`] save their input and wake
     /// the loop. Failed work is retried with a growing delay, and its error
     /// appears in [`Self::state`]. Dropping the future stops the work; every
@@ -130,11 +133,7 @@ where
             let mut wake = pin!(control.wake.notified());
             wake.as_mut().enable();
             parts.mark_unchanged();
-            // The backup check holds the run guard while it runs, and user
-            // actions must not queue behind it.
-            if control.waiting.load(Ordering::SeqCst) > 0
-                || self.inner.progress.status().recovery.is_some()
-            {
+            if control.waiting.load(Ordering::SeqCst) > 0 {
                 select(wake, pin!(parts.changed())).await;
                 continue;
             }
@@ -161,11 +160,13 @@ where
 
     /// Take the run guard for one user action.
     ///
-    /// The run loop yields the guard at once. Any other holder, such as
-    /// another user action or the backup check, makes this
-    /// [`FaError::Busy`].
+    /// The run loop yields the guard at once. Another user action, or a
+    /// backup lookup that has not finished, makes this [`FaError::Busy`].
     pub(crate) async fn claim_run_guard(&self) -> FaResult<ActionGuard<'_>> {
         let control = &self.inner.control;
+        if self.inner.progress.status().recovery.is_some() {
+            return Err(FaError::Busy);
+        }
         let guard = match self.inner.run_guard.try_lock() {
             Ok(guard) => guard,
             Err(_) if control.driving.load(Ordering::SeqCst) => {
@@ -208,7 +209,7 @@ where
     async fn next_work(&self, fa_id: FaId) -> FaResult<Option<Work>> {
         let status = self.inner.progress.status();
         if status.recovery.is_some() {
-            return Ok(None);
+            return Ok(Some(Work::Recover));
         }
         if let Some(recovery) = self.inner.store.load_purchase(fa_id).await? {
             return Ok(Some(Work::Purchase(recovery)));
@@ -227,6 +228,16 @@ where
 
     async fn do_work(&self, work: Work, fa_id: FaId, run: DriverRun<'_>) -> FaResult<()> {
         match work {
+            Work::Recover => {
+                let result = self.recover_backup(fa_id, run).await;
+                if let Err(error) = &result {
+                    let last_error = Some(error.code());
+                    self.inner.progress.modify(|status| {
+                        status.recovery = Some(RecoveryCheck { last_error });
+                    });
+                }
+                result
+            }
             Work::Purchase(recovery) => match self.drive_purchase(recovery, fa_id, run).await {
                 // The purchase ended before it bought its seats, and the
                 // creation needs a new preview.
@@ -241,7 +252,7 @@ where
             Work::Formation(recovery) => self.drive_formation(recovery, fa_id, run).await,
             Work::Reconcile(snapshot) => {
                 self.begin_recheck();
-                let result = self.reconcile_restored(snapshot, fa_id, run).await;
+                let result = self.reconcile_federation(snapshot, fa_id, run).await;
                 if let Err(error) = &result {
                     self.fail_recheck(error);
                 }

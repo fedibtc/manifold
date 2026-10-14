@@ -498,9 +498,6 @@ pub struct FederationSnapshot {
     pub seats: Vec<FederationSeat>,
     /// Whether this run verified the federation against consensus.
     pub freshness: FormationFreshness,
-    /// False only for an imported backup that has not been reconciled
-    /// against consensus yet.
-    pub reconciled: bool,
     /// Error from the last failed recheck.
     pub last_error: Option<FaErrorCode>,
 }
@@ -516,7 +513,7 @@ pub struct FederationSeat {
 }
 
 /// A restored mnemonic waits for its backup check before FA operations may
-/// run. A failed read is retryable; the worker remains active.
+/// run. The run loop retries a failed check.
 #[derive(Clone, Debug, Default, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
 pub struct RecoveryCheck {
     pub last_error: Option<FaErrorCode>,
