@@ -493,6 +493,10 @@ requiring every MG's invite to identify the same federation before
 persisting the deliverable). Every ordinary resume repeats the idempotent
 `StartDkg` with the same durable guardian codes, so a crashed child starts a
 fresh ceremony while an existing `DkgInProcess` ceremony keeps being polled.
+`StartDkg` follows only after every seat cached its guardian code. While a
+seat still lacks its cached code, a pool seat whose MG reports it
+decommissioned or lost leaves the pool with the other cached codes, and the
+creation needs a new seat.
 Resume never selects the destructive `RestartDkg`: replacing a stuck ceremony
 is an explicit, user-authorized action, and ordinary resume must not infer
 that intent. Wire types,

@@ -1254,6 +1254,11 @@ where
         recovery.snapshot.phase = FormationPhase::PreparingDkg;
         self.publish_formation(recovery.snapshot.clone());
 
+        // StartDkg follows only after every code is cached.
+        let dkg_not_started = recovery
+            .seats
+            .iter()
+            .any(|seat| seat.progress.guardian_code.is_none());
         let mut pending_codes = FuturesUnordered::new();
         for (position, session) in sessions.iter().enumerate() {
             let existing = recovery.seats[position].progress.guardian_code.clone();
@@ -1269,14 +1274,18 @@ where
                         existing.clone(),
                         run,
                     )
-                    .await?;
+                    .await
+                    .map_err(|error| (position, error))?;
                 if let Some(recorded) = existing.as_ref()
                     && recorded != &code
                 {
-                    return Err(FaError::InvalidManifoldGuardians(format!(
-                        "Manifold Guardian {} changed its deterministic guardian code",
-                        position + 1
-                    )));
+                    return Err((
+                        position,
+                        FaError::InvalidManifoldGuardians(format!(
+                            "Manifold Guardian {} changed its deterministic guardian code",
+                            position + 1
+                        )),
+                    ));
                 }
                 Ok((position, code, existing.is_none()))
             });
@@ -1285,10 +1294,14 @@ where
             .map(|_| None)
             .collect::<Vec<Option<GuardianCode>>>();
         let mut first_error = None;
+        let mut ended = Vec::new();
         while let Some(result) = pending_codes.next().await {
             let (position, code, newly_generated) = match result {
                 Ok(value) => value,
-                Err(error) => {
+                Err((position, error)) => {
+                    if dkg_not_started && ended_seat(&error) {
+                        ended.push(sessions[position].seat_id.clone());
+                    }
                     if first_error.is_some() {
                         log_mg_failure(&formation_id, &error, "discarded");
                     }
@@ -1312,6 +1325,21 @@ where
                 self.publish_formation(recovery.snapshot.clone());
             }
             guardian_codes[position] = Some(code);
+        }
+        if !ended.is_empty() {
+            // The ended seats leave the pool, and the creation buys new ones.
+            self.inner
+                .store
+                .drop_ended_pool_seats(formation_id, ended)
+                .await?;
+            self.publish_pool().await;
+            self.inner.progress.modify(|status| {
+                status.formation = None;
+                status
+                    .reauthorization
+                    .get_or_insert(SelectionReauthorizationReason::SelectedMgUnavailable);
+            });
+            return Ok(());
         }
         if let Some(error) = first_error {
             return Err(error);
@@ -2839,6 +2867,18 @@ fn canonical_fee_recipients(
         ))
     })?;
     Ok(recipients)
+}
+
+/// Whether an MG reported that the seat ended for good.
+fn ended_seat(error: &FaError) -> bool {
+    matches!(
+        error,
+        FaError::Mg(MgFailure {
+            cause: MgCause::WrongState(ServiceStatus::DataLoss | ServiceStatus::Decommissioned)
+                | MgCause::TerminalStatus(_),
+            ..
+        })
+    )
 }
 
 fn service_seat_phase(status: &ServiceStatus) -> Result<SeatPhase, MgCause> {

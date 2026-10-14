@@ -1805,6 +1805,55 @@ impl FaStore {
             .map_err(map_formation_tx_error)
     }
 
+    /// Remove pool seats whose MG ended them before DKG started. DKG starts
+    /// only after every seat cached its guardian code, so a seat without a
+    /// cached code proves that no seat received `StartDkg`. The remaining
+    /// cached codes are dropped too: a new named seat needs a new code.
+    pub(crate) async fn drop_ended_pool_seats(
+        &self,
+        formation_id: &FormationId,
+        ended: Vec<SeatId>,
+    ) -> FaResult<()> {
+        let formation_id = formation_id.clone();
+        let ended = &ended;
+        self.database
+            .autocommit(
+                move |dbtx, _| {
+                    let formation_id = formation_id.clone();
+                    Box::pin(async move {
+                        let (mut creation, seats) = active_formation(dbtx, &formation_id).await?;
+                        if seats.iter().all(|(_, code)| code.is_some()) {
+                            return Err(FaError::Storage(
+                                "cannot drop FA pool seats after DKG may have started".to_owned(),
+                            ));
+                        }
+                        for (seat, _) in &seats {
+                            let seat_id = seat.seat_id.to_string();
+                            dbtx.remove_entry(&GuardianCodeKey {
+                                seat_id: seat_id.clone(),
+                            })
+                            .await;
+                            if ended.contains(&seat.seat_id) {
+                                dbtx.remove_entry(&PoolSeatKey { seat_id }).await;
+                            }
+                        }
+                        if creation
+                            .named_seat
+                            .as_ref()
+                            .is_some_and(|named| ended.contains(named))
+                        {
+                            creation.named_seat = None;
+                            dbtx.insert_entry(&CreationKey, &creation).await;
+                        }
+                        Ok(())
+                    })
+                },
+                Some(FORMATION_TX_MAX_ATTEMPTS),
+            )
+            .await
+            .map_err(map_formation_tx_error)
+    }
+
     /// Save completed DKG and its invite.
     pub(crate) async fn record_dkg_complete(
         &self,

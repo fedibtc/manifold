@@ -585,6 +585,7 @@ struct MgState {
     /// MGs asked for a guardian code that carries the federation name.
     named_dkg_code_indices: Mutex<Vec<usize>>,
     unavailable_dkg_code_indices: Mutex<HashSet<usize>>,
+    decommissioned_indices: Mutex<HashSet<usize>>,
     /// Codes carry the federation name the request names, as real MGs do.
     name_sensitive_codes: AtomicBool,
     restart_calls: AtomicUsize,
@@ -1080,6 +1081,17 @@ impl ManifoldGuardianService for TestMg {
         request: SignedRequest<GetDkgCodeRequest>,
     ) -> FmResult<GetDkgCodeResponse> {
         self.state.dkg_code_calls.fetch_add(1, Ordering::SeqCst);
+        if self
+            .state
+            .decommissioned_indices
+            .lock()
+            .expect("test lock")
+            .contains(&self.index)
+        {
+            return Err(ManifoldGuardianError::WrongState {
+                status: ServiceStatus::Decommissioned,
+            });
+        }
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .expect("test clock follows Unix epoch")
@@ -10615,6 +10627,125 @@ async fn formation_guardian_code_deadline_logs_only_the_never_ready_seat() {
     assert!(
         line.contains(&format!("formation_id={}", snapshot.formation_id.0)),
         "{logs}"
+    );
+}
+
+/// The index of the formation seat whose guardian code names the federation.
+async fn named_seat_index(client: &TestClient) -> usize {
+    let formation = client
+        .inner
+        .store
+        .load_formation(TestIdentity::fa_id())
+        .await
+        .unwrap()
+        .expect("the pool is full");
+    (0..usize::from(MIN_FEDERATION_SIZE))
+        .find(|index| formation.seats[0].progress.locator == locator(*index))
+        .expect("the named seat is a test MG")
+}
+
+#[tokio::test]
+async fn a_decommissioned_pool_seat_leaves_before_dkg_and_a_new_seat_forms() {
+    let state = Arc::new(MgState::default());
+    state.name_sensitive_codes.store(true, Ordering::SeqCst);
+    let (payments, _) = TestPayments::new();
+    let client = open_client(
+        MemDatabase::new().into_database(),
+        payments,
+        state.clone(),
+        MgConfig::given_away(),
+    )
+    .await;
+    client
+        .request_seats_at(&intent(), locators(), None)
+        .await
+        .unwrap();
+    client.drive_purchase_for_test(options()).await.unwrap();
+    // The named seat ends, so another seat must carry the federation name.
+    let ended = named_seat_index(&client).await;
+    state.decommissioned_indices.lock().unwrap().insert(ended);
+
+    client.drive_all_for_test(options()).await.unwrap();
+    let status = client.status();
+    bought_without(&status, &[u16::try_from(ended).unwrap()]);
+    assert!(status.formation.is_none());
+    assert!(state.start_callbacks.lock().unwrap().is_empty());
+    let FaState::Creating(creation) = client.state() else {
+        panic!("the creation needs a new seat");
+    };
+    assert_eq!(
+        creation.stage,
+        CreationStage::NeedsSeats {
+            count: 1,
+            reauthorization: Some(SelectionReauthorizationReason::SelectedMgUnavailable),
+        },
+    );
+
+    let spare = usize::from(MIN_FEDERATION_SIZE);
+    client
+        .request_seats_at(&intent(), vec![locator(spare)], None)
+        .await
+        .unwrap();
+    client.drive_all_for_test(options()).await.unwrap();
+    federation(&client.status());
+}
+
+#[tokio::test]
+async fn a_decommissioned_pool_seat_stays_once_dkg_may_have_started() {
+    let state = Arc::new(MgState::default());
+    let (payments, _) = TestPayments::new();
+    let client = open_client(
+        MemDatabase::new().into_database(),
+        payments,
+        state.clone(),
+        MgConfig::given_away(),
+    )
+    .await;
+    client
+        .request_seats_at(&intent(), locators(), None)
+        .await
+        .unwrap();
+    client.drive_purchase_for_test(options()).await.unwrap();
+    // Every cached code means a crashed run may have sent StartDkg.
+    let formation = client
+        .inner
+        .store
+        .load_formation(TestIdentity::fa_id())
+        .await
+        .unwrap()
+        .unwrap();
+    for seat in &formation.seats {
+        let mg = (0..usize::from(MIN_FEDERATION_SIZE))
+            .find(|index| seat.progress.locator == locator(*index))
+            .unwrap();
+        client
+            .inner
+            .store
+            .record_guardian_code(
+                &formation.snapshot.formation_id,
+                seat.progress.index,
+                GuardianCode(format!("guardiancode{mg}")),
+            )
+            .await
+            .unwrap();
+    }
+    state.decommissioned_indices.lock().unwrap().insert(1);
+
+    let error = client.drive_all_for_test(options()).await.unwrap_err();
+    assert!(
+        matches!(
+            &error,
+            FaError::Mg(MgFailure {
+                operation: MgOperation::GetDkgCode,
+                cause: MgCause::WrongState(ServiceStatus::Decommissioned),
+                ..
+            })
+        ),
+        "{error:?}"
+    );
+    assert_eq!(
+        client.inner.store.pool_seats().await.len(),
+        usize::from(MIN_FEDERATION_SIZE)
     );
 }
 
