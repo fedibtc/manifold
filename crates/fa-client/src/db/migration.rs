@@ -187,14 +187,24 @@ impl FaStore {
                 .flatten();
             // Schema 12 has no guardian replacement. A seat that waited for
             // one ended after payment, so it leaves the purchase. An applied
-            // replacement is an ordinary seat of its new MG.
-            let ended = !seat_object
+            // replacement has no effect yet, so it leaves too. While a wallet
+            // reservation may hold its payment, it stays until the run
+            // releases that reservation.
+            let replacement = !seat_object
                 .get("replacement_for")
                 .unwrap_or(&serde_json::Value::Null)
-                .is_null()
-                && seat_object.get("replacement_approved") != Some(&serde_json::Value::Bool(true));
+                .is_null();
+            let applied =
+                seat_object.get("replacement_approved") == Some(&serde_json::Value::Bool(true));
             let seat: StoredPurchaseSeat = serde_json::from_value(seat).map_err(|_| malformed())?;
-            if ended {
+            if applied {
+                if purchase.payment_reservation_id.is_some() {
+                    purchase.payment_reservation_release_intended = true;
+                } else {
+                    purchase.payment_authorization = None;
+                }
+            }
+            if replacement && !(applied && purchase.payment_reservation_id.is_some()) {
                 dbtx.raw_remove_entry(&DatabaseKeyPrefix::to_bytes(&key))
                     .await
                     .map_err(|_| FaError::Storage("removing a schema 11 seat failed".to_owned()))?;

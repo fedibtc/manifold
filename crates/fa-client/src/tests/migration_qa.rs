@@ -3,11 +3,11 @@
 
 use std::path::{Path, PathBuf};
 
-use fedimint_core::db::{
-    Database, DatabaseError, DatabaseResult, IDatabaseTransactionOps,
-    IDatabaseTransactionOpsCore, IRawDatabase, IRawDatabaseTransaction, PrefixStream,
-};
 use fedimint_core::db::mem_impl::MemTransaction;
+use fedimint_core::db::{
+    Database, DatabaseError, DatabaseResult, IDatabaseTransactionOps, IDatabaseTransactionOpsCore,
+    IRawDatabase, IRawDatabaseTransaction, PrefixStream,
+};
 use futures::StreamExt as _;
 
 use super::*;
@@ -205,7 +205,8 @@ pub(super) struct Snapshot {
 }
 
 pub(super) fn read_snapshot(path: &Path) -> Snapshot {
-    let snapshot: serde_json::Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+    let snapshot: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
     let rows = snapshot["rows"]
         .as_array()
         .unwrap()
@@ -289,8 +290,14 @@ pub(super) async fn check_snapshot(snapshot: &Snapshot, drive: bool) -> serde_js
     let migrated = dump_rows(&database).await;
     let second = migrate_and_load(&database, fa_id).await;
     let idempotent = dump_rows(&database).await == migrated
-        && first.as_ref().map(status_summary).map_err(ToString::to_string)
-            == second.as_ref().map(status_summary).map_err(ToString::to_string);
+        && first
+            .as_ref()
+            .map(status_summary)
+            .map_err(ToString::to_string)
+            == second
+                .as_ref()
+                .map(status_summary)
+                .map_err(ToString::to_string);
 
     let mut crashes = Vec::new();
     for fail_commit in 1..=3 {
@@ -471,7 +478,10 @@ async fn qa_corpus() {
             for file in std::fs::read_dir(test_dir.unwrap().path()).unwrap() {
                 let path = file.unwrap().path();
                 let name = path.to_string_lossy();
-                if name.ends_with(".json") && !name.ends_with(".oracle.json") && !name.ends_with(".drive.json") {
+                if name.ends_with(".json")
+                    && !name.ends_with(".oracle.json")
+                    && !name.ends_with(".drive.json")
+                {
                     files.push(path);
                 }
             }
@@ -561,47 +571,63 @@ const R269_INTERRUPTED_REPLACEMENT_RESTORE: &str =
 const R269_APPLIED_REPLACEMENT: &str =
     include_str!("../db/fixtures/qa/r269_applied_replacement_awaiting_quote.json");
 
+/// The effect-bound quote ids of the fixture's seats that schema 11 kept,
+/// that is, every seat that does not wait for a replacement.
+fn kept_bound_quotes(json: &str) -> HashSet<QuoteId> {
+    let fixture: serde_json::Value = serde_json::from_str(json).unwrap();
+    fixture["rows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|row| row[0].as_str().unwrap().starts_with("01"))
+        .filter(|row| row[1]["replacement_for"].is_null())
+        .filter_map(|row| {
+            let state = &row[1]["admission"]["peer_badge"]["state"]["effect_authorized"];
+            (!state.is_null()).then(|| serde_json::from_value(state["quote_id"].clone()).unwrap())
+        })
+        .collect()
+}
+
 /// Seat 0 ended after payment outputs started and waits for a replacement;
 /// its six siblings hold effect-authorized quotes the cleared aggregate no
-/// longer names. A run must never leave storage that no longer loads.
+/// longer names. The run pays exactly those quotes, the six seats move to
+/// the pool, and the creation needs one seat.
 #[tokio::test]
-#[ignore = "bug: the run clears an effect-authorized quote, and the FA no longer opens"]
-async fn r269_pending_replacement_run_keeps_storage_loadable() {
-    let (client, mem, _, _) = open_fixture(R269_PENDING_REPLACEMENT).await;
-    let _ = client.drive_all_for_test(options()).await;
+async fn r269_pending_replacement_buys_its_bound_siblings() {
+    let (client, mem, wallet, _) = open_fixture(R269_PENDING_REPLACEMENT).await;
+    client.drive_all_for_test(options()).await.unwrap();
+    let status = client.status();
+    assert!(status.purchase.is_none());
+    assert_eq!(status.pool.len(), 6);
+    let bound = kept_bound_quotes(R269_PENDING_REPLACEMENT);
+    assert_eq!(bound.len(), 6);
+    assert_eq!(*wallet.funded_quotes.lock().unwrap(), bound);
     reload(&mem).await.expect("the FA still loads after a run");
 }
 
 /// A provisional replacement restore was interrupted after the wallet
 /// released its reservation: the release intent remains beside six paid
-/// seats. The run must finish the restore instead of failing forever.
+/// seats. The run finishes the restore: the replacement leaves, the six
+/// seats move to the pool, and the creation needs one seat.
 #[tokio::test]
-#[ignore = "bug: every run fails with a released reservation after payment outputs started"]
 async fn r269_interrupted_replacement_restore_does_not_strand_paid_seats() {
-    let (client, _, _, _) = open_fixture(R269_INTERRUPTED_REPLACEMENT_RESTORE).await;
-    for _ in 0..3 {
-        if let Err(error) = client.drive_all_for_test(options()).await {
-            assert!(
-                !matches!(error, FaError::Storage(_)),
-                "the run fails with {error:?}"
-            );
-        }
-    }
+    let (client, mem, _, _) = open_fixture(R269_INTERRUPTED_REPLACEMENT_RESTORE).await;
+    client.drive_all_for_test(options()).await.unwrap();
+    let status = client.status();
+    assert!(status.purchase.is_none());
+    assert_eq!(status.pool.len(), 6);
+    reload(&mem).await.expect("the FA still loads after a run");
 }
 
 /// An applied replacement MG still needs its quote after payment outputs
-/// started, and its preview has long expired. The FA must leave a way to
-/// buy that seat; a purchase it can neither finish nor end strands the six
-/// paid seats.
+/// started, and its preview has long expired. The replacement leaves, the
+/// six paid seats move to the pool, and the creation needs one seat.
 #[tokio::test]
-#[ignore = "bug: the purchase asks for reauthorization forever and cannot be replaced"]
 async fn r269_applied_replacement_with_an_expired_preview_can_still_finish() {
-    let (client, _, _, _) = open_fixture(R269_APPLIED_REPLACEMENT).await;
-    let result = client.drive_all_for_test(options()).await;
-    if let Err(FaError::SelectionReauthorizationRequired { .. }) = result {
-        assert!(
-            client.status().purchase.is_none(),
-            "reauthorization keeps a purchase that no preview can replace"
-        );
-    }
+    let (client, mem, _, _) = open_fixture(R269_APPLIED_REPLACEMENT).await;
+    client.drive_all_for_test(options()).await.unwrap();
+    let status = client.status();
+    assert!(status.purchase.is_none());
+    assert_eq!(status.pool.len(), 6);
+    reload(&mem).await.expect("the FA still loads after a run");
 }

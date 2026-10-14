@@ -1225,6 +1225,51 @@ where
             return self.complete_purchase(recovery).await;
         }
 
+        // Only a schema 11 replacement restore commits to a release after
+        // payment outputs started. Its reservation holds only the applied
+        // replacements, whose payments never started.
+        if recovery.payment_outputs_started && recovery.payment_reservation_release_intended {
+            let requirements = recovery
+                .reserved_payment_requirements(fa_id)?
+                .ok_or_else(|| {
+                    FaError::Storage(
+                        "replacement reservation has no exact payment requirements".to_owned(),
+                    )
+                })?;
+            let (reservation_id, recovered) = self
+                .recover_payment_reservation(recovery, &requirements, fa_id, run)
+                .await?;
+            if recovery.payment_reservation_id.as_ref() != Some(&reservation_id) {
+                return Err(FaError::Storage(
+                    "stored wallet reservation does not match exact payment requirements"
+                        .to_owned(),
+                ));
+            }
+            if let PaymentReservationRecovery::Existing(reservation) = recovered {
+                run.call("releasing schema 11 replacement reservation", || {
+                    Ok(self
+                        .inner
+                        .ports
+                        .payments
+                        .release_payment_reservation(reservation.clone()))
+                })
+                .await?
+                .map_err(|error| FaError::Payment(error.to_string()))?;
+            }
+            self.inner
+                .store
+                .drop_released_replacements(&recovery.snapshot.purchase_id, &reservation_id)
+                .await?;
+            *recovery = self.active_recovery(fa_id).await?;
+            if recovery
+                .seats
+                .iter()
+                .all(|seat| seat.progress.seat_id.is_some())
+            {
+                return self.complete_purchase(recovery).await;
+            }
+        }
+
         // A wallet commit may have succeeded immediately before the FA-side
         // reservation checkpoint was interrupted. Recover that deterministic
         // aggregate before consulting expiring admission policy: an expired
@@ -1365,7 +1410,11 @@ where
                         recovery.quote_is_authorized(seat.progress.index, quote.quote_id())
                     })
             });
-            if seat.progress.seat_id.is_some() || is_free || is_authorized {
+            // A quote bound to its seat's effect is the only quote that seat
+            // may pay. Schema 11 could leave one without an aggregate
+            // authorization after a seat ended.
+            let is_bound = !seat.admission.requires_effect_authorization();
+            if seat.progress.seat_id.is_some() || is_free || is_authorized || is_bound {
                 continue;
             }
             let Some(signed_quote) = seat.signed_quote.clone() else {

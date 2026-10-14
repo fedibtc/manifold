@@ -3450,7 +3450,7 @@ async fn schema_11_seat_waiting_for_replacement_leaves_the_purchase() {
 }
 
 #[tokio::test]
-async fn schema_11_applied_replacement_stays_a_seat_of_its_new_mg() {
+async fn schema_11_applied_replacement_leaves_the_purchase() {
     let database = MemDatabase::new().into_database();
     crate::db::FaStore::new(database.clone())
         .install_schema_11_replacement_for_test(3, Some((locator(7), test_mg_id(7))))
@@ -3464,9 +3464,10 @@ async fn schema_11_applied_replacement_stays_a_seat_of_its_new_mg() {
     )
     .await;
 
+    // The replacement had no effect yet and no wallet reservation, so it
+    // leaves with the seat it replaced.
     let status = client.status();
     let purchase = purchase(&status);
-    // Payment waits until the new MG quotes on resume.
     assert_eq!(purchase.phase, PurchasePhase::AcquiringSeats);
     assert_eq!(
         purchase
@@ -3474,12 +3475,14 @@ async fn schema_11_applied_replacement_stays_a_seat_of_its_new_mg() {
             .iter()
             .map(|seat| seat.index)
             .collect::<Vec<_>>(),
-        [0, 1, 2, 3, 4, 5, 6]
+        [0, 1, 2, 4, 5, 6]
     );
-    let replaced = &purchase.seats[3];
-    assert_eq!(replaced.mg_id, test_mg_id(7));
-    assert_eq!(replaced.locator, locator(7));
-    assert!(replaced.seat_id.is_none());
+    assert!(
+        purchase
+            .seats
+            .iter()
+            .all(|seat| seat.mg_id != test_mg_id(7))
+    );
 }
 
 #[tokio::test]
