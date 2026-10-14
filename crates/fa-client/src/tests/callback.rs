@@ -19,7 +19,7 @@ async fn one_durable_completion_callback_is_sent_to_every_guardian() {
     .unwrap();
 
     client
-        .create_with_pinned_mgs_and_callback(intent(), locators(), callback.clone(), options())
+        .create_at_with_callback(intent(), locators(), callback.clone(), options())
         .await
         .unwrap();
 
@@ -130,8 +130,8 @@ async fn callback_is_durable_private_state_and_old_schema_resets() {
             TestIdentity::fa_id(),
             FormationId("callback-formation".to_owned()),
             resolved_intent_with_size(FederationSize(1)),
-            vec![seat_progress(0)],
-            crate::db::FormationCreationMode::Pinned,
+            vec![selected_initial_seat(0, test_now_secs() + 120)],
+            None,
             Some(callback.clone()),
         )
         .await
@@ -189,8 +189,8 @@ async fn callback_is_durable_private_state_and_old_schema_resets() {
             TestIdentity::fa_id(),
             FormationId("schema-future".to_owned()),
             resolved_intent_with_size(FederationSize(1)),
-            vec![seat_progress(0)],
-            crate::db::FormationCreationMode::Pinned,
+            vec![selected_initial_seat(0, test_now_secs() + 120)],
+            None,
             None,
         )
         .await
@@ -245,8 +245,8 @@ async fn callback_schema_rejects_missing_current_field() {
             TestIdentity::fa_id(),
             FormationId("missing-current-callback-field".to_owned()),
             resolved_intent_with_size(FederationSize(1)),
-            vec![seat_progress(0)],
-            crate::db::FormationCreationMode::Pinned,
+            vec![selected_initial_seat(0, test_now_secs() + 120)],
+            None,
             None,
         )
         .await

@@ -377,7 +377,7 @@ pub enum FaError {
     /// A later-stage capability is unavailable.
     #[error("FA capability unavailable: {0:?}")]
     CapabilityUnavailable(Capability),
-    /// Pinned locator set failed local validation.
+    /// A guardian set failed local validation.
     #[error("invalid Manifold Guardian set: {0}")]
     InvalidManifoldGuardians(String),
     /// A local verdict about a seat; no remote request is attributed.

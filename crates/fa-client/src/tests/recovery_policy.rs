@@ -18,14 +18,8 @@ async fn durable_reservation_suppresses_quote_refresh_and_pins_exact_set() {
     let (payments, payment_state) = TestPayments::new();
     let mg_state = Arc::new(MgState::default());
     let client = open_client(database, payments, mg_state.clone(), MgConfig::paid()).await;
-    client
-        .create_with_pinned_mgs(intent(), locators(), options())
+    let original_quotes = seed_authorized_selected_purchase(&client)
         .await
-        .unwrap();
-    let authorization_id = payment_requirements(&client.status())
-        .authorization_id
-        .clone();
-    let original_quotes = payment_requirements(&client.status())
         .seats
         .iter()
         .map(|seat| seat.quote_id)
@@ -33,15 +27,15 @@ async fn durable_reservation_suppresses_quote_refresh_and_pins_exact_set() {
     *mg_state.changed_quote_index.lock().expect("test lock") = Some(0);
 
     client
-        .authorize_payments(authorization_id, long_request_options())
+        .resume_with_options(long_request_options())
         .await
         .unwrap();
 
     assert_eq!(formation(&client.status()).phase, FormationPhase::Formed);
     assert_eq!(
         mg_state.quote_calls.load(Ordering::SeqCst),
-        usize::from(MIN_FEDERATION_SIZE),
-        "authorization reserves and consumes the displayed quote set without requoting"
+        0,
+        "authorization reserves and consumes the authorized quote set without requoting"
     );
     assert_eq!(
         payment_state
@@ -66,13 +60,10 @@ async fn terminal_clear_failure_preserves_quote_and_returns_storage_error() {
         MgConfig::paid(),
     )
     .await;
-    client
-        .create_with_pinned_mgs(intent(), locators(), options())
+    let rejected_quote = seed_armed_selected_purchase(&client, &payment_state)
         .await
-        .unwrap();
-    let status = client.status();
-    let authorization_id = payment_requirements(&status).authorization_id.clone();
-    let rejected_quote = payment_requirements(&status).seats[0].quote_id;
+        .seats[0]
+        .quote_id;
     payment_state
         .rejected_quotes
         .lock()
@@ -81,7 +72,7 @@ async fn terminal_clear_failure_preserves_quote_and_returns_storage_error() {
     client.inner.store.fail_quote_clear(0);
 
     assert!(matches!(
-        client.authorize_payments(authorization_id, options()).await,
+        client.resume_with_options(options()).await,
         Err(FaError::Storage(_))
     ));
     let recovery = active_recovery(
@@ -111,13 +102,7 @@ async fn multi_terminal_release_failure_preserves_the_complete_aggregate_for_reo
     let mg_state = Arc::new(MgState::default());
     let config = MgConfig::paid();
     let client = open_client(database.clone(), payments.clone(), mg_state.clone(), config).await;
-    client
-        .create_with_pinned_mgs(intent(), locators(), options())
-        .await
-        .unwrap();
-    let status = client.status();
-    let requirements = payment_requirements(&status);
-    let authorization_id = requirements.authorization_id.clone();
+    let requirements = seed_armed_selected_purchase(&client, &payment_state).await;
     let terminal_quotes = requirements
         .seats
         .iter()
@@ -136,7 +121,7 @@ async fn multi_terminal_release_failure_preserves_the_complete_aggregate_for_reo
         .insert(terminal_quotes[1]);
 
     assert!(matches!(
-        client.authorize_payments(authorization_id, options()).await,
+        client.resume_with_options(options()).await,
         Err(FaError::Payment(_))
     ));
     let interrupted = active_recovery(
@@ -203,13 +188,6 @@ async fn freshly_funded_signed_refusal_clears_the_presented_quote_in_one_run() {
     let (payments, payment_state) = TestPayments::new();
     let mg_state = Arc::new(MgState::default());
     let client = open_client(database, payments, mg_state.clone(), MgConfig::paid()).await;
-    client
-        .create_with_pinned_mgs(intent(), locators(), options())
-        .await
-        .unwrap();
-    let authorization_id = payment_requirements(&client.status())
-        .authorization_id
-        .clone();
     mg_state
         .refused_create_indices
         .lock()
@@ -218,7 +196,7 @@ async fn freshly_funded_signed_refusal_clears_the_presented_quote_in_one_run() {
 
     assert!(matches!(
         client
-            .authorize_payments(authorization_id, options())
+            .create_at(intent(), locators(), options())
             .await
             .as_ref(),
         Err(FaError::Mg(MgFailure {
@@ -249,12 +227,8 @@ async fn mixed_prepared_and_rejected_recovery_waits_for_concurrent_replay_barrie
     let mg_state = Arc::new(MgState::default());
     let config = MgConfig::paid();
     let client = open_client(database.clone(), payments.clone(), mg_state.clone(), config).await;
-    client
-        .create_with_pinned_mgs(intent(), locators(), options())
+    let quote_ids = seed_armed_selected_purchase(&client, &payment_state)
         .await
-        .unwrap();
-    let status = client.status();
-    let quote_ids = payment_requirements(&status)
         .seats
         .iter()
         .map(|seat| seat.quote_id)
@@ -272,13 +246,9 @@ async fn mixed_prepared_and_rejected_recovery_waits_for_concurrent_replay_barrie
     payment_state.barrier_recovery.store(true, Ordering::SeqCst);
     mg_state.block_accepts.store(true, Ordering::SeqCst);
 
-    let authorization_id = payment_requirements(&status).authorization_id.clone();
     let running = client.clone();
-    let operation = tokio::spawn(async move {
-        running
-            .authorize_payments(authorization_id, long_request_options())
-            .await
-    });
+    let operation =
+        tokio::spawn(async move { running.resume_with_options(long_request_options()).await });
     wait_for_count(
         &payment_state.recover_calls,
         usize::from(MIN_FEDERATION_SIZE),
@@ -349,12 +319,7 @@ async fn transient_sibling_failure_preserves_rejected_quote_recovery_entitlement
         let config = MgConfig::paid();
         let client =
             open_client(database.clone(), payments.clone(), mg_state.clone(), config).await;
-        client
-            .create_with_pinned_mgs(intent(), locators(), options())
-            .await
-            .unwrap();
-        let status = client.status();
-        let requirements = payment_requirements(&status);
+        let requirements = seed_armed_selected_purchase(&client, &payment_state).await;
         let authorization_id = requirements.authorization_id.clone();
         let quote_ids = requirements
             .seats
@@ -393,12 +358,7 @@ async fn transient_sibling_failure_preserves_rejected_quote_recovery_entitlement
         let funding_calls = payment_state.create_calls.load(Ordering::SeqCst);
         let payable_calls = payment_state.payable_calls.load(Ordering::SeqCst);
 
-        assert!(
-            client
-                .authorize_payments(authorization_id.clone(), options())
-                .await
-                .is_err()
-        );
+        assert!(client.resume_with_options(options()).await.is_err());
         let interrupted = active_recovery(
             client
                 .inner
@@ -498,14 +458,9 @@ async fn fund_new_failure_preserves_signed_refusal_quote_and_authorization_for_r
             registry.clone(),
         )
         .await;
-        client
-            .create_with_pinned_mgs(intent(), locators(), options())
+        let authorization_id = seed_authorized_selected_purchase(&client)
             .await
-            .unwrap();
-        let initial_status = client.status();
-        let authorization_id = payment_requirements(&initial_status)
-            .authorization_id
-            .clone();
+            .authorization_id;
         mg_state
             .refused_create_indices
             .lock()
@@ -522,12 +477,7 @@ async fn fund_new_failure_preserves_signed_refusal_quote_and_authorization_for_r
             FundNewFailure::Checkpoint => client.inner.store.fail_seat_checkpoint(0),
         }
 
-        assert!(
-            client
-                .authorize_payments(authorization_id.clone(), options())
-                .await
-                .is_err()
-        );
+        assert!(client.resume_with_options(options()).await.is_err());
         let interrupted = active_recovery(
             client
                 .inner
@@ -617,8 +567,11 @@ async fn fund_new_failure_preserves_signed_refusal_quote_and_authorization_for_r
         )
         .await;
         assert!(matches!(
-            reopened.resume().await.as_ref(),
-            Err(FaError::Payment(_))
+            reopened.resume().await,
+            Err(FaError::SelectionReauthorizationRequired {
+                reason: SelectionReauthorizationReason::SelectedPayerUnavailable,
+                failure: None,
+            })
         ));
         assert_eq!(
             payment_state.create_calls.load(Ordering::SeqCst),
@@ -696,12 +649,8 @@ async fn mixed_prepared_and_signed_refusal_survives_interrupted_replay_wave() {
     let mut config = MgConfig::paid();
     config.create_behavior = CreateBehavior::RefuseFirstQuote;
     let client = open_client(database.clone(), payments.clone(), mg_state.clone(), config).await;
-    client
-        .create_with_pinned_mgs(intent(), locators(), options())
+    let quote_ids = seed_armed_selected_purchase(&client, &payment_state)
         .await
-        .unwrap();
-    let status = client.status();
-    let quote_ids = payment_requirements(&status)
         .seats
         .iter()
         .map(|seat| seat.quote_id)
@@ -713,9 +662,7 @@ async fn mixed_prepared_and_signed_refusal_survives_interrupted_replay_wave() {
         .extend(quote_ids.iter().copied());
     mg_state.block_accepts.store(true, Ordering::SeqCst);
 
-    let authorization_id = payment_requirements(&status).authorization_id.clone();
-    let mut operation =
-        Box::pin(client.authorize_payments(authorization_id, long_request_options()));
+    let mut operation = Box::pin(client.resume_with_options(long_request_options()));
     assert!(futures::poll!(&mut operation).is_pending());
     assert_eq!(
         mg_state.create_calls.load(Ordering::SeqCst),
@@ -809,11 +756,8 @@ async fn funded_recovery_ignores_removed_or_empty_current_policy() {
             registry.clone(),
         )
         .await;
-        client
-            .create_with_pinned_mgs(intent(), locators(), options())
+        let quote_ids = seed_armed_selected_purchase(&client, &payment_state)
             .await
-            .unwrap();
-        let quote_ids = payment_requirements(&client.status())
             .seats
             .iter()
             .map(|seat| seat.quote_id)
@@ -825,15 +769,9 @@ async fn funded_recovery_ignores_removed_or_empty_current_policy() {
             .extend(quote_ids);
 
         let create_started = mg_state.create_started.notified();
-        let authorization_id = payment_requirements(&client.status())
-            .authorization_id
-            .clone();
         let running = client.clone();
-        let operation = tokio::spawn(async move {
-            running
-                .authorize_payments(authorization_id, long_request_options())
-                .await
-        });
+        let operation =
+            tokio::spawn(async move { running.resume_with_options(long_request_options()).await });
         create_started.await;
         operation.abort();
         assert!(operation.await.unwrap_err().is_cancelled());
@@ -874,19 +812,11 @@ async fn mixed_funded_recovery_replays_before_empty_policy_stops_unfunded_seats(
         registry.clone(),
     )
     .await;
-    client
-        .create_with_pinned_mgs(intent(), locators(), options())
-        .await
-        .unwrap();
-
     let create_started = mg_state.create_started.notified();
-    let authorization_id = payment_requirements(&client.status())
-        .authorization_id
-        .clone();
     let running = client.clone();
     let operation = tokio::spawn(async move {
         running
-            .authorize_payments(authorization_id, long_request_options())
+            .create_at(intent(), locators(), long_request_options())
             .await
     });
     create_started.await;
@@ -900,7 +830,14 @@ async fn mixed_funded_recovery_replays_before_empty_policy_stops_unfunded_seats(
 
     let reopened =
         open_client_with_registry(database, payments, mg_state.clone(), config, registry).await;
-    assert!(matches!(reopened.resume().await, Err(FaError::Payment(_))));
+    assert!(matches!(
+        reopened.resume().await,
+        Err(FaError::SelectionReauthorizationRequired {
+            reason: SelectionReauthorizationReason::SelectedPayerUnavailable,
+            failure: None,
+        })
+    ));
+    assert!(formation(&reopened.status()).payment_outputs_started);
     assert_eq!(mg_state.create_calls.load(Ordering::SeqCst), 2);
     assert_eq!(
         mg_state.allocated_quotes.lock().expect("test lock").len(),
@@ -1137,7 +1074,7 @@ async fn mixed_replacement_wave_survives_paid_result_loss_and_preview_expiry() {
             && !seat.replacement_approved
             && matches!(
                 &seat.admission,
-                crate::db::MgAdmission::PeerBadge {
+                crate::db::MgAdmission {
                     state: crate::db::AdmissionState::EffectAuthorized { .. },
                     ..
                 }

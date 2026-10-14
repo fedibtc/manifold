@@ -438,25 +438,6 @@ pub struct MgDiscovery {
     pub rejected: Vec<RejectedAdvertisement>,
 }
 
-/// One authenticated, fresh and dialable advertisement projected only as a
-/// pinned diagnostic locator, without requiring PeerBadge material.
-///
-/// This type carries no trust conclusion and cannot enter verified selection.
-#[cfg(any(test, feature = "dev-pinned-formation"))]
-#[derive(Clone, Debug, PartialEq)]
-pub struct InsecureUntrustedPinnedMg {
-    pub mg_id: PublicKey,
-    pub locator: Locator,
-}
-
-/// Development/test-only diagnostic locator discovery with ordinary typed rejections.
-#[cfg(any(test, feature = "dev-pinned-formation"))]
-#[derive(Debug, Default)]
-pub struct InsecureUntrustedPinnedMgDiscovery {
-    pub candidates: Vec<InsecureUntrustedPinnedMg>,
-    pub rejected: Vec<RejectedAdvertisement>,
-}
-
 impl MgDiscovery {
     /// Total number of bounded relay candidates this run observed.
     ///
@@ -534,50 +515,6 @@ where
             .checked_add(options.timeout())
             .expect("clamped discovery timeout fits the monotonic deadline domain");
         discover_mg_candidates_with(&self.registry, requirements, deadline, now).await
-    }
-
-    /// Discover locators for the existing pinned diagnostic formation path.
-    ///
-    /// Event signatures, advertisement proofs, author binding, freshness,
-    /// intent compatibility, capacity and dialing material are still checked.
-    /// HolderAuthorization presence and PeerBadge verification are deliberately
-    /// omitted. The result cannot be converted into a verified selection and
-    /// must never be used by a production consumer.
-    #[cfg(any(test, feature = "dev-pinned-formation"))]
-    pub async fn insecure_discover_untrusted_pinned_mgs(
-        &self,
-        requirements: &MgCandidateRequirements,
-        options: MgDiscoveryOptions,
-    ) -> FaResult<InsecureUntrustedPinnedMgDiscovery> {
-        let now = fedimint_core::time::duration_since_epoch().as_secs();
-        let deadline = Instant::now()
-            .checked_add(options.timeout())
-            .expect("clamped discovery timeout fits the monotonic deadline domain");
-        let events = self
-            .registry
-            .fetch_mg_advertisements(deadline.saturating_duration_since(Instant::now()))
-            .await
-            .map_err(|error| FaError::Registry(error.to_string()))?;
-        let mut rejected = Vec::new();
-        let newest =
-            statically_admit_newest_per_author(events.into_iter(), deadline, &mut rejected);
-        let mut candidates = Vec::new();
-        for (author, admitted) in newest {
-            match admit_insecure_untrusted_pinned_mg(
-                requirements,
-                author,
-                admitted.document,
-                now,
-                deadline,
-            ) {
-                Ok(candidate) => candidates.push(candidate),
-                Err(reason) => rejected.push(RejectedAdvertisement { author, reason }),
-            }
-        }
-        Ok(InsecureUntrustedPinnedMgDiscovery {
-            candidates,
-            rejected,
-        })
     }
 }
 
@@ -732,24 +669,7 @@ fn admit_eligible_advertisement(
     })
 }
 
-#[cfg(any(test, feature = "dev-pinned-formation"))]
-fn admit_insecure_untrusted_pinned_mg(
-    requirements: &MgCandidateRequirements,
-    author: PublicKey,
-    document: AdvertisementDocument,
-    now: u64,
-    deadline: Instant,
-) -> Result<InsecureUntrustedPinnedMg, AdvertisementRejection> {
-    let (payload, _, locator, _) = admit_eligible_payload(requirements, document, now, deadline)?;
-    debug_assert_eq!(payload.mg_id_pubkey, author.to_string());
-    Ok(InsecureUntrustedPinnedMg {
-        mg_id: author,
-        locator,
-    })
-}
-
-/// Apply every non-credential eligibility check shared by verified discovery
-/// and the explicitly untrusted pinned diagnostic projection.
+/// Apply every non-credential eligibility check of verified discovery.
 fn admit_eligible_payload(
     requirements: &MgCandidateRequirements,
     document: AdvertisementDocument,

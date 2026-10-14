@@ -2263,6 +2263,81 @@ fn compatible_selection_approval(max_total_msats: u64) -> MgSelectionApproval {
     approval
 }
 
+impl TestClient {
+    /// Create through one seat at each locator, as if a fresh preview had
+    /// selected them. A priced MG is paid from the test payment federation
+    /// when this FA can pay.
+    async fn create_at(
+        &self,
+        intent: FormationIntent,
+        locators: Vec<Locator>,
+        options: FormationRunOptions,
+    ) -> FaResult<()> {
+        self.create_at_with(intent, locators, None, options).await
+    }
+
+    async fn create_at_with_callback(
+        &self,
+        intent: FormationIntent,
+        locators: Vec<Locator>,
+        completion_callback: DkgCompletionCallback,
+        options: FormationRunOptions,
+    ) -> FaResult<()> {
+        self.create_at_with(intent, locators, Some(completion_callback), options)
+            .await
+    }
+
+    async fn create_at_with(
+        &self,
+        intent: FormationIntent,
+        locators: Vec<Locator>,
+        completion_callback: Option<DkgCompletionCallback>,
+        options: FormationRunOptions,
+    ) -> FaResult<()> {
+        let payer = (self.inner.ports.mg_connector.config.price_msats > 0
+            && self.inner.setup_payment_publisher.is_some())
+        .then(payment_federation_id);
+        let approval = approval_at(&intent, locators);
+        self.create_from_selection(intent, approval, payer, completion_callback, options)
+            .await
+    }
+}
+
+/// An approval for one seat at each locator. Each MG id is the test MG id of
+/// the locator's index, and a missing cap approves any total.
+fn approval_at(intent: &FormationIntent, locators: Vec<Locator>) -> MgSelectionApproval {
+    let minimum = intent.fedimintd_versions().minimum();
+    MgSelectionApproval {
+        request: MgSelectionRequest::new(
+            intent.federation_size(),
+            intent.fedimintd_versions().clone(),
+            intent.plan(),
+        )
+        .expect("valid test selection request"),
+        fedimintd_dkg_version: format!("{minimum}+fedi")
+            .parse::<FedimintdVersion>()
+            .expect("a release with the Fedi vendor is valid SemVer")
+            .dkg_version(),
+        verifier_provenance: test_peer_badge_verifier().provenance(),
+        seats: locators
+            .into_iter()
+            .map(|seat_locator| {
+                let index = (0..64)
+                    .find(|index| locator(*index) == seat_locator)
+                    .expect("test locators come from locator()");
+                crate::selection::ApprovedMgSeat {
+                    mg_id: test_mg_id(index),
+                    holder: test_mg_id(index),
+                    locator: seat_locator,
+                }
+            })
+            .collect(),
+        advertised_total_msats: 1,
+        max_total_msats: intent.max_total_msats().unwrap_or(u64::MAX),
+        valid_until: Timestamp(test_now_secs() + 120),
+    }
+}
+
 fn intent() -> FormationIntent {
     FormationIntent::new(
         Some(FederationName("Test Federation".to_owned())),
@@ -2350,14 +2425,14 @@ fn exact_payment_preflight_rejects_duplicate_semantic_quote_ids() {
         seats: vec![
             SeatPaymentRequirement {
                 index: 0,
-                mg_id: None,
+                mg_id: test_mg_id(0),
                 quote_id,
                 payment_federation_id: payer.clone(),
                 amount_msats: PAYMENT_AMOUNT_MSATS,
             },
             SeatPaymentRequirement {
                 index: 1,
-                mg_id: None,
+                mg_id: test_mg_id(1),
                 quote_id,
                 payment_federation_id: payer,
                 amount_msats: PAYMENT_AMOUNT_MSATS,
@@ -2452,18 +2527,6 @@ fn resolved_intent_with_size(federation_size: FederationSize) -> ResolvedFormati
     let mut intent = resolved_intent();
     intent.federation_size = federation_size;
     intent
-}
-
-fn seat_progress(index: u16) -> SeatProgress {
-    SeatProgress {
-        index,
-        mg_id: None,
-        locator: locator(usize::from(index)),
-        seat_id: None,
-        guardian_code: None,
-        phase: SeatPhase::Selected,
-        freshness: FormationFreshness::Fresh,
-    }
 }
 
 fn test_mg_id(index: usize) -> nostr_sdk::PublicKey {
@@ -3358,7 +3421,7 @@ async fn encrypted_backup_restore_imports_unsynced_lean_state_and_blocks_create(
     assert_eq!(snapshot.seats.len(), usize::from(MIN_FEDERATION_SIZE));
     assert!(
         restored
-            .create_with_pinned_mgs(intent(), locators(), options())
+            .create_at(intent(), locators(), options())
             .await
             .is_err()
     );
@@ -3967,7 +4030,15 @@ impl TestSetupPaymentSelection for TestClient {
         let (deadline, lease) =
             crate::formation::start_driver_run(&self.inner.store, options).await?;
         let run = crate::formation::DriverRun::new(options, deadline, &lease);
-        let result = self.select_setup_payment_federation(run).await;
+        let result =
+            self.payable_setup_payment_federations(run)
+                .await
+                .and_then(|(policy_ids, payable)| {
+                    policy_ids
+                        .into_iter()
+                        .find(|federation_id| payable.contains(federation_id))
+                        .ok_or_else(|| FaError::Payment("no payable policy member".to_owned()))
+                });
         crate::formation::finish_driver_run(
             result,
             self.inner.store.release_driver_lease(lease).await,
@@ -4230,6 +4301,197 @@ fn active_recovery(recovery: FaRecovery) -> crate::db::ActiveFormationRecovery {
         FaRecovery::Formation(recovery) => *recovery,
         FaRecovery::Idle | FaRecovery::Restored(_) => panic!("expected active formation"),
     }
+}
+
+fn guardian_replacements(status: &FaStatus) -> &GuardianReplacementRequirements {
+    match formation(status).action_required.as_ref() {
+        Some(FormationActionRequired::ReplaceGuardians(requirements)) => requirements,
+        other => panic!("expected guardian replacement, found {other:?}"),
+    }
+}
+
+const SEEDED_PURCHASE_ID: &str = "seeded-selected-purchase";
+
+/// Seed a pre-output selected paid purchase whose exact quotes are stored but
+/// not yet authorized, as a crash between quoting and self-authorization
+/// leaves it.
+async fn seed_quoted_selected_purchase(client: &TestClient) -> PaymentRequirements {
+    let store = &client.inner.store;
+    let formation_id = FormationId(SEEDED_PURCHASE_ID.to_owned());
+    let resolved = intent()
+        .with_max_total_msats(PAYMENT_AMOUNT_MSATS * u64::from(MIN_FEDERATION_SIZE))
+        .unwrap()
+        .resolve_for_dkg(
+            FederationName("Fallback Name".to_owned()),
+            fedimintd_version().dkg_version(),
+        )
+        .unwrap();
+    store
+        .initialize(
+            TestIdentity::fa_id(),
+            formation_id.clone(),
+            resolved.clone(),
+            (0..MIN_FEDERATION_SIZE)
+                .map(|index| selected_initial_seat(index, test_now_secs() + 120))
+                .collect(),
+            Some(payment_federation_id()),
+            None,
+        )
+        .await
+        .unwrap();
+    for index in 0..MIN_FEDERATION_SIZE {
+        store
+            .store_quote(
+                &formation_id,
+                index,
+                signed_quote(
+                    usize::from(index),
+                    &resolved,
+                    [200 + u8::try_from(index).unwrap(); 32],
+                ),
+            )
+            .await
+            .unwrap();
+    }
+    active_recovery(store.load_recovery(TestIdentity::fa_id()).await.unwrap())
+        .payment_requirements(TestIdentity::fa_id())
+        .unwrap()
+        .expect("exact paid aggregate")
+}
+
+/// Seed the same purchase after its capped run self-authorized the exact
+/// aggregate and before its first wallet call. Resuming reserves and funds
+/// exactly these quotes.
+async fn seed_authorized_selected_purchase(client: &TestClient) -> PaymentRequirements {
+    let requirements = seed_quoted_selected_purchase(client).await;
+    authorize_requirements(
+        &client.inner.store,
+        &FormationId(SEEDED_PURCHASE_ID.to_owned()),
+        &requirements,
+    )
+    .await;
+    requirements
+}
+
+/// Seed the same purchase after its run reserved the exact aggregate and
+/// armed wallet outputs, before polling any output. A test wallet told that a
+/// quote is funded or rejected then models an output the crashed run started.
+async fn seed_armed_selected_purchase(
+    client: &TestClient,
+    payment_state: &PaymentState,
+) -> PaymentRequirements {
+    let requirements = seed_quoted_selected_purchase(client).await;
+    let formation_id = FormationId(SEEDED_PURCHASE_ID.to_owned());
+    payment_state
+        .reservations
+        .lock()
+        .expect("test lock")
+        .insert(
+            crate::db::payment_reservation_id(&formation_id, &requirements)
+                .as_str()
+                .to_owned(),
+            TestReservation {
+                quote_ids: requirements
+                    .seats
+                    .iter()
+                    .map(|seat| seat.quote_id)
+                    .collect(),
+                started: HashSet::new(),
+                terminal: HashSet::new(),
+                released: HashSet::new(),
+            },
+        );
+    arm_payment_outputs_for_test(&client.inner.store, &formation_id, &requirements).await;
+    requirements
+}
+
+/// Record the exact aggregate authorization a capped run writes before its
+/// first wallet call.
+async fn authorize_requirements(
+    store: &db::FaStore,
+    formation_id: &FormationId,
+    requirements: &PaymentRequirements,
+) {
+    store
+        .authorize_payments(
+            formation_id,
+            &requirements.authorization_id,
+            &requirements
+                .seats
+                .iter()
+                .map(|requirement| QuoteAuthorization {
+                    index: requirement.index,
+                    quote_id: requirement.quote_id,
+                })
+                .collect::<Vec<_>>(),
+        )
+        .await
+        .unwrap();
+}
+
+/// Mark one post-output row terminal and durably assign it the fresh guardian
+/// at `locator(replacement)`, as an applied replacement approval does.
+async fn replace_guardian_for_test(
+    store: &db::FaStore,
+    formation_id: &FormationId,
+    index: u16,
+    terminal_quote: &SignedResponse<GetQuoteResponse>,
+    replacement: usize,
+) {
+    store
+        .mark_replacement_required(formation_id, index, terminal_quote)
+        .await
+        .unwrap();
+    let recovery = active_recovery(store.load_recovery(TestIdentity::fa_id()).await.unwrap());
+    let requirements = crate::db::replacement_requirements(formation_id, &recovery.seats)
+        .expect("the terminal row requires replacement");
+    store
+        .replace_guardians(
+            formation_id,
+            &requirements,
+            &[(
+                locator(replacement),
+                crate::db::MgAdmission::fresh_peer_badge(
+                    test_mg_id(replacement),
+                    test_mg_id(replacement),
+                    test_peer_badge_verifier().provenance().into(),
+                    Timestamp(test_now_secs() + 120),
+                ),
+            )],
+            1,
+        )
+        .await
+        .unwrap();
+}
+
+/// Authorize, reserve, and arm the wallet-output boundary for an exact
+/// aggregate without polling any output, as a crash right after arming
+/// leaves it.
+async fn arm_payment_outputs_for_test(
+    store: &db::FaStore,
+    formation_id: &FormationId,
+    requirements: &PaymentRequirements,
+) {
+    authorize_requirements(store, formation_id, requirements).await;
+    store
+        .record_payment_reservation(
+            formation_id,
+            &crate::db::payment_reservation_id(formation_id, requirements),
+        )
+        .await
+        .unwrap();
+    let lease = store
+        .acquire_driver_lease(
+            options().lease_duration(),
+            options().lease_renewal_duration(),
+        )
+        .await
+        .unwrap();
+    lease
+        .arm_payment_outputs_started(formation_id, test_peer_badge_verifier().provenance().into())
+        .await
+        .unwrap();
+    store.release_driver_lease(lease).await.unwrap();
 }
 
 fn quote_ids(records: &[QuoteRecord]) -> HashSet<QuoteId> {
@@ -4566,7 +4828,7 @@ async fn daemon_rejection_of_selected_common_set_member_is_quote_failure() {
     .await;
 
     let error = client
-        .create_with_pinned_mgs(intent(), locators(), options())
+        .create_at(intent(), locators(), options())
         .await
         .expect_err("daemon-local policy rejection is actionable quote failure");
     assert!(matches!(
@@ -4596,7 +4858,7 @@ async fn authenticated_common_set_selection_is_sent_in_paid_quotes() {
     .await;
 
     client
-        .create_with_pinned_mgs(intent(), locators(), options())
+        .create_at(intent(), locators(), options())
         .await
         .expect("authenticated common-set member funds paid quote");
     let records = state.quote_records.lock().expect("test lock");
@@ -4668,9 +4930,7 @@ async fn intent_and_locator_validation_precede_external_calls() {
 
     let too_few = locators().into_iter().take(6).collect();
     assert!(matches!(
-        client
-            .create_with_pinned_mgs(intent(), too_few, options())
-            .await,
+        client.create_at(intent(), too_few, options()).await,
         Err(FaError::InvalidManifoldGuardians(_))
     ));
     assert_eq!(client.status(), FaStatus::Idle);
@@ -4692,18 +4952,19 @@ async fn intent_and_locator_validation_precede_external_calls() {
     assert_eq!(payment_state.payable_calls.load(Ordering::SeqCst), 0);
     assert_eq!(payment_state.create_calls.load(Ordering::SeqCst), 0);
 
-    let duplicate = vec![locator(0); usize::from(MIN_FEDERATION_SIZE)];
+    let mut outside_request = approval_at(&intent(), locators());
+    outside_request.fedimintd_dkg_version = "0.11.0+fedi"
+        .parse::<FedimintdVersion>()
+        .expect("version parses")
+        .dkg_version();
     assert!(matches!(
         client
-            .create_with_pinned_mgs(intent(), duplicate, options())
-            .await,
-        Err(FaError::InvalidManifoldGuardians(_))
-    ));
-    assert_eq!(mg_state.availability_calls.load(Ordering::SeqCst), 0);
-
-    assert!(matches!(
-        client
-            .create_with_pinned_mgs(compatible_intent(), locators(), options())
+            .pay_and_create(
+                intent(),
+                outside_request,
+                payment_federation_id(),
+                options()
+            )
             .await,
         Err(FaError::InvalidIntent(_))
     ));
@@ -4725,7 +4986,7 @@ async fn an_fa_that_cannot_pay_forms_against_seats_offered_at_zero() {
     .await;
 
     client
-        .create_with_pinned_mgs(intent(), locators(), options())
+        .create_at(intent(), locators(), options())
         .await
         .unwrap();
 
@@ -4733,13 +4994,6 @@ async fn an_fa_that_cannot_pay_forms_against_seats_offered_at_zero() {
     let formed = formation(&status);
     assert_eq!(formed.phase, FormationPhase::Formed);
     assert_eq!(formed.invite_code, Some(test_invite(0)));
-    assert!(
-        formed
-            .seats
-            .iter()
-            .all(|seat| seat.mg_id.is_none() && seat.mg_name().is_none()),
-        "pinned rows carry no badge-vouched identity to derive a name from",
-    );
     assert_eq!(payment_state.payable_calls.load(Ordering::SeqCst), 0);
     assert_eq!(payment_state.create_calls.load(Ordering::SeqCst), 0);
 }
@@ -4762,15 +5016,8 @@ async fn a_payment_settled_under_the_wrong_generation_is_never_presented() {
     )
     .await;
 
-    client
-        .create_with_pinned_mgs(intent(), locators(), options())
-        .await
-        .unwrap();
-    let authorization_id = payment_requirements(&client.status())
-        .authorization_id
-        .clone();
     let error = client
-        .authorize_payments(authorization_id, options())
+        .create_at(intent(), locators(), options())
         .await
         .expect_err("a payment that disagrees with the quote is not presented");
     assert!(
@@ -4779,31 +5026,6 @@ async fn a_payment_settled_under_the_wrong_generation_is_never_presented() {
         "unexpected error: {error:?}"
     );
     assert_eq!(mg_state.create_calls.load(Ordering::SeqCst), 0);
-}
-
-/// The other half of the same rule: an FA that cannot pay is refused by an
-/// MG that charges, rather than forming a seat it has no way to settle.
-#[tokio::test]
-async fn an_fa_that_cannot_pay_is_refused_by_a_priced_mg() {
-    let (payments, payment_state) = TestPayments::new();
-    let client = open_client_that_cannot_pay(
-        MemDatabase::new().into_database(),
-        payments,
-        Arc::new(MgState::default()),
-        MgConfig::paid(),
-    )
-    .await;
-
-    let error = client
-        .create_with_pinned_mgs(intent(), locators(), options())
-        .await
-        .expect_err("a priced seat cannot be taken without a way to pay");
-    assert!(
-        matches!(&error, FaError::ManifoldGuardian { message, .. }
-            if message.contains("no authenticated payment policy")),
-        "unexpected error: {error:?}"
-    );
-    assert_eq!(payment_state.create_calls.load(Ordering::SeqCst), 0);
 }
 
 #[tokio::test]
@@ -4826,7 +5048,7 @@ async fn default_name_final_status_and_formed_reconciliation_are_typed() {
     )
     .unwrap();
     client
-        .create_with_pinned_mgs(unnamed, locators(), options())
+        .create_at(unnamed, locators(), options())
         .await
         .unwrap();
 
@@ -4907,7 +5129,7 @@ async fn an_already_started_reply_resumes_through_status_instead_of_stranding_fo
     .await;
 
     client
-        .create_with_pinned_mgs(intent(), locators(), options())
+        .create_at(intent(), locators(), options())
         .await
         .unwrap();
 
@@ -4941,7 +5163,7 @@ async fn inconsistent_formed_storage_is_rejected_before_status_publication() {
         )
         .await;
         client
-            .create_with_pinned_mgs(intent(), locators(), options())
+            .create_at(intent(), locators(), options())
             .await
             .unwrap();
 
@@ -4979,7 +5201,7 @@ async fn record_dkg_complete_rejects_incomplete_seats_without_changing_recovery_
     let mg_state = Arc::new(MgState::default());
     let client = open_client(database, payments, mg_state, MgConfig::given_away()).await;
     client
-        .create_with_pinned_mgs(intent(), locators(), options())
+        .create_at(intent(), locators(), options())
         .await
         .unwrap();
     let formation_id = formation(&client.status()).formation_id.clone();
@@ -5022,7 +5244,7 @@ async fn formation_rejects_disagreeing_final_federation_identities() {
 
     assert!(matches!(
         client
-            .create_with_pinned_mgs(intent(), locators(), options())
+            .create_at(intent(), locators(), options())
             .await,
         Err(FaError::InvalidManifoldGuardians(message))
             if message.contains("different federation identities")
@@ -5060,19 +5282,12 @@ async fn separately_opened_clients_share_one_database_driver_lease() {
         MgConfig::paid(),
     )
     .await;
-    first
-        .create_with_pinned_mgs(intent(), locators(), options())
-        .await
-        .unwrap();
     let second = open_client(database, payments, mg_state, MgConfig::paid()).await;
-    let authorization_id = payment_requirements(&first.status())
-        .authorization_id
-        .clone();
     payment_state.block_recovery.store(true, Ordering::SeqCst);
     let recovery_started = payment_state.recovery_started.notified();
     let operation = tokio::spawn(async move {
         first
-            .authorize_payments(authorization_id, long_request_options())
+            .create_at(intent(), locators(), long_request_options())
             .await
     });
     recovery_started.await;
@@ -5400,7 +5615,10 @@ async fn setup_policy_takeover_between_registry_and_wallet_fences_wallet_call() 
             fedimint_core::runtime::Instant::now() + Duration::from_secs(600),
             &old,
         );
-        client.select_setup_payment_federation(run).await
+        client
+            .payable_setup_payment_federations(run)
+            .await
+            .map(|_| ())
     });
     fetch_started.notified().await;
 
@@ -5446,17 +5664,10 @@ async fn taken_over_client_cannot_continue_from_a_stalled_wallet_call() {
         MgConfig::paid(),
     )
     .await;
-    client
-        .create_with_pinned_mgs(intent(), locators(), options())
-        .await
-        .unwrap();
-    let authorization_id = payment_requirements(&client.status())
-        .authorization_id
-        .clone();
     payment_state.block_recovery.store(true, Ordering::SeqCst);
     let recovery_started = payment_state.recovery_started.notified();
     let operation =
-        tokio::spawn(async move { client.authorize_payments(authorization_id, options()).await });
+        tokio::spawn(async move { client.create_at(intent(), locators(), options()).await });
     recovery_started.await;
 
     now.store(10_100, Ordering::SeqCst);
@@ -5528,8 +5739,8 @@ async fn initialized_formation_reloads_as_unsynced_typed_status() {
             TestIdentity::fa_id(),
             FormationId("formation1".to_owned()),
             resolved_intent_with_size(FederationSize(1)),
-            vec![seat_progress(0)],
-            crate::db::FormationCreationMode::Pinned,
+            vec![selected_initial_seat(0, test_now_secs() + 120)],
+            None,
             None,
         )
         .await
@@ -5564,8 +5775,8 @@ async fn persisted_formation_rejects_a_different_identity_before_observation() {
             TestIdentity::fa_id(),
             FormationId("ownedformation".to_owned()),
             resolved_intent_with_size(FederationSize(1)),
-            vec![seat_progress(0)],
-            crate::db::FormationCreationMode::Pinned,
+            vec![selected_initial_seat(0, test_now_secs() + 120)],
+            None,
             None,
         )
         .await
@@ -5607,8 +5818,8 @@ async fn current_storage_requires_selected_mode_and_output_tombstone_fields() {
             TestIdentity::fa_id(),
             FormationId("required-schema-fields".to_owned()),
             resolved_intent_with_size(FederationSize(1)),
-            vec![seat_progress(0)],
-            crate::db::FormationCreationMode::Pinned,
+            vec![selected_initial_seat(0, test_now_secs() + 120)],
+            None,
             None,
         )
         .await
@@ -5631,6 +5842,61 @@ async fn current_storage_requires_selected_mode_and_output_tombstone_fields() {
     }
 }
 
+#[tokio::test]
+async fn schema_11_rows_keep_their_tagged_shape_and_pinned_rows_require_reset() {
+    let (payments, _) = TestPayments::new();
+    let client = open_client(
+        MemDatabase::new().into_database(),
+        payments,
+        Arc::new(MgState::default()),
+        MgConfig::paid(),
+    )
+    .await;
+    let store = &client.inner.store;
+    store
+        .initialize(
+            TestIdentity::fa_id(),
+            FormationId("tagged-schema-11".to_owned()),
+            ResolvedFormationIntent {
+                max_total_msats: Some(1_000),
+                ..resolved_intent_with_size(FederationSize(1))
+            },
+            vec![selected_initial_seat(0, test_now_secs() + 120)],
+            Some(payment_federation_id()),
+            None,
+        )
+        .await
+        .unwrap();
+
+    // Earlier schema 11 releases wrote the payer under the selected creation
+    // mode and the admission under its peer-badge tag.
+    let (formation, seat) = store.raw_formation_rows_for_test().await;
+    assert_eq!(formation["schema_version"], 11);
+    assert_eq!(
+        formation["creation_mode"],
+        serde_json::json!({"selected": {"payment_federation_id": payment_federation_id().0}})
+    );
+    assert_eq!(
+        seat["admission"]["peer_badge"]["fman_id"],
+        test_mg_id(0).to_hex()
+    );
+    let recovery = active_recovery(store.load_recovery(TestIdentity::fa_id()).await.unwrap());
+    assert_eq!(
+        recovery.payment_federation_id,
+        Some(payment_federation_id())
+    );
+    assert_eq!(recovery.seats[0].admission.mg_id(), test_mg_id(0));
+
+    store.mark_formation_pinned_for_test().await;
+    let Err(FaError::Storage(message)) = store.load_recovery(TestIdentity::fa_id()).await else {
+        panic!("a pinned formation must not load");
+    };
+    assert!(
+        message.contains("pinned") && message.contains("reset"),
+        "{message}"
+    );
+}
+
 #[test]
 fn older_saved_admissions_without_badge_holders_still_decode() {
     let admission = crate::db::MgAdmission::fresh_peer_badge(
@@ -5640,10 +5906,7 @@ fn older_saved_admissions_without_badge_holders_still_decode() {
         Timestamp(123),
     );
     let mut stored = serde_json::to_value(&admission).unwrap();
-    stored["peer_badge"]
-        .as_object_mut()
-        .unwrap()
-        .remove("holder");
+    stored.as_object_mut().unwrap().remove("holder");
     let legacy: crate::db::MgAdmission = serde_json::from_value(stored).unwrap();
     assert_eq!(legacy.holder(), None);
     assert_eq!(legacy.mg_id(), admission.mg_id());
@@ -5665,7 +5928,10 @@ async fn accepting_one_seat_preserves_a_sibling_journaled_quote() {
     )
     .await;
     let formation_id = FormationId("twoseatinterleaving".to_owned());
-    let intent = resolved_intent_with_size(FederationSize(2));
+    let intent = ResolvedFormationIntent {
+        max_total_msats: Some(1_000),
+        ..resolved_intent_with_size(FederationSize(2))
+    };
     client
         .inner
         .store
@@ -5673,8 +5939,11 @@ async fn accepting_one_seat_preserves_a_sibling_journaled_quote() {
             TestIdentity::fa_id(),
             formation_id.clone(),
             intent.clone(),
-            vec![seat_progress(0), seat_progress(1)],
-            crate::db::FormationCreationMode::Pinned,
+            vec![
+                selected_initial_seat(0, test_now_secs() + 120),
+                selected_initial_seat(1, test_now_secs() + 120),
+            ],
+            Some(payment_federation_id()),
             None,
         )
         .await
@@ -5693,6 +5962,18 @@ async fn accepting_one_seat_preserves_a_sibling_journaled_quote() {
         .store_quote(&formation_id, 1, second_quote.clone())
         .await
         .unwrap();
+    let requirements = active_recovery(
+        client
+            .inner
+            .store
+            .load_recovery(TestIdentity::fa_id())
+            .await
+            .unwrap(),
+    )
+    .payment_requirements(TestIdentity::fa_id())
+    .unwrap()
+    .expect("exact paid aggregate");
+    arm_payment_outputs_for_test(&client.inner.store, &formation_id, &requirements).await;
     client
         .inner
         .store
@@ -5735,14 +6016,20 @@ async fn concurrent_two_seat_acceptance_retries_and_derives_completion_from_dura
     .await;
     let store = &client.inner.store;
     let formation_id = FormationId("concurrentseatacceptance".to_owned());
-    let intent = resolved_intent_with_size(FederationSize(2));
+    let intent = ResolvedFormationIntent {
+        max_total_msats: Some(1_000),
+        ..resolved_intent_with_size(FederationSize(2))
+    };
     store
         .initialize(
             TestIdentity::fa_id(),
             formation_id.clone(),
             intent.clone(),
-            vec![seat_progress(0), seat_progress(1)],
-            crate::db::FormationCreationMode::Pinned,
+            vec![
+                selected_initial_seat(0, test_now_secs() + 120),
+                selected_initial_seat(1, test_now_secs() + 120),
+            ],
+            Some(payment_federation_id()),
             None,
         )
         .await
@@ -5762,6 +6049,11 @@ async fn concurrent_two_seat_acceptance_retries_and_derives_completion_from_dura
             .unwrap();
     }
 
+    let requirements = active_recovery(store.load_recovery(TestIdentity::fa_id()).await.unwrap())
+        .payment_requirements(TestIdentity::fa_id())
+        .unwrap()
+        .expect("exact paid aggregate");
+    arm_payment_outputs_for_test(store, &formation_id, &requirements).await;
     store.set_next_formation_commit_barrier(2);
     let (first, second) = tokio::time::timeout(Duration::from_secs(1), async {
         tokio::join!(
@@ -5810,14 +6102,20 @@ async fn concurrent_two_seat_clear_and_changed_term_store_retry_without_losing_s
     .await;
     let store = &client.inner.store;
     let formation_id = FormationId("concurrentquotereplacement".to_owned());
-    let intent = resolved_intent_with_size(FederationSize(2));
+    let intent = ResolvedFormationIntent {
+        max_total_msats: Some(1_000),
+        ..resolved_intent_with_size(FederationSize(2))
+    };
     store
         .initialize(
             TestIdentity::fa_id(),
             formation_id.clone(),
             intent.clone(),
-            vec![seat_progress(0), seat_progress(1)],
-            crate::db::FormationCreationMode::Pinned,
+            vec![
+                selected_initial_seat(0, test_now_secs() + 120),
+                selected_initial_seat(1, test_now_secs() + 120),
+            ],
+            Some(payment_federation_id()),
             None,
         )
         .await
@@ -5834,8 +6132,10 @@ async fn concurrent_two_seat_clear_and_changed_term_store_retry_without_losing_s
         .store_quote(&formation_id, 1, old_quotes[1].clone())
         .await
         .unwrap();
-    let status = store.load_status(TestIdentity::fa_id()).await.unwrap();
-    let requirements = payment_requirements(&status).clone();
+    let requirements = active_recovery(store.load_recovery(TestIdentity::fa_id()).await.unwrap())
+        .payment_requirements(TestIdentity::fa_id())
+        .unwrap()
+        .expect("exact paid aggregate");
     let authorizations = requirements
         .seats
         .iter()
@@ -5901,8 +6201,10 @@ async fn concurrent_two_seat_clear_and_changed_term_store_retry_without_losing_s
         reloaded.seats[1].signed_quote,
         Some(fresh_quotes[1].clone())
     );
-    let reloaded_status = FaStatus::Formation(reloaded.snapshot.clone());
-    let refreshed = payment_requirements(&reloaded_status);
+    let refreshed = reloaded
+        .payment_requirements(TestIdentity::fa_id())
+        .unwrap()
+        .expect("exact refreshed paid aggregate");
     assert_eq!(refreshed.seats.len(), 2);
     assert_eq!(refreshed.total_msats, 500);
     assert!(
@@ -5945,9 +6247,7 @@ async fn replacement_authority_requires_selected_post_output_terminal_transition
             (0..MIN_FEDERATION_SIZE)
                 .map(|index| selected_initial_seat(index, test_now_secs() + 120))
                 .collect(),
-            crate::db::FormationCreationMode::Selected {
-                payment_federation_id: Some(payment_federation_id()),
-            },
+            Some(payment_federation_id()),
             None,
         )
         .await
@@ -6065,8 +6365,8 @@ async fn recovery_rejects_mixed_quote_and_replacement_authority() {
             TestIdentity::fa_id(),
             formation_id.clone(),
             resolved.clone(),
-            vec![seat_progress(0)],
-            crate::db::FormationCreationMode::Pinned,
+            vec![selected_initial_seat(0, test_now_secs() + 120)],
+            None,
             None,
         )
         .await
@@ -6109,52 +6409,23 @@ async fn aggregate_authorization_blocks_spends_and_unpaid_quotes_refresh_on_reop
         MgConfig::paid(),
     )
     .await;
-    client
-        .create_with_pinned_mgs(intent(), locators(), options())
-        .await
-        .unwrap();
-
-    let first_status = client.status();
-    let requirements = payment_requirements(&first_status).clone();
-    assert_eq!(
-        formation(&first_status).phase,
-        FormationPhase::AwaitingPaymentReadiness
-    );
-    assert_eq!(requirements.seats.len(), usize::from(MIN_FEDERATION_SIZE));
-    assert_eq!(
-        requirements.total_msats,
-        PAYMENT_AMOUNT_MSATS * u64::from(MIN_FEDERATION_SIZE)
-    );
-    let quoted = quote_ids(&mg_state.quote_records.lock().expect("test lock"));
+    let requirements = seed_quoted_selected_purchase(&client).await;
     let required = requirements
         .seats
         .iter()
         .map(|requirement| requirement.quote_id)
         .collect::<HashSet<_>>();
-    assert_eq!(required, quoted);
-    assert_eq!(payment_state.recover_calls.load(Ordering::SeqCst), 0);
-    assert_eq!(payment_state.create_calls.load(Ordering::SeqCst), 0);
-    assert_eq!(mg_state.create_calls.load(Ordering::SeqCst), 0);
+    assert_eq!(required.len(), usize::from(MIN_FEDERATION_SIZE));
+    drop(client);
 
+    // The unauthorized quotes were never covered by the cap, so reopen
+    // refreshes every one of them before the run self-authorizes and spends.
     let reopened = open_client(database, payments, mg_state.clone(), MgConfig::paid()).await;
     reopened.resume().await.unwrap();
-    let reopened_status = reopened.status();
-    let refreshed_requirements = payment_requirements(&reopened_status).clone();
-    let refreshed = refreshed_requirements
-        .seats
-        .iter()
-        .map(|requirement| requirement.quote_id)
-        .collect::<HashSet<_>>();
-    assert!(required.is_disjoint(&refreshed));
-    assert_eq!(payment_state.recover_calls.load(Ordering::SeqCst), 0);
-    assert_eq!(payment_state.create_calls.load(Ordering::SeqCst), 0);
-    assert_eq!(mg_state.create_calls.load(Ordering::SeqCst), 0);
-
-    reopened
-        .authorize_payments(refreshed_requirements.authorization_id.clone(), options())
-        .await
-        .unwrap();
     assert_eq!(formation(&reopened.status()).phase, FormationPhase::Formed);
+    let refreshed = quote_ids(&mg_state.quote_records.lock().expect("test lock"));
+    assert_eq!(refreshed.len(), usize::from(MIN_FEDERATION_SIZE));
+    assert!(required.is_disjoint(&refreshed));
     assert_eq!(
         payment_state.recover_calls.load(Ordering::SeqCst),
         usize::from(MIN_FEDERATION_SIZE)
@@ -6178,7 +6449,7 @@ async fn aggregate_authorization_blocks_spends_and_unpaid_quotes_refresh_on_reop
     assert_eq!(created, refreshed);
     assert_eq!(
         mg_state.quote_calls.load(Ordering::SeqCst),
-        2 * usize::from(MIN_FEDERATION_SIZE)
+        usize::from(MIN_FEDERATION_SIZE)
     );
 }
 
@@ -6211,14 +6482,11 @@ async fn one_ecash_note_pays_every_seat_and_returns_change_sequentially() {
     )
     .await;
     client
-        .create_with_pinned_mgs(intent(), locators(), options())
-        .await
-        .unwrap();
-    let requirements = payment_requirements(&client.status()).clone();
-    assert_eq!(requirements.total_msats, aggregate_payments);
-
-    client
-        .authorize_payments(requirements.authorization_id, options())
+        .create_at(
+            intent().with_max_total_msats(aggregate_payments).unwrap(),
+            locators(),
+            options(),
+        )
         .await
         .expect("one note is reused only after each accepted payment returns spendable change");
 
@@ -6242,11 +6510,7 @@ async fn stale_payment_authorization_cannot_approve_a_replaced_quote_set() {
     let (payments, payment_state) = TestPayments::new();
     let mg_state = Arc::new(MgState::default());
     let client = open_client(database, payments, mg_state.clone(), MgConfig::paid()).await;
-    client
-        .create_with_pinned_mgs(intent(), locators(), options())
-        .await
-        .unwrap();
-    let observed = payment_requirements(&client.status()).clone();
+    let requirements = seed_quoted_selected_purchase(&client).await;
     let recovery = active_recovery(
         client
             .inner
@@ -6255,23 +6519,52 @@ async fn stale_payment_authorization_cannot_approve_a_replaced_quote_set() {
             .await
             .unwrap(),
     );
+    let purchase_id = recovery.snapshot.formation_id.clone();
+    arm_payment_outputs_for_test(&client.inner.store, &purchase_id, &requirements).await;
+    // Only a replacement aggregate after outputs started is displayed for
+    // explicit authorization.
+    let replacement = usize::from(MAX_FEDERATION_SIZE);
     let old_quote = recovery.seats[0]
         .signed_quote
         .clone()
         .expect("journaled paid quote");
+    replace_guardian_for_test(
+        &client.inner.store,
+        &purchase_id,
+        0,
+        &old_quote,
+        replacement,
+    )
+    .await;
+    let displayed_quote = signed_quote(replacement, &recovery.snapshot.intent, [98; 32]);
     client
         .inner
         .store
-        .clear_quote(&recovery.snapshot.formation_id, 0, &old_quote)
+        .store_quote(&purchase_id, 0, displayed_quote.clone())
+        .await
+        .unwrap();
+    let observed = payment_requirements(
+        &client
+            .inner
+            .store
+            .load_status(TestIdentity::fa_id())
+            .await
+            .unwrap(),
+    )
+    .clone();
+    client
+        .inner
+        .store
+        .clear_quote(&purchase_id, 0, &displayed_quote)
         .await
         .unwrap();
     client
         .inner
         .store
         .store_quote(
-            &recovery.snapshot.formation_id,
+            &purchase_id,
             0,
-            signed_quote(0, &recovery.snapshot.intent, [99; 32]),
+            signed_quote(replacement, &recovery.snapshot.intent, [99; 32]),
         )
         .await
         .unwrap();
@@ -6308,7 +6601,10 @@ async fn partial_seat_recovery_projects_payment_readiness_after_replacement() {
     )
     .await;
     let formation_id = FormationId("partialpaymentreadiness".to_owned());
-    let intent = resolved_intent_with_size(FederationSize(2));
+    let intent = ResolvedFormationIntent {
+        max_total_msats: Some(1_000),
+        ..resolved_intent_with_size(FederationSize(2))
+    };
     client
         .inner
         .store
@@ -6316,8 +6612,11 @@ async fn partial_seat_recovery_projects_payment_readiness_after_replacement() {
             TestIdentity::fa_id(),
             formation_id.clone(),
             intent.clone(),
-            vec![seat_progress(0), seat_progress(1)],
-            crate::db::FormationCreationMode::Pinned,
+            vec![
+                selected_initial_seat(0, test_now_secs() + 120),
+                selected_initial_seat(1, test_now_secs() + 120),
+            ],
+            Some(payment_federation_id()),
             None,
         )
         .await
@@ -6336,31 +6635,18 @@ async fn partial_seat_recovery_projects_payment_readiness_after_replacement() {
         .store_quote(&formation_id, 1, second_quote.clone())
         .await
         .unwrap();
-    let status = client
-        .inner
-        .store
-        .load_status(TestIdentity::fa_id())
-        .await
-        .unwrap();
-    let requirements = payment_requirements(&status).clone();
-    let authorizations = requirements
-        .seats
-        .iter()
-        .map(|requirement| QuoteAuthorization {
-            index: requirement.index,
-            quote_id: requirement.quote_id,
-        })
-        .collect::<Vec<_>>();
-    client
-        .inner
-        .store
-        .authorize_payments(
-            &formation_id,
-            &requirements.authorization_id,
-            &authorizations,
-        )
-        .await
-        .unwrap();
+    let requirements = active_recovery(
+        client
+            .inner
+            .store
+            .load_recovery(TestIdentity::fa_id())
+            .await
+            .unwrap(),
+    )
+    .payment_requirements(TestIdentity::fa_id())
+    .unwrap()
+    .expect("exact paid aggregate");
+    arm_payment_outputs_for_test(&client.inner.store, &formation_id, &requirements).await;
     client
         .inner
         .store
@@ -6372,16 +6658,11 @@ async fn partial_seat_recovery_projects_payment_readiness_after_replacement() {
         )
         .await
         .unwrap();
+    replace_guardian_for_test(&client.inner.store, &formation_id, 1, &second_quote, 2).await;
     client
         .inner
         .store
-        .clear_quote(&formation_id, 1, &second_quote)
-        .await
-        .unwrap();
-    client
-        .inner
-        .store
-        .store_quote(&formation_id, 1, signed_quote(1, &intent, [53; 32]))
+        .store_quote(&formation_id, 1, signed_quote(2, &intent, [53; 32]))
         .await
         .unwrap();
 
@@ -6410,10 +6691,15 @@ async fn authorized_reserved_recovery_replays_exact_quotes_before_funding() {
         MgConfig::paid(),
     )
     .await;
-    client
-        .create_with_pinned_mgs(intent(), locators(), options())
-        .await
-        .unwrap();
+    payment_state.block_recovery.store(true, Ordering::SeqCst);
+    let recovery_started = payment_state.recovery_started.notified();
+    let running = client.clone();
+    let operation = tokio::spawn(async move {
+        running
+            .create_at(intent(), locators(), long_request_options())
+            .await
+    });
+    recovery_started.await;
     let stored_quotes = mg_state
         .quote_records
         .lock()
@@ -6421,19 +6707,6 @@ async fn authorized_reserved_recovery_replays_exact_quotes_before_funding() {
         .iter()
         .map(|record| record.quote_id)
         .collect::<HashSet<_>>();
-
-    payment_state.block_recovery.store(true, Ordering::SeqCst);
-    let recovery_started = payment_state.recovery_started.notified();
-    let authorization_id = payment_requirements(&client.status())
-        .authorization_id
-        .clone();
-    let running = client.clone();
-    let operation = tokio::spawn(async move {
-        running
-            .authorize_payments(authorization_id, long_request_options())
-            .await
-    });
-    recovery_started.await;
     assert_eq!(payment_state.create_calls.load(Ordering::SeqCst), 0);
     assert_eq!(mg_state.create_calls.load(Ordering::SeqCst), 0);
     operation.abort();
@@ -6497,24 +6770,28 @@ async fn a_closed_mg_stops_before_quote_or_value_moving_payment_work() {
 
     assert!(matches!(
         client
-            .create_with_pinned_mgs(intent(), locators(), options())
+            .create_at(intent(), locators(), options())
             .await
             .as_ref(),
-        Err(FaError::Mg(MgFailure {
-            operation: MgOperation::GetAvailability,
-            cause: MgCause::NotAcceptingSeats,
-            ..
-        }))
+        Err(FaError::SelectionReauthorizationRequired {
+            reason: SelectionReauthorizationReason::SelectedMgUnavailable,
+            failure: Some(MgFailure {
+                operation: MgOperation::GetAvailability,
+                cause: MgCause::NotAcceptingSeats,
+                ..
+            }),
+        })
     ));
+    assert_eq!(client.status(), FaStatus::Idle);
     assert_eq!(
         mg_state.availability_calls.load(Ordering::SeqCst),
         usize::from(MIN_FEDERATION_SIZE)
     );
     assert_eq!(mg_state.quote_calls.load(Ordering::SeqCst), 0);
     assert_eq!(mg_state.create_calls.load(Ordering::SeqCst), 0);
-    // The payment federation is resolved by the first priced seat, and no
-    // seat got that far, so the wallet was not consulted at all.
-    assert_eq!(payment_state.payable_calls.load(Ordering::SeqCst), 0);
+    // Only the explicit payer's readiness was checked before quoting; no
+    // value-moving wallet work followed.
+    assert_eq!(payment_state.payable_calls.load(Ordering::SeqCst), 1);
     assert_eq!(payment_state.recover_calls.load(Ordering::SeqCst), 0);
     assert_eq!(payment_state.create_calls.load(Ordering::SeqCst), 0);
 }
@@ -6534,17 +6811,19 @@ async fn advertised_size_capability_stops_formation_before_quotes() {
     .await;
 
     let error = client
-        .create_with_pinned_mgs(intent(), locators(), options())
+        .create_at(intent(), locators(), options())
         .await
         .unwrap_err();
-    assert_eq!(error.code(), FaErrorCode::ManifoldGuardian);
     assert!(matches!(
         &error,
-        FaError::Mg(MgFailure {
-            operation: MgOperation::GetAvailability,
-            cause: MgCause::UnsupportedFederationSize,
-            ..
-        })
+        FaError::SelectionReauthorizationRequired {
+            reason: SelectionReauthorizationReason::SelectedMgUnavailable,
+            failure: Some(MgFailure {
+                operation: MgOperation::GetAvailability,
+                cause: MgCause::UnsupportedFederationSize,
+                ..
+            }),
+        }
     ));
     assert_eq!(
         mg_state.availability_calls.load(Ordering::SeqCst),
@@ -6577,20 +6856,22 @@ async fn external_capability_calls_obey_request_timeout() {
 
     assert!(matches!(
         client
-            .create_with_pinned_mgs(intent(), locators(), timeout_options)
+            .create_at(intent(), locators(), timeout_options)
             .await
             .as_ref(),
-        Err(FaError::Mg(MgFailure {
-            operation: MgOperation::GetAvailability,
-            cause: MgCause::Timeout,
-            ..
-        }))
+        Err(FaError::SelectionReauthorizationRequired {
+            reason: SelectionReauthorizationReason::SelectedMgUnavailable,
+            failure: Some(MgFailure {
+                operation: MgOperation::GetAvailability,
+                cause: MgCause::Timeout,
+                ..
+            }),
+        })
     ));
-    let status = client.status();
-    assert_eq!(formation(&status).last_error, Some(FaErrorCode::Timeout));
+    assert_eq!(client.status(), FaStatus::Idle);
     assert_eq!(mg_state.quote_calls.load(Ordering::SeqCst), 0);
     assert_eq!(mg_state.create_calls.load(Ordering::SeqCst), 0);
-    assert_eq!(payment_state.payable_calls.load(Ordering::SeqCst), 0);
+    assert_eq!(payment_state.payable_calls.load(Ordering::SeqCst), 1);
     assert_eq!(payment_state.create_calls.load(Ordering::SeqCst), 0);
 }
 
@@ -6600,23 +6881,9 @@ async fn terminal_payment_rejection_clears_quotes_and_requires_fresh_authorizati
     let (payments, payment_state) = TestPayments::new();
     let mg_state = Arc::new(MgState::default());
     let client = open_client(database, payments, mg_state.clone(), MgConfig::paid()).await;
-    client
-        .create_with_pinned_mgs(intent(), locators(), options())
-        .await
-        .unwrap();
-    let original_status = client.status();
-    let original = payment_requirements(&original_status)
-        .seats
-        .iter()
-        .map(|requirement| requirement.quote_id)
-        .collect::<HashSet<_>>();
-
     payment_state.reject_recovery.store(true, Ordering::SeqCst);
-    let authorization_id = payment_requirements(&original_status)
-        .authorization_id
-        .clone();
     assert!(matches!(
-        client.authorize_payments(authorization_id, options()).await,
+        client.create_at(intent(), locators(), options()).await,
         Err(FaError::Payment(_))
     ));
     assert_eq!(mg_state.create_calls.load(Ordering::SeqCst), 0);
@@ -6636,36 +6903,27 @@ async fn terminal_payment_rejection_clears_quotes_and_requires_fresh_authorizati
             .all(|seat| seat.signed_quote.is_none())
     );
 
+    // The cap approved only the first aggregate. Its replacement quotes need
+    // a fresh selection, so the purchase is released instead of spending.
     payment_state.reject_recovery.store(false, Ordering::SeqCst);
-    client.resume().await.unwrap();
-    let replacement_status = client.status();
-    assert_eq!(
-        formation(&replacement_status).phase,
-        FormationPhase::AwaitingPaymentReadiness
+    let error = client.resume().await.unwrap_err();
+    assert!(
+        matches!(
+            error,
+            FaError::SelectionReauthorizationRequired {
+                reason: SelectionReauthorizationReason::QuoteTotalExceedsLimit,
+                failure: None,
+            }
+        ),
+        "{error:?}"
     );
-    let replacement = payment_requirements(&replacement_status)
-        .seats
-        .iter()
-        .map(|requirement| requirement.quote_id)
-        .collect::<HashSet<_>>();
-    assert!(original.is_disjoint(&replacement));
+    assert_eq!(client.status(), FaStatus::Idle);
     assert_eq!(
         mg_state.quote_calls.load(Ordering::SeqCst),
         2 * usize::from(MIN_FEDERATION_SIZE)
     );
     assert_eq!(mg_state.create_calls.load(Ordering::SeqCst), 0);
     assert_eq!(payment_state.create_calls.load(Ordering::SeqCst), 0);
-
-    client
-        .authorize_payments(
-            payment_requirements(&replacement_status)
-                .authorization_id
-                .clone(),
-            options(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(formation(&client.status()).phase, FormationPhase::Formed);
 }
 
 #[tokio::test]
@@ -6676,19 +6934,11 @@ async fn lost_create_seat_response_replays_exact_quote_without_refunding_twice()
     let mut config = MgConfig::paid();
     config.create_behavior = CreateBehavior::HangFirst;
     let client = open_client(database.clone(), payments.clone(), mg_state.clone(), config).await;
-    client
-        .create_with_pinned_mgs(intent(), locators(), options())
-        .await
-        .unwrap();
-
     let create_started = mg_state.create_started.notified();
-    let authorization_id = payment_requirements(&client.status())
-        .authorization_id
-        .clone();
     let running = client.clone();
     let operation = tokio::spawn(async move {
         running
-            .authorize_payments(authorization_id, long_request_options())
+            .create_at(intent(), locators(), long_request_options())
             .await
     });
     create_started.await;
@@ -6733,7 +6983,7 @@ async fn lost_create_seat_response_replays_exact_quote_without_refunding_twice()
 }
 
 #[tokio::test(start_paused = true)]
-async fn slow_refund_settlement_finishes_before_quote_replacement() {
+async fn slow_refund_settlement_finishes_before_guardian_replacement() {
     let (payments, payment_state) = TestPayments::new();
     *payment_state.refund_delay.lock().expect("test lock") = Duration::from_secs(95);
     let mg_state = Arc::new(MgState::default());
@@ -6749,7 +6999,7 @@ async fn slow_refund_settlement_finishes_before_quote_replacement() {
     )
     .await;
     let error = client
-        .create_with_pinned_mgs(
+        .create_at(
             capped_paid_intent(PAYMENT_AMOUNT_MSATS * u64::from(MIN_FEDERATION_SIZE)),
             locators(),
             FormationRunOptions::default(),
@@ -6777,42 +7027,36 @@ async fn slow_refund_settlement_finishes_before_quote_replacement() {
         &[refused_quote],
     );
     let payments_before = payment_state.create_calls.load(Ordering::SeqCst);
+    let quotes_before = mg_state.quote_calls.load(Ordering::SeqCst);
     client.resume().await.unwrap();
     let status = client.status();
-    let requirements = payment_requirements(&status);
+    let requirements = guardian_replacements(&status);
     assert_eq!(requirements.seats.len(), 1);
-    assert_ne!(requirements.seats[0].quote_id, refused_quote);
+    assert_eq!(requirements.seats[0].previous_quote_id, refused_quote);
     assert_eq!(payment_state.refund_calls.load(Ordering::SeqCst), 1);
     assert_eq!(
         payment_state.create_calls.load(Ordering::SeqCst),
         payments_before
     );
+    assert_eq!(mg_state.quote_calls.load(Ordering::SeqCst), quotes_before);
 }
 
 #[tokio::test]
-async fn repeated_refund_settlement_replays_exact_context_before_quote_replacement() {
+async fn repeated_refund_settlement_replays_exact_context_before_guardian_replacement() {
     let database = MemDatabase::new().into_database();
     let (payments, payment_state) = TestPayments::new();
     let mg_state = Arc::new(MgState::default());
     let mut config = MgConfig::paid();
     config.create_behavior = CreateBehavior::RefuseFirstQuote;
     let client = open_client(database.clone(), payments.clone(), mg_state.clone(), config).await;
-    client
-        .create_with_pinned_mgs(intent(), locators(), options())
-        .await
-        .unwrap();
-
     payment_state
         .hang_first_refund
         .store(true, Ordering::SeqCst);
     let refund_started = payment_state.refund_started.notified();
-    let authorization_id = payment_requirements(&client.status())
-        .authorization_id
-        .clone();
     let running = client.clone();
     let operation = tokio::spawn(async move {
         running
-            .authorize_payments(authorization_id, long_request_options())
+            .create_at(intent(), locators(), long_request_options())
             .await
     });
     refund_started.await;
@@ -6857,11 +7101,13 @@ async fn repeated_refund_settlement_replays_exact_context_before_quote_replaceme
 
     let payment_creates = payment_state.create_calls.load(Ordering::SeqCst);
     let seat_creates = mg_state.create_calls.load(Ordering::SeqCst);
+    let quotes_before = mg_state.quote_calls.load(Ordering::SeqCst);
     reopened.resume().await.unwrap();
     let status = reopened.status();
-    let requirements = payment_requirements(&status);
+    let requirements = guardian_replacements(&status);
     assert_eq!(requirements.seats.len(), 1);
-    assert_ne!(requirements.seats[0].quote_id, refused_quote);
+    assert_eq!(requirements.seats[0].previous_quote_id, refused_quote);
+    assert_eq!(mg_state.quote_calls.load(Ordering::SeqCst), quotes_before);
     assert_eq!(
         formation(&status).phase,
         FormationPhase::AwaitingPaymentReadiness
@@ -6885,7 +7131,7 @@ async fn lost_free_create_seat_response_replays_exact_quote_and_allocation() {
     let running = client.clone();
     let operation = tokio::spawn(async move {
         running
-            .create_with_pinned_mgs(intent(), locators(), long_request_options())
+            .create_at(intent(), locators(), long_request_options())
             .await
     });
     create_started.await;
@@ -6935,7 +7181,7 @@ async fn formed_fa_proposes_and_confirms_the_fixed_4_1_1_policy() {
     )
     .await;
     client
-        .create_with_pinned_mgs(intent(), locators(), options())
+        .create_at(intent(), locators(), options())
         .await
         .unwrap();
 
@@ -7023,7 +7269,7 @@ async fn formation_names_the_mg_with_a_divergent_guardian_verification_fee_accou
     .await;
 
     let error = client
-        .create_with_pinned_mgs(intent(), locators(), options())
+        .create_at(intent(), locators(), options())
         .await
         .unwrap_err();
     assert!(matches!(
@@ -7055,9 +7301,7 @@ async fn unavailable_fa_fee_account_fails_before_any_guardian_vote() {
     )
     .await;
     assert!(matches!(
-        client
-            .create_with_pinned_mgs(intent(), locators(), options())
-            .await,
+        client.create_at(intent(), locators(), options()).await,
         Err(FaError::CapabilityUnavailable(Capability::FeeArrangement))
     ));
     assert!(
@@ -7084,7 +7328,7 @@ async fn fa_and_guardian_accounts_must_be_distinct() {
     )
     .await;
     assert!(matches!(
-        client.create_with_pinned_mgs(intent(), locators(), options()).await,
+        client.create_at(intent(), locators(), options()).await,
         Err(FaError::InvalidManifoldGuardians(message))
             if message.contains("do not form a canonical recipient set")
     ));
@@ -7112,7 +7356,7 @@ async fn guardian_verification_fee_and_fa_accounts_must_be_distinct() {
     .await;
 
     assert!(matches!(
-        client.create_with_pinned_mgs(intent(), locators(), options()).await,
+        client.create_at(intent(), locators(), options()).await,
         Err(FaError::InvalidManifoldGuardians(message))
             if message.contains("do not form a canonical recipient set")
     ));
@@ -7137,7 +7381,7 @@ async fn a_guardian_fee_below_the_admitted_minimum_never_reaches_a_guardian_vote
     )
     .await;
     client
-        .create_with_pinned_mgs(intent(), locators(), options())
+        .create_at(intent(), locators(), options())
         .await
         .unwrap();
     let admitted = mg_state.fee_submissions.lock().expect("test lock").clone();
@@ -7208,7 +7452,7 @@ async fn an_explicit_no_op_rate_write_must_satisfy_the_current_floor() {
     )
     .await;
     client
-        .create_with_pinned_mgs(intent(), locators(), options())
+        .create_at(intent(), locators(), options())
         .await
         .unwrap();
     let admitted = mg_state.fee_submissions.lock().expect("test lock").clone();
@@ -7249,7 +7493,7 @@ async fn the_default_guardian_fee_minimum_applies_before_any_publication_is_admi
     )
     .await;
     client
-        .create_with_pinned_mgs(intent(), locators(), options())
+        .create_at(intent(), locators(), options())
         .await
         .unwrap();
     let admitted = mg_state.fee_submissions.lock().expect("test lock").clone();
@@ -7307,7 +7551,7 @@ async fn guardian_fee_policy_rebases_after_a_stale_wave_and_preserves_other_fiel
     )
     .await;
     client
-        .create_with_pinned_mgs(intent(), locators(), options())
+        .create_at(intent(), locators(), options())
         .await
         .unwrap();
 
@@ -7452,7 +7696,7 @@ async fn selected_free_lost_create_seat_reopens_after_verifier_drift_with_exact_
         .expect("the interrupted selected seat remains durable");
     assert!(matches!(
         &interrupted.admission,
-        crate::db::MgAdmission::PeerBadge {
+        crate::db::MgAdmission {
             state: crate::db::AdmissionState::EffectAuthorized {
                 quote_id,
                 effect: crate::db::AdmissionEffect::FreePresentation,
@@ -7602,9 +7846,7 @@ async fn consensus_carrying_a_different_directory_never_completes_formation() {
     )
     .await;
 
-    let result = client
-        .create_with_pinned_mgs(intent(), locators(), options())
-        .await;
+    let result = client.create_at(intent(), locators(), options()).await;
 
     assert!(
         matches!(&result, Err(FaError::Timeout(_))),
@@ -7641,9 +7883,7 @@ async fn unfinished_setup_reopens_at_its_checkpoint_without_repeating_dkg() {
         )
         .await;
         assert!(matches!(
-            client
-                .create_with_pinned_mgs(intent(), locators(), options())
-                .await,
+            client.create_at(intent(), locators(), options()).await,
             Err(FaError::Timeout(_))
         ));
         assert_eq!(formation(&client.status()).phase, phase);
@@ -7689,7 +7929,7 @@ async fn completed_setup_stays_formed_through_rechecks_and_cancellation() {
     )
     .await;
     client
-        .create_with_pinned_mgs(intent(), locators(), options())
+        .create_at(intent(), locators(), options())
         .await
         .unwrap();
     drop(client);
@@ -7803,9 +8043,7 @@ async fn an_mg_claiming_a_foreign_peer_is_not_pinned_for_recovery() {
     mg_state.attest_foreign_peer.store(true, Ordering::SeqCst);
     let client = open_client(database, payments, mg_state.clone(), MgConfig::given_away()).await;
 
-    let result = client
-        .create_with_pinned_mgs(intent(), locators(), options())
-        .await;
+    let result = client.create_at(intent(), locators(), options()).await;
 
     assert!(
         matches!(&result, Err(FaError::InvalidManifoldGuardians(message))
@@ -7836,9 +8074,7 @@ async fn an_attested_fee_account_must_match_the_signed_seat_acceptance() {
         .store(true, Ordering::SeqCst);
     let client = open_client(database, payments, mg_state, MgConfig::given_away()).await;
 
-    let result = client
-        .create_with_pinned_mgs(intent(), locators(), options())
-        .await;
+    let result = client.create_at(intent(), locators(), options()).await;
 
     assert_eq!(
         result.as_ref().unwrap_err().code(),
@@ -7869,7 +8105,7 @@ async fn resume_replays_the_persisted_directory_without_refetching_attestations(
     )
     .await;
     client
-        .create_with_pinned_mgs(intent(), locators(), options())
+        .create_at(intent(), locators(), options())
         .await
         .unwrap();
 
@@ -7899,7 +8135,7 @@ async fn formed_resume_accepts_a_later_rate_without_fee_account_capabilities() {
     )
     .await;
     client
-        .create_with_pinned_mgs(intent(), locators(), options())
+        .create_at(intent(), locators(), options())
         .await
         .unwrap();
     client
@@ -7939,11 +8175,8 @@ async fn interrupted_formation_replays_its_persisted_fee_target() {
         original_provider.clone(),
     )
     .await;
-    let operation = tokio::spawn(async move {
-        client
-            .create_with_pinned_mgs(intent(), locators(), options())
-            .await
-    });
+    let operation =
+        tokio::spawn(async move { client.create_at(intent(), locators(), options()).await });
     mg_state.meta_call_blocked.notified().await;
     operation.abort();
     assert!(operation.await.unwrap_err().is_cancelled());
@@ -8003,7 +8236,7 @@ async fn exact_formation_readback_wins_over_late_already_published() {
     .await;
 
     client
-        .create_with_pinned_mgs(intent(), locators(), options())
+        .create_at(intent(), locators(), options())
         .await
         .unwrap();
     assert_eq!(formation(&client.status()).phase, FormationPhase::Formed);
@@ -8021,7 +8254,7 @@ async fn fee_rate_uses_terminal_maintenance_rejection() {
     )
     .await;
     client
-        .create_with_pinned_mgs(intent(), locators(), options())
+        .create_at(intent(), locators(), options())
         .await
         .unwrap();
     mg_state
@@ -8060,7 +8293,7 @@ async fn a_transient_consensus_read_failure_is_retried() {
     .await;
 
     client
-        .create_with_pinned_mgs(intent(), locators(), options())
+        .create_at(intent(), locators(), options())
         .await
         .unwrap();
 
@@ -8079,14 +8312,16 @@ async fn pre_payment_abandon_wipes_a_parked_paid_formation_to_idle() {
         MgConfig::paid(),
     )
     .await;
-    client
-        .create_with_pinned_mgs(intent(), locators(), options())
-        .await
-        .unwrap();
-    assert_eq!(
-        formation(&client.status()).phase,
-        FormationPhase::AwaitingPaymentReadiness
-    );
+    seed_quoted_selected_purchase(&client).await;
+    drop(client);
+    let client = open_client(
+        database.clone(),
+        payments.clone(),
+        mg_state.clone(),
+        MgConfig::paid(),
+    )
+    .await;
+    assert!(!formation(&client.status()).payment_outputs_started);
 
     client.abandon_formation(options()).await.unwrap();
 
@@ -8104,20 +8339,18 @@ async fn pre_payment_abandon_wipes_a_parked_paid_formation_to_idle() {
         Err(FaError::NoActiveFormation)
     ));
     reopened
-        .create_with_pinned_mgs(intent(), locators(), options())
+        .create_at(intent(), locators(), options())
         .await
         .unwrap();
-    assert_eq!(
-        formation(&reopened.status()).phase,
-        FormationPhase::AwaitingPaymentReadiness
-    );
+    assert_eq!(formation(&reopened.status()).phase, FormationPhase::Formed);
 }
 
 #[tokio::test]
 async fn pre_payment_abandon_forfeits_accepted_free_seats() {
     // A free formation can hold MG-accepted seats before any payment
-    // exists. Abandoning is still value-safe — no money moved — but the
-    // accepted seats are forfeited server-side, not released.
+    // exists. A pre-output refusal abandons the purchase, which is still
+    // value-safe — no money moved — but the accepted seats are forfeited
+    // server-side, not released.
     let database = MemDatabase::new().into_database();
     let (payments, _payment_state) = TestPayments::new();
     let mg_state = Arc::new(MgState::default());
@@ -8127,16 +8360,20 @@ async fn pre_payment_abandon_forfeits_accepted_free_seats() {
     };
     let client = open_client(database.clone(), payments.clone(), mg_state.clone(), config).await;
     let error = client
-        .create_with_pinned_mgs(intent(), locators(), options())
+        .create_at(intent(), locators(), options())
         .await
         .unwrap_err();
     assert!(
         matches!(
             &error,
-            FaError::Mg(MgFailure {
-                cause: MgCause::OfferChanged,
-                ..
-            }) | FaError::ManifoldGuardian { .. }
+            FaError::SelectionReauthorizationRequired {
+                reason: SelectionReauthorizationReason::SelectedMgUnavailable,
+                failure: Some(MgFailure {
+                    operation: MgOperation::CreateSeat,
+                    cause: MgCause::OfferChanged,
+                    ..
+                }),
+            }
         ),
         "{error}"
     );
@@ -8144,8 +8381,6 @@ async fn pre_payment_abandon_forfeits_accepted_free_seats() {
         mg_state.create_calls.load(Ordering::SeqCst) > 1,
         "sibling free seats were accepted server-side before the refusal",
     );
-
-    client.abandon_formation(options()).await.unwrap();
     assert_eq!(client.status(), FaStatus::Idle);
 
     let reopened = open_client(database, payments, mg_state, MgConfig::given_away()).await;
@@ -8158,141 +8393,20 @@ async fn abandon_after_commercial_authorization_before_outputs_is_value_safe() {
     let (payments, payment_state) = TestPayments::new();
     let mg_state = Arc::new(MgState::default());
     let client = open_client(database, payments, mg_state, MgConfig::paid()).await;
-    client
-        .create_with_pinned_mgs(intent(), locators(), options())
-        .await
-        .unwrap();
-    let requirements = payment_requirements(&client.status()).clone();
-    let authorizations = requirements
-        .seats
-        .iter()
-        .map(|requirement| QuoteAuthorization {
-            index: requirement.index,
-            quote_id: requirement.quote_id,
-        })
-        .collect::<Vec<_>>();
-    let recovery = active_recovery(
+    seed_authorized_selected_purchase(&client).await;
+
+    client.abandon_formation(options()).await.unwrap();
+    assert_eq!(client.status(), FaStatus::Idle);
+    assert!(matches!(
         client
             .inner
             .store
             .load_recovery(TestIdentity::fa_id())
             .await
             .unwrap(),
-    );
-    client
-        .inner
-        .store
-        .authorize_payments(
-            &recovery.snapshot.formation_id,
-            &requirements.authorization_id,
-            &authorizations,
-        )
-        .await
-        .unwrap();
-
-    client.abandon_formation(options()).await.unwrap();
-    assert_eq!(client.status(), FaStatus::Idle);
+        FaRecovery::Idle
+    ));
     assert_eq!(payment_state.create_calls.load(Ordering::SeqCst), 0);
-}
-
-#[tokio::test]
-async fn connector_failure_before_first_output_remains_abandonable() {
-    let database = MemDatabase::new().into_database();
-    let (payments, payment_state) = TestPayments::new();
-    let mg_state = Arc::new(MgState::default());
-    let client = open_client(database, payments, mg_state.clone(), MgConfig::paid()).await;
-    client
-        .create_with_pinned_mgs(intent(), locators(), options())
-        .await
-        .unwrap();
-    let requirements = payment_requirements(&client.status()).clone();
-
-    // Attempt one quoted initially. Exact authorization pins that quote, so
-    // attempt two is the final presentation connection. That last fallible
-    // connection must still be on the abandonable side of the value boundary.
-    *mg_state.fail_connect_on_attempt.lock().expect("test lock") = Some((0, 2));
-    let error = client
-        .authorize_payments(requirements.authorization_id, options())
-        .await
-        .expect_err("the injected final connection fails");
-    assert!(
-        matches!(
-            &error,
-            FaError::Mg(MgFailure {
-                operation: MgOperation::Connect,
-                cause: MgCause::Transport,
-                ..
-            })
-        ),
-        "{error}"
-    );
-    assert_eq!(payment_state.create_calls.load(Ordering::SeqCst), 0);
-    let recovery = active_recovery(
-        client
-            .inner
-            .store
-            .load_recovery(TestIdentity::fa_id())
-            .await
-            .unwrap(),
-    );
-    assert!(!recovery.payment_outputs_started);
-
-    client.abandon_formation(options()).await.unwrap();
-    assert_eq!(client.status(), FaStatus::Idle);
-}
-
-#[tokio::test]
-async fn connector_deadline_before_first_output_remains_abandonable() {
-    let (payments, payment_state) = TestPayments::new();
-    let mg_state = Arc::new(MgState::default());
-    let client = open_client(
-        MemDatabase::new().into_database(),
-        payments,
-        mg_state.clone(),
-        MgConfig::paid(),
-    )
-    .await;
-    client
-        .create_with_pinned_mgs(intent(), locators(), options())
-        .await
-        .unwrap();
-    let requirements = payment_requirements(&client.status()).clone();
-    *mg_state.hang_connect_on_attempt.lock().expect("test lock") = Some((0, 2));
-    let short_request = FormationRunOptions::new(FormationRunOptionsConfig {
-        poll_interval: Duration::from_millis(10),
-        run_timeout: Duration::from_secs(2),
-        request_timeout: Duration::from_millis(10),
-    })
-    .unwrap();
-
-    let error = client
-        .authorize_payments(requirements.authorization_id, short_request)
-        .await
-        .expect_err("the final connection reaches its request deadline");
-    assert!(
-        matches!(
-            &error,
-            FaError::Mg(MgFailure {
-                operation: MgOperation::Connect,
-                cause: MgCause::Timeout,
-                ..
-            })
-        ),
-        "{error}"
-    );
-    assert_eq!(payment_state.create_calls.load(Ordering::SeqCst), 0);
-    let recovery = active_recovery(
-        client
-            .inner
-            .store
-            .load_recovery(TestIdentity::fa_id())
-            .await
-            .unwrap(),
-    );
-    assert!(!recovery.payment_outputs_started);
-
-    client.abandon_formation(options()).await.unwrap();
-    assert_eq!(client.status(), FaStatus::Idle);
 }
 
 #[tokio::test]
@@ -8306,17 +8420,12 @@ async fn every_mg_connection_resolves_before_first_wallet_output_poll() {
         MgConfig::paid(),
     )
     .await;
-    client
-        .create_with_pinned_mgs(intent(), locators(), options())
-        .await
-        .unwrap();
-    let requirements = payment_requirements(&client.status()).clone();
     let effect_log = Arc::new(Mutex::new(Vec::new()));
     *payment_state.effect_log.lock().expect("test lock") = Some(effect_log.clone());
     *mg_state.effect_log.lock().expect("test lock") = Some(effect_log.clone());
 
     client
-        .authorize_payments(requirements.authorization_id, options())
+        .create_at(intent(), locators(), options())
         .await
         .unwrap();
 
@@ -8331,8 +8440,9 @@ async fn every_mg_connection_resolves_before_first_wallet_output_poll() {
             connections[*index] += 1;
         }
     }
+    // One connection obtained each quote; the second is the final preflight.
     assert!(
-        connections.iter().all(|count| *count >= 1),
+        connections.iter().all(|count| *count >= 2),
         "every MG completed the final preflight before funding: {connections:?}"
     );
 }
@@ -8343,11 +8453,6 @@ async fn completed_payment_is_durable_before_the_next_funding_call_starts() {
     let (payments, payment_state) = TestPayments::new();
     let mg_state = Arc::new(MgState::default());
     let client = open_client(database, payments, mg_state.clone(), MgConfig::paid()).await;
-    client
-        .create_with_pinned_mgs(intent(), locators(), options())
-        .await
-        .unwrap();
-    let requirements = payment_requirements(&client.status()).clone();
     let effect_log = Arc::new(Mutex::new(Vec::new()));
     *payment_state.effect_log.lock().expect("test lock") = Some(effect_log.clone());
     let checkpoint_log = effect_log.clone();
@@ -8362,7 +8467,7 @@ async fn completed_payment_is_durable_before_the_next_funding_call_starts() {
         }));
 
     client
-        .authorize_payments(requirements.authorization_id, options())
+        .create_at(intent(), locators(), options())
         .await
         .unwrap();
 
@@ -8425,25 +8530,13 @@ async fn stale_lease_cannot_arm_payment_outputs_after_takeover() {
         MgConfig::paid(),
     )
     .await;
-    client
-        .create_with_pinned_mgs(intent(), locators(), options())
-        .await
-        .unwrap();
-    let requirements = payment_requirements(&client.status()).clone();
-    let authorizations = requirements
-        .seats
-        .iter()
-        .map(|requirement| QuoteAuthorization {
-            index: requirement.index,
-            quote_id: requirement.quote_id,
-        })
-        .collect::<Vec<_>>();
+    let requirements = seed_authorized_selected_purchase(&client).await;
     let recovery = active_recovery(store.load_recovery(TestIdentity::fa_id()).await.unwrap());
+    // Everything but the lease fence would let this arm succeed.
     store
-        .authorize_payments(
+        .record_payment_reservation(
             &recovery.snapshot.formation_id,
-            &requirements.authorization_id,
-            &authorizations,
+            &crate::db::payment_reservation_id(&recovery.snapshot.formation_id, &requirements),
         )
         .await
         .unwrap();
@@ -8490,10 +8583,7 @@ async fn stale_lease_cannot_abandon_formation_after_takeover() {
         MgConfig::paid(),
     )
     .await;
-    client
-        .create_with_pinned_mgs(intent(), locators(), options())
-        .await
-        .unwrap();
+    seed_quoted_selected_purchase(&client).await;
     let recovery = active_recovery(store.load_recovery(TestIdentity::fa_id()).await.unwrap());
 
     let stale = store
@@ -8535,10 +8625,7 @@ async fn expired_lease_cannot_abandon_formation_after_forward_clock_jump() {
         MgConfig::paid(),
     )
     .await;
-    client
-        .create_with_pinned_mgs(intent(), locators(), options())
-        .await
-        .unwrap();
+    seed_quoted_selected_purchase(&client).await;
     let recovery = active_recovery(store.load_recovery(TestIdentity::fa_id()).await.unwrap());
 
     let stale = store
@@ -8574,11 +8661,7 @@ async fn pre_output_cleanup_retains_formation_when_wallet_release_fails() {
         MgConfig::paid(),
     )
     .await;
-    client
-        .create_with_pinned_mgs(intent(), locators(), options())
-        .await
-        .unwrap();
-    let requirements = payment_requirements(&client.status()).clone();
+    let requirements = seed_authorized_selected_purchase(&client).await;
     let recovery = active_recovery(
         client
             .inner
@@ -8587,23 +8670,6 @@ async fn pre_output_cleanup_retains_formation_when_wallet_release_fails() {
             .await
             .unwrap(),
     );
-    client
-        .inner
-        .store
-        .authorize_payments(
-            &recovery.snapshot.formation_id,
-            &requirements.authorization_id,
-            &requirements
-                .seats
-                .iter()
-                .map(|seat| QuoteAuthorization {
-                    index: seat.index,
-                    quote_id: seat.quote_id,
-                })
-                .collect::<Vec<_>>(),
-        )
-        .await
-        .unwrap();
     let reservation_id =
         crate::db::payment_reservation_id(&recovery.snapshot.formation_id, &requirements);
     payment_state
@@ -8631,7 +8697,15 @@ async fn pre_output_cleanup_retains_formation_when_wallet_release_fails() {
         client.abandon_formation(options()).await,
         Err(FaError::Payment(message)) if message.contains("release failure")
     ));
-    assert!(matches!(client.status(), FaStatus::Formation(_)));
+    assert!(matches!(
+        client
+            .inner
+            .store
+            .load_recovery(TestIdentity::fa_id())
+            .await
+            .unwrap(),
+        FaRecovery::Formation(_)
+    ));
     assert_eq!(
         payment_state.reservations.lock().expect("test lock").len(),
         1,
@@ -8654,26 +8728,14 @@ async fn pre_output_cleanup_retains_formation_when_wallet_release_fails() {
 
 #[tokio::test]
 async fn abandon_survives_authorization_invalidation() {
-    // Clearing a quote invalidates the aggregate commercial authorization,
+    // Clearing a terminal quote invalidates the aggregate commercial authorization,
     // but the independent output-generation tombstone must keep gating
     // abandon after the authorization itself is gone.
     let database = MemDatabase::new().into_database();
     let (payments, _) = TestPayments::new();
     let mg_state = Arc::new(MgState::default());
     let client = open_client(database, payments, mg_state, MgConfig::paid()).await;
-    client
-        .create_with_pinned_mgs(intent(), locators(), options())
-        .await
-        .unwrap();
-    let requirements = payment_requirements(&client.status()).clone();
-    let authorizations = requirements
-        .seats
-        .iter()
-        .map(|requirement| QuoteAuthorization {
-            index: requirement.index,
-            quote_id: requirement.quote_id,
-        })
-        .collect::<Vec<_>>();
+    let requirements = seed_quoted_selected_purchase(&client).await;
     let recovery = active_recovery(
         client
             .inner
@@ -8682,46 +8744,12 @@ async fn abandon_survives_authorization_invalidation() {
             .await
             .unwrap(),
     );
-    client
-        .inner
-        .store
-        .authorize_payments(
-            &recovery.snapshot.formation_id,
-            &requirements.authorization_id,
-            &authorizations,
-        )
-        .await
-        .unwrap();
-    let reservation_id =
-        crate::db::payment_reservation_id(&recovery.snapshot.formation_id, &requirements);
-    client
-        .inner
-        .store
-        .record_payment_reservation(&recovery.snapshot.formation_id, &reservation_id)
-        .await
-        .unwrap();
-    let lease = client
-        .inner
-        .store
-        .acquire_driver_lease(
-            options().lease_duration(),
-            options().lease_renewal_duration(),
-        )
-        .await
-        .unwrap();
-    lease
-        .arm_payment_outputs_started(
-            &recovery.snapshot.formation_id,
-            test_peer_badge_verifier().provenance().into(),
-        )
-        .await
-        .unwrap();
-    client
-        .inner
-        .store
-        .release_driver_lease(lease)
-        .await
-        .unwrap();
+    arm_payment_outputs_for_test(
+        &client.inner.store,
+        &recovery.snapshot.formation_id,
+        &requirements,
+    )
+    .await;
     let old_quote = recovery.seats[0]
         .signed_quote
         .clone()
@@ -8729,7 +8757,7 @@ async fn abandon_survives_authorization_invalidation() {
     client
         .inner
         .store
-        .clear_quote(&recovery.snapshot.formation_id, 0, &old_quote)
+        .mark_replacement_required(&recovery.snapshot.formation_id, 0, &old_quote)
         .await
         .unwrap();
     let recovery = active_recovery(
@@ -8764,37 +8792,7 @@ async fn commercial_authorization_does_not_imply_the_output_tombstone() {
     let (payments, _) = TestPayments::new();
     let mg_state = Arc::new(MgState::default());
     let client = open_client(database, payments, mg_state, MgConfig::paid()).await;
-    client
-        .create_with_pinned_mgs(intent(), locators(), options())
-        .await
-        .unwrap();
-    let requirements = payment_requirements(&client.status()).clone();
-    let authorizations = requirements
-        .seats
-        .iter()
-        .map(|requirement| QuoteAuthorization {
-            index: requirement.index,
-            quote_id: requirement.quote_id,
-        })
-        .collect::<Vec<_>>();
-    let recovery = active_recovery(
-        client
-            .inner
-            .store
-            .load_recovery(TestIdentity::fa_id())
-            .await
-            .unwrap(),
-    );
-    client
-        .inner
-        .store
-        .authorize_payments(
-            &recovery.snapshot.formation_id,
-            &requirements.authorization_id,
-            &authorizations,
-        )
-        .await
-        .unwrap();
+    seed_authorized_selected_purchase(&client).await;
     client
         .inner
         .store
@@ -8825,7 +8823,7 @@ async fn abandon_after_formed_is_a_typed_error() {
     let mg_state = Arc::new(MgState::default());
     let client = open_client(database, payments, mg_state, MgConfig::given_away()).await;
     client
-        .create_with_pinned_mgs(intent(), locators(), options())
+        .create_at(intent(), locators(), options())
         .await
         .unwrap();
     assert_eq!(formation(&client.status()).phase, FormationPhase::Formed);
@@ -9032,7 +9030,7 @@ async fn slow_payment_preparation_and_recovery_keep_the_exact_payment() {
         })
         .unwrap();
         let result = client
-            .create_with_pinned_mgs(
+            .create_at(
                 capped_paid_intent(PAYMENT_AMOUNT_MSATS * u64::from(MIN_FEDERATION_SIZE)),
                 locators(),
                 options,
@@ -9080,7 +9078,7 @@ async fn under_cap_paid_formation_self_authorizes_and_forms() {
     let client = open_client(database, payments, mg_state.clone(), MgConfig::paid()).await;
 
     client
-        .create_with_pinned_mgs(
+        .create_at(
             capped_paid_intent(PAYMENT_AMOUNT_MSATS * u64::from(MIN_FEDERATION_SIZE)),
             locators(),
             options(),
@@ -9110,90 +9108,6 @@ async fn under_cap_paid_formation_self_authorizes_and_forms() {
         .test_payment_authorization()
         .expect("durable aggregate authorization exists");
     assert_eq!(authorized.len(), usize::from(MIN_FEDERATION_SIZE));
-}
-
-#[tokio::test]
-async fn over_cap_paid_formation_parks_with_both_numbers() {
-    let database = MemDatabase::new().into_database();
-    let (payments, payment_state) = TestPayments::new();
-    let mg_state = Arc::new(MgState::default());
-    let client = open_client(
-        database.clone(),
-        payments.clone(),
-        mg_state.clone(),
-        MgConfig::paid(),
-    )
-    .await;
-    let cap = PAYMENT_AMOUNT_MSATS * u64::from(MIN_FEDERATION_SIZE) - 1;
-
-    client
-        .create_with_pinned_mgs(capped_paid_intent(cap), locators(), options())
-        .await
-        .unwrap();
-
-    let status = client.status();
-    assert_eq!(
-        formation(&status).phase,
-        FormationPhase::AwaitingPaymentReadiness
-    );
-    let requirements = payment_requirements(&status);
-    assert_eq!(
-        requirements.total_msats,
-        PAYMENT_AMOUNT_MSATS * u64::from(MIN_FEDERATION_SIZE)
-    );
-    assert_eq!(requirements.max_total_msats, Some(cap));
-    assert_eq!(payment_state.create_calls.load(Ordering::SeqCst), 0);
-    assert_eq!(mg_state.create_calls.load(Ordering::SeqCst), 0);
-
-    // The cap is durable intent state: a reopened client resumes to the same
-    // parked action carrying the same cap.
-    let reopened = open_client(database, payments, mg_state, MgConfig::paid()).await;
-    reopened.resume().await.unwrap();
-    let reopened_status = reopened.status();
-    assert_eq!(
-        formation(&reopened_status).phase,
-        FormationPhase::AwaitingPaymentReadiness
-    );
-    assert_eq!(
-        formation(&reopened_status).intent.max_total_msats,
-        Some(cap)
-    );
-    assert_eq!(
-        payment_requirements(&reopened_status).max_total_msats,
-        Some(cap)
-    );
-    // Explicit authorization of the parked over-cap set still works.
-    reopened
-        .authorize_payments(
-            payment_requirements(&reopened_status)
-                .authorization_id
-                .clone(),
-            options(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(formation(&reopened.status()).phase, FormationPhase::Formed);
-}
-
-#[tokio::test]
-async fn absent_cap_still_parks_for_explicit_authorization() {
-    let database = MemDatabase::new().into_database();
-    let (payments, payment_state) = TestPayments::new();
-    let mg_state = Arc::new(MgState::default());
-    let client = open_client(database, payments, mg_state, MgConfig::paid()).await;
-
-    client
-        .create_with_pinned_mgs(intent(), locators(), options())
-        .await
-        .unwrap();
-
-    let status = client.status();
-    assert_eq!(
-        formation(&status).phase,
-        FormationPhase::AwaitingPaymentReadiness
-    );
-    assert_eq!(payment_requirements(&status).max_total_msats, None);
-    assert_eq!(payment_state.create_calls.load(Ordering::SeqCst), 0);
 }
 
 #[tokio::test]
@@ -9354,9 +9268,7 @@ async fn reopen_preserves_the_selected_dkg_identity_and_accepts_patch_skew() {
             (0..MIN_FEDERATION_SIZE)
                 .map(|index| selected_initial_seat(index, test_now_secs() + 120))
                 .collect(),
-            crate::db::FormationCreationMode::Selected {
-                payment_federation_id: Some(payment_federation_id()),
-            },
+            Some(payment_federation_id()),
             None,
         )
         .await
@@ -10144,7 +10056,7 @@ async fn selected_free_refusal_survives_failed_abandon_and_replays_before_cleanu
     assert!(refused_quote.terms.payment.is_none());
     assert!(matches!(
         &refused.admission,
-        crate::db::MgAdmission::PeerBadge {
+        crate::db::MgAdmission {
             state: crate::db::AdmissionState::EffectAuthorized {
                 effect: crate::db::AdmissionEffect::FreePresentation,
                 ..
@@ -10219,8 +10131,7 @@ async fn selected_refusal_changes_only_the_proven_unsecured_guardian() {
     let replaced_index = requirements.seats[0].index;
     for seat in &interrupted.seats {
         assert_eq!(
-            seat.mg_name()
-                .expect("a badge-vouched row derives a display name"),
+            seat.mg_name(),
             MgName::from_mg_id(test_mg_id(usize::from(seat.index))),
             "snapshot row {} lost its badge-vouched MG identity",
             seat.index,
@@ -10228,7 +10139,7 @@ async fn selected_refusal_changes_only_the_proven_unsecured_guardian() {
     }
     assert_eq!(
         requirements.seats[0].previous_mg_id,
-        Some(test_mg_id(usize::from(replaced_index))),
+        test_mg_id(usize::from(replaced_index)),
         "the replacement row names the outgoing MG",
     );
     let accepted_before = interrupted
@@ -10334,7 +10245,7 @@ async fn selected_refusal_changes_only_the_proven_unsecured_guardian() {
             .iter()
             .map(|seat| seat.mg_id)
             .collect::<Vec<_>>(),
-        vec![Some(test_mg_id(usize::from(MAX_FEDERATION_SIZE)))],
+        vec![test_mg_id(usize::from(MAX_FEDERATION_SIZE))],
         "the parked payment names the incoming MG",
     );
     assert_eq!(
@@ -10343,7 +10254,7 @@ async fn selected_refusal_changes_only_the_proven_unsecured_guardian() {
     );
     assert_eq!(
         replaced.seats[usize::from(replaced_index)].mg_id,
-        Some(test_mg_id(usize::from(MAX_FEDERATION_SIZE))),
+        test_mg_id(usize::from(MAX_FEDERATION_SIZE)),
         "the replaced row exposes the incoming MG's identity",
     );
     for (index, seat_id) in accepted_before {
@@ -10466,7 +10377,7 @@ async fn selected_paid_replacement_reopens_after_authorized_output_without_new_s
     assert!(interrupted.progress.seat_id.is_none());
     assert!(matches!(
         &interrupted.admission,
-        crate::db::MgAdmission::PeerBadge {
+        crate::db::MgAdmission {
             state: crate::db::AdmissionState::EffectAuthorized {
                 quote_id,
                 effect: crate::db::AdmissionEffect::PaidOutput,
@@ -10827,9 +10738,7 @@ async fn crashed_selected_over_cap_record_reopens_without_legacy_action_and_clea
             (0..MIN_FEDERATION_SIZE)
                 .map(|index| selected_initial_seat(index, test_now_secs() + 120))
                 .collect(),
-            crate::db::FormationCreationMode::Selected {
-                payment_federation_id: Some(payment_federation_id()),
-            },
+            Some(payment_federation_id()),
             None,
         )
         .await
@@ -10900,9 +10809,7 @@ async fn crashed_selected_record_cannot_resume_after_its_preview_expires() {
             (0..MIN_FEDERATION_SIZE)
                 .map(|index| selected_initial_seat(index, test_now_secs().saturating_sub(1)))
                 .collect(),
-            crate::db::FormationCreationMode::Selected {
-                payment_federation_id: Some(payment_federation_id()),
-            },
+            Some(payment_federation_id()),
             None,
         )
         .await
@@ -10955,9 +10862,7 @@ async fn selected_reopen_under_changed_verifier_requires_fresh_pre_output_author
             (0..MIN_FEDERATION_SIZE)
                 .map(|index| selected_initial_seat(index, test_now_secs() + 120))
                 .collect(),
-            crate::db::FormationCreationMode::Selected {
-                payment_federation_id: Some(payment_federation_id()),
-            },
+            Some(payment_federation_id()),
             None,
         )
         .await
@@ -11015,9 +10920,7 @@ async fn selected_reopen_after_output_tombstone_uses_durable_admission_provenanc
             (0..MIN_FEDERATION_SIZE)
                 .map(|index| selected_initial_seat(index, test_now_secs() + 120))
                 .collect(),
-            crate::db::FormationCreationMode::Selected {
-                payment_federation_id: Some(payment_federation_id()),
-            },
+            Some(payment_federation_id()),
             None,
         )
         .await
@@ -11161,9 +11064,7 @@ async fn expired_selected_cleanup_reconstructs_and_releases_wallet_reservation_b
             (0..MIN_FEDERATION_SIZE)
                 .map(|index| selected_initial_seat(index, test_now_secs().saturating_sub(1)))
                 .collect(),
-            crate::db::FormationCreationMode::Selected {
-                payment_federation_id: Some(payment_federation_id()),
-            },
+            Some(payment_federation_id()),
             None,
         )
         .await
@@ -11289,9 +11190,7 @@ async fn seed_lost_selected_reservation_result(
             (0..MIN_FEDERATION_SIZE)
                 .map(|index| selected_initial_seat(index, valid_until))
                 .collect(),
-            crate::db::FormationCreationMode::Selected {
-                payment_federation_id: Some(payment_federation_id()),
-            },
+            Some(payment_federation_id()),
             None,
         )
         .await
@@ -11720,9 +11619,7 @@ async fn seed_selected_recorded_reservation(
             (0..MIN_FEDERATION_SIZE)
                 .map(|index| selected_initial_seat(index, valid_until))
                 .collect(),
-            crate::db::FormationCreationMode::Selected {
-                payment_federation_id: Some(payment_federation_id()),
-            },
+            Some(payment_federation_id()),
             None,
         )
         .await
@@ -12583,7 +12480,7 @@ async fn under_cap_self_authorization_survives_reopen_and_resume() {
     })
     .unwrap();
     let error = client
-        .create_with_pinned_mgs(capped_paid_intent(cap), locators(), short)
+        .create_at(capped_paid_intent(cap), locators(), short)
         .await
         .unwrap_err();
     assert!(
@@ -12616,65 +12513,6 @@ async fn under_cap_self_authorization_survives_reopen_and_resume() {
     let status = reopened.status();
     assert_eq!(formation(&status).phase, FormationPhase::Formed);
     assert_eq!(formation(&status).intent.max_total_msats, Some(cap));
-}
-
-#[tokio::test]
-async fn quote_replacement_after_self_authorization_parks_even_under_cap() {
-    // The cap approves the initial aggregate exactly once. The capped run
-    // self-authorizes and starts funding, one seat's presentation is refused
-    // (the verified refusal clears that exact quote), and resume re-quotes
-    // the cleared seat under the same cap: the durable tombstone must park
-    // the replacement set for explicit authorization instead of
-    // self-authorizing a second aggregate the consumer never saw.
-    let database = MemDatabase::new().into_database();
-    let (payments, payment_state) = TestPayments::new();
-    let mg_state = Arc::new(MgState::default());
-    let config = MgConfig {
-        create_behavior: CreateBehavior::RefuseFirstQuote,
-        ..MgConfig::paid()
-    };
-    let client = open_client(database.clone(), payments.clone(), mg_state.clone(), config).await;
-    let cap = PAYMENT_AMOUNT_MSATS * u64::from(MIN_FEDERATION_SIZE);
-    let error = client
-        .create_with_pinned_mgs(capped_paid_intent(cap), locators(), options())
-        .await
-        .unwrap_err();
-    assert!(
-        matches!(
-            &error,
-            FaError::Mg(MgFailure {
-                cause: MgCause::OfferChanged,
-                ..
-            })
-        ),
-        "{error}"
-    );
-    let funded = payment_state.create_calls.load(Ordering::SeqCst);
-    assert!(funded > 0, "the self-authorized run started funding");
-    drop(client);
-
-    let reopened = open_client(database, payments, mg_state, MgConfig::paid()).await;
-    reopened.resume().await.unwrap();
-    let status = reopened.status();
-    assert_eq!(
-        formation(&status).phase,
-        FormationPhase::AwaitingPaymentReadiness,
-        "the replacement quote parks despite being under the cap",
-    );
-    let requirements = payment_requirements(&status).clone();
-    assert!(requirements.total_msats <= cap);
-    assert_eq!(
-        payment_state.create_calls.load(Ordering::SeqCst),
-        funded,
-        "no funding started for the parked replacement quote",
-    );
-
-    // Explicit authorization of the parked replacement still completes.
-    reopened
-        .authorize_payments(requirements.authorization_id, options())
-        .await
-        .unwrap();
-    assert_eq!(formation(&reopened.status()).phase, FormationPhase::Formed);
 }
 
 #[tokio::test]
@@ -13822,7 +13660,7 @@ async fn late_stale_base_responses_do_not_fail_an_adopted_directory() {
     let client = open_client(database, payments, mg_state.clone(), MgConfig::given_away()).await;
 
     client
-        .create_with_pinned_mgs(intent(), locators(), options())
+        .create_at(intent(), locators(), options())
         .await
         .unwrap();
 
@@ -13856,7 +13694,7 @@ async fn an_all_stale_wave_rereads_rebases_and_replays_one_identical_base() {
     .await;
 
     client
-        .create_with_pinned_mgs(intent(), locators(), options())
+        .create_at(intent(), locators(), options())
         .await
         .unwrap();
 
@@ -13955,7 +13793,7 @@ async fn formation_request_logs_bind_concurrent_seats_and_exclude_remote_secrets
     let options = formation_log_options(Duration::from_millis(20));
     assert!(
         client
-            .create_with_pinned_mgs(intent(), locators(), options)
+            .create_at(intent(), locators(), options)
             .with_subscriber(capture.subscriber())
             .await
             .is_err()
@@ -14019,18 +13857,13 @@ async fn formation_connect_timeout_logs_identity_without_unassigned_seat_id() {
     .await;
     let capture = FormationLogCapture::default();
     let options = formation_log_options(Duration::from_millis(20));
-    let error = client
-        .create_with_pinned_mgs(intent(), locators(), options)
+    // The selected seat is still value-safe, so the timed-out connection is
+    // logged and retried.
+    client
+        .create_at(intent(), locators(), options)
         .with_subscriber(capture.subscriber())
         .await
-        .unwrap_err();
-    assert_eq!(error.code(), FaErrorCode::Timeout);
-    let FaError::Mg(failure) = &error else {
-        panic!("flat request failure: {error:?}")
-    };
-    assert_eq!(failure.mg, manager_key(3).x_only_public_key().0);
-    assert_eq!(failure.operation, MgOperation::Connect);
-    assert_eq!(failure.cause, MgCause::Timeout);
+        .unwrap();
     let logs = capture.text();
     let line = logs
         .lines()
@@ -14069,13 +13902,13 @@ async fn formation_quote_logs_both_nested_transport_and_service_errors() {
         let client = open_client(MemDatabase::new().into_database(), payments, state, config).await;
         let capture = FormationLogCapture::default();
         let options = formation_log_options(Duration::from_millis(200));
-        assert!(
-            client
-                .create_with_pinned_mgs(intent(), locators(), options)
-                .with_subscriber(capture.subscriber())
-                .await
-                .is_err()
-        );
+        // A selected seat retries a transport loss before outputs, while a
+        // service refusal returns.
+        let result = client
+            .create_at(intent(), locators(), options)
+            .with_subscriber(capture.subscriber())
+            .await;
+        assert_eq!(result.is_ok(), transport, "{result:?}");
         let logs = capture.text();
         assert!(
             logs.lines().any(|line| {
@@ -14089,6 +13922,11 @@ async fn formation_quote_logs_both_nested_transport_and_service_errors() {
                         "cause=transport"
                     } else {
                         "cause=other"
+                    })
+                    && line.contains(if transport {
+                        "outcome=\"retried\""
+                    } else {
+                        "outcome=\"returned\""
                     })
                     && !line.contains("seat_id=")
             }),
@@ -14122,7 +13960,7 @@ async fn formation_acquisition_reconnect_logs_mg_identity() {
     .await;
     assert!(
         client
-            .create_with_pinned_mgs(intent(), locators(), options())
+            .create_at(intent(), locators(), options())
             .await
             .is_err()
     );
@@ -14181,7 +14019,7 @@ async fn formation_guardian_code_deadline_logs_only_the_never_ready_seat() {
     .unwrap();
     let capture = FormationLogCapture::default();
     let error = client
-        .create_with_pinned_mgs(intent(), locators(), options)
+        .create_at(intent(), locators(), options)
         .with_subscriber(capture.subscriber())
         .await
         .unwrap_err();

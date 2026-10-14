@@ -141,8 +141,8 @@ async fn pre_formed_rejection_has_no_connector_or_metadata_effect() {
             TestIdentity::fa_id(),
             FormationId("maintenance-pre-formed".to_owned()),
             resolved_intent_with_size(FederationSize(1)),
-            vec![seat_progress(0)],
-            crate::db::FormationCreationMode::Pinned,
+            vec![selected_initial_seat(0, test_now_secs() + 120)],
+            None,
             None,
         )
         .await
@@ -184,7 +184,7 @@ async fn gateway_registration_fans_out_and_accepts_a_threshold_live_federation()
     )
     .await;
     client
-        .create_with_pinned_mgs(intent(), locators(), options())
+        .create_at(intent(), locators(), options())
         .await
         .unwrap();
 
@@ -225,7 +225,7 @@ async fn terms_url_preserves_unrelated_fields_and_waits_for_consensus() {
     )
     .await;
     client
-        .create_with_pinned_mgs(intent(), locators(), options())
+        .create_at(intent(), locators(), options())
         .await
         .unwrap();
 
@@ -286,7 +286,7 @@ async fn rebases_the_identical_mutation_after_a_stale_wave() {
     )
     .await;
     client
-        .create_with_pinned_mgs(intent(), locators(), options())
+        .create_at(intent(), locators(), options())
         .await
         .unwrap();
 
@@ -354,7 +354,7 @@ async fn rebases_across_a_revision_bump_with_unchanged_content() {
     )
     .await;
     client
-        .create_with_pinned_mgs(intent(), locators(), options())
+        .create_at(intent(), locators(), options())
         .await
         .unwrap();
 
@@ -426,7 +426,7 @@ async fn already_adopted_update_needs_no_live_mg() {
     )
     .await;
     client
-        .create_with_pinned_mgs(intent(), locators(), options())
+        .create_at(intent(), locators(), options())
         .await
         .unwrap();
 
@@ -507,7 +507,7 @@ async fn complete_consensus_object_cap_is_inclusive_and_checked_before_fanout() 
     )
     .await;
     client
-        .create_with_pinned_mgs(intent(), locators(), options())
+        .create_at(intent(), locators(), options())
         .await
         .unwrap();
 
@@ -575,7 +575,7 @@ async fn malformed_consensus_object_is_a_typed_terminal_error_before_fanout() {
     )
     .await;
     client
-        .create_with_pinned_mgs(intent(), locators(), options())
+        .create_at(intent(), locators(), options())
         .await
         .unwrap();
     mg_state.meta_submissions.lock().expect("test lock").clear();
@@ -623,7 +623,7 @@ async fn formation_refuses_an_oversized_consensus_object_before_metadata_fanout(
     .await;
 
     let error = client
-        .create_with_pinned_mgs(intent(), locators(), options())
+        .create_at(intent(), locators(), options())
         .await
         .expect_err("formation cannot amplify an oversized live meta object");
     assert!(matches!(
@@ -656,7 +656,7 @@ async fn threshold_live_partial_wave_succeeds_and_late_timeouts_do_not_mask_adop
     )
     .await;
     client
-        .create_with_pinned_mgs(intent(), locators(), options())
+        .create_at(intent(), locators(), options())
         .await
         .unwrap();
 
@@ -696,7 +696,7 @@ async fn below_threshold_availability_fails_within_the_driver_deadline() {
     )
     .await;
     client
-        .create_with_pinned_mgs(intent(), locators(), options())
+        .create_at(intent(), locators(), options())
         .await
         .unwrap();
 
@@ -798,7 +798,7 @@ async fn transient_transport_retries_only_the_unresolved_rows_until_readback_suc
     )
     .await;
     client
-        .create_with_pinned_mgs(intent(), locators(), options())
+        .create_at(intent(), locators(), options())
         .await
         .unwrap();
 
@@ -877,7 +877,7 @@ async fn terminal_guardian_refusal_is_typed_and_not_retried() {
     let mg_state = Arc::new(MgState::default());
     let client = open_client(database, payments, mg_state.clone(), MgConfig::given_away()).await;
     client
-        .create_with_pinned_mgs(intent(), locators(), options())
+        .create_at(intent(), locators(), options())
         .await
         .unwrap();
 
@@ -936,7 +936,7 @@ async fn pinned_target_conflict_stops_same_base_retries_and_is_distinguishable()
     )
     .await;
     client
-        .create_with_pinned_mgs(intent(), locators(), options())
+        .create_at(intent(), locators(), options())
         .await
         .unwrap();
 
@@ -1036,7 +1036,7 @@ async fn expired_maintenance_driver_is_fenced_after_in_flight_vote() {
     )
     .await;
     client
-        .create_with_pinned_mgs(intent(), locators(), options())
+        .create_at(intent(), locators(), options())
         .await
         .unwrap();
 
@@ -1129,7 +1129,7 @@ async fn transient_read_failure_is_retried_without_changing_the_mutation() {
     )
     .await;
     client
-        .create_with_pinned_mgs(intent(), locators(), options())
+        .create_at(intent(), locators(), options())
         .await
         .unwrap();
     mg_state.meta_submissions.lock().expect("test lock").clear();
@@ -1168,7 +1168,7 @@ async fn cancelled_partial_wave_reopens_and_replays_without_losing_unrelated_met
     )
     .await;
     client
-        .create_with_pinned_mgs(intent(), locators(), options())
+        .create_at(intent(), locators(), options())
         .await
         .unwrap();
 

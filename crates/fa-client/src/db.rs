@@ -206,10 +206,10 @@ struct StoredFormation {
     phase: StoredFormationPhase,
     intent: ResolvedFormationIntent,
     seat_count: u16,
-    /// Explicit creation contract. This is required in schema 11 so an
-    /// explicitly absent selected-bootstrap payer remains distinguishable
-    /// from legacy pinned formation.
-    creation_mode: FormationCreationMode,
+    /// Explicit consumer-selected ready payer, or `None` for the verified
+    /// zero-price deployment-bootstrap path.
+    #[serde(rename = "creation_mode", with = "selected_creation_mode")]
+    payment_federation_id: Option<FederationId>,
     #[serde(default)]
     payment_authorization: Option<StoredPaymentAuthorization>,
     /// Deterministic wallet reservation persisted after the wallet's
@@ -252,6 +252,72 @@ struct StoredFormation {
 #[derive(serde::Deserialize)]
 struct StoredFormationEnvelope {
     schema_version: u16,
+    /// Read before the full record so a removed pinned formation fails with
+    /// reset guidance instead of a decode failure.
+    #[serde(default)]
+    creation_mode: Option<serde_json::Value>,
+}
+
+/// Schema 11 stores the payer under a `selected` creation mode. The other
+/// mode, pinned formation, was removed; `load_recovery` rejects it.
+mod selected_creation_mode {
+    use super::FederationId;
+
+    #[derive(serde::Deserialize, serde::Serialize)]
+    #[serde(rename_all = "snake_case")]
+    enum CreationMode {
+        Selected {
+            #[serde(default, skip_serializing_if = "Option::is_none")]
+            payment_federation_id: Option<FederationId>,
+        },
+    }
+
+    pub(super) fn serialize<S: serde::Serializer>(
+        payment_federation_id: &Option<FederationId>,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        serde::Serialize::serialize(
+            &CreationMode::Selected {
+                payment_federation_id: payment_federation_id.clone(),
+            },
+            serializer,
+        )
+    }
+
+    pub(super) fn deserialize<'de, D: serde::Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<Option<FederationId>, D::Error> {
+        let CreationMode::Selected {
+            payment_federation_id,
+        } = serde::Deserialize::deserialize(deserializer)?;
+        Ok(payment_federation_id)
+    }
+}
+
+/// Schema 11 seat rows tag the admission `peer_badge`, the one admission
+/// kind left after pinned formation was removed.
+mod peer_badge_admission {
+    use super::MgAdmission;
+
+    #[derive(serde::Deserialize, serde::Serialize)]
+    #[serde(rename_all = "snake_case")]
+    enum Tagged<T> {
+        PeerBadge(T),
+    }
+
+    pub(super) fn serialize<S: serde::Serializer>(
+        admission: &MgAdmission,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        serde::Serialize::serialize(&Tagged::PeerBadge(admission), serializer)
+    }
+
+    pub(super) fn deserialize<'de, D: serde::Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<MgAdmission, D::Error> {
+        let Tagged::PeerBadge(admission) = serde::Deserialize::deserialize(deserializer)?;
+        Ok(admission)
+    }
 }
 
 /// Distinguishes a missing legacy JSON field from explicit current-schema
@@ -316,23 +382,6 @@ where
     <Option<T> as serde::Deserialize>::deserialize(deserializer)
 }
 
-/// Durable discriminator for the two formation entry points.
-#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
-#[serde(rename_all = "snake_case")]
-pub(crate) enum FormationCreationMode {
-    /// Legacy/API pinned-locator flow with a separate exact-quote action.
-    Pinned,
-    /// Product Pay-and-create flow authorized by one expiring preview.
-    Selected {
-        /// Explicit consumer-selected ready payer, or `None` for the
-        /// verified zero-price deployment-bootstrap path. Selected mode owns
-        /// this fact; the resolved formation intent remains product intent
-        /// only.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        payment_federation_id: Option<FederationId>,
-    },
-}
-
 /// Serializable stable projection of the verifier's canonical provenance.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -365,21 +414,6 @@ impl From<PeerBadgeVerifierProvenance> for StoredVerifierProvenance {
     }
 }
 
-impl FormationCreationMode {
-    pub(crate) fn is_selected(&self) -> bool {
-        matches!(self, Self::Selected { .. })
-    }
-
-    pub(crate) fn selected_payment_federation(&self) -> Option<&FederationId> {
-        match self {
-            Self::Pinned => None,
-            Self::Selected {
-                payment_federation_id,
-            } => payment_federation_id.as_ref(),
-        }
-    }
-}
-
 /// Durable admission proof for the operator currently assigned to one row.
 ///
 /// `fman_id` is the badge-vouched Nostr author.  The locator's service key is
@@ -388,19 +422,15 @@ impl FormationCreationMode {
 /// output-boundary transaction consumes every currently live proof before any
 /// corresponding wallet future is polled.
 #[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
-#[serde(rename_all = "snake_case")]
-pub(crate) enum MgAdmission {
-    Pinned,
-    PeerBadge {
-        #[serde(rename = "fman_id")]
-        mg_id: PublicKey,
-        /// Older saved seats did not record the verified badge holder.
-        #[serde(default)]
-        holder: Option<PublicKey>,
-        verifier_provenance: StoredVerifierProvenance,
-        valid_until: Timestamp,
-        state: AdmissionState,
-    },
+pub(crate) struct MgAdmission {
+    #[serde(rename = "fman_id")]
+    mg_id: PublicKey,
+    /// Older saved seats did not record the verified badge holder.
+    #[serde(default)]
+    holder: Option<PublicKey>,
+    verifier_provenance: StoredVerifierProvenance,
+    valid_until: Timestamp,
+    pub(crate) state: AdmissionState,
 }
 
 /// Exact irreversible effect authorized by one fresh selected-seat admission.
@@ -436,7 +466,7 @@ impl MgAdmission {
         verifier_provenance: StoredVerifierProvenance,
         valid_until: Timestamp,
     ) -> Self {
-        Self::PeerBadge {
+        Self {
             mg_id,
             holder: Some(holder),
             verifier_provenance,
@@ -445,28 +475,16 @@ impl MgAdmission {
         }
     }
 
-    pub(crate) fn mg_id(&self) -> Option<PublicKey> {
-        match self {
-            Self::Pinned => None,
-            Self::PeerBadge { mg_id, .. } => Some(*mg_id),
-        }
+    pub(crate) fn mg_id(&self) -> PublicKey {
+        self.mg_id
     }
 
     pub(crate) fn holder(&self) -> Option<PublicKey> {
-        match self {
-            Self::Pinned => None,
-            Self::PeerBadge { holder, .. } => *holder,
-        }
+        self.holder
     }
 
     pub(crate) fn requires_effect_authorization(&self) -> bool {
-        matches!(
-            self,
-            Self::PeerBadge {
-                state: AdmissionState::Fresh,
-                ..
-            }
-        )
+        self.state == AdmissionState::Fresh
     }
 
     pub(crate) fn mark_effect_authorized(
@@ -486,35 +504,25 @@ impl MgAdmission {
     }
 
     fn authorize_effect(&mut self, quote_id: QuoteId, effect: AdmissionEffect) -> FaResult<()> {
-        match self {
-            Self::Pinned => Ok(()),
-            Self::PeerBadge { state, .. } => match state {
-                AdmissionState::Fresh => {
-                    *state = AdmissionState::EffectAuthorized { quote_id, effect };
-                    Ok(())
-                }
-                AdmissionState::EffectAuthorized {
-                    quote_id: current_quote,
-                    effect: current_effect,
-                } if *current_quote == quote_id && *current_effect == effect => Ok(()),
-                AdmissionState::EffectAuthorized { .. } => Err(FaError::Storage(
-                    "selected-seat admission is already bound to another effect".to_owned(),
-                )),
-            },
+        match self.state {
+            AdmissionState::Fresh => {
+                self.state = AdmissionState::EffectAuthorized { quote_id, effect };
+                Ok(())
+            }
+            AdmissionState::EffectAuthorized {
+                quote_id: current_quote,
+                effect: current_effect,
+            } if current_quote == quote_id && current_effect == effect => Ok(()),
+            AdmissionState::EffectAuthorized { .. } => Err(FaError::Storage(
+                "selected-seat admission is already bound to another effect".to_owned(),
+            )),
         }
     }
 
     fn authorized_effect(&self) -> Option<(QuoteId, AdmissionEffect)> {
-        match self {
-            Self::Pinned
-            | Self::PeerBadge {
-                state: AdmissionState::Fresh,
-                ..
-            } => None,
-            Self::PeerBadge {
-                state: AdmissionState::EffectAuthorized { quote_id, effect },
-                ..
-            } => Some((*quote_id, *effect)),
+        match self.state {
+            AdmissionState::Fresh => None,
+            AdmissionState::EffectAuthorized { quote_id, effect } => Some((quote_id, effect)),
         }
     }
 
@@ -523,19 +531,12 @@ impl MgAdmission {
         quote_id: QuoteId,
         effect: AdmissionEffect,
     ) -> FaResult<()> {
-        match self {
-            Self::Pinned => Ok(()),
-            Self::PeerBadge {
-                state:
-                    AdmissionState::EffectAuthorized {
-                        quote_id: current_quote,
-                        effect: current_effect,
-                    },
-                ..
-            } if *current_quote == quote_id && *current_effect == effect => Ok(()),
-            Self::PeerBadge { .. } => Err(FaError::Storage(
+        if self.authorized_effect() == Some((quote_id, effect)) {
+            Ok(())
+        } else {
+            Err(FaError::Storage(
                 "selected-seat effect crossed before exact admission authorization".to_owned(),
-            )),
+            ))
         }
     }
 }
@@ -588,6 +589,7 @@ json_database_value!(StoredFormation);
 struct StoredSeat {
     index: u16,
     locator: Locator,
+    #[serde(with = "peer_badge_admission")]
     admission: MgAdmission,
     signed_quote: Option<SignedResponse<GetQuoteResponse>>,
     seat_id: Option<SeatId>,
@@ -683,8 +685,8 @@ pub(crate) struct ActiveFormationRecovery {
     pub(crate) payment_reservation_release_intended: bool,
     /// Whether wallet output generation has crossed its durable boundary.
     pub(crate) payment_outputs_started: bool,
-    /// Entry-point discriminator and selected payer.
-    pub(crate) creation_mode: FormationCreationMode,
+    /// Explicit payer, absent for the zero-price bootstrap.
+    pub(crate) payment_federation_id: Option<FederationId>,
     /// Exact formation metadata target saved before publication.
     pub(crate) formation_meta_target: Option<FormationMetaTarget>,
     /// Bearer callback handed to every MG only at `StartDkg`.
@@ -728,18 +730,6 @@ impl InitialSeat {
                 freshness: FormationFreshness::Fresh,
             },
             admission,
-        }
-    }
-}
-
-impl From<SeatProgress> for InitialSeat {
-    fn from(mut progress: SeatProgress) -> Self {
-        // A pinned admission carries no badge-vouched identity, so the
-        // progress row must not claim one.
-        progress.mg_id = None;
-        Self {
-            progress,
-            admission: MgAdmission::Pinned,
         }
     }
 }
@@ -922,11 +912,7 @@ impl FaStore {
                             FaError::Storage("formed FA backup is missing a seat".to_owned())
                         })?;
                     seats.push(crate::backup::FaBackupSeat {
-                        mg_identity: seat.admission.mg_id().ok_or_else(|| {
-                            FaError::Storage(
-                                "formed FA backup seat has no authenticated MG identity".to_owned(),
-                            )
-                        })?,
+                        mg_identity: seat.admission.mg_id(),
                         seat_id: seat.seat_id.ok_or_else(|| {
                             FaError::Storage("formed FA backup seat has no seat id".to_owned())
                         })?,
@@ -1683,6 +1669,16 @@ impl FaStore {
                     envelope.schema_version
                 )));
             }
+            if envelope
+                .creation_mode
+                .is_some_and(|creation_mode| creation_mode == "pinned")
+            {
+                return Err(FaError::Storage(
+                    "this FA formation was created from pinned MG locators, which are no longer \
+                     supported; reset this unreleased FA namespace and restart formation"
+                        .to_owned(),
+                ));
+            }
         }
         let Some(stored) = dbtx.get_value(&ActiveFormationKey).await else {
             let Some(restored) = dbtx.get_value(&RestoredBackupKey).await else {
@@ -1788,11 +1784,7 @@ impl FaStore {
         let payment_required = payment_requirements.as_ref().is_some_and(|requirements| {
             !authorization_covers(stored.payment_authorization.as_ref(), requirements)
         });
-        let expose_payment_action = payment_required
-            && match &stored.creation_mode {
-                FormationCreationMode::Pinned => true,
-                FormationCreationMode::Selected { .. } => stored.payment_outputs_started,
-            };
+        let expose_payment_action = payment_required && stored.payment_outputs_started;
         let phase = public_phase(stored.phase, &recoveries, expose_payment_action);
         let replacements = replacement_requirements(&stored.formation_id, &recoveries);
         let snapshot = FormationSnapshot {
@@ -1828,7 +1820,7 @@ impl FaStore {
             payment_reservation_id: stored.payment_reservation_id,
             payment_reservation_release_intended: stored.payment_reservation_release_intended,
             payment_outputs_started: stored.payment_outputs_started,
-            creation_mode: stored.creation_mode,
+            payment_federation_id: stored.payment_federation_id,
             payment_authorization: stored.payment_authorization,
             formation_meta_target: stored.formation_meta_target,
             dkg_completion_callback: stored.dkg_completion_callback.into_value(),
@@ -1878,19 +1870,15 @@ impl FaStore {
             })
     }
 
-    pub(crate) async fn initialize<S>(
+    pub(crate) async fn initialize(
         &self,
         fa_id: FaId,
         formation_id: FormationId,
         intent: ResolvedFormationIntent,
-        seats: Vec<S>,
-        creation_mode: FormationCreationMode,
+        seats: Vec<InitialSeat>,
+        payment_federation_id: Option<FederationId>,
         dkg_completion_callback: Option<DkgCompletionCallback>,
-    ) -> FaResult<()>
-    where
-        S: Into<InitialSeat>,
-    {
-        let seats = seats.into_iter().map(Into::into).collect::<Vec<_>>();
+    ) -> FaResult<()> {
         let seat_count = u16::try_from(seats.len())
             .map_err(|_| FaError::Storage("too many FA seat rows".to_owned()))?;
         let mut dbtx = self.database.begin_transaction().await;
@@ -1910,7 +1898,7 @@ impl FaStore {
                 phase: StoredFormationPhase::Initialized,
                 intent,
                 seat_count,
-                creation_mode,
+                payment_federation_id,
                 payment_authorization: None,
                 payment_reservation_id: None,
                 payment_reservation_release_intended: false,
@@ -2605,11 +2593,6 @@ impl FaStore {
             )
         })?;
         validate_active_formation(&formation, formation_id)?;
-        if !formation.creation_mode.is_selected() {
-            return Err(FaError::Storage(
-                "pinned FA seat does not carry selected admission authority".to_owned(),
-            ));
-        }
         if effects.iter().any(|(_, _, effect)| {
             *effect == AdmissionEffect::PaidOutput && !formation.payment_outputs_started
         }) {
@@ -2724,7 +2707,7 @@ impl FaStore {
             )
         })?;
         validate_active_formation(&formation, formation_id)?;
-        if !formation.creation_mode.is_selected() || !formation.payment_outputs_started {
+        if !formation.payment_outputs_started {
             return Err(FaError::Storage(
                 "provisional guardian restoration requires a selected post-output formation"
                     .to_owned(),
@@ -3131,9 +3114,7 @@ impl FaStore {
                                         .filter(|_| seat.replacement_approved)
                                 }
                                 QuoteClearDisposition::TerminalReplacement => {
-                                    if !formation.payment_outputs_started
-                                        || !formation.creation_mode.is_selected()
-                                    {
+                                    if !formation.payment_outputs_started {
                                         return Err(FaError::Storage(format!(
                                             "cannot mark FA seat row {index} for replacement outside a selected post-output formation"
                                         )));
@@ -3148,7 +3129,7 @@ impl FaStore {
                                             })?;
                                     seat.replacement_previous_locator =
                                         Some(seat.locator.clone());
-                                    seat.replacement_previous_mg_id = seat.admission.mg_id();
+                                    seat.replacement_previous_mg_id = Some(seat.admission.mg_id());
                                     seat.replacement_approved = false;
                                     Some(previous_quote_id)
                                 }
@@ -3201,9 +3182,7 @@ impl FaStore {
                             .await
                             .ok_or_else(|| FaError::Storage("no active formation".to_owned()))?;
                         validate_active_formation(&formation, &formation_id)?;
-                        if !formation.payment_outputs_started
-                            || !formation.creation_mode.is_selected()
-                        {
+                        if !formation.payment_outputs_started {
                             return Err(FaError::Storage(
                                 "guardian replacement requires a selected post-output formation"
                                     .to_owned(),
@@ -3269,7 +3248,7 @@ impl FaStore {
                                 .unwrap_or(&seat.locator);
                             let previous_mg_id = seat
                                 .replacement_previous_mg_id
-                                .or_else(|| seat.admission.mg_id());
+                                .unwrap_or_else(|| seat.admission.mg_id());
                             if seat.seat_id.is_some()
                                 || seat.signed_quote.is_some()
                                 || seat.replacement_approved
@@ -3284,7 +3263,7 @@ impl FaStore {
                             }
                             seat.replacement_previous_locator =
                                 Some(requirement.previous_locator.clone());
-                            seat.replacement_previous_mg_id = previous_mg_id;
+                            seat.replacement_previous_mg_id = Some(previous_mg_id);
                             if let Some(existing_index) =
                                 service_pubkeys.insert(locator.service_pubkey, requirement.index)
                             {
@@ -3683,7 +3662,7 @@ pub(crate) fn replacement_requirements(
                     // the fallback covers rows persisted before it existed.
                     previous_mg_id: recovery
                         .replacement_previous_mg_id
-                        .or_else(|| recovery.admission.mg_id()),
+                        .unwrap_or_else(|| recovery.admission.mg_id()),
                     previous_quote_id,
                     previous_locator: recovery
                         .replacement_previous_locator
@@ -3774,33 +3753,22 @@ fn validate_fresh_admission(
     expected_provenance: StoredVerifierProvenance,
     now: Timestamp,
 ) -> FaResult<()> {
-    match admission {
-        MgAdmission::Pinned
-        | MgAdmission::PeerBadge {
-            state: AdmissionState::EffectAuthorized { .. },
-            ..
-        } => Ok(()),
-        MgAdmission::PeerBadge {
-            verifier_provenance,
-            valid_until,
-            state: AdmissionState::Fresh,
-            ..
-        } => {
-            if *verifier_provenance != expected_provenance {
-                return Err(FaError::SelectionReauthorizationRequired {
-                    reason: crate::SelectionReauthorizationReason::VerifierEnvironmentChanged,
-                    failure: None,
-                });
-            }
-            if *valid_until <= now {
-                return Err(FaError::SelectionReauthorizationRequired {
-                    reason: crate::SelectionReauthorizationReason::PreviewExpired,
-                    failure: None,
-                });
-            }
-            Ok(())
-        }
+    if !admission.requires_effect_authorization() {
+        return Ok(());
     }
+    if admission.verifier_provenance != expected_provenance {
+        return Err(FaError::SelectionReauthorizationRequired {
+            reason: crate::SelectionReauthorizationReason::VerifierEnvironmentChanged,
+            failure: None,
+        });
+    }
+    if admission.valid_until <= now {
+        return Err(FaError::SelectionReauthorizationRequired {
+            reason: crate::SelectionReauthorizationReason::PreviewExpired,
+            failure: None,
+        });
+    }
+    Ok(())
 }
 
 fn validate_formation_progress(formation: &StoredFormation, seats: &[StoredSeat]) -> FaResult<()> {
@@ -3824,23 +3792,11 @@ fn validate_formation_progress(formation: &StoredFormation, seats: &[StoredSeat]
                 "persisted FA seats contain duplicate badge holders".to_owned(),
             ));
         }
-        match (&formation.creation_mode, &seat.admission) {
-            (FormationCreationMode::Pinned, MgAdmission::Pinned) => {}
-            (FormationCreationMode::Selected { .. }, MgAdmission::PeerBadge { mg_id, .. }) => {
-                if !mg_ids.insert(*mg_id) {
-                    return Err(FaError::Storage(format!(
-                        "persisted FA seat row {} duplicates an admitted MG identity",
-                        seat.index
-                    )));
-                }
-            }
-            (FormationCreationMode::Pinned, MgAdmission::PeerBadge { .. })
-            | (FormationCreationMode::Selected { .. }, MgAdmission::Pinned) => {
-                return Err(FaError::Storage(format!(
-                    "persisted FA seat row {} admission disagrees with creation mode",
-                    seat.index
-                )));
-            }
+        if !mg_ids.insert(seat.admission.mg_id()) {
+            return Err(FaError::Storage(format!(
+                "persisted FA seat row {} duplicates an admitted MG identity",
+                seat.index
+            )));
         }
         if let Some(existing_index) =
             service_pubkeys.insert(seat.locator.service_pubkey, seat.index)
@@ -3895,7 +3851,7 @@ fn validate_formation_progress(formation: &StoredFormation, seats: &[StoredSeat]
                     seat.index
                 )));
             }
-        } else if formation.creation_mode.is_selected() && seat.seat_id.is_some() {
+        } else if seat.seat_id.is_some() {
             return Err(FaError::Storage(format!(
                 "persisted accepted FA seat row {} lacks pre-effect admission authorization",
                 seat.index
@@ -4132,17 +4088,10 @@ fn validate_schema(formation: &StoredFormation) -> FaResult<()> {
             "current FA storage record is missing its owner identity".to_owned(),
         ));
     }
-    match &formation.creation_mode {
-        FormationCreationMode::Pinned => {}
-        FormationCreationMode::Selected {
-            payment_federation_id,
-        } => {
-            if payment_federation_id.is_some() && formation.intent.max_total_msats.is_none() {
-                return Err(FaError::Storage(
-                    "paid selected FA storage record is missing its spending cap".to_owned(),
-                ));
-            }
-        }
+    if formation.payment_federation_id.is_some() && formation.intent.max_total_msats.is_none() {
+        return Err(FaError::Storage(
+            "paid FA storage record is missing its spending cap".to_owned(),
+        ));
     }
     if !formation.intent.fedimintd_dkg_version.is_fedi()
         || !formation
