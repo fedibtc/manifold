@@ -46,8 +46,10 @@ MG_E2E=1 \
 ```
 
 The harness allocates an exclusive `defe` regtest bitcoind resource, starts seven
-`fleet-manager` daemons, waits for their logged locators, and runs `fa-cli` with
-those locators. It then uses `fedimint-cli join-federation` to prove the returned
+`fleet-manager` daemons onboarded with test PeerBadges on an exclusive `defe`
+Nostr relay, and runs `fa-cli`'s verified registry selection over their
+advertisements. Advertisements name only Iroh endpoint ids, so the harness
+passes each daemon's logged loopback addresses in `MG_E2E_MG_ENDPOINT_ADDRS`. It then uses `fedimint-cli join-federation` to prove the returned
 invite code is joinable, and checks every guardian's committed consensus config
 contains exactly `mintv2`, `walletv2`, `lnv2`, `meta`, and the Manifold
 stability-pool module. It also parses every retained safe-event journal record,
