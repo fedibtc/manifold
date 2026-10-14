@@ -226,8 +226,6 @@ struct PaymentState {
     create_calls: AtomicUsize,
     refund_calls: AtomicUsize,
     funded_quotes: Mutex<HashSet<QuoteId>>,
-    /// The legacy spending cap of each reservation recovery.
-    recovered_caps: Mutex<Vec<Option<u64>>>,
     created_quotes: Mutex<Vec<QuoteId>>,
     settled_quotes: Mutex<HashSet<QuoteId>>,
     refund_contexts: Mutex<Vec<QuoteId>>,
@@ -333,11 +331,6 @@ impl FaPayments for TestPayments {
         self.0
             .reservation_recover_calls
             .fetch_add(1, Ordering::SeqCst);
-        self.0
-            .recovered_caps
-            .lock()
-            .unwrap()
-            .push(preflight.legacy_max_total_msats());
         let quote_ids = preflight
             .seats()
             .iter()
@@ -2721,7 +2714,7 @@ fn exact_payment_preflight_rejects_duplicate_semantic_quote_ids() {
     };
     let quotes = vec![first, second];
 
-    let error = match crate::ExactPaymentPreflight::new(&requirements, &quotes, None) {
+    let error = match crate::ExactPaymentPreflight::new(&requirements, &quotes) {
         Err(error) => error,
         Ok(_) => panic!("duplicate semantic quote ids were accepted"),
     };
@@ -3398,7 +3391,7 @@ async fn schema_11_partial_purchase_stays_a_purchase() {
     crate::db::FaStore::new(database.clone())
         .install_schema_11_fixture_for_test(crate::db::test_support::Schema11Fixture::Purchase)
         .await;
-    let (payments, payment_state) = TestPayments::new();
+    let (payments, _) = TestPayments::new();
     let client = open_client(
         database,
         payments,
@@ -3425,13 +3418,6 @@ async fn schema_11_partial_purchase_stays_a_purchase() {
     assert!(status.pool.is_empty());
     assert!(status.formation.is_none());
     assert!(status.federation.is_none());
-
-    // The wallet recovers the schema 11 reservation with the cap that the
-    // schema 11 purchase recorded.
-    let _ = client.drive_purchase_for_test(options()).await;
-    let caps = payment_state.recovered_caps.lock().unwrap().clone();
-    assert!(!caps.is_empty());
-    assert!(caps.iter().all(|cap| *cap == Some(700)), "{caps:?}");
 }
 
 #[tokio::test]

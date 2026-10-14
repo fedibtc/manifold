@@ -1560,11 +1560,7 @@ where
         )?;
 
         let quotes = self.exact_payment_quotes(recovery, requirements, fa_id)?;
-        let preflight = crate::ExactPaymentPreflight::new(
-            requirements,
-            &quotes,
-            recovery.legacy_max_total_msats,
-        )?;
+        let preflight = crate::ExactPaymentPreflight::new(requirements, &quotes)?;
         let reservation = run
             .call("reserving exact payment aggregate", || {
                 Ok(self
@@ -1605,11 +1601,7 @@ where
         PaymentReservationRecovery<P::PaymentReservation>,
     )> {
         let quotes = self.exact_payment_quotes(recovery, requirements, fa_id)?;
-        let preflight = crate::ExactPaymentPreflight::new(
-            requirements,
-            &quotes,
-            recovery.legacy_max_total_msats,
-        )?;
+        let preflight = crate::ExactPaymentPreflight::new(requirements, &quotes)?;
         let reservation_id =
             crate::db::payment_reservation_id(&recovery.snapshot.purchase_id, requirements);
         let recovered = run

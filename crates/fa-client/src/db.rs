@@ -379,10 +379,6 @@ struct StoredPurchase {
     /// generation future is polled. Unlike commercial authorization, this is
     /// the value-safety gate for payer switching and abandon.
     payment_outputs_started: bool,
-    /// Spending cap of a schema 11 purchase. A consumer wallet may have
-    /// bound its reservation to it, so payment recovery passes it on.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    legacy_max_total_msats: Option<u64>,
 }
 
 #[derive(serde::Deserialize)]
@@ -661,8 +657,6 @@ pub(crate) struct PurchaseRecovery {
     pub(crate) payment_outputs_started: bool,
     /// Explicit payer, absent for the zero-price bootstrap.
     pub(crate) payment_federation_id: Option<FederationId>,
-    /// Spending cap of a purchase migrated from schema 11.
-    pub(crate) legacy_max_total_msats: Option<u64>,
 }
 
 /// One formation seat's public projection and its signed acceptance facts.
@@ -1746,7 +1740,6 @@ impl FaStore {
             payment_outputs_started: stored.payment_outputs_started,
             payment_federation_id: stored.payment_federation_id,
             payment_authorization: stored.payment_authorization,
-            legacy_max_total_msats: stored.legacy_max_total_msats,
         }))
     }
 
@@ -1858,7 +1851,6 @@ impl FaStore {
                 payment_reservation_id: None,
                 payment_reservation_release_intended: false,
                 payment_outputs_started: false,
-                legacy_max_total_msats: None,
             },
         )
         .await;
