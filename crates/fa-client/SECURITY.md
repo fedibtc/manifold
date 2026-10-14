@@ -224,8 +224,12 @@ The following ordering is part of the monetary safety boundary:
    and exact selected locators. The explicit no-payer bootstrap persists that
    absence and fails with typed payer-required reauthorization on any priced
    live offer before requesting its quote;
-3. authenticate and persist the highest setup-payment policy, then buy the
-   seats one at a time in seat order;
+3. authenticate and persist the highest setup-payment policy. Before the
+   first seat is bound, confirm the live availability of every seat at its
+   previewed plan and ask the wallet one value-free funds check for the
+   remaining priced seats. A failed seat leaves, and short funds end every
+   seat, before any quote is bound. Then buy the seats one at a time in seat
+   order;
 4. for a seat without a bound quote, request and verify an exact quote for
    exactly the seat's previewed plan, without automatically replacing a
    selected guardian, and bind it in one autocommit. A live offer without that

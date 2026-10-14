@@ -872,6 +872,13 @@ where
         let mut funds_exhausted = false;
         let mut left = None;
         let mut first_error = None;
+        if recovery
+            .seats
+            .iter()
+            .all(|seat| seat.signed_quote.is_none())
+        {
+            funds_exhausted = self.preflight_purchase(recovery, &mut left, run).await?;
+        }
         let indexes = recovery
             .seats
             .iter()
@@ -920,6 +927,90 @@ where
         }
         self.complete_purchase(recovery).await?;
         left.map_or(Ok(()), Err)
+    }
+
+    /// Before the first seat is bound, confirm that every MG still offers
+    /// its previewed plan and that the payer can fund every seat. A seat that
+    /// fails leaves before any payment. Returns whether funds are short.
+    async fn preflight_purchase(
+        &self,
+        recovery: &mut PurchaseRecovery,
+        left: &mut Option<FaError>,
+        run: DriverRun,
+    ) -> FaResult<bool> {
+        let intent = recovery.snapshot.request.clone();
+        let checks = recovery.seats.iter().map(|seat| {
+            let index = seat.progress.index;
+            let locator = seat.progress.locator.clone();
+            let plan = seat.admission.plan().cloned();
+            let intent = &intent;
+            let formation_id = &recovery.snapshot.purchase_id;
+            async move {
+                let result = retry_selected_mg(formation_id, run, || async {
+                    // A seat saved before the preview pinned its price has no
+                    // approved price to request.
+                    let plan = plan.clone().ok_or_else(|| {
+                        reauthorization(SelectionReauthorizationReason::PreviewExpired)
+                    })?;
+                    let client =
+                        MgClient::connect(&self.inner.ports.mg_connector, &locator, run).await?;
+                    self.live_fedimintd_version(&client, intent, &plan, run)
+                        .await?;
+                    Ok(plan)
+                })
+                .await;
+                (index, result)
+            }
+        });
+        let results = futures::future::join_all(checks).await;
+        let mut prices = Vec::new();
+        let mut ended = Vec::new();
+        for (index, result) in results {
+            match result {
+                Ok(Plan::InfiniteBestEffort { price_msats })
+                | Ok(Plan::SubscriptionBased {
+                    initial_price_msats: price_msats,
+                    ..
+                }) => prices.extend((price_msats > 0).then_some(price_msats)),
+                Err(error @ FaError::SelectionReauthorizationRequired { .. }) => {
+                    ended.push((index, error));
+                }
+                // The next run checks again. Nothing was paid.
+                Err(error) => return Err(error),
+            }
+        }
+        for (index, error) in ended {
+            let FaError::SelectionReauthorizationRequired { reason, .. } = &error else {
+                unreachable!("only reauthorization errors end a seat");
+            };
+            let position = recovery
+                .seats
+                .iter()
+                .position(|seat| seat.progress.index == index)
+                .expect("each seat leaves once");
+            log_mg_failure(&recovery.snapshot.purchase_id, &error, "returned");
+            self.drop_seat(recovery, position, *reason).await?;
+            left.get_or_insert(error);
+        }
+        let Some(requested) = recovery.payment_federation_id.clone() else {
+            return Ok(false);
+        };
+        if prices.is_empty() {
+            return Ok(false);
+        }
+        let payer = self
+            .require_setup_payment_federation(&requested, run)
+            .await?;
+        let checked = run
+            .call_with_timeout("checking seat funds", run.options.request_timeout, || {
+                Ok(self.inner.ports.payments.check_seat_funds(&payer, &prices))
+            })
+            .await?;
+        match checked {
+            Ok(()) => Ok(false),
+            Err(error) if error.proves_insufficient_funds() => Ok(true),
+            Err(error) => Err(FaError::Payment(error.to_string())),
+        }
     }
 
     async fn complete_purchase(&self, recovery: &PurchaseRecovery) -> FaResult<()> {
@@ -1169,8 +1260,7 @@ where
     }
 
     /// Connect, inspect availability, and request one quote as a single
-    /// bounded value-free attempt. A definite transport loss reconnects for
-    /// at most two minutes, and semantic refusals return immediately.
+    /// bounded value-free attempt.
     #[allow(clippy::too_many_arguments)]
     async fn request_quote_with_retry(
         &self,
@@ -1187,59 +1277,26 @@ where
         SignedResponse<GetQuoteResponse>,
         SignatureVerified<GetQuoteResponse>,
     )> {
-        let retry_deadline = Instant::now()
-            .checked_add(SELECTED_MG_CONNECT_RETRY_BUDGET)
-            .unwrap_or(run.deadline)
-            .min(run.deadline);
-        let mut retry_delay = run
-            .options
-            .poll_interval
-            .max(SELECTED_MG_CONNECT_RETRY_MIN_DELAY)
-            .min(SELECTED_MG_CONNECT_RETRY_MAX_DELAY);
-        loop {
-            let result = async {
-                // A seat saved before the preview pinned its price has no
-                // approved price to request.
-                let pinned_plan = pinned_plan.ok_or_else(|| {
-                    reauthorization(SelectionReauthorizationReason::PreviewExpired)
-                })?;
-                let client =
-                    MgClient::connect(&self.inner.ports.mg_connector, locator, run).await?;
-                self.request_new_quote(
-                    index,
-                    &client,
-                    locator,
-                    intent,
-                    pinned_plan,
-                    fa_id,
-                    expected_payer,
-                    payment_federation,
-                    run,
-                )
-                .await
-            }
-            .await;
-            let error = match result {
-                Ok(quote) => return Ok(quote),
-                Err(error) => error,
-            };
-            let FaError::Mg(failure) = error else {
-                return Err(error);
-            };
-            if !matches!(failure.cause, MgCause::Timeout | MgCause::Transport) {
-                return Err(failure.into());
-            }
-            if retry_quote_attempt(retry_deadline, &mut retry_delay)
-                .await
-                .is_err()
-            {
-                return Err(FaError::SelectionReauthorizationRequired {
-                    reason: SelectionReauthorizationReason::SelectedMgUnavailable,
-                    failure: Some(failure),
-                });
-            }
-            log_mg_failure(formation_id, &FaError::Mg(failure), "retried");
-        }
+        retry_selected_mg(formation_id, run, || async {
+            // A seat saved before the preview pinned its price has no
+            // approved price to request.
+            let pinned_plan = pinned_plan
+                .ok_or_else(|| reauthorization(SelectionReauthorizationReason::PreviewExpired))?;
+            let client = MgClient::connect(&self.inner.ports.mg_connector, locator, run).await?;
+            self.request_new_quote(
+                index,
+                &client,
+                locator,
+                intent,
+                pinned_plan,
+                fa_id,
+                expected_payer,
+                payment_federation,
+                run,
+            )
+            .await
+        })
+        .await
     }
 
     async fn run_dkg(
@@ -1443,22 +1500,15 @@ where
         Ok(())
     }
 
-    #[allow(clippy::too_many_arguments)]
-    async fn request_new_quote(
+    /// The Fedimint build an MG offers live for this purchase, if it still
+    /// accepts a seat at exactly the previewed plan.
+    async fn live_fedimintd_version(
         &self,
-        index: usize,
         client: &MgClient<F::Client>,
-        locator: &Locator,
         intent: &ResolvedSeatPurchase,
         pinned_plan: &Plan,
-        fa_id: FaId,
-        expected_payer: Option<&FederationId>,
-        payment_federation: Option<&OnceCell<FederationId>>,
         run: DriverRun,
-    ) -> FaResult<(
-        SignedResponse<GetQuoteResponse>,
-        SignatureVerified<GetQuoteResponse>,
-    )> {
+    ) -> FaResult<FedimintdVersion> {
         let availability = client
             .call(run, MgOperation::GetAvailability, |client| async {
                 crate::mg::fold_transport(
@@ -1475,14 +1525,14 @@ where
         // probing preview seats is exactly a candidate this gate accepts.
         // Requiring the previewed plan gives the quote exactly the previewed
         // price.
-        let fedimintd_version = match crate::selection::match_requested_availability(
+        match crate::selection::match_requested_availability(
             &availability,
             intent.federation_size,
             &intent.fedimintd_versions,
             &intent.fedimintd_dkg_version,
             pinned_plan,
         ) {
-            Ok(fedimintd_version) => fedimintd_version.clone(),
+            Ok(fedimintd_version) => Ok(fedimintd_version.clone()),
             Err(mismatch) => {
                 let (cause, reason) = match mismatch {
                     AvailabilityMismatch::NotAcceptingSeats => (
@@ -1503,12 +1553,33 @@ where
                     ),
                 };
                 let failure = client.failure(MgOperation::GetAvailability, cause);
-                return Err(FaError::SelectionReauthorizationRequired {
+                Err(FaError::SelectionReauthorizationRequired {
                     reason,
                     failure: Some(failure),
-                });
+                })
             }
-        };
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn request_new_quote(
+        &self,
+        index: usize,
+        client: &MgClient<F::Client>,
+        locator: &Locator,
+        intent: &ResolvedSeatPurchase,
+        pinned_plan: &Plan,
+        fa_id: FaId,
+        expected_payer: Option<&FederationId>,
+        payment_federation: Option<&OnceCell<FederationId>>,
+        run: DriverRun,
+    ) -> FaResult<(
+        SignedResponse<GetQuoteResponse>,
+        SignatureVerified<GetQuoteResponse>,
+    )> {
+        let fedimintd_version = self
+            .live_fedimintd_version(client, intent, pinned_plan, run)
+            .await?;
         let plan = pinned_plan.clone();
         // Free-ness is a property of the price, not of the plan: an MG that
         // gives its seats away is quoted against no payment federation
@@ -2934,6 +3005,47 @@ pub(crate) async fn sleep_for_retry(deadline: Instant, interval: Duration) -> Fa
     // absolute deadline can lose the WASM timer's final millisecond.
     sleep(duration).await;
     ensure_time_remaining(deadline, "waiting to retry Manifold Guardian")
+}
+
+/// Run one value-free attempt against a selected MG. A definite transport
+/// loss reconnects for at most two minutes, clipped by the run deadline, and
+/// then the MG counts as unavailable. Semantic refusals return immediately.
+async fn retry_selected_mg<T, A: Future<Output = FaResult<T>>>(
+    formation_id: &FormationId,
+    run: DriverRun,
+    mut attempt: impl FnMut() -> A,
+) -> FaResult<T> {
+    let retry_deadline = Instant::now()
+        .checked_add(SELECTED_MG_CONNECT_RETRY_BUDGET)
+        .unwrap_or(run.deadline)
+        .min(run.deadline);
+    let mut retry_delay = run
+        .options
+        .poll_interval
+        .max(SELECTED_MG_CONNECT_RETRY_MIN_DELAY)
+        .min(SELECTED_MG_CONNECT_RETRY_MAX_DELAY);
+    loop {
+        let error = match attempt().await {
+            Ok(value) => return Ok(value),
+            Err(error) => error,
+        };
+        let FaError::Mg(failure) = error else {
+            return Err(error);
+        };
+        if !matches!(failure.cause, MgCause::Timeout | MgCause::Transport) {
+            return Err(failure.into());
+        }
+        if retry_quote_attempt(retry_deadline, &mut retry_delay)
+            .await
+            .is_err()
+        {
+            return Err(FaError::SelectionReauthorizationRequired {
+                reason: SelectionReauthorizationReason::SelectedMgUnavailable,
+                failure: Some(failure),
+            });
+        }
+        log_mg_failure(formation_id, &FaError::Mg(failure), "retried");
+    }
 }
 
 async fn retry_quote_attempt(deadline: Instant, delay: &mut Duration) -> Result<(), ()> {

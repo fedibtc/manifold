@@ -244,6 +244,32 @@ async fn finalize_locked_payment_transaction(
 }
 
 impl Wallet {
+    /// Whether the balance covers locked payments at these prices, one after
+    /// another, each with its quoted transaction fee. Output fees depend on
+    /// each quote's notes and are not in this estimate. Each payment still
+    /// checks its exact cost.
+    pub async fn covers_locked_payments(
+        &self,
+        federation_id: FederationId,
+        prices: &[Amount],
+    ) -> Result<bool, WalletError> {
+        let client = self.client(federation_id).await?;
+        let mut total = Amount::ZERO;
+        for price in prices {
+            let debit =
+                locked_payment_net_debit(&client, OperationId::new_random(), *price, Amount::ZERO)
+                    .await?;
+            total = total
+                .checked_add(debit)
+                .context("locked-payment total overflow")?;
+        }
+        let balance = client
+            .get_balance_for_btc()
+            .await
+            .context("read payment wallet balance")?;
+        Ok(balance.msats >= total.msats)
+    }
+
     /// A rejected funding transaction is replaceable only after Fedimint's
     /// automatic mint-input refund transactions have restored every exact
     /// input as spendable wallet outputs. Recovery replays the operation's

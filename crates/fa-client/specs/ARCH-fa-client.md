@@ -84,6 +84,13 @@ purchase returns typed `PriceChanged` reauthorization before outputs. A seat
 saved before prices were pinned has no previewed plan, so before outputs it
 returns `PreviewExpired` reauthorization.
 
+Before the purchase binds its first seat, each run checks the whole purchase
+once and pays nothing. It asks every selected MG for live availability at the
+previewed plan, with the same connection retries as a quote. A seat that
+fails leaves. Then the wallet checks, without value movement, that the payer
+can fund the remaining priced seats one after another. If it cannot, every
+seat leaves with `InsufficientFunds`.
+
 The purchase buys seats one at a time, in seat order. For each seat that has
 no seat id, the driver first binds a quote: one autocommit stores the exact
 signed quote and moves the seat's admission to an effect authorization for

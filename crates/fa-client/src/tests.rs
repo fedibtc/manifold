@@ -247,6 +247,10 @@ struct PaymentState {
     refund_started: Notify,
     pay_none: AtomicBool,
     insufficient_funds: AtomicBool,
+    /// Balance the purchase fund check sees, or `None` for enough.
+    checked_balance_msats: Mutex<Option<u64>>,
+    /// Prices of every purchase fund check.
+    fund_checks: Mutex<Vec<Vec<u64>>>,
     /// One-based payment call that finds insufficient funds.
     fail_readiness_on_call: AtomicUsize,
     reverse_payable: AtomicBool,
@@ -301,6 +305,24 @@ impl FaPayments for TestPayments {
             payable.reverse();
         }
         Ok(payable)
+    }
+
+    async fn check_seat_funds(
+        &self,
+        _federation_id: &FederationId,
+        prices_msats: &[u64],
+    ) -> Result<(), FaPaymentError> {
+        self.0
+            .fund_checks
+            .lock()
+            .expect("test lock")
+            .push(prices_msats.to_vec());
+        match *self.0.checked_balance_msats.lock().expect("test lock") {
+            Some(balance) if prices_msats.iter().sum::<u64>() > balance => Err(
+                FaPaymentError::insufficient_funds("the balance cannot fund the seats"),
+            ),
+            _ => Ok(()),
+        }
     }
 
     async fn prepare_quote_refund(
@@ -8339,9 +8361,12 @@ async fn selected_remote_quote_error_cannot_impersonate_local_transport_failure(
 async fn a_failed_presentation_connection_is_retried_by_the_next_run() {
     let (payments, payment_state) = TestPayments::new();
     let mg_state = Arc::new(MgState::default());
-    // Each seat connects once for its quote and once for its presentation.
-    // Fail the presentation connection of the fourth seat after its payment.
-    mg_state.connect_failure_on_call.store(8, Ordering::SeqCst);
+    // The preflight connects once to every seat. Then each seat connects once
+    // for its quote and once for its presentation. Fail the presentation
+    // connection of the fourth seat after its payment.
+    mg_state
+        .connect_failure_on_call
+        .store(usize::from(MIN_FEDERATION_SIZE) + 8, Ordering::SeqCst);
     let client = open_client(
         MemDatabase::new().into_database(),
         payments,
@@ -8599,6 +8624,108 @@ async fn a_refused_paid_seat_leaves_and_the_rest_complete() {
     drop(client);
     let client = open_client(database, payments, mg_state, config).await;
     bought_without(&client.status(), &[dropped]);
+}
+
+#[tokio::test]
+async fn a_short_payer_ends_the_purchase_before_any_quote_or_payment() {
+    let (payments, payment_state) = TestPayments::new();
+    let seats = u64::from(MIN_FEDERATION_SIZE);
+    *payment_state.checked_balance_msats.lock().unwrap() = Some(seats * PAYMENT_AMOUNT_MSATS - 1);
+    let mg_state = Arc::new(MgState::default());
+    let client = open_client(
+        MemDatabase::new().into_database(),
+        payments,
+        mg_state.clone(),
+        MgConfig::paid(),
+    )
+    .await;
+
+    let error = client
+        .create_and_buy(
+            &client.preview_at(&intent(), locators()),
+            Some(payment_federation_id()),
+            options(),
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(
+            error,
+            FaError::SelectionReauthorizationRequired {
+                reason: SelectionReauthorizationReason::SelectedPayerInsufficientFunds,
+                ..
+            }
+        ),
+        "{error:?}"
+    );
+    assert_needs_seats(&client, MIN_FEDERATION_SIZE);
+    assert_eq!(mg_state.quote_calls.load(Ordering::SeqCst), 0);
+    assert_eq!(payment_state.create_calls.load(Ordering::SeqCst), 0);
+    assert_eq!(
+        *payment_state.fund_checks.lock().unwrap(),
+        vec![vec![PAYMENT_AMOUNT_MSATS; usize::from(MIN_FEDERATION_SIZE)]],
+    );
+
+    // Exactly the total is enough, and the check runs once per purchase.
+    *payment_state.checked_balance_msats.lock().unwrap() = Some(seats * PAYMENT_AMOUNT_MSATS);
+    client
+        .request_seats_at(&intent(), locators(), None)
+        .await
+        .unwrap();
+    client.drive_all_for_test(options()).await.unwrap();
+    federation(&client.status());
+    assert_eq!(payment_state.fund_checks.lock().unwrap().len(), 2);
+}
+
+#[tokio::test]
+async fn a_repriced_seat_leaves_before_the_fund_check_and_any_payment() {
+    let (payments, payment_state) = TestPayments::new();
+    let mg_state = Arc::new(MgState::default());
+    let client = open_client(
+        MemDatabase::new().into_database(),
+        payments,
+        mg_state.clone(),
+        MgConfig::paid(),
+    )
+    .await;
+    let preview = client.preview_at(&intent(), locators());
+    mg_state
+        .price_overrides_msats
+        .lock()
+        .unwrap()
+        .insert(2, PAYMENT_AMOUNT_MSATS + 1);
+
+    let error = client
+        .create_and_buy(&preview, Some(payment_federation_id()), options())
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(
+            error,
+            FaError::SelectionReauthorizationRequired {
+                reason: SelectionReauthorizationReason::PriceChanged,
+                ..
+            }
+        ),
+        "{error:?}"
+    );
+    bought_without(&client.status(), &[2]);
+    assert_eq!(
+        *payment_state.fund_checks.lock().unwrap(),
+        vec![vec![
+            PAYMENT_AMOUNT_MSATS;
+            usize::from(MIN_FEDERATION_SIZE) - 1
+        ]],
+    );
+    assert!(
+        mg_state
+            .quote_records
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|record| record.index != 2),
+        "the repriced MG is never asked for a quote",
+    );
 }
 
 #[tokio::test]

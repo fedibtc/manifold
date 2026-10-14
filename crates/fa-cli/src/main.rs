@@ -2261,6 +2261,35 @@ impl FaPayments for CliPayments {
             .collect())
     }
 
+    async fn check_seat_funds(
+        &self,
+        federation_id: &fa_client::FederationId,
+        prices_msats: &[u64],
+    ) -> Result<(), FaPaymentError> {
+        let federation_id = federation_id
+            .0
+            .parse()
+            .map_err(|_| FaPaymentError::new("invalid payment federation id"))?;
+        let prices = prices_msats
+            .iter()
+            .map(|price| fedimint_core::Amount::from_msats(*price))
+            .collect::<Vec<_>>();
+        let covered = self
+            .wallet
+            .as_ref()
+            .ok_or_else(|| FaPaymentError::new("payment wallet unavailable"))?
+            .covers_locked_payments(federation_id, &prices)
+            .await
+            .map_err(|error| FaPaymentError::new(error.to_string()))?;
+        if covered {
+            Ok(())
+        } else {
+            Err(FaPaymentError::insufficient_funds(
+                "payment wallet balance cannot cover the seats",
+            ))
+        }
+    }
+
     async fn prepare_quote_refund(
         &self,
         federation_id: &fa_client::FederationId,

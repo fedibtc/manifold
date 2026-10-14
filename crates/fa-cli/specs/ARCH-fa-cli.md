@@ -32,7 +32,10 @@ The CLI implements the concrete Iroh connector and Fedimint wallet
 payment/refund port. `fa-client` owns payment
 scheduling in its run loop: it buys one seat at a time, binding and paying one
 exact signed quote and checkpointing the completed seat before the next. The
-CLI adapter provides only per-quote payment and recovery capabilities. Its
+CLI adapter provides only per-quote payment and recovery capabilities, plus
+one value-free funds check per purchase. That check adds a quoted
+transaction fee to each seat price; output fees depend on each quote's notes,
+so the per-payment check stays exact. Its
 payment journal is the payment federation's Fedimint operation log: each
 payment's operation id is derived from the exact quote id, issuance set, mint
 generation, and module, and the funding transaction commits atomically with

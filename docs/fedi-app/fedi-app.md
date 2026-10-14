@@ -140,17 +140,19 @@ at a time. The Fedi wallet adapter:
 
 1. reports which authenticated policy members are joined and Ready, while the
    admitted listing remains able to render a zero-balance refill choice;
-2. recovers the operation for an exact quote without creating wallet state,
+2. checks once per purchase, without value movement, that the balance covers
+   the seat prices plus its fee estimate, one payment after another;
+3. recovers the operation for an exact quote without creating wallet state,
    and reports `NotStarted`, `Prepared`, or `Rejected`;
-3. under the wallet-wide spend guard, checks that the balance covers the
+4. under the wallet-wide spend guard, checks that the balance covers the
    quote's current net cost after wallet fees, and reports typed insufficient
    funds only when it does not and no operation for the quote exists;
-4. atomically persists the deterministic quote-bound operation and its
+5. atomically persists the deterministic quote-bound operation and its
    recovery metadata before value commits, so a crash recovers that operation
    without another spend;
-5. returns `Prepared` protocol payment evidence only after consensus accepts
+6. returns `Prepared` protocol payment evidence only after consensus accepts
    the exact transaction and payer change is spendable; and
-6. settles an MG-signed refund retry-safely.
+7. settles an MG-signed refund retry-safely.
 
 The preview is the payment approval: every quote has exactly the previewed
 price. A wallet operation never authorizes another quote. A bridge that held

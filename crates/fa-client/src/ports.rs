@@ -160,6 +160,19 @@ pub trait FaPayments: Send + Sync + 'static {
         admitted: &[FederationId],
     ) -> Result<Vec<FederationId>, FaPaymentError>;
 
+    /// Check, without moving value, that the payer can fund seats at these
+    /// prices in millisatoshis, one payment after another.
+    ///
+    /// The wallet adds its own fee estimate for each payment. Return
+    /// [`FaPaymentError::insufficient_funds`] when the balance cannot cover
+    /// them. `fa-client` calls this once, before it saves a purchase. Each
+    /// seat payment still checks its own funds.
+    async fn check_seat_funds(
+        &self,
+        federation_id: &FederationId,
+        prices_msats: &[u64],
+    ) -> Result<(), FaPaymentError>;
+
     /// Form the FA's mint-generation belief and quote-request refund outputs.
     ///
     /// This runs before the seat's payment can start, so it **must commit no

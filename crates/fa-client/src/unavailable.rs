@@ -53,6 +53,14 @@ impl FaPayments for UnavailablePayments {
         Err(FaPaymentError::new("payment capability unavailable"))
     }
 
+    async fn check_seat_funds(
+        &self,
+        _federation_id: &FederationId,
+        _prices_msats: &[u64],
+    ) -> Result<(), FaPaymentError> {
+        Err(FaPaymentError::new("payment capability unavailable"))
+    }
+
     async fn recover_seat_payment(
         &self,
         _quote: &SignatureVerified<GetQuoteResponse>,
