@@ -9,6 +9,7 @@
 //! receive a parent-death signal if the MG is hard-killed.
 
 mod duplicate_instance;
+mod memory_report;
 #[cfg(feature = "embedded-operator-ui")]
 mod operator_ui;
 mod push_callback;
@@ -162,6 +163,7 @@ async fn main() -> anyhow::Result<()> {
                     }
                 },
             );
+        memory_report::spawn("fedimintd");
         let never = run_bundled_fedimintd(safe_event_layer).await?;
         match never {}
     }
@@ -287,6 +289,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         })
         .transpose()?;
     init_daemon_logging(args.data_dir.join("safe-events").join("fman"))?;
+    memory_report::spawn("mg");
     tracing::info!(
         manifold_environment = %manifold_environment.environment(),
         manifold_profile_revision = manifold_environment.profile_revision(),
