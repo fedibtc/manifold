@@ -427,15 +427,31 @@ async fn drive_migrated<I: FaIdentity>(
     mem: &Arc<MemDatabase>,
     identity: I,
 ) -> serde_json::Value {
+    // A crashed driver's lease only delays the resume.
+    {
+        let database = CrashingDatabase::open(mem, None);
+        let mut dbtx = database.begin_transaction().await;
+        dbtx.raw_remove_entry(&[0x02]).await.unwrap();
+        dbtx.commit_tx().await;
+    }
     let (client, wallet, mgs) = match open_snapshot(snapshot, mem, identity).await {
         Ok(opened) => opened,
         Err(error) => return serde_json::json!({"open": error.to_string()}),
     };
     let old_funded = wallet.funded_quotes.lock().unwrap().clone();
     let mut runs = Vec::new();
-    for _ in 0..4 {
+    for _ in 0..6 {
         let result = client.drive_all_for_test(options()).await;
         runs.push(result.as_ref().err().map(|e| format!("{e:?}")));
+        let status = client.status();
+        let needs_seats = status.creation.is_some()
+            && status.purchase.is_none()
+            && status.formation.is_none();
+        if needs_seats {
+            let rebuy = rebuy_missing_seats(&client).await;
+            runs.push(Some(format!("rebuy: {:?}", rebuy.as_ref().err())));
+            continue;
+        }
         if result.is_ok() {
             break;
         }
@@ -457,6 +473,38 @@ async fn drive_migrated<I: FaIdentity>(
         "restart_calls": mgs.restart_calls.load(Ordering::SeqCst),
         "rows_final": hex_rows(&dump_rows(&CrashingDatabase::open(mem, None)).await),
     })
+}
+
+/// Buy the creation's missing seats from test MGs it does not use yet, as a
+/// user answering a reauthorization would.
+async fn rebuy_missing_seats<I: FaIdentity>(client: &SnapshotClient<I>) -> FaResult<()> {
+    let fa_id = client.fa_id()?;
+    let store = &client.inner.store;
+    let creation = store
+        .load_creation(fa_id)
+        .await?
+        .ok_or(FaError::NoActiveFormation)?;
+    let bought = store.bought_seats().await;
+    let bought_count = u16::try_from(store.pool_seats().await.len()).unwrap();
+    let missing = usize::from(creation.federation_size.0 - bought_count);
+    let request = MgSelectionRequest::new(
+        creation.federation_size,
+        creation.fedimintd_versions,
+        creation.plan,
+    )?
+    .missing_seats(bought.clone(), bought_count);
+    let price_msats = client.inner.ports.mg_connector.config.price_msats;
+    let seats = (0..usize::from(MAX_FEDERATION_SIZE))
+        .filter(|index| !bought.mg_ids.contains(&test_mg_id(*index)))
+        .take(missing)
+        .map(|index| (index, price_msats))
+        .collect::<Vec<_>>();
+    client
+        .buy_seats(
+            &preview_of(request, seats),
+            (price_msats > 0).then(payment_federation_id),
+        )
+        .await
 }
 
 fn qa_hex_quotes(quotes: &HashSet<QuoteId>) -> Vec<String> {

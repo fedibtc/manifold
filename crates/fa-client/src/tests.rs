@@ -800,6 +800,8 @@ struct MgState {
     /// MGs asked for a guardian code that carries the federation name.
     named_dkg_code_indices: Mutex<Vec<usize>>,
     unavailable_dkg_code_indices: Mutex<HashSet<usize>>,
+    /// Codes carry the federation name the request names, as real MGs do.
+    name_sensitive_codes: AtomicBool,
     restart_calls: AtomicUsize,
     report_dkg_already_started: AtomicBool,
     start_callbacks: Mutex<Vec<Option<DkgCompletionCallback>>>,
@@ -1297,18 +1299,26 @@ impl ManifoldGuardianService for TestMg {
             .duration_since(UNIX_EPOCH)
             .expect("test clock follows Unix epoch")
             .as_secs();
-        if request
+        let federation_name = request
             .verify(Timestamp(now))
             .expect("test FA request verifies")
             .into_inner()
-            .federation_name
-            .is_some()
-        {
+            .federation_name;
+        if federation_name.is_some() {
             self.state
                 .named_dkg_code_indices
                 .lock()
                 .expect("test lock")
                 .push(self.index);
+        }
+        // A real MG writes the leader-only federation name into its code.
+        if self.state.name_sensitive_codes.load(Ordering::SeqCst) {
+            return Ok(GetDkgCodeResponse {
+                guardian_code: GuardianCode(match federation_name {
+                    Some(name) => format!("guardiancode{}-{}", self.index, name.0),
+                    None => format!("guardiancode{}", self.index),
+                }),
+            });
         }
         if self
             .state
