@@ -921,12 +921,12 @@ impl FaStore {
         let mut entries = dbtx.find_by_prefix(&LiquidityOperationKeyPrefix).await;
         let mut liquidity = None;
         while let Some((_key, operation)) = entries.next().await {
-            if !operation.is_terminal_for_backup()? {
-                if liquidity.replace(operation.commitment).is_some() {
-                    return Err(FaError::Storage(
-                        "more than one live FA liquidity request".to_owned(),
-                    ));
-                }
+            if !operation.is_terminal_for_backup()?
+                && liquidity.replace(operation.commitment).is_some()
+            {
+                return Err(FaError::Storage(
+                    "more than one live FA liquidity request".to_owned(),
+                ));
             }
         }
         drop(entries);
@@ -3775,13 +3775,11 @@ fn validate_formation_progress(
                 seat.index
             )));
         }
-        if seat.seat_id.is_some() {
-            if seat.signed_quote.is_none() {
-                return Err(FaError::Storage(format!(
-                    "persisted FA seat row {} has a seat without its recovery quote",
-                    seat.index
-                )));
-            }
+        if seat.seat_id.is_some() && seat.signed_quote.is_none() {
+            return Err(FaError::Storage(format!(
+                "persisted FA seat row {} has a seat without its recovery quote",
+                seat.index
+            )));
         }
         // An accepted seat and its MG-signed guardian-fee account are one
         // durable fact: neither may appear without the other. Formation
