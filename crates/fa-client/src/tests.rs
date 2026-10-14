@@ -1,4 +1,6 @@
+mod backup_restore;
 mod callback;
+mod crash_db;
 mod discovery;
 mod maintenance;
 mod migration_qa;

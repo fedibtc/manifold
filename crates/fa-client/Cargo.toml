@@ -38,7 +38,9 @@ tracing = "0.1"
 async-trait = "0.1"
 bitcoin = { version = "0.32.6", features = ["serde"] }
 blind-rsa-signatures = "0.17"
+defe-portalloc = { path = "../defe-portalloc" }
 fedi-decentralized-manifold-environment = { path = "../manifold-environment" }
 peerbadge-protocol.workspace = true
-tokio = { workspace = true, features = ["macros", "rt", "test-util"] }
+tempfile = "3"
+tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "test-util"] }
 tracing-subscriber = { version = "0.3", features = ["fmt"] }
