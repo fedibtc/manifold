@@ -1,6 +1,6 @@
 use std::io::{self, Write};
 
-use fa_client::{FaStatus, PaymentRequirements};
+use fa_client::FaStatus;
 use fedi_decentralized_service_manifold_guardian::{FaId, FedimintdVersion};
 use serde::Serialize;
 
@@ -241,65 +241,6 @@ impl<'a> CliOutput<'a> {
                 }
             }
         }
-        Ok(())
-    }
-
-    /// Writes the payment authorization notice to stderr.
-    pub(crate) fn payment_requirements(
-        &mut self,
-        requirements: &PaymentRequirements,
-        format: OutputFormat,
-    ) -> anyhow::Result<()> {
-        if format == OutputFormat::Json {
-            serde_json::to_writer(
-                &mut self.stderr,
-                &serde_json::json!({ "authorizingPayments": requirements }),
-            )?;
-            writeln!(self.stderr)?;
-            return Ok(());
-        }
-        writeln!(
-            self.stderr,
-            "authorizing {} msat across {} paid seat(s):",
-            requirements.total_msats,
-            requirements.seats.len()
-        )?;
-        for requirement in &requirements.seats {
-            writeln!(
-                self.stderr,
-                "  seat {}: {} msat from federation {}, quote {}",
-                requirement.index,
-                requirement.amount_msats,
-                requirement.payment_federation_id.0,
-                hex::encode(requirement.quote_id.0),
-            )?;
-        }
-        Ok(())
-    }
-
-    /// Writes a parked over-cap aggregate that requires a distinct command.
-    pub(crate) fn payment_authorization_required(
-        &mut self,
-        requirements: &PaymentRequirements,
-        format: OutputFormat,
-    ) -> anyhow::Result<()> {
-        if format == OutputFormat::Json {
-            serde_json::to_writer(
-                &mut self.stderr,
-                &serde_json::json!({ "paymentAuthorizationRequired": requirements }),
-            )?;
-            writeln!(self.stderr)?;
-            return Ok(());
-        }
-        writeln!(
-            self.stderr,
-            "payment authorization required: {} msat exceeds the configured {} msat cap; rerun `authorize-payments --authorization-id {}` with the same wallet coordinates to continue",
-            requirements.total_msats,
-            requirements
-                .max_total_msats
-                .expect("over-cap output requires an intent cap"),
-            requirements.authorization_id.as_str(),
-        )?;
         Ok(())
     }
 

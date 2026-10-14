@@ -8,13 +8,13 @@ use clap::{Args as ClapArgs, Parser, Subcommand};
 use fa_client::{
     FaClient, FaFeeAccountError, FaFeeAccountProvider, FaIdentity, FaPaymentError, FaPayments,
     FaStatus, FederationConsensusError, FederationConsensusReader, FederationConsensusSnapshot,
-    FedimintFederationId, FedimintdVersionRange, FormationActionRequired, FormationIntent,
-    FormationPhase, FormationRunOptions, GuardianFeePpm, LiquidityOperationId,
-    LiquidityProviderConnector, LiquidityProviderConnectorError, LiquidityRequestIntent,
-    MaintenanceRunOptions, ManifoldGuardianCallError, ManifoldGuardianConnector,
-    ManifoldGuardianConnectorError, MgCandidateRequirements, MgDiscoveryOptions, MgRegistryQuery,
-    MgSelectionRequest, PaymentAuthorizationId, PaymentReservationRecovery, PlanPreference,
-    PreparedSeatPayment, SeatPaymentRecovery, SeatPaymentRequirement, SettledSeatRefund,
+    FedimintFederationId, FedimintdVersionRange, FormationIntent, FormationPhase,
+    FormationRunOptions, GuardianFeePpm, LiquidityOperationId, LiquidityProviderConnector,
+    LiquidityProviderConnectorError, LiquidityRequestIntent, MaintenanceRunOptions,
+    ManifoldGuardianCallError, ManifoldGuardianConnector, ManifoldGuardianConnectorError,
+    MgCandidateRequirements, MgDiscoveryOptions, MgRegistryQuery, MgSelectionRequest,
+    PaymentAuthorizationId, PaymentReservationRecovery, PlanPreference, PreparedSeatPayment,
+    SeatPaymentRecovery, SeatPaymentRequirement, SettledSeatRefund,
 };
 use fedi_decentralized_domain::BitcoinNetwork;
 use fedi_decentralized_manifold_environment::{ManifoldEnvironment, ManifoldEnvironmentProfile};
@@ -651,12 +651,6 @@ struct CreateArgs {
     /// JSON file containing the FA's SPv2 BtcDepositor account for the new federation.
     #[arg(long, value_name = "PATH")]
     fa_spv2_account_file: PathBuf,
-    /// Pinned Manifold Guardian locator JSON; repeat once per guardian.
-    #[arg(long = "locator")]
-    locators: Vec<String>,
-    /// INSECURE: discover fresh compatible ads but use them as unverified pinned locators.
-    #[arg(long)]
-    insecure_skip_mg_trust: bool,
     /// TOML file containing formation intent.
     #[arg(long)]
     config: Option<PathBuf>,
@@ -679,10 +673,10 @@ struct CreateArgs {
     /// Exclusive upper three-number Fedimint release bound.
     #[arg(long, requires = "fedimintd_version_minimum")]
     fedimintd_version_maximum_exclusive: Option<String>,
-    /// Pinned-driver probe interval, 1..=2,147,483 seconds; ignored without locators.
+    /// Driver probe interval, 1..=2,147,483 seconds.
     #[arg(long, default_value_t = 2)]
     poll_interval_secs: u64,
-    /// Per-invocation pinned-driver deadline, 1..=2,147,483 seconds; ignored without locators.
+    /// Per-invocation driver deadline, 1..=2,147,483 seconds.
     #[arg(long, default_value_t = 600)]
     poll_timeout_secs: u64,
     /// Secure 0600 file containing the push-gateway hook URL bearer.
@@ -867,21 +861,11 @@ async fn execute(args: AppArgs) -> anyhow::Result<()> {
                     .map_err(anyhow::Error::from)
                 })
                 .transpose()?;
-            ensure!(
-                !create.locators.is_empty()
-                    || create.insecure_skip_mg_trust
-                    || completion_callback.is_none(),
-                "completion callbacks currently require pinned --locator formation"
-            );
-            let options = if create.locators.is_empty() && !create.insecure_skip_mg_trust {
-                FormationRunOptions::default()
-            } else {
-                FormationRunOptions::new(fa_client::FormationRunOptionsConfig {
-                    poll_interval: Duration::from_secs(create.poll_interval_secs),
-                    run_timeout: Duration::from_secs(create.poll_timeout_secs),
-                    ..Default::default()
-                })?
-            };
+            let options = FormationRunOptions::new(fa_client::FormationRunOptionsConfig {
+                poll_interval: Duration::from_secs(create.poll_interval_secs),
+                run_timeout: Duration::from_secs(create.poll_timeout_secs),
+                ..Default::default()
+            })?;
             let fa_fee_account_provider =
                 CliFaFeeAccountProvider::from_file(Some(&create.fa_spv2_account_file))?;
             Some(CreatePreflight {
@@ -1047,112 +1031,45 @@ async fn run(
                 fa_fee_account_provider,
                 completion_callback,
             } = create_preflight.expect("create input is parsed before external input access");
-            let mut locators = create
-                .locators
-                .iter()
-                .map(|input| serde_json::from_str(input).context("parse pinned MG locator"))
-                .collect::<anyhow::Result<Vec<_>>>()?;
-            ensure!(
-                !create.insecure_skip_mg_trust || locators.is_empty(),
-                "--insecure-skip-mg-trust cannot be combined with --locator"
-            );
-            ensure!(
-                !create.insecure_skip_mg_trust
-                    || args.manifold_environment != ManifoldEnvironment::Production,
-                "--insecure-skip-mg-trust is forbidden in production"
-            );
-            let selected_mode = locators.is_empty() && !create.insecure_skip_mg_trust;
             let payment_preflight = CliPayments::preflight(&create, wallet_secret)?;
             let payment_federation_id = payment_preflight
                 .as_ref()
                 .map(|payment| fa_client::FederationId(payment.selected.to_string()));
-            if selected_mode && payment_federation_id.is_some() {
+            if payment_federation_id.is_some() {
                 ensure!(
                     intent.max_total_msats().is_some(),
                     "registry-backed paid creation requires --max-total-msats"
                 );
-            }
-            let diagnostic_registry = if create.insecure_skip_mg_trust {
-                let registry = connect_environment_registry(args.manifold_environment).await?;
-                let requirements = MgCandidateRequirements {
-                    federation_size: intent.federation_size(),
-                    fedimintd_versions: intent.fedimintd_versions().clone(),
-                };
-                let discovery = MgRegistryQuery::new(registry.clone())
-                    .insecure_discover_untrusted_pinned_mgs(
-                        &requirements,
-                        MgDiscoveryOptions::default(),
-                    )
-                    .await?;
-                let required = usize::from(intent.federation_size().0);
-                ensure!(
-                    discovery.candidates.len() >= required,
-                    "insecure diagnostic discovery found {} compatible MG(s), but {} are required",
-                    discovery.candidates.len(),
-                    required
-                );
-                locators = discovery
-                    .candidates
-                    .into_iter()
-                    .take(required)
-                    .map(|candidate| candidate.locator)
-                    .collect();
-                if format == OutputFormat::Human {
-                    eprintln!(
-                        "WARNING: bypassing MG HolderAuthorization/PeerBadge trust for {} pinned diagnostic seat(s)",
-                        locators.len()
-                    );
-                }
-                Some(registry)
-            } else {
-                None
-            };
-            if !selected_mode {
-                CliClient::preflight_create_with_pinned_mgs(&intent, &locators)?;
             }
             // The endpoint carries no identity or durable state; binding it
             // before the preview lets selection probe live availability.
             let endpoint = bind_iroh_endpoint().await?;
             // Preview before opening identity, durable FA state, or the payment wallet. The
             // sealed approval stays in this process and is consumed below.
-            let selected = if selected_mode {
-                let registry = connect_environment_registry(args.manifold_environment).await?;
-                let request = MgSelectionRequest::new(
-                    intent.federation_size(),
-                    intent.fedimintd_versions().clone(),
-                    intent.plan(),
-                )?;
-                let preview = MgRegistryQuery::new(registry.clone())
-                    .with_verifier(
-                        peer_badge_verifier
-                            .clone()
-                            .expect("selected creation constructs a PeerBadge verifier"),
-                    )
-                    .with_mg_connector(CliMgConnector::new(endpoint.clone()))
-                    .preview_mg_selection(&request, MgDiscoveryOptions::default())
-                    .await?;
-                let approval = preview.approve(intent.max_total_msats().unwrap_or(0))?;
-                Some((registry, approval))
-            } else {
-                None
-            };
+            let registry = connect_environment_registry(args.manifold_environment).await?;
+            let request = MgSelectionRequest::new(
+                intent.federation_size(),
+                intent.fedimintd_versions().clone(),
+                intent.plan(),
+            )?;
+            let preview = MgRegistryQuery::new(registry.clone())
+                .with_verifier(
+                    peer_badge_verifier
+                        .clone()
+                        .expect("creation constructs a PeerBadge verifier"),
+                )
+                .with_mg_connector(CliMgConnector::new(endpoint.clone()))
+                .preview_mg_selection(&request, MgDiscoveryOptions::default())
+                .await?;
+            let approval = preview.approve(intent.max_total_msats().unwrap_or(0))?;
             let identity = CliIdentity::load_or_create(&args.state_dir, false)?;
             let payments = CliPayments::open(payment_preflight, format, &mut output).await?;
-            let live_registry = if let Some((registry, _)) = &selected {
-                Some(registry.clone())
-            } else if let Some(registry) = diagnostic_registry {
-                Some(registry)
-            } else if setup_payment.event.is_none() && payment_federation_id.is_some() {
-                Some(connect_environment_registry(args.manifold_environment).await?)
-            } else {
-                None
-            };
             let client = open_client_with_fee_account_provider(
                 &args.state_dir,
                 identity,
                 payments,
                 &setup_payment,
-                live_registry,
+                Some(registry),
                 CliMgConnector::new(endpoint.clone()),
                 peer_badge_verifier
                     .clone()
@@ -1162,42 +1079,38 @@ async fn run(
             )
             .await?;
             let mut observer = client.observe();
-            let result = if selected_mode {
-                let (_, approval) = selected.expect("selected creation retains its approval");
-                match payment_federation_id {
-                    Some(payer) => client
+            let result = match (payment_federation_id, completion_callback) {
+                (Some(payer), None) => {
+                    client
                         .pay_and_create(intent.clone(), approval, payer, options)
                         .await
-                        .map_err(anyhow::Error::from),
-                    None => client
+                }
+                (Some(payer), Some(callback)) => {
+                    client
+                        .pay_and_create_with_callback(
+                            intent.clone(),
+                            approval,
+                            payer,
+                            callback,
+                            options,
+                        )
+                        .await
+                }
+                (None, None) => {
+                    client
                         .create_without_payer(intent.clone(), approval, options)
                         .await
-                        .map_err(anyhow::Error::from),
                 }
-            } else {
-                let mut formed = match completion_callback {
-                    Some(callback) => {
-                        client
-                            .create_with_pinned_mgs_and_callback(
-                                intent.clone(),
-                                locators,
-                                callback,
-                                options,
-                            )
-                            .await
-                    }
-                    None => {
-                        client
-                            .create_with_pinned_mgs(intent.clone(), locators, options)
-                            .await
-                    }
+                (None, Some(callback)) => {
+                    client
+                        .create_without_payer_with_callback(
+                            intent.clone(),
+                            approval,
+                            callback,
+                            options,
+                        )
+                        .await
                 }
-                .map_err(anyhow::Error::from);
-                if formed.is_ok() {
-                    formed =
-                        authorize_pending_payments(&client, options, format, &mut output).await;
-                }
-                formed
             };
             if observer.has_changed().unwrap_or(false) {
                 observer.borrow_and_update();
@@ -1850,40 +1763,6 @@ fn load_intent(args: &CreateArgs) -> anyhow::Result<FormationIntent> {
             .map_err(Into::into),
         None => Ok(intent),
     }
-}
-
-async fn authorize_pending_payments(
-    client: &CliClient,
-    options: FormationRunOptions,
-    format: OutputFormat,
-    output: &mut CliOutput<'_>,
-) -> anyhow::Result<()> {
-    let status = client.status();
-    let FaStatus::Formation(snapshot) = status else {
-        return Ok(());
-    };
-    if snapshot.phase != FormationPhase::AwaitingPaymentReadiness {
-        return Ok(());
-    }
-    let Some(FormationActionRequired::AuthorizePayments(requirements)) = snapshot.action_required
-    else {
-        anyhow::bail!("payment readiness did not expose aggregate requirements");
-    };
-    if payment_requirements_exceed_cap(&requirements) {
-        output.payment_authorization_required(&requirements, format)?;
-        return Ok(());
-    }
-    output.payment_requirements(&requirements, format)?;
-    client
-        .authorize_payments(requirements.authorization_id, options)
-        .await
-        .context("authorize aggregate seat payments")
-}
-
-fn payment_requirements_exceed_cap(requirements: &fa_client::PaymentRequirements) -> bool {
-    requirements
-        .max_total_msats
-        .is_some_and(|cap| requirements.total_msats > cap)
 }
 
 /// Reads federation consensus through a real invite-code preview.
@@ -3063,7 +2942,10 @@ mod tests {
     ) -> SeatPaymentRequirement {
         SeatPaymentRequirement {
             index: 0,
-            mg_id: None,
+            mg_id: NostrPublicKey::parse(
+                "aa4fc8665f5696e33db7e1a572e3b0f5b3d615837b0f362dcb1c8068b098c7b4",
+            )
+            .expect("test MG id parses"),
             quote_id: QuoteId([3; 32]),
             payment_federation_id: federation_id,
             amount_msats,
@@ -3255,41 +3137,6 @@ mod tests {
             format!("{error:#}").contains("could not open completion callback URL file"),
             "{error:#}"
         );
-        assert!(!state_dir.exists());
-    }
-
-    #[tokio::test]
-    #[cfg(unix)]
-    async fn completion_callback_requires_pinned_formation_before_state_access() {
-        use std::os::unix::fs::PermissionsExt as _;
-
-        let dir = tempfile::tempdir().unwrap();
-        let state_dir = dir.path().join("fi-state");
-        let callback_file = dir.path().join("callback-url");
-        std::fs::write(
-            &callback_file,
-            "https://push.example/hooks/hook-id/hook-secret\n",
-        )
-        .unwrap();
-        std::fs::set_permissions(&callback_file, std::fs::Permissions::from_mode(0o600)).unwrap();
-        let args = AppArgs::try_parse_from([
-            "fa-cli",
-            "--state-dir",
-            state_dir.to_str().unwrap(),
-            "create",
-            "--federation-size",
-            "7",
-            "--fa-spv2-account-file",
-            "fi-account.json",
-            "--completion-callback-url-file",
-            callback_file.to_str().unwrap(),
-            "--completion-callback-idempotency-key",
-            "formation-1",
-        ])
-        .unwrap();
-
-        let error = execute(args).await.unwrap_err();
-        assert!(error.to_string().contains("pinned --locator"), "{error:#}");
         assert!(!state_dir.exists());
     }
 
@@ -3642,8 +3489,6 @@ max_total_msats = 1000
         .unwrap();
         let intent = load_intent(&CreateArgs {
             fa_spv2_account_file: PathBuf::from("unused-fi-account.json"),
-            locators: Vec::new(),
-            insecure_skip_mg_trust: false,
             config: Some(path),
             federation_name: Some("override".to_owned()),
             federation_size: None,
@@ -3679,8 +3524,6 @@ max_total_msats = 1000
     fn spending_cap_rejects_zero_from_flag_and_toml() {
         let from_flag = load_intent(&CreateArgs {
             fa_spv2_account_file: PathBuf::from("unused-fi-account.json"),
-            locators: Vec::new(),
-            insecure_skip_mg_trust: false,
             config: None,
             federation_name: None,
             federation_size: Some(7),
@@ -3709,8 +3552,6 @@ max_total_msats = 1000
         .unwrap();
         let from_toml = load_intent(&CreateArgs {
             fa_spv2_account_file: PathBuf::from("unused-fi-account.json"),
-            locators: Vec::new(),
-            insecure_skip_mg_trust: false,
             config: Some(path),
             federation_name: None,
             federation_size: None,
@@ -3741,8 +3582,6 @@ max_total_msats = 1000
         std::fs::write(&path, "federation_size = 7\nguardian_fee_ppm = 100000\n").unwrap();
         let error = load_intent(&CreateArgs {
             fa_spv2_account_file: PathBuf::from("unused-fi-account.json"),
-            locators: Vec::new(),
-            insecure_skip_mg_trust: false,
             config: Some(path),
             federation_name: None,
             federation_size: None,
@@ -3838,22 +3677,8 @@ guardian_fee_pmm = 100
             None,
         )
         .to_string();
-        let locators: Vec<String> = (0..7)
-            .map(|index| {
-                let endpoint_key = iroh::SecretKey::from_bytes(&[index + 1; 32]);
-                let service_key =
-                    SecretKey::from_byte_array(&[index + 20; 32]).expect("valid test key");
-                Locator::new(
-                    iroh::EndpointAddr::new(endpoint_key.public()),
-                    service_key.x_only_public_key(secp256k1::SECP256K1).0,
-                )
-                .to_json()
-            })
-            .collect();
         let create_args = |poll_timeout_secs, payment_federation_id, wallet_data_dir| CreateArgs {
             fa_spv2_account_file: PathBuf::from("unused-fi-account.json"),
-            locators: locators.clone(),
-            insecure_skip_mg_trust: false,
             config: None,
             federation_name: None,
             federation_size: Some(7),
@@ -3925,8 +3750,6 @@ guardian_fee_pmm = 100
             manifold_environment: ManifoldEnvironment::Development,
             command: Command::Create(Box::new(CreateArgs {
                 fa_spv2_account_file: PathBuf::from("unused-fi-account.json"),
-                locators: Vec::new(),
-                insecure_skip_mg_trust: false,
                 config: None,
                 federation_name: None,
                 federation_size: Some(7),
@@ -4236,23 +4059,6 @@ guardian_fee_pmm = 100
 
         let error = parse_payment_invite(Some("not-an-invite"), selected).unwrap_err();
         assert!(format!("{error:#}").contains("parse --payment-invite-code"));
-    }
-
-    #[test]
-    fn over_cap_requirements_do_not_enter_the_cli_authorization_path() {
-        let requirements = fa_client::PaymentRequirements {
-            authorization_id: PaymentAuthorizationId::try_from_opaque("00".repeat(32)).unwrap(),
-            total_msats: 21_000,
-            max_total_msats: Some(20_000),
-            seats: Vec::new(),
-        };
-        assert!(payment_requirements_exceed_cap(&requirements));
-
-        let exact_cap = fa_client::PaymentRequirements {
-            max_total_msats: Some(21_000),
-            ..requirements
-        };
-        assert!(!payment_requirements_exceed_cap(&exact_cap));
     }
 
     #[test]

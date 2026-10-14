@@ -24,8 +24,6 @@ fn invalid_timing_precedes_cli_state_and_runtime_resources() {
             .args(["create", "--fa-spv2-account-file"])
             .arg(&fa_account)
             .args([
-                "--locator",
-                "{}",
                 "--federation-size",
                 "7",
                 "--fedimintd-version-minimum",

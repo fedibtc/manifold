@@ -33,9 +33,7 @@ It has no protocol, trust, signing, or lifecycle implementation of its own —
 transition, and checkpoint.
 
 The CLI implements the concrete Iroh connector and Fedimint wallet
-payment/refund port for both formation modes. As a development/test consumer,
-it is the only workspace package that enables fa-client's
-`dev-pinned-formation` feature. `fa-client` owns payment
+payment/refund port. `fa-client` owns payment
 scheduling for initial formation, resume, and replacement: it starts one new
 member at a time and checkpoints the completed seat before the next. The CLI
 adapter provides only exact aggregate reservation and operation/recovery
@@ -45,7 +43,7 @@ under the wallet spend guard, persists the exact Fedimint operation and change
 range atomically, and returns only after consensus acceptance and spendable
 payer change.
 
-Omitting `--locator` selects the product path: before opening identity, FA
+`create` uses verified selection: before opening identity, FA
 state, or the payment wallet, the CLI binds its Iroh endpoint, runs a fresh
 verified preview against the selected environment with live availability
 probing over that endpoint, seals it with the command's spending cap, retains
@@ -53,19 +51,13 @@ the non-serializable approval in-process, and immediately consumes it through
 `pay_and_create`. Registry-backed paid creation therefore requires
 `--max-total-msats`; passing no wallet coordinates explicitly selects
 `create_without_payer`, which succeeds only when the advertised and live exact
-offers are all zero. Supplying locators retains the diagnostic pinned path used
-by lower-level protocol E2E tests. That path accepts a paired 0600
-completion-callback URL file and idempotency key and delegates protocol
-validation, durable ownership, and delivery entirely to `fa-client` and the
-pinned MGs; the CLI never places the URL bearer in argv, persists it, or
-emits it. Pinned creation accepts only a version range containing one patch
-release; broader ranges remain available to the automatic selection path.
-For temporarily incomplete development/staging trust infrastructure,
-`--insecure-skip-mg-trust` explicitly discovers authenticated, fresh,
-compatible advertisements through `insecure_discover_untrusted_pinned_mgs` and feeds
-their locators into that pinned driver. It cannot be combined with `--locator`,
-is rejected for the production profile, and never creates a verified selection
-or trust claim.
+offers are all zero. `create` accepts a paired 0600 completion-callback URL
+file and idempotency key, passes it to `pay_and_create_with_callback` or
+`create_without_payer_with_callback`, and delegates protocol validation,
+durable ownership, and delivery entirely to `fa-client` and the MGs; the CLI
+never places the URL bearer in argv, persists it, or emits it.
+`--poll-interval-secs` and `--poll-timeout-secs` set the driver timing of
+every `create`.
 
 `discover` and `preview` are read-only registry commands: they connect a
 pooled Nostr relay client to every canonical relay in the selected
@@ -80,7 +72,7 @@ Neither command owns a payment port; they do not load an FA identity, open
 RocksDB, initialize consensus connectors, or touch `--state-dir`. Both take the
 same `--timeout-secs` flag, mapped to the library's clamped
 `MgDiscoveryOptions` deadline, with zero
-rejected at the argument boundary like the pinned-driver timing flags. Both
+rejected at the argument boundary like the driver timing flags. Both
 render the candidates or selected seats plus the library's
 typed rejection summary; neither writes durable formation state nor takes the
 driver lease. `discover` contacts no MG; `preview`'s only MG contact is
@@ -138,16 +130,11 @@ performs a new verified preview, retains the approval only in-process, reopens
 the already-funded payer by federation id, and supplies it to
 `FaClient::pay_and_create`.
 
-For a paid pinned `create` without an applicable cap, `fa-client` first stops at
-`AwaitingPaymentReadiness`. When no cap exists, the CLI prints the
-library-provided aggregate requirements and explicitly authorizes that exact
-quote set before continuing the same formation in a new driver invocation.
-An over-cap initial aggregate remains parked; the CLI prints
-`paymentAuthorizationRequired` and requires a distinct `authorize-payments`
-command carrying the displayed authorization id and the same wallet
-coordinates. An under-cap initial aggregate self-authorizes inside
-`fa-client` without this CLI step. Every replacement after any authorization
-also remains parked for `authorize-payments`. `resume` never
+The approved cap is the only authorization of the initial aggregate:
+`fa-client` self-authorizes it under the cap and restores `Idle` over it.
+A replacement aggregate after any authorization remains parked for a distinct
+`authorize-payments` command carrying the displayed authorization id and the
+same wallet coordinates. `resume` never
 infers fresh payment authorization — it only continues work covered by an
 already durable one. Paid resume reopens the same wallet database and root
 secret; the wallet recovers the exact quote-bound Fedimint operation and its
@@ -230,10 +217,7 @@ writes exactly one stdout object with `fiPubkey` and `state`; `status`, `create`
 `resume`, and successful `authorize-payments` write exactly one stdout `FaStatus`
 value. A formation intent carries `fedimintd_versions` as its inclusive-minimum,
 exclusive-maximum range and `fedimintd_dkg_version` as the selected
-major/minor/vendor identity. When a paid formation
-reaches payment readiness, `create` additionally writes exactly one stderr
-object with the sole top-level field `authorizingPayments`, whose value is the
-library-provided `PaymentRequirements`. Successful `discover` and `preview`
+major/minor/vendor identity. Successful `discover` and `preview`
 write exactly one stdout object carrying the `seen`/`eligible` (and, for
 `preview`, `selected`, `fedimintdDkgVersion`, and `totalAdvertisedMsats`) summary with the
 candidate or seat list and typed rejection reasons rendered as strings.
