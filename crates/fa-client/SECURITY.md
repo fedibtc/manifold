@@ -107,9 +107,9 @@ candidates' self-attested locators, so advertisement spam cannot multiply
 dials beyond the verifier round trips it already costs. The live
 `GetAvailabilityResponse` is untrusted MG-authored input consumed only by
 the shared scalar-version, FA-range, selected major/minor/vendor, size,
-accepting-seats, and plan predicate into typed rejections; its
-offered plans and prices confer nothing — the signed quote remains the only
-commercial term. Probe failure text carries only the sanitized-by-contract
+accepting-seats, and exact-plan predicate into typed rejections. A live
+offer without the advertised plan and price rejects the candidate. Matching
+it confers nothing, because the signed quote remains the only commercial term. Probe failure text carries only the sanitized-by-contract
 local connector error descriptions or a fixed marker for a Fleet
 Manager-returned error; remote error text is never embedded. Each probe runs
 under the per-candidate `MG_SELECTION_PROBE_TIMEOUT` (10 s) capped by the
@@ -190,9 +190,10 @@ probed candidate before any approval — the same exposure quote time already
 creates for selected candidates, widened to reached candidates; consumers
 for whom pre-approval linkability matters should supply an ephemeral probe
 transport, as `fa-cli` does. Every product-path seat must pass the complete verification; there
-is no pinned/BYO exception. The sealed five-minute preview approval is the only input
-to selected creation. Its usable window begins after the verified walk and it
-binds the complete request plus canonical verifier/environment provenance. The
+is no pinned/BYO exception. The five-minute preview is the only input
+to selected creation and is the consumer's payment approval. Its usable window
+begins after the verified walk and it binds the complete request, each seat's
+advertised plan and price, and canonical verifier/environment provenance. The
 stable provenance is persisted separately on every selected seat. Reopening under a different profile requires fresh approval for every
 unconsumed seat before an irreversible effect. Each admission has a private
 monotone state: `Fresh`, or `EffectAuthorized` bound to the exact quote and to
@@ -205,7 +206,7 @@ presentation. Exact recovery therefore retains historical authority after a
 crash without treating
 the formation-wide output tombstone as authorization.
 A failed, timed-out, cancelled, or dropped release retains the entire exact
-state. The preview approval itself is intentionally not serializable or cached.
+state. The preview itself is intentionally not serializable or cached.
 Discovery is now multi-relay (this section's revisit): with the pooled
 profile-relay client a consumer such as `fa-cli` supplies, it reads every
 canonical profile relay, availability only — the
@@ -213,7 +214,7 @@ trust model above is unchanged, the verification order is unchanged, and
 the per-run caps count deduplicated events so adding a relay neither
 multiplies badge-verification work nor shrinks the effective window.
 Re-check this section when the verification order or any cap changes, or
-when the sealed selected-creation contract changes.
+when the preview-as-approval contract changes.
 
 ## Durable ordering
 
@@ -228,12 +229,12 @@ The following ordering is part of the monetary safety boundary:
    absence and fails with typed payer-required reauthorization on any priced
    live offer before requesting its quote;
 3. authenticate and persist the highest setup-payment policy, then request,
-   verify, and persist each exact formation quote without automatically
-   replacing a selected guardian;
-4. check the complete exact total against the original cap and persist one
-   aggregate commercial authorization bound to that complete quote set. Cap
-   self-authorization is one-shot; every later re-quoted set needs explicit
-   renewed authorization;
+   verify, and persist each exact formation quote for exactly the seat's
+   previewed plan, without automatically replacing a selected guardian. A live
+   offer without that plan returns typed `PriceChanged` reauthorization before
+   outputs;
+4. persist one aggregate commercial authorization bound to that complete quote
+   set. The pinned plans make its total the previewed total;
 5. ask the wallet to recover every exact quote operation, refresh every proven
    `NotStarted` quote as one barrier, preserve authorization only for unchanged
    commercial terms, resolve every final MG connection, and prepare each
@@ -283,7 +284,7 @@ Commercial authorization is not the money boundary. `abandon_purchase` may
 remove the purchase while `payment_outputs_started` is false and DKG is not complete;
 selected-flow reauthorization errors must do so before returning.
 If a crash interrupts that cleanup, the durable selected discriminator and
-preview deadline prevent legacy authorization or stale cap reuse on resume.
+preview deadline prevent legacy authorization reuse on resume.
 Once the output tombstone is true,
 it survives authorization and quote replacement and abandon is forbidden until
 a refund-safe teardown exists
@@ -296,13 +297,13 @@ Refresh every `NotStarted` sibling as one barrier and validate the complete
 refreshed set before funding any sibling. Do not arm the output tombstone before
 the exact wallet and transport barriers complete, and do not poll a wallet output
 call before the tombstone commit. Do not replace a quote after an ambiguous
-request merely because it expired. Do not substitute a selected MG. After
+request merely because it expired. Do not substitute a selected MG, and do
+not request any plan other than the seat's previewed plan. After
 outputs, only a terminally rejected or settled-refund seat may leave the
 purchase; release that exact aggregate member with the wallet-issued opaque
 terminal proof before the transaction that deletes its row and invalidates the
 old id. Accepted, prepared, paid, and ambiguous siblings remain in the
-purchase. A new purchase with a fresh preview and its own cap buys any seat
-still missing.
+purchase. A new purchase with a fresh preview buys any seat still missing.
 
 Transport retry authority comes only from the consumer connector's local,
 non-serializable outer call error. A serialized `ManifoldGuardianError` is an

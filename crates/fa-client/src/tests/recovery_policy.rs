@@ -879,7 +879,7 @@ async fn terminal_paid_member_waits_for_held_siblings_before_clearing_aggregate(
         running
             .buy_and_form(
                 intent(),
-                selection_approval(PAYMENT_AMOUNT_MSATS * u64::from(MIN_FEDERATION_SIZE)),
+                &running.preview_at(&intent(), locators()),
                 payment_federation_id(),
                 long_request_options(),
             )
@@ -950,7 +950,6 @@ async fn terminal_paid_member_waits_for_held_siblings_before_clearing_aggregate(
         assert_eq!(journal.released, HashSet::from([terminal_quote]));
     }
 
-    assert!(purchase(&reopened.status()).action_required.is_none());
     let presentations = mg_state.create_calls.load(Ordering::SeqCst);
 
     reopened.resume().await.unwrap();

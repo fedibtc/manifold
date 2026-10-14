@@ -73,7 +73,7 @@ async fn paid_selection_sends_the_callback_to_every_guardian_and_clears_it_at_fo
     client
         .buy_and_form_with_callback(
             intent(),
-            selection_approval(1),
+            &client.preview_at(&intent(), locators()),
             payment_federation_id(),
             callback.clone(),
             options(),

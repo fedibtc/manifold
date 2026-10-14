@@ -46,13 +46,11 @@ impl std::fmt::Display for AbandonUnavailableReason {
 pub enum SelectionReauthorizationReason {
     /// The advertisement preview's five-minute approval window elapsed.
     PreviewExpired,
-    /// The consumer's limit is below the advertisement estimate it displayed.
-    AdvertisementEstimateExceedsLimit,
     /// A selected MG no longer advertises compatible live availability.
     #[serde(rename = "selected_fman_unavailable")]
     SelectedMgUnavailable,
-    /// The exact signed quote total exceeds the approved spending limit.
-    QuoteTotalExceedsLimit,
+    /// A selected MG no longer offers the previewed price.
+    PriceChanged,
     /// An exact quote changed before output generation could begin.
     QuoteTermsChanged,
     /// The explicitly selected payer is no longer admitted and ready.
@@ -72,14 +70,11 @@ impl std::fmt::Display for SelectionReauthorizationReason {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter.write_str(match self {
             Self::PreviewExpired => "the verified selection preview expired",
-            Self::AdvertisementEstimateExceedsLimit => {
-                "the approved limit is below the displayed advertisement estimate"
-            }
             Self::SelectedMgUnavailable => {
                 "a selected Manifold Guardian is no longer available under the approved offer"
             }
-            Self::QuoteTotalExceedsLimit => {
-                "the exact setup quote total exceeds the approved limit"
+            Self::PriceChanged => {
+                "a selected Manifold Guardian no longer offers the previewed price"
             }
             Self::QuoteTermsChanged => {
                 "an exact setup quote changed before payment output generation"

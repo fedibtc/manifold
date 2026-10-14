@@ -14,8 +14,8 @@
 //! seats. When the caller holds an MG connector, each reached, verified,
 //! non-duplicate candidate is additionally probed for live availability —
 //! the same four-check predicate quoting applies — so a stale advertisement
-//! costs its author the seat here instead of invalidating the sealed
-//! approval at quote time. The heuristic and its rationale are recorded in
+//! costs its author the seat here instead of invalidating the approved
+//! preview at quote time. The heuristic and its rationale are recorded in
 //! `specs/ARCH-fa-client-discovery-selection.md`
 //! (resurrecting PR #72); the admission order it extends is
 //! `specs/ARCH-fa-client-discovery-selection.md`.
@@ -244,8 +244,8 @@ pub struct SelectedMgSeat {
     pub(crate) provenance: SeatProvenance,
 }
 
-/// Stable authenticated identity and current dialing material sealed into an
-/// approved selection.
+/// Stable authenticated identity, current dialing material, and advertised
+/// plan of one seat in an approved preview.
 ///
 /// The Nostr event author is the identity vouched for by PeerBadge.  The
 /// locator's service key is only the currently advertised commitment key and
@@ -258,6 +258,8 @@ pub(crate) struct ApprovedMgSeat {
     pub(crate) mg_id: PublicKey,
     pub(crate) holder: PublicKey,
     pub(crate) locator: Locator,
+    /// The advertised plan the preview showed, which the quote must match.
+    pub(crate) plan: Plan,
 }
 
 impl From<SelectedMgSeat> for ApprovedMgSeat {
@@ -265,6 +267,9 @@ impl From<SelectedMgSeat> for ApprovedMgSeat {
         Self {
             mg_id: seat.candidate.mg_id,
             holder: seat.candidate.badge.holder,
+            plan: Plan::InfiniteBestEffort {
+                price_msats: seat.candidate.advertised_price_msats(),
+            },
             locator: seat.candidate.locator,
         }
     }
@@ -410,20 +415,23 @@ impl MgSelectionRequest {
 
 /// Outcome of one read-only selection preview.
 ///
-/// No durable state exists and no seat is reserved. The exact verified set is
-/// nevertheless sealed into approval: any later unavailability requires a
-/// fresh preview and renewed authorization; Pay-and-create never silently
-/// substitutes a different guardian.
+/// No durable state exists and no seat is reserved. Consumers can hold and
+/// return a preview but cannot construct or alter its verified seats.
+/// [`FaClient::buy_seats`](crate::FaClient::buy_seats) buys exactly this set
+/// for at most its advertised total: any later unavailability requires a
+/// fresh preview, and the FA never silently substitutes a different guardian.
+/// A preview is intentionally not serializable: a bridge keeps it only for the
+/// active five-minute screen flow and refetches when the user re-enters.
 #[derive(Debug)]
 pub struct MgSelectionPreview {
     /// Complete request whose verified selection this preview represents.
-    request: MgSelectionRequest,
+    pub(crate) request: MgSelectionRequest,
 
     /// Fedimint major/minor/vendor identity shared by every selected MG.
-    fedimintd_dkg_version: FedimintdDkgVersion,
+    pub(crate) fedimintd_dkg_version: FedimintdDkgVersion,
 
     /// Immutable trust configuration used to verify every selected seat.
-    verifier_provenance: PeerBadgeVerifierProvenance,
+    pub(crate) verifier_provenance: PeerBadgeVerifierProvenance,
 
     /// Verified seats in selection (round-robin) order; exactly the
     /// requested federation size.
@@ -499,77 +507,20 @@ impl MgSelectionPreview {
         self.valid_until
     }
 
-    /// Bind the displayed verified set to the user's maximum setup spend.
-    ///
-    /// This is commercial approval, not the irreversible wallet boundary.
-    /// The returned sealed value can start Pay-and-create for five minutes;
-    /// the wallet-output boundary is durably recorded only immediately before
-    /// `FaPayments::create_seat_payment` is polled. A zero limit is valid only
-    /// for an all-zero advertisement estimate and can be consumed only by the
-    /// no-payer bootstrap entry.
-    pub fn approve(self, max_total_msats: u64) -> FaResult<MgSelectionApproval> {
-        if max_total_msats < self.total_advertised_msats {
-            return Err(FaError::SelectionReauthorizationRequired {
-                reason: SelectionReauthorizationReason::AdvertisementEstimateExceedsLimit,
-                failure: None,
-            });
-        }
-        Ok(MgSelectionApproval {
-            request: self.request,
-            fedimintd_dkg_version: self.fedimintd_dkg_version,
-            verifier_provenance: self.verifier_provenance,
-            seats: self.seats.into_iter().map(ApprovedMgSeat::from).collect(),
-            advertised_total_msats: self.total_advertised_msats,
-            max_total_msats,
-            valid_until: self.valid_until,
-        })
-    }
-}
-
-/// Sealed, short-lived approval of one verified advertisement selection.
-///
-/// Consumers can retain and return this capability but cannot construct or
-/// alter its verified seats. It is intentionally not serializable: a bridge
-/// keeps it only for the active five-minute screen flow and refetches when the
-/// user backs out and re-enters.
-#[derive(Clone, Debug)]
-pub struct MgSelectionApproval {
-    pub(crate) request: MgSelectionRequest,
-    pub(crate) fedimintd_dkg_version: FedimintdDkgVersion,
-    pub(crate) verifier_provenance: PeerBadgeVerifierProvenance,
-    pub(crate) seats: Vec<ApprovedMgSeat>,
-    pub(crate) advertised_total_msats: u64,
-    pub(crate) max_total_msats: u64,
-    pub(crate) valid_until: Timestamp,
-}
-
-impl MgSelectionApproval {
-    /// Approved maximum aggregate setup spend.
-    #[must_use]
-    pub fn max_total_msats(&self) -> u64 {
-        self.max_total_msats
-    }
-
-    /// Advertisement estimate shown when approval was obtained.
-    #[must_use]
-    pub fn advertised_total_msats(&self) -> u64 {
-        self.advertised_total_msats
-    }
-
-    /// Unix timestamp at which Pay-and-create must reject this approval.
-    #[must_use]
-    pub fn valid_until(&self) -> Timestamp {
-        self.valid_until
-    }
-
-    pub(crate) fn into_seats_at(self, now: Timestamp) -> FaResult<Vec<ApprovedMgSeat>> {
+    /// The seats to buy, while this preview is still fresh.
+    pub(crate) fn seats_to_buy_at(&self, now: Timestamp) -> FaResult<Vec<ApprovedMgSeat>> {
         if self.valid_until <= now {
             return Err(FaError::SelectionReauthorizationRequired {
                 reason: SelectionReauthorizationReason::PreviewExpired,
                 failure: None,
             });
         }
-        Ok(self.seats)
+        Ok(self
+            .seats
+            .iter()
+            .cloned()
+            .map(ApprovedMgSeat::from)
+            .collect())
     }
 }
 
@@ -673,7 +624,7 @@ pub(crate) enum AvailabilityMismatch {
     FederationSize,
     /// The live version is outside the selected DKG identity or FA range.
     FedimintdVersion,
-    /// No offered plan matches the requested plan preference.
+    /// The live offer lacks the exact plan, price included.
     Plan,
 }
 
@@ -688,28 +639,20 @@ impl From<AvailabilityMismatch> for AdvertisementRejection {
     }
 }
 
-/// Exact live build and plan chosen for one compatible MG.
-pub(crate) struct MatchedAvailability<'a> {
-    pub(crate) fedimintd_version: &'a FedimintdVersion,
-    pub(crate) plan: &'a Plan,
-}
-
 /// The one definition of "this live availability serves the request".
 ///
 /// Shared by the selection walk's probe and formation's quote-time gate so
 /// the two stages can never disagree about what a compatible MG is. On
-/// success returns the MG's exact build plus the offered plan matching
-/// the preference. Quoting uses both; selection discards the build and plan.
-/// Deliberately price-blind: the
-/// signed quote remains the only commercial term, so a live price drift
-/// still surfaces at quote time, not here.
+/// success returns the MG's exact build, which quoting uses. The live offer
+/// must contain the exact plan, price included: the advertised plan when
+/// selection probes, and the previewed plan when formation quotes.
 pub(crate) fn match_requested_availability<'a>(
     availability: &'a GetAvailabilityResponse,
     federation_size: FederationSize,
     fedimintd_versions: &FedimintdVersionRange,
     fedimintd_dkg_version: &FedimintdDkgVersion,
-    plan: PlanPreference,
-) -> Result<MatchedAvailability<'a>, AvailabilityMismatch> {
+    plan: &Plan,
+) -> Result<&'a FedimintdVersion, AvailabilityMismatch> {
     if !availability.accepting_seats {
         return Err(AvailabilityMismatch::NotAcceptingSeats);
     }
@@ -722,15 +665,10 @@ pub(crate) fn match_requested_availability<'a>(
     {
         return Err(AvailabilityMismatch::FedimintdVersion);
     }
-    let plan = availability
-        .plans
-        .iter()
-        .find(|offered| plan.matches(offered))
-        .ok_or(AvailabilityMismatch::Plan)?;
-    Ok(MatchedAvailability {
-        fedimintd_version,
-        plan,
-    })
+    if !availability.plans.contains(plan) {
+        return Err(AvailabilityMismatch::Plan);
+    }
+    Ok(fedimintd_version)
 }
 
 impl<I, P, N, F, C> FaClient<I, P, N, F, C>
@@ -764,8 +702,9 @@ where
     ///
     /// The walk probes each reached, verified, non-duplicate candidate's live
     /// availability over the consumer's MG connector before seating it, so
-    /// a stale advertisement is rejected here instead of surviving into a
-    /// sealed approval that quote time must then invalidate.
+    /// a stale advertisement, including a changed price, is rejected here
+    /// instead of surviving into a preview that quote time must then
+    /// invalidate.
     ///
     /// # Errors
     ///
@@ -996,7 +935,7 @@ pub(crate) async fn preview_mg_selection_with(
 /// probed for live availability; a candidate whose probe fails or whose
 /// live response cannot serve the request is dropped with a typed rejection
 /// and its bucket continues, so a stale advertisement costs its author the
-/// seat instead of poisoning the sealed approval. The walk stops when
+/// seat instead of poisoning the approved preview. The walk stops when
 /// the requested seat count is verified-filled, the pool is exhausted, or
 /// the deadline expires; the caller turns a shortfall into the typed
 /// partial-failure error. `selected_service_pubkeys` contains signing
@@ -1225,9 +1164,38 @@ async fn probe_reached_candidate(
             request.federation_size,
             &request.fedimintd_versions,
             fedimintd_dkg_version,
-            request.plan,
+            &Plan::InfiniteBestEffort {
+                price_msats: candidate.advertised_price_msats,
+            },
         )
-        .map(|_availability| ())
+        .map(|_fedimintd_version| ())
         .map_err(AdvertisementRejection::from),
+    }
+}
+
+#[cfg(test)]
+impl MgSelectionPreview {
+    /// A preview of exactly `seats`, as if the selection walk had chosen them.
+    pub(crate) fn for_test(
+        request: MgSelectionRequest,
+        fedimintd_dkg_version: FedimintdDkgVersion,
+        verifier_provenance: PeerBadgeVerifierProvenance,
+        seats: Vec<SelectedMgSeat>,
+        valid_until: Timestamp,
+    ) -> Self {
+        Self {
+            request,
+            fedimintd_dkg_version,
+            verifier_provenance,
+            total_advertised_msats: seats
+                .iter()
+                .map(SelectedMgSeat::advertised_price_msats)
+                .sum(),
+            seen: seats.len(),
+            eligible: seats.len(),
+            rejected: Vec::new(),
+            seats,
+            valid_until,
+        }
     }
 }

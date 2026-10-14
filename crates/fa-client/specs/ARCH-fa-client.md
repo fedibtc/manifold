@@ -28,9 +28,8 @@ Each increment extends this consumer boundary and state engine rather than
 adding a second driver to any consumer. Buying seats and forming a federation
 are separate steps (see *Seat purchase, pool, and formation* below). The
 selection request carries federation size (accepted product range 7 through 20
-guardians), current plan family, and a half-open `FedimintdVersionRange`; the
-sealed approval adds the aggregate spending cap `max_total_msats`, persisted
-with the purchase so it survives resume. `form_federation` takes an optional
+guardians), current plan family, and a half-open `FedimintdVersionRange`.
+`form_federation` takes an optional
 display name (resolved to one generated two-word name and persisted before
 remote work), the pool seat ids, and an optional DKG completion callback. Neither step carries a guardian-fee rate: formation installs the
 fixed recipient mapping and an initial rate, while post-formation
@@ -56,21 +55,21 @@ schema 11 are reset because they predate the production compatibility
 baseline. Subsequent schema changes are governed by
 [`GATE-production-compatibility`](../../../specs/GATE-production-compatibility.md).
 
-The cap changes only payment-readiness behavior, and it is **one-shot**: it
-is the consumer's approval of the initial aggregate only. In the product path
-it is sealed into the five-minute advertisement approval returned by
-`MgSelectionPreview::approve`; no MG quote exists before the consumer
-invokes `buy_seats` with that approval and one explicit payer, or without a
-payer for the all-zero deployment bootstrap. The latter
-persists an explicitly absent payer, requests free quotes without payment
-policy, and returns typed payer-required reauthorization before requesting a
-quote if any selected MG's live offer is priced. An all-zero advertisement
-estimate may be sealed with a zero limit; because this mode cannot pay, that
-limit is not projected into the resolved intent's paid spending cap. When the
-complete exact quote total is within the cap and no aggregate authorization
-was ever recorded, the engine records the same durable
-quote-bound aggregate authorization that an explicit `authorize_payments`
-call would write. It refreshes every unpaid quote, connects every selected
+The five-minute selection preview is the consumer's payment approval. Each
+selected seat stores the plan its advertisement showed, price included, and
+every quote for that seat requests exactly that plan. A quote therefore has
+exactly the previewed price, and the purchase total is the previewed total.
+No MG quote exists before the consumer invokes `buy_seats` with the preview
+and one explicit payer, or without a payer for the all-zero deployment
+bootstrap. The latter persists an explicitly absent payer, requests free
+quotes without payment policy, and returns typed payer-required
+reauthorization before requesting a quote if any selected MG's live offer is
+priced. When the MG's live offer no longer contains the previewed plan, the
+purchase returns typed `PriceChanged` reauthorization before outputs. A seat
+saved before prices were pinned has no previewed plan, so before outputs it
+returns `PreviewExpired` reauthorization; its authorized but unstarted payment
+is refreshed at its stored quote's plan. Once every exact quote exists, the
+engine records the durable quote-bound aggregate authorization. It refreshes every unpaid quote, connects every selected
 MG, and derives a deterministic reservation id from the formation and fresh
 exact quote set. The wallet first recover-probes that exact id without creating
 state; only authoritative absence plus live admission permits a new
@@ -88,15 +87,13 @@ payer selection. Binding mismatches, storage errors, and lost or ambiguous
 results after journal persistence keep the exact formation durable and
 recover-probe the deterministic id before freshness or policy on resume.
 
-A purchase parks for explicit authorization only after output generation, for
-a re-quoted aggregate after its one-shot authorization. Before any output
-generation it never publishes or accepts an exact-quote authorization action.
-It instead returns typed
+A purchase never parks for a consumer authorization. Before any output
+generation, a changed price or unavailable MG or payer returns typed
 `SelectionReauthorizationRequired` and value-safely removes the purchase.
-If a process dies before cleanup, the purchase preserves its payer and approval
-expiry: reopen exposes no superseded authorization action, and resume either continues the still-live
-exact set or performs the same typed cleanup. A cloned live approval can then
-retry a different ready payer. An unavailable MG always requires a fresh
+If a process dies before cleanup, the purchase preserves its payer and preview
+expiry, and resume either continues the still-live exact set or performs the
+same typed cleanup. The same live preview can then retry a different ready
+payer. An unavailable MG always requires a fresh
 preview; selected guardians are never silently swapped.
 After outputs start, a seat whose wallet operation terminally rejected or
 whose MG-signed refund was settled leaves the purchase. Its wallet release
@@ -104,8 +101,8 @@ completes first, and one transaction then deletes the row and invalidates the
 aggregate authorization and reservation id. Accepted, prepared, paid, and
 ambiguous siblings stay in the purchase. The purchase completes with the seats
 that remain, and a new purchase buys any seat still missing. A remaining
-unpaid quote set after the drop is a re-quoted aggregate, so it parks for
-`AuthorizePayments`.
+unpaid quote set after the drop is authorized again at the same previewed
+prices.
 Definite connection failures are retried with bounded exponential backoff for
 up to two minutes, clipped by the current driver deadline, before the
 pre-output fresh-selection result is returned. After outputs start, transport
@@ -251,17 +248,16 @@ screen. It takes the same
 `MgDiscoveryOptions` clamped-timeout bound as `discover_mg_candidates`
 — not formation run options, since no lease or driver timing applies to a
 read-only query. It has no durable state and no lease. The result carries a
-five-minute validity bound anchored after enumeration and verification and can
-be consumed into a sealed, non-serializable `MgSelectionApproval`; leaving
-and re-entering the flow refetches instead of caching it. The approval binds
-the complete selection request and immutable verifier/environment provenance.
-`buy_seats` accepts only that sealed approval, an optional explicit
-authenticated Ready payer, and the original spending cap. Without a payer it
-serves all-zero bootstrap and never consults payment policy or the wallet.
-Exact quotes are obtained only inside that action. Expiry, quote drift/cap
-excess, required/missing payer, failure, or selected-seat unavailability before
-outputs removes the purchase and requires the appropriate payer retry or a
-fresh preview.
+five-minute validity bound anchored after enumeration and verification;
+leaving and re-entering the flow refetches instead of caching it. The preview
+binds the complete selection request, each seat's advertised plan, and
+immutable verifier/environment provenance, and it cannot be serialized.
+`buy_seats` accepts the preview and an optional explicit authenticated Ready
+payer. Without a payer it serves all-zero bootstrap and never consults payment
+policy or the wallet. Exact quotes are obtained only inside that action.
+Expiry, a changed price, quote drift, required/missing payer, failure, or
+selected-seat unavailability before outputs removes the purchase and requires
+the appropriate payer retry or a fresh preview.
 
 ## Seat purchase, pool, and formation
 
@@ -339,16 +335,15 @@ objects, trust conclusions, or lifecycle transitions:
   so an adapter that fabricates or caches a result defeats readback silently.
   The obligations are stated on the port and in [`SECURITY.md`](../SECURITY.md).
 - **Presentation** — collects intent, renders an uncached advertisement-only
-  preview and authenticated payer choices, retains the sealed preview approval
-  only for that screen visit, and invokes `buy_seats` with its explicit
-  payer and original cap, or without a payer when the deployment has no
-  setup-payment policy, and then `form_federation` with the bought pool seats.
+  preview and authenticated payer choices, retains the preview only for that
+  screen visit, and invokes `buy_seats` with it and its explicit payer, or
+  without a payer when the deployment has no setup-payment policy, and then `form_federation` with the bought pool seats.
 
 `MgSelectionRequest` rejects invalid sizes and ranges, and
 `validate_federation_name` rejects names `form_federation` would refuse. The
 purchase APIs additionally expose side-effect-free, operation-specific preflights for
-consumers: the purchase validates the sealed seat count, preview age,
-explicit payer, and cap.
+consumers: the purchase validates the preview's seat count, preview age, and
+explicit payer.
 Timing options likewise have private fields and checked construction; invalid
 runtime or lease bounds cannot reach identity, durable state, lease, wallet, or
 network access.
@@ -408,7 +403,7 @@ guard. The recovery requirement is reconstructed on reopen from the caller's
 persisted mnemonic provenance and the FA database's environment-scoped
 completion marker.
 
-Purchase phases are `Preparing`, `AwaitingPaymentReadiness`, `AcquiringSeats`.
+Purchase phases are `Preparing` and `AcquiringSeats`.
 Formation phases are `PreparingDkg`, `DkgUnderway`, `DkgComplete`,
 `PublishingSeatBindings`; a formed federation appears only as `federation`. Status is
 published through a watch channel independently of the future driving the run. Durable phases advance atomically
@@ -662,7 +657,7 @@ readiness, verified all-zero selected bootstrap without a publisher or wallet,
 typed priced-offer rejection, zero-balance admitted-payer listing, exact aggregate preflight,
 same-id reconstruction and mismatch refusal, capability carry and one-shot
 member consumption, drop-not-release, whole/member proven-safe release and
-crash ordering, over-cap and unavailable-seat release before the purchase is removed, and the
+crash ordering, changed-price and unavailable-seat release before the purchase is removed, and the
 independent output tombstone. A focused payer fixture gives the wallet one note
 covering several setup prices and fees, proves concurrent independent spends
 exhaust it, and proves ordered settlement forms successfully with exact final

@@ -133,17 +133,35 @@ impl SelectionBadgeVerifier for PendingBadgeVerifier {
     }
 }
 
-/// Fully compatible live availability for the shared test request shape.
+/// Every price these tests advertise.
+const AD_PRICES_MSATS: [u64; 10] = [
+    AD_PRICE_MSATS,
+    0,
+    1_000,
+    1_500,
+    2_000,
+    3_000,
+    4_000,
+    500_000,
+    600_000,
+    1_000_000,
+];
+
+/// Fully compatible live availability for the shared test request shape. It
+/// offers every advertised price, so each ad's exact plan is live.
 fn compatible_availability() -> GetAvailabilityResponse {
     GetAvailabilityResponse {
         accepting_seats: true,
         fedimintd_version: FEDIMINTD_VERSION_0_1.parse().expect("test version parses"),
         federation_sizes: vec![FederationSize(MIN_FEDERATION_SIZE)],
-        plans: vec![
-            fedi_decentralized_service_manifold_guardian::Plan::InfiniteBestEffort {
-                price_msats: AD_PRICE_MSATS,
-            },
-        ],
+        plans: AD_PRICES_MSATS
+            .into_iter()
+            .map(|price_msats| {
+                fedi_decentralized_service_manifold_guardian::Plan::InfiniteBestEffort {
+                    price_msats,
+                }
+            })
+            .collect(),
         additional_info: Vec::new(),
     }
 }
@@ -350,7 +368,7 @@ fn issuer_ad_with_service_pubkey(
     ad_event(mg, payload)
 }
 
-async fn verified_zero_price_selection_approval() -> MgSelectionApproval {
+async fn verified_zero_price_selection_preview() -> MgSelectionPreview {
     let issuer = issuer_keys(1);
     let events = (0..usize::from(MIN_FEDERATION_SIZE))
         .map(|index| {
@@ -377,13 +395,11 @@ async fn verified_zero_price_selection_approval() -> MgSelectionApproval {
     .expect("the product selection is fully verified");
     assert_eq!(preview.total_advertised_msats(), 0);
     preview
-        .approve(0)
-        .expect("a zero cap seals an all-zero bootstrap estimate")
 }
 
 #[tokio::test]
 async fn selected_verified_zero_price_bootstrap_needs_no_publisher_or_payer() {
-    let approval = verified_zero_price_selection_approval().await;
+    let approval = verified_zero_price_selection_preview().await;
     let (payments, payment_state) = TestPayments::new();
     let mg_state = Arc::new(MgState::default());
     let client = open_client_that_cannot_pay(
@@ -395,7 +411,7 @@ async fn selected_verified_zero_price_bootstrap_needs_no_publisher_or_payer() {
     .await;
 
     client
-        .buy_and_form_without_payer(intent(), approval, options())
+        .buy_and_form_without_payer(intent(), &approval, options())
         .await
         .expect("the first verified federation forms from all-zero quotes");
 
@@ -418,8 +434,7 @@ async fn selected_verified_zero_price_bootstrap_needs_no_publisher_or_payer() {
 }
 
 #[tokio::test]
-async fn selected_without_payer_rejects_a_priced_live_offer_before_effects() {
-    let approval = verified_zero_price_selection_approval().await;
+async fn selected_without_payer_rejects_a_priced_offer_before_effects() {
     let (payments, payment_state) = TestPayments::new();
     let mg_state = Arc::new(MgState::default());
     let client = open_client_that_cannot_pay(
@@ -431,9 +446,13 @@ async fn selected_without_payer_rejects_a_priced_live_offer_before_effects() {
     .await;
 
     let error = client
-        .buy_and_form_without_payer(intent(), approval, options())
+        .buy_and_form_without_payer(
+            intent(),
+            &client.preview_at(&intent(), locators()),
+            options(),
+        )
         .await
-        .expect_err("a priced live offer requires a payer retry");
+        .expect_err("a priced offer requires a payer retry");
 
     assert!(matches!(
         error,
@@ -915,7 +934,7 @@ async fn one_holder_cannot_fill_multiple_seats_even_across_issuers() {
             })
             .collect::<Vec<_>>();
         let fallback = mg_keys(11);
-        events.push(issuer_ad(&fallback, &issuer_keys(0), 1, 1));
+        events.push(issuer_ad(&fallback, &issuer_keys(0), 1_000, 1));
         let prober = StubProber::default();
         let mut rejected = Vec::new();
         let seats = select_mg_seats(
@@ -1414,6 +1433,42 @@ async fn live_mismatches_reject_with_their_typed_reasons() {
 }
 
 #[tokio::test]
+async fn live_offer_must_contain_the_advertised_price() {
+    let live_prices = |prices: &[u64]| GetAvailabilityResponse {
+        plans: prices
+            .iter()
+            .map(|&price_msats| {
+                fedi_decentralized_service_manifold_guardian::Plan::InfiniteBestEffort {
+                    price_msats,
+                }
+            })
+            .collect(),
+        ..compatible_availability()
+    };
+    for (prices, admitted) in [(&[999, 1_001][..], false), (&[2_000, 1_000, 500][..], true)] {
+        let mg = mg_keys(1);
+        let events = vec![issuer_ad(&mg, &issuer_keys(1), 1_000, 3)];
+        let prober = StubProber::with_outcome(
+            service_pubkey(&mg),
+            StubProbeOutcome::Available(live_prices(prices)),
+        );
+
+        let (seats, rejected) =
+            select_probed(events, &StubBadgeVerifier::default(), &prober, 1).await;
+
+        if admitted {
+            assert!(rejected.is_empty(), "{rejected:?}");
+            assert_eq!(seats.len(), 1);
+            assert_eq!(seats[0].advertised_price_msats(), 1_000);
+        } else {
+            assert!(seats.is_empty());
+            assert_eq!(rejected.len(), 1);
+            assert_eq!(rejected[0].reason.code(), "live_no_requested_plan");
+        }
+    }
+}
+
+#[tokio::test]
 async fn duplicate_service_key_candidate_is_never_dialed() {
     let mut issuers = [issuer_keys(1), issuer_keys(2)];
     issuers.sort_by_key(Keys::public_key);
@@ -1816,12 +1871,6 @@ async fn preview_returns_selected_seats_estimate_and_summary() {
         usize::from(MIN_FEDERATION_SIZE),
         "preview verification is lazy",
     );
-    let approval = preview
-        .approve(expected_total)
-        .expect("displayed estimate is an admissible cap");
-    assert_eq!(approval.advertised_total_msats(), expected_total);
-    assert_eq!(approval.max_total_msats(), expected_total);
-    assert_eq!(approval.valid_until(), Timestamp(NOW + 300));
 }
 
 #[tokio::test]
@@ -1853,18 +1902,16 @@ async fn preview_validity_starts_when_the_verified_walk_completes() {
     .expect("preview succeeds after a slow verified walk");
 
     assert_eq!(preview.valid_until(), Timestamp(completed_at + 300));
-    let approval = preview.approve(7_000).expect("exact advertised cap");
     assert_eq!(
-        approval
-            .clone()
-            .into_seats_at(Timestamp(completed_at + 299))
+        preview
+            .seats_to_buy_at(Timestamp(completed_at + 299))
             .expect("the full five-minute window is available")
             .len(),
         usize::from(MIN_FEDERATION_SIZE),
     );
     for now in [completed_at + 300, completed_at + 301] {
         assert!(matches!(
-            approval.clone().into_seats_at(Timestamp(now)),
+            preview.seats_to_buy_at(Timestamp(now)),
             Err(FaError::SelectionReauthorizationRequired {
                 reason: SelectionReauthorizationReason::PreviewExpired,
                 failure: None

@@ -80,9 +80,9 @@ pub use ports::{
     PaymentReservationRecovery, PreparedSeatPayment, SeatPaymentRecovery, SettledSeatRefund,
 };
 pub use selection::{
-    MG_SELECTION_PREVIEW_VALIDITY, MG_SELECTION_PROBE_TIMEOUT, MgSelectionApproval,
-    MgSelectionPreview, MgSelectionQuery, MgSelectionRequest, SeatProvenance, SelectedMgSeat,
-    VerifiedBadgeFacts, VerifiedCandidate,
+    MG_SELECTION_PREVIEW_VALIDITY, MG_SELECTION_PROBE_TIMEOUT, MgSelectionPreview,
+    MgSelectionQuery, MgSelectionRequest, SeatProvenance, SelectedMgSeat, VerifiedBadgeFacts,
+    VerifiedCandidate,
 };
 pub use setup_payment_federations::AdmittedSetupPaymentFederation;
 /// Exact SPv2 account type returned by [`FaFeeAccountProvider`].
@@ -96,9 +96,8 @@ pub use state::{
     FormationId, FormationPhase, FormationSnapshot, MAX_FEDERATION_SIZE,
     MAX_FEDERATION_SIZE_EXCLUSIVE, MAX_GUARDIAN_FEE_PPM, MIN_FEDERATION_SIZE,
     PaymentAuthorizationId, PaymentRequirements, PaymentReservationId, PlanPreference, PoolSeat,
-    PurchaseActionRequired, PurchasePhase, RecoveryCheck, ResolvedSeatPurchase,
-    SeatPaymentRequirement, SeatPhase, SeatProgress, SeatPurchaseSnapshot,
-    validate_federation_name,
+    PurchasePhase, RecoveryCheck, ResolvedSeatPurchase, SeatPaymentRequirement, SeatPhase,
+    SeatProgress, SeatPurchaseSnapshot, validate_federation_name,
 };
 pub use unavailable::{
     UnavailableFaFeeAccountProvider, UnavailableFederationConsensusReader,
@@ -167,7 +166,7 @@ where
     ///
     /// The mandatory verifier authenticates every PeerBadge the selection
     /// walk examines through [`Self::preview_mg_selection`]. The resulting
-    /// sealed approval is consumed by [`Self::buy_seats`]. The fee-account
+    /// preview is the approval [`Self::buy_seats`] takes. The fee-account
     /// provider and Guardian Verification Fee account are explicit capabilities
     /// for the formation fee arrangement.
     #[allow(
@@ -209,7 +208,7 @@ where
     ///
     /// The mandatory verifier authenticates every PeerBadge the selection
     /// walk examines through [`Self::preview_mg_selection`]. The resulting
-    /// sealed approval is consumed by [`Self::buy_seats`]. The fee-account
+    /// preview is the approval [`Self::buy_seats`] takes. The fee-account
     /// provider is an explicit local capability even though this constructor
     /// has no Guardian Verification Fee account and therefore cannot arrange
     /// fees.
@@ -404,18 +403,12 @@ where
 
     /// Continue the active formation from its durable recovery state.
     ///
-    /// `Ok(())` does not necessarily mean that formation completed. In
-    /// particular, a successful call can stop at
-    /// [`FormationPhase::AwaitingPaymentReadiness`]. Read the aggregate
-    /// [`PurchaseActionRequired`] from [`Self::status`] or [`Self::observe`].
-    /// An [`PurchaseActionRequired::AuthorizePayments`] action requires the
-    /// displayed [`PaymentAuthorizationId`].
+    /// `Ok(())` does not necessarily mean that formation completed.
     ///
-    /// Resuming never grants payment authorization. It first recovers operations
-    /// for the exact stored authorized quotes. It can carry that authorization to
-    /// refreshed quote IDs only when every authorized commercial term is
-    /// unchanged; changed terms expose a new payment action, which needs a new
-    /// authorization.
+    /// Resuming pays only the price the approved preview showed for each seat.
+    /// It first recovers operations for the exact stored authorized quotes. A
+    /// refreshed quote requests the same previewed plan, so its price cannot
+    /// change.
     ///
     /// A stored [`FormationPhase::Formed`] state is also not treated as proof of
     /// current remote state: resume reads fresh federation consensus and verifies

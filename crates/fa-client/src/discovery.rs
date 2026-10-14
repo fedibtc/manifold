@@ -343,8 +343,8 @@ pub enum AdvertisementRejection {
     /// identity.
     LiveUnsupportedFedimintdVersion,
 
-    /// The live availability response offers no plan matching the requested
-    /// plan preference.
+    /// The live availability response lacks the advertised plan at the
+    /// advertised price.
     LiveNoRequestedPlan,
 
     /// `expires_at` has passed.

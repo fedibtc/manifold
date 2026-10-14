@@ -762,6 +762,8 @@ impl MgConfig {
 
 #[derive(Clone)]
 struct QuoteRecord {
+    index: usize,
+    plan: Plan,
     quote_id: QuoteId,
     payment_federation_id: Option<FederationId>,
     fedimintd_version: FedimintdVersion,
@@ -800,8 +802,10 @@ struct MgState {
     start_callbacks: Mutex<Vec<Option<DkgCompletionCallback>>>,
     invite_calls: AtomicUsize,
     quote_records: Mutex<Vec<QuoteRecord>>,
-    /// Per-MG price overrides for mixed paid/free replacement-wave tests.
+    /// Per-MG price overrides for mixed paid/free and changed-price tests.
     price_overrides_msats: Mutex<HashMap<usize, u64>>,
+    /// Plans every MG offers ahead of its own price.
+    extra_plans: Mutex<Vec<Plan>>,
     changed_quote_index: Mutex<Option<usize>>,
     blocked_quote_index: Mutex<Option<usize>>,
     quote_blocked: Notify,
@@ -1049,9 +1053,10 @@ impl ManifoldGuardianService for TestMg {
         if self.config.hang_availability {
             return pending().await;
         }
-        let plans = vec![Plan::InfiniteBestEffort {
+        let mut plans = self.state.extra_plans.lock().expect("test lock").clone();
+        plans.push(Plan::InfiniteBestEffort {
             price_msats: self.price_msats(),
-        }];
+        });
         let fedimintd_version = self
             .state
             .fedimintd_version_overrides
@@ -1086,6 +1091,7 @@ impl ManifoldGuardianService for TestMg {
         }
         let payment_federation_id = request.payment_federation_id.clone();
         let fedimintd_version = request.fedimintd_version.clone();
+        let signed_plan = request.plan.clone();
         if self.config.reject_quote {
             return Err(ManifoldGuardianError::Other(
                 "test daemon rejects the selected payment federation".to_owned(),
@@ -1151,6 +1157,8 @@ impl ManifoldGuardianService for TestMg {
             .lock()
             .expect("test lock")
             .push(QuoteRecord {
+                index: self.index,
+                plan: signed_plan,
                 quote_id,
                 payment_federation_id,
                 fedimintd_version,
@@ -2213,44 +2221,83 @@ fn locators() -> Vec<Locator> {
     (0..usize::from(MIN_FEDERATION_SIZE)).map(locator).collect()
 }
 
-fn selection_approval(max_total_msats: u64) -> MgSelectionApproval {
-    MgSelectionApproval {
-        request: MgSelectionRequest::new(
+/// A verified seat for the test MG at `index`, advertised at `price_msats`.
+fn selected_seat(index: usize, price_msats: u64) -> crate::selection::SelectedMgSeat {
+    let now = test_now_secs();
+    crate::selection::SelectedMgSeat {
+        candidate: crate::selection::VerifiedCandidate {
+            mg_id: test_mg_id(index),
+            api_endpoints: Vec::new(),
+            locator: locator(index),
+            advertised_price_msats: price_msats,
+            availability: fedi_decentralized_nostr::mg::Availability {
+                fedimintd_version: fedimintd_version(),
+                federation_sizes: vec![MIN_FEDERATION_SIZE],
+            },
+            issued_at: Timestamp(now),
+            expires_at: Timestamp(now + 3_600),
+            badge: crate::selection::VerifiedBadgeFacts {
+                issuer: test_mg_id(60),
+                holder: test_mg_id(index),
+                subject: test_mg_id(index),
+                badge: fedi_decentralized_domain::TrustScoreBadgeV1 {
+                    trust_level: 10,
+                    holder_pubkey: test_mg_id(index),
+                },
+            },
+        },
+        provenance: SeatProvenance::FediAttested,
+    }
+}
+
+/// A fresh preview of `seats`, each `(index, advertised price)`.
+fn preview_of(
+    request: MgSelectionRequest,
+    seats: impl IntoIterator<Item = (usize, u64)>,
+) -> MgSelectionPreview {
+    let minimum = request.fedimintd_versions().minimum();
+    let fedimintd_dkg_version = format!("{minimum}+fedi")
+        .parse::<FedimintdVersion>()
+        .expect("a release with the Fedi vendor is valid SemVer")
+        .dkg_version();
+    MgSelectionPreview::for_test(
+        request,
+        fedimintd_dkg_version,
+        test_peer_badge_verifier().provenance(),
+        seats
+            .into_iter()
+            .map(|(index, price_msats)| selected_seat(index, price_msats))
+            .collect(),
+        Timestamp(test_now_secs() + 120),
+    )
+}
+
+/// A fresh preview of the seven test MGs, each at the paid test price.
+fn selection_preview() -> MgSelectionPreview {
+    preview_of(
+        MgSelectionRequest::new(
             FederationSize(MIN_FEDERATION_SIZE),
             fedimintd_version_range(),
             PlanPreference::InfiniteBestEffort,
         )
         .expect("valid test selection request"),
-        fedimintd_dkg_version: fedimintd_version().dkg_version(),
-        verifier_provenance: test_peer_badge_verifier().provenance(),
-        seats: locators()
-            .into_iter()
-            .enumerate()
-            .map(|(index, locator)| crate::selection::ApprovedMgSeat {
-                mg_id: test_mg_id(index),
-                holder: test_mg_id(index),
-                locator,
-            })
-            .collect(),
-        advertised_total_msats: 1,
-        max_total_msats,
-        valid_until: Timestamp(test_now_secs() + 120),
-    }
+        (0..usize::from(MIN_FEDERATION_SIZE)).map(|index| (index, PAYMENT_AMOUNT_MSATS)),
+    )
 }
 
-fn compatible_selection_approval(max_total_msats: u64) -> MgSelectionApproval {
-    let mut approval = selection_approval(max_total_msats);
-    approval.request = MgSelectionRequest::new(
-        FederationSize(MIN_FEDERATION_SIZE),
-        FedimintdVersionRange::new(
-            "0.12.0".parse().expect("range minimum parses"),
-            "0.12.3".parse().expect("range maximum parses"),
-        )
-        .expect("test range is ordered"),
-        PlanPreference::InfiniteBestEffort,
+/// [`selection_preview`] for [`compatible_intent`].
+fn compatible_selection_preview() -> MgSelectionPreview {
+    preview_of(
+        compatible_intent().request,
+        (0..usize::from(MIN_FEDERATION_SIZE)).map(|index| (index, PAYMENT_AMOUNT_MSATS)),
     )
-    .expect("valid test selection request");
-    approval
+}
+
+/// The index of a locator built by [`locator`].
+fn locator_index(seat_locator: &Locator) -> usize {
+    (0..64)
+        .find(|index| locator(*index) == *seat_locator)
+        .expect("test locators come from locator()")
 }
 
 impl TestClient {
@@ -2266,8 +2313,30 @@ impl TestClient {
         let payer = (self.inner.ports.mg_connector.config.price_msats > 0
             && self.inner.setup_payment_publisher.is_some())
         .then(payment_federation_id);
-        self.buy_seats(approval_at(intent, locators), payer, options)
+        self.buy_seats(&self.preview_at(intent, locators), payer, options)
             .await
+    }
+
+    /// A fresh preview of one seat at each locator, at the price its test MG
+    /// offers now.
+    fn preview_at(&self, intent: &TestIntent, locators: Vec<Locator>) -> MgSelectionPreview {
+        let connector = &self.inner.ports.mg_connector;
+        let overrides = connector
+            .state
+            .price_overrides_msats
+            .lock()
+            .expect("test lock");
+        preview_of(
+            intent.request.clone(),
+            locators.iter().map(|seat_locator| {
+                let index = locator_index(seat_locator);
+                let price_msats = overrides
+                    .get(&index)
+                    .copied()
+                    .unwrap_or(connector.config.price_msats);
+                (index, price_msats)
+            }),
+        )
     }
     async fn buy_and_form_at(
         &self,
@@ -2293,42 +2362,11 @@ impl TestClient {
     }
 }
 
-/// An approval for one seat at each locator. Each MG id is the test MG id of
-/// the locator's index, and a missing cap approves any total.
-fn approval_at(intent: &TestIntent, locators: Vec<Locator>) -> MgSelectionApproval {
-    let minimum = intent.request.fedimintd_versions().minimum();
-    MgSelectionApproval {
-        request: intent.request.clone(),
-        fedimintd_dkg_version: format!("{minimum}+fedi")
-            .parse::<FedimintdVersion>()
-            .expect("a release with the Fedi vendor is valid SemVer")
-            .dkg_version(),
-        verifier_provenance: test_peer_badge_verifier().provenance(),
-        seats: locators
-            .into_iter()
-            .map(|seat_locator| {
-                let index = (0..64)
-                    .find(|index| locator(*index) == seat_locator)
-                    .expect("test locators come from locator()");
-                crate::selection::ApprovedMgSeat {
-                    mg_id: test_mg_id(index),
-                    holder: test_mg_id(index),
-                    locator: seat_locator,
-                }
-            })
-            .collect(),
-        advertised_total_msats: 1,
-        max_total_msats: intent.max_total_msats.unwrap_or(u64::MAX),
-        valid_until: Timestamp(test_now_secs() + 120),
-    }
-}
-
 /// The seats and federation a test buys and forms in one call.
 #[derive(Clone, Debug)]
 struct TestIntent {
     federation_name: Option<FederationName>,
     request: MgSelectionRequest,
-    max_total_msats: Option<u64>,
 }
 
 impl TestIntent {
@@ -2344,13 +2382,7 @@ impl TestIntent {
         Ok(Self {
             federation_name,
             request: MgSelectionRequest::new(federation_size, fedimintd_versions, plan)?,
-            max_total_msats: None,
         })
-    }
-
-    fn with_max_total_msats(mut self, max_total_msats: u64) -> FaResult<Self> {
-        self.max_total_msats = Some(max_total_msats);
-        Ok(self)
     }
 
     fn resolve(self, fedimintd_dkg_version: FedimintdDkgVersion) -> FaResult<ResolvedSeatPurchase> {
@@ -2359,7 +2391,6 @@ impl TestIntent {
             plan: self.request.plan(),
             fedimintd_versions: self.request.fedimintd_versions().clone(),
             fedimintd_dkg_version,
-            max_total_msats: self.max_total_msats,
         })
     }
 }
@@ -2375,11 +2406,11 @@ where
     async fn buy_and_form(
         &self,
         intent: TestIntent,
-        approval: MgSelectionApproval,
+        preview: &MgSelectionPreview,
         payment_federation_id: FederationId,
         options: FormationRunOptions,
     ) -> FaResult<()> {
-        self.buy_seats(approval, Some(payment_federation_id), options)
+        self.buy_seats(preview, Some(payment_federation_id), options)
             .await?;
         self.form_from_pool(intent.federation_name, None, options)
             .await
@@ -2388,12 +2419,12 @@ where
     async fn buy_and_form_with_callback(
         &self,
         intent: TestIntent,
-        approval: MgSelectionApproval,
+        preview: &MgSelectionPreview,
         payment_federation_id: FederationId,
         completion_callback: DkgCompletionCallback,
         options: FormationRunOptions,
     ) -> FaResult<()> {
-        self.buy_seats(approval, Some(payment_federation_id), options)
+        self.buy_seats(preview, Some(payment_federation_id), options)
             .await?;
         self.form_from_pool(intent.federation_name, Some(completion_callback), options)
             .await
@@ -2402,10 +2433,10 @@ where
     async fn buy_and_form_without_payer(
         &self,
         intent: TestIntent,
-        approval: MgSelectionApproval,
+        preview: &MgSelectionPreview,
         options: FormationRunOptions,
     ) -> FaResult<()> {
-        self.buy_seats(approval, None, options).await?;
+        self.buy_seats(preview, None, options).await?;
         self.form_from_pool(intent.federation_name, None, options)
             .await
     }
@@ -2456,7 +2487,6 @@ fn exact_payment_preflight_rejects_duplicate_semantic_quote_ids() {
     let requirements = PaymentRequirements {
         authorization_id: PaymentAuthorizationId::from_digest([44; 32]),
         total_msats: PAYMENT_AMOUNT_MSATS * 2,
-        max_total_msats: Some(1_000),
         seats: vec![
             SeatPaymentRequirement {
                 index: 0,
@@ -2561,6 +2591,9 @@ fn selected_initial_seat(index: u16, valid_until: u64) -> crate::db::InitialSeat
         crate::db::MgAdmission::fresh_peer_badge(
             test_mg_id(usize::from(index)),
             test_mg_id(usize::from(index)),
+            Plan::InfiniteBestEffort {
+                price_msats: PAYMENT_AMOUNT_MSATS,
+            },
             test_peer_badge_verifier().provenance().into(),
             Timestamp(valid_until),
         ),
@@ -3128,7 +3161,7 @@ async fn formed_client_for_liquidity() -> (
     client
         .buy_and_form(
             intent(),
-            selection_approval(1),
+            &client.preview_at(&intent(), locators()),
             payment_federation_id(),
             options(),
         )
@@ -3197,16 +3230,7 @@ async fn schema_11_seat_waiting_for_replacement_leaves_the_purchase() {
     let status = client.status();
     let purchase = purchase(&status);
     assert!(purchase.payment_outputs_started);
-    assert_eq!(purchase.phase, PurchasePhase::AwaitingPaymentReadiness);
-    assert_eq!(
-        payment_requirements(&status)
-            .seats
-            .iter()
-            .map(|seat| seat.index)
-            .collect::<Vec<_>>(),
-        [4, 5, 6],
-        "the remaining unpaid quotes park for explicit authorization",
-    );
+    assert_eq!(purchase.phase, PurchasePhase::AcquiringSeats);
     assert_eq!(
         purchase
             .seats
@@ -3229,6 +3253,17 @@ async fn schema_11_seat_waiting_for_replacement_leaves_the_purchase() {
             .unwrap(),
     );
     assert_eq!(seat_indices(&recovery), [0, 1, 2, 4, 5, 6]);
+    assert_eq!(
+        recovery
+            .payment_requirements(TestIdentity::fa_id())
+            .unwrap()
+            .expect("unpaid quotes remain")
+            .seats
+            .iter()
+            .map(|seat| seat.index)
+            .collect::<Vec<_>>(),
+        [4, 5, 6],
+    );
     assert!(status.pool.is_empty());
 }
 
@@ -3251,7 +3286,6 @@ async fn schema_11_applied_replacement_stays_a_seat_of_its_new_mg() {
     let purchase = purchase(&status);
     // Payment waits until the new MG quotes on resume.
     assert_eq!(purchase.phase, PurchasePhase::AcquiringSeats);
-    assert!(purchase.action_required.is_none());
     assert_eq!(
         purchase
             .seats
@@ -4553,11 +4587,12 @@ fn federation(status: &FaStatus) -> &FederationSnapshot {
     status.federation.as_ref().expect("expected a federation")
 }
 
-fn payment_requirements(status: &FaStatus) -> &PaymentRequirements {
-    match purchase(status).action_required.as_ref() {
-        Some(PurchaseActionRequired::AuthorizePayments(requirements)) => requirements,
-        None => panic!("expected aggregate payment authorization"),
-    }
+/// The exact paid quotes the active purchase still has to pay.
+async fn current_payment_requirements(store: &db::FaStore) -> PaymentRequirements {
+    active_recovery(store.load_purchase(TestIdentity::fa_id()).await.unwrap())
+        .payment_requirements(TestIdentity::fa_id())
+        .unwrap()
+        .expect("unpaid quotes remain")
 }
 
 fn active_recovery(recovery: Option<crate::db::PurchaseRecovery>) -> crate::db::PurchaseRecovery {
@@ -4572,11 +4607,7 @@ const SEEDED_PURCHASE_ID: &str = "seeded-selected-purchase";
 async fn seed_quoted_selected_purchase(client: &TestClient) -> PaymentRequirements {
     let store = &client.inner.store;
     let formation_id = FormationId(SEEDED_PURCHASE_ID.to_owned());
-    let resolved = intent()
-        .with_max_total_msats(PAYMENT_AMOUNT_MSATS * u64::from(MIN_FEDERATION_SIZE))
-        .unwrap()
-        .resolve(fedimintd_version().dkg_version())
-        .unwrap();
+    let resolved = intent().resolve(fedimintd_version().dkg_version()).unwrap();
     store
         .initialize(
             TestIdentity::fa_id(),
@@ -4609,8 +4640,8 @@ async fn seed_quoted_selected_purchase(client: &TestClient) -> PaymentRequiremen
         .expect("exact paid aggregate")
 }
 
-/// Seed the same purchase after its capped run self-authorized the exact
-/// aggregate and before its first wallet call. Resuming reserves and funds
+/// Seed the same purchase after its run authorized the exact aggregate and
+/// before its first wallet call. Resuming reserves and funds
 /// exactly these quotes.
 async fn seed_authorized_selected_purchase(client: &TestClient) -> PaymentRequirements {
     let requirements = seed_quoted_selected_purchase(client).await;
@@ -4655,8 +4686,8 @@ async fn seed_armed_selected_purchase(
     requirements
 }
 
-/// Record the exact aggregate authorization a capped run writes before its
-/// first wallet call.
+/// Record the exact aggregate authorization a run writes before its first
+/// wallet call.
 async fn authorize_requirements(
     store: &db::FaStore,
     formation_id: &FormationId,
@@ -5143,10 +5174,16 @@ async fn intent_and_locator_validation_precede_external_calls() {
         .set_lease_acquisition_hook(acquisition_started.clone(), acquisition_proceed.clone());
     acquisition_proceed.notify_one();
 
-    let too_few = locators().into_iter().take(6).collect();
+    let mut outside_request = client.preview_at(&intent(), locators());
+    outside_request.fedimintd_dkg_version = "0.11.0+fedi"
+        .parse::<FedimintdVersion>()
+        .expect("version parses")
+        .dkg_version();
     assert!(matches!(
-        client.buy_and_form_at(intent(), too_few, options()).await,
-        Err(FaError::InvalidManifoldGuardians(_))
+        client
+            .buy_seats(&outside_request, Some(payment_federation_id()), options())
+            .await,
+        Err(FaError::InvalidIntent(_))
     ));
     assert_eq!(client.status(), FaStatus::default());
     assert!(
@@ -5166,18 +5203,6 @@ async fn intent_and_locator_validation_precede_external_calls() {
     );
     assert_eq!(payment_state.payable_calls.load(Ordering::SeqCst), 0);
     assert_eq!(payment_state.create_calls.load(Ordering::SeqCst), 0);
-
-    let mut outside_request = approval_at(&intent(), locators());
-    outside_request.fedimintd_dkg_version = "0.11.0+fedi"
-        .parse::<FedimintdVersion>()
-        .expect("version parses")
-        .dkg_version();
-    assert!(matches!(
-        client
-            .buy_seats(outside_request, Some(payment_federation_id()), options())
-            .await,
-        Err(FaError::InvalidIntent(_))
-    ));
     assert_eq!(mg_state.availability_calls.load(Ordering::SeqCst), 0);
 }
 
@@ -6007,11 +6032,7 @@ async fn current_storage_requires_output_tombstone_fields() {
         .await
         .unwrap();
 
-    for field in [
-        "payment_authorization_recorded",
-        "payment_reservation_id",
-        "payment_outputs_started",
-    ] {
+    for field in ["payment_reservation_id", "payment_outputs_started"] {
         assert!(
             client
                 .inner
@@ -6024,17 +6045,22 @@ async fn current_storage_requires_output_tombstone_fields() {
 }
 
 #[test]
-fn older_saved_admissions_without_badge_holders_still_decode() {
+fn older_saved_admissions_without_badge_holders_or_plans_still_decode() {
     let admission = crate::db::MgAdmission::fresh_peer_badge(
         test_mg_id(0),
         test_mg_id(1),
+        Plan::InfiniteBestEffort {
+            price_msats: PAYMENT_AMOUNT_MSATS,
+        },
         test_peer_badge_verifier().provenance().into(),
         Timestamp(123),
     );
     let mut stored = serde_json::to_value(&admission).unwrap();
     stored.as_object_mut().unwrap().remove("holder");
+    stored.as_object_mut().unwrap().remove("plan");
     let legacy: crate::db::MgAdmission = serde_json::from_value(stored).unwrap();
     assert_eq!(legacy.holder(), None);
+    assert_eq!(legacy.plan(), None);
     assert_eq!(legacy.mg_id(), admission.mg_id());
     assert_eq!(
         legacy.requires_effect_authorization(),
@@ -6054,10 +6080,7 @@ async fn accepting_one_seat_preserves_a_sibling_journaled_quote() {
     )
     .await;
     let formation_id = FormationId("twoseatinterleaving".to_owned());
-    let intent = ResolvedSeatPurchase {
-        max_total_msats: Some(1_000),
-        ..resolved_intent_with_size(FederationSize(2))
-    };
+    let intent = resolved_intent_with_size(FederationSize(2));
     client
         .inner
         .store
@@ -6141,10 +6164,7 @@ async fn concurrent_two_seat_acceptance_retries_and_derives_completion_from_dura
     .await;
     let store = &client.inner.store;
     let formation_id = FormationId("concurrentseatacceptance".to_owned());
-    let intent = ResolvedSeatPurchase {
-        max_total_msats: Some(1_000),
-        ..resolved_intent_with_size(FederationSize(2))
-    };
+    let intent = resolved_intent_with_size(FederationSize(2));
     store
         .initialize(
             TestIdentity::fa_id(),
@@ -6226,10 +6246,7 @@ async fn concurrent_two_seat_clear_and_changed_term_store_retry_without_losing_s
     .await;
     let store = &client.inner.store;
     let formation_id = FormationId("concurrentquotereplacement".to_owned());
-    let intent = ResolvedSeatPurchase {
-        max_total_msats: Some(1_000),
-        ..resolved_intent_with_size(FederationSize(2))
-    };
+    let intent = resolved_intent_with_size(FederationSize(2));
     store
         .initialize(
             TestIdentity::fa_id(),
@@ -6393,16 +6410,15 @@ async fn terminal_seat_drop_requires_payment_outputs_started() {
     assert_eq!(recovery.snapshot.seats.len(), recovery.seats.len());
     assert!(recovery.test_payment_authorization().is_none());
     assert!(recovery.payment_reservation_id.is_none());
-    let remaining =
-        payment_requirements(&store.load_status(TestIdentity::fa_id()).await.unwrap()).clone();
     assert_eq!(
-        remaining
+        current_payment_requirements(store)
+            .await
             .seats
             .iter()
             .map(|seat| seat.index)
             .collect::<Vec<_>>(),
         (1..MIN_FEDERATION_SIZE).collect::<Vec<_>>(),
-        "the remaining unpaid quotes park for explicit authorization",
+        "the remaining unpaid quotes still need payment",
     );
     assert!(
         store.store_quote(&formation_id, 0, quote).await.is_err(),
@@ -6431,8 +6447,8 @@ async fn aggregate_authorization_blocks_spends_and_unpaid_quotes_refresh_on_reop
     assert_eq!(required.len(), usize::from(MIN_FEDERATION_SIZE));
     drop(client);
 
-    // The unauthorized quotes were never covered by the cap, so reopen
-    // refreshes every one of them before the run self-authorizes and spends.
+    // The unauthorized quotes were never paid, so reopen refreshes every one
+    // of them at its previewed price before the run authorizes and spends.
     let reopened = open_client(database, payments, mg_state.clone(), MgConfig::paid()).await;
     reopened.resume().await.unwrap();
     bought(&reopened.status());
@@ -6495,11 +6511,7 @@ async fn one_ecash_note_pays_every_seat_and_returns_change_sequentially() {
     )
     .await;
     client
-        .buy_seats_at(
-            &intent().with_max_total_msats(aggregate_payments).unwrap(),
-            locators(),
-            options(),
-        )
+        .buy_seats_at(&intent(), locators(), options())
         .await
         .expect("one note is reused only after each accepted payment returns spendable change");
 
@@ -6518,52 +6530,7 @@ async fn one_ecash_note_pays_every_seat_and_returns_change_sequentially() {
 }
 
 #[tokio::test]
-async fn stale_payment_authorization_cannot_approve_a_replaced_quote_set() {
-    let database = MemDatabase::new().into_database();
-    let (payments, payment_state) = TestPayments::new();
-    let mg_state = Arc::new(MgState::default());
-    let client = open_client(database, payments, mg_state.clone(), MgConfig::paid()).await;
-    let store = &client.inner.store;
-    let requirements = seed_quoted_selected_purchase(&client).await;
-    let recovery = active_recovery(store.load_purchase(TestIdentity::fa_id()).await.unwrap());
-    let purchase_id = recovery.snapshot.purchase_id.clone();
-    arm_payment_outputs_for_test(store, &purchase_id, &requirements).await;
-    // Only an aggregate changed after outputs started is displayed for
-    // explicit authorization: here, the rest after a terminal seat left.
-    let quote = |position: usize| {
-        recovery.seats[position]
-            .signed_quote
-            .clone()
-            .expect("seeded paid quote")
-    };
-    store
-        .clear_terminal_quotes(&purchase_id, &[(0, quote(0))], true)
-        .await
-        .unwrap();
-    let observed =
-        payment_requirements(&store.load_status(TestIdentity::fa_id()).await.unwrap()).clone();
-    store
-        .clear_terminal_quotes(&purchase_id, &[(1, quote(1))], true)
-        .await
-        .unwrap();
-
-    assert!(matches!(
-        client
-            .authorize_payments(observed.authorization_id, options())
-            .await,
-        Err(FaError::InvalidIntent(message)) if message.contains("changed")
-    ));
-    assert_eq!(payment_state.recover_calls.load(Ordering::SeqCst), 0);
-    assert_eq!(payment_state.create_calls.load(Ordering::SeqCst), 0);
-    let current = store.load_status(TestIdentity::fa_id()).await.unwrap();
-    assert_eq!(
-        payment_requirements(&current).seats.len(),
-        usize::from(MIN_FEDERATION_SIZE) - 2
-    );
-}
-
-#[tokio::test]
-async fn partial_seat_recovery_projects_payment_readiness_after_a_dropped_seat() {
+async fn partial_seat_recovery_keeps_the_remaining_payment_after_a_dropped_seat() {
     let database = MemDatabase::new().into_database();
     let (payments, _) = TestPayments::new();
     let client = open_client(
@@ -6575,10 +6542,7 @@ async fn partial_seat_recovery_projects_payment_readiness_after_a_dropped_seat()
     .await;
     let store = &client.inner.store;
     let formation_id = FormationId("partialpaymentreadiness".to_owned());
-    let intent = ResolvedSeatPurchase {
-        max_total_msats: Some(1_000),
-        ..resolved_intent_with_size(FederationSize(3))
-    };
+    let intent = resolved_intent_with_size(FederationSize(3));
     store
         .initialize(
             TestIdentity::fa_id(),
@@ -6621,7 +6585,7 @@ async fn partial_seat_recovery_projects_payment_readiness_after_a_dropped_seat()
 
     let recovered = store.load_status(TestIdentity::fa_id()).await.unwrap();
     let snapshot = purchase(&recovered);
-    assert_eq!(snapshot.phase, PurchasePhase::AwaitingPaymentReadiness);
+    assert_eq!(snapshot.phase, PurchasePhase::AcquiringSeats);
     assert_eq!(
         snapshot
             .seats
@@ -6631,7 +6595,8 @@ async fn partial_seat_recovery_projects_payment_readiness_after_a_dropped_seat()
         vec![(0, Some(SeatId::from(QuoteId([0x04; 32])))), (2, None)],
     );
     assert_eq!(
-        payment_requirements(&recovered)
+        current_payment_requirements(store)
+            .await
             .seats
             .iter()
             .map(|seat| seat.index)
@@ -6680,7 +6645,6 @@ async fn authorized_reserved_recovery_replays_exact_quotes_before_funding() {
         purchase(&recovered_status).phase,
         PurchasePhase::AcquiringSeats
     );
-    assert!(purchase(&recovered_status).action_required.is_none());
     reopened.resume().await.unwrap();
     bought(&reopened.status());
     assert_eq!(
@@ -6837,7 +6801,7 @@ async fn external_capability_calls_obey_request_timeout() {
 }
 
 #[tokio::test]
-async fn terminal_payment_rejection_clears_quotes_and_requires_fresh_authorization() {
+async fn terminal_payment_rejection_clears_quotes_and_resume_requotes_at_the_previewed_price() {
     let database = MemDatabase::new().into_database();
     let (payments, payment_state) = TestPayments::new();
     let mg_state = Arc::new(MgState::default());
@@ -6864,27 +6828,23 @@ async fn terminal_payment_rejection_clears_quotes_and_requires_fresh_authorizati
             .all(|seat| seat.signed_quote.is_none())
     );
 
-    // The cap approved only the first aggregate. Its replacement quotes need
-    // a fresh selection, so the purchase is released instead of spending.
+    // The preview approved each seat's price, not one set of quotes, so
+    // resume quotes every seat again at that price and pays.
     payment_state.reject_recovery.store(false, Ordering::SeqCst);
-    let error = client.resume().await.unwrap_err();
-    assert!(
-        matches!(
-            error,
-            FaError::SelectionReauthorizationRequired {
-                reason: SelectionReauthorizationReason::QuoteTotalExceedsLimit,
-                failure: None,
-            }
-        ),
-        "{error:?}"
-    );
-    assert_eq!(client.status(), FaStatus::default());
+    client.resume().await.unwrap();
+    bought(&client.status());
     assert_eq!(
         mg_state.quote_calls.load(Ordering::SeqCst),
         2 * usize::from(MIN_FEDERATION_SIZE)
     );
-    assert_eq!(mg_state.create_calls.load(Ordering::SeqCst), 0);
-    assert_eq!(payment_state.create_calls.load(Ordering::SeqCst), 0);
+    assert_eq!(
+        mg_state.create_calls.load(Ordering::SeqCst),
+        usize::from(MIN_FEDERATION_SIZE)
+    );
+    assert_eq!(
+        payment_state.create_calls.load(Ordering::SeqCst),
+        usize::from(MIN_FEDERATION_SIZE)
+    );
 }
 
 #[tokio::test]
@@ -6960,11 +6920,7 @@ async fn slow_refund_settlement_finishes_before_the_seat_is_dropped() {
     )
     .await;
     let error = client
-        .buy_and_form_at(
-            capped_paid_intent(PAYMENT_AMOUNT_MSATS * u64::from(MIN_FEDERATION_SIZE)),
-            locators(),
-            FormationRunOptions::default(),
-        )
+        .buy_and_form_at(intent(), locators(), FormationRunOptions::default())
         .await
         .unwrap_err();
     assert!(
@@ -7614,7 +7570,7 @@ async fn selected_free_lost_create_seat_reopens_after_verifier_drift_with_exact_
         running
             .buy_and_form(
                 intent(),
-                selection_approval(1),
+                &running.preview_at(&intent(), locators()),
                 payment_federation_id(),
                 long_request_options(),
             )
@@ -7707,7 +7663,7 @@ async fn selected_free_refusal_returns_idle_and_requires_a_fresh_preview() {
     let error = client
         .buy_and_form(
             intent(),
-            selection_approval(1),
+            &client.preview_at(&intent(), locators()),
             payment_federation_id(),
             options(),
         )
@@ -7760,7 +7716,7 @@ async fn selected_free_refusal_returns_idle_and_requires_a_fresh_preview() {
     reopened
         .buy_and_form(
             intent(),
-            selection_approval(1),
+            &reopened.preview_at(&intent(), locators()),
             payment_federation_id(),
             options(),
         )
@@ -8744,11 +8700,6 @@ async fn commercial_authorization_does_not_imply_the_output_tombstone() {
     let mg_state = Arc::new(MgState::default());
     let client = open_client(database, payments, mg_state, MgConfig::paid()).await;
     seed_authorized_selected_purchase(&client).await;
-    client
-        .inner
-        .store
-        .clear_authorization_tombstone_for_test()
-        .await;
 
     let recovery = active_recovery(
         client
@@ -8758,10 +8709,7 @@ async fn commercial_authorization_does_not_imply_the_output_tombstone() {
             .await
             .unwrap(),
     );
-    assert!(
-        recovery.payment_authorization_recorded,
-        "the loader derives the tombstone from a present authorization",
-    );
+    assert!(recovery.test_payment_authorization().is_some());
     assert!(!recovery.payment_outputs_started);
     client.abandon_purchase(options()).await.unwrap();
     assert_eq!(client.status(), FaStatus::default());
@@ -8799,12 +8747,6 @@ async fn abandon_without_an_active_formation_is_a_typed_error() {
         client.abandon_purchase(options()).await,
         Err(FaError::NoActiveFormation)
     ));
-}
-
-fn capped_paid_intent(max_total_msats: u64) -> TestIntent {
-    intent()
-        .with_max_total_msats(max_total_msats)
-        .expect("valid test spending cap")
 }
 
 fn compatible_intent() -> TestIntent {
@@ -8903,13 +8845,7 @@ async fn slow_payment_preparation_and_recovery_keep_the_exact_payment() {
             ..Default::default()
         })
         .unwrap();
-        let result = client
-            .buy_and_form_at(
-                capped_paid_intent(PAYMENT_AMOUNT_MSATS * u64::from(MIN_FEDERATION_SIZE)),
-                locators(),
-                options,
-            )
-            .await;
+        let result = client.buy_and_form_at(intent(), locators(), options).await;
         if interrupt {
             assert!(matches!(result, Err(FaError::Timeout(_))), "{result:?}");
             assert_eq!(payment_state.create_calls.load(Ordering::SeqCst), 1);
@@ -8945,18 +8881,14 @@ async fn slow_payment_preparation_and_recovery_keep_the_exact_payment() {
 }
 
 #[tokio::test]
-async fn under_cap_paid_formation_self_authorizes_and_forms() {
+async fn previewed_paid_formation_self_authorizes_and_forms() {
     let database = MemDatabase::new().into_database();
     let (payments, payment_state) = TestPayments::new();
     let mg_state = Arc::new(MgState::default());
     let client = open_client(database, payments, mg_state.clone(), MgConfig::paid()).await;
 
     client
-        .buy_and_form_at(
-            capped_paid_intent(PAYMENT_AMOUNT_MSATS * u64::from(MIN_FEDERATION_SIZE)),
-            locators(),
-            options(),
-        )
+        .buy_and_form_at(intent(), locators(), options())
         .await
         .unwrap();
 
@@ -8974,12 +8906,11 @@ async fn buy_seats_uses_the_explicit_ready_payer_and_arms_outputs() {
     let (payments, payment_state) = TestPayments::new();
     let mg_state = Arc::new(MgState::default());
     let client = open_client(database, payments, mg_state.clone(), MgConfig::paid()).await;
-    let cap = PAYMENT_AMOUNT_MSATS * u64::from(MIN_FEDERATION_SIZE);
 
     client
         .buy_and_form(
             intent(),
-            selection_approval(cap),
+            &client.preview_at(&intent(), locators()),
             payment_federation_id(),
             options(),
         )
@@ -9010,16 +8941,15 @@ async fn selected_formation_persists_and_enforces_its_compatible_release() {
     let mg_state = Arc::new(MgState::default());
     set_mg_version(&mg_state, 0, "0.12.1+fedi");
     let client = open_client(database, payments, mg_state.clone(), MgConfig::paid()).await;
-    let cap = PAYMENT_AMOUNT_MSATS * u64::from(MIN_FEDERATION_SIZE);
 
     client
         .buy_seats(
-            compatible_selection_approval(cap),
+            &compatible_selection_preview(),
             Some(payment_federation_id()),
             options(),
         )
         .await
-        .expect("every live MG offers a build in the sealed cohort");
+        .expect("every live MG offers a build in the previewed cohort");
 
     let status = client.status();
     bought(&status);
@@ -9056,7 +8986,7 @@ async fn selected_mg_minor_drift_requires_fresh_selection_before_payment() {
     let error = client
         .buy_and_form(
             compatible_intent(),
-            compatible_selection_approval(PAYMENT_AMOUNT_MSATS * u64::from(MIN_FEDERATION_SIZE)),
+            &compatible_selection_preview(),
             payment_federation_id(),
             options(),
         )
@@ -9087,6 +9017,238 @@ async fn selected_mg_minor_drift_requires_fresh_selection_before_payment() {
     );
 }
 
+/// Buy a fresh preview after MG 3 changed its live price to
+/// `live_price_msats`, and check that nothing was quoted from it or paid.
+async fn assert_changed_live_price_requires_a_fresh_preview(live_price_msats: u64) {
+    let (payments, payment_state) = TestPayments::new();
+    let mg_state = Arc::new(MgState::default());
+    let client = open_client(
+        MemDatabase::new().into_database(),
+        payments,
+        mg_state.clone(),
+        MgConfig::paid(),
+    )
+    .await;
+    let preview = client.preview_at(&intent(), locators());
+    mg_state
+        .price_overrides_msats
+        .lock()
+        .expect("test lock")
+        .insert(3, live_price_msats);
+
+    let error = client
+        .buy_seats(&preview, Some(payment_federation_id()), options())
+        .await
+        .expect_err("a changed live price invalidates the preview");
+
+    assert!(
+        matches!(
+            &error,
+            FaError::SelectionReauthorizationRequired {
+                reason: SelectionReauthorizationReason::PriceChanged,
+                failure: Some(MgFailure {
+                    operation: MgOperation::GetAvailability,
+                    cause: MgCause::PlanNotOffered,
+                    ..
+                }),
+            }
+        ),
+        "{error:?}"
+    );
+    assert_eq!(client.status(), FaStatus::default());
+    assert!(
+        client
+            .inner
+            .store
+            .load_purchase(TestIdentity::fa_id())
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        mg_state
+            .quote_records
+            .lock()
+            .expect("test lock")
+            .iter()
+            .all(|record| record.index != 3),
+        "the MG with the changed price is never asked for a quote",
+    );
+    assert_eq!(payment_state.readiness_calls.load(Ordering::SeqCst), 0);
+    assert_eq!(payment_state.create_calls.load(Ordering::SeqCst), 0);
+    assert!(
+        payment_state
+            .reservations
+            .lock()
+            .expect("test lock")
+            .is_empty()
+    );
+}
+
+#[tokio::test]
+async fn a_higher_live_price_requires_a_fresh_preview_before_payment() {
+    assert_changed_live_price_requires_a_fresh_preview(PAYMENT_AMOUNT_MSATS + 1).await;
+}
+
+#[tokio::test]
+async fn a_lower_live_price_also_requires_a_fresh_preview_before_payment() {
+    assert_changed_live_price_requires_a_fresh_preview(PAYMENT_AMOUNT_MSATS - 1).await;
+}
+
+#[tokio::test]
+async fn a_quote_priced_above_its_previewed_plan_requires_a_fresh_preview() {
+    let (payments, payment_state) = TestPayments::new();
+    let mg_state = Arc::new(MgState::default());
+    // MG 3 echoes the previewed plan but signs a price one above it.
+    *mg_state.changed_quote_index.lock().expect("test lock") = Some(3);
+    let client = open_client(
+        MemDatabase::new().into_database(),
+        payments,
+        mg_state.clone(),
+        MgConfig::paid(),
+    )
+    .await;
+
+    let error = client
+        .buy_seats_at(&intent(), locators(), options())
+        .await
+        .expect_err("a quote above the previewed price is never paid");
+
+    assert!(
+        matches!(
+            &error,
+            FaError::SelectionReauthorizationRequired {
+                reason: SelectionReauthorizationReason::SelectedMgUnavailable,
+                failure: Some(MgFailure {
+                    operation: MgOperation::GetQuote,
+                    cause: MgCause::InvalidResponse,
+                    ..
+                }),
+            }
+        ),
+        "{error:?}"
+    );
+    assert!(
+        client
+            .inner
+            .store
+            .load_purchase(TestIdentity::fa_id())
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(payment_state.readiness_calls.load(Ordering::SeqCst), 0);
+    assert_eq!(payment_state.create_calls.load(Ordering::SeqCst), 0);
+    assert!(
+        payment_state
+            .reservations
+            .lock()
+            .expect("test lock")
+            .is_empty()
+    );
+}
+
+#[tokio::test]
+async fn quotes_are_requested_at_exactly_the_previewed_price() {
+    let (payments, payment_state) = TestPayments::new();
+    let mg_state = Arc::new(MgState::default());
+    // Every MG also offers the same plan at another price, listed first.
+    *mg_state.extra_plans.lock().expect("test lock") = vec![Plan::InfiniteBestEffort {
+        price_msats: PAYMENT_AMOUNT_MSATS * 3,
+    }];
+    let client = open_client(
+        MemDatabase::new().into_database(),
+        payments,
+        mg_state.clone(),
+        MgConfig::paid(),
+    )
+    .await;
+
+    client
+        .buy_seats_at(&intent(), locators(), options())
+        .await
+        .unwrap();
+
+    bought(&client.status());
+    let records = mg_state.quote_records.lock().expect("test lock");
+    assert_eq!(records.len(), usize::from(MIN_FEDERATION_SIZE));
+    assert!(records.iter().all(|record| record.plan
+        == Plan::InfiniteBestEffort {
+            price_msats: PAYMENT_AMOUNT_MSATS,
+        }));
+    assert_eq!(
+        payment_state.create_calls.load(Ordering::SeqCst),
+        usize::from(MIN_FEDERATION_SIZE)
+    );
+}
+
+#[tokio::test]
+async fn a_seat_saved_without_a_previewed_price_requires_a_fresh_preview() {
+    let (payments, payment_state) = TestPayments::new();
+    let mg_state = Arc::new(MgState::default());
+    let client = open_client(
+        MemDatabase::new().into_database(),
+        payments,
+        mg_state.clone(),
+        MgConfig::paid(),
+    )
+    .await;
+    // Seat 2 is stored as before seats recorded their previewed plan.
+    let valid_until = test_now_secs() + 120;
+    let mut unpinned =
+        serde_json::to_value(selected_initial_seat(2, valid_until).admission).unwrap();
+    unpinned.as_object_mut().unwrap().remove("plan");
+    let seats = (0..MIN_FEDERATION_SIZE)
+        .map(|index| {
+            if index == 2 {
+                crate::db::InitialSeat::new(
+                    2,
+                    locator(2),
+                    serde_json::from_value(unpinned.clone()).unwrap(),
+                )
+            } else {
+                selected_initial_seat(index, valid_until)
+            }
+        })
+        .collect();
+    client
+        .inner
+        .store
+        .initialize(
+            TestIdentity::fa_id(),
+            FormationId("unpinned-seat".to_owned()),
+            intent().resolve(fedimintd_version().dkg_version()).unwrap(),
+            seats,
+            Some(payment_federation_id()),
+        )
+        .await
+        .unwrap();
+
+    let error = client.resume().await.unwrap_err();
+
+    assert!(
+        matches!(
+            error,
+            FaError::SelectionReauthorizationRequired {
+                reason: SelectionReauthorizationReason::PreviewExpired,
+                failure: None,
+            }
+        ),
+        "{error:?}"
+    );
+    assert_eq!(client.status(), FaStatus::default());
+    assert!(
+        mg_state
+            .quote_records
+            .lock()
+            .expect("test lock")
+            .iter()
+            .all(|record| record.index != 2),
+        "a seat without a previewed price is never quoted",
+    );
+    assert_eq!(payment_state.create_calls.load(Ordering::SeqCst), 0);
+}
+
 #[tokio::test]
 async fn reopen_preserves_the_selected_dkg_identity_and_accepts_patch_skew() {
     let database = MemDatabase::new().into_database();
@@ -9100,8 +9262,6 @@ async fn reopen_preserves_the_selected_dkg_identity_and_accepts_patch_skew() {
     )
     .await;
     let resolved = compatible_intent()
-        .with_max_total_msats(PAYMENT_AMOUNT_MSATS * u64::from(MIN_FEDERATION_SIZE))
-        .unwrap()
         .resolve(fedimintd_version().dkg_version())
         .unwrap();
     client
@@ -9155,12 +9315,11 @@ async fn selected_connection_failure_retries_before_requesting_replacement() {
         .connect_failures_remaining
         .store(1, Ordering::SeqCst);
     let client = open_client(database, payments, mg_state.clone(), MgConfig::paid()).await;
-    let cap = PAYMENT_AMOUNT_MSATS * u64::from(MIN_FEDERATION_SIZE);
 
     client
         .buy_and_form(
             intent(),
-            selection_approval(cap),
+            &client.preview_at(&intent(), locators()),
             payment_federation_id(),
             options(),
         )
@@ -9185,12 +9344,11 @@ async fn selected_availability_transport_failure_reconnects_before_payment() {
         MgConfig::paid(),
     )
     .await;
-    let cap = PAYMENT_AMOUNT_MSATS * u64::from(MIN_FEDERATION_SIZE);
 
     client
         .buy_and_form(
             intent(),
-            selection_approval(cap),
+            &client.preview_at(&intent(), locators()),
             payment_federation_id(),
             options(),
         )
@@ -9215,12 +9373,11 @@ async fn selected_quote_transport_failure_reconnects_before_payment() {
         MgConfig::paid(),
     )
     .await;
-    let cap = PAYMENT_AMOUNT_MSATS * u64::from(MIN_FEDERATION_SIZE);
 
     client
         .buy_and_form(
             intent(),
-            selection_approval(cap),
+            &client.preview_at(&intent(), locators()),
             payment_federation_id(),
             options(),
         )
@@ -9249,7 +9406,7 @@ async fn selected_remote_quote_error_cannot_impersonate_local_transport_failure(
     let error = client
         .buy_and_form(
             intent(),
-            selection_approval(PAYMENT_AMOUNT_MSATS * u64::from(MIN_FEDERATION_SIZE)),
+            &client.preview_at(&intent(), locators()),
             payment_federation_id(),
             options(),
         )
@@ -9291,12 +9448,11 @@ async fn selected_acquisition_connection_failure_retries_before_output_generatio
         MgConfig::paid(),
     )
     .await;
-    let cap = PAYMENT_AMOUNT_MSATS * u64::from(MIN_FEDERATION_SIZE);
 
     client
         .buy_and_form(
             intent(),
-            selection_approval(cap),
+            &client.preview_at(&intent(), locators()),
             payment_federation_id(),
             options(),
         )
@@ -9327,7 +9483,7 @@ async fn selected_connection_timeouts_retry_in_quote_and_acquisition_phases() {
         client
             .buy_and_form(
                 intent(),
-                selection_approval(PAYMENT_AMOUNT_MSATS * u64::from(MIN_FEDERATION_SIZE)),
+                &client.preview_at(&intent(), locators()),
                 payment_federation_id(),
                 formation_log_options(Duration::from_millis(50)),
             )
@@ -9377,7 +9533,7 @@ async fn exhausted_selected_connection_retry_is_typed_and_returns_idle() {
     let error = client
         .buy_and_form(
             intent(),
-            selection_approval(1_000),
+            &client.preview_at(&intent(), locators()),
             payment_federation_id(),
             options(),
         )
@@ -9420,12 +9576,11 @@ async fn post_output_connection_failure_requires_exact_replay_not_replacement() 
         .expect("test lock")
         .insert(0);
     let client = open_client(database, payments, mg_state.clone(), MgConfig::paid()).await;
-    let cap = PAYMENT_AMOUNT_MSATS * u64::from(MIN_FEDERATION_SIZE);
 
     client
         .buy_and_form(
             intent(),
-            selection_approval(cap),
+            &client.preview_at(&intent(), locators()),
             payment_federation_id(),
             options(),
         )
@@ -9472,7 +9627,7 @@ async fn selected_free_refusal_survives_failed_abandon_and_replays_before_cleanu
     let error = client
         .buy_and_form(
             intent(),
-            selection_approval(1),
+            &client.preview_at(&intent(), locators()),
             payment_federation_id(),
             options(),
         )
@@ -9543,11 +9698,10 @@ async fn post_output_paid_refusal_drops_only_that_seat_and_the_rest_complete() {
         ..MgConfig::paid()
     };
     let client = open_client(database.clone(), payments.clone(), mg_state.clone(), config).await;
-    let original_cap = PAYMENT_AMOUNT_MSATS * u64::from(MIN_FEDERATION_SIZE);
 
     let error = client
         .buy_seats(
-            selection_approval(original_cap),
+            &client.preview_at(&intent(), locators()),
             Some(payment_federation_id()),
             options(),
         )
@@ -9565,7 +9719,6 @@ async fn post_output_paid_refusal_drops_only_that_seat_and_the_rest_complete() {
     );
     let interrupted = purchase(&client.status()).clone();
     assert!(interrupted.payment_outputs_started);
-    assert!(interrupted.action_required.is_none());
     let dropped = dropped_index(&interrupted);
     assert_eq!(
         interrupted.seats.len(),
@@ -9634,16 +9787,10 @@ async fn selected_payer_failure_returns_to_idle_and_live_approval_can_retry() {
         .store(true, Ordering::SeqCst);
     let mg_state = Arc::new(MgState::default());
     let client = open_client(database, payments, mg_state, MgConfig::paid()).await;
-    let cap = PAYMENT_AMOUNT_MSATS * u64::from(MIN_FEDERATION_SIZE);
-    let approval = selection_approval(cap);
+    let approval = selection_preview();
 
     let error = client
-        .buy_and_form(
-            intent(),
-            approval.clone(),
-            payment_federation_id(),
-            options(),
-        )
+        .buy_and_form(intent(), &approval, payment_federation_id(), options())
         .await
         .unwrap_err();
     assert!(matches!(
@@ -9660,7 +9807,7 @@ async fn selected_payer_failure_returns_to_idle_and_live_approval_can_retry() {
         .insufficient_funds
         .store(false, Ordering::SeqCst);
     client
-        .buy_and_form(intent(), approval, payment_federation_id(), options())
+        .buy_and_form(intent(), &approval, payment_federation_id(), options())
         .await
         .unwrap();
     federation(&client.status());
@@ -9681,12 +9828,11 @@ async fn selected_lost_reservation_result_reconstructs_the_same_wallet_journal()
         MgConfig::paid(),
     )
     .await;
-    let cap = PAYMENT_AMOUNT_MSATS * u64::from(MIN_FEDERATION_SIZE);
 
     let error = client
         .buy_and_form(
             intent(),
-            selection_approval(cap),
+            &client.preview_at(&intent(), locators()),
             payment_federation_id(),
             options(),
         )
@@ -9764,12 +9910,11 @@ async fn selected_same_id_reservation_binding_mismatch_never_returns_idle() {
         MgConfig::paid(),
     )
     .await;
-    let cap = PAYMENT_AMOUNT_MSATS * u64::from(MIN_FEDERATION_SIZE);
     assert!(matches!(
         client
             .buy_and_form(
                 intent(),
-                selection_approval(cap),
+                &client.preview_at(&intent(), locators()),
                 payment_federation_id(),
                 options(),
             )
@@ -9821,12 +9966,11 @@ async fn post_refresh_funding_failure_precedes_the_output_tombstone() {
         .store(1, Ordering::SeqCst);
     let mg_state = Arc::new(MgState::default());
     let client = open_client(database, payments, mg_state, MgConfig::paid()).await;
-    let cap = PAYMENT_AMOUNT_MSATS * u64::from(MIN_FEDERATION_SIZE);
 
     let error = client
         .buy_and_form(
             intent(),
-            selection_approval(cap),
+            &client.preview_at(&intent(), locators()),
             payment_federation_id(),
             options(),
         )
@@ -9846,128 +9990,6 @@ async fn post_refresh_funding_failure_precedes_the_output_tombstone() {
 }
 
 #[tokio::test]
-async fn selected_quote_over_cap_returns_durable_idle_before_outputs() {
-    let database = MemDatabase::new().into_database();
-    let (payments, payment_state) = TestPayments::new();
-    let mg_state = Arc::new(MgState::default());
-    let client = open_client(database, payments, mg_state, MgConfig::paid()).await;
-    let exact_total = PAYMENT_AMOUNT_MSATS * u64::from(MIN_FEDERATION_SIZE);
-    let mut observed = client.observe();
-    let operation = client.buy_and_form(
-        intent(),
-        selection_approval(exact_total - 1),
-        payment_federation_id(),
-        options(),
-    );
-    tokio::pin!(operation);
-    let mut exposed_legacy_authorization = false;
-
-    let error = loop {
-        tokio::select! {
-            result = &mut operation => break result.unwrap_err(),
-            changed = observed.changed() => {
-                changed.expect("FA watch remains open");
-                exposed_legacy_authorization |= matches!(
-                    &*observed.borrow_and_update(),
-                    FaStatus { purchase: Some(snapshot), .. }
-                        if matches!(
-                            snapshot.action_required.as_ref(),
-                            Some(PurchaseActionRequired::AuthorizePayments(_))
-                        )
-                );
-            }
-        }
-    };
-
-    assert!(
-        matches!(
-            error,
-            FaError::SelectionReauthorizationRequired {
-                reason: SelectionReauthorizationReason::QuoteTotalExceedsLimit,
-                failure: None
-            }
-        ),
-        "unexpected error: {error:?}"
-    );
-    assert_eq!(client.status(), FaStatus::default());
-    assert!(
-        !exposed_legacy_authorization,
-        "selected Pay-and-create must never publish the legacy second authorization action"
-    );
-    assert_eq!(payment_state.readiness_calls.load(Ordering::SeqCst), 0);
-    assert_eq!(payment_state.create_calls.load(Ordering::SeqCst), 0);
-}
-
-#[tokio::test]
-async fn crashed_selected_over_cap_record_reopens_without_legacy_action_and_cleans_on_resume() {
-    let database = MemDatabase::new().into_database();
-    let (payments, _) = TestPayments::new();
-    let mg_state = Arc::new(MgState::default());
-    let client = open_client(
-        database.clone(),
-        payments.clone(),
-        mg_state.clone(),
-        MgConfig::paid(),
-    )
-    .await;
-    let exact_total = PAYMENT_AMOUNT_MSATS * u64::from(MIN_FEDERATION_SIZE);
-    let resolved = intent()
-        .with_max_total_msats(exact_total - 1)
-        .unwrap()
-        .resolve(fedimintd_version().dkg_version())
-        .unwrap();
-    let formation_id = FormationId("selected-over-cap-crash".to_owned());
-    client
-        .inner
-        .store
-        .initialize(
-            TestIdentity::fa_id(),
-            formation_id.clone(),
-            resolved.clone(),
-            (0..MIN_FEDERATION_SIZE)
-                .map(|index| selected_initial_seat(index, test_now_secs() + 120))
-                .collect(),
-            Some(payment_federation_id()),
-        )
-        .await
-        .unwrap();
-    for index in 0..MIN_FEDERATION_SIZE {
-        client
-            .inner
-            .store
-            .store_quote(
-                &formation_id,
-                index,
-                signed_quote(
-                    usize::from(index),
-                    &resolved,
-                    [u8::try_from(index).unwrap() + 1; 32],
-                ),
-            )
-            .await
-            .unwrap();
-    }
-    drop(client);
-
-    let reopened = open_client(database, payments, mg_state, MgConfig::paid()).await;
-    let status = reopened.status();
-    let snapshot = purchase(&status);
-    assert!(snapshot.action_required.is_none());
-    let error = reopened.resume().await.unwrap_err();
-    assert!(
-        matches!(
-            error,
-            FaError::SelectionReauthorizationRequired {
-                reason: SelectionReauthorizationReason::QuoteTotalExceedsLimit,
-                failure: None
-            }
-        ),
-        "unexpected error: {error:?}"
-    );
-    assert_eq!(reopened.status(), FaStatus::default());
-}
-
-#[tokio::test]
 async fn crashed_selected_record_cannot_resume_after_its_preview_expires() {
     let database = MemDatabase::new().into_database();
     let (payments, _) = TestPayments::new();
@@ -9979,11 +10001,7 @@ async fn crashed_selected_record_cannot_resume_after_its_preview_expires() {
         MgConfig::paid(),
     )
     .await;
-    let resolved = intent()
-        .with_max_total_msats(1_000)
-        .unwrap()
-        .resolve(fedimintd_version().dkg_version())
-        .unwrap();
+    let resolved = intent().resolve(fedimintd_version().dkg_version()).unwrap();
     client
         .inner
         .store
@@ -10001,7 +10019,6 @@ async fn crashed_selected_record_cannot_resume_after_its_preview_expires() {
     drop(client);
 
     let reopened = open_client(database, payments, mg_state, MgConfig::paid()).await;
-    assert!(purchase(&reopened.status()).action_required.is_none());
     let error = reopened.resume().await.unwrap_err();
     assert!(
         matches!(
@@ -10035,11 +10052,7 @@ async fn selected_reopen_under_changed_verifier_requires_fresh_pre_output_author
         .initialize(
             TestIdentity::fa_id(),
             formation_id,
-            intent()
-                .with_max_total_msats(1_000)
-                .unwrap()
-                .resolve(fedimintd_version().dkg_version())
-                .unwrap(),
+            intent().resolve(fedimintd_version().dkg_version()).unwrap(),
             (0..MIN_FEDERATION_SIZE)
                 .map(|index| selected_initial_seat(index, test_now_secs() + 120))
                 .collect(),
@@ -10082,11 +10095,7 @@ async fn selected_reopen_after_output_tombstone_uses_durable_admission_provenanc
     )
     .await;
     let formation_id = FormationId("selected-verifier-drift-post-output".to_owned());
-    let resolved = intent()
-        .with_max_total_msats(1_000)
-        .unwrap()
-        .resolve(fedimintd_version().dkg_version())
-        .unwrap();
+    let resolved = intent().resolve(fedimintd_version().dkg_version()).unwrap();
     client
         .inner
         .store
@@ -10221,11 +10230,7 @@ async fn expired_selected_cleanup_reconstructs_and_releases_wallet_reservation_b
         MgConfig::paid(),
     )
     .await;
-    let resolved = intent()
-        .with_max_total_msats(1_000)
-        .unwrap()
-        .resolve(fedimintd_version().dkg_version())
-        .unwrap();
+    let resolved = intent().resolve(fedimintd_version().dkg_version()).unwrap();
     let formation_id = FormationId("selected-expired-reserved-crash".to_owned());
     client
         .inner
@@ -10340,15 +10345,7 @@ async fn seed_lost_selected_reservation_result(
     formation_id: FormationId,
     valid_until: u64,
 ) {
-    let resolved = intent()
-        .with_max_total_msats(
-            PAYMENT_AMOUNT_MSATS
-                .checked_mul(u64::from(MIN_FEDERATION_SIZE))
-                .expect("test aggregate fits"),
-        )
-        .unwrap()
-        .resolve(fedimintd_version().dkg_version())
-        .unwrap();
+    let resolved = intent().resolve(fedimintd_version().dkg_version()).unwrap();
     client
         .inner
         .store
@@ -10542,15 +10539,7 @@ async fn seed_selected_recorded_reservation(
     formation_id: FormationId,
     valid_until: u64,
 ) -> crate::PaymentReservationId {
-    let resolved = intent()
-        .with_max_total_msats(
-            PAYMENT_AMOUNT_MSATS
-                .checked_mul(u64::from(MIN_FEDERATION_SIZE))
-                .expect("test aggregate fits"),
-        )
-        .unwrap()
-        .resolve(fedimintd_version().dkg_version())
-        .unwrap();
+    let resolved = intent().resolve(fedimintd_version().dkg_version()).unwrap();
     client
         .inner
         .store
@@ -11050,7 +11039,7 @@ async fn unavailable_explicit_payer_stops_before_quotes_and_persistence() {
     let error = client
         .buy_and_form(
             intent(),
-            selection_approval(PAYMENT_AMOUNT_MSATS * u64::from(MIN_FEDERATION_SIZE)),
+            &client.preview_at(&intent(), locators()),
             payment_federation_id(),
             options(),
         )
@@ -11074,11 +11063,17 @@ async fn expired_selection_approval_stops_before_payer_or_quote_work() {
     let (payments, payment_state) = TestPayments::new();
     let mg_state = Arc::new(MgState::default());
     let client = open_client(database, payments, mg_state.clone(), MgConfig::paid()).await;
-    let mut approval = selection_approval(1_000);
-    approval.valid_until = Timestamp(test_now_secs().saturating_sub(1));
+    let fresh = selection_preview();
+    let approval = MgSelectionPreview::for_test(
+        fresh.request.clone(),
+        fresh.fedimintd_dkg_version.clone(),
+        fresh.verifier_provenance,
+        fresh.seats().to_vec(),
+        Timestamp(test_now_secs().saturating_sub(1)),
+    );
 
     let error = client
-        .buy_and_form(intent(), approval, payment_federation_id(), options())
+        .buy_and_form(intent(), &approval, payment_federation_id(), options())
         .await
         .unwrap_err();
 
@@ -11105,7 +11100,7 @@ async fn selection_approval_rejects_verifier_environment_drift_before_external_w
         MgConfig::paid(),
     )
     .await;
-    let mut approval = selection_approval(1_000);
+    let mut approval = selection_preview();
     approval.verifier_provenance = PeerBadgeVerifier::try_from_profile(
         &ManifoldEnvironment::Staging
             .profile()
@@ -11115,7 +11110,7 @@ async fn selection_approval_rejects_verifier_environment_drift_before_external_w
     .provenance();
 
     let error = client
-        .buy_and_form(intent(), approval, payment_federation_id(), options())
+        .buy_and_form(intent(), &approval, payment_federation_id(), options())
         .await
         .unwrap_err();
 
@@ -11143,7 +11138,7 @@ async fn selected_mg_unavailability_requires_a_fresh_set_and_returns_idle() {
     let error = client
         .buy_and_form(
             intent(),
-            selection_approval(1_000),
+            &client.preview_at(&intent(), locators()),
             payment_federation_id(),
             options(),
         )
@@ -11184,7 +11179,7 @@ async fn selected_quote_capacity_race_requires_a_fresh_set_and_returns_idle() {
     let error = client
         .buy_and_form(
             intent(),
-            selection_approval(1_000),
+            &client.preview_at(&intent(), locators()),
             payment_federation_id(),
             options(),
         )
@@ -11208,11 +11203,11 @@ async fn selected_quote_capacity_race_requires_a_fresh_set_and_returns_idle() {
 }
 
 #[tokio::test]
-async fn under_cap_self_authorization_survives_reopen_and_resume() {
-    // Park the capped formation by interrupting before payment: hang the
-    // first CreateSeat so the initial run times out after the durable
-    // self-authorization, then prove a reopened resume carries the cap and
-    // recorded authorization forward to completion.
+async fn self_authorization_survives_reopen_and_resume() {
+    // Park the formation by interrupting before payment: hang the first
+    // CreateSeat so the initial run times out after the durable
+    // self-authorization, then prove a reopened resume carries the recorded
+    // authorization forward to completion.
     let database = MemDatabase::new().into_database();
     let (payments, _payment_state) = TestPayments::new();
     let mg_state = Arc::new(MgState::default());
@@ -11221,7 +11216,6 @@ async fn under_cap_self_authorization_survives_reopen_and_resume() {
         ..MgConfig::paid()
     };
     let client = open_client(database.clone(), payments.clone(), mg_state.clone(), config).await;
-    let cap = PAYMENT_AMOUNT_MSATS * u64::from(MIN_FEDERATION_SIZE);
     let short = FormationRunOptions::new(FormationRunOptionsConfig {
         poll_interval: Duration::from_millis(10),
         run_timeout: Duration::from_millis(1500),
@@ -11229,7 +11223,7 @@ async fn under_cap_self_authorization_survives_reopen_and_resume() {
     })
     .unwrap();
     let error = client
-        .buy_and_form_at(capped_paid_intent(cap), locators(), short)
+        .buy_and_form_at(intent(), locators(), short)
         .await
         .unwrap_err();
     assert!(
@@ -12288,7 +12282,7 @@ async fn liquidity_reopen_resumes_the_exact_persisted_commitment() {
     client
         .buy_and_form(
             intent(),
-            selection_approval(1),
+            &client.preview_at(&intent(), locators()),
             payment_federation_id(),
             options(),
         )
@@ -12868,7 +12862,7 @@ async fn selected_connect_timeout_exhaustion_retains_blame_and_returns_idle() {
     let error = client
         .buy_and_form(
             intent(),
-            selection_approval(1_000),
+            &client.preview_at(&intent(), locators()),
             payment_federation_id(),
             formation_log_options(Duration::from_millis(10)),
         )
@@ -12939,7 +12933,7 @@ async fn malformed_selected_quote_returns_to_selection_with_blame() {
     let error = client
         .buy_and_form(
             intent(),
-            selection_approval(1_000),
+            &client.preview_at(&intent(), locators()),
             payment_federation_id(),
             options(),
         )

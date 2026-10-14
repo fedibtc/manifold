@@ -23,7 +23,7 @@ use fedi_decentralized_peer_badge_verifier::PeerBadgeVerifierProvenance;
 use fedi_decentralized_service_manifold_guardian::{
     DkgCompletionCallback, FaId, FederationId, FederationName, FederationSize, FedimintdDkgVersion,
     FedimintdVersion, FormationSeatBinding, GetQuoteResponse, GuardianCode, GuardianFeeAccount,
-    InviteCode, Locator, QuoteId, SeatId, SignedResponse, Timestamp,
+    InviteCode, Locator, Plan, QuoteId, SeatId, SignedResponse, Timestamp,
 };
 use nostr_sdk::{Event, PublicKey};
 use stability_pool_common::Account;
@@ -31,8 +31,8 @@ use stability_pool_common::Account;
 use crate::{
     FaError, FaResult, FaStatus, FormationFreshness, FormationId, FormationPhase,
     FormationSnapshot, PaymentAuthorizationId, PaymentRequirements, PaymentReservationId,
-    PurchaseActionRequired, PurchasePhase, ResolvedSeatPurchase, SeatPaymentRequirement, SeatPhase,
-    SeatProgress, SeatPurchaseSnapshot,
+    PurchasePhase, ResolvedSeatPurchase, SeatPaymentRequirement, SeatPhase, SeatProgress,
+    SeatPurchaseSnapshot,
 };
 
 // Persisted-format changes are governed by GATE-production-compatibility
@@ -375,18 +375,10 @@ struct StoredPurchase {
     /// wallet absence is the expected outcome of that release rather than
     /// proof of an orphaned journal, so an interrupted abandon completes on a
     /// later run instead of retaining the formation forever. Meaningful only beside a durable
-    /// reservation id; adopting a live reservation clears it. Like the
-    /// spending cap, a record persisted before this field decodes to the
-    /// absent commitment.
+    /// reservation id; adopting a live reservation clears it. A record
+    /// persisted before this field decodes to the absent commitment.
     #[serde(default)]
     payment_reservation_release_intended: bool,
-    /// Whether an aggregate payment authorization was ever durably recorded.
-    ///
-    /// `payment_authorization` is cleared whenever the quote set changes, but
-    /// the initial spending cap must never silently authorize a re-quoted
-    /// aggregate, so this commercial-history tombstone never clears. It is
-    /// independent of the wallet-output value-safety boundary below.
-    payment_authorization_recorded: bool,
     /// Monotone boundary armed immediately before the first wallet output
     /// generation future is polled. Unlike commercial authorization, this is
     /// the value-safety gate for payer switching and abandon.
@@ -481,6 +473,10 @@ pub(crate) struct MgAdmission {
     /// Older saved seats did not record the verified badge holder.
     #[serde(default)]
     holder: Option<PublicKey>,
+    /// The previewed plan this seat was bought at, so its quote has exactly
+    /// the previewed price. Older saved seats did not record it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    plan: Option<Plan>,
     verifier_provenance: StoredVerifierProvenance,
     valid_until: Timestamp,
     pub(crate) state: AdmissionState,
@@ -516,12 +512,14 @@ impl MgAdmission {
     pub(crate) fn fresh_peer_badge(
         mg_id: PublicKey,
         holder: PublicKey,
+        plan: Plan,
         verifier_provenance: StoredVerifierProvenance,
         valid_until: Timestamp,
     ) -> Self {
         Self {
             mg_id,
             holder: Some(holder),
+            plan: Some(plan),
             verifier_provenance,
             valid_until,
             state: AdmissionState::Fresh,
@@ -534,6 +532,10 @@ impl MgAdmission {
 
     pub(crate) fn holder(&self) -> Option<PublicKey> {
         self.holder
+    }
+
+    pub(crate) fn plan(&self) -> Option<&Plan> {
+        self.plan.as_ref()
     }
 
     pub(crate) fn requires_effect_authorization(&self) -> bool {
@@ -690,8 +692,6 @@ pub(crate) struct PurchaseRecovery {
     pub(crate) snapshot: SeatPurchaseSnapshot,
     pub(crate) seats: Vec<PurchaseSeatRecovery>,
     payment_authorization: Option<StoredPaymentAuthorization>,
-    /// Whether an aggregate payment authorization was ever durably recorded.
-    pub(crate) payment_authorization_recorded: bool,
     /// Exact aggregate reservation owned by the wallet, if established.
     pub(crate) payment_reservation_id: Option<PaymentReservationId>,
     /// Whether a durable release commitment makes wallet absence of the
@@ -1499,21 +1499,6 @@ impl FaStore {
     }
 
     #[cfg(test)]
-    /// Clear only the tombstone flag, simulating a record where an aggregate
-    /// authorization is present without the durable tombstone, to exercise
-    /// the legacy OR-arm in [`FaStore::load_recovery`].
-    pub(crate) async fn clear_authorization_tombstone_for_test(&self) {
-        let mut dbtx = self.database.begin_transaction().await;
-        let mut formation = dbtx
-            .get_value(&PurchaseKey)
-            .await
-            .expect("test formation exists");
-        formation.payment_authorization_recorded = false;
-        dbtx.insert_entry(&PurchaseKey, &formation).await;
-        dbtx.commit_tx().await;
-    }
-
-    #[cfg(test)]
     /// Rewind a complete formation while omitting one guardian recovery fact.
     pub(crate) async fn rewind_formed_without_guardian_for_test(&self) {
         let mut dbtx = self.database.begin_transaction().await;
@@ -2010,18 +1995,15 @@ impl FaStore {
                 "persisted FA release commitment names no wallet reservation".to_owned(),
             ));
         }
-        let payment_requirements = payment_requirements(
+        // Reject a persisted quote that does not match the intent or owner.
+        payment_requirements(
             &stored.formation_id,
             &recoveries,
             &stored.intent,
             fa_id,
             None,
         )?;
-        let payment_required = payment_requirements.as_ref().is_some_and(|requirements| {
-            !authorization_covers(stored.payment_authorization.as_ref(), requirements)
-        });
-        let expose_payment_action = payment_required && stored.payment_outputs_started;
-        let phase = public_phase(stored.phase, &recoveries, expose_payment_action);
+        let phase = public_phase(stored.phase, &recoveries);
         let snapshot = SeatPurchaseSnapshot {
             purchase_id: stored.formation_id,
             request: stored.intent,
@@ -2031,22 +2013,12 @@ impl FaStore {
                 .map(|recovery| recovery.progress.clone())
                 .collect(),
             freshness: FormationFreshness::Unsynced,
-            action_required: expose_payment_action.then(|| {
-                PurchaseActionRequired::AuthorizePayments(
-                    payment_requirements.expect("payment readiness implies requirements"),
-                )
-            }),
             payment_outputs_started: stored.payment_outputs_started,
             last_error: None,
         };
         Ok(Some(PurchaseRecovery {
             snapshot,
             seats: recoveries,
-            // Preserve one-shot cap/commercial history even if an in-memory
-            // record somehow carries authorization without its tombstone.
-            // Only `payment_outputs_started` gates abandon.
-            payment_authorization_recorded: stored.payment_authorization_recorded
-                || stored.payment_authorization.is_some(),
             payment_reservation_id: stored.payment_reservation_id,
             payment_reservation_release_intended: stored.payment_reservation_release_intended,
             payment_outputs_started: stored.payment_outputs_started,
@@ -2127,7 +2099,6 @@ impl FaStore {
                 payment_authorization: None,
                 payment_reservation_id: None,
                 payment_reservation_release_intended: false,
-                payment_authorization_recorded: false,
                 payment_outputs_started: false,
             },
         )
@@ -2698,9 +2669,6 @@ impl FaStore {
                             authorization_id,
                             quotes: current,
                         });
-                        // Never cleared: one-shot cap authorization must not
-                        // silently cover a later re-quoted aggregate.
-                        formation.payment_authorization_recorded = true;
                         dbtx.insert_entry(&PurchaseKey, &formation).await;
                         Ok(())
                     })
@@ -3478,7 +3446,6 @@ impl PurchaseRecovery {
             authorization_id,
             quotes,
         });
-        self.payment_authorization_recorded = true;
     }
 }
 
@@ -3560,7 +3527,6 @@ fn payment_requirements(
     Ok((!seats.is_empty()).then(|| PaymentRequirements {
         authorization_id: payment_authorization_id(formation_id, total_msats, &seats),
         total_msats,
-        max_total_msats: intent.max_total_msats,
         seats,
     }))
 }
@@ -4033,14 +3999,7 @@ fn formed_backup_required() -> FaError {
     FaError::Storage("FA backup is available only after formed metadata is confirmed".to_owned())
 }
 
-fn public_phase(
-    stored: StoredPurchasePhase,
-    recoveries: &[PurchaseSeatRecovery],
-    payment_required: bool,
-) -> PurchasePhase {
-    if payment_required {
-        return PurchasePhase::AwaitingPaymentReadiness;
-    }
+fn public_phase(stored: StoredPurchasePhase, recoveries: &[PurchaseSeatRecovery]) -> PurchasePhase {
     match stored {
         StoredPurchasePhase::Initialized
             if !recoveries
@@ -4093,11 +4052,6 @@ fn validate_schema(formation: &StoredPurchase) -> FaResult<()> {
     if formation.fa_id.is_none() {
         return Err(FaError::Storage(
             "current FA storage record is missing its owner identity".to_owned(),
-        ));
-    }
-    if formation.payment_federation_id.is_some() && formation.intent.max_total_msats.is_none() {
-        return Err(FaError::Storage(
-            "paid FA storage record is missing its spending cap".to_owned(),
         ));
     }
     if !formation.intent.fedimintd_dkg_version.is_fedi()

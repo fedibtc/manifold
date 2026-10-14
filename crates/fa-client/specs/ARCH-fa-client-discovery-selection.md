@@ -114,9 +114,9 @@ shortfall, is the property in
 
 After badge and key checks, a connector-equipped walk calls `GetAvailability`
 and applies the same size, allowed range, selected major/minor/vendor identity,
-accepting-seats, and plan-family predicate as quoting. Incompatible responses get typed `Live*` rejections; connection,
-RPC, and per-candidate-budget failures get `ProbeFailed`. The probe is
-price-blind: a live price change is resolved only by the signed quote. The
+accepting-seats, and exact-plan predicate as quoting: the live offer must
+contain the advertised plan at the advertised price. Incompatible responses get typed `Live*` rejections; connection,
+RPC, and per-candidate-budget failures get `ProbeFailed`. The
 transport-less `MgSelectionQuery` intentionally uses advertised claims alone;
 the full `FaClient` preview always probes.
 
@@ -130,19 +130,21 @@ the typed `InsufficientMgSeats` partial failure.
 
 The preview is read-only: it returns selected seats, their locators, advertised
 prices, verified provenance, estimate, and seen/eligible/selected summary. Its
-result is valid for five minutes and can become a non-serializable
-`MgSelectionApproval` that seals the complete request, selected DKG identity,
-verifier/environment provenance, locators, estimate, and user cap. Leaving the screen, restarting, or
-re-entering obtains a new preview.
+result is valid for five minutes, cannot be serialized, and is itself the
+approval: it binds the complete request, selected DKG identity,
+verifier/environment provenance, locators, and each seat's advertised plan.
+Leaving the screen, restarting, or re-entering obtains a new preview.
 
 `buy_seats` requests exact quotes only after the consumer supplies that
-approval and an authenticated Ready payer. Bootstrap consumes the same approval,
-allows a zero limit only for an all-zero estimate, and refuses a priced live
-offer before requesting its quote. Pre-output expiry, unavailable selected seats,
-quote drift or over-cap, and the wallet's proven pre-journal insufficient balance
-return the selected formation to `Idle` with typed reauthorization. Binding,
-storage, and ambiguous post-journal errors remain exact recovery.
-The approval seals the FA range and selected major/minor/vendor DKG identity,
+preview and an authenticated Ready payer. Each quote requests exactly the
+seat's previewed plan, so the purchase pays exactly the previewed prices.
+Bootstrap takes the same preview without a payer and refuses a priced live
+offer before requesting its quote. Pre-output expiry, unavailable selected
+seats, a changed price, quote drift, and the wallet's proven pre-journal
+insufficient balance return the selected formation to `Idle` with typed
+reauthorization. Binding, storage, and ambiguous post-journal errors remain
+exact recovery.
+The preview binds the FA range and selected major/minor/vendor DKG identity,
 not one exact build. Quote-time availability must name a typed version inside
 both; patch and prerelease changes are accepted, while a minor or vendor change
 requires fresh selection before payment.

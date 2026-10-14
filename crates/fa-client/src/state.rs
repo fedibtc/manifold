@@ -182,8 +182,8 @@ pub fn validate_federation_name(name: &FederationName) -> FaResult<()> {
 
 /// Seat purchase request after `fa-client` has resolved every default.
 ///
-/// Stored purchase rows from before the seat pool carried the federation
-/// name here too; decoding ignores it.
+/// Older stored purchase rows also carried the federation name and a
+/// spending cap; decoding ignores both.
 #[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
 pub struct ResolvedSeatPurchase {
     /// Number of seats, and the federation size every quote is priced for.
@@ -194,9 +194,6 @@ pub struct ResolvedSeatPurchase {
     pub fedimintd_versions: FedimintdVersionRange,
     /// Major/minor/vendor identity shared by every bought seat.
     pub fedimintd_dkg_version: FedimintdDkgVersion,
-    /// Optional aggregate spending cap in millisatoshis.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub max_total_msats: Option<u64>,
 }
 
 /// Consumer-observed phase of one seat purchase.
@@ -205,9 +202,6 @@ pub struct ResolvedSeatPurchase {
 pub enum PurchasePhase {
     /// Validating availability and obtaining exact signed quotes.
     Preparing,
-    /// Every quote is durable; explicit aggregate payment authorization is
-    /// required before any paid quote may be funded.
-    AwaitingPaymentReadiness,
     /// Creating or recovering independently paid/free seats.
     AcquiringSeats,
 }
@@ -382,28 +376,15 @@ fn validate_canonical_digest(value: &str, description: &str) -> Result<(), Strin
     Ok(())
 }
 
-/// Aggregate payment authorization required from the consumer.
+/// Exact paid quotes of one purchase, authorized as one aggregate.
 #[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
 pub struct PaymentRequirements {
     /// Binding to this exact, complete set of quote requirements.
     pub authorization_id: PaymentAuthorizationId,
     /// Checked sum of every paid seat requirement.
     pub total_msats: u64,
-    /// The intent's aggregate spending cap, when one exists. A parked
-    /// action therefore carries both numbers, so a consumer can render an
-    /// over-cap total against the configured cap.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub max_total_msats: Option<u64>,
     /// Per-seat, quote-bound requirements.
     pub seats: Vec<SeatPaymentRequirement>,
-}
-
-/// Explicit consumer action required before a purchase can continue.
-#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum PurchaseActionRequired {
-    /// Authorize all exact paid quotes as one decision.
-    AuthorizePayments(PaymentRequirements),
 }
 
 /// Latest progress for one selected MG seat.
@@ -453,8 +434,6 @@ pub struct SeatPurchaseSnapshot {
     pub seats: Vec<SeatProgress>,
     /// Aggregate freshness.
     pub freshness: FormationFreshness,
-    /// Explicit aggregate consumer action, if any.
-    pub action_required: Option<PurchaseActionRequired>,
     /// Whether the durable wallet-output-generation boundary has been armed.
     /// Once true, payer switching and value-destructive abandon are forbidden;
     /// resume must recover the exact quote operations.

@@ -53,12 +53,11 @@ impl ExactSeatPaymentPreflight<'_> {
 /// Exact aggregate funding preflight assembled by `fa-client`.
 ///
 /// Each seat binds a requirement to the verified quote that generated it.
-/// Aggregate total and cap remain available without reconstructing policy in a
+/// The aggregate total remains available without reconstructing policy in a
 /// wallet adapter. This value is read-only and non-serializable.
 pub struct ExactPaymentPreflight<'a> {
     seats: Vec<ExactSeatPaymentPreflight<'a>>,
     total_msats: u64,
-    max_total_msats: Option<u64>,
 }
 
 impl<'a> ExactPaymentPreflight<'a> {
@@ -97,7 +96,6 @@ impl<'a> ExactPaymentPreflight<'a> {
         Ok(Self {
             seats,
             total_msats: requirements.total_msats,
-            max_total_msats: requirements.max_total_msats,
         })
     }
 
@@ -111,12 +109,6 @@ impl<'a> ExactPaymentPreflight<'a> {
     #[must_use]
     pub fn total_msats(&self) -> u64 {
         self.total_msats
-    }
-
-    /// User-approved aggregate cap, when this flow has one.
-    #[must_use]
-    pub fn max_total_msats(&self) -> Option<u64> {
-        self.max_total_msats
     }
 }
 

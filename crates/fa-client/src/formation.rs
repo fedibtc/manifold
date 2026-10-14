@@ -33,10 +33,9 @@ use crate::{
     FaClient, FaError, FaIdentity, FaPayments, FaResult, FederationConsensusReader,
     FederationConsensusSnapshot, FormationFreshness, FormationId, FormationPhase,
     FormationSnapshot, GuardianFeePpm, ManifoldGuardianConnector, MgCause, MgFailure, MgOperation,
-    MgSelectionApproval, MgSelectionRequest, PaymentAuthorizationId, PaymentRequirements,
-    PaymentReservationId, PaymentReservationRecovery, PurchaseActionRequired, PurchasePhase,
-    ResolvedSeatPurchase, SeatPaymentRecovery, SeatPhase, SeatPurchaseSnapshot,
-    SelectionReauthorizationReason,
+    MgSelectionPreview, MgSelectionRequest, PaymentRequirements, PaymentReservationId,
+    PaymentReservationRecovery, PurchasePhase, ResolvedSeatPurchase, SeatPaymentRecovery,
+    SeatPhase, SeatPurchaseSnapshot, SelectionReauthorizationReason,
 };
 
 fn log_mg_failure(formation_id: &FormationId, error: &FaError, outcome: &'static str) {
@@ -642,15 +641,14 @@ where
     F: ManifoldGuardianConnector,
     C: FederationConsensusReader,
 {
-    /// Buy the seats of one fresh, verified selection into the pool.
+    /// Buy exactly the seats of one fresh, verified preview into the pool.
     ///
-    /// The approval comes only from [`crate::MgSelectionPreview::approve`] and
-    /// is valid for five minutes. No quote is requested during preview: this
-    /// method first validates the sealed set and the payer, then obtains exact
-    /// quotes and proceeds automatically only while their total remains
-    /// within the approved limit. Any stale preview, unavailable selected MG,
-    /// unavailable payer, or changed/over-limit quote returns a typed
-    /// reauthorization error before wallet output generation.
+    /// The preview is the approval, valid for five minutes. No quote is
+    /// requested during preview: this method first validates the previewed
+    /// set and the payer, then requests each seat's quote for exactly the
+    /// previewed plan and pays automatically. Any stale preview, unavailable
+    /// selected MG, unavailable payer, changed price, or changed quote returns
+    /// a typed reauthorization error before wallet output generation.
     ///
     /// Without a payment federation, the purchase proceeds only if every
     /// selected Manifold Guardian's live offer and exact signed quote are
@@ -659,33 +657,19 @@ where
     /// quote, wallet call, seat presentation, or durable output boundary.
     pub async fn buy_seats(
         &self,
-        approval: MgSelectionApproval,
+        preview: &MgSelectionPreview,
         payment_federation_id: Option<FederationId>,
         options: FormationRunOptions,
     ) -> FaResult<()> {
-        let request = approval.request.clone();
-        if approval.seats.len() != usize::from(request.federation_size().0) {
-            return Err(FaError::InvalidManifoldGuardians(format!(
-                "selection contains {} seats but its request requires {}",
-                approval.seats.len(),
-                request.federation_size().0
-            )));
-        }
-        if approval.verifier_provenance != self.inner.peer_badge_verifier.provenance() {
+        let request = &preview.request;
+        if preview.verifier_provenance != self.inner.peer_badge_verifier.provenance() {
             return Err(FaError::InvalidIntent(
-                "selection approval belongs to a different verifier environment".to_owned(),
+                "selection preview belongs to a different verifier environment".to_owned(),
             ));
         }
-        // No payment can be requested or authorized without a payer, so a
-        // spending cap is neither needed nor persisted then.
-        let max_total_msats = payment_federation_id
-            .is_some()
-            .then_some(approval.max_total_msats);
-        let approval_valid_until = approval.valid_until;
-        let fedimintd_dkg_version = approval.fedimintd_dkg_version.clone();
-        let verifier_provenance = approval.verifier_provenance.into();
-        let approved_seats = approval.into_seats_at(Timestamp(now_secs()?))?;
-        let seats = approved_seats
+        let verifier_provenance = preview.verifier_provenance.into();
+        let seats = preview
+            .seats_to_buy_at(Timestamp(now_secs()?))?
             .into_iter()
             .enumerate()
             .map(|(index, seat)| {
@@ -695,18 +679,18 @@ where
                     MgAdmission::fresh_peer_badge(
                         seat.mg_id,
                         seat.holder,
+                        seat.plan,
                         verifier_provenance,
-                        approval_valid_until,
+                        preview.valid_until(),
                     ),
                 )
             })
             .collect();
         self.start_purchase(
-            &request,
-            max_total_msats,
+            request,
             seats,
             payment_federation_id,
-            fedimintd_dkg_version,
+            preview.fedimintd_dkg_version.clone(),
             options,
         )
         .await
@@ -763,7 +747,6 @@ where
     async fn start_purchase(
         &self,
         request: &MgSelectionRequest,
-        max_total_msats: Option<u64>,
         seats: Vec<InitialSeat>,
         payment_federation_id: Option<FederationId>,
         fedimintd_dkg_version: crate::FedimintdDkgVersion,
@@ -776,11 +759,6 @@ where
         {
             return Err(FaError::InvalidIntent(
                 "selected Fedimint DKG identity is outside the purchase request".to_owned(),
-            ));
-        }
-        if max_total_msats == Some(0) {
-            return Err(FaError::InvalidIntent(
-                "spending cap must be greater than zero millisatoshis".to_owned(),
             ));
         }
         let _run = self.inner.run_guard.try_lock().map_err(|_| FaError::Busy)?;
@@ -809,76 +787,10 @@ where
                 plan: request.plan(),
                 fedimintd_versions: request.fedimintd_versions().clone(),
                 fedimintd_dkg_version,
-                max_total_msats,
             };
             self.inner
                 .store
                 .initialize(fa_id, purchase_id, request, seats, payment_federation_id)
-                .await?;
-            let recovery = self.active_recovery(fa_id).await?;
-            self.publish_purchase(recovery.snapshot.clone());
-            self.drive_purchase(recovery, fa_id, run).await
-        }
-        .await;
-        finish_driver_run(result, self.inner.store.release_driver_lease(lease).await)
-    }
-
-    /// Explicitly authorize the paid terms currently exposed by the aggregate
-    /// action and continue formation.
-    ///
-    /// Authorization is durably recorded before the first wallet call and the
-    /// exact displayed quote aggregate is then reserved in the payer wallet.
-    /// Dropping this future after either checkpoint is safe:
-    /// [`FaClient::resume`] reconstructs the same reservation and recovers any
-    /// wallet operation that already started.
-    ///
-    /// The initial selected Pay-and-create aggregate cannot use this entry
-    /// point: its sealed cap is the only authorization. After payment outputs
-    /// started, a re-quoted aggregate needs this explicit authorization.
-    pub async fn authorize_payments(
-        &self,
-        authorization_id: PaymentAuthorizationId,
-        options: FormationRunOptions,
-    ) -> FaResult<()> {
-        let _run = self.inner.run_guard.try_lock().map_err(|_| FaError::Busy)?;
-        options.validate_for_start(&self.inner.store)?;
-        let fa_id = self.fa_id()?;
-        let (deadline, lease) = start_driver_run(&self.inner.store, options).await?;
-        let run = DriverRun::new(options, deadline, &lease);
-        let result = async {
-            let recovery = self.active_recovery(fa_id).await?;
-            if !recovery.payment_outputs_started {
-                return Err(FaError::InvalidIntent(
-                    "selected Pay-and-create uses only its sealed cap authorization".to_owned(),
-                ));
-            }
-            let PurchaseActionRequired::AuthorizePayments(requirements) =
-                recovery.snapshot.action_required.clone().ok_or_else(|| {
-                    FaError::InvalidIntent(
-                        "formation is not awaiting payment authorization".to_owned(),
-                    )
-                })?;
-            if requirements.authorization_id != authorization_id {
-                return Err(FaError::InvalidIntent(
-                    "payment requirements changed after they were displayed; review the new set"
-                        .to_owned(),
-                ));
-            }
-            let authorizations = requirements
-                .seats
-                .iter()
-                .map(|requirement| QuoteAuthorization {
-                    index: requirement.index,
-                    quote_id: requirement.quote_id,
-                })
-                .collect::<Vec<_>>();
-            self.inner
-                .store
-                .authorize_payments(
-                    &recovery.snapshot.purchase_id,
-                    &authorization_id,
-                    &authorizations,
-                )
                 .await?;
             let recovery = self.active_recovery(fa_id).await?;
             self.publish_purchase(recovery.snapshot.clone());
@@ -1352,62 +1264,28 @@ where
         if let Some(requirements) = recovery.payment_requirements(fa_id)?
             && !recovery.payments_authorized(&requirements)
         {
-            // An intent spending cap that covers the checked aggregate total
-            // self-authorizes exactly once: the same durable quote-bound
-            // authorization is recorded as an explicit `authorize_payments`
-            // call would write, so recovery and abandon semantics are
-            // identical. The cap is the consumer's approval of the *initial*
-            // aggregate only, so self-authorization is gated on the durable
-            // `payment_authorization_recorded` tombstone: once any aggregate
-            // authorization was ever recorded, a changed quote set (for
-            // example re-quoted after a verified refusal dropped a member)
-            // parks for explicit authorization even when the fresh total is
-            // still under the cap. A cap that is absent or exceeded likewise
-            // parks the formation with the aggregate action carrying both
-            // numbers.
-            let under_cap = !recovery.payment_authorization_recorded
-                && recovery
-                    .snapshot
-                    .request
-                    .max_total_msats
-                    .is_some_and(|cap| requirements.total_msats <= cap);
-            if under_cap {
-                let authorizations = requirements
-                    .seats
-                    .iter()
-                    .map(|requirement| QuoteAuthorization {
-                        index: requirement.index,
-                        quote_id: requirement.quote_id,
-                    })
-                    .collect::<Vec<_>>();
-                self.inner
-                    .store
-                    .authorize_payments(
-                        &recovery.snapshot.purchase_id,
-                        &requirements.authorization_id,
-                        &authorizations,
-                    )
-                    .await?;
-                recovery.apply_payment_authorization(
-                    requirements.authorization_id.clone(),
-                    authorizations,
-                );
-            } else if !recovery.payment_outputs_started {
-                return Err(FaError::SelectionReauthorizationRequired {
-                    reason: SelectionReauthorizationReason::QuoteTotalExceedsLimit,
-                    failure: None,
-                });
-            } else {
-                recovery.snapshot.phase = PurchasePhase::AwaitingPaymentReadiness;
-                recovery.snapshot.action_required =
-                    Some(PurchaseActionRequired::AuthorizePayments(requirements));
-                recovery.snapshot.freshness = FormationFreshness::Fresh;
-                self.publish_purchase(recovery.snapshot.clone());
-                return Ok(());
-            }
+            // Every new quote is for its seat's previewed plan, so the
+            // approved preview already authorizes these exact quotes. The
+            // durable record binds the quote ids for recovery and abandon.
+            let authorizations = requirements
+                .seats
+                .iter()
+                .map(|requirement| QuoteAuthorization {
+                    index: requirement.index,
+                    quote_id: requirement.quote_id,
+                })
+                .collect::<Vec<_>>();
+            self.inner
+                .store
+                .authorize_payments(
+                    &recovery.snapshot.purchase_id,
+                    &requirements.authorization_id,
+                    &authorizations,
+                )
+                .await?;
+            recovery.apply_payment_authorization(requirements.authorization_id, authorizations);
         }
 
-        recovery.snapshot.action_required = None;
         recovery.snapshot.phase = PurchasePhase::AcquiringSeats;
         recovery.snapshot.freshness = FormationFreshness::Fresh;
         self.publish_purchase(recovery.snapshot.clone());
@@ -1498,6 +1376,7 @@ where
             let expected_payer = expected_payer.clone();
             let payment_federation = payment_federation.as_ref();
             let policy = quote_attempt_policy(&seat.admission);
+            let pinned_plan = seat.admission.plan().cloned();
             pending.push(async move {
                 let (signed_quote, _) = self
                     .request_quote_with_retry(
@@ -1505,6 +1384,7 @@ where
                         position,
                         &locator,
                         intent,
+                        pinned_plan.as_ref(),
                         fa_id,
                         policy,
                         expected_payer.as_ref(),
@@ -1750,6 +1630,7 @@ where
         index: usize,
         locator: &Locator,
         intent: &ResolvedSeatPurchase,
+        pinned_plan: Option<&Plan>,
         fa_id: FaId,
         policy: QuoteAttemptPolicy,
         expected_payer: Option<&FederationId>,
@@ -1770,6 +1651,18 @@ where
             .min(SELECTED_MG_CONNECT_RETRY_MAX_DELAY);
         loop {
             let result = async {
+                // A seat saved before the preview pinned its price has no
+                // approved price to request.
+                let pinned_plan = pinned_plan.ok_or_else(|| {
+                    if policy.allows_selection_reauthorization() {
+                        FaError::SelectionReauthorizationRequired {
+                            reason: SelectionReauthorizationReason::PreviewExpired,
+                            failure: None,
+                        }
+                    } else {
+                        mg_error(index, "seat has no previewed price to quote")
+                    }
+                })?;
                 let client =
                     MgClient::connect(&self.inner.ports.mg_connector, locator, run).await?;
                 self.request_new_quote(
@@ -1777,6 +1670,7 @@ where
                     &client,
                     locator,
                     intent,
+                    pinned_plan,
                     fa_id,
                     policy,
                     expected_payer,
@@ -2526,6 +2420,13 @@ where
             let expected_payer = expected_payer.clone();
             let payment_federation = Some(&payment_federation);
             let policy = quote_attempt_policy(&seat.admission);
+            // A seat saved before the preview pinned its price was authorized
+            // at its stored quote's plan.
+            let pinned_plan = seat
+                .admission
+                .plan()
+                .unwrap_or(&old_quote.verified.terms.request.plan)
+                .clone();
             pending.push(async move {
                 let (signed, verified) = self
                     .request_quote_with_retry(
@@ -2533,6 +2434,7 @@ where
                         position,
                         &locator,
                         &intent,
+                        Some(&pinned_plan),
                         fa_id,
                         policy,
                         expected_payer.as_ref(),
@@ -3011,6 +2913,7 @@ where
         client: &MgClient<F::Client>,
         locator: &Locator,
         intent: &ResolvedSeatPurchase,
+        pinned_plan: &Plan,
         fa_id: FaId,
         policy: QuoteAttemptPolicy,
         expected_payer: Option<&FederationId>,
@@ -3034,25 +2937,39 @@ where
         // One shared predicate with the selection walk's live probe
         // (`selection::match_requested_availability`), so a candidate the
         // probing preview seats is exactly a candidate this gate accepts.
-        let matched = match crate::selection::match_requested_availability(
+        // Requiring the previewed plan gives the quote exactly the previewed
+        // price.
+        let fedimintd_version = match crate::selection::match_requested_availability(
             &availability,
             intent.federation_size,
             &intent.fedimintd_versions,
             &intent.fedimintd_dkg_version,
-            intent.plan,
+            pinned_plan,
         ) {
-            Ok(matched) => matched,
+            Ok(fedimintd_version) => fedimintd_version.clone(),
             Err(mismatch) => {
-                let cause = match mismatch {
-                    AvailabilityMismatch::NotAcceptingSeats => MgCause::NotAcceptingSeats,
-                    AvailabilityMismatch::FederationSize => MgCause::UnsupportedFederationSize,
-                    AvailabilityMismatch::FedimintdVersion => MgCause::UnsupportedVersion,
-                    AvailabilityMismatch::Plan => MgCause::PlanNotOffered,
+                let (cause, reason) = match mismatch {
+                    AvailabilityMismatch::NotAcceptingSeats => (
+                        MgCause::NotAcceptingSeats,
+                        SelectionReauthorizationReason::SelectedMgUnavailable,
+                    ),
+                    AvailabilityMismatch::FederationSize => (
+                        MgCause::UnsupportedFederationSize,
+                        SelectionReauthorizationReason::SelectedMgUnavailable,
+                    ),
+                    AvailabilityMismatch::FedimintdVersion => (
+                        MgCause::UnsupportedVersion,
+                        SelectionReauthorizationReason::SelectedMgUnavailable,
+                    ),
+                    AvailabilityMismatch::Plan => (
+                        MgCause::PlanNotOffered,
+                        SelectionReauthorizationReason::PriceChanged,
+                    ),
                 };
                 let failure = client.failure(MgOperation::GetAvailability, cause);
                 return Err(if policy.allows_selection_reauthorization() {
                     FaError::SelectionReauthorizationRequired {
-                        reason: SelectionReauthorizationReason::SelectedMgUnavailable,
+                        reason,
                         failure: Some(failure),
                     }
                 } else {
@@ -3060,8 +2977,7 @@ where
                 });
             }
         };
-        let fedimintd_version = matched.fedimintd_version.clone();
-        let plan = matched.plan.clone();
+        let plan = pinned_plan.clone();
         // Free-ness is a property of the price, not of the plan: an MG that
         // gives its seats away is quoted against no payment federation
         // whatever this FA is configured to pay from, and one that charges
@@ -3141,7 +3057,15 @@ where
             let quote = self
                 .verify_quote(index, &signed_quote, locator, intent, fa_id, expected_payer)
                 .map_err(|_| client.failure(MgOperation::GetQuote, MgCause::InvalidResponse))?;
-            if quote.terms.request != quote_request {
+            // The requested plan is the previewed one, so a quote must charge
+            // exactly its price.
+            let plan_price_msats = match &quote_request.plan {
+                Plan::InfiniteBestEffort { price_msats } => Some(*price_msats),
+                Plan::SubscriptionBased { .. } => None,
+            };
+            if quote.terms.request != quote_request
+                || plan_price_msats != Some(quote.terms.price_msats)
+            {
                 return Err(client
                     .failure(MgOperation::GetQuote, MgCause::InvalidResponse)
                     .into());
