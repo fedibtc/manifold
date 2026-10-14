@@ -2179,7 +2179,7 @@ async fn register_gateway_with_every_guardian(
     mg_locators: &[String],
 ) -> anyhow::Result<()> {
     let status = fa_status(&locate_binary(FA_CLI_BIN_ENV, "fa-cli")?, state_dir).await?;
-    let seats = status["formation"]["seats"]
+    let seats = status["federation"]["seats"]
         .as_array()
         .context("formed FA status carries seats")?;
     anyhow::ensure!(
@@ -2514,10 +2514,7 @@ async fn form_federation_in_state(
 /// The invite of a formed `fa-cli --json` status, or `None` before formation
 /// completes.
 fn formed_invite(status: &serde_json::Value) -> Option<&str> {
-    if status["formation"]["phase"] != "formed" {
-        return None;
-    }
-    status["formation"]["invite_code"].as_str()
+    status["federation"]["federation_invite"].as_str()
 }
 
 async fn wait_for_replacement_child(parent: u32, old_pid: u32) -> anyhow::Result<u32> {
@@ -4499,23 +4496,19 @@ async fn run_fa_cli(
         let mut output = tokio::time::timeout(timeout, child.wait_with_output())
             .await
             .map_err(|_| anyhow::anyhow!("timed out waiting for fa-cli formation run"))??;
-        let mut recovery_formation_id = None;
+        let mut recovered_purchase = None;
         if !output.status.success()
             && let Some(resume_args) = invocation.resume_args
         {
             let failed_status: serde_json::Value = serde_json::from_slice(&output.stdout)
                 .context("recoverable paid failure writes JSON status")?;
-            let formation = &failed_status["formation"];
+            let purchase = &failed_status["purchase"];
             anyhow::ensure!(
-                formation["payment_outputs_started"].as_bool() == Some(false),
+                purchase["purchase_id"].is_string()
+                    && purchase["payment_outputs_started"].as_bool() == Some(false),
                 "paid E2E may retry only before the wallet-output boundary: {failed_status}"
             );
-            recovery_formation_id = Some(
-                formation["formation_id"]
-                    .as_str()
-                    .context("recoverable paid failure names its formation")?
-                    .to_owned(),
-            );
+            recovered_purchase = Some(seat_mg_ids(&purchase["seats"]));
             let mut resume = Command::new(fa_cli_bin);
             resume
                 .arg("--state-dir")
@@ -4567,11 +4560,10 @@ async fn run_fa_cli(
             let status: serde_json::Value = serde_json::from_str(stdout.trim())?;
             let invite = formed_invite(&status)
                 .with_context(|| format!("paid formation did not reach Formed: {status}"))?;
-            if let Some(recovery_formation_id) = recovery_formation_id {
+            if let Some(purchased) = recovered_purchase {
                 anyhow::ensure!(
-                    status["formation"]["formation_id"].as_str()
-                        == Some(recovery_formation_id.as_str()),
-                    "paid resume changed formation identity: {status}"
+                    seat_mg_ids(&status["federation"]["seats"]) == purchased,
+                    "paid resume must form from the recovered purchase's MGs: {status}"
                 );
             }
             return Ok(invite.to_owned());
@@ -4589,6 +4581,16 @@ fn human_invite(stdout: &str) -> anyhow::Result<String> {
         .find(|line| line.starts_with("fed1"))
         .map(ToOwned::to_owned)
         .with_context(|| format!("fa-cli printed no federation invite: {stdout}"))
+}
+
+/// The MG identities of a status seat list, for comparing seat sets.
+fn seat_mg_ids(seats: &serde_json::Value) -> BTreeSet<String> {
+    seats
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|seat| seat["fman_id"].as_str().map(ToOwned::to_owned))
+        .collect()
 }
 
 fn write_fa_fee_account_fixture(state_dir: &Path) -> anyhow::Result<PathBuf> {
