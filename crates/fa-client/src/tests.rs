@@ -8012,6 +8012,51 @@ async fn run_loop_forms_a_creation_and_yields_to_a_user_action_mid_work() {
 }
 
 #[tokio::test]
+async fn a_cancelled_waiting_action_does_not_stop_the_loop() {
+    let (payments, _) = TestPayments::new();
+    let mg_state = Arc::new(MgState::default());
+    *mg_state.blocked_quote_index.lock().expect("test lock") = Some(0);
+    let client = open_client(
+        MemDatabase::new().into_database(),
+        payments,
+        mg_state.clone(),
+        MgConfig::given_away(),
+    )
+    .await;
+    let runner = client.clone();
+    let run = tokio::spawn(async move { runner.run(options()).await });
+    let mut observed = client.observe();
+    client
+        .create_federation(
+            intent().federation_name,
+            None,
+            &client.preview_at(&intent(), locators()),
+            None,
+        )
+        .await
+        .unwrap();
+    mg_state.quote_blocked.notified().await;
+
+    // The action starts to wait for the guard the loop holds, then the
+    // consumer drops it before the loop yields.
+    {
+        let mut claim = std::pin::pin!(client.claim_run_guard());
+        assert!(futures::poll!(claim.as_mut()).is_pending());
+    }
+
+    mg_state.release_quotes.store(true, Ordering::SeqCst);
+    mg_state.quote_release.notify_waiters();
+    tokio::time::timeout(
+        Duration::from_secs(5),
+        observed.wait_for(|state| matches!(state, FaState::Active(_))),
+    )
+    .await
+    .expect("the loop continues after the dropped action")
+    .unwrap();
+    run.abort();
+}
+
+#[tokio::test]
 async fn a_partial_pool_buys_only_its_gap_and_refuses_cancel() {
     let database = MemDatabase::new().into_database();
     let (payments, payment_state) = TestPayments::new();

@@ -86,6 +86,41 @@ impl Drop for ActionGuard<'_> {
     }
 }
 
+/// A user action that waits for the guard the loop holds. Dropping it, also
+/// when the action is cancelled, withdraws the wait.
+struct WaitingAction<'a>(&'a RunControl);
+
+impl<'a> WaitingAction<'a> {
+    fn new(control: &'a RunControl) -> Self {
+        control.waiting.fetch_add(1, Ordering::SeqCst);
+        control.wake.notify_one();
+        Self(control)
+    }
+}
+
+impl Drop for WaitingAction<'_> {
+    fn drop(&mut self) {
+        self.0.waiting.fetch_sub(1, Ordering::SeqCst);
+        self.0.wake.notify_one();
+    }
+}
+
+/// The loop holds, or waits for, the run guard until this drops.
+struct Driving<'a>(&'a RunControl);
+
+impl<'a> Driving<'a> {
+    fn new(control: &'a RunControl) -> Self {
+        control.driving.store(true, Ordering::SeqCst);
+        Self(control)
+    }
+}
+
+impl Drop for Driving<'_> {
+    fn drop(&mut self) {
+        self.0.driving.store(false, Ordering::SeqCst);
+    }
+}
+
 /// The next work the loop does under the run guard.
 enum Work {
     /// Look up and verify the backup of a restored mnemonic.
@@ -137,12 +172,11 @@ where
                 select(wake, pin!(parts.changed())).await;
                 continue;
             }
-            control.driving.store(true, Ordering::SeqCst);
             let step = {
+                let _driving = Driving::new(control);
                 let _guard = self.inner.run_guard.lock().await;
                 self.step(options, wake.as_mut()).await
             };
-            control.driving.store(false, Ordering::SeqCst);
             match step {
                 Step::Idle => {
                     let changed = pin!(parts.changed());
@@ -170,11 +204,8 @@ where
         let guard = match self.inner.run_guard.try_lock() {
             Ok(guard) => guard,
             Err(_) if control.driving.load(Ordering::SeqCst) => {
-                control.waiting.fetch_add(1, Ordering::SeqCst);
-                control.wake.notify_one();
-                let guard = self.inner.run_guard.lock().await;
-                control.waiting.fetch_sub(1, Ordering::SeqCst);
-                guard
+                let _waiting = WaitingAction::new(control);
+                self.inner.run_guard.lock().await
             }
             Err(_) => return Err(FaError::Busy),
         };
