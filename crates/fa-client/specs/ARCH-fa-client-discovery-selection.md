@@ -137,7 +137,7 @@ result is valid for five minutes and can become a non-serializable
 verifier/environment provenance, locators, estimate, and user cap. Leaving the screen, restarting, or
 re-entering obtains a new preview.
 
-`pay_and_create` requests exact quotes only after the consumer supplies that
+`buy_seats` requests exact quotes only after the consumer supplies that
 approval and an authenticated Ready payer. Bootstrap consumes the same approval,
 allows a zero limit only for an all-zero estimate, and refuses a priced live
 offer before requesting its quote. Pre-output expiry, unavailable selected seats,

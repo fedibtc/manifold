@@ -96,7 +96,7 @@ proof re-derivation over the extended envelope.
   formation, optional authenticated setup-payment funding, DKG, seat-binding
   publication and readback, invite recovery, read-only verified MG discovery,
   strict PeerBadge selection at or above the environment minimum,
-  registry-backed Pay-and-create, exact aggregate
+  registry-backed seat purchase, exact aggregate
   reservation, proven-safe subset replacement,
   and typed post-formation name/icon-URL/welcome-message/terms-URL maintenance
   are included. Maintenance requires a genuine threshold consensus reader and

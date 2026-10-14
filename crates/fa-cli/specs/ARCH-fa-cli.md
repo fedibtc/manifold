@@ -5,7 +5,7 @@
 constrained by [GATE-fa-cli-test-tool-scope](GATE-fa-cli-test-tool-scope.md).
 It owns a persistent
 local identity, opens a Fedimint RocksDB database, translates flags and TOML
-into `FormationIntent`, subscribes to library progress, and renders results.
+into a seat purchase and a formation request, subscribes to library progress, and renders results.
 Its `payment-wallet` commands join and directly fund the same persistent
 Fedimint client wallet later supplied to formation; this is consumer capability
 plumbing and does not move selection, authorization, or formation policy out of
@@ -50,14 +50,15 @@ state, or the payment wallet, the CLI binds its Iroh endpoint, runs a fresh
 verified preview against the selected environment with live availability
 probing over that endpoint, seals it with the command's spending cap, retains
 the non-serializable approval in-process, and immediately consumes it through
-`pay_and_create`. Registry-backed paid creation therefore requires
+`buy_seats`. After the purchase completes, `create` forms the federation
+from every pool seat through `form_federation`. Registry-backed paid creation therefore requires
 `--max-total-msats`; passing no wallet coordinates explicitly selects
-`create_without_payer`, which succeeds only when the advertised and live exact
+`buy_seats` without a payer, which succeeds only when the advertised and live exact
 offers are all zero. Supplying locators retains the diagnostic pinned path used
-by lower-level protocol E2E tests. That path accepts a paired 0600
-completion-callback URL file and idempotency key and delegates protocol
-validation, durable ownership, and delivery entirely to `fa-client` and the
-pinned MGs; the CLI never places the URL bearer in argv, persists it, or
+by lower-level protocol E2E tests. Both paths accept a paired 0600
+completion-callback URL file and idempotency key, pass it to
+`form_federation`, and delegate protocol validation, durable ownership, and
+delivery entirely to `fa-client` and the MGs; the CLI never places the URL bearer in argv, persists it, or
 emits it. Pinned creation accepts only a version range containing one patch
 release; broader ranges remain available to the automatic selection path.
 For temporarily incomplete development/staging trust infrastructure,
@@ -136,7 +137,7 @@ consumer-owned payer are capability preparation, not FA formation policy.
 Registry `preview` remains wallet-free and read-only. Registry-backed `create`
 performs a new verified preview, retains the approval only in-process, reopens
 the already-funded payer by federation id, and supplies it to
-`FaClient::pay_and_create`.
+`FaClient::buy_seats`.
 
 For a paid pinned `create` without an applicable cap, `fa-client` first stops at
 `AwaitingPaymentReadiness`. When no cap exists, the CLI prints the
@@ -228,7 +229,7 @@ against hostile local filesystem behavior.
 `--json` is a stable, newline-delimited output contract. Successful `init`
 writes exactly one stdout object with `fiPubkey` and `state`; `status`, `create`,
 `resume`, and successful `authorize-payments` write exactly one stdout `FaStatus`
-value. A formation intent carries `fedimintd_versions` as its inclusive-minimum,
+value. `FaStatus` omits absent parts, so an idle FA writes `{}`. A formation intent carries `fedimintd_versions` as its inclusive-minimum,
 exclusive-maximum range and `fedimintd_dkg_version` as the selected
 major/minor/vendor identity. When a paid formation
 reaches payment readiness, `create` additionally writes exactly one stderr

@@ -26,13 +26,14 @@ and guardian-fee arrangement are implemented as separate operations.
 Post-formation liquidity is governed by
 [`SPEC-fa-post-formation-liquidity`](./SPEC-fa-post-formation-liquidity.md).
 Each increment extends this consumer boundary and state engine rather than
-adding a second driver to any consumer. The public `FormationIntent`
-therefore carries only an optional display name (resolved to one generated
-two-word name and persisted before stateful remote work), federation size (accepted
-product range 7 through 20 guardians), current plan
-family, a half-open `FedimintdVersionRange`, and an optional aggregate spending
-cap `max_total_msats` (must be greater than zero; persisted with the
-resolved intent so it survives resume). The formation intent carries no guardian-fee rate: formation installs the
+adding a second driver to any consumer. Buying seats and forming a federation
+are separate steps (see *Seat purchase, pool, and formation* below). The
+selection request carries federation size (accepted product range 7 through 20
+guardians), current plan family, and a half-open `FedimintdVersionRange`; the
+sealed approval adds the aggregate spending cap `max_total_msats`, persisted
+with the purchase so it survives resume. `form_federation` takes an optional
+display name (resolved to one generated two-word name and persisted before
+remote work), the pool seat ids, and an optional DKG completion callback. Neither step carries a guardian-fee rate: formation installs the
 fixed recipient mapping and an initial rate, while post-formation
 `propose_guardian_fees` changes only that rate under the payer-compatible
 210,000-ppm ceiling and at or above the published minimum
@@ -40,17 +41,17 @@ carried by the admitted setup-payment event (1,500 ppm when no event has
 been admitted, never zero). That floor is the same one every MG enforces
 ([`SPEC-setup-payment-federations`](../../../specs/SPEC-setup-payment-federations.md));
 refusing it here means a rate the whole fleet would vote down names its own
-reason instead of retrying to the run deadline. Serialized external intent is a
-strict schema: unknown fields and values outside the product name, size,
-and cap invariants are rejected rather than producing an invalid intent.
-The optional cap has a default: a serialized intent without it decodes to no
-cap and a capless intent serializes without the field, while any *unknown*
-field stays rejected. Durable FA storage is a separate fail-closed schema:
-schema 11 also persists the selected major/minor/vendor DKG identity beside
-the selected-vs-pinned mode, durable verifier provenance, selected preview
-deadline, exact aggregate reservation identity, commercial-history tombstone,
-and wallet-output tombstone. Every older record must be
-reset rather than migrated because it predates the production compatibility
+reason instead of retrying to the run deadline. Durable FA storage is a
+separate fail-closed schema. Schema 12 keeps purchase rows, one pool row per
+bought seat, and one formation row. The purchase persists the selected
+major/minor/vendor DKG identity beside the selected-vs-pinned mode, durable
+verifier provenance, selected preview deadline, exact aggregate reservation
+identity, commercial-history tombstone, and wallet-output tombstone. Schema 11
+kept the purchase and the formation in one row; opening such an FA migrates it.
+A purchase that has not created every seat stays a purchase. From
+`seats_created` on, its seats move into the formation record, and a formed
+record also gets the federation record when it has none. Records older than
+schema 11 are reset because they predate the production compatibility
 baseline. Subsequent schema changes are governed by
 [`GATE-production-compatibility`](../../../specs/GATE-production-compatibility.md).
 
@@ -58,8 +59,8 @@ The cap changes only payment-readiness behavior, and it is **one-shot**: it
 is the consumer's approval of the initial aggregate only. In the product path
 it is sealed into the five-minute advertisement approval returned by
 `MgSelectionPreview::approve`; no MG quote exists before the consumer
-invokes `pay_and_create` with that approval and one explicit payer, or invokes
-`create_without_payer` for the all-zero deployment bootstrap. The latter
+invokes `buy_seats` with that approval and one explicit payer, or without a
+payer for the all-zero deployment bootstrap. The latter
 persists an explicitly absent payer, requests free quotes without payment
 policy, and returns typed payer-required reauthorization before requesting a
 quote if any selected MG's live offer is priced. An all-zero advertisement
@@ -90,8 +91,8 @@ The diagnostic pinned path parks when the cap is absent or exceeded and for
 every replacement aggregate after its one-shot authorization. Before any
 output generation, the selected product path never publishes or accepts that
 second exact-quote authorization action. It instead returns typed
-`SelectionReauthorizationRequired` and value-safely restores durable `Idle`.
-If a process dies before cleanup, schema 11 preserves selected mode and approval
+`SelectionReauthorizationRequired` and value-safely removes the purchase.
+If a process dies before cleanup, the purchase preserves selected mode and approval
 expiry: reopen exposes no superseded authorization action, and resume either continues the still-live
 exact set or performs the same typed cleanup. A cloned live approval can then
 retry a different ready payer. An unavailable or replacement MG always
@@ -121,7 +122,7 @@ If their checked total exceeds the renewed cap, the already non-abandonable
 post-output formation publishes `AuthorizePayments` for that exact replacement
 subset; the consumer must render and explicitly authorize those terms before
 another output can start. This differs from a pre-output selected cap failure,
-which returns to `Idle` and needs a new preview/Pay-and-create attempt.
+which removes the purchase and needs a new preview and purchase.
 Definite connection failures are retried with bounded exponential backoff for
 up to two minutes, clipped by the current driver deadline, before that
 pre-output replacement result is returned. After outputs start, transport
@@ -139,13 +140,11 @@ The diagnostic pinned path accepts only a range containing one patch release.
 That range determines its `major.minor+fedi` DKG identity before any durable or
 remote work; the ordinary quote-time live gate still checks every pinned MG.
 
-The callback-aware pinned-formation entry point accepts one
-`DkgCompletionCallback` created by the consumer for the initiating app
-installation. FA derives the pinned set's common DKG identity from the single
-allowed patch, then persists the bearer before quotes, payments, seat creation,
-or DKG and sends the same callback and idempotency key to every MG in the
-signed `StartDkg` wave. The ordinary entry point leaves the optional
-callback absent. An ordinary resume repeats the idempotent `StartDkg` wave
+`form_federation` accepts one optional `DkgCompletionCallback` created by the
+consumer for the initiating app installation. FA persists the bearer in the
+formation record before any DKG work and sends the same callback and
+idempotency key to every MG in the signed `StartDkg` wave. An ordinary resume
+repeats the idempotent `StartDkg` wave
 with the same durable guardian codes; each MG retains the first start
 callback it accepts for delivery, while an MG without callback delivery
 configured discards it and proceeds callback-free.
@@ -155,9 +154,7 @@ only source of lifecycle progress after the app resumes.
 Cross-component durability verification is recorded in
 [`crates/mg/testing.md`](../../mg/testing.md).
 
-Formation storage schema 11 owns this callback lifecycle and the selected
-Fedimint DKG identity. Older records from before the production compatibility
-baseline fail closed and require reset.
+The formation record owns this callback lifecycle.
 FA retains the bearer across every pre-`DkgComplete` crash, then clears it in
 the same transaction that records the DKG invite. Callback delivery remains
 best effort: configured MGs have accepted durable retry ownership by then,
@@ -170,7 +167,7 @@ publisher has no authenticated set of federations to fund from, so it arranges
 no payment and can only take seats an MG offers at a price of zero. This is
 what makes the first federation in a deployment formable, before any ecash to
 pay with exists. The verified product path represents that case through
-`create_without_payer`; the diagnostic pinned path is not required for
+`buy_seats` without a payer; the diagnostic pinned path is not required for
 bootstrap.
 
 Paid formation additionally fetches
@@ -188,9 +185,9 @@ members a consumer has already joined, because an id cannot be turned back
 into an invite; a consumer that offers joining an unjoined member needs the
 join material the publication already carries. Operations that need a payer
 reject the empty set before consulting the wallet.
-`pay_and_create` separately requires the explicit payer to be admitted and
-Ready before persisting the formation or requesting the first quote.
-`create_without_payer` bypasses that paid capability only by failing closed on
+`buy_seats` with a payer separately requires it to be admitted and
+Ready before persisting the purchase or requesting the first quote.
+`buy_seats` without a payer bypasses that paid capability only by failing closed on
 a priced live offer before requesting its quote. The consumer wallet can only filter the
 authenticated set; canonical selection uses canonical set order.
 
@@ -287,13 +284,37 @@ five-minute validity bound anchored after enumeration and verification and can
 be consumed into a sealed, non-serializable `MgSelectionApproval`; leaving
 and re-entering the flow refetches instead of caching it. The approval binds
 the complete selection request and immutable verifier/environment provenance.
-`pay_and_create` accepts only that sealed approval, an explicit authenticated
-Ready payer, and the original spending cap. The sibling
-`create_without_payer` entry accepts the same approval for all-zero bootstrap
-and never consults payment policy or the wallet. Exact quotes are obtained only
-inside those actions. Expiry, quote drift/cap excess, required/missing payer,
-failure, or selected-seat unavailability before outputs restores `Idle` and
-requires the appropriate payer retry or a fresh preview.
+`buy_seats` accepts only that sealed approval, an optional explicit
+authenticated Ready payer, and the original spending cap. Without a payer it
+serves all-zero bootstrap and never consults payment policy or the wallet.
+Exact quotes are obtained only inside that action. Expiry, quote drift/cap
+excess, required/missing payer, failure, or selected-seat unavailability before
+outputs removes the purchase and requires the appropriate payer retry or a
+fresh preview.
+
+## Seat purchase, pool, and formation
+
+A seat belongs to the FA once its MG accepts it, and it is not bound to a
+federation until DKG starts. The engine therefore keeps three state machines,
+each with its own storage:
+
+- **Purchase** — `buy_seats` (or `buy_pinned_seats` in development builds)
+  quotes, pays for, and creates the seats of one approval, under every payment
+  rule in this document. When every seat exists, one transaction moves the
+  seats into the pool and deletes the purchase rows. At most one purchase
+  exists; `abandon_purchase` ends it inside its value-safe window.
+- **Pool** — each bought seat keeps its MG identity, locator, seat id,
+  guardian-fee account, and the exact Fedimint build and federation size it
+  was bought for. It stays in the pool until a formation takes it.
+- **Formation** — `form_federation` takes pool seats bought for its exact size
+  and DKG line, persists the name and optional completion callback, and runs
+  DKG and seat-binding publication. A formed formation keeps its record for
+  rechecks; the federation record is the authority for maintenance,
+  liquidity, and backup.
+
+`resume` continues the purchase first, then the formation, including a formed
+formation's recheck, then an imported federation's reconciliation. It never
+starts a formation: forming from pool seats is the consumer's explicit step.
 
 ## Consumer boundary
 
@@ -349,14 +370,15 @@ objects, trust conclusions, or lifecycle transitions:
   The obligations are stated on the port and in [`SECURITY.md`](../SECURITY.md).
 - **Presentation** — collects intent, renders an uncached advertisement-only
   preview and authenticated payer choices, retains the sealed preview approval
-  only for that screen visit, and invokes Pay-and-create with its explicit
-  payer and original cap, or the explicit no-payer bootstrap entry when the
-  deployment has no setup-payment policy.
+  only for that screen visit, and invokes `buy_seats` with its explicit
+  payer and original cap, or without a payer when the deployment has no
+  setup-payment policy, and then `form_federation` with the bought pool seats.
 
-`FormationIntent` itself rejects invalid construction and decoding. The creation
-APIs additionally expose side-effect-free, operation-specific preflights for
-consumers: selected creation validates the sealed seat count, preview age,
-explicit payer, and cap; the development-only pinned creation preflight
+`MgSelectionRequest` rejects invalid sizes and ranges, and
+`validate_federation_name` rejects names `form_federation` would refuse. The
+purchase APIs additionally expose side-effect-free, operation-specific preflights for
+consumers: selected purchase validates the sealed seat count, preview age,
+explicit payer, and cap; the development-only pinned purchase preflight
 validates a single-patch range, locator count, and unique MG keys.
 Timing options likewise have private fields and checked construction; invalid
 runtime or lease bounds cannot reach identity, durable state, lease, wallet, or
@@ -390,7 +412,7 @@ reconciliation then writes the record and makes the imported backup the last
 published generation. Backups and post-formation workflows read only this
 record; formation rows remain the history of a local DKG. Opening migrates
 storage written before the record existed.
-On restart, both a local `Formed` record and a restored backup start unsynced.
+On restart, both a locally formed federation and a restored backup start unsynced.
 Fresh threshold consensus must match the saved federation identity and verified
 directory before either becomes fresh; restored seats and any saved liquidity
 commitment must also match. This check needs no live Manifold Guardian and does not
@@ -400,31 +422,33 @@ the saved managers without waiting for every manager. It verifies the same
 federation and remembers multiple guardian addresses in memory for later
 liquidity and gateway reads. Backups and committed request bytes are unchanged.
 
-After `Formed`, `propose_guardian_fees` changes only the rate through the generic
+After formation, `propose_guardian_fees` changes only the rate through the generic
 metadata verb. It does not resolve or resend recipient accounts. Directory and
 recipient keys are formation-owned and generic writes carrying them revalidate
 the stored signed directory and compiled split before voting.
 
 ## Public state and concurrency
 
-The engine exposes `FaStatus::Recovery` while an opened restored-mnemonic FA
-has an unfinished backup check; `Idle`, `Formation`, and `Restored` mean the
-check is complete or not required. A formation always carries its formation id
-and fully resolved persisted intent. Recovery lookup failures remain retryable;
+`FaStatus` has one optional part per state machine: `recovery` while an
+opened restored-mnemonic FA has an unfinished backup check, `purchase`, `pool`,
+`formation` until it forms, and `federation` for a formed or imported
+federation. A purchase carries its id and resolved request; a formation carries
+its id, name, and DKG line. Recovery lookup failures remain retryable;
 the status watch publishes the ready state only after releasing the mutation
 guard. The recovery requirement is reconstructed on reopen from the caller's
 persisted mnemonic provenance and the FA database's environment-scoped
 completion marker.
 
-Aggregate phases are `Preparing`, `AwaitingPaymentReadiness`, `AcquiringSeats`, `PreparingDkg`,
-`DkgUnderway`, `DkgComplete`, `PublishingSeatBindings`, `Formed`; status is
+Purchase phases are `Preparing`, `AwaitingPaymentReadiness`, `AcquiringSeats`.
+Formation phases are `PreparingDkg`, `DkgUnderway`, `DkgComplete`,
+`PublishingSeatBindings`; a formed federation appears only as `federation`. Status is
 published through a watch channel independently of the future driving the run. Durable phases advance atomically
 with their required recovery facts: `DkgComplete` saves every accepted seat's
 quote, signed guardian-fee account, guardian setup code, and the common invite.
 `PublishingSeatBindings` saves the exact directory and initial fee target before
-submission; `Formed` records its confirmation in consensus. Reopening preserves
-these phases, and later checks keep `Formed` visible with freshness and errors
-reported separately. Inconsistent storage fails closed before status is published.
+submission; the formed state records its confirmation in consensus. Reopening preserves
+these phases, and a recheck of a formed federation reports its freshness and
+last error on `federation`. Inconsistent storage fails closed before status is published.
 The seat/fee-account pairing is
 validated on load, so formation records persisted before signed fee-account
 acceptance existed fail closed and must be reset rather than migrated because
@@ -436,12 +460,12 @@ after every sibling retains unchanged commercial terms. It then repeats the
 value-free exact funding preflight and resolves every MG transport before
 durably setting `payment_outputs_started`. The next fallible effect is the
 wallet output-generation poll. Changed terms return the pinned path to
-aggregate readiness; the selected path restores `Idle` for a fresh approval.
+aggregate readiness; the selected path removes the purchase for a fresh approval.
 The FA replays a stored free quote exactly until the MG signs a refusal, so a
 lost acceptance response cannot allocate a second quote-derived seat. In a
 selected all-free formation, that signed refusal consumes the exact admission
 without crossing the wallet-output boundary; the engine retains the terminal
-quote until abandon returns durable `Idle`, then requires a fresh
+quote until abandon removes the purchase, then requires a fresh
 selection preview rather than re-quoting the same admission. If abandon fails,
 reopen replays the exact refusal before retrying cleanup. A paid
 quote whose wallet payment already started is likewise replayed exactly rather
@@ -484,9 +508,9 @@ remains the protocol-owned dialing and verification binding, and a
 replacement approval swaps a row's exposed identity together with its
 admission.
 
-While the formation is value-safe — before wallet output generation was
-durably armed and before `DkgComplete` — `abandon_formation`
-wipes the durable formation state back to `Idle` under the run guard. Any exact
+While the purchase is value-safe — before wallet output generation was
+durably armed — `abandon_purchase`
+wipes the durable purchase state under the run guard. Any exact
 pre-output wallet reservation is first reconstructed
 by a recover-existing-only id probe and explicitly released. Authoritative
 absence permits the wipe; mismatch, storage failure, or ambiguity retains the
@@ -507,8 +531,7 @@ that, not a second abandon. It reads the recorded formation, asks every MG
 that accepted a seat to decommission it in one pass, and reports per seat
 whether the MG decommissioned it, had already done so, or refused. It takes
 no driver lease and writes nothing, so durable FA state is unchanged and a
-decommissioned federation still reads as `Formed`; abandon or a fresh formation
-is still what returns the FA to `Idle`. Seats are forfeited, never refunded,
+decommissioned federation still reads as formed. Seats are forfeited, never refunded,
 and only development and staging MGs accept the underlying verb
 ([SPEC-fa-rpc](../../mg/specs/SPEC-fa-rpc.md)).
 
@@ -557,7 +580,7 @@ apply Guardianito's trim-for-validation/raw-for-submission rules and the
 network effects; every MG repeats the same authoritative validation. The API
 does not accept raw metadata keys, clear fields, upload image bytes, or widen
 the MG allowlist. The operation requires
-the durable FA formation to be `Formed`, reconstructs every FA-owned seat from
+a formed federation record, reconstructs every FA-owned seat from
 that record, and shares the formation driver's process guard, database lease,
 deadline, connector, identity, and real consensus-reader capabilities.
 
@@ -565,7 +588,7 @@ Fedi constructs `FederationMetadataUpdate::terms_of_service_url(url)` and passes
 it to `FaClient::update_federation_metadata(update, options)`, with checked
 `MaintenanceRunOptions`, for both ready-made and custom terms. The URL is stored
 as `fedi:tos_url`; the result confirms fresh consensus adoption. A restored FA
-must first resume/reconcile to `Formed`.
+must first resume to reconcile it.
 
 Consumers must rebuild for the value-bearing `TermsOfService` variant and the
 removal of `GUARDIANITO_TERMS_OF_SERVICE_URL`. URL errors now use `InvalidUrl`
@@ -673,7 +696,7 @@ readiness, verified all-zero selected bootstrap without a publisher or wallet,
 typed priced-offer rejection, zero-balance admitted-payer listing, exact aggregate preflight,
 same-id reconstruction and mismatch refusal, capability carry and one-shot
 member consumption, drop-not-release, whole/member proven-safe release and
-crash ordering, over-cap and unavailable-seat release-before-`Idle`, and the
+crash ordering, over-cap and unavailable-seat release before the purchase is removed, and the
 independent output tombstone. A focused payer fixture gives the wallet one note
 covering several setup prices and fees, proves concurrent independent spends
 exhaust it, and proves ordered settlement forms successfully with exact final
