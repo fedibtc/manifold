@@ -42,5 +42,10 @@ defe-portalloc = { path = "../defe-portalloc" }
 fedi-decentralized-manifold-environment = { path = "../manifold-environment" }
 peerbadge-protocol.workspace = true
 tempfile = "3"
-tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "test-util"] }
+tokio = { workspace = true, features = [
+  "macros",
+  "rt",
+  "rt-multi-thread",
+  "test-util",
+] }
 tracing-subscriber = { version = "0.3", features = ["fmt"] }
