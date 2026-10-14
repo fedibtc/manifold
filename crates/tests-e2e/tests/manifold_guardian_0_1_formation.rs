@@ -2161,9 +2161,17 @@ async fn register_gateway_with_every_guardian(
 
     for (index, seat) in seats.iter().enumerate() {
         // Restarted MGs advertise fresh ephemeral transport addresses.
-        let locator: Locator = match replacement_locators.get(index) {
-            Some(locator) => serde_json::from_str(locator)?,
-            None => serde_json::from_value(seat["locator"].clone())?,
+        let locator: Locator = serde_json::from_value(seat["locator"].clone())?;
+        let locator = match replacement_locators
+            .iter()
+            .map(|locator| serde_json::from_str::<Locator>(locator))
+            .find(|replacement| {
+                replacement.as_ref().is_ok_and(|replacement| {
+                    replacement.endpoint_addr.id == locator.endpoint_addr.id
+                })
+            }) {
+            Some(replacement) => replacement?,
+            None => locator,
         };
         let seat_id = SeatId::new(
             seat["seat_id"]
