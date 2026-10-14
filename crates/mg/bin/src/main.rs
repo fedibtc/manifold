@@ -9,10 +9,12 @@
 //! receive a parent-death signal if the MG is hard-killed.
 
 mod duplicate_instance;
+mod guardian_config;
 #[cfg(feature = "embedded-operator-ui")]
 mod operator_ui;
 mod push_callback;
 mod seat_readiness;
+mod transfer_source;
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -412,11 +414,34 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         }
     }
 
+    // Reuse the one service endpoint for outbound transfer pulls. It is bound
+    // only after the duplicate-instance veto and before fleet workers start.
+    let endpoint_builder = if local_e2e {
+        Endpoint::builder(presets::N0DisableRelay)
+    } else {
+        Endpoint::builder(presets::N0)
+    };
+    let endpoint = endpoint_builder
+        .secret_key(
+            db.load_identity()
+                .await?
+                .ok_or_else(|| anyhow::anyhow!("completed onboarding has no fleet identity"))?
+                .derive_iroh_secret_key(),
+        )
+        .bind()
+        .await?;
     let wallet_origin = db.wallet_origin().await?;
     let fleet = Arc::new(
         Fleet::open_with_wallet(
             db.clone(),
             FleetConfig {
+                transfer_source: Arc::new(transfer_source::IrohTransferSource::new(
+                    endpoint.clone(),
+                    local_e2e
+                        && manifold_environment.environment() == ManifoldEnvironment::Development
+                        && manifold_environment.bitcoin_network() == bitcoin::Network::Regtest,
+                )),
+                guardian_config_validator: Arc::new(guardian_config::NativeGuardianConfigValidator),
                 manifold_environment: manifold_environment.environment(),
                 first_port_base: PortBase::new(args.first_port_base).ok_or_else(|| {
                     anyhow::anyhow!("--first-port-base leaves no room for a seat's port block")
@@ -465,16 +490,6 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         }
         None => None,
     };
-    // The network-isolated formation harness supplies explicit loopback routes.
-    let endpoint_builder = if local_e2e {
-        Endpoint::builder(presets::N0DisableRelay)
-    } else {
-        Endpoint::builder(presets::N0)
-    };
-    let endpoint = endpoint_builder
-        .secret_key(identity.derive_iroh_secret_key())
-        .bind()
-        .await?;
     let keys = identity.derive_service_nostr_keys();
     let telemetry_registration_keys = keys.clone();
     let holder_authorization_store = Arc::new(FleetHolderAuthorizationStore::for_fleet(&fleet));

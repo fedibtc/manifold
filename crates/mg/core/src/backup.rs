@@ -38,8 +38,9 @@ use crate::identity::RootMnemonic;
 ///   decommission is recorded, so the archive travels beside the document
 ///   ([`SeatPublication`]) and this document names it.
 ///
-/// Everything else either derives from the mnemonic or is refetched: the
-/// consensus database comes from peers, every key from `identity`.
+/// Native keys derive from the mnemonic; imported guardian authentication does
+/// not and travels in the sealed transfer recovery facts. Consensus history
+/// still comes from peers.
 ///
 /// **No ceremony state is carried, deliberately.** Before consensus a seat owns
 /// nothing irreplaceable on the `fedimintd` side: no key shares exist, and a
@@ -51,7 +52,8 @@ use crate::identity::RootMnemonic;
 /// After formation the immutable formed-seat fact must be re-established, and
 /// [`Self::guardian`] already answers exactly that question: `fedimintd` writes
 /// its config when the ceremony completes and at no other time, so
-/// `guardian.is_some()` is the predicate, not an approximation of it. Carrying
+/// `guardian.is_some()` is the native-seat predicate. A removed transfer source
+/// instead retains its formed invite in the archive-less tombstone. Carrying
 /// an observation timestamp beside it would be a second source of truth for one
 /// fact.
 ///
@@ -80,6 +82,65 @@ pub struct SeatBackupDocument {
     /// deliberately left; relay-side event deletion is honoured at the relay's
     /// discretion and cannot be relied on for this.
     pub decommissioned_at_ms: Option<i64>,
+    /// Transfer recovery facts; absent on legacy/native seats. Omission preserves
+    /// their original document digest. Never contains a live signed grant.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transfer: Option<TransferBackup>,
+}
+
+/// Transfer facts are independent of the guardian archive: a removed source
+/// retains its formed identity and permanent fence without retaining key shares.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct TransferBackup {
+    pub incoming: Option<IncomingTransferBackup>,
+    pub outgoing: Option<OutgoingTransferBackup>,
+}
+
+/// Incoming provenance survives renewal and whole-fleet recovery. Accepted auth
+/// is confidential and is sealed by the destination's normal backup encryption.
+#[derive(Clone, Eq, PartialEq, Serialize, Deserialize)]
+pub enum IncomingTransferBackup {
+    /// No accepted material: restore as expired, never as an ordinary spare.
+    Awaiting {
+        binding: crate::transfer_state::TransferMove,
+        callback_commitment: Option<[u8; 32]>,
+    },
+    /// Restore through the import validation/installation path, not straight into
+    /// a running child. The archive remains beside the document.
+    Accepted {
+        binding: crate::transfer_state::TransferMove,
+        api_auth: String,
+        callback_commitment: Option<[u8; 32]>,
+    },
+}
+
+impl std::fmt::Debug for IncomingTransferBackup {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("IncomingTransferBackup(redacted)")
+    }
+}
+
+impl IncomingTransferBackup {
+    pub(crate) fn callback_commitment(&self) -> Option<[u8; 32]> {
+        match self {
+            Self::Awaiting {
+                callback_commitment,
+                ..
+            }
+            | Self::Accepted {
+                callback_commitment,
+                ..
+            } => *callback_commitment,
+        }
+    }
+}
+
+/// The source's permanent fence. Removing and Removed publish the same
+/// archive-less tombstone before any local guardian secrets are deleted.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct OutgoingTransferBackup {
+    pub removed: bool,
+    pub federation_invite: InviteCode,
 }
 
 /// The part of a seat's payment that cannot be reconstructed.
@@ -125,8 +186,8 @@ pub struct GuardianArchiveRef {
 /// `local.json`, `consensus.json`, `private.salt`, `private.encrypt` — and
 /// deliberately not the rest of the data directory: the consensus database
 /// comes back from peers, `client.json` and `invite-code` are derived, and
-/// `password.private` is a plaintext copy of an api_auth this fleet derives
-/// from its mnemonic anyway.
+/// `password.private` is a plaintext copy of an api_auth either derived locally
+/// or carried separately in an imported seat's sealed recovery document.
 ///
 /// Read from disk rather than pulled from that endpoint, for two reasons the
 /// endpoint cannot give: it needs a live child API, and it re-encrypts the
@@ -135,7 +196,7 @@ pub struct GuardianArchiveRef {
 /// every time it is published.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct GuardianArchive {
-    /// `private.encrypt`, still encrypted under the mnemonic-derived
+    /// `private.encrypt`, still encrypted under the original guardian's
     /// `api_auth` (ARCH-manifold-guardian-identity), hex as written on disk.
     pub private_encrypt: String,
     /// `private.salt`, required to decrypt the above.
@@ -174,7 +235,7 @@ const PRIVATE_CONFIG_FILE: &str = "private.encrypt";
 const PRIVATE_SALT_FILE: &str = "private.salt";
 /// `fedimintd` refuses to load an existing config without this file — it holds
 /// the `api_auth` that decrypts `private.encrypt`. It is not *in* the archive
-/// (it is derivable from the mnemonic), so restore re-derives and writes it.
+/// so restore obtains the effective authentication and writes it separately.
 const PLAINTEXT_PASSWORD_FILE: &str = "password.private";
 
 /// Read one seat's guardian archive out of its `fedimintd` data directory.
@@ -225,7 +286,7 @@ pub(crate) async fn read_guardian_archive(
 /// The archive is checked against the digest the seat's document names *here*
 /// rather than by the caller — relay bytes are only safe because of that check,
 /// so the check belongs on this side of the boundary where it cannot be
-/// skipped. `api_auth` is the mnemonic-derived seat credential
+/// skipped. `api_auth` is the effective, possibly imported seat credential
 /// (ARCH-manifold-guardian-identity): the exact bytes `fedimintd` itself writes to
 /// this file after a ceremony.
 pub(crate) async fn write_restored_seat_dir(
@@ -241,7 +302,11 @@ pub(crate) async fn write_restored_seat_dir(
             found,
         });
     }
-    tokio::fs::create_dir_all(seat_data_dir).await?;
+    tokio::fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(seat_data_dir)
+        .await?;
     for (name, contents) in [
         (PRIVATE_CONFIG_FILE, archive.private_encrypt.as_str()),
         (PRIVATE_SALT_FILE, archive.private_salt.as_str()),
@@ -249,9 +314,24 @@ pub(crate) async fn write_restored_seat_dir(
         (CONSENSUS_CONFIG_FILE, archive.consensus_json.as_str()),
         (PLAINTEXT_PASSWORD_FILE, api_auth),
     ] {
-        tokio::fs::write(seat_data_dir.join(name), contents).await?;
+        use tokio::io::AsyncWriteExt;
+        let mut file = tokio::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(seat_data_dir.join(name))
+            .await?;
+        file.write_all(contents.as_bytes()).await?;
+        file.sync_all().await?;
     }
+    sync_directory(seat_data_dir).await?;
     Ok(())
+}
+
+/// Make directory entry changes durable before a SQLite fact can authorize a
+/// child start. These paths are within the exclusively owned Unix data root.
+pub(crate) async fn sync_directory(path: &std::path::Path) -> std::io::Result<()> {
+    tokio::fs::File::open(path).await?.sync_all().await
 }
 
 /// Whether an existing directory is exactly what an interrupted attempt of
@@ -327,7 +407,87 @@ impl SeatBackupDocument {
             payment,
             guardian,
             decommissioned_at_ms,
+            transfer: None,
         }
+    }
+
+    /// Imported authentication is not derived from this host's root.
+    pub(crate) fn effective_api_auth(&self, identity: &RootMnemonic) -> String {
+        match self
+            .transfer
+            .as_ref()
+            .and_then(|transfer| transfer.incoming.as_ref())
+        {
+            Some(IncomingTransferBackup::Accepted { api_auth, .. }) => api_auth.clone(),
+            _ => identity.derive_seat_keys(&self.seat_id).api_auth,
+        }
+    }
+
+    /// Validate shape before restore touches files or commits fleet facts.
+    pub(crate) fn validate_transfer(&self) -> anyhow::Result<()> {
+        let Some(transfer) = &self.transfer else {
+            return Ok(());
+        };
+        anyhow::ensure!(
+            transfer.incoming.is_some() || transfer.outgoing.is_some(),
+            "empty transfer recovery facts"
+        );
+        if let Some(outgoing) = &transfer.outgoing {
+            anyhow::ensure!(
+                outgoing.removed == self.guardian.is_none(),
+                "transfer retirement archive mismatch"
+            );
+            if let Some(guardian) = &self.guardian {
+                anyhow::ensure!(
+                    guardian.federation_invite.as_ref() == Some(&outgoing.federation_invite),
+                    "transfer retirement invite mismatch"
+                );
+            }
+            anyhow::ensure!(
+                !outgoing.removed || transfer.incoming.is_none(),
+                "removed guardian retains imported secrets"
+            );
+        }
+        if let Some(incoming) = &transfer.incoming {
+            let binding = match incoming {
+                IncomingTransferBackup::Awaiting { binding, .. } => {
+                    anyhow::ensure!(
+                        self.guardian.is_none() && transfer.outgoing.is_none(),
+                        "unaccepted transfer has guardian facts"
+                    );
+                    binding
+                }
+                IncomingTransferBackup::Accepted {
+                    binding, api_auth, ..
+                } => {
+                    anyhow::ensure!(
+                        !api_auth.is_empty() && api_auth.len() <= 1024,
+                        "invalid imported authentication"
+                    );
+                    let invite = self
+                        .guardian
+                        .as_ref()
+                        .and_then(|guardian| guardian.federation_invite.as_ref())
+                        .ok_or_else(|| {
+                            anyhow::anyhow!("accepted transfer lacks guardian identity")
+                        })?;
+                    let invite: fedimint_core::invite_code::InviteCode = invite
+                        .0
+                        .parse()
+                        .map_err(|_| anyhow::anyhow!("invalid imported federation invite"))?;
+                    anyhow::ensure!(
+                        invite.federation_id().to_string() == binding.federation_id.0,
+                        "imported federation identity mismatch"
+                    );
+                    binding
+                }
+            };
+            anyhow::ensure!(
+                binding.fa_id == self.fa_id && binding.destination_seat_id == self.seat_id,
+                "incoming transfer seat ownership mismatch"
+            );
+        }
+        Ok(())
     }
 
     /// Rebuild the durable creation facts a restored fleet inserts, under the
@@ -421,32 +581,97 @@ pub(crate) async fn seat_publication_plan(
         .payment(&facts.seat_id)
         .await?
         .map(|record| PaymentBackup::from_record(&record));
-    let federation_invite = db.formed_federation_invite(&facts.seat_id).await?;
+    let incoming = db.incoming_transfer(&facts.seat_id).await?;
+    let outgoing = db.outgoing_transfer(&facts.seat_id).await?;
+    let removed = matches!(
+        outgoing,
+        Some(
+            crate::transfer_state::OutgoingTransfer::Removing
+                | crate::transfer_state::OutgoingTransfer::Removed
+        )
+    );
+    let formed_invite = db.formed_federation_invite(&facts.seat_id).await?;
+    let federation_invite = formed_invite.clone().or_else(|| {
+        incoming
+            .as_ref()
+            .and_then(|incoming| incoming.invite_code().cloned())
+    });
     let decommissioned_at_ms = db.decommissioned_at_ms(&facts.seat_id).await?;
 
-    let (archive, archive_sha256) = match confirmed_archive_digest {
-        Some(digest) => (None, Some(digest.to_owned())),
-        // Only an immutable formed row associates the final directory with a
-        // completed federation. Until it lands, the document carries no
-        // guardian even if event delivery left files in place.
-        None if federation_invite.is_none() => (None, None),
-        None => {
-            let seat_data_dir = crate::seat_process::seat_data_dir(process, facts.seat_no);
-            let archive = read_guardian_archive(&seat_data_dir).await?;
-            let archive = archive.ok_or_else(|| {
-                anyhow::anyhow!(
-                    "consensus has run but this seat has no guardian archive to back up"
-                )
-            })?;
-            let digest = archive.digest();
-            (Some(archive), Some(digest))
+    // Accepted bytes, including original auth, are durable before installation.
+    // Do not require a final directory to make that acceptance recoverable.
+    let material = if removed {
+        None
+    } else {
+        incoming
+            .as_ref()
+            .and_then(|incoming| incoming.material())
+            .map(|(bytes, _)| crate::transfer_package::TransferMaterial::decode(bytes))
+            .transpose()?
+    };
+    let (archive, archive_sha256) = if removed {
+        (None, None)
+    } else if let Some(material) = &material {
+        let digest = material.archive.digest();
+        (
+            (confirmed_archive_digest != Some(digest.as_str())).then(|| material.archive.clone()),
+            Some(digest),
+        )
+    } else {
+        match confirmed_archive_digest {
+            Some(digest) => (None, Some(digest.to_owned())),
+            // Only an immutable formed row associates the final directory with a
+            // completed federation. Until it lands, the document carries no
+            // guardian even if event delivery left files in place.
+            None if federation_invite.is_none() => (None, None),
+            None => {
+                let seat_data_dir = crate::seat_process::seat_data_dir(process, facts.seat_no);
+                let archive = read_guardian_archive(&seat_data_dir).await?;
+                let archive = archive.ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "consensus has run but this seat has no guardian archive to back up"
+                    )
+                })?;
+                let digest = archive.digest();
+                (Some(archive), Some(digest))
+            }
         }
     };
     let guardian = archive_sha256.map(|archive_sha256| GuardianArchiveRef {
         archive_sha256,
         federation_invite,
     });
-    let document = SeatBackupDocument::new(facts, payment, guardian, decommissioned_at_ms);
+    let mut document = SeatBackupDocument::new(facts, payment, guardian, decommissioned_at_ms);
+    if incoming.is_some() || outgoing.is_some() {
+        document.transfer = Some(TransferBackup {
+            incoming: if removed {
+                None
+            } else {
+                incoming.map(|incoming| match material {
+                    Some(material) => IncomingTransferBackup::Accepted {
+                        binding: incoming.binding,
+                        api_auth: material.api_auth,
+                        callback_commitment: incoming.callback_commitment,
+                    },
+                    None => IncomingTransferBackup::Awaiting {
+                        binding: incoming.binding,
+                        callback_commitment: incoming.callback_commitment,
+                    },
+                })
+            },
+            outgoing: outgoing
+                .map(|_| {
+                    formed_invite
+                        .map(|federation_invite| OutgoingTransferBackup {
+                            removed,
+                            federation_invite,
+                        })
+                        .ok_or_else(|| anyhow::anyhow!("retired source lacks formed identity"))
+                })
+                .transpose()?,
+        });
+    }
+    document.validate_transfer()?;
     Ok(SeatPublication { document, archive })
 }
 
@@ -468,8 +693,8 @@ pub struct RecoveredFleet {
 }
 
 impl RecoveredFleet {
-    /// Seats that came back holding a guardian config: the ones that host a
-    /// live federation and must be formed once restored.
+    /// Seats that came back holding a guardian config. Removed transfer sources
+    /// retain formed accounting separately and are not included in this count.
     pub fn formed(&self) -> usize {
         self.seats
             .iter()
@@ -518,6 +743,12 @@ pub trait BackupSink: Send + Sync + 'static {
     /// describes events this sink's own reader would refuse, so changing the
     /// version republishes every seat.
     fn format_version(&self) -> u32;
+
+    /// Whether read-back confirmations represent recoverable storage.
+    /// Discarding adapters must never authorize a destructive transfer step.
+    fn supports_transfer_barrier(&self) -> bool {
+        false
+    }
 }
 
 /// A sink that confirms every publication and stores none of them.

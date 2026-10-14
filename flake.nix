@@ -374,74 +374,80 @@
               env.FEDIMINT_BUILD_FORCE_GIT_HASH = fedimintSourceRev;
             };
 
+            # Explicit qualification uses the ordinary runner and binaries, but
+            # remains outside routine SelfCI's aggregate.
+            guardianTransferTests =
+              runTests "mg-transfer" testArtifacts runtimeBins workspaceTestArgs
+                "binary(manifold_guardian_0_1_formation) & test(=guardian_transfer::native_guardian_transfer_under_defe)"
+                null;
+
+            # Keep every workspace runner on the artifact feature set.
+            # A mismatch makes Cargo recompile inside each isolated runner.
+            workspaceTestArgs = "--workspace --features fedi-decentralized-cloud-mg-telemetry/defe-test-support";
+            # Linux Nix sandboxes isolate each runner's loopback network.
+            # Darwin runners share host loopback while keeping independent
+            # $TMPDIR-backed defe-portalloc ledgers, so concurrent runners
+            # can reserve the same ports before their services bind. Making
+            # each Darwin runner consume its predecessor serializes only the
+            # platform that lacks network namespaces.
+            darwinRunnerDependency =
+              previousRunner:
+              pkgs.lib.optionalString (pkgs.stdenv.isDarwin && previousRunner != null) ''
+                test -e ${previousRunner}
+              '';
+
+            runTests =
+              name: artifacts: bins: cargoArgs: filter: previousRunner:
+              craneLib.mkCargoDerivation {
+                # Darwin includes the derivation name in its build TMPDIR;
+                # keep it short enough for nested Unix-domain sockets.
+                pname = if pkgs.stdenv.isDarwin then "df-nextest-${name}" else "${projectName}-nextest-${name}";
+                cargoArtifacts = artifacts;
+                doCheck = true;
+                doInstallCargoArtifacts = false;
+                env = {
+                  NEXTEST_SHOW_PROGRESS = "none";
+                  NEXTEST_STATUS_LEVEL = "none";
+                };
+                nativeBuildInputs = [
+                  pkgs.cargo-nextest
+                  pkgs.nostr-rs-relay
+                ];
+                buildPhaseCargoCommand = "mkdir -p $out";
+                checkPhaseCargoCommand = ''
+                  ${darwinRunnerDependency previousRunner}
+                  export DEV_DEFE_PORTALLOC_DATA_DIR="$TMPDIR/defe-portalloc"
+                  export FA_CLI_TEST_BIN=${bins}/bin/fa-cli
+                  export MG_E2E=1
+                  export MG_E2E_MANIFOLD_GUARDIAN_BIN=${bins}/bin/fleet-manager
+                  export MG_E2E_MG_CLI_BIN=${bins}/bin/fman-cli
+                  export MG_E2E_FA_CLI_BIN=${bins}/bin/fa-cli
+                  export MG_E2E_FEDIMINT_CLI_BIN=${fedimint.packages.${system}.fedimint-cli}/bin/fedimint-cli
+                  export MG_E2E_BITCOIN_CLI_BIN=${pkgs.bitcoind}/bin/bitcoin-cli
+                  export MG_E2E_ESPLORA_BIN=${fedimintPkgs.esplora-electrs}/bin/esplora
+                  export FLIP_E2E_GATEWAYD_BIN=${fedimint.packages.${system}.gatewayd}/bin/gatewayd
+                  export FLIP_E2E_GATEWAY_CLI_BIN=${fedimint.packages.${system}.gateway-cli}/bin/gateway-cli
+                  export FLIP_E2E_FEDIMINTD_BIN=${fedimint.packages.${system}.fedimintd}/bin/fedimintd
+                  export FLIP_E2E_FEDIMINT_CLI_BIN=${fedimint.packages.${system}.fedimint-cli}/bin/fedimint-cli
+                  export FLIP_E2E_SP_FEDIMINTD_BIN=${fedi.packages.${system}.fedi-fedimintd}/bin/fedimintd
+                  export FLIP_E2E_ESPLORA_BIN=${fedimintPkgs.esplora-electrs}/bin/esplora
+                  export FLIP_E2E_BITCOIN_CLI_BIN=${pkgs.bitcoind}/bin/bitcoin-cli
+                  export FLIP_E2E_LIQUIDITY_MANAGER_DAEMON_BIN=${bins}/bin/liquidity-manager-daemon
+                  mkdir -p "$DEV_DEFE_PORTALLOC_DATA_DIR"
+                  ${bins}/bin/defe \
+                    --binary-path ${bins}/bin \
+                    --nostr-rs-relay-bin ${pkgs.nostr-rs-relay}/bin/nostr-rs-relay \
+                    --bitcoind-bin ${pkgs.bitcoind}/bin/bitcoind \
+                    --gatewayd-bin ${fedimint.packages.${system}.gatewayd}/bin/gatewayd \
+                    --gateway-cli-bin ${fedimint.packages.${system}.gateway-cli}/bin/gateway-cli \
+                    exec cargo nextest run \
+                    ''${CARGO_PROFILE:+--cargo-profile $CARGO_PROFILE} \
+                    ${cargoArgs} -E ${pkgs.lib.escapeShellArg filter}
+                '';
+              };
+
             tests =
               let
-
-                # Keep every workspace runner on the artifact feature set.
-                # A mismatch makes Cargo recompile inside each isolated runner.
-                workspaceTestArgs = "--workspace --features fedi-decentralized-cloud-mg-telemetry/defe-test-support";
-                # Linux Nix sandboxes isolate each runner's loopback network.
-                # Darwin runners share host loopback while keeping independent
-                # $TMPDIR-backed defe-portalloc ledgers, so concurrent runners
-                # can reserve the same ports before their services bind. Making
-                # each Darwin runner consume its predecessor serializes only the
-                # platform that lacks network namespaces.
-                darwinRunnerDependency =
-                  previousRunner:
-                  pkgs.lib.optionalString (pkgs.stdenv.isDarwin && previousRunner != null) ''
-                    test -e ${previousRunner}
-                  '';
-
-                runTests =
-                  name: artifacts: bins: cargoArgs: filter: previousRunner:
-                  craneLib.mkCargoDerivation {
-                    # Darwin includes the derivation name in its build TMPDIR;
-                    # keep it short enough for nested Unix-domain sockets.
-                    pname = if pkgs.stdenv.isDarwin then "df-nextest-${name}" else "${projectName}-nextest-${name}";
-                    cargoArtifacts = artifacts;
-                    doCheck = true;
-                    doInstallCargoArtifacts = false;
-                    env = {
-                      NEXTEST_SHOW_PROGRESS = "none";
-                      NEXTEST_STATUS_LEVEL = "none";
-                    };
-                    nativeBuildInputs = [
-                      pkgs.cargo-nextest
-                      pkgs.nostr-rs-relay
-                    ];
-                    buildPhaseCargoCommand = "mkdir -p $out";
-                    checkPhaseCargoCommand = ''
-                      ${darwinRunnerDependency previousRunner}
-                      export DEV_DEFE_PORTALLOC_DATA_DIR="$TMPDIR/defe-portalloc"
-                      export FA_CLI_TEST_BIN=${bins}/bin/fa-cli
-                      export MG_E2E=1
-                      export MG_E2E_MANIFOLD_GUARDIAN_BIN=${bins}/bin/fleet-manager
-                      export MG_E2E_MG_CLI_BIN=${bins}/bin/fman-cli
-                      export MG_E2E_FA_CLI_BIN=${bins}/bin/fa-cli
-                      export MG_E2E_FEDIMINT_CLI_BIN=${fedimint.packages.${system}.fedimint-cli}/bin/fedimint-cli
-                      export MG_E2E_BITCOIN_CLI_BIN=${pkgs.bitcoind}/bin/bitcoin-cli
-                      export MG_E2E_ESPLORA_BIN=${fedimintPkgs.esplora-electrs}/bin/esplora
-                      export FLIP_E2E_GATEWAYD_BIN=${fedimint.packages.${system}.gatewayd}/bin/gatewayd
-                      export FLIP_E2E_GATEWAY_CLI_BIN=${fedimint.packages.${system}.gateway-cli}/bin/gateway-cli
-                      export FLIP_E2E_FEDIMINTD_BIN=${fedimint.packages.${system}.fedimintd}/bin/fedimintd
-                      export FLIP_E2E_FEDIMINT_CLI_BIN=${fedimint.packages.${system}.fedimint-cli}/bin/fedimint-cli
-                      export FLIP_E2E_SP_FEDIMINTD_BIN=${fedi.packages.${system}.fedi-fedimintd}/bin/fedimintd
-                      export FLIP_E2E_ESPLORA_BIN=${fedimintPkgs.esplora-electrs}/bin/esplora
-                      export FLIP_E2E_BITCOIN_CLI_BIN=${pkgs.bitcoind}/bin/bitcoin-cli
-                      export FLIP_E2E_LIQUIDITY_MANAGER_DAEMON_BIN=${bins}/bin/liquidity-manager-daemon
-                      mkdir -p "$DEV_DEFE_PORTALLOC_DATA_DIR"
-                      ${bins}/bin/defe \
-                        --binary-path ${bins}/bin \
-                        --nostr-rs-relay-bin ${pkgs.nostr-rs-relay}/bin/nostr-rs-relay \
-                        --bitcoind-bin ${pkgs.bitcoind}/bin/bitcoind \
-                        --gatewayd-bin ${fedimint.packages.${system}.gatewayd}/bin/gatewayd \
-                        --gateway-cli-bin ${fedimint.packages.${system}.gateway-cli}/bin/gateway-cli \
-                        exec cargo nextest run \
-                        ''${CARGO_PROFILE:+--cargo-profile $CARGO_PROFILE} \
-                        ${cargoArgs} -E ${pkgs.lib.escapeShellArg filter}
-                    '';
-                  };
-
                 ordinaryRunner =
                   runTests "ordinary" testArtifacts runtimeBins workspaceTestArgs
                     "all() - binary(manifold_guardian_0_1_formation) - binary(integration_live_liquidity) - binary(integration_flip_operator_e2e)"
@@ -1826,6 +1832,7 @@
           operator-ui = operatorUi;
         }
         // pkgs.lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
+          guardian-transfer-tests = multiBuild.ci.guardianTransferTests;
           cloud-fman-telemetry-oci-image = cloudFmanTelemetryContainerImage;
           push-gateway-oci-image = pushGatewayContainerImage;
           fleet-manager-oci-image = fleetManagerContainerImage;

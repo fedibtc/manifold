@@ -860,6 +860,8 @@ struct MgState {
     /// Wakes cancellation tests after a fake accepts a metadata proposal.
     meta_submission_changed: Notify,
     attestation_calls: AtomicUsize,
+    /// Transient child-API readiness failures after transfer reports Running.
+    attestation_unavailable_remaining: AtomicUsize,
     /// Replacement MG index -> original federation peer id it operates.
     attested_peer_overrides: Mutex<HashMap<usize, usize>>,
     /// Seat 0 attests a peer id outside the federation's config.
@@ -1479,6 +1481,16 @@ impl ManifoldGuardianService for TestMg {
         _request: SignedRequest<GetPeerAttestationRequest>,
     ) -> FmResult<GetPeerAttestationResponse> {
         self.state.attestation_calls.fetch_add(1, Ordering::SeqCst);
+        if self
+            .state
+            .attestation_unavailable_remaining
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |remaining| {
+                remaining.checked_sub(1)
+            })
+            .is_ok()
+        {
+            return Err(ManifoldGuardianError::SeatUnavailable);
+        }
         let foreign = self.index == 0 && self.state.attest_foreign_peer.load(Ordering::SeqCst);
         let wrong_fee_account =
             self.index == 0 && self.state.attest_wrong_fee_account.load(Ordering::SeqCst);

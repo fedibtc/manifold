@@ -9,6 +9,7 @@
 //! [`Fleet::open`].
 
 mod payout;
+mod transfer;
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -79,6 +80,11 @@ pub struct FleetConfig {
     pub completion_callback_invoker: Arc<dyn CompletionCallbackInvoker>,
     /// Process-boundary capability used to start supervised seat children.
     pub process_spawner: SeatProcessSpawner,
+    /// Native guardian module validation, supplied by the binary that selects
+    /// the bundled server modules and supported Bitcoin network.
+    pub guardian_config_validator: Arc<dyn crate::transfer_native::GuardianConfigValidator>,
+    /// Outbound RPC transport; retries and acceptance belong to this fleet.
+    pub transfer_source: Arc<dyn crate::transfer_source::TransferSource>,
 }
 
 /// Payment has already been authenticated and verified offline. Fleet owns
@@ -324,16 +330,17 @@ pub struct Fleet {
     /// environment profile.
     backup: Arc<BackupWorker>,
     completion_hooks: CompletionHookWorker,
+    transfers: crate::transfer_worker::TransferWorker,
     fedimint_connectors: fedimint_connectors::ConnectorRegistry,
     claims: Arc<dyn EcashClaimWorker>,
     payouts: Arc<dyn EcashPayoutWorker>,
-    seats: RwLock<HashMap<SeatId, Arc<Seat>>>,
+    seats: Arc<RwLock<HashMap<SeatId, Arc<Seat>>>>,
     telemetry_generation: AtomicU64,
     telemetry_registration_changed: Notify,
     /// Edge trigger for the Nostr runtime to rebuild its advertisement. This is
     /// deliberately independent of the offer epoch, whose only job is quote
     /// validation.
-    advertisement_changed: Notify,
+    advertisement_changed: Arc<Notify>,
     /// The daemon's latest readiness report, for the operator. Admission
     /// reads the durable verdict instead.
     seat_readiness: Mutex<Option<ReadinessReport>>,
@@ -435,6 +442,7 @@ impl Fleet {
                 .bind()
                 .await
                 .context("bind native Fedimint API connectors")?;
+        let transfer_wake = crate::transfer_worker::TransferWake::default();
         let mut map = HashMap::new();
         for seat in db.list_seats().await? {
             let SeatRecord {
@@ -442,16 +450,26 @@ impl Fleet {
                 decommissioned_at_ms,
             } = seat;
             let formed_invite = db.formed_federation_invite(&facts.seat_id).await?;
+            let transfer_phase = db.transfer_phase(&facts.seat_id).await?;
             let ports =
                 SeatPorts::from_base(facts.seat_no.port_base(config.first_port_base).ok_or_else(
                     || anyhow!("stored seat_no {} exceeds port grid", facts.seat_no.0),
                 )?);
-            let keys = identity.derive_seat_keys(&facts.seat_id);
+            crate::transfer_native::clear_transfer_work(&config.process, facts.seat_no).await?;
+            let keys = crate::transfer_native::load_effective_keys(
+                &db,
+                &identity,
+                &config.process,
+                &facts,
+                config.guardian_config_validator.clone(),
+            )
+            .await?;
             let seat = Seat::start(
                 SeatDurableState {
                     facts,
                     formed_invite,
                     decommissioned_at_ms,
+                    transfer_phase,
                 },
                 SeatRuntimeDependencies {
                     db: db.clone(),
@@ -463,12 +481,24 @@ impl Fleet {
                     fedimint_connectors: fedimint_connectors.clone(),
                     backup: backup.clone(),
                     completion_hooks: completion_hooks.wake_handle(),
+                    transfer_wake: transfer_wake.clone(),
                     process_spawner: config.process_spawner.clone(),
                 },
             );
             map.insert(seat.facts().seat_id.clone(), seat);
         }
 
+        let seats = Arc::new(RwLock::new(map));
+        let advertisement_changed = Arc::new(Notify::new());
+        let transfers = crate::transfer_worker::TransferWorker::new(
+            db.clone(),
+            config.clone(),
+            identity.clone(),
+            backup.clone(),
+            seats.clone(),
+            advertisement_changed.clone(),
+            transfer_wake,
+        );
         let fleet = Self {
             config,
             db,
@@ -476,13 +506,14 @@ impl Fleet {
             wallet,
             backup,
             completion_hooks,
+            transfers,
             fedimint_connectors,
             claims,
             payouts,
-            seats: RwLock::new(map),
+            seats,
             telemetry_generation: AtomicU64::new(telemetry_generation),
             telemetry_registration_changed: Notify::new(),
-            advertisement_changed: Notify::new(),
+            advertisement_changed,
             seat_readiness: Mutex::new(None),
         };
         Ok(fleet)
@@ -625,6 +656,7 @@ impl Fleet {
     /// Stop every supervised child. Used by the daemon before process exit and
     /// by embedders before dropping the runtime; `Drop` remains best-effort.
     pub async fn shutdown(&self) {
+        self.transfers.shutdown().await;
         self.completion_hooks.shutdown().await;
         self.claims.shutdown().await;
         let seats = self
@@ -827,6 +859,7 @@ impl Fleet {
                     facts,
                     formed_invite: None,
                     decommissioned_at_ms: None,
+                    transfer_phase: None,
                 },
                 true,
             ),
@@ -834,13 +867,31 @@ impl Fleet {
                 SeatDurableState {
                     formed_invite: self.db.formed_federation_invite(&facts.seat_id).await?,
                     decommissioned_at_ms: self.db.decommissioned_at_ms(&facts.seat_id).await?,
+                    transfer_phase: self.db.transfer_phase(&facts.seat_id).await?,
                     facts,
                 },
                 false,
             ),
         };
 
-        let (_, installed) = self.ensure_seat_runtime(durable);
+        let installed = if self.seat_by_id(&durable.facts.seat_id).is_some() {
+            false
+        } else {
+            let keys = if inserted {
+                // Fresh admission still publishes synchronously after commit.
+                self.identity.derive_seat_keys(&durable.facts.seat_id)
+            } else {
+                crate::transfer_native::load_effective_keys(
+                    &self.db,
+                    &self.identity,
+                    &self.config.process,
+                    &durable.facts,
+                    self.config.guardian_config_validator.clone(),
+                )
+                .await?
+            };
+            self.ensure_seat_runtime(durable, keys).1
+        };
         if inserted || installed {
             // Hint, never await: an FA's CreateSeat must not wait on the
             // operator's relay, and neither must anything downstream of it.
@@ -855,11 +906,16 @@ impl Fleet {
     /// Publish one durable seat into the process registry. Fresh admission
     /// installs synchronously after commit; a durable replay can first hydrate
     /// lifecycle state to repair an older interrupted publication.
-    fn ensure_seat_runtime(&self, durable: SeatDurableState) -> (Arc<Seat>, bool) {
+    fn ensure_seat_runtime(
+        &self,
+        durable: SeatDurableState,
+        keys: crate::identity::SeatKeys,
+    ) -> (Arc<Seat>, bool) {
         let SeatDurableState {
             facts,
             formed_invite,
             decommissioned_at_ms,
+            transfer_phase,
         } = durable;
         if let Some(seat) = self
             .seats
@@ -877,7 +933,6 @@ impl Fleet {
                 .port_base(self.config.first_port_base)
                 .expect("admitted seat_no has a port block"),
         );
-        let keys = self.identity.derive_seat_keys(&facts.seat_id);
         let mut seats = self
             .seats
             .write()
@@ -890,6 +945,7 @@ impl Fleet {
                 facts,
                 formed_invite,
                 decommissioned_at_ms,
+                transfer_phase,
             },
             SeatRuntimeDependencies {
                 db: self.db.clone(),
@@ -901,6 +957,7 @@ impl Fleet {
                 fedimint_connectors: self.fedimint_connectors.clone(),
                 backup: self.backup.clone(),
                 completion_hooks: self.completion_hooks.wake_handle(),
+                transfer_wake: self.transfers.wake_handle(),
                 process_spawner: self.config.process_spawner.clone(),
             },
         );
@@ -989,6 +1046,7 @@ impl Fleet {
     /// owner-bound (`CLAIM-manifold-guardian-selects-only-owned-seat-authority`).
     pub(crate) async fn decommission(&self, seat: &Seat) -> anyhow::Result<bool> {
         let decommissioned = seat.decommission().await?;
+        let _pause = self.transfers.quiesce(&seat.facts().seat_id).await;
         if decommissioned {
             // Hint a republish so the document carries the tombstone promptly:
             // a restore that read the previous version would bring this

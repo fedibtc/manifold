@@ -36,6 +36,11 @@ pub mod seat;
 pub mod seat_process;
 pub mod seat_readiness;
 pub mod service;
+pub mod transfer_native;
+pub mod transfer_package;
+pub mod transfer_source;
+pub mod transfer_state;
+mod transfer_worker;
 pub mod wallet;
 
 #[cfg(test)]

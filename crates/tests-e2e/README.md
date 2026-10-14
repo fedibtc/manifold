@@ -27,6 +27,56 @@ example `cargo test --workspace --exclude tests-e2e`.
 
 ## Manifold Guardian 0.1 formation gate
 
+### Guardian transfer
+
+The native transfer fixture uses real verified FA selection, seven native
+guardians, a free spare purchase, authenticated package transfer, and actual
+consensus readback. It stops the source before admission, restarts the waiting
+destination, drops the FA while the destination completes, then reopens the FA
+to replace the binding and remove the source. It also restores the
+destination from its mnemonic and Nostr backup. FA reopen uses a retained
+in-memory consumer database; this is not an FA disk or mnemonic recovery test.
+
+This Linux-only test uses the ordinary `MG_E2E` opt-in, nextest/Defe runner,
+and shipped daemon build. A focused flake output selects it without adding it
+to routine local SelfCI:
+
+```bash
+nix build -L .#guardian-transfer-tests
+```
+
+The FA verifies real credentials under the development issuer key, using a
+separate local authority/revocation relay. Its signed authority points at that
+relay, so verification neither needs public-network access nor skips revocation.
+
+The existing SelfCI GitHub workflow builds this output in a separate step on
+every in-repository PR. It is deliberately absent from routine local SelfCI
+and the flake's checks.
+The child has a three-minute failure deadline, not a fixed wait. The local-route
+development/regtest harness uses a two-second connection timeout so restarting the source does
+not spend the production thirty-second deadline on its stale route; RPC and
+production timeouts stay unchanged. Phase timings are printed for diagnosis.
+Virtual Tokio time would not advance the independent native processes.
+For a direct Cargo run with `just defe-serve` running:
+
+```bash
+cargo build -p mg --bin fleet-manager -p mg-cli --bin fman-cli \
+  -p devmon --bin manifold-test-issuer
+MG_E2E=1 \
+  MG_E2E_MANIFOLD_GUARDIAN_BIN="$PWD/target/debug/fleet-manager" \
+  MG_E2E_MG_CLI_BIN="$PWD/target/debug/fman-cli" \
+  cargo nextest run -p tests-e2e --test manifold_guardian_0_1_formation \
+    -E 'test(=guardian_transfer::native_guardian_transfer_under_defe)'
+```
+
+The isolated child supplies endpoint-ID-preserving local service routes.
+Only the local development/regtest harness reads `MG_E2E_TRANSFER_SERVICE_ROUTES`; routing does
+not change the grant, service key, or package verification. The stopped source
+and destination sequentially reuse one native socket grid so the test does not
+depend on public Iroh discovery.
+
+### Formation
+
 `tests/manifold_guardian_0_1_formation.rs` is the concrete 7-MG release-gate
 harness. It is checked in as a normal Cargo integration test, but it is a no-op
 unless explicitly enabled:

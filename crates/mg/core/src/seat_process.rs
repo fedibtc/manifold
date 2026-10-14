@@ -688,7 +688,7 @@ fn e2e_iroh_key(port: u16, role: &[u8]) -> [u8; 32] {
 }
 
 pub(crate) fn effective_iroh_p2p_key(keys: &SeatKeys, ports: SeatPorts) -> [u8; 32] {
-    if std::env::var_os("MG_E2E_LOCAL_IROH").is_some() {
+    if !keys.preserve_guardian_identity && std::env::var_os("MG_E2E_LOCAL_IROH").is_some() {
         e2e_iroh_key(ports.p2p(), b"p2p")
     } else {
         keys.iroh_p2p.to_bytes()
@@ -702,7 +702,7 @@ pub(crate) fn effective_iroh_p2p_key(keys: &SeatKeys, ports: SeatPorts) -> [u8; 
 /// can precompute; any daemon-side proof over the child's setup code must use
 /// this same effective key rather than assuming the production branch.
 pub(crate) fn effective_iroh_api_key(keys: &SeatKeys, ports: SeatPorts) -> iroh::SecretKey {
-    if std::env::var_os("MG_E2E_LOCAL_IROH").is_some() {
+    if !keys.preserve_guardian_identity && std::env::var_os("MG_E2E_LOCAL_IROH").is_some() {
         iroh::SecretKey::from_bytes(&e2e_iroh_key(ports.api(), b"api"))
     } else {
         keys.iroh_api.clone()

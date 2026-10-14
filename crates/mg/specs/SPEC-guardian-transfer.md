@@ -4,9 +4,11 @@
 
 `crates/service-manifold-guardian` defines the grant, the four verbs, the four
 seat statuses, the grant's validity rule, and `rebind_transferred_seat`.
-`fa-client` drives the FA side of every step. Every Manifold Guardian still
-answers the four verbs with `UnsupportedVerb` and never reports the new
-statuses.
+`fa-client` drives the FA side of every step. Ordinary Manifold Guardian builds
+implement the four verbs and resume durable transfers after restart without a
+feature or environment activation switch. Recovery assumes the latest published
+backup is returned and stale local snapshots are never restarted, as specified
+below; this implementation does not establish freshness against hostile rollback.
 
 ## Record justification
 
@@ -88,12 +90,15 @@ the move.
 The source records the move as a tombstone in its seat backup, not as a
 deletion: relays may keep a deleted event. A restored `Transferred` seat
 stays stopped, and `RemoveSeat` still applies to it. A confirmed publish does
-not stop a relay from serving the older running-seat event instead. The
-transfer therefore depends on restore never adopting a replayed older seat
-event in place of the tombstone, as
+not stop a relay from serving the older running-seat event instead. Safe recovery
+therefore assumes the configured backup relay returns the latest published seat
+state, including retirement/removal tombstones, and operators do not restart
+stale local snapshots. Under this premise,
 [CLAIM-manifold-guardian-restore-adopts-authentic-consistent-state](./CLAIM-manifold-guardian-restore-adopts-authentic-consistent-state.md)
-requires. The MG implementation must satisfy that claim before transfer
-ships.
+states the authenticity and consistency obligation. It remains unverified.
+There is no independent freshness checkpoint: violating the latest-backup
+premise can resurrect the source alongside the destination. Mandatory source
+and destination backup barriers are retained, but do not solve hostile rollback.
 
 ## Custody
 
@@ -103,4 +108,3 @@ holder hosts, or ever hosted, a peer of the federation. A past host may still
 hold its old key share, and no credential proves that it deleted it. The FA
 keeps past hosts in its own backup for this check. The source checks only the
 FA's signature and ownership.
-

@@ -152,6 +152,44 @@ pub(crate) async fn install(
     if db.load_identity().await?.is_some() {
         return Err(RestoreError::AlreadyOnboarded);
     }
+    for seat in &fleet.seats {
+        seat.validate_transfer()?;
+        if let Some(incoming) = seat
+            .transfer
+            .as_ref()
+            .and_then(|transfer| transfer.incoming.as_ref())
+        {
+            use crate::backup::IncomingTransferBackup;
+            let binding = match incoming {
+                IncomingTransferBackup::Awaiting { binding, .. } => binding,
+                IncomingTransferBackup::Accepted {
+                    binding, api_auth, ..
+                } => {
+                    let guardian = seat.guardian.as_ref().expect("validated accepted shape");
+                    let archive = fleet.archives.get(&seat.seat_id).ok_or_else(|| {
+                        RestoreError::MissingArchive {
+                            seat_id: seat.seat_id.clone(),
+                        }
+                    })?;
+                    if archive.digest() != guardian.archive_sha256 {
+                        return Err(
+                            anyhow::anyhow!("accepted transfer archive digest mismatch").into()
+                        );
+                    }
+                    crate::transfer_package::TransferMaterial {
+                        archive: archive.clone(),
+                        api_auth: api_auth.clone(),
+                    }
+                    .encode()
+                    .map_err(anyhow::Error::from)?;
+                    binding
+                }
+            };
+            if binding.destination_service_pubkey != identity.derive_service_pubkey() {
+                return Err(anyhow::anyhow!("restored transfer names another destination").into());
+            }
+        }
+    }
 
     let staging_root = process.data_root.join("restore-staging");
     if tokio::fs::try_exists(&staging_root).await.unwrap_or(false) {
@@ -186,7 +224,7 @@ pub(crate) async fn install(
             }
             None => {}
             Some(guardian) if exists => {
-                let api_auth = identity.derive_seat_keys(&seat.seat_id).api_auth;
+                let api_auth = seat.effective_api_auth(identity);
                 let adoptable =
                     is_adoptable_restored_seat_dir(&dir, &guardian.archive_sha256, &api_auth)
                         .await
@@ -212,9 +250,9 @@ pub(crate) async fn install(
         let staged = staging_root.join(seat_no.0.to_string());
         // `write_restored_seat_dir` re-checks the digest itself: relay bytes
         // are untrusted, and the check belongs on the side of the boundary
-        // that cannot skip it. The password is re-derived, not restored — the
-        // backup deliberately excludes it.
-        let api_auth = identity.derive_seat_keys(&seat.seat_id).api_auth;
+        // that cannot skip it. Imported passwords come from the sealed recovery
+        // document; only native-seat passwords are re-derived.
+        let api_auth = seat.effective_api_auth(identity);
         write_restored_seat_dir(&staged, archive, &guardian.archive_sha256, &api_auth).await?;
         let dir = seat_data_dir(process, seat_no);
         if let Some(parent) = dir.parent() {
@@ -227,13 +265,78 @@ pub(crate) async fn install(
         tokio::fs::rename(&staged, &dir)
             .await
             .map_err(crate::backup::RestoreConfigError::Write)?;
+        if let Some(parent) = dir.parent() {
+            crate::backup::sync_directory(parent)
+                .await
+                .map_err(crate::backup::RestoreConfigError::Write)?;
+            if let Some(seats_root) = parent.parent() {
+                crate::backup::sync_directory(seats_root)
+                    .await
+                    .map_err(crate::backup::RestoreConfigError::Write)?;
+            }
+        }
     }
+    crate::backup::sync_directory(&process.data_root)
+        .await
+        .map_err(crate::backup::RestoreConfigError::Write)?;
     // The staging root is empty now; leaving it would only make the next
     // wipe-on-entry look like it had something to clean.
     let _ = tokio::fs::remove_dir_all(&staging_root).await;
 
     let mut restored = Vec::with_capacity(seats.len());
     for &(seat_no, seat) in &seats {
+        let incoming_transfer = match seat
+            .transfer
+            .as_ref()
+            .and_then(|transfer| transfer.incoming.as_ref())
+        {
+            None => None,
+            Some(incoming) => {
+                use crate::backup::IncomingTransferBackup;
+                use crate::transfer_state::{IncomingState, IncomingTransfer};
+                let (binding, state) = match incoming {
+                    IncomingTransferBackup::Awaiting { binding, .. } => {
+                        (binding, IncomingState::Expired)
+                    }
+                    IncomingTransferBackup::Accepted {
+                        binding, api_auth, ..
+                    } => {
+                        let guardian = seat.guardian.as_ref().expect("validated accepted shape");
+                        let archive = fleet.archives.get(&seat.seat_id).ok_or_else(|| {
+                            RestoreError::MissingArchive {
+                                seat_id: seat.seat_id.clone(),
+                            }
+                        })?;
+                        let material = crate::transfer_package::TransferMaterial {
+                            archive: archive.clone(),
+                            api_auth: api_auth.clone(),
+                        };
+                        (
+                            binding,
+                            IncomingState::Importing {
+                                material: material.encode().map_err(anyhow::Error::from)?,
+                                archive_digest: guardian.archive_sha256.clone(),
+                                invite_code: guardian
+                                    .federation_invite
+                                    .clone()
+                                    .expect("validated accepted invite"),
+                            },
+                        )
+                    }
+                };
+                if binding.destination_service_pubkey != identity.derive_service_pubkey() {
+                    return Err(
+                        anyhow::anyhow!("restored transfer names another destination").into(),
+                    );
+                }
+                Some(IncomingTransfer {
+                    generation: 1,
+                    binding: binding.clone(),
+                    callback_commitment: incoming.callback_commitment(),
+                    state,
+                })
+            }
+        };
         restored.push(RestoredSeat {
             facts: seat.to_seat_facts(seat_no),
             payment: seat.payment.as_ref().map(|payment| NewPayment {
@@ -251,6 +354,11 @@ pub(crate) async fn install(
             // fetched it — so the restored fleet's first scan republishes
             // nothing.
             published_doc_sha256: crate::backup::seat_document_sha256(seat),
+            incoming_transfer,
+            outgoing_transfer: seat
+                .transfer
+                .as_ref()
+                .and_then(|transfer| transfer.outgoing.clone()),
         });
     }
     db.install_restored_fleet(identity, &restored, fleet.format_version)
