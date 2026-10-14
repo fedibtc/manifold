@@ -4,6 +4,7 @@ mod crash_db;
 mod discovery;
 mod maintenance;
 mod migration_qa;
+mod payment_crash;
 mod recovery_policy;
 mod selection;
 
