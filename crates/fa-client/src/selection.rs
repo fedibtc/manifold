@@ -297,7 +297,7 @@ impl SelectedMgSeat {
 /// Validated inputs for one read-only selection preview.
 ///
 /// Construction enforces the product federation-size range and the
-/// currently supported plan family, mirroring `FormationIntent` discipline,
+/// currently supported plan family, mirroring `ResolvedSeatPurchase` discipline,
 /// so invalid inputs cannot reach registry or verifier work.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct MgSelectionRequest {

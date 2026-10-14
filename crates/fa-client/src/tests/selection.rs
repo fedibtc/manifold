@@ -495,7 +495,7 @@ async fn replacement_preview_public_approval_seals_cap_and_expires_before_effect
     let client = open_client(database, payments, mg_state.clone(), config).await;
     let initial_cap = PAYMENT_AMOUNT_MSATS * u64::from(MIN_FEDERATION_SIZE);
     let error = client
-        .pay_and_create(
+        .buy_and_form(
             intent(),
             selection_approval(initial_cap),
             payment_federation_id(),
@@ -514,15 +514,15 @@ async fn replacement_preview_public_approval_seals_cap_and_expires_before_effect
         "{error:?}"
     );
     let status = client.status();
-    let initial_formation = formation(&status);
-    let FormationActionRequired::ReplaceGuardians(requirements) = initial_formation
+    let initial_formation = purchase(&status);
+    let PurchaseActionRequired::ReplaceGuardians(requirements) = initial_formation
         .action_required
         .clone()
         .expect("the refused selected seat requires replacement")
     else {
         panic!("selected refusal exposed the wrong recovery action")
     };
-    let replaced_index = requirements.seats[0].index;
+    let _replaced_index = requirements.seats[0].index;
     let excluded = initial_formation
         .seats
         .iter()
@@ -587,8 +587,8 @@ async fn replacement_preview_public_approval_seals_cap_and_expires_before_effect
     ));
     let status_after_expiry = client.status();
     assert_eq!(
-        formation(&status_after_expiry).action_required,
-        Some(FormationActionRequired::ReplaceGuardians(
+        purchase(&status_after_expiry).action_required,
+        Some(PurchaseActionRequired::ReplaceGuardians(
             requirements.clone()
         ))
     );
@@ -630,11 +630,12 @@ async fn replacement_preview_public_approval_seals_cap_and_expires_before_effect
         .unwrap();
 
     let formed_status = client.status();
-    let formed = formation(&formed_status);
-    assert_eq!(formed.phase, FormationPhase::Formed);
-    assert_eq!(
-        formed.seats[usize::from(replaced_index)].locator,
-        replacement_locator
+    bought(&formed_status);
+    assert!(
+        formed_status
+            .pool
+            .iter()
+            .any(|seat| seat.locator == replacement_locator)
     );
     assert_eq!(
         payment_state.create_calls.load(Ordering::SeqCst),
@@ -775,11 +776,11 @@ async fn selected_verified_zero_price_bootstrap_needs_no_publisher_or_payer() {
     .await;
 
     client
-        .create_without_payer(intent(), approval, options())
+        .buy_and_form_without_payer(intent(), approval, options())
         .await
         .expect("the first verified federation forms from all-zero quotes");
 
-    assert_eq!(formation(&client.status()).phase, FormationPhase::Formed);
+    federation(&client.status());
     assert_eq!(payment_state.payable_calls.load(Ordering::SeqCst), 0);
     assert_eq!(payment_state.readiness_calls.load(Ordering::SeqCst), 0);
     assert_eq!(payment_state.create_calls.load(Ordering::SeqCst), 0);
@@ -811,7 +812,7 @@ async fn selected_without_payer_rejects_a_priced_live_offer_before_effects() {
     .await;
 
     let error = client
-        .create_without_payer(intent(), approval, options())
+        .buy_and_form_without_payer(intent(), approval, options())
         .await
         .expect_err("a priced live offer requires a payer retry");
 
@@ -822,7 +823,7 @@ async fn selected_without_payer_rejects_a_priced_live_offer_before_effects() {
             failure: None
         }
     ));
-    assert_eq!(client.status(), FaStatus::Idle);
+    assert_eq!(client.status(), FaStatus::default());
     assert_eq!(payment_state.payable_calls.load(Ordering::SeqCst), 0);
     assert_eq!(payment_state.readiness_calls.load(Ordering::SeqCst), 0);
     assert_eq!(payment_state.create_calls.load(Ordering::SeqCst), 0);

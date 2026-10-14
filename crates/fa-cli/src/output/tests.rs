@@ -10,10 +10,10 @@ use nostr_sdk::PublicKey as NostrPublicKey;
 use super::*;
 
 const ACTIVE_STATUS: &str = concat!(
-    r#"{"formation":{"formation_id":"formation-1","intent":{"federation_name":"contract","#,
+    r#"{"purchase":{"purchase_id":"purchase-1","request":{"#,
     r#""federation_size":7,"plan":"infinite_best_effort","#,
     r#""fedimintd_versions":{"minimum":{"major":0,"minor":6,"patch":0},"maximum_exclusive":{"major":0,"minor":6,"patch":1}},"fedimintd_dkg_version":{"major":0,"minor":6,"vendor":"fedi"}},"phase":"awaiting_payment_readiness","seats":[],"#,
-    r#""freshness":"unsynced","action_required":null,"invite_code":null,"last_error":null}}"#
+    r#""freshness":"unsynced","action_required":null,"payment_outputs_started":false,"last_error":null}}"#
 );
 const PAYMENT_REQUIREMENTS: &str = concat!(
     r#"{"authorization_id":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","total_msats":21000,"seats":[{"index":2,"#,
@@ -46,7 +46,7 @@ fn active_status_json_has_exact_schema_on_stdout() {
     );
     let requirements: serde_json::Value = serde_json::from_str(PAYMENT_REQUIREMENTS).unwrap();
     let mut value: serde_json::Value = serde_json::from_str(ACTIVE_STATUS).unwrap();
-    value["formation"]["seats"] = serde_json::json!([{
+    value["purchase"]["seats"] = serde_json::json!([{
         "index": 2,
         "fman_id": "aa4fc8665f5696e33db7e1a572e3b0f5b3d615837b0f362dcb1c8068b098c7b4",
         "locator": locator,
@@ -55,7 +55,7 @@ fn active_status_json_has_exact_schema_on_stdout() {
         "phase": "quote_ready",
         "freshness": "unsynced"
     }]);
-    value["formation"]["action_required"] =
+    value["purchase"]["action_required"] =
         serde_json::json!({ "authorize_payments": requirements });
     let status: FaStatus = serde_json::from_value(value).unwrap();
     let (stdout, stderr) = capture(|output| output.snapshot(&status, OutputFormat::Json));
@@ -63,7 +63,7 @@ fn active_status_json_has_exact_schema_on_stdout() {
     assert_eq!(
         stdout,
         concat!(
-            r#"{"formation":{"formation_id":"formation-1","intent":{"federation_name":"contract","federation_size":7,"plan":"infinite_best_effort","fedimintd_versions":{"minimum":{"major":0,"minor":6,"patch":0},"maximum_exclusive":{"major":0,"minor":6,"patch":1}},"fedimintd_dkg_version":{"major":0,"minor":6,"vendor":"fedi"}},"phase":"awaiting_payment_readiness","seats":[{"index":2,"fman_id":"aa4fc8665f5696e33db7e1a572e3b0f5b3d615837b0f362dcb1c8068b098c7b4","locator":{"version":1,"endpoint_addr":{"id":"8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c","addrs":[]},"service_pubkey":"4d4b6cd1361032ca9bd2aeb9d900aa4d45d9ead80ac9423374c451a7254d0766"},"seat_id":null,"guardian_code":null,"phase":"quote_ready","freshness":"unsynced"}],"freshness":"unsynced","action_required":{"authorize_payments":{"authorization_id":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","total_msats":21000,"seats":[{"index":2,"fman_id":"aa4fc8665f5696e33db7e1a572e3b0f5b3d615837b0f362dcb1c8068b098c7b4","quote_id":[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],"payment_federation_id":"1111111111111111111111111111111111111111111111111111111111111111","amount_msats":21000}]}},"payment_outputs_started":false,"invite_code":null,"last_error":null}}"#,
+            r#"{"purchase":{"purchase_id":"purchase-1","request":{"federation_size":7,"plan":"infinite_best_effort","fedimintd_versions":{"minimum":{"major":0,"minor":6,"patch":0},"maximum_exclusive":{"major":0,"minor":6,"patch":1}},"fedimintd_dkg_version":{"major":0,"minor":6,"vendor":"fedi"}},"phase":"awaiting_payment_readiness","seats":[{"index":2,"fman_id":"aa4fc8665f5696e33db7e1a572e3b0f5b3d615837b0f362dcb1c8068b098c7b4","locator":{"version":1,"endpoint_addr":{"id":"8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c","addrs":[]},"service_pubkey":"4d4b6cd1361032ca9bd2aeb9d900aa4d45d9ead80ac9423374c451a7254d0766"},"seat_id":null,"guardian_code":null,"phase":"quote_ready","freshness":"unsynced"}],"freshness":"unsynced","action_required":{"authorize_payments":{"authorization_id":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","total_msats":21000,"seats":[{"index":2,"fman_id":"aa4fc8665f5696e33db7e1a572e3b0f5b3d615837b0f362dcb1c8068b098c7b4","quote_id":[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],"payment_federation_id":"1111111111111111111111111111111111111111111111111111111111111111","amount_msats":21000}]}},"payment_outputs_started":false,"last_error":null}}"#,
             "\n"
         )
     );
@@ -76,18 +76,20 @@ fn restored_text_status_reports_current_freshness() {
         (fa_client::FormationFreshness::Unsynced, "unsynced"),
         (fa_client::FormationFreshness::Fresh, "fresh"),
     ] {
-        let status = FaStatus::Restored(fa_client::RestoredFormationSnapshot {
-            snapshot_generation: 1,
-            formation_id: fa_client::FormationId("restored-formation".to_owned()),
-            federation_invite: fa_client::InviteCode("invite".to_owned()),
-            federation_name: None,
-            seats: Vec::new(),
-            phase: fa_client::FormationPhase::Formed,
-            freshness,
-            backup_eligible: false,
-        });
+        let status = FaStatus {
+            federation: Some(fa_client::FederationSnapshot {
+                formation_id: fa_client::FormationId("restored-formation".to_owned()),
+                federation_invite: fa_client::InviteCode("invite".to_owned()),
+                federation_name: None,
+                seats: Vec::new(),
+                freshness,
+                reconciled: false,
+                last_error: None,
+            }),
+            ..FaStatus::default()
+        };
         let (stdout, stderr) = capture(|output| output.snapshot(&status, OutputFormat::Human));
-        assert_eq!(stdout, format!("invite\nrecovery state: {expected}\n"));
+        assert_eq!(stdout, format!("invite\nfederation state: {expected}\n"));
         assert_eq!(stderr, "");
     }
 }

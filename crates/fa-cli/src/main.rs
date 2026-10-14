@@ -7,14 +7,14 @@ use anyhow::{Context as _, bail, ensure};
 use clap::{Args as ClapArgs, Parser, Subcommand};
 use fa_client::{
     FaClient, FaFeeAccountError, FaFeeAccountProvider, FaIdentity, FaPaymentError, FaPayments,
-    FaStatus, FederationConsensusError, FederationConsensusReader, FederationConsensusSnapshot,
-    FedimintFederationId, FedimintdVersionRange, FormationIntent, FormationPhase,
-    FormationRunOptions, GuardianFeePpm, LiquidityOperationId, LiquidityProviderConnector,
-    LiquidityProviderConnectorError, LiquidityRequestIntent, MaintenanceRunOptions,
-    ManifoldGuardianCallError, ManifoldGuardianConnector, ManifoldGuardianConnectorError,
-    MgCandidateRequirements, MgDiscoveryOptions, MgRegistryQuery, MgSelectionRequest,
-    PaymentAuthorizationId, PaymentReservationRecovery, PlanPreference, PreparedSeatPayment,
-    SeatPaymentRecovery, SeatPaymentRequirement, SettledSeatRefund,
+    FederationConsensusError, FederationConsensusReader, FederationConsensusSnapshot,
+    FedimintFederationId, FedimintdVersionRange, FormationRunOptions, GuardianFeePpm,
+    LiquidityOperationId, LiquidityProviderConnector, LiquidityProviderConnectorError,
+    LiquidityRequestIntent, MaintenanceRunOptions, ManifoldGuardianCallError,
+    ManifoldGuardianConnector, ManifoldGuardianConnectorError, MgCandidateRequirements,
+    MgDiscoveryOptions, MgRegistryQuery, MgSelectionRequest, PaymentAuthorizationId,
+    PaymentReservationRecovery, PlanPreference, PreparedSeatPayment, SeatPaymentRecovery,
+    SeatPaymentRequirement, SettledSeatRefund,
 };
 use fedi_decentralized_domain::BitcoinNetwork;
 use fedi_decentralized_manifold_environment::{ManifoldEnvironment, ManifoldEnvironmentProfile};
@@ -706,10 +706,36 @@ struct CreateArgs {
 }
 
 struct CreatePreflight {
-    intent: FormationIntent,
+    intent: CreateIntent,
     options: FormationRunOptions,
     fa_fee_account_provider: CliFaFeeAccountProvider,
     completion_callback: Option<DkgCompletionCallback>,
+}
+
+/// The seats `create` buys and the federation it forms from them.
+#[derive(Clone, Debug)]
+struct CreateIntent {
+    federation_name: Option<FederationName>,
+    request: MgSelectionRequest,
+    max_total_msats: Option<u64>,
+}
+
+impl CreateIntent {
+    fn federation_size(&self) -> FederationSize {
+        self.request.federation_size()
+    }
+
+    fn fedimintd_versions(&self) -> &FedimintdVersionRange {
+        self.request.fedimintd_versions()
+    }
+
+    fn plan(&self) -> PlanPreference {
+        self.request.plan()
+    }
+
+    fn max_total_msats(&self) -> Option<u64> {
+        self.max_total_msats
+    }
 }
 
 #[derive(Debug, Default, serde::Deserialize)]
@@ -1079,39 +1105,31 @@ async fn run(
             )
             .await?;
             let mut observer = client.observe();
-            let result = match (payment_federation_id, completion_callback) {
-                (Some(payer), None) => {
-                    client
-                        .pay_and_create(intent.clone(), approval, payer, options)
-                        .await
+            let result = async {
+                client
+                    .buy_seats(approval, payment_federation_id, options)
+                    .await?;
+                let status = client.status();
+                // A purchase still parked for payment forms later.
+                if status.purchase.is_some() {
+                    return Ok(());
                 }
-                (Some(payer), Some(callback)) => {
-                    client
-                        .pay_and_create_with_callback(
-                            intent.clone(),
-                            approval,
-                            payer,
-                            callback,
-                            options,
-                        )
-                        .await
-                }
-                (None, None) => {
-                    client
-                        .create_without_payer(intent.clone(), approval, options)
-                        .await
-                }
-                (None, Some(callback)) => {
-                    client
-                        .create_without_payer_with_callback(
-                            intent.clone(),
-                            approval,
-                            callback,
-                            options,
-                        )
-                        .await
-                }
-            };
+                let seats = status
+                    .pool
+                    .iter()
+                    .map(|seat| seat.seat_id.clone())
+                    .collect();
+                client
+                    .form_federation(
+                        intent.federation_name.clone(),
+                        seats,
+                        completion_callback,
+                        options,
+                    )
+                    .await
+                    .map_err(anyhow::Error::from)
+            }
+            .await;
             if observer.has_changed().unwrap_or(false) {
                 observer.borrow_and_update();
             }
@@ -1469,12 +1487,11 @@ async fn run(
                 }
                 .provider_pubkey()
                 .clone();
-                let formation_id = match client.status() {
-                    FaStatus::Formation(snapshot) if snapshot.phase == FormationPhase::Formed => {
-                        snapshot.formation_id
-                    }
-                    _ => anyhow::bail!("liquidity requires an active formed federation"),
-                };
+                let formation_id = client
+                    .status()
+                    .federation
+                    .context("liquidity requires a formed federation")?
+                    .formation_id;
                 let connector = CliLiquidityConnector::new(endpoint.clone());
                 let snapshot = reconcile_then_run_post_formation(
                     client.resume(),
@@ -1722,7 +1739,7 @@ async fn open_client_with_fee_account_provider(
     }
 }
 
-fn load_intent(args: &CreateArgs) -> anyhow::Result<FormationIntent> {
+fn load_intent(args: &CreateArgs) -> anyhow::Result<CreateIntent> {
     let mut file = match &args.config {
         Some(path) => toml::from_str::<IntentFile>(
             &std::fs::read_to_string(path)
@@ -1767,19 +1784,23 @@ fn load_intent(args: &CreateArgs) -> anyhow::Result<FormationIntent> {
         )?,
         _ => bail!("fedimintd version range requires both minimum and maximum-exclusive bounds"),
     };
-    let intent = FormationIntent::new(
-        file.federation_name,
-        file.federation_size
-            .context("formation intent requires federation_size")?,
-        file.plan.unwrap_or_default(),
-        fedimintd_versions,
-    )?;
-    match file.max_total_msats {
-        Some(max_total_msats) => intent
-            .with_max_total_msats(max_total_msats)
-            .map_err(Into::into),
-        None => Ok(intent),
+    if let Some(name) = &file.federation_name {
+        fa_client::validate_federation_name(name)?;
     }
+    ensure!(
+        file.max_total_msats != Some(0),
+        "spending cap must be greater than zero millisatoshis"
+    );
+    Ok(CreateIntent {
+        federation_name: file.federation_name,
+        request: MgSelectionRequest::new(
+            file.federation_size
+                .context("formation intent requires federation_size")?,
+            fedimintd_versions,
+            file.plan.unwrap_or_default(),
+        )?,
+        max_total_msats: file.max_total_msats,
+    })
 }
 
 /// Reads federation consensus through a real invite-code preview.
@@ -3524,8 +3545,8 @@ max_total_msats = 1000
         })
         .unwrap();
         assert_eq!(
-            intent.federation_name(),
-            Some(&FederationName("override".to_owned()))
+            intent.federation_name,
+            Some(FederationName("override".to_owned()))
         );
         assert_eq!(intent.federation_size(), FederationSize(7));
         assert_eq!(intent.fedimintd_versions().minimum().to_string(), "0.11.1");

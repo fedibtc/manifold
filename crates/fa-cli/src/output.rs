@@ -213,32 +213,45 @@ impl<'a> CliOutput<'a> {
             serde_json::to_writer(&mut self.stdout, snapshot)?;
             writeln!(self.stdout)?;
         } else {
-            match snapshot {
-                FaStatus::Idle => writeln!(self.stdout, "FA state: idle")?,
-                FaStatus::Recovery { last_error } => {
-                    writeln!(self.stdout, "FA state: checking backup")?;
-                    if let Some(error) = last_error {
-                        writeln!(self.stdout, "last error: {error:?}")?;
-                    }
-                }
-                FaStatus::Formation(snapshot) => {
-                    if let Some(invite_code) = &snapshot.invite_code {
-                        writeln!(self.stdout, "{}", invite_code.0)?;
-                    } else {
-                        writeln!(self.stdout, "formation state: {:?}", snapshot.phase)?;
-                        if let Some(error) = snapshot.last_error {
-                            writeln!(self.stdout, "last error: {error:?}")?;
-                        }
-                    }
-                }
-                FaStatus::Restored(snapshot) => {
-                    writeln!(self.stdout, "{}", snapshot.federation_invite.0)?;
-                    let freshness = match snapshot.freshness {
-                        fa_client::FormationFreshness::Fresh => "fresh",
-                        fa_client::FormationFreshness::Unsynced => "unsynced",
-                    };
-                    writeln!(self.stdout, "recovery state: {freshness}")?;
-                }
+            self.status_text(snapshot)?;
+        }
+        Ok(())
+    }
+
+    fn status_text(&mut self, status: &FaStatus) -> anyhow::Result<()> {
+        if *status == FaStatus::default() {
+            writeln!(self.stdout, "FA state: idle")?;
+        }
+        if let Some(recovery) = &status.recovery {
+            writeln!(self.stdout, "FA state: checking backup")?;
+            if let Some(error) = recovery.last_error {
+                writeln!(self.stdout, "last error: {error:?}")?;
+            }
+        }
+        if let Some(purchase) = &status.purchase {
+            writeln!(self.stdout, "purchase state: {:?}", purchase.phase)?;
+            if let Some(error) = purchase.last_error {
+                writeln!(self.stdout, "last error: {error:?}")?;
+            }
+        }
+        if !status.pool.is_empty() {
+            writeln!(self.stdout, "pool seats: {}", status.pool.len())?;
+        }
+        if let Some(formation) = &status.formation {
+            writeln!(self.stdout, "formation state: {:?}", formation.phase)?;
+            if let Some(error) = formation.last_error {
+                writeln!(self.stdout, "last error: {error:?}")?;
+            }
+        }
+        if let Some(federation) = &status.federation {
+            writeln!(self.stdout, "{}", federation.federation_invite.0)?;
+            let freshness = match federation.freshness {
+                fa_client::FormationFreshness::Fresh => "fresh",
+                fa_client::FormationFreshness::Unsynced => "unsynced",
+            };
+            writeln!(self.stdout, "federation state: {freshness}")?;
+            if let Some(error) = federation.last_error {
+                writeln!(self.stdout, "last error: {error:?}")?;
             }
         }
         Ok(())
