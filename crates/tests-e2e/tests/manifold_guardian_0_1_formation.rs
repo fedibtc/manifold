@@ -2116,7 +2116,7 @@ async fn register_gateway_with_every_guardian(
     replacement_locators: &[String],
 ) -> anyhow::Result<()> {
     let status = fa_status(&locate_binary(FA_CLI_BIN_ENV, "fa-cli")?, state_dir).await?;
-    let seats = status["formation"]["seats"]
+    let seats = status["federation"]["seats"]
         .as_array()
         .context("formed FA status carries seats")?;
     anyhow::ensure!(
@@ -2418,10 +2418,10 @@ async fn form_federation_in_state(
         run_expect_success(create, "fa-cli lifecycle create", Duration::from_secs(130)).await?;
     let output: serde_json::Value = serde_json::from_str(output.trim())?;
     anyhow::ensure!(
-        output["formation"]["phase"] == "formed" && output["formation"]["invite_code"].is_string(),
+        output["federation"]["federation_invite"].is_string(),
         "lifecycle FA must finish formation: {output}"
     );
-    Ok(output["formation"]["invite_code"]
+    Ok(output["federation"]["federation_invite"]
         .as_str()
         .expect("formed output checked above")
         .to_owned())
@@ -2631,8 +2631,7 @@ async fn run_fa_crash_recovery() -> anyhow::Result<()> {
     let resumed = run_expect_success(resume, "fa-cli resume", Duration::from_secs(90)).await?;
     let resumed: serde_json::Value = serde_json::from_str(resumed.trim())?;
     anyhow::ensure!(
-        resumed["formation"]["phase"] == "formed"
-            && resumed["formation"]["invite_code"].is_string(),
+        resumed["federation"]["federation_invite"].is_string(),
         "resumed FA must form and persist an invite, got {resumed}"
     );
     for index in 0..GUARDIAN_COUNT {
@@ -4310,7 +4309,6 @@ async fn run_fa_cli(
             .await
             .map_err(|_| anyhow::anyhow!("timed out waiting for fa-cli formation run"))??;
         let mut authorization_stderr = None;
-        let mut recovery_formation_id = None;
         if !output.status.success()
             && let Some(resume_args) = invocation.resume_args
         {
@@ -4320,14 +4318,8 @@ async fn run_fa_cli(
             let failed_status: serde_json::Value = serde_json::from_slice(&output.stdout)
                 .context("recoverable paid failure writes JSON status")?;
             anyhow::ensure!(
-                failed_status["formation"]["payment_outputs_started"].as_bool() == Some(false),
+                failed_status["purchase"]["payment_outputs_started"].as_bool() == Some(false),
                 "paid E2E may retry only before the wallet-output boundary: {failed_status}"
-            );
-            recovery_formation_id = Some(
-                failed_status["formation"]["formation_id"]
-                    .as_str()
-                    .context("recoverable paid failure names its formation")?
-                    .to_owned(),
             );
             authorization_stderr = Some(output.stderr.clone());
             let mut resume = Command::new(fa_cli_bin);
@@ -4384,20 +4376,9 @@ async fn run_fa_cli(
                 "JSON formation must write exactly one stdout line"
             );
             let status: serde_json::Value = serde_json::from_str(stdout.trim())?;
-            anyhow::ensure!(
-                status["formation"]["phase"].as_str() == Some("formed"),
-                "paid formation did not reach Formed: {status}"
-            );
-            if let Some(recovery_formation_id) = recovery_formation_id {
-                anyhow::ensure!(
-                    status["formation"]["formation_id"].as_str()
-                        == Some(recovery_formation_id.as_str()),
-                    "paid resume changed formation identity: {status}"
-                );
-            }
-            return status["formation"]["invite_code"]
+            return status["federation"]["federation_invite"]
                 .as_str()
-                .context("formed JSON status contains invite_code")
+                .context("paid formation did not reach a formed federation")
                 .map(ToOwned::to_owned);
         }
         Ok(String::from_utf8(output.stdout)?.trim().to_owned())

@@ -158,7 +158,7 @@ async fn run_restart() -> anyhow::Result<()> {
         run_expect_success(command("resume"), "fa-cli resume", Duration::from_secs(90)).await?;
     let formed: serde_json::Value = serde_json::from_str(formed.trim())?;
     anyhow::ensure!(
-        formed["formation"]["phase"] == "formed" && formed["formation"]["invite_code"].is_string(),
+        formed["federation"]["federation_invite"].is_string(),
         "restarted formation must finish with an agreed invite: {formed}"
     );
     for index in 0..GUARDIAN_COUNT {
