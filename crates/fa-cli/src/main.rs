@@ -1153,11 +1153,7 @@ async fn run(
         }
         Command::AuthorizePayments(authorize) => {
             let identity = CliIdentity::load_or_create(&args.state_dir, false)?;
-            let endpoint = if std::env::var_os("MG_E2E_LOCAL_IROH").is_some() {
-                Endpoint::bind(presets::N0DisableRelay).await?
-            } else {
-                Endpoint::bind(presets::N0).await?
-            };
+            let endpoint = bind_iroh_endpoint().await?;
             let live_registry = connect_environment_registry(args.manifold_environment).await?;
             let client = open_client_with_fee_account_provider(
                 &args.state_dir,
@@ -1618,11 +1614,32 @@ async fn connect_environment_registry(
 const REGISTRY_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
 async fn bind_iroh_endpoint() -> anyhow::Result<Endpoint> {
-    if std::env::var_os("MG_E2E_LOCAL_IROH").is_some() {
-        Ok(Endpoint::bind(presets::N0DisableRelay).await?)
-    } else {
-        Ok(Endpoint::bind(presets::N0).await?)
+    if std::env::var_os("MG_E2E_LOCAL_IROH").is_none() {
+        return Ok(Endpoint::bind(presets::N0).await?);
     }
+    // Network-isolated E2E: advertisements carry only MG endpoint ids, so the
+    // harness supplies their loopback addresses as `<endpoint-id>=<socket-addr>`
+    // pairs instead of n0 address lookup.
+    let mut addrs = Vec::new();
+    for pair in std::env::var("MG_E2E_MG_ENDPOINT_ADDRS")
+        .unwrap_or_default()
+        .split(',')
+        .filter(|pair| !pair.is_empty())
+    {
+        let (id, addr) = pair
+            .split_once('=')
+            .with_context(|| format!("MG_E2E_MG_ENDPOINT_ADDRS entry {pair:?} lacks '='"))?;
+        addrs.push(
+            iroh::EndpointAddr::new(id.parse().context("parse MG endpoint id")?)
+                .with_ip_addr(addr.parse().context("parse MG socket address")?),
+        );
+    }
+    Ok(Endpoint::builder(presets::N0DisableRelay)
+        .address_lookup(iroh::address_lookup::MemoryLookup::from_endpoint_info(
+            addrs,
+        ))
+        .bind()
+        .await?)
 }
 
 #[allow(
