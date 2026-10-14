@@ -29,7 +29,7 @@
     # `fedi-fedimintd` still builds its Rust graph from this Fedi revision's
     # Cargo.lock, so that graph is not necessarily identical to FLIP's pin.
     fedi = {
-      url = "github:fedixyz/fedi/2f35ea4e3b2516d35b8ed315455718cd3b336758";
+      url = "github:fedixyz/fedi/59e406974ccf7d0cd1d719a78e6cc46fd51870e6";
       inputs.fedimint-pkgs.follows = "fedimint";
     };
   };
@@ -152,11 +152,6 @@
             ./patches/fedimint-dkg-test-pause.patch
           ];
         };
-        fediPatched = pkgs.applyPatches {
-          name = "fedi-stability-pool-fedimint-012";
-          src = fedi;
-          patches = [ ./patches/fedi-stability-pool-fedimint-012.patch ];
-        };
         linkExternalDeps = pkgs.writeShellScriptBin "link-external-deps" ''
           set -eu
 
@@ -187,7 +182,7 @@
 
           link_dependency peerbadge-sdk ${peerbadge-sdk-src}
           link_dependency fedimint ${fedimintPatched}
-          link_dependency fedi ${fediPatched}
+          link_dependency fedi ${fedi}
         '';
 
         flakeboxLib = flakebox.lib.mkLib pkgs {
@@ -1103,7 +1098,7 @@
         # It deliberately differs from the Fedi release tag above.
         fedimintdMetricVersion = "0.12.0";
         fedimintSourceRev = "61b3b02da228fbcdb185f70eb69e7f9093c4bba9";
-        stabilityPoolSourceRev = "2f35ea4e3b2516d35b8ed315455718cd3b336758";
+        stabilityPoolSourceRev = "59e406974ccf7d0cd1d719a78e6cc46fd51870e6";
 
         # Nextest, CLI checks, and OCI runtime-contract checks all stay on the
         # CI Cargo profile. `runtimeBins` enables the two package-qualified UI
@@ -1321,7 +1316,7 @@
               manifest=${./docs/telemetry/fedimint-metrics-v0.12.0-fedi11.tsv}
               privacy_inventory=${./docs/telemetry/metrics-privacy-inventory.md}
               source=${fedimint.outPath}
-              stability_pool_source=${fediPatched}
+              stability_pool_source=${fedi}
 
               field() {
                 ${pkgs.gawk}/bin/awk -F '\t' -v key="$1" '$1 == key { print $2 }' "$manifest"
