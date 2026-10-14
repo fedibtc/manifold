@@ -59,6 +59,13 @@ delivery entirely to `fa-client` and the MGs; the CLI never places the URL beare
 emits it. `--poll-interval-secs` and `--poll-timeout-secs` set the driver
 timing of every `create`.
 
+Advertisements name only an MG Iroh endpoint id. Every endpoint the CLI binds
+uses n0 address lookup, except when the test-only `MG_E2E_LOCAL_IROH` is set:
+then it disables relays and seeds a memory address lookup from
+`MG_E2E_MG_ENDPOINT_ADDRS`, comma-separated `<endpoint-id>=<socket-addr>`
+pairs that the network-isolated E2E harness takes from each MG's logged
+locator.
+
 `discover` and `preview` are read-only registry commands: they connect a
 pooled Nostr relay client to every canonical relay in the selected
 environment profile under ephemeral keys (the enumeration publishes
