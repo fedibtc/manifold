@@ -214,6 +214,12 @@ impl FaStore {
             formation_id: purchase.formation_id.clone(),
             invite_code: legacy.invite_code,
             formation_meta_target: legacy.formation_meta_target,
+            // Schema 11 named the guardian code of the seat at index 0.
+            named_seat: if in_purchase {
+                None
+            } else {
+                seats.first().and_then(|(_, seat, _)| seat.seat_id.clone())
+            },
         };
         if in_purchase {
             purchase.seat_count =

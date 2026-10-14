@@ -796,6 +796,8 @@ struct MgState {
     create_calls: AtomicUsize,
     status_calls: AtomicUsize,
     dkg_code_calls: AtomicUsize,
+    /// MGs asked for a guardian code that carries the federation name.
+    named_dkg_code_indices: Mutex<Vec<usize>>,
     unavailable_dkg_code_indices: Mutex<HashSet<usize>>,
     restart_calls: AtomicUsize,
     report_dkg_already_started: AtomicBool,
@@ -1287,9 +1289,26 @@ impl ManifoldGuardianService for TestMg {
 
     async fn get_dkg_code(
         &self,
-        _request: SignedRequest<GetDkgCodeRequest>,
+        request: SignedRequest<GetDkgCodeRequest>,
     ) -> FmResult<GetDkgCodeResponse> {
         self.state.dkg_code_calls.fetch_add(1, Ordering::SeqCst);
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("test clock follows Unix epoch")
+            .as_secs();
+        if request
+            .verify(Timestamp(now))
+            .expect("test FA request verifies")
+            .into_inner()
+            .federation_name
+            .is_some()
+        {
+            self.state
+                .named_dkg_code_indices
+                .lock()
+                .expect("test lock")
+                .push(self.index);
+        }
         if self
             .state
             .unavailable_dkg_code_indices
@@ -3522,6 +3541,16 @@ async fn schema_11_dkg_moves_seats_into_a_formation_that_finishes() {
     // Each MG re-reports its deterministic code, so a cached code moved to
     // the wrong seat fails the run.
     client.drive().await.unwrap();
+    // Schema 11 named the code of its seat at index 0, which belongs to MG 0.
+    // That seat is not the first in seat-id order.
+    assert_eq!(
+        *mg_state.named_dkg_code_indices.lock().expect("test lock"),
+        [0]
+    );
+    assert_ne!(
+        sorted[0],
+        formation.seats[0].seat_id.as_ref().unwrap().to_string()
+    );
     let status = client.status();
     assert!(status.formation.is_none());
     assert!(status.creation.is_none());

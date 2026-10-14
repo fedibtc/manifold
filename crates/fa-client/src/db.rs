@@ -336,6 +336,10 @@ struct StoredCreation {
     invite_code: Option<InviteCode>,
     /// Exact formation metadata target, persisted before its first vote.
     formation_meta_target: Option<FormationMetaTarget>,
+    /// The seat whose guardian code carries the federation name. A schema 11
+    /// formation keeps the seat it named. Otherwise it is the first pool seat.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    named_seat: Option<SeatId>,
 }
 
 #[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
@@ -1820,6 +1824,7 @@ impl FaStore {
                         formation_id: formation_id.clone(),
                         invite_code: None,
                         formation_meta_target: None,
+                        named_seat: None,
                     },
                 )
                 .await;
@@ -3459,12 +3464,13 @@ fn validate_formation_progress(
 type FormationSeat = (StoredPoolSeat, Option<GuardianCode>);
 
 /// The seats of the creation's formation, in pool order with their cached
-/// guardian codes. The formation runs once the pool holds every seat.
+/// guardian codes and the named seat first. The formation runs once the pool
+/// holds every seat.
 async fn formation_seats(
     dbtx: &mut DatabaseTransaction<'_>,
     creation: &StoredCreation,
 ) -> FaResult<Option<Vec<FormationSeat>>> {
-    let pool: Vec<StoredPoolSeat> = dbtx
+    let mut pool: Vec<StoredPoolSeat> = dbtx
         .find_by_prefix(&PoolSeatKeyPrefix)
         .await
         .map(|(_, seat)| seat)
@@ -3477,6 +3483,13 @@ async fn formation_seats(
             ));
         }
         return Ok(None);
+    }
+    if let Some(named) = creation
+        .named_seat
+        .as_ref()
+        .and_then(|named| pool.iter().position(|seat| &seat.seat_id == named))
+    {
+        pool[..=named].rotate_right(1);
     }
     let mut seats = Vec::with_capacity(pool.len());
     for seat in pool {
