@@ -48,6 +48,8 @@ struct Schema11Formation {
 #[derive(serde::Deserialize)]
 struct Schema11Intent {
     federation_name: FederationName,
+    #[serde(default)]
+    max_total_msats: Option<u64>,
 }
 
 #[derive(PartialEq, serde::Deserialize)]
@@ -221,6 +223,7 @@ impl FaStore {
             }
             seats.push((key, seat, guardian_code));
         }
+        purchase.legacy_max_total_msats = legacy.intent.max_total_msats;
         // Schema 12 keeps the user's creation inputs and formation progress
         // in their own record until the federation forms.
         let creation = StoredCreation {

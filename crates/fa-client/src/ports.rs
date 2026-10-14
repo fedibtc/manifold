@@ -58,12 +58,14 @@ impl ExactSeatPaymentPreflight<'_> {
 pub struct ExactPaymentPreflight<'a> {
     seats: Vec<ExactSeatPaymentPreflight<'a>>,
     total_msats: u64,
+    legacy_max_total_msats: Option<u64>,
 }
 
 impl<'a> ExactPaymentPreflight<'a> {
     pub(crate) fn new(
         requirements: &'a PaymentRequirements,
         quotes: &'a [SignatureVerified<GetQuoteResponse>],
+        legacy_max_total_msats: Option<u64>,
     ) -> FaResult<Self> {
         if requirements.seats.len() != quotes.len() {
             return Err(FaError::Storage(
@@ -96,6 +98,7 @@ impl<'a> ExactPaymentPreflight<'a> {
         Ok(Self {
             seats,
             total_msats: requirements.total_msats,
+            legacy_max_total_msats,
         })
     }
 
@@ -109,6 +112,14 @@ impl<'a> ExactPaymentPreflight<'a> {
     #[must_use]
     pub fn total_msats(&self) -> u64 {
         self.total_msats
+    }
+
+    /// Spending cap of a purchase that older storage recorded. A wallet that
+    /// bound its reservation to that cap needs it to recover the reservation.
+    /// Purchases started by this version have none.
+    #[must_use]
+    pub fn legacy_max_total_msats(&self) -> Option<u64> {
+        self.legacy_max_total_msats
     }
 }
 
