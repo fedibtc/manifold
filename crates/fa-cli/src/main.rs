@@ -12,9 +12,9 @@ use fa_client::{
     LiquidityOperationId, LiquidityProviderConnector, LiquidityProviderConnectorError,
     LiquidityRequestIntent, MaintenanceRunOptions, ManifoldGuardianCallError,
     ManifoldGuardianConnector, ManifoldGuardianConnectorError, MgCandidateRequirements,
-    MgDiscoveryOptions, MgRegistryQuery, MgSelectionRequest, PaymentAuthorizationId,
-    PaymentReservationRecovery, PlanPreference, PreparedSeatPayment, SeatPaymentRecovery,
-    SeatPaymentRequirement, SettledSeatRefund,
+    MgDiscoveryOptions, MgRegistryQuery, MgSelectionRequest, PaymentReservationRecovery,
+    PlanPreference, PreparedSeatPayment, SeatPaymentRecovery, SeatPaymentRequirement,
+    SettledSeatRefund,
 };
 use fedi_decentralized_domain::BitcoinNetwork;
 use fedi_decentralized_manifold_environment::{ManifoldEnvironment, ManifoldEnvironmentProfile};
@@ -113,8 +113,6 @@ enum Command {
     },
     /// Explicitly replace unfinished DKG ceremonies (best effort, no retries).
     RestartDkg(ResumeArgs),
-    /// Explicitly authorize the exact parked aggregate payment requirements.
-    AuthorizePayments(Box<AuthorizePaymentsArgs>),
     /// Print the latest durable/observed formation state.
     Status,
     /// Discover currently eligible MG advertisements from the environment
@@ -638,15 +636,6 @@ struct ResumeArgs {
 }
 
 #[derive(Debug, ClapArgs)]
-struct AuthorizePaymentsArgs {
-    /// Exact authorization binding printed by the parked formation.
-    #[arg(long)]
-    authorization_id: String,
-    #[command(flatten)]
-    resume: ResumeArgs,
-}
-
-#[derive(Debug, ClapArgs)]
 struct CreateArgs {
     /// JSON file containing the FA's SPv2 BtcDepositor account for the new federation.
     #[arg(long, value_name = "PATH")]
@@ -660,13 +649,6 @@ struct CreateArgs {
     /// Guardian count override.
     #[arg(long)]
     federation_size: Option<u16>,
-    /// Aggregate spending cap in millisatoshis for paid seats.
-    ///
-    /// `fa-client` self-authorizes only the initial aggregate when it is
-    /// within the cap. Any later re-quoted aggregate always requires the
-    /// explicit `authorize-payments` command.
-    #[arg(long)]
-    max_total_msats: Option<u64>,
     /// Inclusive lower three-number Fedimint release bound.
     #[arg(long, requires = "fedimintd_version_maximum_exclusive")]
     fedimintd_version_minimum: Option<String>,
@@ -717,7 +699,6 @@ struct CreatePreflight {
 struct CreateIntent {
     federation_name: Option<FederationName>,
     request: MgSelectionRequest,
-    max_total_msats: Option<u64>,
 }
 
 impl CreateIntent {
@@ -732,10 +713,6 @@ impl CreateIntent {
     fn plan(&self) -> PlanPreference {
         self.request.plan()
     }
-
-    fn max_total_msats(&self) -> Option<u64> {
-        self.max_total_msats
-    }
 }
 
 #[derive(Debug, Default, serde::Deserialize)]
@@ -746,7 +723,6 @@ struct IntentFile {
     plan: Option<PlanPreference>,
     fedimintd_version_minimum: Option<FedimintdVersion>,
     fedimintd_version_maximum_exclusive: Option<FedimintdVersion>,
-    max_total_msats: Option<u64>,
 }
 
 #[derive(Clone)]
@@ -1061,17 +1037,11 @@ async fn run(
             let payment_federation_id = payment_preflight
                 .as_ref()
                 .map(|payment| fa_client::FederationId(payment.selected.to_string()));
-            if payment_federation_id.is_some() {
-                ensure!(
-                    intent.max_total_msats().is_some(),
-                    "registry-backed paid creation requires --max-total-msats"
-                );
-            }
             // The endpoint carries no identity or durable state; binding it
             // before the preview lets selection probe live availability.
             let endpoint = bind_iroh_endpoint().await?;
             // Preview before opening identity, durable FA state, or the payment wallet. The
-            // sealed approval stays in this process and is consumed below.
+            // preview is the payment approval; it stays in this process.
             let registry = connect_environment_registry(args.manifold_environment).await?;
             let request = MgSelectionRequest::new(
                 intent.federation_size(),
@@ -1087,7 +1057,6 @@ async fn run(
                 .with_mg_connector(CliMgConnector::new(endpoint.clone()))
                 .preview_mg_selection(&request, MgDiscoveryOptions::default())
                 .await?;
-            let approval = preview.approve(intent.max_total_msats().unwrap_or(0))?;
             let identity = CliIdentity::load_or_create(&args.state_dir, false)?;
             let payments = CliPayments::open(payment_preflight, format, &mut output).await?;
             let client = open_client_with_fee_account_provider(
@@ -1107,7 +1076,7 @@ async fn run(
             let mut observer = client.observe();
             let result = async {
                 client
-                    .buy_seats(approval, payment_federation_id, options)
+                    .buy_seats(&preview, payment_federation_id, options)
                     .await?;
                 let status = client.status();
                 // A purchase still parked for payment forms later.
@@ -1168,37 +1137,6 @@ async fn run(
                 )),
                 "not every guardian acknowledged a fresh DKG ceremony"
             );
-        }
-        Command::AuthorizePayments(authorize) => {
-            let identity = CliIdentity::load_or_create(&args.state_dir, false)?;
-            let endpoint = bind_iroh_endpoint().await?;
-            let live_registry = connect_environment_registry(args.manifold_environment).await?;
-            let client = open_client_with_fee_account_provider(
-                &args.state_dir,
-                identity,
-                CliPayments::open_for_resume(&authorize.resume, wallet_secret).await?,
-                &setup_payment,
-                Some(live_registry),
-                CliMgConnector::new(endpoint.clone()),
-                peer_badge_verifier
-                    .clone()
-                    .expect("commands other than discover construct a PeerBadge verifier"),
-                profile.clone(),
-                CliFaFeeAccountProvider::from_file(
-                    authorize.resume.fa_spv2_account_file.as_deref(),
-                )?,
-            )
-            .await?;
-            let result = client
-                .authorize_payments(
-                    PaymentAuthorizationId::try_from_opaque(authorize.authorization_id)
-                        .map_err(anyhow::Error::msg)?,
-                    FormationRunOptions::default(),
-                )
-                .await;
-            output.snapshot(&client.status(), format)?;
-            endpoint.close().await;
-            result?;
         }
         Command::Status => {
             let identity = CliIdentity::load_or_create(&args.state_dir, false)?;
@@ -1768,9 +1706,6 @@ fn load_intent(args: &CreateArgs) -> anyhow::Result<CreateIntent> {
                 .context("parse --fedimintd-version-maximum-exclusive as a semantic version")?,
         );
     }
-    if let Some(value) = args.max_total_msats {
-        file.max_total_msats = Some(value);
-    }
     let fedimintd_versions = match (
         file.fedimintd_version_minimum,
         file.fedimintd_version_maximum_exclusive,
@@ -1787,10 +1722,6 @@ fn load_intent(args: &CreateArgs) -> anyhow::Result<CreateIntent> {
     if let Some(name) = &file.federation_name {
         fa_client::validate_federation_name(name)?;
     }
-    ensure!(
-        file.max_total_msats != Some(0),
-        "spending cap must be greater than zero millisatoshis"
-    );
     Ok(CreateIntent {
         federation_name: file.federation_name,
         request: MgSelectionRequest::new(
@@ -1799,7 +1730,6 @@ fn load_intent(args: &CreateArgs) -> anyhow::Result<CreateIntent> {
             fedimintd_versions,
             file.plan.unwrap_or_default(),
         )?,
-        max_total_msats: file.max_total_msats,
     })
 }
 
@@ -2019,7 +1949,6 @@ impl WalletRootSecret {
             Command::Resume { args, .. } | Command::RestartDkg(args) => {
                 args.wallet_secret_file.as_ref()
             }
-            Command::AuthorizePayments(args) => args.resume.wallet_secret_file.as_ref(),
             Command::PaymentWallet(args) => args.wallet_secret_file.as_ref(),
             Command::Init
             | Command::Status
@@ -3521,7 +3450,6 @@ federation_name = "file"
 federation_size = 7
 fedimintd_version_minimum = "0.11.1"
 fedimintd_version_maximum_exclusive = "0.11.3"
-max_total_msats = 1000
 "#,
         )
         .unwrap();
@@ -3530,7 +3458,6 @@ max_total_msats = 1000
             config: Some(path),
             federation_name: Some("override".to_owned()),
             federation_size: None,
-            max_total_msats: Some(21_000),
             fedimintd_version_minimum: None,
             fedimintd_version_maximum_exclusive: None,
             poll_interval_secs: 2,
@@ -3555,59 +3482,6 @@ max_total_msats = 1000
             "0.11.3"
         );
         assert_eq!(intent.plan(), PlanPreference::InfiniteBestEffort);
-        assert_eq!(intent.max_total_msats(), Some(21_000));
-    }
-
-    #[test]
-    fn spending_cap_rejects_zero_from_flag_and_toml() {
-        let from_flag = load_intent(&CreateArgs {
-            fa_spv2_account_file: PathBuf::from("unused-fi-account.json"),
-            config: None,
-            federation_name: None,
-            federation_size: Some(7),
-            max_total_msats: Some(0),
-            fedimintd_version_minimum: None,
-            fedimintd_version_maximum_exclusive: None,
-            poll_interval_secs: 2,
-            poll_timeout_secs: 600,
-            completion_callback_url_file: None,
-            completion_callback_idempotency_key: None,
-            payment_federation_id: None,
-            wallet_data_dir: None,
-            wallet_secret_file: None,
-            payment_invite_code: None,
-            funding_token_file: None,
-        })
-        .unwrap_err();
-        assert!(from_flag.to_string().contains("greater than zero"));
-
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("intent.toml");
-        std::fs::write(
-            &path,
-            "federation_size = 7\nplan = \"infinite_best_effort\"\nmax_total_msats = 0\n",
-        )
-        .unwrap();
-        let from_toml = load_intent(&CreateArgs {
-            fa_spv2_account_file: PathBuf::from("unused-fi-account.json"),
-            config: Some(path),
-            federation_name: None,
-            federation_size: None,
-            max_total_msats: None,
-            fedimintd_version_minimum: None,
-            fedimintd_version_maximum_exclusive: None,
-            poll_interval_secs: 2,
-            poll_timeout_secs: 600,
-            completion_callback_url_file: None,
-            completion_callback_idempotency_key: None,
-            payment_federation_id: None,
-            wallet_data_dir: None,
-            wallet_secret_file: None,
-            payment_invite_code: None,
-            funding_token_file: None,
-        })
-        .unwrap_err();
-        assert!(from_toml.to_string().contains("greater than zero"));
     }
 
     #[test]
@@ -3623,7 +3497,6 @@ max_total_msats = 1000
             config: Some(path),
             federation_name: None,
             federation_size: None,
-            max_total_msats: None,
             fedimintd_version_minimum: None,
             fedimintd_version_maximum_exclusive: None,
             poll_interval_secs: 2,
@@ -3720,7 +3593,6 @@ guardian_fee_pmm = 100
             config: None,
             federation_name: None,
             federation_size: Some(7),
-            max_total_msats: None,
             fedimintd_version_minimum: None,
             fedimintd_version_maximum_exclusive: None,
             poll_interval_secs: 2,
@@ -3775,76 +3647,6 @@ guardian_fee_pmm = 100
         );
         assert!(!dir.path().join("wallet").exists());
         assert!(!state_dir.exists());
-
-        let registry_token = dir.path().join("registry-funding-token");
-        std::fs::write(&registry_token, "second bearer token").unwrap();
-        std::fs::set_permissions(&registry_token, std::fs::Permissions::from_mode(0o600)).unwrap();
-        let registry_state = dir.path().join("registry-fi-state");
-        let registry_args = AppArgs {
-            state_dir: registry_state.clone(),
-            json: false,
-            setup_payment_event_file: None,
-            setup_payment_publisher: None,
-            manifold_environment: ManifoldEnvironment::Development,
-            command: Command::Create(Box::new(CreateArgs {
-                fa_spv2_account_file: PathBuf::from("unused-fi-account.json"),
-                config: None,
-                federation_name: None,
-                federation_size: Some(7),
-                max_total_msats: None,
-                fedimintd_version_minimum: None,
-                fedimintd_version_maximum_exclusive: None,
-                poll_interval_secs: 2,
-                poll_timeout_secs: 600,
-                completion_callback_url_file: None,
-                completion_callback_idempotency_key: None,
-                payment_federation_id: Some("11".repeat(32)),
-                wallet_data_dir: Some(dir.path().join("registry-wallet")),
-                wallet_secret_file: None,
-                payment_invite_code: Some(
-                    FedimintInviteCode::new(
-                        "https://guardian.example/".parse().unwrap(),
-                        fedimint_core::PeerId::from(0),
-                        "11".repeat(32).parse().unwrap(),
-                        None,
-                    )
-                    .to_string(),
-                ),
-                funding_token_file: Some(registry_token.clone()),
-            })),
-        };
-        let registry_intent = match &registry_args.command {
-            Command::Create(create) => load_intent(create).unwrap(),
-            _ => unreachable!(),
-        };
-
-        let error = Box::pin(run(
-            registry_args,
-            Some(WalletRootSecret(WalletSecret([43; 64]))),
-            Some(CreatePreflight {
-                intent: registry_intent,
-                options: FormationRunOptions::default(),
-                fa_fee_account_provider: CliFaFeeAccountProvider::unavailable(),
-                completion_callback: None,
-            }),
-            None,
-            None,
-        ))
-        .await
-        .unwrap_err();
-
-        assert!(error.to_string().contains("--max-total-msats"));
-        assert_eq!(
-            std::fs::read_to_string(&registry_token).unwrap(),
-            "second bearer token"
-        );
-        assert!(
-            !funding_token_journal::journal_path(&registry_token)
-                .unwrap()
-                .exists()
-        );
-        assert!(!dir.path().join("registry-wallet").exists());
-        assert!(!registry_state.exists());
     }
 
     #[test]

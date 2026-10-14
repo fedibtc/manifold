@@ -10,14 +10,10 @@ Its `payment-wallet` commands join and directly fund the same persistent
 Fedimint client wallet later supplied to formation; this is consumer capability
 plumbing and does not move selection, authorization, or formation policy out of
 `fa-client`.
-TOML intent files reject unknown fields and invalid name, size, fee, and
-spending-cap values
+TOML intent files reject unknown fields and invalid name, size, and fee values
 before the CLI accesses local identity or durable FA state, or opens payment and
-network capabilities. `--max-total-msats` (or the TOML `max_total_msats`)
-sets the intent's aggregate spending cap; under it `fa-client`
-self-authorizes only the initial paid quote set when its checked total fits.
-An absent or exceeded cap removes that initial purchase, and every re-quoted
-set after any prior authorization parks regardless of its total.
+network capabilities. The verified preview is the payment approval: `fa-client`
+pays exactly each seat's previewed price.
 The global `--manifold-environment` option selects the canonical shared
 PeerBadge issuer-root, authority-relay, and minimum-trust-level profile.
 Commands that make trust decisions construct its concrete verifier and pass it
@@ -46,11 +42,10 @@ payer change.
 `create` uses verified selection: before opening identity, FA
 state, or the payment wallet, the CLI binds its Iroh endpoint, runs a fresh
 verified preview against the selected environment with live availability
-probing over that endpoint, seals it with the command's spending cap, retains
-the non-serializable approval in-process, and immediately consumes it through
-`buy_seats`. After the purchase completes, `create` forms the federation
-from every pool seat through `form_federation`. Registry-backed paid creation therefore requires
-`--max-total-msats`; passing no wallet coordinates explicitly selects
+probing over that endpoint, retains the non-serializable preview in-process,
+and immediately passes it to `buy_seats`. After the purchase completes, `create`
+forms the federation from every pool seat through `form_federation`. Passing
+no wallet coordinates explicitly selects
 `buy_seats` without a payer, which succeeds only when the advertised and live exact
 offers are all zero. `create` accepts a paired 0600
 completion-callback URL file and idempotency key, pass it to
@@ -98,9 +93,9 @@ itself runs after the ephemeral endpoint is bound and contacts MGs only
 through the walk's value-free availability probe; a preview failure still
 creates no identity, wallet, or durable FA state.
 
-`create`, `resume`, and `authorize-payments` can import an explicitly supplied
-funding token after joining the matching payment federation. This lets a parked
-paid formation acquire test funds without discarding its durable quote state.
+`create` and `resume` can import an explicitly supplied
+funding token after joining the matching payment federation. This lets an
+interrupted paid formation acquire test funds without discarding its durable quote state.
 Mint-v2 import and replay recover the deterministic receive operation and wait
 for its exact reissue outputs to become spendable before payment preflight.
 
@@ -133,17 +128,13 @@ setup-payment federations during staging.
 These commands are deliberately outside `fa-client`: joining and funding a
 consumer-owned payer are capability preparation, not FA formation policy.
 Registry `preview` remains wallet-free and read-only. Registry-backed `create`
-performs a new verified preview, retains the approval only in-process, reopens
+performs a new verified preview, retains it only in-process, reopens
 the already-funded payer by federation id, and supplies it to
 `FaClient::buy_seats`.
 
-The approved cap is the only authorization of the initial aggregate:
-`fa-client` self-authorizes it under the cap and removes the purchase over it.
-A re-quoted aggregate after any authorization remains parked for a distinct
-`authorize-payments` command carrying the displayed authorization id and the
-same wallet coordinates. `resume` never
-infers fresh payment authorization — it only continues work covered by an
-already durable one. Paid resume reopens the same wallet database and root
+The preview is the only payment authorization: `fa-client` pays exactly the
+previewed price of each seat and removes the purchase when a price changed
+before outputs. `resume` pays only those previewed prices. Paid resume reopens the same wallet database and root
 secret; the wallet recovers the exact quote-bound Fedimint operation and its
 required persisted change range before waiting for finality. It
 deterministically reconstructs refund material, so `fa-cli` persists no payment
@@ -160,7 +151,7 @@ key, clear operation, or uploaded icon bytes. Terms URLs are supplied by the
 caller for both ready-made and custom documents.
 
 `create` requires `--fa-spv2-account-file PATH` for the test FA account that
-formation installs at weight four; `resume` and `authorize-payments` accept the
+formation installs at weight four; `resume` accepts the
 same option so an interrupted formation can finish the atomic metadata
 proposal. This explicit account remains development/test tooling: supplying
 another structurally valid account redirects the FA share. The Guardian
@@ -221,7 +212,7 @@ against hostile local filesystem behavior.
 
 `--json` is a stable, newline-delimited output contract. Successful `init`
 writes exactly one stdout object with `fiPubkey` and `state`; `status`, `create`,
-`resume`, and successful `authorize-payments` write exactly one stdout `FaStatus`
+and `resume` write exactly one stdout `FaStatus`
 value. `FaStatus` omits absent parts, so an idle FA writes `{}`. A formation intent carries `fedimintd_versions` as its inclusive-minimum,
 exclusive-maximum range and `fedimintd_dkg_version` as the selected
 major/minor/vendor identity. Successful `discover` and `preview`

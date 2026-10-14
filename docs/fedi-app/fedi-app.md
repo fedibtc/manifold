@@ -72,39 +72,35 @@ flowchart LR
     A["Choose 7-20 guardians"] --> B["Fetch uncached verified ad preview"]
     B --> C["Show estimate; choose payer when payment is configured"]
     C --> D["Pay & create or no-payer bootstrap"]
-    D --> E["Exact quotes + cap/funding checks"]
+    D --> E["Exact quotes at previewed prices + funding checks"]
     E --> F["Arm outputs and acquire paid seats"]
     F --> G["Prepare and run DKG"]
     G --> H["Federation formed"]
 ```
 
 Preview is advertisement-only and valid for five minutes from completion of its
-verified walk. Its sealed handle binds the exact request and canonical verifier
-environment. The bridge keeps the
-sealed, non-serializable approval behind an opaque transient handle; back-out,
-restart, or re-entry discards it and refetches. No `GetQuote` is sent until the
-Pay-and-create command supplies that handle, an explicit authenticated Ready
-payer, and the original cap. A deployment with no setup-payment policy instead
-uses the explicit no-payer bootstrap command with the same sealed handle. It
-may seal an all-zero estimate with a zero limit and requests only free quotes:
-a priced live offer returns typed
+verified walk. It binds the exact request, each seat's advertised price, and
+the canonical verifier environment, and it is the user's payment approval. The
+bridge keeps the non-serializable preview behind an opaque transient handle;
+back-out, restart, or re-entry discards it and refetches. No `GetQuote` is sent
+until the Pay-and-create command supplies that handle and an explicit
+authenticated Ready payer. Each quote requests exactly the seat's previewed
+plan, so the user pays exactly the previewed total. A deployment with no
+setup-payment policy instead uses the explicit no-payer bootstrap command with
+the same handle and requests only free quotes: a priced live offer returns typed
 `PaymentFederationRequired` reauthorization before its quote or any wallet,
-presentation, or output effect. Exact paid quotes are checked as one set and
-paid automatically only within the cap.
+presentation, or output effect.
 
-Before wallet output generation, stale/drifted/over-cap terms, payer failure,
+Before wallet output generation, stale or drifted terms, a changed price, payer failure,
 or selected-seat unavailability return a typed reauthorization error and
 durable `Idle`. If a crash interrupts cleanup, resume recognizes the explicit
 selected-flow record, exposes no second-authorization action before outputs,
 and either
-continues a still-live approval or completes cleanup. The same still-live approval may retry another payer; guardian
-replacement always needs a fresh subset preview and authorization. Only an
-exact rejected/refunded row is replaceable; accepted, paid, prepared, and
-ambiguous siblings stay pinned. Sealing the replacement cap is the required
-fresh replacement authorization, and exact replacement quotes auto-authorize
-within it. If their checked total exceeds that cap, the post-output flow
-publishes an exact `AuthorizePayments` action that the bridge must render and
-submit before any replacement output starts. A definite MG
+continues a still-live preview or completes cleanup. The same still-live preview may retry another payer.
+After outputs, an exact rejected or refunded seat leaves the purchase;
+accepted, paid, prepared, and ambiguous siblings stay. The purchase completes
+with the remaining seats, and a new purchase with a fresh preview buys any
+missing seat. A definite MG
 connection failure is retried with bounded exponential backoff for up to two
 minutes (clipped by the invocation deadline) before that result. Once outputs
 are armed the operation is non-abandonable and transport failure stays on exact
@@ -119,16 +115,14 @@ The bridge exposes four concepts:
   five-minute handle;
 - authenticated admitted payer IDs (including zero-balance wallets), a
   Pay-and-create command with an explicit payer, the no-payer all-zero
-  bootstrap command, and the post-output
-  `AuthorizePayments` command when a replacement quote subset exceeds its
-  renewed cap; and
+  bootstrap command; and
 - a stream of typed status snapshots.
 
 `FaStatus::Idle` means no active formation. An active formation always carries
 its id and fully resolved persisted intent. The front end does not reconstruct
 these values from nullable fields.
 
-The active phase is one of `Preparing`, `AwaitingPaymentReadiness`,
+The active phase is one of `Preparing`,
 `AcquiringSeats`, `PreparingDkg`, `DkgUnderway`, `PublishingSeatBindings`, or
 `Formed`. Immediate command
 failures and the snapshot's last operation error use stable typed categories;

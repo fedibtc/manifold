@@ -302,7 +302,7 @@ uses one opened parent-directory descriptor for journal transitions, rejects a
 replacement before deletion, and syncs that directory after creating or
 deleting the journal.
 
-The option is available on `create`, `resume`, and `authorize-payments` so an
+The option is available on `create` and `resume` so an
 interrupted formation can be funded without restarting it. In every case it
 requires the selected payment federation, wallet coordinates, and a matching
 invite before import.

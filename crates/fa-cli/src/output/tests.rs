@@ -12,17 +12,9 @@ use super::*;
 const ACTIVE_STATUS: &str = concat!(
     r#"{"purchase":{"purchase_id":"purchase-1","request":{"#,
     r#""federation_size":7,"plan":"infinite_best_effort","#,
-    r#""fedimintd_versions":{"minimum":{"major":0,"minor":6,"patch":0},"maximum_exclusive":{"major":0,"minor":6,"patch":1}},"fedimintd_dkg_version":{"major":0,"minor":6,"vendor":"fedi"}},"phase":"awaiting_payment_readiness","seats":[],"#,
-    r#""freshness":"unsynced","action_required":null,"payment_outputs_started":false,"last_error":null}}"#
+    r#""fedimintd_versions":{"minimum":{"major":0,"minor":6,"patch":0},"maximum_exclusive":{"major":0,"minor":6,"patch":1}},"fedimintd_dkg_version":{"major":0,"minor":6,"vendor":"fedi"}},"phase":"acquiring_seats","seats":[],"#,
+    r#""freshness":"unsynced","payment_outputs_started":false,"last_error":null}}"#
 );
-const PAYMENT_REQUIREMENTS: &str = concat!(
-    r#"{"authorization_id":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","total_msats":21000,"seats":[{"index":2,"#,
-    r#""fman_id":"aa4fc8665f5696e33db7e1a572e3b0f5b3d615837b0f362dcb1c8068b098c7b4","#,
-    r#""quote_id":[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],"#,
-    r#""payment_federation_id":"1111111111111111111111111111111111111111111111111111111111111111","#,
-    r#""amount_msats":21000}]}"#
-);
-
 fn capture(operation: impl FnOnce(&mut CliOutput<'_>) -> anyhow::Result<()>) -> (String, String) {
     let mut stdout = Vec::new();
     let mut stderr = Vec::new();
@@ -44,7 +36,6 @@ fn active_status_json_has_exact_schema_on_stdout() {
         iroh::EndpointAddr::new(endpoint_key.public()),
         service_key.x_only_public_key(secp256k1::SECP256K1).0,
     );
-    let requirements: serde_json::Value = serde_json::from_str(PAYMENT_REQUIREMENTS).unwrap();
     let mut value: serde_json::Value = serde_json::from_str(ACTIVE_STATUS).unwrap();
     value["purchase"]["seats"] = serde_json::json!([{
         "index": 2,
@@ -55,15 +46,13 @@ fn active_status_json_has_exact_schema_on_stdout() {
         "phase": "quote_ready",
         "freshness": "unsynced"
     }]);
-    value["purchase"]["action_required"] =
-        serde_json::json!({ "authorize_payments": requirements });
     let status: FaStatus = serde_json::from_value(value).unwrap();
     let (stdout, stderr) = capture(|output| output.snapshot(&status, OutputFormat::Json));
 
     assert_eq!(
         stdout,
         concat!(
-            r#"{"purchase":{"purchase_id":"purchase-1","request":{"federation_size":7,"plan":"infinite_best_effort","fedimintd_versions":{"minimum":{"major":0,"minor":6,"patch":0},"maximum_exclusive":{"major":0,"minor":6,"patch":1}},"fedimintd_dkg_version":{"major":0,"minor":6,"vendor":"fedi"}},"phase":"awaiting_payment_readiness","seats":[{"index":2,"fman_id":"aa4fc8665f5696e33db7e1a572e3b0f5b3d615837b0f362dcb1c8068b098c7b4","locator":{"version":1,"endpoint_addr":{"id":"8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c","addrs":[]},"service_pubkey":"4d4b6cd1361032ca9bd2aeb9d900aa4d45d9ead80ac9423374c451a7254d0766"},"seat_id":null,"guardian_code":null,"phase":"quote_ready","freshness":"unsynced"}],"freshness":"unsynced","action_required":{"authorize_payments":{"authorization_id":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","total_msats":21000,"seats":[{"index":2,"fman_id":"aa4fc8665f5696e33db7e1a572e3b0f5b3d615837b0f362dcb1c8068b098c7b4","quote_id":[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],"payment_federation_id":"1111111111111111111111111111111111111111111111111111111111111111","amount_msats":21000}]}},"payment_outputs_started":false,"last_error":null}}"#,
+            r#"{"purchase":{"purchase_id":"purchase-1","request":{"federation_size":7,"plan":"infinite_best_effort","fedimintd_versions":{"minimum":{"major":0,"minor":6,"patch":0},"maximum_exclusive":{"major":0,"minor":6,"patch":1}},"fedimintd_dkg_version":{"major":0,"minor":6,"vendor":"fedi"}},"phase":"acquiring_seats","seats":[{"index":2,"fman_id":"aa4fc8665f5696e33db7e1a572e3b0f5b3d615837b0f362dcb1c8068b098c7b4","locator":{"version":1,"endpoint_addr":{"id":"8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c","addrs":[]},"service_pubkey":"4d4b6cd1361032ca9bd2aeb9d900aa4d45d9ead80ac9423374c451a7254d0766"},"seat_id":null,"guardian_code":null,"phase":"quote_ready","freshness":"unsynced"}],"freshness":"unsynced","payment_outputs_started":false,"last_error":null}}"#,
             "\n"
         )
     );

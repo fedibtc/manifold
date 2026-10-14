@@ -4475,11 +4475,6 @@ async fn run_fa_cli(
         } else {
             Stdio::inherit()
         });
-    if total_msats > 0 {
-        command
-            .arg("--max-total-msats")
-            .arg(total_msats.to_string());
-    }
     if let Some(overrides) = iroh_overrides {
         command.env("FM_IROH_CONNECT_OVERRIDES_PLAIN", overrides);
     }
@@ -4545,8 +4540,8 @@ async fn run_fa_cli(
             String::from_utf8_lossy(&output.stderr),
         );
         if invocation.output == FaCliOutput::JsonContract {
-            // The approved spending cap is the only payment authorization, so
-            // a successful JSON create or resume writes nothing to stderr.
+            // The preview is the only payment authorization, so a successful
+            // JSON create or resume writes nothing to stderr.
             anyhow::ensure!(
                 output.stderr.is_empty(),
                 "successful JSON formation must leave stderr empty: {}",
