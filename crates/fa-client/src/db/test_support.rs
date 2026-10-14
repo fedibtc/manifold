@@ -1,3 +1,4 @@
+use super::migration::{RestoredBackupKey, RestoredBackupState};
 use super::*;
 use fedimint_core::db::IDatabaseTransactionOpsCore as _;
 
