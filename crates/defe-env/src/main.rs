@@ -17,6 +17,7 @@ use defe_client::{
     AsyncDefeClient, FlipRequest, GatewaydInfo, GatewaydRequest, MgInfo, MgRequest,
     ResourceDescriptor, SharingMode,
 };
+use fedi_decentralized_manifold_environment::DEV_NOSTR_RELAYS_ENV;
 use iroh_base_035::{NodeId, SecretKey};
 use serde::Serialize;
 use sha2::{Digest as _, Sha256};
@@ -47,6 +48,7 @@ mod traffic;
 use descendant_supervisor::{DescendantSupervisor, run_lease_guard, run_namespace_spawn};
 
 const GUARDIAN_COUNT: usize = 7;
+const MG_ENDPOINT_ADDRS_ENV: &str = "MG_E2E_MG_ENDPOINT_ADDRS";
 const FA_ACCOUNT: &[u8] = br#"{"acc_type":"BtcDepositor","pub_keys":["031b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f"],"threshold":1}"#;
 const MG_OPERATOR_UI_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../operator-ui");
 const MG_OPERATOR_UI_URL: &str = "http://127.0.0.1:5174";
@@ -734,7 +736,16 @@ async fn run(args: Args, incoming_supervisor: Arc<DescendantSupervisor>) -> Resu
 
     status("forming seven-guardian federation");
     let fa_state_dir = args.root.join("fi-state");
-    let invite = form_federation(&supervisor, &args.fa_cli, &fa_state_dir, &mgs, &routes).await?;
+    let mg_endpoints = mg_endpoint_addrs(&mgs)?;
+    let invite = form_federation(
+        &supervisor,
+        &args.fa_cli,
+        &fa_state_dir,
+        &relay.url,
+        &mg_endpoints,
+        &routes,
+    )
+    .await?;
     let invite_file = args.root.join("federation-invite");
     write_private(&invite_file, invite.as_bytes())?;
     let fa_account_file = fa_state_dir.join("fi-spv2-account.json");
@@ -837,6 +848,7 @@ async fn run(args: Args, incoming_supervisor: Arc<DescendantSupervisor>) -> Resu
         &invite_file,
         &fa_state_dir,
         &routes,
+        &mg_endpoints,
         &mgs,
         &seat_ids,
         &gateway,
@@ -887,11 +899,14 @@ async fn run(args: Args, incoming_supervisor: Arc<DescendantSupervisor>) -> Resu
     Ok(status)
 }
 
+/// Form the federation through fa-cli's verified selection over the MGs
+/// advertised on the environment's exclusive relay.
 async fn form_federation(
     supervisor: &DescendantSupervisor,
     fa_cli: &Path,
     state_dir: &Path,
-    mgs: &[MgInfo],
+    relay_url: &str,
+    mg_endpoints: &str,
     routes: &str,
 ) -> Result<String> {
     run_command(
@@ -906,6 +921,43 @@ async fn form_federation(
     .await?;
     let account = state_dir.join("fi-spv2-account.json");
     fs::write(&account, FA_ACCOUNT)?;
+    // MGs advertise asynchronously after onboarding and repricing.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+    loop {
+        let preview = run_command(
+            supervisor,
+            Command::new(fa_cli)
+                .arg("--json")
+                .arg("preview")
+                .arg("--federation-size")
+                .arg(GUARDIAN_COUNT.to_string())
+                .arg("--timeout-secs")
+                .arg("10")
+                .env("MG_E2E_LOCAL_IROH", "1")
+                .env(MG_ENDPOINT_ADDRS_ENV, mg_endpoints)
+                .env(DEV_NOSTR_RELAYS_ENV, relay_url),
+            "fa-cli preview",
+            Duration::from_secs(20),
+        )
+        .await
+        .and_then(|output| Ok(serde_json::from_str::<serde_json::Value>(output.trim())?));
+        match preview {
+            Ok(preview)
+                if preview["selected"] == GUARDIAN_COUNT
+                    && preview["totalAdvertisedMsats"] == 0 =>
+            {
+                break;
+            }
+            Err(error) if error.downcast_ref::<SetupCommandTimeout>().is_some() => {
+                return Err(error);
+            }
+            Ok(_) | Err(_) if tokio::time::Instant::now() < deadline => {
+                tokio::time::sleep(Duration::from_millis(500)).await;
+            }
+            Ok(preview) => bail!("MG selection never filled the federation: {preview}"),
+            Err(error) => return Err(error.context("MG selection never filled the federation")),
+        }
+    }
     let mut command = Command::new(fa_cli);
     command
         .arg("--state-dir")
@@ -919,10 +971,9 @@ async fn form_federation(
         .arg("--poll-timeout-secs")
         .arg("120")
         .env("MG_E2E_LOCAL_IROH", "1")
+        .env(MG_ENDPOINT_ADDRS_ENV, mg_endpoints)
+        .env(DEV_NOSTR_RELAYS_ENV, relay_url)
         .env("FM_IROH_CONNECT_OVERRIDES_PLAIN", routes);
-    for mg in mgs {
-        command.arg("--locator").arg(&mg.locator);
-    }
     let output = run_command(
         supervisor,
         &mut command,
@@ -931,14 +982,10 @@ async fn form_federation(
     )
     .await?;
     let json: serde_json::Value = serde_json::from_str(output.trim())?;
-    ensure!(
-        json["federation"]["federation_invite"].is_string(),
-        "formation failed: {json}"
-    );
     json["federation"]["federation_invite"]
         .as_str()
         .map(ToOwned::to_owned)
-        .context("formed FA response has no invite code")
+        .with_context(|| format!("formation failed: {json}"))
 }
 
 async fn connect_gateway(
@@ -1016,6 +1063,7 @@ fn write_tools(
     invite: &Path,
     fa_state_dir: &Path,
     routes: &str,
+    mg_endpoints: &str,
     mgs: &[MgInfo],
     seat_ids: &[String],
     gateway: &GatewaydInfo,
@@ -1080,8 +1128,9 @@ fn write_tools(
     write_wrapper(
         &locked_fa_cli,
         &format!(
-            "#!/bin/sh\nMG_E2E_LOCAL_IROH=1 FM_IROH_CONNECT_OVERRIDES_PLAIN={} exec {} --internal-with-lock --lock {} -- {} \"$@\"\n",
+            "#!/bin/sh\nMG_E2E_LOCAL_IROH=1 FM_IROH_CONNECT_OVERRIDES_PLAIN={} {MG_ENDPOINT_ADDRS_ENV}={} exec {} --internal-with-lock --lock {} -- {} \"$@\"\n",
             shell_escape(OsStr::new(routes)),
+            shell_escape(OsStr::new(mg_endpoints)),
             shell_escape(defe_env.as_os_str()),
             shell_escape(args.root.join("fi-cli.lock").as_os_str()),
             shell_escape(args.fa_cli.as_os_str()),
@@ -1451,6 +1500,26 @@ fn local_iroh_overrides(first_port_base: u16) -> String {
         }
     }
     overrides.join(",")
+}
+
+/// `MG_E2E_MG_ENDPOINT_ADDRS` for fa-cli. Advertisements carry only MG
+/// endpoint ids, and the isolated environment has no address lookup, so route
+/// each id to the transport addresses its daemon printed in its locator.
+fn mg_endpoint_addrs(mgs: &[MgInfo]) -> Result<String> {
+    let mut pairs = Vec::new();
+    for mg in mgs {
+        let locator: serde_json::Value = serde_json::from_str(&mg.locator)?;
+        let endpoint = &locator["endpoint_addr"];
+        let id = endpoint["id"]
+            .as_str()
+            .context("MG locator has no endpoint id")?;
+        for addr in endpoint["addrs"].as_array().into_iter().flatten() {
+            if let Some(ip) = addr["Ip"].as_str() {
+                pairs.push(format!("{id}={ip}"));
+            }
+        }
+    }
+    Ok(pairs.join(","))
 }
 
 fn iroh_key(port: u16, role: &[u8]) -> [u8; 32] {
@@ -1943,7 +2012,7 @@ mod tests {
         let recorder = root.join("record command");
         std::fs::write(
             &recorder,
-            "#!/bin/sh\nprintf 'args' >>\"$RECORD\"\nprevious=\nfailed=0\nfor arg in \"$@\"; do printf '[%s]' \"$arg\" >>\"$RECORD\"; [ \"$previous $arg\" = 'guardian-fees collect' ] && failed=1; previous=$arg; done\nprintf ' env=[%s][%s]\\n' \"${MG_E2E_LOCAL_IROH-}\" \"${FM_IROH_CONNECT_OVERRIDES_PLAIN-}\" >>\"$RECORD\"\nif [ \"$failed\" -eq 1 ]; then exit 23; fi\nexit 0\n",
+            "#!/bin/sh\nprintf 'args' >>\"$RECORD\"\nprevious=\nfailed=0\nfor arg in \"$@\"; do printf '[%s]' \"$arg\" >>\"$RECORD\"; [ \"$previous $arg\" = 'guardian-fees collect' ] && failed=1; previous=$arg; done\nprintf ' env=[%s][%s][%s]\\n' \"${MG_E2E_LOCAL_IROH-}\" \"${FM_IROH_CONNECT_OVERRIDES_PLAIN-}\" \"${MG_E2E_MG_ENDPOINT_ADDRS-}\" >>\"$RECORD\"\nif [ \"$failed\" -eq 1 ]; then exit 23; fi\nexit 0\n",
         )
         .unwrap();
         std::fs::set_permissions(&recorder, std::fs::Permissions::from_mode(0o700)).unwrap();
@@ -2005,6 +2074,7 @@ mod tests {
             &root.join("invite"),
             &root.join("fi state"),
             "route one,route two",
+            "mg-endpoint=127.0.0.1:1",
             &mgs,
             &["seat-one".into()],
             &gateway,
@@ -2059,7 +2129,9 @@ mod tests {
         assert!(recorded.contains("args[--data-dir]["));
         assert!(recorded.contains("][alpha][two words]"));
         assert!(recorded.contains("args[--state-dir]["));
-        assert!(recorded.contains("][status][two words] env=[1][route one,route two]"));
+        assert!(recorded.contains(
+            "][status][two words] env=[1][route one,route two][mg-endpoint=127.0.0.1:1]"
+        ));
         assert!(recorded.contains(
             "args[--address][http://gateway][--rpcpassword=gateway-secret][info][two words]"
         ));

@@ -52,6 +52,16 @@ async fn run_restart() -> anyhow::Result<()> {
     init.arg("--state-dir").arg(&state_dir).arg("init");
     run_expect_success(init, "fa-cli init", Duration::from_secs(10)).await?;
     let account_file = write_fa_fee_account_fixture(&state_dir)?;
+    let mg_endpoints = mg_endpoint_addrs(&locators);
+    wait_for_mg_selection(
+        &fa_cli_bin,
+        &relay.url,
+        &mg_endpoints,
+        GUARDIAN_COUNT,
+        &[],
+        0,
+    )
+    .await?;
     let command = |verb: &str| {
         let mut command = Command::new(&fa_cli_bin);
         command
@@ -62,6 +72,7 @@ async fn run_restart() -> anyhow::Result<()> {
             .arg("--fa-spv2-account-file")
             .arg(&account_file)
             .env("MG_E2E_LOCAL_IROH", "1")
+            .env(MG_ENDPOINT_ADDRS_ENV, &mg_endpoints)
             .env("FM_IROH_CONNECT_OVERRIDES_PLAIN", &overrides)
             .env(
                 fedi_decentralized_manifold_environment::DEV_NOSTR_RELAYS_ENV,
@@ -82,9 +93,6 @@ async fn run_restart() -> anyhow::Result<()> {
         .arg("--federation-size")
         .arg(GUARDIAN_COUNT.to_string())
         .args(["--poll-interval-secs", "1", "--poll-timeout-secs", "15"]);
-    for locator in &locators {
-        create.arg("--locator").arg(locator);
-    }
     let mut fi = create
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -158,7 +166,7 @@ async fn run_restart() -> anyhow::Result<()> {
         run_expect_success(command("resume"), "fa-cli resume", Duration::from_secs(90)).await?;
     let formed: serde_json::Value = serde_json::from_str(formed.trim())?;
     anyhow::ensure!(
-        formed["federation"]["federation_invite"].is_string(),
+        formed_invite(&formed).is_some(),
         "restarted formation must finish with an agreed invite: {formed}"
     );
     for index in 0..GUARDIAN_COUNT {
