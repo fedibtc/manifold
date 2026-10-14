@@ -8,6 +8,14 @@ use std::fmt;
 
 use url::Url;
 
+mod app_setting;
+
+pub use app_setting::{
+    FEDERATION_APP_SETTING_MAX_COMMUNITIES, FEDERATION_APP_SETTING_MAX_FEDIMODS,
+    FEDERATION_APP_SETTING_MAX_GROUP_CHATS, FEDERATION_APP_SETTING_MAX_MSATS, FederationAppSetting,
+    FederationAppSettingValue,
+};
+
 use crate::{
     FEDERATION_ICON_URL_META_FIELD_KEY, FEDERATION_NAME_META_FIELD_KEY, MetaFieldKey,
     MetaFieldValue, TERMS_OF_SERVICE_URL_META_FIELD_KEY, WELCOME_MESSAGE_META_FIELD_KEY,
@@ -88,6 +96,14 @@ pub enum InvalidFederationMetadataValue {
         field: &'static str,
         /// Why the host cannot be fetched from the public internet.
         reason: &'static str,
+    },
+    /// The value does not match its Fedi app setting's format.
+    #[error("{field} {reason}")]
+    InvalidAppSetting {
+        /// The setting's meta key.
+        field: &'static str,
+        /// Which rule the value broke.
+        reason: String,
     },
 }
 
@@ -223,7 +239,7 @@ impl TryFrom<String> for FederationMetadataWelcomeMessage {
     }
 }
 
-/// One post-formation metadata mutation supported by Manifold MVP.
+/// One post-formation metadata mutation supported by Manifold.
 ///
 /// Each value is validated before construction. The MG repeats the same
 /// validation before casting its guardian vote.
@@ -237,6 +253,8 @@ pub enum FederationMetadataUpdate {
     WelcomeMessage(FederationMetadataWelcomeMessage),
     /// Set the public HTTP(S) URL of the terms document.
     TermsOfService(FederationMetadataTermsUrl),
+    /// Change one Fedi app setting.
+    AppSetting(FederationAppSettingValue),
 }
 
 impl FederationMetadataUpdate {
@@ -270,6 +288,16 @@ impl FederationMetadataUpdate {
         )?))
     }
 
+    /// Construct a validated Fedi app setting mutation.
+    pub fn app_setting(
+        setting: FederationAppSetting,
+        value: impl Into<String>,
+    ) -> Result<Self, InvalidFederationMetadataValue> {
+        Ok(Self::AppSetting(FederationAppSettingValue::new(
+            setting, value,
+        )?))
+    }
+
     /// Return the exact protocol field selected by this typed mutation.
     #[must_use]
     pub fn into_field(self) -> (MetaFieldKey, MetaFieldValue) {
@@ -288,6 +316,10 @@ impl FederationMetadataUpdate {
             ),
             Self::TermsOfService(value) => (
                 MetaFieldKey(TERMS_OF_SERVICE_URL_META_FIELD_KEY.to_owned()),
+                MetaFieldValue(value.into_inner()),
+            ),
+            Self::AppSetting(value) => (
+                MetaFieldKey(value.setting().key().to_owned()),
                 MetaFieldValue(value.into_inner()),
             ),
         }

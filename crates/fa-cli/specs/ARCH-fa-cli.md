@@ -151,12 +151,13 @@ signatures, ecash, or refund secrets in FA state.
 
 ## Post-formation maintenance
 
-`maintenance set-name`, `set-icon-url`, `set-welcome-message`, and
-`set-terms-of-service --value URL` expose the four semantic metadata mutations currently
-supported by `fa-client`. The commands construct the library's
-shared validated types before opening identity, durable FA state,
-the consensus reader, or Iroh transport. The CLI accepts no arbitrary metadata
-key, clear operation, or uploaded icon bytes. Terms URLs are supplied by the
+`maintenance set-name`, `set-icon-url`, `set-welcome-message`,
+`set-terms-of-service --value URL`, and `set-app-setting --key KEY --value VALUE`
+expose the semantic metadata mutations supported by `fa-client`. The commands
+construct the library's shared validated types before opening identity,
+durable FA state, the consensus reader, or Iroh transport. `set-app-setting`
+accepts only a `FederationAppSetting` key; the CLI accepts no other metadata
+key, delete operation, or uploaded icon bytes. Terms URLs are supplied by the
 caller for both ready-made and custom documents.
 
 `create` requires `--fa-spv2-account-file PATH` for the test FA account that

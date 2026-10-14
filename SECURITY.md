@@ -568,7 +568,14 @@ control and zero-width characters; homoglyph spoofing within accepted scripts
 remains possible. Icon and terms URLs must name a public host — loopback, link-local,
 and RFC-1918 addresses, `localhost` names, and bare undotted hostnames are
 refused — but DNS is not resolved, and consumers fetching these URLs still need
-their own fetch-time policy. The
+their own fetch-time policy. Fedi app settings have smaller per-key raw caps
+(at most 32,768 bytes) and strict formats: flags, canonical msat amounts,
+currency codes, bech32 community invites, Matrix room ids, and mod entries
+whose URLs follow the icon URL rule. The served caps together stay below half
+the object cap, so an FA cannot fill the object past the point where later
+maintenance is refused. Settings that steer payments (`vetted_gateways`,
+`recurringd_api`, `fedi:fixed_exchange_rate`) or lock members out (popup
+expiry) are not served. The
 seat-binding directory has a 65,536-byte raw and canonical cap, and each
 guardian votes only for a directory whose entry for its own seat carries its
 own attestation key, refusing when it cannot derive its own peer id: an

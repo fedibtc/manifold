@@ -167,6 +167,8 @@ enum MaintenanceCommand {
     SetWelcomeMessage(MetadataValueArgs),
     /// Set the public HTTP(S) URL of the terms-of-service document.
     SetTermsOfService(MetadataValueArgs),
+    /// Set one Fedi app setting, such as `fedi:stability_pool_disabled`.
+    SetAppSetting(AppSettingArgs),
     /// Change the rate of the canonical fee policy installed at formation.
     ConfigureGuardianFees(ConfigureGuardianFeesArgs),
 }
@@ -174,6 +176,16 @@ enum MaintenanceCommand {
 #[derive(Debug, ClapArgs)]
 struct MetadataValueArgs {
     /// Exact metadata value; fa-client preserves the accepted original string.
+    #[arg(long)]
+    value: String,
+}
+
+#[derive(Debug, ClapArgs)]
+struct AppSettingArgs {
+    /// Fedi app setting meta key, for example `fedi:autojoin_communities`.
+    #[arg(long)]
+    key: String,
+    /// Exact metadata value, for example `false` or a JSON array.
     #[arg(long)]
     value: String,
 }
@@ -285,6 +297,16 @@ impl MaintenanceArgs {
                 FederationMetadataUpdate::terms_of_service_url(args.value.clone())
                     .context("validate federation metadata terms URL")?,
             ),
+            MaintenanceCommand::SetAppSetting(args) => {
+                let setting = FederationAppSetting::from_key(&args.key).with_context(|| {
+                    let keys = FederationAppSetting::ALL.map(FederationAppSetting::key);
+                    format!("--key must be one of: {}", keys.join(", "))
+                })?;
+                metadata(
+                    FederationMetadataUpdate::app_setting(setting, args.value.clone())
+                        .context("validate Fedi app setting")?,
+                )
+            }
             MaintenanceCommand::ConfigureGuardianFees(args) => {
                 ensure!(
                     args.send_ppm <= fa_client::MAX_GUARDIAN_FEE_PPM,
@@ -3312,6 +3334,44 @@ mod tests {
                 assert!(result.is_err());
             }
         }
+    }
+
+    #[test]
+    fn app_setting_preflight_names_the_key_and_validates_the_value() {
+        let parse = |key: &str, value: &str| {
+            let args = AppArgs::try_parse_from([
+                "fa-cli",
+                "--manifold-environment",
+                "staging",
+                "maintenance",
+                "set-app-setting",
+                "--key",
+                key,
+                "--value",
+                value,
+            ])
+            .unwrap();
+            let Command::Maintenance(maintenance) = args.command else {
+                panic!("expected maintenance")
+            };
+            maintenance.preflight()
+        };
+        let MaintenancePreflight::Metadata { field, value, .. } =
+            parse("fedi:stability_pool_disabled", "false").unwrap()
+        else {
+            panic!("expected metadata")
+        };
+        assert_eq!(field, "fedi:stability_pool_disabled");
+        assert_eq!(value, "false");
+
+        let unknown = parse("vetted_gateways", "[]").unwrap_err().to_string();
+        assert!(unknown.contains("fedi:autojoin_communities"), "{unknown}");
+        assert!(
+            parse("fedi:stability_pool_disabled", "no")
+                .unwrap_err()
+                .to_string()
+                .contains("validate Fedi app setting")
+        );
     }
 
     #[test]

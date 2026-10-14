@@ -45,10 +45,10 @@ pub use fedi_decentralized_service_liquidity_manager::{
     AllocationItemStatus, LiquidityAmountBounds, Pubkey, Sats, Sha256Digest, SourceType,
 };
 pub use fedi_decentralized_service_manifold_guardian::{
-    DkgCompletionCallback, FaId, FaSignature, FederationId, FederationMetadataIconUrl,
-    FederationMetadataName, FederationMetadataTermsUrl, FederationMetadataUpdate,
-    FederationMetadataWelcomeMessage, FederationName, FederationSize, FedimintdDkgVersion,
-    FedimintdVersion, FedimintdVersionCore, GatewayApiUrl, GuardianCode,
+    DkgCompletionCallback, FaId, FaSignature, FederationAppSetting, FederationAppSettingValue,
+    FederationId, FederationMetadataIconUrl, FederationMetadataName, FederationMetadataTermsUrl,
+    FederationMetadataUpdate, FederationMetadataWelcomeMessage, FederationName, FederationSize,
+    FedimintdDkgVersion, FedimintdVersion, FedimintdVersionCore, GatewayApiUrl, GuardianCode,
     InvalidFederationMetadataValue, InvalidGatewayApiUrl, InviteCode, Locator, MgName, QuoteId,
     SeatId, Timestamp,
 };

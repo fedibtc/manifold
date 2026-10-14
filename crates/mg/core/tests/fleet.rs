@@ -2869,6 +2869,63 @@ async fn meta_write_submits_the_directory_and_keeps_the_other_fields() {
 }
 
 #[tokio::test]
+async fn app_setting_write_submits_the_exact_string_and_refuses_fedi_operated_keys() {
+    let temp = TempDir::new().unwrap();
+    let config = config(&temp, 1, 30_967).await;
+    let fleet = open_fleet(config, Arc::new(NoWallet)).await.unwrap();
+    let (_, seat_id) = create_free_seat(&fleet, 74).await;
+    let seat = fleet.seat_by_id(&seat_id).unwrap();
+    let existing = serde_json::to_vec(&serde_json::json!({ "federation_name": "Keep" })).unwrap();
+    let fake = fleet
+        .form_fake_child(&seat_id, running_federation(0, Some(existing.clone())))
+        .await;
+
+    // Fedi-operated keys stay refused before child access.
+    for key in [
+        "vetted_gateways",
+        "recurringd_api",
+        "fedi:popup_end_timestamp",
+    ] {
+        assert!(matches!(
+            seat.submit_meta_field(
+                MetaConsensusBase::from_consensus(Some((0, &existing))),
+                MetaFieldKey(key.to_owned()),
+                MetaFieldValue("[]".to_owned()),
+                NO_FEE_FLOOR,
+            )
+            .await,
+            Err(SeatVerbError::MetaKeyRefused)
+        ));
+    }
+    assert!(fake.state().meta_submissions.is_empty());
+
+    // The app parses list settings from a JSON string, so the MG must submit
+    // the list as that string rather than as a nested JSON array.
+    let rooms = r#"["!lobby:matrix.example.com"]"#;
+    seat.submit_meta_field(
+        MetaConsensusBase::from_consensus(Some((0, &existing))),
+        MetaFieldKey("fedi:default_group_chats".to_owned()),
+        MetaFieldValue(rooms.to_owned()),
+        NO_FEE_FLOOR,
+    )
+    .await
+    .unwrap();
+    let submissions = fake.state().meta_submissions;
+    assert_eq!(submissions.len(), 1);
+    let submitted: std::collections::BTreeMap<String, serde_json::Value> =
+        serde_json::from_slice(&submissions[0]).unwrap();
+    assert_eq!(
+        submitted["fedi:default_group_chats"],
+        serde_json::Value::String(rooms.to_owned()),
+    );
+    assert_eq!(
+        submitted["federation_name"],
+        serde_json::Value::String("Keep".to_owned()),
+    );
+    fleet.shutdown().await;
+}
+
+#[tokio::test]
 async fn generic_meta_write_preserves_formation_owned_fields_without_revalidating_them() {
     let temp = TempDir::new().unwrap();
     let config = config(&temp, 1, 30_972).await;
