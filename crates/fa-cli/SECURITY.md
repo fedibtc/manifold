@@ -38,7 +38,7 @@ change to its threat model.
 
 ## Formation timing input
 
-Pinned formation constructs its poll interval and per-driver invocation timeout before
+`create` constructs its poll interval and per-driver invocation timeout before
 reading wallet-secret or setup-payment-policy input and before opening or
 creating identity, FA database, wallet, Iroh endpoint, or other network
 resources. Zero values and values outside fa-client's shared native/WASM timer
@@ -49,7 +49,7 @@ ordering when adding pre-dispatch CLI input handling or formation resources.
 
 ## DKG completion callback bearer input
 
-Pinned formation accepts a push-gateway hook URL only from the file named by
+`create` accepts a push-gateway hook URL only from the file named by
 `--completion-callback-url-file`; the URL itself must never appear in argv or
 shell history. On Unix, `fa-cli` opens the file without following symlinks and
 requires an owner-owned regular file with permissions exactly `0600`. It reads
@@ -61,8 +61,7 @@ use.
 
 The paired idempotency key is a deduplication identifier rather than the hook's
 authorization secret. The resulting typed callback redacts both fields and is
-handed only to the pinned formation driver; registry-selected formation rejects
-callbacks before state access.
+handed only to `form_federation`.
 
 
 ## Wallet root secret input
@@ -254,16 +253,8 @@ closed and require a fresh disposable test wallet.
 Registry-backed `create` retains the verified, non-serializable selection
 approval only for the current process. It completes discovery and verification
 before opening identity, FA state, or the payment wallet, then consumes the
-approval directly through `fa-client`; it never converts selected rows into
-pinned locators. Paid selected creation requires an explicit aggregate cap.
-
-`--insecure-skip-mg-trust` is an explicit development/staging escape hatch
-for incomplete test credential publication. It retains event/document
-authentication, freshness, intent compatibility, advertised capacity, dialing,
-and every live quote/response verification, but deliberately skips
-HolderAuthorization and PeerBadge admission by entering the diagnostic pinned
-driver. The CLI refuses it under the production profile. Its output must never
-describe those MGs as verified or selected.
+approval directly through `fa-client`. Paid creation requires an explicit
+aggregate cap.
 
 Liquidity commands use only a formed federation already held in `--state-dir`.
 Provider discovery remains the library's no-private-data gate; the CLI passes

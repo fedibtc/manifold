@@ -6,8 +6,7 @@ persistence, cancellation, or progress output are security-sensitive.
 
 ## Trust boundary
 
-The disabled-by-default `dev-pinned-formation` feature exposes pinned Fleet
-Manager locators only to development/test consumers. Those locators are
+Locators enter the FA only through verified selection. They are
 untrusted input except for the concrete facts
 they encode: dialing information and a manager commitment key. A locator is not
 an issuer attestation or a consumer-provided trust decision. Verify every
@@ -44,10 +43,8 @@ generating outputs or creating recovery state. The MG's availability response
 never establishes federation-specific payment policy for FA selection.
 
 Validate the complete formation intent before durable or remote side effects.
-The development-only pinned path accepts one patch release and derives its Fedi
-DKG identity before any value-free availability read or other effect. Resolve
-an absent display name exactly once, validate it, and persist it with that
-release before quotes, payments, seat creation, or DKG.
+`form_federation` resolves an absent display name exactly once, validates it,
+and persists it before DKG.
 Unsupported future fields must be rejected or absent from the public intent,
 never silently ignored.
 
@@ -237,13 +234,6 @@ the per-run caps count deduplicated events so adding a relay neither
 multiplies badge-verification work nor shrinks the effective window.
 Re-check this section when the verification order or any cap changes, or
 when the sealed selected-creation contract changes.
-
-The purpose-specific `insecure_discover_untrusted_pinned_mgs` surface is not a
-product-path exception and is compiled only with `dev-pinned-formation` or
-crate tests. It returns only authenticated, fresh, compatible and
-dialable identities/locators for the existing pinned protocol-test driver; it
-does not return `EligibleMgCandidate`, a verified candidate, badge facts, or
-a selection approval. Production consumers must not expose it.
 
 ## Durable ordering
 
@@ -484,8 +474,8 @@ authorize a generic re-quote or second presentation. Retain the exact quote and
 admission while returning through selected reauthorization cleanup; only the
 durable transition to `Idle` removes them. If cleanup fails or is
 interrupted, reopen replays the same signed refusal before retrying cleanup. The
-next attempt requires a fresh selection preview. Pinned and post-output
-formations retain their exact refusal/replacement behavior.
+next attempt requires a fresh selection preview. Post-output purchases retain
+their exact refusal/replacement behavior.
 
 ## Concurrency and hosting
 

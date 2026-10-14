@@ -17,6 +17,7 @@ const ACTIVE_STATUS: &str = concat!(
 );
 const PAYMENT_REQUIREMENTS: &str = concat!(
     r#"{"authorization_id":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","total_msats":21000,"seats":[{"index":2,"#,
+    r#""fman_id":"aa4fc8665f5696e33db7e1a572e3b0f5b3d615837b0f362dcb1c8068b098c7b4","#,
     r#""quote_id":[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],"#,
     r#""payment_federation_id":"1111111111111111111111111111111111111111111111111111111111111111","#,
     r#""amount_msats":21000}]}"#
@@ -47,6 +48,7 @@ fn active_status_json_has_exact_schema_on_stdout() {
     let mut value: serde_json::Value = serde_json::from_str(ACTIVE_STATUS).unwrap();
     value["purchase"]["seats"] = serde_json::json!([{
         "index": 2,
+        "fman_id": "aa4fc8665f5696e33db7e1a572e3b0f5b3d615837b0f362dcb1c8068b098c7b4",
         "locator": locator,
         "seat_id": null,
         "guardian_code": null,
@@ -61,7 +63,7 @@ fn active_status_json_has_exact_schema_on_stdout() {
     assert_eq!(
         stdout,
         concat!(
-            r#"{"purchase":{"purchase_id":"purchase-1","request":{"federation_size":7,"plan":"infinite_best_effort","fedimintd_versions":{"minimum":{"major":0,"minor":6,"patch":0},"maximum_exclusive":{"major":0,"minor":6,"patch":1}},"fedimintd_dkg_version":{"major":0,"minor":6,"vendor":"fedi"}},"phase":"awaiting_payment_readiness","seats":[{"index":2,"locator":{"version":1,"endpoint_addr":{"id":"8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c","addrs":[]},"service_pubkey":"4d4b6cd1361032ca9bd2aeb9d900aa4d45d9ead80ac9423374c451a7254d0766"},"seat_id":null,"guardian_code":null,"phase":"quote_ready","freshness":"unsynced"}],"freshness":"unsynced","action_required":{"authorize_payments":{"authorization_id":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","total_msats":21000,"seats":[{"index":2,"quote_id":[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],"payment_federation_id":"1111111111111111111111111111111111111111111111111111111111111111","amount_msats":21000}]}},"payment_outputs_started":false,"last_error":null}}"#,
+            r#"{"purchase":{"purchase_id":"purchase-1","request":{"federation_size":7,"plan":"infinite_best_effort","fedimintd_versions":{"minimum":{"major":0,"minor":6,"patch":0},"maximum_exclusive":{"major":0,"minor":6,"patch":1}},"fedimintd_dkg_version":{"major":0,"minor":6,"vendor":"fedi"}},"phase":"awaiting_payment_readiness","seats":[{"index":2,"fman_id":"aa4fc8665f5696e33db7e1a572e3b0f5b3d615837b0f362dcb1c8068b098c7b4","locator":{"version":1,"endpoint_addr":{"id":"8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c","addrs":[]},"service_pubkey":"4d4b6cd1361032ca9bd2aeb9d900aa4d45d9ead80ac9423374c451a7254d0766"},"seat_id":null,"guardian_code":null,"phase":"quote_ready","freshness":"unsynced"}],"freshness":"unsynced","action_required":{"authorize_payments":{"authorization_id":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","total_msats":21000,"seats":[{"index":2,"fman_id":"aa4fc8665f5696e33db7e1a572e3b0f5b3d615837b0f362dcb1c8068b098c7b4","quote_id":[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],"payment_federation_id":"1111111111111111111111111111111111111111111111111111111111111111","amount_msats":21000}]}},"payment_outputs_started":false,"last_error":null}}"#,
             "\n"
         )
     );
@@ -90,39 +92,6 @@ fn restored_text_status_reports_current_freshness() {
         assert_eq!(stdout, format!("invite\nfederation state: {expected}\n"));
         assert_eq!(stderr, "");
     }
-}
-
-#[test]
-fn payment_readiness_json_has_exact_schema_on_stderr() {
-    let requirements: PaymentRequirements = serde_json::from_str(PAYMENT_REQUIREMENTS).unwrap();
-    let (stdout, stderr) =
-        capture(|output| output.payment_requirements(&requirements, OutputFormat::Json));
-
-    assert_eq!(stdout, "");
-    assert_eq!(
-        stderr,
-        concat!(
-            r#"{"authorizingPayments":{"authorization_id":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","seats":[{"amount_msats":21000,"index":2,"payment_federation_id":"1111111111111111111111111111111111111111111111111111111111111111","quote_id":[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]}],"total_msats":21000}}"#,
-            "\n"
-        )
-    );
-}
-
-#[test]
-fn over_cap_payment_authorization_required_has_exact_schema_on_stderr() {
-    let mut requirements: PaymentRequirements = serde_json::from_str(PAYMENT_REQUIREMENTS).unwrap();
-    requirements.max_total_msats = Some(20_000);
-    let (stdout, stderr) =
-        capture(|output| output.payment_authorization_required(&requirements, OutputFormat::Json));
-
-    assert_eq!(stdout, "");
-    assert_eq!(
-        stderr,
-        concat!(
-            r#"{"paymentAuthorizationRequired":{"authorization_id":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","max_total_msats":20000,"seats":[{"amount_msats":21000,"index":2,"payment_federation_id":"1111111111111111111111111111111111111111111111111111111111111111","quote_id":[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]}],"total_msats":21000}}"#,
-            "\n"
-        )
-    );
 }
 
 #[test]
