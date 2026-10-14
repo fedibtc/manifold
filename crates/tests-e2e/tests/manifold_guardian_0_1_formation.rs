@@ -56,6 +56,9 @@ const REPLAY_INVITE_ENV: &str = "MG_E2E_REPLAY_INVITE";
 const REPLAY_TOKEN_FILE_ENV: &str = "MG_E2E_REPLAY_TOKEN_FILE";
 const REPLAY_WALLET_DIR_ENV: &str = "MG_E2E_REPLAY_WALLET_DIR";
 const GATEWAY_CLI_BIN_ENV: &str = "FLIP_E2E_GATEWAY_CLI_BIN";
+/// fa-cli's local-E2E routes from advertised MG endpoint ids to loopback
+/// addresses; see [`mg_endpoint_addrs`].
+const MG_ENDPOINT_ADDRS_ENV: &str = "MG_E2E_MG_ENDPOINT_ADDRS";
 const PAYOUT_CRASH_SEAM_ENABLE: &str = "enable-payout-crash-seam";
 const PAYOUT_CRASH_SEAM_REACHED: &str = "payout-crash-seam-reached";
 const GUARDIAN_COUNT: usize = 7;
@@ -168,8 +171,9 @@ async fn run_manifold_guardian_formation() -> anyhow::Result<()> {
         bitcoind.rpc_url,
         bitcoind.data_dir.display()
     );
+    // Exclusive: fa-cli selects every MG advertised on this relay.
     let nostr_relay_lease = defe
-        .request_nostr_relay(SharingMode::Shared)
+        .request_nostr_relay(SharingMode::Exclusive)
         .await
         .expect("allocate Nostr relay through defe");
     let ResourceDescriptor::NostrRelay(nostr_relay) = &nostr_relay_lease.descriptor else {
@@ -204,16 +208,17 @@ async fn run_manifold_guardian_formation() -> anyhow::Result<()> {
         .await
         .expect("offer the bootstrap seats");
 
-    eprintln!("running fa-cli against {} locators", locators.len());
+    eprintln!("running fa-cli selection over {} MGs", locators.len());
     let invite_code = run_fa_cli(
         &fa_cli_bin,
-        &locators,
+        &nostr_relay.url,
+        &mg_endpoint_addrs(&locators),
         FaCliInvocation {
             extra_args: &[],
             resume_args: None,
             wallet_secret: None,
             output: FaCliOutput::Human,
-            nostr_relay: None,
+            seat_price_msats: 0,
         },
         Some(&iroh_overrides),
         GUARDIAN_COUNT,
@@ -427,8 +432,16 @@ async fn run_formed_fleet_restore() -> anyhow::Result<()> {
     .await;
     offer_free_seats(&manifold_guardian_bin, &temp, GUARDIAN_COUNT).await?;
     let state_dir = temp.join("fi-state");
-    let invite =
-        form_federation_in_state(&fa_cli_bin, &state_dir, &locators, &iroh_overrides, None).await?;
+    let invite = form_federation_in_state(
+        &fa_cli_bin,
+        &state_dir,
+        &nostr_relay.url,
+        &mg_endpoint_addrs(&locators),
+        &iroh_overrides,
+        None,
+    )
+    .await?
+    .parse::<fedimint_core::invite_code::InviteCode>()?;
 
     let original_dir = temp.join("mg-0");
     let original_identity =
@@ -515,9 +528,15 @@ async fn run_formed_fleet_restore() -> anyhow::Result<()> {
             )
             .await?;
             if status["report"]["phase"] == "running" && status["report"]["health"] == "healthy" {
+                // Each guardian's invite names its own peer, and selection
+                // decides which peer this MG became; compare the federation.
+                let restored_invite = status["report"]["invite_code"]
+                    .as_str()
+                    .context("running seat status carries its invite")?
+                    .parse::<fedimint_core::invite_code::InviteCode>()?;
                 anyhow::ensure!(
-                    status["report"]["invite_code"] == invite,
-                    "restored guardian must retain the exact formed invite: {status}"
+                    restored_invite.federation_id() == invite.federation_id(),
+                    "restored guardian must retain the formed federation: {status}"
                 );
                 return Ok::<_, anyhow::Error>(());
             }
@@ -635,7 +654,8 @@ async fn run_diverged_hosts_restore() -> anyhow::Result<()> {
     form_federation_in_state(
         &fa_cli_bin,
         &temp.join("fa-1"),
-        &locators,
+        &nostr_relay.url,
+        &mg_endpoint_addrs(&locators),
         &iroh_overrides,
         None,
     )
@@ -691,11 +711,14 @@ async fn run_diverged_hosts_restore() -> anyhow::Result<()> {
     .await?;
     daemons.push(b);
 
-    // Each host forms one more guardian on its own.
+    // Each host forms one more guardian on its own. Both hosts advertise
+    // the same MG identity, so which one fa-cli dials is decided by the
+    // address its endpoint id resolves to.
     form_federation_in_state(
         &fa_cli_bin,
         &temp.join("fa-2"),
-        &locators,
+        &nostr_relay.url,
+        &mg_endpoint_addrs(&locators),
         &iroh_overrides,
         None,
     )
@@ -705,7 +728,8 @@ async fn run_diverged_hosts_restore() -> anyhow::Result<()> {
     form_federation_in_state(
         &fa_cli_bin,
         &temp.join("fa-3"),
-        &b_locators,
+        &nostr_relay.url,
+        &mg_endpoint_addrs(&b_locators),
         &iroh_overrides,
         None,
     )
@@ -803,8 +827,9 @@ async fn run_real_seat_lifecycle() -> anyhow::Result<()> {
         );
     };
 
+    // Exclusive: fa-cli selects every MG advertised on this relay.
     let nostr_relay_lease = defe
-        .request_nostr_relay(SharingMode::Shared)
+        .request_nostr_relay(SharingMode::Exclusive)
         .await
         .context("allocate local Nostr relay through defe")?;
     let ResourceDescriptor::NostrRelay(nostr_relay) = &nostr_relay_lease.descriptor else {
@@ -839,7 +864,16 @@ async fn run_real_seat_lifecycle() -> anyhow::Result<()> {
     )
     .await;
     offer_free_seats(&manifold_guardian_bin, &temp, GUARDIAN_COUNT).await?;
-    form_federation_in_state(&fa_cli_bin, &state_dir, &locators, &iroh_overrides, None).await?;
+    let mg_endpoints = mg_endpoint_addrs(&locators);
+    form_federation_in_state(
+        &fa_cli_bin,
+        &state_dir,
+        &nostr_relay.url,
+        &mg_endpoints,
+        &iroh_overrides,
+        None,
+    )
+    .await?;
 
     let seats =
         manifold_guardian_admin(&manifold_guardian_bin, &data_dir, &["seats", "list"]).await?;
@@ -896,6 +930,7 @@ async fn run_real_seat_lifecycle() -> anyhow::Result<()> {
     update_federation_name(
         &fa_cli_bin,
         &state_dir,
+        &mg_endpoints,
         &iroh_overrides,
         "seat-lifecycle-e2e",
     )
@@ -1059,8 +1094,9 @@ async fn run_real_post_formation_operations(upgrade_from: Option<&Path>) -> anyh
         );
     };
 
+    // Exclusive: fa-cli selects every MG advertised on this relay.
     let nostr_relay_lease = defe
-        .request_nostr_relay(SharingMode::Shared)
+        .request_nostr_relay(SharingMode::Exclusive)
         .await
         .context("allocate local Nostr relay through defe")?;
     let ResourceDescriptor::NostrRelay(nostr_relay) = &nostr_relay_lease.descriptor else {
@@ -1112,21 +1148,31 @@ async fn run_real_post_formation_operations(upgrade_from: Option<&Path>) -> anyh
     )
     .await;
     offer_free_seats(manifold_guardian_bin, &temp, GUARDIAN_COUNT).await?;
+    let mg_endpoints = mg_endpoint_addrs(&locators);
     let invite = form_federation_in_state(
         &fa_cli_bin,
         &state_dir,
-        &locators,
+        &nostr_relay.url,
+        &mg_endpoints,
         &iroh_overrides,
         upgrade_from.map(|_| ("0.11.2+fedi", "0.11.3+fedi")),
     )
     .await?;
 
-    configure_guardian_fees(&fa_cli_bin, &state_dir, &iroh_overrides, 5_000).await?;
+    configure_guardian_fees(
+        &fa_cli_bin,
+        &state_dir,
+        &mg_endpoints,
+        &iroh_overrides,
+        5_000,
+    )
+    .await?;
     // A generic metadata write after fee adoption must validate and carry the
     // complete authenticated fee policy rather than dropping or restating it.
     update_federation_name(
         &fa_cli_bin,
         &state_dir,
+        &mg_endpoints,
         &iroh_overrides,
         "post-formation-e2e",
     )
@@ -1149,6 +1195,7 @@ async fn run_real_post_formation_operations(upgrade_from: Option<&Path>) -> anyh
         &iroh_overrides,
         &invite,
         &mut daemons,
+        &locators,
         upgrade_to,
     )
     .await?;
@@ -1232,6 +1279,7 @@ async fn exercise_real_guardian_fee_remittance_and_payout_recovery(
     iroh_overrides: &str,
     invite: &str,
     daemons: &mut Vec<Child>,
+    locators: &[String],
     upgrade_to: Option<&Path>,
 ) -> anyhow::Result<()> {
     const REMITTANCE_MSAT: u64 = 200_000;
@@ -1578,9 +1626,10 @@ async fn exercise_real_guardian_fee_remittance_and_payout_recovery(
                 None,
                 None,
             )?;
-            let locator = read_locator(&mut restarted, 0).await?;
+            let mut restarted_locators = locators.to_vec();
+            restarted_locators[0] = read_locator(&mut restarted, 0).await?;
             daemons.insert(0, restarted);
-            (None::<String>, vec![locator])
+            (None::<String>, restarted_locators)
         }
     };
     #[cfg(not(target_os = "linux"))]
@@ -1604,7 +1653,7 @@ async fn exercise_real_guardian_fee_remittance_and_payout_recovery(
                     .context("payout start commits a native operation")?
                     .to_owned(),
             ),
-            Vec::new(),
+            locators.to_vec(),
         )
     };
     let manifold_guardian_bin = upgrade_to.unwrap_or(manifold_guardian_bin);
@@ -2032,6 +2081,7 @@ async fn exercise_guardian_telemetry(
 async fn configure_guardian_fees(
     fa_cli_bin: &Path,
     state_dir: &Path,
+    mg_endpoints: &str,
     iroh_overrides: &str,
     send_ppm: u32,
 ) -> anyhow::Result<()> {
@@ -2051,6 +2101,7 @@ async fn configure_guardian_fees(
         .arg("--send-ppm")
         .arg(send_ppm.to_string())
         .env("MG_E2E_LOCAL_IROH", "1")
+        .env(MG_ENDPOINT_ADDRS_ENV, mg_endpoints)
         .env("FM_IROH_CONNECT_OVERRIDES_PLAIN", iroh_overrides);
     let output = run_expect_success(
         command,
@@ -2113,7 +2164,7 @@ async fn assert_guardian_fee_policy(
 
 async fn register_gateway_with_every_guardian(
     state_dir: &Path,
-    replacement_locators: &[String],
+    mg_locators: &[String],
 ) -> anyhow::Result<()> {
     let status = fa_status(&locate_binary(FA_CLI_BIN_ENV, "fa-cli")?, state_dir).await?;
     let seats = status["formation"]["seats"]
@@ -2140,12 +2191,19 @@ async fn register_gateway_with_every_guardian(
         .await
         .context("bind gateway-registration FA endpoint")?;
 
+    let mg_locators = mg_locators
+        .iter()
+        .map(|locator| serde_json::from_str::<Locator>(locator))
+        .collect::<Result<Vec<_>, _>>()?;
     for (index, seat) in seats.iter().enumerate() {
-        // Restarted MGs advertise fresh ephemeral transport addresses.
-        let locator: Locator = match replacement_locators.get(index) {
-            Some(locator) => serde_json::from_str(locator)?,
-            None => serde_json::from_value(seat["locator"].clone())?,
-        };
+        // Seats record the advertised endpoint id only; dial the transport
+        // address its MG printed, which changes when the MG restarts.
+        let seat_locator: Locator = serde_json::from_value(seat["locator"].clone())?;
+        let locator = mg_locators
+            .iter()
+            .find(|locator| locator.endpoint_addr.id == seat_locator.endpoint_addr.id)
+            .with_context(|| format!("guardian {index} is not one of this test's MGs"))?
+            .clone();
         let seat_id = SeatId::new(
             seat["seat_id"]
                 .as_str()
@@ -2341,6 +2399,7 @@ async fn fund_gateway_federation_wallet(
 async fn update_federation_name(
     fa_cli_bin: &Path,
     state_dir: &Path,
+    mg_endpoints: &str,
     iroh_overrides: &str,
     name: &str,
 ) -> anyhow::Result<()> {
@@ -2360,6 +2419,7 @@ async fn update_federation_name(
         .arg("--value")
         .arg(name)
         .env("MG_E2E_LOCAL_IROH", "1")
+        .env(MG_ENDPOINT_ADDRS_ENV, mg_endpoints)
         .env("FM_IROH_CONNECT_OVERRIDES_PLAIN", iroh_overrides);
     let output = run_expect_success(
         command,
@@ -2377,10 +2437,13 @@ async fn update_federation_name(
     Ok(())
 }
 
+/// Form a free federation through fa-cli's verified selection over the MGs
+/// advertised on `relay_url`.
 async fn form_federation_in_state(
     fa_cli_bin: &Path,
     state_dir: &Path,
-    locators: &[String],
+    relay_url: &str,
+    mg_endpoints: &str,
     iroh_overrides: &str,
     version_range: Option<(&str, &str)>,
 ) -> anyhow::Result<String> {
@@ -2388,6 +2451,25 @@ async fn form_federation_in_state(
     init.arg("--state-dir").arg(state_dir).arg("init");
     run_expect_success(init, "fa-cli init", Duration::from_secs(10)).await?;
     let fa_fee_account_file = write_fa_fee_account_fixture(state_dir)?;
+    let version_args = version_range
+        .map(|(minimum, maximum)| {
+            vec![
+                "--fedimintd-version-minimum",
+                minimum,
+                "--fedimintd-version-maximum-exclusive",
+                maximum,
+            ]
+        })
+        .unwrap_or_default();
+    wait_for_mg_selection(
+        fa_cli_bin,
+        relay_url,
+        mg_endpoints,
+        GUARDIAN_COUNT,
+        &version_args,
+        0,
+    )
+    .await?;
 
     let mut create = Command::new(fa_cli_bin);
     create
@@ -2401,30 +2483,29 @@ async fn form_federation_in_state(
         .arg(GUARDIAN_COUNT.to_string())
         .arg("--poll-timeout-secs")
         .arg("120")
+        .args(&version_args)
         .env("MG_E2E_LOCAL_IROH", "1")
+        .env(MG_ENDPOINT_ADDRS_ENV, mg_endpoints)
+        .env(
+            fedi_decentralized_manifold_environment::DEV_NOSTR_RELAYS_ENV,
+            relay_url,
+        )
         .env("FM_IROH_CONNECT_OVERRIDES_PLAIN", iroh_overrides);
-    if let Some((minimum, maximum)) = version_range {
-        create.args([
-            "--fedimintd-version-minimum",
-            minimum,
-            "--fedimintd-version-maximum-exclusive",
-            maximum,
-        ]);
-    }
-    for locator in locators {
-        create.arg("--locator").arg(locator);
-    }
     let output =
         run_expect_success(create, "fa-cli lifecycle create", Duration::from_secs(130)).await?;
     let output: serde_json::Value = serde_json::from_str(output.trim())?;
-    anyhow::ensure!(
-        output["formation"]["phase"] == "formed" && output["formation"]["invite_code"].is_string(),
-        "lifecycle FA must finish formation: {output}"
-    );
-    Ok(output["formation"]["invite_code"]
-        .as_str()
-        .expect("formed output checked above")
-        .to_owned())
+    formed_invite(&output)
+        .map(ToOwned::to_owned)
+        .with_context(|| format!("lifecycle FA must finish formation: {output}"))
+}
+
+/// The invite of a formed `fa-cli --json` status, or `None` before formation
+/// completes.
+fn formed_invite(status: &serde_json::Value) -> Option<&str> {
+    if status["formation"]["phase"] != "formed" {
+        return None;
+    }
+    status["formation"]["invite_code"].as_str()
 }
 
 async fn wait_for_replacement_child(parent: u32, old_pid: u32) -> anyhow::Result<u32> {
@@ -2523,6 +2604,16 @@ async fn run_fa_crash_recovery() -> anyhow::Result<()> {
     let fa_fee_account_file = write_fa_fee_account_fixture(&state_dir)?;
     let callback_url_file = state_dir.join("completion-callback-url");
     write_sensitive_file(&callback_url_file, callback_server.callback_url())?;
+    let mg_endpoints = mg_endpoint_addrs(&locators);
+    wait_for_mg_selection(
+        &fa_cli_bin,
+        &nostr_relay.url,
+        &mg_endpoints,
+        GUARDIAN_COUNT,
+        &[],
+        0,
+    )
+    .await?;
 
     let mut create = Command::new(&fa_cli_bin);
     create
@@ -2543,6 +2634,7 @@ async fn run_fa_crash_recovery() -> anyhow::Result<()> {
         .arg("--completion-callback-idempotency-key")
         .arg("fa-crash-recovery")
         .env("MG_E2E_LOCAL_IROH", "1")
+        .env(MG_ENDPOINT_ADDRS_ENV, &mg_endpoints)
         .env("FM_IROH_CONNECT_OVERRIDES_PLAIN", &iroh_overrides)
         .env(
             fedi_decentralized_manifold_environment::DEV_NOSTR_RELAYS_ENV,
@@ -2552,9 +2644,6 @@ async fn run_fa_crash_recovery() -> anyhow::Result<()> {
         .stdout(Stdio::null())
         .stderr(Stdio::inherit())
         .kill_on_drop(true);
-    for locator in &locators {
-        create.arg("--locator").arg(locator);
-    }
     let mut fi = create.spawn().context("spawn interrupted fa-cli create")?;
     let fa_pid = fi.id().context("newly spawned fa-cli has a process id")?;
     let fa_process = ExactProcess::open_direct_child(std::process::id(), fa_pid, "fa-cli")?;
@@ -2623,6 +2712,7 @@ async fn run_fa_crash_recovery() -> anyhow::Result<()> {
         .arg("--fa-spv2-account-file")
         .arg(&fa_fee_account_file)
         .env("MG_E2E_LOCAL_IROH", "1")
+        .env(MG_ENDPOINT_ADDRS_ENV, &mg_endpoints)
         .env("FM_IROH_CONNECT_OVERRIDES_PLAIN", &iroh_overrides)
         .env(
             fedi_decentralized_manifold_environment::DEV_NOSTR_RELAYS_ENV,
@@ -2631,8 +2721,7 @@ async fn run_fa_crash_recovery() -> anyhow::Result<()> {
     let resumed = run_expect_success(resume, "fa-cli resume", Duration::from_secs(90)).await?;
     let resumed: serde_json::Value = serde_json::from_str(resumed.trim())?;
     anyhow::ensure!(
-        resumed["formation"]["phase"] == "formed"
-            && resumed["formation"]["invite_code"].is_string(),
+        formed_invite(&resumed).is_some(),
         "resumed FA must form and persist an invite, got {resumed}"
     );
     for index in 0..GUARDIAN_COUNT {
@@ -3347,15 +3436,17 @@ async fn run_paid_formation() -> anyhow::Result<()> {
     offer_free_seats(&manifold_guardian_bin, &temp, PAID_GUARDIAN_COUNT).await?;
 
     eprintln!("forming the payment federation (given away)");
+    let mg_endpoints = mg_endpoint_addrs(&locators);
     let payment_invite = run_fa_cli(
         &fa_cli_bin,
-        &locators,
+        &nostr_relay.url,
+        &mg_endpoints,
         FaCliInvocation {
             extra_args: &[],
             resume_args: None,
             wallet_secret: None,
             output: FaCliOutput::Human,
-            nostr_relay: Some(&nostr_relay.url),
+            seat_price_msats: 0,
         },
         Some(&iroh_overrides),
         PAID_GUARDIAN_COUNT,
@@ -3590,13 +3681,14 @@ async fn run_paid_formation() -> anyhow::Result<()> {
     eprintln!("forming the paid federation");
     let paid_invite = run_fa_cli(
         &fa_cli_bin,
-        &locators,
+        &nostr_relay.url,
+        &mg_endpoints,
         FaCliInvocation {
             extra_args: &fa_cli_paid_args,
             resume_args: Some(&fa_cli_paid_resume_args),
             wallet_secret: Some(&fa_wallet_secret),
             output: FaCliOutput::JsonContract,
-            nostr_relay: Some(&nostr_relay.url),
+            seat_price_msats: SEAT_PRICE_MSAT,
         },
         Some(&iroh_overrides),
         PAID_GUARDIAN_COUNT,
@@ -4237,6 +4329,75 @@ async fn read_locator(daemon: &mut Child, index: usize) -> anyhow::Result<String
     .map_err(|_| anyhow::anyhow!("timed out waiting for fleet-manager {index} locator"))?
 }
 
+/// `MG_E2E_MG_ENDPOINT_ADDRS` for fa-cli. Advertisements carry only MG
+/// endpoint ids, and this network-isolated harness has no address lookup,
+/// so route each id to the transport addresses its daemon printed.
+fn mg_endpoint_addrs(locators: &[String]) -> String {
+    let mut pairs = Vec::new();
+    for locator in locators {
+        let locator: Locator =
+            serde_json::from_str(locator).expect("daemons print valid locator JSON");
+        let id = locator.endpoint_addr.id;
+        pairs.extend(
+            locator
+                .endpoint_addr
+                .ip_addrs()
+                .map(|addr| format!("{id}={addr}")),
+        );
+    }
+    pairs.join(",")
+}
+
+/// Wait until fa-cli's verified selection over `relay_url` fills
+/// `federation_size` seats at exactly `total_msats`: MGs advertise
+/// asynchronously after onboarding and after every plan change.
+async fn wait_for_mg_selection(
+    fa_cli_bin: &Path,
+    relay_url: &str,
+    mg_endpoints: &str,
+    federation_size: usize,
+    version_args: &[&str],
+    total_msats: u64,
+) -> anyhow::Result<()> {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+    loop {
+        let mut preview = Command::new(fa_cli_bin);
+        preview
+            .arg("--json")
+            .arg("preview")
+            .arg("--federation-size")
+            .arg(federation_size.to_string())
+            .args(version_args)
+            .arg("--timeout-secs")
+            .arg("10")
+            .env("MG_E2E_LOCAL_IROH", "1")
+            .env(MG_ENDPOINT_ADDRS_ENV, mg_endpoints)
+            .env(
+                fedi_decentralized_manifold_environment::DEV_NOSTR_RELAYS_ENV,
+                relay_url,
+            )
+            .stderr(Stdio::piped());
+        let result = run_expect_success(preview, "fa-cli preview", Duration::from_secs(20))
+            .await
+            .and_then(|output| Ok(serde_json::from_str::<serde_json::Value>(output.trim())?));
+        let last = match result {
+            Ok(preview)
+                if preview["selected"].as_u64() == Some(federation_size as u64)
+                    && preview["totalAdvertisedMsats"].as_u64() == Some(total_msats) =>
+            {
+                return Ok(());
+            }
+            Ok(preview) => preview.to_string(),
+            Err(error) => format!("{error:#}"),
+        };
+        anyhow::ensure!(
+            tokio::time::Instant::now() < deadline,
+            "MG selection did not fill {federation_size} seats at {total_msats} msat: {last}"
+        );
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+}
+
 #[derive(Clone, Copy, Eq, PartialEq)]
 enum FaCliOutput {
     Human,
@@ -4248,12 +4409,18 @@ struct FaCliInvocation<'a> {
     resume_args: Option<&'a [String]>,
     wallet_secret: Option<&'a str>,
     output: FaCliOutput,
-    nostr_relay: Option<&'a str>,
+    /// Price every MG advertises; a paid run caps the formation at the
+    /// exact total of its seats.
+    seat_price_msats: u64,
 }
 
+/// Run `fa-cli create` through verified selection over the MGs advertised on
+/// `relay_url`, waiting first until the relay advertises a full federation at
+/// the invocation's seat price.
 async fn run_fa_cli(
     fa_cli_bin: &Path,
-    locators: &[String],
+    relay_url: &str,
+    mg_endpoints: &str,
     invocation: FaCliInvocation<'_>,
     iroh_overrides: Option<&str>,
     guardian_count: usize,
@@ -4263,6 +4430,16 @@ async fn run_fa_cli(
     let mut init = Command::new(fa_cli_bin);
     init.arg("--state-dir").arg(state.path()).arg("init");
     run_expect_success(init, "fa-cli init", Duration::from_secs(10)).await?;
+    let total_msats = invocation.seat_price_msats * guardian_count as u64;
+    wait_for_mg_selection(
+        fa_cli_bin,
+        relay_url,
+        mg_endpoints,
+        guardian_count,
+        &[],
+        total_msats,
+    )
+    .await?;
 
     let mut command = Command::new(fa_cli_bin);
     command.arg("--state-dir").arg(state.path());
@@ -4279,22 +4456,23 @@ async fn run_fa_cli(
         .arg("--poll-timeout-secs")
         .arg(timeout.as_secs().to_string())
         .env("MG_E2E_LOCAL_IROH", "1")
+        .env(MG_ENDPOINT_ADDRS_ENV, mg_endpoints)
+        .env(
+            fedi_decentralized_manifold_environment::DEV_NOSTR_RELAYS_ENV,
+            relay_url,
+        )
         .stderr(if invocation.output == FaCliOutput::JsonContract {
             Stdio::piped()
         } else {
             Stdio::inherit()
         });
-    for locator in locators {
-        command.arg("--locator").arg(locator);
+    if total_msats > 0 {
+        command
+            .arg("--max-total-msats")
+            .arg(total_msats.to_string());
     }
     if let Some(overrides) = iroh_overrides {
         command.env("FM_IROH_CONNECT_OVERRIDES_PLAIN", overrides);
-    }
-    if let Some(relay) = invocation.nostr_relay {
-        command.env(
-            fedi_decentralized_manifold_environment::DEV_NOSTR_RELAYS_ENV,
-            relay,
-        );
     }
     command.args(invocation.extra_args);
     if let Some(wallet_secret) = invocation.wallet_secret {
@@ -4342,17 +4520,16 @@ async fn run_fa_cli(
                 .args(resume_args)
                 .arg("--wallet-secret-file")
                 .arg(&wallet_secret_file)
+                .env(MG_ENDPOINT_ADDRS_ENV, mg_endpoints)
+                .env(
+                    fedi_decentralized_manifold_environment::DEV_NOSTR_RELAYS_ENV,
+                    relay_url,
+                )
                 .kill_on_drop(true)
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped());
             if let Some(overrides) = iroh_overrides {
                 resume.env("FM_IROH_CONNECT_OVERRIDES_PLAIN", overrides);
-            }
-            if let Some(relay) = invocation.nostr_relay {
-                resume.env(
-                    fedi_decentralized_manifold_environment::DEV_NOSTR_RELAYS_ENV,
-                    relay,
-                );
             }
             let child = resume.spawn().context("spawn fa-cli formation resume")?;
             output = tokio::time::timeout(timeout, child.wait_with_output())
@@ -4384,10 +4561,8 @@ async fn run_fa_cli(
                 "JSON formation must write exactly one stdout line"
             );
             let status: serde_json::Value = serde_json::from_str(stdout.trim())?;
-            anyhow::ensure!(
-                status["formation"]["phase"].as_str() == Some("formed"),
-                "paid formation did not reach Formed: {status}"
-            );
+            let invite = formed_invite(&status)
+                .with_context(|| format!("paid formation did not reach Formed: {status}"))?;
             if let Some(recovery_formation_id) = recovery_formation_id {
                 anyhow::ensure!(
                     status["formation"]["formation_id"].as_str()
@@ -4395,10 +4570,7 @@ async fn run_fa_cli(
                     "paid resume changed formation identity: {status}"
                 );
             }
-            return status["formation"]["invite_code"]
-                .as_str()
-                .context("formed JSON status contains invite_code")
-                .map(ToOwned::to_owned);
+            return Ok(invite.to_owned());
         }
         Ok(String::from_utf8(output.stdout)?.trim().to_owned())
     } else {
