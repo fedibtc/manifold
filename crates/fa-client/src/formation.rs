@@ -22,8 +22,8 @@ use stability_pool_common::Account;
 use tokio::sync::OnceCell;
 
 use crate::db::{
-    ActiveFormationRecovery, AdmissionEffect, DriverLease, FaRecovery, FaStore,
-    FormationMetaTarget, InitialSeat, MgAdmission, QuoteAuthorization, StoredVerifierProvenance,
+    AdmissionEffect, DriverLease, FaRecovery, FaStore, FormationMetaTarget, InitialSeat,
+    MgAdmission, PurchaseRecovery, QuoteAuthorization, StoredVerifierProvenance,
 };
 use crate::meta_write::{MetaWriteError, SeatVote, write_consensus_meta};
 use crate::mg::MgClient;
@@ -620,7 +620,7 @@ impl TerminalSeatOutcome {
 }
 
 fn apply_authorized_effect_in_memory(
-    recovery: &mut ActiveFormationRecovery,
+    recovery: &mut PurchaseRecovery,
     position: usize,
     quote_id: QuoteId,
     effect: AdmissionEffect,
@@ -1317,7 +1317,7 @@ where
 
     pub(crate) async fn resume_formation(
         &self,
-        recovery: ActiveFormationRecovery,
+        recovery: PurchaseRecovery,
         options: FormationRunOptions,
         deadline: Instant,
         lease: &DriverLease,
@@ -1329,7 +1329,7 @@ where
 
     async fn drive_formation(
         &self,
-        mut recovery: ActiveFormationRecovery,
+        mut recovery: PurchaseRecovery,
         fa_id: FaId,
         run: DriverRun<'_>,
     ) -> FaResult<()> {
@@ -1419,7 +1419,7 @@ where
     /// the durable reservation id as a substitute for wallet release.
     async fn release_and_abandon_pre_output(
         &self,
-        recovery: &mut ActiveFormationRecovery,
+        recovery: &mut PurchaseRecovery,
         fa_id: FaId,
         cleanup: ReservationCleanup,
         run: DriverRun<'_>,
@@ -1516,7 +1516,7 @@ where
     /// its still-unconsumed approval wave to the fresh-preview boundary.
     async fn restore_provisional_replacements_after_reauthorization(
         &self,
-        recovery: &mut ActiveFormationRecovery,
+        recovery: &mut PurchaseRecovery,
         fa_id: FaId,
         run: DriverRun<'_>,
     ) -> FaResult<()> {
@@ -1575,7 +1575,7 @@ where
 
     async fn drive_formation_inner(
         &self,
-        recovery: &mut ActiveFormationRecovery,
+        recovery: &mut PurchaseRecovery,
         fa_id: FaId,
         run: DriverRun<'_>,
     ) -> FaResult<()> {
@@ -1745,7 +1745,7 @@ where
 
     async fn prepare_quotes(
         &self,
-        recovery: &mut ActiveFormationRecovery,
+        recovery: &mut PurchaseRecovery,
         fa_id: FaId,
         run: DriverRun<'_>,
     ) -> FaResult<()> {
@@ -1866,7 +1866,7 @@ where
 
     async fn reserve_payment_requirements(
         &self,
-        recovery: &mut ActiveFormationRecovery,
+        recovery: &mut PurchaseRecovery,
         requirements: &PaymentRequirements,
         fa_id: FaId,
         run: DriverRun<'_>,
@@ -1935,7 +1935,7 @@ where
     /// without creating wallet state or consulting expiring admission policy.
     async fn recover_payment_reservation(
         &self,
-        recovery: &ActiveFormationRecovery,
+        recovery: &PurchaseRecovery,
         requirements: &PaymentRequirements,
         fa_id: FaId,
         run: DriverRun<'_>,
@@ -1962,7 +1962,7 @@ where
 
     fn exact_payment_quotes(
         &self,
-        recovery: &ActiveFormationRecovery,
+        recovery: &PurchaseRecovery,
         requirements: &PaymentRequirements,
         fa_id: FaId,
     ) -> FaResult<Vec<SignatureVerified<GetQuoteResponse>>> {
@@ -2129,7 +2129,7 @@ where
 
     async fn acquire_seats(
         &self,
-        recovery: &mut ActiveFormationRecovery,
+        recovery: &mut PurchaseRecovery,
         fa_id: FaId,
         run: DriverRun<'_>,
     ) -> FaResult<Vec<SeatSession<MgClient<F::Client>>>> {
@@ -2763,7 +2763,7 @@ where
 
     async fn refresh_unstarted_payments(
         &self,
-        recovery: &mut ActiveFormationRecovery,
+        recovery: &mut PurchaseRecovery,
         recovered_payments: &[Option<
             SeatPaymentRecovery<P::RefundContext, P::TerminalReleaseProof>,
         >],
@@ -2935,7 +2935,7 @@ where
 
     async fn run_dkg(
         &self,
-        recovery: &mut ActiveFormationRecovery,
+        recovery: &mut PurchaseRecovery,
         sessions: &[SeatSession<MgClient<F::Client>>],
         fa_id: FaId,
         run: DriverRun<'_>,
@@ -3088,7 +3088,7 @@ where
 
     async fn checkpoint_accepted_seat(
         &self,
-        recovery: &mut ActiveFormationRecovery,
+        recovery: &mut PurchaseRecovery,
         position: usize,
         acceptance: SeatAcceptance,
     ) -> FaResult<()> {
@@ -3122,7 +3122,7 @@ where
 
     async fn release_terminal_quote_reservation(
         &self,
-        recovery: &ActiveFormationRecovery,
+        recovery: &PurchaseRecovery,
         position: usize,
         fa_id: FaId,
         release_proof: Option<P::TerminalReleaseProof>,
@@ -3165,7 +3165,7 @@ where
 
     async fn clear_terminal_quotes(
         &self,
-        recovery: &mut ActiveFormationRecovery,
+        recovery: &mut PurchaseRecovery,
         positions: &[usize],
     ) -> FaResult<()> {
         let mark_replacements = recovery.payment_outputs_started;
@@ -3785,7 +3785,7 @@ where
     async fn poll_until_running(
         &self,
         sessions: &[SeatSession<MgClient<F::Client>>],
-        recovery: &mut ActiveFormationRecovery,
+        recovery: &mut PurchaseRecovery,
         fa_id: FaId,
         run: DriverRun<'_>,
     ) -> FaResult<()> {
@@ -3860,7 +3860,7 @@ where
 
     async fn resume_after_dkg(
         &self,
-        recovery: &mut ActiveFormationRecovery,
+        recovery: &mut PurchaseRecovery,
         fa_id: FaId,
         run: DriverRun<'_>,
     ) -> FaResult<()> {
@@ -3987,7 +3987,7 @@ where
 
     async fn seat_sessions(
         &self,
-        recovery: &ActiveFormationRecovery,
+        recovery: &PurchaseRecovery,
         run: DriverRun<'_>,
     ) -> FaResult<Vec<SeatSession<MgClient<F::Client>>>> {
         let mut sessions = Vec::with_capacity(recovery.seats.len());
@@ -4012,7 +4012,7 @@ where
     async fn publish_seat_bindings(
         &self,
         sessions: &[SeatSession<MgClient<F::Client>>],
-        recovery: &mut ActiveFormationRecovery,
+        recovery: &mut PurchaseRecovery,
         fa_id: FaId,
         invite: &InviteCode,
         run: DriverRun<'_>,
@@ -4208,7 +4208,7 @@ where
     async fn assemble_seat_bindings(
         &self,
         sessions: &[SeatSession<MgClient<F::Client>>],
-        recovery: &ActiveFormationRecovery,
+        recovery: &PurchaseRecovery,
         fa_id: FaId,
         run: DriverRun<'_>,
     ) -> FaResult<(String, Vec<FormationSeatBinding>)> {
@@ -4583,7 +4583,7 @@ where
         Ok(deliverable)
     }
 
-    pub(crate) async fn active_recovery(&self, fa_id: FaId) -> FaResult<ActiveFormationRecovery> {
+    pub(crate) async fn active_recovery(&self, fa_id: FaId) -> FaResult<PurchaseRecovery> {
         match self.inner.store.load_recovery(fa_id).await? {
             FaRecovery::Idle | FaRecovery::Restored(_) => Err(FaError::NoActiveFormation),
             FaRecovery::Formation(recovery) => Ok(*recovery),
@@ -4991,7 +4991,7 @@ pub(crate) fn now_secs() -> FaResult<u64> {
 }
 
 fn validate_live_admissions(
-    recovery: &ActiveFormationRecovery,
+    recovery: &PurchaseRecovery,
     expected_provenance: StoredVerifierProvenance,
     now: Timestamp,
 ) -> FaResult<()> {

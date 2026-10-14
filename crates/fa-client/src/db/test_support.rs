@@ -13,10 +13,10 @@ impl FaStore {
 
     pub(crate) async fn install_raw_formation_for_test(&self, bytes: &[u8]) {
         let mut dbtx = self.database.begin_transaction().await;
-        dbtx.raw_insert_bytes(&DatabaseKeyPrefix::to_bytes(&ActiveFormationKey), bytes)
+        dbtx.raw_insert_bytes(&DatabaseKeyPrefix::to_bytes(&PurchaseKey), bytes)
             .await
             .expect("test raw write succeeds");
-        dbtx.raw_insert_bytes(&[FaDbPrefix::Seat as u8, 0xff], b"sentinel")
+        dbtx.raw_insert_bytes(&[FaDbPrefix::PurchaseSeat as u8, 0xff], b"sentinel")
             .await
             .expect("test raw write succeeds");
         dbtx.commit_tx().await;
@@ -39,9 +39,7 @@ impl FaStore {
         mutate: impl FnOnce(&mut serde_json::Map<String, serde_json::Value>),
     ) {
         let mut dbtx = self.database.begin_transaction().await;
-        let key = <ActiveFormationKey as fedimint_core::db::DatabaseKeyPrefix>::to_bytes(
-            &ActiveFormationKey,
-        );
+        let key = <PurchaseKey as fedimint_core::db::DatabaseKeyPrefix>::to_bytes(&PurchaseKey);
         let bytes = dbtx
             .raw_get_bytes(&key)
             .await
@@ -70,13 +68,13 @@ impl FaStore {
         let mut dbtx = self.database.begin_transaction_nc().await;
         let formation: serde_json::Value = serde_json::from_slice(
             &dbtx
-                .raw_get_bytes(&DatabaseKeyPrefix::to_bytes(&ActiveFormationKey))
+                .raw_get_bytes(&DatabaseKeyPrefix::to_bytes(&PurchaseKey))
                 .await
                 .expect("test raw read succeeds")
                 .expect("test formation exists"),
         )
         .expect("stored formation is JSON");
-        let seat_key = SeatKey {
+        let seat_key = PurchaseSeatKey {
             formation_id: formation["formation_id"]
                 .as_str()
                 .expect("stored formation id is a string")
@@ -112,11 +110,11 @@ impl FaStore {
     pub(crate) async fn set_schema_version_for_test(&self, schema_version: u16) {
         let mut dbtx = self.database.begin_transaction().await;
         let mut formation = dbtx
-            .get_value(&ActiveFormationKey)
+            .get_value(&PurchaseKey)
             .await
             .expect("test formation exists");
         formation.schema_version = schema_version;
-        dbtx.insert_entry(&ActiveFormationKey, &formation).await;
+        dbtx.insert_entry(&PurchaseKey, &formation).await;
         dbtx.commit_tx().await;
     }
 
