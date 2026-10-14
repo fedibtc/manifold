@@ -13,7 +13,7 @@ use tokio::sync::{OwnedMutexGuard, watch};
 
 use crate::backup::{EncryptedFaBackup, FA_BACKUP_D_TAG, FA_BACKUP_EVENT_KIND, FaBackupKeys};
 use crate::{
-    FaError, FaId, FaResult, FaStatus,
+    FaError, FaId, FaResult, FaStatus, RecoveryCheck,
     db::{BACKUP_REFRESH_INTERVAL_SECS, BackupRelayConfirmation, FaStore, RecoveryCompletedKey},
 };
 
@@ -228,13 +228,16 @@ pub(crate) fn spawn_recovery(
                     // The first ready status must be published only after the
                     // mutation guard is released.
                     drop(guard);
-                    progress.send_replace(status.unwrap_or(FaStatus::Idle));
+                    progress.send_replace(status.unwrap_or_default());
                     break;
                 }
                 Err(error) => {
                     tracing::warn!(error_code = ?error.code(), "FA backup lookup will retry");
-                    progress.send_replace(FaStatus::Recovery {
-                        last_error: Some(error.code()),
+                    progress.send_replace(FaStatus {
+                        recovery: Some(RecoveryCheck {
+                            last_error: Some(error.code()),
+                        }),
+                        ..FaStatus::default()
                     });
                     delay = if delay.is_zero() {
                         Duration::from_secs(1)
@@ -242,7 +245,10 @@ pub(crate) fn spawn_recovery(
                         delay.saturating_mul(2).min(Duration::from_secs(5 * 60))
                     };
                     sleep(delay).await;
-                    progress.send_replace(FaStatus::Recovery { last_error: None });
+                    progress.send_replace(FaStatus {
+                        recovery: Some(RecoveryCheck { last_error: None }),
+                        ..FaStatus::default()
+                    });
                 }
             }
         }
@@ -274,7 +280,11 @@ pub(crate) async fn restore_from_relays(
 ) -> FaResult<BackupRestoreOutcome> {
     if store.recovery_completed(recovery).await {
         return Ok(
-            if matches!(store.load_status(fa_id).await?, FaStatus::Restored(_)) {
+            if store
+                .load_federation(fa_id)
+                .await?
+                .is_some_and(|federation| !federation.reconciled)
+            {
                 BackupRestoreOutcome::Restored
             } else {
                 BackupRestoreOutcome::NoBackup

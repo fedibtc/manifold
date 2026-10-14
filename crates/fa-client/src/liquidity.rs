@@ -45,8 +45,8 @@ use crate::formation::{DriverRun, federation_name};
 use crate::ports::FaIdentityExt as _;
 use crate::{
     FaClient, FaError, FaIdentity, FaPayments, FaResult, FederationConsensusReader,
-    FormationFreshness, FormationId, FormationPhase, FormationRunOptions,
-    LiquidityProviderConnector, Locator, ManifoldGuardianConnector, SeatId,
+    FormationFreshness, FormationId, FormationRunOptions, LiquidityProviderConnector, Locator,
+    ManifoldGuardianConnector, SeatId,
 };
 
 use fedi_decentralized_service_manifold_guardian::{
@@ -917,16 +917,13 @@ where
     pub async fn current_liquidity_operation(
         &self,
     ) -> FaResult<Option<LiquidityOperationSnapshot>> {
-        let formation_id = match self.status() {
-            crate::FaStatus::Formation(snapshot) => snapshot.formation_id,
-            crate::FaStatus::Restored(snapshot)
-                if snapshot.freshness == FormationFreshness::Fresh =>
-            {
-                snapshot.formation_id
+        let status = self.status();
+        let formation_id = match (status.formation, status.federation) {
+            (Some(formation), _) => formation.formation_id,
+            (None, Some(federation)) if federation.freshness == FormationFreshness::Fresh => {
+                federation.formation_id
             }
-            crate::FaStatus::Idle
-            | crate::FaStatus::Recovery { .. }
-            | crate::FaStatus::Restored(_) => return Ok(None),
+            (None, _) => return Ok(None),
         };
         self.find_live_liquidity_operation(|operation| operation.formation_id == formation_id)
             .await
@@ -1049,15 +1046,10 @@ where
         &self,
         expected_formation_id: &FormationId,
     ) -> FaResult<FormedLiquidityContext> {
-        match self.status() {
-            crate::FaStatus::Formation(snapshot)
-                if &snapshot.formation_id == expected_formation_id
-                    && snapshot.phase == FormationPhase::Formed
-                    && snapshot.freshness == FormationFreshness::Fresh => {}
-            crate::FaStatus::Restored(snapshot)
-                if &snapshot.formation_id == expected_formation_id
-                    && snapshot.phase == FormationPhase::Formed
-                    && snapshot.freshness == FormationFreshness::Fresh => {}
+        match self.status().federation {
+            Some(federation)
+                if &federation.formation_id == expected_formation_id
+                    && federation.freshness == FormationFreshness::Fresh => {}
             _ => {
                 return Err(FaError::Liquidity(
                     "formation must be freshly reconciled and formed before requesting liquidity"

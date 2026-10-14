@@ -19,7 +19,7 @@ async fn one_durable_completion_callback_is_sent_to_every_guardian() {
     .unwrap();
 
     client
-        .create_with_pinned_mgs_and_callback(intent(), locators(), callback.clone(), options())
+        .buy_and_form_pinned_with_callback(intent(), locators(), callback.clone(), options())
         .await
         .unwrap();
 
@@ -41,17 +41,14 @@ async fn one_durable_completion_callback_is_sent_to_every_guardian() {
         MgConfig::given_away(),
     )
     .await;
-    let recovery = match reopened
+    let recovery = reopened
         .inner
         .store
-        .load_recovery(TestIdentity::fa_id())
+        .load_formation(TestIdentity::fa_id())
         .await
         .unwrap()
-    {
-        FaRecovery::Formation(recovery) => recovery,
-        FaRecovery::Idle | FaRecovery::Restored(_) => panic!("formed recovery remains available"),
-    };
-    assert_eq!(recovery.snapshot.phase, FormationPhase::Formed);
+        .expect("formed recovery remains available");
+    assert!(recovery.formed);
     assert!(recovery.dkg_completion_callback.is_none());
 }
 
@@ -74,7 +71,7 @@ async fn paid_selection_sends_the_callback_to_every_guardian_and_clears_it_at_fo
     .unwrap();
 
     client
-        .pay_and_create_with_callback(
+        .buy_and_form_with_callback(
             intent(),
             selection_approval(1),
             payment_federation_id(),
@@ -93,17 +90,14 @@ async fn paid_selection_sends_the_callback_to_every_guardian_and_clears_it_at_fo
                 .all(|observed| observed.as_ref() == Some(&callback))
         );
     }
-    let recovery = match client
+    let recovery = client
         .inner
         .store
-        .load_recovery(TestIdentity::fa_id())
+        .load_formation(TestIdentity::fa_id())
         .await
         .unwrap()
-    {
-        FaRecovery::Formation(recovery) => recovery,
-        FaRecovery::Idle | FaRecovery::Restored(_) => panic!("formed recovery remains available"),
-    };
-    assert_eq!(recovery.snapshot.phase, FormationPhase::Formed);
+        .expect("formed recovery remains available");
+    assert!(recovery.formed);
     assert!(recovery.dkg_completion_callback.is_none());
 }
 
@@ -115,7 +109,7 @@ async fn callback_is_durable_private_state_and_old_schema_resets() {
         database.clone(),
         payments,
         Arc::new(MgState::default()),
-        MgConfig::paid(),
+        MgConfig::given_away(),
     )
     .await;
     let callback = DkgCompletionCallback::new(DkgCompletionCallbackInput {
@@ -124,14 +118,23 @@ async fn callback_is_durable_private_state_and_old_schema_resets() {
     })
     .unwrap();
     client
+        .buy_pinned_seats(intent().request, None, locators(), options())
+        .await
+        .unwrap();
+    let seats = client
+        .status()
+        .pool
+        .iter()
+        .map(|seat| seat.seat_id.clone())
+        .collect::<Vec<_>>();
+    client
         .inner
         .store
-        .initialize(
+        .start_formation(
             TestIdentity::fa_id(),
             FormationId("callback-formation".to_owned()),
-            resolved_intent_with_size(FederationSize(1)),
-            vec![seat_progress(0)],
-            crate::db::FormationCreationMode::Pinned,
+            FederationName("Callback Federation".to_owned()),
+            &seats,
             Some(callback.clone()),
         )
         .await
@@ -145,16 +148,13 @@ async fn callback_is_durable_private_state_and_old_schema_resets() {
         MgConfig::paid(),
     )
     .await;
-    let recovery = match reopened
+    let recovery = reopened
         .inner
         .store
-        .load_recovery(TestIdentity::fa_id())
+        .load_formation(TestIdentity::fa_id())
         .await
         .unwrap()
-    {
-        FaRecovery::Formation(recovery) => recovery,
-        FaRecovery::Idle | FaRecovery::Restored(_) => panic!("callback formation is durable"),
-    };
+        .expect("callback formation is durable");
     assert_eq!(recovery.dkg_completion_callback, Some(callback));
     let public = serde_json::to_string(&recovery.snapshot).unwrap();
     assert!(!public.contains("bearer-secret"));
@@ -171,7 +171,7 @@ async fn callback_is_durable_private_state_and_old_schema_resets() {
         MgConfig::paid(),
     )
     .await;
-    assert_eq!(reset.status(), FaStatus::Idle);
+    assert_eq!(reset.status(), FaStatus::default());
     assert!(legacy_store.raw_namespace_is_empty_for_test().await);
 
     let (payments, _) = TestPayments::new();
@@ -191,23 +191,22 @@ async fn callback_is_durable_private_state_and_old_schema_resets() {
             resolved_intent_with_size(FederationSize(1)),
             vec![seat_progress(0)],
             crate::db::FormationCreationMode::Pinned,
-            None,
         )
         .await
         .unwrap();
     future_client
         .inner
         .store
-        .set_schema_version_for_test(12)
+        .set_schema_version_for_test(13)
         .await;
     assert!(matches!(
         future_client
             .inner
             .store
-            .load_recovery(TestIdentity::fa_id())
+            .load_purchase(TestIdentity::fa_id())
             .await,
         Err(FaError::Storage(error))
-            if error.contains("unsupported FA storage schema version 12")
+            if error.contains("unsupported FA storage schema version 13")
     ));
     assert!(
         !future_client
@@ -220,45 +219,9 @@ async fn callback_is_durable_private_state_and_old_schema_resets() {
     let malformed_store = crate::db::FaStore::new(MemDatabase::new().into_database());
     malformed_store.install_raw_formation_for_test(b"{").await;
     assert!(matches!(
-        malformed_store.load_recovery(TestIdentity::fa_id()).await,
+        malformed_store.load_purchase(TestIdentity::fa_id()).await,
         Err(FaError::Storage(error))
-            if error.contains("persisted FA formation header is malformed")
+            if error.contains("persisted FA purchase header is malformed")
     ));
     assert!(!malformed_store.raw_namespace_is_empty_for_test().await);
-}
-
-#[tokio::test]
-async fn callback_schema_rejects_missing_current_field() {
-    let missing_database = MemDatabase::new().into_database();
-    let (payments, _) = TestPayments::new();
-    let missing = open_client(
-        missing_database,
-        payments,
-        Arc::new(MgState::default()),
-        MgConfig::paid(),
-    )
-    .await;
-    missing
-        .inner
-        .store
-        .initialize(
-            TestIdentity::fa_id(),
-            FormationId("missing-current-callback-field".to_owned()),
-            resolved_intent_with_size(FederationSize(1)),
-            vec![seat_progress(0)],
-            crate::db::FormationCreationMode::Pinned,
-            None,
-        )
-        .await
-        .unwrap();
-    missing.inner.store.remove_callback_field_for_test().await;
-    assert!(matches!(
-        missing
-            .inner
-            .store
-            .load_recovery(TestIdentity::fa_id())
-            .await,
-        Err(FaError::Storage(error))
-            if error.contains("schema 11 formation omits dkg_completion_callback")
-    ));
 }

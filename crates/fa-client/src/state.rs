@@ -164,176 +164,8 @@ impl PlanPreference {
     }
 }
 
-/// Consumer-owned federation formation request.
-///
-/// A missing name asks `fa-client` to generate a human-friendly default. The
-/// resolved name is persisted before any stateful formation effect and is exposed
-/// in [`FormationSnapshot::intent`]. Deserialization rejects unknown object
-/// fields and values that violate the name, size, or spending-cap
-/// invariants. Construction
-/// returns [`FaError::InvalidIntent`] unless the optional name contains 1..=128
-/// UTF-8 bytes, includes non-whitespace, and has no control characters; the size
-/// is 7..20; and the optional spending cap is greater than zero.
-///
-/// The intent deliberately carries no guardian-fee rate: formation installs the
-/// initial compiled fee policy, while post-formation [`propose_guardian_fees`]
-/// changes its rate explicitly. Because the schema is strict, a payload still carrying
-/// the retired `guardian_fee_ppm` field is rejected as an unknown field — the
-/// intended pre-launch behavior for this namespace.
-///
-/// [`propose_guardian_fees`]: crate::FaClient::propose_guardian_fees
-///
-/// The serialized form stays a strict schema: unknown fields are rejected.
-/// `max_total_msats` evolved as a new optional field with a default — an
-/// older serialized intent without the field decodes to no cap, and a
-/// capless intent serializes without the field, so independently serialized
-/// public intent values remain interoperable. This does not migrate durable
-/// FA store records. Those are separate: schema 11 requires explicit creation mode,
-/// commercial-history, and wallet-output tombstones; every older pre-launch
-/// record is rejected fail-closed with reset guidance.
-#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
-#[serde(try_from = "UncheckedFormationIntent")]
-pub struct FormationIntent {
-    /// Optional federation display name.
-    federation_name: Option<FederationName>,
-    /// Requested guardian count.
-    federation_size: FederationSize,
-    /// Requested MG plan family.
-    plan: PlanPreference,
-    /// FA-approved Fedimint release range.
-    fedimintd_versions: FedimintdVersionRange,
-    /// Optional aggregate spending cap in millisatoshis.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    max_total_msats: Option<u64>,
-}
-
-impl FormationIntent {
-    /// Construct an intent with an FA-controlled compatibility range.
-    pub fn new(
-        federation_name: Option<FederationName>,
-        federation_size: FederationSize,
-        plan: PlanPreference,
-        fedimintd_versions: FedimintdVersionRange,
-    ) -> FaResult<Self> {
-        fedimintd_versions.validate()?;
-        if let Some(name) = &federation_name {
-            validate_federation_name(name)?;
-        }
-        if !(MIN_FEDERATION_SIZE..MAX_FEDERATION_SIZE_EXCLUSIVE).contains(&federation_size.0) {
-            return Err(FaError::InvalidIntent(format!(
-                "federation size must be between {MIN_FEDERATION_SIZE} and \
-                 {MAX_FEDERATION_SIZE}, inclusive"
-            )));
-        }
-        Ok(Self {
-            federation_name,
-            federation_size,
-            plan,
-            fedimintd_versions,
-            max_total_msats: None,
-        })
-    }
-
-    /// Set an aggregate spending cap in millisatoshis.
-    ///
-    /// When present, the engine self-authorizes only the initial aggregate
-    /// paid quote set when its checked total is within the cap and no prior
-    /// aggregate authorization was recorded. Generic quote changes after that
-    /// authorization re-park for explicit review. A proven-safe guardian
-    /// replacement has a separate fresh, verified and sealed approval; its
-    /// exact replacement subset self-authorizes when the new total is within
-    /// that renewed cap and otherwise exposes a new payment action. Returns
-    /// [`FaError::InvalidIntent`] for a zero cap: a cap that can never admit
-    /// a paid quote set is a consumer bug, not a preference.
-    pub fn with_max_total_msats(mut self, max_total_msats: u64) -> FaResult<Self> {
-        if max_total_msats == 0 {
-            return Err(FaError::InvalidIntent(
-                "spending cap must be greater than zero millisatoshis".to_owned(),
-            ));
-        }
-        self.max_total_msats = Some(max_total_msats);
-        Ok(self)
-    }
-
-    /// Return the optional aggregate spending cap in millisatoshis.
-    pub fn max_total_msats(&self) -> Option<u64> {
-        self.max_total_msats
-    }
-
-    /// Return the optional consumer-supplied federation name.
-    pub fn federation_name(&self) -> Option<&FederationName> {
-        self.federation_name.as_ref()
-    }
-
-    /// Return the requested federation size.
-    pub fn federation_size(&self) -> FederationSize {
-        self.federation_size
-    }
-
-    /// Return the requested plan family.
-    pub fn plan(&self) -> PlanPreference {
-        self.plan
-    }
-
-    /// Return the FA-approved Fedimint release range.
-    pub fn fedimintd_versions(&self) -> &FedimintdVersionRange {
-        &self.fedimintd_versions
-    }
-
-    pub(crate) fn resolve_for_dkg(
-        self,
-        default_name: FederationName,
-        dkg: FedimintdDkgVersion,
-    ) -> FaResult<ResolvedFormationIntent> {
-        if !dkg.is_fedi() || !self.fedimintd_versions.overlaps_dkg(&dkg) {
-            return Err(FaError::InvalidIntent(
-                "selected Fedimint DKG identity is outside the formation intent".to_owned(),
-            ));
-        }
-        let federation_name = self.federation_name.unwrap_or(default_name);
-        validate_federation_name(&federation_name)?;
-        Ok(ResolvedFormationIntent {
-            federation_name,
-            federation_size: self.federation_size,
-            plan: self.plan,
-            fedimintd_versions: self.fedimintd_versions,
-            fedimintd_dkg_version: dkg,
-            max_total_msats: self.max_total_msats,
-        })
-    }
-}
-
-#[derive(serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-struct UncheckedFormationIntent {
-    federation_name: Option<FederationName>,
-    federation_size: FederationSize,
-    plan: PlanPreference,
-    fedimintd_versions: FedimintdVersionRange,
-    /// Deliberate serde evolution inside the strict schema: absent means no
-    /// cap, so pre-cap serialized intents keep decoding.
-    #[serde(default)]
-    max_total_msats: Option<u64>,
-}
-
-impl TryFrom<UncheckedFormationIntent> for FormationIntent {
-    type Error = FaError;
-
-    fn try_from(value: UncheckedFormationIntent) -> Result<Self, Self::Error> {
-        let intent = Self::new(
-            value.federation_name,
-            value.federation_size,
-            value.plan,
-            value.fedimintd_versions,
-        )?;
-        match value.max_total_msats {
-            Some(max_total_msats) => intent.with_max_total_msats(max_total_msats),
-            None => Ok(intent),
-        }
-    }
-}
-
-fn validate_federation_name(name: &FederationName) -> FaResult<()> {
+/// Reject a federation name that `form_federation` would refuse.
+pub fn validate_federation_name(name: &FederationName) -> FaResult<()> {
     if name.0.is_empty()
         || name.0.len() > 128
         || name.0.trim().is_empty()
@@ -348,31 +180,29 @@ fn validate_federation_name(name: &FederationName) -> FaResult<()> {
     Ok(())
 }
 
-/// Formation intent after `fa-client` has resolved every default.
+/// Seat purchase request after `fa-client` has resolved every default.
+///
+/// Stored purchase rows from before the seat pool carried the federation
+/// name here too; decoding ignores it.
 #[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
-pub struct ResolvedFormationIntent {
-    /// Persisted federation display name.
-    pub federation_name: FederationName,
-    /// Requested guardian count.
+pub struct ResolvedSeatPurchase {
+    /// Number of seats, and the federation size every quote is priced for.
     pub federation_size: FederationSize,
     /// Requested MG plan family.
     pub plan: PlanPreference,
     /// FA-approved Fedimint release range.
     pub fedimintd_versions: FedimintdVersionRange,
-    /// Major/minor/vendor identity shared by every MG in this DKG.
+    /// Major/minor/vendor identity shared by every bought seat.
     pub fedimintd_dkg_version: FedimintdDkgVersion,
-    /// Optional aggregate spending cap in millisatoshis, persisted with the
-    /// intent so it survives resume. The serde default supports standalone
-    /// public intent values; pre-tombstone stored formations are rejected by
-    /// the FA storage schema rather than migrated.
+    /// Optional aggregate spending cap in millisatoshis.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_total_msats: Option<u64>,
 }
 
-/// Consumer-observed aggregate formation phase.
+/// Consumer-observed phase of one seat purchase.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
-pub enum FormationPhase {
+pub enum PurchasePhase {
     /// Validating availability and obtaining exact signed quotes.
     Preparing,
     /// Every quote is durable; explicit aggregate payment authorization is
@@ -380,7 +210,14 @@ pub enum FormationPhase {
     AwaitingPaymentReadiness,
     /// Creating or recovering independently paid/free seats.
     AcquiringSeats,
-    /// Every seat exists and guardian DKG inputs are being prepared.
+}
+
+/// Consumer-observed phase of one formation, from pool seats to a formed
+/// federation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FormationPhase {
+    /// Guardian codes are being collected from the seats.
     PreparingDkg,
     /// DKG has started.
     DkgUnderway,
@@ -389,16 +226,11 @@ pub enum FormationPhase {
     /// Every guardian is running; the MG seat-binding directory is being
     /// written to consensus metadata and read back.
     PublishingSeatBindings,
-    /// The guardian directory and initial fees are confirmed in consensus.
-    Formed,
 }
 
 impl FormationPhase {
     pub(crate) fn dkg_complete(self) -> bool {
-        matches!(
-            self,
-            Self::DkgComplete | Self::PublishingSeatBindings | Self::Formed
-        )
+        matches!(self, Self::DkgComplete | Self::PublishingSeatBindings)
     }
 }
 
@@ -638,10 +470,10 @@ pub struct GuardianReplacementRequirements {
     pub seats: Vec<GuardianReplacementSeat>,
 }
 
-/// Explicit consumer action required before formation can continue.
+/// Explicit consumer action required before a purchase can continue.
 #[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
-pub enum FormationActionRequired {
+pub enum PurchaseActionRequired {
     /// Authorize all exact paid quotes as one decision.
     AuthorizePayments(PaymentRequirements),
     /// Select and approve fresh verified guardians for only proven-safe rows.
@@ -684,77 +516,129 @@ impl SeatProgress {
     }
 }
 
-/// Latest aggregate formation snapshot.
+/// Latest snapshot of the active seat purchase.
+#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
+pub struct SeatPurchaseSnapshot {
+    /// Active purchase id.
+    pub purchase_id: FormationId,
+    /// Resolved durable request.
+    pub request: ResolvedSeatPurchase,
+    /// Current aggregate phase.
+    pub phase: PurchasePhase,
+    /// Per-MG progress.
+    pub seats: Vec<SeatProgress>,
+    /// Aggregate freshness.
+    pub freshness: FormationFreshness,
+    /// Explicit aggregate consumer action, if any.
+    pub action_required: Option<PurchaseActionRequired>,
+    /// Whether the durable wallet-output-generation boundary has been armed.
+    /// Once true, payer switching and value-destructive abandon are forbidden;
+    /// resume must recover the exact quote operations.
+    pub payment_outputs_started: bool,
+    /// Most recent operation error category.
+    pub last_error: Option<FaErrorCode>,
+}
+
+/// One bought seat that hosts no guardian yet.
+#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
+pub struct PoolSeat {
+    /// MG-minted seat id.
+    pub seat_id: SeatId,
+    /// Badge-vouched identity of the MG that hosts the seat, absent for a
+    /// pinned MG.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "fman_id")]
+    pub mg_id: Option<PublicKey>,
+    /// Protocol-owned locator for the MG.
+    pub locator: Locator,
+    /// Exact Fedimint build the seat was bought for.
+    pub fedimintd_version: FedimintdVersion,
+    /// Federation size the seat was priced for.
+    pub federation_size: FederationSize,
+}
+
+impl PoolSeat {
+    /// Stable two-word display name derived from the authenticated MG id,
+    /// when one exists.
+    #[must_use]
+    pub fn mg_name(&self) -> Option<MgName> {
+        self.mg_id.map(MgName::from_mg_id)
+    }
+}
+
+/// Latest snapshot of a formation that has not formed yet.
 #[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
 pub struct FormationSnapshot {
     /// Active record id.
     pub formation_id: FormationId,
-    /// Resolved durable intent.
-    pub intent: ResolvedFormationIntent,
+    /// Federation display name.
+    pub federation_name: FederationName,
+    /// Major/minor/vendor identity shared by every guardian.
+    pub fedimintd_dkg_version: FedimintdDkgVersion,
     /// Current aggregate phase.
     pub phase: FormationPhase,
     /// Per-MG progress.
     pub seats: Vec<SeatProgress>,
     /// Aggregate freshness.
     pub freshness: FormationFreshness,
-    /// Explicit aggregate consumer action, if any.
-    pub action_required: Option<FormationActionRequired>,
-    /// Whether the durable wallet-output-generation boundary has been armed.
-    /// Once true, payer switching and value-destructive abandon are forbidden;
-    /// resume must recover the exact quote operations.
-    #[serde(default)]
-    pub payment_outputs_started: bool,
     /// Join deliverable once every seat reports running.
     pub invite_code: Option<InviteCode>,
     /// Most recent operation error category.
     pub last_error: Option<FaErrorCode>,
 }
 
-/// Complete FA state. Invalid “active formation without id/intent” shapes are
-/// unrepresentable.
-///
-/// This consumer-facing snapshot is returned infrequently, so preserving the
-/// direct, ergonomic `FormationSnapshot` payload is preferable to boxing it.
-#[allow(clippy::large_enum_variant)]
-#[derive(Clone, Debug, Default, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum FaStatus {
-    /// A restored mnemonic needs a backup check before FA operations may run.
-    /// A failed read is retryable; the worker remains active.
-    Recovery {
-        last_error: Option<crate::FaErrorCode>,
-    },
-    /// No durable formation exists and FA operations may run.
-    #[default]
-    Idle,
-    /// One active or completed formation exists.
-    Formation(FormationSnapshot),
-    /// Authenticated backup facts awaiting authoritative reconciliation.
-    Restored(RestoredFormationSnapshot),
-}
-
-/// Lean recovery facts imported from an authenticated FA backup.
+/// The federation this FA governs, formed here or restored from a backup.
 #[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
-pub struct RestoredFormationSnapshot {
-    pub snapshot_generation: u64,
-    /// Stable local handle derived when the authenticated backup is imported.
+pub struct FederationSnapshot {
+    /// Stable local handle.
     pub formation_id: FormationId,
     pub federation_invite: InviteCode,
-    /// Fresh display metadata, when federation consensus published it.
+    /// Display name, when known.
     pub federation_name: Option<FederationName>,
-    pub seats: Vec<RestoredSeat>,
-    pub phase: FormationPhase,
+    pub seats: Vec<FederationSeat>,
+    /// Whether this run verified the federation against consensus.
     pub freshness: FormationFreshness,
-    /// Whether this device has reconciled the restored backup against the
-    /// Manifold Guardians at least once. False until the first successful
-    /// reconciliation; persisted.
-    pub backup_eligible: bool,
+    /// False only for an imported backup that has not been reconciled
+    /// against consensus yet.
+    pub reconciled: bool,
+    /// Error from the last failed recheck.
+    pub last_error: Option<FaErrorCode>,
 }
 
+/// One guardian seat of the federation.
 #[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
-pub struct RestoredSeat {
-    #[serde(rename = "fman_identity")]
-    pub mg_identity: PublicKey,
+pub struct FederationSeat {
+    /// Badge-vouched identity of the MG, absent for a pinned MG.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "fman_id")]
+    pub mg_id: Option<PublicKey>,
     pub seat_id: SeatId,
     pub locator: Locator,
+}
+
+/// A restored mnemonic waits for its backup check before FA operations may
+/// run. A failed read is retryable; the worker remains active.
+#[derive(Clone, Debug, Default, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
+pub struct RecoveryCheck {
+    pub last_error: Option<FaErrorCode>,
+}
+
+/// Complete FA state. Each part has its own machine and storage.
+#[derive(Clone, Debug, Default, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
+pub struct FaStatus {
+    /// Present while a restored mnemonic waits for its backup check.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recovery: Option<RecoveryCheck>,
+    /// The active seat purchase.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub purchase: Option<SeatPurchaseSnapshot>,
+    /// Bought seats that host no guardian yet.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pool: Vec<PoolSeat>,
+    /// The active formation, until it forms.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub formation: Option<FormationSnapshot>,
+    /// The formed or restored federation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub federation: Option<FederationSnapshot>,
 }

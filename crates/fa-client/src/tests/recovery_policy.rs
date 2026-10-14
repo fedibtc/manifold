@@ -19,7 +19,7 @@ async fn durable_reservation_suppresses_quote_refresh_and_pins_exact_set() {
     let mg_state = Arc::new(MgState::default());
     let client = open_client(database, payments, mg_state.clone(), MgConfig::paid()).await;
     client
-        .create_with_pinned_mgs(intent(), locators(), options())
+        .buy_and_form_pinned(intent(), locators(), options())
         .await
         .unwrap();
     let authorization_id = payment_requirements(&client.status())
@@ -37,7 +37,7 @@ async fn durable_reservation_suppresses_quote_refresh_and_pins_exact_set() {
         .await
         .unwrap();
 
-    assert_eq!(formation(&client.status()).phase, FormationPhase::Formed);
+    bought(&client.status());
     assert_eq!(
         mg_state.quote_calls.load(Ordering::SeqCst),
         usize::from(MIN_FEDERATION_SIZE),
@@ -67,7 +67,7 @@ async fn terminal_clear_failure_preserves_quote_and_returns_storage_error() {
     )
     .await;
     client
-        .create_with_pinned_mgs(intent(), locators(), options())
+        .buy_and_form_pinned(intent(), locators(), options())
         .await
         .unwrap();
     let status = client.status();
@@ -88,7 +88,7 @@ async fn terminal_clear_failure_preserves_quote_and_returns_storage_error() {
         client
             .inner
             .store
-            .load_recovery(TestIdentity::fa_id())
+            .load_purchase(TestIdentity::fa_id())
             .await
             .unwrap(),
     );
@@ -112,7 +112,7 @@ async fn multi_terminal_release_failure_preserves_the_complete_aggregate_for_reo
     let config = MgConfig::paid();
     let client = open_client(database.clone(), payments.clone(), mg_state.clone(), config).await;
     client
-        .create_with_pinned_mgs(intent(), locators(), options())
+        .buy_and_form_pinned(intent(), locators(), options())
         .await
         .unwrap();
     let status = client.status();
@@ -143,7 +143,7 @@ async fn multi_terminal_release_failure_preserves_the_complete_aggregate_for_reo
         client
             .inner
             .store
-            .load_recovery(TestIdentity::fa_id())
+            .load_purchase(TestIdentity::fa_id())
             .await
             .unwrap(),
     );
@@ -178,7 +178,7 @@ async fn multi_terminal_release_failure_preserves_the_complete_aggregate_for_reo
         reopened
             .inner
             .store
-            .load_recovery(TestIdentity::fa_id())
+            .load_purchase(TestIdentity::fa_id())
             .await
             .unwrap(),
     );
@@ -204,7 +204,7 @@ async fn freshly_funded_signed_refusal_clears_the_presented_quote_in_one_run() {
     let mg_state = Arc::new(MgState::default());
     let client = open_client(database, payments, mg_state.clone(), MgConfig::paid()).await;
     client
-        .create_with_pinned_mgs(intent(), locators(), options())
+        .buy_and_form_pinned(intent(), locators(), options())
         .await
         .unwrap();
     let authorization_id = payment_requirements(&client.status())
@@ -230,7 +230,7 @@ async fn freshly_funded_signed_refusal_clears_the_presented_quote_in_one_run() {
         client
             .inner
             .store
-            .load_recovery(TestIdentity::fa_id())
+            .load_purchase(TestIdentity::fa_id())
             .await
             .unwrap(),
     );
@@ -250,7 +250,7 @@ async fn mixed_prepared_and_rejected_recovery_waits_for_concurrent_replay_barrie
     let config = MgConfig::paid();
     let client = open_client(database.clone(), payments.clone(), mg_state.clone(), config).await;
     client
-        .create_with_pinned_mgs(intent(), locators(), options())
+        .buy_and_form_pinned(intent(), locators(), options())
         .await
         .unwrap();
     let status = client.status();
@@ -292,7 +292,7 @@ async fn mixed_prepared_and_rejected_recovery_waits_for_concurrent_replay_barrie
         client
             .inner
             .store
-            .load_recovery(TestIdentity::fa_id())
+            .load_purchase(TestIdentity::fa_id())
             .await
             .unwrap(),
     );
@@ -317,7 +317,7 @@ async fn mixed_prepared_and_rejected_recovery_waits_for_concurrent_replay_barrie
         reopened
             .inner
             .store
-            .load_recovery(TestIdentity::fa_id())
+            .load_purchase(TestIdentity::fa_id())
             .await
             .unwrap(),
     );
@@ -350,7 +350,7 @@ async fn transient_sibling_failure_preserves_rejected_quote_recovery_entitlement
         let client =
             open_client(database.clone(), payments.clone(), mg_state.clone(), config).await;
         client
-            .create_with_pinned_mgs(intent(), locators(), options())
+            .buy_and_form_pinned(intent(), locators(), options())
             .await
             .unwrap();
         let status = client.status();
@@ -403,7 +403,7 @@ async fn transient_sibling_failure_preserves_rejected_quote_recovery_entitlement
             client
                 .inner
                 .store
-                .load_recovery(TestIdentity::fa_id())
+                .load_purchase(TestIdentity::fa_id())
                 .await
                 .unwrap(),
         );
@@ -465,7 +465,7 @@ async fn transient_sibling_failure_preserves_rejected_quote_recovery_entitlement
             reopened
                 .inner
                 .store
-                .load_recovery(TestIdentity::fa_id())
+                .load_purchase(TestIdentity::fa_id())
                 .await
                 .unwrap(),
         );
@@ -499,7 +499,7 @@ async fn fund_new_failure_preserves_signed_refusal_quote_and_authorization_for_r
         )
         .await;
         client
-            .create_with_pinned_mgs(intent(), locators(), options())
+            .buy_and_form_pinned(intent(), locators(), options())
             .await
             .unwrap();
         let initial_status = client.status();
@@ -532,7 +532,7 @@ async fn fund_new_failure_preserves_signed_refusal_quote_and_authorization_for_r
             client
                 .inner
                 .store
-                .load_recovery(TestIdentity::fa_id())
+                .load_purchase(TestIdentity::fa_id())
                 .await
                 .unwrap(),
         );
@@ -633,7 +633,7 @@ async fn fund_new_failure_preserves_signed_refusal_quote_and_authorization_for_r
             reopened
                 .inner
                 .store
-                .load_recovery(TestIdentity::fa_id())
+                .load_purchase(TestIdentity::fa_id())
                 .await
                 .unwrap(),
         );
@@ -660,7 +660,7 @@ async fn fund_new_failure_preserves_signed_refusal_quote_and_authorization_for_r
             reopened
                 .inner
                 .store
-                .load_recovery(TestIdentity::fa_id())
+                .load_purchase(TestIdentity::fa_id())
                 .await
                 .unwrap(),
         );
@@ -697,7 +697,7 @@ async fn mixed_prepared_and_signed_refusal_survives_interrupted_replay_wave() {
     config.create_behavior = CreateBehavior::RefuseFirstQuote;
     let client = open_client(database.clone(), payments.clone(), mg_state.clone(), config).await;
     client
-        .create_with_pinned_mgs(intent(), locators(), options())
+        .buy_and_form_pinned(intent(), locators(), options())
         .await
         .unwrap();
     let status = client.status();
@@ -730,7 +730,7 @@ async fn mixed_prepared_and_signed_refusal_survives_interrupted_replay_wave() {
         client
             .inner
             .store
-            .load_recovery(TestIdentity::fa_id())
+            .load_purchase(TestIdentity::fa_id())
             .await
             .unwrap(),
     );
@@ -770,7 +770,7 @@ async fn mixed_prepared_and_signed_refusal_survives_interrupted_replay_wave() {
         reopened
             .inner
             .store
-            .load_recovery(TestIdentity::fa_id())
+            .load_purchase(TestIdentity::fa_id())
             .await
             .unwrap(),
     );
@@ -810,7 +810,7 @@ async fn funded_recovery_ignores_removed_or_empty_current_policy() {
         )
         .await;
         client
-            .create_with_pinned_mgs(intent(), locators(), options())
+            .buy_and_form_pinned(intent(), locators(), options())
             .await
             .unwrap();
         let quote_ids = payment_requirements(&client.status())
@@ -847,7 +847,7 @@ async fn funded_recovery_ignores_removed_or_empty_current_policy() {
         let reopened =
             open_client_with_registry(database, payments, mg_state, config, registry).await;
         reopened.resume().await.unwrap();
-        assert_eq!(formation(&reopened.status()).phase, FormationPhase::Formed);
+        bought(&reopened.status());
         assert_eq!(
             payment_state.payable_calls.load(Ordering::SeqCst),
             payable_calls_before_resume
@@ -875,7 +875,7 @@ async fn mixed_funded_recovery_replays_before_empty_policy_stops_unfunded_seats(
     )
     .await;
     client
-        .create_with_pinned_mgs(intent(), locators(), options())
+        .buy_and_form_pinned(intent(), locators(), options())
         .await
         .unwrap();
 
@@ -922,7 +922,7 @@ async fn terminal_paid_member_waits_for_held_siblings_before_clearing_aggregate(
     let running = client.clone();
     let operation = tokio::spawn(async move {
         running
-            .pay_and_create(
+            .buy_and_form(
                 intent(),
                 selection_approval(PAYMENT_AMOUNT_MSATS * u64::from(MIN_FEDERATION_SIZE)),
                 payment_federation_id(),
@@ -966,7 +966,7 @@ async fn terminal_paid_member_waits_for_held_siblings_before_clearing_aggregate(
         reopened
             .inner
             .store
-            .load_recovery(TestIdentity::fa_id())
+            .load_purchase(TestIdentity::fa_id())
             .await
             .unwrap(),
     );
@@ -994,12 +994,12 @@ async fn terminal_paid_member_waits_for_held_siblings_before_clearing_aggregate(
         assert_eq!(journal.released, HashSet::from([terminal_quote]));
     }
 
-    let requirements = match formation(&reopened.status())
+    let requirements = match purchase(&reopened.status())
         .action_required
         .clone()
         .expect("terminal member exposes replacement requirements")
     {
-        FormationActionRequired::ReplaceGuardians(requirements) => requirements,
+        PurchaseActionRequired::ReplaceGuardians(requirements) => requirements,
         action => panic!("unexpected terminal action: {action:?}"),
     };
     reopened
@@ -1019,7 +1019,7 @@ async fn terminal_paid_member_waits_for_held_siblings_before_clearing_aggregate(
         )
         .await
         .unwrap();
-    assert_eq!(formation(&reopened.status()).phase, FormationPhase::Formed);
+    bought(&reopened.status());
     assert_eq!(
         payment_state.funded_quotes.lock().expect("test lock").len(),
         usize::from(MIN_FEDERATION_SIZE) + 1,
@@ -1040,7 +1040,7 @@ async fn mixed_replacement_wave_survives_paid_result_loss_and_preview_expiry() {
     let config = MgConfig::paid();
     let client = open_client(database.clone(), payments.clone(), mg_state.clone(), config).await;
     let error = client
-        .pay_and_create(
+        .buy_and_form(
             intent(),
             selection_approval(PAYMENT_AMOUNT_MSATS * u64::from(MIN_FEDERATION_SIZE)),
             payment_federation_id(),
@@ -1058,12 +1058,12 @@ async fn mixed_replacement_wave_survives_paid_result_loss_and_preview_expiry() {
         ),
         "{error:?}"
     );
-    let requirements = match formation(&client.status())
+    let requirements = match purchase(&client.status())
         .action_required
         .clone()
         .expect("the refused members require replacement")
     {
-        FormationActionRequired::ReplaceGuardians(requirements) => requirements,
+        PurchaseActionRequired::ReplaceGuardians(requirements) => requirements,
         action => panic!("unexpected refusal action: {action:?}"),
     };
     assert_eq!(requirements.seats.len(), 2);
@@ -1118,7 +1118,7 @@ async fn mixed_replacement_wave_survives_paid_result_loss_and_preview_expiry() {
         client
             .inner
             .store
-            .load_recovery(TestIdentity::fa_id())
+            .load_purchase(TestIdentity::fa_id())
             .await
             .unwrap(),
     );
@@ -1174,7 +1174,7 @@ async fn mixed_replacement_wave_survives_paid_result_loss_and_preview_expiry() {
 
     let reopened = open_client(database, payments, mg_state.clone(), config).await;
     reopened.resume().await.unwrap();
-    assert_eq!(formation(&reopened.status()).phase, FormationPhase::Formed);
+    bought(&reopened.status());
     assert_eq!(
         payment_state.create_calls.load(Ordering::SeqCst),
         spends_before_reopen,

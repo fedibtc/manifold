@@ -17,8 +17,8 @@ use crate::formation::{
 };
 use crate::meta_write::{MetaWriteError, SeatVote, write_consensus_meta};
 use crate::{
-    FaClient, FaError, FaIdentity, FaPayments, FaResult, FaStatus, FederationConsensusError,
-    FederationConsensusReader, FederationConsensusSnapshot, FormationFreshness, FormationPhase,
+    FaClient, FaError, FaIdentity, FaPayments, FaResult, FederationConsensusError,
+    FederationConsensusReader, FederationConsensusSnapshot, FormationFreshness,
     ManifoldGuardianConnector,
 };
 
@@ -547,28 +547,20 @@ where
         &self,
         fa_id: FaId,
     ) -> FaResult<crate::formation::PostFormedAuthority> {
-        match self.inner.store.load_recovery(fa_id).await? {
-            crate::db::FaRecovery::Idle => return Err(FaError::NoActiveFormation),
-            crate::db::FaRecovery::Formation(recovery)
-                if recovery.snapshot.phase != FormationPhase::Formed =>
-            {
+        if let Some(recovery) = self.inner.store.load_formation(fa_id).await? {
+            if !recovery.formed {
                 return Err(FaError::MaintenanceWrongState {
-                    phase: recovery.snapshot.phase,
+                    phase: Some(recovery.snapshot.phase),
                 });
             }
-            crate::db::FaRecovery::Restored(snapshot)
-                if !matches!(
-                    self.status(),
-                    FaStatus::Restored(current)
-                        if current.freshness == FormationFreshness::Fresh
-                            && current.formation_id == snapshot.formation_id
-                ) =>
-            {
-                return Err(FaError::MaintenanceWrongState {
-                    phase: snapshot.phase,
-                });
-            }
-            crate::db::FaRecovery::Formation(_) | crate::db::FaRecovery::Restored(_) => {}
+        } else if self.inner.store.load_federation(fa_id).await?.is_none() {
+            return Err(FaError::NoActiveFormation);
+        } else if !self
+            .status()
+            .federation
+            .is_some_and(|federation| federation.freshness == FormationFreshness::Fresh)
+        {
+            return Err(FaError::MaintenanceWrongState { phase: None });
         }
         self.post_formed_authority(fa_id).await
     }

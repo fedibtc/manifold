@@ -94,13 +94,14 @@ pub use setup_payment_federations::AdmittedSetupPaymentFederation;
 /// revision of `stability-pool-common`.
 pub use stability_pool_common::Account as GuardianFeeAccount;
 pub use state::{
-    FaStatus, FedimintdVersionRange, FormationActionRequired, FormationFreshness, FormationId,
-    FormationIntent, FormationPhase, FormationSnapshot, GuardianReplacementId,
+    FaStatus, FederationSeat, FederationSnapshot, FedimintdVersionRange, FormationFreshness,
+    FormationId, FormationPhase, FormationSnapshot, GuardianReplacementId,
     GuardianReplacementRequirements, GuardianReplacementSeat, MAX_FEDERATION_SIZE,
     MAX_FEDERATION_SIZE_EXCLUSIVE, MAX_GUARDIAN_FEE_PPM, MIN_FEDERATION_SIZE,
-    PaymentAuthorizationId, PaymentRequirements, PaymentReservationId, PlanPreference,
-    ResolvedFormationIntent, RestoredFormationSnapshot, RestoredSeat, SeatPaymentRequirement,
-    SeatPhase, SeatProgress,
+    PaymentAuthorizationId, PaymentRequirements, PaymentReservationId, PlanPreference, PoolSeat,
+    PurchaseActionRequired, PurchasePhase, RecoveryCheck, ResolvedSeatPurchase,
+    SeatPaymentRequirement, SeatPhase, SeatProgress, SeatPurchaseSnapshot,
+    validate_federation_name,
 };
 pub use unavailable::{
     UnavailableFaFeeAccountProvider, UnavailableFederationConsensusReader,
@@ -169,7 +170,7 @@ where
     ///
     /// The mandatory verifier authenticates every PeerBadge the selection
     /// walk examines through [`Self::preview_mg_selection`]. The resulting
-    /// sealed approval is consumed by [`Self::pay_and_create`]. The fee-account
+    /// sealed approval is consumed by [`Self::buy_seats`]. The fee-account
     /// provider and Guardian Verification Fee account are explicit capabilities
     /// for the formation fee arrangement.
     #[allow(
@@ -207,11 +208,11 @@ where
     ///
     /// Paid quote selection authenticates kind-37707 publications against this
     /// key. Free selected formation through
-    /// [`Self::create_without_payer`] does not require setup-payment policy.
+    /// [`Self::buy_seats`] without a payer does not require setup-payment policy.
     ///
     /// The mandatory verifier authenticates every PeerBadge the selection
     /// walk examines through [`Self::preview_mg_selection`]. The resulting
-    /// sealed approval is consumed by [`Self::pay_and_create`]. The fee-account
+    /// sealed approval is consumed by [`Self::buy_seats`]. The fee-account
     /// provider is an explicit local capability even though this constructor
     /// has no Guardian Verification Fee account and therefore cannot arrange
     /// fees.
@@ -320,7 +321,7 @@ where
         )
         .await?;
         if recovery_hint == BackupRecoveryHint::RestoredMnemonic
-            && matches!(client.status(), FaStatus::Idle)
+            && client.status() == FaStatus::default()
             && !client
                 .inner
                 .store
@@ -333,10 +334,10 @@ where
                 .clone()
                 .try_lock_owned()
                 .expect("the newly opened FA client has no active operation");
-            client
-                .inner
-                .progress
-                .send_replace(FaStatus::Recovery { last_error: None });
+            client.inner.progress.send_replace(FaStatus {
+                recovery: Some(RecoveryCheck { last_error: None }),
+                ..FaStatus::default()
+            });
             backup_worker::spawn_recovery(
                 &client.inner.backup_tasks,
                 backup_worker::RecoveryWorker {
@@ -404,45 +405,15 @@ where
         self.inner.progress.borrow().clone()
     }
 
-    /// Legacy registry-backed creation entry point.
-    ///
-    /// MVP automatic selection uses [`Self::preview_mg_selection`] followed
-    /// by [`Self::pay_and_create`]. This older unapproved registry-create shape
-    /// deliberately remains unavailable because it has no verified preview,
-    /// payer, spending cap, or sealed selection approval.
-    pub async fn create(&self, _intent: FormationIntent) -> FaResult<()> {
-        let _run = self.inner.run_guard.try_lock().map_err(|_| FaError::Busy)?;
-        let _fa_pubkey = self
-            .inner
-            .ports
-            .identity
-            .public_key()
-            .map_err(FaError::Identity)?;
-        let _ = (
-            &self.inner.ports.payments,
-            &self.inner.ports.registry,
-            &self.inner.ports.mg_connector,
-        );
-        self.publish_error(FaErrorCode::CapabilityUnavailable);
-        Err(FaError::CapabilityUnavailable(Capability::Registry))
-    }
-
-    /// Report that the legacy unapproved registry-create shape is unavailable
-    /// without accessing any consumer capability. Use the preview and
-    /// Pay-and-create APIs for MVP creation.
-    pub fn preflight_create(_intent: &FormationIntent) -> FaResult<()> {
-        Err(FaError::CapabilityUnavailable(Capability::Registry))
-    }
-
     /// Continue the active formation from its durable recovery state.
     ///
     /// `Ok(())` does not necessarily mean that formation completed. In
     /// particular, a successful call can stop at
     /// [`FormationPhase::AwaitingPaymentReadiness`]. Read the aggregate
-    /// [`FormationActionRequired`] from [`Self::status`] or [`Self::observe`].
-    /// An [`FormationActionRequired::AuthorizePayments`] action requires the
+    /// [`PurchaseActionRequired`] from [`Self::status`] or [`Self::observe`].
+    /// An [`PurchaseActionRequired::AuthorizePayments`] action requires the
     /// displayed [`PaymentAuthorizationId`]. A
-    /// [`FormationActionRequired::ReplaceGuardians`] action requires a fresh
+    /// [`PurchaseActionRequired::ReplaceGuardians`] action requires a fresh
     /// verified excluding-set preview and sealed replacement approval through
     /// [`Self::apply_mg_replacements`].
     ///
@@ -491,45 +462,35 @@ where
             .map_err(FaError::Identity)?;
         let (deadline, lease) = formation::start_driver_run(&self.inner.store, options).await?;
         let result = async {
-            let recovery = self.inner.store.load_recovery(fa_id).await?;
-            match recovery {
-                db::FaRecovery::Idle => Err(FaError::NoActiveFormation),
-                db::FaRecovery::Formation(recovery) => {
-                    self.inner
-                        .progress
-                        .send_replace(FaStatus::Formation(recovery.snapshot.clone()));
-                    self.resume_pinned(*recovery, options, deadline, &lease)
-                        .await
-                }
-                db::FaRecovery::Restored(snapshot)
-                    if snapshot.freshness == FormationFreshness::Fresh =>
-                {
-                    Ok(())
-                }
-                db::FaRecovery::Restored(snapshot) => {
-                    self.inner
-                        .progress
-                        .send_replace(FaStatus::Restored(snapshot.clone()));
-                    self.reconcile_restored(
-                        snapshot,
-                        fa_id,
-                        formation::DriverRun::new(options, deadline, &lease),
-                    )
-                    .await
-                }
+            if let Some(recovery) = self.inner.store.load_purchase(fa_id).await? {
+                self.inner
+                    .progress
+                    .send_modify(|status| status.purchase = Some(recovery.snapshot.clone()));
+                return self
+                    .resume_purchase(recovery, options, deadline, &lease)
+                    .await;
             }
+            let run = formation::DriverRun::new(options, deadline, &lease);
+            // A formed formation keeps its record, so its recheck also runs
+            // through the formation driver.
+            if let Some(recovery) = self.inner.store.load_formation(fa_id).await? {
+                return self.drive_formation(recovery, fa_id, run).await;
+            }
+            let snapshot = self
+                .inner
+                .store
+                .load_federation(fa_id)
+                .await?
+                .ok_or(FaError::NoActiveFormation)?;
+            self.begin_recheck();
+            let result = self.reconcile_restored(snapshot, fa_id, run).await;
+            if let Err(error) = &result {
+                self.fail_recheck(error);
+            }
+            result
         }
         .await;
         formation::finish_driver_run(result, self.inner.store.release_driver_lease(lease).await)
-    }
-
-    fn publish_error(&self, error: FaErrorCode) {
-        if let FaStatus::Formation(mut snapshot) = self.status() {
-            snapshot.last_error = Some(error);
-            self.inner
-                .progress
-                .send_replace(FaStatus::Formation(snapshot));
-        }
     }
 }
 

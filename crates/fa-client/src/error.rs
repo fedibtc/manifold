@@ -20,7 +20,7 @@ pub enum Capability {
     FeeArrangement,
 }
 
-/// Typed reason the active formation is past its value-safe abandon window.
+/// Typed reason the active purchase is past its value-safe abandon window.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AbandonUnavailableReason {
@@ -28,8 +28,6 @@ pub enum AbandonUnavailableReason {
     /// survives quote or authorization replacement, and teardown now requires
     /// exact payment recovery.
     PaymentOutputsStarted,
-    /// DKG finished; the saved invite and guardian state must be retained.
-    DkgComplete,
 }
 
 impl std::fmt::Display for AbandonUnavailableReason {
@@ -38,7 +36,6 @@ impl std::fmt::Display for AbandonUnavailableReason {
             Self::PaymentOutputsStarted => {
                 "payment output generation started; exact recovery must finish before teardown"
             }
-            Self::DkgComplete => "federation key generation is complete",
         })
     }
 }
@@ -405,10 +402,11 @@ pub enum FaError {
         operation_id: crate::LiquidityOperationId,
     },
     /// A post-formation maintenance verb was attempted in another phase.
-    #[error("federation maintenance requires formed state, found {phase:?}")]
+    #[error("federation maintenance requires a formed, fresh federation, found {phase:?}")]
     MaintenanceWrongState {
-        /// Durable phase observed before any maintenance network effect.
-        phase: crate::FormationPhase,
+        /// Phase of the formation still in progress, or `None` when the
+        /// federation is not freshly reconciled.
+        phase: Option<crate::FormationPhase>,
     },
     /// One guardian returned a terminal typed refusal for this maintenance
     /// request. Retryable unavailability and stale-base responses never use
