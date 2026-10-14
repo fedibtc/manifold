@@ -593,9 +593,15 @@ async fn spawn_child(
     // Do not let the daemon's development/package environment silently change
     // fedimintd's transport auth, module config, chain-backend wiring, or metrics.
     // MG owns every `FM_*` contract var and passes only the intended values
-    // above. Keep a tiny non-FM pass-through set for diagnostics and for local
-    // Nix-built fedimintd binaries that need a dynamic library path.
-    for key in ["LD_LIBRARY_PATH", "RUST_BACKTRACE", "RUST_LOG"] {
+    // above. Keep a tiny non-FM pass-through set for diagnostics (including
+    // jemalloc heap profiling through `MALLOC_CONF`) and for local Nix-built
+    // fedimintd binaries that need a dynamic library path.
+    for key in [
+        "LD_LIBRARY_PATH",
+        "RUST_BACKTRACE",
+        "RUST_LOG",
+        "MALLOC_CONF",
+    ] {
         if let Some(value) = std::env::var_os(key) {
             command.env(key, value);
         }

@@ -86,3 +86,23 @@ Coverage is split at the ownership boundaries:
 - `mg-telemetry` owns request/cursor incarnation comparison, current reads,
   cross-journal and mixed-cursor discontinuities, recreation, and sanitized
   service errors.
+
+## Memory profiling
+
+The daemon and every seat `fedimintd` use jemalloc with profiling compiled
+in. MG passes `MALLOC_CONF` to its children, so one variable on the daemon
+profiles every process. For example, against a local `defe env`:
+
+```bash
+MALLOC_CONF=prof:true,lg_prof_sample:16,lg_prof_interval:27,prof_prefix:/tmp/mgprof/p \
+  target/release/defe --binary-path target/release env
+```
+
+Each process then writes `/tmp/mgprof/p.<pid>.*.heap` after every 128 MiB
+allocated; add `prof_gdump:true` for a dump at each new peak. Read a dump with
+`jeprof --text --show_bytes target/release/fleet-manager <dump>` (`jeprof`
+ships with nixpkgs `jemalloc`). The symbols use the `_rjem_` prefix, which
+`jeprof` does not recognize as allocator frames, so read `--collapsed` stacks
+past the `_rjem_je_prof_backtrace` frames. To approximate a small operator host,
+pin the environment with `taskset -c 0-3`; Tokio sizes its worker pool from
+the visible CPUs.
