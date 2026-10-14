@@ -603,6 +603,10 @@ const R269_NAMED_SEAT_NOT_LOWEST: &str =
     include_str!("../db/fixtures/qa/r269_dkg_preparation_named_seat_not_lowest.json");
 const R269_NAMED_CODE_CACHED: &str =
     include_str!("../db/fixtures/qa/r269_dkg_preparation_named_code_cached.json");
+const R269_UNVERIFIED_RESTORE: &str =
+    include_str!("../db/fixtures/qa/r269_unverified_restored_backup.json");
+const R269_PUBLISHING_SEAT_BINDINGS: &str =
+    include_str!("../db/fixtures/qa/r269_publishing_seat_bindings.json");
 const R269_MIXED_REPLACEMENT_WAVE: &str =
     include_str!("../db/fixtures/qa/r269_mixed_replacement_wave_live_reservation.json");
 
@@ -715,4 +719,103 @@ async fn r269_dkg_preparation_keeps_a_cached_named_code() {
             .iter()
             .all(|index| *index == 0)
     );
+}
+
+/// Schema 11 kept a restored backup it had not verified yet. The migration
+/// drops it, and restoring the same backup again succeeds while the peers of
+/// its saved invite are down, through the other saved MGs.
+#[tokio::test]
+async fn r269_unverified_restore_can_be_restored_again_with_the_invite_peers_down() {
+    let snapshot = fixture(R269_UNVERIFIED_RESTORE);
+    let restored = row_json(&snapshot.rows, &[0x07]).unwrap();
+    assert_eq!(restored["backup_eligible"], false);
+    let payload: crate::backup::FaBackupPayload =
+        serde_json::from_value(restored["payload"].clone()).unwrap();
+    let (client, _, _, _) = open_fixture(R269_UNVERIFIED_RESTORE).await;
+    assert!(client.status().federation.is_none());
+    client
+        .inner
+        .ports
+        .consensus_reader
+        .offline_peers
+        .lock()
+        .unwrap()
+        .extend((0..MIN_FEDERATION_SIZE - 1).map(PeerId::from));
+    client.import_backup_for_test(Some(payload)).await.unwrap();
+    assert_eq!(
+        federation(&client.status()).freshness,
+        FormationFreshness::Fresh
+    );
+}
+
+/// The fixture's metadata target under the field name it had before Manifold
+/// renamed the guardian-fee field.
+fn with_old_fee_field_name(rows: &mut Rows) {
+    let (_, header) = rows.iter_mut().find(|(key, _)| key == &[0x00]).unwrap();
+    let mut formation: serde_json::Value = serde_json::from_slice(header).unwrap();
+    let target = formation["formation_meta_target"].as_object_mut().unwrap();
+    let account = target.remove("guardian_verification_fee_account").unwrap();
+    target.insert("fedi_fee_account".to_owned(), account);
+    *header = serde_json::to_vec(&formation).unwrap();
+}
+
+/// The Fedi bridge's `migrate_fi_guardian_fee_field`, which runs before the
+/// FA client opens.
+fn bridge_fee_field_rewrite(rows: &mut Rows) {
+    let (_, header) = rows.iter_mut().find(|(key, _)| key == &[0x00]).unwrap();
+    let mut formation: serde_json::Value = serde_json::from_slice(header).unwrap();
+    let target = formation["formation_meta_target"].as_object_mut().unwrap();
+    if !target.contains_key("guardian_verification_fee_account")
+        && let Some(account) = target.remove("fedi_fee_account")
+    {
+        target.insert("guardian_verification_fee_account".to_owned(), account);
+    }
+    *header = serde_json::to_vec(&formation).unwrap();
+}
+
+/// A metadata target under the old guardian-fee field name migrates like the
+/// current one once the bridge has rewritten it, and the formation finishes.
+/// Without the rewrite the FA does not open and its rows stay as they were.
+#[tokio::test]
+async fn r269_old_guardian_fee_field_name_migrates_after_the_bridge_rewrite() {
+    let original = fixture(R269_PUBLISHING_SEAT_BINDINGS);
+    let expected = Arc::new(MemDatabase::new());
+    install_rows(&CrashingDatabase::open(&expected, None), &original.rows).await;
+    migrate_and_load(
+        &CrashingDatabase::open(&expected, None),
+        owner(&original.rows).unwrap(),
+    )
+    .await
+    .unwrap();
+
+    let mut renamed = original.rows.clone();
+    with_old_fee_field_name(&mut renamed);
+    let unrewritten = Arc::new(MemDatabase::new());
+    install_rows(&CrashingDatabase::open(&unrewritten, None), &renamed).await;
+    let error = open_snapshot(&original, &unrewritten, LegacyIdentity)
+        .await
+        .err()
+        .expect("the old field name does not migrate");
+    assert!(matches!(error, FaError::Storage(_)), "{error:?}");
+    assert_eq!(
+        dump_rows(&CrashingDatabase::open(&unrewritten, None)).await,
+        {
+            let mut rows = renamed.clone();
+            rows.sort();
+            rows
+        }
+    );
+
+    bridge_fee_field_rewrite(&mut renamed);
+    let rewritten = Arc::new(MemDatabase::new());
+    install_rows(&CrashingDatabase::open(&rewritten, None), &renamed).await;
+    let (client, _, _) = open_snapshot(&original, &rewritten, LegacyIdentity)
+        .await
+        .unwrap();
+    assert_eq!(
+        dump_rows(&CrashingDatabase::open(&rewritten, None)).await,
+        dump_rows(&CrashingDatabase::open(&expected, None)).await
+    );
+    client.drive_all_for_test(options()).await.unwrap();
+    assert!(client.status().federation.is_some());
 }
