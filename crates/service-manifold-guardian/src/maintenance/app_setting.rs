@@ -157,9 +157,9 @@ impl FederationAppSetting {
 
     /// Absolute raw byte cap, checked before parsing.
     ///
-    /// The caps keep every served field together well under
-    /// [`FEDERATION_METADATA_OBJECT_MAX_BYTES`](super::FEDERATION_METADATA_OBJECT_MAX_BYTES),
-    /// so filling them cannot wedge later maintenance.
+    /// Together, the app settings' stored size stays under a quarter of
+    /// [`FEDERATION_METADATA_OBJECT_MAX_BYTES`](super::FEDERATION_METADATA_OBJECT_MAX_BYTES).
+    /// The complete target is still subject to that aggregate cap.
     #[must_use]
     pub const fn raw_max_bytes(self) -> usize {
         match self.kind() {
