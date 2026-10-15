@@ -22,7 +22,7 @@ use fedi_decentralized_peer_badge_verifier::PeerBadgeVerifierProvenance;
 use fedi_decentralized_service_manifold_guardian::{
     DkgCompletionCallback, FaId, FederationId, FederationName, FederationSize, FedimintdVersion,
     FormationSeatBinding, GetQuoteResponse, GuardianCode, GuardianFeeAccount, InviteCode, Locator,
-    Plan, QuoteId, SeatId, SignedResponse, Timestamp,
+    Plan, SeatId, SignedResponse, Timestamp,
 };
 use nostr_sdk::{Event, PublicKey};
 use stability_pool_common::Account;
@@ -346,6 +346,7 @@ struct StoredPurchase {
     /// zero-price deployment-bootstrap path.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     payment_federation_id: Option<FederationId>,
+    approval: PreviewApproval,
 }
 
 #[derive(serde::Deserialize)]
@@ -385,12 +386,10 @@ impl From<PeerBadgeVerifierProvenance> for StoredVerifierProvenance {
     }
 }
 
-/// Durable admission proof for the operator currently assigned to one row.
+/// The verified MG a seat row was selected from, and its previewed plan.
 ///
 /// `fman_id` is the badge-vouched Nostr author.  The locator's service key is
 /// deliberately not identity: it is rotatable commitment/dialing material.
-/// The output-boundary transaction consumes every currently live proof before any
-/// corresponding wallet future is polled.
 #[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
 pub(crate) struct MgAdmission {
     #[serde(rename = "fman_id")]
@@ -402,52 +401,44 @@ pub(crate) struct MgAdmission {
     /// the previewed price. Older saved seats did not record it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     plan: Option<Plan>,
-    verifier_provenance: StoredVerifierProvenance,
-    valid_until: Timestamp,
-    pub(crate) state: AdmissionState,
 }
 
-/// Exact irreversible effect authorized by one fresh selected-seat admission.
+/// The selection preview a purchase was saved from. It must stay fresh, under
+/// the same verifier provenance, until the purchase binds its first seat.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
-#[serde(rename_all = "snake_case")]
-pub(crate) enum AdmissionEffect {
-    /// Generation of quote-bound payer-wallet outputs.
-    PaidOutput,
-    /// Presentation of a zero-price quote to `CreateSeat`.
-    FreePresentation,
+pub(crate) struct PreviewApproval {
+    pub(crate) verifier_provenance: StoredVerifierProvenance,
+    pub(crate) valid_until: Timestamp,
 }
 
-/// Monotone durable state for one selected-seat admission.
-///
-/// This is deliberately private recovery state rather than a public status
-/// projection.  The transition binds the exact quote and effect before that
-/// effect can be polled, so later expiry or verifier-profile changes cannot
-/// strand exact recovery.
-#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
-#[serde(rename_all = "snake_case")]
-pub(crate) enum AdmissionState {
-    Fresh,
-    EffectAuthorized {
-        quote_id: QuoteId,
-        effect: AdmissionEffect,
-    },
+impl PreviewApproval {
+    pub(crate) fn validate(
+        &self,
+        expected_provenance: StoredVerifierProvenance,
+        now: Timestamp,
+    ) -> FaResult<()> {
+        if self.verifier_provenance != expected_provenance {
+            return Err(FaError::SelectionReauthorizationRequired {
+                reason: crate::SelectionReauthorizationReason::VerifierEnvironmentChanged,
+                failure: None,
+            });
+        }
+        if self.valid_until <= now {
+            return Err(FaError::SelectionReauthorizationRequired {
+                reason: crate::SelectionReauthorizationReason::PreviewExpired,
+                failure: None,
+            });
+        }
+        Ok(())
+    }
 }
 
 impl MgAdmission {
-    pub(crate) fn fresh_peer_badge(
-        mg_id: PublicKey,
-        holder: PublicKey,
-        plan: Plan,
-        verifier_provenance: StoredVerifierProvenance,
-        valid_until: Timestamp,
-    ) -> Self {
+    pub(crate) fn fresh_peer_badge(mg_id: PublicKey, holder: PublicKey, plan: Plan) -> Self {
         Self {
             mg_id,
             holder: Some(holder),
             plan: Some(plan),
-            verifier_provenance,
-            valid_until,
-            state: AdmissionState::Fresh,
         }
     }
 
@@ -461,39 +452,6 @@ impl MgAdmission {
 
     pub(crate) fn plan(&self) -> Option<&Plan> {
         self.plan.as_ref()
-    }
-
-    pub(crate) fn requires_effect_authorization(&self) -> bool {
-        self.state == AdmissionState::Fresh
-    }
-
-    pub(crate) fn validate_if_fresh(
-        &self,
-        expected_provenance: StoredVerifierProvenance,
-        now: Timestamp,
-    ) -> FaResult<()> {
-        validate_fresh_admission(self, expected_provenance, now)
-    }
-
-    fn authorized_effect(&self) -> Option<(QuoteId, AdmissionEffect)> {
-        match self.state {
-            AdmissionState::Fresh => None,
-            AdmissionState::EffectAuthorized { quote_id, effect } => Some((quote_id, effect)),
-        }
-    }
-
-    fn require_authorized_effect(
-        &self,
-        quote_id: QuoteId,
-        effect: AdmissionEffect,
-    ) -> FaResult<()> {
-        if self.authorized_effect() == Some((quote_id, effect)) {
-            Ok(())
-        } else {
-            Err(FaError::Storage(
-                "selected-seat effect crossed before exact admission authorization".to_owned(),
-            ))
-        }
     }
 }
 
@@ -570,6 +528,7 @@ pub(crate) struct PurchaseRecovery {
     pub(crate) seats: Vec<PurchaseSeatRecovery>,
     /// Explicit payer, absent for the zero-price bootstrap.
     pub(crate) payment_federation_id: Option<FederationId>,
+    pub(crate) approval: PreviewApproval,
 }
 
 /// One formation seat's public projection and its signed acceptance facts.
@@ -609,7 +568,7 @@ pub(crate) struct InitialSeat {
 }
 
 impl InitialSeat {
-    /// Pair one selected locator with its admission, deriving the public
+    /// Pair one selected locator with its verified MG, deriving the public
     /// progress row so its displayed MG identity cannot disagree with the
     /// durable admission.
     pub(crate) fn new(index: usize, locator: Locator, admission: MgAdmission) -> Self {
@@ -1133,6 +1092,7 @@ impl FaStore {
         intent: ResolvedSeatPurchase,
         seats: Vec<InitialSeat>,
         payment_federation_id: Option<FederationId>,
+        approval: PreviewApproval,
     ) -> FaResult<()> {
         let creation = match self.load_creation(fa_id).await? {
             Some(_) => None,
@@ -1150,6 +1110,7 @@ impl FaStore {
             intent,
             seats,
             payment_federation_id,
+            approval,
             creation,
         )
         .await
@@ -1475,6 +1436,7 @@ impl FaStore {
             snapshot,
             seats: recoveries,
             payment_federation_id: stored.payment_federation_id,
+            approval: stored.approval,
         }))
     }
 
@@ -1521,6 +1483,7 @@ impl FaStore {
             })
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(crate) async fn initialize(
         &self,
         fa_id: FaId,
@@ -1528,6 +1491,7 @@ impl FaStore {
         intent: ResolvedSeatPurchase,
         seats: Vec<InitialSeat>,
         payment_federation_id: Option<FederationId>,
+        approval: PreviewApproval,
         creation: Option<NewCreation>,
     ) -> FaResult<()> {
         let seat_count = u16::try_from(seats.len())
@@ -1585,6 +1549,7 @@ impl FaStore {
                 intent,
                 seat_count,
                 payment_federation_id,
+                approval,
             },
         )
         .await;
@@ -1651,26 +1616,11 @@ impl FaStore {
                         let mut seat = dbtx.get_value(&key).await.ok_or_else(|| {
                             FaError::Storage(format!("missing persisted FA seat row {index}"))
                         })?;
-                        let signed_quote = seat.signed_quote.as_ref().ok_or_else(|| {
-                            FaError::Storage(format!(
-                                "accepted FA seat row {index} is missing its persisted signed quote"
-                            ))
-                        })?;
-                        let quote =
-                            signed_quote
-                                .verify(&seat.locator.service_pubkey)
-                                .map_err(|error| {
-                                    FaError::Storage(format!(
-                                        "invalid accepted quote for FA seat row {index}: {error}"
-                                    ))
-                                })?;
-                        let effect = if quote.terms.payment.is_some() {
-                            AdmissionEffect::PaidOutput
-                        } else {
-                            AdmissionEffect::FreePresentation
-                        };
-                        seat.admission
-                            .require_authorized_effect(quote.quote_id(), effect)?;
+                        if seat.signed_quote.is_none() {
+                            return Err(FaError::Storage(format!(
+                                "accepted FA seat row {index} is missing its bound quote"
+                            )));
+                        }
                         if let Some(existing) = &seat.seat_id
                             && (existing != &seat_id
                                 || seat.guardian_fee_account.as_ref()
@@ -1984,34 +1934,30 @@ impl FaStore {
                                         "invalid quote for FA seat row {index}: {error}"
                                     ))
                                 })?;
-                        let effect = if quote.terms.payment.is_some() {
-                            AdmissionEffect::PaidOutput
-                        } else {
-                            AdmissionEffect::FreePresentation
-                        };
-                        // The preview approval must be fresh until the
-                        // purchase binds its first seat.
-                        let purchase_started = purchase_seat_rows(dbtx, &formation_id)
-                            .await?
-                            .iter()
-                            .any(|(_, seat)| seat.signed_quote.is_some());
-                        match seat.admission.authorized_effect() {
-                            None if purchase_started => {}
+                        match &seat.signed_quote {
+                            // The preview approval must be fresh until the
+                            // purchase binds its first seat.
                             None => {
-                                validate_fresh_admission(&seat.admission, verifier_provenance, now)?
+                                let purchase_started = purchase_seat_rows(dbtx, &formation_id)
+                                    .await?
+                                    .iter()
+                                    .any(|(_, seat)| seat.signed_quote.is_some());
+                                if !purchase_started {
+                                    formation.approval.validate(verifier_provenance, now)?;
+                                }
                             }
-                            Some((_, AdmissionEffect::PaidOutput))
-                                if effect == AdmissionEffect::PaidOutput => {}
-                            Some(_) => {
-                                return Err(FaError::Storage(format!(
-                                    "FA seat row {index} cannot move its bound quote"
-                                )));
+                            // Only a paid quote moves, to a paid quote.
+                            Some(bound) => {
+                                let bound_paid = bound
+                                    .verify(&seat.locator.service_pubkey)
+                                    .is_ok_and(|bound| bound.terms.payment.is_some());
+                                if !bound_paid || quote.terms.payment.is_none() {
+                                    return Err(FaError::Storage(format!(
+                                        "FA seat row {index} cannot move its bound quote"
+                                    )));
+                                }
                             }
                         }
-                        seat.admission.state = AdmissionState::EffectAuthorized {
-                            quote_id: quote.quote_id(),
-                            effect,
-                        };
                         seat.signed_quote = Some(signed_quote);
                         dbtx.insert_entry(&key, &seat).await;
                         store.wait_before_hooked_formation_commit().await;
@@ -2096,29 +2042,6 @@ fn setup_payment_event_is_newer(candidate: &Event, current: &Event) -> bool {
         || (candidate.created_at == current.created_at && candidate.id < current.id)
 }
 
-fn validate_fresh_admission(
-    admission: &MgAdmission,
-    expected_provenance: StoredVerifierProvenance,
-    now: Timestamp,
-) -> FaResult<()> {
-    if !admission.requires_effect_authorization() {
-        return Ok(());
-    }
-    if admission.verifier_provenance != expected_provenance {
-        return Err(FaError::SelectionReauthorizationRequired {
-            reason: crate::SelectionReauthorizationReason::VerifierEnvironmentChanged,
-            failure: None,
-        });
-    }
-    if admission.valid_until <= now {
-        return Err(FaError::SelectionReauthorizationRequired {
-            reason: crate::SelectionReauthorizationReason::PreviewExpired,
-            failure: None,
-        });
-    }
-    Ok(())
-}
-
 /// The seat rows of one purchase, in index order. A seat that ended after
 /// payment outputs started leaves its row, so indexes can have gaps.
 async fn purchase_seat_rows(
@@ -2193,15 +2116,17 @@ fn validate_formation_progress(
                 seat.index
             )));
         }
-        // A seat holds a quote exactly while it is bound to it, and an
-        // accepted seat is always bound.
-        match (
-            seat.admission.authorized_effect(),
-            seat.signed_quote.as_ref(),
-        ) {
-            (None, None) if seat.seat_id.is_none() => {}
-            (Some((quote_id, effect)), Some(signed_quote)) => {
-                let quote = signed_quote
+        // An accepted seat is always bound to its quote.
+        match &seat.signed_quote {
+            None if seat.seat_id.is_some() => {
+                return Err(FaError::Storage(format!(
+                    "persisted accepted FA seat row {} lacks its bound quote",
+                    seat.index
+                )));
+            }
+            None => {}
+            Some(signed_quote) => {
+                signed_quote
                     .verify(&seat.locator.service_pubkey)
                     .map_err(|error| {
                         FaError::Storage(format!(
@@ -2209,22 +2134,6 @@ fn validate_formation_progress(
                             seat.index
                         ))
                     })?;
-                let payment_matches = match effect {
-                    AdmissionEffect::PaidOutput => quote.terms.payment.is_some(),
-                    AdmissionEffect::FreePresentation => quote.terms.payment.is_none(),
-                };
-                if !payment_matches || quote.quote_id() != quote_id {
-                    return Err(FaError::Storage(format!(
-                        "persisted FA seat row {} is bound to another quote",
-                        seat.index
-                    )));
-                }
-            }
-            _ => {
-                return Err(FaError::Storage(format!(
-                    "persisted FA seat row {} does not hold exactly its bound quote",
-                    seat.index
-                )));
             }
         }
         // An accepted seat and its MG-signed guardian-fee account are one

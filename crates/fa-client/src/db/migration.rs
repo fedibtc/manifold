@@ -35,6 +35,7 @@ json_database_value!(RestoredBackupState);
 /// out of the purchase.
 #[derive(serde::Deserialize)]
 struct Schema11Formation {
+    formation_id: FormationId,
     phase: Schema11Phase,
     intent: Schema11Intent,
     #[serde(default)]
@@ -177,6 +178,26 @@ impl FaStore {
         if !in_purchase {
             object.insert("phase".to_owned(), "seats_created".into());
         }
+        // Every schema 11 seat kept its preview approval. The purchase keeps
+        // the one of its first seat, which came from the purchase preview.
+        let first_seat = dbtx
+            .raw_get_bytes(&DatabaseKeyPrefix::to_bytes(&PurchaseSeatKey {
+                formation_id: legacy.formation_id.0.clone(),
+                index: 0,
+            }))
+            .await
+            .map_err(|_| FaError::Storage("reading FA storage failed".to_owned()))?
+            .ok_or_else(malformed)?;
+        let first_seat: serde_json::Value =
+            serde_json::from_slice(&first_seat).map_err(|_| malformed())?;
+        let badge = &first_seat["admission"]["peer_badge"];
+        object.insert(
+            "approval".to_owned(),
+            serde_json::json!({
+                "verifier_provenance": badge["verifier_provenance"],
+                "valid_until": badge["valid_until"],
+            }),
+        );
         let mut purchase: StoredPurchase =
             serde_json::from_value(header).map_err(|_| malformed())?;
         let mut seats = Vec::with_capacity(usize::from(purchase.seat_count));
@@ -200,6 +221,9 @@ impl FaStore {
                 .and_then(|admission| admission.get_mut("peer_badge"))
                 .ok_or_else(malformed)?
                 .take();
+            // Schema 12 keeps a quote only while its seat is bound to it. The
+            // payer wallet released every unbound quote's payment hold.
+            let unbound = admission["state"] == "fresh";
             seat_object.insert("admission".to_owned(), admission);
             let guardian_code: Option<GuardianCode> = seat_object
                 .remove("guardian_code")
@@ -222,9 +246,7 @@ impl FaStore {
                     .map_err(|_| FaError::Storage("removing a schema 11 seat failed".to_owned()))?;
                 continue;
             }
-            // Schema 12 keeps a quote only while its seat is bound to it.
-            // The payer wallet released every unbound quote's payment hold.
-            if seat.admission.requires_effect_authorization() {
+            if unbound {
                 seat.signed_quote = None;
             }
             seats.push((key, seat, guardian_code));

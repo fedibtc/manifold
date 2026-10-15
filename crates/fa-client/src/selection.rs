@@ -50,8 +50,8 @@ use crate::{
 };
 
 /// How long one freshly fetched advertisement selection may authorize the
-/// start of a seat purchase and each pre-effect run. Once an
-/// admission is effect-authorized, this deadline no longer applies. This
+/// start of a seat purchase and each run until the purchase binds its first
+/// seat quote. After that, this deadline no longer applies. This
 /// freshness allowance does not size the consumer's retry budget.
 pub const MG_SELECTION_PREVIEW_VALIDITY: Duration = Duration::from_secs(5 * 60);
 

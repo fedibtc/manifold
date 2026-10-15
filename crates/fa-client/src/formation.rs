@@ -22,8 +22,8 @@ use stability_pool_common::Account;
 use tokio::sync::OnceCell;
 
 use crate::db::{
-    AdmissionEffect, AdmissionState, FormationMetaTarget, FormationRecovery, InitialSeat,
-    MgAdmission, NewCreation, PurchaseRecovery,
+    FormationMetaTarget, FormationRecovery, InitialSeat, MgAdmission, NewCreation, PreviewApproval,
+    PurchaseRecovery,
 };
 use crate::meta_write::{MetaWriteError, SeatVote, write_consensus_meta};
 use crate::mg::MgClient;
@@ -549,7 +549,10 @@ where
                 "selected Fedimint DKG identity is outside the purchase request".to_owned(),
             ));
         }
-        let verifier_provenance = preview.verifier_provenance.into();
+        let approval = PreviewApproval {
+            verifier_provenance: preview.verifier_provenance.into(),
+            valid_until: preview.valid_until(),
+        };
         let seats = preview
             .seats_to_buy_at(Timestamp(now_secs()?))?
             .into_iter()
@@ -558,13 +561,7 @@ where
                 InitialSeat::new(
                     index,
                     seat.locator,
-                    MgAdmission::fresh_peer_badge(
-                        seat.mg_id,
-                        seat.holder,
-                        seat.plan,
-                        verifier_provenance,
-                        preview.valid_until(),
-                    ),
+                    MgAdmission::fresh_peer_badge(seat.mg_id, seat.holder, seat.plan),
                 )
             })
             .collect();
@@ -597,6 +594,7 @@ where
                     request,
                     seats,
                     payment_federation_id,
+                    approval,
                     creation,
                 )
                 .await?;
@@ -1098,7 +1096,7 @@ where
         {
             // The preview approval must be fresh until the purchase binds its
             // first seat.
-            seat.admission.validate_if_fresh(
+            recovery.approval.validate(
                 self.inner.peer_badge_verifier.provenance().into(),
                 Timestamp(now_secs()?),
             )?;
@@ -1129,14 +1127,6 @@ where
             )
             .await?;
         let seat = &mut recovery.seats[position];
-        seat.admission.state = AdmissionState::EffectAuthorized {
-            quote_id: quote.quote_id(),
-            effect: if quote.terms.payment.is_some() {
-                AdmissionEffect::PaidOutput
-            } else {
-                AdmissionEffect::FreePresentation
-            },
-        };
         seat.signed_quote = Some(signed_quote.clone());
         seat.progress.phase = SeatPhase::QuoteReady;
         seat.progress.freshness = FormationFreshness::Fresh;

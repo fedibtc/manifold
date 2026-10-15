@@ -46,9 +46,9 @@ separate fail-closed schema. Schema 12 keeps one creation row, purchase rows,
 one pool row per bought seat, and one cached guardian code per formation seat.
 The creation row also holds the formation's progress: its id, invite, and
 metadata target. The purchase persists the selected
-major/minor/vendor DKG identity beside the optional explicit payer. Each
-purchase seat persists its admission: the verifier provenance and preview
-deadline before its quote is bound, then the exact bound quote. Schema 11
+major/minor/vendor DKG identity beside the optional explicit payer, and the
+preview's verifier provenance and deadline. Each purchase seat persists its
+verified MG, its previewed plan, and its bound quote once it has one. Schema 11
 kept the purchase and the formation in one row; opening such an FA migrates it.
 A schema 11 pinned formation cannot be migrated, because its MGs have no
 authenticated identity; opening it fails with reset guidance.
@@ -93,8 +93,7 @@ seat leaves with `InsufficientFunds`.
 
 The purchase buys seats one at a time, in seat order. For each seat that has
 no seat id, the driver first binds a quote: one autocommit stores the exact
-signed quote and moves the seat's admission to an effect authorization for
-that quote, free or paid output. The selection preview must still be fresh,
+signed quote before its payment or presentation can start. The selection preview must still be fresh,
 under the same verifier provenance, until the purchase binds its first seat.
 After that, slow sequential payments cannot expire the purchase. A bound free
 quote is presented again exactly. A bound paid quote is first given to the
@@ -443,10 +442,9 @@ last error on `federation`. Inconsistent storage fails closed before status is p
 The seat/fee-account pairing is
 validated on load, so formation records persisted before signed fee-account
 acceptance existed fail closed and must be reset rather than migrated because
-they predate the production compatibility baseline. Every selected row
-persists a typed admission state, and a seat holds a signed quote exactly when
-its admission authorizes that quote's effect. Crash recovery therefore
-consults per-seat effect authority. A paid quote whose wallet payment already
+they predate the production compatibility baseline. A stored seat quote is the
+seat's authority for that quote's effect, and an accepted seat always holds
+its quote. A paid quote whose wallet payment already
 started is replayed exactly rather than refreshed, because its funds are
 locked to that quote's blind nonces. Per-seat progress is
 diagnostic and carries independent recovery facts. Public seat progress and

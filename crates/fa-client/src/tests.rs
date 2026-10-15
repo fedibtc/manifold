@@ -2534,7 +2534,14 @@ fn test_mg_id(index: usize) -> nostr_sdk::PublicKey {
     mg_keys(index).public_key()
 }
 
-fn selected_initial_seat(index: u16, valid_until: u64) -> crate::db::InitialSeat {
+fn test_approval(valid_until: u64) -> crate::db::PreviewApproval {
+    crate::db::PreviewApproval {
+        verifier_provenance: test_peer_badge_verifier().provenance().into(),
+        valid_until: Timestamp(valid_until),
+    }
+}
+
+fn selected_initial_seat(index: u16) -> crate::db::InitialSeat {
     crate::db::InitialSeat::new(
         usize::from(index),
         locator(usize::from(index)),
@@ -2544,8 +2551,6 @@ fn selected_initial_seat(index: u16, valid_until: u64) -> crate::db::InitialSeat
             Plan::InfiniteBestEffort {
                 price_msats: PAYMENT_AMOUNT_MSATS,
             },
-            test_peer_badge_verifier().provenance().into(),
-            Timestamp(valid_until),
         ),
     )
 }
@@ -4692,9 +4697,10 @@ async fn seed_purchase(client: &TestClient, formation_id: &str) {
             FormationId(formation_id.to_owned()),
             intent().resolve(fedimintd_version().dkg_version()).unwrap(),
             (0..MIN_FEDERATION_SIZE)
-                .map(|index| selected_initial_seat(index, test_now_secs() + 120))
+                .map(selected_initial_seat)
                 .collect(),
             Some(payment_federation_id()),
+            test_approval(test_now_secs() + 120),
         )
         .await
         .unwrap();
@@ -5472,8 +5478,9 @@ async fn initialized_formation_reloads_as_unsynced_typed_status() {
             TestIdentity::fa_id(),
             FormationId("formation1".to_owned()),
             resolved_intent_with_size(FederationSize(1)),
-            vec![selected_initial_seat(0, test_now_secs() + 120)],
+            vec![selected_initial_seat(0)],
             None,
+            test_approval(test_now_secs() + 120),
         )
         .await
         .unwrap();
@@ -5507,8 +5514,9 @@ async fn persisted_formation_rejects_a_different_identity_before_observation() {
             TestIdentity::fa_id(),
             FormationId("ownedformation".to_owned()),
             resolved_intent_with_size(FederationSize(1)),
-            vec![selected_initial_seat(0, test_now_secs() + 120)],
+            vec![selected_initial_seat(0)],
             None,
+            test_approval(test_now_secs() + 120),
         )
         .await
         .unwrap();
@@ -5540,8 +5548,6 @@ fn older_saved_admissions_without_badge_holders_or_plans_still_decode() {
         Plan::InfiniteBestEffort {
             price_msats: PAYMENT_AMOUNT_MSATS,
         },
-        test_peer_badge_verifier().provenance().into(),
-        Timestamp(123),
     );
     let mut stored = serde_json::to_value(&admission).unwrap();
     stored.as_object_mut().unwrap().remove("holder");
@@ -5550,9 +5556,94 @@ fn older_saved_admissions_without_badge_holders_or_plans_still_decode() {
     assert_eq!(legacy.holder(), None);
     assert_eq!(legacy.plan(), None);
     assert_eq!(legacy.mg_id(), admission.mg_id());
-    assert_eq!(
-        legacy.requires_effect_authorization(),
-        admission.requires_effect_authorization()
+}
+
+#[tokio::test]
+async fn the_preview_bounds_only_the_first_bind_and_only_unpaid_paid_quotes_move() {
+    let now = Arc::new(AtomicU64::new(10_000));
+    let clock = now.clone();
+    let store = db::FaStore::new_with_clock(
+        MemDatabase::new().into_database(),
+        Arc::new(move || clock.load(Ordering::SeqCst)),
+    );
+    let formation_id = FormationId("approval-bounds".to_owned());
+    let intent = resolved_intent_with_size(FederationSize(2));
+    store
+        .initialize_for_test(
+            TestIdentity::fa_id(),
+            formation_id.clone(),
+            intent.clone(),
+            vec![selected_initial_seat(0), selected_initial_seat(1)],
+            Some(payment_federation_id()),
+            test_approval(10_100),
+        )
+        .await
+        .unwrap();
+    let first = signed_quote(0, &intent, [1; 32]);
+
+    // At the deadline, the first bind needs a new preview.
+    now.store(10_100, Ordering::SeqCst);
+    let error = store
+        .bind_fresh_quote(&formation_id, 0, first.clone())
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(
+            error,
+            FaError::SelectionReauthorizationRequired {
+                reason: SelectionReauthorizationReason::PreviewExpired,
+                ..
+            }
+        ),
+        "{error:?}"
+    );
+    now.store(10_099, Ordering::SeqCst);
+    store
+        .bind_fresh_quote(&formation_id, 0, first.clone())
+        .await
+        .unwrap();
+
+    // Later seats bind after the preview expired.
+    now.store(20_000, Ordering::SeqCst);
+    store
+        .bind_fresh_quote(&formation_id, 1, signed_quote(1, &intent, [2; 32]))
+        .await
+        .unwrap();
+
+    // A paid quote moves to a new paid quote, but only from the bound one.
+    let second = signed_quote(0, &intent, [3; 32]);
+    let provenance = test_peer_badge_verifier().provenance().into();
+    assert!(
+        store
+            .bind_quote(&formation_id, 0, None, second.clone(), provenance)
+            .await
+            .is_err()
+    );
+    store
+        .bind_quote(&formation_id, 0, Some(&first), second.clone(), provenance)
+        .await
+        .unwrap();
+    // An accepted seat keeps its quote.
+    store
+        .record_seat_accepted(
+            &formation_id,
+            0,
+            SeatId::from(QuoteId([0x05; 32])),
+            guardian_fee_account(32),
+        )
+        .await
+        .unwrap();
+    assert!(
+        store
+            .bind_quote(
+                &formation_id,
+                0,
+                Some(&second),
+                signed_quote(0, &intent, [4; 32]),
+                provenance,
+            )
+            .await
+            .is_err()
     );
 }
 
@@ -5576,11 +5667,9 @@ async fn accepting_one_seat_preserves_a_sibling_journaled_quote() {
             TestIdentity::fa_id(),
             formation_id.clone(),
             intent.clone(),
-            vec![
-                selected_initial_seat(0, test_now_secs() + 120),
-                selected_initial_seat(1, test_now_secs() + 120),
-            ],
+            vec![selected_initial_seat(0), selected_initial_seat(1)],
             Some(payment_federation_id()),
+            test_approval(test_now_secs() + 120),
         )
         .await
         .unwrap();
@@ -5646,11 +5735,9 @@ async fn concurrent_two_seat_acceptance_retries_and_derives_completion_from_dura
             TestIdentity::fa_id(),
             formation_id.clone(),
             intent.clone(),
-            vec![
-                selected_initial_seat(0, test_now_secs() + 120),
-                selected_initial_seat(1, test_now_secs() + 120),
-            ],
+            vec![selected_initial_seat(0), selected_initial_seat(1)],
             Some(payment_federation_id()),
+            test_approval(test_now_secs() + 120),
         )
         .await
         .unwrap();
@@ -5823,10 +5910,9 @@ async fn partial_seat_recovery_keeps_the_remaining_payment_after_a_dropped_seat(
             TestIdentity::fa_id(),
             formation_id.clone(),
             intent.clone(),
-            (0..3)
-                .map(|index| selected_initial_seat(index, test_now_secs() + 120))
-                .collect(),
+            (0..3).map(selected_initial_seat).collect(),
             Some(payment_federation_id()),
+            test_approval(test_now_secs() + 120),
         )
         .await
         .unwrap();
@@ -6729,16 +6815,18 @@ async fn selected_free_lost_create_seat_reopens_after_verifier_drift_with_exact_
             })
         })
         .expect("the interrupted selected seat remains durable");
-    assert!(matches!(
-        &interrupted.admission,
-        crate::db::MgAdmission {
-            state: crate::db::AdmissionState::EffectAuthorized {
-                quote_id,
-                effect: crate::db::AdmissionEffect::FreePresentation,
-            },
-            ..
-        } if *quote_id == hung_quote
-    ));
+    assert!(
+        interrupted
+            .signed_quote
+            .as_ref()
+            .unwrap()
+            .verify(&interrupted.progress.locator.service_pubkey)
+            .unwrap()
+            .terms
+            .payment
+            .is_none(),
+        "the interrupted seat is bound to its free quote",
+    );
     operation.abort();
     assert!(operation.await.unwrap_err().is_cancelled());
     let quote_calls_before_resume = mg_state.quote_calls.load(Ordering::SeqCst);
@@ -8115,8 +8203,7 @@ async fn a_seat_saved_without_a_previewed_price_requires_a_fresh_preview() {
     .await;
     // Seat 2 is stored as before seats recorded their previewed plan.
     let valid_until = test_now_secs() + 120;
-    let mut unpinned =
-        serde_json::to_value(selected_initial_seat(2, valid_until).admission).unwrap();
+    let mut unpinned = serde_json::to_value(selected_initial_seat(2).admission).unwrap();
     unpinned.as_object_mut().unwrap().remove("plan");
     let seats = (0..MIN_FEDERATION_SIZE)
         .map(|index| {
@@ -8127,7 +8214,7 @@ async fn a_seat_saved_without_a_previewed_price_requires_a_fresh_preview() {
                     serde_json::from_value(unpinned.clone()).unwrap(),
                 )
             } else {
-                selected_initial_seat(index, valid_until)
+                selected_initial_seat(index)
             }
         })
         .collect();
@@ -8140,6 +8227,7 @@ async fn a_seat_saved_without_a_previewed_price_requires_a_fresh_preview() {
             intent().resolve(fedimintd_version().dkg_version()).unwrap(),
             seats,
             Some(payment_federation_id()),
+            test_approval(valid_until),
         )
         .await
         .unwrap();
@@ -8203,9 +8291,10 @@ async fn reopen_preserves_the_selected_dkg_identity_and_accepts_patch_skew() {
             FormationId("restart-range".to_owned()),
             resolved,
             (0..MIN_FEDERATION_SIZE)
-                .map(|index| selected_initial_seat(index, test_now_secs() + 120))
+                .map(selected_initial_seat)
                 .collect(),
             Some(payment_federation_id()),
+            test_approval(test_now_secs() + 120),
         )
         .await
         .unwrap();
@@ -8897,9 +8986,10 @@ async fn crashed_selected_record_cannot_resume_after_its_preview_expires() {
             FormationId("selected-expired-crash".to_owned()),
             resolved,
             (0..MIN_FEDERATION_SIZE)
-                .map(|index| selected_initial_seat(index, test_now_secs().saturating_sub(1)))
+                .map(selected_initial_seat)
                 .collect(),
             Some(payment_federation_id()),
+            test_approval(test_now_secs().saturating_sub(1)),
         )
         .await
         .unwrap();
@@ -8941,9 +9031,10 @@ async fn selected_reopen_under_changed_verifier_requires_fresh_pre_output_author
             formation_id,
             intent().resolve(fedimintd_version().dkg_version()).unwrap(),
             (0..MIN_FEDERATION_SIZE)
-                .map(|index| selected_initial_seat(index, test_now_secs() + 120))
+                .map(selected_initial_seat)
                 .collect(),
             Some(payment_federation_id()),
+            test_approval(test_now_secs() + 120),
         )
         .await
         .unwrap();

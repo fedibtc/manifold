@@ -194,13 +194,11 @@ is no pinned/BYO exception. The five-minute preview is the only input
 to selected creation and is the consumer's payment approval. Its usable window
 begins after the verified walk and it binds the complete request, each seat's
 advertised plan and price, and canonical verifier/environment provenance. The
-stable provenance is persisted separately on every selected seat. Reopening under a different profile requires fresh approval for every
-unconsumed seat before an irreversible effect. Each admission has a private
-monotone state: `Fresh`, or `EffectAuthorized` bound to the exact quote and to
-either paid output generation or free `CreateSeat` presentation. A seat holds a
-signed quote exactly when its admission is bound to that quote. One autocommit
-binds the quote and the admission before the seat's payment or first
-presentation. Only a paid binding whose wallet operation is proven
+stable provenance and the deadline are persisted on the purchase. Reopening
+under a different profile requires fresh approval before the first seat binds
+its quote. A stored seat quote is the seat's authority for that quote's
+effect: paid output generation or free `CreateSeat` presentation. One
+autocommit binds the quote before the seat's payment or first presentation. Only a paid binding whose wallet operation is proven
 `NotStarted` may move to a new paid quote. Exact recovery therefore retains
 historical authority after a crash. The preview itself is intentionally not serializable or cached.
 Discovery is now multi-relay (this section's revisit): with the pooled

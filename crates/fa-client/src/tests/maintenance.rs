@@ -141,8 +141,9 @@ async fn pre_formed_rejection_has_no_connector_or_metadata_effect() {
             TestIdentity::fa_id(),
             FormationId("maintenance-pre-formed".to_owned()),
             resolved_intent_with_size(FederationSize(1)),
-            vec![selected_initial_seat(0, test_now_secs() + 120)],
+            vec![selected_initial_seat(0)],
             None,
+            test_approval(test_now_secs() + 120),
         )
         .await
         .unwrap();
