@@ -2439,6 +2439,11 @@ where
             }
             if let Some(purchase) = self.inner.store.load_purchase(fa_id).await? {
                 self.drive_purchase(purchase, fa_id, options).await?;
+                // Report why the first seat left, as the run loop logs it.
+                let dropped = std::mem::take(&mut *self.inner.dropped_seats.lock().unwrap());
+                if let Some(error) = dropped.into_iter().next() {
+                    return Err(error);
+                }
                 continue;
             }
             if purchase_only {
@@ -4447,6 +4452,7 @@ async fn open_client_with_store_and_registry(
             progress,
             control: crate::run::RunControl::default(),
             run_guard: Arc::new(tokio::sync::Mutex::new(())),
+            dropped_seats: std::sync::Mutex::default(),
             backup_source: None,
             peer_badge_verifier: test_peer_badge_verifier(),
             setup_payment_publisher: Some(setup_payment_keys().public_key()),
@@ -8696,6 +8702,51 @@ async fn a_repriced_seat_leaves_before_the_fund_check_and_any_payment() {
             .all(|record| record.index != 2),
         "the repriced MG is never asked for a quote",
     );
+}
+
+/// One seat leaves first because its MG repriced, then the payer cannot fund
+/// the rest. The creation shows the payer reason, because a new preview
+/// alone cannot fix it.
+#[tokio::test]
+async fn a_payer_reason_outranks_an_earlier_seat_reason() {
+    let (payments, payment_state) = TestPayments::new();
+    let seats = u64::from(MIN_FEDERATION_SIZE) - 1;
+    *payment_state.checked_balance_msats.lock().unwrap() = Some(seats * PAYMENT_AMOUNT_MSATS - 1);
+    let mg_state = Arc::new(MgState::default());
+    let client = open_client(
+        MemDatabase::new().into_database(),
+        payments,
+        mg_state.clone(),
+        MgConfig::paid(),
+    )
+    .await;
+    let preview = client.preview_at(&intent(), locators());
+    mg_state
+        .price_overrides_msats
+        .lock()
+        .unwrap()
+        .insert(2, PAYMENT_AMOUNT_MSATS + 1);
+
+    let error = client
+        .create_and_buy(&preview, Some(payment_federation_id()), options())
+        .await
+        .unwrap_err();
+    // The repriced seat left first.
+    assert!(
+        matches!(
+            error,
+            FaError::SelectionReauthorizationRequired {
+                reason: SelectionReauthorizationReason::SeatUnavailable,
+                ..
+            }
+        ),
+        "{error:?}"
+    );
+    assert_eq!(
+        reauthorization(&client.status()),
+        Some(SelectionReauthorizationReason::SelectedPayerInsufficientFunds)
+    );
+    assert_needs_seats(&client, MIN_FEDERATION_SIZE);
 }
 
 #[tokio::test]

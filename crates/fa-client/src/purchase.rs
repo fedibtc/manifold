@@ -302,10 +302,7 @@ where
         timeouts: Timeouts,
     ) -> FaResult<()> {
         let result = self.drive_purchase_inner(&purchase, fa_id, timeouts).await;
-        // A purchase that ended without some of its seats is complete.
-        if let Err(error) = &result
-            && !matches!(error, FaError::SelectionReauthorizationRequired { .. })
-        {
+        if let Err(error) = &result {
             let formation_id = &purchase.formation_id;
             log_mg_failure(formation_id, error, "returned");
             tracing::warn!(
@@ -319,8 +316,8 @@ where
     }
 
     /// Buy the purchase's seats one at a time. A seat that cannot be bought
-    /// leaves the purchase, and the purchase completes with the seats it
-    /// bought. It then returns why the first seat left.
+    /// leaves the purchase with its reason, and the purchase completes with
+    /// the seats it bought.
     async fn drive_purchase_inner(
         &self,
         purchase: &PurchaseView,
@@ -333,12 +330,11 @@ where
         // seat, and a purchase of free seats never reads a payer policy.
         let payer = OnceCell::new();
         let mut funds_exhausted = false;
-        let mut left = None;
         let mut first_error = None;
         let mut slots = purchase.slots.clone();
         if slots.iter().all(|slot| slot.state.bound_quote().is_none()) {
             funds_exhausted = self
-                .preflight_purchase(purchase, &mut slots, &mut left, timeouts)
+                .preflight_purchase(purchase, &mut slots, timeouts)
                 .await?;
         }
         for mut slot in slots {
@@ -355,11 +351,9 @@ where
             match result {
                 Ok(()) => {}
                 Err(error @ FaError::SelectionReauthorizationRequired { reason, .. }) => {
-                    log_mg_failure(formation_id, &error, "returned");
                     funds_exhausted |=
                         reason == SelectionReauthorizationReason::SelectedPayerInsufficientFunds;
-                    self.drop_seat(purchase, &slot, reason).await?;
-                    left.get_or_insert(error);
+                    self.drop_seat(purchase, &slot, error).await?;
                 }
                 Err(error) => {
                     if first_error.is_some() {
@@ -369,7 +363,7 @@ where
                 }
             }
         }
-        first_error.or(left).map_or(Ok(()), Err)
+        first_error.map_or(Ok(()), Err)
     }
 
     /// While no slot is bound, confirm that every picked MG still offers its
@@ -379,7 +373,6 @@ where
         &self,
         purchase: &PurchaseView,
         slots: &mut Vec<PendingSlot>,
-        left: &mut Option<FaError>,
         timeouts: Timeouts,
     ) -> FaResult<bool> {
         let intent = &purchase.intent;
@@ -422,17 +415,12 @@ where
             }
         }
         for (index, error) in ended {
-            let FaError::SelectionReauthorizationRequired { reason, .. } = &error else {
-                unreachable!("only reauthorization errors end a seat");
-            };
             let position = slots
                 .iter()
                 .position(|slot| slot.index == index)
                 .expect("each seat leaves once");
             let slot = slots.remove(position);
-            log_mg_failure(formation_id, &error, "returned");
-            self.drop_seat(purchase, &slot, *reason).await?;
-            left.get_or_insert(error);
+            self.drop_seat(purchase, &slot, error).await?;
         }
         let Some(requested) = &purchase.payment_federation_id else {
             return Ok(false);
@@ -440,9 +428,16 @@ where
         if prices.is_empty() {
             return Ok(false);
         }
-        let payer = self
+        let payer = match self
             .require_setup_payment_federation(requested, timeouts)
-            .await?;
+            .await
+        {
+            Ok(payer) => payer,
+            // Each seat then leaves with the payer's reason when it asks
+            // for its quote.
+            Err(FaError::SelectionReauthorizationRequired { .. }) => return Ok(false),
+            Err(error) => return Err(error),
+        };
         let checked = timeouts
             .call("checking seat funds", || {
                 Ok(self.inner.ports.payments.check_seat_funds(&payer, &prices))
@@ -668,8 +663,12 @@ where
         &self,
         purchase: &PurchaseView,
         slot: &PendingSlot,
-        reason: SelectionReauthorizationReason,
+        error: FaError,
     ) -> FaResult<()> {
+        let FaError::SelectionReauthorizationRequired { reason, .. } = error else {
+            unreachable!("only reauthorization errors end a seat");
+        };
+        log_mg_failure(&purchase.formation_id, &error, "returned");
         self.inner
             .store
             .empty_slots(
@@ -679,6 +678,8 @@ where
             )
             .await?;
         self.publish(None).await;
+        #[cfg(test)]
+        self.inner.dropped_seats.lock().unwrap().push(error);
         Ok(())
     }
 

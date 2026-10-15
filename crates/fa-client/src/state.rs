@@ -360,7 +360,9 @@ pub enum CreationStage {
     NeedsSeats {
         /// Empty slots.
         count: u16,
-        /// Why the last slot was emptied, if one was.
+        /// Why slots were emptied, if any were. With several reasons, this is
+        /// the one that ranks highest: a payer reason before
+        /// `SeatUnavailable`.
         reauthorization: Option<crate::SelectionReauthorizationReason>,
     },
     /// The picked slots without a seat are being bought.

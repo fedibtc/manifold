@@ -275,15 +275,7 @@ where
                 }
                 result
             }
-            Work::Purchase(purchase) => {
-                match self.drive_purchase(*purchase, fa_id, timeouts).await {
-                    // The purchase ended without some of its seats. Each
-                    // seat that left recorded why, and the creation needs
-                    // a new preview.
-                    Err(FaError::SelectionReauthorizationRequired { .. }) => Ok(()),
-                    result => result,
-                }
-            }
+            Work::Purchase(purchase) => self.drive_purchase(*purchase, fa_id, timeouts).await,
             Work::Formation(formation) => self.drive_formation(*formation, fa_id, timeouts).await,
         }
     }

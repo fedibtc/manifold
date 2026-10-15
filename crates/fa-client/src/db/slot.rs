@@ -297,7 +297,7 @@ impl FaStore {
     }
 
     /// Empty pending slots, each still in its expected state, and keep the
-    /// first reason a slot left. A slot may go only when no payment of its
+    /// highest-ranked reason a slot left for. A slot may go only when no payment of its
     /// bound quote is outstanding.
     pub(crate) async fn empty_slots(
         &self,
@@ -323,7 +323,10 @@ impl FaStore {
                             }
                             dbtx.remove_entry(&SlotKey { index: *index }).await;
                         }
-                        creation.stored.reauthorization.get_or_insert(reason);
+                        let shown = &mut creation.stored.reauthorization;
+                        if shown.is_none_or(|shown| reason.rank() > shown.rank()) {
+                            *shown = Some(reason);
+                        }
                         dbtx.insert_entry(&CreationKey, &creation.stored).await;
                         Ok(())
                     })

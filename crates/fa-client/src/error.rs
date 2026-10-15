@@ -62,6 +62,20 @@ pub enum SelectionReauthorizationReason {
     SelectedPayerInsufficientFunds,
 }
 
+impl SelectionReauthorizationReason {
+    /// How much the reason matters when several seats leave one purchase.
+    /// The creation shows the highest. A payer reason ranks above
+    /// `SeatUnavailable`, because a new preview cannot fix the payer.
+    pub(crate) fn rank(self) -> u8 {
+        match self {
+            Self::SeatUnavailable => 0,
+            Self::PaymentFederationRequired => 1,
+            Self::SelectedPayerUnavailable => 2,
+            Self::SelectedPayerInsufficientFunds => 3,
+        }
+    }
+}
+
 impl std::fmt::Display for SelectionReauthorizationReason {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter.write_str(match self {

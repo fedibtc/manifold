@@ -127,6 +127,9 @@ struct FaClientInner<I, P, N, F, C> {
     /// Set while a restored mnemonic still looks for its backup.
     backup_source: Option<backup_worker::BackupSource>,
     backup_tasks: TaskGroup,
+    /// Why each seat left a purchase, in order. Production only logs this.
+    #[cfg(test)]
+    dropped_seats: std::sync::Mutex<Vec<FaError>>,
 }
 
 impl<I, P, N, F, C> Drop for FaClientInner<I, P, N, F, C> {
@@ -374,6 +377,8 @@ where
                 guardian_verification_fee_account,
                 backup_source,
                 backup_tasks,
+                #[cfg(test)]
+                dropped_seats: std::sync::Mutex::default(),
             }),
         })
     }

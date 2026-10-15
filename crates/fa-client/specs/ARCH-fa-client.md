@@ -52,7 +52,7 @@ and cached guardian code. A
 slot's purchase is the selected major/minor/vendor DKG identity and the
 optional explicit payer, and every slot not yet accepted shares one purchase.
 The purchase runs while such a slot exists. The creation row holds the creation's inputs, the
-formation id, and the reason the last slot left. It keeps the DKG completion
+formation id, and the reason slots left. It keeps the DKG completion
 callback until DKG completes. Then a formation row holds the invite the MGs
 agreed on, and later the formation metadata target. The formation row ends
 with the creation. The pool is the accepted slots, and the formation runs when
@@ -91,7 +91,10 @@ purchase returns typed `SeatUnavailable` reauthorization before outputs.
 A reauthorization reason is `SeatUnavailable` for every problem that a new
 selection fixes. The payer reasons (`SelectedPayerUnavailable`,
 `SelectedPayerInsufficientFunds`, `PaymentFederationRequired`) stay separate,
-because the user must fix the payer instead.
+because the user must fix the payer instead. When several seats leave, the
+creation keeps the highest-ranked reason: insufficient funds, then an
+unavailable payer, then a required payer, then `SeatUnavailable`. A new
+preview alone fixes none of the payer reasons.
 
 While no slot is bound, each run checks the whole purchase once and pays
 nothing. It asks every selected MG for live availability at the
