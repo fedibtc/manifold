@@ -7100,6 +7100,50 @@ async fn a_partial_pool_buys_only_its_gap_and_refuses_cancel() {
     ));
 }
 
+/// A run interrupted after the formation committed its federation, but
+/// before the state showed it, must not leave the old creation in the state.
+/// The next run finds no work and refreshes the state from storage.
+#[tokio::test]
+async fn a_run_after_an_interrupted_finish_shows_the_federation() {
+    let database = MemDatabase::new().into_database();
+    let (payments, _) = TestPayments::new();
+    let state = Arc::new(MgState::default());
+    let reader = TestConsensusReader::new(state.clone());
+    reader.force_value("{}");
+    let client =
+        open_client_with_reader(database, payments, state, MgConfig::given_away(), reader).await;
+    let waited = tokio::time::timeout(
+        Duration::from_secs(1),
+        client.buy_and_form_at(intent(), locators(), options()),
+    )
+    .await;
+    assert!(waited.is_err(), "{waited:?}");
+    assert_eq!(
+        formation_phase(&client.status()),
+        FormationPhase::PublishingSeatBindings
+    );
+    let formation = client
+        .inner
+        .store
+        .load_formation(TestIdentity::fa_id())
+        .await
+        .unwrap()
+        .unwrap();
+    client
+        .inner
+        .store
+        .finish_formation(&formation.formation_id)
+        .await
+        .unwrap();
+    assert!(client.status().creation.is_some());
+
+    let run = tokio::time::timeout(Duration::from_millis(200), client.run_with(options())).await;
+    assert!(run.is_err());
+    let status = client.status();
+    assert!(status.creation.is_none(), "{status:?}");
+    federation(&status);
+}
+
 #[tokio::test]
 async fn unfinished_setup_reopens_at_its_checkpoint_without_repeating_dkg() {
     for phase in [

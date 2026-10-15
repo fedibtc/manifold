@@ -609,16 +609,7 @@ where
         }
         self.publish_seat_bindings(&sessions, formation, fa_id, &invite, timeouts)
             .await?;
-        self.finish_formation(fa_id).await
-    }
-
-    /// Publish a formed federation in place of its formation.
-    async fn finish_formation(&self, fa_id: FaId) -> FaResult<()> {
-        let federation = self.inner.store.load_federation(fa_id).await?;
-        self.inner.progress.modify(|status| {
-            status.creation = None;
-            status.federation = federation;
-        });
+        self.publish(None).await;
         Ok(())
     }
 
@@ -681,11 +672,10 @@ where
             .store
             .import_backup(fa_id, payload, federation_name, completed)
             .await?;
-        let federation = self.inner.store.load_federation(fa_id).await?;
-        self.inner.progress.replace(crate::state::FaStatus {
-            federation,
-            ..crate::state::FaStatus::default()
-        });
+        // The lookup is done once the import commits, so the loop never
+        // looks again, even when the state refresh below fails.
+        self.inner.progress.modify(|status| status.recovery = None);
+        self.publish(None).await;
         Ok(())
     }
 
@@ -947,12 +937,12 @@ where
                 FaError::Timeout("waiting for formation metadata consensus".to_owned())
             }
         })?;
+        self.remember_read_invite(invite, &snapshot).await?;
         timeouts
             .call("confirming formation metadata consensus", || {
                 Ok(self.inner.store.finish_formation(formation_id))
             })
-            .await??;
-        self.remember_read_invite(invite, &snapshot).await
+            .await?
     }
 
     /// Collect one MG attestation and endpoint proof per seat.
@@ -1265,21 +1255,22 @@ where
         self.inner.store.post_formed_authority(fa_id).await
     }
 
-    /// Publish the stored creation, with the error of the step that just
-    /// failed, if one did.
+    /// Publish the stored creation and federation, with the error of the
+    /// step that just failed, if one did.
     pub(crate) async fn publish(&self, last_error: Option<crate::FaErrorCode>) {
-        let snapshot = match self.fa_id() {
-            Ok(fa_id) => self.inner.store.load_snapshot(fa_id).await,
+        let stored = match self.fa_id() {
+            Ok(fa_id) => self.inner.store.load_status(fa_id).await,
             Err(error) => Err(error),
         };
-        match snapshot {
-            Ok(snapshot) => self.inner.progress.modify(|status| {
-                status.creation = snapshot.map(|snapshot| crate::CreationSnapshot {
+        match stored {
+            Ok(stored) => self.inner.progress.modify(|status| {
+                status.creation = stored.creation.map(|snapshot| crate::CreationSnapshot {
                     last_error,
                     ..snapshot
                 });
+                status.federation = stored.federation;
             }),
-            Err(error) => tracing::warn!(%error, "reading the FA creation failed"),
+            Err(error) => tracing::warn!(%error, "reading the FA state failed"),
         }
     }
 

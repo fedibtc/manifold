@@ -132,7 +132,6 @@ impl FaStore {
                             ));
                         };
                         insert_formed_federation(dbtx, &creation.stored, invite_code, &seats).await;
-                        // Ended slots go with the creation.
                         for (index, _) in &creation.slots {
                             dbtx.remove_entry(&SlotKey { index: *index }).await;
                         }

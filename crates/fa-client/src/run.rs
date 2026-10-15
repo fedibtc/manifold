@@ -35,8 +35,14 @@ impl Progress {
         }
     }
 
+    /// Change the status. Watchers wake only when it changed, so the run
+    /// loop can refresh it from storage without waking itself.
     pub(crate) fn modify(&self, update: impl FnOnce(&mut FaStatus)) {
-        self.parts.send_modify(update);
+        self.parts.send_if_modified(|status| {
+            let before = status.clone();
+            update(status);
+            *status != before
+        });
         let state = self.parts.borrow().state();
         self.state.send_if_modified(|current| {
             let changed = *current != state;
@@ -223,6 +229,9 @@ where
         let result = async {
             let fa_id = self.fa_id()?;
             let Some(work) = self.next_work(fa_id).await? else {
+                // Work that ended between its last commit and its state
+                // update leaves a stale state, so refresh it from storage.
+                self.publish(None).await;
                 return Ok(Step::Idle);
             };
             match select(pin!(self.do_work(work, fa_id, timeouts)), interrupt).await {
