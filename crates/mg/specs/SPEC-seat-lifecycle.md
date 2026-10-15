@@ -115,12 +115,15 @@ the local consensus API under a one-second timeout every 60 seconds while
 healthy and every 5 seconds
 while unavailable. The faster unavailable cadence bounds stale refusal after a
 child recovers. Unformed, `DataLoss`, and decommissioned seats are never probed.
+A configured child whose local API fails every probe for 15 minutes is killed
+and respawned: the API is local, so such an outage means a wedged child, which
+would otherwise never exit on its own.
 
 `GetInviteCode` reads the formed record alone and remains available while the
 child is down. A configured child's `Hello` is the sole repair path for a
 missing formed record: every spawn reports `AlreadyConfigured { invite_code }`
-before serving, and the seat loop records that invite. The watchdog has no
-lifecycle side effects. A formed record whose directory is absent is never
+before serving, and the seat loop records that invite. The watchdog never
+writes the formed record. A formed record whose directory is absent is never
 treated as a new seat.
 
 ## Formation endpoint proof
@@ -180,7 +183,8 @@ snapshot, but the substantive call then reports that failure normally. Thus FA
 request volume cannot become probe volume and no request waits on a missing
 child merely to establish liveness.
 
-The watchdog has no lifecycle side effects. `ConfigPersisted`, restore, and an
+The watchdog's only lifecycle side effect is that unresponsive-child restart; it
+never writes the formed record. `ConfigPersisted`, restore, and an
 already-configured child's `Hello` are the only formed-record writers; every
 spawn therefore repairs a missing record without an FA status request. Durable
 invite reads use only that record. Callback delivery uses its own durable work

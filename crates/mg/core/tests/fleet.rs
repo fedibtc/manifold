@@ -2074,6 +2074,67 @@ async fn status_is_prompt_while_the_seat_loop_is_waiting_on_health() {
 }
 
 #[tokio::test]
+async fn watchdog_restarts_a_child_unresponsive_for_the_whole_limit() {
+    let temp = TempDir::new().unwrap();
+    let mut config = config(&temp, 1, 31_252).await;
+    config.respawn.initial_backoff = Duration::from_millis(10);
+    config.respawn.unresponsive_restart_after = Duration::from_millis(300);
+    let invite = fixture_invite_code(&fixture_client_config(), 0);
+    let spawner = Arc::new(FakeSeatProcessSpawner::scripted([vec![
+        vec![],
+        vec![FakeDkgStep::Message(ChildMessage::Hello {
+            proto: PROTOCOL_VERSION,
+            code_version: "fake-fedimintd".to_owned(),
+            state: ChildState::AlreadyConfigured {
+                invite_code: invite,
+            },
+        })],
+    ]]));
+    config.process_spawner = SeatProcessSpawner::Fake(spawner.clone());
+    let fleet = open_fleet(config, Arc::new(NoWallet)).await.unwrap();
+    let (_, seat_id) = create_free_seat(&fleet, 132).await;
+    let seat = fleet.seat_by_id(&seat_id).unwrap();
+    let fake = fleet
+        .form_fake_child(&seat_id, running_federation(0, None))
+        .await;
+    let spawns = spawner.spawn_count();
+
+    // An answer in between restarts the limit.
+    fake.set_consensus_running(false);
+    seat.watchdog_tick_for_test().await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    fake.set_consensus_running(true);
+    seat.watchdog_tick_for_test().await;
+    fake.set_consensus_running(false);
+    seat.watchdog_tick_for_test().await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    seat.watchdog_tick_for_test().await;
+    // Longer than the respawn backoff, so a wrongful restart would show.
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert_eq!(spawner.spawn_count(), spawns, "no restart before the limit");
+
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    seat.watchdog_tick_for_test().await;
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while spawner.spawn_count() == spawns {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("the unresponsive child is replaced");
+
+    // The replacement gets its own full limit.
+    let replacement = fleet
+        .configure_fake_child(&seat_id, FakeApiState::default())
+        .await;
+    seat.watchdog_tick_for_test().await;
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert_eq!(replacement.state().probe_calls, 1);
+    assert_eq!(spawner.spawn_count(), spawns + 1);
+    fleet.shutdown().await;
+}
+
+#[tokio::test]
 async fn watchdog_never_probes_unformed_data_loss_or_decommissioned_seats() {
     let temp = TempDir::new().unwrap();
     let config = config(&temp, 3, 31_249).await;

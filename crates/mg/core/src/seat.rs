@@ -253,6 +253,9 @@ struct SeatLoop {
     child_started: Option<tokio::time::Instant>,
     respawn_at: Option<tokio::time::Instant>,
     watchdog_at: Option<tokio::time::Instant>,
+    /// First failed watchdog probe of the current child since it last
+    /// answered.
+    unresponsive_since: Option<tokio::time::Instant>,
     backoff: Duration,
 }
 
@@ -526,6 +529,7 @@ impl Seat {
                 child_started: None,
                 respawn_at: None,
                 watchdog_at: None,
+                unresponsive_since: None,
                 backoff: policy.initial_backoff,
             };
             tokio::spawn(async move {
@@ -951,6 +955,43 @@ impl SeatLoop {
         };
         self.set_watchdog_health(health == SeatHealth::Healthy, failure_kind);
         self.watchdog_at = Some(tokio::time::Instant::now() + interval);
+        if health == SeatHealth::Healthy {
+            self.unresponsive_since = None;
+        } else {
+            self.restart_if_unresponsive(failure_kind).await;
+        }
+    }
+
+    /// Kill and respawn a configured child whose local API has failed every
+    /// probe for the policy's limit. Probe failures alone never prove the
+    /// child is gone, so without this a wedged child would stay up forever.
+    async fn restart_if_unresponsive(&mut self, failure_kind: Option<&'static str>) {
+        let since = *self
+            .unresponsive_since
+            .get_or_insert_with(tokio::time::Instant::now);
+        if since.elapsed() < self.policy.unresponsive_restart_after
+            || !matches!(self.child, ProcessSlot::Configured { .. })
+        {
+            return;
+        }
+        tracing::warn!(
+            safe_to_share = true,
+            seat_id = %self.facts.seat_id,
+            failure_kind = failure_kind.unwrap_or("unknown"),
+            unresponsive_secs = since.elapsed().as_secs(),
+            "restarting unresponsive seat fedimintd"
+        );
+        if self
+            .child_started
+            .is_some_and(|started| started.elapsed() >= self.policy.backoff_reset_after)
+        {
+            self.backoff = self.policy.initial_backoff;
+        }
+        if let Err(error) = self.stop_child().await {
+            tracing::warn!(seat_id = %self.facts.seat_id, error = format_args!("{error:#}"), "failed to stop unresponsive seat fedimintd");
+            return;
+        }
+        self.schedule_respawn();
     }
 
     fn set_watchdog_health(&self, healthy: bool, failure_kind: Option<&'static str>) {
@@ -1366,6 +1407,7 @@ impl SeatLoop {
             },
         });
         self.child_started = Some(tokio::time::Instant::now());
+        self.unresponsive_since = None;
         if let Err(error) = self.handle_child_state(state).await {
             // Revalidation or a database read may fail before RunDkg begins.
             // Do not leave that child parked while respawn is scheduled: the
