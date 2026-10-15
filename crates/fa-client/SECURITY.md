@@ -507,10 +507,12 @@ and exercise both option-consuming public
 operations. Re-check this bound and its regressions whenever the runtime timer
 implementation or supported WASM target changes.
 
-Payment creation, recovery, and refund settlement may use the remaining
-invocation deadline rather than the shorter request timeout. These wallet
-operations include multiple bounded stages. A timeout cancels the call and
-leaves exact payment recovery intact.
+Payment creation, recovery, and refund settlement do not start after the
+invocation deadline. A started wallet call is bounded by the run timeout, not
+by the deadline, because it includes multiple bounded stages. Each seat of a
+purchase has its own run timeout, so earlier seats cannot use up the time of
+a later one. A timeout cancels the call and leaves exact payment recovery
+intact.
 
 The crate does not spawn unmanaged tasks. Consumers own execution and
 cancellation. Keep dependencies compatible with native mobile targets and

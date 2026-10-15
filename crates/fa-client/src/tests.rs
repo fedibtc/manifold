@@ -8009,9 +8009,15 @@ async fn slow_payment_preparation_and_recovery_keep_the_exact_payment() {
         .unwrap();
         let result = client.buy_and_form_at(intent(), locators(), options).await;
         if interrupt {
+            // Each seat has its own run timeout, so every payment starts and
+            // times out once.
             assert!(matches!(result, Err(FaError::Timeout(_))), "{result:?}");
-            assert_eq!(payment_state.create_calls.load(Ordering::SeqCst), 1);
-            let paid_quote = payment_state.created_quotes.lock().expect("test lock")[0];
+            let paid_quotes = payment_state
+                .created_quotes
+                .lock()
+                .expect("test lock")
+                .clone();
+            assert_eq!(paid_quotes.len(), usize::from(MIN_FEDERATION_SIZE));
             drop(client);
             let reopened =
                 open_client_with_store(store, payments, mg_state, MgConfig::paid()).await;
@@ -8021,14 +8027,9 @@ async fn slow_payment_preparation_and_recovery_keep_the_exact_payment() {
                 .expect("recover signatures without another payment");
             bought(&reopened.status());
             assert_eq!(
-                payment_state
-                    .created_quotes
-                    .lock()
-                    .expect("test lock")
-                    .iter()
-                    .filter(|quote| **quote == paid_quote)
-                    .count(),
-                1,
+                *payment_state.created_quotes.lock().expect("test lock"),
+                paid_quotes,
+                "recovery pays no quote again",
             );
         } else {
             result.expect("payment preparation can outlast a network request");

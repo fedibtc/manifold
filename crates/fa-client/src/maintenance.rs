@@ -283,9 +283,7 @@ where
                             seat_id: session.seat_id.clone(),
                             gateway_api,
                         };
-                        let request = run
-                            .construct("signing RegisterGateway request", || self.sign(&request))
-                            .await?;
+                        let request = self.sign(&request)?;
                         run.call("registering LNv2 gateway", || {
                             Ok(session.client.register_gateway(request))
                         })

@@ -7,10 +7,7 @@ use fedimint_core::invite_code::InviteCode as FedimintInviteCode;
 use fedimint_core::runtime::Instant;
 use fedimint_core::util::SafeUrl;
 
-use super::{
-    DriverRun, FormationRunOptions, ValueCallTimeoutBudget, invite_federation_id,
-    select_timer_duration,
-};
+use super::{DriverRun, FormationRunOptions, invite_federation_id, select_timer_duration};
 use crate::FaError;
 
 #[test]
@@ -35,51 +32,44 @@ fn effective_runtime_timer_rejects_sub_millisecond_remainders() {
     );
 }
 
-#[tokio::test]
-async fn sub_millisecond_remainder_precedes_construct_effect() {
-    let run = DriverRun::with_deadline(
-        FormationRunOptions::default(),
-        Instant::now() + Duration::from_nanos(999_999),
-    );
-    let constructed = std::cell::Cell::new(false);
-
-    assert!(matches!(
-        run.construct("test signing", || {
-            constructed.set(true);
-            Ok(())
-        })
-        .await,
-        Err(FaError::Timeout(operation)) if operation == "test signing"
-    ));
-    assert!(!constructed.get());
-}
-
 #[tokio::test(start_paused = true)]
-async fn value_call_budget_rechecks_the_absolute_deadline_when_polled() {
+async fn value_call_does_not_start_after_the_deadline() {
     let run = DriverRun::with_deadline(
         FormationRunOptions::default(),
         Instant::now() + Duration::from_secs(2),
     );
-    let budget = ValueCallTimeoutBudget {
-        operation: "test wallet output",
-        deadline: Instant::now() + Duration::from_secs(2),
-    };
     tokio::time::advance(Duration::from_secs(3)).await;
-    let polled = std::cell::Cell::new(false);
+    let made = std::cell::Cell::new(false);
 
-    let result = budget
-        .poll_value_call(run, async {
-            polled.set(true);
+    let result = run
+        .value_call("test wallet output", || {
+            made.set(true);
+            Ok(async {})
         })
         .await;
 
     assert!(
         matches!(result, Err(FaError::Timeout(operation)) if operation == "test wallet output")
     );
-    assert!(
-        !polled.get(),
-        "an expired wallet future must remain unpolled"
+    assert!(!made.get(), "an expired run must not start a wallet call");
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_started_value_call_outlives_the_deadline() {
+    // One second remains, but the payment needs five. The run timeout bounds
+    // it, not the deadline.
+    let run = DriverRun::with_deadline(
+        FormationRunOptions::default(),
+        Instant::now() + Duration::from_secs(1),
     );
+
+    let result = run
+        .value_call("test wallet output", || {
+            Ok(tokio::time::sleep(Duration::from_secs(5)))
+        })
+        .await;
+
+    assert!(result.is_ok(), "{result:?}");
 }
 
 #[test]
