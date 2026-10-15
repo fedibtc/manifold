@@ -661,10 +661,10 @@ async fn user_actions_are_busy_while_restoring() {
             "{action} during a restore returned {error:?}"
         );
     }
-    // Buying missing seats needs a creation, which a restoring FA never has.
+    // Buying missing seats takes the run guard first, like every action.
     assert!(matches!(
         restored.buy_seats(&preview, None).await,
-        Err(FaError::NoActiveFormation)
+        Err(FaError::Busy)
     ));
     assert_eq!(
         restored.state(),
