@@ -72,7 +72,8 @@ also kept an imported backup in its own row until consensus verified it. A
 verified one becomes the federation record. An unverified one stays: the FA
 opens in recovery, and the run loop verifies that saved payload against
 consensus without a relay lookup. Its import removes the row in the same
-transaction, and a failed check keeps it for the next attempt.
+transaction, and a failed check keeps it for the next attempt. A kept backup
+of another FA identity fails the open.
 Records older than
 schema 11 are reset because they predate the production compatibility
 baseline. Subsequent schema changes are governed by

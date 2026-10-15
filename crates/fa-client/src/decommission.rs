@@ -51,6 +51,8 @@ where
     /// One pass, no retries and no convergence: a seat that could not be
     /// reached is reported, and its operator has to decommission it by hand.
     pub async fn decommission_seats(&self) -> FaResult<DecommissionOutcome> {
+        // The run loop must not finish the formation between the two reads.
+        let _run = self.claim_run_guard().await?;
         let fa_id = self.fa_id()?;
         // The seats of the formed federation, or else the accepted seats of
         // the running creation. A slot without a seat id was never accepted

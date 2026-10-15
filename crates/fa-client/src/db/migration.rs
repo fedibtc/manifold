@@ -379,17 +379,24 @@ impl FaStore {
     }
 
     /// The backup that schema 11 restored for `fa_id` and consensus did not
-    /// verify yet. The import of a verified backup removes it.
+    /// verify yet. The import of a verified backup removes it. A backup of
+    /// another FA identity is an error, so this namespace never looks empty.
     pub(crate) async fn unverified_restored_backup(
         &self,
         fa_id: FaId,
-    ) -> Option<crate::backup::FaBackupPayload> {
-        self.database
+    ) -> FaResult<Option<crate::backup::FaBackupPayload>> {
+        let restored = self
+            .database
             .begin_transaction_nc()
             .await
             .get_value(&RestoredBackupKey)
-            .await
-            .filter(|restored| !restored.backup_eligible && restored.fa_id == fa_id)
-            .map(|restored| restored.payload)
+            .await;
+        match restored {
+            Some(restored) if restored.fa_id != fa_id => Err(FaError::Storage(
+                "restored FA backup belongs to another scoped root".to_owned(),
+            )),
+            Some(restored) if !restored.backup_eligible => Ok(Some(restored.payload)),
+            _ => Ok(None),
+        }
     }
 }

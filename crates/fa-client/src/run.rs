@@ -252,7 +252,7 @@ where
             // A restore can commit and still be interrupted before it
             // clears the lookup, so storage decides whether it is done.
             let store = &self.inner.store;
-            let done = store.unverified_restored_backup(fa_id).await.is_none()
+            let done = store.unverified_restored_backup(fa_id).await?.is_none()
                 && match &self.inner.backup_source {
                     Some(source) => store.recovery_completed(&source.completed).await,
                     None => true,
@@ -260,7 +260,7 @@ where
             if !done {
                 return Ok(Some(Work::Recover));
             }
-            self.inner.progress.modify(|status| status.recovery = None);
+            self.end_recovery(fa_id).await?;
         }
         // A creation that needs seats waits for the user.
         if let Some(purchase) = self.inner.store.load_purchase(fa_id).await? {

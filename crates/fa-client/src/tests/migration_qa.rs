@@ -735,9 +735,31 @@ async fn r269_unverified_restore_is_verified_and_imported_by_the_run() {
             .store
             .unverified_restored_backup(fa_id)
             .await
+            .unwrap()
             .is_none()
     );
     assert!(reload(&mem).await.unwrap().federation.is_some());
+}
+
+/// A kept backup of another FA identity fails the open. The namespace is
+/// not empty, so the FA must not offer to create a federation in it.
+#[tokio::test]
+async fn r269_unverified_restore_of_another_identity_fails_the_open() {
+    let snapshot = fixture(R269_UNVERIFIED_RESTORE);
+    let mem = Arc::new(MemDatabase::new());
+    install_rows(&CrashingDatabase::open(&mem, None), &snapshot.rows).await;
+    let opened = open_snapshot(&snapshot, &mem, super::TestIdentity).await;
+    let Err(error) = opened else {
+        panic!("a foreign kept backup must fail the open");
+    };
+    assert!(matches!(error, FaError::Storage(_)), "{error:?}");
+    assert!(
+        row_json(
+            &dump_rows(&CrashingDatabase::open(&mem, None)).await,
+            &[0x07]
+        )
+        .is_some()
+    );
 }
 
 /// While consensus cannot verify the kept backup, it stays, and the FA
@@ -759,6 +781,7 @@ async fn r269_unverified_restore_stays_while_consensus_is_unreachable() {
             .store
             .unverified_restored_backup(fa_id)
             .await
+            .unwrap()
             .is_some()
     );
 }

@@ -608,7 +608,7 @@ where
     pub(crate) async fn recover_backup(&self, fa_id: FaId, timeouts: Timeouts) -> FaResult<()> {
         let source = self.inner.backup_source.as_ref();
         let completed = source.map(|source| &source.completed);
-        if let Some(payload) = self.inner.store.unverified_restored_backup(fa_id).await {
+        if let Some(payload) = self.inner.store.unverified_restored_backup(fa_id).await? {
             return self
                 .import_backup(Some(payload), completed, fa_id, timeouts)
                 .await;
@@ -641,10 +641,7 @@ where
         let Some(payload) = payload else {
             let completed = completed.expect("an empty lookup comes from a backup source");
             self.inner.store.complete_empty_recovery(completed).await?;
-            self.inner
-                .progress
-                .replace(crate::state::FaStatus::default());
-            return Ok(());
+            return self.end_recovery(fa_id).await;
         };
         let seats = payload
             .seats
@@ -667,10 +664,15 @@ where
             .store
             .import_backup(fa_id, payload, federation_name, completed)
             .await?;
-        // The lookup is done once the import commits, so the loop never
-        // looks again, even when the state refresh below fails.
-        self.inner.progress.modify(|status| status.recovery = None);
-        self.publish(None).await;
+        self.end_recovery(fa_id).await
+    }
+
+    /// Publish the stored state in place of the finished lookup, in one
+    /// update, so no observer sees an empty FA in between. If this fails,
+    /// the loop finds the lookup done in storage and calls it again.
+    pub(crate) async fn end_recovery(&self, fa_id: FaId) -> FaResult<()> {
+        let stored = self.inner.store.load_status(fa_id).await?;
+        self.inner.progress.replace(stored);
         Ok(())
     }
 

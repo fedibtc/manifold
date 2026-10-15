@@ -355,7 +355,7 @@ where
         // A backup that schema 11 restored and did not verify yet is checked
         // first. Otherwise only an empty FA looks for its backup, and only
         // once.
-        let unverified = store.unverified_restored_backup(fa_id).await.is_some();
+        let unverified = store.unverified_restored_backup(fa_id).await?.is_some();
         let looks_up = match &backup_source {
             Some(source) => {
                 status == FaStatus::default() && !store.recovery_completed(&source.completed).await
