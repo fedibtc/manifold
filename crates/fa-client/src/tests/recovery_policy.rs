@@ -98,7 +98,7 @@ async fn a_refusal_interrupted_before_its_refund_replays_on_resume() {
     assert!(matches!(
         reopened.drive().await,
         Err(FaError::SelectionReauthorizationRequired {
-            reason: SelectionReauthorizationReason::SelectedMgUnavailable,
+            reason: SelectionReauthorizationReason::SeatUnavailable,
             ..
         })
     ));

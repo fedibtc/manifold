@@ -61,7 +61,7 @@ Each schema 11 seat becomes the slot at its index, so the seat that named the
 federation stays first. Accepted seats keep their cached codes, and seats
 bound to an effect keep their quote. Replacement seats are dropped. Schema 11
 did not record the previewed plan, so a seat that was never bound leaves with
-`PreviewExpired`. Aggregate authorization and reservation
+`SeatUnavailable`. Aggregate authorization and reservation
 fields are ignored, so the wallet adapter must release any unstarted part of an
 old reservation before it opens the FA.
 A formed row yields only the federation record, when none exists. Schema 11
@@ -84,7 +84,11 @@ bootstrap. The latter persists an explicitly absent payer, requests free
 quotes without payment policy, and returns typed payer-required
 reauthorization before requesting a quote if any selected MG's live offer is
 priced. When the MG's live offer no longer contains the previewed plan, the
-purchase returns typed `PriceChanged` reauthorization before outputs.
+purchase returns typed `SeatUnavailable` reauthorization before outputs.
+A reauthorization reason is `SeatUnavailable` for every problem that a new
+selection fixes. The payer reasons (`SelectedPayerUnavailable`,
+`SelectedPayerInsufficientFunds`, `PaymentFederationRequired`) stay separate,
+because the user must fix the payer instead.
 
 Before the purchase binds its first seat, each run checks the whole purchase
 once and pays nothing. It asks every selected MG for live availability at the

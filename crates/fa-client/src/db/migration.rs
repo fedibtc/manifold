@@ -261,7 +261,7 @@ impl FaStore {
                 // seat has no approved price to request.
                 (None, _) => {
                     reauthorization
-                        .get_or_insert(crate::SelectionReauthorizationReason::PreviewExpired);
+                        .get_or_insert(crate::SelectionReauthorizationReason::SeatUnavailable);
                     continue;
                 }
             };

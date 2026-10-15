@@ -1147,7 +1147,7 @@ where
             }
             // A refused payment was refunded before `present_seat` returned.
             SeatCreation::Refused(failure) => Err(FaError::SelectionReauthorizationRequired {
-                reason: SelectionReauthorizationReason::SelectedMgUnavailable,
+                reason: SelectionReauthorizationReason::SeatUnavailable,
                 failure: Some(failure),
             }),
         }
@@ -1316,7 +1316,7 @@ where
         {
             // The ended seats leave their slots, and the creation buys new
             // ones. Every cached code goes too.
-            let reason = SelectionReauthorizationReason::SelectedMgUnavailable;
+            let reason = SelectionReauthorizationReason::SeatUnavailable;
             let emptied = recovery
                 .slots
                 .iter()
@@ -1460,27 +1460,15 @@ where
         ) {
             Ok(fedimintd_version) => Ok(fedimintd_version.clone()),
             Err(mismatch) => {
-                let (cause, reason) = match mismatch {
-                    AvailabilityMismatch::NotAcceptingSeats => (
-                        MgCause::NotAcceptingSeats,
-                        SelectionReauthorizationReason::SelectedMgUnavailable,
-                    ),
-                    AvailabilityMismatch::FederationSize => (
-                        MgCause::UnsupportedFederationSize,
-                        SelectionReauthorizationReason::SelectedMgUnavailable,
-                    ),
-                    AvailabilityMismatch::FedimintdVersion => (
-                        MgCause::UnsupportedVersion,
-                        SelectionReauthorizationReason::SelectedMgUnavailable,
-                    ),
-                    AvailabilityMismatch::Plan => (
-                        MgCause::PlanNotOffered,
-                        SelectionReauthorizationReason::PriceChanged,
-                    ),
+                let cause = match mismatch {
+                    AvailabilityMismatch::NotAcceptingSeats => MgCause::NotAcceptingSeats,
+                    AvailabilityMismatch::FederationSize => MgCause::UnsupportedFederationSize,
+                    AvailabilityMismatch::FedimintdVersion => MgCause::UnsupportedVersion,
+                    AvailabilityMismatch::Plan => MgCause::PlanNotOffered,
                 };
                 let failure = client.failure(MgOperation::GetAvailability, cause);
                 Err(FaError::SelectionReauthorizationRequired {
-                    reason,
+                    reason: SelectionReauthorizationReason::SeatUnavailable,
                     failure: Some(failure),
                 })
             }
@@ -1604,7 +1592,7 @@ where
                 ) =>
             {
                 FaError::SelectionReauthorizationRequired {
-                    reason: SelectionReauthorizationReason::SelectedMgUnavailable,
+                    reason: SelectionReauthorizationReason::SeatUnavailable,
                     failure: Some(failure),
                 }
             }
@@ -2906,7 +2894,7 @@ async fn retry_selected_mg<T, A: Future<Output = FaResult<T>>>(
             .is_err()
         {
             return Err(FaError::SelectionReauthorizationRequired {
-                reason: SelectionReauthorizationReason::SelectedMgUnavailable,
+                reason: SelectionReauthorizationReason::SeatUnavailable,
                 failure: Some(failure),
             });
         }

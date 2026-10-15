@@ -47,13 +47,10 @@ impl std::fmt::Display for AbandonUnavailableReason {
 #[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SelectionReauthorizationReason {
-    /// The advertisement preview's five-minute approval window elapsed.
-    PreviewExpired,
-    /// A selected MG no longer advertises compatible live availability.
-    #[serde(rename = "selected_fman_unavailable")]
-    SelectedMgUnavailable,
-    /// A selected MG no longer offers the previewed price.
-    PriceChanged,
+    /// A selected seat cannot be bought under its approved terms: its MG is
+    /// unavailable or changed its offer, the preview expired, or the verifier
+    /// environment changed. A new selection fixes it.
+    SeatUnavailable,
     /// The explicitly selected payer is no longer admitted and ready, or it
     /// rejected a seat payment.
     SelectedPayerUnavailable,
@@ -63,20 +60,13 @@ pub enum SelectionReauthorizationReason {
     /// The selected payer cannot cover a seat's quote plus wallet fees and
     /// required reserve. No payment of that seat started.
     SelectedPayerInsufficientFunds,
-    /// The active verifier profile differs from the one that admitted the
-    /// approved guardian set.
-    VerifierEnvironmentChanged,
 }
 
 impl std::fmt::Display for SelectionReauthorizationReason {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter.write_str(match self {
-            Self::PreviewExpired => "the verified selection preview expired",
-            Self::SelectedMgUnavailable => {
-                "a selected Manifold Guardian is no longer available under the approved offer"
-            }
-            Self::PriceChanged => {
-                "a selected Manifold Guardian no longer offers the previewed price"
+            Self::SeatUnavailable => {
+                "a selected seat is no longer available under the approved selection"
             }
             Self::SelectedPayerUnavailable => {
                 "the selected payment federation is no longer admitted and ready"
@@ -86,9 +76,6 @@ impl std::fmt::Display for SelectionReauthorizationReason {
             }
             Self::SelectedPayerInsufficientFunds => {
                 "the selected payment federation cannot fund a seat and its fees"
-            }
-            Self::VerifierEnvironmentChanged => {
-                "the PeerBadge verifier environment changed since guardian approval"
             }
         })
     }

@@ -3183,7 +3183,7 @@ async fn schema_11_seat_never_bound_leaves_without_a_previewed_plan() {
     );
     assert_eq!(
         recovery.reauthorization,
-        Some(SelectionReauthorizationReason::PreviewExpired)
+        Some(SelectionReauthorizationReason::SeatUnavailable)
     );
     assert_eq!(accepted_seats(&status).len(), 3);
 }
@@ -5662,7 +5662,7 @@ async fn the_preview_bounds_only_the_first_bind_and_only_unpaid_paid_quotes_move
         matches!(
             error,
             FaError::SelectionReauthorizationRequired {
-                reason: SelectionReauthorizationReason::PreviewExpired,
+                reason: SelectionReauthorizationReason::SeatUnavailable,
                 ..
             }
         ),
@@ -6020,7 +6020,7 @@ async fn partial_seat_recovery_keeps_the_remaining_payment_after_a_dropped_seat(
                     quote: quotes[1].clone(),
                 },
             )],
-            SelectionReauthorizationReason::SelectedMgUnavailable,
+            SelectionReauthorizationReason::SeatUnavailable,
         )
         .await
         .unwrap();
@@ -6059,7 +6059,7 @@ async fn a_closed_mg_stops_before_quote_or_value_moving_payment_work() {
             .await
             .as_ref(),
         Err(FaError::SelectionReauthorizationRequired {
-            reason: SelectionReauthorizationReason::SelectedMgUnavailable,
+            reason: SelectionReauthorizationReason::SeatUnavailable,
             failure: Some(MgFailure {
                 operation: MgOperation::GetAvailability,
                 cause: MgCause::NotAcceptingSeats,
@@ -6102,7 +6102,7 @@ async fn advertised_size_capability_stops_formation_before_quotes() {
     assert!(matches!(
         &error,
         FaError::SelectionReauthorizationRequired {
-            reason: SelectionReauthorizationReason::SelectedMgUnavailable,
+            reason: SelectionReauthorizationReason::SeatUnavailable,
             failure: Some(MgFailure {
                 operation: MgOperation::GetAvailability,
                 cause: MgCause::UnsupportedFederationSize,
@@ -6140,7 +6140,7 @@ async fn external_capability_calls_obey_request_timeout() {
             .await
             .as_ref(),
         Err(FaError::SelectionReauthorizationRequired {
-            reason: SelectionReauthorizationReason::SelectedMgUnavailable,
+            reason: SelectionReauthorizationReason::SeatUnavailable,
             failure: Some(MgFailure {
                 operation: MgOperation::GetAvailability,
                 cause: MgCause::Timeout,
@@ -6968,7 +6968,7 @@ async fn a_refused_free_seat_leaves_and_its_quote_is_never_presented_again() {
     assert!(matches!(
         &error,
         FaError::SelectionReauthorizationRequired {
-            reason: SelectionReauthorizationReason::SelectedMgUnavailable,
+            reason: SelectionReauthorizationReason::SeatUnavailable,
             failure: Some(MgFailure {
                 operation: MgOperation::CreateSeat,
                 cause: MgCause::OfferChanged,
@@ -8010,7 +8010,7 @@ async fn selected_mg_minor_drift_requires_fresh_selection_before_payment() {
     assert!(matches!(
         &error,
         FaError::SelectionReauthorizationRequired {
-            reason: SelectionReauthorizationReason::SelectedMgUnavailable,
+            reason: SelectionReauthorizationReason::SeatUnavailable,
             failure: Some(MgFailure {
                 operation: MgOperation::GetAvailability,
                 cause: MgCause::UnsupportedVersion,
@@ -8062,7 +8062,7 @@ async fn assert_changed_live_price_requires_a_fresh_preview(live_price_msats: u6
         matches!(
             &error,
             FaError::SelectionReauthorizationRequired {
-                reason: SelectionReauthorizationReason::PriceChanged,
+                reason: SelectionReauthorizationReason::SeatUnavailable,
                 failure: Some(MgFailure {
                     operation: MgOperation::GetAvailability,
                     cause: MgCause::PlanNotOffered,
@@ -8122,7 +8122,7 @@ async fn a_quote_priced_above_its_previewed_plan_requires_a_fresh_preview() {
         matches!(
             &error,
             FaError::SelectionReauthorizationRequired {
-                reason: SelectionReauthorizationReason::SelectedMgUnavailable,
+                reason: SelectionReauthorizationReason::SeatUnavailable,
                 failure: Some(MgFailure {
                     operation: MgOperation::GetQuote,
                     cause: MgCause::InvalidResponse,
@@ -8497,7 +8497,7 @@ async fn exhausted_selected_connection_retry_is_typed_and_returns_idle() {
     assert!(matches!(
         &error,
         FaError::SelectionReauthorizationRequired {
-            reason: SelectionReauthorizationReason::SelectedMgUnavailable,
+            reason: SelectionReauthorizationReason::SeatUnavailable,
             failure: Some(MgFailure {
                 operation: MgOperation::Connect,
                 cause: MgCause::Transport,
@@ -8587,7 +8587,7 @@ async fn a_refused_paid_seat_leaves_and_the_rest_complete() {
         matches!(
             &error,
             FaError::SelectionReauthorizationRequired {
-                reason: SelectionReauthorizationReason::SelectedMgUnavailable,
+                reason: SelectionReauthorizationReason::SeatUnavailable,
                 failure: Some(MgFailure {
                     cause: MgCause::OfferChanged,
                     ..
@@ -8619,7 +8619,7 @@ async fn a_refused_paid_seat_leaves_and_the_rest_complete() {
         creation.stage,
         CreationStage::NeedsSeats {
             count: 1,
-            reauthorization: Some(SelectionReauthorizationReason::SelectedMgUnavailable),
+            reauthorization: Some(SelectionReauthorizationReason::SeatUnavailable),
         },
     );
 
@@ -8787,7 +8787,7 @@ async fn a_repriced_seat_leaves_before_the_fund_check_and_any_payment() {
         matches!(
             error,
             FaError::SelectionReauthorizationRequired {
-                reason: SelectionReauthorizationReason::PriceChanged,
+                reason: SelectionReauthorizationReason::SeatUnavailable,
                 ..
             }
         ),
@@ -8971,7 +8971,7 @@ async fn crashed_selected_record_cannot_resume_after_its_preview_expires() {
         matches!(
             error,
             FaError::SelectionReauthorizationRequired {
-                reason: SelectionReauthorizationReason::PreviewExpired,
+                reason: SelectionReauthorizationReason::SeatUnavailable,
                 failure: None
             }
         ),
@@ -9022,7 +9022,7 @@ async fn selected_reopen_under_changed_verifier_requires_fresh_pre_output_author
     assert!(matches!(
         error,
         FaError::SelectionReauthorizationRequired {
-            reason: SelectionReauthorizationReason::VerifierEnvironmentChanged,
+            reason: SelectionReauthorizationReason::SeatUnavailable,
             failure: None
         }
     ));
@@ -9112,7 +9112,7 @@ async fn expired_selection_approval_stops_before_payer_or_quote_work() {
     assert!(matches!(
         error,
         FaError::SelectionReauthorizationRequired {
-            reason: SelectionReauthorizationReason::PreviewExpired,
+            reason: SelectionReauthorizationReason::SeatUnavailable,
             failure: None
         }
     ));
@@ -9180,7 +9180,7 @@ async fn selected_mg_unavailability_requires_a_fresh_set_and_returns_idle() {
     assert!(matches!(
         &error,
         FaError::SelectionReauthorizationRequired {
-            reason: SelectionReauthorizationReason::SelectedMgUnavailable,
+            reason: SelectionReauthorizationReason::SeatUnavailable,
             failure: Some(MgFailure {
                 operation: MgOperation::GetAvailability,
                 cause: MgCause::NotAcceptingSeats,
@@ -9221,7 +9221,7 @@ async fn selected_quote_capacity_race_requires_a_fresh_set_and_returns_idle() {
     assert!(matches!(
         &error,
         FaError::SelectionReauthorizationRequired {
-            reason: SelectionReauthorizationReason::SelectedMgUnavailable,
+            reason: SelectionReauthorizationReason::SeatUnavailable,
             failure: Some(MgFailure {
                 operation: MgOperation::GetQuote,
                 cause: MgCause::CapacityExhausted,
@@ -10882,7 +10882,7 @@ async fn a_decommissioned_pool_seat_leaves_before_dkg_and_a_new_seat_forms() {
         creation.stage,
         CreationStage::NeedsSeats {
             count: 1,
-            reauthorization: Some(SelectionReauthorizationReason::SelectedMgUnavailable),
+            reauthorization: Some(SelectionReauthorizationReason::SeatUnavailable),
         },
     );
 
@@ -11030,12 +11030,12 @@ fn flat_mg_failure_preserves_cause_and_separate_reauthorization_policy() {
         let error = FaError::Mg(failure.clone());
         assert_eq!(error.code(), code);
         let policy = FaError::SelectionReauthorizationRequired {
-            reason: SelectionReauthorizationReason::SelectedMgUnavailable,
+            reason: SelectionReauthorizationReason::SeatUnavailable,
             failure: Some(failure.clone()),
         };
         assert_eq!(policy.code(), FaErrorCode::SelectionReauthorizationRequired);
         assert!(matches!(policy, FaError::SelectionReauthorizationRequired {
-            reason: SelectionReauthorizationReason::SelectedMgUnavailable,
+            reason: SelectionReauthorizationReason::SeatUnavailable,
             failure: Some(actual),
         } if actual == failure));
     }
@@ -11063,7 +11063,7 @@ async fn selected_connect_timeout_exhaustion_retains_blame_and_returns_idle() {
         .await
         .unwrap_err();
     assert!(matches!(error, FaError::SelectionReauthorizationRequired {
-        reason: SelectionReauthorizationReason::SelectedMgUnavailable,
+        reason: SelectionReauthorizationReason::SeatUnavailable,
         failure: Some(MgFailure { mg, operation: MgOperation::Connect, cause: MgCause::Timeout }),
     } if mg == manager_key(0).x_only_public_key().0));
     assert!(state.connect_calls.load(Ordering::SeqCst) > usize::from(MIN_FEDERATION_SIZE));
@@ -11095,7 +11095,7 @@ async fn malformed_selected_quote_returns_to_selection_with_blame() {
         .await
         .unwrap_err();
     assert!(matches!(error, FaError::SelectionReauthorizationRequired {
-        reason: SelectionReauthorizationReason::SelectedMgUnavailable,
+        reason: SelectionReauthorizationReason::SeatUnavailable,
         failure: Some(MgFailure { mg, operation: MgOperation::GetQuote, cause: MgCause::InvalidResponse }),
     } if mg == manager_key(0).x_only_public_key().0));
     assert_needs_new_preview(&client);

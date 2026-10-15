@@ -1959,7 +1959,7 @@ async fn preview_validity_starts_when_the_verified_walk_completes() {
         assert!(matches!(
             preview.seats_to_buy_at(Timestamp(now)),
             Err(FaError::SelectionReauthorizationRequired {
-                reason: SelectionReauthorizationReason::PreviewExpired,
+                reason: SelectionReauthorizationReason::SeatUnavailable,
                 failure: None
             }),
         ));

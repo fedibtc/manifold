@@ -541,7 +541,7 @@ impl MgSelectionPreview {
     pub(crate) fn seats_to_buy_at(&self, now: Timestamp) -> FaResult<Vec<ApprovedMgSeat>> {
         if self.valid_until <= now {
             return Err(FaError::SelectionReauthorizationRequired {
-                reason: SelectionReauthorizationReason::PreviewExpired,
+                reason: SelectionReauthorizationReason::SeatUnavailable,
                 failure: None,
             });
         }

@@ -231,7 +231,7 @@ The following ordering is part of the monetary safety boundary:
 4. for a seat without a bound quote, request and verify an exact quote for
    exactly the seat's previewed plan, without automatically replacing a
    selected guardian, and bind it in one autocommit. A live offer without that
-   plan returns typed `PriceChanged` reauthorization and the seat leaves. Until
+   plan returns typed `SeatUnavailable` reauthorization and the seat leaves. Until
    the purchase binds its first seat, the bind requires a fresh preview under
    the same verifier provenance;
 5. for a bound paid quote, ask the wallet to recover that exact quote before

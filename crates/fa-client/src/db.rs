@@ -429,13 +429,13 @@ impl PreviewApproval {
     ) -> FaResult<()> {
         if self.verifier_provenance != expected_provenance {
             return Err(FaError::SelectionReauthorizationRequired {
-                reason: crate::SelectionReauthorizationReason::VerifierEnvironmentChanged,
+                reason: crate::SelectionReauthorizationReason::SeatUnavailable,
                 failure: None,
             });
         }
         if self.valid_until <= now {
             return Err(FaError::SelectionReauthorizationRequired {
-                reason: crate::SelectionReauthorizationReason::PreviewExpired,
+                reason: crate::SelectionReauthorizationReason::SeatUnavailable,
                 failure: None,
             });
         }
