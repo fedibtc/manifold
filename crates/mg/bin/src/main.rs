@@ -540,6 +540,10 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         telemetry_registration_keys,
         nostr.subscribe_setup_payment_federations(),
     );
+    let runtime_seat_limits = mg_core::seat_capacity::spawn_runtime_seat_limits(
+        fleet.clone(),
+        nostr.subscribe_setup_payment_federations(),
+    );
     let join_reconciler = mg_fedimint::setup_payment_policy::spawn_setup_payment_join_reconciler(
         fleet.wallet().clone(),
         nostr.subscribe_setup_payment_federations(),
@@ -574,6 +578,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         result = &mut seat_readiness => Some(result),
     };
     seat_readiness.abort();
+    runtime_seat_limits.abort();
     telemetry_registration.shutdown().await;
     router.shutdown().await?;
     // Stop and join every wallet-join task before shutting down the fleet.

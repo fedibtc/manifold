@@ -176,6 +176,8 @@ pub struct PaymentFederationStatus {
 pub(crate) struct AvailabilitySnapshot {
     pub(crate) accepting_seats: bool,
     pub(crate) max_seats: u32,
+    pub(crate) memory_max_seats: u32,
+    pub(crate) policy_max_seats: u32,
     pub(crate) available_seats: u32,
     pub(crate) plans: Vec<Plan>,
 }
@@ -215,6 +217,8 @@ impl FleetNostrHost {
             safe_to_share = true,
             mg_version = env!("CARGO_PKG_VERSION"),
             max_seats = snapshot.max_seats,
+            memory_max_seats = snapshot.memory_max_seats,
+            policy_max_seats = snapshot.policy_max_seats,
             available_seats = snapshot.available_seats,
             accepting_seats = snapshot.accepting_seats,
             "seat capacity"
@@ -699,14 +703,17 @@ impl Fleet {
         Ok(())
     }
 
-    /// Apply one change to what gates admission; see
+    /// Apply one change to what limits admission; see
     /// [`crate::db::Db::update_seats_config`]. Returns whether a stored value
     /// changed.
     pub(crate) async fn update_seats_config(
         &self,
         update: SeatsConfigUpdate,
     ) -> anyhow::Result<bool> {
-        let changed = self.db.update_seats_config(update).await?;
+        let changed = self
+            .db
+            .update_seats_config(update, self.config.first_port_base)
+            .await?;
         if changed {
             self.advertisement_changed.notify_one();
         }
@@ -803,6 +810,8 @@ impl Fleet {
                 && settings.price.is_some()
                 && snapshot.ready_for_new_seats,
             max_seats: snapshot.max_seats,
+            memory_max_seats: snapshot.memory_max_seats,
+            policy_max_seats: snapshot.policy_max_seats,
             available_seats: snapshot.slots,
             plans: settings.plans(),
         }

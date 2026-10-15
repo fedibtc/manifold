@@ -28,9 +28,20 @@ computable from the quote alone.
 
 One random 32-byte value standing for both the MG's capacity and the terms it
 sells on. A quote whose epoch differs from the current epoch is refused,
-permanently. Two things replace it with fresh randomness, each in the
+permanently. These replace it with fresh randomness, each in the
 transaction of the write that motivates it: the acceptance that takes the last
-free slot, and a change to `QuoteSettings`.
+free slot, a change to `QuoteSettings`, a change to the operator's maximum
+seat count or the readiness verdict, and a runtime seat limit write that takes
+the last free slot.
+
+Admission sells up to the lowest of three limits: the operator's maximum and
+two runtime limits from host memory and the setup-payment publication
+([REQ-seat-capacity-default](./REQ-seat-capacity-default.md)). One SQLite write
+transaction applies every change to them and to readiness, and compares free
+slots before and after. A runtime limit change that leaves a free slot keeps
+the epoch, so outstanding quotes still compete for the remaining slots, as
+after an acceptance that leaves one. A runtime limit may fall below the active
+seat count. It then leaves zero slots and removes no seat.
 
 `QuoteSettings` holds the operator-controlled inputs to quoting and nothing else.
 Quote composition takes one and has no other route to operator state, so this
@@ -113,7 +124,9 @@ MG's root mnemonic.
    replacements satisfy this structurally, by committing in an earlier request's
    transaction than any refusal they enable.
 4. **A current-epoch quote is guaranteed a slot**, so the capacity check
-   inside the lock is a fail-closed assertion, not a branch.
+   inside the lock is a fail-closed assertion, not a branch. Every write that
+   can take the last slot (an acceptance or a seat limit change) replaces the
+   epoch in its own transaction.
 
 ## Consequences for the claim records
 

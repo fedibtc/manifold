@@ -36,6 +36,21 @@ pub const DEFAULT_SETUP_PAYMENT_MIN_FEE_PPM: u64 = 1_500;
 /// rather than quietly making every fee proposal impossible.
 pub const SETUP_PAYMENT_MAX_MIN_FEE_PPM: u64 = 210_000;
 
+/// Available memory, in MiB, an MG needs per seat when a publication does not
+/// say: about 1.2 GiB.
+pub const DEFAULT_SEAT_MEMORY_BUDGET_MIB: u32 = 1_229;
+
+/// Smallest and largest per-seat memory budget a publication may set, in MiB.
+/// The bounds refuse a publisher mistake that would let MGs admit seats with
+/// almost no memory each, or would stop every MG from admitting any.
+pub const SETUP_PAYMENT_SEAT_MEMORY_BUDGET_MIB_RANGE: std::ops::RangeInclusive<u32> = 256..=16_384;
+
+/// Seats one MG may host when a publication does not say.
+pub const DEFAULT_MAX_SEATS_PER_MG: u32 = 12;
+
+/// Largest per-MG seat limit a publication may set.
+pub const SETUP_PAYMENT_MAX_SEATS_PER_MG: u32 = 256;
+
 fn default_min_fee_ppm() -> u64 {
     DEFAULT_SETUP_PAYMENT_MIN_FEE_PPM
 }
@@ -113,6 +128,18 @@ pub struct SetupPaymentFederationsContent {
     /// profile's support key applies.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub support_nostr_pubkey: Option<nostr::PublicKey>,
+
+    /// Available memory, in MiB, an MG needs per seat. Optional on the
+    /// wire: absent means [`DEFAULT_SEAT_MEMORY_BUDGET_MIB`]. Omitted when
+    /// unset so that consumers that refuse unknown fields keep admitting
+    /// publications that do not use it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seat_memory_budget_mib: Option<u32>,
+
+    /// Seats one MG may host, below its operator's own limit. Optional on the
+    /// wire: absent means [`DEFAULT_MAX_SEATS_PER_MG`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_seats_per_mg: Option<u32>,
 }
 
 /// Semantically admitted common payment-federation set.
@@ -126,6 +153,8 @@ pub struct AdmittedSetupPaymentFederations {
     telemetry_registration_url: Url,
     min_fee_ppm: u64,
     support_nostr_pubkey: Option<nostr::PublicKey>,
+    seat_memory_budget_mib: Option<u32>,
+    max_seats_per_mg: Option<u32>,
 }
 
 impl AdmittedSetupPaymentFederations {
@@ -151,6 +180,18 @@ impl AdmittedSetupPaymentFederations {
         }
         if content.min_fee_ppm > SETUP_PAYMENT_MAX_MIN_FEE_PPM {
             return Err(SetupPaymentFederationsContentError::MinFeePpmTooHigh);
+        }
+        if content
+            .seat_memory_budget_mib
+            .is_some_and(|mib| !SETUP_PAYMENT_SEAT_MEMORY_BUDGET_MIB_RANGE.contains(&mib))
+        {
+            return Err(SetupPaymentFederationsContentError::SeatMemoryBudgetOutOfRange);
+        }
+        if content
+            .max_seats_per_mg
+            .is_some_and(|seats| seats > SETUP_PAYMENT_MAX_SEATS_PER_MG)
+        {
+            return Err(SetupPaymentFederationsContentError::MaxSeatsPerMgTooHigh);
         }
 
         let registration_url = url::Url::parse(&content.telemetry_registration_url.0)
@@ -192,6 +233,8 @@ impl AdmittedSetupPaymentFederations {
             telemetry_registration_url: content.telemetry_registration_url,
             min_fee_ppm: content.min_fee_ppm,
             support_nostr_pubkey: content.support_nostr_pubkey,
+            seat_memory_budget_mib: content.seat_memory_budget_mib,
+            max_seats_per_mg: content.max_seats_per_mg,
         })
     }
 
@@ -244,6 +287,19 @@ impl AdmittedSetupPaymentFederations {
     pub fn support_nostr_pubkey(&self) -> Option<&nostr::PublicKey> {
         self.support_nostr_pubkey.as_ref()
     }
+
+    /// Return the per-seat memory budget in MiB.
+    #[must_use]
+    pub fn seat_memory_budget_mib(&self) -> u32 {
+        self.seat_memory_budget_mib
+            .unwrap_or(DEFAULT_SEAT_MEMORY_BUDGET_MIB)
+    }
+
+    /// Return how many seats one MG may host.
+    #[must_use]
+    pub fn max_seats_per_mg(&self) -> u32 {
+        self.max_seats_per_mg.unwrap_or(DEFAULT_MAX_SEATS_PER_MG)
+    }
 }
 
 /// Failure while parsing or semantically admitting publication content.
@@ -277,6 +333,12 @@ pub enum SetupPaymentFederationsContentError {
     /// The published minimum fee rate exceeds the payer's own send-rate
     /// ceiling, so no rate would satisfy both bounds.
     MinFeePpmTooHigh,
+
+    /// The published per-seat memory budget is outside the admitted range.
+    SeatMemoryBudgetOutOfRange,
+
+    /// The published per-MG seat limit is above the admitted maximum.
+    MaxSeatsPerMgTooHigh,
 }
 
 impl core::fmt::Display for SetupPaymentFederationsContentError {
@@ -296,6 +358,12 @@ impl core::fmt::Display for SetupPaymentFederationsContentError {
             }
             Self::MinFeePpmTooHigh => {
                 "setup-payment federation set sets a minimum guardian fee rate above the payer cap"
+            }
+            Self::SeatMemoryBudgetOutOfRange => {
+                "setup-payment federation set sets a per-seat memory budget outside the admitted range"
+            }
+            Self::MaxSeatsPerMgTooHigh => {
+                "setup-payment federation set sets a per-MG seat limit above the admitted maximum"
             }
         };
         formatter.write_str(message)

@@ -33,6 +33,7 @@ pub mod push_callback;
 pub mod remittance_metadata;
 pub mod restore;
 pub mod seat;
+pub mod seat_capacity;
 pub mod seat_process;
 pub mod seat_readiness;
 pub mod service;

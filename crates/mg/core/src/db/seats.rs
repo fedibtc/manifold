@@ -498,10 +498,13 @@ impl Db {
             tx.commit().await?;
             return Ok(SeatAdmissionResult::Existing(facts));
         }
-        let (epoch, max_seats): (Vec<u8>, i64) =
-            sqlx::query_as("SELECT offer_epoch, max_seats FROM offer_state WHERE id = 1")
-                .fetch_one(&mut *tx)
-                .await?;
+        let (epoch, max_seats, memory_max_seats, policy_max_seats): (Vec<u8>, i64, i64, i64) =
+            sqlx::query_as(
+                "SELECT offer_epoch, max_seats, memory_max_seats, policy_max_seats \
+                 FROM offer_state WHERE id = 1",
+            )
+            .fetch_one(&mut *tx)
+            .await?;
         let epoch = super::parse_offer_epoch(epoch)?;
         if epoch != offer_epoch {
             tx.commit().await?;
@@ -517,11 +520,11 @@ impl Db {
         .fetch_one(&mut *tx)
         .await?;
         let slots = super::available_slots(
-            u32::try_from(max_seats).map_err(|_| DbError::CorruptRow {
-                table: "offer_state",
-                key: "1".to_owned(),
-                detail: "max_seats is outside the u32 domain".to_owned(),
-            })?,
+            super::effective_max_seats(
+                super::stored_max_seats(max_seats)?,
+                super::stored_max_seats(memory_max_seats)?,
+                super::stored_max_seats(policy_max_seats)?,
+            ),
             first_port_base,
             active,
             next_no,

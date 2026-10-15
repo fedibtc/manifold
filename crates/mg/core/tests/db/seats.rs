@@ -688,7 +688,18 @@ async fn set_max_seats(db: &Db, max_seats: u32) -> Result<bool, DbError> {
         max_seats: Some(max_seats),
         ..Default::default()
     };
-    db.update_seats_config(update).await
+    db.update_seats_config(update, crate::facts::PortBase::new(30_000).unwrap())
+        .await
+}
+
+async fn set_limits(db: &Db, memory: Option<u32>, policy: Option<u32>) -> Result<bool, DbError> {
+    let update = crate::db::SeatsConfigUpdate {
+        memory_max_seats: memory,
+        policy_max_seats: policy,
+        ..Default::default()
+    };
+    db.update_seats_config(update, crate::facts::PortBase::new(30_000).unwrap())
+        .await
 }
 
 async fn open_db() -> (TempDir, Db) {
@@ -707,6 +718,142 @@ async fn reload(db: &Db, seat_id: &SeatId) -> SeatRecord {
 }
 
 #[tokio::test]
+async fn memory_limit_that_leaves_a_slot_keeps_open_quotes_valid() {
+    let (_dir, db) = open_db().await;
+    let base = crate::facts::PortBase::new(30_000).unwrap();
+    set_max_seats(&db, 3).await.unwrap();
+    let epoch = db.offer_epoch().await.unwrap();
+
+    assert!(set_limits(&db, Some(1), None).await.unwrap());
+    assert_eq!(db.offer_epoch().await.unwrap(), epoch);
+    let snapshot = db.offer_snapshot(base).await.unwrap();
+    assert_eq!(
+        (
+            snapshot.max_seats,
+            snapshot.memory_max_seats,
+            snapshot.slots
+        ),
+        (3, 1, 1)
+    );
+    // Rewriting the same limit is idempotent.
+    assert!(!set_limits(&db, Some(1), None).await.unwrap());
+
+    // The open quote takes the one remaining slot, which retires its epoch.
+    assert!(matches!(
+        db.admit_seat(new_seat(31), epoch, base).await.unwrap(),
+        SeatAdmissionResult::Inserted(_)
+    ));
+    assert_ne!(db.offer_epoch().await.unwrap(), epoch);
+    assert_eq!(db.offer_snapshot(base).await.unwrap().slots, 0);
+}
+
+#[tokio::test]
+async fn memory_limit_that_takes_the_last_slot_refuses_open_quotes() {
+    let (_dir, db) = open_db().await;
+    let base = crate::facts::PortBase::new(30_000).unwrap();
+    set_max_seats(&db, 3).await.unwrap();
+    let epoch = db.offer_epoch().await.unwrap();
+
+    assert!(set_limits(&db, Some(0), None).await.unwrap());
+    let closed_epoch = db.offer_epoch().await.unwrap();
+    assert_ne!(closed_epoch, epoch);
+    assert!(matches!(
+        db.admit_seat(new_seat(32), epoch, base).await.unwrap(),
+        SeatAdmissionResult::OfferChanged
+    ));
+
+    // Raising the limit again reopens sales without reviving the old epoch,
+    // so the refused quote stays refused.
+    assert!(set_limits(&db, Some(2), None).await.unwrap());
+    assert_eq!(db.offer_epoch().await.unwrap(), closed_epoch);
+    assert!(matches!(
+        db.admit_seat(new_seat(32), epoch, base).await.unwrap(),
+        SeatAdmissionResult::OfferChanged
+    ));
+    assert!(matches!(
+        db.admit_seat(new_seat(33), closed_epoch, base)
+            .await
+            .unwrap(),
+        SeatAdmissionResult::Inserted(_)
+    ));
+}
+
+#[tokio::test]
+async fn memory_limit_may_fall_below_active_seats() {
+    let (_dir, db) = open_db().await;
+    let base = crate::facts::PortBase::new(30_000).unwrap();
+    set_max_seats(&db, 2).await.unwrap();
+    let epoch = db.offer_epoch().await.unwrap();
+    assert!(matches!(
+        db.admit_seat(new_seat(34), epoch, base).await.unwrap(),
+        SeatAdmissionResult::Inserted(_)
+    ));
+    let epoch = db.offer_epoch().await.unwrap();
+
+    // Unlike the operator limit, memory may say the running seat is already
+    // too many; that only leaves no free slot.
+    assert!(set_limits(&db, Some(0), None).await.unwrap());
+    assert_ne!(db.offer_epoch().await.unwrap(), epoch);
+    let snapshot = db.offer_snapshot(base).await.unwrap();
+    assert_eq!((snapshot.slots, snapshot.memory_max_seats), (0, 0));
+    assert_eq!(db.active_seat_count().await.unwrap(), 1);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn memory_limit_and_admission_share_the_sqlite_writer_order() {
+    let base = crate::facts::PortBase::new(30_000).unwrap();
+    for round in 0..20u8 {
+        let (_dir, db) = open_db().await;
+        set_max_seats(&db, 2).await.unwrap();
+        let epoch = db.offer_epoch().await.unwrap();
+
+        let (admitted, limited) = tokio::join!(
+            db.admit_seat(new_seat(40 + round), epoch, base),
+            set_limits(&db, Some(0), None),
+        );
+        limited.unwrap();
+        // Either order is fine; neither may leave a current epoch without a
+        // slot, which admission would hit as its capacity assertion.
+        match admitted.unwrap() {
+            SeatAdmissionResult::Inserted(_) | SeatAdmissionResult::OfferChanged => {}
+            SeatAdmissionResult::Existing(_) => panic!("no earlier acceptance exists"),
+        }
+        assert_ne!(db.offer_epoch().await.unwrap(), epoch);
+        assert_eq!(db.offer_snapshot(base).await.unwrap().slots, 0);
+    }
+}
+
+#[tokio::test]
+async fn admission_uses_the_lowest_of_operator_memory_and_policy_limits() {
+    let (_dir, db) = open_db().await;
+    let base = crate::facts::PortBase::new(30_000).unwrap();
+    set_max_seats(&db, 5).await.unwrap();
+    let epoch = db.offer_epoch().await.unwrap();
+
+    set_limits(&db, None, Some(3)).await.unwrap();
+    set_limits(&db, Some(4), None).await.unwrap();
+    assert_eq!(db.offer_snapshot(base).await.unwrap().slots, 3);
+    set_limits(&db, Some(2), None).await.unwrap();
+    assert_eq!(db.offer_snapshot(base).await.unwrap().slots, 2);
+    // Raising one limit does not lift another: policy now binds at 3, but
+    // memory still holds it to 2.
+    set_limits(&db, None, Some(12)).await.unwrap();
+    assert_eq!(db.offer_snapshot(base).await.unwrap().slots, 2);
+    // None of those writes emptied the offer, so open quotes stayed valid.
+    assert_eq!(db.offer_epoch().await.unwrap(), epoch);
+
+    // The policy limit takes the last slot: that write alone rotates.
+    set_limits(&db, None, Some(0)).await.unwrap();
+    assert_ne!(db.offer_epoch().await.unwrap(), epoch);
+    assert!(matches!(
+        db.admit_seat(new_seat(60), epoch, base).await.unwrap(),
+        SeatAdmissionResult::OfferChanged
+    ));
+    // The operator's own value is untouched by either runtime limit.
+    assert_eq!(db.max_seats().await.unwrap(), 5);
+}
+
+#[tokio::test]
 async fn readiness_changes_rotate_and_repeats_do_not() {
     let (_dir, db) = open_db().await;
     set_max_seats(&db, 2).await.unwrap();
@@ -717,9 +864,9 @@ async fn readiness_changes_rotate_and_repeats_do_not() {
     let base = crate::facts::PortBase::new(30_000).unwrap();
     let initial = db.offer_snapshot(base).await.unwrap().ready_for_new_seats;
     let epoch = db.offer_epoch().await.unwrap();
-    assert!(!db.update_seats_config(ready(initial)).await.unwrap());
+    assert!(!db.update_seats_config(ready(initial), base).await.unwrap());
     assert_eq!(db.offer_epoch().await.unwrap(), epoch);
-    assert!(db.update_seats_config(ready(!initial)).await.unwrap());
+    assert!(db.update_seats_config(ready(!initial), base).await.unwrap());
     assert_ne!(db.offer_epoch().await.unwrap(), epoch);
     assert_eq!(
         db.offer_snapshot(base).await.unwrap().ready_for_new_seats,

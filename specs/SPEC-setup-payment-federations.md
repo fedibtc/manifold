@@ -116,14 +116,25 @@ replacement ordering as the new shared high-water mark.
   Optional: absent means 1,500 (0.15%). It bounds *new* proposals
   only — each MG refuses one below it, while a rate a federation already
   adopted stays valid to carry forward and still reports as configured
-  ([REQ-guardian-fee-remittance](./REQ-guardian-fee-remittance.md)); and
+  ([REQ-guardian-fee-remittance](./REQ-guardian-fee-remittance.md));
 - `support_nostr_pubkey`, the Fedi support key MG operators chat with
   ([SPEC-mg-support-chat](../crates/mg/specs/SPEC-mg-support-chat.md)),
   as a Nostr public key. Optional: absent means the MG uses the key its
   environment profile pins. A present key overrides the profile key, so a
   newer publication with a different key rotates it. Consumers older than
   this field reject a publication that sets it, so Fedi sets it only after
-  enough consumers have upgraded.
+  enough consumers have upgraded;
+- `seat_memory_budget_mib`, the RAM in MiB that each MG reserves per seat when
+  it computes its memory seat limit, from 256 to 16,384. Optional: absent
+  means 1,229 (about 1.2 GiB); and
+- `max_seats_per_mg`, a limit on total seats for each MG, from 0 to 256.
+  Optional: absent means 12.
+
+Neither seat field changes the operator's own maximum. Each MG sells up to
+the lowest of the operator maximum and its runtime limits
+([REQ-seat-capacity-default](../crates/mg/specs/REQ-seat-capacity-default.md)).
+MG releases older than unknown-field tolerance reject a publication that sets
+either field, so Fedi sets them only after enough consumers have upgraded.
 
 Consumers ignore unknown content fields so optional additions remain admissible
 without a coordinated upgrade. A policy change that consumers must understand
@@ -159,7 +170,9 @@ Admission performs all of these checks before the set influences policy:
 10. reject a telemetry registration URL that is not credential-free HTTPS or
     contains a query or fragment;
 11. reject a `min_fee_ppm` above the payer's 210,000-ppm send-rate ceiling,
-    which would leave no proposable rate.
+    which would leave no proposable rate;
+12. reject a `seat_memory_budget_mib` outside 256 to 16,384 or a
+    `max_seats_per_mg` above 256.
 
 Array position carries no preference or fallback meaning. A consumer uses the
 derived federation ID as the member identity and the signed invite as its join
