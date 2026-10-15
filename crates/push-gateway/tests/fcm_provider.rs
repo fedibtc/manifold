@@ -76,6 +76,32 @@ async fn fcm_registration_validation_uses_validate_only_without_notification() {
     assert!(request["message"]["notification"].is_null());
 }
 
+/// FCM answers 403 `SENDER_ID_MISMATCH` when the token belongs to another
+/// Firebase project than the gateway's service account. That is this caller's
+/// token being wrong for this deployment, so the caller must learn it as an
+/// invalid token rather than as a gateway outage.
+#[tokio::test]
+async fn token_from_another_firebase_project_is_an_invalid_token() {
+    let server = FakeFcmServer::start().await;
+    server.set_validation_mode(ValidationMode::SenderIdMismatch);
+    let harness = Harness::new(&server).await;
+
+    let response = signed_post_json(
+        &harness,
+        "/registrations",
+        &json!({
+            "installation_id": "device",
+            "fcm_token": "other-project-token",
+            "platform": "android"
+        }),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let body: Value = response.json().await.expect("json body");
+    assert_eq!(body["error"]["code"], "invalid_fcm_token");
+}
+
 #[tokio::test]
 async fn invalid_fcm_token_is_rejected_before_registration_is_persisted() {
     let server = FakeFcmServer::start().await;
@@ -492,6 +518,7 @@ enum ValidationMode {
     #[default]
     Success,
     Unregistered,
+    SenderIdMismatch,
     Unavailable,
 }
 
@@ -551,6 +578,18 @@ async fn send_handler(
                         "details": [{
                             "@type": "type.googleapis.com/google.firebase.fcm.v1.FcmError",
                             "error_code": "UNREGISTERED"
+                        }]
+                    }
+                })),
+            ),
+            ValidationMode::SenderIdMismatch => (
+                StatusCode::FORBIDDEN,
+                Json(json!({
+                    "error": {
+                        "status": "PERMISSION_DENIED",
+                        "details": [{
+                            "@type": "type.googleapis.com/google.firebase.fcm.v1.FcmError",
+                            "error_code": "SENDER_ID_MISMATCH"
                         }]
                     }
                 })),
