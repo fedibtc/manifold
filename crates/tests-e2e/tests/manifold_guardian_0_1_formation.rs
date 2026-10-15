@@ -2684,13 +2684,13 @@ async fn run_fa_crash_recovery() -> anyhow::Result<()> {
 
     let status = fa_status(&fa_cli_bin, &state_dir).await?;
     anyhow::ensure!(
-        status["creating"]["stage"]["forming"]["phase"] == "preparing_dkg"
+        status["creating"]["stage"]["forming"]["phase"] == "dkg_underway"
             && status["creating"]["slots"]
                 .as_array()
                 .is_some_and(|seats| seats.iter().all(|seat| {
-                    seat["phase"] == "guardian_code_ready" && seat["guardian_code"].is_string()
+                    seat["phase"] == "dkg_underway" && seat["guardian_code"].is_string()
                 })),
-        "killed FA must reopen its durable guardian-code preparation, got {status}"
+        "killed FA must reopen with every durable guardian code, got {status}"
     );
 
     // The killed guardians are still restarting fedimintd, so a resume can
