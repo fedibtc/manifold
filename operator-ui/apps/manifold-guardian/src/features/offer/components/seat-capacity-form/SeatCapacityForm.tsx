@@ -98,9 +98,13 @@ export const SeatCapacityForm = () => {
       ? undefined
       : `${activeSeats} ${activeSeats === 1 ? 'seat is' : 'seats are'} active. The limit cannot go below that.`;
 
-  const automaticHint = capacity.data
-    ? `Fedi's limit is ${capacity.data.policy_max_seats} seats. This host's memory carries ${capacity.data.memory_max_seats}. The lower one applies.`
-    : undefined;
+  const automaticLimit = capacity.data
+    ? Math.min(capacity.data.policy_max_seats, capacity.data.memory_max_seats)
+    : null;
+  const automaticHint =
+    automaticLimit === null
+      ? undefined
+      : `Up to ${automaticLimit} ${automaticLimit === 1 ? 'seat' : 'seats'} for this host now.`;
 
   return (
     <SectionCard title="Seat capacity">

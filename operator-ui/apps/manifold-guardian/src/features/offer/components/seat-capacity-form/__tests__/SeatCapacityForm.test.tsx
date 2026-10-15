@@ -195,9 +195,8 @@ it('should show an automatic limit without a number and keep it on save', async 
 
   expect(automatic).toBeChecked();
   expect(screen.queryByLabelText('Maximum active seats')).toBeNull();
-  expect(
-    screen.getByText("Fedi's limit is 12 seats. This host's memory carries 9. The lower one applies.")
-  ).toBeInTheDocument();
+  // The lower of the policy (12) and memory (9) limits.
+  expect(screen.getByText('Up to 9 seats for this host now.')).toBeInTheDocument();
 
   fireEvent.click(automatic);
   fireEvent.change(screen.getByLabelText('Maximum active seats'), { target: { value: '5' } });
