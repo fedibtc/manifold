@@ -36,7 +36,7 @@ describe('SeatReadinessCard', () => {
     expect(screen.getByText(guidance.bitcoin)).toBeTruthy();
   });
 
-  it('should name the uptime window that closed the gate', () => {
+  it('should explain a closed gate whose only failure is uptime', () => {
     render(
       <SeatReadinessCard
         readiness={{ ready_for_new_seats: false, report: report({ uptime: 'uptime_30d_low' }) }}
@@ -46,7 +46,6 @@ describe('SeatReadinessCard', () => {
     expect(screen.getByText('Not accepting new seats')).toBeTruthy();
     expect(screen.getByText('Uptime')).toBeTruthy();
     expect(screen.getByText(outcomes.uptime_30d_low)).toBeTruthy();
-    expect(screen.queryByText(outcomes.uptime_7d_low)).toBeNull();
     expect(screen.getByText(guidance.uptime)).toBeTruthy();
     expect(screen.queryByText(guidance.bitcoin)).toBeNull();
     expect(screen.queryByText(guidance.relay)).toBeNull();

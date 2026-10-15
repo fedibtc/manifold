@@ -22,9 +22,9 @@ export const outcomes: Record<ReadinessOutcome, string> = {
   bitcoin_wrong_network: 'The configured Bitcoin backend is on a different network.',
   bitcoin_syncing: 'Bitcoin Core is still in initial block download.',
   bitcoin_no_fee_rate: 'The Bitcoin backend has no fee estimate yet.',
-  uptime_1d_low: 'Online less than 70% of the past day.',
-  uptime_7d_low: 'Online less than 90% of the past week.',
-  uptime_30d_low: 'Online less than 93% of the past month.'
+  uptime_1d_low: 'This host was offline too much recently.',
+  uptime_7d_low: 'This host was offline too much recently.',
+  uptime_30d_low: 'This host was offline too much recently.'
 };
 
 export const guidance: Record<ReadinessCheck, string> = {
@@ -34,7 +34,7 @@ export const guidance: Record<ReadinessCheck, string> = {
     'Check outbound DNS and HTTPS from this host. A new record can take a minute to publish after a relay change.',
   bitcoin:
     'Check the configured Bitcoin backend, its credentials, and its network. Let initial sync finish; do not expose RPC publicly.',
-  uptime: 'Keep this host running. New seats resume when uptime recovers.'
+  uptime: 'Keep this host online.'
 };
 
 export const passed = (outcome: ReadinessOutcome): boolean =>
