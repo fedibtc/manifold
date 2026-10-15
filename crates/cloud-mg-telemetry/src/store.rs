@@ -16,7 +16,7 @@ use crate::{
     journal_target::{CollectionTarget, CommitOutcome, WorkTarget},
     journal_types::{JournalStreamId, ReceptionDay, ValidatedJournalBatch},
     metrics_policy::{MetricsIdentity, MetricsPolicy},
-    metrics_snapshot::{MetricsSnapshot, MetricsTargetHealth},
+    metrics_snapshot::{MetricsSeatHealth, MetricsSnapshot, MetricsTargetHealth},
     metrics_types::MetricsCommit,
 };
 
@@ -455,7 +455,14 @@ impl Store {
             .execute(&mut *transaction)
             .await?;
             sqlx::query(
-                "UPDATE metric_poll_state SET last_complete_at=NULL WHERE target_id =
+                "UPDATE metric_poll_state SET last_listed_at=NULL WHERE target_id =
+                 (SELECT target_id FROM targets WHERE fman_pubkey = ?)",
+            )
+            .bind(target.mg_pubkey)
+            .execute(&mut *transaction)
+            .await?;
+            sqlx::query(
+                "DELETE FROM metric_listed_seats WHERE target_id =
                  (SELECT target_id FROM targets WHERE fman_pubkey = ?)",
             )
             .bind(target.mg_pubkey)
@@ -701,7 +708,7 @@ impl Store {
             return Ok(false);
         }
         sqlx::query(
-            "INSERT INTO metric_poll_state(target_id,last_attempt_at,next_due_at,last_complete_at)
+            "INSERT INTO metric_poll_state(target_id,last_attempt_at,next_due_at,last_listed_at)
              VALUES(?,?,?,NULL) ON CONFLICT(target_id) DO UPDATE SET
              last_attempt_at=excluded.last_attempt_at,next_due_at=excluded.next_due_at",
         )
@@ -867,14 +874,25 @@ impl Store {
         if !target_is_current(&mut transaction, target, now).await? {
             return Ok(CommitOutcome::Stale);
         }
-        if commit.complete {
-            sqlx::query("UPDATE metric_poll_state SET last_complete_at=? WHERE target_id=?")
+        if let Some(listed_seats) = &commit.listed_seats {
+            sqlx::query("UPDATE metric_poll_state SET last_listed_at=? WHERE target_id=?")
                 .bind(now)
                 .bind(target.target_id())
                 .execute(&mut *transaction)
                 .await?;
-        }
-        if let Some(listed_seats) = &commit.listed_seats {
+            sqlx::query("DELETE FROM metric_listed_seats WHERE target_id = ?")
+                .bind(target.target_id())
+                .execute(&mut *transaction)
+                .await?;
+            for seat in listed_seats {
+                sqlx::query(
+                    "INSERT INTO metric_listed_seats(target_id,guardian_seat_id) VALUES (?,?)",
+                )
+                .bind(target.target_id())
+                .bind(seat)
+                .execute(&mut *transaction)
+                .await?;
+            }
             let existing: Vec<String> = sqlx::query_scalar(
                 "SELECT guardian_seat_id FROM metric_snapshots WHERE target_id = ?",
             )
@@ -1026,15 +1044,7 @@ impl Store {
         .await?;
         #[cfg(test)]
         wait_test_hook(&self.metric_exposition_hook);
-        let cutoff = now.saturating_sub(stale_after);
-        let target_rows = sqlx::query(
-            "SELECT t.fman_pubkey,t.fman_name,p.last_complete_at
-             FROM targets t LEFT JOIN metric_poll_state p ON p.target_id=t.target_id
-             WHERE t.status='active' AND t.lease_until > ? ORDER BY t.fman_pubkey",
-        )
-        .bind(now)
-        .fetch_all(&mut *transaction)
-        .await?;
+        let targets = load_target_health(&mut transaction, now, stale_after).await?;
         transaction.commit().await?;
 
         let mut snapshots = Vec::new();
@@ -1144,17 +1154,6 @@ impl Store {
             snapshots,
             rejected,
         };
-        let targets = target_rows
-            .into_iter()
-            .map(|row| {
-                let completed: Option<i64> = row.get("last_complete_at");
-                MetricsTargetHealth {
-                    mg_id: row.get("fman_pubkey"),
-                    mg_name: row.get("fman_name"),
-                    fresh: completed.is_some_and(|value| value >= cutoff),
-                }
-            })
-            .collect();
         Ok(MetricExpositionView {
             version,
             snapshots,
@@ -1342,26 +1341,10 @@ impl Store {
         now: i64,
         stale_after: i64,
     ) -> Result<Vec<MetricsTargetHealth>, StoreError> {
-        let cutoff = now.saturating_sub(stale_after);
-        let rows = sqlx::query(
-            "SELECT t.fman_pubkey,t.fman_name,p.last_complete_at
-             FROM targets t LEFT JOIN metric_poll_state p ON p.target_id=t.target_id
-             WHERE t.status='active' AND t.lease_until > ? ORDER BY t.fman_pubkey",
-        )
-        .bind(now)
-        .fetch_all(&self.pool)
-        .await?;
-        Ok(rows
-            .into_iter()
-            .map(|row| {
-                let completed: Option<i64> = row.get("last_complete_at");
-                MetricsTargetHealth {
-                    mg_id: row.get("fman_pubkey"),
-                    mg_name: row.get("fman_name"),
-                    fresh: completed.is_some_and(|value| value >= cutoff),
-                }
-            })
-            .collect())
+        let mut transaction = self.pool.begin().await?;
+        let targets = load_target_health(&mut transaction, now, stale_after).await?;
+        transaction.commit().await?;
+        Ok(targets)
     }
 
     /// Version of the immutable cached private exposition.
@@ -1703,6 +1686,55 @@ impl Store {
         transaction.commit().await?;
         Ok(())
     }
+}
+
+/// Active targets with their listing freshness and each listed seat's latest observation.
+async fn load_target_health(
+    transaction: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    now: i64,
+    stale_after: i64,
+) -> Result<Vec<MetricsTargetHealth>, StoreError> {
+    let cutoff = now.saturating_sub(stale_after);
+    let mut targets: Vec<MetricsTargetHealth> = sqlx::query(
+        "SELECT t.fman_pubkey,t.fman_name,p.last_listed_at
+         FROM targets t LEFT JOIN metric_poll_state p ON p.target_id=t.target_id
+         WHERE t.status='active' AND t.lease_until > ? ORDER BY t.fman_pubkey",
+    )
+    .bind(now)
+    .fetch_all(&mut **transaction)
+    .await?
+    .into_iter()
+    .map(|row| {
+        let listed: Option<i64> = row.get("last_listed_at");
+        MetricsTargetHealth {
+            mg_id: row.get("fman_pubkey"),
+            mg_name: row.get("fman_name"),
+            fresh: listed.is_some_and(|value| value >= cutoff),
+            seats: Vec::new(),
+        }
+    })
+    .collect();
+    let seat_rows = sqlx::query(
+        "SELECT t.fman_pubkey,l.guardian_seat_id,s.observed_at_ms
+         FROM metric_listed_seats l JOIN targets t ON t.target_id=l.target_id
+         LEFT JOIN metric_snapshots s
+             ON s.target_id=l.target_id AND s.guardian_seat_id=l.guardian_seat_id
+         WHERE t.status='active' AND t.lease_until > ?
+         ORDER BY t.fman_pubkey,l.guardian_seat_id",
+    )
+    .bind(now)
+    .fetch_all(&mut **transaction)
+    .await?;
+    for row in seat_rows {
+        let mg_id: String = row.get("fman_pubkey");
+        if let Ok(index) = targets.binary_search_by(|target| target.mg_id.cmp(&mg_id)) {
+            targets[index].seats.push(MetricsSeatHealth {
+                guardian_seat_id: row.get("guardian_seat_id"),
+                observed_at_ms: row.get("observed_at_ms"),
+            });
+        }
+    }
+    Ok(targets)
 }
 
 async fn target_is_current(
@@ -2325,6 +2357,14 @@ mod tests {
         assert!(!store.ready().await);
     }
 
+    fn listed_seats(health: &[MetricsTargetHealth]) -> Vec<(String, Option<i64>)> {
+        health[0]
+            .seats
+            .iter()
+            .map(|seat| (seat.guardian_seat_id.clone(), seat.observed_at_ms))
+            .collect()
+    }
+
     #[tokio::test]
     async fn metric_snapshots_survive_restart_and_obey_revision_and_seat_cas() {
         let directory = tempfile::tempdir().unwrap();
@@ -2361,7 +2401,6 @@ mod tests {
                             observed_at_ms: 100_000,
                             samples: stored_samples("aa", 1),
                         }],
-                        complete: true,
                     },
                     100,
                 )
@@ -2407,7 +2446,6 @@ mod tests {
                     MetricsCommit {
                         listed_seats: Some(Default::default()),
                         snapshots: Vec::new(),
-                        complete: true,
                     },
                     101,
                 )
@@ -2448,7 +2486,6 @@ mod tests {
                         observed_at_ms: 101_000,
                         samples: stored_samples("bb", 2),
                     }],
-                    complete: false,
                 },
                 101,
             )
@@ -2463,18 +2500,53 @@ mod tests {
                 .len(),
             2
         );
+        assert_eq!(
+            listed_seats(&restarted.metric_target_health(101, 100).await.unwrap()),
+            [
+                ("aa".to_owned(), Some(100_000)),
+                ("bb".to_owned(), Some(101_000))
+            ],
+            "a seat that failed this poll keeps its older observation"
+        );
         restarted
             .commit_metrics(
                 &current,
                 MetricsCommit {
-                    listed_seats: Some(["bb".to_owned()].into()),
+                    listed_seats: Some(["bb".to_owned(), "cc".to_owned()].into()),
                     snapshots: Vec::new(),
-                    complete: true,
                 },
                 202,
             )
             .await
             .unwrap();
+        let health = restarted.metric_target_health(202, 100).await.unwrap();
+        assert!(
+            health[0].fresh,
+            "a listing without any scrape keeps the MG fresh"
+        );
+        assert_eq!(
+            listed_seats(&health),
+            [("bb".to_owned(), Some(101_000)), ("cc".to_owned(), None)],
+            "unlisted seats leave and a never-scraped seat is still reported"
+        );
+        restarted
+            .commit_metrics(
+                &current,
+                MetricsCommit {
+                    listed_seats: None,
+                    snapshots: Vec::new(),
+                },
+                210,
+            )
+            .await
+            .unwrap();
+        let health = restarted.metric_target_health(210, 5).await.unwrap();
+        assert!(!health[0].fresh, "a failed listing does not refresh the MG");
+        assert_eq!(
+            listed_seats(&health),
+            [("bb".to_owned(), Some(101_000)), ("cc".to_owned(), None)],
+            "a failed listing keeps the previous seats"
+        );
         let snapshots = restarted
             .metric_snapshots(&metrics_policy(), 202, 202_000)
             .await
@@ -2557,7 +2629,6 @@ mod tests {
                     })
                     .collect(),
             }],
-            complete: true,
         };
         assert_eq!(
             store
@@ -2801,7 +2872,6 @@ mod tests {
                             observed_at_ms: 100_000,
                             samples: stored_samples("aa", 1),
                         }],
-                        complete: true,
                     },
                     100,
                 )
@@ -2929,11 +2999,28 @@ mod tests {
             .unwrap();
         first.configure_metrics_policy("policy").await.unwrap();
         let scheduled = first.due_metric_targets(100).await.unwrap().remove(0);
-        first
+        let work = first
             .begin_metric_work(&scheduled, 100, 1800)
             .await
             .unwrap()
             .unwrap();
+        first
+            .commit_metrics(
+                &work,
+                MetricsCommit {
+                    listed_seats: Some(["aa".to_owned()].into()),
+                    snapshots: Vec::new(),
+                },
+                100,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            first.metric_target_health(100, 1800).await.unwrap()[0]
+                .seats
+                .len(),
+            1
+        );
         drop(first);
 
         let renewed = Store::open(
@@ -2954,6 +3041,11 @@ mod tests {
             .admit(&auth("renewed", 222), target(2), 222)
             .await
             .unwrap();
+        let health = renewed.metric_target_health(222, 1800).await.unwrap();
+        assert!(
+            !health[0].fresh && health[0].seats.is_empty(),
+            "renewal after expiry starts empty"
+        );
         drop(renewed);
 
         let restarted = Store::open(

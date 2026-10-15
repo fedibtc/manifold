@@ -370,19 +370,16 @@ impl MetricsPoller {
             return failed_commit();
         }
         let mut snapshots = Vec::new();
-        // Aggregate outcome only: a failed seat must not suppress later snapshots.
-        let mut complete = true;
+        // A failed seat must not suppress later snapshots.
         let mut total_bytes = 0usize;
         'seats: for seat in response.seats {
             let Some(federation_id) = federation_id_from_invite(seat.invite_code.as_ref()) else {
                 self.observability
                     .record(AdmissionOutcome::InvalidFederationInvite);
-                complete = false;
                 continue;
             };
             let Some(remaining) = deadline.checked_duration_since(tokio::time::Instant::now())
             else {
-                complete = false;
                 break;
             };
             let Ok(Ok(upstream)) = tokio::time::timeout(
@@ -394,7 +391,6 @@ impl MetricsPoller {
             )
             .await
             else {
-                complete = false;
                 continue;
             };
             if upstream.status_code != 200
@@ -405,7 +401,6 @@ impl MetricsPoller {
                     .is_some_and(|value| value.starts_with("text/plain"))
                 || upstream.body.len() > MAX_GUARDIAN_METRICS_BODY_BYTES
             {
-                complete = false;
                 continue;
             }
             let seat_id = seat.seat_id.to_string();
@@ -423,7 +418,6 @@ impl MetricsPoller {
                 Ok(admitted) => admitted,
                 Err(_) => {
                     self.observability.record(AdmissionOutcome::Rejected);
-                    complete = false;
                     continue;
                 }
             };
@@ -441,28 +435,23 @@ impl MetricsPoller {
                     .record(AdmissionOutcome::InvalidAdmittedDiscarded);
             }
             if tokio::time::Instant::now() >= deadline {
-                complete = false;
                 break;
             }
             let mut bytes = 0usize;
             for sample in &admitted.samples {
                 if tokio::time::Instant::now() >= deadline {
-                    complete = false;
                     break 'seats;
                 }
                 bytes = bytes.saturating_add(sample.len() + 1);
             }
             total_bytes = total_bytes.saturating_add(bytes);
             if total_bytes > MAX_TARGET_SNAPSHOT_BYTES {
-                complete = false;
                 continue;
             }
             let Ok(observed_at_ms) = unix_millis() else {
-                complete = false;
                 continue;
             };
             if tokio::time::Instant::now() >= deadline {
-                complete = false;
                 break;
             }
             snapshots.push(SeatObservation {
@@ -475,7 +464,6 @@ impl MetricsPoller {
         MetricsCommit {
             listed_seats: Some(listed),
             snapshots,
-            complete,
         }
     }
 
@@ -549,7 +537,6 @@ fn failed_commit() -> MetricsCommit {
     MetricsCommit {
         listed_seats: None,
         snapshots: Vec::new(),
-        complete: false,
     }
 }
 
