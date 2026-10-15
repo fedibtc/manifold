@@ -324,13 +324,11 @@ where
         fa_id: FaId,
         timeouts: Timeouts,
     ) -> FaResult<()> {
-        let formation_id = &purchase.formation_id;
         self.publish(None).await;
         // Resolved on first use, so one authenticated read serves every
         // seat, and a purchase of free seats never reads a payer policy.
         let payer = OnceCell::new();
         let mut funds_exhausted = false;
-        let mut first_error = None;
         let mut slots = purchase.slots.clone();
         if slots.iter().all(|slot| slot.state.bound_quote().is_none()) {
             funds_exhausted = self
@@ -355,15 +353,13 @@ where
                         reason == SelectionReauthorizationReason::SelectedPayerInsufficientFunds;
                     self.drop_seat(purchase, &slot, error).await?;
                 }
-                Err(error) => {
-                    if first_error.is_some() {
-                        log_mg_failure(formation_id, &error, "discarded");
-                    }
-                    first_error.get_or_insert(error);
-                }
+                // The seat's payment may still be settling. The next seat
+                // starts only after this seat is accepted or has left, so
+                // the step fails and the next run recovers this seat first.
+                Err(error) => return Err(error),
             }
         }
-        first_error.map_or(Ok(()), Err)
+        Ok(())
     }
 
     /// While no slot is bound, confirm that every picked MG still offers its

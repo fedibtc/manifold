@@ -366,18 +366,11 @@ where
         let mut guardian_codes = (0..sessions.len())
             .map(|_| None)
             .collect::<Vec<Option<GuardianCode>>>();
-        let mut first_error = None;
         while let Some(result) = pending_codes.next().await {
-            let (position, code, newly_generated) = match result {
-                Ok(value) => value,
-                Err((_, error)) => {
-                    if first_error.is_some() {
-                        log_mg_failure(formation_id, &error, "discarded");
-                    }
-                    first_error.get_or_insert(error);
-                    continue;
-                }
-            };
+            // A failed request ends the wave at once: another seat may wait
+            // for its code without end, and would hide this error. The saved
+            // codes stay, and the next run asks the other seats again.
+            let (position, code, newly_generated) = result.map_err(|(_, error)| error)?;
             if newly_generated {
                 self.inner
                     .store
@@ -390,9 +383,6 @@ where
                 self.publish(None).await;
             }
             guardian_codes[position] = Some(code);
-        }
-        if let Some(error) = first_error {
-            return Err(error);
         }
         let guardian_codes = guardian_codes
             .into_iter()

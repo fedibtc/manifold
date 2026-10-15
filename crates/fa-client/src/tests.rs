@@ -5060,10 +5060,8 @@ async fn daemon_rejection_of_selected_common_set_member_is_quote_failure() {
             ..
         })
     ));
-    assert_eq!(
-        state.quote_calls.load(Ordering::SeqCst),
-        usize::from(MIN_FEDERATION_SIZE)
-    );
+    // The step ends at the first failed seat.
+    assert_eq!(state.quote_calls.load(Ordering::SeqCst), 1);
 }
 
 #[tokio::test]
@@ -7749,15 +7747,15 @@ async fn slow_payment_preparation_and_recovery_keep_the_exact_payment() {
         };
         let result = client.buy_and_form_at(intent(), locators(), options).await;
         if interrupt {
-            // Each seat has its own run timeout, so every payment starts and
-            // times out once.
+            // The first payment times out, and no other seat starts before
+            // that seat is recovered.
             assert!(matches!(result, Err(FaError::Timeout(_))), "{result:?}");
             let paid_quotes = payment_state
                 .created_quotes
                 .lock()
                 .expect("test lock")
                 .clone();
-            assert_eq!(paid_quotes.len(), usize::from(MIN_FEDERATION_SIZE));
+            assert_eq!(paid_quotes.len(), 1);
             drop(client);
             let reopened =
                 open_client_with_store(store, payments, mg_state, MgConfig::paid()).await;
@@ -7766,9 +7764,17 @@ async fn slow_payment_preparation_and_recovery_keep_the_exact_payment() {
                 .await
                 .expect("recover signatures without another payment");
             bought(&reopened.status());
+            let created = payment_state
+                .created_quotes
+                .lock()
+                .expect("test lock")
+                .clone();
             assert_eq!(
-                *payment_state.created_quotes.lock().expect("test lock"),
-                paid_quotes,
+                created
+                    .iter()
+                    .filter(|quote| paid_quotes.contains(quote))
+                    .count(),
+                1,
                 "recovery pays no quote again",
             );
         } else {
@@ -8251,7 +8257,7 @@ async fn selected_remote_quote_error_cannot_impersonate_local_transport_failure(
     );
     assert_eq!(
         mg_state.quote_calls.load(Ordering::SeqCst),
-        usize::from(MIN_FEDERATION_SIZE),
+        1,
         "remote errors must not enter the local transport retry path",
     );
 }
@@ -8300,8 +8306,8 @@ async fn a_failed_presentation_connection_is_retried_by_the_next_run() {
             .iter()
             .filter(|seat| seat.seat_id.is_none())
             .count(),
-        1,
-        "the other seats are bought",
+        4,
+        "the seats before it are bought, and the seats after it wait",
     );
 
     client.drive_all_for_test(options()).await.unwrap();
@@ -10641,10 +10647,12 @@ async fn a_never_ready_seat_keeps_the_formation_waiting_for_its_code() {
 }
 
 /// FA does not replace a seat that its MG decommissioned. The formation
-/// stops with the MG's error, and the seat stays in the pool.
+/// stops with the MG's error, and the seat stays in the pool. A seat that
+/// waits for its code without end does not hide that error.
 #[tokio::test]
 async fn a_decommissioned_pool_seat_stops_the_formation() {
     let state = Arc::new(MgState::default());
+    state.unavailable_dkg_code_indices.lock().unwrap().insert(5);
     let (payments, _) = TestPayments::new();
     let client = open_client(
         MemDatabase::new().into_database(),
@@ -10660,7 +10668,10 @@ async fn a_decommissioned_pool_seat_stops_the_formation() {
     client.drive_purchase_for_test(options()).await.unwrap();
     state.decommissioned_indices.lock().unwrap().insert(1);
 
-    let error = client.drive_all_for_test(options()).await.unwrap_err();
+    let error = tokio::time::timeout(Duration::from_secs(5), client.drive_all_for_test(options()))
+        .await
+        .expect("the error ends the wait for the never-ready seat")
+        .unwrap_err();
     assert!(
         matches!(
             &error,
