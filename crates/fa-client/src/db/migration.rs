@@ -208,7 +208,6 @@ impl FaStore {
         };
         let mut reauthorization = None;
         let mut slots = Vec::with_capacity(usize::from(legacy.seat_count));
-        let mut guardian_codes = Vec::new();
         for index in 0..legacy.seat_count {
             let key = Schema11SeatKey {
                 formation_id: legacy.formation_id.0.clone(),
@@ -245,13 +244,11 @@ impl FaStore {
                     let quote = quote
                         .verify(&seat.locator.service_pubkey)
                         .map_err(|_| malformed())?;
-                    if let Some(code) = seat.guardian_code {
-                        guardian_codes.push((seat_id.clone(), code));
-                    }
                     SlotState::Accepted {
                         seat_id,
                         guardian_fee_account: seat.guardian_fee_account.ok_or_else(malformed)?,
                         fedimintd_version: quote.terms.request.fedimintd_version.clone(),
+                        guardian_code: seat.guardian_code,
                     }
                 }
                 (Some(_), None) => return Err(malformed()),
@@ -326,22 +323,13 @@ impl FaStore {
                 insert_formed_federation(&mut dbtx.to_ref_nc(), &creation.stored, &seats).await?;
             }
         } else {
-            for (seat_id, code) in guardian_codes {
-                dbtx.insert_new_entry(
-                    &GuardianCodeKey {
-                        seat_id: seat_id.to_string(),
-                    },
-                    &StoredGuardianCode(code),
-                )
-                .await;
-            }
             for (index, slot) in &creation.slots {
                 dbtx.insert_new_entry(&SlotKey { index: *index }, slot)
                     .await;
             }
             dbtx.insert_new_entry(&CreationKey, &creation.stored).await;
-            // Reject cached codes that disagree with the formation.
-            formation_seats(&mut dbtx.to_ref_nc(), &creation).await?;
+            // Reject a formation that disagrees with its seats.
+            formation_seats(&creation)?;
         }
         dbtx.commit_tx_result()
             .await

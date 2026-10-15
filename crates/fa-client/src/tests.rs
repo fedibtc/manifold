@@ -10780,6 +10780,20 @@ async fn a_decommissioned_pool_seat_leaves_after_codes_while_no_seat_started_dkg
         .collect::<Vec<_>>();
     assert_eq!(ended.len(), 1);
     assert_eq!(ended[0].locator, locator(1));
+    // The pool changed, so no stored slot keeps its code.
+    let stored = client
+        .inner
+        .store
+        .load_creation(TestIdentity::fa_id())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        stored
+            .slots
+            .iter()
+            .all(|slot| slot.state.guardian_code().is_none())
+    );
 }
 
 #[test]

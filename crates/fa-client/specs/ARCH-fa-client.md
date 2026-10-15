@@ -42,12 +42,12 @@ been admitted, never zero). That floor is the same one every MG enforces
 ([`SPEC-setup-payment-federations`](../../../specs/SPEC-setup-payment-federations.md));
 refusing it here means a rate the whole fleet would vote down names its own
 reason instead of retrying until the maintenance limit. Durable FA storage is a
-separate fail-closed schema. Schema 12 keeps one creation row, one slot row
-per selected guardian, and one cached guardian code per accepted seat. A slot
+separate fail-closed schema. Schema 12 keeps one creation row and one slot row
+per selected guardian. A slot
 is keyed by a stable id, and the ids of the live slots order the guardians.
 It holds its verified MG and badge holder, and one state: `picked` with its
 previewed plan, `bound` to its exact signed quote, `accepted` with its seat
-id, guardian-fee account, and exact Fedimint build, or `ended` with the seat
+id, guardian-fee account, exact Fedimint build, and cached guardian code, or `ended` with the seat
 id its MG ended before DKG. An ended slot is not live, and a new slot
 replaces it. The creation row holds the
 creation's inputs, the formation's progress (its id, invite, and metadata
@@ -310,8 +310,9 @@ federation until DKG starts. The engine keeps one record per concern:
   order. The first slot's guardian code carries the federation name.
   It runs DKG and seat-binding publication, and keeps its invite and metadata
   target in the creation record. MGs refuse the guardian code request once
-  DKG starts, so the codes are cached per seat for a DKG restart until MGs
-  return them in every state. Confirming the formation metadata ends the
+  DKG starts, so each accepted slot caches its code for a DKG restart until
+  MGs return them in every state. A seat that leaves the pool clears every
+  code. Confirming the formation metadata ends the
   creation (see below).
 
 `FaClient::run` is the only driver. The consumer spawns it once. It continues

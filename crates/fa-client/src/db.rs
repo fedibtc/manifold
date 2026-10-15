@@ -56,7 +56,6 @@ enum FaDbPrefix {
     Federation = 0x09,
     Slot = 0x0a,
     Creation = 0x0b,
-    GuardianCode = 0x0c,
     ReadInvite = 0x0d,
 }
 
@@ -320,6 +319,12 @@ pub(crate) enum SlotState {
         guardian_fee_account: Account,
         /// Exact Fedimint build from the seat's quote.
         fedimintd_version: FedimintdVersion,
+        /// The code the MG returned for the full pool, kept until the
+        /// federation forms. MGs refuse the code request once DKG starts, and
+        /// a DKG restart needs every code again. A seat that leaves the pool
+        /// clears every code.
+        // TODO: remove once MGs return the code in every state.
+        guardian_code: Option<GuardianCode>,
     },
     /// The MG ended the bought seat before DKG. The slot stays to report it
     /// and to keep its MG out of later previews.
@@ -354,6 +359,13 @@ impl SlotState {
             Self::Picked { .. } | Self::Accepted { .. } | Self::Ended { .. } => None,
         }
     }
+
+    pub(crate) fn guardian_code(&self) -> Option<&GuardianCode> {
+        match self {
+            Self::Accepted { guardian_code, .. } => guardian_code.as_ref(),
+            Self::Picked { .. } | Self::Bound { .. } | Self::Ended { .. } => None,
+        }
+    }
 }
 
 /// A slot whose seat the MG accepted.
@@ -363,24 +375,6 @@ struct AcceptedSlot<'a> {
     seat_id: &'a SeatId,
     fedimintd_version: &'a FedimintdVersion,
 }
-
-/// The guardian code an MG returned for one accepted seat, kept until the
-/// federation forms. MGs refuse the code request once DKG starts, and a DKG
-/// restart needs every code again.
-// TODO: remove once MGs return the code in every state.
-#[derive(Debug, Decodable, Encodable)]
-struct GuardianCodeKey {
-    seat_id: String,
-}
-
-#[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
-struct StoredGuardianCode(GuardianCode);
-
-impl_db_record!(
-    key = GuardianCodeKey,
-    value = StoredGuardianCode,
-    db_prefix = FaDbPrefix::GuardianCode,
-);
 
 #[derive(serde::Deserialize)]
 struct StoredCreationEnvelope {
@@ -408,7 +402,6 @@ macro_rules! json_database_value {
 mod migration;
 json_database_value!(StoredCreation);
 json_database_value!(StoredSlot);
-json_database_value!(StoredGuardianCode);
 
 #[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
 struct StoredSetupPaymentFederationsEvent(Event);
@@ -458,7 +451,6 @@ pub(crate) struct SlotRecovery {
     pub(crate) mg_id: PublicKey,
     pub(crate) locator: Locator,
     pub(crate) state: SlotState,
-    pub(crate) guardian_code: Option<GuardianCode>,
     pub(crate) phase: SeatPhase,
     pub(crate) freshness: FormationFreshness,
 }
@@ -477,7 +469,7 @@ impl SlotRecovery {
             mg_id: self.mg_id,
             locator: self.locator.clone(),
             seat_id: self.seat_id().cloned(),
-            guardian_code: self.guardian_code.clone(),
+            guardian_code: self.state.guardian_code().cloned(),
             phase: self.phase,
             freshness: self.freshness,
         }
@@ -1153,14 +1145,8 @@ impl FaStore {
         let Some(creation) = read_creation(&mut dbtx.to_ref_nc(), fa_id).await? else {
             return Ok(None);
         };
-        let full = formation_seats(&mut dbtx.to_ref_nc(), &creation).await?;
-        let mut guardian_codes = BTreeMap::new();
-        for seat in full.into_iter().flatten() {
-            if let Some(code) = seat.guardian_code {
-                guardian_codes.insert(seat.index, code);
-            }
-        }
-        Ok(Some(creation.recovery(guardian_codes)))
+        formation_seats(&creation)?;
+        Ok(Some(creation.recovery()))
     }
 
     /// End a federation creation that holds no accepted seat or formation,
@@ -1436,6 +1422,7 @@ impl FaStore {
                                         .request
                                         .fedimintd_version
                                         .clone(),
+                                    guardian_code: None,
                                 }
                             }
                             SlotState::Accepted {
@@ -1495,7 +1482,7 @@ impl FaStore {
                     Box::pin(async move {
                         let (mut creation, _) = active_formation(dbtx, &formation_id).await?;
                         update(&mut creation.stored);
-                        active_formation_seats(dbtx, &creation).await?;
+                        active_formation_seats(&creation)?;
                         dbtx.insert_entry(&CreationKey, &creation.stored).await;
                         Ok(())
                     })
@@ -1520,16 +1507,18 @@ impl FaStore {
                     let formation_id = formation_id.clone();
                     let guardian_code = guardian_code.clone();
                     Box::pin(async move {
-                        let (_, seats) = active_formation(dbtx, &formation_id).await?;
-                        let seat =
-                            seats
-                                .iter()
-                                .find(|seat| seat.index == index)
-                                .ok_or_else(|| {
-                                    FaError::Storage(format!("missing FA formation seat {index}"))
-                                })?;
-                        if seat
-                            .guardian_code
+                        let (mut creation, _) = active_formation(dbtx, &formation_id).await?;
+                        let slot = creation.slot_mut(index)?;
+                        let SlotState::Accepted {
+                            guardian_code: code,
+                            ..
+                        } = &mut slot.state
+                        else {
+                            return Err(FaError::Storage(format!(
+                                "missing FA formation seat {index}"
+                            )));
+                        };
+                        if code
                             .as_ref()
                             .is_some_and(|existing| existing != &guardian_code)
                         {
@@ -1537,13 +1526,9 @@ impl FaStore {
                                 "FA formation seat {index} changed guardian code"
                             )));
                         }
-                        dbtx.insert_entry(
-                            &GuardianCodeKey {
-                                seat_id: seat.seat_id.to_string(),
-                            },
-                            &StoredGuardianCode(guardian_code),
-                        )
-                        .await;
+                        *code = Some(guardian_code);
+                        let slot = slot.clone();
+                        dbtx.insert_entry(&SlotKey { index }, &slot).await;
                         Ok(())
                     })
                 },
@@ -1597,12 +1582,6 @@ impl FaStore {
                             ));
                         }
                         insert_formed_federation(dbtx, &creation.stored, &seats).await?;
-                        for seat in &seats {
-                            dbtx.remove_entry(&GuardianCodeKey {
-                                seat_id: seat.seat_id.to_string(),
-                            })
-                            .await;
-                        }
                         // Ended slots go with the creation.
                         for (index, _) in &creation.slots {
                             dbtx.remove_entry(&SlotKey { index: *index }).await;
@@ -1728,11 +1707,13 @@ impl FaStore {
                                     "a seat cannot leave after DKG completed".to_owned(),
                                 ));
                             }
-                            for (_, seat) in creation.accepted() {
-                                dbtx.remove_entry(&GuardianCodeKey {
-                                    seat_id: seat.seat_id.to_string(),
-                                })
-                                .await;
+                            // The pool changes, so every code goes.
+                            for (index, slot) in &mut creation.slots {
+                                if let SlotState::Accepted { guardian_code, .. } = &mut slot.state
+                                    && guardian_code.take().is_some()
+                                {
+                                    dbtx.insert_entry(&SlotKey { index: *index }, slot).await;
+                                }
                             }
                         }
                         for (index, expected) in emptied {
@@ -1803,8 +1784,8 @@ impl Creation {
             .ok_or_else(|| FaError::Storage(format!("missing persisted FA slot {index}")))
     }
 
-    /// The driver's view, with the cached codes of a full formation.
-    fn recovery(self, mut guardian_codes: BTreeMap<u16, GuardianCode>) -> CreationRecovery {
+    /// The driver's view.
+    fn recovery(self) -> CreationRecovery {
         let stored = self.stored;
         let dkg_complete = stored.invite_code.is_some();
         let pending = self
@@ -1815,14 +1796,14 @@ impl Creation {
             .slots
             .into_iter()
             .map(|(index, slot)| {
-                let guardian_code = guardian_codes.remove(&index);
                 let phase = match &slot.state {
                     SlotState::Picked { .. } => SeatPhase::Selected,
                     SlotState::Bound { .. } => SeatPhase::QuoteReady,
                     SlotState::Accepted { .. } if dkg_complete => SeatPhase::Running,
-                    SlotState::Accepted { .. } if guardian_code.is_some() => {
-                        SeatPhase::GuardianCodeReady
-                    }
+                    SlotState::Accepted {
+                        guardian_code: Some(_),
+                        ..
+                    } => SeatPhase::GuardianCodeReady,
                     SlotState::Accepted { .. } => SeatPhase::Created,
                     SlotState::Ended { .. } => SeatPhase::Ended,
                 };
@@ -1831,7 +1812,6 @@ impl Creation {
                     mg_id: slot.mg_id,
                     locator: slot.locator,
                     state: slot.state,
-                    guardian_code,
                     phase,
                     freshness: FormationFreshness::Unsynced,
                 }
@@ -2040,10 +2020,7 @@ struct FormationSeat {
 /// The seats of the creation's formation in slot order, with their cached
 /// guardian codes. The first seat's code carries the federation name. The
 /// formation runs once every slot holds an accepted seat.
-async fn formation_seats(
-    dbtx: &mut DatabaseTransaction<'_>,
-    creation: &Creation,
-) -> FaResult<Option<Vec<FormationSeat>>> {
+fn formation_seats(creation: &Creation) -> FaResult<Option<Vec<FormationSeat>>> {
     let accepted = creation.accepted().collect::<Vec<_>>();
     if accepted.len() < usize::from(creation.stored.federation_size.0) {
         if creation.stored.invite_code.is_some() {
@@ -2055,18 +2032,12 @@ async fn formation_seats(
     }
     let mut seats = Vec::with_capacity(accepted.len());
     for (index, seat) in accepted {
-        let guardian_code = dbtx
-            .get_value(&GuardianCodeKey {
-                seat_id: seat.seat_id.to_string(),
-            })
-            .await
-            .map(|code| code.0);
         seats.push(FormationSeat {
             index,
             mg_id: seat.slot.mg_id,
             locator: seat.slot.locator.clone(),
             seat_id: seat.seat_id.clone(),
-            guardian_code,
+            guardian_code: seat.slot.state.guardian_code().cloned(),
         });
     }
     validate_formation(&creation.stored, &seats)?;
@@ -2074,12 +2045,8 @@ async fn formation_seats(
 }
 
 /// The seats of the running formation.
-async fn active_formation_seats(
-    dbtx: &mut DatabaseTransaction<'_>,
-    creation: &Creation,
-) -> FaResult<Vec<FormationSeat>> {
-    formation_seats(dbtx, creation)
-        .await?
+fn active_formation_seats(creation: &Creation) -> FaResult<Vec<FormationSeat>> {
+    formation_seats(creation)?
         .ok_or_else(|| FaError::Storage("the FA formation is missing".to_owned()))
 }
 
@@ -2094,7 +2061,7 @@ async fn active_formation(
         .ok_or_else(|| {
             FaError::Storage("active FA formation changed during an operation".to_owned())
         })?;
-    let seats = active_formation_seats(dbtx, &creation).await?;
+    let seats = active_formation_seats(&creation)?;
     Ok((creation, seats))
 }
 

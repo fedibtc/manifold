@@ -524,7 +524,7 @@ where
                 .slots
                 .iter()
                 .map(|seat| {
-                    seat.guardian_code.clone().ok_or_else(|| {
+                    seat.state.guardian_code().cloned().ok_or_else(|| {
                         FaError::InvalidIntent("restart requires every saved guardian code".into())
                     })
                 })
@@ -1050,10 +1050,10 @@ where
         let dkg_not_started = recovery
             .slots
             .iter()
-            .any(|seat| seat.guardian_code.is_none());
+            .any(|seat| seat.state.guardian_code().is_none());
         let mut pending_codes = FuturesUnordered::new();
         for (position, session) in sessions.iter().enumerate() {
-            let existing = recovery.slots[position].guardian_code.clone();
+            let existing = recovery.slots[position].state.guardian_code().cloned();
             let federation_name = (position == 0).then(|| recovery.federation_name.clone());
             pending_codes.push(async move {
                 let code = self
@@ -1101,9 +1101,12 @@ where
                 }
             };
             if newly_generated {
-                recovery.slots[position].guardian_code = Some(code.clone());
-                recovery.slots[position].phase = SeatPhase::GuardianCodeReady;
-                recovery.slots[position].freshness = FormationFreshness::Fresh;
+                let slot = &mut recovery.slots[position];
+                if let SlotState::Accepted { guardian_code, .. } = &mut slot.state {
+                    *guardian_code = Some(code.clone());
+                }
+                slot.phase = SeatPhase::GuardianCodeReady;
+                slot.freshness = FormationFreshness::Fresh;
                 self.inner
                     .store
                     .record_guardian_code(
@@ -1153,14 +1156,15 @@ where
                     "an MG ended a bought seat before DKG"
                 );
                 slot.state = SlotState::Ended { seat_id };
-                slot.guardian_code = None;
                 slot.phase = SeatPhase::Ended;
                 recovery.ended.push(slot);
             }
             recovery.ended.sort_by_key(|slot| slot.index);
             recovery.slots = kept;
             for slot in &mut recovery.slots {
-                slot.guardian_code = None;
+                if let SlotState::Accepted { guardian_code, .. } = &mut slot.state {
+                    *guardian_code = None;
+                }
                 slot.phase = SeatPhase::Created;
             }
             recovery.reauthorization.get_or_insert(reason);

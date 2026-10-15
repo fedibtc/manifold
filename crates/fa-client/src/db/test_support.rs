@@ -176,8 +176,7 @@ impl FaStore {
             .is_none()
     }
 
-    /// Whether any legacy formation, creation, slot or guardian-code row
-    /// remains.
+    /// Whether any legacy formation, creation or slot row remains.
     pub(crate) async fn holds_creation_rows_for_test(&self) -> bool {
         let mut dbtx = self.database.begin_transaction_nc().await;
         for prefix in [
@@ -185,7 +184,6 @@ impl FaStore {
             FaDbPrefix::LegacySeat,
             FaDbPrefix::Slot,
             FaDbPrefix::Creation,
-            FaDbPrefix::GuardianCode,
         ] {
             if dbtx
                 .raw_find_by_prefix(&[prefix as u8])
