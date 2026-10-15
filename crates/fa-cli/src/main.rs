@@ -106,6 +106,19 @@ enum Command {
         #[arg(long)]
         run_timeout_secs: Option<u64>,
     },
+    /// Preview and buy the seats the creation still needs, then run it.
+    ///
+    /// Running this command approves the new preview; it uses the payer of
+    /// `--payment-federation-id`, or none for free seats.
+    BuyMissingSeats {
+        #[command(flatten)]
+        args: ResumeArgs,
+        /// Maximum duration of this run; defaults to ten minutes.
+        #[arg(long)]
+        run_timeout_secs: Option<u64>,
+    },
+    /// Cancel a creation before any of its seats is bought.
+    CancelCreation(ResumeArgs),
     /// Explicitly replace unfinished DKG ceremonies (best effort, no retries).
     RestartDkg(ResumeArgs),
     /// Print the latest durable/observed formation state.
@@ -922,6 +935,10 @@ async fn run(
         Command::Resume {
             run_timeout_secs: Some(seconds),
             ..
+        }
+        | Command::BuyMissingSeats {
+            run_timeout_secs: Some(seconds),
+            ..
         } => Duration::from_secs(*seconds),
         _ => DEFAULT_RUN_LIMIT,
     };
@@ -1047,6 +1064,33 @@ async fn run(
             output.snapshot(&client.state(), format)?;
             endpoint.close().await;
             result?;
+        }
+        Command::BuyMissingSeats { args: resume, .. } => {
+            let payment_federation_id = resume
+                .payment_federation_id
+                .as_deref()
+                .map(parse_payment_federation_id)
+                .transpose()?
+                .map(|id| fa_client::FederationId(id.to_string()));
+            let (client, endpoint) = open_existing(&resume, wallet_secret).await?;
+            let result = async {
+                let preview = client
+                    .preview_missing_seats(MgDiscoveryOptions::default())
+                    .await?;
+                client.buy_seats(&preview, payment_federation_id).await?;
+                run_until_settled(&client, resume_limit).await
+            }
+            .await;
+            output.snapshot(&client.state(), format)?;
+            endpoint.close().await;
+            result?;
+        }
+        Command::CancelCreation(resume) => {
+            let (client, endpoint) = open_existing(&resume, wallet_secret).await?;
+            let result = client.cancel_creation().await;
+            output.snapshot(&client.state(), format)?;
+            endpoint.close().await;
+            result.context("cancel the creation")?;
         }
         Command::RestartDkg(restart) => {
             let (client, endpoint) = open_existing(&restart, wallet_secret).await?;
@@ -1480,12 +1524,12 @@ fn settled(state: &FaState) -> Option<anyhow::Result<()>> {
                 ..
             } => {
                 return Some(Err(anyhow::anyhow!(
-                    "the seat purchase ended ({reason:?}); the creation needs a new preview"
+                    "the seat purchase ended ({reason:?}); approve new seats with `buy-missing-seats`"
                 )));
             }
             CreationStage::NeedsSeats { count, .. } => {
                 return Some(Err(anyhow::anyhow!(
-                    "the creation needs {count} more seats"
+                    "the creation needs {count} more seats; buy them with `buy-missing-seats`"
                 )));
             }
             CreationStage::Buying | CreationStage::Forming { .. } => creation.last_error,
@@ -1918,9 +1962,10 @@ impl WalletRootSecret {
     fn read_for(args: &AppArgs) -> anyhow::Result<Option<Self>> {
         let explicit_path = match &args.command {
             Command::Create(args) => args.wallet_secret_file.as_ref(),
-            Command::Resume { args, .. } | Command::RestartDkg(args) => {
-                args.wallet_secret_file.as_ref()
-            }
+            Command::Resume { args, .. }
+            | Command::BuyMissingSeats { args, .. }
+            | Command::CancelCreation(args)
+            | Command::RestartDkg(args) => args.wallet_secret_file.as_ref(),
             Command::PaymentWallet(args) => args.wallet_secret_file.as_ref(),
             Command::Init
             | Command::Status
