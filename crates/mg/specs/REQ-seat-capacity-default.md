@@ -31,7 +31,9 @@ Available RAM is `MemAvailable`, lowered to the cgroup headroom
 
 Admission sells up to the lowest of three limits on total seats:
 
-- the operator's maximum, which only the operator writes;
+- the operator's maximum, which only the operator writes. The u32 maximum
+  (4,294,967,295) means automatic: no operator cap, so the two runtime limits
+  decide;
 - a memory limit: available RAM plus the anonymous resident memory of the
   MG's seat processes, divided by the budget. Running seats count toward
   their own budget, so they do not lower the limit as they grow. It has no
@@ -44,6 +46,13 @@ The publication's `seat_memory_budget_mib` replaces the default budget
 So Fedi can raise or lower capacity across MGs without an operator action
 and without a release. An operator that wants Fedi to decide sets a high
 maximum.
+
+When the runtime limits shipped, a migration made the operator maximum
+automatic where it was from 1 to 8. The onboarding form had pre-filled a
+recommendation capped at 8, so such a value most likely was that
+recommendation, not an operator choice. Values above 8 and 0 (not selling)
+stay. The replaced value stays in `offer_state.pre_automatic_max_seats`, so it
+can be restored. The raise adds slots only, so the offer epoch stays.
 
 The MG writes both runtime limits at start, on each newly admitted
 publication, and every 5 minutes. The memory limit falls at once and rises

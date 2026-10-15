@@ -427,3 +427,49 @@ async fn stored_price_msats(db: &Db) -> Option<i64> {
         .await
         .unwrap()
 }
+
+#[tokio::test]
+async fn recommended_seat_limits_migrate_to_automatic() {
+    for (stored, expected, kept) in [
+        (0, 0, None),
+        (1, u32::MAX, Some(1)),
+        (8, u32::MAX, Some(8)),
+        (9, 9, None),
+        (11, 11, None),
+    ] {
+        let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+        sqlx::raw_sql(
+            "CREATE TABLE offer_state (\
+                 id INTEGER PRIMARY KEY NOT NULL CHECK (id = 1), \
+                 max_seats INTEGER NOT NULL CHECK (0 <= max_seats AND max_seats <= 4294967295)\
+             );",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query("INSERT INTO offer_state (id, max_seats) VALUES (1, ?)")
+            .bind(stored)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        sqlx::raw_sql(include_str!("../migrations/0008_runtime_seat_limits.sql"))
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let row: (i64, Option<i64>, i64, i64) = sqlx::query_as(
+            "SELECT max_seats, pre_automatic_max_seats, memory_max_seats, policy_max_seats \
+             FROM offer_state WHERE id = 1",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        let max = i64::from(u32::MAX);
+        assert_eq!(
+            row,
+            (i64::from(expected), kept, max, max),
+            "stored max_seats {stored}"
+        );
+    }
+}
