@@ -33,7 +33,37 @@ const FEDIMOD_ID_MAX_BYTES: usize = 64;
 const FEDIMOD_TITLE_MAX_BYTES: usize = 64;
 const FEDIMOD_COLOR_MAX_BYTES: usize = 32;
 const CURRENCY_ALIAS_MAX_BYTES: usize = 32;
-const COMMUNITY_INVITE_HRPS: [&str; 2] = ["fedi:community", "fedi:community2"];
+const COMMUNITY_V1_HRP: &str = "fedi:community";
+const COMMUNITY_V2_HRP: &str = "fedi:community2";
+
+/// The Fedi app's `SupportedCurrency` codes. The app formats any other code
+/// with a zero exchange rate, so MG accepts only these.
+const SUPPORTED_CURRENCY_CODES: [&str; 68] = [
+    "USD", "ARS", "AUD", "BDT", "BIF", "BOB", "BRL", "BTN", "BWP", "CAD", "CDF", "CHF", "CLP",
+    "CNY", "COP", "CRC", "CUP", "CZK", "DJF", "DOP", "ERN", "ETB", "EUR", "GBP", "GHS", "GTQ",
+    "HKD", "HNL", "IDR", "INR", "JPY", "KES", "KHR", "KRW", "LBP", "LKR", "PAB", "MMK", "MWK",
+    "MXN", "MYR", "MZN", "NAD", "NGN", "NIO", "NZD", "PEN", "PHP", "PKR", "PLN", "PYG", "RWF",
+    "SDG", "SOS", "SRD", "SSP", "THB", "TZS", "UAH", "UGX", "UYU", "VES", "VND", "ZAR", "ZMW",
+    "ZWL", "XAF", "XOF",
+];
+/// The Fedi app's `CurrencyAliases` names. `Intl.NumberFormat` throws on an
+/// unknown alias, so MG accepts only these.
+const CURRENCY_ALIASES: [&str; 14] = [
+    "cameroon",
+    "central_african_republic",
+    "chad",
+    "equatorial_guinea",
+    "gabon",
+    "republic_of_the_congo",
+    "benin",
+    "burkina_faso",
+    "cote_d_ivoire",
+    "guinea_bissau",
+    "mali",
+    "niger",
+    "senegal",
+    "togo",
+];
 
 /// One Fedi app setting served by FA metadata maintenance.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
@@ -184,14 +214,11 @@ impl FederationAppSetting {
                 invalid("must be a canonical decimal msat amount up to 21 million BTC")
             }),
             ValueKind::Currency => {
-                let iso = value.len() == 3 && value.bytes().all(|b| b.is_ascii_uppercase());
-                let alias = value.bytes().next().is_some_and(|b| b.is_ascii_lowercase())
-                    && value.bytes().all(|b| b.is_ascii_lowercase() || b == b'_');
-                if iso || alias {
+                if SUPPORTED_CURRENCY_CODES.contains(&value) || CURRENCY_ALIASES.contains(&value) {
                     Ok(())
                 } else {
                     Err(invalid(
-                        "must be a three-letter uppercase code or a lowercase currency alias",
+                        "must be a currency code or alias the Fedi app supports",
                     ))
                 }
             }
@@ -199,6 +226,11 @@ impl FederationAppSetting {
                 // The app hides an empty pinned message, so "" is the clear.
                 if value.is_empty() {
                     return Ok(());
+                }
+                // No Guardianito padding to preserve: refuse controls anywhere,
+                // which also bounds JSON escaping of the stored value.
+                if value.chars().any(char::is_control) {
+                    return Err(InvalidFederationMetadataValue::ControlCharacter { field });
                 }
                 let trimmed = validate_trimmed(
                     field,
@@ -310,38 +342,78 @@ where
     Ok(())
 }
 
-/// Accept what Fedi's `CommunityInvite::from_str` accepts: a bech32 string,
-/// compared case-insensitively, whose HRP is a community HRP and whose
-/// payload is a JSON object.
-fn validate_community_invite(entry: &str) -> Result<(), &'static str> {
-    let (hrp, data) = bech32::decode(&entry.to_lowercase())
-        .map_err(|_| "entries must be bech32 community invite codes")?;
-    if !COMMUNITY_INVITE_HRPS.contains(&hrp.as_str()) {
-        return Err("entries must be community invite codes");
-    }
-    serde_json::from_slice::<serde_json::Map<String, serde_json::Value>>(&data)
-        .map(|_| ())
-        .map_err(|_| "entries must carry a community invite payload")
+/// Fedi's `CommunityInviteV1` payload.
+#[derive(Deserialize)]
+struct CommunityInviteV1 {
+    #[allow(dead_code)]
+    community_meta_url: String,
 }
 
-/// Accept a Matrix room id in the shape the app requires (`!opaque:server`).
+/// Fedi's `CommunityInviteV2` payload.
+#[derive(Deserialize)]
+struct CommunityInviteV2 {
+    #[allow(dead_code)]
+    author_pubkey: nostr::PublicKey,
+    #[allow(dead_code)]
+    community_uuid_hex: String,
+    decryption_key: String,
+}
+
+/// Accept what Fedi's `CommunityInvite::from_str` accepts: the lowercased
+/// string decodes as bech32 with the V2 HRP and a V2 payload, or with the V1
+/// HRP and a V1 payload.
+fn validate_community_invite(entry: &str) -> Result<(), &'static str> {
+    use nostr::base64::Engine as _;
+    use nostr::base64::alphabet;
+    use nostr::base64::engine::{DecodePaddingMode, GeneralPurpose, GeneralPurposeConfig};
+
+    let (hrp, data) = bech32::decode(&entry.to_lowercase())
+        .map_err(|_| "entries must be bech32 community invite codes")?;
+    let payload = "entries must carry a valid community invite payload";
+    match hrp.as_str() {
+        COMMUNITY_V2_HRP => {
+            let invite: CommunityInviteV2 = serde_json::from_slice(&data).map_err(|_| payload)?;
+            // Fedi decodes the key with serde_with's standard base64, which
+            // ignores padding.
+            let engine = GeneralPurpose::new(
+                &alphabet::STANDARD,
+                GeneralPurposeConfig::new()
+                    .with_decode_padding_mode(DecodePaddingMode::Indifferent),
+            );
+            let key = engine.decode(&invite.decryption_key).map_err(|_| payload)?;
+            if key.len() != 32 {
+                return Err(payload);
+            }
+            Ok(())
+        }
+        COMMUNITY_V1_HRP => serde_json::from_slice::<CommunityInviteV1>(&data)
+            .map(|_| ())
+            .map_err(|_| payload),
+        _ => Err("entries must be community invite codes"),
+    }
+}
+
+/// Accept a Matrix room id as Fedi's Ruma parses it: `!` then a nonempty
+/// body, at most 255 bytes. Legacy ids carry `:server`; room version 12 ids
+/// are a bare hash.
 fn validate_matrix_room_id(entry: &str) -> Result<(), &'static str> {
     let shaped = entry.len() <= MATRIX_ROOM_ID_MAX_BYTES
         && !entry
             .chars()
             .any(|ch| ch.is_whitespace() || ch.is_control())
-        && entry
-            .strip_prefix('!')
-            .and_then(|rest| rest.split_once(':'))
-            .is_some_and(|(opaque, server)| !opaque.is_empty() && !server.is_empty());
+        && entry.strip_prefix('!').is_some_and(|rest| !rest.is_empty());
     if shaped {
         Ok(())
     } else {
-        Err("entries must be Matrix room ids like `!opaque:server`")
+        Err("entries must be Matrix room ids starting with `!`")
     }
 }
 
 /// One mod entry, limited to the fields the app reads.
+///
+/// The app's schema rejects an explicit `null` description or color and then
+/// drops the whole entry, so those fields deserialize as present-or-absent
+/// strings. It accepts a `null` image URL as absent.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 struct FediMod {
@@ -349,8 +421,17 @@ struct FediMod {
     title: String,
     url: String,
     image_url: Option<String>,
+    #[serde(default, deserialize_with = "present_string")]
     description: Option<String>,
+    #[serde(default, deserialize_with = "present_string")]
     color: Option<String>,
+}
+
+/// Deserialize a field that, when present, must be a string (not `null`).
+fn present_string<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<String>, D::Error> {
+    String::deserialize(deserializer).map(Some)
 }
 
 fn validate_fedimod(entry: &FediMod) -> Result<(), InvalidFederationMetadataValue> {
@@ -364,10 +445,11 @@ fn validate_fedimod(entry: &FediMod) -> Result<(), InvalidFederationMetadataValu
         validate_url(FIELD, image_url, FEDERATION_METADATA_ICON_URL_MAX_BYTES)?;
     }
     if let Some(description) = &entry.description {
+        // The app accepts an empty description.
         let trimmed = validate_trimmed(
             FIELD,
             description,
-            1,
+            0,
             FEDERATION_METADATA_WELCOME_MESSAGE_MAX_BYTES,
         )?;
         validate_visible(FIELD, trimmed)?;

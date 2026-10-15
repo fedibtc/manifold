@@ -356,15 +356,25 @@ fn msat_limits_are_canonical_and_bounded_by_the_bitcoin_supply() {
 }
 
 #[test]
-fn currency_accepts_iso_codes_and_app_aliases_only() {
+fn currency_accepts_only_codes_and_aliases_the_app_supports() {
     let setting = FederationAppSetting::DefaultCurrency;
-    for value in ["USD", "XAF", "cameroon", "cote_d_ivoire"] {
+    for value in ["USD", "XAF", "ZWL", "cameroon", "cote_d_ivoire", "togo"] {
         assert!(app(setting, value).is_ok(), "{value}");
     }
-    for value in ["", "US", "USDT", "Usd", "_niger", "côte", "US D", "usd1"] {
+    // Well-shaped but unknown to the app: an unknown alias makes
+    // `Intl.NumberFormat` throw, an unknown code shows a zero rate.
+    for value in [
+        "",
+        "usd",
+        "Usd",
+        "XYZ",
+        "AED",
+        "banana",
+        "us_dollars",
+        "togo ",
+    ] {
         assert!(app(setting, value).is_err(), "{value:?}");
     }
-    assert!(app(setting, &"a".repeat(33)).is_err());
 }
 
 #[test]
@@ -390,30 +400,65 @@ fn pinned_message_clears_with_empty_and_otherwise_matches_welcome_rules() {
     );
     assert!(app(setting, "safe\u{202E}txt").is_err());
     assert!(app(setting, "line\nbreak").is_err());
+    // Unlike the welcome message, control padding is refused too.
+    assert!(app(setting, "\u{b}Maintenance\u{b}").is_err());
+}
+
+fn v2_payload(decryption_key: &str) -> String {
+    serde_json::json!({
+        "author_pubkey": "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",
+        "community_uuid_hex": "00112233445566778899aabbccddeeff",
+        "decryption_key": decryption_key,
+    })
+    .to_string()
 }
 
 #[test]
-fn linked_communities_accept_v1_and_v2_invites_and_reject_lookalikes() {
+fn linked_communities_accept_only_invites_fedi_can_join() {
+    use nostr::base64::Engine as _;
+
     let setting = FederationAppSetting::AutojoinCommunities;
+    let key = nostr::base64::engine::general_purpose::STANDARD.encode([7u8; 32]);
     let v1 = community_invite(
         "fedi:community",
         r#"{"community_meta_url":"https://example.com/c.json"}"#,
     );
-    let v2 = community_invite("fedi:community2", r#"{"community_uuid_hex":"ab"}"#);
+    let v2 = community_invite("fedi:community2", &v2_payload(&key));
     assert!(app(setting, "[]").is_ok());
     assert!(app(setting, &serde_json::json!([v1, v2]).to_string()).is_ok());
     // Fedi lowercases before decoding, so an uppercase code still joins.
     assert!(app(setting, &serde_json::json!([v2.to_uppercase()]).to_string()).is_ok());
+    // serde_with's base64 decoder ignores padding.
+    let unpadded_key = nostr::base64::engine::general_purpose::STANDARD_NO_PAD.encode([7u8; 32]);
+    let unpadded = community_invite("fedi:community2", &v2_payload(&unpadded_key));
+    assert!(app(setting, &serde_json::json!([unpadded]).to_string()).is_ok());
 
-    let wrong_hrp = community_invite("fedi:group", r#"{"id":"x"}"#);
-    let not_json = community_invite("fedi:community2", "not json");
+    let short_key = nostr::base64::engine::general_purpose::STANDARD.encode([7u8; 31]);
+    let url_safe_key = nostr::base64::engine::general_purpose::URL_SAFE.encode([0xfbu8; 32]);
     let mut bad_checksum = v2.clone();
     let last = bad_checksum.pop().unwrap();
     bad_checksum.push(if last == 'q' { 'p' } else { 'q' });
+    for invite in [
+        community_invite("fedi:group", r#"{"community_meta_url":"https://x.com"}"#),
+        community_invite("fedi:community2", "not json"),
+        community_invite("fedi:community", "{}"),
+        community_invite("fedi:community2", "{}"),
+        community_invite("fedi:community", r#"{"community_meta_url":7}"#),
+        // Each HRP carries its own payload version.
+        community_invite("fedi:community", &v2_payload(&key)),
+        community_invite(
+            "fedi:community2",
+            r#"{"community_meta_url":"https://example.com/c.json"}"#,
+        ),
+        community_invite("fedi:community2", &v2_payload(&short_key)),
+        community_invite("fedi:community2", &v2_payload(&url_safe_key)),
+        community_invite("fedi:community2", &v2_payload(&key).replace("79be", "zzbe")),
+        bad_checksum,
+    ] {
+        let value = serde_json::json!([invite]).to_string();
+        assert!(app(setting, &value).is_err(), "{value}");
+    }
     for value in [
-        serde_json::json!([wrong_hrp]).to_string(),
-        serde_json::json!([not_json]).to_string(),
-        serde_json::json!([bad_checksum]).to_string(),
         // The same community twice, differing only in case.
         serde_json::json!([v2, v2.to_uppercase()]).to_string(),
         serde_json::json!(v2).to_string(),
@@ -438,15 +483,22 @@ fn linked_communities_accept_v1_and_v2_invites_and_reject_lookalikes() {
 }
 
 #[test]
-fn group_chats_require_unique_matrix_room_ids() {
+fn group_chats_accept_legacy_and_v12_matrix_room_ids() {
     let setting = FederationAppSetting::DefaultGroupChats;
     assert!(app(setting, "[]").is_ok());
     assert!(app(setting, r#"["!abc:matrix.org","!def:matrix.org"]"#).is_ok());
+    // Room version 12 ids are the bare create-event hash, without a server.
+    assert!(
+        app(
+            setting,
+            r#"["!31hneApxJ_1o-63DmFrpeqnkFfWppnzWso1JvH3ogLM"]"#
+        )
+        .is_ok()
+    );
     for value in [
         r#"["abc:matrix.org"]"#,
-        r#"["!abc"]"#,
-        r#"["!:matrix.org"]"#,
-        r#"["!abc:"]"#,
+        r#"["!"]"#,
+        r##"["#alias:matrix.org"]"##,
         r#"["!a b:matrix.org"]"#,
         r#"["!abc:matrix.org","!abc:matrix.org"]"#,
         r#"[1]"#,
@@ -483,6 +535,10 @@ fn fedimods_accept_the_app_shape_with_public_urls_only() {
     });
     assert!(app(setting, "[]").is_ok());
     assert!(app(setting, &serde_json::json!([full, minimal]).to_string()).is_ok());
+    let mut lenient = minimal.clone();
+    lenient["imageUrl"] = serde_json::Value::Null;
+    lenient["description"] = "".into();
+    assert!(app(setting, &serde_json::json!([lenient]).to_string()).is_ok());
 
     let with = |key: &str, value: serde_json::Value| {
         let mut entry = minimal.clone();
@@ -502,6 +558,9 @@ fn fedimods_accept_the_app_shape_with_public_urls_only() {
         with("title", "a\u{200B}b".into()),
         with("id", " ".into()),
         with("unexpected", "field".into()),
+        // The app's schema drops an entry with a null description or color.
+        with("description", serde_json::Value::Null),
+        with("color", serde_json::Value::Null),
         // The app's field is camelCase; a snake_case key would be ignored.
         with("image_url", "https://example.com/x.png".into()),
         without_url,
@@ -534,4 +593,33 @@ fn app_settings_check_the_raw_cap_before_parsing() {
             "{setting:?}",
         );
     }
+}
+
+#[test]
+fn app_settings_at_their_caps_stay_a_small_share_of_the_object_cap() {
+    // A stored value is a JSON string. App-setting values hold no raw control
+    // characters except JSON whitespace, so escaping at most doubles them. A
+    // newline-padded empty list is valid and is that worst case.
+    for setting in [
+        FederationAppSetting::AutojoinCommunities,
+        FederationAppSetting::DefaultGroupChats,
+        FederationAppSetting::FediMods,
+    ] {
+        let max_bytes = setting.raw_max_bytes();
+        let padded = format!("[{}]", "\n".repeat(max_bytes - 2));
+        assert_eq!(app(setting, &padded), Ok(()), "{setting:?}");
+        let stored = serde_json::to_string(&padded).unwrap().len();
+        assert_eq!(stored, 2 * max_bytes, "{setting:?}");
+    }
+    let stored = FederationAppSetting::ALL
+        .into_iter()
+        .map(|setting| 2 * setting.raw_max_bytes() + 2 + setting.key().len() + 4)
+        .sum::<usize>();
+    // The Guardianito fields' raw padding can already exceed the object cap
+    // on its own, and MG refuses such a target before voting. The app
+    // settings add only a bounded share on top.
+    assert!(
+        stored < FEDERATION_METADATA_OBJECT_MAX_BYTES / 4,
+        "app settings can store {stored} bytes"
+    );
 }
