@@ -15,6 +15,7 @@ mod maintenance;
 mod meta_write;
 mod mg;
 mod ports;
+mod purchase;
 mod run;
 mod selection;
 mod setup_payment_federations;
