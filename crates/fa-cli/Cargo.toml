@@ -9,7 +9,7 @@ repository.workspace = true
 anyhow = "1"
 bitcoin_hashes = "0.14"
 clap = { version = "4", features = ["derive"] }
-fa-client = { path = "../fa-client", features = ["dev-pinned-formation"] }
+fa-client = { path = "../fa-client" }
 fedi-decentralized-domain = { path = "../domain" }
 fedi-decentralized-federation-preview = { path = "../federation-preview" }
 fedi-decentralized-manifold-environment = { path = "../manifold-environment" }

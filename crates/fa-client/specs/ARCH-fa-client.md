@@ -13,9 +13,8 @@ secret-exclusion, and replay invariants that make the money path safe.
 ## Scope
 
 The current product path implements advertisement preview through selected-set
-payment, DKG, and invite-code recovery. The lower-level pinned-locator driver
-is excluded from the default public API and exists only behind the
-`dev-pinned-formation` feature for CLI diagnostics and protocol tests. A
+payment, DKG, and invite-code recovery. Every seat comes from a verified
+selection; there is no pinned-locator path. A
 locator is dialing data plus the MG
 commitment-verification key — an out-of-band fact, never an issuer attestation
 or a consumer trust verdict. Registry discovery is implemented as a
@@ -47,9 +46,11 @@ The optional cap has a default: a serialized intent without it decodes to no
 cap and a capless intent serializes without the field, while any *unknown*
 field stays rejected. Durable FA storage is a separate fail-closed schema:
 schema 11 also persists the selected major/minor/vendor DKG identity beside
-the selected-vs-pinned mode, durable verifier provenance, selected preview
+the optional explicit payer, durable verifier provenance, selected preview
 deadline, exact aggregate reservation identity, commercial-history tombstone,
-and wallet-output tombstone. Every older record must be
+and wallet-output tombstone. A schema 11 formation from the removed pinned
+mode cannot be loaded, because its MGs have no authenticated identity; opening
+it fails with reset guidance. Every older record must be
 reset rather than migrated because it predates the production compatibility
 baseline. Subsequent schema changes are governed by
 [`GATE-production-compatibility`](../../../specs/GATE-production-compatibility.md).
@@ -86,12 +87,12 @@ payer selection. Binding mismatches, storage errors, and lost or ambiguous
 results after journal persistence keep the exact formation durable and
 recover-probe the deterministic id before freshness or policy on resume.
 
-The diagnostic pinned path parks when the cap is absent or exceeded and for
-every replacement aggregate after its one-shot authorization. Before any
-output generation, the selected product path never publishes or accepts that
-second exact-quote authorization action. It instead returns typed
+A formation parks for explicit authorization only after output generation,
+for a replacement aggregate after its one-shot authorization. Before any
+output generation it never publishes or accepts an exact-quote authorization
+action. It instead returns typed
 `SelectionReauthorizationRequired` and value-safely restores durable `Idle`.
-If a process dies before cleanup, schema 11 preserves selected mode and approval
+If a process dies before cleanup, schema 11 preserves the payer and approval
 expiry: reopen exposes no superseded authorization action, and resume either continues the still-live
 exact set or performs the same typed cleanup. A cloned live approval can then
 retry a different ready payer. An unavailable or replacement MG always
@@ -135,14 +136,11 @@ Selected formation persists the original FA range and the chosen
 major/minor/vendor DKG identity. Quote-time checks accept patch or prerelease
 differences inside both; replacements and restart recovery remain fixed to that
 identity. Stored quotes must name an exact build inside both persisted constraints.
-The diagnostic pinned path accepts only a range containing one patch release.
-That range determines its `major.minor+fedi` DKG identity before any durable or
-remote work; the ordinary quote-time live gate still checks every pinned MG.
 
-The callback-aware pinned-formation entry point accepts one
-`DkgCompletionCallback` created by the consumer for the initiating app
-installation. FA derives the pinned set's common DKG identity from the single
-allowed patch, then persists the bearer before quotes, payments, seat creation,
+The callback-aware entry points `pay_and_create_with_callback` and
+`create_without_payer_with_callback` accept one `DkgCompletionCallback`
+created by the consumer for the initiating app installation. FA persists the
+bearer with the selected DKG identity before quotes, payments, seat creation,
 or DKG and sends the same callback and idempotency key to every MG in the
 signed `StartDkg` wave. The ordinary entry point leaves the optional
 callback absent. An ordinary resume repeats the idempotent `StartDkg` wave
@@ -170,8 +168,7 @@ publisher has no authenticated set of federations to fund from, so it arranges
 no payment and can only take seats an MG offers at a price of zero. This is
 what makes the first federation in a deployment formable, before any ecash to
 pay with exists. The verified product path represents that case through
-`create_without_payer`; the diagnostic pinned path is not required for
-bootstrap.
+`create_without_payer`.
 
 Paid formation additionally fetches
 the common kind-37707 setup-payment set, authenticates it against the
@@ -267,13 +264,7 @@ from the advertised iroh endpoint and the self-attested commitment-signing
 facts.
 
 Every MVP seat is subject to that complete PeerBadge verification. There is no
-unverified FA-owned, pinned, or bring-your-own exception in the product path.
-The separate `insecure_discover_untrusted_pinned_mgs` query exists only for explicit
-development/test consumers that enable `dev-pinned-formation` alongside the
-already-diagnostic pinned formation driver.
-It still authenticates the event and advertisement, freshness, compatibility,
-capacity, and dialing material, but deliberately projects no credential or
-trust conclusion and cannot construct a selection approval.
+unverified FA-owned, pinned, or bring-your-own exception.
 
 `preview_mg_selection` is the read-only public surface over
 enumerate → admit → select: it returns the selected seat set, the checked
@@ -356,8 +347,7 @@ objects, trust conclusions, or lifecycle transitions:
 `FormationIntent` itself rejects invalid construction and decoding. The creation
 APIs additionally expose side-effect-free, operation-specific preflights for
 consumers: selected creation validates the sealed seat count, preview age,
-explicit payer, and cap; the development-only pinned creation preflight
-validates a single-patch range, locator count, and unique MG keys.
+explicit payer, and cap.
 Timing options likewise have private fields and checked construction; invalid
 runtime or lease bounds cannot reach identity, durable state, lease, wallet, or
 network access.
@@ -428,8 +418,8 @@ unpaid paid quote as one barrier and carries the authorization forward only
 after every sibling retains unchanged commercial terms. It then repeats the
 value-free exact funding preflight and resolves every MG transport before
 durably setting `payment_outputs_started`. The next fallible effect is the
-wallet output-generation poll. Changed terms return the pinned path to
-aggregate readiness; the selected path restores `Idle` for a fresh approval.
+wallet output-generation poll. Changed terms restore `Idle` for a fresh
+approval.
 The FA replays a stored free quote exactly until the MG signs a refusal, so a
 lost acceptance response cannot allocate a second quote-derived seat. In a
 selected all-free formation, that signed refusal consumes the exact admission
@@ -469,10 +459,10 @@ dropping a capability or reservation id is never release. Current policy
 replaces only operations the wallet proves safe. Per-seat progress is
 diagnostic and carries independent recovery facts. Public seat progress,
 payment requirement, and replacement rows expose the badge-vouched identity
-of their assigned — for a replacement row, outgoing — MG when one exists,
+of their assigned — for a replacement row, outgoing — MG,
 and derive the two-word MG name from it locally
-([ARCH-service-manifold-guardian](../../service-manifold-guardian/specs/ARCH-service-manifold-guardian.md));
-pinned rows expose none. The identity is presentation material: the locator
+([ARCH-service-manifold-guardian](../../service-manifold-guardian/specs/ARCH-service-manifold-guardian.md)).
+The identity is presentation material: the locator
 remains the protocol-owned dialing and verification binding, and a
 replacement approval swaps a row's exposed identity together with its
 admission.

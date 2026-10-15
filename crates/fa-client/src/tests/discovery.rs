@@ -429,32 +429,6 @@ async fn missing_holder_authorization_is_rejected() {
 }
 
 #[tokio::test]
-async fn insecure_untrusted_pinned_discovery_accepts_missing_holder_authorization_only_as_locator()
-{
-    let now = fedimint_core::time::duration_since_epoch().as_secs();
-    let mg = mg_keys(1);
-    let mut unsigned = payload(&mg, Vec::new());
-    unsigned.issued_at = now - 60;
-    unsigned.expires_at = now + 3_600;
-    let event = ad_event_at(&mg, unsigned, now - 30);
-    let discovery = crate::MgRegistryQuery::new(registry(vec![event]))
-        .insecure_discover_untrusted_pinned_mgs(
-            &requirements(),
-            crate::MgDiscoveryOptions::default(),
-        )
-        .await
-        .unwrap();
-
-    assert!(discovery.rejected.is_empty());
-    assert_eq!(discovery.candidates.len(), 1);
-    assert_eq!(discovery.candidates[0].mg_id, mg.public_key());
-    assert_eq!(
-        discovery.candidates[0].locator.service_pubkey,
-        service_pubkey(&mg)
-    );
-}
-
-#[tokio::test]
 async fn expired_advertisement_is_rejected() {
     let mg = mg_keys(1);
     let mut payload = self_authorized_payload(&mg);

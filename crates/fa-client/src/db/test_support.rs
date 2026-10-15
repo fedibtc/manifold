@@ -63,6 +63,45 @@ impl FaStore {
         dbtx.commit_tx().await;
     }
 
+    /// The active formation row and its first seat row, as stored JSON.
+    pub(crate) async fn raw_formation_rows_for_test(
+        &self,
+    ) -> (serde_json::Value, serde_json::Value) {
+        let mut dbtx = self.database.begin_transaction_nc().await;
+        let formation: serde_json::Value = serde_json::from_slice(
+            &dbtx
+                .raw_get_bytes(&DatabaseKeyPrefix::to_bytes(&ActiveFormationKey))
+                .await
+                .expect("test raw read succeeds")
+                .expect("test formation exists"),
+        )
+        .expect("stored formation is JSON");
+        let seat_key = SeatKey {
+            formation_id: formation["formation_id"]
+                .as_str()
+                .expect("stored formation id is a string")
+                .to_owned(),
+            index: 0,
+        };
+        let seat = serde_json::from_slice(
+            &dbtx
+                .raw_get_bytes(&DatabaseKeyPrefix::to_bytes(&seat_key))
+                .await
+                .expect("test raw read succeeds")
+                .expect("test seat exists"),
+        )
+        .expect("stored seat is JSON");
+        (formation, seat)
+    }
+
+    /// Rewrite the active formation as one from the removed pinned mode.
+    pub(crate) async fn mark_formation_pinned_for_test(&self) {
+        self.mutate_active_formation_json_for_test(|formation| {
+            formation.insert("creation_mode".to_owned(), "pinned".into());
+        })
+        .await;
+    }
+
     pub(crate) async fn remove_callback_field_for_test(&self) {
         self.mutate_active_formation_json_for_test(|formation| {
             formation.remove("dkg_completion_callback");

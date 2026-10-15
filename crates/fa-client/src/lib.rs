@@ -36,8 +36,6 @@ pub use discovery::{
     MG_ADVERTISEMENT_MAX_HOLDER_AUTHORIZATIONS, MG_DISCOVERY_TIMEOUT, MgCandidateRequirements,
     MgDiscovery, MgDiscoveryOptions, MgRegistryQuery, RejectedAdvertisement,
 };
-#[cfg(any(test, feature = "dev-pinned-formation"))]
-pub use discovery::{InsecureUntrustedPinnedMg, InsecureUntrustedPinnedMgDiscovery};
 pub use error::{
     AbandonUnavailableReason, Capability, FaError, FaErrorCode, FaResult, MgCause, MgFailure,
     MgOperation, SelectionReauthorizationReason,
@@ -496,7 +494,7 @@ where
                     self.inner
                         .progress
                         .send_replace(FaStatus::Formation(recovery.snapshot.clone()));
-                    self.resume_pinned(*recovery, options, deadline, &lease)
+                    self.resume_formation(*recovery, options, deadline, &lease)
                         .await
                 }
                 db::FaRecovery::Restored(snapshot)

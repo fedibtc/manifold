@@ -24,7 +24,7 @@ TLS certificate.
   `payer` module) on the shared `crates/locked-payments` protocol crate. The
   library implements consumer-neutral state, registry discovery, a verified advertisement-only
   preview, explicit-payer Pay-and-create, selected all-zero bootstrap without a
-  payer, pinned diagnostic formation, exact
+  payer, exact
   payment recovery, DKG, invite-code recovery, post-DKG seat-binding
   publication, typed post-formation metadata maintenance, and post-formation
   liquidity orchestration

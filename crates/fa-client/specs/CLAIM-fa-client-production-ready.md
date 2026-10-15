@@ -92,7 +92,7 @@ proof re-derivation over the extended envelope.
   terminal state that cannot publish `Formed`. The cumulative transition
   budgets from start or supported resume to terminal outcome fit the configured
   formation deadline or recovery objective.
-- The consumer uses only the documented feature envelope. Pinned-locator
+- The consumer uses only the documented feature envelope. Selected-set
   formation, optional authenticated setup-payment funding, DKG, seat-binding
   publication and readback, invite recovery, read-only verified MG discovery,
   strict PeerBadge selection at or above the environment minimum,

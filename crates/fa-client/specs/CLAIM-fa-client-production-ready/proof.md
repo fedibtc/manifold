@@ -6,7 +6,7 @@ assumption or inspect an implementation to do so.
 
 ## Scope
 
-The property covers the documented feature envelope: pinned-locator formation,
+The property covers the documented feature envelope: selected-set formation,
 optional authenticated setup-payment funding, DKG, seat-binding publication and
 readback, invite recovery, and read-only verified MG discovery. It excludes
 trust-based selection, registry-backed creation, post-formation maintenance,
@@ -65,7 +65,7 @@ The following are axioms, copied from
    terminal state that cannot publish `Formed`. The cumulative transition
    budgets from start or supported resume to terminal outcome fit the configured
    formation deadline or recovery objective.
-9. The consumer uses only the documented feature envelope: pinned-locator
+9. The consumer uses only the documented feature envelope: selected-set
    formation, optional authenticated setup-payment funding, DKG, seat-binding
    publication and readback, invite recovery, and read-only verified MG
    discovery; it excludes trust-based selection, registry-backed creation,
