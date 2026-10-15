@@ -49,7 +49,7 @@ verified MG and badge holder, and one state: `picked` with its previewed plan,
 `bound` to its exact signed quote, or `accepted` with its seat id,
 guardian-fee account, and exact Fedimint build. The creation row holds the
 creation's inputs, the formation's progress (its id, invite, and metadata
-target), the reason the last slot left, and the last purchase: its id,
+target), the reason the last slot left, and the last purchase: its
 selected major/minor/vendor DKG identity, optional explicit payer, and the
 preview approval until the first bind. The purchase runs while some slot is
 not accepted. The pool is the accepted slots, and the formation runs when
@@ -423,15 +423,17 @@ the stored signed directory and compiled split before voting.
 
 `FaClient::state` and the `observe` watch expose one `FaState`: `Idle`;
 `Restoring` while an opened restored-mnemonic FA has an unfinished backup
-check; `Creating` with the name, size, pool, and one stage (`NeedsSeats` with
-a count and any typed reauthorization reason, `Buying` with the purchase, or
-`Forming` with the formation); and `Active` for a formed or imported
-federation. The run loop does the backup lookup as its first work and retries
+check; `Creating` with the formation id, name, size, DKG identity once bought
+for, the picked slots with their per-seat progress, freshness, last error, and
+one stage (`NeedsSeats` with the count of empty slots and any typed
+reauthorization reason, `Buying`, or `Forming` with the formation phase and
+invite); and `Active` for a formed or imported federation. The state is
+derived from the stored slots; there is no separate purchase, pool, or
+formation snapshot. The pool is the slots that hold a seat id. The run loop does the backup lookup as its first work and retries
 failures; user actions fail as busy until it ends. The recovery requirement is
 reconstructed on reopen from the caller's persisted mnemonic provenance and the
 FA database's environment-scoped completion marker.
 
-Purchase phases are `Preparing` and `AcquiringSeats`.
 Formation phases are `PreparingDkg`, `DkgUnderway`, `DkgComplete`,
 `PublishingSeatBindings`; a formed federation appears only as `Active`. State is
 published through a watch channel independently of the run loop. Durable phases advance atomically

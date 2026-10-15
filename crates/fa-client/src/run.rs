@@ -10,12 +10,12 @@ use fedimint_core::runtime::sleep;
 use futures::future::{Either, select};
 use tokio::sync::{MutexGuard, Notify, futures::Notified, watch};
 
-use crate::db::FormationRecovery;
+use crate::db::CreationRecovery;
 use crate::formation::DriverRun;
 use crate::{
     FaClient, FaError, FaIdentity, FaPayments, FaResult, FaState, FederationConsensusReader,
     FederationSnapshot, FormationFreshness, FormationRunOptions, ManifoldGuardianConnector,
-    RecoveryCheck, db::PurchaseRecovery, state::FaStatus,
+    RecoveryCheck, state::FaStatus,
 };
 
 /// Longest wait before the loop retries failed work.
@@ -125,8 +125,8 @@ impl Drop for Driving<'_> {
 enum Work {
     /// Look up and verify the backup of a restored mnemonic.
     Recover,
-    Purchase(PurchaseRecovery),
-    Formation(FormationRecovery),
+    /// Buy the creation's picked slots, or form its full slots.
+    Creation(Box<CreationRecovery>),
     Reconcile(FederationSnapshot),
 }
 
@@ -240,14 +240,10 @@ where
         if status.recovery.is_some() {
             return Ok(Some(Work::Recover));
         }
-        if let Some(recovery) = self.inner.store.load_purchase(fa_id).await? {
-            return Ok(Some(Work::Purchase(recovery)));
-        }
-        if let Some(recovery) = self.inner.store.load_formation(fa_id).await? {
-            return Ok(Some(Work::Formation(recovery)));
-        }
-        if status.creation.is_some() {
-            return Ok(None);
+        if let Some(creation) = self.inner.store.load_creation(fa_id).await? {
+            // A creation that needs seats waits for the user.
+            return Ok((creation.purchase.is_some() || creation.is_full())
+                .then(|| Work::Creation(Box::new(creation))));
         }
         Ok(status
             .federation
@@ -267,14 +263,16 @@ where
                 }
                 result
             }
-            Work::Purchase(recovery) => match self.drive_purchase(recovery, fa_id, run).await {
-                // The purchase ended without some of its seats. Each seat
-                // that left recorded why, and the creation needs a new
-                // preview.
-                Err(FaError::SelectionReauthorizationRequired { .. }) => Ok(()),
-                result => result,
-            },
-            Work::Formation(recovery) => self.drive_formation(recovery, fa_id, run).await,
+            Work::Creation(creation) if creation.purchase.is_some() => {
+                match self.drive_purchase(*creation, fa_id, run).await {
+                    // The purchase ended without some of its seats. Each
+                    // seat that left recorded why, and the creation needs
+                    // a new preview.
+                    Err(FaError::SelectionReauthorizationRequired { .. }) => Ok(()),
+                    result => result,
+                }
+            }
+            Work::Creation(creation) => self.drive_formation(*creation, fa_id, run).await,
             Work::Reconcile(snapshot) => {
                 self.begin_recheck();
                 let result = self.reconcile_federation(snapshot, fa_id, run).await;

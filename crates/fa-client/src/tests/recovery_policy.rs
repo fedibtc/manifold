@@ -36,7 +36,7 @@ async fn a_rejected_payment_leaves_and_prepared_seats_replay() {
         usize::from(MIN_FEDERATION_SIZE) - 1
     );
     assert_eq!(
-        client.status().reauthorization,
+        reauthorization(&client.status()),
         Some(SelectionReauthorizationReason::SelectedPayerUnavailable)
     );
 }

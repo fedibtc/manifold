@@ -275,7 +275,7 @@ async fn assert_restored(restored: &TestClient, source: &TestClient, generation:
         source_federation.federation_name
     );
     let status = restored.status();
-    assert!(status.creation.is_none() && status.purchase.is_none() && status.formation.is_none());
+    assert!(status.creation.is_none() && !is_buying(&status) && !is_forming(&status));
     assert!(
         restored
             .inner

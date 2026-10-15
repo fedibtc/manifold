@@ -1528,15 +1528,12 @@ fn settled(state: &FaState) -> Option<anyhow::Result<()>> {
                     "the seat purchase ended ({reason:?}); the creation needs a new preview"
                 )));
             }
-            // A full pool forms next.
-            CreationStage::NeedsSeats { count: 0, .. } => None,
             CreationStage::NeedsSeats { count, .. } => {
                 return Some(Err(anyhow::anyhow!(
                     "the creation needs {count} more seats"
                 )));
             }
-            CreationStage::Buying(purchase) => purchase.last_error,
-            CreationStage::Forming(formation) => formation.last_error,
+            CreationStage::Buying | CreationStage::Forming { .. } => creation.last_error,
         },
         FaState::Active(federation) => {
             if federation.last_error.is_none()

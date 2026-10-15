@@ -181,11 +181,9 @@ fn check(scenario: Scenario, crashes: &[(usize, CrashPoint)], outcome: &Outcome)
             .iter()
             .map(|seat| seat.seat_id.clone())
             .collect::<Vec<_>>(),
-        None => outcome
-            .status
-            .pool
-            .iter()
-            .map(|seat| seat.seat_id.clone())
+        None => accepted_seats(&outcome.status)
+            .into_iter()
+            .filter_map(|seat| seat.seat_id)
             .collect(),
     };
     let pooled = seated
@@ -255,7 +253,7 @@ fn check(scenario: Scenario, crashes: &[(usize, CrashPoint)], outcome: &Outcome)
                 "{context}: the refused payment comes back once"
             );
             assert_eq!(
-                outcome.status.pool.len(),
+                accepted_seats(&outcome.status).len(),
                 usize::from(MIN_FEDERATION_SIZE) - 1,
                 "{context}: the refused seat left the pool; {:?}",
                 outcome.status

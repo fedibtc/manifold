@@ -119,12 +119,12 @@ The bridge exposes four concepts:
 - a stream of typed status snapshots.
 
 `FaState::Idle` means no creation and no federation. A creation always carries
-its name, size, pool, and stage. The front end does not reconstruct
-these values from nullable fields.
+its formation id, name, size, picked slots, and stage: `NeedsSeats`, `Buying`,
+or `Forming`. A slot with a seat id is bought. The front end does not
+reconstruct these values from nullable fields.
 
-The active phase is one of `Preparing`,
-`AcquiringSeats`, `PreparingDkg`, `DkgUnderway`, `PublishingSeatBindings`, or
-`Formed`. Immediate command
+A forming creation is in one of `PreparingDkg`, `DkgUnderway`, `DkgComplete`,
+or `PublishingSeatBindings`. A formed federation is `FaState::Active`. Immediate command
 failures and the snapshot's last operation error use stable typed categories;
 UI behavior must not parse human-readable Rust error strings.
 

@@ -295,7 +295,6 @@ impl FaStore {
         // A kept unaccepted seat was bound, so the purchase approval is used.
         if creation.pending().next().is_some() {
             creation.stored.purchase = Some(StoredPurchase {
-                purchase_id: legacy.formation_id,
                 fedimintd_dkg_version: legacy.intent.fedimintd_dkg_version,
                 payment_federation_id,
                 approval: None,
@@ -318,8 +317,6 @@ impl FaStore {
                     mg_id: slot.mg_id,
                     locator: slot.locator.clone(),
                     seat_id: accepted.seat_id.clone(),
-                    guardian_fee_account: accepted.guardian_fee_account.clone(),
-                    fedimintd_version: accepted.fedimintd_version.clone(),
                     guardian_code: None,
                 });
             }

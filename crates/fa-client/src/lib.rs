@@ -96,10 +96,9 @@ pub use setup_payment_federations::AdmittedSetupPaymentFederation;
 pub use stability_pool_common::Account as GuardianFeeAccount;
 pub use state::{
     CreationSnapshot, CreationStage, FaState, FederationSeat, FederationSnapshot,
-    FedimintdVersionRange, FormationFreshness, FormationId, FormationPhase, FormationSnapshot,
-    MAX_FEDERATION_SIZE, MAX_FEDERATION_SIZE_EXCLUSIVE, MAX_GUARDIAN_FEE_PPM, MIN_FEDERATION_SIZE,
-    PlanPreference, PoolSeat, PurchasePhase, RecoveryCheck, ResolvedSeatPurchase, SeatPhase,
-    SeatProgress, SeatPurchaseSnapshot, validate_federation_name,
+    FedimintdVersionRange, FormationFreshness, FormationId, FormationPhase, MAX_FEDERATION_SIZE,
+    MAX_FEDERATION_SIZE_EXCLUSIVE, MAX_GUARDIAN_FEE_PPM, MIN_FEDERATION_SIZE, PlanPreference,
+    RecoveryCheck, SeatPhase, SeatProgress, validate_federation_name,
 };
 pub use unavailable::{
     UnavailableFaFeeAccountProvider, UnavailableFederationConsensusReader,

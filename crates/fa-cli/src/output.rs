@@ -229,7 +229,16 @@ impl<'a> CliOutput<'a> {
                 recovery.last_error
             }
             FaState::Creating(creation) => {
-                writeln!(self.stdout, "pool seats: {}", creation.pool.len())?;
+                let accepted = creation
+                    .slots
+                    .iter()
+                    .filter(|slot| slot.seat_id.is_some())
+                    .count();
+                writeln!(
+                    self.stdout,
+                    "seats: {accepted} of {}",
+                    creation.federation_size.0
+                )?;
                 match &creation.stage {
                     CreationStage::NeedsSeats {
                         count,
@@ -239,17 +248,15 @@ impl<'a> CliOutput<'a> {
                         if let Some(reason) = reauthorization {
                             writeln!(self.stdout, "purchase ended: {reason:?}")?;
                         }
-                        None
                     }
-                    CreationStage::Buying(purchase) => {
-                        writeln!(self.stdout, "purchase state: {:?}", purchase.phase)?;
-                        purchase.last_error
+                    CreationStage::Buying => {
+                        writeln!(self.stdout, "creation state: buying seats")?;
                     }
-                    CreationStage::Forming(formation) => {
-                        writeln!(self.stdout, "formation state: {:?}", formation.phase)?;
-                        formation.last_error
+                    CreationStage::Forming { phase, .. } => {
+                        writeln!(self.stdout, "formation state: {phase:?}")?;
                     }
                 }
+                creation.last_error
             }
             FaState::Active(federation) => {
                 writeln!(self.stdout, "{}", federation.federation_invite.0)?;

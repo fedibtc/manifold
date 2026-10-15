@@ -28,9 +28,8 @@ use nostr_sdk::{Event, PublicKey};
 use stability_pool_common::Account;
 
 use crate::{
-    FaError, FaResult, FormationFreshness, FormationId, FormationPhase, FormationSnapshot,
-    PurchasePhase, ResolvedSeatPurchase, SeatPhase, SeatProgress, SeatPurchaseSnapshot,
-    state::FaStatus,
+    CreationSnapshot, CreationStage, FaError, FaResult, FormationFreshness, FormationId,
+    FormationPhase, SeatPhase, SeatProgress, state::FaStatus, state::ResolvedSeatPurchase,
 };
 
 // Persisted-format changes are governed by GATE-production-compatibility
@@ -244,7 +243,6 @@ struct StoredCreation {
 /// What one purchase of the creation's empty slots shares.
 #[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
 struct StoredPurchase {
-    purchase_id: FormationId,
     /// Major/minor/vendor identity of every seat the purchase buys.
     fedimintd_dkg_version: FedimintdDkgVersion,
     /// Explicit consumer-selected ready payer, or `None` for the verified
@@ -287,9 +285,9 @@ struct StoredSlot {
     state: SlotState,
 }
 
-#[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
+#[derive(Clone, Debug, PartialEq, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
-enum SlotState {
+pub(crate) enum SlotState {
     /// No quote is bound. The previewed plan gives the quote exactly the
     /// previewed price.
     Picked { plan: Plan },
@@ -313,22 +311,23 @@ impl StoredSlot {
         match &self.state {
             SlotState::Accepted {
                 seat_id,
-                guardian_fee_account,
                 fedimintd_version,
+                ..
             } => Some(AcceptedSlot {
                 slot: self,
                 seat_id,
-                guardian_fee_account,
                 fedimintd_version,
             }),
             SlotState::Picked { .. } | SlotState::Bound { .. } => None,
         }
     }
+}
 
-    fn bound_quote(&self) -> Option<&SignedResponse<GetQuoteResponse>> {
-        match &self.state {
-            SlotState::Bound { quote } => Some(quote),
-            SlotState::Picked { .. } | SlotState::Accepted { .. } => None,
+impl SlotState {
+    pub(crate) fn bound_quote(&self) -> Option<&SignedResponse<GetQuoteResponse>> {
+        match self {
+            Self::Bound { quote } => Some(quote),
+            Self::Picked { .. } | Self::Accepted { .. } => None,
         }
     }
 }
@@ -338,7 +337,6 @@ impl StoredSlot {
 struct AcceptedSlot<'a> {
     slot: &'a StoredSlot,
     seat_id: &'a SeatId,
-    guardian_fee_account: &'a Account,
     fedimintd_version: &'a FedimintdVersion,
 }
 
@@ -459,55 +457,145 @@ json_database_value!(BackupGenerationState);
 json_database_value!(BackupRelayConfirmation);
 json_database_value!(StoredFederation);
 
-/// One empty slot's public projection and its private recovery facts.
-pub(crate) struct PurchaseSeatRecovery {
-    pub(crate) progress: SeatProgress,
-    pub(crate) state: PendingSlot,
+/// The running creation, as the driver works on it.
+pub(crate) struct CreationRecovery {
+    pub(crate) formation_id: FormationId,
+    pub(crate) federation_name: FederationName,
+    pub(crate) federation_size: FederationSize,
+    pub(crate) fedimintd_versions: crate::FedimintdVersionRange,
+    pub(crate) plan: crate::PlanPreference,
+    pub(crate) reauthorization: Option<crate::SelectionReauthorizationReason>,
+    /// The running purchase, while some slot holds no accepted seat.
+    pub(crate) purchase: Option<RunningPurchase>,
+    pub(crate) invite_code: Option<InviteCode>,
+    /// Exact formation metadata target saved before publication.
+    pub(crate) formation_meta_target: Option<FormationMetaTarget>,
+    /// Bearer callback handed to every MG only at `StartDkg`.
+    pub(crate) dkg_completion_callback: Option<DkgCompletionCallback>,
+    /// The filled slots, in index order.
+    pub(crate) slots: Vec<SlotRecovery>,
+    /// Formation progress this run observed.
+    pub(crate) formation_phase: FormationPhase,
+    pub(crate) freshness: FormationFreshness,
+    pub(crate) last_error: Option<crate::FaErrorCode>,
 }
 
-/// How far an empty slot got.
-#[derive(Clone)]
-pub(crate) enum PendingSlot {
-    Picked {
-        plan: Plan,
-    },
-    Bound {
-        quote: SignedResponse<GetQuoteResponse>,
-    },
-}
-
-impl PendingSlot {
-    pub(crate) fn bound_quote(&self) -> Option<&SignedResponse<GetQuoteResponse>> {
-        match self {
-            Self::Picked { .. } => None,
-            Self::Bound { quote } => Some(quote),
-        }
-    }
-}
-
-pub(crate) struct PurchaseRecovery {
-    pub(crate) snapshot: SeatPurchaseSnapshot,
-    /// The empty slots, in index order.
-    pub(crate) seats: Vec<PurchaseSeatRecovery>,
+/// What one running purchase shares.
+pub(crate) struct RunningPurchase {
+    pub(crate) fedimintd_dkg_version: FedimintdDkgVersion,
     /// Explicit payer, absent for the zero-price bootstrap.
     pub(crate) payment_federation_id: Option<FederationId>,
     /// The approved preview, until the purchase binds its first quote.
     pub(crate) approval: Option<PreviewApproval>,
 }
 
-/// One formation seat's public projection and its signed acceptance facts.
-pub(crate) struct FormationSeatRecovery {
-    pub(crate) progress: SeatProgress,
-    pub(crate) guardian_fee_account: Account,
+/// One filled slot: its durable state and the progress this run observed.
+pub(crate) struct SlotRecovery {
+    pub(crate) index: u16,
+    pub(crate) mg_id: PublicKey,
+    pub(crate) locator: Locator,
+    pub(crate) state: SlotState,
+    pub(crate) guardian_code: Option<GuardianCode>,
+    pub(crate) phase: SeatPhase,
+    pub(crate) freshness: FormationFreshness,
 }
 
-pub(crate) struct FormationRecovery {
-    pub(crate) snapshot: FormationSnapshot,
-    pub(crate) seats: Vec<FormationSeatRecovery>,
-    /// Exact formation metadata target saved before publication.
-    pub(crate) formation_meta_target: Option<FormationMetaTarget>,
-    /// Bearer callback handed to every MG only at `StartDkg`.
-    pub(crate) dkg_completion_callback: Option<DkgCompletionCallback>,
+impl SlotRecovery {
+    pub(crate) fn seat_id(&self) -> Option<&SeatId> {
+        match &self.state {
+            SlotState::Accepted { seat_id, .. } => Some(seat_id),
+            SlotState::Picked { .. } | SlotState::Bound { .. } => None,
+        }
+    }
+
+    fn progress(&self) -> SeatProgress {
+        SeatProgress {
+            index: self.index,
+            mg_id: self.mg_id,
+            locator: self.locator.clone(),
+            seat_id: self.seat_id().cloned(),
+            guardian_code: self.guardian_code.clone(),
+            phase: self.phase,
+            freshness: self.freshness,
+        }
+    }
+}
+
+impl CreationRecovery {
+    /// Whether every slot holds an accepted seat.
+    pub(crate) fn is_full(&self) -> bool {
+        self.slots.len() == usize::from(self.federation_size.0)
+            && self.slots.iter().all(|slot| slot.seat_id().is_some())
+    }
+
+    /// The indexes of the slots the running purchase still buys.
+    pub(crate) fn pending(&self) -> Vec<u16> {
+        self.slots
+            .iter()
+            .filter(|slot| slot.seat_id().is_none())
+            .map(|slot| slot.index)
+            .collect()
+    }
+
+    /// The position of slot `index` in [`Self::slots`].
+    pub(crate) fn position(&self, index: u16) -> Option<usize> {
+        self.slots.iter().position(|slot| slot.index == index)
+    }
+
+    /// What every quote of the running purchase must match.
+    pub(crate) fn intent(&self) -> FaResult<ResolvedSeatPurchase> {
+        let purchase = self.purchase.as_ref().ok_or(FaError::NoActiveFormation)?;
+        Ok(ResolvedSeatPurchase {
+            federation_size: self.federation_size,
+            plan: self.plan,
+            fedimintd_versions: self.fedimintd_versions.clone(),
+            fedimintd_dkg_version: purchase.fedimintd_dkg_version.clone(),
+        })
+    }
+
+    fn fedimintd_dkg_version(&self) -> Option<FedimintdDkgVersion> {
+        self.purchase
+            .as_ref()
+            .map(|purchase| purchase.fedimintd_dkg_version.clone())
+            .or_else(|| {
+                self.slots.iter().find_map(|slot| match &slot.state {
+                    SlotState::Accepted {
+                        fedimintd_version, ..
+                    } => Some(fedimintd_version.dkg_version()),
+                    SlotState::Picked { .. } | SlotState::Bound { .. } => None,
+                })
+            })
+    }
+
+    /// The public projection.
+    pub(crate) fn snapshot(&self) -> CreationSnapshot {
+        let stage = if self.purchase.is_some() {
+            CreationStage::Buying
+        } else if self.is_full() {
+            CreationStage::Forming {
+                phase: self.formation_phase,
+                invite_code: self.invite_code.clone(),
+            }
+        } else {
+            CreationStage::NeedsSeats {
+                count: self
+                    .federation_size
+                    .0
+                    .saturating_sub(u16::try_from(self.slots.len()).unwrap_or(u16::MAX)),
+                reauthorization: self.reauthorization,
+            }
+        };
+        CreationSnapshot {
+            formation_id: self.formation_id.clone(),
+            federation_name: self.federation_name.clone(),
+            federation_size: self.federation_size,
+            fedimintd_dkg_version: self.fedimintd_dkg_version(),
+            slots: self.slots.iter().map(SlotRecovery::progress).collect(),
+            stage,
+            freshness: self.freshness,
+            last_error: self.last_error,
+        }
+    }
 }
 
 /// Complete semantic target replayed until formation metadata is confirmed.
@@ -535,20 +623,12 @@ pub(crate) struct PickedSeat {
 
 /// The inputs of a new federation creation.
 pub(crate) struct NewCreation {
+    pub(crate) formation_id: FormationId,
     pub(crate) federation_name: FederationName,
     pub(crate) federation_size: FederationSize,
     pub(crate) fedimintd_versions: crate::FedimintdVersionRange,
     pub(crate) plan: crate::PlanPreference,
     pub(crate) dkg_completion_callback: Option<DkgCompletionCallback>,
-}
-
-/// The stored inputs of the running federation creation.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct CreationIntent {
-    pub(crate) federation_name: FederationName,
-    pub(crate) federation_size: FederationSize,
-    pub(crate) fedimintd_versions: crate::FedimintdVersionRange,
-    pub(crate) plan: crate::PlanPreference,
 }
 
 #[cfg(test)]
@@ -1029,11 +1109,12 @@ impl FaStore {
     async fn wait_before_hooked_formation_commit(&self) {}
 
     #[cfg(test)]
-    /// Start a purchase and, when none exists, the creation it belongs to.
+    /// Start a purchase and, when none exists, the creation `formation_id`
+    /// it belongs to.
     pub(crate) async fn initialize_for_test(
         &self,
         fa_id: FaId,
-        purchase_id: FormationId,
+        formation_id: FormationId,
         intent: ResolvedSeatPurchase,
         seats: Vec<PickedSeat>,
         payment_federation_id: Option<FederationId>,
@@ -1042,6 +1123,7 @@ impl FaStore {
         let creation = match self.load_creation(fa_id).await? {
             Some(_) => None,
             None => Some(NewCreation {
+                formation_id,
                 federation_name: FederationName("Test Federation".to_owned()),
                 federation_size: intent.federation_size,
                 fedimintd_versions: intent.fedimintd_versions.clone(),
@@ -1051,7 +1133,6 @@ impl FaStore {
         };
         self.initialize(
             fa_id,
-            purchase_id,
             intent.fedimintd_dkg_version,
             seats,
             payment_federation_id,
@@ -1100,33 +1181,30 @@ impl FaStore {
     }
 
     pub(crate) async fn load_status(&self, fa_id: FaId) -> FaResult<FaStatus> {
-        let formation = self.load_formation(fa_id).await?;
-        let mut dbtx = self.database.begin_transaction_nc().await;
-        let creation = read_creation(&mut dbtx.to_ref_nc(), fa_id).await?;
-        drop(dbtx);
         Ok(FaStatus {
             recovery: None,
-            creation: creation.as_ref().map(Creation::intent),
-            reauthorization: creation
-                .as_ref()
-                .and_then(|creation| creation.stored.reauthorization),
-            purchase: creation
-                .as_ref()
-                .and_then(Creation::purchase)
-                .map(|purchase| purchase.snapshot),
-            pool: creation.as_ref().map(Creation::pool).unwrap_or_default(),
-            formation: formation.map(|formation| formation.snapshot),
+            creation: self
+                .load_creation(fa_id)
+                .await?
+                .map(|creation| creation.snapshot()),
             federation: self.load_federation(fa_id).await?,
         })
     }
 
     /// The running federation creation, if any.
-    pub(crate) async fn load_creation(&self, fa_id: FaId) -> FaResult<Option<CreationIntent>> {
+    pub(crate) async fn load_creation(&self, fa_id: FaId) -> FaResult<Option<CreationRecovery>> {
         let mut dbtx = self.database.begin_transaction_nc().await;
-        Ok(read_creation(&mut dbtx.to_ref_nc(), fa_id)
-            .await?
-            .as_ref()
-            .map(Creation::intent))
+        let Some(creation) = read_creation(&mut dbtx.to_ref_nc(), fa_id).await? else {
+            return Ok(None);
+        };
+        let full = formation_seats(&mut dbtx.to_ref_nc(), &creation).await?;
+        let mut guardian_codes = BTreeMap::new();
+        for seat in full.into_iter().flatten() {
+            if let Some(code) = seat.guardian_code {
+                guardian_codes.insert(seat.index, code);
+            }
+        }
+        Ok(Some(creation.recovery(guardian_codes)))
     }
 
     /// End a federation creation that holds no accepted seat or formation,
@@ -1176,16 +1254,6 @@ impl FaStore {
         })
     }
 
-    /// Accepted seats that host no guardian yet.
-    pub(crate) async fn pool_seats(&self, fa_id: FaId) -> FaResult<Vec<crate::PoolSeat>> {
-        let mut dbtx = self.database.begin_transaction_nc().await;
-        Ok(read_creation(&mut dbtx.to_ref_nc(), fa_id)
-            .await?
-            .as_ref()
-            .map(Creation::pool)
-            .unwrap_or_default())
-    }
-
     /// The federation this FA governs, as stored.
     pub(crate) async fn load_federation(
         &self,
@@ -1216,72 +1284,6 @@ impl FaStore {
             freshness: FormationFreshness::Unsynced,
             last_error: None,
         }))
-    }
-
-    /// The running formation, with the name and callback of its creation.
-    pub(crate) async fn load_formation(&self, fa_id: FaId) -> FaResult<Option<FormationRecovery>> {
-        let mut dbtx = self.database.begin_transaction_nc().await;
-        let Some(creation) = read_creation(&mut dbtx.to_ref_nc(), fa_id).await? else {
-            return Ok(None);
-        };
-        let Some(seats) = formation_seats(&mut dbtx.to_ref_nc(), &creation).await? else {
-            return Ok(None);
-        };
-        let creation = creation.stored;
-        let fedimintd_dkg_version = seats[0].fedimintd_version.dkg_version();
-        let dkg_complete = creation.invite_code.is_some();
-        let seats = seats
-            .into_iter()
-            .map(|seat| FormationSeatRecovery {
-                progress: SeatProgress {
-                    index: seat.index,
-                    mg_id: seat.mg_id,
-                    locator: seat.locator,
-                    seat_id: Some(seat.seat_id),
-                    phase: if dkg_complete {
-                        SeatPhase::Running
-                    } else if seat.guardian_code.is_some() {
-                        SeatPhase::GuardianCodeReady
-                    } else {
-                        SeatPhase::Created
-                    },
-                    guardian_code: seat.guardian_code,
-                    freshness: FormationFreshness::Unsynced,
-                },
-                guardian_fee_account: seat.guardian_fee_account,
-            })
-            .collect::<Vec<_>>();
-        let phase = if creation.formation_meta_target.is_some() {
-            FormationPhase::PublishingSeatBindings
-        } else if dkg_complete {
-            FormationPhase::DkgComplete
-        } else {
-            FormationPhase::PreparingDkg
-        };
-        Ok(Some(FormationRecovery {
-            snapshot: FormationSnapshot {
-                formation_id: creation.formation_id,
-                federation_name: creation.federation_name,
-                fedimintd_dkg_version,
-                phase,
-                seats: seats.iter().map(|seat| seat.progress.clone()).collect(),
-                freshness: FormationFreshness::Unsynced,
-                invite_code: creation.invite_code,
-                last_error: None,
-            },
-            seats,
-            formation_meta_target: creation.formation_meta_target,
-            dkg_completion_callback: creation.dkg_completion_callback,
-        }))
-    }
-
-    /// The running purchase and its empty slots.
-    pub(crate) async fn load_purchase(&self, fa_id: FaId) -> FaResult<Option<PurchaseRecovery>> {
-        let mut dbtx = self.database.begin_transaction_nc().await;
-        Ok(read_creation(&mut dbtx.to_ref_nc(), fa_id)
-            .await?
-            .as_ref()
-            .and_then(Creation::purchase))
     }
 
     /// Load the complete last durably admitted setup-payment publication.
@@ -1329,11 +1331,9 @@ impl FaStore {
 
     /// Start a purchase of empty slots, and the creation it belongs to when
     /// `creation` is given. Each picked MG takes the lowest empty slot.
-    #[allow(clippy::too_many_arguments)]
     pub(crate) async fn initialize(
         &self,
         fa_id: FaId,
-        purchase_id: FormationId,
         fedimintd_dkg_version: FedimintdDkgVersion,
         seats: Vec<PickedSeat>,
         payment_federation_id: Option<FederationId>,
@@ -1346,7 +1346,6 @@ impl FaStore {
             ));
         }
         let purchase = StoredPurchase {
-            purchase_id: purchase_id.clone(),
             fedimintd_dkg_version,
             payment_federation_id,
             approval: Some(approval),
@@ -1369,7 +1368,7 @@ impl FaStore {
                         fedimintd_versions: creation.fedimintd_versions,
                         plan: creation.plan,
                         dkg_completion_callback: creation.dkg_completion_callback,
-                        formation_id: purchase_id,
+                        formation_id: creation.formation_id,
                         invite_code: None,
                         formation_meta_target: None,
                         reauthorization: None,
@@ -1434,23 +1433,23 @@ impl FaStore {
     /// slot.
     pub(crate) async fn record_seat_accepted(
         &self,
-        purchase_id: &FormationId,
+        formation_id: &FormationId,
         index: u16,
         seat_id: SeatId,
         guardian_fee_account: Account,
-    ) -> FaResult<()> {
-        let purchase_id = purchase_id.clone();
+    ) -> FaResult<SlotState> {
+        let formation_id = formation_id.clone();
         let store = self.clone();
         let result = self
             .database
             .autocommit(
                 move |dbtx, _| {
-                    let purchase_id = purchase_id.clone();
+                    let formation_id = formation_id.clone();
                     let seat_id = seat_id.clone();
                     let guardian_fee_account = guardian_fee_account.clone();
                     let store = store.clone();
                     Box::pin(async move {
-                        let mut creation = running_purchase(dbtx, &purchase_id).await?;
+                        let mut creation = running_purchase(dbtx, &formation_id).await?;
                         let size = creation.stored.federation_size;
                         let slot = creation.slot_mut(index)?;
                         let accepted = match &slot.state {
@@ -1484,7 +1483,7 @@ impl FaStore {
                             } if existing == &seat_id
                                 && existing_account == &guardian_fee_account =>
                             {
-                                return Ok(());
+                                return Ok(slot.state.clone());
                             }
                             SlotState::Picked { .. } | SlotState::Accepted { .. } => {
                                 return Err(FaError::Storage(format!(
@@ -1497,7 +1496,7 @@ impl FaStore {
                         validate_creation(&creation)?;
                         dbtx.insert_entry(&SlotKey { index }, &slot).await;
                         store.wait_before_hooked_formation_commit().await;
-                        Ok(())
+                        Ok(slot.state)
                     })
                 },
                 Some(FORMATION_TX_MAX_ATTEMPTS),
@@ -1590,44 +1589,6 @@ impl FaStore {
             .map_err(map_formation_tx_error)
     }
 
-    /// Empty the slots whose MG ended their seat before DKG started. The
-    /// caller proved that no seat started DKG. The remaining cached codes are
-    /// dropped too: the code that carries the name may change.
-    pub(crate) async fn drop_ended_pool_seats(
-        &self,
-        formation_id: &FormationId,
-        ended: Vec<SeatId>,
-    ) -> FaResult<()> {
-        let formation_id = formation_id.clone();
-        let ended = &ended;
-        self.database
-            .autocommit(
-                move |dbtx, _| {
-                    let formation_id = formation_id.clone();
-                    Box::pin(async move {
-                        let (mut creation, seats) = active_formation(dbtx, &formation_id).await?;
-                        for seat in &seats {
-                            dbtx.remove_entry(&GuardianCodeKey {
-                                seat_id: seat.seat_id.to_string(),
-                            })
-                            .await;
-                            if ended.contains(&seat.seat_id) {
-                                dbtx.remove_entry(&SlotKey { index: seat.index }).await;
-                            }
-                        }
-                        creation.stored.reauthorization.get_or_insert(
-                            crate::SelectionReauthorizationReason::SelectedMgUnavailable,
-                        );
-                        dbtx.insert_entry(&CreationKey, &creation.stored).await;
-                        Ok(())
-                    })
-                },
-                Some(FORMATION_TX_MAX_ATTEMPTS),
-            )
-            .await
-            .map_err(map_formation_tx_error)
-    }
-
     /// Save completed DKG and its invite.
     pub(crate) async fn record_dkg_complete(
         &self,
@@ -1695,25 +1656,25 @@ impl FaStore {
     /// the wallet proved that no payment of its bound quote started.
     pub(crate) async fn bind_quote(
         &self,
-        purchase_id: &FormationId,
+        formation_id: &FormationId,
         index: u16,
         bound_quote: Option<&SignedResponse<GetQuoteResponse>>,
         signed_quote: SignedResponse<GetQuoteResponse>,
         verifier_provenance: StoredVerifierProvenance,
     ) -> FaResult<()> {
         let now = Timestamp((self.clock)());
-        let purchase_id = purchase_id.clone();
+        let formation_id = formation_id.clone();
         let bound_quote = bound_quote.cloned();
         let store = self.clone();
         self.database
             .autocommit(
                 move |dbtx, _| {
-                    let purchase_id = purchase_id.clone();
+                    let formation_id = formation_id.clone();
                     let bound_quote = bound_quote.clone();
                     let signed_quote = signed_quote.clone();
                     let store = store.clone();
                     Box::pin(async move {
-                        let mut creation = running_purchase(dbtx, &purchase_id).await?;
+                        let mut creation = running_purchase(dbtx, &formation_id).await?;
                         let slot = creation.slot_mut(index)?.clone();
                         let quote =
                             signed_quote
@@ -1771,35 +1732,58 @@ impl FaStore {
             .map_err(map_formation_tx_error)
     }
 
-    /// Empty a slot whose seat cannot be bought. The caller proved that no
-    /// payment of its bound quote is outstanding.
-    pub(crate) async fn drop_seat(
+    /// Empty slots, each still in its expected state, and keep the first
+    /// reason a slot left. A slot without a seat may go only when no
+    /// payment of its bound quote is outstanding. An accepted seat may go
+    /// only before DKG started, and then every cached code goes too: the
+    /// code that carries the federation name may change.
+    pub(crate) async fn empty_slots(
         &self,
-        purchase_id: &FormationId,
-        index: u16,
-        bound_quote: Option<&SignedResponse<GetQuoteResponse>>,
+        formation_id: &FormationId,
+        emptied: Vec<(u16, SlotState)>,
         reason: crate::SelectionReauthorizationReason,
     ) -> FaResult<()> {
-        let purchase_id = purchase_id.clone();
-        let bound_quote = bound_quote.cloned();
+        let formation_id = formation_id.clone();
+        let emptied = &emptied;
         self.database
             .autocommit(
                 move |dbtx, _| {
-                    let purchase_id = purchase_id.clone();
-                    let bound_quote = bound_quote.clone();
+                    let formation_id = formation_id.clone();
                     Box::pin(async move {
-                        let mut creation = running_purchase(dbtx, &purchase_id).await?;
-                        let slot = creation.slot_mut(index)?;
-                        if matches!(slot.state, SlotState::Accepted { .. })
-                            || slot.bound_quote() != bound_quote.as_ref()
-                        {
-                            return Err(FaError::Storage(format!(
-                                "FA slot {index} changed before it left the purchase"
-                            )));
+                        let mut creation = read_any_creation(dbtx)
+                            .await?
+                            .filter(|creation| creation.stored.formation_id == formation_id)
+                            .ok_or_else(|| {
+                                FaError::Storage(
+                                    "the FA creation changed during an operation".to_owned(),
+                                )
+                            })?;
+                        let mut seat_left = false;
+                        for (index, expected) in emptied {
+                            if creation.slot_mut(*index)?.state != *expected {
+                                return Err(FaError::Storage(format!(
+                                    "FA slot {index} changed before it was emptied"
+                                )));
+                            }
+                            seat_left |= matches!(expected, SlotState::Accepted { .. });
                         }
-                        creation.slots.retain(|(slot, _)| *slot != index);
+                        if seat_left {
+                            if creation.stored.invite_code.is_some() {
+                                return Err(FaError::Storage(
+                                    "a seat cannot leave after DKG completed".to_owned(),
+                                ));
+                            }
+                            for (_, seat) in creation.accepted() {
+                                dbtx.remove_entry(&GuardianCodeKey {
+                                    seat_id: seat.seat_id.to_string(),
+                                })
+                                .await;
+                            }
+                        }
+                        for (index, _) in emptied {
+                            dbtx.remove_entry(&SlotKey { index: *index }).await;
+                        }
                         creation.stored.reauthorization.get_or_insert(reason);
-                        dbtx.remove_entry(&SlotKey { index }).await;
                         dbtx.insert_entry(&CreationKey, &creation.stored).await;
                         Ok(())
                     })
@@ -1833,15 +1817,6 @@ struct Creation {
 }
 
 impl Creation {
-    fn intent(&self) -> CreationIntent {
-        CreationIntent {
-            federation_name: self.stored.federation_name.clone(),
-            federation_size: self.stored.federation_size,
-            fedimintd_versions: self.stored.fedimintd_versions.clone(),
-            plan: self.stored.plan,
-        }
-    }
-
     fn accepted(&self) -> impl Iterator<Item = (u16, AcceptedSlot<'_>)> {
         self.slots
             .iter()
@@ -1863,73 +1838,66 @@ impl Creation {
             .ok_or_else(|| FaError::Storage(format!("missing persisted FA slot {index}")))
     }
 
-    fn pool(&self) -> Vec<crate::PoolSeat> {
-        self.accepted()
-            .map(|(_, seat)| crate::PoolSeat {
-                seat_id: seat.seat_id.clone(),
-                mg_id: seat.slot.mg_id,
-                locator: seat.slot.locator.clone(),
-                fedimintd_version: seat.fedimintd_version.clone(),
-                federation_size: self.stored.federation_size,
-            })
-            .collect()
-    }
-
-    fn purchase(&self) -> Option<PurchaseRecovery> {
-        self.pending().next()?;
-        let purchase = self.stored.purchase.as_ref()?;
-        let seats = self
-            .pending()
+    /// The driver's view, with the cached codes of a full formation.
+    fn recovery(self, mut guardian_codes: BTreeMap<u16, GuardianCode>) -> CreationRecovery {
+        let stored = self.stored;
+        let dkg_complete = stored.invite_code.is_some();
+        let pending = self.slots.iter().any(|(_, slot)| slot.accepted().is_none());
+        let slots = self
+            .slots
+            .into_iter()
             .map(|(index, slot)| {
-                let (state, phase) = match &slot.state {
-                    SlotState::Picked { plan } => (
-                        PendingSlot::Picked { plan: plan.clone() },
-                        SeatPhase::Selected,
-                    ),
-                    SlotState::Bound { quote } => (
-                        PendingSlot::Bound {
-                            quote: quote.clone(),
-                        },
-                        SeatPhase::QuoteReady,
-                    ),
-                    SlotState::Accepted { .. } => unreachable!("pending slots hold no seat"),
+                let guardian_code = guardian_codes.remove(&index);
+                let phase = match &slot.state {
+                    SlotState::Picked { .. } => SeatPhase::Selected,
+                    SlotState::Bound { .. } => SeatPhase::QuoteReady,
+                    SlotState::Accepted { .. } if dkg_complete => SeatPhase::Running,
+                    SlotState::Accepted { .. } if guardian_code.is_some() => {
+                        SeatPhase::GuardianCodeReady
+                    }
+                    SlotState::Accepted { .. } => SeatPhase::Created,
                 };
-                PurchaseSeatRecovery {
-                    progress: SeatProgress {
-                        index,
-                        mg_id: slot.mg_id,
-                        locator: slot.locator.clone(),
-                        seat_id: None,
-                        guardian_code: None,
-                        phase,
-                        freshness: FormationFreshness::Unsynced,
-                    },
-                    state,
+                SlotRecovery {
+                    index,
+                    mg_id: slot.mg_id,
+                    locator: slot.locator,
+                    state: slot.state,
+                    guardian_code,
+                    phase,
+                    freshness: FormationFreshness::Unsynced,
                 }
             })
-            .collect::<Vec<_>>();
-        Some(PurchaseRecovery {
-            snapshot: SeatPurchaseSnapshot {
-                purchase_id: purchase.purchase_id.clone(),
-                request: ResolvedSeatPurchase {
-                    federation_size: self.stored.federation_size,
-                    plan: self.stored.plan,
-                    fedimintd_versions: self.stored.fedimintd_versions.clone(),
-                    fedimintd_dkg_version: purchase.fedimintd_dkg_version.clone(),
-                },
-                phase: if purchase.approval.is_some() {
-                    PurchasePhase::Preparing
-                } else {
-                    PurchasePhase::AcquiringSeats
-                },
-                seats: seats.iter().map(|seat| seat.progress.clone()).collect(),
-                freshness: FormationFreshness::Unsynced,
-                last_error: None,
-            },
-            seats,
-            payment_federation_id: purchase.payment_federation_id.clone(),
-            approval: purchase.approval,
-        })
+            .collect();
+        let formation_phase = if stored.formation_meta_target.is_some() {
+            FormationPhase::PublishingSeatBindings
+        } else if dkg_complete {
+            FormationPhase::DkgComplete
+        } else {
+            FormationPhase::PreparingDkg
+        };
+        CreationRecovery {
+            formation_id: stored.formation_id,
+            federation_name: stored.federation_name,
+            federation_size: stored.federation_size,
+            fedimintd_versions: stored.fedimintd_versions,
+            plan: stored.plan,
+            reauthorization: stored.reauthorization,
+            purchase: stored
+                .purchase
+                .filter(|_| pending)
+                .map(|purchase| RunningPurchase {
+                    fedimintd_dkg_version: purchase.fedimintd_dkg_version,
+                    payment_federation_id: purchase.payment_federation_id,
+                    approval: purchase.approval,
+                }),
+            invite_code: stored.invite_code,
+            formation_meta_target: stored.formation_meta_target,
+            dkg_completion_callback: stored.dkg_completion_callback,
+            slots,
+            formation_phase,
+            freshness: FormationFreshness::Unsynced,
+            last_error: None,
+        }
     }
 }
 
@@ -1981,19 +1949,15 @@ async fn read_any_creation(dbtx: &mut DatabaseTransaction<'_>) -> FaResult<Optio
     Ok(Some(creation))
 }
 
-/// The creation whose running purchase `purchase_id` names.
+/// The creation `formation_id` names, while its purchase runs.
 async fn running_purchase(
     dbtx: &mut DatabaseTransaction<'_>,
-    purchase_id: &FormationId,
+    formation_id: &FormationId,
 ) -> FaResult<Creation> {
     read_any_creation(dbtx)
         .await?
         .filter(|creation| {
-            creation
-                .stored
-                .purchase
-                .as_ref()
-                .is_some_and(|purchase| &purchase.purchase_id == purchase_id)
+            &creation.stored.formation_id == formation_id && creation.pending().next().is_some()
         })
         .ok_or_else(|| {
             FaError::Storage("the running FA seat purchase changed during an operation".to_owned())
@@ -2089,8 +2053,6 @@ struct FormationSeat {
     mg_id: PublicKey,
     locator: Locator,
     seat_id: SeatId,
-    guardian_fee_account: Account,
-    fedimintd_version: FedimintdVersion,
     guardian_code: Option<GuardianCode>,
 }
 
@@ -2123,8 +2085,6 @@ async fn formation_seats(
             mg_id: seat.slot.mg_id,
             locator: seat.slot.locator.clone(),
             seat_id: seat.seat_id.clone(),
-            guardian_fee_account: seat.guardian_fee_account.clone(),
-            fedimintd_version: seat.fedimintd_version.clone(),
             guardian_code,
         });
     }

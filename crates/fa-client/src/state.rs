@@ -180,30 +180,17 @@ pub fn validate_federation_name(name: &FederationName) -> FaResult<()> {
     Ok(())
 }
 
-/// Seat purchase request after `fa-client` has resolved every default.
-///
-/// Older stored purchase rows also carried the federation name and a
-/// spending cap; decoding ignores both.
-#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
-pub struct ResolvedSeatPurchase {
+/// What every quote of a running purchase must match.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct ResolvedSeatPurchase {
     /// Number of seats, and the federation size every quote is priced for.
-    pub federation_size: FederationSize,
+    pub(crate) federation_size: FederationSize,
     /// Requested MG plan family.
-    pub plan: PlanPreference,
+    pub(crate) plan: PlanPreference,
     /// FA-approved Fedimint release range.
-    pub fedimintd_versions: FedimintdVersionRange,
+    pub(crate) fedimintd_versions: FedimintdVersionRange,
     /// Major/minor/vendor identity shared by every bought seat.
-    pub fedimintd_dkg_version: FedimintdDkgVersion,
-}
-
-/// Consumer-observed phase of one seat purchase.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum PurchasePhase {
-    /// Validating availability and obtaining exact signed quotes.
-    Preparing,
-    /// Creating or recovering independently paid/free seats.
-    AcquiringSeats,
+    pub(crate) fedimintd_dkg_version: FedimintdDkgVersion,
 }
 
 /// Consumer-observed phase of one formation, from pool seats to a formed
@@ -292,68 +279,6 @@ impl SeatProgress {
     }
 }
 
-/// Latest snapshot of the active seat purchase.
-#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
-pub struct SeatPurchaseSnapshot {
-    /// Active purchase id.
-    pub purchase_id: FormationId,
-    /// Resolved durable request.
-    pub request: ResolvedSeatPurchase,
-    /// Current aggregate phase.
-    pub phase: PurchasePhase,
-    /// Per-MG progress.
-    pub seats: Vec<SeatProgress>,
-    /// Aggregate freshness.
-    pub freshness: FormationFreshness,
-    /// Most recent operation error category.
-    pub last_error: Option<FaErrorCode>,
-}
-
-/// One seat bought for the federation being created.
-#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
-pub struct PoolSeat {
-    /// MG-minted seat id.
-    pub seat_id: SeatId,
-    /// Badge-vouched identity of the MG that hosts the seat.
-    #[serde(rename = "fman_id")]
-    pub mg_id: PublicKey,
-    /// Protocol-owned locator for the MG.
-    pub locator: Locator,
-    /// Exact Fedimint build the seat was bought for.
-    pub fedimintd_version: FedimintdVersion,
-    /// Federation size the seat was priced for.
-    pub federation_size: FederationSize,
-}
-
-impl PoolSeat {
-    /// Stable two-word display name derived from the authenticated MG id.
-    #[must_use]
-    pub fn mg_name(&self) -> MgName {
-        MgName::from_mg_id(self.mg_id)
-    }
-}
-
-/// Latest snapshot of a formation that has not formed yet.
-#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
-pub struct FormationSnapshot {
-    /// Active record id.
-    pub formation_id: FormationId,
-    /// Federation display name.
-    pub federation_name: FederationName,
-    /// Major/minor/vendor identity shared by every guardian.
-    pub fedimintd_dkg_version: FedimintdDkgVersion,
-    /// Current aggregate phase.
-    pub phase: FormationPhase,
-    /// Per-MG progress.
-    pub seats: Vec<SeatProgress>,
-    /// Aggregate freshness.
-    pub freshness: FormationFreshness,
-    /// Join deliverable once every seat reports running.
-    pub invite_code: Option<InviteCode>,
-    /// Most recent operation error category.
-    pub last_error: Option<FaErrorCode>,
-}
-
 /// The federation this FA governs, formed here or restored from a backup.
 #[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
 pub struct FederationSnapshot {
@@ -392,15 +317,7 @@ pub(crate) struct FaStatus {
     /// Present while a restored mnemonic waits for its backup check.
     pub(crate) recovery: Option<RecoveryCheck>,
     /// The running federation creation.
-    pub(crate) creation: Option<crate::db::CreationIntent>,
-    /// Why the last purchase ended before it bought its seats.
-    pub(crate) reauthorization: Option<crate::SelectionReauthorizationReason>,
-    /// The active seat purchase.
-    pub(crate) purchase: Option<SeatPurchaseSnapshot>,
-    /// Bought seats that host no guardian yet.
-    pub(crate) pool: Vec<PoolSeat>,
-    /// The active formation, until it forms.
-    pub(crate) formation: Option<FormationSnapshot>,
+    pub(crate) creation: Option<CreationSnapshot>,
     /// The formed or restored federation.
     pub(crate) federation: Option<FederationSnapshot>,
 }
@@ -412,23 +329,7 @@ impl FaStatus {
             return FaState::Restoring(recovery.clone());
         }
         if let Some(creation) = &self.creation {
-            let stage = if let Some(formation) = &self.formation {
-                CreationStage::Forming(formation.clone())
-            } else if let Some(purchase) = &self.purchase {
-                CreationStage::Buying(purchase.clone())
-            } else {
-                let pool = u16::try_from(self.pool.len()).unwrap_or(u16::MAX);
-                CreationStage::NeedsSeats {
-                    count: creation.federation_size.0.saturating_sub(pool),
-                    reauthorization: self.reauthorization,
-                }
-            };
-            return FaState::Creating(Box::new(CreationSnapshot {
-                federation_name: creation.federation_name.clone(),
-                federation_size: creation.federation_size,
-                pool: self.pool.clone(),
-                stage,
-            }));
+            return FaState::Creating(Box::new(creation.clone()));
         }
         match &self.federation {
             Some(federation) => FaState::Active(Box::new(federation.clone())),
@@ -456,15 +357,25 @@ pub enum FaState {
 /// A federation that is being created.
 #[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
 pub struct CreationSnapshot {
+    /// Stable local handle, kept by the formed federation.
+    pub formation_id: FormationId,
     /// Federation display name.
     pub federation_name: FederationName,
     /// Number of guardians the federation will have.
     pub federation_size: FederationSize,
-    /// Seats bought for this federation. Formation uses them, and they stay
-    /// here until the federation forms.
-    pub pool: Vec<PoolSeat>,
+    /// Major/minor/vendor identity every seat is bought for, once a purchase
+    /// started.
+    pub fedimintd_dkg_version: Option<FedimintdDkgVersion>,
+    /// The guardian slots that hold a picked MG, in index order. An index
+    /// missing from the list is an empty slot. A slot keeps its seat from
+    /// acceptance until the federation forms.
+    pub slots: Vec<SeatProgress>,
     /// What the creation does now.
     pub stage: CreationStage,
+    /// Whether this run reconciled the state with the MGs.
+    pub freshness: FormationFreshness,
+    /// Most recent operation error category.
+    pub last_error: Option<FaErrorCode>,
 }
 
 /// The stage of a federation creation.
@@ -473,13 +384,19 @@ pub struct CreationSnapshot {
 pub enum CreationStage {
     /// The user must approve a preview of this many more seats.
     NeedsSeats {
-        /// Seats still missing.
+        /// Empty slots.
         count: u16,
-        /// Why the last purchase ended without its seats, if one did.
+        /// Why the last slot was emptied, if one was.
         reauthorization: Option<crate::SelectionReauthorizationReason>,
     },
-    /// A seat purchase runs.
-    Buying(SeatPurchaseSnapshot),
-    /// The bought seats run DKG and publish the federation metadata.
-    Forming(FormationSnapshot),
+    /// The picked slots without a seat are being bought.
+    Buying,
+    /// Every slot holds a seat. They run DKG and publish the federation
+    /// metadata.
+    Forming {
+        /// Current formation phase.
+        phase: FormationPhase,
+        /// Join deliverable once every seat reports running.
+        invite_code: Option<InviteCode>,
+    },
 }

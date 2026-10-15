@@ -221,25 +221,17 @@ fn owner(rows: &Rows) -> Option<FaId> {
 fn status_summary(status: &FaStatus) -> serde_json::Value {
     serde_json::json!({
         "creation": status.creation.as_ref().map(|c| serde_json::json!({
+            "id": c.formation_id.0,
             "name": c.federation_name.0,
             "size": c.federation_size.0,
-        })),
-        "purchase": status.purchase.as_ref().map(|p| serde_json::json!({
-            "id": p.purchase_id.0,
-            "phase": format!("{:?}", p.phase),
-            "seats": p.seats.iter().map(|s| serde_json::json!({
+            "stage": format!("{:?}", c.stage),
+            "slots": c.slots.iter().map(|s| serde_json::json!({
                 "index": s.index,
                 "mg": s.mg_id.to_hex(),
                 "seat_id": s.seat_id.as_ref().map(ToString::to_string),
                 "phase": format!("{:?}", s.phase),
+                "code": s.guardian_code.is_some(),
             })).collect::<Vec<_>>(),
-        })),
-        "pool": status.pool.iter().map(|s| s.seat_id.to_string()).collect::<Vec<_>>(),
-        "formation": status.formation.as_ref().map(|f| serde_json::json!({
-            "id": f.formation_id.0,
-            "phase": format!("{:?}", f.phase),
-            "invite": f.invite_code.as_ref().map(|i| i.0.clone()),
-            "codes": f.seats.iter().filter(|s| s.guardian_code.is_some()).count(),
         })),
         "federation": status.federation.as_ref().map(|f| serde_json::json!({
             "id": f.formation_id.0,
@@ -248,7 +240,6 @@ fn status_summary(status: &FaStatus) -> serde_json::Value {
             "seats": f.seats.iter().map(|s| s.seat_id.to_string()).collect::<Vec<_>>(),
             "freshness": format!("{:?}", f.freshness),
         })),
-        "reauthorization": status.reauthorization.map(|r| format!("{r:?}")),
         "recovery": status.recovery.is_some(),
     })
 }
@@ -427,8 +418,7 @@ async fn drive_migrated<I: FaIdentity>(
         let result = client.drive_all_for_test(options()).await;
         runs.push(result.as_ref().err().map(|e| format!("{e:?}")));
         let status = client.status();
-        let needs_seats =
-            status.creation.is_some() && status.purchase.is_none() && status.formation.is_none();
+        let needs_seats = status.creation.is_some() && !is_buying(&status) && !is_forming(&status);
         if needs_seats {
             let rebuy = rebuy_missing_seats(&client).await;
             runs.push(Some(format!("rebuy: {:?}", rebuy.as_ref().err())));
@@ -639,8 +629,8 @@ async fn r269_pending_replacement_buys_its_bound_siblings() {
     let (client, mem, wallet, _) = open_fixture(R269_PENDING_REPLACEMENT).await;
     client.drive_all_for_test(options()).await.unwrap();
     let status = client.status();
-    assert!(status.purchase.is_none());
-    assert_eq!(status.pool.len(), 6);
+    assert!(!is_buying(&status));
+    assert_eq!(accepted_seats(&status).len(), 6);
     let bound = kept_bound_quotes(R269_PENDING_REPLACEMENT);
     assert_eq!(bound.len(), 6);
     // No bound payment started, so each seat pays a fresh quote.
@@ -659,8 +649,8 @@ async fn r269_interrupted_replacement_restore_does_not_strand_paid_seats() {
     let (client, mem, _, _) = open_fixture(R269_INTERRUPTED_REPLACEMENT_RESTORE).await;
     client.drive_all_for_test(options()).await.unwrap();
     let status = client.status();
-    assert!(status.purchase.is_none());
-    assert_eq!(status.pool.len(), 6);
+    assert!(!is_buying(&status));
+    assert_eq!(accepted_seats(&status).len(), 6);
     reload(&mem).await.expect("the FA still loads after a run");
 }
 
@@ -672,8 +662,8 @@ async fn r269_applied_replacement_with_an_expired_preview_can_still_finish() {
     let (client, mem, _, _) = open_fixture(R269_APPLIED_REPLACEMENT).await;
     client.drive_all_for_test(options()).await.unwrap();
     let status = client.status();
-    assert!(status.purchase.is_none());
-    assert_eq!(status.pool.len(), 6);
+    assert!(!is_buying(&status));
+    assert_eq!(accepted_seats(&status).len(), 6);
     reload(&mem).await.expect("the FA still loads after a run");
 }
 
@@ -687,8 +677,8 @@ async fn r269_mixed_replacement_wave_drops_both_replacements() {
     let funded = wallet.funded_quotes.lock().unwrap().clone();
     client.drive_all_for_test(options()).await.unwrap();
     let status = client.status();
-    assert!(status.purchase.is_none());
-    assert_eq!(status.pool.len(), 5);
+    assert!(!is_buying(&status));
+    assert_eq!(accepted_seats(&status).len(), 5);
     assert_eq!(*wallet.funded_quotes.lock().unwrap(), funded);
     reload(&mem).await.expect("the FA still loads after a run");
 }
@@ -852,7 +842,7 @@ async fn r269_bound_replacement_with_a_prepared_payment_presents_it_once() {
     assert!(wallet.funded_quotes.lock().unwrap().contains(&quote));
     client.drive_all_for_test(options()).await.unwrap();
     let status = client.status();
-    assert!(status.purchase.is_none());
+    assert!(!is_buying(&status));
     assert_eq!(federation(&status).seats.len(), 7);
     assert!(wallet.created_quotes.lock().unwrap().is_empty());
     let presented = mgs
@@ -887,8 +877,8 @@ async fn r269_bound_replacement_with_a_rejected_payment_leaves() {
         "{result:?}"
     );
     let status = client.status();
-    assert!(status.purchase.is_none());
-    assert_eq!(status.pool.len(), 6);
+    assert!(!is_buying(&status));
+    assert_eq!(accepted_seats(&status).len(), 6);
     assert!(status.creation.is_some());
     assert!(wallet.created_quotes.lock().unwrap().is_empty());
     assert!(
@@ -916,7 +906,7 @@ async fn r269_bound_replacement_without_a_started_payment_pays_one_new_quote() {
     wallet.funded_quotes.lock().unwrap().remove(&quote);
     client.drive_all_for_test(options()).await.unwrap();
     let status = client.status();
-    assert!(status.purchase.is_none());
+    assert!(!is_buying(&status));
     assert_eq!(federation(&status).seats.len(), 7);
     let paid = wallet.created_quotes.lock().unwrap().clone();
     assert_eq!(paid.len(), 1);

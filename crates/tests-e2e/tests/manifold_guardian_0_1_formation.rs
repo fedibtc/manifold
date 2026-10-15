@@ -2699,7 +2699,7 @@ async fn run_fa_crash_recovery() -> anyhow::Result<()> {
     let status = fa_status(&fa_cli_bin, &state_dir).await?;
     anyhow::ensure!(
         status["creating"]["stage"]["forming"]["phase"] == "preparing_dkg"
-            && status["creating"]["stage"]["forming"]["seats"]
+            && status["creating"]["slots"]
                 .as_array()
                 .is_some_and(|seats| seats.iter().all(|seat| {
                     seat["phase"] == "guardian_code_ready" && seat["guardian_code"].is_string()
@@ -4504,12 +4504,12 @@ async fn run_fa_cli(
         {
             let failed_status: serde_json::Value = serde_json::from_slice(&output.stdout)
                 .context("recoverable paid failure writes JSON status")?;
-            let purchase = &failed_status["creating"]["stage"]["buying"];
+            let creation = &failed_status["creating"];
             anyhow::ensure!(
-                purchase["purchase_id"].is_string(),
+                creation["stage"] == "buying",
                 "paid E2E retries only a running purchase: {failed_status}"
             );
-            recovered_purchase = Some(seat_mg_ids(&purchase["seats"]));
+            recovered_purchase = Some(seat_mg_ids(&creation["slots"]));
             let mut resume = Command::new(fa_cli_bin);
             resume
                 .arg("--state-dir")

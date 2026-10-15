@@ -52,16 +52,16 @@ where
     /// reached is reported, and its operator has to decommission it by hand.
     pub async fn decommission_seats(&self) -> FaResult<DecommissionOutcome> {
         let fa_id = self.fa_id()?;
-        let recovery = self.active_recovery(fa_id).await?;
+        let creation = self.active_creation(fa_id).await?;
         let mut pending = FuturesUnordered::new();
-        for seat in &recovery.seats {
-            let index = seat.progress.index;
-            // A seat row without an id was never accepted by its MG, so
+        for slot in &creation.slots {
+            let index = slot.index;
+            // A slot without a seat id was never accepted by its MG, so
             // there is nothing on the other side to release.
-            let Some(seat_id) = seat.progress.seat_id.clone() else {
+            let Some(seat_id) = slot.seat_id().cloned() else {
                 continue;
             };
-            let locator = seat.progress.locator.clone();
+            let locator = slot.locator.clone();
             pending.push(async move {
                 let result = timeout(DECOMMISSION_REQUEST_TIMEOUT, async {
                     let client = self

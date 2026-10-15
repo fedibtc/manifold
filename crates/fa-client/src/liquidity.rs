@@ -889,8 +889,11 @@ where
         &self,
     ) -> FaResult<Option<LiquidityOperationSnapshot>> {
         let status = self.status();
-        let formation_id = match (status.formation, status.federation) {
-            (Some(formation), _) => formation.formation_id,
+        let forming = status
+            .creation
+            .filter(|creation| matches!(creation.stage, crate::CreationStage::Forming { .. }));
+        let formation_id = match (forming, status.federation) {
+            (Some(creation), _) => creation.formation_id,
             (None, Some(federation)) if federation.freshness == FormationFreshness::Fresh => {
                 federation.formation_id
             }

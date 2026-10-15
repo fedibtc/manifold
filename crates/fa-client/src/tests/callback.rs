@@ -143,7 +143,7 @@ async fn callback_is_durable_private_state_and_old_schema_resets() {
         .unwrap()
         .expect("callback formation is durable");
     assert_eq!(recovery.dkg_completion_callback, Some(callback));
-    let public = serde_json::to_string(&recovery.snapshot).unwrap();
+    let public = serde_json::to_string(&recovery.snapshot()).unwrap();
     assert!(!public.contains("bearer-secret"));
     assert!(!public.contains("formation-dkg-complete"));
 

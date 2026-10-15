@@ -35,6 +35,7 @@ use stability_pool_common::{Account, AccountType};
 use tokio::sync::Notify;
 
 use crate::liquidity::TestLiquidityBadgeVerifier;
+use crate::state::ResolvedSeatPurchase;
 
 use super::*;
 
@@ -2430,9 +2431,9 @@ where
         let purchase_only = self
             .inner
             .store
-            .load_purchase(self.fa_id()?)
+            .load_creation(self.fa_id()?)
             .await?
-            .is_some();
+            .is_some_and(|creation| creation.purchase.is_some());
         self.drive_steps_for_test(options, purchase_only).await
     }
 
@@ -2460,34 +2461,29 @@ where
             if status.recovery.is_some() {
                 return Ok(());
             }
-            let purchase = self.inner.store.load_purchase(fa_id).await?;
-            if purchase.is_none() && purchase_only {
+            let creation = self.inner.store.load_creation(fa_id).await?;
+            let buying = creation
+                .as_ref()
+                .is_some_and(|creation| creation.purchase.is_some());
+            if purchase_only && !buying {
                 return Ok(());
             }
-            let formation = match purchase {
-                Some(_) => None,
-                None => self.inner.store.load_formation(fa_id).await?,
-            };
+            let creation = creation.filter(|creation| buying || creation.is_full());
             let reconcile = status
                 .federation
                 .filter(|federation| federation.freshness == FormationFreshness::Unsynced)
                 .filter(|_| status.creation.is_none());
-            if purchase.is_none() && formation.is_none() && reconcile.is_none() {
+            if creation.is_none() && reconcile.is_none() {
                 return Ok(());
             }
             let run = crate::formation::DriverRun::start(options)?;
             async {
-                if let Some(recovery) = purchase {
-                    let result = self.drive_purchase(recovery, fa_id, run).await;
-                    if let Err(FaError::SelectionReauthorizationRequired { reason, .. }) = &result {
-                        let reason = *reason;
-                        self.inner
-                            .progress
-                            .modify(|status| status.reauthorization = Some(reason));
+                if let Some(recovery) = creation {
+                    if buying {
+                        self.drive_purchase(recovery, fa_id, run).await
+                    } else {
+                        self.drive_formation(recovery, fa_id, run).await
                     }
-                    result
-                } else if let Some(recovery) = formation {
-                    self.drive_formation(recovery, fa_id, run).await
                 } else {
                     let snapshot = reconcile.expect("one piece of work was chosen");
                     self.begin_recheck();
@@ -3166,22 +3162,14 @@ async fn schema_11_partial_purchase_stays_a_purchase() {
     .await;
 
     let status = client.status();
-    let purchase = purchase(&status);
     assert_eq!(
-        purchase.request.federation_size,
+        purchase(&status).federation_size,
         FederationSize(MIN_FEDERATION_SIZE)
     );
     // The accepted seats are in the pool, and the rest are still bought.
-    assert_eq!(
-        purchase
-            .seats
-            .iter()
-            .map(|seat| (seat.index, seat.seat_id.is_some()))
-            .collect::<Vec<_>>(),
-        [(3, false), (4, false), (5, false), (6, false)]
-    );
-    assert_eq!(status.pool.len(), 3);
-    assert!(status.formation.is_none());
+    assert_eq!(pending_indices(&status), [3, 4, 5, 6]);
+    assert_eq!(accepted_seats(&status).len(), 3);
+    assert!(!is_forming(&status));
     assert!(status.federation.is_none());
 }
 
@@ -3202,19 +3190,20 @@ async fn schema_11_seat_never_bound_leaves_without_a_previewed_plan() {
 
     // Schema 11 kept no plan, so the seat has no approved price to request.
     let status = client.status();
-    assert_eq!(
-        purchase(&status)
-            .seats
-            .iter()
-            .map(|seat| seat.index)
-            .collect::<Vec<_>>(),
-        [3, 5, 6]
+    assert_eq!(pending_indices(&status), [3, 5, 6]);
+    let recovery = active_recovery(
+        client
+            .inner
+            .store
+            .load_purchase(TestIdentity::fa_id())
+            .await
+            .unwrap(),
     );
     assert_eq!(
-        status.reauthorization,
+        recovery.reauthorization,
         Some(SelectionReauthorizationReason::PreviewExpired)
     );
-    assert_eq!(status.pool.len(), 3);
+    assert_eq!(accepted_seats(&status).len(), 3);
 }
 
 #[tokio::test]
@@ -3260,16 +3249,7 @@ async fn schema_11_seat_waiting_for_replacement_leaves_the_purchase() {
     .await;
 
     let status = client.status();
-    let purchase = purchase(&status);
-    assert_eq!(purchase.phase, PurchasePhase::AcquiringSeats);
-    assert_eq!(
-        purchase
-            .seats
-            .iter()
-            .map(|seat| seat.index)
-            .collect::<Vec<_>>(),
-        [4, 5, 6]
-    );
+    assert_eq!(pending_indices(&status), [4, 5, 6]);
     let recovery = active_recovery(
         crate::db::FaStore::new(database)
             .load_purchase(TestIdentity::fa_id())
@@ -3278,12 +3258,13 @@ async fn schema_11_seat_waiting_for_replacement_leaves_the_purchase() {
     );
     assert!(
         recovery
-            .seats
+            .slots
             .iter()
+            .filter(|seat| seat.seat_id().is_none())
             .all(|seat| seat.state.bound_quote().is_some()),
         "the unpaid seats keep their bound quotes",
     );
-    assert_eq!(status.pool.len(), 3);
+    assert_eq!(accepted_seats(&status).len(), 3);
 }
 
 #[tokio::test]
@@ -3304,23 +3285,14 @@ async fn schema_11_applied_replacement_leaves_the_purchase() {
     // The replacement had no effect yet and no wallet reservation, so it
     // leaves with the seat it replaced.
     let status = client.status();
-    let purchase = purchase(&status);
-    assert_eq!(purchase.phase, PurchasePhase::AcquiringSeats);
-    assert_eq!(
-        purchase
-            .seats
-            .iter()
-            .map(|seat| seat.index)
-            .collect::<Vec<_>>(),
-        [4, 5, 6]
-    );
+    assert_eq!(pending_indices(&status), [4, 5, 6]);
     assert!(
-        purchase
-            .seats
+        purchase(&status)
+            .slots
             .iter()
             .all(|seat| seat.mg_id != test_mg_id(7))
     );
-    assert_eq!(status.pool.len(), 3);
+    assert_eq!(accepted_seats(&status).len(), 3);
 }
 
 #[tokio::test]
@@ -3334,7 +3306,7 @@ async fn schema_11_dkg_moves_seats_into_a_formation_that_finishes() {
     let client = open_client(database, payments, mg_state.clone(), MgConfig::paid()).await;
 
     let status = client.status();
-    assert!(status.purchase.is_none());
+    assert!(!is_buying(&status));
     let creation = status
         .creation
         .as_ref()
@@ -3349,16 +3321,15 @@ async fn schema_11_dkg_moves_seats_into_a_formation_that_finishes() {
     );
     // Every seat keeps its schema 11 index, so the pool and the formation
     // list them in that order.
-    let pool = status
-        .pool
+    let pool = accepted_seats(&status)
         .iter()
-        .map(|seat| Some(seat.seat_id.clone()))
+        .map(|seat| seat.seat_id.clone())
         .collect::<Vec<_>>();
     assert_eq!(pool.len(), usize::from(MIN_FEDERATION_SIZE));
     let formation = formation(&status);
     assert_eq!(
         formation
-            .seats
+            .slots
             .iter()
             .map(|seat| (seat.index, seat.seat_id.clone()))
             .collect::<Vec<_>>(),
@@ -3367,15 +3338,15 @@ async fn schema_11_dkg_moves_seats_into_a_formation_that_finishes() {
             .map(|(index, seat_id)| (u16::try_from(index).unwrap(), seat_id))
             .collect::<Vec<_>>()
     );
-    assert_eq!(formation.phase, FormationPhase::PreparingDkg);
-    assert!(formation.invite_code.is_none());
+    assert_eq!(formation_phase(&status), FormationPhase::PreparingDkg);
+    assert!(formation_invite(&status).is_none());
     assert_eq!(
         formation.federation_name,
         FederationName("Test Federation".to_owned())
     );
     // The six codes that arrived stay cached against their seats; only the
     // seat stored at index 5 still needs its code.
-    for seat in &formation.seats {
+    for seat in &formation.slots {
         let seat_id = seat.seat_id.as_ref().unwrap().to_string();
         assert_eq!(
             seat.guardian_code.is_none(),
@@ -3391,7 +3362,7 @@ async fn schema_11_dkg_moves_seats_into_a_formation_that_finishes() {
 
     // The FA reads the invite from the first seat of the formation.
     let first_mg = (0..usize::from(MIN_FEDERATION_SIZE))
-        .find(|index| test_mg_id(*index) == formation.seats[0].mg_id)
+        .find(|index| test_mg_id(*index) == formation.slots[0].mg_id)
         .unwrap();
 
     // Each MG re-reports its deterministic code, so a cached code moved to
@@ -3403,17 +3374,17 @@ async fn schema_11_dkg_moves_seats_into_a_formation_that_finishes() {
         *mg_state.named_dkg_code_indices.lock().expect("test lock"),
         [0]
     );
-    assert_eq!(formation.seats[0].mg_id, test_mg_id(0));
+    assert_eq!(formation.slots[0].mg_id, test_mg_id(0));
     assert!(
         formation
-            .seats
+            .slots
             .iter()
-            .any(|seat| seat.seat_id < formation.seats[0].seat_id)
+            .any(|seat| seat.seat_id < formation.slots[0].seat_id)
     );
     let status = client.status();
-    assert!(status.formation.is_none());
+    assert!(!is_forming(&status));
     assert!(status.creation.is_none());
-    assert!(status.pool.is_empty());
+    assert!(accepted_seats(&status).is_empty());
     let federation = federation(&status);
     assert_eq!(federation.federation_invite, test_invite(first_mg));
     assert_eq!(federation.freshness, FormationFreshness::Fresh);
@@ -3435,13 +3406,16 @@ async fn schema_11_dkg_complete_resumes_at_metadata_with_its_invite() {
         let client = open_client(database, payments, mg_state.clone(), MgConfig::paid()).await;
 
         let status = client.status();
-        assert!(status.purchase.is_none(), "{fixture:?}");
+        assert!(!is_buying(&status), "{fixture:?}");
         assert!(status.federation.is_none(), "{fixture:?}");
         assert!(status.creation.is_some(), "{fixture:?}");
-        assert_eq!(status.pool.len(), usize::from(MIN_FEDERATION_SIZE));
+        assert_eq!(
+            accepted_seats(&status).len(),
+            usize::from(MIN_FEDERATION_SIZE)
+        );
         let formation = formation(&status);
         assert_eq!(
-            formation.phase,
+            formation_phase(&status),
             match fixture {
                 crate::db::test_support::Schema11Fixture::DkgComplete => {
                     FormationPhase::DkgComplete
@@ -3450,10 +3424,14 @@ async fn schema_11_dkg_complete_resumes_at_metadata_with_its_invite() {
             },
             "{fixture:?}"
         );
-        assert_eq!(formation.invite_code, Some(test_invite(0)), "{fixture:?}");
+        assert_eq!(
+            formation_invite(&status),
+            Some(test_invite(0)),
+            "{fixture:?}"
+        );
         assert!(
             formation
-                .seats
+                .slots
                 .iter()
                 .all(|seat| seat.guardian_code.is_some()),
             "{fixture:?}"
@@ -3462,7 +3440,7 @@ async fn schema_11_dkg_complete_resumes_at_metadata_with_its_invite() {
         client.drive().await.unwrap();
         let status = client.status();
         assert!(status.creation.is_none(), "{fixture:?}");
-        assert!(status.pool.is_empty(), "{fixture:?}");
+        assert!(accepted_seats(&status).is_empty(), "{fixture:?}");
         assert_eq!(
             federation(&status).federation_invite,
             test_invite(0),
@@ -3517,14 +3495,14 @@ async fn schema_11_formed_federation_keeps_its_record_and_rechecks() {
         let client = open_client(database, payments, state, MgConfig::paid()).await;
 
         let status = client.status();
-        assert!(status.purchase.is_none(), "{fixture:?}");
-        assert!(status.formation.is_none(), "{fixture:?}");
+        assert!(!is_buying(&status), "{fixture:?}");
+        assert!(!is_forming(&status), "{fixture:?}");
         let federation = federation(&status);
         assert_eq!(federation.federation_invite, test_invite(0), "{fixture:?}");
         assert_eq!(federation.seats.len(), usize::from(MIN_FEDERATION_SIZE));
         // Only the federation record remains.
         assert!(status.creation.is_none(), "{fixture:?}");
-        assert!(status.pool.is_empty(), "{fixture:?}");
+        assert!(accepted_seats(&status).is_empty(), "{fixture:?}");
         let store = &client.inner.store;
         let fa_id = TestIdentity::fa_id();
         assert!(store.load_creation(fa_id).await.unwrap().is_none());
@@ -4623,18 +4601,85 @@ fn recovering(last_error: Option<FaErrorCode>) -> FaStatus {
     }
 }
 
-fn purchase(status: &FaStatus) -> &SeatPurchaseSnapshot {
-    status
-        .purchase
-        .as_ref()
-        .expect("expected an active purchase")
+fn creation(status: &FaStatus) -> &CreationSnapshot {
+    status.creation.as_ref().expect("expected a creation")
 }
 
-fn formation(status: &FaStatus) -> &FormationSnapshot {
+/// The creation, which buys seats now.
+fn purchase(status: &FaStatus) -> &CreationSnapshot {
+    let creation = creation(status);
+    assert_eq!(creation.stage, CreationStage::Buying, "expected a purchase");
+    creation
+}
+
+fn is_buying(status: &FaStatus) -> bool {
     status
-        .formation
+        .creation
         .as_ref()
-        .expect("expected an active formation")
+        .is_some_and(|creation| creation.stage == CreationStage::Buying)
+}
+
+fn is_forming(status: &FaStatus) -> bool {
+    status
+        .creation
+        .as_ref()
+        .is_some_and(|creation| matches!(creation.stage, CreationStage::Forming { .. }))
+}
+
+/// The creation, once every slot holds an accepted seat.
+fn formation(status: &FaStatus) -> &CreationSnapshot {
+    let creation = creation(status);
+    assert!(
+        is_forming(status),
+        "expected a formation, got {:?}",
+        creation.stage
+    );
+    creation
+}
+
+fn formation_phase(status: &FaStatus) -> FormationPhase {
+    match formation(status).stage {
+        CreationStage::Forming { phase, .. } => phase,
+        _ => unreachable!(),
+    }
+}
+
+fn formation_invite(status: &FaStatus) -> Option<InviteCode> {
+    match &formation(status).stage {
+        CreationStage::Forming { invite_code, .. } => invite_code.clone(),
+        _ => unreachable!(),
+    }
+}
+
+/// The slots the purchase still buys.
+fn pending_indices(status: &FaStatus) -> Vec<u16> {
+    purchase(status)
+        .slots
+        .iter()
+        .filter(|slot| slot.seat_id.is_none())
+        .map(|slot| slot.index)
+        .collect()
+}
+
+/// The seats the MGs accepted, in slot order.
+fn accepted_seats(status: &FaStatus) -> Vec<SeatProgress> {
+    status
+        .creation
+        .iter()
+        .flat_map(|creation| &creation.slots)
+        .filter(|slot| slot.seat_id.is_some())
+        .cloned()
+        .collect()
+}
+
+/// Why the creation needs a new preview, if it does.
+fn reauthorization(status: &FaStatus) -> Option<SelectionReauthorizationReason> {
+    match status.creation.as_ref()?.stage {
+        CreationStage::NeedsSeats {
+            reauthorization, ..
+        } => reauthorization,
+        _ => None,
+    }
 }
 
 /// The purchase ended before it bought a seat, and the creation asks for a
@@ -4651,13 +4696,13 @@ fn assert_needs_new_preview(client: &TestClient) {
 fn assert_needs_seats(client: &TestClient, missing: u16) {
     let status = client.status();
     assert!(
-        status.purchase.is_none() && status.formation.is_none() && status.federation.is_none(),
+        !is_buying(&status) && !is_forming(&status) && status.federation.is_none(),
         "{status:?}"
     );
     match client.state() {
         FaState::Creating(creation) => {
             assert_eq!(
-                status.pool.len(),
+                accepted_seats(&status).len(),
                 usize::from(creation.federation_size.0 - missing)
             );
             assert!(
@@ -4678,20 +4723,22 @@ fn assert_needs_seats(client: &TestClient, missing: u16) {
 
 /// The purchase finished and its seats wait in the pool.
 fn bought(status: &FaStatus) {
-    assert!(status.purchase.is_none(), "purchase still active");
-    assert_eq!(status.pool.len(), usize::from(MIN_FEDERATION_SIZE));
+    assert!(!is_buying(status), "purchase still active");
+    assert_eq!(
+        accepted_seats(status).len(),
+        usize::from(MIN_FEDERATION_SIZE)
+    );
 }
 
 /// The purchase finished without the rows at `dropped`, and exactly the
 /// other selected MGs' seats wait in the pool.
 fn bought_without(status: &FaStatus, dropped: &[u16]) {
-    assert!(status.purchase.is_none(), "purchase still active");
+    assert!(!is_buying(status), "purchase still active");
     let expected = (0..MIN_FEDERATION_SIZE)
         .filter(|index| !dropped.contains(index))
         .map(|index| locator(usize::from(index)))
         .collect::<Vec<_>>();
-    let mut pooled = status
-        .pool
+    let mut pooled = accepted_seats(status)
         .iter()
         .map(|seat| seat.locator.clone())
         .collect::<Vec<_>>();
@@ -4699,19 +4746,16 @@ fn bought_without(status: &FaStatus, dropped: &[u16]) {
     assert_eq!(pooled, expected);
 }
 
-fn seat_indices(recovery: &crate::db::PurchaseRecovery) -> Vec<u16> {
-    recovery
-        .seats
-        .iter()
-        .map(|seat| seat.progress.index)
-        .collect()
+/// The indices of the slots the purchase still buys.
+fn seat_indices(recovery: &crate::db::CreationRecovery) -> Vec<u16> {
+    recovery.pending()
 }
 
 fn federation(status: &FaStatus) -> &FederationSnapshot {
     status.federation.as_ref().expect("expected a federation")
 }
 
-async fn active_formation(store: &db::FaStore) -> crate::db::FormationRecovery {
+async fn active_formation(store: &db::FaStore) -> crate::db::CreationRecovery {
     store
         .load_formation(TestIdentity::fa_id())
         .await
@@ -4719,11 +4763,38 @@ async fn active_formation(store: &db::FaStore) -> crate::db::FormationRecovery {
         .expect("expected a formation")
 }
 
-fn active_recovery(recovery: Option<crate::db::PurchaseRecovery>) -> crate::db::PurchaseRecovery {
+fn active_recovery(recovery: Option<crate::db::CreationRecovery>) -> crate::db::CreationRecovery {
     recovery.expect("expected an active purchase")
 }
 
 impl crate::db::FaStore {
+    /// The creation, while it buys seats.
+    async fn load_purchase(&self, fa_id: FaId) -> FaResult<Option<crate::db::CreationRecovery>> {
+        Ok(self
+            .load_creation(fa_id)
+            .await?
+            .filter(|creation| creation.purchase.is_some()))
+    }
+
+    /// The creation, once every slot holds an accepted seat.
+    async fn load_formation(&self, fa_id: FaId) -> FaResult<Option<crate::db::CreationRecovery>> {
+        Ok(self
+            .load_creation(fa_id)
+            .await?
+            .filter(crate::db::CreationRecovery::is_full))
+    }
+
+    /// The seats of the creation's accepted slots, in slot order.
+    async fn pool_seats(&self, fa_id: FaId) -> FaResult<Vec<SeatId>> {
+        Ok(self
+            .load_creation(fa_id)
+            .await?
+            .iter()
+            .flat_map(|creation| &creation.slots)
+            .filter_map(|slot| slot.seat_id().cloned())
+            .collect())
+    }
+
     /// Bind a fresh seat to its quote, as a run does before it pays.
     async fn bind_fresh_quote(
         &self,
@@ -5426,7 +5497,7 @@ async fn record_dkg_complete_rejects_incomplete_seats_without_changing_recovery_
         .unwrap();
     let store = &client.inner.store;
     // The full pool is a formation that has not run yet.
-    let formation_id = active_formation(store).await.snapshot.formation_id;
+    let formation_id = active_formation(store).await.formation_id;
     // Every seat but the first has its guardian code.
     for index in 1..MIN_FEDERATION_SIZE {
         store
@@ -5453,8 +5524,8 @@ async fn record_dkg_complete_rejects_incomplete_seats_without_changing_recovery_
         .load_status(TestIdentity::fa_id())
         .await
         .unwrap();
-    assert_eq!(formation(&status).phase, FormationPhase::PreparingDkg);
-    assert!(formation(&status).invite_code.is_none());
+    assert_eq!(formation_phase(&status), FormationPhase::PreparingDkg);
+    assert!(formation_invite(&status).is_none());
 }
 
 #[tokio::test]
@@ -5478,10 +5549,10 @@ async fn formation_rejects_disagreeing_final_federation_identities() {
             if message.contains("different federation identities")
     ));
     assert_eq!(
-        formation(&client.status()).phase,
+        formation_phase(&client.status()),
         FormationPhase::DkgUnderway
     );
-    assert!(formation(&client.status()).invite_code.is_none());
+    assert!(formation_invite(&client.status()).is_none());
 }
 
 #[tokio::test]
@@ -5552,11 +5623,10 @@ async fn initialized_formation_reloads_as_unsynced_typed_status() {
     let reopened = open_client(database, payments, mg_state, MgConfig::paid()).await;
     let status = reopened.status();
     let snapshot = purchase(&status);
-    assert_eq!(snapshot.purchase_id, FormationId("formation1".to_owned()));
-    assert_eq!(snapshot.phase, PurchasePhase::Preparing);
+    assert_eq!(snapshot.formation_id, FormationId("formation1".to_owned()));
     assert_eq!(snapshot.freshness, FormationFreshness::Unsynced);
-    assert_eq!(snapshot.seats[0].freshness, FormationFreshness::Unsynced);
-    assert_eq!(snapshot.seats[0].phase, SeatPhase::Selected);
+    assert_eq!(snapshot.slots[0].freshness, FormationFreshness::Unsynced);
+    assert_eq!(snapshot.slots[0].phase, SeatPhase::Selected);
 }
 
 #[tokio::test]
@@ -5755,17 +5825,14 @@ async fn accepting_one_seat_preserves_a_sibling_journaled_quote() {
     );
     // The accepted seat moved to the pool, and its sibling kept its quote.
     assert_eq!(seat_indices(&recovery), [1]);
-    assert_eq!(recovery.seats[0].state.bound_quote(), Some(&second_quote));
-    let pool = client
-        .inner
-        .store
-        .pool_seats(TestIdentity::fa_id())
-        .await
-        .unwrap();
+    assert_eq!(recovery.slots[1].state.bound_quote(), Some(&second_quote));
     assert_eq!(
-        pool.iter()
-            .map(|seat| seat.seat_id.clone())
-            .collect::<Vec<_>>(),
+        client
+            .inner
+            .store
+            .pool_seats(TestIdentity::fa_id())
+            .await
+            .unwrap(),
         [SeatId::from(QuoteId([0x01; 32]))]
     );
 }
@@ -5783,7 +5850,9 @@ async fn concurrent_two_seat_acceptance_retries_and_derives_completion_from_dura
     .await;
     let store = &client.inner.store;
     let formation_id = FormationId("concurrentseatacceptance".to_owned());
-    let intent = resolved_intent_with_size(FederationSize(2));
+    // Two of the four slots are picked, so their acceptance ends the purchase
+    // without a formation.
+    let intent = resolved_intent();
     store
         .initialize_for_test(
             TestIdentity::fa_id(),
@@ -5835,13 +5904,7 @@ async fn concurrent_two_seat_acceptance_retries_and_derives_completion_from_dura
     let fa_id = TestIdentity::fa_id();
     assert!(store.load_purchase(fa_id).await.unwrap().is_none());
     assert_eq!(
-        store
-            .pool_seats(fa_id)
-            .await
-            .unwrap()
-            .iter()
-            .map(|seat| seat.seat_id.clone())
-            .collect::<Vec<_>>(),
+        store.pool_seats(fa_id).await.unwrap(),
         [
             SeatId::from(QuoteId([0x02; 32])),
             SeatId::from(QuoteId([0x03; 32]))
@@ -5994,29 +6057,31 @@ async fn partial_seat_recovery_keeps_the_remaining_payment_after_a_dropped_seat(
         .await
         .unwrap();
     store
-        .drop_seat(
+        .empty_slots(
             &formation_id,
-            1,
-            Some(&quotes[1]),
+            vec![(
+                1,
+                crate::db::SlotState::Bound {
+                    quote: quotes[1].clone(),
+                },
+            )],
             SelectionReauthorizationReason::SelectedMgUnavailable,
         )
         .await
         .unwrap();
 
     let recovered = store.load_status(TestIdentity::fa_id()).await.unwrap();
-    let snapshot = purchase(&recovered);
-    assert_eq!(snapshot.phase, PurchasePhase::AcquiringSeats);
+    assert_eq!(pending_indices(&recovered), [2]);
     assert_eq!(
-        recovered
-            .pool
-            .iter()
-            .map(|seat| seat.seat_id.clone())
+        accepted_seats(&recovered)
+            .into_iter()
+            .map(|seat| seat.seat_id)
             .collect::<Vec<_>>(),
-        [SeatId::from(QuoteId([0x04; 32]))]
+        [Some(SeatId::from(QuoteId([0x04; 32])))]
     );
     let recovery = active_recovery(store.load_purchase(TestIdentity::fa_id()).await.unwrap());
     assert_eq!(seat_indices(&recovery), [2]);
-    assert_eq!(recovery.seats[0].state.bound_quote(), Some(&quotes[2]));
+    assert_eq!(recovery.slots[1].state.bound_quote(), Some(&quotes[2]));
 }
 
 #[tokio::test]
@@ -6865,12 +6930,12 @@ async fn selected_free_lost_create_seat_reopens_after_verifier_drift_with_exact_
             .unwrap(),
     );
     let interrupted = recovery
-        .seats
+        .slots
         .iter()
         .find(|seat| {
             seat.state.bound_quote().is_some_and(|signed| {
                 signed
-                    .verify(&seat.progress.locator.service_pubkey)
+                    .verify(&seat.locator.service_pubkey)
                     .is_ok_and(|quote| quote.quote_id() == hung_quote)
             })
         })
@@ -6880,7 +6945,7 @@ async fn selected_free_lost_create_seat_reopens_after_verifier_drift_with_exact_
             .state
             .bound_quote()
             .unwrap()
-            .verify(&interrupted.progress.locator.service_pubkey)
+            .verify(&interrupted.locator.service_pubkey)
             .unwrap()
             .terms
             .payment
@@ -6976,9 +7041,7 @@ async fn a_refused_free_seat_leaves_and_its_quote_is_never_presented_again() {
     let presentations_before_reopen = mg_state.create_calls.load(Ordering::SeqCst);
     let dropped = (0..usize::from(MIN_FEDERATION_SIZE))
         .find(|index| {
-            client
-                .status()
-                .pool
+            accepted_seats(&client.status())
                 .iter()
                 .all(|seat| seat.locator != locator(*index))
         })
@@ -7165,7 +7228,7 @@ async fn a_partial_pool_buys_only_its_gap_and_refuses_cancel() {
         .await
         .unwrap_err();
     client.drive().await.unwrap();
-    let pool = client.status().pool;
+    let pool = accepted_seats(&client.status());
     assert_eq!(pool.len(), usize::from(MIN_FEDERATION_SIZE) - 1);
     let dropped = (0..usize::from(MIN_FEDERATION_SIZE))
         .find(|index| pool.iter().all(|seat| seat.mg_id != test_mg_id(*index)))
@@ -7190,8 +7253,10 @@ async fn a_partial_pool_buys_only_its_gap_and_refuses_cancel() {
         .request_seats_at(&intent(), vec![locator(dropped)], None)
         .await
         .unwrap();
-    let running = purchase(&client.status()).clone();
-    assert_eq!(running.seats.len(), 1);
+    assert_eq!(
+        pending_indices(&client.status()),
+        [u16::try_from(dropped).unwrap()]
+    );
 
     let error = client.cancel_creation().await.unwrap_err();
 
@@ -7205,8 +7270,14 @@ async fn a_partial_pool_buys_only_its_gap_and_refuses_cancel() {
     // The refusal leaves the creation, its pool and its running purchase.
     let status = client.status();
     assert!(status.creation.is_some());
-    assert_eq!(status.pool, pool);
-    assert!(status.purchase.is_some());
+    let seat_ids = |seats: &[SeatProgress]| {
+        seats
+            .iter()
+            .map(|seat| seat.seat_id.clone())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(seat_ids(&accepted_seats(&status)), seat_ids(&pool));
+    assert!(is_buying(&status));
     assert!(
         client
             .inner
@@ -7254,11 +7325,11 @@ async fn unfinished_setup_reopens_at_its_checkpoint_without_repeating_dkg() {
                 .await,
             Err(FaError::Timeout(_))
         ));
-        assert_eq!(formation(&client.status()).phase, phase);
+        assert_eq!(formation_phase(&client.status()), phase);
         drop(client);
 
         let reopened = open_client(database, payments, state.clone(), MgConfig::given_away()).await;
-        assert_eq!(formation(&reopened.status()).phase, phase);
+        assert_eq!(formation_phase(&reopened.status()), phase);
         assert!(matches!(
             reopened.cancel_creation().await,
             Err(FaError::AbandonUnavailable(
@@ -8044,10 +8115,20 @@ async fn selected_formation_persists_and_enforces_its_compatible_release() {
     let status = client.status();
     bought(&status);
     assert!(
-        status
-            .pool
+        client
+            .inner
+            .store
+            .load_creation(TestIdentity::fa_id())
+            .await
+            .unwrap()
+            .expect("the creation forms next")
+            .slots
             .iter()
-            .all(|seat| seat.fedimintd_version.dkg_version() == fedimintd_version().dkg_version())
+            .all(|slot| matches!(
+                &slot.state,
+                crate::db::SlotState::Accepted { fedimintd_version: version, .. }
+                    if version.dkg_version() == fedimintd_version().dkg_version()
+            ))
     );
     assert!(
         mg_state
@@ -8284,17 +8365,20 @@ async fn reopen_preserves_the_selected_dkg_identity_and_accepts_patch_skew() {
     set_mg_version(&mg_state, 0, "0.12.2+fedi");
 
     let reopened = open_client(database, payments, mg_state, MgConfig::paid()).await;
-    let persisted = purchase(&reopened.status()).clone();
     assert_eq!(
-        persisted.request.fedimintd_dkg_version,
-        fedimintd_version().dkg_version()
+        purchase(&reopened.status()).fedimintd_dkg_version,
+        Some(fedimintd_version().dkg_version())
+    );
+    let persisted = active_recovery(
+        reopened
+            .inner
+            .store
+            .load_purchase(TestIdentity::fa_id())
+            .await
+            .unwrap(),
     );
     assert_eq!(
-        persisted
-            .request
-            .fedimintd_versions
-            .maximum_exclusive()
-            .to_string(),
+        persisted.fedimintd_versions.maximum_exclusive().to_string(),
         "0.12.3"
     );
     reopened
@@ -8473,7 +8557,7 @@ async fn a_failed_presentation_connection_is_retried_by_the_next_run() {
     );
     assert_eq!(
         purchase(&client.status())
-            .seats
+            .slots
             .iter()
             .filter(|seat| seat.seat_id.is_none())
             .count(),
@@ -8670,11 +8754,10 @@ async fn a_refused_paid_seat_leaves_and_the_rest_complete() {
         "{error:?}"
     );
     let status = client.status();
-    assert!(status.purchase.is_none());
+    assert!(!is_buying(&status));
     let dropped = (0..MIN_FEDERATION_SIZE)
         .find(|index| {
-            status
-                .pool
+            accepted_seats(&status)
                 .iter()
                 .all(|seat| seat.locator != locator(usize::from(*index)))
         })
@@ -8761,7 +8844,7 @@ async fn buy_seats_rejects_a_preview_that_a_finished_purchase_made_stale() {
 
     let error = buying.await.unwrap().unwrap_err();
     assert!(matches!(error, FaError::InvalidIntent(_)), "{error:?}");
-    assert!(client.status().purchase.is_none());
+    assert!(!is_buying(&client.status()));
 }
 
 #[tokio::test]
@@ -8925,7 +9008,7 @@ async fn insufficient_funds_ends_the_purchase_with_the_seats_it_bought() {
         "the seats after the failed payment are never quoted",
     );
     assert_eq!(
-        client.status().reauthorization,
+        reauthorization(&client.status()),
         Some(SelectionReauthorizationReason::SelectedPayerInsufficientFunds)
     );
 }
@@ -9351,9 +9434,9 @@ async fn a_bound_seat_survives_reopen_and_resume() {
     );
     assert!(
         recovery
-            .seats
+            .slots
             .iter()
-            .any(|seat| seat.progress.seat_id.is_none() && seat.state.bound_quote().is_some()),
+            .any(|seat| seat.seat_id().is_none() && seat.state.bound_quote().is_some()),
         "the hung seat stays bound to its quote",
     );
     drop(client);
@@ -10647,13 +10730,8 @@ async fn formation_request_logs_bind_concurrent_seats_and_exclude_remote_secrets
             .await
             .is_err()
     );
-    let FaStatus {
-        formation: Some(snapshot),
-        ..
-    } = client.status()
-    else {
-        panic!("failed formation remains recoverable");
-    };
+    // The failed formation remains recoverable.
+    let snapshot = formation(&client.status()).clone();
     let logs = capture.text();
     let failures = logs
         .lines()
@@ -10881,14 +10959,8 @@ async fn formation_guardian_code_deadline_logs_only_the_never_ready_seat() {
         if *mg == manager_key(5).x_only_public_key().0),
         "{error:?}"
     );
-    let FaStatus {
-        formation: Some(snapshot),
-        ..
-    } = client.status()
-    else {
-        panic!("active formation");
-    };
-    for (index, seat) in snapshot.seats.iter().enumerate() {
+    let snapshot = formation(&client.status()).clone();
+    for (index, seat) in snapshot.slots.iter().enumerate() {
         assert_eq!(
             seat.guardian_code.is_some(),
             index != 5,
@@ -10930,7 +11002,7 @@ async fn named_seat_index(client: &TestClient) -> usize {
         .unwrap()
         .expect("the pool is full");
     (0..usize::from(MIN_FEDERATION_SIZE))
-        .find(|index| formation.seats[0].progress.locator == locator(*index))
+        .find(|index| formation.slots[0].locator == locator(*index))
         .expect("the named seat is a test MG")
 }
 
@@ -10958,7 +11030,7 @@ async fn a_decommissioned_pool_seat_leaves_before_dkg_and_a_new_seat_forms() {
     client.drive_all_for_test(options()).await.unwrap();
     let status = client.status();
     bought_without(&status, &[u16::try_from(ended).unwrap()]);
-    assert!(status.formation.is_none());
+    assert!(!is_forming(&status));
     assert!(state.start_callbacks.lock().unwrap().is_empty());
     let FaState::Creating(creation) = client.state() else {
         panic!("the creation needs a new seat");
@@ -11004,16 +11076,16 @@ async fn a_decommissioned_pool_seat_stays_once_dkg_may_have_started() {
         .await
         .unwrap()
         .unwrap();
-    for seat in &formation.seats {
+    for seat in &formation.slots {
         let mg = (0..usize::from(MIN_FEDERATION_SIZE))
-            .find(|index| seat.progress.locator == locator(*index))
+            .find(|index| seat.locator == locator(*index))
             .unwrap();
         client
             .inner
             .store
             .record_guardian_code(
-                &formation.snapshot.formation_id,
-                seat.progress.index,
+                &formation.formation_id,
+                seat.index,
                 GuardianCode(format!("guardiancode{mg}")),
             )
             .await
@@ -11069,16 +11141,16 @@ async fn a_decommissioned_pool_seat_leaves_after_codes_while_no_seat_started_dkg
         .await
         .unwrap()
         .unwrap();
-    for seat in &formation.seats {
+    for seat in &formation.slots {
         let mg = (0..usize::from(MIN_FEDERATION_SIZE))
-            .find(|index| seat.progress.locator == locator(*index))
+            .find(|index| seat.locator == locator(*index))
             .unwrap();
         client
             .inner
             .store
             .record_guardian_code(
-                &formation.snapshot.formation_id,
-                seat.progress.index,
+                &formation.formation_id,
+                seat.index,
                 GuardianCode(format!("guardiancode{mg}")),
             )
             .await
