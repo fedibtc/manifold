@@ -17,14 +17,44 @@ fn runtime_limit_counts_memory_the_seats_already_hold() {
 
 #[test]
 fn smoothing_lowers_at_once_and_raises_after_three_agreeing_samples() {
-    let mut smoothed = Smoothed::default();
-    assert_eq!(smoothed.push(6), 6);
+    let mut smoothed = Smoothed::starting_at(6);
     assert_eq!(smoothed.push(4), 4);
     assert_eq!(smoothed.push(8), 4);
     assert_eq!(smoothed.push(8), 4);
     // The 4 has now left the window.
     assert_eq!(smoothed.push(8), 8);
     assert_eq!(smoothed.push(7), 7);
+}
+
+#[test]
+fn a_restart_needs_three_samples_to_raise_the_stored_limit() {
+    let mut smoothed = Smoothed::starting_at(1);
+    assert_eq!(smoothed.push(12), 1);
+    assert_eq!(smoothed.push(12), 1);
+    assert_eq!(smoothed.push(12), 12);
+    // A lower first sample still applies at once.
+    assert_eq!(Smoothed::starting_at(5).push(2), 2);
+}
+
+#[test]
+fn cgroup_limits_apply_from_the_own_group_and_every_ancestor() {
+    let dirs = cgroup_dirs("0::/system.slice/mg.service\n");
+    assert_eq!(
+        dirs,
+        [
+            "/sys/fs/cgroup/system.slice/mg.service",
+            "/sys/fs/cgroup/system.slice",
+            "/sys/fs/cgroup",
+        ]
+        .map(std::path::PathBuf::from)
+    );
+    // A private cgroup namespace sees itself at the root.
+    assert_eq!(
+        cgroup_dirs("0::/\n"),
+        [std::path::PathBuf::from("/sys/fs/cgroup")]
+    );
+    // Without a unified-hierarchy entry (cgroup v1 only), no limit applies.
+    assert!(cgroup_dirs("4:memory:/docker/abc\n").is_empty());
 }
 
 #[test]

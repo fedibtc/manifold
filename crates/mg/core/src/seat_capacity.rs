@@ -38,10 +38,15 @@ fn memory_max_seats(available_ram_bytes: u64, seat_process_bytes: u64, budget_by
 }
 
 /// Lower at once; raise only after [`RAISE_AFTER_SAMPLES`] samples.
-#[derive(Default)]
 struct Smoothed(VecDeque<u32>);
 
 impl Smoothed {
+    /// Start from the stored limit, so a restart also needs
+    /// [`RAISE_AFTER_SAMPLES`] samples to raise it.
+    fn starting_at(stored: u32) -> Self {
+        Self(VecDeque::from([stored]))
+    }
+
     fn push(&mut self, sample: u32) -> u32 {
         if self.0.len() == RAISE_AFTER_SAMPLES {
             self.0.pop_front();
@@ -60,7 +65,8 @@ pub fn spawn_runtime_seat_limits(
     mut policy: watch::Receiver<Option<AdmittedSetupPaymentFederations>>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
-        let mut smoothed = Smoothed::default();
+        let mut smoothed =
+            Smoothed::starting_at(fleet.availability_snapshot().await.memory_max_seats);
         let mut sample_memory = true;
         loop {
             let (policy_max_seats, budget_mib) = policy.borrow_and_update().as_ref().map_or(
@@ -111,14 +117,19 @@ pub(crate) fn detect_available_ram_bytes() -> anyhow::Result<u64> {
     let meminfo = std::fs::read_to_string("/proc/meminfo")
         .context("read /proc/meminfo to derive a seat capacity")?;
     let available = parse_mem_available_bytes(&meminfo)?;
-    let cgroup = cgroup_headroom_bytes(
-        std::fs::read_to_string("/sys/fs/cgroup/memory.max")
-            .ok()
-            .as_deref(),
-        std::fs::read_to_string("/sys/fs/cgroup/memory.current")
-            .ok()
-            .as_deref(),
-    );
+    let cgroups = std::fs::read_to_string("/proc/self/cgroup")
+        .map(|cgroup| cgroup_dirs(&cgroup))
+        .unwrap_or_default();
+    let cgroup = cgroups
+        .iter()
+        .filter_map(|dir| {
+            let read = |file| std::fs::read_to_string(dir.join(file)).ok();
+            cgroup_headroom_bytes(
+                read("memory.max").as_deref(),
+                read("memory.current").as_deref(),
+            )
+        })
+        .min();
     Ok(cgroup.map_or(available, |cgroup| cgroup.min(available)))
 }
 
@@ -134,6 +145,24 @@ fn parse_mem_available_bytes(meminfo: &str) -> anyhow::Result<u64> {
         .parse()
         .context("MemAvailable value is not a number")?;
     Ok(kib * 1024)
+}
+
+/// The cgroup v2 directories that bound this process: its own and each
+/// ancestor up to the root of the unified hierarchy. A limit on any of them
+/// applies, for example on the slice of a systemd service.
+fn cgroup_dirs(proc_self_cgroup: &str) -> Vec<std::path::PathBuf> {
+    let root = std::path::Path::new("/sys/fs/cgroup");
+    let Some(own) = proc_self_cgroup
+        .lines()
+        .find_map(|line| line.strip_prefix("0::"))
+    else {
+        return Vec::new();
+    };
+    root.join(own.trim().trim_start_matches('/'))
+        .ancestors()
+        .take_while(|dir| dir.starts_with(root))
+        .map(std::path::Path::to_path_buf)
+        .collect()
 }
 
 /// Remaining room under a cgroup v2 memory limit, or `None` without one.
