@@ -1,7 +1,7 @@
 import type { ReadinessReport } from '@operator-ui/types';
 import { render, screen } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
-import { guidance } from '@/shared/utils/seatReadiness';
+import { guidance, outcomes } from '@/shared/utils/seatReadiness';
 import { SeatReadinessCard } from '../SeatReadinessCard';
 
 const CHECKED_AT = Date.UTC(2026, 9, 1, 12, 34, 56);
@@ -11,6 +11,7 @@ const report = (overrides: Partial<ReadinessReport> = {}): ReadinessReport => ({
   relay: 'pass',
   discovery: 'not_applicable',
   bitcoin: 'pass',
+  uptime: 'pass',
   ...overrides
 });
 
@@ -33,6 +34,21 @@ describe('SeatReadinessCard', () => {
     expect(screen.getByText('Not accepting new seats')).toBeTruthy();
     expect(screen.getByText('Bitcoin Core is still in initial block download.')).toBeTruthy();
     expect(screen.getByText(guidance.bitcoin)).toBeTruthy();
+  });
+
+  it('should name the uptime window that closed the gate', () => {
+    render(
+      <SeatReadinessCard
+        readiness={{ ready_for_new_seats: false, report: report({ uptime: 'uptime_30d_low' }) }}
+      />
+    );
+
+    expect(screen.getByText('Not accepting new seats')).toBeTruthy();
+    expect(screen.getByText('Uptime')).toBeTruthy();
+    expect(screen.getByText(outcomes.uptime_30d_low)).toBeTruthy();
+    expect(screen.queryByText(outcomes.uptime_7d_low)).toBeNull();
+    expect(screen.getByText(guidance.uptime)).toBeTruthy();
+    expect(screen.queryByText(guidance.bitcoin)).toBeNull();
     expect(screen.queryByText(guidance.relay)).toBeNull();
   });
 

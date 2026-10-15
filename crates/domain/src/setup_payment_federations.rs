@@ -55,6 +55,36 @@ fn default_min_fee_ppm() -> u64 {
     DEFAULT_SETUP_PAYMENT_MIN_FEE_PPM
 }
 
+/// Uptime scores, in percent, an MG needs to accept new seats. Each score is
+/// an exponential moving average with the named time constant; 0 turns that
+/// window's check off.
+///
+/// Optional on the wire as a whole and per window: an omitted window takes
+/// its [`Default`] value, so a publication can change one window alone.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
+#[serde(default)]
+pub struct MinUptimePercent {
+    /// One-day score: holds an MG closed for some hours after a long outage.
+    #[serde(rename = "1d")]
+    pub day: u8,
+    /// Seven-day score: closes an MG for about two days after a day down.
+    #[serde(rename = "7d")]
+    pub week: u8,
+    /// Thirty-day score: closes an MG that is often down a little.
+    #[serde(rename = "30d")]
+    pub month: u8,
+}
+
+impl Default for MinUptimePercent {
+    fn default() -> Self {
+        Self {
+            day: 70,
+            week: 90,
+            month: 93,
+        }
+    }
+}
+
 /// SemVer release of the Manifold Guardian daemon.
 ///
 /// Parsing is the validity gate; the wire representation is a string.
@@ -123,6 +153,11 @@ pub struct SetupPaymentFederationsContent {
     #[serde(default = "default_min_fee_ppm")]
     pub min_fee_ppm: u64,
 
+    /// Uptime scores below which an MG stops accepting new seats. Optional on
+    /// the wire: absent, [`MinUptimePercent::default`] applies.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_uptime_percent: Option<MinUptimePercent>,
+
     /// Nostr public key of Fedi support, which MG operators chat
     /// with over NIP-17. Optional on the wire: absent, the environment
     /// profile's support key applies.
@@ -152,6 +187,7 @@ pub struct AdmittedSetupPaymentFederations {
     federations: BTreeMap<FederationId, InviteCode>,
     telemetry_registration_url: Url,
     min_fee_ppm: u64,
+    min_uptime_percent: MinUptimePercent,
     support_nostr_pubkey: Option<nostr::PublicKey>,
     seat_memory_budget_mib: Option<u32>,
     max_seats_per_mg: Option<u32>,
@@ -166,8 +202,8 @@ impl AdmittedSetupPaymentFederations {
     ///
     /// Returns an error for oversized or malformed content, excessive entries,
     /// invalid, oversized, or secret-bearing invites, duplicate derived
-    /// federation IDs, or a minimum fee rate above the payer's send-rate
-    /// ceiling.
+    /// federation IDs, a minimum fee rate above the payer's send-rate
+    /// ceiling, or a minimum uptime above 100%.
     pub fn parse(raw_content: &[u8]) -> Result<Self, SetupPaymentFederationsContentError> {
         if raw_content.len() > SETUP_PAYMENT_FEDERATIONS_MAX_CONTENT_BYTES {
             return Err(SetupPaymentFederationsContentError::ContentTooLarge);
@@ -192,6 +228,17 @@ impl AdmittedSetupPaymentFederations {
             .is_some_and(|seats| seats > SETUP_PAYMENT_MAX_SEATS_PER_MG)
         {
             return Err(SetupPaymentFederationsContentError::MaxSeatsPerMgTooHigh);
+        }
+        let min_uptime_percent = content.min_uptime_percent.unwrap_or_default();
+        if [
+            min_uptime_percent.day,
+            min_uptime_percent.week,
+            min_uptime_percent.month,
+        ]
+        .into_iter()
+        .any(|percent| percent > 100)
+        {
+            return Err(SetupPaymentFederationsContentError::MinUptimeTooHigh);
         }
 
         let registration_url = url::Url::parse(&content.telemetry_registration_url.0)
@@ -232,6 +279,7 @@ impl AdmittedSetupPaymentFederations {
             federations,
             telemetry_registration_url: content.telemetry_registration_url,
             min_fee_ppm: content.min_fee_ppm,
+            min_uptime_percent,
             support_nostr_pubkey: content.support_nostr_pubkey,
             seat_memory_budget_mib: content.seat_memory_budget_mib,
             max_seats_per_mg: content.max_seats_per_mg,
@@ -280,6 +328,13 @@ impl AdmittedSetupPaymentFederations {
     #[must_use]
     pub fn min_fee_ppm(&self) -> u64 {
         self.min_fee_ppm
+    }
+
+    /// Return the uptime scores an MG needs to accept new seats. An event
+    /// that omits the field yields [`MinUptimePercent::default`].
+    #[must_use]
+    pub fn min_uptime_percent(&self) -> MinUptimePercent {
+        self.min_uptime_percent
     }
 
     /// Return the Fedi support key MG operators chat with, if published.
@@ -339,6 +394,9 @@ pub enum SetupPaymentFederationsContentError {
 
     /// The published per-MG seat limit is above the admitted maximum.
     MaxSeatsPerMgTooHigh,
+
+    /// A published minimum uptime is above 100%, which no MG can reach.
+    MinUptimeTooHigh,
 }
 
 impl core::fmt::Display for SetupPaymentFederationsContentError {
@@ -364,6 +422,9 @@ impl core::fmt::Display for SetupPaymentFederationsContentError {
             }
             Self::MaxSeatsPerMgTooHigh => {
                 "setup-payment federation set sets a per-MG seat limit above the admitted maximum"
+            }
+            Self::MinUptimeTooHigh => {
+                "setup-payment federation set sets a minimum uptime above 100%"
             }
         };
         formatter.write_str(message)

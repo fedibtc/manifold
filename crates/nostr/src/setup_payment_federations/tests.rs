@@ -25,6 +25,7 @@ fn content(invites: &[&str]) -> String {
             "https://push.fedi.example/v1/telemetry/registrations".to_owned()
         ),
         min_fee_ppm: DEFAULT_SETUP_PAYMENT_MIN_FEE_PPM,
+        min_uptime_percent: None,
         support_nostr_pubkey: None,
         seat_memory_budget_mib: None,
         max_seats_per_mg: None,

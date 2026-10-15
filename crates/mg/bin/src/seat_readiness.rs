@@ -9,6 +9,7 @@
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use fedi_decentralized_domain::{AdmittedSetupPaymentFederations, MinUptimePercent};
 use fedimint_core::bitcoin::Network;
 use fedimint_core::util::SafeUrl;
 use fedimint_server_bitcoin_rpc::bitcoind::BitcoindClient;
@@ -21,10 +22,12 @@ use iroh::address_lookup::{
 use iroh::{Endpoint, RelayUrl, Watcher as _};
 use mg_core::fleet::Fleet;
 use mg_core::seat_process::{BitcoinBackend, SeatProcessConfig};
-use mg_core::seat_readiness::{ReadinessOutcome as Outcome, ReadinessReport as Report};
+use mg_core::seat_readiness::{
+    ReadinessOutcome as Outcome, ReadinessReport as Report, UPTIME_SLOT_SECS, UptimeScores,
+};
+use tokio::sync::watch;
 use tokio::time::Instant;
 
-const READY_INTERVAL: Duration = Duration::from_secs(10 * 60);
 const NOT_READY_INTERVAL: Duration = Duration::from_secs(60);
 /// A run retries failed prerequisites for about a minute, which also covers
 /// relay connection and discovery publication after startup.
@@ -71,11 +74,42 @@ impl SeatReadiness {
         })
     }
 
-    /// Run until aborted: probe, report, and wait longer while ready.
-    pub(super) fn spawn(mut self, fleet: Arc<Fleet>) -> tokio::task::JoinHandle<()> {
+    /// Run until aborted: probe, record this uptime slot, report, and wait
+    /// for the next slot while ready or a minute while failing.
+    pub(super) fn spawn(
+        mut self,
+        fleet: Arc<Fleet>,
+        setup_payment_policy: watch::Receiver<Option<AdmittedSetupPaymentFederations>>,
+    ) -> tokio::task::JoinHandle<()> {
         tokio::spawn(async move {
             loop {
-                let report = self.probe().await;
+                let mut report = self.probe().await;
+                // Recording this slot also accounts for every slot since the
+                // last record, such as a restart's downtime.
+                let recorded_at = SystemTime::now();
+                let scores = match fleet
+                    .record_uptime_slot(recorded_at, report.prerequisites_passed())
+                    .await
+                {
+                    Ok(scores) => scores,
+                    Err(error) => {
+                        tracing::warn!(%error, "failed to record an uptime slot");
+                        UptimeScores {
+                            day: 0.0,
+                            week: 0.0,
+                            month: 0.0,
+                        }
+                    }
+                };
+                let min = setup_payment_policy
+                    .borrow()
+                    .as_ref()
+                    .map_or_else(MinUptimePercent::default, |policy| {
+                        policy.min_uptime_percent()
+                    });
+                report.uptime = scores.outcome(min);
+                // Telemetry reports a score to the 0.1% the gate compares at.
+                let pct = |score: f64| (score * 1000.0).round() / 10.0;
                 let ready = report.ready();
                 tracing::info!(
                     safe_to_share = true,
@@ -83,13 +117,20 @@ impl SeatReadiness {
                     relay = report.relay.as_str(),
                     discovery = report.discovery.as_str(),
                     bitcoin = report.bitcoin.as_str(),
+                    uptime = report.uptime.as_str(),
+                    uptime_1d_pct = pct(scores.day),
+                    uptime_7d_pct = pct(scores.week),
+                    uptime_30d_pct = pct(scores.month),
+                    min_uptime_1d_pct = min.day,
+                    min_uptime_7d_pct = min.week,
+                    min_uptime_30d_pct = min.month,
                     "seat readiness check completed"
                 );
                 if let Err(error) = fleet.set_seat_readiness(report).await {
                     tracing::warn!(%error, "failed to apply the seat readiness verdict");
                 }
                 tokio::time::sleep(if ready {
-                    READY_INTERVAL
+                    until_slot_after(recorded_at)
                 } else {
                     NOT_READY_INTERVAL
                 })
@@ -98,10 +139,12 @@ impl SeatReadiness {
         })
     }
 
+    /// Probe the prerequisites, retrying failures. The caller sets the
+    /// uptime outcome.
     async fn probe(&mut self) -> Report {
         let give_up = Instant::now() + RETRY_BUDGET;
         let mut report = self.probe_once().await;
-        while !report.ready() && Instant::now() + RETRY_DELAY < give_up {
+        while !report.prerequisites_passed() && Instant::now() + RETRY_DELAY < give_up {
             tokio::time::sleep(RETRY_DELAY).await;
             report = self.probe_once().await;
         }
@@ -136,6 +179,7 @@ impl SeatReadiness {
             relay,
             discovery,
             bitcoin,
+            uptime: Outcome::NotApplicable,
         }
     }
 
@@ -176,6 +220,20 @@ impl SeatReadiness {
         }
         Outcome::DiscoveryRecordMissing
     }
+}
+
+/// The time from now to just past the start of the slot after the one
+/// `recorded_at` falls in, so a ready MG runs once in every slot and misses
+/// none, even when recording crossed a boundary.
+fn until_slot_after(recorded_at: SystemTime) -> Duration {
+    let recorded = recorded_at
+        .duration_since(UNIX_EPOCH)
+        .expect("system clock is after the Unix epoch")
+        .as_secs();
+    let next =
+        UNIX_EPOCH + Duration::from_secs((recorded / UPTIME_SLOT_SECS + 1) * UPTIME_SLOT_SECS + 1);
+    next.duration_since(SystemTime::now())
+        .unwrap_or(Duration::ZERO)
 }
 
 /// Check Bitcoin on a blocking thread with a client built for this attempt.
@@ -250,6 +308,24 @@ mod tests {
     use serde_json::{Value, json};
 
     use super::*;
+
+    /// A record that crossed into the next slot before the wait was computed
+    /// still waits only for that next slot, not the one after it.
+    #[test]
+    fn the_wait_ends_in_the_slot_after_the_recorded_one() {
+        let slot = Duration::from_secs(UPTIME_SLOT_SECS);
+        let now = SystemTime::now();
+        let start_of_slot = UNIX_EPOCH
+            + Duration::from_secs(
+                now.duration_since(UNIX_EPOCH).unwrap().as_secs() / UPTIME_SLOT_SECS
+                    * UPTIME_SLOT_SECS,
+            );
+        let late = until_slot_after(start_of_slot - slot);
+        assert!(late <= Duration::from_secs(1), "{late:?}");
+        let wait = until_slot_after(start_of_slot);
+        assert!(wait <= slot + Duration::from_secs(1), "{wait:?}");
+        assert!(wait > Duration::ZERO, "{wait:?}");
+    }
 
     /// Block 1 of Mutinynet, which fedimintd classifies as Signet.
     const MUTINYNET_BLOCK_1: &str =

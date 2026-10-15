@@ -84,6 +84,7 @@ async fn rpc_with_config(
             relay: ReadinessOutcome::Pass,
             discovery: ReadinessOutcome::Pass,
             bitcoin: ReadinessOutcome::Pass,
+            uptime: ReadinessOutcome::Pass,
         })
         .await
         .unwrap();
