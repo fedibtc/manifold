@@ -294,22 +294,3 @@ fn fedi_operated_and_inert_keys_are_not_served() {
         );
     }
 }
-
-#[test]
-fn every_served_field_at_its_cap_fits_the_consensus_object_cap() {
-    // Filling every served field must leave later maintenance possible, so the
-    // sum of raw caps plus formation-owned fields stays below half the object
-    // cap: JSON string escaping at most doubles a value's printable bytes.
-    let served = VALIDATORS
-        .iter()
-        .map(|validator| validator.raw_value_max_bytes() + validator.key().len() + 8)
-        .sum::<usize>();
-    let formation = fedi_decentralized_domain::MG_SEAT_BINDINGS_MAX_VALUE_BYTES
-        + fedi_decentralized_domain::MG_API_URLS_MAX_VALUE_BYTES;
-    assert!(
-        served + formation
-            < fedi_decentralized_service_manifold_guardian::FEDERATION_METADATA_OBJECT_MAX_BYTES
-                / 2,
-        "served {served} + formation {formation} bytes"
-    );
-}

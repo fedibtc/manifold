@@ -31,19 +31,25 @@ strings exactly as the app parses them; list values are JSON inside the string.
 
 | Key | App behavior | Validator |
 | --- | --- | --- |
-| `fedi:autojoin_communities` | Linked communities members join | JSON array of at most 10 distinct bech32 invite codes (compared case-insensitively) with HRP `fedi:community` or `fedi:community2` and a JSON-object payload |
-| `fedi:default_group_chats` | Group chats shown to members | JSON array of at most 20 distinct `!opaque:server` Matrix room ids, each at most 255 bytes without whitespace or controls |
-| `fedi:fedimods` | Default home-screen mods | JSON array of at most 32 objects with only `id`, `title`, `url`, and optional `imageUrl`, `description`, `color`; distinct ids; URLs pass the icon URL rule |
-| `fedi:pinned_message` | Home-screen message | Exactly empty, or the welcome-message rules |
-| `fedi:default_currency` | Display currency | Three uppercase ASCII letters, or a lowercase `[a-z_]` alias of at most 32 bytes |
+| `fedi:autojoin_communities` | Linked communities members join | JSON array of at most 10 distinct invite codes (compared case-insensitively) that Fedi's parser accepts: lowercased bech32 with HRP `fedi:community2` and a V2 payload (author pubkey, UUID, 32-byte base64 key), or HRP `fedi:community` and a V1 payload (`community_meta_url`) |
+| `fedi:default_group_chats` | Group chats shown to members | JSON array of at most 20 distinct Matrix room ids: `!` and a nonempty body, at most 255 bytes, without whitespace or controls. Legacy `!opaque:server` and room version 12 server-less ids both pass |
+| `fedi:fedimods` | Default home-screen mods | JSON array of at most 32 objects with only `id`, `title`, `url`, and optional `imageUrl`, `description`, `color`; distinct ids; URLs pass the icon URL rule. `description` and `color` must be strings when present, because the app drops an entry with a `null` one |
+| `fedi:pinned_message` | Home-screen message | Exactly empty, or the welcome-message rules with control characters refused anywhere |
+| `fedi:default_currency` | Display currency | One of the app's `SupportedCurrency` codes or `CurrencyAliases` names; the app mis-renders any other value |
 | `fedi:stability_pool_disabled`, `fedi:multispend_disabled` | Feature hidden unless `false` | `true` or `false` |
 | `fedi:invite_codes_disabled`, `fedi:new_members_disabled`, `fedi:offline_wallet_disabled`, `fedi:onchain_deposits_disabled` | Feature restrictions | `true` or `false` |
 | `fedi:max_balance_msats`, `fedi:max_invoice_msats`, `fedi:max_stable_balance_msats` | App amount limits | Canonical decimal from 0 through 2,100,000,000,000,000,000 |
 
 The app reads `fedi:<field>` before `<field>`, so these prefixed keys take
-precedence over unprefixed legacy values. Each setting has a raw cap well
-below the object cap so filling every served field cannot block later
-maintenance.
+precedence over unprefixed legacy values. The exception is group chats: the
+app reads `fedi:default_matrix_rooms` and `default_matrix_rooms` first. MG
+does not serve either, so on a federation whose metadata only MGs write they
+stay absent.
+
+The app settings' raw caps keep their stored size, including JSON string
+escaping, under a quarter of the object cap. This does not make every
+combination of valid fields fit: padded Guardianito fields can exceed the cap
+by themselves. MG refuses any target over the cap before voting.
 
 The meta module cannot delete a field. Empty values are refused except for
 `fedi:pinned_message`, whose empty value hides the message; lists clear with
