@@ -176,6 +176,17 @@ impl FaStore {
             .is_none()
     }
 
+    /// Why the last slot left the creation.
+    pub(crate) async fn reauthorization_for_test(
+        &self,
+    ) -> Option<crate::SelectionReauthorizationReason> {
+        let mut dbtx = self.database.begin_transaction_nc().await;
+        read_any_creation(&mut dbtx.to_ref_nc())
+            .await
+            .expect("test creation reads")
+            .and_then(|creation| creation.stored.reauthorization)
+    }
+
     /// Whether any legacy formation, creation or slot row remains.
     pub(crate) async fn holds_creation_rows_for_test(&self) -> bool {
         let mut dbtx = self.database.begin_transaction_nc().await;

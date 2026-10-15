@@ -149,12 +149,14 @@ impl FaStore {
 }
 
 /// One accepted seat of the formation and its cached guardian code.
-pub(super) struct FormationSeat {
-    pub(super) index: u16,
-    pub(super) mg_id: PublicKey,
-    pub(super) locator: Locator,
-    pub(super) seat_id: SeatId,
-    pub(super) guardian_code: Option<GuardianCode>,
+pub(crate) struct FormationSeat {
+    pub(crate) index: u16,
+    pub(crate) mg_id: PublicKey,
+    pub(crate) locator: Locator,
+    pub(crate) seat_id: SeatId,
+    /// MG-signed account from the seat's acceptance.
+    pub(crate) guardian_fee_account: Account,
+    pub(crate) guardian_code: Option<GuardianCode>,
 }
 
 /// The seats of the creation's formation in slot order, with their cached
@@ -177,7 +179,8 @@ pub(super) fn formation_seats(creation: &Creation) -> FaResult<Option<Vec<Format
             mg_id: seat.slot.mg_id,
             locator: seat.slot.locator.clone(),
             seat_id: seat.seat_id.clone(),
-            guardian_code: seat.slot.state.guardian_code().cloned(),
+            guardian_fee_account: seat.guardian_fee_account.clone(),
+            guardian_code: seat.guardian_code.cloned(),
         });
     }
     validate_formation(creation, &seats)?;

@@ -57,7 +57,7 @@ async fn assert_callback_dropped_with_formation(client: &TestClient) {
     );
     assert!(
         store
-            .load_creation(TestIdentity::fa_id())
+            .load_snapshot(TestIdentity::fa_id())
             .await
             .unwrap()
             .is_none()
@@ -143,7 +143,7 @@ async fn callback_is_durable_private_state_and_old_schema_resets() {
         .unwrap()
         .expect("callback formation is durable");
     assert_eq!(recovery.dkg_completion_callback, Some(callback));
-    let public = serde_json::to_string(&recovery.snapshot()).unwrap();
+    let public = serde_json::to_string(&reopened.state()).unwrap();
     assert!(!public.contains("bearer-secret"));
     assert!(!public.contains("formation-dkg-complete"));
 

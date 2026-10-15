@@ -28,8 +28,8 @@ use nostr_sdk::{Event, PublicKey};
 use stability_pool_common::Account;
 
 use crate::{
-    CreationSnapshot, CreationStage, FaError, FaResult, FormationFreshness, FormationId,
-    FormationPhase, SeatPhase, SeatProgress, state::FaStatus, state::ResolvedSeatPurchase,
+    CreationSnapshot, CreationStage, FaError, FaResult, FormationId, FormationPhase, SeatPhase,
+    SeatProgress, state::FaStatus, state::ResolvedSeatPurchase,
 };
 
 // Persisted-format changes are governed by GATE-production-compatibility
@@ -278,8 +278,8 @@ mod formation;
 mod migration;
 mod slot;
 
-pub(crate) use formation::FormationMetaTarget;
 use formation::*;
+pub(crate) use formation::{FormationMetaTarget, FormationSeat};
 pub(crate) use slot::SlotState;
 use slot::*;
 json_database_value!(StoredCreation);
@@ -294,150 +294,38 @@ json_database_value!(BackupRelayConfirmation);
 json_database_value!(StoredFederation);
 json_database_value!(StoredReadInvite);
 
-/// The running creation, as the driver works on it.
-pub(crate) struct CreationRecovery {
+/// The running purchase: the live slots that hold no accepted seat yet.
+pub(crate) struct PurchaseView {
     pub(crate) formation_id: FormationId,
-    pub(crate) federation_name: FederationName,
-    pub(crate) federation_size: FederationSize,
-    pub(crate) fedimintd_versions: crate::FedimintdVersionRange,
-    pub(crate) plan: crate::PlanPreference,
-    pub(crate) reauthorization: Option<crate::SelectionReauthorizationReason>,
-    pub(crate) invite_code: Option<InviteCode>,
-    /// Exact formation metadata target saved before publication.
-    pub(crate) formation_meta_target: Option<FormationMetaTarget>,
-    /// Bearer callback handed to every MG only at `StartDkg`.
-    pub(crate) dkg_completion_callback: Option<DkgCompletionCallback>,
-    /// The filled slots, in index order.
-    pub(crate) slots: Vec<SlotRecovery>,
-    /// Slots whose seat the MG ended before DKG, in index order.
-    pub(crate) ended: Vec<SlotRecovery>,
-    /// Formation progress this run observed.
-    pub(crate) formation_phase: FormationPhase,
-    pub(crate) freshness: FormationFreshness,
-    pub(crate) last_error: Option<crate::FaErrorCode>,
+    /// What every quote of the purchase must match.
+    pub(crate) intent: ResolvedSeatPurchase,
+    /// Explicit payer, absent for the zero-price bootstrap.
+    pub(crate) payment_federation_id: Option<FederationId>,
+    /// The picked or bound slots, in id order.
+    pub(crate) slots: Vec<PendingSlot>,
 }
 
-/// One filled slot: its durable state and the progress this run observed.
-pub(crate) struct SlotRecovery {
+/// One slot the running purchase still buys.
+#[derive(Clone)]
+pub(crate) struct PendingSlot {
     pub(crate) index: u16,
-    pub(crate) mg_id: PublicKey,
     pub(crate) locator: Locator,
     pub(crate) state: SlotState,
-    pub(crate) phase: SeatPhase,
-    pub(crate) freshness: FormationFreshness,
 }
 
-impl SlotRecovery {
-    pub(crate) fn seat_id(&self) -> Option<&SeatId> {
-        match &self.state {
-            SlotState::Accepted { seat_id, .. } | SlotState::Ended { seat_id } => Some(seat_id),
-            SlotState::Picked { .. } | SlotState::Bound { .. } => None,
-        }
-    }
-
-    fn progress(&self) -> SeatProgress {
-        SeatProgress {
-            index: self.index,
-            mg_id: self.mg_id,
-            locator: self.locator.clone(),
-            seat_id: self.seat_id().cloned(),
-            guardian_code: self.state.guardian_code().cloned(),
-            phase: self.phase,
-            freshness: self.freshness,
-        }
-    }
-}
-
-impl CreationRecovery {
-    /// Whether every slot holds an accepted seat.
-    pub(crate) fn is_full(&self) -> bool {
-        self.slots.len() == usize::from(self.federation_size.0)
-            && self.slots.iter().all(|slot| slot.seat_id().is_some())
-    }
-
-    /// The indexes of the slots the running purchase still buys.
-    pub(crate) fn pending(&self) -> Vec<u16> {
-        self.slots
-            .iter()
-            .filter(|slot| slot.seat_id().is_none())
-            .map(|slot| slot.index)
-            .collect()
-    }
-
-    /// The position of slot `index` in [`Self::slots`].
-    pub(crate) fn position(&self, index: u16) -> Option<usize> {
-        self.slots.iter().position(|slot| slot.index == index)
-    }
-
-    /// The running purchase: the purchase of every slot not yet accepted.
-    pub(crate) fn purchase(&self) -> Option<&SlotPurchase> {
-        self.slots.iter().find_map(|slot| slot.state.purchase())
-    }
-
-    /// What every quote of the running purchase must match.
-    pub(crate) fn intent(&self) -> FaResult<ResolvedSeatPurchase> {
-        let purchase = self.purchase().ok_or(FaError::NoActiveFormation)?;
-        Ok(ResolvedSeatPurchase {
-            federation_size: self.federation_size,
-            plan: self.plan,
-            fedimintd_versions: self.fedimintd_versions.clone(),
-            fedimintd_dkg_version: purchase.fedimintd_dkg_version.clone(),
-        })
-    }
-
-    fn fedimintd_dkg_version(&self) -> Option<FedimintdDkgVersion> {
-        self.purchase()
-            .map(|purchase| purchase.fedimintd_dkg_version.clone())
-            .or_else(|| {
-                self.slots.iter().find_map(|slot| match &slot.state {
-                    SlotState::Accepted {
-                        fedimintd_version, ..
-                    } => Some(fedimintd_version.dkg_version()),
-                    SlotState::Picked { .. }
-                    | SlotState::Bound { .. }
-                    | SlotState::Ended { .. } => None,
-                })
-            })
-    }
-
-    /// The public projection.
-    pub(crate) fn snapshot(&self) -> CreationSnapshot {
-        let stage = if self.purchase().is_some() {
-            CreationStage::Buying
-        } else if self.is_full() {
-            CreationStage::Forming {
-                phase: self.formation_phase,
-                invite_code: self.invite_code.clone(),
-            }
-        } else {
-            CreationStage::NeedsSeats {
-                count: self
-                    .federation_size
-                    .0
-                    .saturating_sub(u16::try_from(self.slots.len()).unwrap_or(u16::MAX)),
-                reauthorization: self.reauthorization,
-            }
-        };
-        CreationSnapshot {
-            formation_id: self.formation_id.clone(),
-            federation_name: self.federation_name.clone(),
-            federation_size: self.federation_size,
-            fedimintd_dkg_version: self.fedimintd_dkg_version(),
-            slots: {
-                let mut slots = self
-                    .slots
-                    .iter()
-                    .chain(&self.ended)
-                    .map(SlotRecovery::progress)
-                    .collect::<Vec<_>>();
-                slots.sort_by_key(|slot| slot.index);
-                slots
-            },
-            stage,
-            freshness: self.freshness,
-            last_error: self.last_error,
-        }
-    }
+/// The formation of a full pool.
+pub(crate) struct FormationView {
+    pub(crate) formation_id: FormationId,
+    pub(crate) federation_name: FederationName,
+    /// Bearer callback handed to every MG only at `StartDkg`.
+    pub(crate) dkg_completion_callback: Option<DkgCompletionCallback>,
+    /// The pool, in slot id order. The first seat's code carries the
+    /// federation name.
+    pub(crate) seats: Vec<FormationSeat>,
+    /// The agreed invite, once DKG completed.
+    pub(crate) invite_code: Option<InviteCode>,
+    /// Exact formation metadata target saved before publication.
+    pub(crate) meta_target: Option<FormationMetaTarget>,
 }
 
 /// One MG a preview picked for an empty slot.
@@ -930,7 +818,7 @@ impl FaStore {
         seats: Vec<PickedSeat>,
         payment_federation_id: Option<FederationId>,
     ) -> FaResult<()> {
-        let creation = match self.load_creation(fa_id).await? {
+        let creation = match self.load_stored_creation(fa_id).await? {
             Some(_) => None,
             None => Some(NewCreation {
                 formation_id,
@@ -992,22 +880,43 @@ impl FaStore {
     pub(crate) async fn load_status(&self, fa_id: FaId) -> FaResult<FaStatus> {
         Ok(FaStatus {
             recovery: None,
-            creation: self
-                .load_creation(fa_id)
-                .await?
-                .map(|creation| creation.snapshot()),
+            creation: self.load_snapshot(fa_id).await?,
             federation: self.load_federation(fa_id).await?,
         })
     }
 
-    /// The running federation creation, if any.
-    pub(crate) async fn load_creation(&self, fa_id: FaId) -> FaResult<Option<CreationRecovery>> {
+    /// The validated creation of `fa_id`, if any.
+    async fn load_stored_creation(&self, fa_id: FaId) -> FaResult<Option<Creation>> {
         let mut dbtx = self.database.begin_transaction_nc().await;
-        let Some(creation) = read_creation(&mut dbtx.to_ref_nc(), fa_id).await? else {
-            return Ok(None);
-        };
-        formation_seats(&creation)?;
-        Ok(Some(creation.recovery()))
+        let creation = read_creation(&mut dbtx.to_ref_nc(), fa_id).await?;
+        if let Some(creation) = &creation {
+            formation_seats(creation)?;
+        }
+        Ok(creation)
+    }
+
+    /// The public projection of the running creation, if any.
+    pub(crate) async fn load_snapshot(&self, fa_id: FaId) -> FaResult<Option<CreationSnapshot>> {
+        self.load_stored_creation(fa_id)
+            .await?
+            .map(|creation| creation.snapshot())
+            .transpose()
+    }
+
+    /// The running purchase, if a live slot holds no accepted seat.
+    pub(crate) async fn load_purchase(&self, fa_id: FaId) -> FaResult<Option<PurchaseView>> {
+        Ok(self
+            .load_stored_creation(fa_id)
+            .await?
+            .and_then(|creation| creation.purchase_view()))
+    }
+
+    /// The formation, if the pool is full.
+    pub(crate) async fn load_formation(&self, fa_id: FaId) -> FaResult<Option<FormationView>> {
+        match self.load_stored_creation(fa_id).await? {
+            Some(creation) => creation.formation_view(),
+            None => Ok(None),
+        }
     }
 
     /// End a federation creation that holds no accepted seat or formation,
@@ -1031,25 +940,27 @@ impl FaStore {
             .map_err(|_| FaError::Storage("cancelling FA federation creation failed".to_owned()))
     }
 
-    /// What a preview of the empty slots must avoid and keep.
-    pub(crate) async fn bought_seats(
+    /// The request whose preview fills the creation's empty slots. It
+    /// keeps the DKG line of the bought seats, and avoids the MGs, service
+    /// keys and badge holders of the bought and ended seats.
+    pub(crate) async fn missing_seats_request(
         &self,
         fa_id: FaId,
-    ) -> FaResult<crate::selection::BoughtSeats> {
-        let mut dbtx = self.database.begin_transaction_nc().await;
-        let creation = read_creation(&mut dbtx.to_ref_nc(), fa_id)
+    ) -> FaResult<crate::MgSelectionRequest> {
+        let creation = self
+            .load_stored_creation(fa_id)
             .await?
             .ok_or(FaError::NoActiveFormation)?;
-        let seats = creation.accepted().collect::<Vec<_>>();
-        // An ended slot's MG and holder stay taken.
+        let accepted = creation.accepted().collect::<Vec<_>>();
+        let bought_count = u16::try_from(accepted.len()).expect("slots fit the federation size");
         let taken = creation
             .slots
             .iter()
             .filter(|(_, slot)| slot.accepted().is_some() || slot.ended())
             .map(|(_, slot)| (slot.mg_id, &slot.locator, slot.holder))
             .collect::<Vec<_>>();
-        Ok(crate::selection::BoughtSeats {
-            fedimintd_dkg_version: seats
+        let bought = crate::selection::BoughtSeats {
+            fedimintd_dkg_version: accepted
                 .first()
                 .map(|(_, seat)| seat.fedimintd_version.dkg_version()),
             mg_ids: taken.iter().map(|(mg_id, _, _)| *mg_id).collect(),
@@ -1058,7 +969,14 @@ impl FaStore {
                 .map(|(mg_id, locator, _)| (locator.service_pubkey, *mg_id))
                 .collect(),
             holders: taken.iter().filter_map(|(_, _, holder)| *holder).collect(),
-        })
+        };
+        let stored = &creation.stored;
+        Ok(crate::MgSelectionRequest::new(
+            stored.federation_size,
+            stored.fedimintd_versions.clone(),
+            stored.plan,
+        )?
+        .missing_seats(bought, bought_count))
     }
 
     /// The federation this FA governs, as stored.
@@ -1283,62 +1201,134 @@ impl Creation {
             .ok_or_else(|| FaError::Storage(format!("missing persisted FA slot {index}")))
     }
 
-    /// The driver's view.
-    fn recovery(self) -> CreationRecovery {
-        let stored = self.stored;
-        let (invite_code, formation_meta_target) = match self.formation {
-            Some(formation) => (Some(formation.invite_code), formation.meta_target),
-            None => (None, None),
+    /// The running purchase, while a live slot holds no accepted seat.
+    fn purchase_view(&self) -> Option<PurchaseView> {
+        let slots = self
+            .pending()
+            .map(|(index, slot)| PendingSlot {
+                index,
+                locator: slot.locator.clone(),
+                state: slot.state.clone(),
+            })
+            .collect::<Vec<_>>();
+        // Every pending slot carries the same purchase.
+        let purchase = slots.first()?.state.purchase()?.clone();
+        let stored = &self.stored;
+        Some(PurchaseView {
+            formation_id: stored.formation_id.clone(),
+            intent: ResolvedSeatPurchase {
+                federation_size: stored.federation_size,
+                plan: stored.plan,
+                fedimintd_versions: stored.fedimintd_versions.clone(),
+                fedimintd_dkg_version: purchase.fedimintd_dkg_version,
+            },
+            payment_federation_id: purchase.payment_federation_id,
+            slots,
+        })
+    }
+
+    /// The formation, once `size` live slots hold accepted seats.
+    fn formation_view(&self) -> FaResult<Option<FormationView>> {
+        let Some(seats) = formation_seats(self)? else {
+            return Ok(None);
         };
-        let dkg_complete = invite_code.is_some();
-        let (ended, slots) = self
+        let stored = &self.stored;
+        Ok(Some(FormationView {
+            formation_id: stored.formation_id.clone(),
+            federation_name: stored.federation_name.clone(),
+            dkg_completion_callback: stored.dkg_completion_callback.clone(),
+            seats,
+            invite_code: self
+                .formation
+                .as_ref()
+                .map(|formation| formation.invite_code.clone()),
+            meta_target: self
+                .formation
+                .as_ref()
+                .and_then(|formation| formation.meta_target.clone()),
+        }))
+    }
+
+    /// The public projection of the stored creation.
+    fn snapshot(&self) -> FaResult<CreationSnapshot> {
+        let stored = &self.stored;
+        let formation = self.formation_view()?;
+        // StartDkg follows once every code is saved.
+        let dkg_requested = formation.as_ref().is_some_and(|formation| {
+            formation
+                .seats
+                .iter()
+                .all(|seat| seat.guardian_code.is_some())
+        });
+        let slots = self
             .slots
-            .into_iter()
-            .map(|(index, slot)| {
-                let phase = match &slot.state {
+            .iter()
+            .map(|(index, slot)| SeatProgress {
+                index: *index,
+                mg_id: slot.mg_id,
+                locator: slot.locator.clone(),
+                seat_id: match &slot.state {
+                    SlotState::Accepted { seat_id, .. } | SlotState::Ended { seat_id } => {
+                        Some(seat_id.clone())
+                    }
+                    SlotState::Picked { .. } | SlotState::Bound { .. } => None,
+                },
+                guardian_code: slot.state.guardian_code().cloned(),
+                phase: match &slot.state {
                     SlotState::Picked { .. } => SeatPhase::Selected,
                     SlotState::Bound { .. } => SeatPhase::QuoteReady,
-                    SlotState::Accepted { .. } if dkg_complete => SeatPhase::Running,
+                    SlotState::Accepted { .. } if self.formation.is_some() => SeatPhase::Running,
+                    SlotState::Accepted { .. } if dkg_requested => SeatPhase::DkgUnderway,
                     SlotState::Accepted {
                         guardian_code: Some(_),
                         ..
                     } => SeatPhase::GuardianCodeReady,
                     SlotState::Accepted { .. } => SeatPhase::Created,
                     SlotState::Ended { .. } => SeatPhase::Ended,
-                };
-                SlotRecovery {
-                    index,
-                    mg_id: slot.mg_id,
-                    locator: slot.locator,
-                    state: slot.state,
-                    phase,
-                    freshness: FormationFreshness::Unsynced,
-                }
+                },
             })
-            .partition::<Vec<_>, _>(|slot| matches!(slot.state, SlotState::Ended { .. }));
-        let formation_phase = if formation_meta_target.is_some() {
-            FormationPhase::PublishingSeatBindings
-        } else if dkg_complete {
-            FormationPhase::DkgComplete
+            .collect();
+        let live = self.slots.iter().filter(|(_, slot)| !slot.ended()).count();
+        let purchase = self
+            .slots
+            .iter()
+            .find_map(|(_, slot)| slot.state.purchase());
+        let stage = if purchase.is_some() {
+            CreationStage::Buying
+        } else if let Some(formation) = &formation {
+            CreationStage::Forming {
+                phase: match (&formation.invite_code, &formation.meta_target) {
+                    (Some(_), Some(_)) => FormationPhase::PublishingSeatBindings,
+                    (Some(_), None) => FormationPhase::DkgComplete,
+                    (None, _) if dkg_requested => FormationPhase::DkgUnderway,
+                    (None, _) => FormationPhase::PreparingDkg,
+                },
+                invite_code: formation.invite_code.clone(),
+            }
         } else {
-            FormationPhase::PreparingDkg
+            CreationStage::NeedsSeats {
+                count: stored
+                    .federation_size
+                    .0
+                    .saturating_sub(u16::try_from(live).unwrap_or(u16::MAX)),
+                reauthorization: stored.reauthorization,
+            }
         };
-        CreationRecovery {
-            formation_id: stored.formation_id,
-            federation_name: stored.federation_name,
+        Ok(CreationSnapshot {
+            formation_id: stored.formation_id.clone(),
+            federation_name: stored.federation_name.clone(),
             federation_size: stored.federation_size,
-            fedimintd_versions: stored.fedimintd_versions,
-            plan: stored.plan,
-            reauthorization: stored.reauthorization,
-            invite_code,
-            formation_meta_target,
-            dkg_completion_callback: stored.dkg_completion_callback,
+            fedimintd_dkg_version: purchase
+                .map(|purchase| purchase.fedimintd_dkg_version.clone())
+                .or_else(|| {
+                    self.accepted()
+                        .next()
+                        .map(|(_, seat)| seat.fedimintd_version.dkg_version())
+                }),
             slots,
-            ended,
-            formation_phase,
-            freshness: FormationFreshness::Unsynced,
+            stage,
             last_error: None,
-        }
+        })
     }
 }
 

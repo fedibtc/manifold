@@ -10,7 +10,7 @@ use fedimint_core::runtime::sleep;
 use futures::future::{Either, select};
 use tokio::sync::{MutexGuard, Notify, futures::Notified, watch};
 
-use crate::db::CreationRecovery;
+use crate::db::{FormationView, PurchaseView};
 use crate::formation::Timeouts;
 use crate::{
     FaClient, FaError, FaIdentity, FaPayments, FaResult, FaState, FederationConsensusReader,
@@ -124,8 +124,10 @@ impl Drop for Driving<'_> {
 enum Work {
     /// Look up and verify the backup of a restored mnemonic.
     Recover,
-    /// Buy the creation's picked slots, or form its full slots.
-    Creation(Box<CreationRecovery>),
+    /// Buy the creation's pending slots.
+    Purchase(Box<PurchaseView>),
+    /// Form the full pool.
+    Formation(Box<FormationView>),
 }
 
 /// How one loop step ended.
@@ -241,13 +243,15 @@ where
             return Ok(Some(Work::Recover));
         }
         // A creation that needs seats waits for the user.
+        if let Some(purchase) = self.inner.store.load_purchase(fa_id).await? {
+            return Ok(Some(Work::Purchase(Box::new(purchase))));
+        }
         Ok(self
             .inner
             .store
-            .load_creation(fa_id)
+            .load_formation(fa_id)
             .await?
-            .filter(|creation| creation.purchase().is_some() || creation.is_full())
-            .map(|creation| Work::Creation(Box::new(creation))))
+            .map(|formation| Work::Formation(Box::new(formation))))
     }
 
     async fn do_work(&self, work: Work, fa_id: FaId, timeouts: Timeouts) -> FaResult<()> {
@@ -262,8 +266,8 @@ where
                 }
                 result
             }
-            Work::Creation(creation) if creation.purchase().is_some() => {
-                match self.drive_purchase(*creation, fa_id, timeouts).await {
+            Work::Purchase(purchase) => {
+                match self.drive_purchase(*purchase, fa_id, timeouts).await {
                     // The purchase ended without some of its seats. Each
                     // seat that left recorded why, and the creation needs
                     // a new preview.
@@ -271,7 +275,7 @@ where
                     result => result,
                 }
             }
-            Work::Creation(creation) => self.drive_formation(*creation, fa_id, timeouts).await,
+            Work::Formation(formation) => self.drive_formation(*formation, fa_id, timeouts).await,
         }
     }
 }

@@ -10,32 +10,20 @@ use fedimint_core::runtime::Instant;
 use stability_pool_common::Account;
 use tokio::sync::OnceCell;
 
-use crate::db::{CreationRecovery, NewCreation, PickedSeat, SlotState};
+use crate::db::{NewCreation, PendingSlot, PickedSeat, PurchaseView, SlotState};
 use crate::formation::{Timeouts, log_mg_failure, now_secs, sleep_for_retry};
 use crate::mg::MgClient;
 use crate::selection::AvailabilityMismatch;
 use crate::{
-    FaClient, FaError, FaIdentity, FaPayments, FaResult, FederationConsensusReader,
-    FormationFreshness, FormationId, ManifoldGuardianConnector, MgCause, MgFailure, MgOperation,
-    MgSelectionPreview, MgSelectionRequest, PreparedSeatPayment, SeatPaymentRecovery, SeatPhase,
-    SelectionReauthorizationReason, state::ResolvedSeatPurchase,
+    FaClient, FaError, FaIdentity, FaPayments, FaResult, FederationConsensusReader, FormationId,
+    ManifoldGuardianConnector, MgCause, MgFailure, MgOperation, MgSelectionPreview,
+    PreparedSeatPayment, SeatPaymentRecovery, SelectionReauthorizationReason,
+    state::ResolvedSeatPurchase,
 };
 
 const SELECTED_MG_CONNECT_RETRY_BUDGET: Duration = Duration::from_secs(2 * 60);
 const SELECTED_MG_CONNECT_RETRY_MIN_DELAY: Duration = Duration::from_millis(100);
 const SELECTED_MG_CONNECT_RETRY_MAX_DELAY: Duration = Duration::from_secs(5);
-
-/// How many slots hold an accepted seat.
-fn accepted_count(creation: &CreationRecovery) -> u16 {
-    u16::try_from(
-        creation
-            .slots
-            .iter()
-            .filter(|slot| slot.seat_id().is_some())
-            .count(),
-    )
-    .expect("slots fit the federation size")
-}
 
 enum SeatCreation {
     Accepted(SeatAcceptance),
@@ -165,20 +153,11 @@ where
         &self,
         options: crate::MgDiscoveryOptions,
     ) -> FaResult<MgSelectionPreview> {
-        let fa_id = self.fa_id()?;
-        let creation = self
+        let request = self
             .inner
             .store
-            .load_creation(fa_id)
-            .await?
-            .ok_or(FaError::NoActiveFormation)?;
-        let bought_count = accepted_count(&creation);
-        let request = MgSelectionRequest::new(
-            creation.federation_size,
-            creation.fedimintd_versions,
-            creation.plan,
-        )?
-        .missing_seats(self.inner.store.bought_seats(fa_id).await?, bought_count);
+            .missing_seats_request(self.fa_id()?)
+            .await?;
         self.preview_mg_selection(&request, options).await
     }
 
@@ -200,24 +179,13 @@ where
     /// needs. The caller holds the run guard, so no purchase can complete
     /// between this check and the new purchase.
     async fn require_missing_seats_preview(&self, preview: &MgSelectionPreview) -> FaResult<()> {
-        let fa_id = self.fa_id()?;
-        let creation = self
+        let expected = self
             .inner
             .store
-            .load_creation(fa_id)
-            .await?
-            .ok_or(FaError::NoActiveFormation)?;
-        let bought = self.inner.store.bought_seats(fa_id).await?;
-        let request = &preview.request;
-        let missing = creation
-            .federation_size
-            .0
-            .saturating_sub(accepted_count(&creation));
-        if request.federation_size() != creation.federation_size
-            || request.fedimintd_versions() != &creation.fedimintd_versions
-            || request.plan() != creation.plan
-            || request.bought != bought
-            || preview.seats().len() != usize::from(missing)
+            .missing_seats_request(self.fa_id()?)
+            .await?;
+        if preview.request != expected
+            || preview.seats().len() != usize::from(expected.seat_count())
         {
             return Err(FaError::InvalidIntent(
                 "the preview does not match the seats this federation still needs".to_owned(),
@@ -284,8 +252,7 @@ where
                     creation,
                 )
                 .await?;
-            let creation = self.active_creation(fa_id).await?;
-            self.publish(&creation);
+            self.publish(None).await;
             Ok(())
         }
         .await
@@ -306,18 +273,16 @@ where
         let fa_id = self.fa_id()?;
         let timeouts = Timeouts::default();
         async {
-            let creation = self.active_creation(fa_id).await?;
-            if let Some(purchase) = creation.purchase() {
-                let intent = creation.intent()?;
-                for (position, slot) in creation.slots.iter().enumerate() {
+            if let Some(purchase) = self.inner.store.load_purchase(fa_id).await? {
+                for slot in &purchase.slots {
                     let Some(signed_quote) = slot.state.bound_quote() else {
                         continue;
                     };
                     let quote = self.verify_quote(
-                        position,
+                        usize::from(slot.index),
                         signed_quote,
                         &slot.locator,
-                        &intent,
+                        &purchase.intent,
                         fa_id,
                         purchase.payment_federation_id.as_ref(),
                     )?;
@@ -342,26 +307,23 @@ where
 
     pub(crate) async fn drive_purchase(
         &self,
-        mut recovery: CreationRecovery,
+        purchase: PurchaseView,
         fa_id: FaId,
         timeouts: Timeouts,
     ) -> FaResult<()> {
-        let result = self
-            .drive_purchase_inner(&mut recovery, fa_id, timeouts)
-            .await;
+        let result = self.drive_purchase_inner(&purchase, fa_id, timeouts).await;
         // A purchase that ended without some of its seats is complete.
         if let Err(error) = &result
             && !matches!(error, FaError::SelectionReauthorizationRequired { .. })
         {
-            let formation_id = &recovery.formation_id;
+            let formation_id = &purchase.formation_id;
             log_mg_failure(formation_id, error, "returned");
             tracing::warn!(
                 formation_id = %formation_id.0,
                 %error,
                 "seat purchase failed"
             );
-            recovery.last_error = Some(error.code());
-            self.publish(&recovery);
+            self.publish(Some(error.code())).await;
         }
         result
     }
@@ -371,86 +333,73 @@ where
     /// bought. It then returns why the first seat left.
     async fn drive_purchase_inner(
         &self,
-        recovery: &mut CreationRecovery,
+        purchase: &PurchaseView,
         fa_id: FaId,
         timeouts: Timeouts,
     ) -> FaResult<()> {
-        let formation_id = recovery.formation_id.clone();
-        recovery.freshness = FormationFreshness::Fresh;
-        self.publish(recovery);
+        let formation_id = &purchase.formation_id;
+        self.publish(None).await;
         // Resolved on first use, so one authenticated read serves every
         // seat, and a purchase of free seats never reads a payer policy.
         let payer = OnceCell::new();
         let mut funds_exhausted = false;
         let mut left = None;
         let mut first_error = None;
-        if recovery
-            .slots
-            .iter()
-            .all(|slot| slot.state.bound_quote().is_none())
-        {
+        let mut slots = purchase.slots.clone();
+        if slots.iter().all(|slot| slot.state.bound_quote().is_none()) {
             funds_exhausted = self
-                .preflight_purchase(recovery, &mut left, timeouts)
+                .preflight_purchase(purchase, &mut slots, &mut left, timeouts)
                 .await?;
         }
-        for index in recovery.pending() {
-            let position = recovery
-                .position(index)
-                .expect("slots are emptied only in this loop");
+        for mut slot in slots {
             // A seat bound to its quote may hold a started payment, so it is
             // still recovered after the payer ran out of funds.
-            let result =
-                if funds_exhausted && recovery.slots[position].state.bound_quote().is_none() {
-                    Err(reauthorization(
-                        SelectionReauthorizationReason::SelectedPayerInsufficientFunds,
-                    ))
-                } else {
-                    self.buy_seat(recovery, position, fa_id, &payer, timeouts)
-                        .await
-                };
+            let result = if funds_exhausted && slot.state.bound_quote().is_none() {
+                Err(reauthorization(
+                    SelectionReauthorizationReason::SelectedPayerInsufficientFunds,
+                ))
+            } else {
+                self.buy_seat(purchase, &mut slot, fa_id, &payer, timeouts)
+                    .await
+            };
             match result {
                 Ok(()) => {}
                 Err(error @ FaError::SelectionReauthorizationRequired { reason, .. }) => {
-                    log_mg_failure(&formation_id, &error, "returned");
+                    log_mg_failure(formation_id, &error, "returned");
                     funds_exhausted |=
                         reason == SelectionReauthorizationReason::SelectedPayerInsufficientFunds;
-                    self.drop_seat(recovery, position, reason).await?;
+                    self.drop_seat(purchase, &slot, reason).await?;
                     left.get_or_insert(error);
                 }
                 Err(error) => {
                     if first_error.is_some() {
-                        log_mg_failure(&formation_id, &error, "discarded");
+                        log_mg_failure(formation_id, &error, "discarded");
                     }
                     first_error.get_or_insert(error);
                 }
             }
         }
-        if let Some(error) = first_error {
-            return Err(error);
-        }
-        // Every seat was accepted or left, which ended the purchase.
-        self.publish(recovery);
-        left.map_or(Ok(()), Err)
+        first_error.or(left).map_or(Ok(()), Err)
     }
 
     /// While no slot is bound, confirm that every picked MG still offers its
     /// plan and that the payer can fund every picked seat. A seat that fails
-    /// leaves before any payment. Returns whether funds are short.
+    /// leaves `slots` before any payment. Returns whether funds are short.
     async fn preflight_purchase(
         &self,
-        recovery: &mut CreationRecovery,
+        purchase: &PurchaseView,
+        slots: &mut Vec<PendingSlot>,
         left: &mut Option<FaError>,
         timeouts: Timeouts,
     ) -> FaResult<bool> {
-        let intent = recovery.intent()?;
-        let checks = recovery.slots.iter().filter_map(|seat| {
+        let intent = &purchase.intent;
+        let formation_id = &purchase.formation_id;
+        let checks = slots.iter().filter_map(|seat| {
             let SlotState::Picked { plan, .. } = &seat.state else {
                 return None;
             };
             let index = seat.index;
             let locator = seat.locator.clone();
-            let intent = &intent;
-            let formation_id = &recovery.formation_id;
             Some(async move {
                 let result = retry_selected_mg(formation_id, timeouts, || async {
                     let plan = plan.clone();
@@ -486,22 +435,23 @@ where
             let FaError::SelectionReauthorizationRequired { reason, .. } = &error else {
                 unreachable!("only reauthorization errors end a seat");
             };
-            let position = recovery.position(index).expect("each seat leaves once");
-            log_mg_failure(&recovery.formation_id, &error, "returned");
-            self.drop_seat(recovery, position, *reason).await?;
+            let position = slots
+                .iter()
+                .position(|slot| slot.index == index)
+                .expect("each seat leaves once");
+            let slot = slots.remove(position);
+            log_mg_failure(formation_id, &error, "returned");
+            self.drop_seat(purchase, &slot, *reason).await?;
             left.get_or_insert(error);
         }
-        let Some(requested) = recovery
-            .purchase()
-            .and_then(|purchase| purchase.payment_federation_id.clone())
-        else {
+        let Some(requested) = &purchase.payment_federation_id else {
             return Ok(false);
         };
         if prices.is_empty() {
             return Ok(false);
         }
         let payer = self
-            .require_setup_payment_federation(&requested, timeouts)
+            .require_setup_payment_federation(requested, timeouts)
             .await?;
         let checked = timeouts
             .call("checking seat funds", || {
@@ -521,44 +471,45 @@ where
     /// seat cannot be bought and that no payment of it is outstanding.
     async fn buy_seat(
         &self,
-        recovery: &mut CreationRecovery,
-        position: usize,
+        purchase: &PurchaseView,
+        slot: &mut PendingSlot,
         fa_id: FaId,
         payer: &OnceCell<FederationId>,
         timeouts: Timeouts,
     ) -> FaResult<()> {
-        let formation_id = recovery.formation_id.clone();
-        let intent = recovery.intent()?;
-        let seat = &recovery.slots[position];
-        let locator = seat.locator.clone();
-        let bound_quote = seat.state.bound_quote().cloned();
-        let (plan, expected_payer) = match &seat.state {
-            // The purchase buys only pending slots.
-            SlotState::Accepted { .. } | SlotState::Ended { .. } => return Ok(()),
-            SlotState::Picked { plan, purchase } => {
-                (plan.clone(), purchase.payment_federation_id.clone())
+        let formation_id = &purchase.formation_id;
+        let intent = &purchase.intent;
+        let expected_payer = purchase.payment_federation_id.as_ref();
+        let position = usize::from(slot.index);
+        let bound_quote = slot.state.bound_quote().cloned();
+        let plan = match &slot.state {
+            SlotState::Accepted { .. } | SlotState::Ended { .. } => {
+                return Err(FaError::Storage(format!(
+                    "FA slot {} is not pending",
+                    slot.index
+                )));
             }
+            SlotState::Picked { plan, .. } => plan.clone(),
             SlotState::Bound {
                 quote: signed_quote,
-                purchase,
+                ..
             } => {
-                let expected_payer = purchase.payment_federation_id.clone();
                 let signed_quote = signed_quote.clone();
                 let quote = self.verify_quote(
                     position,
                     &signed_quote,
-                    &locator,
-                    &intent,
+                    &slot.locator,
+                    intent,
                     fa_id,
-                    expected_payer.as_ref(),
+                    expected_payer,
                 )?;
                 if quote.terms.payment.is_none() {
                     // CreateSeat may have accepted this quote and lost its
                     // reply, so the bound quote is presented again.
                     return self
                         .present_bound_seat(
-                            recovery,
-                            position,
+                            purchase,
+                            slot,
                             fa_id,
                             signed_quote,
                             quote,
@@ -571,8 +522,8 @@ where
                     SeatPaymentRecovery::Prepared(prepared) => {
                         return self
                             .present_bound_seat(
-                                recovery,
-                                position,
+                                purchase,
+                                slot,
                                 fa_id,
                                 signed_quote,
                                 quote,
@@ -588,22 +539,20 @@ where
                     }
                     // The bound quote may have expired, so the seat pays a new
                     // quote at the same plan.
-                    SeatPaymentRecovery::NotStarted => {
-                        (quote.terms.request.plan.clone(), expected_payer)
-                    }
+                    SeatPaymentRecovery::NotStarted => quote.terms.request.plan.clone(),
                 }
             }
         };
 
         let (signed_quote, quote) = self
             .request_quote_with_retry(
-                &formation_id,
+                formation_id,
                 position,
-                &locator,
-                &intent,
+                &slot.locator,
+                intent,
                 &plan,
                 fa_id,
-                expected_payer.as_ref(),
+                expected_payer,
                 expected_payer.is_some().then_some(payer),
                 timeouts,
             )
@@ -611,25 +560,22 @@ where
         self.inner
             .store
             .bind_quote(
-                &formation_id,
-                recovery.slots[position].index,
+                formation_id,
+                slot.index,
                 bound_quote.as_ref(),
                 signed_quote.clone(),
             )
             .await?;
-        let seat = &mut recovery.slots[position];
-        let purchase = seat
+        let slot_purchase = slot
             .state
             .purchase()
             .cloned()
-            .expect("only a slot with a purchase binds a quote");
-        seat.state = SlotState::Bound {
+            .expect("a pending slot carries its purchase");
+        slot.state = SlotState::Bound {
             quote: signed_quote.clone(),
-            purchase,
+            purchase: slot_purchase,
         };
-        seat.phase = SeatPhase::QuoteReady;
-        seat.freshness = FormationFreshness::Fresh;
-        self.publish(recovery);
+        self.publish(None).await;
 
         let prepared = if quote.terms.payment.is_some() {
             let prepared = timeouts
@@ -651,8 +597,8 @@ where
             None
         };
         self.present_bound_seat(
-            recovery,
-            position,
+            purchase,
+            slot,
             fa_id,
             signed_quote,
             quote,
@@ -667,25 +613,23 @@ where
     #[allow(clippy::too_many_arguments)]
     async fn present_bound_seat(
         &self,
-        recovery: &mut CreationRecovery,
-        position: usize,
+        purchase: &PurchaseView,
+        slot: &PendingSlot,
         fa_id: FaId,
         signed_quote: SignedResponse<GetQuoteResponse>,
         quote: SignatureVerified<GetQuoteResponse>,
         prepared: Option<PreparedSeatPayment<P::RefundContext>>,
         timeouts: Timeouts,
     ) -> FaResult<()> {
-        let formation_id = recovery.formation_id.clone();
-        let locator = recovery.slots[position].locator.clone();
-        recovery.slots[position].phase = SeatPhase::Acquiring;
-        self.publish(recovery);
-        let client = MgClient::connect(&self.inner.ports.mg_connector, &locator, timeouts).await?;
+        let formation_id = &purchase.formation_id;
+        let client =
+            MgClient::connect(&self.inner.ports.mg_connector, &slot.locator, timeouts).await?;
         let creation = self
             .present_seat(
-                &formation_id,
-                position,
+                formation_id,
+                usize::from(slot.index),
                 &client,
-                &locator,
+                &slot.locator,
                 fa_id,
                 signed_quote,
                 quote,
@@ -695,8 +639,17 @@ where
             .await?;
         match creation {
             SeatCreation::Accepted(acceptance) => {
-                self.checkpoint_accepted_seat(recovery, position, acceptance)
-                    .await
+                self.inner
+                    .store
+                    .record_seat_accepted(
+                        formation_id,
+                        slot.index,
+                        acceptance.seat_id,
+                        acceptance.guardian_fee_account,
+                    )
+                    .await?;
+                self.publish(None).await;
+                Ok(())
             }
             // A refused payment was refunded before `present_seat` returned.
             SeatCreation::Refused(failure) => Err(FaError::SelectionReauthorizationRequired {
@@ -723,22 +676,19 @@ where
     /// preview of the missing seats.
     async fn drop_seat(
         &self,
-        recovery: &mut CreationRecovery,
-        position: usize,
+        purchase: &PurchaseView,
+        slot: &PendingSlot,
         reason: SelectionReauthorizationReason,
     ) -> FaResult<()> {
-        let slot = &recovery.slots[position];
         self.inner
             .store
             .empty_slots(
-                &recovery.formation_id,
+                &purchase.formation_id,
                 vec![(slot.index, slot.state.clone())],
                 reason,
             )
             .await?;
-        recovery.slots.remove(position);
-        recovery.reauthorization.get_or_insert(reason);
-        self.publish(recovery);
+        self.publish(None).await;
         Ok(())
     }
 
@@ -777,30 +727,6 @@ where
             .await
         })
         .await
-    }
-
-    /// Record an accepted seat. It joins the pool at once.
-    async fn checkpoint_accepted_seat(
-        &self,
-        recovery: &mut CreationRecovery,
-        position: usize,
-        acceptance: SeatAcceptance,
-    ) -> FaResult<()> {
-        let slot = &mut recovery.slots[position];
-        slot.state = self
-            .inner
-            .store
-            .record_seat_accepted(
-                &recovery.formation_id,
-                slot.index,
-                acceptance.seat_id,
-                acceptance.guardian_fee_account,
-            )
-            .await?;
-        slot.phase = SeatPhase::Created;
-        slot.freshness = FormationFreshness::Fresh;
-        self.publish(recovery);
-        Ok(())
     }
 
     /// The Fedimint build an MG offers live for this purchase, if it still

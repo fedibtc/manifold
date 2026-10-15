@@ -319,6 +319,7 @@ impl FaStore {
                     mg_id: slot.mg_id,
                     locator: slot.locator.clone(),
                     seat_id: accepted.seat_id.clone(),
+                    guardian_fee_account: accepted.guardian_fee_account.clone(),
                     guardian_code: None,
                 });
             }

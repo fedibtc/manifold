@@ -200,29 +200,13 @@ pub(crate) struct ResolvedSeatPurchase {
 pub enum FormationPhase {
     /// Guardian codes are being collected from the seats.
     PreparingDkg,
-    /// DKG has started.
+    /// Every guardian code is saved, so DKG is requested or has started.
     DkgUnderway,
     /// Every guardian is running and the common invite is saved.
     DkgComplete,
     /// Every guardian is running; the MG seat-binding directory is being
     /// written to consensus metadata and read back.
     PublishingSeatBindings,
-}
-
-impl FormationPhase {
-    pub(crate) fn dkg_complete(self) -> bool {
-        matches!(self, Self::DkgComplete | Self::PublishingSeatBindings)
-    }
-}
-
-/// Whether displayed state has been reconciled with its authoritative service.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum FormationFreshness {
-    /// State was reconciled during the current run.
-    Fresh,
-    /// State came from durable storage and still needs reconciliation.
-    Unsynced,
 }
 
 /// Stable consumer-facing state of one selected seat.
@@ -233,15 +217,14 @@ pub enum SeatPhase {
     Selected,
     /// An exact signed quote is durably recorded.
     QuoteReady,
-    /// Payment recovery/funding or `CreateSeat` is in progress.
-    Acquiring,
     /// The MG has durably accepted the seat.
     Created,
     /// The MG has returned this seat's guardian code.
     GuardianCodeReady,
-    /// DKG has been requested for this seat.
+    /// Every seat of the full pool has its code, so DKG is requested or
+    /// has started.
     DkgUnderway,
-    /// The seat reports a running federation.
+    /// DKG completed, and the invite is saved.
     Running,
     /// The MG ended this bought seat before DKG. The FA paid for it, it does
     /// not join the federation, and another slot replaces it.
@@ -267,8 +250,6 @@ pub struct SeatProgress {
     pub guardian_code: Option<GuardianCode>,
     /// Stable consumer-facing phase.
     pub phase: SeatPhase,
-    /// Current freshness.
-    pub freshness: FormationFreshness,
 }
 
 impl SeatProgress {
@@ -372,8 +353,6 @@ pub struct CreationSnapshot {
     pub slots: Vec<SeatProgress>,
     /// What the creation does now.
     pub stage: CreationStage,
-    /// Whether this run reconciled the state with the MGs.
-    pub freshness: FormationFreshness,
     /// Most recent operation error category.
     pub last_error: Option<FaErrorCode>,
 }

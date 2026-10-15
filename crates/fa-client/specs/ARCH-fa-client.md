@@ -439,11 +439,15 @@ the stored signed directory and compiled split before voting.
 `FaClient::state` and the `observe` watch expose one `FaState`: `Idle`;
 `Restoring` while an opened restored-mnemonic FA has an unfinished backup
 check; `Creating` with the formation id, name, size, DKG identity once bought
-for, the picked slots with their per-seat progress, freshness, last error, and
+for, the picked slots with their per-seat progress, last error, and
 one stage (`NeedsSeats` with the count of empty slots and any typed
 reauthorization reason, `Buying`, or `Forming` with the formation phase and
-invite); and `Active` for a formed or imported federation. The state is
-derived from the stored slots; there is no separate purchase, pool, or
+invite); and `Active` for a formed or imported federation. The creation state
+is a projection of the stored creation, slots and formation row: the client
+publishes it again after each write, and only the last error is kept in
+memory. Each phase follows from stored facts. `DkgUnderway` means every seat
+of the full pool has its code, because `StartDkg` follows at once, and
+`Running` means DKG completed. There is no separate purchase, pool, or
 formation snapshot. The pool is the slots that hold a seat id. The run loop does the backup lookup as its first work and retries
 failures; user actions fail as busy until it ends. The recovery requirement is
 reconstructed on reopen from the caller's persisted mnemonic provenance and the

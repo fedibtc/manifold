@@ -417,16 +417,14 @@ where
         &self,
         fa_id: FaId,
     ) -> FaResult<crate::formation::PostFormedAuthority> {
-        if let Some(creation) = self
+        if let Some(crate::CreationStage::Forming { phase, .. }) = self
             .inner
             .store
-            .load_creation(fa_id)
+            .load_snapshot(fa_id)
             .await?
-            .filter(|creation| creation.is_full())
+            .map(|creation| creation.stage)
         {
-            return Err(FaError::MaintenanceWrongState {
-                phase: Some(creation.formation_phase),
-            });
+            return Err(FaError::MaintenanceWrongState { phase: Some(phase) });
         } else if self.inner.store.load_federation(fa_id).await?.is_none() {
             return Err(FaError::NoActiveFormation);
         }

@@ -451,19 +451,9 @@ async fn drive_migrated<I: FaIdentity>(
 async fn rebuy_missing_seats<I: FaIdentity>(client: &SnapshotClient<I>) -> FaResult<()> {
     let fa_id = client.fa_id()?;
     let store = &client.inner.store;
-    let creation = store
-        .load_creation(fa_id)
-        .await?
-        .ok_or(FaError::NoActiveFormation)?;
-    let bought = store.bought_seats(fa_id).await?;
-    let bought_count = u16::try_from(store.pool_seats(fa_id).await?.len()).unwrap();
-    let missing = usize::from(creation.federation_size.0 - bought_count);
-    let request = MgSelectionRequest::new(
-        creation.federation_size,
-        creation.fedimintd_versions,
-        creation.plan,
-    )?
-    .missing_seats(bought.clone(), bought_count);
+    let request = store.missing_seats_request(fa_id).await?;
+    let bought = request.bought.clone();
+    let missing = usize::from(request.seat_count());
     let price_msats = client.inner.ports.mg_connector.config.price_msats;
     let seats = (0..usize::from(MAX_FEDERATION_SIZE))
         .filter(|index| !bought.mg_ids.contains(&test_mg_id(*index)))

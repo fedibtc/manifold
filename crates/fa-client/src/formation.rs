@@ -20,15 +20,14 @@ use futures::stream::{FuturesUnordered, StreamExt as _};
 use sha2::{Digest as _, Sha256};
 use stability_pool_common::Account;
 
-use crate::db::{CreationRecovery, FormationMetaTarget, SlotState};
+use crate::db::{FormationMetaTarget, FormationView};
 use crate::meta_write::{MetaWriteError, SeatVote, write_consensus_meta};
 use crate::mg::MgClient;
 use crate::ports::FaIdentityExt as _;
 use crate::{
     FaClient, FaError, FaIdentity, FaPayments, FaResult, FederationConsensusReader,
-    FederationConsensusSnapshot, FormationFreshness, FormationId, FormationPhase, GuardianFeePpm,
-    ManifoldGuardianConnector, MgCause, MgFailure, MgOperation, SeatPhase,
-    SelectionReauthorizationReason,
+    FederationConsensusSnapshot, FormationId, GuardianFeePpm, ManifoldGuardianConnector, MgCause,
+    MgFailure, MgOperation, SeatPhase,
 };
 
 pub(crate) fn log_mg_failure(formation_id: &FormationId, error: &FaError, outcome: &'static str) {
@@ -245,25 +244,23 @@ where
         let _guard = self.claim_run_guard().await?;
         let fa_id = self.fa_id()?;
         async {
-            let mut recovery = self.active_formation(fa_id).await?;
-            let formation_id = recovery.formation_id.clone();
-            let formation_id = &formation_id;
-
-            if recovery.formation_phase.dkg_complete() {
+            let formation = self.active_formation(fa_id).await?;
+            let formation_id = &formation.formation_id;
+            if formation.invite_code.is_some() {
                 return Err(FaError::InvalidIntent(
                     "formation cannot restart DKG in its current state".into(),
                 ));
             }
-            let codes = recovery
-                .slots
+            let codes = formation
+                .seats
                 .iter()
                 .map(|seat| {
-                    seat.state.guardian_code().cloned().ok_or_else(|| {
+                    seat.guardian_code.clone().ok_or_else(|| {
                         FaError::InvalidIntent("restart requires every saved guardian code".into())
                     })
                 })
                 .collect::<FaResult<Vec<_>>>()?;
-            let sessions = self.seat_sessions(&recovery, timeouts).await?;
+            let sessions = self.seat_sessions(&formation, timeouts).await?;
             let mut checks = FuturesUnordered::new();
             for session in &sessions {
                 checks.push(async {
@@ -287,8 +284,6 @@ where
                 check?;
             }
             drop(checks);
-            recovery.freshness = FormationFreshness::Unsynced;
-            self.publish(&recovery);
             let mut pending = FuturesUnordered::new();
             for session in &sessions {
                 let codes = &codes;
@@ -330,28 +325,24 @@ where
     }
 
     /// Collect every guardian code and start DKG on every seat. Returns
-    /// false when some seat ended before DKG, so its slot was emptied.
+    /// false when some seat ended before DKG, so its slot was marked ended.
     async fn start_dkg(
         &self,
-        recovery: &mut CreationRecovery,
+        formation: &FormationView,
         sessions: &[SeatSession<MgClient<F::Client>>],
         fa_id: FaId,
         timeouts: Timeouts,
     ) -> FaResult<bool> {
-        let formation_id = recovery.formation_id.clone();
-        let formation_id = &formation_id;
-        recovery.formation_phase = FormationPhase::PreparingDkg;
-        self.publish(recovery);
-
+        let formation_id = &formation.formation_id;
         // StartDkg follows only after every code is cached.
-        let dkg_not_started = recovery
-            .slots
+        let dkg_not_started = formation
+            .seats
             .iter()
-            .any(|seat| seat.state.guardian_code().is_none());
+            .any(|seat| seat.guardian_code.is_none());
         let mut pending_codes = FuturesUnordered::new();
         for (position, session) in sessions.iter().enumerate() {
-            let existing = recovery.slots[position].state.guardian_code().cloned();
-            let federation_name = (position == 0).then(|| recovery.federation_name.clone());
+            let existing = formation.seats[position].guardian_code.clone();
+            let federation_name = (position == 0).then(|| formation.federation_name.clone());
             pending_codes.push(async move {
                 let code = self
                     .get_dkg_code_with_retry(
@@ -398,21 +389,15 @@ where
                 }
             };
             if newly_generated {
-                let slot = &mut recovery.slots[position];
-                if let SlotState::Accepted { guardian_code, .. } = &mut slot.state {
-                    *guardian_code = Some(code.clone());
-                }
-                slot.phase = SeatPhase::GuardianCodeReady;
-                slot.freshness = FormationFreshness::Fresh;
                 self.inner
                     .store
                     .record_guardian_code(
                         formation_id,
-                        recovery.slots[position].index,
+                        formation.seats[position].index,
                         code.clone(),
                     )
                     .await?;
-                self.publish(recovery);
+                self.publish(None).await;
             }
             guardian_codes[position] = Some(code);
         }
@@ -424,48 +409,20 @@ where
         {
             // The ended seats' slots stay as ended, and the creation buys new
             // slots. Every cached code goes too.
-            let reason = SelectionReauthorizationReason::SeatEnded;
-            let emptied = recovery
-                .slots
+            for seat in formation
+                .seats
                 .iter()
-                .filter(|slot| {
-                    slot.seat_id()
-                        .is_some_and(|seat_id| ended.contains(seat_id))
-                })
-                .map(|slot| (slot.index, slot.state.clone()))
-                .collect::<Vec<_>>();
-            self.inner
-                .store
-                .empty_slots(formation_id, emptied, reason)
-                .await?;
-            let (ended_slots, kept) = std::mem::take(&mut recovery.slots)
-                .into_iter()
-                .partition::<Vec<_>, _>(|slot| {
-                    slot.seat_id()
-                        .is_some_and(|seat_id| ended.contains(seat_id))
-                });
-            for mut slot in ended_slots {
-                let seat_id = slot.seat_id().cloned().expect("an ended slot holds a seat");
+                .filter(|seat| ended.contains(&seat.seat_id))
+            {
                 tracing::warn!(
                     formation_id = %formation_id.0,
-                    mg_id = %slot.mg_id,
-                    seat_id = %seat_id,
+                    mg_id = %seat.mg_id,
+                    seat_id = %seat.seat_id,
                     "an MG ended a bought seat before DKG"
                 );
-                slot.state = SlotState::Ended { seat_id };
-                slot.phase = SeatPhase::Ended;
-                recovery.ended.push(slot);
             }
-            recovery.ended.sort_by_key(|slot| slot.index);
-            recovery.slots = kept;
-            for slot in &mut recovery.slots {
-                if let SlotState::Accepted { guardian_code, .. } = &mut slot.state {
-                    *guardian_code = None;
-                }
-                slot.phase = SeatPhase::Created;
-            }
-            recovery.reauthorization.get_or_insert(reason);
-            self.publish(recovery);
+            self.inner.store.end_seats(formation_id, ended).await?;
+            self.publish(None).await;
             return Ok(false);
         }
         if let Some(error) = first_error {
@@ -482,9 +439,9 @@ where
             .collect::<FaResult<Vec<_>>>()?;
 
         let mut pending_starts = FuturesUnordered::new();
-        for (position, session) in sessions.iter().enumerate() {
+        for session in sessions {
             let timestamp = Timestamp(now_secs()?);
-            let completion_callback = recovery.dkg_completion_callback.clone();
+            let completion_callback = formation.dkg_completion_callback.clone();
             let guardian_codes = guardian_codes.clone();
             let seat_id = session.seat_id.clone();
             pending_starts.push(async move {
@@ -500,32 +457,21 @@ where
                     Ok(_) | Err(FaError::Mg(MgFailure {
                         cause: MgCause::WrongState(ServiceStatus::DkgInProcess | ServiceStatus::Running),
                         ..
-                    })) => Ok::<_, FaError>(position),
+                    })) => Ok::<_, FaError>(()),
                     Err(error) => Err(error),
                 }
             });
         }
         let mut first_error = None;
         while let Some(result) = pending_starts.next().await {
-            match result {
-                Ok(position) => {
-                    recovery.slots[position].phase = SeatPhase::DkgUnderway;
-                    recovery.slots[position].freshness = FormationFreshness::Fresh;
+            if let Err(error) = result {
+                if first_error.is_some() {
+                    log_mg_failure(formation_id, &error, "discarded");
                 }
-                Err(error) => {
-                    if first_error.is_some() {
-                        log_mg_failure(formation_id, &error, "discarded");
-                    }
-                    first_error.get_or_insert(error);
-                }
+                first_error.get_or_insert(error);
             }
         }
-        if let Some(error) = first_error {
-            return Err(error);
-        }
-        recovery.formation_phase = FormationPhase::DkgUnderway;
-        self.publish(recovery);
-        Ok(true)
+        first_error.map_or(Ok(true), Err)
     }
 
     async fn get_dkg_code_with_retry(
@@ -616,7 +562,6 @@ where
     async fn poll_until_running(
         &self,
         sessions: &[SeatSession<MgClient<F::Client>>],
-        recovery: &mut CreationRecovery,
         fa_id: FaId,
         timeouts: Timeouts,
     ) -> FaResult<()> {
@@ -631,21 +576,17 @@ where
             }
             while let Some(result) = pending_status.next().await {
                 let (position, status) = result?;
-                recovery.slots[position].phase =
-                    service_seat_phase(&status.status).map_err(|cause| {
-                        sessions[position]
-                            .client
-                            .failure(MgOperation::GetStatus, cause)
-                    })?;
-                recovery.slots[position].freshness = FormationFreshness::Fresh;
+                service_seat_phase(&status.status).map_err(|cause| {
+                    sessions[position]
+                        .client
+                        .failure(MgOperation::GetStatus, cause)
+                })?;
                 if status.status == ServiceStatus::Running
                     && status.seat_health == Some(SeatHealth::Healthy)
                 {
                     running += 1;
                 }
             }
-            recovery.freshness = FormationFreshness::Fresh;
-            self.publish(recovery);
             if running == sessions.len() {
                 return Ok(());
             }
@@ -657,20 +598,21 @@ where
     /// its durable fact exists, so an interrupted formation repeats nothing.
     async fn form(
         &self,
-        recovery: &mut CreationRecovery,
+        formation: &FormationView,
         fa_id: FaId,
         timeouts: Timeouts,
     ) -> FaResult<()> {
-        let sessions = self.seat_sessions(recovery, timeouts).await?;
-        if recovery.invite_code.is_none()
-            && !self.start_dkg(recovery, &sessions, fa_id, timeouts).await?
+        let sessions = self.seat_sessions(formation, timeouts).await?;
+        if formation.invite_code.is_none()
+            && !self
+                .start_dkg(formation, &sessions, fa_id, timeouts)
+                .await?
         {
             return Ok(());
         }
-        self.poll_until_running(&sessions, recovery, fa_id, timeouts)
-            .await?;
+        self.poll_until_running(&sessions, fa_id, timeouts).await?;
         let invite = self.fetch_agreed_invite(&sessions, fa_id, timeouts).await?;
-        match &recovery.invite_code {
+        match &formation.invite_code {
             Some(stored) => {
                 if invite_federation_id(stored)? != invite_federation_id(&invite)? {
                     return Err(FaError::InvalidManifoldGuardians(
@@ -683,14 +625,12 @@ where
                 // repeats it.
                 self.inner
                     .store
-                    .record_dkg_complete(&recovery.formation_id, invite.clone())
+                    .record_dkg_complete(&formation.formation_id, invite.clone())
                     .await?;
-                recovery.invite_code = Some(invite.clone());
-                recovery.formation_phase = FormationPhase::DkgComplete;
-                self.publish(recovery);
+                self.publish(None).await;
             }
         }
-        self.publish_seat_bindings(&sessions, recovery, fa_id, &invite, timeouts)
+        self.publish_seat_bindings(&sessions, formation, fa_id, &invite, timeouts)
             .await?;
         self.finish_formation(fa_id).await
     }
@@ -843,15 +783,12 @@ where
 
     async fn seat_sessions(
         &self,
-        recovery: &CreationRecovery,
+        formation: &FormationView,
         timeouts: Timeouts,
     ) -> FaResult<Vec<SeatSession<MgClient<F::Client>>>> {
-        let mut sessions = Vec::with_capacity(recovery.slots.len());
-        for (position, seat) in recovery.slots.iter().enumerate() {
-            let seat_id = seat.seat_id().cloned().ok_or_else(|| {
-                FaError::Storage(format!("FA seat row {position} has no seat id"))
-            })?;
-
+        let mut sessions = Vec::with_capacity(formation.seats.len());
+        for seat in &formation.seats {
+            let seat_id = seat.seat_id.clone();
             let client =
                 MgClient::connect(&self.inner.ports.mg_connector, &seat.locator, timeouts).await?;
             sessions.push(SeatSession {
@@ -867,7 +804,7 @@ where
     async fn publish_seat_bindings(
         &self,
         sessions: &[SeatSession<MgClient<F::Client>>],
-        recovery: &mut CreationRecovery,
+        formation: &FormationView,
         fa_id: FaId,
         invite: &InviteCode,
         timeouts: Timeouts,
@@ -876,7 +813,7 @@ where
         // durable: recovery replays its exact bytes and cannot repair an
         // invalid directory after pinning it. This read validates the signed
         // directory only; recipient derivation no longer uses API keys.
-        let formation_config = if recovery.formation_meta_target.is_none() {
+        let formation_config = if formation.meta_target.is_none() {
             loop {
                 // A guardian that restarts can leave a read unanswered until
                 // its request timeout. That is a reason to retry, as an error.
@@ -894,11 +831,11 @@ where
         } else {
             None
         };
-        let target = match recovery.formation_meta_target.clone() {
+        let target = match formation.meta_target.clone() {
             Some(target) => target,
             None => {
                 let (bindings, binding_entries) = self
-                    .assemble_seat_bindings(sessions, recovery, fa_id, timeouts)
+                    .assemble_seat_bindings(sessions, formation, fa_id, timeouts)
                     .await?;
                 let federation_id = invite_federation_id(invite)?;
                 let fa_account = self
@@ -951,17 +888,15 @@ where
                         Ok(self
                             .inner
                             .store
-                            .record_formation_meta_target(&recovery.formation_id, target.clone()))
+                            .record_formation_meta_target(&formation.formation_id, target.clone()))
                     })
                     .await??;
-                recovery.formation_meta_target = Some(target.clone());
+                self.publish(None).await;
                 target
             }
         };
 
-        recovery.formation_phase = FormationPhase::PublishingSeatBindings;
-        self.publish(recovery);
-        let formation_id = &recovery.formation_id;
+        let formation_id = &formation.formation_id;
         let target = &target;
         let seats = sessions.iter().map(|session| session.index).collect();
         let snapshot = write_consensus_meta(
@@ -1035,7 +970,7 @@ where
         })?;
         timeouts
             .call("confirming formation metadata consensus", || {
-                Ok(self.inner.store.finish_formation(&recovery.formation_id))
+                Ok(self.inner.store.finish_formation(formation_id))
             })
             .await??;
         self.remember_read_invite(invite, &snapshot).await
@@ -1045,21 +980,14 @@ where
     async fn assemble_seat_bindings(
         &self,
         sessions: &[SeatSession<MgClient<F::Client>>],
-        recovery: &CreationRecovery,
+        formation: &FormationView,
         fa_id: FaId,
         timeouts: Timeouts,
     ) -> FaResult<(String, Vec<FormationSeatBinding>)> {
         let mut pending = FuturesUnordered::new();
         for (position, session) in sessions.iter().enumerate() {
-            let SlotState::Accepted {
-                guardian_fee_account: expected_guardian_fee_account,
-                ..
-            } = recovery.slots[position].state.clone()
-            else {
-                return Err(FaError::Storage(format!(
-                    "formation slot {position} holds no accepted seat"
-                )));
-            };
+            let expected_guardian_fee_account =
+                formation.seats[position].guardian_fee_account.clone();
 
             pending.push(async move {
                 let request = GetPeerAttestationRequest {
@@ -1407,54 +1335,53 @@ where
         Ok(deliverable)
     }
 
-    /// The running creation.
-    pub(crate) async fn active_creation(&self, fa_id: FaId) -> FaResult<CreationRecovery> {
+    /// The running formation: a creation whose pool is full.
+    pub(crate) async fn active_formation(&self, fa_id: FaId) -> FaResult<FormationView> {
         self.inner
             .store
-            .load_creation(fa_id)
+            .load_formation(fa_id)
             .await?
             .ok_or(FaError::NoActiveFormation)
-    }
-
-    /// The running formation: a creation whose slots all hold seats.
-    pub(crate) async fn active_formation(&self, fa_id: FaId) -> FaResult<CreationRecovery> {
-        let creation = self.active_creation(fa_id).await?;
-        if !creation.is_full() {
-            return Err(FaError::NoActiveFormation);
-        }
-        Ok(creation)
     }
 
     pub(crate) async fn post_formed_authority(&self, fa_id: FaId) -> FaResult<PostFormedAuthority> {
         self.inner.store.post_formed_authority(fa_id).await
     }
 
-    /// Publish the creation's current progress.
-    pub(crate) fn publish(&self, creation: &CreationRecovery) {
-        let snapshot = creation.snapshot();
-        self.inner
-            .progress
-            .modify(|status| status.creation = Some(snapshot));
+    /// Publish the stored creation, with the error of the step that just
+    /// failed, if one did.
+    pub(crate) async fn publish(&self, last_error: Option<crate::FaErrorCode>) {
+        let snapshot = match self.fa_id() {
+            Ok(fa_id) => self.inner.store.load_snapshot(fa_id).await,
+            Err(error) => Err(error),
+        };
+        match snapshot {
+            Ok(snapshot) => self.inner.progress.modify(|status| {
+                status.creation = snapshot.map(|snapshot| crate::CreationSnapshot {
+                    last_error,
+                    ..snapshot
+                });
+            }),
+            Err(error) => tracing::warn!(%error, "reading the FA creation failed"),
+        }
     }
 
     /// Drive a formation from pool seats to a formed federation.
     pub(crate) async fn drive_formation(
         &self,
-        mut recovery: CreationRecovery,
+        formation: FormationView,
         fa_id: FaId,
         timeouts: Timeouts,
     ) -> FaResult<()> {
-        self.publish(&recovery);
-        let result = self.form(&mut recovery, fa_id, timeouts).await;
+        self.publish(None).await;
+        let result = self.form(&formation, fa_id, timeouts).await;
         if let Err(error) = &result {
-            log_mg_failure(&recovery.formation_id, error, "returned");
-            recovery.last_error = Some(error.code());
-            self.publish(&recovery);
+            log_mg_failure(&formation.formation_id, error, "returned");
+            self.publish(Some(error.code())).await;
         }
         result
     }
 
-    /// A recheck withdraws the federation's freshness until it succeeds.
     pub(crate) fn fa_id(&self) -> FaResult<FaId> {
         self.inner
             .ports

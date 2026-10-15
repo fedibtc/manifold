@@ -84,12 +84,15 @@ impl StoredSlot {
         match &self.state {
             SlotState::Accepted {
                 seat_id,
+                guardian_fee_account,
                 fedimintd_version,
-                ..
+                guardian_code,
             } => Some(AcceptedSlot {
                 slot: self,
                 seat_id,
+                guardian_fee_account,
                 fedimintd_version,
+                guardian_code: guardian_code.as_ref(),
             }),
             SlotState::Picked { .. } | SlotState::Bound { .. } | SlotState::Ended { .. } => None,
         }
@@ -129,7 +132,9 @@ impl SlotState {
 pub(super) struct AcceptedSlot<'a> {
     pub(super) slot: &'a StoredSlot,
     pub(super) seat_id: &'a SeatId,
+    pub(super) guardian_fee_account: &'a Account,
     pub(super) fedimintd_version: &'a FedimintdVersion,
+    pub(super) guardian_code: Option<&'a GuardianCode>,
 }
 
 json_database_value!(StoredSlot);
@@ -302,11 +307,9 @@ impl FaStore {
             .map_err(map_formation_tx_error)
     }
 
-    /// Empty slots, each still in its expected state, and keep the first
-    /// reason a slot left. A slot without a seat may go only when no
-    /// payment of its bound quote is outstanding. An accepted seat may go
-    /// only before DKG started. Its slot stays as ended, and every cached
-    /// code goes: the code that carries the federation name may change.
+    /// Empty pending slots, each still in its expected state, and keep the
+    /// first reason a slot left. A slot may go only when no payment of its
+    /// bound quote is outstanding.
     pub(crate) async fn empty_slots(
         &self,
         formation_id: &FormationId,
@@ -320,50 +323,16 @@ impl FaStore {
                 move |dbtx, _| {
                     let formation_id = formation_id.clone();
                     Box::pin(async move {
-                        let mut creation = read_any_creation(dbtx)
-                            .await?
-                            .filter(|creation| creation.stored.formation_id == formation_id)
-                            .ok_or_else(|| {
-                                FaError::Storage(
-                                    "the FA creation changed during an operation".to_owned(),
-                                )
-                            })?;
-                        let mut seat_left = false;
+                        let mut creation = running_purchase(dbtx, &formation_id).await?;
                         for (index, expected) in emptied {
-                            if creation.slot_mut(*index)?.state != *expected {
+                            if expected.purchase().is_none()
+                                || creation.slot_mut(*index)?.state != *expected
+                            {
                                 return Err(FaError::Storage(format!(
                                     "FA slot {index} changed before it was emptied"
                                 )));
                             }
-                            seat_left |= matches!(expected, SlotState::Accepted { .. });
-                        }
-                        if seat_left {
-                            if creation.formation.is_some() {
-                                return Err(FaError::Storage(
-                                    "a seat cannot leave after DKG completed".to_owned(),
-                                ));
-                            }
-                            // The pool changes, so every code goes.
-                            for (index, slot) in &mut creation.slots {
-                                if let SlotState::Accepted { guardian_code, .. } = &mut slot.state
-                                    && guardian_code.take().is_some()
-                                {
-                                    dbtx.insert_entry(&SlotKey { index: *index }, slot).await;
-                                }
-                            }
-                        }
-                        for (index, expected) in emptied {
-                            if let SlotState::Accepted { seat_id, .. } = expected {
-                                // The MG ended a bought seat. Its slot stays.
-                                let slot = creation.slot_mut(*index)?;
-                                slot.state = SlotState::Ended {
-                                    seat_id: seat_id.clone(),
-                                };
-                                let slot = slot.clone();
-                                dbtx.insert_entry(&SlotKey { index: *index }, &slot).await;
-                            } else {
-                                dbtx.remove_entry(&SlotKey { index: *index }).await;
-                            }
+                            dbtx.remove_entry(&SlotKey { index: *index }).await;
                         }
                         creation.stored.reauthorization.get_or_insert(reason);
                         dbtx.insert_entry(&CreationKey, &creation.stored).await;
@@ -376,6 +345,64 @@ impl FaStore {
             .map_err(map_formation_tx_error)
     }
 
+    /// Mark the accepted seats `ended` as ended by their MGs. This is allowed
+    /// only before DKG completed. Their slots stay, and every cached code
+    /// goes: the code that carries the federation name may change.
+    pub(crate) async fn end_seats(
+        &self,
+        formation_id: &FormationId,
+        ended: Vec<SeatId>,
+    ) -> FaResult<()> {
+        let formation_id = formation_id.clone();
+        let ended = &ended;
+        self.database
+            .autocommit(
+                move |dbtx, _| {
+                    let formation_id = formation_id.clone();
+                    Box::pin(async move {
+                        let (mut creation, _) = active_formation(dbtx, &formation_id).await?;
+                        if creation.formation.is_some() {
+                            return Err(FaError::Storage(
+                                "a seat cannot leave after DKG completed".to_owned(),
+                            ));
+                        }
+                        let mut found = 0;
+                        for (index, slot) in &mut creation.slots {
+                            let SlotState::Accepted {
+                                seat_id,
+                                guardian_code,
+                                ..
+                            } = &mut slot.state
+                            else {
+                                continue;
+                            };
+                            if ended.contains(seat_id) {
+                                let seat_id = seat_id.clone();
+                                found += 1;
+                                slot.state = SlotState::Ended { seat_id };
+                            } else if guardian_code.take().is_none() {
+                                continue;
+                            }
+                            dbtx.insert_entry(&SlotKey { index: *index }, slot).await;
+                        }
+                        if found != ended.len() {
+                            return Err(FaError::Storage(
+                                "an ended FA seat is not in the pool".to_owned(),
+                            ));
+                        }
+                        creation
+                            .stored
+                            .reauthorization
+                            .get_or_insert(crate::SelectionReauthorizationReason::SeatEnded);
+                        dbtx.insert_entry(&CreationKey, &creation.stored).await;
+                        Ok(())
+                    })
+                },
+                Some(FORMATION_TX_MAX_ATTEMPTS),
+            )
+            .await
+            .map_err(map_formation_tx_error)
+    }
     /// Record one guardian code.
     pub(crate) async fn record_guardian_code(
         &self,
