@@ -1,14 +1,15 @@
 import type { ReadinessOutcome, ReadinessReport } from '@operator-ui/types';
 
-/** The prerequisites one daemon readiness run checks, in display order. */
-export type ReadinessCheck = 'relay' | 'discovery' | 'bitcoin';
+/** The checks one daemon readiness run makes, in display order. */
+export type ReadinessCheck = 'relay' | 'discovery' | 'bitcoin' | 'uptime';
 
-export const CHECKS: readonly ReadinessCheck[] = ['relay', 'discovery', 'bitcoin'];
+export const CHECKS: readonly ReadinessCheck[] = ['relay', 'discovery', 'bitcoin', 'uptime'];
 
 export const labels: Record<ReadinessCheck, string> = {
   relay: 'Relay connection',
   discovery: 'Guardian discovery',
-  bitcoin: 'Bitcoin backend'
+  bitcoin: 'Bitcoin backend',
+  uptime: 'Uptime'
 };
 
 export const outcomes: Record<ReadinessOutcome, string> = {
@@ -20,7 +21,10 @@ export const outcomes: Record<ReadinessOutcome, string> = {
   bitcoin_unavailable: 'The configured Bitcoin backend did not answer.',
   bitcoin_wrong_network: 'The configured Bitcoin backend is on a different network.',
   bitcoin_syncing: 'Bitcoin Core is still in initial block download.',
-  bitcoin_no_fee_rate: 'The Bitcoin backend has no fee estimate yet.'
+  bitcoin_no_fee_rate: 'The Bitcoin backend has no fee estimate yet.',
+  uptime_1d_low: 'This host was offline too much recently.',
+  uptime_7d_low: 'This host was offline too much recently.',
+  uptime_30d_low: 'This host was offline too much recently.'
 };
 
 export const guidance: Record<ReadinessCheck, string> = {
@@ -29,7 +33,8 @@ export const guidance: Record<ReadinessCheck, string> = {
   discovery:
     'Check outbound DNS and HTTPS from this host. A new record can take a minute to publish after a relay change.',
   bitcoin:
-    'Check the configured Bitcoin backend, its credentials, and its network. Let initial sync finish; do not expose RPC publicly.'
+    'Check the configured Bitcoin backend, its credentials, and its network. Let initial sync finish; do not expose RPC publicly.',
+  uptime: 'Keep this host online.'
 };
 
 export const passed = (outcome: ReadinessOutcome): boolean =>

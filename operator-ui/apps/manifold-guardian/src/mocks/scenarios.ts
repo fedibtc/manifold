@@ -69,7 +69,8 @@ const READY: MockState['seatReadiness'] = {
   checked_at_ms: LAST_READ_AT * 1000,
   relay: 'pass',
   discovery: 'pass',
-  bitcoin: 'pass'
+  bitcoin: 'pass',
+  uptime: 'pass'
 };
 
 const fees = (overrides: Partial<MockGuardianFees> = {}): MockGuardianFees => ({
@@ -414,6 +415,15 @@ const builders = {
       bitcoin: 'bitcoin_syncing'
     }
   }),
+  'uptime-low': () => ({
+    ...base(),
+    seats: [],
+    paymentFederations: [],
+    price: null,
+    onboarding: authorized,
+    readyForNewSeats: false,
+    seatReadiness: { ...READY, uptime: 'uptime_7d_low' }
+  }),
   // The state a fleet is actually in before its first payout: revenue on both
   // sides and nowhere to send it. Every sweep refuses until a destination is
   // stored, which is the ordering the Payouts screen has to make visible.
@@ -645,6 +655,10 @@ const notes: Record<ScenarioName, ScenarioNote> = {
   },
   'not-ready-for-seats': {
     desc: 'The last readiness run failed: no discovery record and Bitcoin still syncing. The daemon has stopped advertising and quoting new seats.',
+    affects: ['overview', 'health']
+  },
+  'uptime-low': {
+    desc: 'Every prerequisite passes, but this host was online less than 90% of the past week (the 7-day uptime minimum), so the daemon has stopped advertising and quoting new seats.',
     affects: ['overview', 'health']
   },
   'payouts-unset': {

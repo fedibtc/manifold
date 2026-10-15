@@ -18,6 +18,7 @@ use sqlx::{Sqlite, SqlitePool, Transaction};
 use thiserror::Error;
 
 use crate::identity::RootMnemonic;
+use crate::seat_readiness::{Uptime, UptimeScores};
 use fedi_decentralized_service_manifold_guardian::SeatId;
 
 pub(crate) const IDENTITY_ID: i64 = 1;
@@ -741,6 +742,41 @@ impl Db {
         Ok(())
     }
 
+    /// Record one uptime slot and return the updated history, or `None`
+    /// while no slot has been up.
+    pub(crate) async fn record_uptime_slot(
+        &self,
+        slot: u64,
+        up: bool,
+    ) -> Result<Option<Uptime>, DbError> {
+        let mut tx = self.begin_write().await?;
+        let previous = uptime_row(&mut tx).await?;
+        let next = Uptime::record(previous, slot, up);
+        if let Some(next) = next
+            && Some(next) != previous
+        {
+            sqlx::query(
+                "INSERT INTO uptime (id, day, week, month, slot) VALUES (1, ?, ?, ?, ?) \
+                 ON CONFLICT (id) DO UPDATE SET day = excluded.day, week = excluded.week, \
+                 month = excluded.month, slot = excluded.slot",
+            )
+            .bind(next.scores.day)
+            .bind(next.scores.week)
+            .bind(next.scores.month)
+            .bind(i64::try_from(next.slot).unwrap_or(i64::MAX))
+            .execute(&mut *tx)
+            .await?;
+        }
+        tx.commit().await?;
+        Ok(next)
+    }
+
+    /// The uptime history, or `None` before the first up slot.
+    pub(crate) async fn uptime(&self) -> Result<Option<Uptime>, DbError> {
+        let mut conn = self.pool.acquire().await?;
+        uptime_row(&mut conn).await
+    }
+
     pub async fn offer_epoch(&self) -> Result<OfferEpoch, DbError> {
         let (epoch,): (Vec<u8>,) =
             sqlx::query_as("SELECT offer_epoch FROM offer_state WHERE id = 1")
@@ -748,6 +784,17 @@ impl Db {
                 .await?;
         parse_offer_epoch(epoch)
     }
+}
+
+async fn uptime_row(conn: &mut sqlx::SqliteConnection) -> Result<Option<Uptime>, DbError> {
+    let row: Option<(f64, f64, f64, i64)> =
+        sqlx::query_as("SELECT day, week, month, slot FROM uptime WHERE id = 1")
+            .fetch_optional(conn)
+            .await?;
+    Ok(row.map(|(day, week, month, slot)| Uptime {
+        scores: UptimeScores { day, week, month },
+        slot: u64::try_from(slot).expect("slot is non-negative by schema CHECK"),
+    }))
 }
 
 pub(super) fn fresh_offer_epoch() -> OfferEpoch {

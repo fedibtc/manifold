@@ -139,7 +139,8 @@ const failingReport = {
   checked_at_ms: 0,
   relay: 'pass',
   discovery: 'discovery_record_missing',
-  bitcoin: 'bitcoin_no_fee_rate'
+  bitcoin: 'bitcoin_no_fee_rate',
+  uptime: 'pass'
 } as const;
 
 it('should send the operator to Health when a readiness check fails, naming only the failures', () => {
@@ -169,7 +170,8 @@ it('should raise nothing for a stored ready verdict, with or without a fresh run
     checked_at_ms: 0,
     relay: 'not_applicable',
     discovery: 'not_applicable',
-    bitcoin: 'pass'
+    bitcoin: 'pass',
+    uptime: 'pass'
   } as const;
 
   expect(

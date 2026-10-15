@@ -16,7 +16,7 @@ use std::sync::{
     Arc, Mutex, RwLock,
     atomic::{AtomicU64, Ordering},
 };
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context as _, anyhow};
 use fedi_decentralized_domain::Pubkey;
@@ -49,7 +49,7 @@ use crate::seat::{
     SeatVerbError,
 };
 use crate::seat_process::{RespawnPolicy, SeatProcessConfig, SeatProcessSpawner};
-use crate::seat_readiness::ReadinessReport;
+use crate::seat_readiness::{ReadinessReport, UPTIME_SLOT_SECS, UptimeScores};
 
 // No `Debug`: [`SeatProcessConfig`] may hold a bitcoind password.
 #[derive(Clone)]
@@ -772,6 +772,36 @@ impl Fleet {
             );
         }
         Ok(())
+    }
+
+    /// Record the current slot of uptime, up or not, and return the uptime
+    /// scores. Slots since the last record count as down; slots before the
+    /// first up one do not count.
+    pub async fn record_uptime_slot(
+        &self,
+        now: SystemTime,
+        up: bool,
+    ) -> anyhow::Result<UptimeScores> {
+        let slot = now
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock is after the Unix epoch")
+            .as_secs()
+            / UPTIME_SLOT_SECS;
+        Ok(self
+            .db
+            .record_uptime_slot(slot, up)
+            .await?
+            .map_or(UptimeScores::START, |uptime| uptime.scores))
+    }
+
+    /// How much of the recent past this MG was up, or
+    /// [`UptimeScores::START`] without history.
+    pub async fn uptime(&self) -> anyhow::Result<UptimeScores> {
+        Ok(self
+            .db
+            .uptime()
+            .await?
+            .map_or(UptimeScores::START, |uptime| uptime.scores))
     }
 
     /// The durable verdict that gates admission.

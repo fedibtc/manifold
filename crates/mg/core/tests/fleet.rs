@@ -18,7 +18,7 @@ use crate::seat_process::fake::{
     FakeSeatProcessSpawner, block_forever, write_fake_fedimintd,
 };
 use crate::seat_process::{BitcoindConfig, seat_data_dir};
-use crate::seat_readiness::{ReadinessOutcome, ReadinessReport};
+use crate::seat_readiness::{ReadinessOutcome, ReadinessReport, UPTIME_SLOT_SECS, UptimeScores};
 use crate::wallet::NoWallet;
 use crate::wallet::testutil::GatedRefundWallet;
 
@@ -938,6 +938,7 @@ fn readiness(ready: bool) -> ReadinessReport {
         } else {
             ReadinessOutcome::BitcoinSyncing
         },
+        uptime: ReadinessOutcome::Pass,
     }
 }
 
@@ -975,6 +976,91 @@ async fn readiness_verdict_survives_restart() {
     assert!(!fleet.availability_snapshot().await.accepting_seats);
     assert!(fleet.quote_offer().await.is_none());
     assert_ne!(fleet.db.offer_epoch().await.unwrap(), quoted.epoch);
+    fleet.shutdown().await;
+}
+
+/// Uptime scores are durable, start at the first up slot, a low one closes
+/// admission, and slots no daemon recorded count as down in every window.
+#[tokio::test]
+async fn uptime_survives_restart_and_counts_unrecorded_slots_down() {
+    let temp = TempDir::new().unwrap();
+    let slot = |n: u64| {
+        std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_800_000_000 + n * UPTIME_SLOT_SECS)
+    };
+    let fleet = open_fleet(config(&temp, 2, 30_740).await, Arc::new(NoWallet))
+        .await
+        .unwrap();
+    assert_eq!(
+        fleet.uptime().await.unwrap(),
+        UptimeScores::START,
+        "a new MG starts at 95%"
+    );
+    fleet.set_offered_price(Some(Msats(0))).await.unwrap();
+    let mut low = readiness(true);
+    low.uptime = ReadinessOutcome::MonthUptimeLow;
+    fleet.set_seat_readiness(low).await.unwrap();
+    assert!(!fleet.availability_snapshot().await.accepting_seats);
+    // Setup before the first up slot does not count.
+    assert_eq!(
+        fleet.record_uptime_slot(slot(0), false).await.unwrap(),
+        UptimeScores::START
+    );
+    let started = fleet.record_uptime_slot(slot(1), true).await.unwrap();
+    assert!((0.95..0.951).contains(&started.week), "{started:?}");
+    fleet.shutdown().await;
+    drop(fleet);
+
+    let fleet = open_fleet(config(&temp, 2, 30_740).await, Arc::new(NoWallet))
+        .await
+        .unwrap();
+    // A day passes unrecorded; the slot after it is up.
+    let day = 24 * 60 * 60 / UPTIME_SLOT_SECS;
+    let scores = fleet.record_uptime_slot(slot(1 + day), true).await.unwrap();
+    for (score, start, days) in [
+        (scores.day, started.day, 1.0f64),
+        (scores.week, started.week, 7.0),
+        (scores.month, started.month, 30.0),
+    ] {
+        assert!(
+            (score - start * (-1.0 / days).exp()).abs() < 2e-2,
+            "{scores:?}"
+        );
+    }
+    assert_eq!(fleet.uptime().await.unwrap(), scores);
+    fleet.shutdown().await;
+}
+
+/// Recording a slot while other writes commit never fails: a failed record
+/// would read as zero uptime and close a healthy MG.
+#[tokio::test]
+async fn uptime_records_alongside_concurrent_writes() {
+    let temp = TempDir::new().unwrap();
+    let fleet = Arc::new(
+        open_fleet(config(&temp, 2, 30_760).await, Arc::new(NoWallet))
+            .await
+            .unwrap(),
+    );
+    let start = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_800_000_000);
+    let mut tasks = Vec::new();
+    for n in 0..50u64 {
+        let recorder = fleet.clone();
+        tasks.push(tokio::spawn(async move {
+            recorder
+                .record_uptime_slot(
+                    start + std::time::Duration::from_secs(n * UPTIME_SLOT_SECS),
+                    true,
+                )
+                .await
+                .map(|_| ())
+        }));
+        let writer = fleet.clone();
+        tasks.push(tokio::spawn(async move {
+            writer.set_offered_price(Some(Msats(n))).await
+        }));
+    }
+    for task in tasks {
+        task.await.unwrap().unwrap();
+    }
     fleet.shutdown().await;
 }
 

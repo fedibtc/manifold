@@ -4,6 +4,7 @@
     "bitcoin": "bitcoin_syncing",
     "checked_at_ms": 1700000000000,
     "discovery": "discovery_record_missing",
-    "relay": "pass"
+    "relay": "pass",
+    "uptime": "uptime_7d_low"
   }
 }

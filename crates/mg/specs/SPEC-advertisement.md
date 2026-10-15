@@ -127,8 +127,8 @@ can observe different settings epochs and live state.
 
 A seat sold by an MG that cannot be reached or cannot use Bitcoin becomes
 the cause of a failed DKG, so the daemon admits new seats only while its
-readiness checks pass. At startup and then every 10 minutes (every minute
-while failing), it requires a connected home relay, its own discovery record
+readiness checks pass. At startup and then once in every 10-minute uptime
+slot (every minute while failing), it requires a connected home relay, its own discovery record
 resolving through n0 pkarr or DNS with a relay it is connected to, and its
 Bitcoin backend — read through the client `fedimintd` builds, with Bitcoin Core
 required on its own rather than through its Esplora fallback — serving the
@@ -142,6 +142,24 @@ calls; a check that outlives its deadline counts as unavailable, and the next
 attempt waits on it rather than starting another. Local E2E skips the relay
 and discovery checks.
 
+Each run also requires three uptime scores of at least the setup-payment
+policy's `min_uptime_percent` (1 day 70%, 7 days 90%, 30 days 93% when
+absent or before a policy is admitted; 0 turns a window off;
+[SPEC-setup-payment-federations](../../../specs/SPEC-setup-payment-federations.md)).
+Each run records its 10-minute slot, up when the run's prerequisites passed;
+the first run in a slot decides it. The daemon keeps durable exponential
+moving averages over slots with 1-, 7- and 30-day time constants and compares
+each at the 0.1% telemetry reports; a failure names the shortest failing
+window. Slots no daemon recorded, such as while it was stopped, count as
+down. History starts at 95% at the first up slot, so setup before an MG first
+passes its prerequisites costs it nothing, while a new MG has less margin
+than one with a good record. Only the prerequisites decide whether a slot is
+up, so a low uptime alone never keeps itself low, and failed prerequisites
+are retried but the uptime check is not. With the defaults, an outage of up
+to about 8.5 hours costs nothing, 12 hours down closes the MG for about 6
+hours (1 day), one day down for about two days (7 days), and an MG down
+about 2 hours every day stays closed (30 days).
+
 The verdict is durable in `offer_state`, so a restart resumes it: a ready MG
 keeps selling and a failing one stays closed until a run passes. A fresh,
 restored, or upgraded MG starts closed.
@@ -151,6 +169,6 @@ A failed verdict suppresses publication, makes `GetAvailability` report
 FAs treat it like a full MG. Each change of verdict also draws a fresh offer
 epoch in the same database write: a quote issued before a failure is refused
 with `OfferChanged` and its refund instead of admitting a seat. Every run emits one shareable event with a
-fixed code per check for telemetry, and the latest report is served to the
+fixed code per check, the three uptime scores, and the minimums they were held to for telemetry, and the latest report is served to the
 operator by the `ShowSeatReadiness` admin verb, which the operator UI's Health
 page shows.

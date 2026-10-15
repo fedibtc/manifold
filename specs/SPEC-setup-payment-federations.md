@@ -117,6 +117,16 @@ replacement ordering as the new shared high-water mark.
   only — each MG refuses one below it, while a rate a federation already
   adopted stays valid to carry forward and still reports as configured
   ([REQ-guardian-fee-remittance](./REQ-guardian-fee-remittance.md));
+- `min_uptime_percent`, an object of uptime scores, each in percent from 0
+  to 100, below which an MG stops accepting new seats: `1d`, `7d` and `30d`
+  for the 1-, 7- and 30-day scores
+  ([SPEC-advertisement](../crates/mg/specs/SPEC-advertisement.md#readiness-gate)).
+  Optional as a whole and per window: an absent window means 70, 90 and 93
+  respectively, and 0 turns a window off. Unknown windows are ignored.
+  Consumers that admit unknown fields but predate this one ignore it and
+  apply no uptime gate. Consumers older than unknown field admission reject
+  a publication that sets it, so Fedi sets it only after those consumers have
+  upgraded;
 - `support_nostr_pubkey`, the Fedi support key MG operators chat with
   ([SPEC-mg-support-chat](../crates/mg/specs/SPEC-mg-support-chat.md)),
   as a Nostr public key. Optional: absent means the MG uses the key its
@@ -172,7 +182,8 @@ Admission performs all of these checks before the set influences policy:
 11. reject a `min_fee_ppm` above the payer's 210,000-ppm send-rate ceiling,
     which would leave no proposable rate;
 12. reject a `seat_memory_budget_mib` outside 256 to 16,384 or a
-    `max_seats_per_mg` above 256.
+    `max_seats_per_mg` above 256;
+13. reject a `min_uptime_percent` window above 100, which no MG can reach.
 
 Array position carries no preference or fallback meaning. A consumer uses the
 derived federation ID as the member identity and the signed invite as its join

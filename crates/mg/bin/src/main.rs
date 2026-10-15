@@ -557,7 +557,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
 
     let mut seat_readiness =
         seat_readiness::SeatReadiness::new(router.endpoint().clone(), &process, local_e2e)?
-            .spawn(fleet.clone());
+            .spawn(fleet.clone(), nostr.subscribe_setup_payment_federations());
     let host = Arc::new(FleetNostrHost::new(
         fleet.clone(),
         router.endpoint().id().to_string(),

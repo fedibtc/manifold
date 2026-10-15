@@ -48,6 +48,7 @@ fn content_with_min_fee_ppm(invites: Vec<String>, min_fee_ppm: u64) -> Vec<u8> {
             "https://push.fedi.example/v1/telemetry/registrations".to_owned()
         ),
         min_fee_ppm,
+        min_uptime_percent: None,
         support_nostr_pubkey: None,
         seat_memory_budget_mib: None,
         max_seats_per_mg: None,
@@ -113,6 +114,68 @@ fn rejects_a_published_min_fee_ppm_above_the_payer_cap() {
     assert_eq!(error, SetupPaymentFederationsContentError::MinFeePpmTooHigh);
 }
 
+fn content_with_min_uptime(field: &str) -> String {
+    format!(
+        r#"{{"version":1,"fman_version":"0.1.0","federations":[],"telemetry_registration_url":"https://push.fedi.example/v1/telemetry/registrations"{field}}}"#
+    )
+}
+
+#[test]
+fn omitted_min_uptime_defaults_to_70_90_93_percent() {
+    let admitted = AdmittedSetupPaymentFederations::parse(content_with_min_uptime("").as_bytes())
+        .expect("content without the field is admitted");
+    assert_eq!(
+        admitted.min_uptime_percent(),
+        MinUptimePercent {
+            day: 70,
+            week: 90,
+            month: 93
+        }
+    );
+}
+
+/// A publication may set one window; the others keep their defaults, and a
+/// window this consumer does not know is ignored.
+#[test]
+fn a_published_window_overrides_only_itself() {
+    let admitted = AdmittedSetupPaymentFederations::parse(
+        content_with_min_uptime(r#","min_uptime_percent":{"30d":0,"365d":99}"#).as_bytes(),
+    )
+    .expect("a partial minimum is admitted");
+    assert_eq!(
+        admitted.min_uptime_percent(),
+        MinUptimePercent {
+            day: 70,
+            week: 90,
+            month: 0
+        }
+    );
+    let content: SetupPaymentFederationsContent = serde_json::from_str(&content_with_min_uptime(
+        r#","min_uptime_percent":{"1d":75,"7d":85,"30d":100}"#,
+    ))
+    .unwrap();
+    assert_eq!(
+        content.min_uptime_percent,
+        Some(MinUptimePercent {
+            day: 75,
+            week: 85,
+            month: 100
+        })
+    );
+}
+
+#[test]
+fn rejects_a_min_uptime_above_one_hundred_percent_in_any_window() {
+    for window in ["1d", "7d", "30d"] {
+        let error = AdmittedSetupPaymentFederations::parse(
+            content_with_min_uptime(&format!(r#","min_uptime_percent":{{"{window}":101}}"#))
+                .as_bytes(),
+        )
+        .expect_err("a minimum above 100% is rejected");
+        assert_eq!(error, SetupPaymentFederationsContentError::MinUptimeTooHigh);
+    }
+}
+
 fn content_with_support(support_nostr_pubkey: &str) -> String {
     format!(
         r#"{{"version":1,"fman_version":"0.1.0","federations":[],"telemetry_registration_url":"https://push.fedi.example/v1/telemetry/registrations","support_nostr_pubkey":"{support_nostr_pubkey}"}}"#
@@ -166,6 +229,7 @@ fn admits_only_credential_free_https_telemetry_registration_urls() {
             federations: Vec::new(),
             telemetry_registration_url: Url(invalid.to_owned()),
             min_fee_ppm: DEFAULT_SETUP_PAYMENT_MIN_FEE_PPM,
+            min_uptime_percent: None,
             support_nostr_pubkey: None,
             seat_memory_budget_mib: None,
             max_seats_per_mg: None,
