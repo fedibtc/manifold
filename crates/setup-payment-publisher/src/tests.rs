@@ -9,6 +9,8 @@ use fedimint_core::invite_code::InviteCode as FedimintInviteCode;
 use fedimint_core::util::SafeUrl;
 use tempfile::TempDir;
 
+use fedi_decentralized_domain::MinUptimePercent;
+
 use super::*;
 
 const POLICY_FIXTURE: &str = include_str!("../testdata/valid-policy.json");
@@ -114,6 +116,37 @@ fn manifest_rejects_only_the_injected_unknown_field() {
     content["future_field"] = serde_json::json!(true);
     let path = write_policy(&temp, &serde_json::to_string(&content).unwrap());
     assert!(read_content(&path).is_err());
+}
+
+/// A partial uptime minimum is published with the defaults filled in, while a
+/// misspelled or future window is refused rather than signed as a default.
+#[test]
+fn manifest_checks_uptime_windows_it_would_otherwise_drop() {
+    let temp = TempDir::new().unwrap();
+    let mut content: serde_json::Value = serde_json::from_str(POLICY_FIXTURE).unwrap();
+    content["min_uptime_percent"] = serde_json::json!({"7d": 85});
+    let path = write_policy(&temp, &serde_json::to_string(&content).unwrap());
+    let read = read_content(&path).expect("a partial minimum is publishable");
+    assert_eq!(
+        read.min_uptime_percent,
+        Some(MinUptimePercent {
+            day: 70,
+            week: 85,
+            month: 93
+        })
+    );
+
+    for window in ["7D", "365d"] {
+        content["min_uptime_percent"] = serde_json::json!({ window: 100 });
+        let path = write_policy(&temp, &serde_json::to_string(&content).unwrap());
+        let error = read_content(&path).expect_err("an unknown window is refused");
+        assert!(
+            error
+                .to_string()
+                .contains(&format!("min_uptime_percent.{window}")),
+            "{error}"
+        );
+    }
 }
 
 #[test]

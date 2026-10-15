@@ -257,15 +257,33 @@ fn read_content(path: &Path) -> anyhow::Result<SetupPaymentFederationsContent> {
         .with_context(|| format!("parse policy content {}", path.display()))?;
     // Consumers ignore future fields, but the publisher must not silently
     // discard operator policy. Derive known fields from the shared wire type.
-    let input: serde_json::Map<String, serde_json::Value> = serde_json::from_slice(&bytes)?;
-    let serialized = serde_json::to_value(&content)?;
-    for field in input.keys() {
-        ensure!(
-            serialized.get(field).is_some(),
-            "unknown policy content field: {field}"
-        );
-    }
+    let input: serde_json::Value = serde_json::from_slice(&bytes)?;
+    ensure_known_fields(&input, &serde_json::to_value(&content)?, "")?;
     Ok(content)
+}
+
+/// Require every object key in `input`, nested ones included, to survive the
+/// typed round trip that produced `serialized`.
+fn ensure_known_fields(
+    input: &serde_json::Value,
+    serialized: &serde_json::Value,
+    path: &str,
+) -> anyhow::Result<()> {
+    let (Some(input), Some(serialized)) = (input.as_object(), serialized.as_object()) else {
+        return Ok(());
+    };
+    for (field, value) in input {
+        let field_path = if path.is_empty() {
+            field.clone()
+        } else {
+            format!("{path}.{field}")
+        };
+        let Some(known) = serialized.get(field) else {
+            anyhow::bail!("unknown policy content field: {field_path}");
+        };
+        ensure_known_fields(value, known, &field_path)?;
+    }
+    Ok(())
 }
 
 fn read_secret_key(path: Option<&Path>) -> anyhow::Result<Zeroizing<String>> {

@@ -130,7 +130,7 @@ impl SeatReadiness {
                     tracing::warn!(%error, "failed to apply the seat readiness verdict");
                 }
                 tokio::time::sleep(if ready {
-                    until_slot_after(recorded_at)
+                    until_slot_after(recorded_at, SystemTime::now())
                 } else {
                     NOT_READY_INTERVAL
                 })
@@ -225,15 +225,18 @@ impl SeatReadiness {
 /// The time from now to just past the start of the slot after the one
 /// `recorded_at` falls in, so a ready MG runs once in every slot and misses
 /// none, even when recording crossed a boundary.
-fn until_slot_after(recorded_at: SystemTime) -> Duration {
+fn until_slot_after(recorded_at: SystemTime, now: SystemTime) -> Duration {
     let recorded = recorded_at
         .duration_since(UNIX_EPOCH)
         .expect("system clock is after the Unix epoch")
         .as_secs();
     let next =
         UNIX_EPOCH + Duration::from_secs((recorded / UPTIME_SLOT_SECS + 1) * UPTIME_SLOT_SECS + 1);
-    next.duration_since(SystemTime::now())
+    // A clock set back while recording must not stretch the wait past one
+    // slot, which would leave the last verdict standing unchecked.
+    next.duration_since(now)
         .unwrap_or(Duration::ZERO)
+        .min(Duration::from_secs(UPTIME_SLOT_SECS + 1))
 }
 
 /// Check Bitcoin on a blocking thread with a client built for this attempt.
@@ -309,22 +312,29 @@ mod tests {
 
     use super::*;
 
-    /// A record that crossed into the next slot before the wait was computed
-    /// still waits only for that next slot, not the one after it.
+    /// The wait ends just past the start of the slot after the recorded one:
+    /// at once when recording crossed into it, and never more than one slot
+    /// when the clock was set back meanwhile.
     #[test]
     fn the_wait_ends_in_the_slot_after_the_recorded_one() {
         let slot = Duration::from_secs(UPTIME_SLOT_SECS);
-        let now = SystemTime::now();
-        let start_of_slot = UNIX_EPOCH
-            + Duration::from_secs(
-                now.duration_since(UNIX_EPOCH).unwrap().as_secs() / UPTIME_SLOT_SECS
-                    * UPTIME_SLOT_SECS,
-            );
-        let late = until_slot_after(start_of_slot - slot);
-        assert!(late <= Duration::from_secs(1), "{late:?}");
-        let wait = until_slot_after(start_of_slot);
-        assert!(wait <= slot + Duration::from_secs(1), "{wait:?}");
-        assert!(wait > Duration::ZERO, "{wait:?}");
+        let second = Duration::from_secs(1);
+        let start = UNIX_EPOCH + slot * 3_000_000;
+        let recorded = start + Duration::from_secs(100);
+        assert_eq!(
+            until_slot_after(recorded, recorded),
+            slot - Duration::from_secs(100) + second
+        );
+        assert_eq!(
+            until_slot_after(recorded, start + slot + second * 5),
+            Duration::ZERO
+        );
+        assert_eq!(
+            until_slot_after(recorded, start + slot - second * 2),
+            second * 3
+        );
+        let set_back_an_hour = recorded - Duration::from_secs(3600);
+        assert_eq!(until_slot_after(recorded, set_back_an_hour), slot + second);
     }
 
     /// Block 1 of Mutinynet, which fedimintd classifies as Signet.

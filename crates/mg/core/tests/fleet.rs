@@ -1030,6 +1030,40 @@ async fn uptime_survives_restart_and_counts_unrecorded_slots_down() {
     fleet.shutdown().await;
 }
 
+/// Recording a slot while other writes commit never fails: a failed record
+/// would read as zero uptime and close a healthy MG.
+#[tokio::test]
+async fn uptime_records_alongside_concurrent_writes() {
+    let temp = TempDir::new().unwrap();
+    let fleet = Arc::new(
+        open_fleet(config(&temp, 2, 30_760).await, Arc::new(NoWallet))
+            .await
+            .unwrap(),
+    );
+    let start = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_800_000_000);
+    let mut tasks = Vec::new();
+    for n in 0..50u64 {
+        let recorder = fleet.clone();
+        tasks.push(tokio::spawn(async move {
+            recorder
+                .record_uptime_slot(
+                    start + std::time::Duration::from_secs(n * UPTIME_SLOT_SECS),
+                    true,
+                )
+                .await
+                .map(|_| ())
+        }));
+        let writer = fleet.clone();
+        tasks.push(tokio::spawn(async move {
+            writer.set_offered_price(Some(Msats(n))).await
+        }));
+    }
+    for task in tasks {
+        task.await.unwrap().unwrap();
+    }
+    fleet.shutdown().await;
+}
+
 /// A failed readiness check withdraws discovery and quoting, and refuses
 /// quotes already issued instead of admitting a seat this MG may not serve.
 #[tokio::test]

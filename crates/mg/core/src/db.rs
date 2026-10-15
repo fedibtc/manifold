@@ -749,7 +749,7 @@ impl Db {
         slot: u64,
         up: bool,
     ) -> Result<Option<Uptime>, DbError> {
-        let mut tx = self.pool.begin().await?;
+        let mut tx = self.begin_write().await?;
         let previous = uptime_row(&mut tx).await?;
         let next = Uptime::record(previous, slot, up);
         if let Some(next) = next
