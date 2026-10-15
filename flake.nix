@@ -1772,6 +1772,9 @@
             pkgs.pnpm_9.configHook
           ];
           pnpmDeps = operatorUiDeps;
+          # The MG dashboard compares this with the daemon's reported version;
+          # the workspace manifest is outside this derivation's source.
+          env.MG_OPERATOR_UI_VERSION = pushGatewayVersion;
           # Root package.json: "build": "pnpm -r --filter \"./apps/*\" build".
           # `vite build` sets DEV=false, which is what switches the MSW mocks
           # off, so no mock-related configuration is needed here.
