@@ -10621,8 +10621,24 @@ async fn a_decommissioned_pool_seat_leaves_before_dkg_and_a_new_seat_forms() {
         creation.stage,
         CreationStage::NeedsSeats {
             count: 1,
-            reauthorization: Some(SelectionReauthorizationReason::SeatUnavailable),
+            reauthorization: Some(SelectionReauthorizationReason::SeatEnded),
         },
+    );
+    // The ended seat stays listed, and a new preview cannot pick its MG.
+    assert_eq!(creation.ended_seats.len(), 1);
+    assert_eq!(creation.ended_seats[0].locator, locator(ended));
+    assert_eq!(creation.ended_seats[0].mg_id, test_mg_id(ended));
+    let bought = client
+        .inner
+        .store
+        .bought_seats(TestIdentity::fa_id())
+        .await
+        .unwrap();
+    assert!(bought.mg_ids.contains(&test_mg_id(ended)));
+    assert!(
+        bought
+            .service_pubkeys
+            .contains_key(&locator(ended).service_pubkey)
     );
 
     let spare = usize::from(MIN_FEDERATION_SIZE);
@@ -10744,6 +10760,9 @@ async fn a_decommissioned_pool_seat_leaves_after_codes_while_no_seat_started_dkg
     client.drive_all_for_test(options()).await.unwrap();
     bought_without(&client.status(), &[1]);
     assert!(state.start_callbacks.lock().unwrap().is_empty());
+    let ended = creation(&client.status()).ended_seats.clone();
+    assert_eq!(ended.len(), 1);
+    assert_eq!(ended[0].locator, locator(1));
 }
 
 #[test]

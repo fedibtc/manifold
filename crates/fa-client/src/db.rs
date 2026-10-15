@@ -256,6 +256,19 @@ struct StoredCreation {
     /// The last purchase. It runs while some slot holds no accepted seat,
     /// and its facts stay until the next purchase replaces them.
     purchase: Option<StoredPurchase>,
+    /// Bought seats that their MG ended before DKG, oldest first.
+    #[serde(default)]
+    ended_seats: Vec<StoredEndedSeat>,
+}
+
+/// A bought seat that its MG ended before DKG. It keeps the facts that
+/// exclude its MG from later previews.
+#[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
+struct StoredEndedSeat {
+    locator: Locator,
+    mg_id: PublicKey,
+    holder: Option<PublicKey>,
+    seat_id: SeatId,
 }
 
 /// What one purchase of the creation's empty slots shares.
@@ -429,6 +442,8 @@ pub(crate) struct CreationRecovery {
     pub(crate) dkg_completion_callback: Option<DkgCompletionCallback>,
     /// The filled slots, in index order.
     pub(crate) slots: Vec<SlotRecovery>,
+    /// Bought seats that their MG ended before DKG, oldest first.
+    pub(crate) ended_seats: Vec<crate::EndedSeat>,
     /// Formation progress this run observed.
     pub(crate) formation_phase: FormationPhase,
     pub(crate) freshness: FormationFreshness,
@@ -544,6 +559,7 @@ impl CreationRecovery {
             federation_size: self.federation_size,
             fedimintd_dkg_version: self.fedimintd_dkg_version(),
             slots: self.slots.iter().map(SlotRecovery::progress).collect(),
+            ended_seats: self.ended_seats.clone(),
             stage,
             freshness: self.freshness,
             last_error: self.last_error,
@@ -1173,19 +1189,28 @@ impl FaStore {
             .await?
             .ok_or(FaError::NoActiveFormation)?;
         let seats = creation.accepted().collect::<Vec<_>>();
+        // An ended seat's MG and holder are excluded like a bought one.
+        let taken = seats
+            .iter()
+            .map(|(_, seat)| (seat.slot.mg_id, &seat.slot.locator, seat.slot.holder))
+            .chain(
+                creation
+                    .stored
+                    .ended_seats
+                    .iter()
+                    .map(|seat| (seat.mg_id, &seat.locator, seat.holder)),
+            )
+            .collect::<Vec<_>>();
         Ok(crate::selection::BoughtSeats {
             fedimintd_dkg_version: seats
                 .first()
                 .map(|(_, seat)| seat.fedimintd_version.dkg_version()),
-            mg_ids: seats.iter().map(|(_, seat)| seat.slot.mg_id).collect(),
-            service_pubkeys: seats
+            mg_ids: taken.iter().map(|(mg_id, _, _)| *mg_id).collect(),
+            service_pubkeys: taken
                 .iter()
-                .map(|(_, seat)| (seat.slot.locator.service_pubkey, seat.slot.mg_id))
+                .map(|(mg_id, locator, _)| (locator.service_pubkey, *mg_id))
                 .collect(),
-            holders: seats
-                .iter()
-                .filter_map(|(_, seat)| seat.slot.holder)
-                .collect(),
+            holders: taken.iter().filter_map(|(_, _, holder)| *holder).collect(),
         })
     }
 
@@ -1304,6 +1329,7 @@ impl FaStore {
                         formation_meta_target: None,
                         reauthorization: None,
                         purchase: None,
+                        ended_seats: Vec::new(),
                     },
                     slots: Vec::new(),
                 }
@@ -1654,8 +1680,8 @@ impl FaStore {
     /// Empty slots, each still in its expected state, and keep the first
     /// reason a slot left. A slot without a seat may go only when no
     /// payment of its bound quote is outstanding. An accepted seat may go
-    /// only before DKG started, and then every cached code goes too: the
-    /// code that carries the federation name may change.
+    /// only before DKG started. It moves to the ended seats, and every cached
+    /// code goes too: the code that carries the federation name may change.
     pub(crate) async fn empty_slots(
         &self,
         formation_id: &FormationId,
@@ -1679,12 +1705,22 @@ impl FaStore {
                             })?;
                         let mut seat_left = false;
                         for (index, expected) in emptied {
-                            if creation.slot_mut(*index)?.state != *expected {
+                            let slot = creation.slot_mut(*index)?.clone();
+                            if slot.state != *expected {
                                 return Err(FaError::Storage(format!(
                                     "FA slot {index} changed before it was emptied"
                                 )));
                             }
-                            seat_left |= matches!(expected, SlotState::Accepted { .. });
+                            if let SlotState::Accepted { seat_id, .. } = slot.state {
+                                // The MG ended a bought seat. It stays listed.
+                                seat_left = true;
+                                creation.stored.ended_seats.push(StoredEndedSeat {
+                                    locator: slot.locator,
+                                    mg_id: slot.mg_id,
+                                    holder: slot.holder,
+                                    seat_id,
+                                });
+                            }
                         }
                         if seat_left {
                             if creation.stored.invite_code.is_some() {
@@ -1812,6 +1848,15 @@ impl Creation {
             formation_meta_target: stored.formation_meta_target,
             dkg_completion_callback: stored.dkg_completion_callback,
             slots,
+            ended_seats: stored
+                .ended_seats
+                .into_iter()
+                .map(|seat| crate::EndedSeat {
+                    mg_id: seat.mg_id,
+                    locator: seat.locator,
+                    seat_id: seat.seat_id,
+                })
+                .collect(),
             formation_phase,
             freshness: FormationFreshness::Unsynced,
             last_error: None,
@@ -1938,6 +1983,18 @@ fn validate_creation(creation: &Creation) -> FaResult<()> {
                 }
                 dkg_versions.push(fedimintd_version.dkg_version());
             }
+        }
+    }
+    for seat in &stored.ended_seats {
+        if !mg_ids.insert(seat.mg_id)
+            || seat.holder.is_some_and(|holder| !holders.insert(holder))
+            || service_pubkeys
+                .insert(seat.locator.service_pubkey, &size)
+                .is_some()
+        {
+            return Err(FaError::Storage(
+                "an FA slot reuses the MG of an ended seat".to_owned(),
+            ));
         }
     }
     if creation.pending().next().is_some() && stored.purchase.is_none() {

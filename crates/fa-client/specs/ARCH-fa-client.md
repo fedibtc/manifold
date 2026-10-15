@@ -88,7 +88,8 @@ purchase returns typed `SeatUnavailable` reauthorization before outputs.
 A reauthorization reason is `SeatUnavailable` for every problem that a new
 selection fixes. The payer reasons (`SelectedPayerUnavailable`,
 `SelectedPayerInsufficientFunds`, `PaymentFederationRequired`) stay separate,
-because the user must fix the payer instead.
+because the user must fix the payer instead. `SeatEnded` also stays separate:
+an MG ended a seat the FA paid for.
 
 While no slot is bound, each run checks the whole purchase once and pays
 nothing. It asks every selected MG for live availability at the
@@ -509,11 +510,14 @@ requiring every MG's invite to identify the same federation before
 persisting the deliverable). Every ordinary resume repeats the idempotent
 `StartDkg` with the same durable guardian codes, so a crashed child starts a
 fresh ceremony while an existing `DkgInProcess` ceremony keeps being polled.
-A pool seat whose MG reports it decommissioned or lost leaves its slot, with
-the other cached codes, while no seat can have started DKG. That holds while
-a seat still lacks its cached code, because `StartDkg` follows only after
-every code is cached, or while every other seat reports `New`. The creation
-then needs a new seat.
+A pool seat whose MG reports it decommissioned leaves its slot, with the
+other cached codes, while no seat can have started DKG. That holds while a
+seat still lacks its cached code, because `StartDkg` follows only after every
+code is cached, or while every other seat reports `New`. The FA paid for that
+seat, so it is never dropped silently: the creation keeps it in
+`ended_seats`, logs a warning, and needs a new seat with the `SeatEnded`
+reason. Later previews exclude the ended seat's MG, service key, and holder.
+The list ends with the creation when the federation forms.
 Resume never selects the destructive `RestartDkg`: replacing a stuck ceremony
 is an explicit, user-authorized action, and ordinary resume must not infer
 that intent. Wire types,

@@ -1122,9 +1122,9 @@ where
                     .no_seat_started_dkg(sessions, &ended, fa_id, timeouts)
                     .await)
         {
-            // The ended seats leave their slots, and the creation buys new
-            // ones. Every cached code goes too.
-            let reason = SelectionReauthorizationReason::SeatUnavailable;
+            // The ended seats leave their slots and stay listed as ended, and
+            // the creation buys new ones. Every cached code goes too.
+            let reason = SelectionReauthorizationReason::SeatEnded;
             let emptied = recovery
                 .slots
                 .iter()
@@ -1138,10 +1138,27 @@ where
                 .store
                 .empty_slots(formation_id, emptied, reason)
                 .await?;
-            recovery.slots.retain(|slot| {
-                slot.seat_id()
-                    .is_some_and(|seat_id| !ended.contains(seat_id))
-            });
+            let (ended_slots, kept) = std::mem::take(&mut recovery.slots)
+                .into_iter()
+                .partition::<Vec<_>, _>(|slot| {
+                    slot.seat_id()
+                        .is_some_and(|seat_id| ended.contains(seat_id))
+                });
+            for slot in ended_slots {
+                let seat_id = slot.seat_id().cloned().expect("an ended slot holds a seat");
+                tracing::warn!(
+                    formation_id = %formation_id.0,
+                    mg_id = %slot.mg_id,
+                    seat_id = %seat_id,
+                    "an MG ended a bought seat before DKG"
+                );
+                recovery.ended_seats.push(crate::EndedSeat {
+                    mg_id: slot.mg_id,
+                    locator: slot.locator,
+                    seat_id,
+                });
+            }
+            recovery.slots = kept;
             for slot in &mut recovery.slots {
                 slot.guardian_code = None;
                 slot.phase = SeatPhase::Created;
@@ -2598,8 +2615,7 @@ fn ended_seat(error: &FaError) -> bool {
     matches!(
         error,
         FaError::Mg(MgFailure {
-            cause: MgCause::WrongState(ServiceStatus::DataLoss | ServiceStatus::Decommissioned)
-                | MgCause::TerminalStatus(_),
+            cause: MgCause::WrongState(ServiceStatus::Decommissioned),
             ..
         })
     )

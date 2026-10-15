@@ -11,7 +11,8 @@ use super::*;
 
 const CREATING_STATE: &str = concat!(
     r#"{"creating":{"formation_id":"formation-1","federation_name":"Fed","federation_size":7,"#,
-    r#""fedimintd_dkg_version":{"major":0,"minor":6,"vendor":"fedi"},"slots":[],"stage":"buying","#,
+    r#""fedimintd_dkg_version":{"major":0,"minor":6,"vendor":"fedi"},"slots":[],"ended_seats":[],"#,
+    r#""stage":"buying","#,
     r#""freshness":"unsynced","last_error":null}}"#
 );
 fn capture(operation: impl FnOnce(&mut CliOutput<'_>) -> anyhow::Result<()>) -> (String, String) {
@@ -51,7 +52,7 @@ fn creating_state_json_has_exact_schema_on_stdout() {
     assert_eq!(
         stdout,
         concat!(
-            r#"{"creating":{"formation_id":"formation-1","federation_name":"Fed","federation_size":7,"fedimintd_dkg_version":{"major":0,"minor":6,"vendor":"fedi"},"slots":[{"index":2,"fman_id":"aa4fc8665f5696e33db7e1a572e3b0f5b3d615837b0f362dcb1c8068b098c7b4","locator":{"version":1,"endpoint_addr":{"id":"8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c","addrs":[]},"service_pubkey":"4d4b6cd1361032ca9bd2aeb9d900aa4d45d9ead80ac9423374c451a7254d0766"},"seat_id":null,"guardian_code":null,"phase":"quote_ready","freshness":"unsynced"}],"stage":"buying","freshness":"unsynced","last_error":null}}"#,
+            r#"{"creating":{"formation_id":"formation-1","federation_name":"Fed","federation_size":7,"fedimintd_dkg_version":{"major":0,"minor":6,"vendor":"fedi"},"slots":[{"index":2,"fman_id":"aa4fc8665f5696e33db7e1a572e3b0f5b3d615837b0f362dcb1c8068b098c7b4","locator":{"version":1,"endpoint_addr":{"id":"8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c","addrs":[]},"service_pubkey":"4d4b6cd1361032ca9bd2aeb9d900aa4d45d9ead80ac9423374c451a7254d0766"},"seat_id":null,"guardian_code":null,"phase":"quote_ready","freshness":"unsynced"}],"ended_seats":[],"stage":"buying","freshness":"unsynced","last_error":null}}"#,
             "\n"
         )
     );

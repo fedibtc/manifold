@@ -289,6 +289,7 @@ impl FaStore {
                 formation_meta_target: legacy.formation_meta_target,
                 reauthorization,
                 purchase: None,
+                ended_seats: Vec::new(),
             },
             slots,
         };
