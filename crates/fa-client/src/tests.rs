@@ -1220,7 +1220,18 @@ impl ManifoldGuardianService for TestMg {
             } else {
                 ServiceStatus::Running
             },
-            detail: StatusDetail::None,
+            detail: if self.state.report_status_new.load(Ordering::SeqCst) {
+                StatusDetail::None
+            } else {
+                StatusDetail::Federation(FederationStatusInfo {
+                    valid_until_date: None,
+                    invite_code: Some(test_mg_invite(&self.state, self.index)),
+                    peer_connections: Vec::new(),
+                    in_grace: false,
+                    grace_deadline: None,
+                    stats: None,
+                })
+            },
             seat_health: Some(SeatHealth::Healthy),
         })
     }
@@ -1231,13 +1242,7 @@ impl ManifoldGuardianService for TestMg {
     ) -> FmResult<GetInviteCodeResponse> {
         self.state.invite_calls.fetch_add(1, Ordering::SeqCst);
         Ok(GetInviteCodeResponse {
-            invite_code: if self.state.disagreeing_invite.load(Ordering::SeqCst)
-                && self.index + 1 == usize::from(MIN_FEDERATION_SIZE)
-            {
-                test_invite_for_federation(self.index, 1)
-            } else {
-                test_invite(self.index)
-            },
+            invite_code: test_mg_invite(&self.state, self.index),
         })
     }
 
@@ -2444,6 +2449,17 @@ where
             };
             self.drive_formation(formation, fa_id, options).await?;
         }
+    }
+}
+
+/// The invite test MG `index` reports. One MG can disagree.
+fn test_mg_invite(state: &MgState, index: usize) -> InviteCode {
+    if state.disagreeing_invite.load(Ordering::SeqCst)
+        && index + 1 == usize::from(MIN_FEDERATION_SIZE)
+    {
+        test_invite_for_federation(index, 1)
+    } else {
+        test_invite(index)
     }
 }
 

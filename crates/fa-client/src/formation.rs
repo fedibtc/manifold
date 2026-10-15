@@ -559,14 +559,16 @@ where
             .all(|status| status.is_ok_and(|status| status.status == ServiceStatus::New))
     }
 
+    /// Poll every seat until each runs healthy, and return the invite each
+    /// running seat reports, in seat order.
     async fn poll_until_running(
         &self,
         sessions: &[SeatSession<MgClient<F::Client>>],
         fa_id: FaId,
         timeouts: Timeouts,
-    ) -> FaResult<()> {
+    ) -> FaResult<Vec<InviteCode>> {
         loop {
-            let mut running = 0;
+            let mut invites = (0..sessions.len()).map(|_| None).collect::<Vec<_>>();
             let mut pending_status = FuturesUnordered::new();
             for (position, session) in sessions.iter().enumerate() {
                 pending_status.push(async move {
@@ -576,22 +578,54 @@ where
             }
             while let Some(result) = pending_status.next().await {
                 let (position, status) = result?;
-                service_seat_phase(&status.status).map_err(|cause| {
+                let failure = |cause| {
                     sessions[position]
                         .client
                         .failure(MgOperation::GetStatus, cause)
-                })?;
+                };
+                service_seat_phase(&status.status).map_err(failure)?;
                 if status.status == ServiceStatus::Running
                     && status.seat_health == Some(SeatHealth::Healthy)
                 {
-                    running += 1;
+                    let StatusDetail::Federation(FederationStatusInfo {
+                        invite_code: Some(invite),
+                        ..
+                    }) = status.detail
+                    else {
+                        return Err(failure(MgCause::InvalidResponse).into());
+                    };
+                    invites[position] = Some(invite);
                 }
             }
-            if running == sessions.len() {
-                return Ok(());
+            if let Some(invites) = invites.into_iter().collect::<Option<Vec<_>>>() {
+                return Ok(invites);
             }
             sleep(timeouts.poll).await;
         }
+    }
+
+    /// The invite every seat agrees on: all name one federation.
+    fn agreed_invite(
+        sessions: &[SeatSession<MgClient<F::Client>>],
+        invites: Vec<InviteCode>,
+    ) -> FaResult<InviteCode> {
+        let mut expected = None;
+        for (session, invite) in sessions.iter().zip(&invites) {
+            let federation_id = invite_federation_id(invite).map_err(|_| {
+                session
+                    .client
+                    .failure(MgOperation::GetStatus, MgCause::InvalidResponse)
+            })?;
+            if *expected.get_or_insert(federation_id) != federation_id {
+                return Err(FaError::InvalidManifoldGuardians(
+                    "selected Manifold Guardians reported different federation identities"
+                        .to_owned(),
+                ));
+            }
+        }
+        invites.into_iter().next().ok_or_else(|| {
+            FaError::InvalidManifoldGuardians("no Manifold Guardians selected".to_owned())
+        })
     }
 
     /// Form the federation from the full slots. Each stage is skipped when
@@ -610,8 +644,8 @@ where
         {
             return Ok(());
         }
-        self.poll_until_running(&sessions, fa_id, timeouts).await?;
-        let invite = self.fetch_agreed_invite(&sessions, fa_id, timeouts).await?;
+        let invites = self.poll_until_running(&sessions, fa_id, timeouts).await?;
+        let invite = Self::agreed_invite(&sessions, invites)?;
         match &formation.invite_code {
             Some(stored) => {
                 if invite_federation_id(stored)? != invite_federation_id(&invite)? {
@@ -1271,68 +1305,6 @@ where
             }
         }
         first
-    }
-
-    async fn fetch_agreed_invite(
-        &self,
-        sessions: &[SeatSession<MgClient<F::Client>>],
-        fa_id: FaId,
-        timeouts: Timeouts,
-    ) -> FaResult<InviteCode> {
-        if sessions.is_empty() {
-            return Err(FaError::InvalidManifoldGuardians(
-                "no Manifold Guardians selected".to_owned(),
-            ));
-        }
-        let mut pending = FuturesUnordered::new();
-        for (position, session) in sessions.iter().enumerate() {
-            pending.push(async move {
-                let request = GetInviteCodeRequest {
-                    ts: Timestamp(now_secs()?),
-                    fa_id,
-                    seat_id: session.seat_id.clone(),
-                };
-                let request = self.sign(&request)?;
-                let invite = session
-                    .client
-                    .call(timeouts, MgOperation::GetInviteCode, |client| {
-                        client.get_invite_code(request)
-                    })
-                    .await?
-                    .invite_code;
-                let federation_id = invite_federation_id(&invite).map_err(|_| {
-                    session
-                        .client
-                        .failure(MgOperation::GetInviteCode, MgCause::InvalidResponse)
-                })?;
-                Ok::<_, FaError>((position, invite, federation_id))
-            });
-        }
-        let mut invites = (0..sessions.len())
-            .map(|_| None)
-            .collect::<Vec<Option<(InviteCode, FedimintFederationId)>>>();
-        while let Some(result) = pending.next().await {
-            let (position, invite, federation_id) = result?;
-            invites[position] = Some((invite, federation_id));
-        }
-        let mut invites = invites.into_iter().enumerate().map(|(position, invite)| {
-            invite.ok_or_else(|| {
-                FaError::Storage(format!("missing invite response for seat {position}"))
-            })
-        });
-        let (deliverable, expected_id) = invites
-            .next()
-            .ok_or_else(|| FaError::Storage("formed FA record contains no seats".to_owned()))??;
-        for invite in invites {
-            let (_, federation_id) = invite?;
-            if federation_id != expected_id {
-                return Err(FaError::InvalidManifoldGuardians(
-                    "selected Manifold Guardians reported different federation identities"
-                        .to_owned(),
-                ));
-            }
-        }
-        Ok(deliverable)
     }
 
     /// The running formation: a creation whose pool is full.

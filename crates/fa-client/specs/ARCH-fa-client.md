@@ -311,7 +311,8 @@ federation until DKG starts. The engine keeps one record per concern:
 - **Formation** — runs when every slot is accepted, over the slots in index
   order. The first slot's guardian code carries the federation name.
   It runs DKG and seat-binding publication, and keeps its invite and metadata
-  target in the formation row. MGs refuse the guardian code request once
+  target in the formation row. Each MG reports the invite in its `GetStatus`
+  reply once its seat runs, and every invite must name the same federation. MGs refuse the guardian code request once
   DKG starts, so each accepted slot caches its code for a DKG restart until
   MGs return them in every state. A seat that leaves the pool clears every
   code. Confirming the formation metadata ends the
