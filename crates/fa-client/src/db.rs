@@ -1769,10 +1769,9 @@ impl FaStore {
             .map_err(map_formation_tx_error)
     }
 
-    /// Remove pool seats whose MG ended them before DKG started. DKG starts
-    /// only after every seat cached its guardian code, so a seat without a
-    /// cached code proves that no seat received `StartDkg`. The remaining
-    /// cached codes are dropped too: a new named seat needs a new code.
+    /// Remove pool seats whose MG ended them before DKG started. The caller
+    /// proved that no seat started DKG. The remaining cached codes are
+    /// dropped too: a new named seat needs a new code.
     pub(crate) async fn drop_ended_pool_seats(
         &self,
         formation_id: &FormationId,
@@ -1786,11 +1785,6 @@ impl FaStore {
                     let formation_id = formation_id.clone();
                     Box::pin(async move {
                         let (mut creation, seats) = active_formation(dbtx, &formation_id).await?;
-                        if seats.iter().all(|(_, code)| code.is_some()) {
-                            return Err(FaError::Storage(
-                                "cannot drop FA pool seats after DKG may have started".to_owned(),
-                            ));
-                        }
                         for (seat, _) in &seats {
                             let seat_id = seat.seat_id.to_string();
                             dbtx.remove_entry(&GuardianCodeKey {

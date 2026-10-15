@@ -1357,7 +1357,7 @@ where
             let (position, code, newly_generated) = match result {
                 Ok(value) => value,
                 Err((position, error)) => {
-                    if dkg_not_started && ended_seat(&error) {
+                    if ended_seat(&error) {
                         ended.push(sessions[position].seat_id.clone());
                     }
                     if first_error.is_some() {
@@ -1384,7 +1384,9 @@ where
             }
             guardian_codes[position] = Some(code);
         }
-        if !ended.is_empty() {
+        if !ended.is_empty()
+            && (dkg_not_started || self.no_seat_started_dkg(sessions, &ended, fa_id, run).await)
+        {
             // The ended seats leave the pool, and the creation buys new ones.
             self.inner
                 .store
@@ -1889,6 +1891,40 @@ where
                 Err(error) => return Err(error),
             }
         }
+    }
+
+    /// Whether every seat except `ended` reports that it has not started
+    /// DKG. Any error counts as a possible start.
+    async fn no_seat_started_dkg(
+        &self,
+        sessions: &[SeatSession<MgClient<F::Client>>],
+        ended: &[SeatId],
+        fa_id: FaId,
+        run: DriverRun,
+    ) -> bool {
+        let checks = sessions
+            .iter()
+            .filter(|session| !ended.contains(&session.seat_id))
+            .map(|session| async move {
+                let request = GetStatusRequest {
+                    ts: Timestamp(now_secs()?),
+                    fa_id,
+                    seat_id: session.seat_id.clone(),
+                };
+                let request = run
+                    .construct("signing GetStatus request", || self.sign(&request))
+                    .await?;
+                session
+                    .client
+                    .call(run, MgOperation::GetStatus, |client| {
+                        client.get_status(request)
+                    })
+                    .await
+            });
+        futures::future::join_all(checks)
+            .await
+            .into_iter()
+            .all(|status| status.is_ok_and(|status| status.status == ServiceStatus::New))
     }
 
     async fn poll_until_running(

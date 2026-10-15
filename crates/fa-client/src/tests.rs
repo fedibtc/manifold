@@ -611,6 +611,8 @@ struct MgState {
     named_dkg_code_indices: Mutex<Vec<usize>>,
     unavailable_dkg_code_indices: Mutex<HashSet<usize>>,
     decommissioned_indices: Mutex<HashSet<usize>>,
+    /// Seats report that DKG has not started.
+    report_status_new: AtomicBool,
     /// Codes carry the federation name the request names, as real MGs do.
     name_sensitive_codes: AtomicBool,
     restart_calls: AtomicUsize,
@@ -1211,7 +1213,11 @@ impl ManifoldGuardianService for TestMg {
     ) -> FmResult<GetStatusResponse> {
         self.state.status_calls.fetch_add(1, Ordering::SeqCst);
         Ok(GetStatusResponse {
-            status: ServiceStatus::Running,
+            status: if self.state.report_status_new.load(Ordering::SeqCst) {
+                ServiceStatus::New
+            } else {
+                ServiceStatus::Running
+            },
             detail: StatusDetail::None,
             seat_health: Some(SeatHealth::Healthy),
         })
@@ -11049,6 +11055,53 @@ async fn a_decommissioned_pool_seat_stays_once_dkg_may_have_started() {
         client.inner.store.pool_seats().await.len(),
         usize::from(MIN_FEDERATION_SIZE)
     );
+}
+
+#[tokio::test]
+async fn a_decommissioned_pool_seat_leaves_after_codes_while_no_seat_started_dkg() {
+    let state = Arc::new(MgState::default());
+    let (payments, _) = TestPayments::new();
+    let client = open_client(
+        MemDatabase::new().into_database(),
+        payments,
+        state.clone(),
+        MgConfig::given_away(),
+    )
+    .await;
+    client
+        .request_seats_at(&intent(), locators(), None)
+        .await
+        .unwrap();
+    client.drive_purchase_for_test(options()).await.unwrap();
+    // Every cached code means a crashed run may have sent StartDkg.
+    let formation = client
+        .inner
+        .store
+        .load_formation(TestIdentity::fa_id())
+        .await
+        .unwrap()
+        .unwrap();
+    for seat in &formation.seats {
+        let mg = (0..usize::from(MIN_FEDERATION_SIZE))
+            .find(|index| seat.progress.locator == locator(*index))
+            .unwrap();
+        client
+            .inner
+            .store
+            .record_guardian_code(
+                &formation.snapshot.formation_id,
+                seat.progress.index,
+                GuardianCode(format!("guardiancode{mg}")),
+            )
+            .await
+            .unwrap();
+    }
+    state.decommissioned_indices.lock().unwrap().insert(1);
+    state.report_status_new.store(true, Ordering::SeqCst);
+
+    client.drive_all_for_test(options()).await.unwrap();
+    bought_without(&client.status(), &[1]);
+    assert!(state.start_callbacks.lock().unwrap().is_empty());
 }
 
 #[test]
