@@ -243,24 +243,15 @@ pub enum SeatPhase {
     DkgUnderway,
     /// The seat reports a running federation.
     Running,
-}
-
-/// A bought seat that its MG ended before DKG. The FA paid for it, and it
-/// does not join the federation.
-#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
-pub struct EndedSeat {
-    /// Badge-vouched identity of the MG that ended the seat.
-    pub mg_id: PublicKey,
-    /// Protocol-owned locator of the MG.
-    pub locator: Locator,
-    /// The seat the MG ended.
-    pub seat_id: SeatId,
+    /// The MG ended this bought seat before DKG. The FA paid for it, it does
+    /// not join the federation, and another slot replaces it.
+    Ended,
 }
 
 /// Latest progress for one selected MG seat.
 #[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
 pub struct SeatProgress {
-    /// Stable selected-seat index.
+    /// Stable slot id. Ids order the federation's guardians.
     pub index: u16,
     /// Badge-vouched identity of the currently assigned MG. Presentation
     /// material only: the locator remains the protocol-owned dialing and
@@ -374,13 +365,11 @@ pub struct CreationSnapshot {
     /// Major/minor/vendor identity every seat is bought for, once a purchase
     /// started.
     pub fedimintd_dkg_version: Option<FedimintdDkgVersion>,
-    /// The guardian slots that hold a picked MG, in index order. An index
-    /// missing from the list is an empty slot. A slot keeps its seat from
-    /// acceptance until the federation forms.
+    /// The guardian slots, in id order. A slot keeps its seat from
+    /// acceptance until the federation forms. An ended slot (phase
+    /// [`SeatPhase::Ended`]) reports a paid seat that its MG ended before
+    /// DKG.
     pub slots: Vec<SeatProgress>,
-    /// Bought seats that their MG ended before DKG, oldest first. Each one
-    /// left its slot, and its MG is excluded from later previews.
-    pub ended_seats: Vec<EndedSeat>,
     /// What the creation does now.
     pub stage: CreationStage,
     /// Whether this run reconciled the state with the MGs.

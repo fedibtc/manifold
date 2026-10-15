@@ -4555,7 +4555,7 @@ fn accepted_seats(status: &FaStatus) -> Vec<SeatProgress> {
         .creation
         .iter()
         .flat_map(|creation| &creation.slots)
-        .filter(|slot| slot.seat_id.is_some())
+        .filter(|slot| slot.seat_id.is_some() && slot.phase != SeatPhase::Ended)
         .cloned()
         .collect()
 }
@@ -7085,10 +7085,16 @@ async fn a_partial_pool_buys_only_its_gap_and_refuses_cancel() {
         .request_seats_at(&intent(), vec![locator(dropped)], None)
         .await
         .unwrap();
-    assert_eq!(
-        pending_indices(&client.status()),
-        [u16::try_from(dropped).unwrap()]
-    );
+    // The new slot takes a new id.
+    let status = client.status();
+    let pending = purchase(&status)
+        .slots
+        .iter()
+        .filter(|slot| slot.seat_id.is_none())
+        .collect::<Vec<_>>();
+    assert_eq!(pending.len(), 1);
+    assert_eq!(pending[0].locator, locator(dropped));
+    assert_eq!(pending[0].index, MIN_FEDERATION_SIZE);
 
     let error = client.cancel_creation().await.unwrap_err();
 
@@ -10624,10 +10630,16 @@ async fn a_decommissioned_pool_seat_leaves_before_dkg_and_a_new_seat_forms() {
             reauthorization: Some(SelectionReauthorizationReason::SeatEnded),
         },
     );
-    // The ended seat stays listed, and a new preview cannot pick its MG.
-    assert_eq!(creation.ended_seats.len(), 1);
-    assert_eq!(creation.ended_seats[0].locator, locator(ended));
-    assert_eq!(creation.ended_seats[0].mg_id, test_mg_id(ended));
+    // The ended seat keeps its slot, and a new preview cannot pick its MG.
+    let ended_slots = creation
+        .slots
+        .iter()
+        .filter(|slot| slot.phase == SeatPhase::Ended)
+        .collect::<Vec<_>>();
+    assert_eq!(ended_slots.len(), 1);
+    assert_eq!(ended_slots[0].locator, locator(ended));
+    assert_eq!(ended_slots[0].mg_id, test_mg_id(ended));
+    assert!(ended_slots[0].seat_id.is_some());
     let bought = client
         .inner
         .store
@@ -10760,7 +10772,12 @@ async fn a_decommissioned_pool_seat_leaves_after_codes_while_no_seat_started_dkg
     client.drive_all_for_test(options()).await.unwrap();
     bought_without(&client.status(), &[1]);
     assert!(state.start_callbacks.lock().unwrap().is_empty());
-    let ended = creation(&client.status()).ended_seats.clone();
+    let status = client.status();
+    let ended = creation(&status)
+        .slots
+        .iter()
+        .filter(|slot| slot.phase == SeatPhase::Ended)
+        .collect::<Vec<_>>();
     assert_eq!(ended.len(), 1);
     assert_eq!(ended[0].locator, locator(1));
 }

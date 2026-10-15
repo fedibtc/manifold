@@ -796,7 +796,7 @@ where
         let bound_quote = seat.state.bound_quote().cloned();
         let plan = match &seat.state {
             // The purchase buys only pending slots.
-            SlotState::Accepted { .. } => return Ok(()),
+            SlotState::Accepted { .. } | SlotState::Ended { .. } => return Ok(()),
             SlotState::Picked { plan } => plan.clone(),
             SlotState::Bound {
                 quote: signed_quote,
@@ -1122,8 +1122,8 @@ where
                     .no_seat_started_dkg(sessions, &ended, fa_id, timeouts)
                     .await)
         {
-            // The ended seats leave their slots and stay listed as ended, and
-            // the creation buys new ones. Every cached code goes too.
+            // The ended seats' slots stay as ended, and the creation buys new
+            // slots. Every cached code goes too.
             let reason = SelectionReauthorizationReason::SeatEnded;
             let emptied = recovery
                 .slots
@@ -1144,7 +1144,7 @@ where
                     slot.seat_id()
                         .is_some_and(|seat_id| ended.contains(seat_id))
                 });
-            for slot in ended_slots {
+            for mut slot in ended_slots {
                 let seat_id = slot.seat_id().cloned().expect("an ended slot holds a seat");
                 tracing::warn!(
                     formation_id = %formation_id.0,
@@ -1152,12 +1152,12 @@ where
                     seat_id = %seat_id,
                     "an MG ended a bought seat before DKG"
                 );
-                recovery.ended_seats.push(crate::EndedSeat {
-                    mg_id: slot.mg_id,
-                    locator: slot.locator,
-                    seat_id,
-                });
+                slot.state = SlotState::Ended { seat_id };
+                slot.guardian_code = None;
+                slot.phase = SeatPhase::Ended;
+                recovery.ended.push(slot);
             }
+            recovery.ended.sort_by_key(|slot| slot.index);
             recovery.slots = kept;
             for slot in &mut recovery.slots {
                 slot.guardian_code = None;
