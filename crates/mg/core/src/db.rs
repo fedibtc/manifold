@@ -458,39 +458,67 @@ impl Db {
         Ok(())
     }
 
-    /// Change admission capacity without allowing the configured ceiling to
-    /// move below seats that are still active.
-    pub(crate) async fn set_max_seats(&self, max_seats: u32) -> Result<(), DbError> {
+    /// Apply one change to the operator's seat limit and the readiness
+    /// verdict, in one write transaction.
+    ///
+    /// The operator's `max_seats` may not fall below the active seat count. A
+    /// change of either value draws a fresh offer epoch in the same
+    /// transaction, refusing every quote issued under the old value; an
+    /// unchanged value keeps the epoch. Returns whether a stored value changed.
+    pub(crate) async fn update_seats_config(
+        &self,
+        update: SeatsConfigUpdate,
+    ) -> Result<bool, DbError> {
         let mut tx = self.begin_write().await?;
-        let active: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM seats s LEFT JOIN decommissioned_seats d USING (quote_id) \
-             WHERE d.quote_id IS NULL",
-        )
-        .fetch_one(&mut *tx)
-        .await?;
-        let active = u32::try_from(active).unwrap_or(u32::MAX);
-        if max_seats < active {
-            return Err(DbError::SeatLimitBelowActive {
-                requested: max_seats,
-                active,
-            });
-        }
-        let existing: i64 = sqlx::query_scalar("SELECT max_seats FROM offer_state WHERE id = 1")
+        let (max_seats, ready): (i64, bool) =
+            sqlx::query_as("SELECT max_seats, ready_for_new_seats FROM offer_state WHERE id = 1")
+                .fetch_one(&mut *tx)
+                .await?;
+        let before = SeatsConfig {
+            max_seats: stored_max_seats(max_seats)?,
+            ready_for_new_seats: ready,
+        };
+        let after = SeatsConfig {
+            max_seats: update.max_seats.unwrap_or(before.max_seats),
+            ready_for_new_seats: update
+                .ready_for_new_seats
+                .unwrap_or(before.ready_for_new_seats),
+        };
+        if let Some(requested) = update.max_seats {
+            let active: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM seats s LEFT JOIN decommissioned_seats d USING (quote_id) \
+                 WHERE d.quote_id IS NULL",
+            )
             .fetch_one(&mut *tx)
             .await?;
-        if stored_max_seats(existing)? != max_seats {
-            sqlx::query(
-                "UPDATE offer_state SET max_seats = ?, updated_at_ms = ?, offer_epoch = ? \
-                 WHERE id = 1",
-            )
-            .bind(i64::from(max_seats))
-            .bind(now_ms())
-            .bind(fresh_offer_epoch().as_bytes().as_slice())
-            .execute(&mut *tx)
-            .await?;
+            let active = u32::try_from(active).unwrap_or(u32::MAX);
+            if requested < active {
+                return Err(DbError::SeatLimitBelowActive { requested, active });
+            }
+        }
+        if after == before {
+            tx.commit().await?;
+            return Ok(false);
+        }
+        // A CSPRNG draw prevents a refused epoch from recurring after a
+        // restore; do not replace it with a derived or sequential value.
+        sqlx::query(
+            "UPDATE offer_state SET max_seats = ?, ready_for_new_seats = ?, offer_epoch = ? \
+             WHERE id = 1",
+        )
+        .bind(i64::from(after.max_seats))
+        .bind(after.ready_for_new_seats)
+        .bind(fresh_offer_epoch().as_bytes().as_slice())
+        .execute(&mut *tx)
+        .await?;
+        if after.max_seats != before.max_seats {
+            sqlx::query("UPDATE offer_state SET updated_at_ms = ? WHERE id = 1")
+                .bind(now_ms())
+                .execute(&mut *tx)
+                .await?;
         }
         tx.commit().await?;
-        Ok(())
+        Ok(true)
     }
 
     pub(crate) async fn max_seats(&self) -> Result<u32, DbError> {
@@ -659,23 +687,6 @@ impl Db {
         Ok(())
     }
 
-    /// Store the readiness verdict. A change draws a fresh offer epoch in the
-    /// same statement, refusing every quote issued under the old verdict.
-    /// Returns whether the verdict changed.
-    pub(crate) async fn set_ready_for_new_seats(&self, ready: bool) -> Result<bool, DbError> {
-        let changed = sqlx::query(
-            "UPDATE offer_state SET ready_for_new_seats = ?, offer_epoch = ? \
-             WHERE id = 1 AND ready_for_new_seats != ?",
-        )
-        .bind(ready)
-        .bind(fresh_offer_epoch().as_bytes().as_slice())
-        .bind(ready)
-        .execute(&self.pool)
-        .await?
-        .rows_affected();
-        Ok(changed == 1)
-    }
-
     pub async fn offer_epoch(&self) -> Result<OfferEpoch, DbError> {
         let (epoch,): (Vec<u8>,) =
             sqlx::query_as("SELECT offer_epoch FROM offer_state WHERE id = 1")
@@ -683,6 +694,22 @@ impl Db {
                 .await?;
         parse_offer_epoch(epoch)
     }
+}
+
+/// One change to what gates admission ([`Db::update_seats_config`]). `None`
+/// keeps the stored value.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct SeatsConfigUpdate {
+    /// The operator's limit on total seats.
+    pub(crate) max_seats: Option<u32>,
+    /// The readiness verdict (`crate::seat_readiness`).
+    pub(crate) ready_for_new_seats: Option<bool>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct SeatsConfig {
+    max_seats: u32,
+    ready_for_new_seats: bool,
 }
 
 pub(super) fn fresh_offer_epoch() -> OfferEpoch {

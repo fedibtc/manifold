@@ -304,7 +304,7 @@ async fn free_seat_has_no_payment_ledger_row() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn admission_transaction_serializes_the_last_slot() {
     let (_dir, db) = open_db().await;
-    db.set_max_seats(1).await.unwrap();
+    set_max_seats(&db, 1).await.unwrap();
     let epoch = db.offer_epoch().await.unwrap();
     let base = crate::facts::PortBase::new(30_000).unwrap();
 
@@ -332,7 +332,7 @@ async fn admission_transaction_serializes_the_last_slot() {
 #[tokio::test]
 async fn durable_acceptance_precedes_a_later_epoch_mismatch() {
     let (_dir, db) = open_db().await;
-    db.set_max_seats(1).await.unwrap();
+    set_max_seats(&db, 1).await.unwrap();
     let epoch = db.offer_epoch().await.unwrap();
     let base = crate::facts::PortBase::new(30_000).unwrap();
 
@@ -349,7 +349,7 @@ async fn durable_acceptance_precedes_a_later_epoch_mismatch() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn duplicate_snapshots_resolve_to_one_acceptance_without_a_refusal() {
     let (_dir, db) = open_db().await;
-    db.set_max_seats(1).await.unwrap();
+    set_max_seats(&db, 1).await.unwrap();
     let epoch = db.offer_epoch().await.unwrap();
     let base = crate::facts::PortBase::new(30_000).unwrap();
     let seat_id = new_seat(23).seat_id;
@@ -393,7 +393,7 @@ async fn duplicate_snapshots_resolve_to_one_acceptance_without_a_refusal() {
 #[tokio::test]
 async fn capacity_cannot_shrink_below_active_seats_and_changes_rotate_the_offer() {
     let (_dir, db) = open_db().await;
-    db.set_max_seats(2).await.unwrap();
+    set_max_seats(&db, 2).await.unwrap();
     let first_epoch = db.offer_epoch().await.unwrap();
     assert!(matches!(
         db.admit_seat(
@@ -406,7 +406,7 @@ async fn capacity_cannot_shrink_below_active_seats_and_changes_rotate_the_offer(
         SeatAdmissionResult::Inserted(_)
     ));
 
-    let error = db.set_max_seats(0).await.unwrap_err();
+    let error = set_max_seats(&db, 0).await.unwrap_err();
     assert!(matches!(
         error,
         crate::db::DbError::SeatLimitBelowActive {
@@ -417,17 +417,17 @@ async fn capacity_cannot_shrink_below_active_seats_and_changes_rotate_the_offer(
     assert_eq!(db.max_seats().await.unwrap(), 2);
     assert_eq!(db.offer_epoch().await.unwrap(), first_epoch);
 
-    db.set_max_seats(1).await.unwrap();
+    set_max_seats(&db, 1).await.unwrap();
     let second_epoch = db.offer_epoch().await.unwrap();
     assert_ne!(second_epoch, first_epoch);
-    db.set_max_seats(1).await.unwrap();
+    set_max_seats(&db, 1).await.unwrap();
     assert_eq!(db.offer_epoch().await.unwrap(), second_epoch);
 }
 
 #[tokio::test]
 async fn terminal_read_snapshot_outcomes_do_not_wait_for_the_sqlite_writer() {
     let (_dir, db) = open_db().await;
-    db.set_max_seats(2).await.unwrap();
+    set_max_seats(&db, 2).await.unwrap();
     let epoch = db.offer_epoch().await.unwrap();
     let base = crate::facts::PortBase::new(30_000).unwrap();
     assert!(matches!(
@@ -464,7 +464,7 @@ async fn terminal_read_snapshot_outcomes_do_not_wait_for_the_sqlite_writer() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn admission_and_offer_change_share_the_sqlite_writer_order() {
     let (_dir, db) = open_db().await;
-    db.set_max_seats(2).await.unwrap();
+    set_max_seats(&db, 2).await.unwrap();
     let epoch = db.offer_epoch().await.unwrap();
     let base = crate::facts::PortBase::new(30_000).unwrap();
 
@@ -683,6 +683,14 @@ async fn formed_seat_is_set_once_and_immutable() {
     );
 }
 
+async fn set_max_seats(db: &Db, max_seats: u32) -> Result<bool, DbError> {
+    let update = crate::db::SeatsConfigUpdate {
+        max_seats: Some(max_seats),
+        ..Default::default()
+    };
+    db.update_seats_config(update).await
+}
+
 async fn open_db() -> (TempDir, Db) {
     let dir = tempfile::tempdir().unwrap();
     let db = Db::open(dir.path()).await.unwrap();
@@ -696,4 +704,25 @@ async fn reload(db: &Db, seat_id: &SeatId) -> SeatRecord {
         .into_iter()
         .find(|seat| &seat.facts.seat_id == seat_id)
         .unwrap()
+}
+
+#[tokio::test]
+async fn readiness_changes_rotate_and_repeats_do_not() {
+    let (_dir, db) = open_db().await;
+    set_max_seats(&db, 2).await.unwrap();
+    let ready = |ready| crate::db::SeatsConfigUpdate {
+        ready_for_new_seats: Some(ready),
+        ..Default::default()
+    };
+    let base = crate::facts::PortBase::new(30_000).unwrap();
+    let initial = db.offer_snapshot(base).await.unwrap().ready_for_new_seats;
+    let epoch = db.offer_epoch().await.unwrap();
+    assert!(!db.update_seats_config(ready(initial)).await.unwrap());
+    assert_eq!(db.offer_epoch().await.unwrap(), epoch);
+    assert!(db.update_seats_config(ready(!initial)).await.unwrap());
+    assert_ne!(db.offer_epoch().await.unwrap(), epoch);
+    assert_eq!(
+        db.offer_snapshot(base).await.unwrap().ready_for_new_seats,
+        !initial
+    );
 }

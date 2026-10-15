@@ -36,7 +36,10 @@ use crate::wallet::{ClaimOutcome, EcashClaimWorker, EcashWallet, Msats, Verified
 
 use crate::backup::BackupSink;
 use crate::backup_worker::BackupWorker;
-use crate::db::{Db, NewPayment, NewSeat, Offer, QuoteSettings, SeatAdmissionResult, SeatRecord};
+use crate::db::{
+    Db, NewPayment, NewSeat, Offer, QuoteSettings, SeatAdmissionResult, SeatRecord,
+    SeatsConfigUpdate,
+};
 use crate::facts::{PortBase, SeatPorts};
 use crate::identity::RootMnemonic;
 use crate::payout_wire::WalletDrainStatusWire;
@@ -688,9 +691,26 @@ impl Fleet {
     }
 
     pub async fn set_max_seats(&self, max_seats: u32) -> anyhow::Result<()> {
-        self.db.set_max_seats(max_seats).await?;
-        self.advertisement_changed.notify_one();
+        self.update_seats_config(SeatsConfigUpdate {
+            max_seats: Some(max_seats),
+            ..SeatsConfigUpdate::default()
+        })
+        .await?;
         Ok(())
+    }
+
+    /// Apply one change to what gates admission; see
+    /// [`crate::db::Db::update_seats_config`]. Returns whether a stored value
+    /// changed.
+    pub(crate) async fn update_seats_config(
+        &self,
+        update: SeatsConfigUpdate,
+    ) -> anyhow::Result<bool> {
+        let changed = self.db.update_seats_config(update).await?;
+        if changed {
+            self.advertisement_changed.notify_one();
+        }
+        Ok(changed)
     }
 
     pub async fn available_slots(&self) -> u32 {
@@ -724,7 +744,11 @@ impl Fleet {
             .lock()
             .expect("readiness lock is never poisoned") = Some(report);
         let ready = report.ready();
-        if !self.db.set_ready_for_new_seats(ready).await? {
+        let update = SeatsConfigUpdate {
+            ready_for_new_seats: Some(ready),
+            ..SeatsConfigUpdate::default()
+        };
+        if !self.update_seats_config(update).await? {
             return Ok(());
         }
         if ready {
@@ -738,7 +762,6 @@ impl Fleet {
                 "readiness checks failed; not accepting new seats"
             );
         }
-        self.advertisement_changed.notify_one();
         Ok(())
     }
 
