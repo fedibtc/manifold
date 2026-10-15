@@ -246,7 +246,7 @@ where
             .store
             .load_creation(fa_id)
             .await?
-            .filter(|creation| creation.purchase.is_some() || creation.is_full())
+            .filter(|creation| creation.purchase().is_some() || creation.is_full())
             .map(|creation| Work::Creation(Box::new(creation))))
     }
 
@@ -262,7 +262,7 @@ where
                 }
                 result
             }
-            Work::Creation(creation) if creation.purchase.is_some() => {
+            Work::Creation(creation) if creation.purchase().is_some() => {
                 match self.drive_purchase(*creation, fa_id, timeouts).await {
                     // The purchase ended without some of its seats. Each
                     // seat that left recorded why, and the creation needs

@@ -46,15 +46,15 @@ separate fail-closed schema. Schema 12 keeps one creation row and one slot row
 per selected guardian. A slot
 is keyed by a stable id, and the ids of the live slots order the guardians.
 It holds its verified MG and badge holder, and one state: `picked` with its
-previewed plan, `bound` to its exact signed quote, `accepted` with its seat
-id, guardian-fee account, exact Fedimint build, and cached guardian code, or `ended` with the seat
-id its MG ended before DKG. An ended slot is not live, and a new slot
-replaces it. The creation row holds the
-creation's inputs, the formation's progress (its id, invite, and metadata
-target), the reason the last slot left, and the last purchase: its
-selected major/minor/vendor DKG identity and optional explicit payer. The
-purchase runs while some slot is
-not accepted. The pool is the accepted slots, and the formation runs when
+previewed plan and purchase, `bound` to its exact signed quote and purchase,
+`accepted` with its seat id, guardian-fee account, exact Fedimint build, and
+cached guardian code, or `ended` with the seat id its MG ended before DKG. A
+slot's purchase is the selected major/minor/vendor DKG identity and the
+optional explicit payer, and every slot not yet accepted shares one purchase.
+The purchase runs while such a slot exists. An ended slot is not live, and a
+new slot replaces it. The creation row holds the creation's inputs, the
+formation's progress (its id, invite, and metadata target), and the reason the
+last slot left. The pool is the accepted slots, and the formation runs when
 `size` live slots are accepted. Schema 11
 kept the purchase and the formation in one row; opening such an FA migrates it.
 A schema 11 pinned formation cannot be migrated, because its MGs have no

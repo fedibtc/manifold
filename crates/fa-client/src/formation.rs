@@ -407,7 +407,7 @@ where
         let timeouts = Timeouts::default();
         async {
             let creation = self.active_creation(fa_id).await?;
-            if let Some(purchase) = &creation.purchase {
+            if let Some(purchase) = creation.purchase() {
                 let intent = creation.intent()?;
                 for (position, slot) in creation.slots.iter().enumerate() {
                     let Some(signed_quote) = slot.state.bound_quote() else {
@@ -684,7 +684,6 @@ where
             return Err(error);
         }
         // Every seat was accepted or left, which ended the purchase.
-        recovery.purchase = None;
         self.publish(recovery);
         left.map_or(Ok(()), Err)
     }
@@ -700,7 +699,7 @@ where
     ) -> FaResult<bool> {
         let intent = recovery.intent()?;
         let checks = recovery.slots.iter().filter_map(|seat| {
-            let SlotState::Picked { plan } = &seat.state else {
+            let SlotState::Picked { plan, .. } = &seat.state else {
                 return None;
             };
             let index = seat.index;
@@ -748,8 +747,7 @@ where
             left.get_or_insert(error);
         }
         let Some(requested) = recovery
-            .purchase
-            .as_ref()
+            .purchase()
             .and_then(|purchase| purchase.payment_federation_id.clone())
         else {
             return Ok(false);
@@ -786,21 +784,20 @@ where
     ) -> FaResult<()> {
         let formation_id = recovery.formation_id.clone();
         let intent = recovery.intent()?;
-        let purchase = recovery
-            .purchase
-            .as_ref()
-            .ok_or(FaError::NoActiveFormation)?;
-        let expected_payer = purchase.payment_federation_id.clone();
         let seat = &recovery.slots[position];
         let locator = seat.locator.clone();
         let bound_quote = seat.state.bound_quote().cloned();
-        let plan = match &seat.state {
+        let (plan, expected_payer) = match &seat.state {
             // The purchase buys only pending slots.
             SlotState::Accepted { .. } | SlotState::Ended { .. } => return Ok(()),
-            SlotState::Picked { plan } => plan.clone(),
+            SlotState::Picked { plan, purchase } => {
+                (plan.clone(), purchase.payment_federation_id.clone())
+            }
             SlotState::Bound {
                 quote: signed_quote,
+                purchase,
             } => {
+                let expected_payer = purchase.payment_federation_id.clone();
                 let signed_quote = signed_quote.clone();
                 let quote = self.verify_quote(
                     position,
@@ -846,7 +843,9 @@ where
                     }
                     // The bound quote may have expired, so the seat pays a new
                     // quote at the same plan.
-                    SeatPaymentRecovery::NotStarted => quote.terms.request.plan.clone(),
+                    SeatPaymentRecovery::NotStarted => {
+                        (quote.terms.request.plan.clone(), expected_payer)
+                    }
                 }
             }
         };
@@ -874,8 +873,14 @@ where
             )
             .await?;
         let seat = &mut recovery.slots[position];
+        let purchase = seat
+            .state
+            .purchase()
+            .cloned()
+            .expect("only a slot with a purchase binds a quote");
         seat.state = SlotState::Bound {
             quote: signed_quote.clone(),
+            purchase,
         };
         seat.phase = SeatPhase::QuoteReady;
         seat.freshness = FormationFreshness::Fresh;
@@ -988,9 +993,6 @@ where
             .await?;
         recovery.slots.remove(position);
         recovery.reauthorization.get_or_insert(reason);
-        if recovery.pending().is_empty() {
-            recovery.purchase = None;
-        }
         self.publish(recovery);
         Ok(())
     }

@@ -206,6 +206,10 @@ impl FaStore {
             }
             _ => return Err(malformed()),
         };
+        let purchase = SlotPurchase {
+            fedimintd_dkg_version: legacy.intent.fedimintd_dkg_version,
+            payment_federation_id,
+        };
         let mut reauthorization = None;
         let mut slots = Vec::with_capacity(usize::from(legacy.seat_count));
         for index in 0..legacy.seat_count {
@@ -253,7 +257,10 @@ impl FaStore {
                 }
                 (Some(_), None) => return Err(malformed()),
                 // A seat whose quote was bound may hold a started payment.
-                (None, Some(quote)) if state != "fresh" => SlotState::Bound { quote },
+                (None, Some(quote)) if state != "fresh" => SlotState::Bound {
+                    quote,
+                    purchase: purchase.clone(),
+                },
                 // Schema 11 did not record the previewed plan, so an unbound
                 // seat has no approved price to request.
                 (None, _) => {
@@ -272,7 +279,7 @@ impl FaStore {
                 },
             ));
         }
-        let mut creation = Creation {
+        let creation = Creation {
             stored: StoredCreation {
                 schema_version: STORAGE_SCHEMA_VERSION,
                 fa_id: legacy.fa_id,
@@ -285,17 +292,9 @@ impl FaStore {
                 invite_code: legacy.invite_code,
                 formation_meta_target: legacy.formation_meta_target,
                 reauthorization,
-                purchase: None,
             },
             slots,
         };
-        // The kept unaccepted seats continue the purchase.
-        if creation.pending().next().is_some() {
-            creation.stored.purchase = Some(StoredPurchase {
-                fedimintd_dkg_version: legacy.intent.fedimintd_dkg_version,
-                payment_federation_id,
-            });
-        }
         validate_creation(&creation)?;
         dbtx.raw_remove_entry(&[FaDbPrefix::LegacyFormation as u8])
             .await

@@ -2433,7 +2433,7 @@ where
             .store
             .load_creation(self.fa_id()?)
             .await?
-            .is_some_and(|creation| creation.purchase.is_some());
+            .is_some_and(|creation| creation.purchase().is_some());
         self.drive_steps_for_test(options, purchase_only).await
     }
 
@@ -2459,7 +2459,7 @@ where
             let creation = self.inner.store.load_creation(fa_id).await?;
             let buying = creation
                 .as_ref()
-                .is_some_and(|creation| creation.purchase.is_some());
+                .is_some_and(|creation| creation.purchase().is_some());
             if purchase_only && !buying {
                 return Ok(());
             }
@@ -4661,7 +4661,7 @@ impl crate::db::FaStore {
         Ok(self
             .load_creation(fa_id)
             .await?
-            .filter(|creation| creation.purchase.is_some()))
+            .filter(|creation| creation.purchase().is_some()))
     }
 
     /// The creation, once every slot holds an accepted seat.
@@ -5887,15 +5887,19 @@ async fn partial_seat_recovery_keeps_the_remaining_payment_after_a_dropped_seat(
         )
         .await
         .unwrap();
+    let bound = store
+        .load_creation(TestIdentity::fa_id())
+        .await
+        .unwrap()
+        .unwrap()
+        .slots[1]
+        .state
+        .clone();
+    assert_eq!(bound.bound_quote(), Some(&quotes[1]));
     store
         .empty_slots(
             &formation_id,
-            vec![(
-                1,
-                crate::db::SlotState::Bound {
-                    quote: quotes[1].clone(),
-                },
-            )],
+            vec![(1, bound)],
             SelectionReauthorizationReason::SeatUnavailable,
         )
         .await

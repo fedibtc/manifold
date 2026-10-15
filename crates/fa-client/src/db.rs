@@ -252,19 +252,17 @@ struct StoredCreation {
     formation_meta_target: Option<FormationMetaTarget>,
     /// Why a slot last left the creation. A new purchase clears it.
     reauthorization: Option<crate::SelectionReauthorizationReason>,
-    /// The last purchase. It runs while some slot holds no accepted seat,
-    /// and its facts stay until the next purchase replaces them.
-    purchase: Option<StoredPurchase>,
 }
 
-/// What one purchase of the creation's empty slots shares.
-#[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
-struct StoredPurchase {
+/// What one purchase gives each slot it buys. Every slot that is not yet
+/// accepted belongs to the same purchase.
+#[derive(Clone, Debug, PartialEq, serde::Deserialize, serde::Serialize)]
+pub(crate) struct SlotPurchase {
     /// Major/minor/vendor identity of every seat the purchase buys.
-    fedimintd_dkg_version: FedimintdDkgVersion,
+    pub(crate) fedimintd_dkg_version: FedimintdDkgVersion,
     /// Explicit consumer-selected ready payer, or `None` for the verified
     /// zero-price deployment-bootstrap path.
-    payment_federation_id: Option<FederationId>,
+    pub(crate) payment_federation_id: Option<FederationId>,
 }
 
 /// One guardian slot of the creation, keyed by a stable id. A slot exists
@@ -306,11 +304,12 @@ struct StoredSlot {
 pub(crate) enum SlotState {
     /// No quote is bound. The previewed plan gives the quote exactly the
     /// previewed price.
-    Picked { plan: Plan },
+    Picked { plan: Plan, purchase: SlotPurchase },
     /// The slot's payment or presentation may have started for this exact
     /// MG-signed quote. It holds only public terms.
     Bound {
         quote: SignedResponse<GetQuoteResponse>,
+        purchase: SlotPurchase,
     },
     /// The MG accepted the seat.
     Accepted {
@@ -355,8 +354,16 @@ impl StoredSlot {
 impl SlotState {
     pub(crate) fn bound_quote(&self) -> Option<&SignedResponse<GetQuoteResponse>> {
         match self {
-            Self::Bound { quote } => Some(quote),
+            Self::Bound { quote, .. } => Some(quote),
             Self::Picked { .. } | Self::Accepted { .. } | Self::Ended { .. } => None,
+        }
+    }
+
+    /// The purchase that buys this slot, until the MG accepts it.
+    pub(crate) fn purchase(&self) -> Option<&SlotPurchase> {
+        match self {
+            Self::Picked { purchase, .. } | Self::Bound { purchase, .. } => Some(purchase),
+            Self::Accepted { .. } | Self::Ended { .. } => None,
         }
     }
 
@@ -421,8 +428,6 @@ pub(crate) struct CreationRecovery {
     pub(crate) fedimintd_versions: crate::FedimintdVersionRange,
     pub(crate) plan: crate::PlanPreference,
     pub(crate) reauthorization: Option<crate::SelectionReauthorizationReason>,
-    /// The running purchase, while some slot holds no accepted seat.
-    pub(crate) purchase: Option<RunningPurchase>,
     pub(crate) invite_code: Option<InviteCode>,
     /// Exact formation metadata target saved before publication.
     pub(crate) formation_meta_target: Option<FormationMetaTarget>,
@@ -436,13 +441,6 @@ pub(crate) struct CreationRecovery {
     pub(crate) formation_phase: FormationPhase,
     pub(crate) freshness: FormationFreshness,
     pub(crate) last_error: Option<crate::FaErrorCode>,
-}
-
-/// What one running purchase shares.
-pub(crate) struct RunningPurchase {
-    pub(crate) fedimintd_dkg_version: FedimintdDkgVersion,
-    /// Explicit payer, absent for the zero-price bootstrap.
-    pub(crate) payment_federation_id: Option<FederationId>,
 }
 
 /// One filled slot: its durable state and the progress this run observed.
@@ -497,9 +495,14 @@ impl CreationRecovery {
         self.slots.iter().position(|slot| slot.index == index)
     }
 
+    /// The running purchase: the purchase of every slot not yet accepted.
+    pub(crate) fn purchase(&self) -> Option<&SlotPurchase> {
+        self.slots.iter().find_map(|slot| slot.state.purchase())
+    }
+
     /// What every quote of the running purchase must match.
     pub(crate) fn intent(&self) -> FaResult<ResolvedSeatPurchase> {
-        let purchase = self.purchase.as_ref().ok_or(FaError::NoActiveFormation)?;
+        let purchase = self.purchase().ok_or(FaError::NoActiveFormation)?;
         Ok(ResolvedSeatPurchase {
             federation_size: self.federation_size,
             plan: self.plan,
@@ -509,8 +512,7 @@ impl CreationRecovery {
     }
 
     fn fedimintd_dkg_version(&self) -> Option<FedimintdDkgVersion> {
-        self.purchase
-            .as_ref()
+        self.purchase()
             .map(|purchase| purchase.fedimintd_dkg_version.clone())
             .or_else(|| {
                 self.slots.iter().find_map(|slot| match &slot.state {
@@ -526,7 +528,7 @@ impl CreationRecovery {
 
     /// The public projection.
     pub(crate) fn snapshot(&self) -> CreationSnapshot {
-        let stage = if self.purchase.is_some() {
+        let stage = if self.purchase().is_some() {
             CreationStage::Buying
         } else if self.is_full() {
             CreationStage::Forming {
@@ -1288,7 +1290,7 @@ impl FaStore {
                 "a seat purchase needs at least one seat".to_owned(),
             ));
         }
-        let purchase = StoredPurchase {
+        let purchase = SlotPurchase {
             fedimintd_dkg_version,
             payment_federation_id,
         };
@@ -1314,7 +1316,6 @@ impl FaStore {
                         invite_code: None,
                         formation_meta_target: None,
                         reauthorization: None,
-                        purchase: None,
                     },
                     slots: Vec::new(),
                 }
@@ -1337,7 +1338,6 @@ impl FaStore {
             ));
         }
         creation.stored.reauthorization = None;
-        creation.stored.purchase = Some(purchase);
         let live = creation
             .slots
             .iter()
@@ -1358,7 +1358,10 @@ impl FaStore {
                     locator: seat.locator,
                     mg_id: seat.mg_id,
                     holder: Some(seat.holder),
-                    state: SlotState::Picked { plan: seat.plan },
+                    state: SlotState::Picked {
+                        plan: seat.plan,
+                        purchase: purchase.clone(),
+                    },
                 },
             ));
         }
@@ -1401,7 +1404,7 @@ impl FaStore {
                         let size = creation.stored.federation_size;
                         let slot = creation.slot_mut(index)?;
                         let accepted = match &slot.state {
-                            SlotState::Bound { quote } => {
+                            SlotState::Bound { quote, .. } => {
                                 let quote = quote.verify(&slot.locator.service_pubkey).map_err(
                                     |error| {
                                         FaError::Storage(format!(
@@ -1627,12 +1630,16 @@ impl FaStore {
                                         "invalid quote for FA slot {index}: {error}"
                                     ))
                                 })?;
-                        match (&slot.state, &bound_quote) {
-                            (SlotState::Picked { .. }, None) => {}
+                        let purchase = match (&slot.state, &bound_quote) {
+                            (SlotState::Picked { purchase, .. }, None) => purchase.clone(),
                             // Only a paid quote moves, to a paid quote.
-                            (SlotState::Bound { quote: bound }, Some(expected))
-                                if bound == expected =>
-                            {
+                            (
+                                SlotState::Bound {
+                                    quote: bound,
+                                    purchase,
+                                },
+                                Some(expected),
+                            ) if bound == expected => {
                                 let bound_paid = bound
                                     .verify(&slot.locator.service_pubkey)
                                     .is_ok_and(|bound| bound.terms.payment.is_some());
@@ -1641,16 +1648,18 @@ impl FaStore {
                                         "FA slot {index} cannot move its bound quote"
                                     )));
                                 }
+                                purchase.clone()
                             }
                             _ => {
                                 return Err(FaError::Storage(format!(
                                     "FA slot {index} changed before its quote was bound"
                                 )));
                             }
-                        }
+                        };
                         let slot = StoredSlot {
                             state: SlotState::Bound {
                                 quote: signed_quote,
+                                purchase,
                             },
                             ..slot
                         };
@@ -1788,10 +1797,6 @@ impl Creation {
     fn recovery(self) -> CreationRecovery {
         let stored = self.stored;
         let dkg_complete = stored.invite_code.is_some();
-        let pending = self
-            .slots
-            .iter()
-            .any(|(_, slot)| slot.accepted().is_none() && !slot.ended());
         let (ended, slots) = self
             .slots
             .into_iter()
@@ -1831,13 +1836,6 @@ impl Creation {
             fedimintd_versions: stored.fedimintd_versions,
             plan: stored.plan,
             reauthorization: stored.reauthorization,
-            purchase: stored
-                .purchase
-                .filter(|_| pending)
-                .map(|purchase| RunningPurchase {
-                    fedimintd_dkg_version: purchase.fedimintd_dkg_version,
-                    payment_federation_id: purchase.payment_federation_id,
-                }),
             invite_code: stored.invite_code,
             formation_meta_target: stored.formation_meta_target,
             dkg_completion_callback: stored.dkg_completion_callback,
@@ -1948,7 +1946,7 @@ fn validate_creation(creation: &Creation) -> FaResult<()> {
         }
         match &slot.state {
             SlotState::Picked { .. } => {}
-            SlotState::Bound { quote } => {
+            SlotState::Bound { quote, .. } => {
                 quote
                     .verify(&slot.locator.service_pubkey)
                     .map_err(|error| {
@@ -1983,12 +1981,16 @@ fn validate_creation(creation: &Creation) -> FaResult<()> {
             "persisted FA creation has more live slots than guardians".to_owned(),
         ));
     }
-    if creation.pending().next().is_some() && stored.purchase.is_none() {
-        return Err(FaError::Storage(
-            "persisted FA purchase disagrees with its empty slots".to_owned(),
-        ));
-    }
-    if let Some(purchase) = &stored.purchase {
+    let mut purchases = creation
+        .slots
+        .iter()
+        .filter_map(|(_, slot)| slot.state.purchase());
+    if let Some(purchase) = purchases.next() {
+        if purchases.any(|other| other != purchase) {
+            return Err(FaError::Storage(
+                "persisted FA slots belong to different purchases".to_owned(),
+            ));
+        }
         if !purchase.fedimintd_dkg_version.is_fedi()
             || !stored
                 .fedimintd_versions
