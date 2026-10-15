@@ -52,21 +52,29 @@ where
     /// reached is reported, and its operator has to decommission it by hand.
     pub async fn decommission_seats(&self) -> FaResult<DecommissionOutcome> {
         let fa_id = self.fa_id()?;
-        let creation = self
-            .inner
-            .store
-            .load_snapshot(fa_id)
-            .await?
-            .ok_or(FaError::NoActiveFormation)?;
+        // The seats of the formed federation, or else the accepted seats of
+        // the running creation. A slot without a seat id was never accepted
+        // by its MG, so there is nothing on the other side to release.
+        let seats = match self.inner.store.load_federation(fa_id).await? {
+            Some(federation) => federation
+                .seats
+                .into_iter()
+                .zip(0..)
+                .map(|(seat, index)| (index, seat.seat_id, seat.locator))
+                .collect::<Vec<_>>(),
+            None => self
+                .inner
+                .store
+                .load_snapshot(fa_id)
+                .await?
+                .ok_or(FaError::NoActiveFormation)?
+                .slots
+                .into_iter()
+                .filter_map(|slot| Some((slot.index, slot.seat_id?, slot.locator)))
+                .collect(),
+        };
         let mut pending = FuturesUnordered::new();
-        for slot in &creation.slots {
-            let index = slot.index;
-            // A slot without a seat id was never accepted by its MG, so
-            // there is nothing on the other side to release.
-            let Some(seat_id) = slot.seat_id.clone() else {
-                continue;
-            };
-            let locator = slot.locator.clone();
+        for (index, seat_id, locator) in seats {
             pending.push(async move {
                 let result = timeout(DECOMMISSION_REQUEST_TIMEOUT, async {
                     let client = self

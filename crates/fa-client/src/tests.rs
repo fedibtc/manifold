@@ -10646,6 +10646,36 @@ async fn a_never_ready_seat_keeps_the_formation_waiting_for_its_code() {
     }
 }
 
+/// A formed federation keeps its seats only in the federation record, and
+/// a reopened FA still sends one decommission per seat.
+#[tokio::test]
+async fn decommission_reaches_every_seat_of_a_formed_federation() {
+    let database = MemDatabase::new().into_database();
+    let (payments, _) = TestPayments::new();
+    let state = Arc::new(MgState::default());
+    let client = open_client(
+        database.clone(),
+        payments.clone(),
+        state.clone(),
+        MgConfig::given_away(),
+    )
+    .await;
+    client
+        .buy_and_form_at(intent(), locators(), options())
+        .await
+        .unwrap();
+    drop(client);
+    let reopened = open_client(database, payments, state, MgConfig::given_away()).await;
+    federation(&reopened.status());
+
+    let outcome = reopened.decommission_seats().await.unwrap();
+    assert_eq!(
+        outcome.decommissioned,
+        (0..MIN_FEDERATION_SIZE).collect::<Vec<_>>()
+    );
+    assert!(outcome.refused.is_empty(), "{outcome:?}");
+}
+
 /// FA does not replace a seat that its MG decommissioned. The formation
 /// stops with the MG's error, and the seat stays in the pool. A seat that
 /// waits for its code without end does not hide that error.
