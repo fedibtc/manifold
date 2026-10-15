@@ -25,10 +25,18 @@ struct LocalRelay {
 
 impl LocalRelay {
     async fn start() -> Self {
-        Self::start_on(free_port()).await
+        // A relay whose port another process took panics at once, while
+        // that process answers our readiness probe. Detect it and move on.
+        for _ in 0..5 {
+            if let Some(relay) = Self::try_start_on(free_port()).await {
+                return relay;
+            }
+        }
+        panic!("nostr-rs-relay never got a free port");
     }
 
-    async fn start_on(port: u16) -> Self {
+    /// Start a relay on `port`, or `None` when another process holds it.
+    async fn try_start_on(port: u16) -> Option<Self> {
         let dir = tempfile::tempdir().expect("relay directory");
         let data = dir.path().join("db");
         std::fs::create_dir_all(&data).expect("relay data directory");
@@ -52,20 +60,47 @@ impl LocalRelay {
             .spawn()
             .expect("start nostr-rs-relay from the dev shell");
         let ready_by = std::time::Instant::now() + Duration::from_secs(60);
-        while std::net::TcpStream::connect(("127.0.0.1", port)).is_err() {
-            assert!(
-                child.try_wait().expect("relay status").is_none(),
-                "nostr-rs-relay exited before it listened on {port}"
-            );
+        loop {
+            if child.try_wait().expect("relay status").is_some() {
+                return None;
+            }
+            if listens_on(child.id(), port) {
+                break;
+            }
             assert!(std::time::Instant::now() < ready_by, "relay never listened");
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
-        Self {
+        Some(Self {
             child,
             url: relay_url(port),
             _dir: dir,
-        }
+        })
     }
+}
+
+/// Whether process `pid` holds the TCP listener on `127.0.0.1:port`. A
+/// connect probe cannot tell: it also succeeds against another process that
+/// took the port.
+fn listens_on(pid: u32, port: u16) -> bool {
+    let local = format!("0100007F:{port:04X}");
+    let Ok(table) = std::fs::read_to_string("/proc/net/tcp") else {
+        return false;
+    };
+    // Columns: sl, local_address, rem_address, st, ..., inode (index 9).
+    let Some(inode) = table.lines().skip(1).find_map(|line| {
+        let fields = line.split_whitespace().collect::<Vec<_>>();
+        (fields.get(1) == Some(&local.as_str()) && fields.get(3) == Some(&"0A"))
+            .then(|| fields.get(9).map(|inode| (*inode).to_owned()))
+            .flatten()
+    }) else {
+        return false;
+    };
+    let socket = format!("socket:[{inode}]");
+    std::fs::read_dir(format!("/proc/{pid}/fd")).is_ok_and(|fds| {
+        fds.flatten().any(|fd| {
+            std::fs::read_link(fd.path()).is_ok_and(|target| target.as_os_str() == socket.as_str())
+        })
+    })
 }
 
 impl Drop for LocalRelay {
@@ -374,7 +409,9 @@ async fn too_few_relays_keep_restoring_and_the_loop_retries() {
     ));
 
     // The relays come back; the next retry completes the lookup.
-    let _back = LocalRelay::start_on(first_down).await;
+    let _back = LocalRelay::try_start_on(first_down)
+        .await
+        .expect("the down relay's reserved port is free");
     tokio::time::timeout(
         Duration::from_secs(60),
         observed.wait_for(|state| *state == FaState::Idle),
@@ -718,4 +755,26 @@ async fn a_restore_stopped_at_any_commit_finishes_after_reopen() {
     run_until(&reopened, Duration::from_secs(30), is_active).await;
     assert_restored(&reopened, &source, 1).await;
     workers.shutdown_join_all(None).await.unwrap();
+}
+
+/// A relay whose port another process holds is started on another port,
+/// rather than handing out the other process's listener.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_relay_never_reuses_a_port_another_process_holds() {
+    let taken = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let port = taken.local_addr().unwrap().port();
+    assert!(LocalRelay::try_start_on(port).await.is_none());
+    let relay = LocalRelay::start().await;
+    assert!(listens_on(
+        relay.child.id(),
+        relay
+            .url
+            .as_str()
+            .rsplit(':')
+            .next()
+            .unwrap()
+            .trim_end_matches('/')
+            .parse()
+            .unwrap()
+    ));
 }
