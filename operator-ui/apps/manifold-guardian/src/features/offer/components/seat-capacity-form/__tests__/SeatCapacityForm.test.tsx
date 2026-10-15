@@ -213,7 +213,5 @@ it('should switch an operator limit to automatic', async () => {
   expect(screen.getByLabelText('Maximum active seats')).toHaveValue('4');
   fireEvent.click(automatic);
   fireEvent.click(screen.getByRole('button', { name: 'Save seat limit' }));
-  await waitFor(() =>
-    expect(adminCall).toHaveBeenCalledWith({ SetCapacity: { max_seats: null } })
-  );
+  await waitFor(() => expect(adminCall).toHaveBeenCalledWith({ SetCapacity: { max_seats: null } }));
 });
