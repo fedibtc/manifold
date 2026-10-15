@@ -292,12 +292,11 @@ impl FaStore {
             },
             slots,
         };
-        // A kept unaccepted seat was bound, so the purchase approval is used.
+        // The kept unaccepted seats continue the purchase.
         if creation.pending().next().is_some() {
             creation.stored.purchase = Some(StoredPurchase {
                 fedimintd_dkg_version: legacy.intent.fedimintd_dkg_version,
                 payment_federation_id,
-                approval: None,
             });
         }
         validate_creation(&creation)?;

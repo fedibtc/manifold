@@ -2533,13 +2533,6 @@ fn test_mg_id(index: usize) -> nostr_sdk::PublicKey {
     mg_keys(index).public_key()
 }
 
-fn test_approval(valid_until: u64) -> crate::db::PreviewApproval {
-    crate::db::PreviewApproval {
-        verifier_provenance: test_peer_badge_verifier().provenance().into(),
-        valid_until: Timestamp(valid_until),
-    }
-}
-
 fn selected_initial_seat(index: u16) -> crate::db::PickedSeat {
     crate::db::PickedSeat {
         locator: locator(usize::from(index)),
@@ -4762,14 +4755,7 @@ impl crate::db::FaStore {
         index: u16,
         quote: SignedResponse<GetQuoteResponse>,
     ) -> FaResult<()> {
-        self.bind_quote(
-            formation_id,
-            index,
-            None,
-            quote,
-            test_peer_badge_verifier().provenance().into(),
-        )
-        .await
+        self.bind_quote(formation_id, index, None, quote).await
     }
 }
 
@@ -4795,7 +4781,6 @@ async fn seed_purchase(client: &TestClient, formation_id: &str) {
                 .map(selected_initial_seat)
                 .collect(),
             Some(payment_federation_id()),
-            test_approval(test_now_secs() + 120),
         )
         .await
         .unwrap();
@@ -4820,13 +4805,7 @@ async fn seed_bound_purchase(client: &TestClient, formation_id: &str, nonce: u8)
                 .quote_id(),
         );
         store
-            .bind_quote(
-                &formation_id,
-                index,
-                None,
-                quote,
-                test_peer_badge_verifier().provenance().into(),
-            )
+            .bind_quote(&formation_id, index, None, quote)
             .await
             .unwrap();
     }
@@ -5570,7 +5549,6 @@ async fn initialized_formation_reloads_as_unsynced_typed_status() {
             resolved_intent_with_size(FederationSize(1)),
             vec![selected_initial_seat(0)],
             None,
-            test_approval(test_now_secs() + 120),
         )
         .await
         .unwrap();
@@ -5605,7 +5583,6 @@ async fn persisted_formation_rejects_a_different_identity_before_observation() {
             resolved_intent_with_size(FederationSize(1)),
             vec![selected_initial_seat(0)],
             None,
-            test_approval(test_now_secs() + 120),
         )
         .await
         .unwrap();
@@ -5630,14 +5607,9 @@ async fn persisted_formation_rejects_a_different_identity_before_observation() {
 }
 
 #[tokio::test]
-async fn the_preview_bounds_only_the_first_bind_and_only_unpaid_paid_quotes_move() {
-    let now = Arc::new(AtomicU64::new(10_000));
-    let clock = now.clone();
-    let store = db::FaStore::new_with_clock(
-        MemDatabase::new().into_database(),
-        Arc::new(move || clock.load(Ordering::SeqCst)),
-    );
-    let formation_id = FormationId("approval-bounds".to_owned());
+async fn only_a_paid_bound_quote_moves_and_only_to_a_paid_quote() {
+    let store = db::FaStore::new(MemDatabase::new().into_database());
+    let formation_id = FormationId("quote-moves".to_owned());
     let intent = resolved_intent_with_size(FederationSize(2));
     store
         .initialize_for_test(
@@ -5646,52 +5618,25 @@ async fn the_preview_bounds_only_the_first_bind_and_only_unpaid_paid_quotes_move
             intent.clone(),
             vec![selected_initial_seat(0), selected_initial_seat(1)],
             Some(payment_federation_id()),
-            test_approval(10_100),
         )
         .await
         .unwrap();
     let first = signed_quote(0, &intent, [1; 32]);
-
-    // At the deadline, the first bind needs a new preview.
-    now.store(10_100, Ordering::SeqCst);
-    let error = store
-        .bind_fresh_quote(&formation_id, 0, first.clone())
-        .await
-        .unwrap_err();
-    assert!(
-        matches!(
-            error,
-            FaError::SelectionReauthorizationRequired {
-                reason: SelectionReauthorizationReason::SeatUnavailable,
-                ..
-            }
-        ),
-        "{error:?}"
-    );
-    now.store(10_099, Ordering::SeqCst);
     store
         .bind_fresh_quote(&formation_id, 0, first.clone())
-        .await
-        .unwrap();
-
-    // Later seats bind after the preview expired.
-    now.store(20_000, Ordering::SeqCst);
-    store
-        .bind_fresh_quote(&formation_id, 1, signed_quote(1, &intent, [2; 32]))
         .await
         .unwrap();
 
     // A paid quote moves to a new paid quote, but only from the bound one.
     let second = signed_quote(0, &intent, [3; 32]);
-    let provenance = test_peer_badge_verifier().provenance().into();
     assert!(
         store
-            .bind_quote(&formation_id, 0, None, second.clone(), provenance)
+            .bind_quote(&formation_id, 0, None, second.clone())
             .await
             .is_err()
     );
     store
-        .bind_quote(&formation_id, 0, Some(&first), second.clone(), provenance)
+        .bind_quote(&formation_id, 0, Some(&first), second.clone())
         .await
         .unwrap();
     // An accepted seat keeps its quote.
@@ -5711,7 +5656,6 @@ async fn the_preview_bounds_only_the_first_bind_and_only_unpaid_paid_quotes_move
                 0,
                 Some(&second),
                 signed_quote(0, &intent, [4; 32]),
-                provenance,
             )
             .await
             .is_err()
@@ -5740,7 +5684,6 @@ async fn accepting_one_seat_preserves_a_sibling_journaled_quote() {
             intent.clone(),
             vec![selected_initial_seat(0), selected_initial_seat(1)],
             Some(payment_federation_id()),
-            test_approval(test_now_secs() + 120),
         )
         .await
         .unwrap();
@@ -5815,7 +5758,6 @@ async fn concurrent_two_seat_acceptance_retries_and_derives_completion_from_dura
             intent.clone(),
             vec![selected_initial_seat(0), selected_initial_seat(1)],
             Some(payment_federation_id()),
-            test_approval(test_now_secs() + 120),
         )
         .await
         .unwrap();
@@ -5989,7 +5931,6 @@ async fn partial_seat_recovery_keeps_the_remaining_payment_after_a_dropped_seat(
             intent.clone(),
             (0..3).map(selected_initial_seat).collect(),
             Some(payment_federation_id()),
-            test_approval(test_now_secs() + 120),
         )
         .await
         .unwrap();
@@ -7834,9 +7775,7 @@ async fn slow_payment_preparation_and_recovery_keep_the_exact_payment() {
             .lock()
             .expect("test lock") = Duration::from_secs(95);
         let mg_state = Arc::new(MgState::default());
-        let started = tokio::time::Instant::now();
-        let clock = Arc::new(move || 10_000 + started.elapsed().as_secs());
-        let store = db::FaStore::new_with_clock(database, clock);
+        let store = db::FaStore::new(database);
         let client = open_client_with_store(
             store.clone(),
             payments.clone(),
@@ -8200,7 +8139,6 @@ async fn reopen_preserves_the_selected_dkg_identity_and_accepts_patch_skew() {
                 .map(selected_initial_seat)
                 .collect(),
             Some(payment_federation_id()),
-            test_approval(test_now_secs() + 120),
         )
         .await
         .unwrap();
@@ -8933,100 +8871,6 @@ async fn selected_payer_failure_returns_to_idle_and_live_approval_can_retry() {
         .unwrap();
     client.drive_all_for_test(options()).await.unwrap();
     federation(&client.status());
-}
-
-#[tokio::test]
-async fn crashed_selected_record_cannot_resume_after_its_preview_expires() {
-    let database = MemDatabase::new().into_database();
-    let (payments, _) = TestPayments::new();
-    let mg_state = Arc::new(MgState::default());
-    let client = open_client(
-        database.clone(),
-        payments.clone(),
-        mg_state.clone(),
-        MgConfig::paid(),
-    )
-    .await;
-    let resolved = intent().resolve(fedimintd_version().dkg_version()).unwrap();
-    client
-        .inner
-        .store
-        .initialize_for_test(
-            TestIdentity::fa_id(),
-            FormationId("selected-expired-crash".to_owned()),
-            resolved,
-            (0..MIN_FEDERATION_SIZE)
-                .map(selected_initial_seat)
-                .collect(),
-            Some(payment_federation_id()),
-            test_approval(test_now_secs().saturating_sub(1)),
-        )
-        .await
-        .unwrap();
-    drop(client);
-
-    let reopened = open_client(database, payments, mg_state, MgConfig::paid()).await;
-    let error = reopened.drive().await.unwrap_err();
-    assert!(
-        matches!(
-            error,
-            FaError::SelectionReauthorizationRequired {
-                reason: SelectionReauthorizationReason::SeatUnavailable,
-                failure: None
-            }
-        ),
-        "unexpected error: {error:?}"
-    );
-    assert_needs_new_preview(&reopened);
-}
-
-#[tokio::test]
-async fn selected_reopen_under_changed_verifier_requires_fresh_pre_output_authority() {
-    let database = MemDatabase::new().into_database();
-    let (payments, payment_state) = TestPayments::new();
-    let mg_state = Arc::new(MgState::default());
-    let client = open_client(
-        database.clone(),
-        payments.clone(),
-        mg_state.clone(),
-        MgConfig::paid(),
-    )
-    .await;
-    let formation_id = FormationId("selected-verifier-drift-pre-output".to_owned());
-    client
-        .inner
-        .store
-        .initialize_for_test(
-            TestIdentity::fa_id(),
-            formation_id,
-            intent().resolve(fedimintd_version().dkg_version()).unwrap(),
-            (0..MIN_FEDERATION_SIZE)
-                .map(selected_initial_seat)
-                .collect(),
-            Some(payment_federation_id()),
-            test_approval(test_now_secs() + 120),
-        )
-        .await
-        .unwrap();
-    drop(client);
-
-    let reopened = open_client_with_verifier(
-        database,
-        payments,
-        mg_state,
-        MgConfig::paid(),
-        peer_badge_verifier(ManifoldEnvironment::Staging),
-    )
-    .await;
-    let error = reopened.drive().await.unwrap_err();
-    assert!(matches!(
-        error,
-        FaError::SelectionReauthorizationRequired {
-            reason: SelectionReauthorizationReason::SeatUnavailable,
-            failure: None
-        }
-    ));
-    assert_eq!(payment_state.create_calls.load(Ordering::SeqCst), 0);
 }
 
 #[tokio::test]

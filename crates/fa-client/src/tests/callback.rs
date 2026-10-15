@@ -178,7 +178,6 @@ async fn callback_is_durable_private_state_and_old_schema_resets() {
             resolved_intent_with_size(FederationSize(1)),
             vec![selected_initial_seat(0)],
             None,
-            test_approval(test_now_secs() + 120),
         )
         .await
         .unwrap();

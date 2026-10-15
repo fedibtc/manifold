@@ -193,10 +193,10 @@ transport, as `fa-cli` does. Every product-path seat must pass the complete veri
 is no pinned/BYO exception. The five-minute preview is the only input
 to selected creation and is the consumer's payment approval. Its usable window
 begins after the verified walk and it binds the complete request, each seat's
-advertised plan and price, and canonical verifier/environment provenance. The
-stable provenance and the deadline are persisted on the purchase. Reopening
-under a different profile requires fresh approval before the first seat binds
-its quote. A stored seat quote is the seat's authority for that quote's
+advertised plan and price, and canonical verifier/environment provenance.
+`create_federation` and `buy_seats` check the deadline and provenance once,
+and the purchase does not store them: the saved seats are the approval. A
+stored seat quote is the seat's authority for that quote's
 effect: paid output generation or free `CreateSeat` presentation. One
 autocommit binds the quote before the seat's payment or first presentation. Only a paid binding whose wallet operation is proven
 `NotStarted` may move to a new paid quote. Exact recovery therefore retains
@@ -222,8 +222,8 @@ The following ordering is part of the monetary safety boundary:
    and exact selected locators. The explicit no-payer bootstrap persists that
    absence and fails with typed payer-required reauthorization on any priced
    live offer before requesting its quote;
-3. authenticate and persist the highest setup-payment policy. Before the
-   first seat is bound, confirm the live availability of every seat at its
+3. authenticate and persist the highest setup-payment policy. While no
+   slot is bound, confirm the live availability of every seat at its
    previewed plan and ask the wallet one value-free funds check for the
    remaining priced seats. A failed seat leaves, and short funds end every
    seat, before any quote is bound. Then buy the seats one at a time in seat
@@ -231,9 +231,7 @@ The following ordering is part of the monetary safety boundary:
 4. for a seat without a bound quote, request and verify an exact quote for
    exactly the seat's previewed plan, without automatically replacing a
    selected guardian, and bind it in one autocommit. A live offer without that
-   plan returns typed `SeatUnavailable` reauthorization and the seat leaves. Until
-   the purchase binds its first seat, the bind requires a fresh preview under
-   the same verifier provenance;
+   plan returns typed `SeatUnavailable` reauthorization and the seat leaves;
 5. for a bound paid quote, ask the wallet to recover that exact quote before
    any new payment. `Prepared` replays its presentation without a new spend.
    `Rejected` makes the seat leave. `NotStarted` permits a new quote at the

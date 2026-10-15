@@ -21,9 +21,7 @@ use sha2::{Digest as _, Sha256};
 use stability_pool_common::Account;
 use tokio::sync::OnceCell;
 
-use crate::db::{
-    CreationRecovery, FormationMetaTarget, NewCreation, PickedSeat, PreviewApproval, SlotState,
-};
+use crate::db::{CreationRecovery, FormationMetaTarget, NewCreation, PickedSeat, SlotState};
 use crate::meta_write::{MetaWriteError, SeatVote, write_consensus_meta};
 use crate::mg::MgClient;
 use crate::ports::FaIdentityExt as _;
@@ -529,10 +527,6 @@ where
                 "selected Fedimint DKG identity is outside the purchase request".to_owned(),
             ));
         }
-        let approval = PreviewApproval {
-            verifier_provenance: preview.verifier_provenance.into(),
-            valid_until: preview.valid_until(),
-        };
         let seats = preview
             .seats_to_buy_at(Timestamp(now_secs()?))?
             .into_iter()
@@ -566,7 +560,6 @@ where
                     fedimintd_dkg_version,
                     seats,
                     payment_federation_id,
-                    approval,
                     creation,
                 )
                 .await?;
@@ -820,9 +813,9 @@ where
         let mut left = None;
         let mut first_error = None;
         if recovery
-            .purchase
-            .as_ref()
-            .is_some_and(|purchase| purchase.approval.is_some())
+            .slots
+            .iter()
+            .all(|slot| slot.state.bound_quote().is_none())
         {
             funds_exhausted = self.preflight_purchase(recovery, &mut left, run).await?;
         }
@@ -869,11 +862,9 @@ where
         left.map_or(Ok(()), Err)
     }
 
-    /// Before the first seat is bound, confirm that every MG still offers
-    /// its previewed plan and that the payer can fund every seat. A seat that
-    /// fails leaves before any payment. Returns whether funds are short.
-    ///
-    /// No seat is bound yet, so every seat is still picked.
+    /// While no slot is bound, confirm that every picked MG still offers its
+    /// plan and that the payer can fund every picked seat. A seat that fails
+    /// leaves before any payment. Returns whether funds are short.
     async fn preflight_purchase(
         &self,
         recovery: &mut CreationRecovery,
@@ -972,24 +963,13 @@ where
             .as_ref()
             .ok_or(FaError::NoActiveFormation)?;
         let expected_payer = purchase.payment_federation_id.clone();
-        let approval = purchase.approval;
         let seat = &recovery.slots[position];
         let locator = seat.locator.clone();
         let bound_quote = seat.state.bound_quote().cloned();
         let plan = match &seat.state {
             // The purchase buys only pending slots.
             SlotState::Accepted { .. } => return Ok(()),
-            SlotState::Picked { plan } => {
-                // The preview approval must be fresh until the purchase binds
-                // its first seat.
-                if let Some(approval) = &approval {
-                    approval.validate(
-                        self.inner.peer_badge_verifier.provenance().into(),
-                        Timestamp(now_secs()?),
-                    )?;
-                }
-                plan.clone()
-            }
+            SlotState::Picked { plan } => plan.clone(),
             SlotState::Bound {
                 quote: signed_quote,
             } => {
@@ -1064,12 +1044,8 @@ where
                 recovery.slots[position].index,
                 bound_quote.as_ref(),
                 signed_quote.clone(),
-                self.inner.peer_badge_verifier.provenance().into(),
             )
             .await?;
-        if let Some(purchase) = &mut recovery.purchase {
-            purchase.approval = None;
-        }
         let seat = &mut recovery.slots[position];
         seat.state = SlotState::Bound {
             quote: signed_quote.clone(),

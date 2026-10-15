@@ -50,8 +50,8 @@ verified MG and badge holder, and one state: `picked` with its previewed plan,
 guardian-fee account, and exact Fedimint build. The creation row holds the
 creation's inputs, the formation's progress (its id, invite, and metadata
 target), the reason the last slot left, and the last purchase: its
-selected major/minor/vendor DKG identity, optional explicit payer, and the
-preview approval until the first bind. The purchase runs while some slot is
+selected major/minor/vendor DKG identity and optional explicit payer. The
+purchase runs while some slot is
 not accepted. The pool is the accepted slots, and the formation runs when
 every slot is accepted. Schema 11
 kept the purchase and the formation in one row; opening such an FA migrates it.
@@ -90,8 +90,8 @@ selection fixes. The payer reasons (`SelectedPayerUnavailable`,
 `SelectedPayerInsufficientFunds`, `PaymentFederationRequired`) stay separate,
 because the user must fix the payer instead.
 
-Before the purchase binds its first seat, each run checks the whole purchase
-once and pays nothing. It asks every selected MG for live availability at the
+While no slot is bound, each run checks the whole purchase once and pays
+nothing. It asks every selected MG for live availability at the
 previewed plan, with the same connection retries as a quote. A seat that
 fails leaves. Then the wallet checks, without value movement, that the payer
 can fund the remaining priced seats one after another. If it cannot, every
@@ -99,9 +99,10 @@ seat leaves with `InsufficientFunds`.
 
 The purchase buys seats one at a time, in slot order. For each picked slot,
 the driver first binds a quote: one autocommit stores the exact
-signed quote before its payment or presentation can start. The selection preview must still be fresh,
-under the same verifier provenance, until the purchase binds its first seat.
-After that, slow sequential payments cannot expire the purchase. A bound free
+signed quote before its payment or presentation can start. Only
+`create_federation` and `buy_seats` check that the preview is fresh and
+under the same verifier provenance, so a slow or resumed purchase never
+expires. A bound free
 quote is presented again exactly. A bound paid quote is first given to the
 wallet's per-quote recovery:
 

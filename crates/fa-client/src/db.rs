@@ -13,16 +13,16 @@ use fedimint_core::module::registry::ModuleDecoderRegistry;
 use fedimint_core::{impl_db_lookup, impl_db_record};
 use futures::StreamExt as _;
 use std::collections::{BTreeMap, BTreeSet};
+#[cfg(test)]
 use std::sync::Arc;
 #[cfg(test)]
 use std::sync::atomic::Ordering;
 
 use fedi_decentralized_manifold_environment::ManifoldEnvironment;
-use fedi_decentralized_peer_badge_verifier::PeerBadgeVerifierProvenance;
 use fedi_decentralized_service_manifold_guardian::{
     DkgCompletionCallback, FaId, FederationId, FederationName, FederationSize, FedimintdDkgVersion,
     FedimintdVersion, FormationSeatBinding, GetQuoteResponse, GuardianCode, GuardianFeeAccount,
-    InviteCode, Locator, Plan, SeatId, SignedResponse, Timestamp,
+    InviteCode, Locator, Plan, SeatId, SignedResponse,
 };
 use nostr_sdk::{Event, PublicKey};
 use stability_pool_common::Account;
@@ -266,8 +266,6 @@ struct StoredPurchase {
     /// Explicit consumer-selected ready payer, or `None` for the verified
     /// zero-price deployment-bootstrap path.
     payment_federation_id: Option<FederationId>,
-    /// The approved preview, until the purchase binds its first quote.
-    approval: Option<PreviewApproval>,
 }
 
 /// One guardian slot of the creation, keyed by its stable position. A slot
@@ -381,68 +379,6 @@ struct StoredCreationEnvelope {
     schema_version: u16,
 }
 
-/// Serializable stable projection of the verifier's canonical provenance.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
-#[serde(rename_all = "snake_case")]
-pub(crate) enum StoredVerifierProvenance {
-    Development { profile_revision: u32 },
-    Staging { profile_revision: u32 },
-    Production { profile_revision: u32 },
-    ExplicitTestConfiguration,
-}
-
-impl From<PeerBadgeVerifierProvenance> for StoredVerifierProvenance {
-    fn from(value: PeerBadgeVerifierProvenance) -> Self {
-        match value {
-            PeerBadgeVerifierProvenance::ManifoldProfile {
-                environment: ManifoldEnvironment::Development,
-                profile_revision,
-            } => Self::Development { profile_revision },
-            PeerBadgeVerifierProvenance::ManifoldProfile {
-                environment: ManifoldEnvironment::Staging,
-                profile_revision,
-            } => Self::Staging { profile_revision },
-            PeerBadgeVerifierProvenance::ManifoldProfile {
-                environment: ManifoldEnvironment::Production,
-                profile_revision,
-            } => Self::Production { profile_revision },
-            PeerBadgeVerifierProvenance::ExplicitTestConfiguration => {
-                Self::ExplicitTestConfiguration
-            }
-        }
-    }
-}
-
-/// The selection preview a purchase was saved from. It must stay fresh, under
-/// the same verifier provenance, until the purchase binds its first seat.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
-pub(crate) struct PreviewApproval {
-    pub(crate) verifier_provenance: StoredVerifierProvenance,
-    pub(crate) valid_until: Timestamp,
-}
-
-impl PreviewApproval {
-    pub(crate) fn validate(
-        &self,
-        expected_provenance: StoredVerifierProvenance,
-        now: Timestamp,
-    ) -> FaResult<()> {
-        if self.verifier_provenance != expected_provenance {
-            return Err(FaError::SelectionReauthorizationRequired {
-                reason: crate::SelectionReauthorizationReason::SeatUnavailable,
-                failure: None,
-            });
-        }
-        if self.valid_until <= now {
-            return Err(FaError::SelectionReauthorizationRequired {
-                reason: crate::SelectionReauthorizationReason::SeatUnavailable,
-                failure: None,
-            });
-        }
-        Ok(())
-    }
-}
-
 macro_rules! json_database_value {
     ($type:ty) => {
         impl DatabaseValue for $type {
@@ -504,8 +440,6 @@ pub(crate) struct RunningPurchase {
     pub(crate) fedimintd_dkg_version: FedimintdDkgVersion,
     /// Explicit payer, absent for the zero-price bootstrap.
     pub(crate) payment_federation_id: Option<FederationId>,
-    /// The approved preview, until the purchase binds its first quote.
-    pub(crate) approval: Option<PreviewApproval>,
 }
 
 /// One filled slot: its durable state and the progress this run observed.
@@ -663,8 +597,6 @@ struct FormationTestHook {
 #[derive(Clone)]
 pub(crate) struct FaStore {
     database: Database,
-    /// Wall-clock seconds for admission freshness. Tests inject their own.
-    clock: Arc<dyn Fn() -> u64 + Send + Sync>,
     #[cfg(test)]
     formation_commit_hook: Arc<std::sync::Mutex<Option<Arc<FormationTestHook>>>>,
     #[cfg(test)]
@@ -675,7 +607,6 @@ impl FaStore {
     pub(crate) fn new(database: Database) -> Self {
         Self {
             database,
-            clock: Arc::new(|| fedimint_core::time::duration_since_epoch().as_secs()),
             #[cfg(test)]
             formation_commit_hook: Arc::new(std::sync::Mutex::new(None)),
             #[cfg(test)]
@@ -1068,19 +999,6 @@ impl FaStore {
     }
 
     #[cfg(test)]
-    pub(crate) fn new_with_clock(
-        database: Database,
-        clock: Arc<dyn Fn() -> u64 + Send + Sync>,
-    ) -> Self {
-        Self {
-            database,
-            clock,
-            formation_commit_hook: Arc::new(std::sync::Mutex::new(None)),
-            seat_checkpoint_hook: Arc::new(std::sync::Mutex::new(None)),
-        }
-    }
-
-    #[cfg(test)]
     /// Pause the next hooked quote or seat transactions immediately before commit.
     ///
     /// Only the first `participants` calls from `store_quote`, `clear_quote`, or
@@ -1137,7 +1055,6 @@ impl FaStore {
         intent: ResolvedSeatPurchase,
         seats: Vec<PickedSeat>,
         payment_federation_id: Option<FederationId>,
-        approval: PreviewApproval,
     ) -> FaResult<()> {
         let creation = match self.load_creation(fa_id).await? {
             Some(_) => None,
@@ -1155,7 +1072,6 @@ impl FaStore {
             intent.fedimintd_dkg_version,
             seats,
             payment_federation_id,
-            approval,
             creation,
         )
         .await
@@ -1354,7 +1270,6 @@ impl FaStore {
         fedimintd_dkg_version: FedimintdDkgVersion,
         seats: Vec<PickedSeat>,
         payment_federation_id: Option<FederationId>,
-        approval: PreviewApproval,
         creation: Option<NewCreation>,
     ) -> FaResult<()> {
         if seats.is_empty() {
@@ -1365,7 +1280,6 @@ impl FaStore {
         let purchase = StoredPurchase {
             fedimintd_dkg_version,
             payment_federation_id,
-            approval: Some(approval),
         };
         let mut dbtx = self.database.begin_transaction().await;
         let existing = read_creation(&mut dbtx.to_ref_nc(), fa_id).await?;
@@ -1668,8 +1582,7 @@ impl FaStore {
     }
 
     /// Bind one slot to its quote before its payment or presentation can
-    /// start. The first bind of a purchase uses up its preview approval,
-    /// which must still be valid. A paid slot moves to a new quote only after
+    /// start. A paid slot moves to a new quote only after
     /// the wallet proved that no payment of its bound quote started.
     pub(crate) async fn bind_quote(
         &self,
@@ -1677,9 +1590,7 @@ impl FaStore {
         index: u16,
         bound_quote: Option<&SignedResponse<GetQuoteResponse>>,
         signed_quote: SignedResponse<GetQuoteResponse>,
-        verifier_provenance: StoredVerifierProvenance,
     ) -> FaResult<()> {
-        let now = Timestamp((self.clock)());
         let formation_id = formation_id.clone();
         let bound_quote = bound_quote.cloned();
         let store = self.clone();
@@ -1702,16 +1613,7 @@ impl FaStore {
                                     ))
                                 })?;
                         match (&slot.state, &bound_quote) {
-                            (SlotState::Picked { .. }, None) => {
-                                let purchase = creation
-                                    .stored
-                                    .purchase
-                                    .as_mut()
-                                    .expect("a running purchase exists");
-                                if let Some(approval) = purchase.approval.take() {
-                                    approval.validate(verifier_provenance, now)?;
-                                }
-                            }
+                            (SlotState::Picked { .. }, None) => {}
                             // Only a paid quote moves, to a paid quote.
                             (SlotState::Bound { quote: bound }, Some(expected))
                                 if bound == expected =>
@@ -1905,7 +1807,6 @@ impl Creation {
                 .map(|purchase| RunningPurchase {
                     fedimintd_dkg_version: purchase.fedimintd_dkg_version,
                     payment_federation_id: purchase.payment_federation_id,
-                    approval: purchase.approval,
                 }),
             invite_code: stored.invite_code,
             formation_meta_target: stored.formation_meta_target,
