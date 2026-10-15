@@ -53,8 +53,10 @@ slot's purchase is the selected major/minor/vendor DKG identity and the
 optional explicit payer, and every slot not yet accepted shares one purchase.
 The purchase runs while such a slot exists. An ended slot is not live, and a
 new slot replaces it. The creation row holds the creation's inputs, the
-formation's progress (its id, invite, and metadata target), and the reason the
-last slot left. The pool is the accepted slots, and the formation runs when
+formation id, and the reason the last slot left. It keeps the DKG completion
+callback until DKG completes. Then a formation row holds the invite the MGs
+agreed on, and later the formation metadata target. The formation row ends
+with the creation. The pool is the accepted slots, and the formation runs when
 `size` live slots are accepted. Schema 11
 kept the purchase and the formation in one row; opening such an FA migrates it.
 A schema 11 pinned formation cannot be migrated, because its MGs have no
@@ -309,7 +311,7 @@ federation until DKG starts. The engine keeps one record per concern:
 - **Formation** — runs when every slot is accepted, over the slots in index
   order. The first slot's guardian code carries the federation name.
   It runs DKG and seat-binding publication, and keeps its invite and metadata
-  target in the creation record. MGs refuse the guardian code request once
+  target in the formation row. MGs refuse the guardian code request once
   DKG starts, so each accepted slot caches its code for a DKG restart until
   MGs return them in every state. A seat that leaves the pool clears every
   code. Confirming the formation metadata ends the

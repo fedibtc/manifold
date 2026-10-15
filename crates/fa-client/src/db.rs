@@ -57,6 +57,7 @@ enum FaDbPrefix {
     Slot = 0x0a,
     Creation = 0x0b,
     ReadInvite = 0x0d,
+    Formation = 0x0e,
 }
 
 #[derive(Debug, Decodable, Encodable)]
@@ -246,12 +247,27 @@ struct StoredCreation {
     dkg_completion_callback: Option<DkgCompletionCallback>,
     /// Stable local handle of the federation: the id of the first purchase.
     formation_id: FormationId,
-    /// Federation invite, saved when DKG completes.
-    invite_code: Option<InviteCode>,
-    /// Exact formation metadata target, persisted before its first vote.
-    formation_meta_target: Option<FormationMetaTarget>,
     /// Why a slot last left the creation. A new purchase clears it.
     reauthorization: Option<crate::SelectionReauthorizationReason>,
+}
+
+/// The formation of a full pool after its DKG completed. It ends with the
+/// creation.
+#[derive(Debug, Decodable, Encodable)]
+struct FormationKey;
+
+impl_db_record!(
+    key = FormationKey,
+    value = StoredFormation,
+    db_prefix = FaDbPrefix::Formation,
+);
+
+#[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
+struct StoredFormation {
+    /// Federation invite the MGs agreed on when DKG completed.
+    invite_code: InviteCode,
+    /// Exact formation metadata target, persisted before its first vote.
+    meta_target: Option<FormationMetaTarget>,
 }
 
 /// What one purchase gives each slot it buys. Every slot that is not yet
@@ -409,6 +425,7 @@ macro_rules! json_database_value {
 mod migration;
 json_database_value!(StoredCreation);
 json_database_value!(StoredSlot);
+json_database_value!(StoredFormation);
 
 #[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
 struct StoredSetupPaymentFederationsEvent(Event);
@@ -1313,11 +1330,10 @@ impl FaStore {
                         plan: creation.plan,
                         dkg_completion_callback: creation.dkg_completion_callback,
                         formation_id: creation.formation_id,
-                        invite_code: None,
-                        formation_meta_target: None,
                         reauthorization: None,
                     },
                     slots: Vec::new(),
+                    formation: None,
                 }
             }
             (Some(_), Some(_)) => {
@@ -1474,7 +1490,7 @@ impl FaStore {
     async fn update_formation(
         &self,
         formation_id: &FormationId,
-        update: impl Fn(&mut StoredCreation) + Send + Sync,
+        update: impl Fn(&mut Creation) -> FaResult<()> + Send + Sync,
     ) -> FaResult<()> {
         let formation_id = formation_id.clone();
         let update = &update;
@@ -1484,9 +1500,12 @@ impl FaStore {
                     let formation_id = formation_id.clone();
                     Box::pin(async move {
                         let (mut creation, _) = active_formation(dbtx, &formation_id).await?;
-                        update(&mut creation.stored);
+                        update(&mut creation)?;
                         active_formation_seats(&creation)?;
                         dbtx.insert_entry(&CreationKey, &creation.stored).await;
+                        if let Some(formation) = &creation.formation {
+                            dbtx.insert_entry(&FormationKey, formation).await;
+                        }
                         Ok(())
                     })
                 },
@@ -1548,11 +1567,20 @@ impl FaStore {
         invite_code: InviteCode,
     ) -> FaResult<()> {
         self.update_formation(formation_id, |creation| {
-            creation.invite_code = Some(invite_code.clone());
+            if creation.formation.is_some() {
+                return Err(FaError::Storage(
+                    "the FA formation already completed DKG".to_owned(),
+                ));
+            }
+            creation.formation = Some(StoredFormation {
+                invite_code: invite_code.clone(),
+                meta_target: None,
+            });
             // Every MG now owns durable delivery retry. Drop the FA-side
             // bearer with the DKG checkpoint, retaining it through every
             // earlier crash and restart.
-            creation.dkg_completion_callback = None;
+            creation.stored.dkg_completion_callback = None;
+            Ok(())
         })
         .await
     }
@@ -1564,7 +1592,13 @@ impl FaStore {
         target: FormationMetaTarget,
     ) -> FaResult<()> {
         self.update_formation(formation_id, |creation| {
-            creation.formation_meta_target = Some(target.clone());
+            let formation = creation.formation.as_mut().ok_or_else(|| {
+                FaError::Storage(
+                    "the FA formation has no invite for its metadata target".to_owned(),
+                )
+            })?;
+            formation.meta_target = Some(target.clone());
+            Ok(())
         })
         .await
     }
@@ -1579,16 +1613,21 @@ impl FaStore {
                     let formation_id = formation_id.clone();
                     Box::pin(async move {
                         let (creation, seats) = active_formation(dbtx, &formation_id).await?;
-                        if creation.stored.formation_meta_target.is_none() {
+                        let Some(StoredFormation {
+                            invite_code,
+                            meta_target: Some(_),
+                        }) = &creation.formation
+                        else {
                             return Err(FaError::Storage(
                                 "cannot complete formation before publishing metadata".to_owned(),
                             ));
-                        }
-                        insert_formed_federation(dbtx, &creation.stored, &seats).await?;
+                        };
+                        insert_formed_federation(dbtx, &creation.stored, invite_code, &seats).await;
                         // Ended slots go with the creation.
                         for (index, _) in &creation.slots {
                             dbtx.remove_entry(&SlotKey { index: *index }).await;
                         }
+                        dbtx.remove_entry(&FormationKey).await;
                         dbtx.remove_entry(&CreationKey).await;
                         Ok(())
                     })
@@ -1711,7 +1750,7 @@ impl FaStore {
                             seat_left |= matches!(expected, SlotState::Accepted { .. });
                         }
                         if seat_left {
-                            if creation.stored.invite_code.is_some() {
+                            if creation.formation.is_some() {
                                 return Err(FaError::Storage(
                                     "a seat cannot leave after DKG completed".to_owned(),
                                 ));
@@ -1769,6 +1808,8 @@ fn setup_payment_event_is_newer(candidate: &Event, current: &Event) -> bool {
 struct Creation {
     stored: StoredCreation,
     slots: Vec<(u16, StoredSlot)>,
+    /// Present once DKG completed.
+    formation: Option<StoredFormation>,
 }
 
 impl Creation {
@@ -1796,7 +1837,11 @@ impl Creation {
     /// The driver's view.
     fn recovery(self) -> CreationRecovery {
         let stored = self.stored;
-        let dkg_complete = stored.invite_code.is_some();
+        let (invite_code, formation_meta_target) = match self.formation {
+            Some(formation) => (Some(formation.invite_code), formation.meta_target),
+            None => (None, None),
+        };
+        let dkg_complete = invite_code.is_some();
         let (ended, slots) = self
             .slots
             .into_iter()
@@ -1822,7 +1867,7 @@ impl Creation {
                 }
             })
             .partition::<Vec<_>, _>(|slot| matches!(slot.state, SlotState::Ended { .. }));
-        let formation_phase = if stored.formation_meta_target.is_some() {
+        let formation_phase = if formation_meta_target.is_some() {
             FormationPhase::PublishingSeatBindings
         } else if dkg_complete {
             FormationPhase::DkgComplete
@@ -1836,8 +1881,8 @@ impl Creation {
             fedimintd_versions: stored.fedimintd_versions,
             plan: stored.plan,
             reauthorization: stored.reauthorization,
-            invite_code: stored.invite_code,
-            formation_meta_target: stored.formation_meta_target,
+            invite_code,
+            formation_meta_target,
             dkg_completion_callback: stored.dkg_completion_callback,
             slots,
             ended,
@@ -1890,7 +1935,12 @@ async fn read_any_creation(dbtx: &mut DatabaseTransaction<'_>) -> FaResult<Optio
         .map(|(key, slot)| (key.index, slot))
         .collect::<Vec<_>>()
         .await;
-    let mut creation = Creation { stored, slots };
+    let formation = dbtx.get_value(&FormationKey).await;
+    let mut creation = Creation {
+        stored,
+        slots,
+        formation,
+    };
     creation.slots.sort_by_key(|(index, _)| *index);
     validate_creation(&creation)?;
     Ok(Some(creation))
@@ -2025,7 +2075,7 @@ struct FormationSeat {
 fn formation_seats(creation: &Creation) -> FaResult<Option<Vec<FormationSeat>>> {
     let accepted = creation.accepted().collect::<Vec<_>>();
     if accepted.len() < usize::from(creation.stored.federation_size.0) {
-        if creation.stored.invite_code.is_some() {
+        if creation.formation.is_some() {
             return Err(FaError::Storage(
                 "persisted FA formation lacks accepted seats".to_owned(),
             ));
@@ -2042,7 +2092,7 @@ fn formation_seats(creation: &Creation) -> FaResult<Option<Vec<FormationSeat>>> 
             guardian_code: seat.slot.state.guardian_code().cloned(),
         });
     }
-    validate_formation(&creation.stored, &seats)?;
+    validate_formation(creation, &seats)?;
     Ok(Some(seats))
 }
 
@@ -2068,21 +2118,17 @@ async fn active_formation(
 }
 
 /// Reject formation progress that disagrees with its seats.
-fn validate_formation(creation: &StoredCreation, seats: &[FormationSeat]) -> FaResult<()> {
+fn validate_formation(creation: &Creation, seats: &[FormationSeat]) -> FaResult<()> {
     if !(crate::MIN_FEDERATION_SIZE..crate::MAX_FEDERATION_SIZE_EXCLUSIVE)
-        .contains(&creation.federation_size.0)
+        .contains(&creation.stored.federation_size.0)
     {
         return Err(FaError::Storage(
             "persisted FA formation has an unsupported seat count".to_owned(),
         ));
     }
-    if creation.invite_code.is_none() {
-        if creation.formation_meta_target.is_some() {
-            return Err(FaError::Storage(
-                "persisted FA formation has a metadata target before its invite".to_owned(),
-            ));
-        }
-    } else if let Some(seat) = seats.iter().find(|seat| seat.guardian_code.is_none()) {
+    if creation.formation.is_some()
+        && let Some(seat) = seats.iter().find(|seat| seat.guardian_code.is_none())
+    {
         return Err(FaError::Storage(format!(
             "persisted formed FA formation lacks guardian recovery facts for slot {}",
             seat.index
@@ -2164,18 +2210,15 @@ async fn adopt_backup(
 async fn insert_formed_federation(
     dbtx: &mut DatabaseTransaction<'_>,
     creation: &StoredCreation,
+    federation_invite: &InviteCode,
     seats: &[FormationSeat],
-) -> FaResult<()> {
-    let federation_invite = creation
-        .invite_code
-        .clone()
-        .ok_or_else(formed_backup_required)?;
+) {
     dbtx.insert_entry(
         &FederationKey,
         &StoredFederation {
             fa_id: creation.fa_id,
             formation_id: creation.formation_id.clone(),
-            federation_invite,
+            federation_invite: federation_invite.clone(),
             federation_name: Some(creation.federation_name.clone()),
             seats: seats
                 .iter()
@@ -2188,7 +2231,6 @@ async fn insert_formed_federation(
         },
     )
     .await;
-    Ok(())
 }
 
 fn formed_backup_required() -> FaError {

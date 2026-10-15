@@ -279,6 +279,14 @@ impl FaStore {
                 },
             ));
         }
+        let formation = match (legacy.invite_code, legacy.formation_meta_target) {
+            (Some(invite_code), meta_target) => Some(StoredFormation {
+                invite_code,
+                meta_target,
+            }),
+            (None, None) => None,
+            (None, Some(_)) => return Err(malformed()),
+        };
         let creation = Creation {
             stored: StoredCreation {
                 schema_version: STORAGE_SCHEMA_VERSION,
@@ -289,11 +297,10 @@ impl FaStore {
                 plan: legacy.intent.plan,
                 dkg_completion_callback: legacy.dkg_completion_callback,
                 formation_id: legacy.formation_id.clone(),
-                invite_code: legacy.invite_code,
-                formation_meta_target: legacy.formation_meta_target,
                 reauthorization,
             },
             slots,
+            formation,
         };
         validate_creation(&creation)?;
         dbtx.raw_remove_entry(&[FaDbPrefix::LegacyFormation as u8])
@@ -318,8 +325,15 @@ impl FaStore {
             if seats.len() != usize::from(creation.stored.federation_size.0) {
                 return Err(malformed());
             }
+            let formation = creation.formation.as_ref().ok_or_else(malformed)?;
             if dbtx.get_value(&FederationKey).await.is_none() {
-                insert_formed_federation(&mut dbtx.to_ref_nc(), &creation.stored, &seats).await?;
+                insert_formed_federation(
+                    &mut dbtx.to_ref_nc(),
+                    &creation.stored,
+                    &formation.invite_code,
+                    &seats,
+                )
+                .await;
             }
         } else {
             for (index, slot) in &creation.slots {
@@ -327,6 +341,9 @@ impl FaStore {
                     .await;
             }
             dbtx.insert_new_entry(&CreationKey, &creation.stored).await;
+            if let Some(formation) = &creation.formation {
+                dbtx.insert_new_entry(&FormationKey, formation).await;
+            }
             // Reject a formation that disagrees with its seats.
             formation_seats(&creation)?;
         }
