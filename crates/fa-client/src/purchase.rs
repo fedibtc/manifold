@@ -30,6 +30,21 @@ enum SeatCreation {
     Refused(MgFailure),
 }
 
+/// A seat whose quote is saved, with its payment when the quote is paid.
+struct BoundSeat<R> {
+    signed_quote: SignedResponse<GetQuoteResponse>,
+    quote: SignatureVerified<GetQuoteResponse>,
+    payment: Option<PreparedSeatPayment<R>>,
+}
+
+/// Where a pending slot resumes.
+enum SavedSeat<R> {
+    /// The saved quote is presented next.
+    Bound(Box<BoundSeat<R>>),
+    /// A new quote at this plan is bound next.
+    Unbound(Plan),
+}
+
 #[derive(Clone)]
 struct SeatAcceptance {
     seat_id: SeatId,
@@ -457,7 +472,9 @@ where
 
     /// Buy one seat: bind a quote, pay it, and present it to its MG.
     ///
-    /// A [`FaError::SelectionReauthorizationRequired`] error proves that the
+    /// Each step starts from the slot's saved facts, so a run that resumes
+    /// after a crash repeats no finished step. A
+    /// [`FaError::SelectionReauthorizationRequired`] error proves that the
     /// seat cannot be bought and that no payment of it is outstanding.
     async fn buy_seat(
         &self,
@@ -467,80 +484,100 @@ where
         payer: &OnceCell<FederationId>,
         timeouts: Timeouts,
     ) -> FaResult<()> {
-        let formation_id = &purchase.formation_id;
-        let intent = &purchase.intent;
-        let expected_payer = purchase.payment_federation_id.as_ref();
-        let position = usize::from(slot.index);
-        let bound_quote = slot.state.bound_quote().cloned();
-        let plan = match &slot.state {
+        let bound = match self.saved_seat(purchase, slot, fa_id, timeouts).await? {
+            SavedSeat::Bound(bound) => *bound,
+            SavedSeat::Unbound(plan) => {
+                let (signed_quote, quote) = self
+                    .bind_new_quote(purchase, slot, &plan, fa_id, payer, timeouts)
+                    .await?;
+                let payment = self.fund_seat(&quote, timeouts).await?;
+                BoundSeat {
+                    signed_quote,
+                    quote,
+                    payment,
+                }
+            }
+        };
+        self.present_bound_seat(purchase, slot, fa_id, bound, timeouts)
+            .await
+    }
+
+    /// What the slot's saved facts leave to do. A bound quote resumes when
+    /// it is free or its payment exists. A bound quote that the wallet
+    /// proves was never funded may have expired, so it is quoted again at
+    /// the same plan.
+    async fn saved_seat(
+        &self,
+        purchase: &PurchaseView,
+        slot: &PendingSlot,
+        fa_id: FaId,
+        timeouts: Timeouts,
+    ) -> FaResult<SavedSeat<P::RefundContext>> {
+        let signed_quote = match &slot.state {
+            SlotState::Picked { plan, .. } => return Ok(SavedSeat::Unbound(plan.clone())),
+            SlotState::Bound { quote, .. } => quote.clone(),
             SlotState::Accepted { .. } | SlotState::Ended { .. } => {
                 return Err(FaError::Storage(format!(
                     "FA slot {} is not pending",
                     slot.index
                 )));
             }
-            SlotState::Picked { plan, .. } => plan.clone(),
-            SlotState::Bound {
-                quote: signed_quote,
-                ..
-            } => {
-                let signed_quote = signed_quote.clone();
-                let quote = self.verify_quote(
-                    position,
-                    &signed_quote,
-                    &slot.locator,
-                    intent,
-                    fa_id,
-                    expected_payer,
-                )?;
-                if quote.terms.payment.is_none() {
-                    // CreateSeat may have accepted this quote and lost its
-                    // reply, so the bound quote is presented again.
-                    return self
-                        .present_bound_seat(
-                            purchase,
-                            slot,
-                            fa_id,
-                            signed_quote,
-                            quote,
-                            None,
-                            timeouts,
-                        )
-                        .await;
+        };
+        let quote = self.verify_quote(
+            usize::from(slot.index),
+            &signed_quote,
+            &slot.locator,
+            &purchase.intent,
+            fa_id,
+            purchase.payment_federation_id.as_ref(),
+        )?;
+        // CreateSeat may have accepted a free quote and lost its reply, so
+        // the bound quote is presented again.
+        let payment = if quote.terms.payment.is_none() {
+            None
+        } else {
+            match self.recover_seat_payment(&quote, timeouts).await? {
+                SeatPaymentRecovery::Prepared(prepared) => Some(prepared),
+                SeatPaymentRecovery::Rejected => {
+                    return Err(reauthorization(
+                        SelectionReauthorizationReason::SelectedPayerUnavailable,
+                    ));
                 }
-                match self.recover_seat_payment(&quote, timeouts).await? {
-                    SeatPaymentRecovery::Prepared(prepared) => {
-                        return self
-                            .present_bound_seat(
-                                purchase,
-                                slot,
-                                fa_id,
-                                signed_quote,
-                                quote,
-                                Some(prepared),
-                                timeouts,
-                            )
-                            .await;
-                    }
-                    SeatPaymentRecovery::Rejected => {
-                        return Err(reauthorization(
-                            SelectionReauthorizationReason::SelectedPayerUnavailable,
-                        ));
-                    }
-                    // The bound quote may have expired, so the seat pays a new
-                    // quote at the same plan.
-                    SeatPaymentRecovery::NotStarted => quote.terms.request.plan.clone(),
+                SeatPaymentRecovery::NotStarted => {
+                    return Ok(SavedSeat::Unbound(quote.terms.request.plan.clone()));
                 }
             }
         };
+        Ok(SavedSeat::Bound(Box::new(BoundSeat {
+            signed_quote,
+            quote,
+            payment,
+        })))
+    }
 
+    /// Request a quote at `plan` and save it as the slot's bound quote
+    /// before any payment can start.
+    async fn bind_new_quote(
+        &self,
+        purchase: &PurchaseView,
+        slot: &mut PendingSlot,
+        plan: &Plan,
+        fa_id: FaId,
+        payer: &OnceCell<FederationId>,
+        timeouts: Timeouts,
+    ) -> FaResult<(
+        SignedResponse<GetQuoteResponse>,
+        SignatureVerified<GetQuoteResponse>,
+    )> {
+        let formation_id = &purchase.formation_id;
+        let expected_payer = purchase.payment_federation_id.as_ref();
         let (signed_quote, quote) = self
             .request_quote_with_retry(
                 formation_id,
-                position,
+                usize::from(slot.index),
                 &slot.locator,
-                intent,
-                &plan,
+                &purchase.intent,
+                plan,
                 fa_id,
                 expected_payer,
                 expected_payer.is_some().then_some(payer),
@@ -552,7 +589,7 @@ where
             .bind_quote(
                 formation_id,
                 slot.index,
-                bound_quote.as_ref(),
+                slot.state.bound_quote(),
                 signed_quote.clone(),
             )
             .await?;
@@ -566,49 +603,41 @@ where
             purchase: slot_purchase,
         };
         self.publish(None).await;
+        Ok((signed_quote, quote))
+    }
 
-        let prepared = if quote.terms.payment.is_some() {
-            let prepared = timeouts
-                .long_call("funding seat payment", || {
-                    Ok(self.inner.ports.payments.create_seat_payment(&quote))
-                })
-                .await?
-                .map_err(|error| {
-                    if error.proves_insufficient_funds() {
-                        reauthorization(
-                            SelectionReauthorizationReason::SelectedPayerInsufficientFunds,
-                        )
-                    } else {
-                        FaError::Payment(error.to_string())
-                    }
-                })?;
-            Some(prepared)
-        } else {
-            None
-        };
-        self.present_bound_seat(
-            purchase,
-            slot,
-            fa_id,
-            signed_quote,
-            quote,
-            prepared,
-            timeouts,
-        )
-        .await
+    /// Fund a bound quote. A free quote needs no payment.
+    async fn fund_seat(
+        &self,
+        quote: &SignatureVerified<GetQuoteResponse>,
+        timeouts: Timeouts,
+    ) -> FaResult<Option<PreparedSeatPayment<P::RefundContext>>> {
+        if quote.terms.payment.is_none() {
+            return Ok(None);
+        }
+        let prepared = timeouts
+            .long_call("funding seat payment", || {
+                Ok(self.inner.ports.payments.create_seat_payment(quote))
+            })
+            .await?
+            .map_err(|error| {
+                if error.proves_insufficient_funds() {
+                    reauthorization(SelectionReauthorizationReason::SelectedPayerInsufficientFunds)
+                } else {
+                    FaError::Payment(error.to_string())
+                }
+            })?;
+        Ok(Some(prepared))
     }
 
     /// Present a seat's bound quote, with its payment if it is paid, and
     /// record the accepted seat.
-    #[allow(clippy::too_many_arguments)]
     async fn present_bound_seat(
         &self,
         purchase: &PurchaseView,
         slot: &PendingSlot,
         fa_id: FaId,
-        signed_quote: SignedResponse<GetQuoteResponse>,
-        quote: SignatureVerified<GetQuoteResponse>,
-        prepared: Option<PreparedSeatPayment<P::RefundContext>>,
+        bound: BoundSeat<P::RefundContext>,
         timeouts: Timeouts,
     ) -> FaResult<()> {
         let formation_id = &purchase.formation_id;
@@ -621,9 +650,9 @@ where
                 &client,
                 &slot.locator,
                 fa_id,
-                signed_quote,
-                quote,
-                prepared,
+                bound.signed_quote,
+                bound.quote,
+                bound.payment,
                 timeouts,
             )
             .await?;
