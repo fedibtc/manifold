@@ -753,17 +753,7 @@ where
             let mut checks = FuturesUnordered::new();
             for session in &sessions {
                 checks.push(async {
-                    let request = self.sign(&GetStatusRequest {
-                        ts: Timestamp(now_secs()?),
-                        fa_id,
-                        seat_id: session.seat_id.clone(),
-                    })?;
-                    let response = session
-                        .client
-                        .call(run, MgOperation::GetStatus, |client| {
-                            client.get_status(request)
-                        })
-                        .await?;
+                    let response = self.seat_status(session, fa_id, run).await?;
                     if !matches!(
                         response.status,
                         ServiceStatus::New | ServiceStatus::DkgInProcess
@@ -1278,13 +1268,15 @@ where
         .await
     }
 
-    async fn run_dkg(
+    /// Collect every guardian code and start DKG on every seat. Returns
+    /// false when some seat ended before DKG, so its slot was emptied.
+    async fn start_dkg(
         &self,
         recovery: &mut CreationRecovery,
         sessions: &[SeatSession<MgClient<F::Client>>],
         fa_id: FaId,
         run: DriverRun,
-    ) -> FaResult<()> {
+    ) -> FaResult<bool> {
         let formation_id = recovery.formation_id.clone();
         let formation_id = &formation_id;
         recovery.formation_phase = FormationPhase::PreparingDkg;
@@ -1389,7 +1381,7 @@ where
             }
             recovery.reauthorization.get_or_insert(reason);
             self.publish(recovery);
-            return Ok(());
+            return Ok(false);
         }
         if let Some(error) = first_error {
             return Err(error);
@@ -1425,7 +1417,7 @@ where
                     Ok(_) | Err(FaError::Mg(MgFailure {
                         cause: MgCause::WrongState(ServiceStatus::DkgInProcess | ServiceStatus::Running),
                         ..
-                    })) => Ok::<_, FaError>((position, false)),
+                    })) => Ok::<_, FaError>(position),
                     Err(error) => Err(error),
                 }
             });
@@ -1433,7 +1425,7 @@ where
         let mut first_error = None;
         while let Some(result) = pending_starts.next().await {
             match result {
-                Ok((position, _)) => {
+                Ok(position) => {
                     recovery.slots[position].phase = SeatPhase::DkgUnderway;
                     recovery.slots[position].freshness = FormationFreshness::Fresh;
                 }
@@ -1450,21 +1442,7 @@ where
         }
         recovery.formation_phase = FormationPhase::DkgUnderway;
         self.publish(recovery);
-        self.poll_until_running(sessions, recovery, fa_id, run)
-            .await?;
-
-        let invite = self.fetch_agreed_invite(sessions, fa_id, run).await?;
-        recovery.invite_code = Some(invite.clone());
-        // Save DKG before publication so an interrupted run never repeats it.
-        self.inner
-            .store
-            .record_dkg_complete(formation_id, invite.clone())
-            .await?;
-        recovery.formation_phase = FormationPhase::DkgComplete;
-        self.publish(recovery);
-        self.publish_seat_bindings(sessions, recovery, fa_id, &invite, run)
-            .await?;
-        self.finish_formation(fa_id).await
+        Ok(true)
     }
 
     /// Record an accepted seat. It joins the pool at once.
@@ -1883,6 +1861,29 @@ where
 
     /// Whether every seat except `ended` reports that it has not started
     /// DKG. Any error counts as a possible start.
+    /// Read one seat's service status from its MG.
+    async fn seat_status(
+        &self,
+        session: &SeatSession<MgClient<F::Client>>,
+        fa_id: FaId,
+        run: DriverRun,
+    ) -> FaResult<GetStatusResponse> {
+        let request = GetStatusRequest {
+            ts: Timestamp(now_secs()?),
+            fa_id,
+            seat_id: session.seat_id.clone(),
+        };
+        let request = run
+            .construct("signing GetStatus request", || self.sign(&request))
+            .await?;
+        session
+            .client
+            .call(run, MgOperation::GetStatus, |client| {
+                client.get_status(request)
+            })
+            .await
+    }
+
     async fn no_seat_started_dkg(
         &self,
         sessions: &[SeatSession<MgClient<F::Client>>],
@@ -1893,22 +1894,7 @@ where
         let checks = sessions
             .iter()
             .filter(|session| !ended.contains(&session.seat_id))
-            .map(|session| async move {
-                let request = GetStatusRequest {
-                    ts: Timestamp(now_secs()?),
-                    fa_id,
-                    seat_id: session.seat_id.clone(),
-                };
-                let request = run
-                    .construct("signing GetStatus request", || self.sign(&request))
-                    .await?;
-                session
-                    .client
-                    .call(run, MgOperation::GetStatus, |client| {
-                        client.get_status(request)
-                    })
-                    .await
-            });
+            .map(|session| self.seat_status(session, fa_id, run));
         futures::future::join_all(checks)
             .await
             .into_iter()
@@ -1930,21 +1916,8 @@ where
             let mut running = 0;
             let mut pending_status = FuturesUnordered::new();
             for (position, session) in sessions.iter().enumerate() {
-                let request = GetStatusRequest {
-                    ts: Timestamp(now_secs()?),
-                    fa_id,
-                    seat_id: session.seat_id.clone(),
-                };
                 pending_status.push(async move {
-                    let request = run
-                        .construct("signing GetStatus request", || self.sign(&request))
-                        .await?;
-                    let status = session
-                        .client
-                        .call(run, MgOperation::GetStatus, |client| {
-                            client.get_status(request)
-                        })
-                        .await?;
+                    let status = self.seat_status(session, fa_id, run).await?;
                     Ok::<_, FaError>((position, status))
                 });
             }
@@ -1987,27 +1960,44 @@ where
         }
     }
 
-    async fn resume_after_dkg(
+    /// Form the federation from the full slots. Each stage is skipped when
+    /// its durable fact exists, so an interrupted formation repeats nothing.
+    async fn form(
         &self,
         recovery: &mut CreationRecovery,
         fa_id: FaId,
         run: DriverRun,
     ) -> FaResult<()> {
-        let stored = recovery.invite_code.clone().ok_or_else(|| {
-            FaError::Storage("formed FA record contains no persisted invite".to_owned())
-        })?;
-        let manager_connections = self.seat_sessions(recovery, run).await?;
-        self.poll_until_running(&manager_connections, recovery, fa_id, run)
-            .await?;
-        let invite = self
-            .fetch_agreed_invite(&manager_connections, fa_id, run)
-            .await?;
-        if invite_federation_id(&stored)? != invite_federation_id(&invite)? {
-            return Err(FaError::InvalidManifoldGuardians(
-                "formed federation identity changed during reconciliation".to_owned(),
-            ));
+        let sessions = self.seat_sessions(recovery, run).await?;
+        if recovery.invite_code.is_none()
+            && !self.start_dkg(recovery, &sessions, fa_id, run).await?
+        {
+            return Ok(());
         }
-        self.publish_seat_bindings(&manager_connections, recovery, fa_id, &invite, run)
+        self.poll_until_running(&sessions, recovery, fa_id, run)
+            .await?;
+        let invite = self.fetch_agreed_invite(&sessions, fa_id, run).await?;
+        match &recovery.invite_code {
+            Some(stored) => {
+                if invite_federation_id(stored)? != invite_federation_id(&invite)? {
+                    return Err(FaError::InvalidManifoldGuardians(
+                        "formed federation identity changed during reconciliation".to_owned(),
+                    ));
+                }
+            }
+            None => {
+                // Save DKG before publication so an interrupted run never
+                // repeats it.
+                self.inner
+                    .store
+                    .record_dkg_complete(&recovery.formation_id, invite.clone())
+                    .await?;
+                recovery.invite_code = Some(invite.clone());
+                recovery.formation_phase = FormationPhase::DkgComplete;
+                self.publish(recovery);
+            }
+        }
+        self.publish_seat_bindings(&sessions, recovery, fa_id, &invite, run)
             .await?;
         self.finish_formation(fa_id).await
     }
@@ -2812,14 +2802,7 @@ where
         run: DriverRun,
     ) -> FaResult<()> {
         self.publish(&recovery);
-        let result = if recovery.formation_phase.dkg_complete() {
-            self.resume_after_dkg(&mut recovery, fa_id, run).await
-        } else {
-            match self.seat_sessions(&recovery, run).await {
-                Ok(sessions) => self.run_dkg(&mut recovery, &sessions, fa_id, run).await,
-                Err(error) => Err(error),
-            }
-        };
+        let result = self.form(&mut recovery, fa_id, run).await;
         if let Err(error) = &result {
             log_mg_failure(&recovery.formation_id, error, "returned");
             recovery.last_error = Some(error.code());
