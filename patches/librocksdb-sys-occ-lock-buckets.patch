@@ -1,0 +1,17 @@
+--- a/rocksdb/include/rocksdb/utilities/optimistic_transaction_db.h
++++ b/rocksdb/include/rocksdb/utilities/optimistic_transaction_db.h
+@@ -72,7 +72,13 @@
+   // Used on only if validate_policy == OccValidationPolicy::kValidateParallel
+   // and shared_lock_buckets (below) is empty. Larger number potentially
+   // reduces contention but uses more memory.
+-  uint32_t occ_lock_buckets = (1 << 20);
++  //
++  // Manifold: upstream defaults to 1 << 20 buckets, which allocates and
++  // touches about 40 MiB of mutexes per open database. Every bundled
++  // fedimintd and the MG client database pay this once. Commits validate in
++  // parallel at low concurrency here, and any count of at least 16 is
++  // correct, so 4096 buckets keep contention negligible at about 160 KiB.
++  uint32_t occ_lock_buckets = (1 << 12);
+ 
+   // A pool of mutex locks for validating transactions. Can be shared among
+   // DBs. Ignored if validate_policy != OccValidationPolicy::kValidateParallel.

@@ -9,6 +9,7 @@
 //! receive a parent-death signal if the MG is hard-killed.
 
 mod duplicate_instance;
+mod memory_report;
 #[cfg(feature = "embedded-operator-ui")]
 mod operator_ui;
 mod push_callback;
@@ -148,8 +149,25 @@ enum AdminHttpAuthArg {
     Password,
 }
 
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
+/// Upper bound on Tokio's blocking pool in the daemon and in every bundled
+/// `fedimintd`.
+///
+/// Fedimint wraps each RocksDB read and write in `block_in_place`, which
+/// moves a worker into this pool. Tokio's default allows 512 threads, and the
+/// pool keeps its peak size while work keeps arriving, so a seat's thread
+/// count, and with it its memory, only ratcheted up under client load. Work
+/// beyond the bound queues until a thread is free.
+const MAX_BLOCKING_THREADS: usize = 16;
+
+fn main() -> anyhow::Result<()> {
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .max_blocking_threads(MAX_BLOCKING_THREADS)
+        .build()?
+        .block_on(run())
+}
+
+async fn run() -> anyhow::Result<()> {
     // Before this CLI is parsed: fedimintd owns the argv it was spawned with.
     if is_bundled_fedimintd() {
         let safe_event_layer = std::env::var_os(mg_core::seat_process::SAFE_EVENT_DIR_ENV)
@@ -162,6 +180,7 @@ async fn main() -> anyhow::Result<()> {
                     }
                 },
             );
+        memory_report::spawn("fedimintd");
         let never = run_bundled_fedimintd(safe_event_layer).await?;
         match never {}
     }
@@ -287,6 +306,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         })
         .transpose()?;
     init_daemon_logging(args.data_dir.join("safe-events").join("fman"))?;
+    memory_report::spawn("mg");
     tracing::info!(
         manifold_environment = %manifold_environment.environment(),
         manifold_profile_revision = manifold_environment.profile_revision(),

@@ -152,6 +152,19 @@
             ./patches/fedimint-dkg-test-pause.patch
           ];
         };
+        # RocksDB's `OptimisticTransactionDB` defaults to 2^20 commit lock
+        # buckets (about 40 MiB resident per open database), and its C API
+        # cannot set the count. Every bundled fedimintd and the MG client
+        # database open one, so lower the default in the source Cargo builds.
+        librocksdbSysPatched = pkgs.applyPatches {
+          name = "librocksdb-sys-small-occ-lock-buckets";
+          src = pkgs.fetchCrate {
+            pname = "librocksdb-sys";
+            version = "0.17.3+10.4.2";
+            hash = "sha256-sqEgsbKycWQTh9s4mZNVLo+fxMfEgR/wlPlViE/hYEM=";
+          };
+          patches = [ ./patches/librocksdb-sys-occ-lock-buckets.patch ];
+        };
         linkExternalDeps = pkgs.writeShellScriptBin "link-external-deps" ''
           set -eu
 
@@ -183,6 +196,7 @@
           link_dependency peerbadge-sdk ${peerbadge-sdk-src}
           link_dependency fedimint ${fedimintPatched}
           link_dependency fedi ${fedi}
+          link_dependency librocksdb-sys ${librocksdbSysPatched}
         '';
 
         flakeboxLib = flakebox.lib.mkLib pkgs {

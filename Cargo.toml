@@ -217,6 +217,8 @@ tokio = "1"
 # Workspace crates request Fedimint via source-neutral version requirements, so
 # this `[patch.crates-io]` block is what routes them to `.nix-deps/fedimint`.
 [patch.crates-io]
+# Lowers RocksDB's per-database optimistic-transaction lock buckets; see
+# `librocksdbSysPatched` in flake.nix.
 fedimint-aead = { path = ".nix-deps/fedimint/crypto/aead" }
 fedimint-api-client = { path = ".nix-deps/fedimint/fedimint-api-client" }
 fedimint-bip39 = { path = ".nix-deps/fedimint/fedimint-bip39" }
@@ -255,6 +257,7 @@ fedimint-wallet-client = { path = ".nix-deps/fedimint/modules/fedimint-wallet-cl
 fedimint-wallet-common = { path = ".nix-deps/fedimint/modules/fedimint-wallet-common" }
 fedimint-walletv2-client = { path = ".nix-deps/fedimint/modules/fedimint-walletv2-client" }
 fedimint-walletv2-common = { path = ".nix-deps/fedimint/modules/fedimint-walletv2-common" }
+librocksdb-sys = { path = ".nix-deps/librocksdb-sys" }
 # netwatch 0.5 uses socket2 APIs gated behind its "all" feature on macOS.
 netwatch = { git = "https://github.com/fedibtc/net-tools", rev = "0b4a63b847fd662779ad1a9c04a23db6fec39390" }
 # iroh 0.35 (Fedimint p2p) with a fix for a send livelock that pins every
