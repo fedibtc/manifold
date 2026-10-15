@@ -5849,7 +5849,12 @@ async fn partial_seat_recovery_keeps_the_remaining_payment_after_a_dropped_seat(
         .await
         .unwrap();
     store
-        .drop_seat(&formation_id, 1, Some(&quotes[1]))
+        .drop_seat(
+            &formation_id,
+            1,
+            Some(&quotes[1]),
+            SelectionReauthorizationReason::SelectedMgUnavailable,
+        )
         .await
         .unwrap();
 
@@ -8628,13 +8633,14 @@ async fn a_refused_paid_seat_leaves_and_the_rest_complete() {
 
 #[tokio::test]
 async fn a_short_payer_ends_the_purchase_before_any_quote_or_payment() {
+    let database = MemDatabase::new().into_database();
     let (payments, payment_state) = TestPayments::new();
     let seats = u64::from(MIN_FEDERATION_SIZE);
     *payment_state.checked_balance_msats.lock().unwrap() = Some(seats * PAYMENT_AMOUNT_MSATS - 1);
     let mg_state = Arc::new(MgState::default());
     let client = open_client(
-        MemDatabase::new().into_database(),
-        payments,
+        database.clone(),
+        payments.clone(),
         mg_state.clone(),
         MgConfig::paid(),
     )
@@ -8659,6 +8665,25 @@ async fn a_short_payer_ends_the_purchase_before_any_quote_or_payment() {
         "{error:?}"
     );
     assert_needs_seats(&client, MIN_FEDERATION_SIZE);
+    // A reopened FA still shows why the purchase ended.
+    let reopened = open_client(
+        database.clone(),
+        payments.clone(),
+        mg_state.clone(),
+        MgConfig::paid(),
+    )
+    .await;
+    let FaState::Creating(creation) = reopened.state() else {
+        panic!("the creation needs seats");
+    };
+    assert_eq!(
+        creation.stage,
+        CreationStage::NeedsSeats {
+            count: MIN_FEDERATION_SIZE,
+            reauthorization: Some(SelectionReauthorizationReason::SelectedPayerInsufficientFunds),
+        },
+    );
+    drop(reopened);
     assert_eq!(mg_state.quote_calls.load(Ordering::SeqCst), 0);
     assert_eq!(payment_state.create_calls.load(Ordering::SeqCst), 0);
     assert_eq!(

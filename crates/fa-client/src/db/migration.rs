@@ -247,6 +247,7 @@ impl FaStore {
             } else {
                 seats.first().and_then(|(_, seat, _)| seat.seat_id.clone())
             },
+            reauthorization: None,
         };
         if in_purchase {
             purchase.seat_count =

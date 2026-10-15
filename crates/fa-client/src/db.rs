@@ -324,6 +324,10 @@ struct StoredCreation {
     /// formation keeps the seat it named. Otherwise it is the first pool seat.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     named_seat: Option<SeatId>,
+    /// Why the last purchase ended without some of its seats. A new
+    /// purchase clears it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    reauthorization: Option<crate::SelectionReauthorizationReason>,
 }
 
 #[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
@@ -1191,10 +1195,17 @@ impl FaStore {
 
     pub(crate) async fn load_status(&self, fa_id: FaId) -> FaResult<FaStatus> {
         let formation = self.load_formation(fa_id).await?;
+        let reauthorization = self
+            .database
+            .begin_transaction_nc()
+            .await
+            .get_value(&CreationKey)
+            .await
+            .and_then(|creation| creation.reauthorization);
         Ok(FaStatus {
             recovery: None,
             creation: self.load_creation(fa_id).await?,
-            reauthorization: None,
+            reauthorization,
             purchase: self
                 .load_purchase(fa_id)
                 .await?
@@ -1549,16 +1560,19 @@ impl FaStore {
                         invite_code: None,
                         formation_meta_target: None,
                         named_seat: None,
+                        reauthorization: None,
                     },
                 )
                 .await;
             }
             None => {
-                if dbtx.get_value(&CreationKey).await.is_none() {
+                let Some(mut existing) = dbtx.get_value(&CreationKey).await else {
                     return Err(FaError::InvalidIntent(
                         "no federation creation needs seats".to_owned(),
                     ));
-                }
+                };
+                existing.reauthorization = None;
+                dbtx.insert_entry(&CreationKey, &existing).await;
             }
         }
         dbtx.insert_entry(
@@ -1843,8 +1857,11 @@ impl FaStore {
                             .is_some_and(|named| ended.contains(named))
                         {
                             creation.named_seat = None;
-                            dbtx.insert_entry(&CreationKey, &creation).await;
                         }
+                        creation.reauthorization.get_or_insert(
+                            crate::SelectionReauthorizationReason::SelectedMgUnavailable,
+                        );
+                        dbtx.insert_entry(&CreationKey, &creation).await;
                         Ok(())
                     })
                 },
@@ -2014,6 +2031,7 @@ impl FaStore {
         formation_id: &FormationId,
         index: u16,
         bound_quote: Option<&SignedResponse<GetQuoteResponse>>,
+        reason: crate::SelectionReauthorizationReason,
     ) -> FaResult<()> {
         let formation_id = formation_id.clone();
         let bound_quote = bound_quote.cloned();
@@ -2052,6 +2070,7 @@ impl FaStore {
                             .expect("remaining seats fit the stored count");
                         formation.phase = purchase_phase(&seats);
                         dbtx.insert_entry(&PurchaseKey, &formation).await;
+                        record_reauthorization(dbtx, reason).await;
                         Ok(())
                     })
                 },
@@ -2282,6 +2301,19 @@ async fn formation_seats(
     }
     validate_formation(creation, &seats)?;
     Ok(Some(seats))
+}
+
+/// Keep the first reason a seat left since the last purchase started.
+async fn record_reauthorization(
+    dbtx: &mut DatabaseTransaction<'_>,
+    reason: crate::SelectionReauthorizationReason,
+) {
+    if let Some(mut creation) = dbtx.get_value(&CreationKey).await
+        && creation.reauthorization.is_none()
+    {
+        creation.reauthorization = Some(reason);
+        dbtx.insert_entry(&CreationKey, &creation).await;
+    }
 }
 
 /// The seats of the running formation.

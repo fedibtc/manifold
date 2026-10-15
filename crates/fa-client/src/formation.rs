@@ -1247,6 +1247,7 @@ where
                 &recovery.snapshot.purchase_id,
                 seat.progress.index,
                 seat.signed_quote.as_ref(),
+                reason,
             )
             .await?;
         recovery.seats.remove(position);
