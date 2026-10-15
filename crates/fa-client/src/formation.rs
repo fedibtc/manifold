@@ -345,7 +345,7 @@ where
             let federation_name = (position == 0).then(|| formation.federation_name.clone());
             pending_codes.push(async move {
                 let code = self
-                    .get_dkg_code_with_retry(
+                    .wait_for_dkg_code(
                         formation_id,
                         session,
                         fa_id,
@@ -474,7 +474,9 @@ where
         first_error.map_or(Ok(true), Err)
     }
 
-    async fn get_dkg_code_with_retry(
+    /// Wait until the seat's MG returns its guardian code. A seat whose
+    /// `fedimintd` is not ready yet is normal progress.
+    async fn wait_for_dkg_code(
         &self,
         formation_id: &FormationId,
         session: &SeatSession<MgClient<F::Client>>,
@@ -483,7 +485,7 @@ where
         recorded_code: Option<GuardianCode>,
         timeouts: Timeouts,
     ) -> FaResult<GuardianCode> {
-        loop {
+        wait_until(timeouts.poll, || async {
             let request = GetDkgCodeRequest {
                 ts: Timestamp(now_secs()?),
                 fa_id,
@@ -498,7 +500,7 @@ where
                 })
                 .await
             {
-                Ok(response) => return Ok(response.guardian_code),
+                Ok(response) => Ok(Some(response.guardian_code)),
                 Err(
                     error @ FaError::Mg(MgFailure {
                         cause: MgCause::SeatUnavailable,
@@ -506,17 +508,16 @@ where
                     }),
                 ) => {
                     log_mg_failure(formation_id, &error, "retried");
-                    sleep(timeouts.poll).await;
+                    Ok(None)
                 }
                 Err(FaError::Mg(MgFailure {
                     cause: MgCause::WrongState(ServiceStatus::DkgInProcess | ServiceStatus::Running),
                     ..
-                })) if recorded_code.is_some() => {
-                    return Ok(recorded_code.expect("matched present recorded code"));
-                }
-                Err(error) => return Err(error),
+                })) if recorded_code.is_some() => Ok(recorded_code.clone()),
+                Err(error) => Err(error),
             }
-        }
+        })
+        .await
     }
 
     /// Whether every seat except `ended` reports that it has not started
@@ -567,7 +568,7 @@ where
         fa_id: FaId,
         timeouts: Timeouts,
     ) -> FaResult<Vec<InviteCode>> {
-        loop {
+        wait_until(timeouts.poll, || async {
             let mut invites = (0..sessions.len()).map(|_| None).collect::<Vec<_>>();
             let mut pending_status = FuturesUnordered::new();
             for (position, session) in sessions.iter().enumerate() {
@@ -597,11 +598,9 @@ where
                     invites[position] = Some(invite);
                 }
             }
-            if let Some(invites) = invites.into_iter().collect::<Option<Vec<_>>>() {
-                return Ok(invites);
-            }
-            sleep(timeouts.poll).await;
-        }
+            Ok(invites.into_iter().collect::<Option<Vec<_>>>())
+        })
+        .await
     }
 
     /// The invite every seat agrees on: all name one federation.
@@ -848,20 +847,22 @@ where
         // invalid directory after pinning it. This read validates the signed
         // directory only; recipient derivation no longer uses API keys.
         let formation_config = if formation.meta_target.is_none() {
-            loop {
-                // A guardian that restarts can leave a read unanswered until
-                // its request timeout. That is a reason to retry, as an error.
+            // A guardian that restarts can leave a read unanswered until its
+            // request timeout. The config is not readable yet, as an error.
+            let config = wait_until(timeouts.poll, || async {
                 match timeouts
                     .call("reading the formation config", || {
                         Ok(self.inner.ports.consensus_reader.read_consensus(invite))
                     })
                     .await
                 {
-                    Ok(Ok(snapshot)) => break Some(snapshot.config),
-                    Ok(Err(_)) | Err(FaError::Timeout(_)) => sleep(timeouts.poll).await,
-                    Err(error) => return Err(error),
+                    Ok(Ok(snapshot)) => Ok(Some(snapshot.config)),
+                    Ok(Err(_)) | Err(FaError::Timeout(_)) => Ok(None),
+                    Err(error) => Err(error),
                 }
-            }
+            })
+            .await?;
+            Some(config)
         } else {
             None
         };
@@ -1484,6 +1485,21 @@ fn service_seat_phase(status: &ServiceStatus) -> Result<SeatPhase, MgCause> {
         ServiceStatus::DataLoss | ServiceStatus::Decommissioned => {
             Err(MgCause::TerminalStatus(status.clone()))
         }
+    }
+}
+
+/// Run `check` every `interval` until it returns a value. `Ok(None)` means
+/// the awaited remote state is not there yet, which is normal progress and
+/// not a failure. An error ends the wait.
+async fn wait_until<T, A: Future<Output = FaResult<Option<T>>>>(
+    interval: Duration,
+    mut check: impl FnMut() -> A,
+) -> FaResult<T> {
+    loop {
+        if let Some(value) = check().await? {
+            return Ok(value);
+        }
+        sleep(interval).await;
     }
 }
 

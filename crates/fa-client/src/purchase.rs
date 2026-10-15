@@ -67,27 +67,17 @@ async fn retry_selected_mg<T, A: Future<Output = FaResult<T>>>(
         if !matches!(failure.cause, MgCause::Timeout | MgCause::Transport) {
             return Err(failure.into());
         }
-        if retry_quote_attempt(retry_deadline, &mut retry_delay)
-            .await
-            .is_err()
-        {
+        if sleep_for_retry(retry_deadline, retry_delay).await.is_err() {
             return Err(FaError::SelectionReauthorizationRequired {
                 reason: SelectionReauthorizationReason::SeatUnavailable,
                 failure: Some(failure),
             });
         }
+        retry_delay = retry_delay
+            .saturating_mul(2)
+            .min(SELECTED_MG_CONNECT_RETRY_MAX_DELAY);
         log_mg_failure(formation_id, &FaError::Mg(failure), "retried");
     }
-}
-
-async fn retry_quote_attempt(deadline: Instant, delay: &mut Duration) -> Result<(), ()> {
-    if Instant::now() >= deadline || sleep_for_retry(deadline, *delay).await.is_err() {
-        return Err(());
-    }
-    *delay = (*delay)
-        .saturating_mul(2)
-        .min(SELECTED_MG_CONNECT_RETRY_MAX_DELAY);
-    Ok(())
 }
 
 impl<I, P, N, F, C> FaClient<I, P, N, F, C>
