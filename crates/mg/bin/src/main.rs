@@ -68,6 +68,21 @@ mod tests;
 #[global_allocator]
 static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 
+/// Built-in jemalloc options for the daemon and its `fedimintd` seats (the
+/// same binary). A background thread returns freed pages within about a
+/// second, instead of on a later allocation in the same arena. Under a
+/// 30-minute federation workload this lowered `fedimintd` anonymous memory by
+/// about 8% and peak RSS by about 4%. `MALLOC_CONF` overrides these per option.
+///
+/// jemalloc reads this symbol by name. On Linux the
+/// `unprefixed_malloc_on_supported_platforms` feature of `tikv-jemalloc-sys`
+/// (enabled through `fedimintd`) leaves it without the `_rjem_` prefix.
+#[cfg(target_os = "linux")]
+#[used]
+#[unsafe(export_name = "malloc_conf")]
+static MALLOC_CONF: Option<&std::ffi::c_char> =
+    Some(unsafe { &*c"background_thread:true,dirty_decay_ms:1000,muzzy_decay_ms:0".as_ptr() });
+
 // No `Debug`: `Serve` carries the bitcoind password.
 #[derive(Parser)]
 #[command(name = "fleet-manager", about = "Manifold Guardian daemon")]
