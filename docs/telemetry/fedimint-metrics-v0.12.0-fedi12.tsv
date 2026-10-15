@@ -11,12 +11,12 @@
 # stability-pool-server. Build and dev dependencies are intentionally excluded:
 # they do not link into the MG runtime image. Any unaccounted same-source
 # Cargo.lock edge fails the check rather than silently evading this boundary.
-release_tag	0.12.0-fedi11
-producer	fedimint	fedibtc/fedimint	v0.12.0-fedi11	61b3b02da228fbcdb185f70eb69e7f9093c4bba9
+release_tag	0.12.0-fedi12
+producer	fedimint	fedibtc/fedimint	v0.12.0-fedi12	e1e3b3227c526ae2f12f6c004ee52d2d0b3e75fb
 producer	stability_pool	fedixyz/fedi	59e406974ccf7d0cd1d719a78e6cc46fd51870e6	59e406974ccf7d0cd1d719a78e6cc46fd51870e6
 package	stability_pool	stability-pool-common	crates/modules/stability-pool/common
 package	stability_pool	stability-pool-server	crates/modules/stability-pool/server
-revision	61b3b02da228fbcdb185f70eb69e7f9093c4bba9
+revision	e1e3b3227c526ae2f12f6c004ee52d2d0b3e75fb
 metric_version	0.12.0
 metric	admit	app_start_ts	fedimint
 metric	admit	backup_counts	fedimint
