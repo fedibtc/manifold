@@ -42,7 +42,9 @@ accepted source property, not something the collector can repair.
 The collector's target database, WAL, bearer capabilities, archive, and backups
 are confidential. Capabilities, Holder envelopes, endpoints, invites, journal
 selectors, incarnations, cursors, and raw rejected inputs never enter logs,
-traces, errors, metric labels, or public operator surfaces.
+traces, errors, metric labels, or public operator surfaces. The one exception
+is the federation export described below, which returns invites on the private
+listener only.
 
 ## Metrics ownership and identity
 
@@ -121,12 +123,33 @@ wildcard.
 
 The private listener is a deployment trust boundary, not an Internet-facing
 API. Operators must place it on loopback or an access-controlled private
-network; it carries health, readiness, and `/metrics`, while the separate public
-listener carries only authenticated registration. The collector fails closed
+network; it carries health, readiness, `/metrics`, and the federation export,
+while the separate public listener carries only
+authenticated registration. The collector fails closed
 when configured with a non-loopback private address unless the operator
 explicitly asserts that deployment isolation exists. That assertion makes the
 boundary visible in runtime configuration; it does not prove the external
 control.
+
+## Federation export
+
+Each admitted seat snapshot also keeps, AEAD-encrypted under the store key, the
+canonical invite the authenticated MG asserted for that seat. The ciphertext is
+bound to the deployment profile, key identifier, target, seat, and federation
+id, so it does not authenticate in any other row. The invite shares the row's
+lifecycle: an unlisted seat, a quarantined or expired target, and a metrics
+policy change remove it together with the snapshot, and the next admitted poll
+restores it.
+
+The private listener serves `GET /v1/federations`. It returns, per federation
+id of an active and unexpired target's current seats, the invite of the most
+recently observed seat, the seat count, and the latest observation time. Like
+the rest of the private listener it has no application-layer authentication;
+the private binding and the deployment's network isolation protect it, and the
+public listener never routes it. The export
+lets a deployment-owned consumer, such as a Fedimint Observer, connect to the
+federations whose MGs report telemetry; the invite is the same assertion that
+already attributes the seat's metrics and carries no stronger guarantee.
 
 `/ready` reports only local store and serving health. One stale or unreachable
 MG cannot remove registration and exposition for healthy targets from service.

@@ -7,6 +7,8 @@ pub(crate) struct SeatObservation {
     pub(crate) guardian_seat_id: String,
     /// Canonical federation id derived from the discovered seat invite.
     pub(crate) federation_id: String,
+    /// Canonical form of the invite the authenticated MG asserted for this seat.
+    pub(crate) invite_code: String,
     pub(crate) observed_at_ms: i64,
     pub(crate) samples: Vec<String>,
 }

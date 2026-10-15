@@ -24,6 +24,17 @@ const MAX_METRIC_STATE_BYTES: i64 = 32 * 1024 * 1024;
 const MAX_METRIC_STATE_SAMPLES: i64 = 100_000;
 const MAX_METRIC_SNAPSHOT_ROWS: i64 = MAX_TARGETS * 64;
 
+/// One federation whose invite an authenticated MG asserted for a current seat.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub(crate) struct ExportedFederation {
+    pub(crate) federation_id: String,
+    /// Invite from the federation's most recently observed seat.
+    pub(crate) invite_code: String,
+    /// Current seats that asserted an invite for this federation.
+    pub(crate) seats: u32,
+    pub(crate) last_seen_ms: i64,
+}
+
 /// Bounded result of loading persisted snapshots for one private exposition.
 pub(crate) struct LoadedMetricSnapshots {
     /// Rows that passed the current full metrics policy.
@@ -901,14 +912,28 @@ impl Store {
             if samples.len() > 4 * 1024 * 1024 {
                 return Err(StoreError::Saturated);
             }
+            let invite_aad = seat_invite_aad(
+                &self.trust_profile,
+                &self.key_id,
+                target.target_id(),
+                &snapshot.guardian_seat_id,
+                &snapshot.federation_id,
+            )?;
+            let (invite_nonce, invite_ciphertext) = self
+                .cipher
+                .encrypt(snapshot.invite_code.as_bytes(), &invite_aad)
+                .map_err(|_| StoreError::Secret)?;
             sqlx::query(
                 "INSERT INTO metric_snapshots(
-                    target_id,guardian_seat_id,federation_id,observed_at_ms,samples_json,sample_count
-                 ) VALUES (?,?,?,?,?,?)
+                    target_id,guardian_seat_id,federation_id,observed_at_ms,samples_json,sample_count,
+                    invite_nonce,invite_ciphertext
+                 ) VALUES (?,?,?,?,?,?,?,?)
                  ON CONFLICT(target_id,guardian_seat_id) DO UPDATE SET
                      federation_id=excluded.federation_id,
                      observed_at_ms=excluded.observed_at_ms,
-                     samples_json=excluded.samples_json,sample_count=excluded.sample_count",
+                     samples_json=excluded.samples_json,sample_count=excluded.sample_count,
+                     invite_nonce=excluded.invite_nonce,
+                     invite_ciphertext=excluded.invite_ciphertext",
             )
             .bind(target.target_id())
             .bind(snapshot.guardian_seat_id)
@@ -916,6 +941,8 @@ impl Store {
             .bind(snapshot.observed_at_ms)
             .bind(samples)
             .bind(sample_count)
+            .bind(invite_nonce)
+            .bind(invite_ciphertext)
             .execute(&mut *transaction)
             .await?;
         }
@@ -935,6 +962,64 @@ impl Store {
         wait_test_hook(&self.metric_commit_hook);
         transaction.commit().await?;
         Ok(CommitOutcome::Committed)
+    }
+
+    /// Federations of the current seats' latest admitted snapshots, one entry per
+    /// federation, ordered by federation id.
+    ///
+    /// Only active targets with an unexpired lease contribute, so an invite leaves
+    /// this view together with its seat's snapshot.
+    pub(crate) async fn exported_federations(
+        &self,
+        now: i64,
+    ) -> Result<Vec<ExportedFederation>, StoreError> {
+        let rows = sqlx::query(
+            "SELECT s.target_id,s.guardian_seat_id,s.federation_id,s.observed_at_ms,
+                    s.invite_nonce,s.invite_ciphertext
+             FROM metric_snapshots s JOIN targets t ON t.target_id = s.target_id
+             WHERE t.status = 'active' AND t.lease_until > ? AND s.invite_ciphertext IS NOT NULL
+             ORDER BY s.federation_id, s.observed_at_ms DESC, s.target_id, s.guardian_seat_id",
+        )
+        .bind(now)
+        .fetch_all(&self.pool)
+        .await?;
+        let mut federations: Vec<ExportedFederation> = Vec::new();
+        for row in rows {
+            let target_id: String = row.try_get("target_id")?;
+            let guardian_seat_id: String = row.try_get("guardian_seat_id")?;
+            let federation_id: String = row.try_get("federation_id")?;
+            let observed_at_ms: i64 = row.try_get("observed_at_ms")?;
+            let nonce: Vec<u8> = row.try_get("invite_nonce")?;
+            let ciphertext: Vec<u8> = row.try_get("invite_ciphertext")?;
+            if !canonical_federation_id(&federation_id) {
+                return Err(StoreError::Corrupt);
+            }
+            let aad = seat_invite_aad(
+                &self.trust_profile,
+                &self.key_id,
+                &target_id,
+                &guardian_seat_id,
+                &federation_id,
+            )?;
+            let invite_code = String::from_utf8(
+                self.cipher
+                    .decrypt(&nonce, &ciphertext, &aad)
+                    .map_err(|_| StoreError::Secret)?,
+            )
+            .map_err(|_| StoreError::Corrupt)?;
+            match federations.last_mut() {
+                Some(last) if last.federation_id == federation_id => {
+                    last.seats = last.seats.saturating_add(1);
+                }
+                _ => federations.push(ExportedFederation {
+                    federation_id,
+                    invite_code,
+                    seats: 1,
+                    last_seen_ms: observed_at_ms,
+                }),
+            }
+        }
+        Ok(federations)
     }
 
     /// Read one lifecycle-consistent private metrics exposition view.
@@ -1851,6 +1936,39 @@ async fn finish_immediate<T>(
     }
 }
 
+const SEAT_INVITE_FORMAT: i64 = 1;
+
+#[derive(Serialize)]
+struct SeatInviteAad<'a> {
+    format: i64,
+    secret_kind: &'static str,
+    trust_profile: &'a str,
+    key_id: &'a str,
+    target_id: &'a str,
+    guardian_seat_id: &'a str,
+    federation_id: &'a str,
+}
+
+/// Binds an invite ciphertext to its deployment, key, target, seat, and federation.
+fn seat_invite_aad(
+    trust_profile: &str,
+    key_id: &str,
+    target_id: &str,
+    guardian_seat_id: &str,
+    federation_id: &str,
+) -> Result<Vec<u8>, StoreError> {
+    serde_json::to_vec(&SeatInviteAad {
+        format: SEAT_INVITE_FORMAT,
+        secret_kind: "seat-invite",
+        trust_profile,
+        key_id,
+        target_id,
+        guardian_seat_id,
+        federation_id,
+    })
+    .map_err(|_| StoreError::Secret)
+}
+
 fn key_sentinel_aad(trust_profile: &str, key_id: &str) -> String {
     format!("cloud-fman-telemetry/key-sentinel/v1:{trust_profile}:{key_id}")
 }
@@ -2358,6 +2476,7 @@ mod tests {
                             federation_id:
                                 "0000000000000000000000000000000000000000000000000000000000000000"
                                     .to_owned(),
+                            invite_code: "test-invite".to_owned(),
                             observed_at_ms: 100_000,
                             samples: stored_samples("aa", 1),
                         }],
@@ -2445,6 +2564,7 @@ mod tests {
                         federation_id:
                             "0000000000000000000000000000000000000000000000000000000000000000"
                                 .to_owned(),
+                        invite_code: "test-invite".to_owned(),
                         observed_at_ms: 101_000,
                         samples: stored_samples("bb", 2),
                     }],
@@ -2546,6 +2666,7 @@ mod tests {
             snapshots: vec![SeatObservation {
                 guardian_seat_id: "aa".to_owned(),
                 federation_id: federation_id.to_owned(),
+                invite_code: "test-invite".to_owned(),
                 observed_at_ms,
                 samples: stored_samples("aa", 1)
                     .into_iter()
@@ -2597,6 +2718,125 @@ mod tests {
             "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
         );
         assert_eq!(loaded.snapshots[0].observed_at_ms, 101_000);
+    }
+
+    #[tokio::test]
+    async fn exported_federations_follow_current_seat_snapshots() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = store(&directory).await;
+        store
+            .reserve_auth(&auth("federation-export", 100), 100)
+            .await
+            .unwrap();
+        store
+            .admit(&auth("federation-export", 100), target(1), 100)
+            .await
+            .unwrap();
+        let scheduled = store
+            .active_collection_targets(100)
+            .await
+            .unwrap()
+            .remove(0);
+        let work = store
+            .begin_metric_work(&scheduled, 100, 1_800)
+            .await
+            .unwrap()
+            .unwrap();
+        let first = "aa".repeat(32);
+        let second = "bb".repeat(32);
+        let seat =
+            |seat: &str, federation_id: &str, invite: &str, observed_at_ms| SeatObservation {
+                guardian_seat_id: seat.to_owned(),
+                federation_id: federation_id.to_owned(),
+                invite_code: invite.to_owned(),
+                observed_at_ms,
+                samples: stored_samples(seat, 1),
+            };
+        store
+            .commit_metrics(
+                &work,
+                MetricsCommit {
+                    listed_seats: Some(["s1".to_owned(), "s2".to_owned(), "s3".to_owned()].into()),
+                    snapshots: vec![
+                        seat("s1", &first, "invite-first-old", 100_000),
+                        seat("s2", &first, "invite-first-new", 101_000),
+                        seat("s3", &second, "invite-second", 100_500),
+                    ],
+                    complete: true,
+                },
+                100,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            store.exported_federations(100).await.unwrap(),
+            vec![
+                ExportedFederation {
+                    federation_id: first.clone(),
+                    invite_code: "invite-first-new".to_owned(),
+                    seats: 2,
+                    last_seen_ms: 101_000,
+                },
+                ExportedFederation {
+                    federation_id: second.clone(),
+                    invite_code: "invite-second".to_owned(),
+                    seats: 1,
+                    last_seen_ms: 100_500,
+                },
+            ]
+        );
+        let stored: Vec<Vec<u8>> =
+            sqlx::query_scalar("SELECT invite_ciphertext FROM metric_snapshots")
+                .fetch_all(&store.pool)
+                .await
+                .unwrap();
+        assert!(stored.iter().all(|ciphertext| {
+            !ciphertext
+                .windows(b"invite-".len())
+                .any(|window| window == b"invite-")
+        }));
+
+        // A seat the MG no longer lists leaves the export with its snapshot.
+        store
+            .commit_metrics(
+                &work,
+                MetricsCommit {
+                    listed_seats: Some(["s1".to_owned(), "s3".to_owned()].into()),
+                    snapshots: Vec::new(),
+                    complete: true,
+                },
+                100,
+            )
+            .await
+            .unwrap();
+        let exported = store.exported_federations(100).await.unwrap();
+        assert_eq!(exported[0].invite_code, "invite-first-old");
+        assert_eq!(exported[0].seats, 1);
+
+        // An expired lease hides every invite of the target.
+        assert!(store.exported_federations(220).await.unwrap().is_empty());
+
+        // A ciphertext moved to another seat no longer authenticates.
+        sqlx::query(
+            "UPDATE metric_snapshots SET guardian_seat_id='moved' WHERE guardian_seat_id='s3'",
+        )
+        .execute(&store.pool)
+        .await
+        .unwrap();
+        assert!(matches!(
+            store.exported_federations(100).await,
+            Err(StoreError::Secret)
+        ));
+        sqlx::query(
+            "UPDATE metric_snapshots SET guardian_seat_id='s3' WHERE guardian_seat_id='moved'",
+        )
+        .execute(&store.pool)
+        .await
+        .unwrap();
+
+        assert!(store.quarantine("11").await.unwrap());
+        assert!(store.exported_federations(100).await.unwrap().is_empty());
     }
 
     #[tokio::test]
@@ -2798,6 +3038,7 @@ mod tests {
                             federation_id:
                                 "0000000000000000000000000000000000000000000000000000000000000000"
                                     .to_owned(),
+                            invite_code: "test-invite".to_owned(),
                             observed_at_ms: 100_000,
                             samples: stored_samples("aa", 1),
                         }],

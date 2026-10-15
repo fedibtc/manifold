@@ -27,7 +27,10 @@ that deployment policy provides this isolation; the process cannot verify that
 NetworkPolicy or an equivalent control exists or is enforced.
 Its `/metrics` output contains vetted operational data and stable MG,
 guardian-seat, and invite-derived federation identifiers; it never belongs on
-the public registration route.
+the public registration route. The same private listener also serves
+`GET /v1/federations`, which returns full invite codes; like `/metrics` it has
+no application-layer authentication, so the private binding and network
+isolation are what keep workloads other than its intended consumers away.
 
 ## Image publishing credentials
 
@@ -338,6 +341,8 @@ attestation, and is insufficient for authorization, billing, or disputes.
 Capabilities, Holder envelopes, endpoints, full invite codes or data, journal selectors,
 incarnations, cursors, raw unverified identifiers, and caller-controlled or
 unbounded values remain forbidden in labels, logs, traces, and errors.
+Seat invites are stored AEAD-encrypted beside their snapshot and leave the
+process only through the private listener's federation export.
 The collector's stderr formatter accepts only its exact crate-target namespace
 before applying `RUST_LOG`; operator directives cannot enable events or spans
 under nonmatching dependency targets that may format held endpoint or capability

@@ -18,14 +18,14 @@ const VALID_INVITE: &str = "fed11qgqpu8rhwden5te0vejkg6tdd9h8gepwd4cxcumxv4jzuen
 
 #[test]
 fn federation_attribution_requires_a_parseable_invite() {
-    assert!(federation_id_from_invite(None).is_none());
+    assert!(seat_federation(None).is_none());
     assert!(
-        federation_id_from_invite(Some(
+        seat_federation(Some(
             &fedi_decentralized_service_manifold_guardian::InviteCode("not-an-invite".to_owned())
         ))
         .is_none()
     );
-    let federation_id = federation_id_from_invite(Some(
+    let (federation_id, invite_code) = seat_federation(Some(
         &fedi_decentralized_service_manifold_guardian::InviteCode(VALID_INVITE.to_owned()),
     ))
     .unwrap();
@@ -35,6 +35,8 @@ fn federation_attribution_requires_a_parseable_invite() {
             .bytes()
             .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
     );
+    let reparsed = fedimint_core::invite_code::InviteCode::from_str(&invite_code).unwrap();
+    assert_eq!(reparsed.federation_id().to_string(), federation_id);
 }
 
 fn secure_state_path(directory: &tempfile::TempDir) -> std::path::PathBuf {

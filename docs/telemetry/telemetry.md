@@ -158,3 +158,8 @@ snapshots and poll deadlines before serving. Source release metadata never
 authorizes a target or enables a metric family.
 6. **Non-Fedi-verified MGs** — explicitly out of scope (blind spot
    acknowledged), since telemetry rides on the verification relationship.
+7. **Federation export** — the collector keeps each current seat's invite
+   encrypted beside its latest snapshot. Its private listener returns one
+   invite per federation, so
+   a deployment-owned Observer can follow the federations whose MGs report
+   telemetry. The push-gateway adapter delivers no invites.
