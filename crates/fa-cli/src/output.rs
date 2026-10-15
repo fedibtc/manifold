@@ -260,12 +260,7 @@ impl<'a> CliOutput<'a> {
             }
             FaState::Active(federation) => {
                 writeln!(self.stdout, "{}", federation.federation_invite.0)?;
-                let freshness = match federation.freshness {
-                    fa_client::FormationFreshness::Fresh => "fresh",
-                    fa_client::FormationFreshness::Unsynced => "unsynced",
-                };
-                writeln!(self.stdout, "federation state: {freshness}")?;
-                federation.last_error
+                None
             }
         };
         if let Some(error) = last_error {

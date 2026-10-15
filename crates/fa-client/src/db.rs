@@ -57,6 +57,7 @@ enum FaDbPrefix {
     Slot = 0x0a,
     Creation = 0x0b,
     GuardianCode = 0x0c,
+    ReadInvite = 0x0d,
 }
 
 #[derive(Debug, Decodable, Encodable)]
@@ -135,6 +136,23 @@ impl_db_record!(
     value = StoredFederation,
     db_prefix = FaDbPrefix::Federation
 );
+
+/// Guardian addresses from the last verified consensus of the federation
+/// that `saved` names. They are only a connection hint, and they never enter
+/// a backup.
+#[derive(Debug, Decodable, Encodable)]
+struct ReadInviteKey;
+impl_db_record!(
+    key = ReadInviteKey,
+    value = StoredReadInvite,
+    db_prefix = FaDbPrefix::ReadInvite
+);
+
+#[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
+struct StoredReadInvite {
+    saved: InviteCode,
+    invite: InviteCode,
+}
 
 #[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
 struct StoredFederation {
@@ -456,6 +474,7 @@ json_database_value!(crate::liquidity::StoredLiquidityOperation);
 json_database_value!(BackupGenerationState);
 json_database_value!(BackupRelayConfirmation);
 json_database_value!(StoredFederation);
+json_database_value!(StoredReadInvite);
 
 /// The running creation, as the driver works on it.
 pub(crate) struct CreationRecovery {
@@ -822,26 +841,26 @@ impl FaStore {
     }
 
     /// Refresh the federation name from a consensus recheck.
-    pub(crate) async fn record_federation_name(
+    /// The guardian addresses last read for the federation `saved` names.
+    pub(crate) async fn read_invite(&self, saved: &InviteCode) -> Option<InviteCode> {
+        let mut dbtx = self.database.begin_transaction_nc().await;
+        dbtx.get_value(&ReadInviteKey)
+            .await
+            .filter(|stored| &stored.saved == saved)
+            .map(|stored| stored.invite)
+    }
+
+    pub(crate) async fn record_read_invite(
         &self,
-        fa_id: FaId,
-        federation_name: Option<crate::FederationName>,
+        saved: InviteCode,
+        invite: InviteCode,
     ) -> FaResult<()> {
         let mut dbtx = self.database.begin_transaction().await;
-        let mut federation = dbtx
-            .get_value(&FederationKey)
-            .await
-            .ok_or(FaError::NoActiveFormation)?;
-        if federation.fa_id != fa_id {
-            return Err(FaError::Storage(
-                "FA federation record belongs to another scoped root".to_owned(),
-            ));
-        }
-        federation.federation_name = federation_name;
-        dbtx.insert_entry(&FederationKey, &federation).await;
+        dbtx.insert_entry(&ReadInviteKey, &StoredReadInvite { saved, invite })
+            .await;
         dbtx.commit_tx_result()
             .await
-            .map_err(|_| FaError::Storage("committing FA federation recheck failed".to_owned()))
+            .map_err(|_| FaError::Storage("committing the FA read invite failed".to_owned()))
     }
 
     pub(crate) async fn record_backup_confirmation(
@@ -1281,8 +1300,6 @@ impl FaStore {
                     locator: seat.locator,
                 })
                 .collect(),
-            freshness: FormationFreshness::Unsynced,
-            last_error: None,
         }))
     }
 

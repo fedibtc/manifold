@@ -1535,14 +1535,7 @@ fn settled(state: &FaState) -> Option<anyhow::Result<()>> {
             }
             CreationStage::Buying | CreationStage::Forming { .. } => creation.last_error,
         },
-        FaState::Active(federation) => {
-            if federation.last_error.is_none()
-                && federation.freshness == fa_client::FormationFreshness::Fresh
-            {
-                return Some(Ok(()));
-            }
-            federation.last_error
-        }
+        FaState::Active(_) => return Some(Ok(())),
     };
     last_error.map(|error| Err(anyhow::anyhow!("FA run failed: {error:?}")))
 }

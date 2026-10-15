@@ -59,23 +59,16 @@ fn creating_state_json_has_exact_schema_on_stdout() {
 }
 
 #[test]
-fn restored_text_status_reports_current_freshness() {
-    for (freshness, expected) in [
-        (fa_client::FormationFreshness::Unsynced, "unsynced"),
-        (fa_client::FormationFreshness::Fresh, "fresh"),
-    ] {
-        let state = FaState::Active(Box::new(fa_client::FederationSnapshot {
-            formation_id: fa_client::FormationId("restored-formation".to_owned()),
-            federation_invite: fa_client::InviteCode("invite".to_owned()),
-            federation_name: None,
-            seats: Vec::new(),
-            freshness,
-            last_error: None,
-        }));
-        let (stdout, stderr) = capture(|output| output.snapshot(&state, OutputFormat::Human));
-        assert_eq!(stdout, format!("invite\nfederation state: {expected}\n"));
-        assert_eq!(stderr, "");
-    }
+fn active_text_status_prints_the_invite() {
+    let state = FaState::Active(Box::new(fa_client::FederationSnapshot {
+        formation_id: fa_client::FormationId("restored-formation".to_owned()),
+        federation_invite: fa_client::InviteCode("invite".to_owned()),
+        federation_name: None,
+        seats: Vec::new(),
+    }));
+    let (stdout, stderr) = capture(|output| output.snapshot(&state, OutputFormat::Human));
+    assert_eq!(stdout, "invite\n");
+    assert_eq!(stderr, "");
 }
 
 #[test]

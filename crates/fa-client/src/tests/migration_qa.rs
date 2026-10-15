@@ -238,7 +238,6 @@ fn status_summary(status: &FaStatus) -> serde_json::Value {
             "invite": f.federation_invite.0.clone(),
             "name": f.federation_name.as_ref().map(|n| n.0.clone()),
             "seats": f.seats.iter().map(|s| s.seat_id.to_string()).collect::<Vec<_>>(),
-            "freshness": format!("{:?}", f.freshness),
         })),
         "recovery": status.recovery.is_some(),
     })
@@ -735,10 +734,6 @@ async fn r269_unverified_restore_can_be_restored_again_with_the_invite_peers_dow
         .unwrap()
         .extend((0..MIN_FEDERATION_SIZE - 1).map(PeerId::from));
     client.import_backup_for_test(Some(payload)).await.unwrap();
-    assert_eq!(
-        federation(&client.status()).freshness,
-        FormationFreshness::Fresh
-    );
 }
 
 /// The fixture's metadata target under the field name it had before Manifold

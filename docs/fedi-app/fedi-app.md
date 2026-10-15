@@ -180,10 +180,11 @@ Each accepted seat joins the pool at once. When no seat is left to buy, the
 state asks for a new preview of the missing seats. A seat with a started payment stays in the
 purchase, and the run loop recovers it by quote.
 
-Reloaded service-derived state is marked unsynced until reconciliation. An
-already formed federation is verified through fresh guardian consensus; if its
-saved invite is unreachable, recovery may ask saved managers for alternatives.
-Unfinished formation retains its MG checks. The UI may display reloaded state
+Reloaded creation state is marked unsynced until the run loop checks it with
+the MGs. A restored federation is verified through fresh guardian consensus
+once, before import; if its saved invite is unreachable, the restore may ask
+saved managers for alternatives. A formed federation is not checked again on
+reopen. The UI may display reloaded state
 as last known information but must not present it as a fresh remote observation.
 
 ## Testing responsibilities

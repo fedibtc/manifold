@@ -18,8 +18,7 @@ use crate::formation::{
 use crate::meta_write::{MetaWriteError, SeatVote, write_consensus_meta};
 use crate::{
     FaClient, FaError, FaIdentity, FaPayments, FaResult, FederationConsensusError,
-    FederationConsensusReader, FederationConsensusSnapshot, FormationFreshness,
-    ManifoldGuardianConnector,
+    FederationConsensusReader, FederationConsensusSnapshot, ManifoldGuardianConnector,
 };
 
 const MAINTENANCE_RETRY_MAX_DELAY: Duration = Duration::from_secs(5);
@@ -539,12 +538,6 @@ where
             });
         } else if self.inner.store.load_federation(fa_id).await?.is_none() {
             return Err(FaError::NoActiveFormation);
-        } else if !self
-            .status()
-            .federation
-            .is_some_and(|federation| federation.freshness == FormationFreshness::Fresh)
-        {
-            return Err(FaError::MaintenanceWrongState { phase: None });
         }
         self.post_formed_authority(fa_id).await
     }

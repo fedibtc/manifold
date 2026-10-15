@@ -14,8 +14,7 @@ use crate::db::CreationRecovery;
 use crate::formation::DriverRun;
 use crate::{
     FaClient, FaError, FaIdentity, FaPayments, FaResult, FaState, FederationConsensusReader,
-    FederationSnapshot, FormationFreshness, FormationRunOptions, ManifoldGuardianConnector,
-    RecoveryCheck, state::FaStatus,
+    FormationRunOptions, ManifoldGuardianConnector, RecoveryCheck, state::FaStatus,
 };
 
 /// Longest wait before the loop retries failed work.
@@ -127,7 +126,6 @@ enum Work {
     Recover,
     /// Buy the creation's picked slots, or form its full slots.
     Creation(Box<CreationRecovery>),
-    Reconcile(FederationSnapshot),
 }
 
 /// How one loop step ended.
@@ -240,15 +238,14 @@ where
         if status.recovery.is_some() {
             return Ok(Some(Work::Recover));
         }
-        if let Some(creation) = self.inner.store.load_creation(fa_id).await? {
-            // A creation that needs seats waits for the user.
-            return Ok((creation.purchase.is_some() || creation.is_full())
-                .then(|| Work::Creation(Box::new(creation))));
-        }
-        Ok(status
-            .federation
-            .filter(|federation| federation.freshness == FormationFreshness::Unsynced)
-            .map(Work::Reconcile))
+        // A creation that needs seats waits for the user.
+        Ok(self
+            .inner
+            .store
+            .load_creation(fa_id)
+            .await?
+            .filter(|creation| creation.purchase.is_some() || creation.is_full())
+            .map(|creation| Work::Creation(Box::new(creation))))
     }
 
     async fn do_work(&self, work: Work, fa_id: FaId, run: DriverRun) -> FaResult<()> {
@@ -273,14 +270,6 @@ where
                 }
             }
             Work::Creation(creation) => self.drive_formation(*creation, fa_id, run).await,
-            Work::Reconcile(snapshot) => {
-                self.begin_recheck();
-                let result = self.reconcile_federation(snapshot, fa_id, run).await;
-                if let Err(error) = &result {
-                    self.fail_recheck(error);
-                }
-                result
-            }
         }
     }
 }

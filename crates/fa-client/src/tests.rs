@@ -2468,33 +2468,15 @@ where
             if purchase_only && !buying {
                 return Ok(());
             }
-            let creation = creation.filter(|creation| buying || creation.is_full());
-            let reconcile = status
-                .federation
-                .filter(|federation| federation.freshness == FormationFreshness::Unsynced)
-                .filter(|_| status.creation.is_none());
-            if creation.is_none() && reconcile.is_none() {
+            let Some(recovery) = creation.filter(|creation| buying || creation.is_full()) else {
                 return Ok(());
-            }
+            };
             let run = crate::formation::DriverRun::start(options)?;
-            async {
-                if let Some(recovery) = creation {
-                    if buying {
-                        self.drive_purchase(recovery, fa_id, run).await
-                    } else {
-                        self.drive_formation(recovery, fa_id, run).await
-                    }
-                } else {
-                    let snapshot = reconcile.expect("one piece of work was chosen");
-                    self.begin_recheck();
-                    let result = self.reconcile_federation(snapshot, fa_id, run).await;
-                    if let Err(error) = &result {
-                        self.fail_recheck(error);
-                    }
-                    result
-                }
+            if buying {
+                self.drive_purchase(recovery, fa_id, run).await?;
+            } else {
+                self.drive_formation(recovery, fa_id, run).await?;
             }
-            .await?;
         }
     }
 }
@@ -3387,7 +3369,6 @@ async fn schema_11_dkg_moves_seats_into_a_formation_that_finishes() {
     assert!(accepted_seats(&status).is_empty());
     let federation = federation(&status);
     assert_eq!(federation.federation_invite, test_invite(first_mg));
-    assert_eq!(federation.freshness, FormationFreshness::Fresh);
     client.inner.store.backup_payload().await.unwrap();
 }
 
@@ -3519,16 +3500,39 @@ async fn schema_11_formed_federation_keeps_its_record_and_rechecks() {
         assert_eq!(backup.payload.federation_invite, test_invite(0));
 
         client.drive().await.unwrap();
-        let status = client.status();
-        assert_eq!(
-            status
-                .federation
-                .as_ref()
-                .map(|federation| federation.freshness),
-            Some(FormationFreshness::Fresh),
-            "{fixture:?}"
-        );
     }
+}
+
+#[tokio::test]
+async fn the_read_invite_survives_a_reopen_and_stays_out_of_the_backup() {
+    let database = MemDatabase::new().into_database();
+    let (payments, _) = TestPayments::new();
+    let mg_state = Arc::new(MgState::default());
+    let client = open_client(
+        database.clone(),
+        payments.clone(),
+        mg_state.clone(),
+        MgConfig::given_away(),
+    )
+    .await;
+    client
+        .buy_and_form_at(intent(), locators(), options())
+        .await
+        .unwrap();
+    let saved = federation(&client.status()).federation_invite.clone();
+    let read = client
+        .inner
+        .store
+        .read_invite(&saved)
+        .await
+        .expect("formation stores the guardian addresses it read");
+    assert_ne!(read, saved, "the read invite lists every guardian");
+    drop(client);
+
+    let reopened = open_client(database, payments, mg_state, MgConfig::given_away()).await;
+    assert_eq!(reopened.consensus_invite(&saved).await, read);
+    let backup = reopened.inner.store.backup_payload().await.unwrap();
+    assert_eq!(backup.payload.federation_invite, saved);
 }
 
 #[tokio::test]
@@ -3732,7 +3736,6 @@ async fn verified_backup_import_commits_federation_and_lookup_together() {
         "the import and the completed lookup commit together"
     );
     let snapshot = restored.status().federation.expect("restored status");
-    assert_eq!(snapshot.freshness, FormationFreshness::Fresh);
     assert_eq!(snapshot.seats.len(), usize::from(MIN_FEDERATION_SIZE));
     assert!(
         restored
@@ -3867,7 +3870,7 @@ fn federation_name_uses_config_only_when_metadata_name_is_absent() {
 }
 
 #[tokio::test]
-async fn restored_backup_reconciles_to_usable_authority_and_hydrates_liquidity() {
+async fn restored_backup_gives_usable_authority_and_hydrates_liquidity() {
     let (source, formation_id, mg_state, connector) = formed_client_for_liquidity().await;
     let provider = liquidity_api::Pubkey(liquidity_provider_keys().public_key().to_string());
     source
@@ -3928,7 +3931,6 @@ async fn restored_backup_reconciles_to_usable_authority_and_hydrates_liquidity()
         .status()
         .federation
         .expect("reconciled restored status");
-    assert_eq!(reconciled.freshness, FormationFreshness::Fresh);
     assert_eq!(reconciled.formation_id, restored_formation_id);
     assert_eq!(mg_state.connect_calls.load(Ordering::SeqCst), connect_calls);
     let republished = restored.inner.store.backup_payload().await.unwrap();
@@ -3979,20 +3981,6 @@ async fn restored_backup_reconciles_to_usable_authority_and_hydrates_liquidity()
     mg_state
         .connect_failures_remaining
         .store(0, Ordering::SeqCst);
-    // One hanging manager must not delay another manager's working invite.
-    let next = mg_state
-        .connect_attempts
-        .lock()
-        .unwrap()
-        .get(&0)
-        .copied()
-        .unwrap_or(0)
-        + 1;
-    *mg_state.hang_connect_on_attempt.lock().unwrap() = Some((0, next));
-    tokio::time::timeout(Duration::from_secs(2), restored.drive())
-        .await
-        .unwrap()
-        .unwrap();
     let hydrated = restored
         .current_liquidity_operation()
         .await
@@ -4018,29 +4006,6 @@ async fn restored_backup_reconciles_to_usable_authority_and_hydrates_liquidity()
     assert_eq!(resumed.phase, LiquidityOperationPhase::Accepted);
     assert!(resumed.gateway_view_verified);
     assert_eq!(connector.0.requests.lock().unwrap().len(), 1);
-    mg_state
-        .connect_failures_remaining
-        .store(usize::MAX, Ordering::SeqCst);
-    restored.inner.ports.consensus_reader.fail_next(1);
-    // Only an unsynced federation reconciles, as after a reopen.
-    restored.begin_recheck();
-    restored
-        .drive()
-        .await
-        .expect_err("a failed fresh reconciliation invalidates prior authority");
-    let invalidated = restored
-        .status()
-        .federation
-        .expect("invalidated restored status");
-    assert_eq!(invalidated.freshness, FormationFreshness::Unsynced);
-    assert!(
-        restored
-            .current_liquidity_operation()
-            .await
-            .unwrap()
-            .is_none(),
-        "post-formed mutations remain gated after failed reconciliation",
-    );
 }
 
 #[tokio::test]
@@ -4154,10 +4119,6 @@ async fn restored_recovery_dials_saved_managers_when_the_invite_peers_are_down()
         .import_backup_for_test(Some(payload))
         .await
         .unwrap();
-    assert_eq!(
-        federation(&restored.status()).freshness,
-        FormationFreshness::Fresh
-    );
 }
 
 #[tokio::test]
@@ -4565,7 +4526,6 @@ async fn open_client_with_store_and_registry(
     let progress = Arc::new(crate::run::Progress::new(status));
     FaClient {
         inner: Arc::new(FaClientInner {
-            read_invite: tokio::sync::Mutex::new(None),
             store,
             ports: FaClientPorts {
                 identity: TestIdentity,
@@ -5407,7 +5367,6 @@ async fn default_name_final_status_and_formed_reconciliation_are_typed() {
 
     let formed_status = client.status();
     let formed = federation(&formed_status);
-    assert_eq!(formed.freshness, FormationFreshness::Fresh);
     assert_eq!(formed.federation_invite, test_invite(0));
     let generated_name = formed.federation_name.clone().expect("formed name");
     assert_eq!(generated_name.0.split_whitespace().count(), 2);
@@ -5443,14 +5402,10 @@ async fn default_name_final_status_and_formed_reconciliation_are_typed() {
     let reopened = open_client(database, payments, mg_state.clone(), MgConfig::given_away()).await;
     let reloaded_status = reopened.status();
     let reloaded = federation(&reloaded_status);
-    assert_eq!(reloaded.freshness, FormationFreshness::Unsynced);
-    assert_eq!(reloaded.federation_name, Some(generated_name.clone()));
+    assert_eq!(reloaded.federation_name, Some(generated_name));
 
+    // A reopened federation has no work, so it calls no MG.
     reopened.drive().await.unwrap();
-    let reconciled_status = reopened.status();
-    let reconciled = federation(&reconciled_status);
-    assert_eq!(reconciled.freshness, FormationFreshness::Fresh);
-    assert_eq!(reconciled.federation_name, Some(generated_name));
     assert_eq!(mg_state.quote_calls.load(Ordering::SeqCst), quote_calls);
     assert_eq!(mg_state.create_calls.load(Ordering::SeqCst), create_calls);
     assert_eq!(mg_state.status_calls.load(Ordering::SeqCst), status_calls);
@@ -7159,7 +7114,6 @@ async fn run_loop_forms_a_creation_and_yields_to_a_user_action_mid_work() {
     .unwrap();
     let status = client.status();
     assert!(status.creation.is_none());
-    assert_eq!(federation(&status).freshness, FormationFreshness::Fresh);
     run.abort();
 }
 
@@ -7352,118 +7306,6 @@ async fn unfinished_setup_reopens_at_its_checkpoint_without_repeating_dkg() {
         assert_eq!(state.start_callbacks.lock().unwrap().len(), starts);
         assert_eq!(state.create_calls.load(Ordering::SeqCst), seats);
         assert_eq!(payment_state.create_calls.load(Ordering::SeqCst), 0);
-    }
-}
-
-#[tokio::test]
-async fn completed_setup_stays_formed_through_rechecks_and_cancellation() {
-    let database = MemDatabase::new().into_database();
-    let (payments, _) = TestPayments::new();
-    let state = Arc::new(MgState::default());
-    let client = open_client(
-        database.clone(),
-        payments.clone(),
-        state.clone(),
-        MgConfig::given_away(),
-    )
-    .await;
-    client
-        .buy_and_form_at(intent(), locators(), options())
-        .await
-        .unwrap();
-    drop(client);
-
-    let reader = TestConsensusReader::new(state.clone());
-    reader.fail_next(usize::MAX);
-    let client = open_client_with_reader(
-        database.clone(),
-        payments.clone(),
-        state.clone(),
-        MgConfig::given_away(),
-        reader.clone(),
-    )
-    .await;
-    // Cancel after the first failed consensus read, while the loop waits to retry.
-    tokio::time::timeout(Duration::from_secs(2), async {
-        tokio::select! {
-            () = client.run(options()) => panic!("the run loop returned"),
-            () = async {
-                while reader.failures.load(Ordering::SeqCst) == usize::MAX {
-                    tokio::task::yield_now().await;
-                }
-            } => {}
-        }
-    })
-    .await
-    .unwrap();
-    let status = client.status();
-    federation(&status);
-    assert_eq!(federation(&status).freshness, FormationFreshness::Unsynced);
-    drop(client);
-
-    for fault in ["none", "identity", "directory"] {
-        let fail = fault != "none";
-        let mut reader = TestConsensusReader::new(state.clone());
-        // Yield during readback so the observer sees the phase while checking.
-        reader.fail_next(1);
-        if fault == "identity" {
-            reader
-                .config
-                .global
-                .api_endpoints
-                .remove(&fedimint_core::PeerId::from(0));
-        }
-        if fault == "directory" {
-            reader.adopt(b"{}".to_vec());
-            reader.force_value("{}");
-        }
-        let client = open_client_with_reader(
-            database.clone(),
-            payments.clone(),
-            state.clone(),
-            MgConfig::given_away(),
-            reader,
-        )
-        .await;
-        federation(&client.status());
-        assert_eq!(
-            federation(&client.status()).freshness,
-            FormationFreshness::Unsynced
-        );
-        let mut observed = client.observe();
-        let result = {
-            let operation = client.drive();
-            tokio::pin!(operation);
-            loop {
-                tokio::select! {
-                    biased;
-                    changed = observed.changed() => {
-                        changed.unwrap();
-                        assert!(matches!(&*observed.borrow_and_update(), FaState::Active(_)));
-                    }
-                    result = &mut operation => break result,
-                }
-            }
-        };
-        assert_eq!(result.is_err(), fail);
-        let status = client.status();
-        let snapshot = federation(&status);
-        assert_eq!(snapshot.last_error.is_some(), fail);
-        assert_eq!(
-            snapshot.freshness,
-            if fail {
-                FormationFreshness::Unsynced
-            } else {
-                FormationFreshness::Fresh
-            }
-        );
-        let saved = client
-            .inner
-            .store
-            .load_status(TestIdentity::fa_id())
-            .await
-            .unwrap();
-        federation(&saved);
     }
 }
 

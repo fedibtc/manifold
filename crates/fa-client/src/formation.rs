@@ -1949,47 +1949,13 @@ where
         self.finish_formation(fa_id).await
     }
 
-    /// Publish a formed federation as fresh, in place of its formation.
+    /// Publish a formed federation in place of its formation.
     async fn finish_formation(&self, fa_id: FaId) -> FaResult<()> {
-        let mut federation = self.inner.store.load_federation(fa_id).await?;
-        if let Some(federation) = federation.as_mut() {
-            federation.freshness = FormationFreshness::Fresh;
-        }
+        let federation = self.inner.store.load_federation(fa_id).await?;
         self.inner.progress.modify(|status| {
             status.creation = None;
             status.federation = federation;
         });
-        Ok(())
-    }
-
-    /// Recheck the stored federation against consensus.
-    pub(crate) async fn reconcile_federation(
-        &self,
-        snapshot: crate::FederationSnapshot,
-        fa_id: FaId,
-        run: DriverRun,
-    ) -> FaResult<()> {
-        let seats = snapshot
-            .seats
-            .iter()
-            .map(|seat| crate::liquidity::FormedMgSeat {
-                mg_id: seat.mg_id,
-                locator: seat.locator.clone(),
-                seat_id: seat.seat_id.clone(),
-            })
-            .collect();
-        let federation_name = self
-            .verify_federation(&snapshot.federation_invite, seats, None, run)
-            .await?;
-        self.inner
-            .store
-            .record_federation_name(fa_id, federation_name)
-            .await?;
-        let mut federation = self.inner.store.load_federation(fa_id).await?;
-        if let Some(federation) = federation.as_mut() {
-            federation.freshness = FormationFreshness::Fresh;
-        }
-        self.publish_federation(federation);
         Ok(())
     }
 
@@ -2052,10 +2018,7 @@ where
             .store
             .import_backup(fa_id, payload, federation_name, completed)
             .await?;
-        let mut federation = self.inner.store.load_federation(fa_id).await?;
-        if let Some(federation) = federation.as_mut() {
-            federation.freshness = FormationFreshness::Fresh;
-        }
+        let federation = self.inner.store.load_federation(fa_id).await?;
         self.inner.progress.replace(crate::state::FaStatus {
             federation,
             ..crate::state::FaStatus::default()
@@ -2529,19 +2492,16 @@ where
     /// callers must still read fresh consensus.
     pub(crate) async fn consensus_invite(&self, saved: &InviteCode) -> InviteCode {
         self.inner
-            .read_invite
-            .lock()
+            .store
+            .read_invite(saved)
             .await
-            .as_ref()
-            .filter(|(original, _)| original == saved)
-            .map(|(_, invite)| invite.clone())
             .unwrap_or_else(|| saved.clone())
     }
 
     /// Remember several guardian addresses from a verified consensus snapshot.
     /// Call after verifying the directory and saved authority. This checks the
-    /// federation identity again before storing the connection hint in memory;
-    /// the saved invite, backups, and signed liquidity request stay unchanged.
+    /// federation identity again before it stores the connection hint. The
+    /// saved invite, backups, and signed liquidity request stay unchanged.
     async fn remember_read_invite(
         &self,
         saved: &InviteCode,
@@ -2559,9 +2519,10 @@ where
             .map_err(|error| FaError::InvalidIntent(error.to_string()))?;
         let invite =
             FedimintInviteCode::from_map(&peers, parsed.federation_id(), parsed.api_secret());
-        *self.inner.read_invite.lock().await =
-            Some((saved.clone(), InviteCode(invite.to_string())));
-        Ok(())
+        self.inner
+            .store
+            .record_read_invite(saved.clone(), InviteCode(invite.to_string()))
+            .await
     }
 
     /// Read fresh consensus, trying the invites of `seats` if the first read
@@ -2722,12 +2683,6 @@ where
             .modify(|status| status.creation = Some(snapshot));
     }
 
-    pub(crate) fn publish_federation(&self, federation: Option<crate::FederationSnapshot>) {
-        self.inner
-            .progress
-            .modify(|status| status.federation = federation);
-    }
-
     /// Drive a formation from pool seats to a formed federation.
     pub(crate) async fn drive_formation(
         &self,
@@ -2746,23 +2701,6 @@ where
     }
 
     /// A recheck withdraws the federation's freshness until it succeeds.
-    pub(crate) fn begin_recheck(&self) {
-        self.inner.progress.modify(|status| {
-            if let Some(federation) = &mut status.federation {
-                federation.freshness = FormationFreshness::Unsynced;
-            }
-        });
-    }
-
-    pub(crate) fn fail_recheck(&self, error: &FaError) {
-        self.inner.progress.modify(|status| {
-            if let Some(federation) = &mut status.federation {
-                federation.freshness = FormationFreshness::Unsynced;
-                federation.last_error = Some(error.code());
-            }
-        });
-    }
-
     pub(crate) fn fa_id(&self) -> FaResult<FaId> {
         self.inner
             .ports

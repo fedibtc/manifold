@@ -288,10 +288,6 @@ pub struct FederationSnapshot {
     /// Display name, when known.
     pub federation_name: Option<FederationName>,
     pub seats: Vec<FederationSeat>,
-    /// Whether this run verified the federation against consensus.
-    pub freshness: FormationFreshness,
-    /// Error from the last failed recheck.
-    pub last_error: Option<FaErrorCode>,
 }
 
 /// One guardian seat of the federation.

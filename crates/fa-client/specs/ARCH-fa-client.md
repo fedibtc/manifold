@@ -307,8 +307,8 @@ federation until DKG starts. The engine keeps one record per concern:
   creation (see below).
 
 `FaClient::run` is the only driver. The consumer spawns it once. It continues
-the purchase, then the formation of a full pool, then verifies an unsynced
-federation against consensus. User actions take the
+the purchase, then the formation of a full pool. A formed or restored
+federation gives the loop no work. User actions take the
 run guard, which makes the loop yield, save their input, and wake the loop.
 Failed work is retried with a growing delay up to five minutes, and its error
 appears in the state.
@@ -323,7 +323,7 @@ objects, trust conclusions, or lifecycle transitions:
 - **Storage** — an already-namespaced Fedimint `Database`; backend,
   namespacing and local encryption remain consumer concerns. The library owns
   the purpose-built encrypted Nostr recovery document and imports only its
-  lean authenticated facts as `Unsynced` state
+  lean authenticated facts after it verifies them against consensus
   ([`SPEC-fa-backup-payload`](./SPEC-fa-backup-payload.md)).
 - **Payments** — a wallet adapter that reports Ready federations and pays one
   verified quote at a time. Its funding operation is recoverable from the quote
@@ -395,24 +395,26 @@ constructs the same bounded canonical directory, verifies every paired proof
 against final configured endpoint keys, and derives
 the same recipients; FA waits for all three exact consensus fields and durably
 checkpoints their exact readback. An interrupted proposal replays the persisted
-target without re-resolving accounts or policy. Once confirmed, formed-state
-reconciliation requires the immutable directory and recipients to remain exact,
-accepts later rate changes, and needs no formation account provider.
+target without re-resolving accounts or policy.
 Formed state lives in one federation record: invite, seats, and name.
 Confirming formation metadata writes it and deletes the creation, its slots,
 and their cached codes in the same transaction. A fetched backup stays
 in memory until its seats are verified against consensus; the import then
 writes the record and makes the backup the last published generation. Backups and post-formation workflows read only this
 record. Opening migrates storage written before the record existed.
-On restart, both a locally formed federation and a restored backup start unsynced.
-Fresh threshold consensus must match the saved federation identity and verified
-directory before either becomes fresh; restored seats and any saved liquidity
-commitment must also match. This check needs no live Manifold Guardian and does not
-repeat initial formation's all-seat health and invite checks.
-If the saved invite is unreachable, recovery tries alternative invites from
+A restored backup is verified once, before the import. Fresh threshold
+consensus must match the saved federation identity, the verified directory,
+every saved seat, and any saved liquidity commitment. This check needs no
+live Manifold Guardian and does not repeat initial formation's all-seat health
+and invite checks. A reopened federation is not checked again: its record was
+written only after one of these checks, or with the confirmation of its
+formation metadata.
+If the saved invite is unreachable, the restore tries alternative invites from
 the saved managers without waiting for every manager. It verifies the same
-federation and remembers multiple guardian addresses in memory for later
-liquidity and gateway reads. Backups and committed request bytes are unchanged.
+federation. After formation or a restore, the FA stores the guardian addresses
+of the verified consensus as a read invite in its database, for later
+liquidity and gateway reads. The read invite never enters a backup, and the
+saved invite and committed request bytes are unchanged.
 
 After formation, `propose_guardian_fees` changes only the rate through the generic
 metadata verb. It does not resolve or resend recipient accounts. Directory and
@@ -441,8 +443,7 @@ with their required recovery facts: `DkgComplete` saves every accepted seat's
 quote, signed guardian-fee account, guardian setup code, and the common invite.
 `PublishingSeatBindings` saves the exact directory and initial fee target before
 submission; the formed state records its confirmation in consensus. Reopening preserves
-these phases, and a recheck of a formed federation reports its freshness and
-last error on `federation`. Inconsistent storage fails closed before status is published.
+these phases. Inconsistent storage fails closed before status is published.
 The seat/fee-account pairing is
 validated on load, so formation records persisted before signed fee-account
 acceptance existed fail closed and must be reset rather than migrated because
@@ -533,8 +534,7 @@ that record, and shares the formation driver's run guard, deadline, connector, i
 Fedi constructs `FederationMetadataUpdate::terms_of_service_url(url)` and passes
 it to `FaClient::update_federation_metadata(update, options)`, with checked
 `MaintenanceRunOptions`, for both ready-made and custom terms. The URL is stored
-as `fedi:tos_url`; the result confirms fresh consensus adoption. A restored FA
-must first resume to reconcile it.
+as `fedi:tos_url`; the result confirms fresh consensus adoption.
 
 Consumers must rebuild for the value-bearing `TermsOfService` variant and the
 removal of `GUARDIANITO_TERMS_OF_SERVICE_URL`. URL errors now use `InvalidUrl`

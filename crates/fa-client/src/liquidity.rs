@@ -44,9 +44,8 @@ use serde::Serialize;
 use crate::formation::{DriverRun, federation_name};
 use crate::ports::FaIdentityExt as _;
 use crate::{
-    FaClient, FaError, FaIdentity, FaPayments, FaResult, FederationConsensusReader,
-    FormationFreshness, FormationId, FormationRunOptions, LiquidityProviderConnector, Locator,
-    ManifoldGuardianConnector, SeatId,
+    FaClient, FaError, FaIdentity, FaPayments, FaResult, FederationConsensusReader, FormationId,
+    FormationRunOptions, LiquidityProviderConnector, Locator, ManifoldGuardianConnector, SeatId,
 };
 
 use fedi_decentralized_service_manifold_guardian::{
@@ -894,10 +893,8 @@ where
             .filter(|creation| matches!(creation.stage, crate::CreationStage::Forming { .. }));
         let formation_id = match (forming, status.federation) {
             (Some(creation), _) => creation.formation_id,
-            (None, Some(federation)) if federation.freshness == FormationFreshness::Fresh => {
-                federation.formation_id
-            }
-            (None, _) => return Ok(None),
+            (None, Some(federation)) => federation.formation_id,
+            (None, None) => return Ok(None),
         };
         self.find_live_liquidity_operation(|operation| operation.formation_id == formation_id)
             .await
@@ -1021,13 +1018,10 @@ where
         expected_formation_id: &FormationId,
     ) -> FaResult<FormedLiquidityContext> {
         match self.status().federation {
-            Some(federation)
-                if &federation.formation_id == expected_formation_id
-                    && federation.freshness == FormationFreshness::Fresh => {}
+            Some(federation) if &federation.formation_id == expected_formation_id => {}
             _ => {
                 return Err(FaError::Liquidity(
-                    "formation must be freshly reconciled and formed before requesting liquidity"
-                        .to_owned(),
+                    "formation must be formed before requesting liquidity".to_owned(),
                 ));
             }
         }
@@ -1038,10 +1032,7 @@ where
             .public_key()
             .map_err(FaError::Identity)?;
         let authority = self.post_formed_authority(fa_id).await.map_err(|_| {
-            FaError::Liquidity(
-                "formation must be freshly reconciled and formed before requesting liquidity"
-                    .to_owned(),
-            )
+            FaError::Liquidity("formation must be formed before requesting liquidity".to_owned())
         })?;
         if &authority.formation_id != expected_formation_id {
             return Err(FaError::Liquidity(

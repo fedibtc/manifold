@@ -264,7 +264,6 @@ fn lookup_error(client: &TestClient) -> FaErrorCode {
 async fn assert_restored(restored: &TestClient, source: &TestClient, generation: u64) {
     let restored_federation = federation(&restored.status()).clone();
     let source_federation = federation(&source.status()).clone();
-    assert_eq!(restored_federation.freshness, FormationFreshness::Fresh);
     assert_eq!(
         restored_federation.federation_invite,
         source_federation.federation_invite
@@ -333,17 +332,14 @@ async fn a_restored_mnemonic_finds_its_published_backup_through_the_run_loop() {
     assert_restored(&restored, &source, 1).await;
     drop(restored);
 
-    // Reopening skips the finished lookup; the stored federation is unsynced
-    // until the loop rechecks it against consensus.
+    // Reopening skips the finished lookup, and the stored federation is
+    // active at once.
     let reopened = open_restored(database, state, urls, 2).await;
-    let FaState::Active(federation) = reopened.state() else {
-        panic!("a reopened restore is active, not {:?}", reopened.state());
-    };
-    assert_eq!(federation.freshness, FormationFreshness::Unsynced);
-    run_until(&reopened, Duration::from_secs(30), |state| {
-        matches!(state, FaState::Active(federation) if federation.freshness == FormationFreshness::Fresh)
-    })
-    .await;
+    assert!(
+        matches!(reopened.state(), FaState::Active(_)),
+        "a reopened restore is active, not {:?}",
+        reopened.state()
+    );
     assert_restored(&reopened, &source, 1).await;
     workers.shutdown_join_all(None).await.unwrap();
 }
@@ -723,7 +719,7 @@ async fn a_restore_stopped_at_any_commit_finishes_after_reopen() {
             )
             .await;
             run_until(&reopened, Duration::from_secs(30), |state| {
-                matches!(state, FaState::Active(federation) if federation.freshness == FormationFreshness::Fresh)
+                matches!(state, FaState::Active(_))
             })
             .await;
             assert_restored(&reopened, &source, 1).await;

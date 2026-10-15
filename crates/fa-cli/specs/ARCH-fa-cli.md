@@ -172,11 +172,10 @@ guardian, or Guardian Verification Fee account input. Omitting the rate uses
 1,500-ppm fallback.
 
 Every maintenance command reopens the existing federation, runs the
-`fa-client` run loop until it has verified the federation against consensus,
-stops the loop, and invokes the typed library operation through the
-same open client and real consensus reader. A failed reconciliation prevents
-the mutation future from being polled. Reopening does not connect the live
-registry because neither reconciliation nor these operations uses it. The
+`fa-client` run loop until it has no work, stops the loop, and invokes the
+typed library operation through the same open client and real consensus
+reader. Reopening does not connect the live registry because these operations
+do not use it. The
 commands require a formed federation and return only after fa-client
 rereads threshold consensus and observes the exact metadata value or requested guardian-fee rate. They do not persist a second CLI-side operation record.
 
@@ -201,12 +200,11 @@ through the `fa-client` run loop, and invokes
 public-RPC client. The CLI never constructs provider trust or sends the invite
 itself.
 
-`liquidity resume --operation-id` reopens the same FA database, reconciles the
-formed federation through `fa-client::resume`, and asks `fa-client` to
-status-query or exact-replay the durable operation in the same process. The
-storage-only operation lookup occurs after the environment clients open but
-before MG/FLIP reconciliation, so a malformed or absent operation id cannot
-start protocol recovery.
+`liquidity resume --operation-id` reopens the same FA database and asks
+`fa-client` to status-query or exact-replay the durable operation in the same
+process. The storage-only operation lookup occurs after the environment
+clients open but before any MG or FLIP call, so a malformed or absent
+operation id cannot start protocol recovery.
 `liquidity status` and `liquidity list` are storage-only projections suitable
 for E2E assertions and launch-time recovery. Provider choice is not durable CLI
 state: the exact provider, request hash, endpoint hint, amounts, response, and
