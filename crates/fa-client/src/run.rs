@@ -71,7 +71,7 @@ pub(crate) struct RunControl {
     /// User actions that wait for the guard the loop holds.
     waiting: AtomicUsize,
     /// Whether the loop holds, or waits for, the run guard.
-    driving: AtomicBool,
+    pub(crate) driving: AtomicBool,
 }
 
 /// The run guard held by one user action. Releasing it wakes the loop.

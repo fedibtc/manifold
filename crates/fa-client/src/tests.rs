@@ -8721,6 +8721,62 @@ async fn a_refused_paid_seat_leaves_and_the_rest_complete() {
 }
 
 #[tokio::test]
+async fn buy_seats_rejects_a_preview_that_a_finished_purchase_made_stale() {
+    let (payments, _) = TestPayments::new();
+    let mg_state = Arc::new(MgState::default());
+    let client = open_client(
+        MemDatabase::new().into_database(),
+        payments,
+        mg_state,
+        MgConfig::given_away(),
+    )
+    .await;
+    client
+        .request_seats_at(&intent(), locators(), None)
+        .await
+        .unwrap();
+    // A preview of the missing seats, taken while the first purchase runs.
+    let spare = (0..usize::from(MIN_FEDERATION_SIZE))
+        .map(|index| locator(usize::from(MIN_FEDERATION_SIZE) + index))
+        .collect();
+    let stale = client.missing_preview_at(spare).await;
+
+    // The run loop holds the guard, so buy_seats waits for it.
+    let guard = client.inner.run_guard.lock().await;
+    client.inner.control.driving.store(true, Ordering::SeqCst);
+    let buying = tokio::spawn({
+        let client = client.clone();
+        async move { client.buy_seats(&stale, None).await }
+    });
+    tokio::task::yield_now().await;
+    let recovery = client
+        .inner
+        .store
+        .load_purchase(TestIdentity::fa_id())
+        .await
+        .unwrap()
+        .unwrap();
+    client
+        .drive_purchase(
+            recovery,
+            TestIdentity::fa_id(),
+            crate::formation::DriverRun::start(options()).unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        client.inner.store.pool_seats().await.len(),
+        usize::from(MIN_FEDERATION_SIZE)
+    );
+    client.inner.control.driving.store(false, Ordering::SeqCst);
+    drop(guard);
+
+    let error = buying.await.unwrap().unwrap_err();
+    assert!(matches!(error, FaError::InvalidIntent(_)), "{error:?}");
+    assert!(client.status().purchase.is_none());
+}
+
+#[tokio::test]
 async fn a_short_payer_ends_the_purchase_before_any_quote_or_payment() {
     let database = MemDatabase::new().into_database();
     let (payments, payment_state) = TestPayments::new();

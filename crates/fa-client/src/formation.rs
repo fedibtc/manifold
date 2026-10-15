@@ -500,6 +500,14 @@ where
         preview: &MgSelectionPreview,
         payment_federation_id: Option<FederationId>,
     ) -> FaResult<()> {
+        self.start_purchase(preview, payment_federation_id, None)
+            .await
+    }
+
+    /// Reject a preview that is not for exactly the seats the creation still
+    /// needs. The caller holds the run guard, so no purchase can complete
+    /// between this check and the new purchase.
+    async fn require_missing_seats_preview(&self, preview: &MgSelectionPreview) -> FaResult<()> {
         let fa_id = self.fa_id()?;
         let creation = self
             .inner
@@ -521,8 +529,7 @@ where
                 "the preview does not match the seats this federation still needs".to_owned(),
             ));
         }
-        self.start_purchase(preview, payment_federation_id, None)
-            .await
+        Ok(())
     }
 
     /// Validate the preview and payer, then save the purchase and wake the
@@ -567,6 +574,9 @@ where
             .collect();
         let options = FormationRunOptions::default();
         let _run = self.claim_run_guard().await?;
+        if creation.is_none() {
+            self.require_missing_seats_preview(preview).await?;
+        }
         options.validate_for_start()?;
         let fa_id = self.fa_id()?;
         let run = DriverRun::start(options)?;
