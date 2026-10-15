@@ -31,13 +31,17 @@ pub(super) struct RestoredBackupState {
 
 json_database_value!(RestoredBackupState);
 
-/// The formation fields of a schema 11 formation row that schema 12 moved
-/// out of the purchase.
+/// The schema 11 formation row: one federation creation and its purchase.
 #[derive(serde::Deserialize)]
 struct Schema11Formation {
+    schema_version: u16,
+    #[serde(rename = "fi_id")]
+    fa_id: FaId,
     formation_id: FormationId,
     phase: Schema11Phase,
     intent: Schema11Intent,
+    seat_count: u16,
+    creation_mode: serde_json::Value,
     #[serde(default)]
     invite_code: Option<InviteCode>,
     #[serde(default)]
@@ -49,6 +53,10 @@ struct Schema11Formation {
 #[derive(serde::Deserialize)]
 struct Schema11Intent {
     federation_name: FederationName,
+    federation_size: FederationSize,
+    plan: crate::PlanPreference,
+    fedimintd_versions: crate::FedimintdVersionRange,
+    fedimintd_dkg_version: FedimintdDkgVersion,
 }
 
 #[derive(PartialEq, serde::Deserialize)]
@@ -60,6 +68,52 @@ enum Schema11Phase {
     DkgComplete,
     PublishingSeatBindings,
     Formed,
+}
+
+/// The key of a schema 11 seat row.
+#[derive(Debug, Decodable, Encodable)]
+struct Schema11SeatKey {
+    formation_id: String,
+    index: u16,
+}
+
+impl Schema11SeatKey {
+    fn to_bytes(&self) -> Vec<u8> {
+        let mut bytes = vec![FaDbPrefix::LegacySeat as u8];
+        bytes.extend(self.consensus_encode_to_vec());
+        bytes
+    }
+}
+
+/// One schema 11 seat row.
+#[derive(serde::Deserialize)]
+struct Schema11Seat {
+    index: u16,
+    locator: Locator,
+    admission: Schema11Admission,
+    signed_quote: Option<SignedResponse<GetQuoteResponse>>,
+    seat_id: Option<SeatId>,
+    #[serde(default)]
+    guardian_fee_account: Option<Account>,
+    #[serde(default)]
+    guardian_code: Option<GuardianCode>,
+    /// Set while the seat waited for a guardian replacement.
+    #[serde(default)]
+    replacement_for: Option<serde_json::Value>,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum Schema11Admission {
+    PeerBadge {
+        #[serde(rename = "fman_id")]
+        mg_id: PublicKey,
+        #[serde(default)]
+        holder: Option<PublicKey>,
+        /// `"fresh"` until the seat's quote was bound to its payment or
+        /// presentation.
+        state: serde_json::Value,
+    },
 }
 
 impl FaStore {
@@ -95,13 +149,13 @@ impl FaStore {
     async fn reset_before_schema_11(&self) -> FaResult<()> {
         let mut dbtx = self.database.begin_transaction().await;
         let Some(bytes) = dbtx
-            .raw_get_bytes(&DatabaseKeyPrefix::to_bytes(&PurchaseKey))
+            .raw_get_bytes(&[FaDbPrefix::LegacyFormation as u8])
             .await
             .map_err(|_| FaError::Storage("reading FA storage failed".to_owned()))?
         else {
             return Ok(());
         };
-        let envelope: StoredPurchaseEnvelope = serde_json::from_slice(&bytes).map_err(|_| {
+        let envelope: StoredCreationEnvelope = serde_json::from_slice(&bytes).map_err(|_| {
             FaError::Storage("persisted FA purchase header is malformed".to_owned())
         })?;
         if envelope.schema_version >= RESET_BEFORE_SCHEMA_VERSION {
@@ -115,52 +169,36 @@ impl FaStore {
             .map_err(|_| FaError::Storage("committing legacy FA reset failed".to_owned()))
     }
 
-    /// Schema 11 kept a formation and its seat purchase in one row. A
-    /// purchase that has not created every seat stays a purchase. From
-    /// `seats_created` on, the seats move into the pool and the formation
-    /// progress into the creation record.
+    /// Schema 11 kept a federation creation, its purchase and its formation
+    /// in one row, with one row per seat. Each seat becomes a slot at its
+    /// index, so the seat at index 0 still carries the federation name. A
+    /// formed federation keeps only its federation record.
     async fn split_schema_11_formation(&self) -> FaResult<()> {
         let malformed =
             || FaError::Storage("persisted schema 11 FA formation is malformed".to_owned());
         let mut dbtx = self.database.begin_transaction().await;
         let Some(bytes) = dbtx
-            .raw_get_bytes(&DatabaseKeyPrefix::to_bytes(&PurchaseKey))
+            .raw_get_bytes(&[FaDbPrefix::LegacyFormation as u8])
             .await
             .map_err(|_| FaError::Storage("reading FA storage failed".to_owned()))?
         else {
             return Ok(());
         };
-        let mut header: serde_json::Value =
-            serde_json::from_slice(&bytes).map_err(|_| malformed())?;
-        if header["schema_version"] != 11 {
-            return Ok(());
+        let legacy: Schema11Formation = serde_json::from_slice(&bytes).map_err(|_| malformed())?;
+        if legacy.schema_version != 11 {
+            return Err(malformed());
         }
-        let legacy: Schema11Formation =
-            serde_json::from_value(header.clone()).map_err(|_| malformed())?;
-        let object = header.as_object_mut().ok_or_else(malformed)?;
-        for field in [
-            "invite_code",
-            "formation_meta_target",
-            "dkg_completion_callback",
-        ] {
-            object.remove(field);
-        }
-        object.insert("schema_version".to_owned(), STORAGE_SCHEMA_VERSION.into());
-        // Schema 12 keeps only the selected payer. Pinned formations were a
-        // development path with no authenticated MG identities.
-        let payment_federation_id = match object.remove("creation_mode") {
-            Some(serde_json::Value::Object(mut mode)) => mode
-                .remove("selected")
-                .ok_or_else(|| {
-                    FaError::Storage(
-                        "a schema 11 pinned FA formation cannot be migrated; reset this FA \
-                         namespace"
-                            .to_owned(),
-                    )
-                })?
-                .get_mut("payment_federation_id")
-                .map(serde_json::Value::take),
-            Some(serde_json::Value::String(mode)) if mode == "pinned" => {
+        // Pinned formations were a development path with no authenticated
+        // MG identities.
+        let payment_federation_id = match &legacy.creation_mode {
+            serde_json::Value::Object(mode) if mode.contains_key("selected") => mode["selected"]
+                .get("payment_federation_id")
+                .cloned()
+                .map(serde_json::from_value)
+                .transpose()
+                .map_err(|_| malformed())?
+                .flatten(),
+            serde_json::Value::String(mode) if mode == "pinned" => {
                 return Err(FaError::Storage(
                     "a schema 11 pinned FA formation cannot be migrated; reset this FA namespace"
                         .to_owned(),
@@ -168,169 +206,146 @@ impl FaStore {
             }
             _ => return Err(malformed()),
         };
-        if let Some(payment_federation_id) = payment_federation_id {
-            object.insert("payment_federation_id".to_owned(), payment_federation_id);
-        }
-        let in_purchase = matches!(
-            legacy.phase,
-            Schema11Phase::Initialized | Schema11Phase::SeatsPartiallyCreated
-        );
-        if !in_purchase {
-            object.insert("phase".to_owned(), "seats_created".into());
-        }
-        // Every schema 11 seat kept its preview approval. The purchase keeps
-        // the one of its first seat, which came from the purchase preview.
-        let first_seat = dbtx
-            .raw_get_bytes(&DatabaseKeyPrefix::to_bytes(&PurchaseSeatKey {
+        let mut reauthorization = None;
+        let mut slots = Vec::with_capacity(usize::from(legacy.seat_count));
+        let mut guardian_codes = Vec::new();
+        for index in 0..legacy.seat_count {
+            let key = Schema11SeatKey {
                 formation_id: legacy.formation_id.0.clone(),
-                index: 0,
-            }))
-            .await
-            .map_err(|_| FaError::Storage("reading FA storage failed".to_owned()))?
-            .ok_or_else(malformed)?;
-        let first_seat: serde_json::Value =
-            serde_json::from_slice(&first_seat).map_err(|_| malformed())?;
-        let badge = &first_seat["admission"]["peer_badge"];
-        object.insert(
-            "approval".to_owned(),
-            serde_json::json!({
-                "verifier_provenance": badge["verifier_provenance"],
-                "valid_until": badge["valid_until"],
-            }),
-        );
-        let mut purchase: StoredPurchase =
-            serde_json::from_value(header).map_err(|_| malformed())?;
-        let mut seats = Vec::with_capacity(usize::from(purchase.seat_count));
-        for index in 0..purchase.seat_count {
-            let key = PurchaseSeatKey {
-                formation_id: purchase.formation_id.0.clone(),
                 index,
             };
             let bytes = dbtx
-                .raw_get_bytes(&DatabaseKeyPrefix::to_bytes(&key))
+                .raw_get_bytes(&key.to_bytes())
                 .await
                 .map_err(|_| FaError::Storage("reading FA storage failed".to_owned()))?
                 .ok_or_else(|| {
                     FaError::Storage(format!("missing persisted FA seat row {index}"))
                 })?;
-            let mut seat: serde_json::Value =
-                serde_json::from_slice(&bytes).map_err(|_| malformed())?;
-            let seat_object = seat.as_object_mut().ok_or_else(malformed)?;
-            let admission = seat_object
-                .get_mut("admission")
-                .and_then(|admission| admission.get_mut("peer_badge"))
-                .ok_or_else(malformed)?
-                .take();
-            // Schema 12 keeps a quote only while its seat is bound to it. The
-            // payer wallet released every unbound quote's payment hold.
-            let unbound = admission["state"] == "fresh";
-            seat_object.insert("admission".to_owned(), admission);
-            let guardian_code: Option<GuardianCode> = seat_object
-                .remove("guardian_code")
-                .map(serde_json::from_value)
-                .transpose()
-                .map_err(|_| malformed())?
-                .flatten();
+            let seat: Schema11Seat = serde_json::from_slice(&bytes).map_err(|_| malformed())?;
+            if seat.index != index {
+                return Err(malformed());
+            }
             // Schema 12 has no guardian replacement. A seat that waited for
             // one ended after payment, and an applied replacement has no
-            // effect yet, so both leave the purchase.
-            let replacement = !seat_object
-                .get("replacement_for")
-                .unwrap_or(&serde_json::Value::Null)
-                .is_null();
-            let mut seat: StoredPurchaseSeat =
-                serde_json::from_value(seat).map_err(|_| malformed())?;
-            if replacement {
-                dbtx.raw_remove_entry(&DatabaseKeyPrefix::to_bytes(&key))
-                    .await
-                    .map_err(|_| FaError::Storage("removing a schema 11 seat failed".to_owned()))?;
+            // effect yet, so both leave.
+            if seat
+                .replacement_for
+                .as_ref()
+                .is_some_and(|replacement| !replacement.is_null())
+            {
                 continue;
             }
-            if unbound {
-                seat.signed_quote = None;
-            }
-            seats.push((key, seat, guardian_code));
-        }
-        // Schema 12 keeps the user's creation inputs and formation progress
-        // in their own record until the federation forms.
-        let creation = StoredCreation {
-            fa_id: purchase.fa_id.ok_or_else(malformed)?,
-            federation_name: legacy.intent.federation_name,
-            federation_size: purchase.intent.federation_size,
-            fedimintd_versions: purchase.intent.fedimintd_versions.clone(),
-            plan: purchase.intent.plan,
-            dkg_completion_callback: legacy.dkg_completion_callback,
-            formation_id: purchase.formation_id.clone(),
-            invite_code: legacy.invite_code,
-            formation_meta_target: legacy.formation_meta_target,
-            // Schema 11 named the guardian code of the seat at index 0.
-            named_seat: if in_purchase {
-                None
-            } else {
-                seats.first().and_then(|(_, seat, _)| seat.seat_id.clone())
-            },
-            reauthorization: None,
-        };
-        if in_purchase {
-            purchase.seat_count =
-                u16::try_from(seats.len()).expect("kept seats fit the stored count");
-            purchase.phase = purchase_phase(
-                &seats
-                    .iter()
-                    .map(|(_, seat, _)| seat.clone())
-                    .collect::<Vec<_>>(),
-            );
-            // The schema 11 rows no longer decode, so they are replaced
-            // without decoding.
-            dbtx.raw_remove_entry(&DatabaseKeyPrefix::to_bytes(&PurchaseKey))
-                .await
-                .map_err(|_| FaError::Storage("removing a schema 11 purchase failed".to_owned()))?;
-            dbtx.insert_new_entry(&PurchaseKey, &purchase).await;
-            for (key, seat, _) in seats {
-                dbtx.raw_remove_entry(&DatabaseKeyPrefix::to_bytes(&key))
-                    .await
-                    .map_err(|_| FaError::Storage("removing a schema 11 seat failed".to_owned()))?;
-                dbtx.insert_new_entry(&key, &seat).await;
-            }
-            dbtx.insert_new_entry(&CreationKey, &creation).await;
-        } else {
-            let mut formation_seats = Vec::with_capacity(seats.len());
-            for (key, seat, guardian_code) in seats {
-                dbtx.raw_remove_entry(&DatabaseKeyPrefix::to_bytes(&key))
-                    .await
-                    .map_err(|_| FaError::Storage("removing a schema 11 seat failed".to_owned()))?;
-                formation_seats.push((pool_seat(seat)?, guardian_code));
-            }
-            // The schema 11 row may hold a phase the purchase type cannot
-            // decode, so it is removed without decoding.
-            dbtx.raw_remove_entry(&DatabaseKeyPrefix::to_bytes(&PurchaseKey))
-                .await
-                .map_err(|_| {
-                    FaError::Storage("removing a schema 11 formation failed".to_owned())
-                })?;
-            validate_formation(&creation, &formation_seats)?;
-            if legacy.phase == Schema11Phase::Formed {
-                // A formed federation keeps only its federation record.
-                if dbtx.get_value(&FederationKey).await.is_none() {
-                    insert_formed_federation(&mut dbtx.to_ref_nc(), &creation, &formation_seats)
-                        .await?;
-                }
-            } else {
-                for (seat, guardian_code) in formation_seats {
-                    let seat_id = seat.seat_id.to_string();
-                    if let Some(guardian_code) = guardian_code {
-                        dbtx.insert_new_entry(
-                            &GuardianCodeKey {
-                                seat_id: seat_id.clone(),
-                            },
-                            &StoredGuardianCode(guardian_code),
-                        )
-                        .await;
+            let Schema11Admission::PeerBadge {
+                mg_id,
+                holder,
+                state,
+            } = seat.admission;
+            let state = match (seat.seat_id, seat.signed_quote) {
+                (Some(seat_id), Some(quote)) => {
+                    let quote = quote
+                        .verify(&seat.locator.service_pubkey)
+                        .map_err(|_| malformed())?;
+                    if let Some(code) = seat.guardian_code {
+                        guardian_codes.push((seat_id.clone(), code));
                     }
-                    dbtx.insert_new_entry(&PoolSeatKey { seat_id }, &seat).await;
+                    SlotState::Accepted {
+                        seat_id,
+                        guardian_fee_account: seat.guardian_fee_account.ok_or_else(malformed)?,
+                        fedimintd_version: quote.terms.request.fedimintd_version.clone(),
+                    }
                 }
-                dbtx.insert_new_entry(&CreationKey, &creation).await;
+                (Some(_), None) => return Err(malformed()),
+                // A seat whose quote was bound may hold a started payment.
+                (None, Some(quote)) if state != "fresh" => SlotState::Bound { quote },
+                // Schema 11 did not record the previewed plan, so an unbound
+                // seat has no approved price to request.
+                (None, _) => {
+                    reauthorization
+                        .get_or_insert(crate::SelectionReauthorizationReason::PreviewExpired);
+                    continue;
+                }
+            };
+            slots.push((
+                index,
+                StoredSlot {
+                    locator: seat.locator,
+                    mg_id,
+                    holder,
+                    state,
+                },
+            ));
+        }
+        let mut creation = Creation {
+            stored: StoredCreation {
+                schema_version: STORAGE_SCHEMA_VERSION,
+                fa_id: legacy.fa_id,
+                federation_name: legacy.intent.federation_name,
+                federation_size: legacy.intent.federation_size,
+                fedimintd_versions: legacy.intent.fedimintd_versions,
+                plan: legacy.intent.plan,
+                dkg_completion_callback: legacy.dkg_completion_callback,
+                formation_id: legacy.formation_id.clone(),
+                invite_code: legacy.invite_code,
+                formation_meta_target: legacy.formation_meta_target,
+                reauthorization,
+                purchase: None,
+            },
+            slots,
+        };
+        // A kept unaccepted seat was bound, so the purchase approval is used.
+        if creation.pending().next().is_some() {
+            creation.stored.purchase = Some(StoredPurchase {
+                purchase_id: legacy.formation_id,
+                fedimintd_dkg_version: legacy.intent.fedimintd_dkg_version,
+                payment_federation_id,
+                approval: None,
+            });
+        }
+        validate_creation(&creation)?;
+        dbtx.raw_remove_entry(&[FaDbPrefix::LegacyFormation as u8])
+            .await
+            .map_err(|_| FaError::Storage("removing a schema 11 formation failed".to_owned()))?;
+        dbtx.raw_remove_by_prefix(&[FaDbPrefix::LegacySeat as u8])
+            .await
+            .map_err(|_| FaError::Storage("removing schema 11 seats failed".to_owned()))?;
+        if legacy.phase == Schema11Phase::Formed {
+            // A formed federation keeps only its federation record.
+            let mut seats = Vec::with_capacity(creation.slots.len());
+            for (index, slot) in &creation.slots {
+                let accepted = slot.accepted().ok_or_else(malformed)?;
+                seats.push(FormationSeat {
+                    index: *index,
+                    mg_id: slot.mg_id,
+                    locator: slot.locator.clone(),
+                    seat_id: accepted.seat_id.clone(),
+                    guardian_fee_account: accepted.guardian_fee_account.clone(),
+                    fedimintd_version: accepted.fedimintd_version.clone(),
+                    guardian_code: None,
+                });
             }
+            if seats.len() != usize::from(creation.stored.federation_size.0) {
+                return Err(malformed());
+            }
+            if dbtx.get_value(&FederationKey).await.is_none() {
+                insert_formed_federation(&mut dbtx.to_ref_nc(), &creation.stored, &seats).await?;
+            }
+        } else {
+            for (seat_id, code) in guardian_codes {
+                dbtx.insert_new_entry(
+                    &GuardianCodeKey {
+                        seat_id: seat_id.to_string(),
+                    },
+                    &StoredGuardianCode(code),
+                )
+                .await;
+            }
+            for (index, slot) in &creation.slots {
+                dbtx.insert_new_entry(&SlotKey { index: *index }, slot)
+                    .await;
+            }
+            dbtx.insert_new_entry(&CreationKey, &creation.stored).await;
+            // Reject cached codes that disagree with the formation.
+            formation_seats(&mut dbtx.to_ref_nc(), &creation).await?;
         }
         dbtx.commit_tx_result()
             .await

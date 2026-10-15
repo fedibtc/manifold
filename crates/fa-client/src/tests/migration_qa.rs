@@ -466,8 +466,8 @@ async fn rebuy_missing_seats<I: FaIdentity>(client: &SnapshotClient<I>) -> FaRes
         .load_creation(fa_id)
         .await?
         .ok_or(FaError::NoActiveFormation)?;
-    let bought = store.bought_seats().await;
-    let bought_count = u16::try_from(store.pool_seats().await.len()).unwrap();
+    let bought = store.bought_seats(fa_id).await?;
+    let bought_count = u16::try_from(store.pool_seats(fa_id).await?.len()).unwrap();
     let missing = usize::from(creation.federation_size.0 - bought_count);
     let request = MgSelectionRequest::new(
         creation.federation_size,

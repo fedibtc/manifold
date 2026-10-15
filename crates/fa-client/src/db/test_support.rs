@@ -128,6 +128,26 @@ impl FaStore {
         dbtx.commit_tx().await;
     }
 
+    /// Install the schema 11 purchase fixture with seat `index` never bound
+    /// to an effect.
+    pub(crate) async fn install_schema_11_unbound_seat_for_test(&self, index: u16) {
+        let mut rows: Vec<(String, serde_json::Value)> =
+            serde_json::from_str(SCHEMA_11_PURCHASE).expect("schema 11 fixture parses");
+        for (key, value) in &mut rows {
+            if key.starts_with("01") && value["index"] == index {
+                value["admission"]["peer_badge"]["state"] = "fresh".into();
+            }
+        }
+        let mut dbtx = self.database.begin_transaction().await;
+        for (key, value) in rows {
+            let key = hex::decode(key).expect("fixture key is hex");
+            dbtx.raw_insert_bytes(&key, &serde_json::to_vec(&value).expect("fixture value"))
+                .await
+                .expect("test raw write succeeds");
+        }
+        dbtx.commit_tx().await;
+    }
+
     pub(crate) async fn install_schema_9_fixture_for_test(&self) {
         self.install_raw_formation_for_test(SCHEMA_9_FORMATION)
             .await;
@@ -135,10 +155,10 @@ impl FaStore {
 
     pub(crate) async fn install_raw_formation_for_test(&self, bytes: &[u8]) {
         let mut dbtx = self.database.begin_transaction().await;
-        dbtx.raw_insert_bytes(&DatabaseKeyPrefix::to_bytes(&PurchaseKey), bytes)
+        dbtx.raw_insert_bytes(&[FaDbPrefix::LegacyFormation as u8], bytes)
             .await
             .expect("test raw write succeeds");
-        dbtx.raw_insert_bytes(&[FaDbPrefix::PurchaseSeat as u8, 0xff], b"sentinel")
+        dbtx.raw_insert_bytes(&[FaDbPrefix::LegacySeat as u8, 0xff], b"sentinel")
             .await
             .expect("test raw write succeeds");
         dbtx.commit_tx().await;
@@ -156,13 +176,14 @@ impl FaStore {
             .is_none()
     }
 
-    /// Whether any purchase, creation, pool or guardian-code row remains.
+    /// Whether any legacy formation, creation, slot or guardian-code row
+    /// remains.
     pub(crate) async fn holds_creation_rows_for_test(&self) -> bool {
         let mut dbtx = self.database.begin_transaction_nc().await;
         for prefix in [
-            FaDbPrefix::Purchase,
-            FaDbPrefix::PurchaseSeat,
-            FaDbPrefix::PoolSeat,
+            FaDbPrefix::LegacyFormation,
+            FaDbPrefix::LegacySeat,
+            FaDbPrefix::Slot,
             FaDbPrefix::Creation,
             FaDbPrefix::GuardianCode,
         ] {
@@ -182,12 +203,12 @@ impl FaStore {
 
     pub(crate) async fn set_schema_version_for_test(&self, schema_version: u16) {
         let mut dbtx = self.database.begin_transaction().await;
-        let mut formation = dbtx
-            .get_value(&PurchaseKey)
+        let mut creation = dbtx
+            .get_value(&CreationKey)
             .await
-            .expect("test formation exists");
-        formation.schema_version = schema_version;
-        dbtx.insert_entry(&PurchaseKey, &formation).await;
+            .expect("test creation exists");
+        creation.schema_version = schema_version;
+        dbtx.insert_entry(&CreationKey, &creation).await;
         dbtx.commit_tx().await;
     }
 

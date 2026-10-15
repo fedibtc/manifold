@@ -407,9 +407,10 @@ durable recovery facts, and parallel non-value seat work must not rewrite
 sibling facts from stale snapshots.
 
 Ordinary formation-state read/modify/write transactions use bounded optimistic
-retries. Every retry reloads the active formation and affected seat rows,
-rechecks formation identity and exact expected quote or recovery facts, and
-recomputes completion state before writing. These
+retries. Every retry reloads the creation and its slots, rechecks the
+purchase or formation identity and exact expected quote or recovery facts,
+and revalidates every slot before writing. Accepting a seat writes only its
+own slot, so concurrent acceptances cannot overwrite each other. These
 transaction closures contain no wallet, signing, or network effects. Exhausted
 or non-conflict commit failures return a sanitized storage error rather than
 unwinding. Initialization remains single-attempt because the run guard

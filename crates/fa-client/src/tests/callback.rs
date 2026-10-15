@@ -207,7 +207,7 @@ async fn callback_is_durable_private_state_and_old_schema_resets() {
     let malformed_store = crate::db::FaStore::new(MemDatabase::new().into_database());
     malformed_store.install_raw_formation_for_test(b"{").await;
     assert!(matches!(
-        malformed_store.load_purchase(TestIdentity::fa_id()).await,
+        malformed_store.migrate_storage().await,
         Err(FaError::Storage(error))
             if error.contains("persisted FA purchase header is malformed")
     ));

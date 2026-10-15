@@ -98,9 +98,9 @@ selected-flow record, exposes no second-authorization action before outputs,
 and either
 continues a still-live preview or completes cleanup. The same still-live preview may retry another payer.
 After outputs, an exact rejected or refunded seat leaves the purchase;
-accepted, paid, prepared, and ambiguous siblings stay. The purchase completes
-with the remaining seats, and a new purchase with a fresh preview buys any
-missing seat. A definite MG
+paid, prepared, and ambiguous siblings stay, and each accepted seat joins the
+pool at once. When no seat is left to buy, a new purchase with a fresh preview
+buys any missing seat. A definite MG
 connection failure is retried with bounded exponential backoff for up to two
 minutes (clipped by the invocation deadline) before that result. Once outputs
 are armed the operation is non-abandonable and transport failure stays on exact
@@ -176,8 +176,8 @@ from durable state.
 
 A seat that cannot be bought leaves the purchase with a typed reason, for
 example a changed price, an unavailable MG or payer, or insufficient funds.
-The purchase completes with the seats it bought, and the state then asks for a
-new preview of the missing seats. A seat with a started payment stays in the
+Each accepted seat joins the pool at once. When no seat is left to buy, the
+state asks for a new preview of the missing seats. A seat with a started payment stays in the
 purchase, and the run loop recovers it by quote.
 
 Reloaded service-derived state is marked unsynced until reconciliation. An

@@ -2232,14 +2232,29 @@ impl TestClient {
             .await
             .unwrap()
             .expect("a creation needs seats");
-        let bought = u16::try_from(self.inner.store.pool_seats().await.len()).unwrap();
+        let bought = u16::try_from(
+            self.inner
+                .store
+                .pool_seats(TestIdentity::fa_id())
+                .await
+                .unwrap()
+                .len(),
+        )
+        .unwrap();
         let request = MgSelectionRequest::new(
             creation.federation_size,
             creation.fedimintd_versions,
             creation.plan,
         )
         .unwrap()
-        .missing_seats(self.inner.store.bought_seats().await, bought);
+        .missing_seats(
+            self.inner
+                .store
+                .bought_seats(TestIdentity::fa_id())
+                .await
+                .unwrap(),
+            bought,
+        );
         preview_of(request, self.live_prices(&locators))
     }
 
@@ -2547,18 +2562,15 @@ fn test_approval(valid_until: u64) -> crate::db::PreviewApproval {
     }
 }
 
-fn selected_initial_seat(index: u16) -> crate::db::InitialSeat {
-    crate::db::InitialSeat::new(
-        usize::from(index),
-        locator(usize::from(index)),
-        crate::db::MgAdmission::fresh_peer_badge(
-            test_mg_id(usize::from(index)),
-            test_mg_id(usize::from(index)),
-            Plan::InfiniteBestEffort {
-                price_msats: PAYMENT_AMOUNT_MSATS,
-            },
-        ),
-    )
+fn selected_initial_seat(index: u16) -> crate::db::PickedSeat {
+    crate::db::PickedSeat {
+        locator: locator(usize::from(index)),
+        mg_id: test_mg_id(usize::from(index)),
+        holder: test_mg_id(usize::from(index)),
+        plan: Plan::InfiniteBestEffort {
+            price_msats: PAYMENT_AMOUNT_MSATS,
+        },
+    }
 }
 
 fn signed_quote(
@@ -3159,17 +3171,50 @@ async fn schema_11_partial_purchase_stays_a_purchase() {
         purchase.request.federation_size,
         FederationSize(MIN_FEDERATION_SIZE)
     );
+    // The accepted seats are in the pool, and the rest are still bought.
     assert_eq!(
         purchase
             .seats
             .iter()
-            .map(|seat| seat.seat_id.is_some())
+            .map(|seat| (seat.index, seat.seat_id.is_some()))
             .collect::<Vec<_>>(),
-        [true, true, true, false, false, false, false]
+        [(3, false), (4, false), (5, false), (6, false)]
     );
-    assert!(status.pool.is_empty());
+    assert_eq!(status.pool.len(), 3);
     assert!(status.formation.is_none());
     assert!(status.federation.is_none());
+}
+
+#[tokio::test]
+async fn schema_11_seat_never_bound_leaves_without_a_previewed_plan() {
+    let database = MemDatabase::new().into_database();
+    crate::db::FaStore::new(database.clone())
+        .install_schema_11_unbound_seat_for_test(4)
+        .await;
+    let (payments, _) = TestPayments::new();
+    let client = open_client(
+        database,
+        payments,
+        Arc::new(MgState::default()),
+        MgConfig::paid(),
+    )
+    .await;
+
+    // Schema 11 kept no plan, so the seat has no approved price to request.
+    let status = client.status();
+    assert_eq!(
+        purchase(&status)
+            .seats
+            .iter()
+            .map(|seat| seat.index)
+            .collect::<Vec<_>>(),
+        [3, 5, 6]
+    );
+    assert_eq!(
+        status.reauthorization,
+        Some(SelectionReauthorizationReason::PreviewExpired)
+    );
+    assert_eq!(status.pool.len(), 3);
 }
 
 #[tokio::test]
@@ -3221,16 +3266,9 @@ async fn schema_11_seat_waiting_for_replacement_leaves_the_purchase() {
         purchase
             .seats
             .iter()
-            .map(|seat| (seat.index, seat.seat_id.is_some()))
+            .map(|seat| seat.index)
             .collect::<Vec<_>>(),
-        [
-            (0, true),
-            (1, true),
-            (2, true),
-            (4, false),
-            (5, false),
-            (6, false)
-        ]
+        [4, 5, 6]
     );
     let recovery = active_recovery(
         crate::db::FaStore::new(database)
@@ -3238,18 +3276,14 @@ async fn schema_11_seat_waiting_for_replacement_leaves_the_purchase() {
             .await
             .unwrap(),
     );
-    assert_eq!(seat_indices(&recovery), [0, 1, 2, 4, 5, 6]);
-    assert_eq!(
+    assert!(
         recovery
             .seats
             .iter()
-            .filter(|seat| seat.progress.seat_id.is_none() && seat.signed_quote.is_some())
-            .map(|seat| seat.progress.index)
-            .collect::<Vec<_>>(),
-        [4, 5, 6],
+            .all(|seat| seat.state.bound_quote().is_some()),
         "the unpaid seats keep their bound quotes",
     );
-    assert!(status.pool.is_empty());
+    assert_eq!(status.pool.len(), 3);
 }
 
 #[tokio::test]
@@ -3278,7 +3312,7 @@ async fn schema_11_applied_replacement_leaves_the_purchase() {
             .iter()
             .map(|seat| seat.index)
             .collect::<Vec<_>>(),
-        [0, 1, 2, 4, 5, 6]
+        [4, 5, 6]
     );
     assert!(
         purchase
@@ -3286,6 +3320,7 @@ async fn schema_11_applied_replacement_leaves_the_purchase() {
             .iter()
             .all(|seat| seat.mg_id != test_mg_id(7))
     );
+    assert_eq!(status.pool.len(), 3);
 }
 
 #[tokio::test]
@@ -3312,17 +3347,26 @@ async fn schema_11_dkg_moves_seats_into_a_formation_that_finishes() {
         creation.federation_size,
         FederationSize(MIN_FEDERATION_SIZE)
     );
-    // Every seat moved into the pool, which lists them in seat-id order.
+    // Every seat keeps its schema 11 index, so the pool and the formation
+    // list them in that order.
     let pool = status
         .pool
         .iter()
-        .map(|seat| seat.seat_id.to_string())
+        .map(|seat| Some(seat.seat_id.clone()))
         .collect::<Vec<_>>();
-    let mut sorted = pool.clone();
-    sorted.sort();
-    assert_eq!(pool, sorted);
     assert_eq!(pool.len(), usize::from(MIN_FEDERATION_SIZE));
     let formation = formation(&status);
+    assert_eq!(
+        formation
+            .seats
+            .iter()
+            .map(|seat| (seat.index, seat.seat_id.clone()))
+            .collect::<Vec<_>>(),
+        pool.into_iter()
+            .enumerate()
+            .map(|(index, seat_id)| (u16::try_from(index).unwrap(), seat_id))
+            .collect::<Vec<_>>()
+    );
     assert_eq!(formation.phase, FormationPhase::PreparingDkg);
     assert!(formation.invite_code.is_none());
     assert_eq!(
@@ -3335,6 +3379,11 @@ async fn schema_11_dkg_moves_seats_into_a_formation_that_finishes() {
         let seat_id = seat.seat_id.as_ref().unwrap().to_string();
         assert_eq!(
             seat.guardian_code.is_none(),
+            seat.index == 5,
+            "seat {seat_id}"
+        );
+        assert_eq!(
+            seat.index == 5,
             seat_id.starts_with("bfd0b333"),
             "seat {seat_id}"
         );
@@ -3349,14 +3398,17 @@ async fn schema_11_dkg_moves_seats_into_a_formation_that_finishes() {
     // the wrong seat fails the run.
     client.drive().await.unwrap();
     // Schema 11 named the code of its seat at index 0, which belongs to MG 0.
-    // That seat is not the first in seat-id order.
+    // That seat stays first, though it is not the first in seat-id order.
     assert_eq!(
         *mg_state.named_dkg_code_indices.lock().expect("test lock"),
         [0]
     );
-    assert_ne!(
-        sorted[0],
-        formation.seats[0].seat_id.as_ref().unwrap().to_string()
+    assert_eq!(formation.seats[0].mg_id, test_mg_id(0));
+    assert!(
+        formation
+            .seats
+            .iter()
+            .any(|seat| seat.seat_id < formation.seats[0].seat_id)
     );
     let status = client.status();
     assert!(status.formation.is_none());
@@ -3477,7 +3529,13 @@ async fn schema_11_formed_federation_keeps_its_record_and_rechecks() {
         let fa_id = TestIdentity::fa_id();
         assert!(store.load_creation(fa_id).await.unwrap().is_none());
         assert!(store.load_purchase(fa_id).await.unwrap().is_none());
-        assert!(store.pool_seats().await.is_empty());
+        assert!(
+            store
+                .pool_seats(TestIdentity::fa_id())
+                .await
+                .unwrap()
+                .is_empty()
+        );
         assert!(!store.holds_creation_rows_for_test().await, "{fixture:?}");
         let backup = client.inner.store.backup_payload().await.unwrap();
         assert_eq!(backup.payload.federation_invite, test_invite(0));
@@ -5546,24 +5604,6 @@ async fn persisted_formation_rejects_a_different_identity_before_observation() {
     );
 }
 
-#[test]
-fn older_saved_admissions_without_badge_holders_or_plans_still_decode() {
-    let admission = crate::db::MgAdmission::fresh_peer_badge(
-        test_mg_id(0),
-        test_mg_id(1),
-        Plan::InfiniteBestEffort {
-            price_msats: PAYMENT_AMOUNT_MSATS,
-        },
-    );
-    let mut stored = serde_json::to_value(&admission).unwrap();
-    stored.as_object_mut().unwrap().remove("holder");
-    stored.as_object_mut().unwrap().remove("plan");
-    let legacy: crate::db::MgAdmission = serde_json::from_value(stored).unwrap();
-    assert_eq!(legacy.holder(), None);
-    assert_eq!(legacy.plan(), None);
-    assert_eq!(legacy.mg_id(), admission.mg_id());
-}
-
 #[tokio::test]
 async fn the_preview_bounds_only_the_first_bind_and_only_unpaid_paid_quotes_move() {
     let now = Arc::new(AtomicU64::new(10_000));
@@ -5713,13 +5753,21 @@ async fn accepting_one_seat_preserves_a_sibling_journaled_quote() {
             .await
             .unwrap(),
     );
-    assert_eq!(recovery.seats[0].signed_quote, Some(first_quote));
-    assert_eq!(recovery.seats[1].signed_quote, Some(second_quote));
+    // The accepted seat moved to the pool, and its sibling kept its quote.
+    assert_eq!(seat_indices(&recovery), [1]);
+    assert_eq!(recovery.seats[0].state.bound_quote(), Some(&second_quote));
+    let pool = client
+        .inner
+        .store
+        .pool_seats(TestIdentity::fa_id())
+        .await
+        .unwrap();
     assert_eq!(
-        recovery.snapshot.seats[0].seat_id,
-        Some(SeatId::from(QuoteId([0x01; 32])))
+        pool.iter()
+            .map(|seat| seat.seat_id.clone())
+            .collect::<Vec<_>>(),
+        [SeatId::from(QuoteId([0x01; 32]))]
     );
-    assert!(recovery.snapshot.seats[1].seat_id.is_none());
 }
 
 #[tokio::test]
@@ -5783,16 +5831,21 @@ async fn concurrent_two_seat_acceptance_retries_and_derives_completion_from_dura
     first.unwrap();
     second.unwrap();
 
-    let reloaded = store.load_status(TestIdentity::fa_id()).await.unwrap();
-    let formation = purchase(&reloaded);
-    assert_eq!(formation.phase, PurchasePhase::AcquiringSeats);
+    // Both seats are in the pool, which ended the purchase.
+    let fa_id = TestIdentity::fa_id();
+    assert!(store.load_purchase(fa_id).await.unwrap().is_none());
     assert_eq!(
-        formation.seats[0].seat_id,
-        Some(SeatId::from(QuoteId([0x02; 32])))
-    );
-    assert_eq!(
-        formation.seats[1].seat_id,
-        Some(SeatId::from(QuoteId([0x03; 32])))
+        store
+            .pool_seats(fa_id)
+            .await
+            .unwrap()
+            .iter()
+            .map(|seat| seat.seat_id.clone())
+            .collect::<Vec<_>>(),
+        [
+            SeatId::from(QuoteId([0x02; 32])),
+            SeatId::from(QuoteId([0x03; 32]))
+        ]
     );
 }
 
@@ -5954,15 +6007,16 @@ async fn partial_seat_recovery_keeps_the_remaining_payment_after_a_dropped_seat(
     let snapshot = purchase(&recovered);
     assert_eq!(snapshot.phase, PurchasePhase::AcquiringSeats);
     assert_eq!(
-        snapshot
-            .seats
+        recovered
+            .pool
             .iter()
-            .map(|seat| (seat.index, seat.seat_id.clone()))
+            .map(|seat| seat.seat_id.clone())
             .collect::<Vec<_>>(),
-        vec![(0, Some(SeatId::from(QuoteId([0x04; 32])))), (2, None)],
+        [SeatId::from(QuoteId([0x04; 32]))]
     );
     let recovery = active_recovery(store.load_purchase(TestIdentity::fa_id()).await.unwrap());
-    assert_eq!(recovery.seats[1].signed_quote.as_ref(), Some(&quotes[2]));
+    assert_eq!(seat_indices(&recovery), [2]);
+    assert_eq!(recovery.seats[0].state.bound_quote(), Some(&quotes[2]));
 }
 
 #[tokio::test]
@@ -6814,7 +6868,7 @@ async fn selected_free_lost_create_seat_reopens_after_verifier_drift_with_exact_
         .seats
         .iter()
         .find(|seat| {
-            seat.signed_quote.as_ref().is_some_and(|signed| {
+            seat.state.bound_quote().is_some_and(|signed| {
                 signed
                     .verify(&seat.progress.locator.service_pubkey)
                     .is_ok_and(|quote| quote.quote_id() == hung_quote)
@@ -6823,8 +6877,8 @@ async fn selected_free_lost_create_seat_reopens_after_verifier_drift_with_exact_
         .expect("the interrupted selected seat remains durable");
     assert!(
         interrupted
-            .signed_quote
-            .as_ref()
+            .state
+            .bound_quote()
             .unwrap()
             .verify(&interrupted.progress.locator.service_pubkey)
             .unwrap()
@@ -8197,84 +8251,6 @@ async fn quotes_are_requested_at_exactly_the_previewed_price() {
 }
 
 #[tokio::test]
-async fn a_seat_saved_without_a_previewed_price_requires_a_fresh_preview() {
-    let (payments, payment_state) = TestPayments::new();
-    let mg_state = Arc::new(MgState::default());
-    let client = open_client(
-        MemDatabase::new().into_database(),
-        payments,
-        mg_state.clone(),
-        MgConfig::paid(),
-    )
-    .await;
-    // Seat 2 is stored as before seats recorded their previewed plan.
-    let valid_until = test_now_secs() + 120;
-    let mut unpinned = serde_json::to_value(selected_initial_seat(2).admission).unwrap();
-    unpinned.as_object_mut().unwrap().remove("plan");
-    let seats = (0..MIN_FEDERATION_SIZE)
-        .map(|index| {
-            if index == 2 {
-                crate::db::InitialSeat::new(
-                    2,
-                    locator(2),
-                    serde_json::from_value(unpinned.clone()).unwrap(),
-                )
-            } else {
-                selected_initial_seat(index)
-            }
-        })
-        .collect();
-    client
-        .inner
-        .store
-        .initialize_for_test(
-            TestIdentity::fa_id(),
-            FormationId("unpinned-seat".to_owned()),
-            intent().resolve(fedimintd_version().dkg_version()).unwrap(),
-            seats,
-            Some(payment_federation_id()),
-            test_approval(valid_until),
-        )
-        .await
-        .unwrap();
-
-    let error = client.drive().await.unwrap_err();
-
-    assert!(
-        matches!(
-            error,
-            FaError::SelectionReauthorizationRequired {
-                reason: SelectionReauthorizationReason::PreviewExpired,
-                failure: None,
-            }
-        ),
-        "{error:?}"
-    );
-    // The seat was seeded under an open client, so its status never held the
-    // creation.
-    let status = client.status();
-    assert!(
-        status.purchase.is_none()
-            && status.pool.len() == usize::from(MIN_FEDERATION_SIZE) - 1
-            && status.reauthorization == Some(SelectionReauthorizationReason::PreviewExpired),
-        "{status:?}"
-    );
-    assert!(
-        mg_state
-            .quote_records
-            .lock()
-            .expect("test lock")
-            .iter()
-            .all(|record| record.index != 2),
-        "a seat without a previewed price is never quoted",
-    );
-    assert_eq!(
-        payment_state.create_calls.load(Ordering::SeqCst),
-        usize::from(MIN_FEDERATION_SIZE) - 1
-    );
-}
-
-#[tokio::test]
 async fn reopen_preserves_the_selected_dkg_identity_and_accepts_patch_skew() {
     let database = MemDatabase::new().into_database();
     let (payments, payment_state) = TestPayments::new();
@@ -8771,7 +8747,13 @@ async fn buy_seats_rejects_a_preview_that_a_finished_purchase_made_stale() {
         .await
         .unwrap();
     assert_eq!(
-        client.inner.store.pool_seats().await.len(),
+        client
+            .inner
+            .store
+            .pool_seats(TestIdentity::fa_id())
+            .await
+            .unwrap()
+            .len(),
         usize::from(MIN_FEDERATION_SIZE)
     );
     client.inner.control.driving.store(false, Ordering::SeqCst);
@@ -9371,7 +9353,7 @@ async fn a_bound_seat_survives_reopen_and_resume() {
         recovery
             .seats
             .iter()
-            .any(|seat| seat.progress.seat_id.is_none() && seat.signed_quote.is_some()),
+            .any(|seat| seat.progress.seat_id.is_none() && seat.state.bound_quote().is_some()),
         "the hung seat stays bound to its quote",
     );
     drop(client);
@@ -11052,7 +11034,13 @@ async fn a_decommissioned_pool_seat_stays_once_dkg_may_have_started() {
         "{error:?}"
     );
     assert_eq!(
-        client.inner.store.pool_seats().await.len(),
+        client
+            .inner
+            .store
+            .pool_seats(TestIdentity::fa_id())
+            .await
+            .unwrap()
+            .len(),
         usize::from(MIN_FEDERATION_SIZE)
     );
 }

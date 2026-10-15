@@ -42,24 +42,28 @@ been admitted, never zero). That floor is the same one every MG enforces
 ([`SPEC-setup-payment-federations`](../../../specs/SPEC-setup-payment-federations.md));
 refusing it here means a rate the whole fleet would vote down names its own
 reason instead of retrying to the run deadline. Durable FA storage is a
-separate fail-closed schema. Schema 12 keeps one creation row, purchase rows,
-one pool row per bought seat, and one cached guardian code per formation seat.
-The creation row also holds the formation's progress: its id, invite, and
-metadata target. The purchase persists the selected
-major/minor/vendor DKG identity beside the optional explicit payer, and the
-preview's verifier provenance and deadline. Each purchase seat persists its
-verified MG, its previewed plan, and its bound quote once it has one. Schema 11
+separate fail-closed schema. Schema 12 keeps one creation row, one slot row
+per selected guardian, and one cached guardian code per accepted seat. A slot
+is one guardian position of the federation, keyed by its index. It holds its
+verified MG and badge holder, and one state: `picked` with its previewed plan,
+`bound` to its exact signed quote, or `accepted` with its seat id,
+guardian-fee account, and exact Fedimint build. The creation row holds the
+creation's inputs, the formation's progress (its id, invite, and metadata
+target), the reason the last slot left, and the last purchase: its id,
+selected major/minor/vendor DKG identity, optional explicit payer, and the
+preview approval until the first bind. The purchase runs while some slot is
+not accepted. The pool is the accepted slots, and the formation runs when
+every slot is accepted. Schema 11
 kept the purchase and the formation in one row; opening such an FA migrates it.
 A schema 11 pinned formation cannot be migrated, because its MGs have no
 authenticated identity; opening it fails with reset guidance.
-An unformed schema 11 row also yields a creation row with its name and
-callback. A purchase that has not created every seat stays a purchase. Its
-replacement seats are dropped, and a seat whose admission was never bound to
-an effect loses its stored quote. Aggregate authorization and reservation
+Each schema 11 seat becomes the slot at its index, so the seat that named the
+federation stays first. Accepted seats keep their cached codes, and seats
+bound to an effect keep their quote. Replacement seats are dropped. Schema 11
+did not record the previewed plan, so a seat that was never bound leaves with
+`PreviewExpired`. Aggregate authorization and reservation
 fields are ignored, so the wallet adapter must release any unstarted part of an
-old reservation before it opens the FA. From
-`seats_created` on, its seats move into the pool, their guardian codes move
-into the code cache, and its formation progress moves into the creation row.
+old reservation before it opens the FA.
 A formed row yields only the federation record, when none exists. Schema 11
 also kept an imported backup in its own row until consensus verified it. A
 verified one becomes the federation record. An unverified one is dropped with
@@ -80,9 +84,7 @@ bootstrap. The latter persists an explicitly absent payer, requests free
 quotes without payment policy, and returns typed payer-required
 reauthorization before requesting a quote if any selected MG's live offer is
 priced. When the MG's live offer no longer contains the previewed plan, the
-purchase returns typed `PriceChanged` reauthorization before outputs. A seat
-saved before prices were pinned has no previewed plan, so before outputs it
-returns `PreviewExpired` reauthorization.
+purchase returns typed `PriceChanged` reauthorization before outputs.
 
 Before the purchase binds its first seat, each run checks the whole purchase
 once and pays nothing. It asks every selected MG for live availability at the
@@ -91,8 +93,8 @@ fails leaves. Then the wallet checks, without value movement, that the payer
 can fund the remaining priced seats one after another. If it cannot, every
 seat leaves with `InsufficientFunds`.
 
-The purchase buys seats one at a time, in seat order. For each seat that has
-no seat id, the driver first binds a quote: one autocommit stores the exact
+The purchase buys seats one at a time, in slot order. For each picked slot,
+the driver first binds a quote: one autocommit stores the exact
 signed quote before its payment or presentation can start. The selection preview must still be fresh,
 under the same verifier provenance, until the purchase binds its first seat.
 After that, slow sequential payments cannot expire the purchase. A bound free
@@ -113,15 +115,14 @@ refusal is settled in the wallet first, then the seat leaves. The FA replays
 a stored free quote exactly until the MG signs a refusal, so a lost acceptance
 response cannot allocate a second quote-derived seat.
 
-A seat leaves the purchase with a typed reason when its MG or payer becomes
-unavailable, its price changes, or it was refused. One transaction deletes
-the seat row. If the wallet proves that the payer cannot fund a seat, that
-seat and every seat without a bound quote leave with `InsufficientFunds`.
-Other errors keep the seat and end the run without completion, so the next run
-continues it. When every remaining seat is accepted, the purchase completes:
-its seats move into the pool. If a seat left, the creation returns to
-`NeedsSeats` with the first leave reason, and a new purchase buys any seat
-still missing. Selected guardians are never silently swapped.
+An accepted seat joins the pool at once. A seat leaves the purchase with a
+typed reason when its MG or payer becomes unavailable, its price changes, or
+it was refused. One transaction deletes its slot. If the wallet proves that
+the payer cannot fund a seat, that seat and every seat without a bound quote
+leave with `InsufficientFunds`. Other errors keep the seat and end the run,
+so the next run continues it. The purchase ends when no slot is left to buy.
+If a seat left, the creation returns to `NeedsSeats` with the first leave
+reason, and a new purchase fills the empty slots, lowest index first. Selected guardians are never silently swapped.
 Definite connection failures are retried with bounded exponential backoff for
 up to two minutes, clipped by the current driver deadline, before the
 pre-output fresh-selection result is returned. After outputs start, transport
@@ -288,16 +289,17 @@ federation until DKG starts. The engine keeps one record per concern:
   record lives until the federation forms. `cancel_creation` deletes it
   before any seat is bought.
 - **Purchase** — quotes, pays for, and creates the seats of one approval,
-  under every payment rule in this document. When every seat exists, one
-  transaction moves the seats into the pool and deletes the purchase rows. At
-  most one purchase exists. When a purchase ends before it buys every seat,
-  the state asks for a preview of the missing seats; `preview_missing_seats`
-  avoids the MGs, service keys, and badge holders already in the pool and
-  keeps their DKG line, and `buy_seats` buys them.
-- **Pool** — each bought seat keeps its MG identity, locator, seat id,
-  guardian-fee account, and the exact Fedimint build and federation size it
-  was bought for. It stays in the pool until the federation forms.
-- **Formation** — runs when the pool holds every seat, over all pool seats.
+  under every payment rule in this document. It runs while some slot is
+  picked or bound, so at most one purchase exists. When a purchase ends
+  before it buys every seat, the state asks for a preview of the missing
+  seats; `preview_missing_seats` avoids the MGs, service keys, and badge
+  holders already in the pool and keeps their DKG line, and `buy_seats` buys
+  them.
+- **Pool** — the accepted slots. Each keeps its MG identity, locator, seat
+  id, guardian-fee account, and the exact Fedimint build it was bought for,
+  until the federation forms.
+- **Formation** — runs when every slot is accepted, over the slots in index
+  order. The first slot's guardian code carries the federation name.
   It runs DKG and seat-binding publication, and keeps its invite and metadata
   target in the creation record. MGs refuse the guardian code request once
   DKG starts, so the codes are cached per seat for a DKG restart until MGs
@@ -397,8 +399,8 @@ target without re-resolving accounts or policy. Once confirmed, formed-state
 reconciliation requires the immutable directory and recipients to remain exact,
 accepts later rate changes, and needs no formation account provider.
 Formed state lives in one federation record: invite, seats, and name.
-Confirming formation metadata writes it and deletes the creation, its pool
-seats, and their cached codes in the same transaction. A fetched backup stays
+Confirming formation metadata writes it and deletes the creation, its slots,
+and their cached codes in the same transaction. A fetched backup stays
 in memory until its seats are verified against consensus; the import then
 writes the record and makes the backup the last published generation. Backups and post-formation workflows read only this
 record. Opening migrates storage written before the record existed.
@@ -458,7 +460,7 @@ remains the protocol-owned dialing and verification binding.
 guard while no seat is bought and no seat payment started. It asks the wallet
 to recover every bound paid quote first. A `Prepared` payment refuses the
 cancel with `AbandonUnavailable(PaymentOutputsStarted)`, because the run loop
-must buy or refund that seat. An accepted purchase seat or any pool seat
+must buy or refund that seat. Any accepted seat
 refuses it with `AbandonUnavailable(SeatsBought)`: those seats stay with the
 creation until its federation forms. Cancel contacts no MG, so free seats
 already accepted server-side are forfeited, and the setup-payment policy
@@ -498,7 +500,7 @@ requiring every MG's invite to identify the same federation before
 persisting the deliverable). Every ordinary resume repeats the idempotent
 `StartDkg` with the same durable guardian codes, so a crashed child starts a
 fresh ceremony while an existing `DkgInProcess` ceremony keeps being polled.
-A pool seat whose MG reports it decommissioned or lost leaves the pool, with
+A pool seat whose MG reports it decommissioned or lost leaves its slot, with
 the other cached codes, while no seat can have started DKG. That holds while
 a seat still lacks its cached code, because `StartDkg` follows only after
 every code is cached, or while every other seat reports `New`. The creation
@@ -637,7 +639,7 @@ readiness, verified all-zero selected bootstrap without a publisher or wallet,
 typed priced-offer rejection, zero-balance admitted-payer listing, freshness
 only until the first bound seat, re-binding of an unstarted paid quote, exact
 replay of a prepared payment, the seat that leaves after rejection, refusal, or
-insufficient funds, completion with the remaining seats into the pool, and the
+insufficient funds, each accepted seat joining the pool at once, and the
 cancel rules. The fa-cli's concrete reference FA payer adapter separately
 covers exact foreign-output fee costing, quote-derived operation identity,
 exact payment and change range recovery, unordered/duplicate rejected-input
