@@ -69,8 +69,10 @@ fields are ignored, so the wallet adapter must release any unstarted part of an
 old reservation before it opens the FA.
 A formed row yields only the federation record, when none exists. Schema 11
 also kept an imported backup in its own row until consensus verified it. A
-verified one becomes the federation record. An unverified one is dropped with
-the completed-lookup markers, so the next restored open looks it up again.
+verified one becomes the federation record. An unverified one stays: the FA
+opens in recovery, and the run loop verifies that saved payload against
+consensus without a relay lookup. Its import removes the row in the same
+transaction, and a failed check keeps it for the next attempt.
 Records older than
 schema 11 are reset because they predate the production compatibility
 baseline. Subsequent schema changes are governed by
@@ -440,20 +442,23 @@ the stored signed directory and compiled split before voting.
 
 `FaClient::state` and the `observe` watch expose one `FaState`: `Idle`;
 `Restoring` while an opened restored-mnemonic FA has an unfinished backup
-check; `Creating` with the formation id, name, size, DKG identity once bought
+check, or a schema 11 restore waits for its consensus check; `Creating` with the formation id, name, size, DKG identity once bought
 for, the picked slots with their per-seat progress, last error, and
 one stage (`NeedsSeats` with the count of empty slots and any typed
 reauthorization reason, `Buying`, or `Forming` with the formation phase and
 invite); and `Active` for a formed or imported federation. The creation state
 is a projection of the stored creation, slots and formation row: the client
 publishes it again after each write, and only the last error is kept in
-memory. Each phase follows from stored facts. `DkgUnderway` means every seat
+memory. The run loop also refreshes the state from storage whenever it finds
+no work, so a step interrupted after its last commit leaves no stale state. Each phase follows from stored facts. `DkgUnderway` means every seat
 of the full pool has its code, because `StartDkg` follows at once, and
 `Running` means DKG completed. There is no separate purchase, pool, or
 formation snapshot. The pool is the slots that hold a seat id. The run loop does the backup lookup as its first work and retries
 failures; user actions fail as busy until it ends. The recovery requirement is
 reconstructed on reopen from the caller's persisted mnemonic provenance and the
-FA database's environment-scoped completion marker.
+FA database's environment-scoped completion marker. Before each lookup the
+loop checks that marker, so an interrupted lookup that already committed is
+not repeated.
 
 Formation phases are `PreparingDkg`, `DkgUnderway`, `DkgComplete`,
 `PublishingSeatBindings`; a formed federation appears only as `Active`. State is

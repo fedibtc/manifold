@@ -352,16 +352,21 @@ where
         let fa_id = ports.identity.public_key().map_err(FaError::Identity)?;
         store.migrate_storage().await?;
         let mut status = store.load_status(fa_id).await?;
-        // Only an empty FA looks for its backup, and only once.
-        let backup_source = match backup_source {
-            Some(source)
-                if status == FaStatus::default()
-                    && !store.recovery_completed(&source.completed).await =>
-            {
-                status.recovery = Some(RecoveryCheck { last_error: None });
-                Some(source)
+        // A backup that schema 11 restored and did not verify yet is checked
+        // first. Otherwise only an empty FA looks for its backup, and only
+        // once.
+        let unverified = store.unverified_restored_backup(fa_id).await.is_some();
+        let looks_up = match &backup_source {
+            Some(source) => {
+                status == FaStatus::default() && !store.recovery_completed(&source.completed).await
             }
-            _ => None,
+            None => false,
+        };
+        let backup_source = if unverified || looks_up {
+            status.recovery = Some(RecoveryCheck { last_error: None });
+            backup_source
+        } else {
+            None
         };
         let progress = Arc::new(run::Progress::new(status));
         let backup_tasks = TaskGroup::new();

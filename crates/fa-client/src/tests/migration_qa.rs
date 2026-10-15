@@ -704,16 +704,15 @@ async fn r269_dkg_preparation_keeps_a_cached_named_code() {
 }
 
 /// Schema 11 kept a restored backup it had not verified yet. The migration
-/// drops it, and restoring the same backup again succeeds while the peers of
-/// its saved invite are down, through the other saved MGs.
+/// keeps it, and the run verifies and imports it with no relay lookup,
+/// through the other saved MGs while the peers of its saved invite are down.
 #[tokio::test]
-async fn r269_unverified_restore_can_be_restored_again_with_the_invite_peers_down() {
+async fn r269_unverified_restore_is_verified_and_imported_by_the_run() {
     let snapshot = fixture(R269_UNVERIFIED_RESTORE);
     let restored = row_json(&snapshot.rows, &[0x07]).unwrap();
     assert_eq!(restored["backup_eligible"], false);
-    let payload: crate::backup::FaBackupPayload =
-        serde_json::from_value(restored["payload"].clone()).unwrap();
-    let (client, _, _, _) = open_fixture(R269_UNVERIFIED_RESTORE).await;
+    let (client, mem, _, _) = open_fixture(R269_UNVERIFIED_RESTORE).await;
+    assert!(client.status().recovery.is_some());
     assert!(client.status().federation.is_none());
     client
         .inner
@@ -723,7 +722,45 @@ async fn r269_unverified_restore_can_be_restored_again_with_the_invite_peers_dow
         .lock()
         .unwrap()
         .extend((0..MIN_FEDERATION_SIZE - 1).map(PeerId::from));
-    client.import_backup_for_test(Some(payload)).await.unwrap();
+
+    let run = tokio::time::timeout(Duration::from_secs(2), client.run_with(options())).await;
+    assert!(run.is_err());
+    let status = client.status();
+    assert!(status.recovery.is_none(), "{status:?}");
+    assert!(status.federation.is_some());
+    let fa_id = LegacyIdentity.public_key().unwrap();
+    assert!(
+        client
+            .inner
+            .store
+            .unverified_restored_backup(fa_id)
+            .await
+            .is_none()
+    );
+    assert!(reload(&mem).await.unwrap().federation.is_some());
+}
+
+/// While consensus cannot verify the kept backup, it stays, and the FA
+/// stays in recovery.
+#[tokio::test]
+async fn r269_unverified_restore_stays_while_consensus_is_unreachable() {
+    let (client, _, _, _) = open_fixture(R269_UNVERIFIED_RESTORE).await;
+    client.inner.ports.consensus_reader.fail_next(usize::MAX);
+
+    let run = tokio::time::timeout(Duration::from_secs(1), client.run_with(options())).await;
+    assert!(run.is_err());
+    let status = client.status();
+    assert!(status.recovery.is_some(), "{status:?}");
+    assert!(status.federation.is_none());
+    let fa_id = LegacyIdentity.public_key().unwrap();
+    assert!(
+        client
+            .inner
+            .store
+            .unverified_restored_backup(fa_id)
+            .await
+            .is_some()
+    );
 }
 
 /// The fixture's metadata target under the field name it had before Manifold

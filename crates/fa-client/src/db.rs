@@ -100,13 +100,6 @@ impl_db_record!(
     db_prefix = FaDbPrefix::RecoveryCompleted
 );
 
-#[derive(Debug, Decodable, Encodable)]
-struct RecoveryCompletedKeyPrefix;
-impl_db_lookup!(
-    key = RecoveryCompletedKey,
-    query_prefix = RecoveryCompletedKeyPrefix
-);
-
 #[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
 struct BackupGenerationState {
     generation: u64,
@@ -476,7 +469,7 @@ impl FaStore {
         fa_id: FaId,
         payload: crate::backup::FaBackupPayload,
         federation_name: Option<crate::FederationName>,
-        completed: &RecoveryCompletedKey,
+        completed: Option<&RecoveryCompletedKey>,
     ) -> FaResult<()> {
         if let Some(commitment) = &payload.liquidity {
             if commitment.requester_pubkey.0 != fa_id.0.to_string() {
@@ -517,7 +510,10 @@ impl FaStore {
             federation_name,
         )
         .await?;
-        dbtx.insert_entry(completed, &()).await;
+        if let Some(completed) = completed {
+            dbtx.insert_entry(completed, &()).await;
+        }
+        dbtx.remove_entry(&migration::RestoredBackupKey).await;
         dbtx.commit_tx_result()
             .await
             .map_err(|_| FaError::Storage("committing authenticated FA restore failed".to_owned()))

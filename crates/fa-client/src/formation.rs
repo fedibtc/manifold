@@ -603,13 +603,17 @@ where
         Ok(())
     }
 
-    /// Look up the backup of a restored mnemonic and import it.
+    /// Import the backup of a restored mnemonic: the one schema 11 saved
+    /// before consensus verified it, or else the one on the backup relays.
     pub(crate) async fn recover_backup(&self, fa_id: FaId, timeouts: Timeouts) -> FaResult<()> {
-        let source = self
-            .inner
-            .backup_source
-            .as_ref()
-            .expect("only a client with a backup source starts in recovery");
+        let source = self.inner.backup_source.as_ref();
+        let completed = source.map(|source| &source.completed);
+        if let Some(payload) = self.inner.store.unverified_restored_backup(fa_id).await {
+            return self
+                .import_backup(Some(payload), completed, fa_id, timeouts)
+                .await;
+        }
+        let source = source.expect("only a client with a backup source looks one up");
         let root = self.inner.ports.identity.scoped_root();
         let payload = timeouts
             .long_call("reading FA backup relays", || {
@@ -620,7 +624,7 @@ where
                 ))
             })
             .await??;
-        self.import_backup(payload, &source.completed, fa_id, timeouts)
+        self.import_backup(payload, completed, fa_id, timeouts)
             .await
     }
 
@@ -630,11 +634,12 @@ where
     pub(crate) async fn import_backup(
         &self,
         payload: Option<crate::backup::FaBackupPayload>,
-        completed: &crate::db::RecoveryCompletedKey,
+        completed: Option<&crate::db::RecoveryCompletedKey>,
         fa_id: FaId,
         timeouts: Timeouts,
     ) -> FaResult<()> {
         let Some(payload) = payload else {
+            let completed = completed.expect("an empty lookup comes from a backup source");
             self.inner.store.complete_empty_recovery(completed).await?;
             self.inner
                 .progress

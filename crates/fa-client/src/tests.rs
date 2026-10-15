@@ -2402,7 +2402,7 @@ where
         let options = Timeouts::default();
         let fa_id = self.fa_id()?;
         let run = options;
-        self.import_backup(payload, &staging_recovery(), fa_id, run)
+        self.import_backup(payload, Some(&staging_recovery()), fa_id, run)
             .await
     }
 
@@ -3654,6 +3654,50 @@ async fn run_loop_retries_a_backup_lookup_without_a_relay_quorum() {
     assert!(matches!(client.claim_run_guard().await, Err(FaError::Busy)));
 }
 
+/// A lookup that committed and was then interrupted, before it cleared the
+/// recovery in memory, is done. The loop does not look again.
+#[tokio::test]
+async fn run_loop_ends_a_recovery_that_storage_already_completed() {
+    let state = Arc::new(MgState::default());
+    let (payments, _) = TestPayments::new();
+    let client = FaClient::open_inner(
+        MemDatabase::new().into_database(),
+        FaClientPorts {
+            identity: TestIdentity,
+            payments,
+            registry: TestRegistry::default(),
+            mg_connector: TestConnector {
+                state: state.clone(),
+                config: MgConfig::given_away(),
+            },
+            consensus_reader: TestConsensusReader::new(state),
+            fa_fee_account_provider: Arc::new(TestFaFeeAccountProvider::default()),
+        },
+        test_peer_badge_verifier(),
+        None,
+        None,
+        Some(crate::backup_worker::BackupSource {
+            relays: Vec::new(),
+            required_reads: 1,
+            completed: staging_recovery(),
+        }),
+    )
+    .await
+    .unwrap();
+    assert_eq!(client.status(), recovering(None));
+    client
+        .inner
+        .store
+        .complete_empty_recovery(&staging_recovery())
+        .await
+        .unwrap();
+
+    let run = tokio::time::timeout(Duration::from_millis(200), client.run_with(options())).await;
+    assert!(run.is_err());
+    // Without a relay quorum, a second lookup would fail with `Registry`.
+    assert_eq!(client.status(), FaStatus::default());
+}
+
 #[tokio::test]
 async fn empty_backup_recovery_completion_survives_reopen_and_is_environment_scoped() {
     let database = MemDatabase::new().into_database();
@@ -3731,7 +3775,12 @@ async fn backup_import_keeps_cached_setup_payment_policy() {
         .await
         .unwrap();
     store
-        .import_backup(TestIdentity::fa_id(), payload, None, &staging_recovery())
+        .import_backup(
+            TestIdentity::fa_id(),
+            payload,
+            None,
+            Some(&staging_recovery()),
+        )
         .await
         .unwrap();
     assert!(store.recovery_completed(&staging_recovery()).await);

@@ -354,29 +354,42 @@ impl FaStore {
     }
 
     /// Schema 11 kept an imported backup in its own row until consensus
-    /// verified it.
+    /// verified it. A verified one becomes the federation record. An
+    /// unverified one stays, and the run loop verifies and imports it.
     async fn adopt_schema_11_restored_backup(&self) -> FaResult<()> {
         let mut dbtx = self.database.begin_transaction().await;
         let Some(restored) = dbtx.get_value(&RestoredBackupKey).await else {
             return Ok(());
         };
-        dbtx.remove_entry(&RestoredBackupKey).await;
-        // A reconciled legacy import becomes the record. An unreconciled one
-        // is dropped, and the next restored open looks it up again.
-        if restored.backup_eligible {
-            adopt_backup(
-                &mut dbtx.to_ref_nc(),
-                restored.fa_id,
-                restored.formation_id,
-                restored.payload,
-                restored.federation_name,
-            )
-            .await?;
-        } else {
-            dbtx.remove_by_prefix(&RecoveryCompletedKeyPrefix).await;
+        if !restored.backup_eligible {
+            return Ok(());
         }
+        dbtx.remove_entry(&RestoredBackupKey).await;
+        adopt_backup(
+            &mut dbtx.to_ref_nc(),
+            restored.fa_id,
+            restored.formation_id,
+            restored.payload,
+            restored.federation_name,
+        )
+        .await?;
         dbtx.commit_tx_result()
             .await
             .map_err(|_| FaError::Storage("migrating restored FA backup failed".to_owned()))
+    }
+
+    /// The backup that schema 11 restored for `fa_id` and consensus did not
+    /// verify yet. The import of a verified backup removes it.
+    pub(crate) async fn unverified_restored_backup(
+        &self,
+        fa_id: FaId,
+    ) -> Option<crate::backup::FaBackupPayload> {
+        self.database
+            .begin_transaction_nc()
+            .await
+            .get_value(&RestoredBackupKey)
+            .await
+            .filter(|restored| !restored.backup_eligible && restored.fa_id == fa_id)
+            .map(|restored| restored.payload)
     }
 }
