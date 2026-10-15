@@ -324,21 +324,15 @@ where
         .await
     }
 
-    /// Collect every guardian code and start DKG on every seat. Returns
-    /// false when some seat ended before DKG, so its slot was marked ended.
+    /// Collect every guardian code and start DKG on every seat.
     async fn start_dkg(
         &self,
         formation: &FormationView,
         sessions: &[SeatSession<MgClient<F::Client>>],
         fa_id: FaId,
         timeouts: Timeouts,
-    ) -> FaResult<bool> {
+    ) -> FaResult<()> {
         let formation_id = &formation.formation_id;
-        // StartDkg follows only after every code is cached.
-        let dkg_not_started = formation
-            .seats
-            .iter()
-            .any(|seat| seat.guardian_code.is_none());
         let mut pending_codes = FuturesUnordered::new();
         for (position, session) in sessions.iter().enumerate() {
             let existing = formation.seats[position].guardian_code.clone();
@@ -373,14 +367,10 @@ where
             .map(|_| None)
             .collect::<Vec<Option<GuardianCode>>>();
         let mut first_error = None;
-        let mut ended = Vec::new();
         while let Some(result) = pending_codes.next().await {
             let (position, code, newly_generated) = match result {
                 Ok(value) => value,
-                Err((position, error)) => {
-                    if ended_seat(&error) {
-                        ended.push(sessions[position].seat_id.clone());
-                    }
+                Err((_, error)) => {
                     if first_error.is_some() {
                         log_mg_failure(formation_id, &error, "discarded");
                     }
@@ -400,30 +390,6 @@ where
                 self.publish(None).await;
             }
             guardian_codes[position] = Some(code);
-        }
-        if !ended.is_empty()
-            && (dkg_not_started
-                || self
-                    .no_seat_started_dkg(sessions, &ended, fa_id, timeouts)
-                    .await)
-        {
-            // The ended seats' slots stay as ended, and the creation buys new
-            // slots. Every cached code goes too.
-            for seat in formation
-                .seats
-                .iter()
-                .filter(|seat| ended.contains(&seat.seat_id))
-            {
-                tracing::warn!(
-                    formation_id = %formation_id.0,
-                    mg_id = %seat.mg_id,
-                    seat_id = %seat.seat_id,
-                    "an MG ended a bought seat before DKG"
-                );
-            }
-            self.inner.store.end_seats(formation_id, ended).await?;
-            self.publish(None).await;
-            return Ok(false);
         }
         if let Some(error) = first_error {
             return Err(error);
@@ -471,7 +437,7 @@ where
                 first_error.get_or_insert(error);
             }
         }
-        first_error.map_or(Ok(true), Err)
+        first_error.map_or(Ok(()), Err)
     }
 
     /// Wait until the seat's MG returns its guardian code. A seat whose
@@ -520,8 +486,6 @@ where
         .await
     }
 
-    /// Whether every seat except `ended` reports that it has not started
-    /// DKG. Any error counts as a possible start.
     /// Read one seat's service status from its MG.
     async fn seat_status(
         &self,
@@ -541,23 +505,6 @@ where
                 client.get_status(request)
             })
             .await
-    }
-
-    async fn no_seat_started_dkg(
-        &self,
-        sessions: &[SeatSession<MgClient<F::Client>>],
-        ended: &[SeatId],
-        fa_id: FaId,
-        timeouts: Timeouts,
-    ) -> bool {
-        let checks = sessions
-            .iter()
-            .filter(|session| !ended.contains(&session.seat_id))
-            .map(|session| self.seat_status(session, fa_id, timeouts));
-        futures::future::join_all(checks)
-            .await
-            .into_iter()
-            .all(|status| status.is_ok_and(|status| status.status == ServiceStatus::New))
     }
 
     /// Poll every seat until each runs healthy, and return the invite each
@@ -636,12 +583,9 @@ where
         timeouts: Timeouts,
     ) -> FaResult<()> {
         let sessions = self.seat_sessions(formation, timeouts).await?;
-        if formation.invite_code.is_none()
-            && !self
-                .start_dkg(formation, &sessions, fa_id, timeouts)
-                .await?
-        {
-            return Ok(());
+        if formation.invite_code.is_none() {
+            self.start_dkg(formation, &sessions, fa_id, timeouts)
+                .await?;
         }
         let invites = self.poll_until_running(&sessions, fa_id, timeouts).await?;
         let invite = Self::agreed_invite(&sessions, invites)?;
@@ -1467,16 +1411,6 @@ fn canonical_fee_recipients(
 }
 
 /// Whether an MG reported that the seat ended for good.
-fn ended_seat(error: &FaError) -> bool {
-    matches!(
-        error,
-        FaError::Mg(MgFailure {
-            cause: MgCause::WrongState(ServiceStatus::Decommissioned),
-            ..
-        })
-    )
-}
-
 fn service_seat_phase(status: &ServiceStatus) -> Result<SeatPhase, MgCause> {
     match status {
         ServiceStatus::New => Ok(SeatPhase::Created),

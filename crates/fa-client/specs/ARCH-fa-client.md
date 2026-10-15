@@ -44,20 +44,19 @@ refusing it here means a rate the whole fleet would vote down names its own
 reason instead of retrying until the maintenance limit. Durable FA storage is a
 separate fail-closed schema. Schema 12 keeps one creation row and one slot row
 per selected guardian. A slot
-is keyed by a stable id, and the ids of the live slots order the guardians.
+is keyed by a stable id, and the slot ids order the guardians.
 It holds its verified MG and badge holder, and one state: `picked` with its
 previewed plan and purchase, `bound` to its exact signed quote and purchase,
-`accepted` with its seat id, guardian-fee account, exact Fedimint build, and
-cached guardian code, or `ended` with the seat id its MG ended before DKG. A
+or `accepted` with its seat id, guardian-fee account, exact Fedimint build,
+and cached guardian code. A
 slot's purchase is the selected major/minor/vendor DKG identity and the
 optional explicit payer, and every slot not yet accepted shares one purchase.
-The purchase runs while such a slot exists. An ended slot is not live, and a
-new slot replaces it. The creation row holds the creation's inputs, the
+The purchase runs while such a slot exists. The creation row holds the creation's inputs, the
 formation id, and the reason the last slot left. It keeps the DKG completion
 callback until DKG completes. Then a formation row holds the invite the MGs
 agreed on, and later the formation metadata target. The formation row ends
 with the creation. The pool is the accepted slots, and the formation runs when
-`size` live slots are accepted. Schema 11
+`size` slots are accepted. Schema 11
 kept the purchase and the formation in one row; opening such an FA migrates it.
 A schema 11 pinned formation cannot be migrated, because its MGs have no
 authenticated identity; opening it fails with reset guidance.
@@ -92,8 +91,7 @@ purchase returns typed `SeatUnavailable` reauthorization before outputs.
 A reauthorization reason is `SeatUnavailable` for every problem that a new
 selection fixes. The payer reasons (`SelectedPayerUnavailable`,
 `SelectedPayerInsufficientFunds`, `PaymentFederationRequired`) stay separate,
-because the user must fix the payer instead. `SeatEnded` also stays separate:
-an MG ended a seat the FA paid for.
+because the user must fix the payer instead.
 
 While no slot is bound, each run checks the whole purchase once and pays
 nothing. It asks every selected MG for live availability at the
@@ -520,15 +518,10 @@ requiring every MG's invite to identify the same federation before
 persisting the deliverable). Every ordinary resume repeats the idempotent
 `StartDkg` with the same durable guardian codes, so a crashed child starts a
 fresh ceremony while an existing `DkgInProcess` ceremony keeps being polled.
-A pool seat whose MG reports it decommissioned becomes an ended slot, and the
-other cached codes go, while no seat can have started DKG. That holds while a
-seat still lacks its cached code, because `StartDkg` follows only after every
-code is cached, or while every other seat reports `New`. The FA paid for that
-seat, so it is never dropped silently: the slot stays with phase `Ended`, the
-FA logs a warning, and the creation needs a new seat with the `SeatEnded`
-reason. Later previews exclude the ended slot's MG, service key, and holder,
-as for every other slot. Ended slots go with the creation when the federation
-forms.
+FA does not replace a pool seat whose MG decommissioned it, or lost its
+data, before the federation formed. The formation step fails with that MG's
+error and retries, and the seat stays in the pool. This rare case is a known
+gap: the formation cannot finish, and the bought seats cannot be cancelled.
 Resume never selects the destructive `RestartDkg`: replacing a stuck ceremony
 is an explicit, user-authorized action, and ordinary resume must not infer
 that intent. Wire types,

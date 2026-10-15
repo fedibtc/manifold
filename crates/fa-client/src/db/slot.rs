@@ -1,5 +1,5 @@
 //! The slots: one row per picked MG, from its pick through its bound
-//! quote to its accepted or ended seat.
+//! quote to its accepted seat.
 
 use super::*;
 
@@ -16,8 +16,7 @@ pub(crate) struct SlotPurchase {
 
 /// One guardian slot of the creation, keyed by a stable id. A slot exists
 /// from the preview that picked its MG until the federation forms. It leaves
-/// when its seat cannot be bought. A seat that its MG ends before DKG stays
-/// as an ended slot, and a new slot replaces it.
+/// when its seat cannot be bought.
 #[derive(Debug, Decodable, Encodable)]
 pub(super) struct SlotKey {
     pub(super) index: u16,
@@ -69,14 +68,10 @@ pub(crate) enum SlotState {
         fedimintd_version: FedimintdVersion,
         /// The code the MG returned for the full pool, kept until the
         /// federation forms. MGs refuse the code request once DKG starts, and
-        /// a DKG restart needs every code again. A seat that leaves the pool
-        /// clears every code.
+        /// a DKG restart needs every code again.
         // TODO: remove once MGs return the code in every state.
         guardian_code: Option<GuardianCode>,
     },
-    /// The MG ended the bought seat before DKG. The slot stays to report it
-    /// and to keep its MG out of later previews.
-    Ended { seat_id: SeatId },
 }
 
 impl StoredSlot {
@@ -94,12 +89,8 @@ impl StoredSlot {
                 fedimintd_version,
                 guardian_code: guardian_code.as_ref(),
             }),
-            SlotState::Picked { .. } | SlotState::Bound { .. } | SlotState::Ended { .. } => None,
+            SlotState::Picked { .. } | SlotState::Bound { .. } => None,
         }
-    }
-
-    pub(super) fn ended(&self) -> bool {
-        matches!(self.state, SlotState::Ended { .. })
     }
 }
 
@@ -107,7 +98,7 @@ impl SlotState {
     pub(crate) fn bound_quote(&self) -> Option<&SignedResponse<GetQuoteResponse>> {
         match self {
             Self::Bound { quote, .. } => Some(quote),
-            Self::Picked { .. } | Self::Accepted { .. } | Self::Ended { .. } => None,
+            Self::Picked { .. } | Self::Accepted { .. } => None,
         }
     }
 
@@ -115,14 +106,14 @@ impl SlotState {
     pub(crate) fn purchase(&self) -> Option<&SlotPurchase> {
         match self {
             Self::Picked { purchase, .. } | Self::Bound { purchase, .. } => Some(purchase),
-            Self::Accepted { .. } | Self::Ended { .. } => None,
+            Self::Accepted { .. } => None,
         }
     }
 
     pub(crate) fn guardian_code(&self) -> Option<&GuardianCode> {
         match self {
             Self::Accepted { guardian_code, .. } => guardian_code.as_ref(),
-            Self::Picked { .. } | Self::Bound { .. } | Self::Ended { .. } => None,
+            Self::Picked { .. } | Self::Bound { .. } => None,
         }
     }
 }
@@ -198,9 +189,7 @@ impl FaStore {
                             {
                                 return Ok(slot.state.clone());
                             }
-                            SlotState::Picked { .. }
-                            | SlotState::Accepted { .. }
-                            | SlotState::Ended { .. } => {
+                            SlotState::Picked { .. } | SlotState::Accepted { .. } => {
                                 return Err(FaError::Storage(format!(
                                     "FA slot {index} changed before its seat was accepted"
                                 )));
@@ -345,64 +334,6 @@ impl FaStore {
             .map_err(map_formation_tx_error)
     }
 
-    /// Mark the accepted seats `ended` as ended by their MGs. This is allowed
-    /// only before DKG completed. Their slots stay, and every cached code
-    /// goes: the code that carries the federation name may change.
-    pub(crate) async fn end_seats(
-        &self,
-        formation_id: &FormationId,
-        ended: Vec<SeatId>,
-    ) -> FaResult<()> {
-        let formation_id = formation_id.clone();
-        let ended = &ended;
-        self.database
-            .autocommit(
-                move |dbtx, _| {
-                    let formation_id = formation_id.clone();
-                    Box::pin(async move {
-                        let (mut creation, _) = active_formation(dbtx, &formation_id).await?;
-                        if creation.formation.is_some() {
-                            return Err(FaError::Storage(
-                                "a seat cannot leave after DKG completed".to_owned(),
-                            ));
-                        }
-                        let mut found = 0;
-                        for (index, slot) in &mut creation.slots {
-                            let SlotState::Accepted {
-                                seat_id,
-                                guardian_code,
-                                ..
-                            } = &mut slot.state
-                            else {
-                                continue;
-                            };
-                            if ended.contains(seat_id) {
-                                let seat_id = seat_id.clone();
-                                found += 1;
-                                slot.state = SlotState::Ended { seat_id };
-                            } else if guardian_code.take().is_none() {
-                                continue;
-                            }
-                            dbtx.insert_entry(&SlotKey { index: *index }, slot).await;
-                        }
-                        if found != ended.len() {
-                            return Err(FaError::Storage(
-                                "an ended FA seat is not in the pool".to_owned(),
-                            ));
-                        }
-                        creation
-                            .stored
-                            .reauthorization
-                            .get_or_insert(crate::SelectionReauthorizationReason::SeatEnded);
-                        dbtx.insert_entry(&CreationKey, &creation.stored).await;
-                        Ok(())
-                    })
-                },
-                Some(FORMATION_TX_MAX_ATTEMPTS),
-            )
-            .await
-            .map_err(map_formation_tx_error)
-    }
     /// Record one guardian code.
     pub(crate) async fn record_guardian_code(
         &self,

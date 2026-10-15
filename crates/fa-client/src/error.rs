@@ -60,9 +60,6 @@ pub enum SelectionReauthorizationReason {
     /// The selected payer cannot cover a seat's quote plus wallet fees and
     /// required reserve. No payment of that seat started.
     SelectedPayerInsufficientFunds,
-    /// An MG ended a bought seat before DKG. The FA paid for the seat, and
-    /// the creation lists it in its ended seats.
-    SeatEnded,
 }
 
 impl std::fmt::Display for SelectionReauthorizationReason {
@@ -80,7 +77,6 @@ impl std::fmt::Display for SelectionReauthorizationReason {
             Self::SelectedPayerInsufficientFunds => {
                 "the selected payment federation cannot fund a seat and its fees"
             }
-            Self::SeatEnded => "a Manifold Guardian ended a bought seat before DKG",
         })
     }
 }

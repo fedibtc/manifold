@@ -294,7 +294,7 @@ json_database_value!(BackupRelayConfirmation);
 json_database_value!(StoredFederation);
 json_database_value!(StoredReadInvite);
 
-/// The running purchase: the live slots that hold no accepted seat yet.
+/// The running purchase: the slots that hold no accepted seat yet.
 pub(crate) struct PurchaseView {
     pub(crate) formation_id: FormationId,
     /// What every quote of the purchase must match.
@@ -903,7 +903,7 @@ impl FaStore {
             .transpose()
     }
 
-    /// The running purchase, if a live slot holds no accepted seat.
+    /// The running purchase, if a slot holds no accepted seat.
     pub(crate) async fn load_purchase(&self, fa_id: FaId) -> FaResult<Option<PurchaseView>> {
         Ok(self
             .load_stored_creation(fa_id)
@@ -942,7 +942,7 @@ impl FaStore {
 
     /// The request whose preview fills the creation's empty slots. It
     /// keeps the DKG line of the bought seats, and avoids the MGs, service
-    /// keys and badge holders of the bought and ended seats.
+    /// keys and badge holders of the bought seats.
     pub(crate) async fn missing_seats_request(
         &self,
         fa_id: FaId,
@@ -953,11 +953,9 @@ impl FaStore {
             .ok_or(FaError::NoActiveFormation)?;
         let accepted = creation.accepted().collect::<Vec<_>>();
         let bought_count = u16::try_from(accepted.len()).expect("slots fit the federation size");
-        let taken = creation
-            .slots
+        let taken = accepted
             .iter()
-            .filter(|(_, slot)| slot.accepted().is_some() || slot.ended())
-            .map(|(_, slot)| (slot.mg_id, &slot.locator, slot.holder))
+            .map(|(_, seat)| (seat.slot.mg_id, &seat.slot.locator, seat.slot.holder))
             .collect::<Vec<_>>();
         let bought = crate::selection::BoughtSeats {
             fedimintd_dkg_version: accepted
@@ -1114,18 +1112,12 @@ impl FaStore {
             ));
         }
         creation.stored.reauthorization = None;
-        let live = creation
-            .slots
-            .iter()
-            .filter(|(_, slot)| !slot.ended())
-            .count();
-        if live + seats.len() > usize::from(creation.stored.federation_size.0) {
+        if creation.slots.len() + seats.len() > usize::from(creation.stored.federation_size.0) {
             return Err(FaError::InvalidIntent(
                 "the purchase has more seats than empty slots".to_owned(),
             ));
         }
-        // A new slot takes an id after every existing slot, so an ended
-        // slot keeps its id.
+        // A new slot takes an id after every existing slot.
         let first = creation.slots.last().map_or(0, |(index, _)| index + 1);
         for (index, seat) in (first..).zip(seats) {
             creation.slots.push((
@@ -1189,7 +1181,7 @@ impl Creation {
     fn pending(&self) -> impl Iterator<Item = (u16, &StoredSlot)> {
         self.slots
             .iter()
-            .filter(|(_, slot)| slot.accepted().is_none() && !slot.ended())
+            .filter(|(_, slot)| slot.accepted().is_none())
             .map(|(index, slot)| (*index, slot))
     }
 
@@ -1201,7 +1193,7 @@ impl Creation {
             .ok_or_else(|| FaError::Storage(format!("missing persisted FA slot {index}")))
     }
 
-    /// The running purchase, while a live slot holds no accepted seat.
+    /// The running purchase, while a slot holds no accepted seat.
     fn purchase_view(&self) -> Option<PurchaseView> {
         let slots = self
             .pending()
@@ -1227,7 +1219,7 @@ impl Creation {
         })
     }
 
-    /// The formation, once `size` live slots hold accepted seats.
+    /// The formation, once `size` slots hold accepted seats.
     fn formation_view(&self) -> FaResult<Option<FormationView>> {
         let Some(seats) = formation_seats(self)? else {
             return Ok(None);
@@ -1268,9 +1260,7 @@ impl Creation {
                 mg_id: slot.mg_id,
                 locator: slot.locator.clone(),
                 seat_id: match &slot.state {
-                    SlotState::Accepted { seat_id, .. } | SlotState::Ended { seat_id } => {
-                        Some(seat_id.clone())
-                    }
+                    SlotState::Accepted { seat_id, .. } => Some(seat_id.clone()),
                     SlotState::Picked { .. } | SlotState::Bound { .. } => None,
                 },
                 guardian_code: slot.state.guardian_code().cloned(),
@@ -1284,11 +1274,9 @@ impl Creation {
                         ..
                     } => SeatPhase::GuardianCodeReady,
                     SlotState::Accepted { .. } => SeatPhase::Created,
-                    SlotState::Ended { .. } => SeatPhase::Ended,
                 },
             })
             .collect();
-        let live = self.slots.iter().filter(|(_, slot)| !slot.ended()).count();
         let purchase = self
             .slots
             .iter()
@@ -1310,7 +1298,7 @@ impl Creation {
                 count: stored
                     .federation_size
                     .0
-                    .saturating_sub(u16::try_from(live).unwrap_or(u16::MAX)),
+                    .saturating_sub(u16::try_from(self.slots.len()).unwrap_or(u16::MAX)),
                 reauthorization: stored.reauthorization,
             }
         };
@@ -1441,18 +1429,11 @@ fn validate_creation(creation: &Creation) -> FaResult<()> {
                 }
                 dkg_versions.push(fedimintd_version.dkg_version());
             }
-            SlotState::Ended { .. } => {}
         }
     }
-    if creation
-        .slots
-        .iter()
-        .filter(|(_, slot)| !slot.ended())
-        .count()
-        > usize::from(size)
-    {
+    if creation.slots.len() > usize::from(size) {
         return Err(FaError::Storage(
-            "persisted FA creation has more live slots than guardians".to_owned(),
+            "persisted FA creation has more slots than guardians".to_owned(),
         ));
     }
     let mut purchases = creation

@@ -226,9 +226,6 @@ pub enum SeatPhase {
     DkgUnderway,
     /// DKG completed, and the invite is saved.
     Running,
-    /// The MG ended this bought seat before DKG. The FA paid for it, it does
-    /// not join the federation, and another slot replaces it.
-    Ended,
 }
 
 /// Latest progress for one selected MG seat.
@@ -347,9 +344,7 @@ pub struct CreationSnapshot {
     /// started.
     pub fedimintd_dkg_version: Option<FedimintdDkgVersion>,
     /// The guardian slots, in id order. A slot keeps its seat from
-    /// acceptance until the federation forms. An ended slot (phase
-    /// [`SeatPhase::Ended`]) reports a paid seat that its MG ended before
-    /// DKG.
+    /// acceptance until the federation forms.
     pub slots: Vec<SeatProgress>,
     /// What the creation does now.
     pub stage: CreationStage,

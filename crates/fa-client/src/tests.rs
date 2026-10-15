@@ -4533,7 +4533,7 @@ fn accepted_seats(status: &FaStatus) -> Vec<SeatProgress> {
         .creation
         .iter()
         .flat_map(|creation| &creation.slots)
-        .filter(|slot| slot.seat_id.is_some() && slot.phase != SeatPhase::Ended)
+        .filter(|slot| slot.seat_id.is_some())
         .cloned()
         .collect()
 }
@@ -4634,14 +4634,13 @@ fn active_recovery(recovery: Option<crate::db::PurchaseView>) -> crate::db::Purc
 }
 
 impl crate::db::FaStore {
-    /// The seats of the creation's live accepted slots, in slot order.
+    /// The seats of the creation's accepted slots, in slot order.
     async fn pool_seats(&self, fa_id: FaId) -> FaResult<Vec<SeatId>> {
         Ok(self
             .load_snapshot(fa_id)
             .await?
             .iter()
             .flat_map(|creation| &creation.slots)
-            .filter(|slot| slot.phase != SeatPhase::Ended)
             .filter_map(|slot| slot.seat_id.clone())
             .collect())
     }
@@ -10546,91 +10545,10 @@ async fn a_never_ready_seat_keeps_the_formation_waiting_for_its_code() {
     }
 }
 
-/// The index of the formation seat whose guardian code names the federation.
-async fn named_seat_index(client: &TestClient) -> usize {
-    let formation = client
-        .inner
-        .store
-        .load_formation(TestIdentity::fa_id())
-        .await
-        .unwrap()
-        .expect("the pool is full");
-    (0..usize::from(MIN_FEDERATION_SIZE))
-        .find(|index| formation.seats[0].locator == locator(*index))
-        .expect("the named seat is a test MG")
-}
-
+/// FA does not replace a seat that its MG decommissioned. The formation
+/// stops with the MG's error, and the seat stays in the pool.
 #[tokio::test]
-async fn a_decommissioned_pool_seat_leaves_before_dkg_and_a_new_seat_forms() {
-    let state = Arc::new(MgState::default());
-    state.name_sensitive_codes.store(true, Ordering::SeqCst);
-    let (payments, _) = TestPayments::new();
-    let client = open_client(
-        MemDatabase::new().into_database(),
-        payments,
-        state.clone(),
-        MgConfig::given_away(),
-    )
-    .await;
-    client
-        .request_seats_at(&intent(), locators(), None)
-        .await
-        .unwrap();
-    client.drive_purchase_for_test(options()).await.unwrap();
-    // The named seat ends, so another seat must carry the federation name.
-    let ended = named_seat_index(&client).await;
-    state.decommissioned_indices.lock().unwrap().insert(ended);
-
-    client.drive_all_for_test(options()).await.unwrap();
-    let status = client.status();
-    bought_without(&status, &[u16::try_from(ended).unwrap()]);
-    assert!(!is_forming(&status));
-    assert!(state.start_callbacks.lock().unwrap().is_empty());
-    let FaState::Creating(creation) = client.state() else {
-        panic!("the creation needs a new seat");
-    };
-    assert_eq!(
-        creation.stage,
-        CreationStage::NeedsSeats {
-            count: 1,
-            reauthorization: Some(SelectionReauthorizationReason::SeatEnded),
-        },
-    );
-    // The ended seat keeps its slot, and a new preview cannot pick its MG.
-    let ended_slots = creation
-        .slots
-        .iter()
-        .filter(|slot| slot.phase == SeatPhase::Ended)
-        .collect::<Vec<_>>();
-    assert_eq!(ended_slots.len(), 1);
-    assert_eq!(ended_slots[0].locator, locator(ended));
-    assert_eq!(ended_slots[0].mg_id, test_mg_id(ended));
-    assert!(ended_slots[0].seat_id.is_some());
-    let bought = client
-        .inner
-        .store
-        .missing_seats_request(TestIdentity::fa_id())
-        .await
-        .unwrap()
-        .bought;
-    assert!(bought.mg_ids.contains(&test_mg_id(ended)));
-    assert!(
-        bought
-            .service_pubkeys
-            .contains_key(&locator(ended).service_pubkey)
-    );
-
-    let spare = usize::from(MIN_FEDERATION_SIZE);
-    client
-        .request_seats_at(&intent(), vec![locator(spare)], None)
-        .await
-        .unwrap();
-    client.drive_all_for_test(options()).await.unwrap();
-    federation(&client.status());
-}
-
-#[tokio::test]
-async fn a_decommissioned_pool_seat_stays_once_dkg_may_have_started() {
+async fn a_decommissioned_pool_seat_stops_the_formation() {
     let state = Arc::new(MgState::default());
     let (payments, _) = TestPayments::new();
     let client = open_client(
@@ -10645,29 +10563,6 @@ async fn a_decommissioned_pool_seat_stays_once_dkg_may_have_started() {
         .await
         .unwrap();
     client.drive_purchase_for_test(options()).await.unwrap();
-    // Every cached code means a crashed run may have sent StartDkg.
-    let formation = client
-        .inner
-        .store
-        .load_formation(TestIdentity::fa_id())
-        .await
-        .unwrap()
-        .unwrap();
-    for seat in &formation.seats {
-        let mg = (0..usize::from(MIN_FEDERATION_SIZE))
-            .find(|index| seat.locator == locator(*index))
-            .unwrap();
-        client
-            .inner
-            .store
-            .record_guardian_code(
-                &formation.formation_id,
-                seat.index,
-                GuardianCode(format!("guardiancode{mg}")),
-            )
-            .await
-            .unwrap();
-    }
     state.decommissioned_indices.lock().unwrap().insert(1);
 
     let error = client.drive_all_for_test(options()).await.unwrap_err();
@@ -10692,104 +10587,6 @@ async fn a_decommissioned_pool_seat_stays_once_dkg_may_have_started() {
             .len(),
         usize::from(MIN_FEDERATION_SIZE)
     );
-}
-
-#[tokio::test]
-async fn a_decommissioned_pool_seat_leaves_after_codes_while_no_seat_started_dkg() {
-    let state = Arc::new(MgState::default());
-    let (payments, _) = TestPayments::new();
-    let client = open_client(
-        MemDatabase::new().into_database(),
-        payments,
-        state.clone(),
-        MgConfig::given_away(),
-    )
-    .await;
-    client
-        .request_seats_at(&intent(), locators(), None)
-        .await
-        .unwrap();
-    client.drive_purchase_for_test(options()).await.unwrap();
-    // Every cached code means a crashed run may have sent StartDkg.
-    let formation = client
-        .inner
-        .store
-        .load_formation(TestIdentity::fa_id())
-        .await
-        .unwrap()
-        .unwrap();
-    for seat in &formation.seats {
-        let mg = (0..usize::from(MIN_FEDERATION_SIZE))
-            .find(|index| seat.locator == locator(*index))
-            .unwrap();
-        client
-            .inner
-            .store
-            .record_guardian_code(
-                &formation.formation_id,
-                seat.index,
-                GuardianCode(format!("guardiancode{mg}")),
-            )
-            .await
-            .unwrap();
-    }
-    state.decommissioned_indices.lock().unwrap().insert(1);
-    state.report_status_new.store(true, Ordering::SeqCst);
-
-    client.drive_all_for_test(options()).await.unwrap();
-    bought_without(&client.status(), &[1]);
-    assert!(state.start_callbacks.lock().unwrap().is_empty());
-    let status = client.status();
-    let ended = creation(&status)
-        .slots
-        .iter()
-        .filter(|slot| slot.phase == SeatPhase::Ended)
-        .collect::<Vec<_>>();
-    assert_eq!(ended.len(), 1);
-    assert_eq!(ended[0].locator, locator(1));
-    // The pool changed, so no stored slot keeps its code.
-    let stored = client
-        .inner
-        .store
-        .load_snapshot(TestIdentity::fa_id())
-        .await
-        .unwrap()
-        .unwrap();
-    assert!(stored.slots.iter().all(|slot| slot.guardian_code.is_none()));
-}
-
-#[test]
-fn flat_mg_failure_preserves_cause_and_separate_reauthorization_policy() {
-    let mg = manager_key(4).x_only_public_key().0;
-    for (cause, code) in [
-        (MgCause::Timeout, FaErrorCode::Timeout),
-        (MgCause::Transport, FaErrorCode::ManifoldGuardian),
-        (
-            MgCause::InvalidResponse,
-            FaErrorCode::InvalidManifoldGuardians,
-        ),
-        (
-            MgCause::FormationMetaAlreadyPublished,
-            FaErrorCode::InvalidManifoldGuardians,
-        ),
-    ] {
-        let failure = MgFailure {
-            mg,
-            operation: MgOperation::GetQuote,
-            cause,
-        };
-        let error = FaError::Mg(failure.clone());
-        assert_eq!(error.code(), code);
-        let policy = FaError::SelectionReauthorizationRequired {
-            reason: SelectionReauthorizationReason::SeatUnavailable,
-            failure: Some(failure.clone()),
-        };
-        assert_eq!(policy.code(), FaErrorCode::SelectionReauthorizationRequired);
-        assert!(matches!(policy, FaError::SelectionReauthorizationRequired {
-            reason: SelectionReauthorizationReason::SeatUnavailable,
-            failure: Some(actual),
-        } if actual == failure));
-    }
 }
 
 #[tokio::test(start_paused = true)]

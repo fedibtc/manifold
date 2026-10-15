@@ -473,7 +473,7 @@ where
         let position = usize::from(slot.index);
         let bound_quote = slot.state.bound_quote().cloned();
         let plan = match &slot.state {
-            SlotState::Accepted { .. } | SlotState::Ended { .. } => {
+            SlotState::Accepted { .. } => {
                 return Err(FaError::Storage(format!(
                     "FA slot {} is not pending",
                     slot.index
