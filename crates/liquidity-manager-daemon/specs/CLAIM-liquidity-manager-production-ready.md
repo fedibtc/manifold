@@ -2,13 +2,19 @@
 
 Within its documented single-process, single-gateway production envelope, FLIP
 can accept and complete supported gateway and stability-pool allocations
-unattended while preserving admission authorization, provider-wallet value,
+unattended while preserving admission authorization, operational custody of
+technically authorized funds under FLIP management,
 item-specific settlement attribution, crash and retry idempotency,
 recoverability, failure visibility, secret confinement, and the canonical
 service-adapter wire and signing contract. Durable allocation state grows by at
 most one `allocations` row per admitted federation, and each admission spends a
 valid unrevoked MG endorsement for that federation. Incomplete RPC streams
 cannot starve new streams from frame decoding.
+
+Operational custody includes bounded, authorized effects directed to their exact
+authorized targets and retained technical recovery or reconciliation authority.
+It does not assert target-side receipt for an incomplete effect, stability
+investment performance, dependency solvency, or legal or economic ownership.
 
 This envelope does not bound the total number of qualifying federations or
 retained target-client databases. `--max-open-target-clients` is a soft ceiling,
@@ -38,6 +44,7 @@ Unverified.
 
 ## Assumptions
 
+- [CLAIM-liquidity-manager-managed-funds-not-lost](CLAIM-liquidity-manager-managed-funds-not-lost.md).
 - Exactly one FLIP process and runtime generation owns one data directory and
   configured gateway. The Admin API binds to a local or private interface or is
   protected by operator-controlled access enforcement.
@@ -105,8 +112,8 @@ Unverified.
   ([claim](CLAIM-failed-stability-allocation-strands-ecash.md)).
 - If a claimed stability-pool deposit is rejected, an Admin operation fails the
   item, releases the provider capacity its reservation held, and durably records
-  the amount left behind in the target client. Recovering that value is outside
-  FLIP
+  the amount left behind in the target client. This capacity-release property
+  does not establish recovery of the remaining value
   ([claim](CLAIM-stability-deposit-rejection-releases-capacity.md)).
 - Fair worker execution eventually observes an upstream terminal
   `deposit_to_provide` result for an active stability-pool item
