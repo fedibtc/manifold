@@ -323,7 +323,7 @@ fn after(request: &AdminRequest) -> Option<AdminRequest> {
         },
         AdminRequest::SetPrice { .. } => AdminRequest::ShowCapacity,
         AdminRequest::ShowCapacity => AdminRequest::ShowSeatReadiness,
-        AdminRequest::ShowSeatReadiness => AdminRequest::SetCapacity { max_seats: 4 },
+        AdminRequest::ShowSeatReadiness => AdminRequest::SetCapacity { max_seats: Some(4) },
         AdminRequest::SetCapacity { .. } => AdminRequest::ListPaymentFederations,
         AdminRequest::ListPaymentFederations => AdminRequest::PayoutDestination,
         AdminRequest::PayoutDestination => AdminRequest::SetPayoutDestination {
@@ -368,7 +368,7 @@ fn after(request: &AdminRequest) -> Option<AdminRequest> {
         AdminRequest::SweepGuardianFees { .. } => AdminRequest::Onboarding,
         AdminRequest::Onboarding => AdminRequest::RefreshHolderAuthorizations,
         AdminRequest::RefreshHolderAuthorizations => AdminRequest::ConfigureInitialOffer {
-            max_seats: 4,
+            max_seats: Some(4),
             price_msats: Some(50_000_000),
         },
         AdminRequest::ConfigureInitialOffer { .. } => AdminRequest::ShowMnemonic,

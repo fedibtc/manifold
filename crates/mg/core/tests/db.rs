@@ -387,7 +387,7 @@ async fn onboarding_progress_is_durable_and_ordered() {
         db.onboarding_stage().await.unwrap(),
         crate::db::OnboardingStage::InitialOffer
     );
-    db.configure_initial_offer(Some(Msats(12)), 3)
+    db.configure_initial_offer(Some(Msats(12)), Some(3))
         .await
         .unwrap();
     drop(db);
@@ -397,7 +397,7 @@ async fn onboarding_progress_is_durable_and_ordered() {
         reopened.onboarding_stage().await.unwrap(),
         crate::db::OnboardingStage::Complete
     );
-    assert_eq!(reopened.max_seats().await.unwrap(), 3);
+    assert_eq!(reopened.max_seats().await.unwrap(), Some(3));
     assert_eq!(stored_price_msats(&reopened).await, Some(12));
 }
 
@@ -431,25 +431,34 @@ async fn stored_price_msats(db: &Db) -> Option<i64> {
 #[tokio::test]
 async fn recommended_seat_limits_migrate_to_automatic() {
     for (stored, expected, kept) in [
-        (0, 0, None),
-        (1, u32::MAX, Some(1)),
-        (8, u32::MAX, Some(8)),
-        (9, 9, None),
-        (11, 11, None),
+        (0, Some(0), None),
+        (1, None, Some(1)),
+        (8, None, Some(8)),
+        (9, Some(9), None),
+        (11, Some(11), None),
     ] {
-        let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
-        sqlx::raw_sql(
-            "CREATE TABLE offer_state (\
-                 id INTEGER PRIMARY KEY NOT NULL CHECK (id = 1), \
-                 max_seats INTEGER NOT NULL CHECK (0 <= max_seats AND max_seats <= 4294967295)\
-             );",
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("mg.sqlite");
+        let options = sqlx::sqlite::SqliteConnectOptions::new()
+            .filename(&path)
+            .create_if_missing(true);
+        let pool = SqlitePool::connect_with(options).await.unwrap();
+        for migration in [
+            include_str!("../migrations/0001_initial.sql"),
+            include_str!("../migrations/0006_seat_readiness.sql"),
+        ] {
+            sqlx::raw_sql(migration).execute(&pool).await.unwrap();
+        }
+        sqlx::query(
+            "UPDATE offer_state SET max_seats = ?, price_msats = 7, updated_at_ms = 9, \
+             ready_for_new_seats = 1 WHERE id = 1",
         )
+        .bind(stored)
         .execute(&pool)
         .await
         .unwrap();
-        sqlx::query("INSERT INTO offer_state (id, max_seats) VALUES (1, ?)")
-            .bind(stored)
-            .execute(&pool)
+        let epoch: Vec<u8> = sqlx::query_scalar("SELECT offer_epoch FROM offer_state")
+            .fetch_one(&pool)
             .await
             .unwrap();
 
@@ -458,18 +467,28 @@ async fn recommended_seat_limits_migrate_to_automatic() {
             .await
             .unwrap();
 
-        let row: (i64, Option<i64>, i64, i64) = sqlx::query_as(
+        let limits: (Option<i64>, Option<i64>, i64, i64) = sqlx::query_as(
             "SELECT max_seats, pre_automatic_max_seats, memory_max_seats, policy_max_seats \
              FROM offer_state WHERE id = 1",
         )
         .fetch_one(&pool)
         .await
         .unwrap();
-        let max = i64::from(u32::MAX);
-        assert_eq!(
-            row,
-            (i64::from(expected), kept, max, max),
-            "stored max_seats {stored}"
+        assert_eq!(limits, (expected, kept, 4, 12), "stored max_seats {stored}");
+        let kept_columns: (Option<i64>, Option<i64>, bool) = sqlx::query_as(
+            "SELECT price_msats, updated_at_ms, ready_for_new_seats FROM offer_state WHERE id = 1",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(kept_columns, (Some(7), Some(9), true));
+        let migrated: Vec<u8> = sqlx::query_scalar("SELECT offer_epoch FROM offer_state")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_ne!(
+            migrated, epoch,
+            "quotes from before the upgrade are refused"
         );
     }
 }

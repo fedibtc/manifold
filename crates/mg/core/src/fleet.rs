@@ -175,7 +175,8 @@ pub struct PaymentFederationStatus {
 /// publish or skip an advertisement. The seat count remains operator-private.
 pub(crate) struct AvailabilitySnapshot {
     pub(crate) accepting_seats: bool,
-    pub(crate) max_seats: u32,
+    /// `None` is automatic.
+    pub(crate) max_seats: Option<u32>,
     pub(crate) memory_max_seats: u32,
     pub(crate) policy_max_seats: u32,
     pub(crate) available_seats: u32,
@@ -687,14 +688,15 @@ impl Fleet {
         Ok(())
     }
 
-    pub async fn max_seats(&self) -> u32 {
+    /// The operator's limit on total seats; `None` is automatic.
+    pub async fn max_seats(&self) -> Option<u32> {
         self.db
             .max_seats()
             .await
             .expect("stored max seats are valid")
     }
 
-    pub async fn set_max_seats(&self, max_seats: u32) -> anyhow::Result<()> {
+    pub async fn set_max_seats(&self, max_seats: Option<u32>) -> anyhow::Result<()> {
         self.update_seats_config(SeatsConfigUpdate {
             max_seats: Some(max_seats),
             ..SeatsConfigUpdate::default()

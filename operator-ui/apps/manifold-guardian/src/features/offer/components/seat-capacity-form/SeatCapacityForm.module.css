@@ -5,3 +5,7 @@
 .actions {
   @apply uActionsRow;
 }
+
+.error {
+  @apply uFieldError;
+}

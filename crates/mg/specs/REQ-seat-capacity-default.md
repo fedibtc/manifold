@@ -2,8 +2,8 @@
 
 Source: MG operator sizing and the measured per-seat memory budget.
 
-The MG recommends an initial durable seat capacity from **available** RAM in
-the onboarding offer form. It is a recommendation the operator may override.
+The MG recommends a seat capacity from **available** RAM. The onboarding
+offer form pre-fills it when the operator clears the automatic seat limit.
 Capacity is no longer a daemon-start argument.
 
 The normative rule: one seat per whole per-seat budget of available RAM,
@@ -31,28 +31,28 @@ Available RAM is `MemAvailable`, lowered to the cgroup headroom
 
 Admission sells up to the lowest of three limits on total seats:
 
-- the operator's maximum, which only the operator writes. The u32 maximum
-  (4,294,967,295) means automatic: no operator cap, so the two runtime limits
-  decide;
+- the operator's maximum, which only the operator writes. It may be
+  automatic: no operator cap, so the two runtime limits decide. New installs
+  start automatic;
 - a memory limit: available RAM plus the anonymous resident memory of the
   MG's seat processes, divided by the budget. Running seats count toward
   their own budget, so they do not lower the limit as they grow. It has no
-  cap of 8;
+  cap of 8. Until the first sample it is 4;
 - a policy limit, the setup-payment publication's `max_seats_per_mg`
   (default 12).
 
 The publication's `seat_memory_budget_mib` replaces the default budget
 ([SPEC-setup-payment-federations](../../../specs/SPEC-setup-payment-federations.md)).
 So Fedi can raise or lower capacity across MGs without an operator action
-and without a release. An operator that wants Fedi to decide sets a high
-maximum.
+and without a release.
 
 When the runtime limits shipped, a migration made the operator maximum
 automatic where it was from 1 to 8. The onboarding form had pre-filled a
 recommendation capped at 8, so such a value most likely was that
 recommendation, not an operator choice. Values above 8 and 0 (not selling)
 stay. The replaced value stays in `offer_state.pre_automatic_max_seats`, so it
-can be restored. The raise adds slots only, so the offer epoch stays.
+can be restored. The migration replaces the offer epoch, because the first
+memory value of 4 can take the last free slot.
 
 The MG writes both runtime limits at start, on each newly admitted
 publication, and every 5 minutes. The memory limit falls at once and rises

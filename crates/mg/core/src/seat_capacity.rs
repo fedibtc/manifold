@@ -64,8 +64,9 @@ impl Smoothed {
 }
 
 /// Write the runtime seat limits until the runtime shuts down: at once, on
-/// every newly admitted publication, and every [`SAMPLE_INTERVAL`]. Hosts
-/// without procfs get no memory limit, only the policy one.
+/// every newly admitted publication, and every [`SAMPLE_INTERVAL`]. On a host
+/// without procfs the memory limit keeps its stored value (4 seats until a
+/// first sample).
 pub fn spawn_runtime_seat_limits(
     fleet: Arc<Fleet>,
     mut policy: watch::Receiver<Option<AdmittedSetupPaymentFederations>>,
@@ -89,7 +90,7 @@ pub fn spawn_runtime_seat_limits(
                         )));
                     }
                     Err(error) => {
-                        tracing::info!(%error, "no memory seat limit on this host");
+                        tracing::warn!(%error, "cannot sample memory; the memory seat limit stays");
                         sample_memory = false;
                     }
                 }

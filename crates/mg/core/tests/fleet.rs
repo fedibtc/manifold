@@ -215,7 +215,9 @@ async fn config(temp: &TempDir, max_seats: u32, first_port_base: u16) -> FleetCo
     if db.load_identity().await.unwrap().is_none() {
         crate::onboarding::onboard_as_new(&db).await.unwrap();
     }
-    db.complete_onboarding_for_test(max_seats).await.unwrap();
+    db.complete_onboarding_for_test(Some(max_seats))
+        .await
+        .unwrap();
     drop(db);
     FleetConfig {
         process_spawner: SeatProcessSpawner::Fake(Arc::new(
@@ -899,7 +901,7 @@ async fn advertisement_cycle_shares_seat_capacity() {
         .await
         .unwrap();
     assert!(host.advertisement().await.is_some());
-    fleet.set_max_seats(1).await.unwrap();
+    fleet.set_max_seats(Some(1)).await.unwrap();
     assert!(host.advertisement().await.is_none());
 
     let shared = |max: &str, available: &str, accepting: &str| {
@@ -909,8 +911,8 @@ async fn advertisement_cycle_shares_seat_capacity() {
                 ("safe_to_share", "true"),
                 ("mg_version", concat!("\"", env!("CARGO_PKG_VERSION"), "\"")),
                 ("max_seats", max),
-                // The memory limit was never written: it starts at u32::MAX.
-                ("memory_max_seats", "4294967295"),
+                // Until the first memory sample the limit assumes 4 seats.
+                ("memory_max_seats", "4"),
                 ("policy_max_seats", "2"),
                 ("available_seats", available),
                 ("accepting_seats", accepting),

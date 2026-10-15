@@ -44,8 +44,11 @@ test('should take a new fleet from the doors through to a priced offer', async (
   await page.getByRole('button', { name: 'Accept and continue' }).click();
 
   await expect(page.getByRole('heading', { name: 'Set your price' })).toBeVisible();
-  // The capacity field seeds from the daemon's RAM-derived recommendation; the
-  // operator overrides it, and the override is what must land in the offer.
+  // The seat limit starts automatic. Clearing it seeds the field from the
+  // daemon's RAM-derived recommendation; the operator overrides it, and the
+  // override is what must land in the offer.
+  await expect(page.getByLabel('Automatic seat limit')).toBeChecked();
+  await page.getByLabel('Automatic seat limit').uncheck();
   await expect(page.getByLabel('Maximum active seats')).toHaveValue('8');
   await page.getByLabel('Maximum active seats').fill('5');
   await page.getByLabel('Price per seat (sats)').fill('50000');

@@ -1,4 +1,4 @@
-import { Button, SectionCard, TextInput } from '@operator-ui/common-ui';
+import { Button, CheckboxField, SectionCard, TextInput } from '@operator-ui/common-ui';
 import { type FormEvent, useState } from 'react';
 import { useCapacity } from '@/shared/api/hooks/use-capacity/useCapacity';
 import { useSeats } from '@/shared/api/hooks/use-seats/useSeats';
@@ -36,13 +36,15 @@ export const SeatCapacityForm = () => {
   const capacity = useCapacity();
   const seats = useSeats();
   const setCapacity = useSetCapacity();
+  const [automatic, setAutomatic] = useState(false);
   const [maxSeats, setMaxSeats] = useState('');
   const [hasSeeded, setHasSeeded] = useState(false);
   const [hasEdited, setHasEdited] = useState(false);
   const [validationError, setValidationError] = useState<string | null>(null);
 
   if (!hasSeeded && capacity.data) {
-    setMaxSeats(String(capacity.data.max_seats));
+    setAutomatic(capacity.data.max_seats === null);
+    setMaxSeats(capacity.data.max_seats === null ? '' : String(capacity.data.max_seats));
     setHasSeeded(true);
   }
 
@@ -62,11 +64,21 @@ export const SeatCapacityForm = () => {
     setValidationError(null);
   };
 
+  const handleAutomaticChange = (checked: boolean) => {
+    setAutomatic(checked);
+    setHasEdited(true);
+    setValidationError(null);
+  };
+
   // @owner: Keep this write separate from price; the daemon commits them independently.
   const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (!hasCapacity || !hasEdited) return;
 
+    if (automatic) {
+      setCapacity.mutate(null, { onSuccess: () => setHasEdited(false) });
+      return;
+    }
     const parsed = parseSeatCapacity(maxSeats, activeSeats);
     if (!parsed.ok) {
       setValidationError(parsed.error);
@@ -86,18 +98,34 @@ export const SeatCapacityForm = () => {
       ? undefined
       : `${activeSeats} ${activeSeats === 1 ? 'seat is' : 'seats are'} active. The limit cannot go below that.`;
 
+  const automaticHint = capacity.data
+    ? `Fedi's limit is ${capacity.data.policy_max_seats} seats. This host's memory carries ${capacity.data.memory_max_seats}. The lower one applies.`
+    : undefined;
+
   return (
     <SectionCard title="Seat capacity">
       <QuerySurface disposition={disposition} onRetry={retry}>
         <form className={styles.form} onSubmit={handleSubmit}>
-          <TextInput
-            label="Maximum active seats"
-            hint={hint}
-            value={maxSeats}
-            onChange={handleChange}
-            error={error}
+          <CheckboxField
+            label="Automatic"
+            hint={automaticHint}
+            checked={automatic}
+            onChange={handleAutomaticChange}
             disabled={setCapacity.isPending}
           />
+
+          {automatic ? null : (
+            <TextInput
+              label="Maximum active seats"
+              hint={hint}
+              value={maxSeats}
+              onChange={handleChange}
+              error={error}
+              disabled={setCapacity.isPending}
+            />
+          )}
+
+          {automatic && error ? <span className={styles.error}>{error}</span> : null}
 
           <div className={styles.actions}>
             <Button

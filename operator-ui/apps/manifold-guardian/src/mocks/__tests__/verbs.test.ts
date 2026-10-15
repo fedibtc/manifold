@@ -139,7 +139,7 @@ describe('staged onboarding dispatch', () => {
     dispatch('Onboarding');
     dispatch('Onboarding');
 
-    expect(dispatch('ShowCapacity')).toEqual({ Ok: { max_seats: 5, available_slots: 5 } });
+    expect(dispatch('ShowCapacity')).toEqual({ Ok: { max_seats: 5, memory_max_seats: 9, policy_max_seats: 12, available_slots: 5 } });
   });
 
   it('should refuse an initial offer below the restored seat floor', () => {
@@ -205,15 +205,15 @@ describe('SetCapacity', () => {
     const refused = dispatch({ SetCapacity: { max_seats: 2 } }) as { Err: { message: string } };
 
     expect(refused.Err.message).toBe('cannot set max seats to 2; 3 seats are active');
-    expect(dispatch('ShowCapacity')).toEqual({ Ok: { max_seats: 3, available_slots: 0 } });
+    expect(dispatch('ShowCapacity')).toEqual({ Ok: { max_seats: 3, memory_max_seats: 9, policy_max_seats: 12, available_slots: 0 } });
   });
 
   it('should raise the ceiling and report the freed slots', () => {
     resetState('seats-mixed');
 
     expect(dispatch({ SetCapacity: { max_seats: 5 } })).toEqual({
-      Ok: { max_seats: 5, available_slots: 2 }
+      Ok: { max_seats: 5, memory_max_seats: 9, policy_max_seats: 12, available_slots: 2 }
     });
-    expect(dispatch('ShowCapacity')).toEqual({ Ok: { max_seats: 5, available_slots: 2 } });
+    expect(dispatch('ShowCapacity')).toEqual({ Ok: { max_seats: 5, memory_max_seats: 9, policy_max_seats: 12, available_slots: 2 } });
   });
 });

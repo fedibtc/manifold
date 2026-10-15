@@ -111,7 +111,8 @@ pub(crate) struct Offer {
 
 pub(crate) struct OfferSnapshot {
     pub(crate) offer: Offer,
-    pub(crate) max_seats: u32,
+    /// The operator's limit on total seats; `None` is automatic.
+    pub(crate) max_seats: Option<u32>,
     /// The runtime limits on total seats.
     pub(crate) memory_max_seats: u32,
     pub(crate) policy_max_seats: u32,
@@ -181,7 +182,7 @@ impl Db {
         let (epoch, price, max_seats, memory_max_seats, policy_max_seats, ready_for_new_seats): (
             Vec<u8>,
             Option<i64>,
-            i64,
+            Option<i64>,
             i64,
             i64,
             bool,
@@ -199,7 +200,7 @@ impl Db {
         .await?;
         tx.commit().await?;
         let epoch = parse_offer_epoch(epoch)?;
-        let max_seats = stored_max_seats(max_seats)?;
+        let max_seats = max_seats.map(stored_max_seats).transpose()?;
         let memory_max_seats = stored_max_seats(memory_max_seats)?;
         let policy_max_seats = stored_max_seats(policy_max_seats)?;
         Ok(OfferSnapshot {
@@ -423,10 +424,9 @@ impl Db {
     pub async fn configure_initial_offer(
         &self,
         price: Option<Msats>,
-        max_seats: u32,
+        max_seats: Option<u32>,
     ) -> Result<(), DbError> {
         let price_msats = price.map(|price| price.0 as i64);
-        let max_seats_i64 = i64::from(max_seats);
         let updated_at_ms = now_ms();
         let mut tx = self.begin_write().await?;
         let stage: String = sqlx::query_scalar("SELECT stage FROM onboarding_state WHERE id = 1")
@@ -445,18 +445,15 @@ impl Db {
         .fetch_one(&mut *tx)
         .await?;
         let active = u32::try_from(active).unwrap_or(u32::MAX);
-        if max_seats < active {
-            return Err(DbError::SeatLimitBelowActive {
-                requested: max_seats,
-                active,
-            });
+        if let Some(requested) = max_seats.filter(|requested| *requested < active) {
+            return Err(DbError::SeatLimitBelowActive { requested, active });
         }
         sqlx::query(
             "UPDATE offer_state SET price_msats = ?, max_seats = ?, updated_at_ms = ?, \
              offer_epoch = ? WHERE id = 1",
         )
         .bind(price_msats)
-        .bind(max_seats_i64)
+        .bind(max_seats.map(i64::from))
         .bind(updated_at_ms)
         .bind(fresh_offer_epoch().as_bytes().as_slice())
         .execute(&mut *tx)
@@ -477,11 +474,12 @@ impl Db {
         Ok(())
     }
 
-    pub(crate) async fn max_seats(&self) -> Result<u32, DbError> {
-        let max_seats: i64 = sqlx::query_scalar("SELECT max_seats FROM offer_state WHERE id = 1")
-            .fetch_one(&self.pool)
-            .await?;
-        stored_max_seats(max_seats)
+    pub(crate) async fn max_seats(&self) -> Result<Option<u32>, DbError> {
+        let max_seats: Option<i64> =
+            sqlx::query_scalar("SELECT max_seats FROM offer_state WHERE id = 1")
+                .fetch_one(&self.pool)
+                .await?;
+        max_seats.map(stored_max_seats).transpose()
     }
 
     pub async fn active_seat_count(&self) -> Result<u32, DbError> {
@@ -516,14 +514,14 @@ impl Db {
         first_port_base: crate::facts::PortBase,
     ) -> Result<bool, DbError> {
         let mut tx = self.begin_write().await?;
-        let (max_seats, memory, policy, ready): (i64, i64, i64, bool) = sqlx::query_as(
+        let (max_seats, memory, policy, ready): (Option<i64>, i64, i64, bool) = sqlx::query_as(
             "SELECT max_seats, memory_max_seats, policy_max_seats, ready_for_new_seats \
                  FROM offer_state WHERE id = 1",
         )
         .fetch_one(&mut *tx)
         .await?;
         let before = SeatsConfig {
-            max_seats: stored_max_seats(max_seats)?,
+            max_seats: max_seats.map(stored_max_seats).transpose()?,
             memory_max_seats: stored_max_seats(memory)?,
             policy_max_seats: stored_max_seats(policy)?,
             ready_for_new_seats: ready,
@@ -542,7 +540,7 @@ impl Db {
         )
         .fetch_one(&mut *tx)
         .await?;
-        if let Some(requested) = update.max_seats {
+        if let Some(Some(requested)) = update.max_seats {
             let active = u32::try_from(active).unwrap_or(u32::MAX);
             if requested < active {
                 return Err(DbError::SeatLimitBelowActive { requested, active });
@@ -571,7 +569,7 @@ impl Db {
             "UPDATE offer_state SET max_seats = ?, memory_max_seats = ?, policy_max_seats = ?, \
              ready_for_new_seats = ? WHERE id = 1",
         )
-        .bind(i64::from(after.max_seats))
+        .bind(after.max_seats.map(i64::from))
         .bind(i64::from(after.memory_max_seats))
         .bind(i64::from(after.policy_max_seats))
         .bind(after.ready_for_new_seats)
@@ -596,10 +594,13 @@ impl Db {
     }
 
     #[cfg(test)]
-    pub(crate) async fn complete_onboarding_for_test(&self, max_seats: u32) -> Result<(), DbError> {
+    pub(crate) async fn complete_onboarding_for_test(
+        &self,
+        max_seats: Option<u32>,
+    ) -> Result<(), DbError> {
         let mut tx = self.begin_write().await?;
         sqlx::query("UPDATE offer_state SET max_seats = ?, updated_at_ms = ? WHERE id = 1")
-            .bind(i64::from(max_seats))
+            .bind(max_seats.map(i64::from))
             .bind(now_ms())
             .execute(&mut *tx)
             .await?;
@@ -759,8 +760,8 @@ pub(super) fn fresh_offer_epoch() -> OfferEpoch {
 /// keeps the stored value.
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct SeatsConfigUpdate {
-    /// The operator's limit on total seats.
-    pub(crate) max_seats: Option<u32>,
+    /// The operator's limit on total seats. `Some(None)` makes it automatic.
+    pub(crate) max_seats: Option<Option<u32>>,
     /// Runtime limit from sampled host memory (`crate::seat_capacity`).
     pub(crate) memory_max_seats: Option<u32>,
     /// Runtime limit from the setup-payment publication.
@@ -771,16 +772,19 @@ pub(crate) struct SeatsConfigUpdate {
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct SeatsConfig {
-    max_seats: u32,
+    max_seats: Option<u32>,
     memory_max_seats: u32,
     policy_max_seats: u32,
     ready_for_new_seats: bool,
 }
 
 /// The seat limit admission enforces: the lowest of the operator's and the
-/// runtime limits.
-pub(super) fn effective_max_seats(max_seats: u32, memory: u32, policy: u32) -> u32 {
-    max_seats.min(memory).min(policy)
+/// runtime limits. An automatic operator limit does not bind.
+pub(super) fn effective_max_seats(max_seats: Option<u32>, memory: u32, policy: u32) -> u32 {
+    max_seats
+        .map_or(u32::MAX, |max| max)
+        .min(memory)
+        .min(policy)
 }
 
 pub(super) fn available_slots(

@@ -414,7 +414,7 @@ async fn capacity_cannot_shrink_below_active_seats_and_changes_rotate_the_offer(
             active: 1
         }
     ));
-    assert_eq!(db.max_seats().await.unwrap(), 2);
+    assert_eq!(db.max_seats().await.unwrap(), Some(2));
     assert_eq!(db.offer_epoch().await.unwrap(), first_epoch);
 
     set_max_seats(&db, 1).await.unwrap();
@@ -685,7 +685,7 @@ async fn formed_seat_is_set_once_and_immutable() {
 
 async fn set_max_seats(db: &Db, max_seats: u32) -> Result<bool, DbError> {
     let update = crate::db::SeatsConfigUpdate {
-        max_seats: Some(max_seats),
+        max_seats: Some(Some(max_seats)),
         ..Default::default()
     };
     db.update_seats_config(update, crate::facts::PortBase::new(30_000).unwrap())
@@ -733,7 +733,7 @@ async fn memory_limit_that_leaves_a_slot_keeps_open_quotes_valid() {
             snapshot.memory_max_seats,
             snapshot.slots
         ),
-        (3, 1, 1)
+        (Some(3), 1, 1)
     );
     // Rewriting the same limit is idempotent.
     assert!(!set_limits(&db, Some(1), None).await.unwrap());
@@ -850,7 +850,7 @@ async fn admission_uses_the_lowest_of_operator_memory_and_policy_limits() {
         SeatAdmissionResult::OfferChanged
     ));
     // The operator's own value is untouched by either runtime limit.
-    assert_eq!(db.max_seats().await.unwrap(), 5);
+    assert_eq!(db.max_seats().await.unwrap(), Some(5));
 }
 
 #[tokio::test]

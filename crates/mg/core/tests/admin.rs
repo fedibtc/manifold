@@ -209,7 +209,7 @@ async fn admin_socket_round_trips_operator_verbs() {
     // mints one on open.
     let db = crate::db::Db::open(temp.path()).await.unwrap();
     crate::onboarding::onboard_as_new(&db).await.unwrap();
-    db.complete_onboarding_for_test(1).await.unwrap();
+    db.complete_onboarding_for_test(Some(1)).await.unwrap();
 
     let fleet = Arc::new(
         Fleet::open(

@@ -6,7 +6,7 @@ import * as adminCallModule from '@/shared/api/adminCall';
 import { CAPACITY_KEY } from '@/shared/api/hooks/use-capacity/useCapacity';
 import { parseSeatCapacity, SeatCapacityForm } from '../SeatCapacityForm';
 
-let storedMaxSeats = 4;
+let storedMaxSeats: number | null = 4;
 let writeError: Error | null = null;
 /** Seats the daemon reports. The floor counts the ones not decommissioned, the
  *  same way `Db::set_max_seats` does. Empty by default so a test opts in to the
@@ -18,7 +18,12 @@ let seatsUnavailable = false;
 const mockDaemon = () =>
   vi.spyOn(adminCallModule, 'adminCall').mockImplementation(async (request: AdminRequest) => {
     if (request === 'ShowCapacity') {
-      return { max_seats: storedMaxSeats, available_slots: storedMaxSeats } as never;
+      return {
+        max_seats: storedMaxSeats,
+        memory_max_seats: 9,
+        policy_max_seats: 12,
+        available_slots: storedMaxSeats ?? 9
+      } as never;
     }
     if (request === 'ListSeats') {
       if (seatsUnavailable) throw new Error('seat list unavailable');
@@ -180,4 +185,36 @@ it('should show the daemon refusal', async () => {
   fireEvent.click(screen.getByRole('button', { name: 'Save seat limit' }));
 
   await screen.findByText('cannot set max seats to 2; 4 seats are active');
+});
+
+it('should show an automatic limit without a number and keep it on save', async () => {
+  storedMaxSeats = null;
+  const adminCall = mockDaemon();
+  renderForm();
+  const automatic = await screen.findByLabelText('Automatic');
+
+  expect(automatic).toBeChecked();
+  expect(screen.queryByLabelText('Maximum active seats')).toBeNull();
+  expect(
+    screen.getByText("Fedi's limit is 12 seats. This host's memory carries 9. The lower one applies.")
+  ).toBeInTheDocument();
+
+  fireEvent.click(automatic);
+  fireEvent.change(screen.getByLabelText('Maximum active seats'), { target: { value: '5' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Save seat limit' }));
+  await waitFor(() => expect(adminCall).toHaveBeenCalledWith({ SetCapacity: { max_seats: 5 } }));
+});
+
+it('should switch an operator limit to automatic', async () => {
+  const adminCall = mockDaemon();
+  renderForm();
+  const automatic = await screen.findByLabelText('Automatic');
+
+  expect(automatic).not.toBeChecked();
+  expect(screen.getByLabelText('Maximum active seats')).toHaveValue('4');
+  fireEvent.click(automatic);
+  fireEvent.click(screen.getByRole('button', { name: 'Save seat limit' }));
+  await waitFor(() =>
+    expect(adminCall).toHaveBeenCalledWith({ SetCapacity: { max_seats: null } })
+  );
 });

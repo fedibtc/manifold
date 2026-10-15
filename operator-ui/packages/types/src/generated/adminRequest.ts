@@ -12,7 +12,7 @@ import type { FederationId } from '../funds';
  * Operator verbs. The CLI (`fman-cli --data-dir ...`) is a thin mapping
  * onto these.
  */
-export type AdminRequest = "ShowPlans" | { "SetPrice": { price_msats: number | null, } } | "ShowCapacity" | "ShowSeatReadiness" | { "SetCapacity": { max_seats: number, } } | "ListPaymentFederations" | "PayoutDestination" | { "SetPayoutDestination": { destination: string | null, } } | { "SweepPaymentFees": { federation_id: FederationId,
+export type AdminRequest = "ShowPlans" | { "SetPrice": { price_msats: number | null, } } | "ShowCapacity" | "ShowSeatReadiness" | { "SetCapacity": { max_seats: number | null, } } | "ListPaymentFederations" | "PayoutDestination" | { "SetPayoutDestination": { destination: string | null, } } | { "SweepPaymentFees": { federation_id: FederationId,
 /**
  * Caller-generated idempotency identity.
  */
@@ -20,7 +20,7 @@ request_id: string, } } | { "PayoutStatus": { request_id: string, } } | { "Await
 /**
  * Caller-generated idempotency identity.
  */
-request_id: string, } } | "Onboarding" | "RefreshHolderAuthorizations" | { "ConfigureInitialOffer": { max_seats: number, price_msats: number | null, } } | "ShowMnemonic" | { "OnboardAsNew": {
+request_id: string, } } | "Onboarding" | "RefreshHolderAuthorizations" | { "ConfigureInitialOffer": { max_seats: number | null, price_msats: number | null, } } | "ShowMnemonic" | { "OnboardAsNew": {
 /**
  * Whether "this host is already onboarded" is success rather than a
  * refusal. Set by orchestrators whose want is *ensure onboarded* —

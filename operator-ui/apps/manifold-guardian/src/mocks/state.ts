@@ -74,9 +74,10 @@ export interface MockState {
    *  means the sweep verbs refuse rather than invent a payee. */
   payoutDestination: string | null;
   onboarding: OnboardingResponse;
-  /** The durable seat-admission ceiling (`offer_state.max_seats`): written by
-   *  `ConfigureInitialOffer` and `SetCapacity`, read by `ShowCapacity`. */
-  maxSeats: number;
+  /** The operator's seat-admission ceiling (`offer_state.max_seats`), null
+   *  when automatic: written by `ConfigureInitialOffer` and `SetCapacity`,
+   *  read by `ShowCapacity`. */
+  maxSeats: number | null;
   /** The durable verdict that gates new seats, read by `ShowSeatReadiness`. */
   readyForNewSeats: boolean;
   /** The latest readiness run since the daemon started; null before one
