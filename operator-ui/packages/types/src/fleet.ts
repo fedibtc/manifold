@@ -252,7 +252,6 @@ export interface MgVersionReport {
 export interface OnboardingResponse {
   stage: 'holder_authorization' | 'initial_offer' | 'complete';
   runtime: 'starting' | 'ready';
-  recommended_max_seats?: number;
   minimum_max_seats?: number;
   fman_name: string;
   service_pubkey: string;
@@ -287,8 +286,12 @@ export interface ShowPlansResponse {
 // SetPrice answers with the offer it just stored, in the same shape ShowPlans
 // reads it back — so a write needs no follow-up read.
 export type SetPriceResponse = ShowPlansResponse;
+/** Admission sells up to the lowest of the operator's limit and the two
+ *  runtime limits. `max_seats` is null when automatic: no operator cap. */
 export interface CapacityResponse {
-  max_seats: number;
+  max_seats: number | null;
+  memory_max_seats: number;
+  policy_max_seats: number;
   available_slots: number;
 }
 export type ShowCapacityResponse = CapacityResponse;
@@ -302,7 +305,7 @@ export interface ShowSeatReadinessResponse {
 export type SetCapacityResponse = CapacityResponse;
 export interface ConfigureInitialOfferResponse extends ShowPlansResponse {
   onboarding: 'complete';
-  max_seats: number;
+  max_seats: number | null;
 }
 export interface ListPaymentFederationsResponse {
   federations: PaymentFederation[];

@@ -258,7 +258,7 @@ async fn completion_is_observed_across_a_restart() {
         db.replace_holder_authorization_event(1, "{}", 1)
             .await
             .unwrap();
-        db.configure_initial_offer(None, 1).await.unwrap();
+        db.configure_initial_offer(None, Some(1)).await.unwrap();
         drop(phase);
     }
 

@@ -44,10 +44,8 @@ test('should take a new fleet from the doors through to a priced offer', async (
   await page.getByRole('button', { name: 'Accept and continue' }).click();
 
   await expect(page.getByRole('heading', { name: 'Set your price' })).toBeVisible();
-  // The capacity field seeds from the daemon's RAM-derived recommendation; the
-  // operator overrides it, and the override is what must land in the offer.
-  await expect(page.getByLabel('Maximum active seats')).toHaveValue('8');
-  await page.getByLabel('Maximum active seats').fill('5');
+  // Setup asks for no seat count: the limit starts automatic.
+  await expect(page.getByLabel('Maximum active seats')).toHaveCount(0);
   await page.getByLabel('Price per seat (sats)').fill('50000');
   await page.getByRole('button', { name: 'Finish setup' }).click();
 
@@ -58,7 +56,7 @@ test('should take a new fleet from the doors through to a priced offer', async (
   await expect(page.getByRole('heading', { name: 'Overview', level: 1 })).toBeVisible();
   await expect(page.getByText('50,000 sats per seat')).toBeVisible();
 
-  // The chosen capacity is durable, not just echoed by the configure response.
+  // The automatic limit is durable, not just echoed by the configure response.
   const capacity = await page.evaluate(async () => {
     const response = await fetch('/api/admin', {
       method: 'POST',
@@ -67,7 +65,9 @@ test('should take a new fleet from the doors through to a priced offer', async (
     });
     return response.json();
   });
-  expect(capacity).toEqual({ Ok: { max_seats: 5, available_slots: 5 } });
+  expect(capacity).toEqual({
+    Ok: { max_seats: null, memory_max_seats: 9, policy_max_seats: 12, available_slots: 9 }
+  });
 });
 
 // The daemon's stage cursor does not advance past `holder_authorization` until

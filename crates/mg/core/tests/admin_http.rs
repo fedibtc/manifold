@@ -190,7 +190,7 @@ async fn the_operator_listener_serves_a_data_root_with_no_identity_and_survives_
     let completed = post_admin(
         addr,
         &AdminRequest::ConfigureInitialOffer {
-            max_seats: 1,
+            max_seats: Some(1),
             price_msats: None,
         },
     )

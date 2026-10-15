@@ -3,8 +3,6 @@
 //! A fleet opens only after the operator has created or restored its identity,
 //! enrolled a Holder authorization, and configured its initial offer.
 
-mod seat_capacity;
-
 use std::sync::Arc;
 
 use serde_json::{Value, json};
@@ -64,7 +62,6 @@ pub struct Onboarding {
     archive: Arc<dyn crate::backup::BackupArchive>,
     holder_authorizations: Arc<dyn HolderAuthorizationFetcher>,
     holder_status: tokio::sync::Mutex<OnboardingStatus>,
-    recommended_max_seats: u32,
     setup_payments_configured: bool,
 }
 
@@ -84,9 +81,6 @@ impl Onboarding {
             archive,
             holder_authorizations,
             holder_status: tokio::sync::Mutex::new(OnboardingStatus::Checking),
-            recommended_max_seats: seat_capacity::detect_available_ram_bytes()
-                .map(seat_capacity::recommended_max_seats)
-                .unwrap_or(0),
             setup_payments_configured,
         })
     }
@@ -266,10 +260,6 @@ impl Onboarding {
                 OnboardingStage::InitialOffer => "initial_offer",
                 OnboardingStage::Complete => "complete",
             }),
-        );
-        object.insert(
-            "recommended_max_seats".to_owned(),
-            json!(self.recommended_max_seats),
         );
         object.insert(
             "minimum_max_seats".to_owned(),

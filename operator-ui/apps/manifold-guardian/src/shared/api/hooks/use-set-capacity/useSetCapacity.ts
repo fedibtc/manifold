@@ -7,7 +7,7 @@ export const useSetCapacity = () => {
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: (maxSeats: number) =>
+    mutationFn: (maxSeats: number | null) =>
       adminCall<SetCapacityResponse>({ SetCapacity: { max_seats: maxSeats } }),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: CAPACITY_KEY });

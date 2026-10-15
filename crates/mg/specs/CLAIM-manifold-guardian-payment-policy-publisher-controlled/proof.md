@@ -207,12 +207,13 @@ and the empty stop-set removal. A4 supplies commit and epoch freshness.
 **L5 (enum + code + axiom) — the other epoch writers cannot conceal a
 removal.** The complete production enumeration of `offer_epoch` writes is: the
 initial migration draw; `Db::set_offered_price`, which changes price and epoch
-in one transaction; L4's removal branch; and
-`Db::admit_seat`, which advances the epoch in the seat-insertion
-transaction when the last slot is consumed. All runtime writers are serialized
-with L4 by the same `Fleet::admission` mutex. A concurrent price change or
-last-slot allocation can only install another fresh epoch, not restore the
-pre-removal epoch. Under A4/A5 no concurrent production writer can make a
+in one transaction; L4's removal branch;
+`Db::update_seats_config`, which changes seat limits or readiness and may draw
+an epoch in the same transaction; and `Db::admit_seat`, which advances the
+epoch in the seat-insertion transaction when the last slot is consumed. All
+runtime writers are serialized with L4 by SQLite's single writer. A concurrent
+price change, seat limit change, or last-slot allocation can only install
+another fresh epoch, not restore the pre-removal epoch. Under A4/A5 no concurrent production writer can make a
 removed membership visible with the preceding epoch.
 
 **L6 (enum + code) — every policy decision reads authenticated derived state,

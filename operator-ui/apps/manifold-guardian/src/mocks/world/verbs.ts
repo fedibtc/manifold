@@ -242,10 +242,6 @@ const payoutStatus: Verb<'PayoutStatus'> = ({ request_id }) => {
 
 const awaitPayout: Verb<'AwaitPayout'> = payoutStatus;
 
-/** The daemon derives this from available RAM (REQ-seat-capacity-default); the
- *  mock host is deterministic, so the recommendation is a constant. */
-const MOCK_RECOMMENDED_MAX_SEATS = 8;
-
 /** Seats the capacity ceiling must stay above. The daemon counts its seats
  *  table, which a restore repopulates; the mock world does not materialize
  *  restored seats, so the durable `minimum_max_seats` floor stands in for
@@ -308,10 +304,21 @@ const refreshHolderAuthorizations: Verb<'RefreshHolderAuthorizations'> = () => {
   return state.onboarding;
 };
 
-const capacity = () => ({
-  max_seats: getState().maxSeats,
-  available_slots: Math.max(0, getState().maxSeats - activeSeatCount())
-});
+// The runtime limits the daemon writes: from sampled host memory, and from the
+// setup-payment publication (default 12).
+const MOCK_MEMORY_MAX_SEATS = 9;
+const MOCK_POLICY_MAX_SEATS = 12;
+
+const capacity = () => {
+  const maxSeats = getState().maxSeats;
+  const limit = Math.min(maxSeats ?? Infinity, MOCK_MEMORY_MAX_SEATS, MOCK_POLICY_MAX_SEATS);
+  return {
+    max_seats: maxSeats,
+    memory_max_seats: MOCK_MEMORY_MAX_SEATS,
+    policy_max_seats: MOCK_POLICY_MAX_SEATS,
+    available_slots: Math.max(0, limit - activeSeatCount())
+  };
+};
 
 const showCapacity: Verb<'ShowCapacity'> = capacity;
 
@@ -329,7 +336,7 @@ const showSeatReadiness: Verb<'ShowSeatReadiness'> = () => {
 // mirroring Db::set_max_seats and its error text.
 const setCapacity: Verb<'SetCapacity'> = ({ max_seats }) => {
   const active = activeSeatCount();
-  if (max_seats < active) {
+  if (max_seats !== null && max_seats < active) {
     throw new Error(`cannot set max seats to ${max_seats}; ${active} seats are active`);
   }
   getState().maxSeats = max_seats;
@@ -341,7 +348,7 @@ const configureInitialOffer: Verb<'ConfigureInitialOffer'> = ({ max_seats, price
   // The same floor Db::configure_initial_offer holds: a restore's recovered
   // seats are already active, and the initial ceiling may not undercut them.
   const active = activeSeatCount();
-  if (max_seats < active) {
+  if (max_seats !== null && max_seats < active) {
     throw new Error(`cannot set max seats to ${max_seats}; ${active} seats are active`);
   }
   state.price = price_msats;
@@ -437,7 +444,6 @@ const onboardAsNew: Verb<'OnboardAsNew'> = ({ if_needed }) => {
     ...state.onboarding,
     stage: 'holder_authorization',
     runtime: 'starting',
-    recommended_max_seats: MOCK_RECOMMENDED_MAX_SEATS,
     minimum_max_seats: 0
   };
   return { onboarded: 'new', seats: 0 };
@@ -474,7 +480,6 @@ const onboardFromBackup: Verb<'OnboardFromBackup'> = ({
     ...state.onboarding,
     stage: 'holder_authorization',
     runtime: 'starting',
-    recommended_max_seats: MOCK_RECOMMENDED_MAX_SEATS,
     minimum_max_seats: seats
   };
   return { onboarded: 'restored', seats, formed };

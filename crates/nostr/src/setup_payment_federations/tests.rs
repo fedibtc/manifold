@@ -26,6 +26,8 @@ fn content(invites: &[&str]) -> String {
         ),
         min_fee_ppm: DEFAULT_SETUP_PAYMENT_MIN_FEE_PPM,
         support_nostr_pubkey: None,
+        seat_memory_budget_mib: None,
+        max_seats_per_mg: None,
     })
     .expect("test content serializes")
 }

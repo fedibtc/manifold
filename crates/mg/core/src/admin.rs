@@ -59,8 +59,12 @@ pub enum AdminRequest {
     ShowCapacity,
     /// The latest new-seat readiness report, absent before the first run.
     ShowSeatReadiness,
-    /// Replace the admission ceiling without moving it below active seats.
-    SetCapacity { max_seats: u32 },
+    /// Replace the operator's admission ceiling without moving it below
+    /// active seats. `null` is automatic: the memory and policy limits decide.
+    SetCapacity {
+        #[ts(type = "number | null")]
+        max_seats: Option<u32>,
+    },
     /// Payment federations with wallet health and balance: the accepted
     /// common setup-payment set plus wallet-only leftovers of removed
     /// members. Read-only — acceptance is the authenticated common set,
@@ -142,8 +146,10 @@ pub enum AdminRequest {
     RefreshHolderAuthorizations,
     /// Finish first-run setup with the admission limit and initial price. This
     /// is accepted only after a Holder authorization has been retained.
+    /// `max_seats` `null` is automatic.
     ConfigureInitialOffer {
-        max_seats: u32,
+        #[ts(type = "number | null")]
+        max_seats: Option<u32>,
         #[ts(type = "number | null")]
         price_msats: Option<u64>,
     },
@@ -463,20 +469,14 @@ pub(crate) async fn dispatch(
             fleet.set_offered_price(price_msats.map(Msats)).await?;
             Ok(plans_json(fleet.offered_plans().await))
         }
-        AdminRequest::ShowCapacity => Ok(capacity_json(
-            fleet.max_seats().await,
-            fleet.available_slots().await,
-        )),
+        AdminRequest::ShowCapacity => Ok(capacity_json(&fleet.availability_snapshot().await)),
         AdminRequest::ShowSeatReadiness => Ok(seat_readiness_json(
             fleet.ready_for_new_seats().await,
             fleet.seat_readiness(),
         )),
         AdminRequest::SetCapacity { max_seats } => {
             fleet.set_max_seats(max_seats).await?;
-            Ok(capacity_json(
-                fleet.max_seats().await,
-                fleet.available_slots().await,
-            ))
+            Ok(capacity_json(&fleet.availability_snapshot().await))
         }
         AdminRequest::ListPaymentFederations => Ok(payment_federations_json(
             fleet.payment_federation_statuses().await,
@@ -590,8 +590,15 @@ pub fn plans_json(plans: Vec<Plan>) -> Value {
     json!({ "plans": plans })
 }
 
-pub fn capacity_json(max_seats: u32, available_slots: u32) -> Value {
-    json!({ "max_seats": max_seats, "available_slots": available_slots })
+/// `max_seats` is the operator's limit, `null` when automatic. Admission
+/// sells up to the lowest of it and the two runtime limits.
+pub(crate) fn capacity_json(snapshot: &crate::fleet::AvailabilitySnapshot) -> Value {
+    json!({
+        "max_seats": snapshot.max_seats,
+        "memory_max_seats": snapshot.memory_max_seats,
+        "policy_max_seats": snapshot.policy_max_seats,
+        "available_slots": snapshot.available_seats,
+    })
 }
 
 pub fn seat_readiness_json(ready_for_new_seats: bool, report: Option<ReadinessReport>) -> Value {

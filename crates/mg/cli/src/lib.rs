@@ -91,7 +91,7 @@ pub enum OnboardVerb {
     /// Finish setup after Holder authorization is observed.
     Offer {
         #[arg(long)]
-        max_seats: u32,
+        max_seats: MaxSeatsArg,
         #[arg(long = "price-msats")]
         price_msats: Option<u64>,
     },
@@ -100,7 +100,25 @@ pub enum OnboardVerb {
 #[derive(Debug, Subcommand)]
 pub enum CapacityVerb {
     Show,
-    Set { max_seats: u32 },
+    Set { max_seats: MaxSeatsArg },
+}
+
+/// An operator seat limit: a whole number, or `automatic` for no operator cap.
+#[derive(Clone, Copy, Debug)]
+pub struct MaxSeatsArg(Option<u32>);
+
+impl std::str::FromStr for MaxSeatsArg {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        if value == "automatic" {
+            return Ok(Self(None));
+        }
+        value
+            .parse()
+            .map(|max_seats| Self(Some(max_seats)))
+            .map_err(|_| "expected a whole number or `automatic`".to_owned())
+    }
 }
 
 #[derive(Debug, Subcommand)]
@@ -232,7 +250,9 @@ pub async fn run(data_dir: &Path, verb: AdminVerb) -> anyhow::Result<()> {
         } => AdminRequest::ShowCapacity,
         AdminVerb::Capacity {
             verb: CapacityVerb::Set { max_seats },
-        } => AdminRequest::SetCapacity { max_seats },
+        } => AdminRequest::SetCapacity {
+            max_seats: max_seats.0,
+        },
         AdminVerb::PaymentFederations {
             verb: PaymentFederationsVerb::List,
         } => AdminRequest::ListPaymentFederations,
@@ -317,7 +337,7 @@ pub async fn run(data_dir: &Path, verb: AdminVerb) -> anyhow::Result<()> {
                     price_msats,
                 },
         } => AdminRequest::ConfigureInitialOffer {
-            max_seats,
+            max_seats: max_seats.0,
             price_msats,
         },
     };

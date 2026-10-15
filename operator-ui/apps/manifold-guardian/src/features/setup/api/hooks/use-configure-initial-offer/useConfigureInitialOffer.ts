@@ -4,7 +4,8 @@ import { adminCall } from '@/shared/api/adminCall';
 import { ONBOARDING_KEY } from '@/shared/api/hooks/use-onboarding/useOnboarding';
 
 interface InitialOffer {
-  maxSeats: number;
+  /** null is automatic. */
+  maxSeats: number | null;
   priceMsat: number | null;
 }
 

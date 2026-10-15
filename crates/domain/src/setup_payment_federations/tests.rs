@@ -49,6 +49,8 @@ fn content_with_min_fee_ppm(invites: Vec<String>, min_fee_ppm: u64) -> Vec<u8> {
         ),
         min_fee_ppm,
         support_nostr_pubkey: None,
+        seat_memory_budget_mib: None,
+        max_seats_per_mg: None,
     })
     .expect("test content serializes")
 }
@@ -165,6 +167,8 @@ fn admits_only_credential_free_https_telemetry_registration_urls() {
             telemetry_registration_url: Url(invalid.to_owned()),
             min_fee_ppm: DEFAULT_SETUP_PAYMENT_MIN_FEE_PPM,
             support_nostr_pubkey: None,
+            seat_memory_budget_mib: None,
+            max_seats_per_mg: None,
         })
         .unwrap();
         assert_eq!(
@@ -333,4 +337,67 @@ fn rejects_oversized_malformed_versions_and_duplicate_fields() {
             SetupPaymentFederationsContentError::MalformedContent
         );
     }
+}
+
+fn content_with_seat_memory_budget(budget: &str) -> String {
+    format!(
+        r#"{{"version":1,"fman_version":"0.1.0","federations":[],"telemetry_registration_url":"https://push.fedi.example/v1/telemetry/registrations","seat_memory_budget_mib":{budget}}}"#
+    )
+}
+
+#[test]
+fn seat_memory_budget_is_optional_and_bounded() {
+    let absent = AdmittedSetupPaymentFederations::parse(&content(vec![]))
+        .expect("content without a budget is admitted");
+    assert_eq!(
+        absent.seat_memory_budget_mib(),
+        DEFAULT_SEAT_MEMORY_BUDGET_MIB
+    );
+
+    for budget in [256, 1_229, 16_384] {
+        let admitted = AdmittedSetupPaymentFederations::parse(
+            content_with_seat_memory_budget(&budget.to_string()).as_bytes(),
+        )
+        .expect("an in-range budget is admitted");
+        assert_eq!(admitted.seat_memory_budget_mib(), budget);
+    }
+    for budget in ["0", "255", "16385"] {
+        assert_eq!(
+            AdmittedSetupPaymentFederations::parse(
+                content_with_seat_memory_budget(budget).as_bytes()
+            ),
+            Err(SetupPaymentFederationsContentError::SeatMemoryBudgetOutOfRange)
+        );
+    }
+}
+
+#[test]
+fn max_seats_per_mg_defaults_to_twelve_and_is_bounded() {
+    let raw = |seats: &str| {
+        format!(
+            r#"{{"version":1,"fman_version":"0.1.0","federations":[],"telemetry_registration_url":"https://push.fedi.example/v1/telemetry/registrations","max_seats_per_mg":{seats}}}"#
+        )
+    };
+    let absent = AdmittedSetupPaymentFederations::parse(&content(vec![])).unwrap();
+    assert_eq!(absent.max_seats_per_mg(), 12);
+    for seats in [0, 5, SETUP_PAYMENT_MAX_SEATS_PER_MG] {
+        let admitted = AdmittedSetupPaymentFederations::parse(raw(&seats.to_string()).as_bytes())
+            .expect("an in-range limit is admitted");
+        assert_eq!(admitted.max_seats_per_mg(), seats);
+    }
+    assert_eq!(
+        AdmittedSetupPaymentFederations::parse(
+            raw(&(SETUP_PAYMENT_MAX_SEATS_PER_MG + 1).to_string()).as_bytes()
+        ),
+        Err(SetupPaymentFederationsContentError::MaxSeatsPerMgTooHigh)
+    );
+}
+
+#[test]
+fn unset_seat_limits_stay_off_the_wire() {
+    // Consumers built before unknown fields were admitted refuse a
+    // publication that carries one, so unset limits must not serialize.
+    let encoded = String::from_utf8(content(vec![])).unwrap();
+    assert!(!encoded.contains("seat_memory_budget_mib"));
+    assert!(!encoded.contains("max_seats_per_mg"));
 }
