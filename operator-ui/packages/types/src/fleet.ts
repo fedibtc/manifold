@@ -252,7 +252,6 @@ export interface MgVersionReport {
 export interface OnboardingResponse {
   stage: 'holder_authorization' | 'initial_offer' | 'complete';
   runtime: 'starting' | 'ready';
-  recommended_max_seats?: number;
   minimum_max_seats?: number;
   fman_name: string;
   service_pubkey: string;

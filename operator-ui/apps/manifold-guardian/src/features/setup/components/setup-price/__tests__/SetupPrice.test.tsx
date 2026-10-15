@@ -15,9 +15,7 @@ const renderPrice = (onDone = vi.fn()) => {
 };
 
 const priceField = () => screen.getByLabelText('Price per seat (sats)');
-const maxSeatsField = () => screen.getByLabelText('Maximum active seats');
 const finishButton = () => screen.getByRole('button', { name: 'Finish setup' });
-const automaticBox = () => screen.getByLabelText('Automatic seat limit');
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -89,52 +87,25 @@ describe('SetupPrice', () => {
     );
   });
 
-  // `Number('')` is 0, so a cleared field used to finish setup with no seats.
-  it('should refuse a blank maximum seat count without calling the daemon', async () => {
-    const adminCallSpy = vi
-      .spyOn(adminCallModule, 'adminCall')
-      .mockResolvedValue({ plans: [], recommended_max_seats: 3, minimum_max_seats: 0 });
-    const { onDone } = renderPrice();
-    fireEvent.click(automaticBox());
-    await waitFor(() => expect(maxSeatsField()).toHaveValue('3'));
-
-    fireEvent.change(maxSeatsField(), { target: { value: '' } });
-    fireEvent.click(finishButton());
-
-    await screen.findByText('Maximum seats must be a whole number from 0 to 4294967295.');
-    expect(adminCallSpy).not.toHaveBeenCalledWith(
-      expect.objectContaining({ ConfigureInitialOffer: expect.anything() })
-    );
-    expect(onDone).not.toHaveBeenCalled();
-  });
-
-  it('should write an operator limit once automatic is cleared', async () => {
-    const adminCallSpy = vi
-      .spyOn(adminCallModule, 'adminCall')
-      .mockResolvedValue({ plans: [], recommended_max_seats: 3, minimum_max_seats: 0 });
+  it('should leave the seat limit automatic and ask for no number', async () => {
+    const adminCallSpy = vi.spyOn(adminCallModule, 'adminCall').mockResolvedValue({ plans: [] });
     renderPrice();
 
-    expect(automaticBox()).toBeChecked();
     expect(screen.queryByLabelText('Maximum active seats')).toBeNull();
-    fireEvent.click(automaticBox());
-    await waitFor(() => expect(maxSeatsField()).toHaveValue('3'));
-    fireEvent.change(maxSeatsField(), { target: { value: '5' } });
     fireEvent.click(finishButton());
 
     await waitFor(() =>
       expect(adminCallSpy).toHaveBeenCalledWith({
-        ConfigureInitialOffer: { max_seats: 5, price_msats: null }
+        ConfigureInitialOffer: { max_seats: null, price_msats: null }
       })
     );
   });
 
-  it('should keep browser autofill out of the number fields', () => {
+  it('should keep browser autofill out of the price field', () => {
     vi.spyOn(adminCallModule, 'adminCall').mockResolvedValue({ plans: [] });
     renderPrice();
-    fireEvent.click(automaticBox());
 
     expect(priceField()).toHaveAttribute('inputmode', 'numeric');
     expect(priceField()).toHaveAttribute('autocomplete', 'off');
-    expect(maxSeatsField()).toHaveAttribute('autocomplete', 'off');
   });
 });

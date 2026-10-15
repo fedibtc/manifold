@@ -242,10 +242,6 @@ const payoutStatus: Verb<'PayoutStatus'> = ({ request_id }) => {
 
 const awaitPayout: Verb<'AwaitPayout'> = payoutStatus;
 
-/** The daemon derives this from available RAM (REQ-seat-capacity-default); the
- *  mock host is deterministic, so the recommendation is a constant. */
-const MOCK_RECOMMENDED_MAX_SEATS = 8;
-
 /** Seats the capacity ceiling must stay above. The daemon counts its seats
  *  table, which a restore repopulates; the mock world does not materialize
  *  restored seats, so the durable `minimum_max_seats` floor stands in for
@@ -448,7 +444,6 @@ const onboardAsNew: Verb<'OnboardAsNew'> = ({ if_needed }) => {
     ...state.onboarding,
     stage: 'holder_authorization',
     runtime: 'starting',
-    recommended_max_seats: MOCK_RECOMMENDED_MAX_SEATS,
     minimum_max_seats: 0
   };
   return { onboarded: 'new', seats: 0 };
@@ -485,7 +480,6 @@ const onboardFromBackup: Verb<'OnboardFromBackup'> = ({
     ...state.onboarding,
     stage: 'holder_authorization',
     runtime: 'starting',
-    recommended_max_seats: MOCK_RECOMMENDED_MAX_SEATS,
     minimum_max_seats: seats
   };
   return { onboarded: 'restored', seats, formed };

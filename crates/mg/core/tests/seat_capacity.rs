@@ -3,31 +3,6 @@ use super::*;
 const GIB: u64 = 1024 * MIB;
 
 #[test]
-fn one_seat_per_one_point_two_gib_capped_at_eight() {
-    let budget = 1_229 * MIB;
-    // Multiples of the 1.2 GiB budget recommend exactly their multiplier...
-    for seats in 1..=8u64 {
-        assert_eq!(
-            recommended_max_seats(seats * budget),
-            seats as u32,
-            "at exactly {seats} x 1.2 GiB"
-        );
-        // ...and one byte less truncates down a seat.
-        assert_eq!(
-            recommended_max_seats(seats * budget - 1),
-            seats as u32 - 1,
-            "one byte short of {seats} x 1.2 GiB"
-        );
-    }
-    // Below the first budget the host is too small to sell seats at all.
-    assert_eq!(recommended_max_seats(0), 0);
-    assert_eq!(recommended_max_seats(GIB), 0);
-    // The cap holds arbitrarily high.
-    assert_eq!(recommended_max_seats(9 * budget), 8);
-    assert_eq!(recommended_max_seats(u64::MAX), 8);
-}
-
-#[test]
 fn runtime_limit_counts_memory_the_seats_already_hold() {
     let budget = GIB;
     // 2.5 GiB available and nothing running: two seats fit.

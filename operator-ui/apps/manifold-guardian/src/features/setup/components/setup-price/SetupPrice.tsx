@@ -1,11 +1,8 @@
-import { Banner, Button, CheckboxField } from '@operator-ui/common-ui';
+import { Banner, Button } from '@operator-ui/common-ui';
 import { type FormEvent, useState } from 'react';
 import { useConfigureInitialOffer } from '@/features/setup/api/hooks/use-configure-initial-offer/useConfigureInitialOffer';
-import { useOnboarding } from '@/shared/api/hooks/use-onboarding/useOnboarding';
 import { describeActionError } from '@/shared/utils/describeActionError';
 import { parsePriceField } from '@/shared/utils/offerPrice';
-import { MAX_SEAT_LIMIT } from '@/shared/utils/seatLimit';
-import { parseWholeNumberInput } from '@/shared/utils/wholeNumberInput';
 import styles from './SetupPrice.module.css';
 
 interface SetupPriceProps {
@@ -14,36 +11,16 @@ interface SetupPriceProps {
 
 export const SetupPrice = ({ onDone }: SetupPriceProps) => {
   const configureOffer = useConfigureInitialOffer();
-  const onboarding = useOnboarding();
   const [priceSats, setPriceSats] = useState('');
-  const [automatic, setAutomatic] = useState(true);
-  const [maxSeats, setMaxSeats] = useState('0');
   const [validationError, setValidationError] = useState<string | null>(null);
-  const [hasSeededMaxSeats, setHasSeededMaxSeats] = useState(false);
-  if (!hasSeededMaxSeats && onboarding.data) {
-    setMaxSeats(
-      String(
-        Math.max(onboarding.data.recommended_max_seats ?? 0, onboarding.data.minimum_max_seats ?? 0)
-      )
-    );
-    setHasSeededMaxSeats(true);
-  }
 
   const handlePriceChange = (event: FormEvent<HTMLInputElement>) => {
     setPriceSats(event.currentTarget.value);
     setValidationError(null);
   };
 
-  const handleAutomaticChange = (checked: boolean) => {
-    setAutomatic(checked);
-    setValidationError(null);
-  };
-
-  const handleMaxSeatsChange = (event: FormEvent<HTMLInputElement>) => {
-    setMaxSeats(event.currentTarget.value);
-    setValidationError(null);
-  };
-
+  // The seat limit starts automatic: Fedi's policy and this host's memory set
+  // it. The operator can set their own limit later, on the Overview.
   const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     const parsed = parsePriceField(priceSats);
@@ -51,18 +28,8 @@ export const SetupPrice = ({ onDone }: SetupPriceProps) => {
       setValidationError(parsed.error);
       return;
     }
-    const parsedMaxSeats = automatic
-      ? ({ ok: true, value: null } as const)
-      : parseWholeNumberInput(maxSeats, { max: MAX_SEAT_LIMIT });
-    if (!parsedMaxSeats.ok) {
-      setValidationError(`Maximum seats must be a whole number from 0 to ${MAX_SEAT_LIMIT}.`);
-      return;
-    }
     setValidationError(null);
-    configureOffer.mutate(
-      { maxSeats: parsedMaxSeats.value, priceMsat: parsed.priceMsat },
-      { onSuccess: onDone }
-    );
+    configureOffer.mutate({ maxSeats: null, priceMsat: parsed.priceMsat }, { onSuccess: onDone });
   };
 
   const error =
@@ -85,30 +52,6 @@ export const SetupPrice = ({ onDone }: SetupPriceProps) => {
       </Banner>
 
       <form className={styles.form} onSubmit={handleSubmit}>
-        <CheckboxField
-          label="Automatic seat limit"
-          hint="Fedi and this host's memory set how many seats you sell. Clear this to set your own limit."
-          checked={automatic}
-          onChange={handleAutomaticChange}
-        />
-
-        {automatic ? null : (
-          <>
-            <label className={styles.label} htmlFor="setup-max-seats">
-              Maximum active seats
-            </label>
-
-            <input
-              id="setup-max-seats"
-              className={styles.input}
-              inputMode="numeric"
-              autoComplete="off"
-              value={maxSeats}
-              onChange={handleMaxSeatsChange}
-            />
-          </>
-        )}
-
         <label className={styles.label} htmlFor="setup-price-sats">
           Price per seat (sats)
         </label>

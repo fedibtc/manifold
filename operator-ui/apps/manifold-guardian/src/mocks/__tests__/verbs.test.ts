@@ -55,7 +55,6 @@ describe('OnboardFromBackup', () => {
     const status = dispatch('Onboarding') as { Ok: Record<string, unknown> };
 
     expect(status.Ok.stage).toBe('holder_authorization');
-    expect(status.Ok.recommended_max_seats).toBe(8);
     expect(status.Ok.minimum_max_seats).toBe(2);
   });
 });

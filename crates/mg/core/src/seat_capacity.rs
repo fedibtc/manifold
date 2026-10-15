@@ -1,9 +1,8 @@
 //! How many seats this host's memory carries
 //! (`crates/mg/specs/REQ-seat-capacity-default.md`).
 //!
-//! Onboarding recommends an initial operator limit from it. At runtime one
-//! task writes two limits beside the operator's: one from sampled memory and
-//! one from the setup-payment publication. Admission uses the lowest, and the
+//! One task writes two limits beside the operator's: one from sampled memory
+//! and one from the setup-payment publication. Admission uses the lowest, and the
 //! database applies each write without breaking the offer-epoch invariant
 //! ([`crate::db::Db::update_seats_config`]).
 
@@ -25,21 +24,10 @@ use crate::fleet::Fleet;
 mod tests;
 
 const MIB: u64 = 1024 * 1024;
-/// Above this the expected binding constraints are concurrent-ceremony CPU
-/// and disk IO, not RAM.
-const MAX_RECOMMENDED_SEATS: u64 = 8;
 const SAMPLE_INTERVAL: Duration = Duration::from_secs(5 * 60);
 /// A raised limit takes effect only once this many consecutive samples agree,
 /// while a lowered one takes effect at once.
 const RAISE_AFTER_SAMPLES: usize = 3;
-
-/// The onboarding recommendation: one seat per whole default budget of
-/// available RAM, capped at 8. Fractional budget truncates toward fewer seats,
-/// and a host below one budget gets 0, too small to sell seats at all.
-pub(crate) fn recommended_max_seats(available_ram_bytes: u64) -> u32 {
-    (available_ram_bytes / (u64::from(DEFAULT_SEAT_MEMORY_BUDGET_MIB) * MIB))
-        .min(MAX_RECOMMENDED_SEATS) as u32
-}
 
 /// The runtime limit on total seats: one seat per whole budget of the memory
 /// the seats can use, which is what is available plus what this daemon's
