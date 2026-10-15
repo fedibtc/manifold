@@ -434,10 +434,9 @@ no-ops for endpoint auth and must not be treated as production authorization.
 
 ## FA formation inputs
 
-FA formation timing options cross a consumer/CLI input boundary. Keep invalid
-timing unconstructible and reject it before durable-state, wallet, lease, or
-network work. [`crates/fa-client/SECURITY.md`](crates/fa-client/SECURITY.md)
-owns the exact shared native/WASM timer domain and runtime deadline contract.
+FA formation timing is fixed in the library and takes no consumer input.
+[`crates/fa-client/SECURITY.md`](crates/fa-client/SECURITY.md) owns the
+shared native/WASM timer domain.
 
 
 ## MG/FLIP/guardian-telemetry trust material

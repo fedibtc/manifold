@@ -2,17 +2,17 @@
 //!
 //! The write reads the consensus base, votes through the seats that have not
 //! accepted that base, reads back, and retries until consensus carries the
-//! target or the run ends. Callers supply the target predicate and the vote;
+//! target or, for a maintenance action, its deadline passes. Callers supply the target predicate and the vote;
 //! the base, row, readback, and backoff bookkeeping lives here once.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::future::Future;
 
 use fedi_decentralized_service_manifold_guardian::MetaConsensusBase;
-use fedimint_core::runtime::Instant;
+use fedimint_core::runtime::{Instant, sleep};
 
 use crate::formation::{
-    DriverRun, sleep_for_retry, snapshot_meta_consensus, validate_consensus_metadata_size,
+    Timeouts, sleep_for_retry, snapshot_meta_consensus, validate_consensus_metadata_size,
 };
 use crate::maintenance::next_maintenance_retry_delay;
 use crate::{FaError, FaResult, FederationConsensusError, FederationConsensusSnapshot};
@@ -43,7 +43,7 @@ pub(crate) enum MetaWriteError<R> {
     },
     /// Consensus metadata does not form a usable base.
     InvalidBase(String),
-    /// The run ended before consensus adopted the target.
+    /// The deadline passed before consensus adopted the target.
     Unconverged {
         unresolved: Vec<u16>,
         guardian_errors: Vec<(u16, String)>,
@@ -65,7 +65,8 @@ impl<R> From<FaError> for MetaWriteError<R> {
 /// guardian must sign a rebased mutation. A readback follows every wave, so a
 /// threshold can adopt the target while a late sibling fails.
 pub(crate) async fn write_consensus_meta<R, ReadFut, SubmitFut>(
-    run: DriverRun,
+    timeouts: Timeouts,
+    deadline: Option<Instant>,
     seats: BTreeSet<u16>,
     read: impl Fn() -> ReadFut,
     adopted: impl Fn(&FederationConsensusSnapshot) -> FaResult<bool>,
@@ -81,7 +82,7 @@ where
     let mut guardian_errors = BTreeMap::new();
     let mut pinned = BTreeSet::new();
     let mut consensus_error = None;
-    let mut retry_delay = run.poll_interval();
+    let mut retry_delay = timeouts.poll;
     let unconverged = |unresolved: &BTreeSet<u16>,
                        guardian_errors: &BTreeMap<u16, String>,
                        consensus_error: Option<String>| {
@@ -96,7 +97,7 @@ where
     };
 
     loop {
-        if Instant::now() >= run.deadline() {
+        if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
             return Err(unconverged(&unresolved, &guardian_errors, consensus_error));
         }
         let snapshot = match read().await {
@@ -122,7 +123,7 @@ where
                 unresolved.clone_from(&seats);
                 guardian_errors.clear();
                 pinned.clear();
-                retry_delay = run.poll_interval();
+                retry_delay = timeouts.poll;
             }
 
             let rows = unresolved.difference(&pinned).copied().collect();
@@ -165,10 +166,15 @@ where
             }
         }
 
-        if sleep_for_retry(run.deadline(), retry_delay).await.is_err() {
-            return Err(unconverged(&unresolved, &guardian_errors, consensus_error));
+        match deadline {
+            Some(deadline) => {
+                if sleep_for_retry(deadline, retry_delay).await.is_err() {
+                    return Err(unconverged(&unresolved, &guardian_errors, consensus_error));
+                }
+            }
+            None => sleep(retry_delay).await,
         }
-        retry_delay = next_maintenance_retry_delay(run.poll_interval(), retry_delay);
+        retry_delay = next_maintenance_retry_delay(timeouts.poll, retry_delay);
     }
 }
 

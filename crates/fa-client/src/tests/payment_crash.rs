@@ -44,13 +44,12 @@ impl Scenario {
 
 /// [`options`] with timeouts no loaded machine reaches, so every run of a
 /// scenario makes the same commits.
-fn crash_options() -> FormationRunOptions {
-    FormationRunOptions::new(crate::FormationRunOptionsConfig {
-        poll_interval: Duration::from_millis(1),
-        run_timeout: Duration::from_secs(120),
-        request_timeout: Duration::from_secs(60),
-    })
-    .unwrap()
+fn crash_options() -> Timeouts {
+    Timeouts {
+        poll: Duration::from_millis(1),
+        long: Duration::from_secs(120),
+        request: Duration::from_secs(60),
+    }
 }
 
 /// What one crash run leaves behind, for the invariants.

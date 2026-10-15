@@ -8,12 +8,11 @@ use clap::{Args as ClapArgs, Parser, Subcommand};
 use fa_client::{
     CreationStage, FaClient, FaFeeAccountError, FaFeeAccountProvider, FaIdentity, FaPaymentError,
     FaPayments, FaState, FederationConsensusError, FederationConsensusReader,
-    FederationConsensusSnapshot, FedimintFederationId, FedimintdVersionRange, FormationRunOptions,
-    GuardianFeePpm, LiquidityOperationId, LiquidityProviderConnector,
-    LiquidityProviderConnectorError, LiquidityRequestIntent, MaintenanceRunOptions,
-    ManifoldGuardianCallError, ManifoldGuardianConnector, ManifoldGuardianConnectorError,
-    MgCandidateRequirements, MgDiscoveryOptions, MgRegistryQuery, MgSelectionRequest,
-    PlanPreference, PreparedSeatPayment, SeatPaymentRecovery,
+    FederationConsensusSnapshot, FedimintFederationId, FedimintdVersionRange, GuardianFeePpm,
+    LiquidityOperationId, LiquidityProviderConnector, LiquidityProviderConnectorError,
+    LiquidityRequestIntent, ManifoldGuardianCallError, ManifoldGuardianConnector,
+    ManifoldGuardianConnectorError, MgCandidateRequirements, MgDiscoveryOptions, MgRegistryQuery,
+    MgSelectionRequest, PlanPreference, PreparedSeatPayment, SeatPaymentRecovery,
 };
 use fedi_decentralized_domain::BitcoinNetwork;
 use fedi_decentralized_manifold_environment::{ManifoldEnvironment, ManifoldEnvironmentProfile};
@@ -132,23 +131,8 @@ enum Command {
 
 #[derive(Debug, ClapArgs)]
 struct MaintenanceArgs {
-    #[command(flatten)]
-    timing: MaintenanceTimingArgs,
     #[command(subcommand)]
     command: MaintenanceCommand,
-}
-
-#[derive(Debug, ClapArgs)]
-struct MaintenanceTimingArgs {
-    /// Delay between consensus convergence attempts.
-    #[arg(long, global = true, default_value_t = 2)]
-    poll_interval_secs: u64,
-    /// Maximum time for the maintenance operation after reconciliation.
-    #[arg(long, global = true, default_value_t = 600)]
-    run_timeout_secs: u64,
-    /// Maximum time for one consensus read, connection, signature, or RPC.
-    #[arg(long, global = true, default_value_t = 30)]
-    request_timeout_secs: u64,
 }
 
 #[derive(Debug, Subcommand)]
@@ -185,11 +169,9 @@ enum MaintenancePreflight {
         update: FederationMetadataUpdate,
         field: String,
         value: String,
-        options: MaintenanceRunOptions,
     },
     GuardianFees {
         send_ppm: GuardianFeePpm,
-        options: FormationRunOptions,
     },
 }
 
@@ -236,29 +218,12 @@ impl FaFeeAccountProvider for CliFaFeeAccountProvider {
 
 impl MaintenanceArgs {
     fn preflight(&self) -> anyhow::Result<MaintenancePreflight> {
-        let maintenance_options = || {
-            MaintenanceRunOptions::new(fa_client::MaintenanceRunOptionsConfig {
-                poll_interval: Duration::from_secs(self.timing.poll_interval_secs),
-                run_timeout: Duration::from_secs(self.timing.run_timeout_secs),
-                request_timeout: Duration::from_secs(self.timing.request_timeout_secs),
-            })
-            .map_err(anyhow::Error::from)
-        };
-        let formation_options = || {
-            FormationRunOptions::new(fa_client::FormationRunOptionsConfig {
-                poll_interval: Duration::from_secs(self.timing.poll_interval_secs),
-                run_timeout: Duration::from_secs(self.timing.run_timeout_secs),
-                request_timeout: Duration::from_secs(self.timing.request_timeout_secs),
-            })
-            .map_err(anyhow::Error::from)
-        };
         let metadata = |update: FederationMetadataUpdate| -> anyhow::Result<_> {
             let (field, value) = update.clone().into_field();
             Ok(MaintenancePreflight::Metadata {
                 update,
                 field: field.0,
                 value: value.0,
-                options: maintenance_options()?,
             })
         };
 
@@ -287,10 +252,7 @@ impl MaintenanceArgs {
                 );
                 let send_ppm = GuardianFeePpm::try_from(args.send_ppm)
                     .context("validate --send-ppm as a guardian-fee rate")?;
-                Ok(MaintenancePreflight::GuardianFees {
-                    send_ppm,
-                    options: formation_options()?,
-                })
+                Ok(MaintenancePreflight::GuardianFees { send_ppm })
             }
         }
     }
@@ -651,10 +613,7 @@ struct CreateArgs {
     /// Exclusive upper three-number Fedimint release bound.
     #[arg(long, requires = "fedimintd_version_minimum")]
     fedimintd_version_maximum_exclusive: Option<String>,
-    /// Driver probe interval, 1..=2,147,483 seconds.
-    #[arg(long, default_value_t = 2)]
-    poll_interval_secs: u64,
-    /// Per-invocation driver deadline, 1..=2,147,483 seconds.
+    /// How long this command waits for the formation, in seconds.
     #[arg(long, default_value_t = 600)]
     poll_timeout_secs: u64,
     /// Secure 0600 file containing the push-gateway hook URL bearer.
@@ -685,7 +644,7 @@ struct CreateArgs {
 
 struct CreatePreflight {
     intent: CreateIntent,
-    options: FormationRunOptions,
+    limit: Duration,
     fa_fee_account_provider: CliFaFeeAccountProvider,
     completion_callback: Option<DkgCompletionCallback>,
 }
@@ -859,16 +818,16 @@ async fn execute(args: AppArgs) -> anyhow::Result<()> {
                     .map_err(anyhow::Error::from)
                 })
                 .transpose()?;
-            let options = FormationRunOptions::new(fa_client::FormationRunOptionsConfig {
-                poll_interval: Duration::from_secs(create.poll_interval_secs),
-                run_timeout: Duration::from_secs(create.poll_timeout_secs),
-                ..Default::default()
-            })?;
+            ensure!(
+                create.poll_timeout_secs > 0,
+                "--poll-timeout-secs must be at least one second"
+            );
+            let limit = Duration::from_secs(create.poll_timeout_secs);
             let fa_fee_account_provider =
                 CliFaFeeAccountProvider::from_file(Some(&create.fa_spv2_account_file))?;
             Some(CreatePreflight {
                 intent,
-                options,
+                limit,
                 fa_fee_account_provider,
                 completion_callback,
             })
@@ -959,15 +918,12 @@ async fn run(
     maintenance_preflight: Option<MaintenancePreflight>,
 ) -> anyhow::Result<()> {
     let mut output = CliOutput::stdio();
-    let resume_options = match &args.command {
+    let resume_limit = match &args.command {
         Command::Resume {
             run_timeout_secs: Some(seconds),
             ..
-        } => FormationRunOptions::new(fa_client::FormationRunOptionsConfig {
-            run_timeout: Duration::from_secs(*seconds),
-            ..Default::default()
-        })?,
-        _ => FormationRunOptions::default(),
+        } => Duration::from_secs(*seconds),
+        _ => DEFAULT_RUN_LIMIT,
     };
     let format = OutputFormat::from_json_flag(args.json);
     let setup_payment = CliSetupPayment::load(&args)?;
@@ -1025,7 +981,7 @@ async fn run(
         Command::Create(create) => {
             let CreatePreflight {
                 intent,
-                options,
+                limit,
                 fa_fee_account_provider,
                 completion_callback,
             } = create_preflight.expect("create input is parsed before external input access");
@@ -1078,7 +1034,7 @@ async fn run(
                         payment_federation_id,
                     )
                     .await?;
-                run_until_settled(&client, options).await
+                run_until_settled(&client, limit).await
             }
             .await;
             output.snapshot(&client.state(), format)?;
@@ -1087,14 +1043,14 @@ async fn run(
         }
         Command::Resume { args: resume, .. } => {
             let (client, endpoint) = open_existing(&resume, wallet_secret).await?;
-            let result = run_until_settled(&client, resume_options).await;
+            let result = run_until_settled(&client, resume_limit).await;
             output.snapshot(&client.state(), format)?;
             endpoint.close().await;
             result?;
         }
         Command::RestartDkg(restart) => {
             let (client, endpoint) = open_existing(&restart, wallet_secret).await?;
-            let results = client.restart_dkg(FormationRunOptions::default()).await;
+            let results = client.restart_dkg().await;
             endpoint.close().await;
             let results = results?;
             let output: Vec<_> = results
@@ -1192,19 +1148,16 @@ async fn run(
                     update,
                     field,
                     value,
-                    options,
                 } => async {
-                    run_until_settled(&client, FormationRunOptions::default()).await?;
-                    Ok::<_, anyhow::Error>(
-                        client.update_federation_metadata(update, options).await?,
-                    )
+                    run_until_settled(&client, DEFAULT_RUN_LIMIT).await?;
+                    Ok::<_, anyhow::Error>(client.update_federation_metadata(update).await?)
                 }
                 .await
                 .context("reconcile and update federation metadata")
                 .and_then(|()| output.metadata_consensus(&field, &value, format)),
-                MaintenancePreflight::GuardianFees { send_ppm, options } => async {
-                    run_until_settled(&client, FormationRunOptions::default()).await?;
-                    Ok::<_, anyhow::Error>(client.propose_guardian_fees(send_ppm, options).await?)
+                MaintenancePreflight::GuardianFees { send_ppm } => async {
+                    run_until_settled(&client, DEFAULT_RUN_LIMIT).await?;
+                    Ok::<_, anyhow::Error>(client.propose_guardian_fees(send_ppm).await?)
                 }
                 .await
                 .context("reconcile and configure guardian fees")
@@ -1408,7 +1361,7 @@ async fn run(
                     bail!("liquidity requires a formed federation");
                 };
                 let connector = CliLiquidityConnector::new(endpoint.clone());
-                run_until_settled(&client, FormationRunOptions::default()).await?;
+                run_until_settled(&client, DEFAULT_RUN_LIMIT).await?;
                 let snapshot = client
                     .start_liquidity(&federation.formation_id, &provider, intent, &connector)
                     .await?;
@@ -1435,7 +1388,7 @@ async fn run(
                 let operation_id = LiquidityOperationId(resume.operation_id);
                 client.liquidity_status(&operation_id).await?;
                 let connector = CliLiquidityConnector::new(endpoint.clone());
-                run_until_settled(&client, FormationRunOptions::default()).await?;
+                run_until_settled(&client, DEFAULT_RUN_LIMIT).await?;
                 let snapshot = client.resume_liquidity(&operation_id, &connector).await?;
                 output.liquidity_snapshot(&snapshot, format)?;
                 endpoint.close().await;
@@ -1484,13 +1437,14 @@ async fn run(
     Ok(())
 }
 
-/// Run the FA until it needs the user, has failed, or has nothing to do.
-///
-/// A reopened federation is unsynced, so this also verifies it against
-/// consensus before post-formation work.
+/// How long a command waits for the FA run loop by default.
+const DEFAULT_RUN_LIMIT: Duration = Duration::from_secs(600);
+
+/// Run the FA until it needs the user, has failed, or has nothing to do, or
+/// until `limit` passes.
 async fn run_until_settled<I, P, N, F, C>(
     client: &FaClient<I, P, N, F, C>,
-    options: FormationRunOptions,
+    limit: Duration,
 ) -> anyhow::Result<()>
 where
     I: FaIdentity,
@@ -1509,8 +1463,9 @@ where
         }
     };
     tokio::select! {
-        () = client.run(options) => unreachable!("the FA run loop does not return"),
+        () = client.run() => unreachable!("the FA run loop does not return"),
         result = settled => result,
+        () = tokio::time::sleep(limit) => bail!("the FA did not settle within {limit:?}"),
     }
 }
 
@@ -2870,18 +2825,14 @@ mod tests {
             "set-name",
             "--value",
             "Staging Federation",
-            "--run-timeout-secs",
-            "90",
         ])
         .unwrap();
         let Command::Maintenance(maintenance) = args.command else {
             panic!("expected maintenance command")
         };
-        assert_eq!(maintenance.timing.run_timeout_secs, 90);
         let MaintenancePreflight::Metadata {
             field,
             value,
-            options: _,
             update: _,
         } = maintenance.preflight().unwrap()
         else {
@@ -2891,11 +2842,6 @@ mod tests {
         assert_eq!(value, "Staging Federation");
 
         let invalid_name = MaintenanceArgs {
-            timing: MaintenanceTimingArgs {
-                poll_interval_secs: 2,
-                run_timeout_secs: 600,
-                request_timeout_secs: 30,
-            },
             command: MaintenanceCommand::SetName(MetadataValueArgs {
                 value: "no".to_owned(),
             }),
@@ -2909,11 +2855,6 @@ mod tests {
         );
 
         let invalid_fee = MaintenanceArgs {
-            timing: MaintenanceTimingArgs {
-                poll_interval_secs: 2,
-                run_timeout_secs: 600,
-                request_timeout_secs: 30,
-            },
             command: MaintenanceCommand::ConfigureGuardianFees(ConfigureGuardianFeesArgs {
                 send_ppm: fa_client::MAX_GUARDIAN_FEE_PPM + 1,
             }),
@@ -2964,11 +2905,6 @@ mod tests {
     #[test]
     fn guardian_fee_preflight_accepts_only_the_rate() {
         let maintenance = MaintenanceArgs {
-            timing: MaintenanceTimingArgs {
-                poll_interval_secs: 2,
-                run_timeout_secs: 600,
-                request_timeout_secs: 30,
-            },
             command: MaintenanceCommand::ConfigureGuardianFees(ConfigureGuardianFeesArgs {
                 send_ppm: GuardianFeePpm::MANIFOLD_DEFAULT.value(),
             }),
@@ -3114,7 +3050,6 @@ fedimintd_version_maximum_exclusive = "0.11.3"
             federation_size: None,
             fedimintd_version_minimum: None,
             fedimintd_version_maximum_exclusive: None,
-            poll_interval_secs: 2,
             poll_timeout_secs: 600,
             completion_callback_url_file: None,
             completion_callback_idempotency_key: None,
@@ -3153,7 +3088,6 @@ fedimintd_version_maximum_exclusive = "0.11.3"
             federation_size: None,
             fedimintd_version_minimum: None,
             fedimintd_version_maximum_exclusive: None,
-            poll_interval_secs: 2,
             poll_timeout_secs: 600,
             completion_callback_url_file: None,
             completion_callback_idempotency_key: None,
@@ -3249,7 +3183,6 @@ guardian_fee_pmm = 100
             federation_size: Some(7),
             fedimintd_version_minimum: None,
             fedimintd_version_maximum_exclusive: None,
-            poll_interval_secs: 2,
             poll_timeout_secs,
             completion_callback_url_file: None,
             completion_callback_idempotency_key: None,
@@ -3279,7 +3212,7 @@ guardian_fee_pmm = 100
             Some(WalletRootSecret(WalletSecret([42; 64]))),
             Some(CreatePreflight {
                 intent,
-                options: FormationRunOptions::default(),
+                limit: DEFAULT_RUN_LIMIT,
                 fa_fee_account_provider: CliFaFeeAccountProvider::unavailable(),
                 completion_callback: None,
             }),

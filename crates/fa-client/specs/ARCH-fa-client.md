@@ -41,7 +41,7 @@ carried by the admitted setup-payment event (1,500 ppm when no event has
 been admitted, never zero). That floor is the same one every MG enforces
 ([`SPEC-setup-payment-federations`](../../../specs/SPEC-setup-payment-federations.md));
 refusing it here means a rate the whole fleet would vote down names its own
-reason instead of retrying to the run deadline. Durable FA storage is a
+reason instead of retrying until the maintenance limit. Durable FA storage is a
 separate fail-closed schema. Schema 12 keeps one creation row, one slot row
 per selected guardian, and one cached guardian code per accepted seat. A slot
 is one guardian position of the federation, keyed by its index. It holds its
@@ -129,7 +129,7 @@ so the next run continues it. The purchase ends when no slot is left to buy.
 If a seat left, the creation returns to `NeedsSeats` with the first leave
 reason, and a new purchase fills the empty slots, lowest index first. Selected guardians are never silently swapped.
 Definite connection failures are retried with bounded exponential backoff for
-up to two minutes, clipped by the current driver deadline, before the
+up to two minutes before the
 pre-output fresh-selection result is returned. After outputs start, transport
 failure is an exact-replay error instead and never requires a fresh selection.
 The product range does not imply that every MG release supports every admitted
@@ -316,7 +316,12 @@ the purchase, then the formation of a full pool. A formed or restored
 federation gives the loop no work. User actions take the
 run guard, which makes the loop yield, save their input, and wake the loop.
 Failed work is retried with a growing delay up to five minutes, and its error
-appears in the state.
+appears in the state. A step has no deadline: it ends when its work is done,
+when a call fails, or when a user action wakes the loop. So the DKG wait, the
+guardian-code wait, and the metadata readback wait as long as they must. Each
+call has a fixed timeout: 30 s for an ordinary call, and 10 minutes for a
+payment, its recovery, a refund, or a backup read. A timeout cancels the call
+and leaves exact payment recovery intact. The library has no timing options.
 
 ## Consumer boundary
 
@@ -378,9 +383,6 @@ objects, trust conclusions, or lifecycle transitions:
 purchase APIs additionally expose side-effect-free, operation-specific preflights for
 consumers: the purchase validates the preview's seat count, preview age, and
 explicit payer.
-Timing options likewise have private fields and checked construction; invalid
-runtime bounds cannot reach identity, durable state, wallet, or
-network access.
 
 Formation installs guardian-fee arrangement on the same state engine. Opening
 with a `ManifoldEnvironmentProfile` supplies the setup-payment publisher and
@@ -493,8 +495,7 @@ database refuses a second open of the same path. A process restart ends the
 old driver before persisted state is reopened. Schema 11 also kept a
 database-wide driver lease; opening such an FA deletes it.
 Exact durable operation recovery prevents a restarted consumer from submitting
-a payment twice. Each invocation has one monotonic deadline, and prepared
-payment work remains effect-free until it is polled. Parallel non-value seat
+a payment twice. Prepared payment work remains effect-free until it is polled. Parallel non-value seat
 work uses narrow row updates so one completion cannot overwrite another seat's
 recovery facts. The crate stays compatible with native mobile targets and
 `wasm32-unknown-unknown`.
@@ -534,11 +535,11 @@ network effects; every MG repeats the same authoritative validation. The API
 does not accept raw metadata keys, clear fields, upload image bytes, or widen
 the MG allowlist. The operation requires
 a formed federation record, reconstructs every FA-owned seat from
-that record, and shares the formation driver's run guard, deadline, connector, identity, and real consensus-reader capabilities.
+that record, and shares the formation driver's run guard, connector, identity, and real consensus-reader capabilities.
 
 Fedi constructs `FederationMetadataUpdate::terms_of_service_url(url)` and passes
-it to `FaClient::update_federation_metadata(update, options)`, with checked
-`MaintenanceRunOptions`, for both ready-made and custom terms. The URL is stored
+it to `FaClient::update_federation_metadata(update)` for both ready-made and
+custom terms. The URL is stored
 as `fedi:tos_url`; the result confirms fresh consensus adoption.
 
 Consumers must rebuild for the value-bearing `TermsOfService` variant and the
@@ -558,11 +559,8 @@ object and before submitting the canonical target. Initial seat-binding
 publication applies the same FA ceiling before hashing or fan-out and fails the
 formation rather than amplifying an oversized pre-existing object.
 
-The public operation accepts `MaintenanceRunOptions`, whose checked native/WASM
-timers and errors use maintenance vocabulary. Its private representation reuses
-the formation driver's generic deadline and request-timeout machinery;
-that implementation sharing is not exposed as formation policy in the
-maintenance API.
+The caller waits for a maintenance operation, so it alone keeps a limit: it
+retries for at most 10 minutes, then returns `MaintenanceConvergence`.
 
 Because the meta module votes on one opaque whole object, each retry reads the
 live raw value, commits every FA-signed seat request to its exact

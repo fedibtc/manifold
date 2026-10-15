@@ -87,8 +87,6 @@ impl std::fmt::Display for SelectionReauthorizationReason {
 pub enum FaErrorCode {
     /// Consumer intent failed validation.
     InvalidIntent,
-    /// Formation run options failed validation.
-    InvalidOptions,
     /// Durable state could not be read or written.
     Storage,
     /// The consumer-provided identity could not be used.
@@ -155,7 +153,6 @@ pub enum MgOperation {
     GetInviteCode,
     GetPeerAttestation,
     ProposeFormationMeta,
-    WaitForRunning,
 }
 impl MgOperation {
     pub(crate) fn as_str(self) -> &'static str {
@@ -171,7 +168,6 @@ impl MgOperation {
             Self::GetInviteCode => "get_invite_code",
             Self::GetPeerAttestation => "get_peer_attestation",
             Self::ProposeFormationMeta => "propose_formation_meta",
-            Self::WaitForRunning => "wait_for_running",
         }
     }
 }
@@ -195,8 +191,6 @@ pub enum MgCause {
     NotAcceptingSeats,
     #[error("offer_changed")]
     OfferChanged,
-    #[error("not_running")]
-    NotRunning,
     #[error("plan_not_offered")]
     PlanNotOffered,
     #[error("payment_federation_not_accepted")]
@@ -290,9 +284,6 @@ pub enum FaError {
     /// Consumer intent failed validation.
     #[error("invalid formation intent: {0}")]
     InvalidIntent(String),
-    /// Formation run options failed validation.
-    #[error(transparent)]
-    InvalidOptions(#[from] crate::InvalidFormationRunOptions),
     /// Durable state could not be read or written.
     #[error("FA storage failure: {0}")]
     Storage(String),
@@ -447,7 +438,6 @@ impl FaError {
                 _ => FaErrorCode::ManifoldGuardian,
             },
             Self::InvalidIntent(_) => FaErrorCode::InvalidIntent,
-            Self::InvalidOptions(_) => FaErrorCode::InvalidOptions,
             Self::Storage(_) => FaErrorCode::Storage,
             Self::Identity(_) => FaErrorCode::Identity,
             Self::Busy => FaErrorCode::Busy,

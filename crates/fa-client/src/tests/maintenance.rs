@@ -1,45 +1,23 @@
 use super::*;
 
-fn maintenance_options() -> MaintenanceRunOptions {
-    MaintenanceRunOptions::new(MaintenanceRunOptionsConfig {
-        poll_interval: Duration::from_millis(1),
-        run_timeout: Duration::from_secs(2),
-        request_timeout: Duration::from_millis(200),
-    })
-    .unwrap()
+fn maintenance_options() -> Timeouts {
+    Timeouts {
+        poll: Duration::from_millis(1),
+        long: Duration::from_secs(2),
+        request: Duration::from_millis(200),
+    }
 }
 
-fn long_maintenance_options() -> MaintenanceRunOptions {
-    MaintenanceRunOptions::new(MaintenanceRunOptionsConfig {
-        poll_interval: Duration::from_millis(1),
-        run_timeout: Duration::from_secs(2),
-        request_timeout: Duration::from_secs(30),
-    })
-    .unwrap()
-}
-
-#[test]
-fn maintenance_timing_errors_use_maintenance_vocabulary() {
-    let error = MaintenanceRunOptions::new(MaintenanceRunOptionsConfig {
-        poll_interval: Duration::ZERO,
-        run_timeout: Duration::from_millis(1),
-        request_timeout: Duration::from_millis(1),
-    })
-    .unwrap_err();
-    assert_eq!(
-        error,
-        InvalidMaintenanceRunOptions::BelowMinimum {
-            field: MaintenanceTimingField::PollInterval,
-        }
-    );
-    assert_eq!(
-        error.to_string(),
-        "invalid maintenance options: poll interval must be at least one millisecond"
-    );
+fn long_maintenance_options() -> Timeouts {
+    Timeouts {
+        poll: Duration::from_millis(1),
+        long: Duration::from_secs(2),
+        request: Duration::from_secs(30),
+    }
 }
 
 #[test]
-fn maintenance_backoff_never_shortens_the_public_poll_interval() {
+fn maintenance_backoff_never_shortens_the_poll_interval() {
     assert_eq!(
         first_three_maintenance_retry_delays(Duration::from_secs(2)),
         [
@@ -55,7 +33,7 @@ fn maintenance_backoff_never_shortens_the_public_poll_interval() {
     assert_eq!(
         first_three_maintenance_retry_delays(Duration::from_secs(7)),
         [Duration::from_secs(7); 3],
-        "the private backoff cap cannot make a caller-selected interval more aggressive"
+        "the backoff cap cannot make a longer poll interval more aggressive"
     );
 }
 
@@ -149,7 +127,7 @@ async fn pre_formed_rejection_has_no_connector_or_metadata_effect() {
 
     assert!(matches!(
         client
-            .update_federation_metadata(
+            .update_federation_metadata_with(
                 FederationMetadataUpdate::name("New Federation").unwrap(),
                 maintenance_options(),
             )
@@ -191,7 +169,7 @@ async fn gateway_registration_fans_out_and_accepts_a_threshold_live_federation()
     )
     .unwrap();
     client
-        .register_gateway(gateway_api.clone(), maintenance_options())
+        .register_gateway_with(gateway_api.clone(), maintenance_options())
         .await
         .unwrap();
 
@@ -239,7 +217,7 @@ async fn terms_url_preserves_unrelated_fields_and_waits_for_consensus() {
         .clone()
         .expect("formation published metadata");
     client
-        .update_federation_metadata(
+        .update_federation_metadata_with(
             FederationMetadataUpdate::terms_of_service_url("https://example.com/custom-terms")
                 .unwrap(),
             maintenance_options(),
@@ -297,7 +275,7 @@ async fn rebases_the_identical_mutation_after_a_stale_wave() {
     let concurrent = serde_json::to_vec(&serde_json::json!({"existing": "new"})).unwrap();
     reader.change_base_after_next_read(initial.clone(), concurrent.clone());
     client
-        .update_federation_metadata(
+        .update_federation_metadata_with(
             FederationMetadataUpdate::welcome_message("Hello members").unwrap(),
             maintenance_options(),
         )
@@ -368,7 +346,7 @@ async fn rebases_across_a_revision_bump_with_unchanged_content() {
     let recurred = serde_json::to_vec(&serde_json::json!({"existing": "recurred"})).unwrap();
     reader.bump_revision_after_next_read(recurred.clone(), 2);
     client
-        .update_federation_metadata(
+        .update_federation_metadata_with(
             FederationMetadataUpdate::welcome_message("Hello again").unwrap(),
             maintenance_options(),
         )
@@ -454,7 +432,7 @@ async fn already_adopted_update_needs_no_live_mg() {
     mg_state.connect_calls.store(0, Ordering::SeqCst);
 
     client
-        .update_federation_metadata(
+        .update_federation_metadata_with(
             FederationMetadataUpdate::name("Already Adopted").unwrap(),
             maintenance_options(),
         )
@@ -522,7 +500,7 @@ async fn complete_consensus_object_cap_is_inclusive_and_checked_before_fanout() 
     assert_eq!(at_cap.len(), FEDERATION_METADATA_OBJECT_MAX_BYTES);
     *mg_state.meta_consensus_raw.lock().expect("test lock") = Some(at_cap);
     client
-        .update_federation_metadata(
+        .update_federation_metadata_with(
             FederationMetadataUpdate::name("At Object Cap").unwrap(),
             maintenance_options(),
         )
@@ -534,7 +512,7 @@ async fn complete_consensus_object_cap_is_inclusive_and_checked_before_fanout() 
     assert_eq!(oversized.len(), FEDERATION_METADATA_OBJECT_MAX_BYTES + 1);
     *mg_state.meta_consensus_raw.lock().expect("test lock") = Some(oversized);
     let error = client
-        .update_federation_metadata(
+        .update_federation_metadata_with(
             FederationMetadataUpdate::name("Oversized Object").unwrap(),
             maintenance_options(),
         )
@@ -586,7 +564,7 @@ async fn malformed_consensus_object_is_a_typed_terminal_error_before_fanout() {
 
     assert!(matches!(
         client
-            .update_federation_metadata(
+            .update_federation_metadata_with(
                 FederationMetadataUpdate::name("Cannot Parse").unwrap(),
                 maintenance_options(),
             )
@@ -666,7 +644,7 @@ async fn threshold_live_partial_wave_succeeds_and_late_timeouts_do_not_mask_adop
     *mg_state.hang_meta_indices.lock().expect("test lock") = [0, 1].into_iter().collect();
 
     client
-        .update_federation_metadata(
+        .update_federation_metadata_with(
             FederationMetadataUpdate::welcome_message("Threshold live").unwrap(),
             maintenance_options(),
         )
@@ -707,12 +685,11 @@ async fn below_threshold_availability_fails_within_the_driver_deadline() {
     // surfaces as the driver's request timeout, never as a serialized wire
     // refusal (transport failure lives outside `ManifoldGuardianError`).
     *mg_state.hang_meta_indices.lock().expect("test lock") = [0, 1, 2].into_iter().collect();
-    let bounded = MaintenanceRunOptions::new(MaintenanceRunOptionsConfig {
-        poll_interval: Duration::from_millis(1),
-        run_timeout: Duration::from_millis(50),
-        request_timeout: Duration::from_millis(10),
-    })
-    .unwrap();
+    let bounded = Timeouts {
+        poll: Duration::from_millis(1),
+        long: Duration::from_millis(50),
+        request: Duration::from_millis(10),
+    };
 
     mg_state
         .meta_request_wave_size
@@ -722,7 +699,7 @@ async fn below_threshold_availability_fails_within_the_driver_deadline() {
         let client = client.clone();
         async move {
             client
-                .update_federation_metadata(
+                .update_federation_metadata_with(
                     FederationMetadataUpdate::name("Cannot Converge").unwrap(),
                     bounded,
                 )
@@ -813,7 +790,7 @@ async fn transient_transport_retries_only_the_unresolved_rows_until_readback_suc
         let client = client.clone();
         async move {
             client
-                .update_federation_metadata(
+                .update_federation_metadata_with(
                     FederationMetadataUpdate::name("Recovered transport").unwrap(),
                     maintenance_options(),
                 )
@@ -892,7 +869,7 @@ async fn terminal_guardian_refusal_is_typed_and_not_retried() {
         .insert(2, ManifoldGuardianError::MetaValueInvalid);
 
     let error = client
-        .update_federation_metadata(
+        .update_federation_metadata_with(
             FederationMetadataUpdate::name("Terminal Refusal").unwrap(),
             maintenance_options(),
         )
@@ -951,15 +928,14 @@ async fn pinned_target_conflict_stops_same_base_retries_and_is_distinguishable()
             failures.insert(index, ManifoldGuardianError::MetaTargetConflict);
         }
     }
-    let bounded = MaintenanceRunOptions::new(MaintenanceRunOptionsConfig {
-        poll_interval: Duration::from_millis(1),
-        run_timeout: Duration::from_millis(50),
-        request_timeout: Duration::from_millis(10),
-    })
-    .unwrap();
+    let bounded = Timeouts {
+        poll: Duration::from_millis(1),
+        long: Duration::from_millis(50),
+        request: Duration::from_millis(10),
+    };
 
     let error = client
-        .update_federation_metadata(
+        .update_federation_metadata_with(
             FederationMetadataUpdate::name("Pinned Conflict").unwrap(),
             bounded,
         )
@@ -1036,7 +1012,7 @@ async fn transient_read_failure_is_retried_without_changing_the_mutation() {
     reader.fail_next(1);
 
     client
-        .update_federation_metadata(
+        .update_federation_metadata_with(
             FederationMetadataUpdate::icon_url("https://example.com/new.png").unwrap(),
             maintenance_options(),
         )
@@ -1101,7 +1077,7 @@ async fn cancelled_partial_wave_reopens_and_replays_without_losing_unrelated_met
     let operation_client = client.clone();
     let operation = tokio::spawn(async move {
         operation_client
-            .update_federation_metadata(
+            .update_federation_metadata_with(
                 FederationMetadataUpdate::welcome_message("Survives cancellation").unwrap(),
                 long_maintenance_options(),
             )
@@ -1138,7 +1114,7 @@ async fn cancelled_partial_wave_reopens_and_replays_without_losing_unrelated_met
     // Maintenance waits for the reopened federation to reconcile.
     reopened.drive().await.unwrap();
     reopened
-        .update_federation_metadata(
+        .update_federation_metadata_with(
             FederationMetadataUpdate::welcome_message("Survives cancellation").unwrap(),
             maintenance_options(),
         )

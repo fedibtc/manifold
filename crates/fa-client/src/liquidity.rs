@@ -41,11 +41,11 @@ use nostr_sdk::{Event, EventId, Kind, PublicKey, TagKind};
 use secp256k1::{XOnlyPublicKey, schnorr::Signature};
 use serde::Serialize;
 
-use crate::formation::{DriverRun, federation_name};
+use crate::formation::{Timeouts, federation_name};
 use crate::ports::FaIdentityExt as _;
 use crate::{
     FaClient, FaError, FaIdentity, FaPayments, FaResult, FederationConsensusReader, FormationId,
-    FormationRunOptions, LiquidityProviderConnector, Locator, ManifoldGuardianConnector, SeatId,
+    LiquidityProviderConnector, Locator, ManifoldGuardianConnector, SeatId,
 };
 
 use fedi_decentralized_service_manifold_guardian::{
@@ -571,9 +571,6 @@ where
         V: LiquidityBadgeVerifier,
     {
         let _run = self.claim_run_guard().await?;
-        let options = FormationRunOptions::default();
-        options.validate_for_start()?;
-        let run = DriverRun::start(options)?;
         async {
             intent.validate()?;
             let context = self.formed_liquidity_context(formation_id).await?;
@@ -626,8 +623,7 @@ where
             let snapshot = self
                 .submit_prepared_liquidity(operation, context, provider, connector, verifier)
                 .await?;
-            self.attach_completed_gateway(&snapshot.operation_id, run)
-                .await
+            self.attach_completed_gateway(&snapshot.operation_id).await
         }
         .await
     }
@@ -694,15 +690,12 @@ where
         }) {
             return operation.snapshot();
         }
-        let options = FormationRunOptions::default();
-        options.validate_for_start()?;
-        let run = DriverRun::start(options)?;
         async {
             let context = self
                 .formed_liquidity_context(&operation.formation_id)
                 .await?;
             context.matches_commitment(&operation.commitment)?;
-            let durable_snapshot = self.attach_completed_gateway(operation_id, run).await?;
+            let durable_snapshot = self.attach_completed_gateway(operation_id).await?;
             if durable_snapshot.is_complete() {
                 return Ok(durable_snapshot);
             }
@@ -780,8 +773,7 @@ where
                     error.message()
                 ))),
             }?;
-            self.attach_completed_gateway(&snapshot.operation_id, run)
-                .await
+            self.attach_completed_gateway(&snapshot.operation_id).await
         }
         .await
     }
@@ -802,7 +794,6 @@ where
     async fn attach_completed_gateway(
         &self,
         operation_id: &LiquidityOperationId,
-        run: DriverRun,
     ) -> FaResult<LiquidityOperationSnapshot> {
         let operation = self
             .inner
@@ -817,7 +808,7 @@ where
         let Some(gateway_api) = gateway_api else {
             return operation.snapshot();
         };
-        self.register_gateway_pinned(gateway_api.clone(), self.fa_id()?, run)
+        self.register_gateway_pinned(gateway_api.clone(), self.fa_id()?, Timeouts::default())
             .await?;
         self.inner
             .store

@@ -491,27 +491,14 @@ that preceded it. An adapter that fabricates or caches a snapshot makes the FA
 believe the directory reached consensus when it did not. Implement the port
 against a real invite-code preview.
 
-The driver uses Fedimint's native/WASM runtime abstraction for deadlines and
-retry wakeups. The WASM adapter represents timer milliseconds as `i32`, so every
-public formation timing is limited to the inclusive range from one through
-`i32::MAX` integral milliseconds on all targets. Private fields and fallible construction
-prevent fractional-millisecond values and deadline overflow, returning
-`InvalidFormationRunOptions` before formation-state, wallet, signing, or network
-effects. Runtime request and retry timers pass the limiting configured duration
-directly, or otherwise pass a checked one-millisecond-or-greater driver-invocation
-remainder. A smaller remainder returns `Timeout` before another effect rather
-than reaching the WASM adapter as zero. Tests pin the
-effective one-millisecond quantum, maximum accepted, and first cross-platform-unsafe values,
-and exercise both option-consuming public
-operations. Re-check this bound and its regressions whenever the runtime timer
-implementation or supported WASM target changes.
-
-Payment creation, recovery, and refund settlement do not start after the
-invocation deadline. A started wallet call is bounded by the run timeout, not
-by the deadline, because it includes multiple bounded stages. Each seat of a
-purchase has its own run timeout, so earlier seats cannot use up the time of
-a later one. A timeout cancels the call and leaves exact payment recovery
-intact.
+The driver uses Fedimint's native/WASM runtime abstraction for timeouts and
+retry wakeups. No run-loop step has a deadline. Every call has a fixed
+timeout: 30 s for an ordinary call, and 10 minutes for a payment, its
+recovery, a refund, or a backup read. These constants fit the WASM `i32`
+millisecond timer. A timeout cancels the call and leaves exact payment
+recovery intact. A maintenance operation, which the caller waits for, retries
+for at most 10 minutes. The library has no timing options, so no consumer
+input reaches a timer.
 
 The crate does not spawn unmanaged tasks. Consumers own execution and
 cancellation. Keep dependencies compatible with native mobile targets and

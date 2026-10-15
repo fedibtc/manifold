@@ -8,12 +8,12 @@ use fedi_decentralized_service_manifold_guardian::{
     FaId, FederationMetadataUpdate, GatewayApiUrl, ManifoldGuardianError, ManifoldGuardianService,
     MetaFieldKey, MetaFieldValue, RegisterGatewayRequest,
 };
+use fedimint_core::runtime::Instant;
 use futures::stream::{FuturesUnordered, StreamExt as _};
 
 use crate::formation::{
-    DriverRun, FormationRunOptions, FormationRunOptionsConfig, FormationTimingField,
-    InvalidFormationRunOptions, MetaFieldSubmission, MetaFieldSubmissionError, SeatSession,
-    meta_field_matches, sleep_for_retry,
+    MetaFieldSubmission, MetaFieldSubmissionError, SeatSession, Timeouts, meta_field_matches,
+    sleep_for_retry,
 };
 use crate::meta_write::{MetaWriteError, SeatVote, write_consensus_meta};
 use crate::{
@@ -27,130 +27,6 @@ const MAINTENANCE_RETRY_MAX_DELAY: Duration = Duration::from_secs(5);
 /// app can stop expecting same-base retries to help.
 const MAINTENANCE_TARGET_CONFLICT: &str = "guardian already admitted a different metadata target for this consensus base; retrying \
      cannot help until the conflicting write converges or the guardian's operator restarts it";
-
-/// One timing field in [`MaintenanceRunOptionsConfig`].
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum MaintenanceTimingField {
-    /// Delay between convergence/readback attempts.
-    PollInterval,
-    /// Maximum elapsed time for one maintenance invocation.
-    RunTimeout,
-    /// Maximum time for one consensus, connection, signing, or RPC call.
-    RequestTimeout,
-}
-
-impl std::fmt::Display for MaintenanceTimingField {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str(match self {
-            Self::PollInterval => "poll interval",
-            Self::RunTimeout => "run timeout",
-            Self::RequestTimeout => "request timeout",
-        })
-    }
-}
-
-/// Reason maintenance timing options could not be constructed.
-#[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
-pub enum InvalidMaintenanceRunOptions {
-    /// A timer would truncate below the shared runtime quantum.
-    #[error("invalid maintenance options: {field} must be at least one millisecond")]
-    BelowMinimum {
-        /// Invalid configuration field.
-        field: MaintenanceTimingField,
-    },
-    /// A timer exceeds the shared native/WASM representation.
-    #[error("invalid maintenance options: {field} exceeds the runtime timer range")]
-    AboveMaximum {
-        /// Invalid configuration field.
-        field: MaintenanceTimingField,
-    },
-    /// A duration would be truncated by the WASM millisecond timer.
-    #[error("invalid maintenance options: {field} must be an integral millisecond value")]
-    NonIntegral {
-        /// Invalid configuration field.
-        field: MaintenanceTimingField,
-    },
-    /// A runtime monotonic deadline could not represent the value.
-    #[error("invalid maintenance options: {field} is too large")]
-    DeadlineOverflow {
-        /// Invalid configuration field.
-        field: MaintenanceTimingField,
-    },
-}
-
-/// Named inputs for checked metadata-maintenance timing bounds.
-pub struct MaintenanceRunOptionsConfig {
-    /// Delay between convergence/readback attempts.
-    pub poll_interval: Duration,
-    /// Maximum elapsed time for one maintenance invocation.
-    pub run_timeout: Duration,
-    /// Maximum time for one consensus, connection, signing, or RPC call.
-    pub request_timeout: Duration,
-}
-
-impl Default for MaintenanceRunOptionsConfig {
-    fn default() -> Self {
-        let defaults = FormationRunOptionsConfig::default();
-        Self {
-            poll_interval: defaults.poll_interval,
-            run_timeout: defaults.run_timeout,
-            request_timeout: defaults.request_timeout,
-        }
-    }
-}
-
-/// Timing and deadline policy for one metadata-maintenance invocation.
-#[derive(Clone, Copy, Debug)]
-pub struct MaintenanceRunOptions(FormationRunOptions);
-
-impl MaintenanceRunOptions {
-    /// Construct timing options valid on native and WASM runtimes.
-    pub fn new(config: MaintenanceRunOptionsConfig) -> Result<Self, InvalidMaintenanceRunOptions> {
-        FormationRunOptions::new(FormationRunOptionsConfig {
-            poll_interval: config.poll_interval,
-            run_timeout: config.run_timeout,
-            request_timeout: config.request_timeout,
-        })
-        .map(Self)
-        .map_err(InvalidMaintenanceRunOptions::from)
-    }
-}
-
-impl Default for MaintenanceRunOptions {
-    fn default() -> Self {
-        Self::new(MaintenanceRunOptionsConfig::default())
-            .expect("default maintenance timings are valid")
-    }
-}
-
-impl From<InvalidFormationRunOptions> for InvalidMaintenanceRunOptions {
-    fn from(error: InvalidFormationRunOptions) -> Self {
-        fn field(field: FormationTimingField) -> MaintenanceTimingField {
-            match field {
-                FormationTimingField::PollInterval => MaintenanceTimingField::PollInterval,
-                FormationTimingField::RunTimeout => MaintenanceTimingField::RunTimeout,
-                FormationTimingField::RequestTimeout => MaintenanceTimingField::RequestTimeout,
-            }
-        }
-
-        match error {
-            InvalidFormationRunOptions::BelowMinimum { field: invalid } => Self::BelowMinimum {
-                field: field(invalid),
-            },
-            InvalidFormationRunOptions::AboveMaximum { field: invalid } => Self::AboveMaximum {
-                field: field(invalid),
-            },
-            InvalidFormationRunOptions::NonIntegral { field: invalid } => Self::NonIntegral {
-                field: field(invalid),
-            },
-            InvalidFormationRunOptions::DeadlineOverflow { field: invalid } => {
-                Self::DeadlineOverflow {
-                    field: field(invalid),
-                }
-            }
-        }
-    }
-}
 
 enum MaintenanceConnection<C> {
     Connected(SeatSession<C>),
@@ -171,29 +47,33 @@ where
     /// operation succeeds once the federation's consensus threshold of
     /// guardians acknowledged their local insertion; unavailable or
     /// decommissioned minority seats do not make a usable gateway impossible.
-    pub async fn register_gateway(
+    pub async fn register_gateway(&self, gateway_api: GatewayApiUrl) -> FaResult<()> {
+        self.register_gateway_with(gateway_api, Timeouts::default())
+            .await
+    }
+
+    pub(crate) async fn register_gateway_with(
         &self,
         gateway_api: GatewayApiUrl,
-        options: MaintenanceRunOptions,
+        timeouts: Timeouts,
     ) -> FaResult<()> {
         let _guard = self.claim_run_guard().await?;
-        let options = options.0;
-        options.validate_for_start()?;
         let fa_id = self.fa_id()?;
-        let run = DriverRun::start(options)?;
-        self.register_gateway_pinned(gateway_api, fa_id, run).await
+        self.register_gateway_pinned(gateway_api, fa_id, timeouts)
+            .await
     }
 
     pub(crate) async fn register_gateway_pinned(
         &self,
         gateway_api: GatewayApiUrl,
         fa_id: FaId,
-        run: DriverRun,
+        timeouts: Timeouts,
     ) -> FaResult<()> {
+        let deadline = Instant::now() + timeouts.long;
         let authority = self.maintenance_authority(fa_id).await?;
         let invite = self.consensus_invite(&authority.invite_code).await;
         let snapshot = self
-            .read_metadata_consensus(&invite, run)
+            .read_metadata_consensus(&invite, timeouts)
             .await?
             .map_err(|error| FaError::MaintenanceConvergence {
                 unresolved: authority.seats.iter().map(|seat| seat.index).collect(),
@@ -217,11 +97,11 @@ where
         let mut terminal: BTreeMap<u16, ManifoldGuardianError> = BTreeMap::new();
         let mut guardian_errors = BTreeMap::new();
         let mut consensus_error = None;
-        let mut retry_delay = run.poll_interval();
+        let mut retry_delay = timeouts.poll;
 
         loop {
             if accepted.len() >= threshold {
-                match run
+                match timeouts
                     .call("reading the LNv2 gateway view", || {
                         Ok(self
                             .inner
@@ -260,7 +140,7 @@ where
 
             let mut sessions = Vec::with_capacity(unresolved.len());
             for outcome in self
-                .connect_unresolved_formed_sessions(&authority, &unresolved, run)
+                .connect_unresolved_formed_sessions(&authority, &unresolved, timeouts)
                 .await?
             {
                 match outcome {
@@ -283,10 +163,11 @@ where
                             gateway_api,
                         };
                         let request = self.sign(&request)?;
-                        run.call("registering LNv2 gateway", || {
-                            Ok(session.client.register_gateway(request))
-                        })
-                        .await
+                        timeouts
+                            .call("registering LNv2 gateway", || {
+                                Ok(session.client.register_gateway(request))
+                            })
+                            .await
                     }
                     .await;
                     (session.index, result)
@@ -317,7 +198,8 @@ where
                 .copied()
                 .collect::<BTreeSet<_>>();
             sleep_for_maintenance_retry(
-                run,
+                timeouts,
+                deadline,
                 &mut retry_delay,
                 &unresolved,
                 &guardian_errors,
@@ -359,15 +241,21 @@ where
     pub async fn update_federation_metadata(
         &self,
         update: FederationMetadataUpdate,
-        options: MaintenanceRunOptions,
+    ) -> FaResult<()> {
+        self.update_federation_metadata_with(update, Timeouts::default())
+            .await
+    }
+
+    pub(crate) async fn update_federation_metadata_with(
+        &self,
+        update: FederationMetadataUpdate,
+        timeouts: Timeouts,
     ) -> FaResult<()> {
         let _guard = self.claim_run_guard().await?;
-        let options = options.0;
-        options.validate_for_start()?;
         let fa_id = self.fa_id()?;
-        let run = DriverRun::start(options)?;
         let (key, value) = update.into_field();
-        self.update_meta_field_pinned(key, value, fa_id, run).await
+        self.update_meta_field_pinned(key, value, fa_id, timeouts)
+            .await
     }
 
     pub(crate) async fn update_meta_field_pinned(
@@ -375,22 +263,24 @@ where
         key: MetaFieldKey,
         value: MetaFieldValue,
         fa_id: FaId,
-        run: DriverRun,
+        timeouts: Timeouts,
     ) -> FaResult<()> {
+        let deadline = Instant::now() + timeouts.long;
         let authority = self.maintenance_authority(fa_id).await?;
         let invite = self.consensus_invite(&authority.invite_code).await;
         let (authority, invite, key, value) = (&authority, &invite, &key, &value);
         let seats = authority.seats.iter().map(|seat| seat.index).collect();
         let written = write_consensus_meta(
-            run,
+            timeouts,
+            Some(deadline),
             seats,
-            || self.read_metadata_consensus(invite, run),
+            || self.read_metadata_consensus(invite, timeouts),
             |snapshot| meta_field_matches(snapshot.meta_value.as_deref(), key, value),
             |rows, expected_base| async move {
                 let mut votes = Vec::with_capacity(rows.len());
                 let mut sessions = Vec::with_capacity(rows.len());
                 for outcome in self
-                    .connect_unresolved_formed_sessions(authority, &rows, run)
+                    .connect_unresolved_formed_sessions(authority, &rows, timeouts)
                     .await?
                 {
                     match outcome {
@@ -401,7 +291,7 @@ where
                     }
                 }
                 for (index, result) in self
-                    .submit_meta_field_wave(&sessions, fa_id, expected_base, key, value, run)
+                    .submit_meta_field_wave(&sessions, fa_id, expected_base, key, value, timeouts)
                     .await
                 {
                     let vote = match result {
@@ -469,19 +359,20 @@ where
     pub(crate) async fn read_metadata_consensus(
         &self,
         invite: &fedi_decentralized_service_manifold_guardian::InviteCode,
-        run: DriverRun,
+        timeouts: Timeouts,
     ) -> FaResult<Result<FederationConsensusSnapshot, FederationConsensusError>> {
-        run.call("reading federation consensus metadata", || {
-            Ok(self.inner.ports.consensus_reader.read_consensus(invite))
-        })
-        .await
+        timeouts
+            .call("reading federation consensus metadata", || {
+                Ok(self.inner.ports.consensus_reader.read_consensus(invite))
+            })
+            .await
     }
 
     async fn connect_unresolved_formed_sessions(
         &self,
         authority: &crate::formation::PostFormedAuthority,
         unresolved: &BTreeSet<u16>,
-        run: DriverRun,
+        timeouts: Timeouts,
     ) -> FaResult<Vec<MaintenanceConnection<F::Client>>> {
         let mut pending = FuturesUnordered::new();
         for seat in &authority.seats {
@@ -492,7 +383,7 @@ where
             let seat_id = seat.seat_id.clone();
             let locator = seat.locator.clone();
             pending.push(async move {
-                let result = run
+                let result = timeouts
                     .call("reconnecting to formed Manifold Guardian", || {
                         Ok(self.inner.ports.mg_connector.connect(&locator))
                     })
@@ -559,23 +450,21 @@ fn maintenance_convergence(
 }
 
 async fn sleep_for_maintenance_retry(
-    run: DriverRun,
+    timeouts: Timeouts,
+    deadline: Instant,
     delay: &mut Duration,
     unresolved: &BTreeSet<u16>,
     guardian_errors: &BTreeMap<u16, String>,
     consensus_error: Option<String>,
 ) -> FaResult<()> {
-    if sleep_for_retry(run.deadline(), *delay).await.is_err() {
+    if sleep_for_retry(deadline, *delay).await.is_err() {
         return Err(maintenance_convergence(
             unresolved,
             guardian_errors,
             consensus_error,
         ));
     }
-    // The public poll interval is a lower bound selected by the caller. The
-    // private five-second value only caps exponential growth when that would
-    // not silently make a larger caller-selected interval more aggressive.
-    *delay = next_maintenance_retry_delay(run.poll_interval(), *delay);
+    *delay = next_maintenance_retry_delay(timeouts.poll, *delay);
     Ok(())
 }
 

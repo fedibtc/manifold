@@ -102,7 +102,7 @@ paid, prepared, and ambiguous siblings stay, and each accepted seat joins the
 pool at once. When no seat is left to buy, a new purchase with a fresh preview
 buys any missing seat. A definite MG
 connection failure is retried with bounded exponential backoff for up to two
-minutes (clipped by the invocation deadline) before that result. Once outputs
+minutes before that result. Once outputs
 are armed the operation is non-abandonable and transport failure stays on exact
 replay rather than suggesting replacement; recovery continues after crash.
 

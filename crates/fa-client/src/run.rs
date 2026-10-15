@@ -11,10 +11,10 @@ use futures::future::{Either, select};
 use tokio::sync::{MutexGuard, Notify, futures::Notified, watch};
 
 use crate::db::CreationRecovery;
-use crate::formation::DriverRun;
+use crate::formation::Timeouts;
 use crate::{
     FaClient, FaError, FaIdentity, FaPayments, FaResult, FaState, FederationConsensusReader,
-    FormationRunOptions, ManifoldGuardianConnector, RecoveryCheck, state::FaStatus,
+    ManifoldGuardianConnector, RecoveryCheck, state::FaStatus,
 };
 
 /// Longest wait before the loop retries failed work.
@@ -158,10 +158,14 @@ where
     /// the loop. Failed work is retried with a growing delay, and its error
     /// appears in [`Self::state`]. Dropping the future stops the work; every
     /// durable checkpoint continues on the next run.
-    pub async fn run(&self, options: FormationRunOptions) {
+    pub async fn run(&self) {
+        self.run_with(Timeouts::default()).await;
+    }
+
+    pub(crate) async fn run_with(&self, timeouts: Timeouts) {
         let control = &self.inner.control;
         let mut parts = self.inner.progress.parts.subscribe();
-        let mut retry = options.poll_interval();
+        let mut retry = timeouts.poll;
         loop {
             let mut wake = pin!(control.wake.notified());
             wake.as_mut().enable();
@@ -173,14 +177,14 @@ where
             let step = {
                 let _driving = Driving::new(control);
                 let _guard = self.inner.run_guard.lock().await;
-                self.step(options, wake.as_mut()).await
+                self.step(timeouts, wake.as_mut()).await
             };
             match step {
                 Step::Idle => {
                     let changed = pin!(parts.changed());
                     select(wake, changed).await;
                 }
-                Step::Progressed => retry = options.poll_interval(),
+                Step::Progressed => retry = timeouts.poll,
                 Step::Yielded => {}
                 Step::Failed => {
                     select(wake, pin!(sleep(retry))).await;
@@ -213,15 +217,13 @@ where
         })
     }
 
-    async fn step(&self, options: FormationRunOptions, interrupt: Pin<&mut Notified<'_>>) -> Step {
+    async fn step(&self, timeouts: Timeouts, interrupt: Pin<&mut Notified<'_>>) -> Step {
         let result = async {
             let fa_id = self.fa_id()?;
             let Some(work) = self.next_work(fa_id).await? else {
                 return Ok(Step::Idle);
             };
-            options.validate_for_start()?;
-            let run = DriverRun::start(options)?;
-            match select(pin!(self.do_work(work, fa_id, run)), interrupt).await {
+            match select(pin!(self.do_work(work, fa_id, timeouts)), interrupt).await {
                 Either::Left((result, _)) => result.map(|()| Step::Progressed),
                 Either::Right(((), _)) => Ok(Step::Yielded),
             }
@@ -248,10 +250,10 @@ where
             .map(|creation| Work::Creation(Box::new(creation))))
     }
 
-    async fn do_work(&self, work: Work, fa_id: FaId, run: DriverRun) -> FaResult<()> {
+    async fn do_work(&self, work: Work, fa_id: FaId, timeouts: Timeouts) -> FaResult<()> {
         match work {
             Work::Recover => {
-                let result = self.recover_backup(fa_id, run).await;
+                let result = self.recover_backup(fa_id, timeouts).await;
                 if let Err(error) = &result {
                     let last_error = Some(error.code());
                     self.inner.progress.modify(|status| {
@@ -261,7 +263,7 @@ where
                 result
             }
             Work::Creation(creation) if creation.purchase.is_some() => {
-                match self.drive_purchase(*creation, fa_id, run).await {
+                match self.drive_purchase(*creation, fa_id, timeouts).await {
                     // The purchase ended without some of its seats. Each
                     // seat that left recorded why, and the creation needs
                     // a new preview.
@@ -269,7 +271,7 @@ where
                     result => result,
                 }
             }
-            Work::Creation(creation) => self.drive_formation(*creation, fa_id, run).await,
+            Work::Creation(creation) => self.drive_formation(*creation, fa_id, timeouts).await,
         }
     }
 }

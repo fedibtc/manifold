@@ -57,10 +57,7 @@ pub use fedi_decentralized_service_manifold_guardian::{
     SeatId, Timestamp,
 };
 pub use fedimint_core::config::FederationId as FedimintFederationId;
-pub use formation::{
-    DkgRestartResult, FormationRunOptions, FormationRunOptionsConfig, FormationTimingField,
-    InvalidFormationRunOptions,
-};
+pub use formation::DkgRestartResult;
 pub use guardian_fee_ppm::{GuardianFeePpm, InvalidGuardianFeePpm};
 pub use liquidity::{
     AdmittedLiquidityProvider, FA_LIQUIDITY_DISCOVERY_TIMEOUT, FA_LIQUIDITY_MAX_ADVERTISEMENT_AGE,
@@ -71,10 +68,6 @@ pub use liquidity::{
 };
 #[cfg(test)]
 pub(crate) use maintenance::first_three_maintenance_retry_delays;
-pub use maintenance::{
-    InvalidMaintenanceRunOptions, MaintenanceRunOptions, MaintenanceRunOptionsConfig,
-    MaintenanceTimingField,
-};
 pub use ports::{
     FaFeeAccountError, FaFeeAccountProvider, FaIdentity, FaPaymentError, FaPayments,
     FederationConsensusError, FederationConsensusReader, FederationConsensusSnapshot,

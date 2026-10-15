@@ -74,231 +74,54 @@ const SELECTED_MG_CONNECT_RETRY_BUDGET: Duration = Duration::from_secs(2 * 60);
 const SELECTED_MG_CONNECT_RETRY_MIN_DELAY: Duration = Duration::from_millis(100);
 const SELECTED_MG_CONNECT_RETRY_MAX_DELAY: Duration = Duration::from_secs(5);
 
-/// One field of [`FormationRunOptionsConfig`].
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum FormationTimingField {
-    /// Probe interval.
-    PollInterval,
-    /// Per-invocation run timeout.
-    RunTimeout,
-    /// Per-capability request timeout.
-    RequestTimeout,
-}
-
-impl std::fmt::Display for FormationTimingField {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str(match self {
-            Self::PollInterval => "poll interval",
-            Self::RunTimeout => "run timeout",
-            Self::RequestTimeout => "request timeout",
-        })
-    }
-}
-
-/// Reason that formation timing options could not be constructed.
-#[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
-pub enum InvalidFormationRunOptions {
-    /// A timer would truncate below the shared runtime quantum.
-    #[error("invalid formation options: formation {field} must be at least one millisecond")]
-    BelowMinimum {
-        /// Invalid configuration field.
-        field: FormationTimingField,
-    },
-    /// A timer exceeds the shared native/WASM representation.
-    #[error("invalid formation options: formation {field} exceeds the runtime timer range")]
-    AboveMaximum {
-        /// Invalid configuration field.
-        field: FormationTimingField,
-    },
-    /// A duration would be truncated by the WASM millisecond timer.
-    #[error("invalid formation options: formation {field} must be an integral millisecond value")]
-    NonIntegral {
-        /// Invalid configuration field.
-        field: FormationTimingField,
-    },
-    /// A runtime monotonic deadline could not represent the value.
-    #[error("invalid formation options: formation {field} is too large")]
-    DeadlineOverflow {
-        /// Invalid configuration field.
-        field: FormationTimingField,
-    },
-}
-
-/// Timing bounds for one formation driver/API invocation.
+/// The timeouts of FA calls. No step of the run loop has a deadline: a
+/// step ends when its work is done, when a call fails, or when a user action
+/// wakes the loop.
 #[derive(Clone, Copy, Debug)]
-pub struct FormationRunOptions {
-    /// Runtime-representable delay between child-readiness and running-status probes.
-    poll_interval: Duration,
-    /// Runtime-representable maximum elapsed time for one driver/API invocation.
-    run_timeout: Duration,
-    /// Runtime-representable maximum time for one ordinary capability call.
-    request_timeout: Duration,
+pub(crate) struct Timeouts {
+    /// One ordinary MG, consensus, or wallet call.
+    pub(crate) request: Duration,
+    /// The delay between two probes of a wait.
+    pub(crate) poll: Duration,
+    /// A payment, its recovery, a refund, a backup read, and one maintenance
+    /// action, which the caller waits for.
+    pub(crate) long: Duration,
 }
 
-/// Named inputs for checked formation timing bounds.
-pub struct FormationRunOptionsConfig {
-    /// Delay between child-readiness and running-status probes.
-    pub poll_interval: Duration,
-    /// Maximum elapsed time for one driver/API invocation. A purchase gives
-    /// each seat its own run timeout.
-    pub run_timeout: Duration,
-    /// Maximum time for one ordinary capability call.
-    /// Payment creation, recovery, and refund settlement use the run timeout.
-    pub request_timeout: Duration,
-}
-
-impl Default for FormationRunOptionsConfig {
+impl Default for Timeouts {
     fn default() -> Self {
         Self {
-            poll_interval: Duration::from_secs(2),
-            run_timeout: Duration::from_secs(600),
-            request_timeout: Duration::from_secs(30),
+            request: Duration::from_secs(30),
+            poll: Duration::from_secs(2),
+            long: Duration::from_secs(600),
         }
     }
 }
 
-impl FormationRunOptions {
-    /// Construct timing options that are valid on native and WASM runtimes.
-    ///
-    /// Every value must be an integral number of milliseconds in the inclusive
-    /// 1..=2,147,483,647 range. Invalid values return
-    /// [`InvalidFormationRunOptions`] before durable-state, wallet, or RPC
-    /// effects.
-    pub fn new(config: FormationRunOptionsConfig) -> Result<Self, InvalidFormationRunOptions> {
-        let timings = [
-            (FormationTimingField::PollInterval, config.poll_interval),
-            (FormationTimingField::RunTimeout, config.run_timeout),
-            (FormationTimingField::RequestTimeout, config.request_timeout),
-        ];
-        for (name, duration) in timings {
-            if duration < MIN_RUNTIME_TIMER_DURATION {
-                return Err(InvalidFormationRunOptions::BelowMinimum { field: name });
-            }
-            if MAX_RUNTIME_TIMER_DURATION < duration {
-                return Err(InvalidFormationRunOptions::AboveMaximum { field: name });
-            }
-            if !duration.subsec_nanos().is_multiple_of(1_000_000) {
-                return Err(InvalidFormationRunOptions::NonIntegral { field: name });
-            }
-        }
-        let now = Instant::now();
-        for (name, duration) in timings {
-            now.checked_add(duration)
-                .ok_or(InvalidFormationRunOptions::DeadlineOverflow { field: name })?;
-        }
-        Ok(Self {
-            poll_interval: config.poll_interval,
-            run_timeout: config.run_timeout,
-            request_timeout: config.request_timeout,
-        })
-    }
-
-    /// Return the per-capability request timeout.
-    pub(crate) fn request_timeout(self) -> Duration {
-        self.request_timeout
-    }
-
-    /// Return the configured retry/readback interval.
-    pub(crate) fn poll_interval(self) -> Duration {
-        self.poll_interval
-    }
-
-    /// Recheck the time-dependent runtime bound before any effect.
-    pub(crate) fn validate_for_start(self) -> FaResult<()> {
-        formation_deadline(self).map(|_| ())
-    }
-}
-
-impl Default for FormationRunOptions {
-    fn default() -> Self {
-        Self::new(FormationRunOptionsConfig::default())
-            .expect("default formation timings are valid")
-    }
-}
-
-#[derive(Clone, Copy)]
-/// One bounded driver's deadline and call timeout policy.
-pub(crate) struct DriverRun {
-    options: FormationRunOptions,
-    deadline: Instant,
-}
-
-impl DriverRun {
-    /// Start a run whose absolute deadline begins now.
-    pub(crate) fn start(options: FormationRunOptions) -> FaResult<Self> {
-        Ok(Self {
-            options,
-            deadline: formation_deadline(options)?,
-        })
-    }
-
-    #[cfg(test)]
-    pub(crate) fn with_deadline(options: FormationRunOptions, deadline: Instant) -> Self {
-        Self { options, deadline }
-    }
-
-    /// Return the per-capability timeout for composite operations.
-    pub(crate) fn request_timeout(self) -> Duration {
-        self.options.request_timeout()
-    }
-
-    /// Return this invocation's absolute monotonic deadline.
-    pub(crate) fn deadline(self) -> Instant {
-        self.deadline
-    }
-
-    /// Return the retry/readback interval selected by the caller.
-    pub(crate) fn poll_interval(self) -> Duration {
-        self.options.poll_interval()
-    }
-
-    /// Check the deadline around deferred capability construction, then poll
-    /// it under the request timeout and the original absolute deadline.
+impl Timeouts {
+    /// Poll one ordinary call under the request timeout.
     pub(crate) async fn call<T, Fut>(
-        &self,
+        self,
         operation: &'static str,
         make_future: impl FnOnce() -> FaResult<Fut>,
     ) -> FaResult<T>
     where
         Fut: Future<Output = T>,
     {
-        self.call_with_timeout(operation, self.options.request_timeout(), make_future)
-            .await
+        poll_with_timeout(operation, self.request, make_future()?).await
     }
 
-    async fn call_with_timeout<T, Fut>(
-        &self,
-        operation: &'static str,
-        call_timeout: Duration,
-        make_future: impl FnOnce() -> FaResult<Fut>,
-    ) -> FaResult<T>
-    where
-        Fut: Future<Output = T>,
-    {
-        ensure_time_remaining(self.deadline, operation)?;
-        let future = make_future()?;
-        let duration = select_timer_duration(
-            call_timeout,
-            self.deadline.saturating_duration_since(Instant::now()),
-            operation,
-        )?;
-        poll_with_timeout(operation, duration, future).await
-    }
-
-    /// Poll a wallet call under the run timeout. It does not start after the
-    /// deadline, but the deadline does not cut a started call short. A
-    /// payment, its recovery, and a refund each take as long as they need.
-    async fn value_call<T, Fut>(
-        &self,
+    /// Poll a payment, its recovery, a refund, or a backup read under the
+    /// long timeout.
+    pub(crate) async fn long_call<T, Fut>(
+        self,
         operation: &'static str,
         make_future: impl FnOnce() -> FaResult<Fut>,
     ) -> FaResult<T>
     where
         Fut: Future<Output = T>,
     {
-        ensure_time_remaining(self.deadline, operation)?;
-        let future = make_future()?;
-        poll_with_timeout(operation, self.options.run_timeout, future).await
+        poll_with_timeout(operation, self.long, make_future()?).await
     }
 }
 
@@ -537,20 +360,18 @@ where
                 plan: seat.plan,
             })
             .collect();
-        let options = FormationRunOptions::default();
         let _run = self.claim_run_guard().await?;
         if creation.is_none() {
             self.require_missing_seats_preview(preview).await?;
         }
-        options.validate_for_start()?;
         let fa_id = self.fa_id()?;
-        let run = DriverRun::start(options)?;
+        let timeouts = Timeouts::default();
         async {
             if let Some(requested) = &payment_federation_id {
                 // A purchase must not obtain even its first exact quote until
                 // the explicitly selected payer is authenticated and currently
                 // Ready. The wallet checks its balance for each seat payment.
-                self.require_setup_payment_federation(requested, run)
+                self.require_setup_payment_federation(requested, timeouts)
                     .await?;
             }
             self.inner
@@ -581,11 +402,9 @@ where
     /// The authenticated setup-payment policy retention is deliberately
     /// preserved; it is deployment policy, not creation state.
     pub async fn cancel_creation(&self) -> FaResult<()> {
-        let options = FormationRunOptions::default();
         let _run = self.claim_run_guard().await?;
-        options.validate_for_start()?;
         let fa_id = self.fa_id()?;
-        let run = DriverRun::start(options)?;
+        let timeouts = Timeouts::default();
         async {
             let creation = self.active_creation(fa_id).await?;
             if let Some(purchase) = &creation.purchase {
@@ -604,7 +423,7 @@ where
                     )?;
                     if quote.terms.payment.is_some()
                         && matches!(
-                            self.recover_seat_payment(&quote, run).await?,
+                            self.recover_seat_payment(&quote, timeouts).await?,
                             SeatPaymentRecovery::Prepared(_)
                         )
                     {
@@ -641,13 +460,17 @@ where
     /// failures may yield a timeout; cancellation stores no partial policy
     /// record, and retrying the same call safely rereads, rebases, and confirms
     /// the live consensus value.
-    pub async fn propose_guardian_fees(
+    pub async fn propose_guardian_fees(&self, send_ppm: GuardianFeePpm) -> FaResult<()> {
+        self.propose_guardian_fees_with(send_ppm, Timeouts::default())
+            .await
+    }
+
+    pub(crate) async fn propose_guardian_fees_with(
         &self,
         send_ppm: GuardianFeePpm,
-        options: FormationRunOptions,
+        timeouts: Timeouts,
     ) -> FaResult<()> {
         let _run = self.claim_run_guard().await?;
-        options.validate_for_start()?;
         if send_ppm.value() > crate::MAX_GUARDIAN_FEE_PPM {
             return Err(FaError::InvalidIntent(format!(
                 "guardian fee ppm exceeds the payer ceiling of {}",
@@ -661,13 +484,13 @@ where
             )));
         }
         let fa_id = self.fa_id()?;
-        let run = DriverRun::start(options)?;
         let key = MetaFieldKey(
             fedi_decentralized_service_manifold_guardian::GUARDIAN_FEE_SEND_PPM_META_FIELD_KEY
                 .to_owned(),
         );
         let value = MetaFieldValue(send_ppm.value().to_string());
-        self.update_meta_field_pinned(key, value, fa_id, run).await
+        self.update_meta_field_pinned(key, value, fa_id, timeouts)
+            .await
     }
 
     /// Explicitly replace every unfinished guardian ceremony, without paying
@@ -677,14 +500,16 @@ where
     /// No request is retried. Cancellation or a missing reply leaves the
     /// outcome unknown; another restart requires a new user decision. The
     /// run loop yields to this call, then continues the formation.
-    pub async fn restart_dkg(
+    pub async fn restart_dkg(&self) -> FaResult<Vec<DkgRestartResult>> {
+        self.restart_dkg_with(Timeouts::default()).await
+    }
+
+    pub(crate) async fn restart_dkg_with(
         &self,
-        options: FormationRunOptions,
+        timeouts: Timeouts,
     ) -> FaResult<Vec<DkgRestartResult>> {
         let _guard = self.claim_run_guard().await?;
-        options.validate_for_start()?;
         let fa_id = self.fa_id()?;
-        let run = DriverRun::start(options)?;
         async {
             let mut recovery = self.active_formation(fa_id).await?;
             let formation_id = recovery.formation_id.clone();
@@ -704,11 +529,11 @@ where
                     })
                 })
                 .collect::<FaResult<Vec<_>>>()?;
-            let sessions = self.seat_sessions(&recovery, run).await?;
+            let sessions = self.seat_sessions(&recovery, timeouts).await?;
             let mut checks = FuturesUnordered::new();
             for session in &sessions {
                 checks.push(async {
-                    let response = self.seat_status(session, fa_id, run).await?;
+                    let response = self.seat_status(session, fa_id, timeouts).await?;
                     if !matches!(
                         response.status,
                         ServiceStatus::New | ServiceStatus::DkgInProcess
@@ -743,7 +568,7 @@ where
                         })?;
                         let response = session
                             .client
-                            .call(run, MgOperation::RestartDkg, |client| {
+                            .call(timeouts, MgOperation::RestartDkg, |client| {
                                 client.restart_dkg(request)
                             })
                             .await?;
@@ -774,9 +599,11 @@ where
         &self,
         mut recovery: CreationRecovery,
         fa_id: FaId,
-        run: DriverRun,
+        timeouts: Timeouts,
     ) -> FaResult<()> {
-        let result = self.drive_purchase_inner(&mut recovery, fa_id, run).await;
+        let result = self
+            .drive_purchase_inner(&mut recovery, fa_id, timeouts)
+            .await;
         // A purchase that ended without some of its seats is complete.
         if let Err(error) = &result
             && !matches!(error, FaError::SelectionReauthorizationRequired { .. })
@@ -801,7 +628,7 @@ where
         &self,
         recovery: &mut CreationRecovery,
         fa_id: FaId,
-        run: DriverRun,
+        timeouts: Timeouts,
     ) -> FaResult<()> {
         let formation_id = recovery.formation_id.clone();
         recovery.freshness = FormationFreshness::Fresh;
@@ -817,12 +644,11 @@ where
             .iter()
             .all(|slot| slot.state.bound_quote().is_none())
         {
-            funds_exhausted = self.preflight_purchase(recovery, &mut left, run).await?;
+            funds_exhausted = self
+                .preflight_purchase(recovery, &mut left, timeouts)
+                .await?;
         }
         for index in recovery.pending() {
-            // Each seat has its own time budget, so earlier seats cannot use
-            // up the time of a later one.
-            let run = DriverRun::start(run.options)?;
             let position = recovery
                 .position(index)
                 .expect("slots are emptied only in this loop");
@@ -834,7 +660,8 @@ where
                         SelectionReauthorizationReason::SelectedPayerInsufficientFunds,
                     ))
                 } else {
-                    self.buy_seat(recovery, position, fa_id, &payer, run).await
+                    self.buy_seat(recovery, position, fa_id, &payer, timeouts)
+                        .await
                 };
             match result {
                 Ok(()) => {}
@@ -869,7 +696,7 @@ where
         &self,
         recovery: &mut CreationRecovery,
         left: &mut Option<FaError>,
-        run: DriverRun,
+        timeouts: Timeouts,
     ) -> FaResult<bool> {
         let intent = recovery.intent()?;
         let checks = recovery.slots.iter().filter_map(|seat| {
@@ -881,11 +708,12 @@ where
             let intent = &intent;
             let formation_id = &recovery.formation_id;
             Some(async move {
-                let result = retry_selected_mg(formation_id, run, || async {
+                let result = retry_selected_mg(formation_id, timeouts, || async {
                     let plan = plan.clone();
                     let client =
-                        MgClient::connect(&self.inner.ports.mg_connector, &locator, run).await?;
-                    self.live_fedimintd_version(&client, intent, &plan, run)
+                        MgClient::connect(&self.inner.ports.mg_connector, &locator, timeouts)
+                            .await?;
+                    self.live_fedimintd_version(&client, intent, &plan, timeouts)
                         .await?;
                     Ok(plan)
                 })
@@ -930,10 +758,10 @@ where
             return Ok(false);
         }
         let payer = self
-            .require_setup_payment_federation(&requested, run)
+            .require_setup_payment_federation(&requested, timeouts)
             .await?;
-        let checked = run
-            .call_with_timeout("checking seat funds", run.options.request_timeout, || {
+        let checked = timeouts
+            .call("checking seat funds", || {
                 Ok(self.inner.ports.payments.check_seat_funds(&payer, &prices))
             })
             .await?;
@@ -954,7 +782,7 @@ where
         position: usize,
         fa_id: FaId,
         payer: &OnceCell<FederationId>,
-        run: DriverRun,
+        timeouts: Timeouts,
     ) -> FaResult<()> {
         let formation_id = recovery.formation_id.clone();
         let intent = recovery.intent()?;
@@ -993,11 +821,11 @@ where
                             signed_quote,
                             quote,
                             None,
-                            run,
+                            timeouts,
                         )
                         .await;
                 }
-                match self.recover_seat_payment(&quote, run).await? {
+                match self.recover_seat_payment(&quote, timeouts).await? {
                     SeatPaymentRecovery::Prepared(prepared) => {
                         return self
                             .present_bound_seat(
@@ -1007,7 +835,7 @@ where
                                 signed_quote,
                                 quote,
                                 Some(prepared),
-                                run,
+                                timeouts,
                             )
                             .await;
                     }
@@ -1033,10 +861,9 @@ where
                 fa_id,
                 expected_payer.as_ref(),
                 expected_payer.is_some().then_some(payer),
-                run,
+                timeouts,
             )
             .await?;
-        ensure_time_remaining(run.deadline(), "binding a seat quote")?;
         self.inner
             .store
             .bind_quote(
@@ -1055,8 +882,8 @@ where
         self.publish(recovery);
 
         let prepared = if quote.terms.payment.is_some() {
-            let prepared = run
-                .value_call("funding seat payment", || {
+            let prepared = timeouts
+                .long_call("funding seat payment", || {
                     Ok(self.inner.ports.payments.create_seat_payment(&quote))
                 })
                 .await?
@@ -1080,7 +907,7 @@ where
             signed_quote,
             quote,
             prepared,
-            run,
+            timeouts,
         )
         .await
     }
@@ -1096,13 +923,13 @@ where
         signed_quote: SignedResponse<GetQuoteResponse>,
         quote: SignatureVerified<GetQuoteResponse>,
         prepared: Option<PreparedSeatPayment<P::RefundContext>>,
-        run: DriverRun,
+        timeouts: Timeouts,
     ) -> FaResult<()> {
         let formation_id = recovery.formation_id.clone();
         let locator = recovery.slots[position].locator.clone();
         recovery.slots[position].phase = SeatPhase::Acquiring;
         self.publish(recovery);
-        let client = MgClient::connect(&self.inner.ports.mg_connector, &locator, run).await?;
+        let client = MgClient::connect(&self.inner.ports.mg_connector, &locator, timeouts).await?;
         let creation = self
             .present_seat(
                 &formation_id,
@@ -1113,7 +940,7 @@ where
                 signed_quote,
                 quote,
                 prepared,
-                run,
+                timeouts,
             )
             .await?;
         match creation {
@@ -1132,13 +959,14 @@ where
     async fn recover_seat_payment(
         &self,
         quote: &SignatureVerified<GetQuoteResponse>,
-        run: DriverRun,
+        timeouts: Timeouts,
     ) -> FaResult<SeatPaymentRecovery<P::RefundContext>> {
-        run.value_call("recovering seat payment", || {
-            Ok(self.inner.ports.payments.recover_seat_payment(quote))
-        })
-        .await?
-        .map_err(|error| FaError::Payment(error.to_string()))
+        timeouts
+            .long_call("recovering seat payment", || {
+                Ok(self.inner.ports.payments.recover_seat_payment(quote))
+            })
+            .await?
+            .map_err(|error| FaError::Payment(error.to_string()))
     }
 
     /// Remove a seat that cannot be bought, and keep its reason for the
@@ -1180,13 +1008,14 @@ where
         fa_id: FaId,
         expected_payer: Option<&FederationId>,
         payment_federation: Option<&OnceCell<FederationId>>,
-        run: DriverRun,
+        timeouts: Timeouts,
     ) -> FaResult<(
         SignedResponse<GetQuoteResponse>,
         SignatureVerified<GetQuoteResponse>,
     )> {
-        retry_selected_mg(formation_id, run, || async {
-            let client = MgClient::connect(&self.inner.ports.mg_connector, locator, run).await?;
+        retry_selected_mg(formation_id, timeouts, || async {
+            let client =
+                MgClient::connect(&self.inner.ports.mg_connector, locator, timeouts).await?;
             self.request_new_quote(
                 index,
                 &client,
@@ -1196,7 +1025,7 @@ where
                 fa_id,
                 expected_payer,
                 payment_federation,
-                run,
+                timeouts,
             )
             .await
         })
@@ -1210,7 +1039,7 @@ where
         recovery: &mut CreationRecovery,
         sessions: &[SeatSession<MgClient<F::Client>>],
         fa_id: FaId,
-        run: DriverRun,
+        timeouts: Timeouts,
     ) -> FaResult<bool> {
         let formation_id = recovery.formation_id.clone();
         let formation_id = &formation_id;
@@ -1234,7 +1063,7 @@ where
                         fa_id,
                         federation_name,
                         existing.clone(),
-                        run,
+                        timeouts,
                     )
                     .await
                     .map_err(|error| (position, error))?;
@@ -1288,7 +1117,10 @@ where
             guardian_codes[position] = Some(code);
         }
         if !ended.is_empty()
-            && (dkg_not_started || self.no_seat_started_dkg(sessions, &ended, fa_id, run).await)
+            && (dkg_not_started
+                || self
+                    .no_seat_started_dkg(sessions, &ended, fa_id, timeouts)
+                    .await)
         {
             // The ended seats leave their slots, and the creation buys new
             // ones. Every cached code goes too.
@@ -1346,7 +1178,7 @@ where
                     completion_callback,
                 };
                 let request = self.sign(&request)?;
-                match session.client.call(run, MgOperation::StartDkg, |client| client.start_dkg(request)).await {
+                match session.client.call(timeouts, MgOperation::StartDkg, |client| client.start_dkg(request)).await {
                     Ok(_) | Err(FaError::Mg(MgFailure {
                         cause: MgCause::WrongState(ServiceStatus::DkgInProcess | ServiceStatus::Running),
                         ..
@@ -1409,10 +1241,10 @@ where
         client: &MgClient<F::Client>,
         intent: &ResolvedSeatPurchase,
         pinned_plan: &Plan,
-        run: DriverRun,
+        timeouts: Timeouts,
     ) -> FaResult<FedimintdVersion> {
         let availability = client
-            .call(run, MgOperation::GetAvailability, |client| async {
+            .call(timeouts, MgOperation::GetAvailability, |client| async {
                 crate::mg::fold_transport(
                     self.inner
                         .ports
@@ -1462,13 +1294,13 @@ where
         fa_id: FaId,
         expected_payer: Option<&FederationId>,
         payment_federation: Option<&OnceCell<FederationId>>,
-        run: DriverRun,
+        timeouts: Timeouts,
     ) -> FaResult<(
         SignedResponse<GetQuoteResponse>,
         SignatureVerified<GetQuoteResponse>,
     )> {
         let fedimintd_version = self
-            .live_fedimintd_version(client, intent, pinned_plan, run)
+            .live_fedimintd_version(client, intent, pinned_plan, timeouts)
             .await?;
         let plan = pinned_plan.clone();
         // Free-ness is a property of the price, not of the plan: an MG that
@@ -1488,7 +1320,8 @@ where
                     .get_or_try_init(|| async {
                         match expected_payer {
                             Some(requested) => {
-                                self.require_setup_payment_federation(requested, run).await
+                                self.require_setup_payment_federation(requested, timeouts)
+                                    .await
                             }
                             None => Err(FaError::SelectionReauthorizationRequired {
                                 reason: SelectionReauthorizationReason::PaymentFederationRequired,
@@ -1504,15 +1337,16 @@ where
         };
         let refund_issuance = match &payment_federation_id {
             Some(federation_id) => Some(
-                run.call("preparing quote refund", || {
-                    Ok(self
-                        .inner
-                        .ports
-                        .payments
-                        .prepare_quote_refund(federation_id, &plan))
-                })
-                .await?
-                .map_err(|error| FaError::Payment(error.to_string()))?,
+                timeouts
+                    .call("preparing quote refund", || {
+                        Ok(self
+                            .inner
+                            .ports
+                            .payments
+                            .prepare_quote_refund(federation_id, &plan))
+                    })
+                    .await?
+                    .map_err(|error| FaError::Payment(error.to_string()))?,
             ),
             None => None,
         };
@@ -1526,7 +1360,7 @@ where
         };
         let result = async {
             let signed_quote = client
-                .call(run, MgOperation::GetQuote, |client| async {
+                .call(timeouts, MgOperation::GetQuote, |client| async {
                     crate::mg::fold_transport(
                         self.inner
                             .ports
@@ -1632,7 +1466,7 @@ where
         signed_quote: SignedResponse<GetQuoteResponse>,
         quote: SignatureVerified<GetQuoteResponse>,
         prepared: Option<PreparedSeatPayment<P::RefundContext>>,
-        run: DriverRun,
+        timeouts: Timeouts,
     ) -> FaResult<SeatCreation> {
         let (payment_signatures, refund_context) = match (&quote.terms.payment, prepared) {
             (None, None) => (Vec::new(), None),
@@ -1660,7 +1494,7 @@ where
         };
         let request = self.sign(&request)?;
         let response = client
-            .call(run, MgOperation::CreateSeat, |client| {
+            .call(timeouts, MgOperation::CreateSeat, |client| {
                 client.create_seat(request)
             })
             .await?
@@ -1697,15 +1531,16 @@ where
                 log_mg_failure(formation_id, &FaError::Mg(error.clone()), "pending_refund");
                 match (refund_context, refund_transaction) {
                     (Some(refund_context), Some(refund)) => {
-                        run.value_call("settling refused seat refund", || {
-                            Ok(self
-                                .inner
-                                .ports
-                                .payments
-                                .settle_seat_refund(refund_context, refund))
-                        })
-                        .await?
-                        .map_err(|error| FaError::Payment(error.to_string()))?;
+                        timeouts
+                            .long_call("settling refused seat refund", || {
+                                Ok(self
+                                    .inner
+                                    .ports
+                                    .payments
+                                    .settle_seat_refund(refund_context, refund))
+                            })
+                            .await?
+                            .map_err(|error| FaError::Payment(error.to_string()))?;
                     }
                     (None, None) => {}
                     _ => {
@@ -1727,10 +1562,9 @@ where
         fa_id: FaId,
         federation_name: Option<FederationName>,
         recorded_code: Option<GuardianCode>,
-        run: DriverRun,
+        timeouts: Timeouts,
     ) -> FaResult<GuardianCode> {
         loop {
-            ensure_time_remaining(run.deadline, "waiting for MG child readiness")?;
             let request = GetDkgCodeRequest {
                 ts: Timestamp(now_secs()?),
                 fa_id,
@@ -1740,7 +1574,7 @@ where
             let request = self.sign(&request)?;
             match session
                 .client
-                .call(run, MgOperation::GetDkgCode, |client| {
+                .call(timeouts, MgOperation::GetDkgCode, |client| {
                     client.get_dkg_code(request)
                 })
                 .await
@@ -1752,14 +1586,8 @@ where
                         ..
                     }),
                 ) => {
-                    sleep_for_retry(run.deadline, run.options.poll_interval)
-                        .await
-                        .map_err(|_| {
-                            session
-                                .client
-                                .failure(MgOperation::GetDkgCode, MgCause::Timeout)
-                        })?;
                     log_mg_failure(formation_id, &error, "retried");
+                    sleep(timeouts.poll).await;
                 }
                 Err(FaError::Mg(MgFailure {
                     cause: MgCause::WrongState(ServiceStatus::DkgInProcess | ServiceStatus::Running),
@@ -1779,7 +1607,7 @@ where
         &self,
         session: &SeatSession<MgClient<F::Client>>,
         fa_id: FaId,
-        run: DriverRun,
+        timeouts: Timeouts,
     ) -> FaResult<GetStatusResponse> {
         let request = GetStatusRequest {
             ts: Timestamp(now_secs()?),
@@ -1789,7 +1617,7 @@ where
         let request = self.sign(&request)?;
         session
             .client
-            .call(run, MgOperation::GetStatus, |client| {
+            .call(timeouts, MgOperation::GetStatus, |client| {
                 client.get_status(request)
             })
             .await
@@ -1800,12 +1628,12 @@ where
         sessions: &[SeatSession<MgClient<F::Client>>],
         ended: &[SeatId],
         fa_id: FaId,
-        run: DriverRun,
+        timeouts: Timeouts,
     ) -> bool {
         let checks = sessions
             .iter()
             .filter(|session| !ended.contains(&session.seat_id))
-            .map(|session| self.seat_status(session, fa_id, run));
+            .map(|session| self.seat_status(session, fa_id, timeouts));
         futures::future::join_all(checks)
             .await
             .into_iter()
@@ -1817,18 +1645,14 @@ where
         sessions: &[SeatSession<MgClient<F::Client>>],
         recovery: &mut CreationRecovery,
         fa_id: FaId,
-        run: DriverRun,
+        timeouts: Timeouts,
     ) -> FaResult<()> {
-        let formation_id = recovery.formation_id.clone();
-        let formation_id = &formation_id;
         loop {
-            ensure_time_remaining(run.deadline, "waiting for every MG to report running")?;
-            let mut waiting = Vec::new();
             let mut running = 0;
             let mut pending_status = FuturesUnordered::new();
             for (position, session) in sessions.iter().enumerate() {
                 pending_status.push(async move {
-                    let status = self.seat_status(session, fa_id, run).await?;
+                    let status = self.seat_status(session, fa_id, timeouts).await?;
                     Ok::<_, FaError>((position, status))
                 });
             }
@@ -1845,8 +1669,6 @@ where
                     && status.seat_health == Some(SeatHealth::Healthy)
                 {
                     running += 1;
-                } else {
-                    waiting.push(&sessions[position]);
                 }
             }
             recovery.freshness = FormationFreshness::Fresh;
@@ -1854,20 +1676,7 @@ where
             if running == sessions.len() {
                 return Ok(());
             }
-            sleep_for_retry(run.deadline, run.options.poll_interval)
-                .await
-                .inspect_err(|_| {
-                    for session in &waiting {
-                        log_mg_failure(
-                            formation_id,
-                            &session
-                                .client
-                                .failure(MgOperation::WaitForRunning, MgCause::NotRunning)
-                                .into(),
-                            "returned",
-                        );
-                    }
-                })?;
+            sleep(timeouts.poll).await;
         }
     }
 
@@ -1877,17 +1686,17 @@ where
         &self,
         recovery: &mut CreationRecovery,
         fa_id: FaId,
-        run: DriverRun,
+        timeouts: Timeouts,
     ) -> FaResult<()> {
-        let sessions = self.seat_sessions(recovery, run).await?;
+        let sessions = self.seat_sessions(recovery, timeouts).await?;
         if recovery.invite_code.is_none()
-            && !self.start_dkg(recovery, &sessions, fa_id, run).await?
+            && !self.start_dkg(recovery, &sessions, fa_id, timeouts).await?
         {
             return Ok(());
         }
-        self.poll_until_running(&sessions, recovery, fa_id, run)
+        self.poll_until_running(&sessions, recovery, fa_id, timeouts)
             .await?;
-        let invite = self.fetch_agreed_invite(&sessions, fa_id, run).await?;
+        let invite = self.fetch_agreed_invite(&sessions, fa_id, timeouts).await?;
         match &recovery.invite_code {
             Some(stored) => {
                 if invite_federation_id(stored)? != invite_federation_id(&invite)? {
@@ -1908,7 +1717,7 @@ where
                 self.publish(recovery);
             }
         }
-        self.publish_seat_bindings(&sessions, recovery, fa_id, &invite, run)
+        self.publish_seat_bindings(&sessions, recovery, fa_id, &invite, timeouts)
             .await?;
         self.finish_formation(fa_id).await
     }
@@ -1924,15 +1733,15 @@ where
     }
 
     /// Look up the backup of a restored mnemonic and import it.
-    pub(crate) async fn recover_backup(&self, fa_id: FaId, run: DriverRun) -> FaResult<()> {
+    pub(crate) async fn recover_backup(&self, fa_id: FaId, timeouts: Timeouts) -> FaResult<()> {
         let source = self
             .inner
             .backup_source
             .as_ref()
             .expect("only a client with a backup source starts in recovery");
         let root = self.inner.ports.identity.scoped_root();
-        let payload = run
-            .call_with_timeout("reading FA backup relays", run.options.run_timeout, || {
+        let payload = timeouts
+            .long_call("reading FA backup relays", || {
                 Ok(crate::backup_worker::fetch_backup(
                     &root,
                     &source.relays,
@@ -1940,7 +1749,7 @@ where
                 ))
             })
             .await??;
-        self.import_backup(payload, &source.completed, fa_id, run)
+        self.import_backup(payload, &source.completed, fa_id, timeouts)
             .await
     }
 
@@ -1952,7 +1761,7 @@ where
         payload: Option<crate::backup::FaBackupPayload>,
         completed: &crate::db::RecoveryCompletedKey,
         fa_id: FaId,
-        run: DriverRun,
+        timeouts: Timeouts,
     ) -> FaResult<()> {
         let Some(payload) = payload else {
             self.inner.store.complete_empty_recovery(completed).await?;
@@ -1975,7 +1784,7 @@ where
                 &payload.federation_invite,
                 seats,
                 payload.liquidity.as_ref(),
-                run,
+                timeouts,
             )
             .await?;
         self.inner
@@ -1999,7 +1808,7 @@ where
         liquidity: Option<
             &fedi_decentralized_service_liquidity_manager::RequestLiquidityDetailsCommitmentV1,
         >,
-        run: DriverRun,
+        timeouts: Timeouts,
     ) -> FaResult<Option<crate::FederationName>> {
         if seats.is_empty() {
             return Err(FaError::InvalidManifoldGuardians(
@@ -2007,7 +1816,7 @@ where
             ));
         }
         let consensus = self
-            .read_recovery_consensus(invite, &seats, run)
+            .read_recovery_consensus(invite, &seats, timeouts)
             .await?
             .map_err(|error| {
                 FaError::InvalidManifoldGuardians(format!(
@@ -2062,7 +1871,7 @@ where
     async fn seat_sessions(
         &self,
         recovery: &CreationRecovery,
-        run: DriverRun,
+        timeouts: Timeouts,
     ) -> FaResult<Vec<SeatSession<MgClient<F::Client>>>> {
         let mut sessions = Vec::with_capacity(recovery.slots.len());
         for (position, seat) in recovery.slots.iter().enumerate() {
@@ -2071,7 +1880,7 @@ where
             })?;
 
             let client =
-                MgClient::connect(&self.inner.ports.mg_connector, &seat.locator, run).await?;
+                MgClient::connect(&self.inner.ports.mg_connector, &seat.locator, timeouts).await?;
             sessions.push(SeatSession {
                 index: seat.index,
                 client,
@@ -2088,7 +1897,7 @@ where
         recovery: &mut CreationRecovery,
         fa_id: FaId,
         invite: &InviteCode,
-        run: DriverRun,
+        timeouts: Timeouts,
     ) -> FaResult<()> {
         // A new target must be validated against the final config before it is
         // durable: recovery replays its exact bytes and cannot repair an
@@ -2096,19 +1905,16 @@ where
         // directory only; recipient derivation no longer uses API keys.
         let formation_config = if recovery.formation_meta_target.is_none() {
             loop {
-                ensure_time_remaining(run.deadline, "reading the formation config")?;
                 // A guardian that restarts can leave a read unanswered until
                 // its request timeout. That is a reason to retry, as an error.
-                match run
+                match timeouts
                     .call("reading the formation config", || {
                         Ok(self.inner.ports.consensus_reader.read_consensus(invite))
                     })
                     .await
                 {
                     Ok(Ok(snapshot)) => break Some(snapshot.config),
-                    Ok(Err(_)) | Err(FaError::Timeout(_)) => {
-                        sleep_for_retry(run.deadline, run.options.poll_interval).await?
-                    }
+                    Ok(Err(_)) | Err(FaError::Timeout(_)) => sleep(timeouts.poll).await,
                     Err(error) => return Err(error),
                 }
             }
@@ -2119,7 +1925,7 @@ where
             Some(target) => target,
             None => {
                 let (bindings, binding_entries) = self
-                    .assemble_seat_bindings(sessions, recovery, fa_id, run)
+                    .assemble_seat_bindings(sessions, recovery, fa_id, timeouts)
                     .await?;
                 let federation_id = invite_federation_id(invite)?;
                 let fa_account = self
@@ -2167,13 +1973,14 @@ where
                     send_ppm,
                     recipients,
                 };
-                run.call("recording the formation metadata target", || {
-                    Ok(self
-                        .inner
-                        .store
-                        .record_formation_meta_target(&recovery.formation_id, target.clone()))
-                })
-                .await??;
+                timeouts
+                    .call("recording the formation metadata target", || {
+                        Ok(self
+                            .inner
+                            .store
+                            .record_formation_meta_target(&recovery.formation_id, target.clone()))
+                    })
+                    .await??;
                 recovery.formation_meta_target = Some(target.clone());
                 target
             }
@@ -2185,10 +1992,11 @@ where
         let target = &target;
         let seats = sessions.iter().map(|session| session.index).collect();
         let snapshot = write_consensus_meta(
-            run,
+            timeouts,
+            None,
             seats,
             || {
-                run.call("reading the formation metadata base", || {
+                timeouts.call("reading the formation metadata base", || {
                     Ok(self.inner.ports.consensus_reader.read_consensus(invite))
                 })
             },
@@ -2203,7 +2011,14 @@ where
             |rows, expected_base| async move {
                 let mut votes = Vec::with_capacity(rows.len());
                 for (index, result) in self
-                    .submit_formation_meta_wave(sessions, &rows, fa_id, expected_base, target, run)
+                    .submit_formation_meta_wave(
+                        sessions,
+                        &rows,
+                        fa_id,
+                        expected_base,
+                        target,
+                        timeouts,
+                    )
                     .await
                 {
                     let vote = match result {
@@ -2245,10 +2060,11 @@ where
                 FaError::Timeout("waiting for formation metadata consensus".to_owned())
             }
         })?;
-        run.call("confirming formation metadata consensus", || {
-            Ok(self.inner.store.finish_formation(&recovery.formation_id))
-        })
-        .await??;
+        timeouts
+            .call("confirming formation metadata consensus", || {
+                Ok(self.inner.store.finish_formation(&recovery.formation_id))
+            })
+            .await??;
         self.remember_read_invite(invite, &snapshot).await
     }
 
@@ -2258,7 +2074,7 @@ where
         sessions: &[SeatSession<MgClient<F::Client>>],
         recovery: &CreationRecovery,
         fa_id: FaId,
-        run: DriverRun,
+        timeouts: Timeouts,
     ) -> FaResult<(String, Vec<FormationSeatBinding>)> {
         let mut pending = FuturesUnordered::new();
         for (position, session) in sessions.iter().enumerate() {
@@ -2281,7 +2097,7 @@ where
                 let request = self.sign(&request)?;
                 let response = session
                     .client
-                    .call(run, MgOperation::GetPeerAttestation, |client| {
+                    .call(timeouts, MgOperation::GetPeerAttestation, |client| {
                         client.get_peer_attestation(request)
                     })
                     .await?;
@@ -2324,7 +2140,7 @@ where
         fa_id: FaId,
         expected_base: MetaConsensusBase,
         target: &FormationMetaTarget,
-        run: DriverRun,
+        timeouts: Timeouts,
     ) -> Vec<(u16, FaResult<ProposeFormationMetaResponse>)> {
         let mut pending = FuturesUnordered::new();
         for session in sessions
@@ -2347,7 +2163,7 @@ where
                 let request = self.sign(&request)?;
                 session
                     .client
-                    .call(run, MgOperation::ProposeFormationMeta, |client| {
+                    .call(timeouts, MgOperation::ProposeFormationMeta, |client| {
                         client.propose_formation_meta(request)
                     })
                     .await
@@ -2374,7 +2190,7 @@ where
         expected_base: MetaConsensusBase,
         key: &MetaFieldKey,
         value: &MetaFieldValue,
-        run: DriverRun,
+        timeouts: Timeouts,
     ) -> Vec<(u16, Result<MetaFieldSubmission, MetaFieldSubmissionError>)> {
         let mut pending = FuturesUnordered::new();
         for session in sessions {
@@ -2391,7 +2207,7 @@ where
                     let request = self
                         .sign(&request)
                         .map_err(MetaFieldSubmissionError::Driver)?;
-                    let response = run
+                    let response = timeouts
                         .call("submitting SetMetaField proposal", || {
                             Ok(session.client.set_meta_field(request))
                         })
@@ -2498,10 +2314,10 @@ where
         &self,
         saved: &InviteCode,
         seats: &[crate::liquidity::FormedMgSeat],
-        run: DriverRun,
+        timeouts: Timeouts,
     ) -> FaResult<Result<FederationConsensusSnapshot, crate::FederationConsensusError>> {
         let invite = self.consensus_invite(saved).await;
-        let first = run
+        let first = timeouts
             .call("reading federation recovery consensus", || {
                 Ok(self.inner.ports.consensus_reader.read_consensus(&invite))
             })
@@ -2520,14 +2336,15 @@ where
         for seat in seats {
             pending.push(async move {
                 let client =
-                    MgClient::connect(&self.inner.ports.mg_connector, &seat.locator, run).await?;
+                    MgClient::connect(&self.inner.ports.mg_connector, &seat.locator, timeouts)
+                        .await?;
                 let request = self.sign(&GetInviteCodeRequest {
                     ts: Timestamp(now_secs()?),
                     fa_id,
                     seat_id: seat.seat_id.clone(),
                 })?;
                 let invite = client
-                    .call(run, MgOperation::GetInviteCode, |client| {
+                    .call(timeouts, MgOperation::GetInviteCode, |client| {
                         client.get_invite_code(request)
                     })
                     .await?
@@ -2537,7 +2354,7 @@ where
                         "recovery invite names another federation".to_owned(),
                     ));
                 }
-                let snapshot = run
+                let snapshot = timeouts
                     .call("reading alternate recovery consensus", || {
                         Ok(self.inner.ports.consensus_reader.read_consensus(&invite))
                     })
@@ -2559,7 +2376,7 @@ where
         &self,
         sessions: &[SeatSession<MgClient<F::Client>>],
         fa_id: FaId,
-        run: DriverRun,
+        timeouts: Timeouts,
     ) -> FaResult<InviteCode> {
         if sessions.is_empty() {
             return Err(FaError::InvalidManifoldGuardians(
@@ -2577,7 +2394,7 @@ where
                 let request = self.sign(&request)?;
                 let invite = session
                     .client
-                    .call(run, MgOperation::GetInviteCode, |client| {
+                    .call(timeouts, MgOperation::GetInviteCode, |client| {
                         client.get_invite_code(request)
                     })
                     .await?
@@ -2652,10 +2469,10 @@ where
         &self,
         mut recovery: CreationRecovery,
         fa_id: FaId,
-        run: DriverRun,
+        timeouts: Timeouts,
     ) -> FaResult<()> {
         self.publish(&recovery);
-        let result = self.form(&mut recovery, fa_id, run).await;
+        let result = self.form(&mut recovery, fa_id, timeouts).await;
         if let Err(error) = &result {
             log_mg_failure(&recovery.formation_id, error, "returned");
             recovery.last_error = Some(error.code());
@@ -2814,44 +2631,32 @@ fn default_federation_name(fa_id: FaId, created_at: u64) -> FederationName {
     FederationName(format!("{adjective} {noun}"))
 }
 
-/// Fail when less than one timer quantum remains before the deadline.
-pub(crate) fn ensure_time_remaining(deadline: Instant, operation: &'static str) -> FaResult<()> {
-    select_timer_duration(
-        MIN_RUNTIME_TIMER_DURATION,
-        deadline.saturating_duration_since(Instant::now()),
-        operation,
-    )
-    .map(drop)
-}
-
+/// Sleep before a retry. Fail when no time remains before the deadline of
+/// the action.
 pub(crate) async fn sleep_for_retry(deadline: Instant, interval: Duration) -> FaResult<()> {
-    let operation = "waiting to retry Manifold Guardian";
-    let duration = select_timer_duration(
-        interval,
-        deadline.saturating_duration_since(Instant::now()),
-        operation,
-    )?;
-    // Pass the selected relative duration directly. Reconstructing it from an
-    // absolute deadline can lose the WASM timer's final millisecond.
-    sleep(duration).await;
-    ensure_time_remaining(deadline, "waiting to retry Manifold Guardian")
+    let timeout = || FaError::Timeout("waiting to retry Manifold Guardian".to_owned());
+    let remaining = deadline.saturating_duration_since(Instant::now());
+    if remaining.is_zero() {
+        return Err(timeout());
+    }
+    sleep(interval.min(remaining)).await;
+    if Instant::now() >= deadline {
+        return Err(timeout());
+    }
+    Ok(())
 }
 
 /// Run one value-free attempt against a selected MG. A definite transport
-/// loss reconnects for at most two minutes, clipped by the run deadline, and
-/// then the MG counts as unavailable. Semantic refusals return immediately.
+/// loss reconnects for at most two minutes, and then the MG counts as
+/// unavailable. Semantic refusals return immediately.
 async fn retry_selected_mg<T, A: Future<Output = FaResult<T>>>(
     formation_id: &FormationId,
-    run: DriverRun,
+    timeouts: Timeouts,
     mut attempt: impl FnMut() -> A,
 ) -> FaResult<T> {
-    let retry_deadline = Instant::now()
-        .checked_add(SELECTED_MG_CONNECT_RETRY_BUDGET)
-        .unwrap_or(run.deadline)
-        .min(run.deadline);
-    let mut retry_delay = run
-        .options
-        .poll_interval
+    let retry_deadline = Instant::now() + SELECTED_MG_CONNECT_RETRY_BUDGET;
+    let mut retry_delay = timeouts
+        .poll
         .max(SELECTED_MG_CONNECT_RETRY_MIN_DELAY)
         .min(SELECTED_MG_CONNECT_RETRY_MAX_DELAY);
     loop {
@@ -2886,17 +2691,6 @@ async fn retry_quote_attempt(deadline: Instant, delay: &mut Duration) -> Result<
         .saturating_mul(2)
         .min(SELECTED_MG_CONNECT_RETRY_MAX_DELAY);
     Ok(())
-}
-
-fn select_timer_duration(
-    configured: Duration,
-    run_remaining: Duration,
-    operation: &'static str,
-) -> FaResult<Duration> {
-    if run_remaining < MIN_RUNTIME_TIMER_DURATION {
-        return Err(FaError::Timeout(operation.to_owned()));
-    }
-    Ok(configured.min(run_remaining))
 }
 
 /// Extract the `fedi:fman_seat_bindings` string from a raw meta object.
@@ -3081,23 +2875,4 @@ fn invite_federation_id(invite: &InviteCode) -> FaResult<FedimintFederationId> {
         ));
     }
     Ok(parsed.federation_id())
-}
-
-/// Create the actual monotonic deadline after the pre-effect check.
-pub(crate) fn formation_deadline(options: FormationRunOptions) -> FaResult<Instant> {
-    checked_deadline(
-        Instant::now(),
-        options.run_timeout,
-        FormationTimingField::RunTimeout,
-    )
-}
-
-fn checked_deadline(
-    now: Instant,
-    duration: Duration,
-    field: FormationTimingField,
-) -> FaResult<Instant> {
-    now.checked_add(duration)
-        .ok_or(InvalidFormationRunOptions::DeadlineOverflow { field })
-        .map_err(FaError::from)
 }

@@ -10,7 +10,7 @@ use fedi_decentralized_nostr_clients::{FaNostrClient, SETUP_PAYMENT_FEDERATIONS_
 use fedi_decentralized_service_manifold_guardian::{FederationId, InviteCode};
 use nostr_sdk::Timestamp;
 
-use crate::formation::DriverRun;
+use crate::formation::Timeouts;
 use crate::{
     FaClient, FaError, FaIdentity, FaPayments, FaResult, FederationConsensusReader,
     ManifoldGuardianConnector,
@@ -70,12 +70,17 @@ where
     /// id cannot be turned back into an invite.
     pub async fn admitted_setup_payment_federations(
         &self,
-        options: crate::FormationRunOptions,
+    ) -> FaResult<Vec<AdmittedSetupPaymentFederation>> {
+        self.admitted_setup_payment_federations_with(Timeouts::default())
+            .await
+    }
+
+    pub(crate) async fn admitted_setup_payment_federations_with(
+        &self,
+        timeouts: Timeouts,
     ) -> FaResult<Vec<AdmittedSetupPaymentFederation>> {
         let _run = self.claim_run_guard().await?;
-        options.validate_for_start()?;
-        let run = DriverRun::start(options)?;
-        self.refresh_setup_payment_federations(run).await
+        self.refresh_setup_payment_federations(timeouts).await
     }
 
     /// The smallest guardian fee rate this FA may propose right now, in ppm.
@@ -108,18 +113,18 @@ where
     pub(crate) async fn require_setup_payment_federation(
         &self,
         requested: &FederationId,
-        run: DriverRun,
+        timeouts: Timeouts,
     ) -> FaResult<FederationId> {
-        let (policy_ids, payable) =
-            self.payable_setup_payment_federations(run)
-                .await
-                .map_err(|error| match error {
-                    FaError::Payment(_) => FaError::SelectionReauthorizationRequired {
-                        reason: crate::SelectionReauthorizationReason::SelectedPayerUnavailable,
-                        failure: None,
-                    },
-                    error => error,
-                })?;
+        let (policy_ids, payable) = self
+            .payable_setup_payment_federations(timeouts)
+            .await
+            .map_err(|error| match error {
+                FaError::Payment(_) => FaError::SelectionReauthorizationRequired {
+                    reason: crate::SelectionReauthorizationReason::SelectedPayerUnavailable,
+                    failure: None,
+                },
+                error => error,
+            })?;
         if !policy_ids.contains(requested) || !payable.contains(requested) {
             return Err(FaError::SelectionReauthorizationRequired {
                 reason: crate::SelectionReauthorizationReason::SelectedPayerUnavailable,
@@ -131,10 +136,10 @@ where
 
     pub(crate) async fn payable_setup_payment_federations(
         &self,
-        run: DriverRun,
+        timeouts: Timeouts,
     ) -> FaResult<(Vec<FederationId>, HashSet<FederationId>)> {
         let policy_ids = self
-            .refresh_setup_payment_federations(run)
+            .refresh_setup_payment_federations(timeouts)
             .await?
             .into_iter()
             .map(|member| member.federation_id)
@@ -144,7 +149,7 @@ where
                 "the authenticated setup-payment federation set is empty".to_owned(),
             ));
         }
-        let payable = run
+        let payable = timeouts
             .call("selecting a payable federation", || {
                 Ok(self.inner.ports.payments.payable_federations(&policy_ids))
             })
@@ -157,9 +162,9 @@ where
 
     async fn refresh_setup_payment_federations(
         &self,
-        run: DriverRun,
+        timeouts: Timeouts,
     ) -> FaResult<Vec<AdmittedSetupPaymentFederation>> {
-        let request_timeout = run.request_timeout();
+        let request_timeout = timeouts.request;
         let publisher = self.inner.setup_payment_publisher.ok_or_else(|| {
             FaError::Payment(
                 "paid formation requires a deployment-pinned setup-payment publisher".to_owned(),
@@ -180,7 +185,7 @@ where
                 })
                 .transpose()?;
 
-        let candidates = run
+        let candidates = timeouts
             .call("refreshing setup-payment policy", || {
                 Ok(self
                     .inner

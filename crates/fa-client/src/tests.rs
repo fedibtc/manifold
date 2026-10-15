@@ -8,6 +8,7 @@ mod payment_crash;
 mod recovery_policy;
 mod selection;
 
+use crate::formation::Timeouts;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::future::pending;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
@@ -2188,7 +2189,7 @@ impl TestClient {
         &self,
         intent: &TestIntent,
         locators: Vec<Locator>,
-        options: FormationRunOptions,
+        options: Timeouts,
     ) -> FaResult<()> {
         self.request_seats_at(intent, locators, None).await?;
         self.drive_purchase_for_test(options).await
@@ -2283,7 +2284,7 @@ impl TestClient {
         &self,
         intent: TestIntent,
         locators: Vec<Locator>,
-        options: FormationRunOptions,
+        options: Timeouts,
     ) -> FaResult<()> {
         self.request_seats_at(&intent, locators, None).await?;
         self.drive_all_for_test(options).await
@@ -2294,7 +2295,7 @@ impl TestClient {
         intent: TestIntent,
         locators: Vec<Locator>,
         completion_callback: DkgCompletionCallback,
-        options: FormationRunOptions,
+        options: Timeouts,
     ) -> FaResult<()> {
         self.request_seats_at(&intent, locators, Some(completion_callback))
             .await?;
@@ -2348,7 +2349,7 @@ where
         intent: TestIntent,
         preview: &MgSelectionPreview,
         payment_federation_id: FederationId,
-        options: FormationRunOptions,
+        options: Timeouts,
     ) -> FaResult<()> {
         self.create_federation(
             intent.federation_name,
@@ -2366,7 +2367,7 @@ where
         preview: &MgSelectionPreview,
         payment_federation_id: FederationId,
         completion_callback: DkgCompletionCallback,
-        options: FormationRunOptions,
+        options: Timeouts,
     ) -> FaResult<()> {
         self.create_federation(
             intent.federation_name,
@@ -2382,7 +2383,7 @@ where
         &self,
         intent: TestIntent,
         preview: &MgSelectionPreview,
-        options: FormationRunOptions,
+        options: Timeouts,
     ) -> FaResult<()> {
         self.create_federation(intent.federation_name, None, preview, None)
             .await?;
@@ -2395,7 +2396,7 @@ where
         &self,
         preview: &MgSelectionPreview,
         payment_federation_id: Option<FederationId>,
-        options: FormationRunOptions,
+        options: Timeouts,
     ) -> FaResult<()> {
         self.create_federation(
             intent().federation_name,
@@ -2409,8 +2410,7 @@ where
 
     /// [`Self::drive_with_options`] with the default options.
     async fn drive(&self) -> FaResult<()> {
-        self.drive_with_options(FormationRunOptions::default())
-            .await
+        self.drive_with_options(Timeouts::default()).await
     }
 
     /// The import step of a backup lookup, on a payload the relays returned.
@@ -2418,16 +2418,16 @@ where
         &self,
         payload: Option<crate::backup::FaBackupPayload>,
     ) -> FaResult<()> {
-        let options = FormationRunOptions::default();
+        let options = Timeouts::default();
         let fa_id = self.fa_id()?;
-        let run = crate::formation::DriverRun::start(options)?;
+        let run = options;
         self.import_backup(payload, &staging_recovery(), fa_id, run)
             .await
     }
 
     /// Drive the running purchase, or without one every later piece of
     /// work, as [`Self::drive_all_for_test`] does.
-    async fn drive_with_options(&self, options: FormationRunOptions) -> FaResult<()> {
+    async fn drive_with_options(&self, options: Timeouts) -> FaResult<()> {
         let purchase_only = self
             .inner
             .store
@@ -2439,22 +2439,17 @@ where
 
     /// Do the run loop's work until none is left, without its retries, and
     /// return the first error. Each step is the work `run` would choose.
-    async fn drive_all_for_test(&self, options: FormationRunOptions) -> FaResult<()> {
+    async fn drive_all_for_test(&self, options: Timeouts) -> FaResult<()> {
         self.drive_steps_for_test(options, false).await
     }
 
     /// [`Self::drive_with_options`], limited to the running purchase.
-    async fn drive_purchase_for_test(&self, options: FormationRunOptions) -> FaResult<()> {
+    async fn drive_purchase_for_test(&self, options: Timeouts) -> FaResult<()> {
         self.drive_steps_for_test(options, true).await
     }
 
-    async fn drive_steps_for_test(
-        &self,
-        options: FormationRunOptions,
-        purchase_only: bool,
-    ) -> FaResult<()> {
+    async fn drive_steps_for_test(&self, options: Timeouts, purchase_only: bool) -> FaResult<()> {
         let _run = self.inner.run_guard.try_lock().map_err(|_| FaError::Busy)?;
-        options.validate_for_start()?;
         let fa_id = self.fa_id()?;
         loop {
             let status = self.status();
@@ -2471,7 +2466,7 @@ where
             let Some(recovery) = creation.filter(|creation| buying || creation.is_full()) else {
                 return Ok(());
             };
-            let run = crate::formation::DriverRun::start(options)?;
+            let run = options;
             if buying {
                 self.drive_purchase(recovery, fa_id, run).await?;
             } else {
@@ -3660,7 +3655,7 @@ async fn run_loop_retries_a_backup_lookup_without_a_relay_quorum() {
     let mut state = client.observe();
     let failed = state.wait_for(|state| *state != FaState::Restoring(RecoveryCheck::default()));
     tokio::select! {
-        () = client.run(options()) => unreachable!("the run loop does not return"),
+        () = client.run_with(options()) => unreachable!("the run loop does not return"),
         result = tokio::time::timeout(Duration::from_secs(5), failed) => {
             result.expect("the loop runs the lookup").unwrap();
         }
@@ -3802,9 +3797,9 @@ async fn restored_federation_name_uses_consensus_without_a_liquidity_backup() {
     for name in ["Test Federation", "Renamed Federation"] {
         if name == "Renamed Federation" {
             source
-                .update_federation_metadata(
+                .update_federation_metadata_with(
                     FederationMetadataUpdate::name(name).unwrap(),
-                    MaintenanceRunOptions::default(),
+                    Timeouts::default(),
                 )
                 .await
                 .unwrap();
@@ -4191,89 +4186,29 @@ async fn backup_relay_progress_is_independent_and_workers_do_not_block_fa_operat
     backup_tasks.shutdown_join_all(None).await.unwrap();
 }
 
-fn options() -> FormationRunOptions {
-    FormationRunOptions::new(crate::FormationRunOptionsConfig {
-        poll_interval: Duration::from_millis(1),
-        run_timeout: Duration::from_secs(2),
-        request_timeout: Duration::from_millis(200),
-    })
-    .unwrap()
+fn options() -> Timeouts {
+    Timeouts {
+        poll: Duration::from_millis(1),
+        long: Duration::from_secs(2),
+        request: Duration::from_millis(200),
+    }
 }
 
 /// A run long enough for every selected MG to use up its retry budget.
-fn unreachable_mg_options(request_timeout: Duration) -> FormationRunOptions {
-    FormationRunOptions::new(crate::FormationRunOptionsConfig {
-        poll_interval: Duration::from_millis(1),
-        run_timeout: Duration::from_secs(20 * 60),
-        request_timeout,
-    })
-    .unwrap()
+fn unreachable_mg_options(request_timeout: Duration) -> Timeouts {
+    Timeouts {
+        poll: Duration::from_millis(1),
+        long: Duration::from_secs(20 * 60),
+        request: request_timeout,
+    }
 }
 
-fn long_request_options() -> FormationRunOptions {
-    FormationRunOptions::new(crate::FormationRunOptionsConfig {
-        poll_interval: Duration::from_millis(1),
-        run_timeout: Duration::from_secs(2),
-        request_timeout: Duration::from_secs(30),
-    })
-    .unwrap()
-}
-
-#[test]
-fn formation_run_options_enforce_boundaries_and_lease_horizon() {
-    let valid = Duration::from_millis(1);
-    for (config, expected) in [
-        (
-            crate::FormationRunOptionsConfig {
-                poll_interval: Duration::ZERO,
-                run_timeout: valid,
-                request_timeout: valid,
-            },
-            crate::InvalidFormationRunOptions::BelowMinimum {
-                field: crate::FormationTimingField::PollInterval,
-            },
-        ),
-        (
-            crate::FormationRunOptionsConfig {
-                poll_interval: valid,
-                run_timeout: Duration::from_micros(1_999),
-                request_timeout: valid,
-            },
-            crate::InvalidFormationRunOptions::NonIntegral {
-                field: crate::FormationTimingField::RunTimeout,
-            },
-        ),
-        (
-            crate::FormationRunOptionsConfig {
-                poll_interval: valid,
-                run_timeout: valid,
-                request_timeout: Duration::from_millis(i32::MAX as u64 + 1),
-            },
-            crate::InvalidFormationRunOptions::AboveMaximum {
-                field: crate::FormationTimingField::RequestTimeout,
-            },
-        ),
-    ] {
-        assert_eq!(FormationRunOptions::new(config).unwrap_err(), expected);
+fn long_request_options() -> Timeouts {
+    Timeouts {
+        poll: Duration::from_millis(1),
+        long: Duration::from_secs(2),
+        request: Duration::from_secs(30),
     }
-    for duration in [valid, Duration::from_millis(i32::MAX as u64)] {
-        FormationRunOptions::new(crate::FormationRunOptionsConfig {
-            poll_interval: duration,
-            run_timeout: duration,
-            request_timeout: duration,
-        })
-        .unwrap();
-    }
-    let bounded = FormationRunOptions::new(crate::FormationRunOptionsConfig {
-        poll_interval: valid,
-        run_timeout: valid,
-        request_timeout: Duration::from_millis(i32::MAX as u64),
-    })
-    .unwrap();
-    assert_eq!(
-        bounded.request_timeout(),
-        Duration::from_millis(i32::MAX as u64)
-    );
 }
 
 type TestClient =
@@ -4291,12 +4226,12 @@ impl TestSetupPaymentSelection for TestClient {
         &self,
         request_timeout: Duration,
     ) -> FaResult<FederationId> {
-        let options = FormationRunOptions::new(crate::FormationRunOptionsConfig {
-            poll_interval: Duration::from_millis(1),
-            run_timeout: Duration::from_secs(2),
-            request_timeout,
-        })?;
-        let run = crate::formation::DriverRun::start(options)?;
+        let options = Timeouts {
+            poll: Duration::from_millis(1),
+            long: Duration::from_secs(2),
+            request: request_timeout,
+        };
+        let run = options;
         self.payable_setup_payment_federations(run)
             .await
             .and_then(|(policy_ids, payable)| {
@@ -4861,7 +4796,7 @@ async fn canonical_policy_order_overrides_wallet_output_order() {
     .await;
 
     let admitted = client
-        .admitted_setup_payment_federations(options())
+        .admitted_setup_payment_federations_with(options())
         .await
         .unwrap();
     assert_eq!(
@@ -4876,7 +4811,7 @@ async fn canonical_policy_order_overrides_wallet_output_order() {
     );
     assert_eq!(
         client
-            .select_setup_payment_federation_for_test(options().request_timeout())
+            .select_setup_payment_federation_for_test(options().request)
             .await
             .unwrap(),
         expected_ids[0]
@@ -4900,7 +4835,7 @@ async fn paid_selection_requires_a_nonempty_authenticated_common_set() {
         .await;
 
         let error = client
-            .select_setup_payment_federation_for_test(options().request_timeout())
+            .select_setup_payment_federation_for_test(options().request)
             .await
             .expect_err("missing or empty policy stops paid selection");
         assert!(matches!(error, FaError::Payment(_)));
@@ -4929,7 +4864,7 @@ async fn paid_selection_requires_a_wallet_member_of_authenticated_policy() {
     .await;
 
     let error = client
-        .select_setup_payment_federation_for_test(options().request_timeout())
+        .select_setup_payment_federation_for_test(options().request)
         .await
         .expect_err("wallet holdings only filter authenticated policy");
     assert!(matches!(error, FaError::Payment(_)));
@@ -4950,7 +4885,7 @@ async fn admitted_payer_listing_includes_a_zero_balance_policy_member() {
     .await;
 
     let admitted = client
-        .admitted_setup_payment_federations(options())
+        .admitted_setup_payment_federations_with(options())
         .await
         .unwrap();
     assert_eq!(admitted.len(), 1);
@@ -4986,7 +4921,7 @@ async fn admitted_payer_listing_represents_an_authenticated_empty_stop_set() {
 
     assert!(
         client
-            .admitted_setup_payment_federations(options())
+            .admitted_setup_payment_federations_with(options())
             .await
             .unwrap()
             .is_empty()
@@ -5012,7 +4947,7 @@ async fn common_set_high_water_survives_restart_and_rejects_rollback() {
     .await;
     assert_eq!(
         client
-            .select_setup_payment_federation_for_test(options().request_timeout())
+            .select_setup_payment_federation_for_test(options().request)
             .await
             .expect("current authenticated set selects"),
         payment_federation_id()
@@ -5036,7 +4971,7 @@ async fn common_set_high_water_survives_restart_and_rejects_rollback() {
     .await;
     assert_eq!(
         reopened
-            .select_setup_payment_federation_for_test(options().request_timeout())
+            .select_setup_payment_federation_for_test(options().request)
             .await
             .expect("rollback cannot replace last-known-good policy"),
         payment_federation_id()
@@ -5045,7 +4980,7 @@ async fn common_set_high_water_survives_restart_and_rejects_rollback() {
     rollback_registry.fail.store(true, Ordering::SeqCst);
     assert_eq!(
         reopened
-            .select_setup_payment_federation_for_test(options().request_timeout())
+            .select_setup_payment_federation_for_test(options().request)
             .await
             .expect("publisher or relay outage retains non-expiring policy"),
         payment_federation_id()
@@ -5072,7 +5007,7 @@ async fn malformed_newer_common_set_preserves_durable_last_known_good() {
     )
     .await;
     client
-        .select_setup_payment_federation_for_test(options().request_timeout())
+        .select_setup_payment_federation_for_test(options().request)
         .await
         .expect("initial policy selects");
     drop(client);
@@ -5095,7 +5030,7 @@ async fn malformed_newer_common_set_preserves_durable_last_known_good() {
 
     assert_eq!(
         reopened
-            .select_setup_payment_federation_for_test(options().request_timeout())
+            .select_setup_payment_federation_for_test(options().request)
             .await
             .expect("malformed update cannot replace last-known-good"),
         payment_federation_id()
@@ -5123,7 +5058,7 @@ async fn newer_empty_common_set_replaces_older_nonempty_set() {
 
     assert!(matches!(
         client
-            .select_setup_payment_federation_for_test(options().request_timeout())
+            .select_setup_payment_federation_for_test(options().request)
             .await,
         Err(FaError::Payment(_))
     ));
@@ -6169,7 +6104,7 @@ async fn slow_refund_settlement_finishes_before_the_seat_is_dropped() {
     )
     .await;
     let error = client
-        .buy_and_form_at(intent(), locators(), FormationRunOptions::default())
+        .buy_and_form_at(intent(), locators(), Timeouts::default())
         .await
         .unwrap_err();
     assert!(
@@ -6329,7 +6264,7 @@ async fn formed_fa_proposes_and_confirms_the_fixed_4_1_1_policy() {
         .unwrap();
 
     client
-        .propose_guardian_fees(GuardianFeePpm::MANIFOLD_DEFAULT, options())
+        .propose_guardian_fees_with(GuardianFeePpm::MANIFOLD_DEFAULT, options())
         .await
         .unwrap();
 
@@ -6550,7 +6485,7 @@ async fn a_guardian_fee_below_the_admitted_minimum_never_reaches_a_guardian_vote
         assert!(
             matches!(
                 client
-                    .propose_guardian_fees(
+                    .propose_guardian_fees_with(
                         send_ppm.try_into().unwrap(),
                         options(),
                     )
@@ -6569,7 +6504,7 @@ async fn a_guardian_fee_below_the_admitted_minimum_never_reaches_a_guardian_vote
 
     // The floor itself is a rate an FA may propose.
     client
-        .propose_guardian_fees(2_500.try_into().unwrap(), options())
+        .propose_guardian_fees_with(2_500.try_into().unwrap(), options())
         .await
         .unwrap();
     let raw = mg_state
@@ -6611,7 +6546,7 @@ async fn an_explicit_no_op_rate_write_must_satisfy_the_current_floor() {
 
     assert!(matches!(
         client
-            .propose_guardian_fees(GuardianFeePpm::MANIFOLD_DEFAULT, options())
+            .propose_guardian_fees_with(GuardianFeePpm::MANIFOLD_DEFAULT, options())
             .await,
         Err(FaError::InvalidIntent(message))
             if message.contains("below the published minimum of 6000")
@@ -6650,7 +6585,7 @@ async fn the_default_guardian_fee_minimum_applies_before_any_publication_is_admi
 
     assert!(matches!(
         client
-            .propose_guardian_fees(
+            .propose_guardian_fees_with(
                 (default_minimum - 1).try_into().unwrap(),
                 options(),
             )
@@ -6666,7 +6601,7 @@ async fn the_default_guardian_fee_minimum_applies_before_any_publication_is_admi
     // Anything above the floor is untouched: the 5,000-ppm Manifold default
     // proposes exactly as it did before the floor existed.
     client
-        .propose_guardian_fees(GuardianFeePpm::MANIFOLD_DEFAULT, options())
+        .propose_guardian_fees_with(GuardianFeePpm::MANIFOLD_DEFAULT, options())
         .await
         .unwrap();
     let raw = mg_state
@@ -6718,7 +6653,7 @@ async fn guardian_fee_policy_rebases_after_a_stale_wave_and_preserves_other_fiel
     reader.change_base_after_next_read(initial.clone(), concurrent.clone());
     let revision_before = mg_state.meta_consensus_revision.load(Ordering::SeqCst);
     client
-        .propose_guardian_fees(2_500.try_into().unwrap(), options())
+        .propose_guardian_fees_with(2_500.try_into().unwrap(), options())
         .await
         .unwrap();
 
@@ -6777,13 +6712,13 @@ async fn generic_open_fails_closed_for_the_deployment_guardian_verification_fee_
 
     assert!(matches!(
         client
-            .propose_guardian_fees((MAX_GUARDIAN_FEE_PPM + 1).try_into().unwrap(), options(),)
+            .propose_guardian_fees_with((MAX_GUARDIAN_FEE_PPM + 1).try_into().unwrap(), options(),)
             .await,
         Err(FaError::InvalidIntent(_))
     ));
     assert!(matches!(
         client
-            .propose_guardian_fees(GuardianFeePpm::MANIFOLD_DEFAULT, options(),)
+            .propose_guardian_fees_with(GuardianFeePpm::MANIFOLD_DEFAULT, options(),)
             .await,
         Err(FaError::NoActiveFormation)
     ));
@@ -6983,13 +6918,15 @@ async fn consensus_carrying_a_different_directory_never_completes_formation() {
     )
     .await;
 
-    let result = client
-        .buy_and_form_at(intent(), locators(), options())
-        .await;
+    let waited = tokio::time::timeout(
+        Duration::from_secs(1),
+        client.buy_and_form_at(intent(), locators(), options()),
+    )
+    .await;
 
     assert!(
-        matches!(&result, Err(FaError::Timeout(_))),
-        "expected the run to keep waiting until its deadline, got {result:?}"
+        waited.is_err(),
+        "expected the run to keep waiting, got {waited:?}"
     );
     // It really did submit; only consensus disagreed.
     assert_eq!(
@@ -7015,7 +6952,7 @@ async fn run_loop_forms_a_creation_and_yields_to_a_user_action_mid_work() {
     )
     .await;
     let runner = client.clone();
-    let run = tokio::spawn(async move { runner.run(options()).await });
+    let run = tokio::spawn(async move { runner.run_with(options()).await });
     let mut observed = client.observe();
 
     // Saving the creation wakes the idle loop, which buys and forms.
@@ -7071,7 +7008,7 @@ async fn a_cancelled_waiting_action_does_not_stop_the_loop() {
     )
     .await;
     let runner = client.clone();
-    let run = tokio::spawn(async move { runner.run(options()).await });
+    let run = tokio::spawn(async move { runner.run_with(options()).await });
     let mut observed = client.observe();
     client
         .create_federation(
@@ -7214,12 +7151,13 @@ async fn unfinished_setup_reopens_at_its_checkpoint_without_repeating_dkg() {
             reader,
         )
         .await;
-        assert!(matches!(
-            client
-                .buy_and_form_at(intent(), locators(), options())
-                .await,
-            Err(FaError::Timeout(_))
-        ));
+        // The formation waits for consensus until the test stops it.
+        let waited = tokio::time::timeout(
+            Duration::from_secs(1),
+            client.buy_and_form_at(intent(), locators(), options()),
+        )
+        .await;
+        assert!(waited.is_err(), "{waited:?}");
         assert_eq!(formation_phase(&client.status()), phase);
         drop(client);
 
@@ -7232,8 +7170,8 @@ async fn unfinished_setup_reopens_at_its_checkpoint_without_repeating_dkg() {
             ))
         ));
         assert!(matches!(
-            reopened.update_federation_metadata(
-                FederationMetadataUpdate::name("Unfinished").unwrap(), MaintenanceRunOptions::default(),
+            reopened.update_federation_metadata_with(
+                FederationMetadataUpdate::name("Unfinished").unwrap(), Timeouts::default(),
             ).await,
             Err(FaError::MaintenanceWrongState { phase: Some(actual) }) if actual == phase
         ));
@@ -7361,7 +7299,7 @@ async fn formed_resume_accepts_a_later_rate_without_fee_account_capabilities() {
         .await
         .unwrap();
     client
-        .propose_guardian_fees(2_500.try_into().unwrap(), options())
+        .propose_guardian_fees_with(2_500.try_into().unwrap(), options())
         .await
         .unwrap();
     drop(client);
@@ -7493,7 +7431,7 @@ async fn fee_rate_uses_terminal_maintenance_rejection() {
 
     assert!(matches!(
         client
-            .propose_guardian_fees(2_500.try_into().unwrap(), options())
+            .propose_guardian_fees_with(2_500.try_into().unwrap(), options())
             .await,
         Err(FaError::MaintenanceRejected { .. })
     ));
@@ -7783,11 +7721,10 @@ async fn slow_payment_preparation_and_recovery_keep_the_exact_payment() {
             MgConfig::paid(),
         )
         .await;
-        let options = FormationRunOptions::new(crate::FormationRunOptionsConfig {
-            run_timeout: Duration::from_secs(if interrupt { 40 } else { 600 }),
-            ..Default::default()
-        })
-        .unwrap();
+        let options = Timeouts {
+            long: Duration::from_secs(if interrupt { 40 } else { 600 }),
+            ..Timeouts::default()
+        };
         let result = client.buy_and_form_at(intent(), locators(), options).await;
         if interrupt {
             // Each seat has its own run timeout, so every payment starts and
@@ -8603,11 +8540,7 @@ async fn buy_seats_rejects_a_preview_that_a_finished_purchase_made_stale() {
         .unwrap()
         .unwrap();
     client
-        .drive_purchase(
-            recovery,
-            TestIdentity::fa_id(),
-            crate::formation::DriverRun::start(options()).unwrap(),
-        )
+        .drive_purchase(recovery, TestIdentity::fa_id(), options())
         .await
         .unwrap();
     assert_eq!(
@@ -9090,12 +9023,11 @@ async fn a_bound_seat_survives_reopen_and_resume() {
         ..MgConfig::paid()
     };
     let client = open_client(database.clone(), payments.clone(), mg_state.clone(), config).await;
-    let short = FormationRunOptions::new(FormationRunOptionsConfig {
-        poll_interval: Duration::from_millis(10),
-        run_timeout: Duration::from_millis(1500),
-        request_timeout: Duration::from_millis(500),
-    })
-    .unwrap();
+    let short = Timeouts {
+        poll: Duration::from_millis(10),
+        long: Duration::from_millis(1500),
+        request: Duration::from_millis(500),
+    };
     let error = client
         .buy_and_form_at(intent(), locators(), short)
         .await
@@ -9527,9 +9459,9 @@ async fn completed_gateway_recovery_uses_durable_evidence_before_provider_connec
 async fn liquidity_recovery_replays_the_exact_commitment_only_after_not_found() {
     let (client, formation_id, _mg_state, connector) = formed_client_for_liquidity().await;
     client
-        .update_federation_metadata(
+        .update_federation_metadata_with(
             FederationMetadataUpdate::name("First rename").unwrap(),
-            MaintenanceRunOptions::default(),
+            Timeouts::default(),
         )
         .await
         .unwrap();
@@ -9557,9 +9489,9 @@ async fn liquidity_recovery_replays_the_exact_commitment_only_after_not_found() 
         .pop()
         .expect("one prepared operation");
     client
-        .update_federation_metadata(
+        .update_federation_metadata_with(
             FederationMetadataUpdate::name("Second rename").unwrap(),
-            MaintenanceRunOptions::default(),
+            Timeouts::default(),
         )
         .await
         .unwrap();
@@ -10375,14 +10307,13 @@ impl FormationLogCapture {
     }
 }
 
-fn formation_log_options(request_timeout: Duration) -> FormationRunOptions {
-    FormationRunOptions::new(crate::FormationRunOptionsConfig {
-        poll_interval: Duration::from_millis(1),
+fn formation_log_options(request_timeout: Duration) -> Timeouts {
+    Timeouts {
+        poll: Duration::from_millis(1),
         // Leave room for parallel-suite scheduling; only the request bound is under test.
-        run_timeout: Duration::from_secs(30),
-        request_timeout,
-    })
-    .unwrap()
+        long: Duration::from_secs(30),
+        request: request_timeout,
+    }
 }
 
 #[tokio::test]
@@ -10614,9 +10545,7 @@ async fn formation_acquisition_reconnect_logs_mg_identity() {
 }
 
 #[tokio::test]
-async fn formation_guardian_code_deadline_logs_only_the_never_ready_seat() {
-    use tracing::instrument::WithSubscriber as _;
-
+async fn a_never_ready_seat_keeps_the_formation_waiting_for_its_code() {
     let state = Arc::new(MgState::default());
     state.unavailable_dkg_code_indices.lock().unwrap().insert(5);
     let (payments, _) = TestPayments::new();
@@ -10627,25 +10556,14 @@ async fn formation_guardian_code_deadline_logs_only_the_never_ready_seat() {
         MgConfig::given_away(),
     )
     .await;
-    // The interval consumes the remaining run budget after SeatUnavailable,
-    // so the actual exit must be sleep_for_retry, not the next loop's preflight.
-    let options = FormationRunOptions::new(crate::FormationRunOptionsConfig {
-        poll_interval: Duration::from_secs(5),
-        run_timeout: Duration::from_secs(5),
-        request_timeout: Duration::from_secs(1),
-    })
-    .unwrap();
-    let capture = FormationLogCapture::default();
-    let error = client
-        .buy_and_form_at(intent(), locators(), options)
-        .with_subscriber(capture.subscriber())
-        .await
-        .unwrap_err();
-    assert!(
-        matches!(&error, FaError::Mg(MgFailure { mg, operation: MgOperation::GetDkgCode, cause: MgCause::Timeout })
-        if *mg == manager_key(5).x_only_public_key().0),
-        "{error:?}"
-    );
+    // No step has a deadline, so the formation waits for the child of seat 5
+    // until something else stops it.
+    let waited = tokio::time::timeout(
+        Duration::from_secs(1),
+        client.buy_and_form_at(intent(), locators(), options()),
+    )
+    .await;
+    assert!(waited.is_err(), "{waited:?}");
     let snapshot = formation(&client.status()).clone();
     for (index, seat) in snapshot.slots.iter().enumerate() {
         assert_eq!(
@@ -10654,29 +10572,6 @@ async fn formation_guardian_code_deadline_logs_only_the_never_ready_seat() {
             "only the never-ready child should lack its code"
         );
     }
-    let logs = capture.text();
-    let deadline_events = logs
-        .lines()
-        .filter(|line| {
-            line.contains("safe_to_share=true")
-                && line.contains("formation request failed")
-                && line.contains("operation=get_dkg_code")
-                && line.contains("cause=timeout")
-        })
-        .collect::<Vec<_>>();
-    assert_eq!(deadline_events.len(), 1, "{logs}");
-    let line = deadline_events[0];
-    assert!(
-        line.contains(&format!(
-            "mg_pubkey={}",
-            manager_key(5).x_only_public_key().0
-        )),
-        "{logs}"
-    );
-    assert!(
-        line.contains(&format!("formation_id={}", snapshot.formation_id.0)),
-        "{logs}"
-    );
 }
 
 /// The index of the formation seat whose guardian code names the federation.

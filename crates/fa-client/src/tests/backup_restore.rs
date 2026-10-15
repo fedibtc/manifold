@@ -123,13 +123,12 @@ fn down_relay() -> RelayUrl {
     relay_url(free_port())
 }
 
-fn relay_options() -> FormationRunOptions {
-    FormationRunOptions::new(crate::FormationRunOptionsConfig {
-        poll_interval: Duration::from_millis(10),
-        run_timeout: Duration::from_secs(30),
-        request_timeout: Duration::from_secs(5),
-    })
-    .unwrap()
+fn relay_options() -> Timeouts {
+    Timeouts {
+        poll: Duration::from_millis(10),
+        long: Duration::from_secs(30),
+        request: Duration::from_secs(5),
+    }
 }
 
 fn backup_keys() -> FaBackupKeys {
@@ -227,7 +226,7 @@ async fn run_until(
 ) -> FaState {
     let mut observed = client.observe();
     tokio::select! {
-        () = client.run(relay_options()) => unreachable!("the run loop does not return"),
+        () = client.run_with(relay_options()) => unreachable!("the run loop does not return"),
         state = tokio::time::timeout(within, observed.wait_for(done)) => {
             state
                 .unwrap_or_else(|_| panic!("state stayed {:?}", client.state()))
@@ -391,7 +390,7 @@ async fn too_few_relays_keep_restoring_and_the_loop_retries() {
     )
     .await;
     let runner = restored.clone();
-    let run = tokio::spawn(async move { runner.run(relay_options()).await });
+    let run = tokio::spawn(async move { runner.run_with(relay_options()).await });
     let mut observed = restored.observe();
     tokio::time::timeout(Duration::from_secs(30), observed.wait_for(failed_lookup))
         .await
@@ -543,7 +542,7 @@ async fn a_backup_that_consensus_rejects_writes_nothing_and_is_retried() {
 
     let restored = open_restored(MemDatabase::new().into_database(), state, urls.clone(), 2).await;
     let runner = restored.clone();
-    let run = tokio::spawn(async move { runner.run(relay_options()).await });
+    let run = tokio::spawn(async move { runner.run_with(relay_options()).await });
     let mut observed = restored.observe();
     tokio::time::timeout(Duration::from_secs(30), observed.wait_for(failed_lookup))
         .await
@@ -585,7 +584,7 @@ async fn user_actions_are_busy_while_restoring() {
     )
     .await;
     let runner = restored.clone();
-    let run = tokio::spawn(async move { runner.run(relay_options()).await });
+    let run = tokio::spawn(async move { runner.run_with(relay_options()).await });
     tokio::time::sleep(Duration::from_millis(200)).await;
     assert_eq!(
         restored.state(),
@@ -593,7 +592,7 @@ async fn user_actions_are_busy_while_restoring() {
     );
 
     let preview = restored.preview_at(&intent(), locators());
-    let maintenance = MaintenanceRunOptions::default();
+    let maintenance = Timeouts::default();
     let results = [
         (
             "create_federation",
@@ -606,15 +605,18 @@ async fn user_actions_are_busy_while_restoring() {
         (
             "propose_guardian_fees",
             restored
-                .propose_guardian_fees(GuardianFeePpm::MANIFOLD_DEFAULT, options())
+                .propose_guardian_fees_with(GuardianFeePpm::MANIFOLD_DEFAULT, options())
                 .await
                 .err(),
         ),
-        ("restart_dkg", restored.restart_dkg(options()).await.err()),
+        (
+            "restart_dkg",
+            restored.restart_dkg_with(options()).await.err(),
+        ),
         (
             "update_federation_metadata",
             restored
-                .update_federation_metadata(
+                .update_federation_metadata_with(
                     FederationMetadataUpdate::name("Renamed").unwrap(),
                     maintenance,
                 )
@@ -624,7 +626,7 @@ async fn user_actions_are_busy_while_restoring() {
         (
             "register_gateway",
             restored
-                .register_gateway(
+                .register_gateway_with(
                     GatewayApiUrl::try_from("https://gateway.example/").unwrap(),
                     maintenance,
                 )
@@ -634,7 +636,7 @@ async fn user_actions_are_busy_while_restoring() {
         (
             "admitted_setup_payment_federations",
             restored
-                .admitted_setup_payment_federations(options())
+                .admitted_setup_payment_federations_with(options())
                 .await
                 .err(),
         ),
@@ -703,7 +705,7 @@ async fn a_restore_stopped_at_any_commit_finishes_after_reopen() {
             let crashed =
                 open_restored(storage.open(plan.clone()), state.clone(), urls.clone(), 2).await;
             tokio::select! {
-                () = crashed.run(relay_options()) => unreachable!(),
+                () = crashed.run_with(relay_options()) => unreachable!(),
                 () = plan.wait() => {}
                 () = tokio::time::sleep(Duration::from_secs(30)) => {
                     panic!("commit {commit} {point:?} was never reached");
@@ -733,7 +735,7 @@ async fn a_restore_stopped_at_any_commit_finishes_after_reopen() {
     let database = MemDatabase::new().into_database();
     let stopped = open_restored(database.clone(), state.clone(), with_silent.clone(), 3).await;
     tokio::select! {
-        () = stopped.run(relay_options()) => unreachable!(),
+        () = stopped.run_with(relay_options()) => unreachable!(),
         () = tokio::time::sleep(Duration::from_secs(1)) => {}
     }
     assert_eq!(

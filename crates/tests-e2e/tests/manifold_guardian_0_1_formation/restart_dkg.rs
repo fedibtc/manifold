@@ -92,7 +92,7 @@ async fn run_restart() -> anyhow::Result<()> {
     create
         .arg("--federation-size")
         .arg(GUARDIAN_COUNT.to_string())
-        .args(["--poll-interval-secs", "1", "--poll-timeout-secs", "15"]);
+        .args(["--poll-timeout-secs", "15"]);
     let mut fi = create
         .stdin(Stdio::null())
         .stdout(Stdio::null())

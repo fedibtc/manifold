@@ -57,8 +57,9 @@ advertised and live exact offers are all zero. `create` accepts a paired 0600
 completion-callback URL file and idempotency key, passes it to
 `create_federation`, and delegates protocol validation, durable ownership, and
 delivery entirely to `fa-client` and the MGs; the CLI never places the URL bearer in argv, persists it, or
-emits it. `--poll-interval-secs` and `--poll-timeout-secs` set the driver
-timing of every `create`.
+emits it. `--poll-timeout-secs` sets how long `create` waits for the run
+loop, and `resume --run-timeout-secs` does the same for `resume`. Every other
+command waits up to ten minutes. The library has no timing options.
 
 Advertisements name only an MG Iroh endpoint id. Every endpoint the CLI binds
 uses n0 address lookup, except when the test-only `MG_E2E_LOCAL_IROH` is set:
