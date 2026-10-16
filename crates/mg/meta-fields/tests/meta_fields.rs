@@ -221,3 +221,76 @@ fn check_url_hosts(validator: &dyn MetaFieldValidator) {
         );
     }
 }
+
+#[test]
+fn registry_serves_every_app_setting_once_and_no_duplicate_keys() {
+    let keys = VALIDATORS
+        .iter()
+        .map(|validator| validator.key())
+        .collect::<Vec<_>>();
+    let unique = keys.iter().collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(unique.len(), keys.len(), "duplicate key in VALIDATORS");
+    for setting in FederationAppSetting::ALL {
+        assert!(keys.contains(&setting.key()), "{setting:?} is not served");
+    }
+}
+
+#[test]
+fn compiled_dispatch_relays_app_settings_with_their_shared_rules() {
+    for (key, value) in [
+        ("fedi:stability_pool_disabled", "false"),
+        ("fedi:max_balance_msats", "0"),
+        ("fedi:default_currency", "EUR"),
+        ("fedi:pinned_message", ""),
+        ("fedi:default_group_chats", r#"["!abc:matrix.org"]"#),
+        ("fedi:autojoin_communities", "[]"),
+    ] {
+        assert_eq!(
+            validate_meta_field(
+                &MetaFieldKey(key.to_owned()),
+                &MetaFieldValue(value.to_owned())
+            ),
+            Ok(()),
+            "{key}"
+        );
+    }
+    for (key, value) in [
+        ("fedi:stability_pool_disabled", "no"),
+        ("fedi:max_balance_msats", "-1"),
+        ("fedi:default_group_chats", r#"["abc"]"#),
+    ] {
+        assert!(matches!(
+            validate_meta_field(
+                &MetaFieldKey(key.to_owned()),
+                &MetaFieldValue(value.to_owned())
+            ),
+            Err(MetaFieldError::InvalidValue(_))
+        ));
+    }
+}
+
+#[test]
+fn fedi_operated_and_inert_keys_are_not_served() {
+    for key in [
+        "vetted_gateways",
+        "recurringd_api",
+        "fedi:fixed_exchange_rate",
+        "fedi:popup_end_timestamp",
+        "fedi:popup_countdown_message",
+        "fedi:popup_ended_message",
+        "federation_expiry_timestamp",
+        "fedi:social_recovery_disabled",
+        "meta_override_url",
+        // Unprefixed spellings would lose to any `fedi:` value the app reads first.
+        "stability_pool_disabled",
+    ] {
+        assert_eq!(
+            validate_meta_field(
+                &MetaFieldKey(key.to_owned()),
+                &MetaFieldValue("false".to_owned()),
+            ),
+            Err(MetaFieldError::UnknownKey),
+            "{key}"
+        );
+    }
+}

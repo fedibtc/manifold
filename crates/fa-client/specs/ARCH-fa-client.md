@@ -532,14 +532,16 @@ authentication is
 
 ## Post-formation metadata maintenance
 
-`update_federation_metadata` exposes only the MG's compiled MVP policy as
+`update_federation_metadata` exposes only the MG's compiled policy as
 fallibly constructed semantic values: display name, HTTP(S) icon URL, welcome
-message/description, and a caller-supplied public HTTP(S) terms URL. The shared types
-apply Guardianito's trim-for-validation/raw-for-submission rules and the
-65,536-byte absolute raw resource cap before lease, signing, connection, or
-network effects; every MG repeats the same authoritative validation. The API
-does not accept raw metadata keys, clear fields, upload image bytes, or widen
-the MG allowlist. The operation requires
+message/description, a caller-supplied public HTTP(S) terms URL, and one
+`FederationAppSetting` value at a time. The shared types
+apply Guardianito's trim-for-validation/raw-for-submission rules, each
+setting's format, and its absolute raw resource cap before lease, signing,
+connection, or network effects; every MG repeats the same authoritative
+validation. The API does not accept raw metadata keys, upload image bytes, or
+widen the MG allowlist. A setting is turned off with its explicit off value,
+never by deleting the field. The operation requires
 the durable FA formation to be `Formed`, reconstructs every FA-owned seat from
 that record, and shares the formation driver's process guard, database lease,
 deadline, connector, identity, and real consensus-reader capabilities.
