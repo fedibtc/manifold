@@ -186,6 +186,14 @@ where
                 failure: None,
             });
         }
+        // A priced seat cannot be bought without a payer; refuse before the
+        // transfer is saved rather than leave it open with nothing to pay.
+        if 0 < approval.max_msats && payment_federation_id.is_none() {
+            return Err(FaError::SelectionReauthorizationRequired {
+                reason: crate::SelectionReauthorizationReason::PaymentFederationRequired,
+                failure: None,
+            });
+        }
         Ok(StoredSeatPurchase {
             mg_id: approval.seat.mg_id,
             holder: approval.seat.holder,
@@ -320,7 +328,7 @@ where
         }
 
         if purchase.signed_quote.is_none() {
-            let (signed, quote) = self
+            let (signed, quote) = match self
                 .request_new_quote(
                     0,
                     &client,
@@ -332,7 +340,19 @@ where
                     Some(&payment_federation),
                     run,
                 )
-                .await?;
+                .await
+            {
+                Ok(quoted) => quoted,
+                // No quote and no reservation: nothing is at risk, and a
+                // retry with the same payer and approval cannot succeed.
+                Err(error @ FaError::SelectionReauthorizationRequired { .. }) => {
+                    lease
+                        .write_guardian_transfer(fa_id, GuardianTransferWrite::Close)
+                        .await?;
+                    return Err(error);
+                }
+                Err(error) => return Err(error),
+            };
             if purchase.max_msats < quote.terms.price_msats {
                 lease
                     .write_guardian_transfer(fa_id, GuardianTransferWrite::Close)
@@ -459,6 +479,14 @@ where
                 SeatPaymentRecovery::NotStarted => {}
             }
         }
+        let payer = quote
+            .terms
+            .payment
+            .as_ref()
+            .map(|terms| terms.federation_id().clone())
+            .ok_or_else(|| {
+                FaError::Storage("a free destination seat quote has no payment".to_owned())
+            })?;
         let preflight =
             crate::ExactPaymentPreflight::new(&requirements, std::slice::from_ref(quote))?;
         let recovered = run
@@ -490,7 +518,35 @@ where
                 .await?
                 .map_err(|error| FaError::Payment(error.to_string()))?,
         };
-        if !purchase.outputs_started {
+        // The payer was checked when the quote was made. A payment that
+        // never started may resume much later, so the current policy must
+        // still allow the payer before any value moves.
+        if purchase.outputs_started {
+            match self.require_setup_payment_federation(&payer, run).await {
+                Ok(_) => {}
+                Err(error @ FaError::SelectionReauthorizationRequired { .. }) => {
+                    // Mark the payment unstarted first: a crash before the
+                    // close then replays as a stale quote, which releases the
+                    // reservation and closes on the same policy check.
+                    purchase.outputs_started = false;
+                    save_purchase(transfer, purchase, fa_id, run).await?;
+                    run.call("releasing destination seat reservation", || {
+                        Ok(self
+                            .inner
+                            .ports
+                            .payments
+                            .release_payment_reservation(reservation))
+                    })
+                    .await?
+                    .map_err(|error| FaError::Payment(error.to_string()))?;
+                    run.lease()
+                        .write_guardian_transfer(fa_id, GuardianTransferWrite::Close)
+                        .await?;
+                    return Err(error);
+                }
+                Err(error) => return Err(error),
+            }
+        } else {
             purchase.outputs_started = true;
             save_purchase(transfer, purchase, fa_id, run).await?;
         }
