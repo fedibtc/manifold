@@ -42,3 +42,29 @@ pub(crate) async fn insert_test_seat(db: &Db, new_seat: NewSeat) -> SeatFacts {
         created_at_ms,
     }
 }
+
+/// A seat data directory in the legacy encrypted layout, as releases before
+/// the plaintext one wrote it: `private.encrypt`
+/// is hex ChaCha20-Poly1305 under an Argon2 key from the password and salt,
+/// beside the salt and a plaintext copy of the password.
+pub(crate) async fn write_legacy_layout(
+    seat_dir: &std::path::Path,
+    api_auth: &str,
+    private_json: &str,
+) {
+    let salt = "c2FsdHNhbHRzYWx0c2E";
+    let key = fedimint_aead::get_encryption_key(api_auth, salt).unwrap();
+    let encrypted =
+        hex::encode(fedimint_aead::encrypt(private_json.as_bytes().to_vec(), &key).unwrap());
+    for (name, contents) in [
+        ("private.encrypt", encrypted.as_str()),
+        ("private.salt", salt),
+        ("password.private", &format!("{api_auth}\n")),
+        ("local.json", r#"{"api_bind":"127.0.0.1:8174"}"#),
+        ("consensus.json", r#"{"api_endpoints":{"0":"wss://peer"}}"#),
+    ] {
+        tokio::fs::write(seat_dir.join(name), contents)
+            .await
+            .unwrap();
+    }
+}

@@ -1877,7 +1877,7 @@ async fn exercise_guardian_telemetry(
         metrics_body.lines().any(|line| {
             line.starts_with("fm_app_start_ts{")
                 && line.contains("version=\"0.12.0\"")
-                && line.contains("version_hash=\"e1e3b3227c526ae2f12f6c004ee52d2d0b3e75fb\"")
+                && line.contains("version_hash=\"6b40d01d11c07067f3c5d9621c18e2882ffa6c95\"")
         }),
         "the exact bundled 0.12 guardian must expose its release marker"
     );
@@ -2300,8 +2300,10 @@ async fn register_local_gateway_for_lnv2(
         .await?;
 
     let gateway = format!("{}/v1", gateway_api_url.trim_end_matches('/'));
+    let manifold_guardian_bin = locate_binary(MANIFOLD_GUARDIAN_BIN_ENV, "fleet-manager")?;
     for manager in 0..GUARDIAN_COUNT {
-        let data_dir = temp.join(format!("mg-{manager}/seats/0/data"));
+        let mg_dir = temp.join(format!("mg-{manager}"));
+        let data_dir = mg_dir.join("seats/0/data");
         let local: serde_json::Value = serde_json::from_str(
             &std::fs::read_to_string(data_dir.join("local.json"))
                 .with_context(|| format!("read guardian {manager} local config"))?,
@@ -2310,15 +2312,32 @@ async fn register_local_gateway_for_lnv2(
             .as_u64()
             .with_context(|| format!("guardian {manager} local config carries its peer id"))?
             .to_string();
-        let password = std::fs::read_to_string(data_dir.join("password.private"))
-            .with_context(|| format!("read guardian {manager} LNv2 admin credential"))?;
+        // The guardian's admin credential is derived, never stored: the
+        // same derivation MG injects into fedimintd.
+        let seat_id: SeatId = manifold_guardian_admin(
+            &manifold_guardian_bin,
+            &mg_dir,
+            &["seats", "list"],
+        )
+        .await?["seats"][0]["seat_id"]
+            .as_str()
+            .with_context(|| format!("guardian {manager} seat listing carries its id"))?
+            .parse()?;
+        let mnemonic = manifold_guardian_admin(&manifold_guardian_bin, &mg_dir, &["show-mnemonic"])
+            .await?["mnemonic"]
+            .as_str()
+            .with_context(|| format!("guardian {manager} show-mnemonic returns the root phrase"))?
+            .to_owned();
+        let password = mg_core::identity::RootMnemonic::parse(&mnemonic)?
+            .derive_seat_keys(&seat_id)
+            .api_auth;
         fedimint_cli
             .run(
                 &[
                     "--our-id",
                     &peer,
                     "--password",
-                    password.trim(),
+                    &password,
                     "module",
                     "lnv2",
                     "gateways",

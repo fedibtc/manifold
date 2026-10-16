@@ -35,11 +35,29 @@ Four kinds of state, and two of them are genuinely at risk:
 - **Guardian config** — each seat's DKG key shares and the federation's
   consensus config, written once by `fedimintd` when the ceremony completes.
   Not derived, not held by peers, not reconstructible. **This is one of the two
-  things the backup exists for.** The four files are carried together as one
-  immutable **guardian archive** — `private.encrypt`, `private.salt`,
-  `local.json`, `consensus.json`, exactly the set `fedimintd`'s own
-  `download_guardian_backup` exports — because they are written at one moment,
-  restored as a set, and useless individually.
+  things the backup exists for.** The three files are carried together as one
+  immutable **guardian archive** — `private.json`, `local.json`,
+  `consensus.json`, exactly the set `fedimintd` reads a formed guardian from
+  — because they are written at one moment, restored as a set, and useless
+  individually.
+
+  `private.json` is plaintext on disk and in the archive. The data root is
+  the trust boundary (SECURITY.md): the mnemonic beside it derives the
+  `api_auth` that `fedimintd`'s legacy encrypted layout (`private.encrypt`
+  under an Argon2 key from `private.salt` and `password.private`) was locked
+  with, so that encryption was a password stored next to the lock. The
+  plaintext layout makes the archive the same bytes on every host and lets a
+  restore install it without re-deriving a credential. `fedimintd`'s driven
+  DKG writes this layout. Seat directories written by earlier releases
+  convert when the daemon opens its fleet, before the backup worker or any
+  child starts:
+  decrypt under the seat's derived `api_auth`, write `private.json` whole,
+  set the three legacy files aside as `*.old`. `fedimintd` prefers
+  `private.json` whenever it exists, so an interrupted conversion is
+  harmless, and the set-aside files stay for an operator to inspect. A private config the
+  derived credential cannot open is unreadable or does not belong to this
+  mnemonic — a corrupt file and a wrong phrase look the same — and the daemon
+  refuses to start.
 - **Accepted payment material** — typed mint-v1 or mint-v2 claim evidence for
   each paid seat, including the public invite needed to rejoin its payment
   federation independently of the current setup-payment set. It cannot be
@@ -208,9 +226,16 @@ order and membership, and the tag on the reassembled whole is the only
 integrity check it needs. The slices are published before the document, so a
 seat document on a relay is never the newer half of a pair — it names a
 digest, and a digest verifies an archive rather than conjuring one. The
-archive never changes, so if a publication does repeat, it rewrites the same
-archive at the same coordinates (the sealed bytes differ — sealing is
-nonce-randomized — but what they carry does not).
+archive never changes within a schema version, so if a publication does
+repeat, it rewrites the same archive at the same coordinates (the sealed
+bytes differ — sealing is nonce-randomized — but what they carry does not).
+A version change can change the archive's bytes, as the plaintext layout
+did, so from version 2 on the schema version is part of the slice coordinate
+(`"archive:v2:"`): the new generation lands beside the old one, and the old
+document keeps finding every slice it names until the new document replaces
+it. A reader drains the other version's coordinates for each seat it
+restores — the generation an upgrade retired, or the one an interrupted
+upgrade staged — rather than mistaking them for events without a document.
 
 One event per seat rather than one event per fleet is a scaling decision: a
 single document would cap durable seat capacity on a relay's event-size limit, and the
@@ -231,7 +256,14 @@ understand before it can read *anything*, every archive is reached through
 some seat's document, and a second copy would be a number with nothing to make
 it agree with the first. A version this build does not know is refused before
 the body is parsed, rather than parsed into whichever fields still happen to
-match.
+match. Version 1, which carried the archive in the legacy encrypted layout, is
+still read: the adapter decrypts its archive under the seat's `api_auth`
+re-derived from the mnemonic, the credential the original `fedimintd`
+encrypted it with, and hands the fleet on in current terms, the seat document
+naming the digest of the decrypted archive. A relay mid-upgrade may
+serve both versions side by side; each seat is read by its own document's
+version, and the restored fleet republishes everything under the current one
+regardless.
 
 Restore enumerates seats by querying the backup identity and kind. There is no
 index document to keep consistent with the events it would describe.
@@ -252,8 +284,9 @@ identity), plus the digest
 of the guardian archive once its slices have been confirmed. The record is
 scoped to the schema version that wrote it: the version lives outside the
 hashed plaintext, so after a version bump an unchanged document would
-otherwise look confirmed while the relay serves events the new build's own
-restore refuses. A record under another version is no confirmation, and the
+otherwise look confirmed while the relay serves events in a shape the new
+build only still reads for restore. A record under another version is no
+confirmation, and the
 whole publication — archive slices included, since a reader reassembles them
 by the rules the version names — republishes under the current one.
 
@@ -386,17 +419,13 @@ those stages complete. The offer itself is operator policy and is not restored
 from guardian backup documents.
 
 Restore takes the mnemonic, enumerates and decrypts the documents, reassembles
-each seat's guardian archive from its slices, writes each seat's config files
-into a new seat directory, and rebuilds the fleet facts. Beside the archive's
-four files it writes one the backup deliberately does not carry:
-`password.private`, the seat's `api_auth`, re-derived from the mnemonic — the
-exact bytes `fedimintd` itself writes there after a ceremony, and without
-which `fedimintd` treats an existing config as absent and enters a fresh
-ceremony instead of serving the restored one. It also seeds each
-seat's publication record with the hash of the document it just fetched — the
-relay demonstrably serves exactly that document — so the restored fleet's
-first scan republishes nothing. After the remaining onboarding stages complete,
-the daemon starts that fleet and each guardian catches up from its peers.
+each seat's guardian archive from its slices, writes each seat's three config
+files into a new seat directory, and rebuilds the fleet facts. It records no
+publication for them: the restored fleet's first scan republishes every seat
+once, which costs one rewrite of immutable bytes and saves the restore from
+having to reason about which format version served what. After the remaining
+onboarding stages complete, the daemon starts that fleet and each guardian
+catches up from its peers.
 
 **A partial answer is an error, never a smaller fleet.** Because it happens
 once, restore has no second attempt in which to notice something was missed, so
@@ -425,7 +454,7 @@ staging directory that the next attempt wipes, and renamed into place so a
 final seat directory only ever appears complete; a final directory that
 already exists is adopted if and only if it is exactly what a staged write
 renames into place — the archive files hashing to the digest the seat's
-document names, the re-derived password, and nothing else. That is exactly
+document names, and nothing else. That is exactly
 what an interruption between the renames and the transaction leaves, and
 nothing a foreign directory — including a live guardian's, whose consensus
 database is precisely the extra content the shape check refuses — can satisfy.

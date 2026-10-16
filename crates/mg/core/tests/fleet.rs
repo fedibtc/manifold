@@ -4039,8 +4039,7 @@ async fn write_guardian_config_files(config: &FleetConfig, seat_no: crate::facts
     let dir = seat_data_dir(&config.process, seat_no);
     tokio::fs::create_dir_all(&dir).await.unwrap();
     for (name, contents) in [
-        ("private.encrypt", "deadbeef"),
-        ("private.salt", "c2FsdA"),
+        ("private.json", r#"{"shares":"deadbeef"}"#),
         ("local.json", r#"{"api_bind":"127.0.0.1:1"}"#),
         ("consensus.json", r#"{"api_endpoints":{}}"#),
     ] {
@@ -4071,6 +4070,65 @@ async fn eventually(what: &str, mut condition: impl FnMut() -> bool) {
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
     panic!("{what} never happened");
+}
+
+/// A seat directory left by a release before the plaintext layout converts
+/// when the fleet opens, before anything reads or runs it — even with no
+/// formed row, as when the ceremony's `ConfigPersisted` was lost and the
+/// child's own already-configured recovery will form the seat later. One whose
+/// private config this mnemonic cannot open stops the daemon instead of
+/// running a guardian it could not back up.
+#[tokio::test]
+async fn opening_the_fleet_migrates_formed_seats_to_the_plaintext_layout() {
+    let temp = TempDir::new().unwrap();
+    let mut config = config(&temp, 2, 31_300).await;
+    config.process_spawner = SeatProcessSpawner::Fake(Arc::new(FakeSeatProcessSpawner::default()));
+    let fleet = open_fleet(config.clone(), Arc::new(NoWallet))
+        .await
+        .unwrap();
+    let (_, seat_id) = create_free_seat(&fleet, 171).await;
+    let seat_no = fleet.seat_by_id(&seat_id).unwrap().facts().seat_no;
+    let api_auth = fleet.identity().derive_seat_keys(&seat_id).api_auth;
+    fleet.shutdown().await;
+    drop(fleet);
+
+    let dir = seat_data_dir(&config.process, seat_no);
+    tokio::fs::create_dir_all(&dir).await.unwrap();
+    crate::test_support::write_legacy_layout(&dir, &api_auth, r#"{"shares":"legacy"}"#).await;
+
+    let fleet = open_fleet(config.clone(), Arc::new(NoWallet))
+        .await
+        .unwrap();
+    let archive = crate::backup::read_guardian_archive(&dir)
+        .await
+        .unwrap()
+        .expect("the plaintext layout is in place before the fleet is up");
+    assert_eq!(archive.private_json, r#"{"shares":"legacy"}"#);
+    assert!(!dir.join("private.encrypt").exists());
+    assert!(
+        dir.join("private.encrypt.old").exists(),
+        "legacy files are set aside, not deleted"
+    );
+    fleet.shutdown().await;
+    drop(fleet);
+
+    // The same seat, written under a credential this mnemonic does not derive.
+    tokio::fs::remove_file(dir.join("private.json"))
+        .await
+        .unwrap();
+    crate::test_support::write_legacy_layout(&dir, "someone-elses-password", r#"{"shares":"x"}"#)
+        .await;
+    let Err(error) = open_fleet(config, Arc::new(NoWallet)).await else {
+        panic!("a config this mnemonic cannot open must refuse to start");
+    };
+    assert!(
+        format!("{error:#}").contains("unreadable or does not belong"),
+        "refusal names the migration: {error:#}"
+    );
+    assert!(
+        dir.join("private.encrypt").exists(),
+        "a refused directory is untouched"
+    );
 }
 
 async fn fleet_with_backup(config: FleetConfig, sink: Arc<FakeBackupSink>) -> Fleet {

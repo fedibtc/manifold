@@ -4,8 +4,10 @@ use fedi_decentralized_service_manifold_guardian::{
 use mg_core::backup::GuardianArchiveRef;
 use mg_core::facts::{SeatFacts, SeatNo};
 use mg_core::identity::RootMnemonic;
+use mg_core::legacy_layout::LegacyGuardianArchive;
 
 use super::*;
+use crate::backup::{MAX_RESTORE_EVENTS_PER_SEAT, MAX_RESTORE_SLICES_PER_SEAT};
 
 const TEST_MNEMONIC: &str =
     "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
@@ -53,8 +55,7 @@ fn seat_facts() -> SeatFacts {
 
 fn guardian_archive(private_len: usize) -> GuardianArchive {
     GuardianArchive {
-        private_encrypt: "ab".repeat(private_len),
-        private_salt: "c2FsdHNhbHRzYWx0c2E".into(),
+        private_json: format!(r#"{{"shares":"{}"}}"#, "ab".repeat(private_len)),
         local_json: r#"{"api_bind":"127.0.0.1:8174"}"#.into(),
         consensus_json: r#"{"api_endpoints":{"0":"wss://peer"}}"#.into(),
     }
@@ -108,7 +109,7 @@ fn seat_document_roundtrips_through_seal_and_restores_the_original_facts() {
     let document = SeatBackupDocument::new(&facts, None, Some(guardian_ref()), None);
 
     let sealed = identity.seal_seat_document(&document).unwrap();
-    let recovered = identity.open_seat_document(&sealed).unwrap();
+    let recovered = identity.open_seat_document(&sealed).unwrap().document;
 
     assert_eq!(recovered, document);
     // The whole point of the document: the durable facts come back intact,
@@ -262,7 +263,7 @@ fn a_publication_carries_its_archive_slices_before_the_seat_document() {
     assert!(slices.len() > 1, "the test needs a multi-event archive");
     // The last event is the seat's document, at the seat's coordinate.
     assert_eq!(
-        identity.open_seat_document(&seat.content).unwrap(),
+        identity.open_seat_document(&seat.content).unwrap().document,
         publication.document
     );
     assert_eq!(
@@ -275,8 +276,11 @@ fn a_publication_carries_its_archive_slices_before_the_seat_document() {
     for (index, slice) in slices.iter().enumerate() {
         assert_eq!(
             slice.tags.identifier().unwrap(),
-            identity
-                .archive_coordinate(&publication.document.seat_id, u32::try_from(index).unwrap())
+            identity.archive_coordinate(
+                &publication.document.seat_id,
+                BACKUP_DOCUMENT_VERSION,
+                u32::try_from(index).unwrap()
+            )
         );
         assert!(matches!(
             identity.open_seat_document(&slice.content),
@@ -294,6 +298,236 @@ fn a_publication_carries_its_archive_slices_before_the_seat_document() {
         },
     );
     assert_eq!(events.len(), 1);
+}
+
+/// What version 1 published: the same document under version 1, beside an
+/// archive in the legacy encrypted shape, sealed and sliced the same way.
+fn legacy_published_events(
+    identity: &BackupIdentity,
+    facts: &SeatFacts,
+    archive: &LegacyGuardianArchive,
+) -> Vec<Event> {
+    let mut bytes = Vec::new();
+    ciborium::into_writer(archive, &mut bytes).unwrap();
+    let document = SeatBackupDocument::new(
+        facts,
+        None,
+        Some(GuardianArchiveRef {
+            archive_sha256: sha256_hex(&bytes),
+            federation_invite: None,
+        }),
+        None,
+    );
+    let mut payload = Vec::new();
+    ciborium::into_writer(
+        &Envelope {
+            version: LEGACY_DOCUMENT_VERSION,
+            document: &document,
+        },
+        &mut payload,
+    )
+    .unwrap();
+    let mut builders: Vec<EventBuilder> = identity
+        .seal_padded(bytes, AAD_ARCHIVE)
+        .into_iter()
+        .enumerate()
+        .map(|(index, content)| {
+            addressable_event(
+                content,
+                identity.archive_coordinate(&facts.seat_id, LEGACY_DOCUMENT_VERSION, index as u32),
+            )
+        })
+        .collect();
+    builders.push(addressable_event(
+        identity.seal_padded(payload, AAD_DOCUMENT).remove(0),
+        identity.seat_coordinate(&facts.seat_id),
+    ));
+    builders
+        .into_iter()
+        .map(|builder| builder.sign_with_keys(identity.keys()).unwrap())
+        .collect()
+}
+
+/// Pad `consensus_json` so the archive `serialized` describes fills exactly
+/// [`MAX_RESTORE_SLICES_PER_SEAT`] slices.
+fn consensus_filling_the_slice_budget(serialized: impl Fn(&str) -> usize) -> String {
+    let target = SEALED_LEN * usize::from(MAX_RESTORE_SLICES_PER_SEAT) - SEAL_OVERHEAD - LEN_PREFIX;
+    // Leave room for the CBOR length prefix to grow with the padding.
+    let pad = target - 256 - serialized("");
+    "c".repeat(pad)
+}
+
+/// The restore budget holds for a seat at its slice allowance in both
+/// retained generations: a version 1 archive of the maximum size still on
+/// the relay beside its version 2 republication, plus the one seat document,
+/// is exactly the per-seat event count the enumeration cap is derived from,
+/// and the fleet restores.
+#[test]
+fn a_seat_at_the_slice_budget_in_both_generations_fits_the_restore_budget() {
+    let identity = test_identity();
+    let facts = seat_facts_no(1, 0);
+    let private_json = r#"{"shares":"from-before-the-plaintext-layout"}"#;
+    let salt = "c2FsdHNhbHRzYWx0c2E";
+    let key = fedimint_aead::get_encryption_key(
+        &test_mnemonic().derive_seat_keys(&facts.seat_id).api_auth,
+        salt,
+    )
+    .unwrap();
+    let local_json = r#"{"api_bind":"127.0.0.1:8174"}"#;
+    let legacy = |consensus_json: &str| LegacyGuardianArchive {
+        private_encrypt: hex::encode(
+            fedimint_aead::encrypt(private_json.as_bytes().to_vec(), &key).unwrap(),
+        ),
+        private_salt: salt.into(),
+        local_json: local_json.into(),
+        consensus_json: consensus_json.into(),
+    };
+    let migrated = |consensus_json: &str| GuardianArchive {
+        private_json: private_json.into(),
+        local_json: local_json.into(),
+        consensus_json: consensus_json.into(),
+    };
+    let legacy = legacy(&consensus_filling_the_slice_budget(|pad| {
+        let mut bytes = Vec::new();
+        ciborium::into_writer(&legacy(pad), &mut bytes).unwrap();
+        bytes.len()
+    }));
+    let migrated = migrated(&consensus_filling_the_slice_budget(|pad| {
+        migrated(pad).to_bytes().len()
+    }));
+
+    let before = legacy_published_events(&identity, &facts, &legacy);
+    let upgrade = published_events(&identity, &formed_publication(&facts, &migrated));
+    assert_eq!(before.len() - 1, usize::from(MAX_RESTORE_SLICES_PER_SEAT));
+    assert_eq!(upgrade.len() - 1, usize::from(MAX_RESTORE_SLICES_PER_SEAT));
+
+    let mut relay: HashMap<String, Event> = HashMap::new();
+    for event in before.into_iter().chain(upgrade) {
+        relay.insert(event.tags.identifier().unwrap().to_owned(), event);
+    }
+    assert_eq!(relay.len(), usize::from(MAX_RESTORE_EVENTS_PER_SEAT));
+    let recovered =
+        recover_from_events(&identity, &test_mnemonic(), relay.into_values().collect()).unwrap();
+    assert_eq!(recovered.archives[&facts.seat_id], migrated);
+}
+
+/// A fleet published under version 1 still restores, in current terms: the
+/// legacy archive is decrypted under the seat's `api_auth` re-derived from
+/// the mnemonic, and the seat document is handed on naming the digest of the
+/// archive the install will actually write. The fleet is read under version
+/// 1, so the confirmation records it seeds do not count for the current sink.
+#[test]
+fn a_version_1_publication_decodes_into_the_current_archive() {
+    let identity = test_identity();
+    let facts = seat_facts_no(1, 0);
+    let private_json = r#"{"shares":"from-before-the-plaintext-layout"}"#;
+    let salt = "c2FsdHNhbHRzYWx0c2E";
+    let key = fedimint_aead::get_encryption_key(
+        &test_mnemonic().derive_seat_keys(&facts.seat_id).api_auth,
+        salt,
+    )
+    .unwrap();
+    let legacy = LegacyGuardianArchive {
+        private_encrypt: hex::encode(
+            fedimint_aead::encrypt(private_json.as_bytes().to_vec(), &key).unwrap(),
+        ),
+        private_salt: salt.into(),
+        local_json: r#"{"api_bind":"127.0.0.1:8174"}"#.into(),
+        consensus_json: format!(r#"{{"pad":"{}"}}"#, "a".repeat(40_000)),
+    };
+    let events = legacy_published_events(&identity, &facts, &legacy);
+    assert!(events.len() > 2, "the interesting case is a sliced archive");
+
+    let recovered = recover_from_events(&identity, &test_mnemonic(), events.clone()).unwrap();
+    let expected = GuardianArchive {
+        private_json: private_json.into(),
+        local_json: legacy.local_json.clone(),
+        consensus_json: legacy.consensus_json.clone(),
+    };
+    assert_eq!(recovered.archives[&facts.seat_id], expected);
+    assert_eq!(
+        recovered.seats[0].guardian.as_ref().unwrap().archive_sha256,
+        expected.digest()
+    );
+
+    // Another mnemonic finds nothing on the relay at all (its coordinates and
+    // keys differ); the same backup identity with the wrong seat credential
+    // cannot decrypt the shares, and the restore refuses whole.
+    let wrong_seat =
+        RootMnemonic::parse("zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo wrong").unwrap();
+    assert!(recover_from_events(&identity, &wrong_seat, events.clone()).is_err());
+
+    // A relay mid-upgrade serves both versions side by side; each seat is
+    // read by its own document's version.
+    let current = formed_publication(&seat_facts_no(2, 1), &guardian_archive(64));
+    let mut mixed = events;
+    mixed.extend(published_events(&identity, &current));
+    let recovered = recover_from_events(&identity, &test_mnemonic(), mixed).unwrap();
+    assert_eq!(recovered.formed(), 2);
+    assert_eq!(
+        recovered.archives[&seat_facts_no(2, 1).seat_id],
+        guardian_archive(64)
+    );
+}
+
+/// The upgrade republishes every archive under version 2, slices first and
+/// document last, and a host can die at any point of that sequence. Version 2
+/// slices live at version-qualified coordinates, so they land beside the
+/// version 1 slices instead of over them: whatever prefix of the publication
+/// reached the relay, a restore recovers one whole generation — the old one
+/// until the new document lands, the new one after — and the other
+/// generation's slices are drained rather than mistaken for foreign events.
+#[test]
+fn an_interrupted_upgrade_keeps_the_previous_generation_restorable() {
+    let identity = test_identity();
+    let facts = seat_facts_no(1, 0);
+    let private_json = r#"{"shares":"from-before-the-plaintext-layout"}"#;
+    let salt = "c2FsdHNhbHRzYWx0c2E";
+    let key = fedimint_aead::get_encryption_key(
+        &test_mnemonic().derive_seat_keys(&facts.seat_id).api_auth,
+        salt,
+    )
+    .unwrap();
+    let consensus_json = format!(r#"{{"pad":"{}"}}"#, "a".repeat(40_000));
+    let legacy = LegacyGuardianArchive {
+        private_encrypt: hex::encode(
+            fedimint_aead::encrypt(private_json.as_bytes().to_vec(), &key).unwrap(),
+        ),
+        private_salt: salt.into(),
+        local_json: r#"{"api_bind":"127.0.0.1:8174"}"#.into(),
+        consensus_json: consensus_json.clone(),
+    };
+    let migrated = GuardianArchive {
+        private_json: private_json.into(),
+        local_json: legacy.local_json.clone(),
+        consensus_json,
+    };
+    let before = legacy_published_events(&identity, &facts, &legacy);
+    let upgrade = published_events(&identity, &formed_publication(&facts, &migrated));
+    assert!(
+        upgrade.len() > 2,
+        "the interesting case is a sliced archive"
+    );
+
+    // What the relay serves: the latest event at every coordinate.
+    let mut relay: HashMap<String, Event> = HashMap::new();
+    for event in before {
+        relay.insert(event.tags.identifier().unwrap().to_owned(), event);
+    }
+    for (published, event) in upgrade.into_iter().enumerate() {
+        relay.insert(event.tags.identifier().unwrap().to_owned(), event);
+        let recovered = recover_from_events(
+            &identity,
+            &test_mnemonic(),
+            relay.values().cloned().collect(),
+        )
+        .unwrap_or_else(|err| panic!("restore after {published} upgrade events: {err}"));
+        assert_eq!(recovered.archives[&facts.seat_id], migrated);
+        assert_eq!(
+            recovered.seats[0].guardian.as_ref().unwrap().archive_sha256,
+            migrated.digest()
+        );
+    }
 }
 
 #[test]
@@ -403,7 +637,10 @@ fn a_document_with_a_legacy_seat_number_still_opens() {
     .unwrap();
     let content = identity.seal_padded(payload, AAD_DOCUMENT).remove(0);
 
-    assert_eq!(identity.open_seat_document(&content).unwrap(), document);
+    assert_eq!(
+        identity.open_seat_document(&content).unwrap().document,
+        document
+    );
 }
 
 /// The decode half of a restore: the published events come back as the seats
@@ -426,10 +663,9 @@ fn published_events_decode_into_the_fleet_they_describe() {
         },
     ));
 
-    let recovered = recover_from_events(&identity, events).unwrap();
+    let recovered = recover_from_events(&identity, &test_mnemonic(), events).unwrap();
     assert_eq!(recovered.seats.len(), 2);
     assert_eq!(recovered.formed(), 1);
-    assert_eq!(recovered.format_version, BACKUP_DOCUMENT_VERSION);
     assert_eq!(recovered.archives[&publication.document.seat_id], archive);
 }
 
@@ -452,7 +688,7 @@ fn slices_of_two_different_seals_never_reassemble_into_one_archive() {
     let replaced = events.len() - 2;
     events[replaced] = second[replaced].clone();
 
-    let Err(err) = recover_from_events(&identity, events) else {
+    let Err(err) = recover_from_events(&identity, &test_mnemonic(), events) else {
         panic!("spliced slices must not reassemble");
     };
     assert!(
@@ -472,7 +708,7 @@ fn a_withheld_archive_slice_refuses_the_restore() {
     // Drop the last slice; the document itself stays published.
     events.remove(events.len() - 2);
 
-    assert!(recover_from_events(&identity, events).is_err());
+    assert!(recover_from_events(&identity, &test_mnemonic(), events).is_err());
 }
 
 /// Slices belong to the seat that published them, not to a digest. Two seats
@@ -503,7 +739,7 @@ fn one_seats_slices_do_not_stand_in_for_another_seats() {
         },
     ));
 
-    let recovered = recover_from_events(&identity, events).unwrap();
+    let recovered = recover_from_events(&identity, &test_mnemonic(), events).unwrap();
     assert!(recovered.archives.contains_key(&backed_up.document.seat_id));
     assert!(
         !recovered.archives.contains_key(&bare.seat_id),
@@ -525,6 +761,7 @@ fn a_document_that_cannot_be_read_refuses_the_restore() {
     assert!(matches!(
         recover_from_events(
             &test_identity(),
+            &test_mnemonic(),
             published_events(
                 &stranger_identity(),
                 &SeatPublication {
@@ -549,7 +786,7 @@ fn a_single_slice_archive_restores() {
     let events = published_events(&identity, &publication);
     assert_eq!(events.len(), 2, "the test needs a one-slice archive");
 
-    let recovered = recover_from_events(&identity, events).unwrap();
+    let recovered = recover_from_events(&identity, &test_mnemonic(), events).unwrap();
     assert_eq!(recovered.archives[&publication.document.seat_id], archive);
 }
 
@@ -566,7 +803,7 @@ fn a_duplicate_document_event_refuses_the_restore() {
     let mut events = published_events(&identity, &publication);
     events.extend(published_events(&identity, &publication));
 
-    let Err(err) = recover_from_events(&identity, events) else {
+    let Err(err) = recover_from_events(&identity, &test_mnemonic(), events) else {
         panic!("two documents at one coordinate must refuse");
     };
     assert!(
@@ -592,7 +829,7 @@ fn a_document_at_a_foreign_coordinate_refuses_the_restore() {
         .unwrap();
 
     assert!(matches!(
-        recover_from_events(&identity, vec![misplaced]),
+        recover_from_events(&identity, &test_mnemonic(), vec![misplaced]),
         Err(RecoverError::UnreadableDocument(_))
     ));
 }
@@ -610,7 +847,7 @@ fn a_missing_first_slice_refuses_the_restore() {
     events.remove(0);
 
     assert!(matches!(
-        recover_from_events(&identity, events),
+        recover_from_events(&identity, &test_mnemonic(), events),
         Err(RecoverError::UnreadableDocument(_))
     ));
 }
@@ -625,7 +862,7 @@ fn a_garbage_event_refuses_the_restore() {
         .unwrap();
 
     assert!(matches!(
-        recover_from_events(&identity, vec![garbage]),
+        recover_from_events(&identity, &test_mnemonic(), vec![garbage]),
         Err(RecoverError::UnreadableDocument(_))
     ));
 }

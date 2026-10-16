@@ -318,6 +318,13 @@ databases from an earlier unreleased format must be reset rather than migrated
 silently. The data root must be an owned real 0700 directory and its database,
 WAL, shared-memory, and lock files must remain 0600 regular files.
 
+Each formed seat's `fedimintd` private config (`private.json`, its DKG key
+shares) is plaintext under the data root, alongside the mnemonic that
+derives every seat credential; the legacy `private.encrypt` layout locked
+it with a password derived from that same mnemonic, so it added no boundary.
+The data root's ownership, modes, and volume are the protection
+(SPEC-nostr-backup-restore).
+
 The commit-coupled SQLite database, WAL, and archive share one encrypted
 persistent volume in the single-active deployment. That volume must provide
 local block-filesystem semantics for SQLite WAL shared memory, advisory locks,

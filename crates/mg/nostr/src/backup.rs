@@ -33,12 +33,20 @@ const RESTORE_TIMEOUT: Duration = Duration::from_secs(60);
 /// Derived from a per-seat budget rather than asserted: each seat is one
 /// document plus its guardian archive's ciphertext slices, so the cap
 /// supports [`MAX_RESTORE_SEATS`] seats each carrying up to
-/// `MAX_RESTORE_EVENTS_PER_SEAT - 1` slices — 480 KiB of guardian config per
+/// [`MAX_RESTORE_SLICES_PER_SEAT`] slices — 480 KiB of guardian config per
 /// seat at the 32 KiB slice size, several times the size a federation's
-/// config reaches today. An operator running more seats than the budget
-/// supports would hit the failed-closed refusal above, not a truncated fleet.
+/// config reaches today. Archive slices live at coordinates qualified by the
+/// document version, so across a format bump the relay keeps the previous
+/// generation's slices beside the current ones until every seat has
+/// republished; the budget counts both, or a fleet that restored before the
+/// upgrade could hit the cap during it. An operator running more seats than
+/// the budget supports would hit the failed-closed refusal above, not a
+/// truncated fleet.
 const MAX_RESTORE_SEATS: u16 = 256;
-const MAX_RESTORE_EVENTS_PER_SEAT: u16 = 16;
+pub(crate) const MAX_RESTORE_SLICES_PER_SEAT: u16 = 15;
+const RETAINED_ARCHIVE_GENERATIONS: u16 = 2;
+pub(crate) const MAX_RESTORE_EVENTS_PER_SEAT: u16 =
+    1 + MAX_RESTORE_SLICES_PER_SEAT * RETAINED_ARCHIVE_GENERATIONS;
 const MAX_RESTORE_DOCUMENTS: u16 = MAX_RESTORE_SEATS * MAX_RESTORE_EVENTS_PER_SEAT;
 
 /// A relay's worth of one MG's backup documents.
@@ -182,6 +190,6 @@ impl BackupArchive for RelayBackupArchive {
             .await?
             .fetch_own_documents(MAX_RESTORE_DOCUMENTS)
             .await?;
-        recover_from_events(&backup, events)
+        recover_from_events(&backup, identity, events)
     }
 }

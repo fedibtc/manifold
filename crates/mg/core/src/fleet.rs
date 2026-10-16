@@ -431,6 +431,50 @@ impl Fleet {
         // daemon was down — or whose last publish confirmed but crashed
         // before its record — is found by comparison, and everything else
         // costs a hash, not a relay round trip.
+        // Seats written by a release before the plaintext layout convert
+        // here, before the backup worker's first scan can look for their
+        // archive and before any child starts. Every seat, not only those
+        // with a formed row: a ceremony whose `ConfigPersisted` was lost has
+        // a legacy directory and no row yet, and the child's own
+        // already-configured recovery would otherwise form it unmigrated. A
+        // private config this fleet's own derived credential cannot open is
+        // unreadable or mismatched recovery material — a corrupt file is as
+        // likely as a wrong mnemonic — and the daemon refuses to start
+        // rather than run a guardian it cannot back up.
+        for seat in db.list_seats().await? {
+            let seat_id = &seat.facts.seat_id;
+            let data_dir = crate::seat_process::seat_data_dir(&config.process, seat.facts.seat_no);
+            // Both events carry only the opaque seat id and a fixed label:
+            // the error's text may name files or dependency output, so it
+            // goes to the startup error alone.
+            match crate::legacy_layout::migrate_seat_data_dir(
+                &data_dir,
+                &identity.derive_seat_keys(seat_id).api_auth,
+            )
+            .await
+            {
+                Ok(outcome) => tracing::info!(
+                    safe_to_share = true,
+                    seat_id = %seat_id,
+                    stage = "config_layout_migration",
+                    outcome = outcome.as_str(),
+                    "guardian config layout checked"
+                ),
+                Err(error) => {
+                    tracing::error!(
+                        safe_to_share = true,
+                        seat_id = %seat_id,
+                        stage = "config_layout_migration",
+                        failure_kind = error.kind(),
+                        "guardian config layout migration failed; refusing to start"
+                    );
+                    return Err(anyhow::Error::from(error).context(format!(
+                        "seat {seat_id}: its guardian config is unreadable or does not belong to \
+                         this mnemonic; refusing to start"
+                    )));
+                }
+            }
+        }
         let backup = BackupWorker::new(backup(&identity).await?, config.backup_scan_interval);
         db.validate_completion_callbacks().await?;
         backup.spawn(db.clone(), config.process.clone());
@@ -452,11 +496,11 @@ impl Fleet {
                 decommissioned_at_ms,
             } = seat;
             let formed_invite = db.formed_federation_invite(&facts.seat_id).await?;
+            let keys = identity.derive_seat_keys(&facts.seat_id);
             let ports =
                 SeatPorts::from_base(facts.seat_no.port_base(config.first_port_base).ok_or_else(
                     || anyhow!("stored seat_no {} exceeds port grid", facts.seat_no.0),
                 )?);
-            let keys = identity.derive_seat_keys(&facts.seat_id);
             let seat = Seat::start(
                 SeatDurableState {
                     facts,
