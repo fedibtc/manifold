@@ -241,6 +241,48 @@ async fn an_offline_source_leaves_only_its_removal_open() {
 }
 
 #[tokio::test]
+async fn an_unreachable_destination_keeps_the_source_seat() {
+    let (_database, _payments, _payment_state, mg_state, client) = formed_paid_client().await;
+    start_transfer(&client, &mg_state).await;
+    guardian_arrives(&mg_state);
+    mg_state
+        .offline_indices
+        .lock()
+        .expect("test lock")
+        .insert(MOVED);
+    let waiting = client
+        .resume_guardian_transfer(transfer_options())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(waiting.phase, GuardianTransferPhase::RemovingSource);
+
+    // The source is back, but the destination is gone since it ran the
+    // guardian. Its earlier answer does not count.
+    {
+        let mut offline = mg_state.offline_indices.lock().expect("test lock");
+        offline.clear();
+        offline.insert(DESTINATION);
+    }
+    let still = client
+        .resume_guardian_transfer(transfer_options())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(still.phase, GuardianTransferPhase::RemovingSource);
+    assert!(mg_state.removed_seats.lock().expect("test lock").is_empty());
+
+    mg_state.offline_indices.lock().expect("test lock").clear();
+    let finished = client
+        .resume_guardian_transfer(transfer_options())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(finished.phase, GuardianTransferPhase::Completed);
+    assert_eq!(mg_state.removed_seats.lock().expect("test lock").len(), 1);
+}
+
+#[tokio::test]
 async fn a_refused_vote_keeps_the_transfer_open_and_the_seats_unchanged() {
     let (_database, _payments, _payment_state, mg_state, client) = formed_paid_client().await;
     let destination = start_transfer(&client, &mg_state)
@@ -535,6 +577,26 @@ async fn a_reopened_fa_finishes_a_transfer_that_consensus_adopted() {
         panic!("restored status");
     };
     assert_eq!(reconciled.freshness, FormationFreshness::Fresh);
+}
+
+#[tokio::test]
+async fn a_published_binding_does_not_remove_the_source_of_a_lost_destination() {
+    let (_database, mg_state, restored, _destination, _backup) =
+        transfer_adopted_but_unrecorded().await;
+    mg_state
+        .seat_statuses
+        .lock()
+        .expect("test lock")
+        .insert(DESTINATION, ServiceStatus::DataLoss);
+
+    let waiting = restored
+        .resume_guardian_transfer(transfer_options())
+        .await
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(waiting.phase, GuardianTransferPhase::RemovingSource);
+    assert!(mg_state.removed_seats.lock().expect("test lock").is_empty());
 }
 
 #[tokio::test]
