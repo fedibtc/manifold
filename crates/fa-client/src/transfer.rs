@@ -1,16 +1,22 @@
-//! Guardian transfer: move one guardian of the formed federation onto a spare
+//! Guardian transfer: move one guardian of the formed federation onto a new
 //! seat ([`SPEC-guardian-transfer`](../../mg/specs/SPEC-guardian-transfer.md)).
 //!
-//! The FA grants the move and asks the spare seat to pull the guardian. The
-//! destination MG then fetches it from the source MG on its own, so the
-//! FA only has to come back to finish. Finishing has two steps:
+//! The transfer owns its destination seat. It first buys the seat
+//! (`crate::seat_purchase`), then grants the move and asks the new seat to
+//! pull the guardian. The destination MG then fetches it from the source MG
+//! on its own, so the FA only has to come back to finish. Finishing has two
+//! steps:
 //!
 //! 1. Every guardian votes the moved peer's new seat binding and fee
 //!    recipient into consensus. The FA confirms the result by readback.
 //! 2. The source MG deletes the old guardian data.
 //!
-//! The local seat list changes between the two steps, in the same transaction
-//! that takes the spare out of the pool.
+//! The local seat list changes between the two steps.
+//!
+//! Once a grant was sent, the destination seat stays bound to this move. The
+//! source may have stopped and handed over the guardian, and only a renewed
+//! grant for the same move recovers it, so the seat is never offered to
+//! another guardian.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
@@ -39,17 +45,17 @@ use crate::maintenance::{
     MaintenanceConnection, maintenance_convergence, sleep_for_maintenance_retry,
 };
 use crate::mg::MgClient;
-use crate::seat_pool::StoredSpareSeat;
+use crate::seat_purchase::{StoredDestinationSeat, StoredSeatPurchase};
 use crate::{
     FaClient, FaError, FaId, FaIdentity, FaPayments, FaResult, FaStatus, FederationConsensusReader,
-    FormationFreshness, MaintenanceRunOptions, ManifoldGuardianConnector, MgCause, MgOperation,
-    SpareSeat,
+    FormationFreshness, FormationId, MaintenanceRunOptions, ManifoldGuardianConnector, MgCause,
+    MgOperation, TransferDestinationApproval,
 };
 
 /// How long a grant lets the destination keep asking the source.
 const GRANT_LIFETIME: Duration = Duration::from_secs(14 * 24 * 60 * 60);
 
-/// One guardian moving from its MG onto a spare seat.
+/// One guardian moving from its MG onto a new seat.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct GuardianTransfer {
     /// Position of the moved guardian in the federation's seat list.
@@ -58,10 +64,13 @@ pub struct GuardianTransfer {
     pub source_mg_id: PublicKey,
     /// Seat on the source MG.
     pub source_seat_id: SeatId,
-    /// Spare seat that receives the guardian.
-    pub destination: SpareSeat,
-    /// Last second at which the destination asks the source.
-    pub expires_at: Timestamp,
+    /// MG that receives the guardian.
+    pub destination_mg_id: PublicKey,
+    /// Seat on the destination MG. Absent until the purchase completes.
+    pub destination_seat_id: Option<SeatId>,
+    /// Last second at which the destination asks the source under the current
+    /// grant. Absent until the purchase completes.
+    pub expires_at: Option<Timestamp>,
     pub phase: GuardianTransferPhase,
 }
 
@@ -69,6 +78,8 @@ pub struct GuardianTransfer {
 #[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum GuardianTransferPhase {
+    /// The FA buys the destination seat. A resume finishes the purchase.
+    BuyingSeat,
     /// The destination waits for the source MG to hand over the guardian.
     AwaitingSource,
     /// The guardian runs on the destination. Its new seat binding and fee
@@ -93,19 +104,37 @@ pub(crate) enum StoredTransferPhase {
 #[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct StoredGuardianTransfer {
+    /// Identity of the transfer, and the scope of its seat payment.
+    pub(crate) transfer_id: FormationId,
     pub(crate) seat_index: u16,
     #[serde(rename = "source_fman_id")]
     pub(crate) source_mg_id: PublicKey,
     pub(crate) source_locator: Locator,
     pub(crate) source_seat_id: SeatId,
-    pub(crate) destination: StoredSpareSeat,
     pub(crate) federation_id: FederationId,
+    /// Bearer callback the destination invokes once the guardian runs.
+    pub(crate) completion_callback: Option<DkgCompletionCallback>,
+    pub(crate) stage: TransferStage,
+}
+
+#[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+#[allow(clippy::large_enum_variant)]
+pub(crate) enum TransferStage {
+    /// The destination seat is being bought. No grant exists yet.
+    Buying(StoredSeatPurchase),
+    /// The destination seat exists and the guardian moves onto it.
+    Moving(StoredMove),
+}
+
+#[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct StoredMove {
+    pub(crate) destination: StoredDestinationSeat,
     /// The latest grant. The FA replaces it when it expires.
     pub(crate) grant: SignedRequest<SeatTransferGrant>,
     /// The grant's expiry, which its envelope only exposes after verification.
     pub(crate) expires_at: Timestamp,
-    /// Bearer callback the destination invokes once the guardian runs.
-    pub(crate) completion_callback: Option<DkgCompletionCallback>,
     /// The destination's binding for the moved peer, saved before the first
     /// vote. The destination signs a new one on every request, so a resumed
     /// transfer must vote and look for the same one.
@@ -114,22 +143,63 @@ pub(crate) struct StoredGuardianTransfer {
 }
 
 impl StoredGuardianTransfer {
+    /// This transfer at the given move state.
+    fn moved(&self, moving: &StoredMove) -> Self {
+        Self {
+            stage: TransferStage::Moving(moving.clone()),
+            ..self.clone()
+        }
+    }
+
+    /// What a backup keeps of this transfer: its move, while the destination
+    /// exists but is not in the seat list yet. A restored FA then continues
+    /// the same move instead of losing the paid seat.
+    pub(crate) fn backup(&self) -> Option<crate::backup::FaBackupTransfer> {
+        match &self.stage {
+            TransferStage::Moving(moving)
+                if moving.phase != StoredTransferPhase::RemovingSource =>
+            {
+                Some(crate::backup::FaBackupTransfer {
+                    seat_index: self.seat_index,
+                    destination: crate::backup::FaBackupSeat {
+                        mg_identity: moving.destination.mg_id,
+                        seat_id: moving.destination.seat_id.clone(),
+                        locator: moving.destination.locator.clone(),
+                    },
+                })
+            }
+            _ => None,
+        }
+    }
+
     fn view(&self, phase: GuardianTransferPhase) -> GuardianTransfer {
+        let (destination_mg_id, destination_seat_id, expires_at) = match &self.stage {
+            TransferStage::Buying(purchase) => (purchase.mg_id, None, None),
+            TransferStage::Moving(moving) => (
+                moving.destination.mg_id,
+                Some(moving.destination.seat_id.clone()),
+                Some(moving.expires_at),
+            ),
+        };
         GuardianTransfer {
             seat_index: self.seat_index,
             source_mg_id: self.source_mg_id,
             source_seat_id: self.source_seat_id.clone(),
-            destination: self.destination.clone().into(),
-            expires_at: self.expires_at,
+            destination_mg_id,
+            destination_seat_id,
+            expires_at,
             phase,
         }
     }
 
     fn public_phase(&self) -> GuardianTransferPhase {
-        match self.phase {
-            StoredTransferPhase::Pulling => GuardianTransferPhase::AwaitingSource,
-            StoredTransferPhase::Binding => GuardianTransferPhase::PublishingBinding,
-            StoredTransferPhase::RemovingSource => GuardianTransferPhase::RemovingSource,
+        match &self.stage {
+            TransferStage::Buying(_) => GuardianTransferPhase::BuyingSeat,
+            TransferStage::Moving(moving) => match moving.phase {
+                StoredTransferPhase::Pulling => GuardianTransferPhase::AwaitingSource,
+                StoredTransferPhase::Binding => GuardianTransferPhase::PublishingBinding,
+                StoredTransferPhase::RemovingSource => GuardianTransferPhase::RemovingSource,
+            },
         }
     }
 }
@@ -142,18 +212,21 @@ where
     F: ManifoldGuardianConnector,
     C: FederationConsensusReader,
 {
-    /// Start to move the guardian at `seat_index` onto a spare seat.
+    /// Start to move the guardian at `seat_index` onto a new seat on the
+    /// approved MG.
     ///
-    /// The FA signs a grant that is valid for 14 days and asks the spare seat
-    /// to pull the guardian from its MG. The call then advances the
-    /// transfer like [`Self::resume_guardian_transfer`]. The destination keeps
-    /// asking the source on its own, so the caller can return later, for
-    /// example when `completion_callback` reports that the guardian runs.
-    /// Only one transfer is open at a time.
+    /// The FA buys the seat, paid from `payment_federation_id` unless it is
+    /// free. It then signs a grant that is valid for 14 days and asks the new
+    /// seat to pull the guardian from its MG. The call advances the transfer
+    /// like [`Self::resume_guardian_transfer`], but does not wait for the
+    /// source. The destination keeps asking the source on its own, so the
+    /// caller can return later, for example when `completion_callback`
+    /// reports that the guardian runs. Only one transfer is open at a time.
     pub async fn start_guardian_transfer(
         &self,
         seat_index: u16,
-        spare_seat_id: SeatId,
+        approval: TransferDestinationApproval,
+        payment_federation_id: Option<FederationId>,
         completion_callback: Option<DkgCompletionCallback>,
         options: MaintenanceRunOptions,
     ) -> FaResult<GuardianTransfer> {
@@ -174,52 +247,28 @@ where
             .iter()
             .find(|seat| seat.index == seat_index)
             .ok_or_else(|| FaError::InvalidIntent("no guardian has this seat index".to_owned()))?;
-        let source_mg_id = source.mg_id;
-        let destination = self
-            .inner
-            .store
-            .list_spare_seats()
-            .await?
-            .into_iter()
-            .find(|spare| spare.seat_id == spare_seat_id)
-            .ok_or_else(|| FaError::InvalidIntent("no spare seat has this id".to_owned()))?;
-        // A host of another peer, now or before, would hold two key shares.
-        let custody = self.pool_federation(fa_id).await?;
-        if custody
-            .seats
-            .iter()
-            .any(|(mg_id, _, _)| *mg_id == destination.mg_id)
-            || custody.past_mgs.contains(&destination.mg_id)
-            || destination
-                .holder
-                .is_some_and(|holder| custody.holders.contains(&holder))
-        {
+        let federation = self.transfer_federation(fa_id).await?;
+        if federation.has_custody(approval.seat.mg_id, Some(approval.seat.holder)) {
             return Err(FaError::InvalidIntent(
-                "the spare's MG or holder hosts or hosted a peer of this federation".to_owned(),
+                "the destination MG or holder hosts or hosted a peer of this federation".to_owned(),
             ));
         }
-        let federation_id = FederationId(
-            crate::formation::invite_federation_id(&authority.invite_code)?.to_string(),
-        );
-        let (grant, expires_at) = self.sign_grant(
-            fa_id,
-            &federation_id,
-            &source.locator,
-            &source.seat_id,
-            &destination,
-        )?;
+        let purchase = self.seat_purchase(approval, &federation, payment_federation_id)?;
         let transfer = StoredGuardianTransfer {
+            transfer_id: FormationId(format!(
+                "{}:guardian-transfer:{}",
+                federation.formation_id.0,
+                now_secs()?
+            )),
             seat_index,
-            source_mg_id,
+            source_mg_id: source.mg_id,
             source_locator: source.locator.clone(),
             source_seat_id: source.seat_id.clone(),
-            destination,
-            federation_id,
-            grant,
-            expires_at,
+            federation_id: FederationId(
+                crate::formation::invite_federation_id(&authority.invite_code)?.to_string(),
+            ),
             completion_callback,
-            binding: None,
-            phase: StoredTransferPhase::Pulling,
+            stage: TransferStage::Buying(purchase),
         };
         let (deadline, lease) = start_driver_run(&self.inner.store, options).await?;
         let run = DriverRun::new(options, deadline, &lease);
@@ -238,8 +287,9 @@ where
     ///
     /// Waiting for the source MG or for its removal is not an error: the
     /// result reports the phase, and a later call continues from it. A
-    /// guardian that cannot confirm the new binding in time returns
-    /// [`FaError::MaintenanceConvergence`]. `None` means no transfer is open.
+    /// purchase or a vote that fails returns its error and stays open for a
+    /// later call, unless the purchase ended without value at risk; then the
+    /// transfer closes. `None` means no transfer is open.
     pub async fn resume_guardian_transfer(
         &self,
         options: MaintenanceRunOptions,
@@ -272,58 +322,103 @@ where
 
     async fn drive_guardian_transfer(
         &self,
-        mut transfer: StoredGuardianTransfer,
+        transfer: StoredGuardianTransfer,
         fa_id: FaId,
         wait: bool,
         run: DriverRun<'_>,
     ) -> FaResult<GuardianTransfer> {
         let lease = run.lease();
-        if transfer.phase == StoredTransferPhase::Pulling {
+        let mut moving = match &transfer.stage {
+            TransferStage::Moving(moving) => moving.clone(),
+            TransferStage::Buying(purchase) => {
+                let destination = self
+                    .drive_seat_purchase(&transfer, purchase.clone(), fa_id, run)
+                    .await?;
+                let (grant, expires_at) = self.sign_grant(
+                    fa_id,
+                    &transfer.federation_id,
+                    &transfer.source_locator,
+                    &transfer.source_seat_id,
+                    &destination,
+                )?;
+                let moving = StoredMove {
+                    destination,
+                    grant,
+                    expires_at,
+                    binding: None,
+                    phase: StoredTransferPhase::Pulling,
+                };
+                lease
+                    .write_guardian_transfer(
+                        fa_id,
+                        GuardianTransferWrite::Update(transfer.moved(&moving)),
+                    )
+                    .await?;
+                moving
+            }
+        };
+        if moving.phase == StoredTransferPhase::Pulling {
             match self
-                .await_pulled_guardian(&mut transfer, fa_id, wait, run)
+                .await_pulled_guardian(&transfer, &mut moving, fa_id, wait, run)
                 .await?
             {
                 Pulled::Running => {
-                    transfer.phase = StoredTransferPhase::Binding;
+                    moving.phase = StoredTransferPhase::Binding;
                     lease
                         .write_guardian_transfer(
                             fa_id,
-                            GuardianTransferWrite::Update(transfer.clone()),
+                            GuardianTransferWrite::Update(transfer.moved(&moving)),
                         )
                         .await?;
                 }
-                Pulled::Waiting => return Ok(transfer.view(GuardianTransferPhase::AwaitingSource)),
+                Pulled::Waiting => {
+                    return Ok(transfer
+                        .moved(&moving)
+                        .view(GuardianTransferPhase::AwaitingSource));
+                }
             }
         }
-        if transfer.phase == StoredTransferPhase::Binding {
+        if moving.phase == StoredTransferPhase::Binding {
             // The seat list may be stale after a reopen: consensus can name
             // the destination already. The readback below confirms the moved
             // seat itself, so the transfer does not wait for a full
             // reconciliation, which would refuse the destination.
             let authority = self.post_formed_authority(fa_id).await?;
-            let binding = match transfer.binding.clone() {
+            let binding = match moving.binding.clone() {
                 Some(binding) => binding,
                 None => {
-                    let binding = self.destination_binding(&transfer, fa_id, run).await?;
-                    transfer.binding = Some(binding.clone());
+                    let binding = self
+                        .destination_binding(&moving.destination, fa_id, run)
+                        .await?;
+                    moving.binding = Some(binding.clone());
                     lease
                         .write_guardian_transfer(
                             fa_id,
-                            GuardianTransferWrite::Update(transfer.clone()),
+                            GuardianTransferWrite::Update(transfer.moved(&moving)),
                         )
                         .await?;
                     binding
                 }
             };
-            self.publish_moved_binding(&transfer, &binding, &authority, fa_id, run)
-                .await?;
+            self.publish_moved_binding(
+                &transfer,
+                &moving.destination,
+                &binding,
+                &authority,
+                fa_id,
+                run,
+            )
+            .await?;
             let was_fresh = !matches!(
                 self.status(),
                 FaStatus::Restored(snapshot) if snapshot.freshness != FormationFreshness::Fresh
             );
-            transfer.phase = StoredTransferPhase::RemovingSource;
+            moving.phase = StoredTransferPhase::RemovingSource;
             lease
-                .write_guardian_transfer(fa_id, GuardianTransferWrite::Rebind(transfer.clone()))
+                .write_guardian_transfer(
+                    fa_id,
+                    GuardianTransferWrite::Rebind(transfer.moved(&moving)),
+                )
                 .await?;
             let mut status = self.inner.store.load_status(fa_id).await?;
             if was_fresh && let FaStatus::Restored(snapshot) = &mut status {
@@ -331,6 +426,7 @@ where
             }
             self.inner.progress.send_replace(status);
         }
+        let transfer = transfer.moved(&moving);
         match self.remove_source_seat(&transfer, fa_id, run).await {
             Ok(()) => {
                 lease
@@ -352,12 +448,16 @@ where
     /// An unreachable destination counts as still waiting.
     async fn await_pulled_guardian(
         &self,
-        transfer: &mut StoredGuardianTransfer,
+        transfer: &StoredGuardianTransfer,
+        moving: &mut StoredMove,
         fa_id: FaId,
         wait: bool,
         run: DriverRun<'_>,
     ) -> FaResult<Pulled> {
-        match self.poll_pulled_guardian(transfer, fa_id, wait, run).await {
+        match self
+            .poll_pulled_guardian(transfer, moving, fa_id, wait, run)
+            .await
+        {
             Err(FaError::Mg(failure))
                 if matches!(failure.cause, MgCause::Timeout | MgCause::Transport) =>
             {
@@ -369,12 +469,13 @@ where
 
     async fn poll_pulled_guardian(
         &self,
-        transfer: &mut StoredGuardianTransfer,
+        transfer: &StoredGuardianTransfer,
+        moving: &mut StoredMove,
         fa_id: FaId,
         wait: bool,
         run: DriverRun<'_>,
     ) -> FaResult<Pulled> {
-        let destination = transfer.destination.clone();
+        let destination = moving.destination.clone();
         let client = match MgClient::connect(
             &self.inner.ports.mg_connector,
             &destination.locator,
@@ -405,8 +506,8 @@ where
                 // guardian: its answer may have been lost. Only a new grant
                 // for the same move can finish it.
                 ServiceStatus::New | ServiceStatus::TransferGrantExpired => {
-                    if transfer.expires_at.0 <= now_secs()? {
-                        (transfer.grant, transfer.expires_at) = self.sign_grant(
+                    if moving.expires_at.0 <= now_secs()? {
+                        (moving.grant, moving.expires_at) = self.sign_grant(
                             fa_id,
                             &transfer.federation_id,
                             &transfer.source_locator,
@@ -416,7 +517,7 @@ where
                         run.lease()
                             .write_guardian_transfer(
                                 fa_id,
-                                GuardianTransferWrite::Update(transfer.clone()),
+                                GuardianTransferWrite::Update(transfer.moved(moving)),
                             )
                             .await?;
                     }
@@ -424,7 +525,7 @@ where
                         ts: Timestamp(now_secs()?),
                         fa_id,
                         seat_id: destination.seat_id.clone(),
-                        grant: transfer.grant.clone(),
+                        grant: moving.grant.clone(),
                         completion_callback: transfer.completion_callback.clone(),
                     })?;
                     client
@@ -450,14 +551,115 @@ where
         }
     }
 
+    /// Put a transfer's destination in place of its source when consensus
+    /// shows the move done but the seat list still names the source. That
+    /// happens when this device lost the run before it recorded the move, or
+    /// restored a backup taken before then.
+    pub(crate) async fn adopt_transferred_seat(
+        &self,
+        fa_id: FaId,
+        payload: crate::backup::FaBackupPayload,
+        bindings: &[fedi_decentralized_domain::VerifiedSeatBinding],
+    ) -> FaResult<crate::backup::FaBackupPayload> {
+        let open = self.inner.store.load_guardian_transfer().await?;
+        let (seat_index, destination) = match (open, &payload.transfer) {
+            (
+                Some(StoredGuardianTransfer {
+                    seat_index,
+                    stage: TransferStage::Moving(moving),
+                    ..
+                }),
+                _,
+            ) => (seat_index, moving.destination),
+            (Some(_), _) | (None, None) => return Ok(payload),
+            (None, Some(backed_up)) => (
+                backed_up.seat_index,
+                restored_destination(&backed_up.destination),
+            ),
+        };
+        let source = payload.seats.get(usize::from(seat_index)).ok_or_else(|| {
+            FaError::Storage("the transferred seat index is out of range".to_owned())
+        })?;
+        let named = |mg_id: PublicKey| {
+            bindings
+                .iter()
+                .any(|binding| binding.mg_pubkey.0 == mg_id.to_string())
+        };
+        if named(source.mg_identity) || !named(destination.mg_id) {
+            return Ok(payload);
+        }
+        self.inner
+            .store
+            .adopt_transferred_seat(fa_id, seat_index, &source.seat_id, &destination)
+            .await?;
+        self.inner.store.restored_backup_payload(fa_id).await
+    }
+
+    /// Open the backed-up transfer again on a restored FA, with a new grant
+    /// for the same move. The old grant may have reached the source, so only
+    /// this move can bring the guardian back.
+    pub(crate) async fn reopen_backed_up_transfer(
+        &self,
+        fa_id: FaId,
+        snapshot: &crate::RestoredFormationSnapshot,
+        payload: &crate::backup::FaBackupPayload,
+        run: DriverRun<'_>,
+    ) -> FaResult<()> {
+        let Some(backed_up) = &payload.transfer else {
+            return Ok(());
+        };
+        if self.inner.store.load_guardian_transfer().await?.is_some() {
+            return Ok(());
+        }
+        let source = payload
+            .seats
+            .get(usize::from(backed_up.seat_index))
+            .ok_or_else(|| {
+                FaError::Storage("the transferred seat index is out of range".to_owned())
+            })?;
+        let federation_id = FederationId(
+            crate::formation::invite_federation_id(&snapshot.federation_invite)?.to_string(),
+        );
+        let destination = restored_destination(&backed_up.destination);
+        let (grant, expires_at) = self.sign_grant(
+            fa_id,
+            &federation_id,
+            &source.locator,
+            &source.seat_id,
+            &destination,
+        )?;
+        let transfer = StoredGuardianTransfer {
+            transfer_id: FormationId(format!(
+                "{}:guardian-transfer:{}",
+                snapshot.formation_id.0,
+                now_secs()?
+            )),
+            seat_index: backed_up.seat_index,
+            source_mg_id: source.mg_identity,
+            source_locator: source.locator.clone(),
+            source_seat_id: source.seat_id.clone(),
+            federation_id,
+            completion_callback: None,
+            stage: TransferStage::Moving(StoredMove {
+                destination,
+                grant,
+                expires_at,
+                binding: None,
+                phase: StoredTransferPhase::Pulling,
+            }),
+        };
+        run.lease()
+            .write_guardian_transfer(fa_id, GuardianTransferWrite::Begin(transfer))
+            .await
+    }
+
     /// Fetch and check the destination's binding for the moved peer.
     async fn destination_binding(
         &self,
-        transfer: &StoredGuardianTransfer,
+        destination: &StoredDestinationSeat,
         fa_id: FaId,
         run: DriverRun<'_>,
     ) -> FaResult<FormationSeatBinding> {
-        let destination = &transfer.destination;
         let client =
             MgClient::connect(&self.inner.ports.mg_connector, &destination.locator, run).await?;
         let request = self.sign(&GetPeerAttestationRequest {
@@ -495,12 +697,12 @@ where
     async fn publish_moved_binding(
         &self,
         transfer: &StoredGuardianTransfer,
+        destination: &StoredDestinationSeat,
         binding: &FormationSeatBinding,
         authority: &PostFormedAuthority,
         fa_id: FaId,
         run: DriverRun<'_>,
     ) -> FaResult<()> {
-        let destination = &transfer.destination;
         // Every current guardian votes, with the destination in place of the
         // stopped source.
         let mut voters = authority.clone();
@@ -678,13 +880,13 @@ where
     }
 
     /// Sign a grant for the move, valid for [`GRANT_LIFETIME`] from now.
-    fn sign_grant(
+    pub(crate) fn sign_grant(
         &self,
         fa_id: FaId,
         federation_id: &FederationId,
         source: &Locator,
         source_seat_id: &SeatId,
-        destination: &StoredSpareSeat,
+        destination: &StoredDestinationSeat,
     ) -> FaResult<(SignedRequest<SeatTransferGrant>, Timestamp)> {
         let now = now_secs()?;
         let expires_at = Timestamp(now + GRANT_LIFETIME.as_secs());
@@ -724,6 +926,17 @@ where
             })
             .await?;
         Ok(())
+    }
+}
+
+/// A backed-up destination, without the acceptance and holder a backup omits.
+fn restored_destination(seat: &crate::backup::FaBackupSeat) -> StoredDestinationSeat {
+    StoredDestinationSeat {
+        mg_id: seat.mg_identity,
+        locator: seat.locator.clone(),
+        seat_id: seat.seat_id.clone(),
+        guardian_fee_account: None,
+        holder: None,
     }
 }
 

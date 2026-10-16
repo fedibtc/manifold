@@ -1,10 +1,14 @@
-//! Spare-seat purchase into the FA seat pool.
+//! The purchase stage of a guardian transfer: buying its destination seat.
 
 use super::*;
-use crate::selection::{ApprovedMgSeat, SpareSeatApproval};
+use crate::selection::{ApprovedMgSeat, TransferDestinationApproval};
+use crate::transfer::TransferStage;
 
 /// The first MG outside the formation's pinned seats.
-pub(super) const SPARE_INDEX: usize = MIN_FEDERATION_SIZE as usize;
+pub(super) const DESTINATION: usize = MIN_FEDERATION_SIZE as usize;
+
+/// The guardian these tests move.
+pub(super) const MOVED: usize = 1;
 
 pub(super) async fn formed_paid_client() -> (
     fedimint_core::db::Database,
@@ -43,21 +47,69 @@ pub(super) async fn formed_paid_client() -> (
     (database, payments, payment_state, mg_state, client)
 }
 
-pub(super) fn spare_approval(max_msats: u64) -> SpareSeatApproval {
-    SpareSeatApproval {
+pub(super) fn destination_approval(max_msats: u64) -> TransferDestinationApproval {
+    TransferDestinationApproval {
         verifier_provenance: test_peer_badge_verifier().provenance(),
         fedimintd_dkg_version: fedimintd_version().dkg_version(),
         seat: ApprovedMgSeat {
-            mg_id: test_mg_id(SPARE_INDEX),
-            holder: test_mg_id(SPARE_INDEX),
-            locator: locator(SPARE_INDEX),
+            mg_id: test_mg_id(DESTINATION),
+            holder: test_mg_id(DESTINATION),
+            locator: locator(DESTINATION),
         },
         max_msats,
         valid_until: Timestamp(test_now_secs() + 120),
     }
 }
 
-fn spare_create_records(state: &MgState) -> Vec<CreateRecord> {
+pub(super) fn transfer_options() -> MaintenanceRunOptions {
+    MaintenanceRunOptions::new(MaintenanceRunOptionsConfig {
+        poll_interval: Duration::from_millis(10),
+        run_timeout: Duration::from_secs(5),
+        request_timeout: Duration::from_secs(2),
+    })
+    .unwrap()
+}
+
+/// A run that gives up soon, for steps that cannot finish.
+pub(super) fn short_options() -> MaintenanceRunOptions {
+    MaintenanceRunOptions::new(MaintenanceRunOptionsConfig {
+        poll_interval: Duration::from_millis(10),
+        run_timeout: Duration::from_millis(300),
+        request_timeout: Duration::from_millis(200),
+    })
+    .unwrap()
+}
+
+/// Start to move `MOVED` onto a seat bought with `approval`. The bought seat
+/// is unformed until a guardian arrives.
+pub(super) async fn start_transfer_with(
+    client: &TestClient,
+    state: &MgState,
+    approval: TransferDestinationApproval,
+) -> FaResult<GuardianTransfer> {
+    state
+        .seat_statuses
+        .lock()
+        .expect("test lock")
+        .insert(DESTINATION, ServiceStatus::New);
+    client
+        .start_guardian_transfer(
+            MOVED as u16,
+            approval,
+            Some(payment_federation_id()),
+            None,
+            transfer_options(),
+        )
+        .await
+}
+
+pub(super) async fn start_transfer(client: &TestClient, state: &MgState) -> GuardianTransfer {
+    start_transfer_with(client, state, destination_approval(PAYMENT_AMOUNT_MSATS))
+        .await
+        .unwrap()
+}
+
+fn destination_create_records(state: &MgState) -> Vec<CreateRecord> {
     state
         .create_records
         .lock()
@@ -66,36 +118,47 @@ fn spare_create_records(state: &MgState) -> Vec<CreateRecord> {
         .filter(|record| {
             record
                 .signed_quote
-                .verify(&manager_key(SPARE_INDEX).x_only_public_key().0)
+                .verify(&manager_key(DESTINATION).x_only_public_key().0)
                 .is_ok()
         })
         .cloned()
         .collect()
 }
 
+/// The open transfer's purchase, while it still buys its seat.
+async fn open_purchase(client: &TestClient) -> crate::seat_purchase::StoredSeatPurchase {
+    let transfer = client
+        .inner
+        .store
+        .load_guardian_transfer()
+        .await
+        .unwrap()
+        .expect("an open transfer");
+    let TransferStage::Buying(purchase) = transfer.stage else {
+        panic!("the transfer still buys its seat");
+    };
+    purchase
+}
+
 #[tokio::test]
-async fn a_paid_spare_seat_lands_in_the_pool_and_the_backup() {
+async fn a_transfer_buys_its_seat_and_backs_up_the_move() {
     let (_database, _payments, payment_state, mg_state, client) = formed_paid_client().await;
     let funded_before = payment_state.create_calls.load(Ordering::SeqCst);
 
-    let spare = client
-        .buy_spare_seat(
-            spare_approval(PAYMENT_AMOUNT_MSATS),
-            Some(payment_federation_id()),
-            long_request_options(),
-        )
-        .await
-        .unwrap();
+    let transfer = start_transfer(&client, &mg_state).await;
 
-    let records = spare_create_records(&mg_state);
+    let records = destination_create_records(&mg_state);
     assert_eq!(records.len(), 1);
-    assert_eq!(spare.seat_id, records[0].seat_id);
-    assert_eq!(spare.locator, locator(SPARE_INDEX));
-    assert_eq!(spare.mg_id, test_mg_id(SPARE_INDEX));
-    // The spare is quoted for this federation, not for a seat of size one.
+    assert_eq!(transfer.phase, GuardianTransferPhase::AwaitingSource);
+    assert_eq!(transfer.destination_mg_id, test_mg_id(DESTINATION));
+    assert_eq!(
+        transfer.destination_seat_id,
+        Some(records[0].seat_id.clone())
+    );
+    // The seat is quoted for this federation, not for a seat of size one.
     let quote = records[0]
         .signed_quote
-        .verify(&manager_key(SPARE_INDEX).x_only_public_key().0)
+        .verify(&manager_key(DESTINATION).x_only_public_key().0)
         .unwrap();
     assert_eq!(
         quote.terms.request.federation_size,
@@ -105,42 +168,19 @@ async fn a_paid_spare_seat_lands_in_the_pool_and_the_backup() {
         payment_state.create_calls.load(Ordering::SeqCst),
         funded_before + 1
     );
-    assert_eq!(client.spare_seats().await.unwrap(), vec![spare.clone()]);
-    assert!(
-        client
-            .inner
-            .store
-            .load_seat_purchase()
-            .await
-            .unwrap()
-            .is_none()
-    );
 
     let backup = client.inner.store.backup_payload().await.unwrap().payload;
     assert_eq!(backup.seats.len(), usize::from(MIN_FEDERATION_SIZE));
     assert_eq!(
-        backup.spare_seats,
-        vec![crate::backup::FaBackupSeat {
-            mg_identity: spare.mg_id,
-            seat_id: spare.seat_id.clone(),
-            locator: spare.locator.clone(),
-        }]
-    );
-
-    let restored = db::FaStore::new(MemDatabase::new().into_database());
-    restored
-        .restore_backup_payload_with_completion(TestIdentity::fa_id(), backup, None)
-        .await
-        .unwrap();
-    assert_eq!(
-        restored
-            .list_spare_seats()
-            .await
-            .unwrap()
-            .into_iter()
-            .map(|seat| (seat.mg_id, seat.locator, seat.seat_id))
-            .collect::<Vec<_>>(),
-        vec![(spare.mg_id, spare.locator, spare.seat_id)]
+        backup.transfer,
+        Some(crate::backup::FaBackupTransfer {
+            seat_index: MOVED as u16,
+            destination: crate::backup::FaBackupSeat {
+                mg_identity: test_mg_id(DESTINATION),
+                seat_id: records[0].seat_id.clone(),
+                locator: locator(DESTINATION),
+            },
+        })
     );
 }
 
@@ -151,40 +191,42 @@ async fn a_lost_acceptance_after_payment_replays_the_exact_quote() {
         .failed_create_indices
         .lock()
         .expect("test lock")
-        .insert(SPARE_INDEX);
+        .insert(DESTINATION);
 
-    client
-        .buy_spare_seat(
-            spare_approval(PAYMENT_AMOUNT_MSATS),
-            Some(payment_federation_id()),
-            long_request_options(),
-        )
-        .await
-        .unwrap_err();
-    let pending = client.spare_seat_purchase().await.unwrap().unwrap();
-    assert_eq!(pending.mg_id, test_mg_id(SPARE_INDEX));
-    assert_eq!(pending.max_msats, PAYMENT_AMOUNT_MSATS);
-    assert!(pending.outputs_started);
-    let quotes_after_failure = mg_state.quote_calls.load(Ordering::SeqCst);
-    let funded_after_failure = payment_state.create_calls.load(Ordering::SeqCst);
-    assert!(
+    start_transfer_with(
+        &client,
+        &mg_state,
+        destination_approval(PAYMENT_AMOUNT_MSATS),
+    )
+    .await
+    .unwrap_err();
+    let pending = client.guardian_transfer().await.unwrap().unwrap();
+    assert_eq!(pending.phase, GuardianTransferPhase::BuyingSeat);
+    assert_eq!(pending.destination_mg_id, test_mg_id(DESTINATION));
+    assert_eq!(pending.destination_seat_id, None);
+    assert!(open_purchase(&client).await.outputs_started);
+    // The paid seat is not in the backup until it exists.
+    assert_eq!(
         client
             .inner
             .store
-            .load_seat_purchase()
+            .backup_payload()
             .await
             .unwrap()
-            .unwrap()
-            .outputs_started
+            .payload
+            .transfer,
+        None
     );
+    let quotes_after_failure = mg_state.quote_calls.load(Ordering::SeqCst);
+    let funded_after_failure = payment_state.create_calls.load(Ordering::SeqCst);
 
     mg_state
         .failed_create_indices
         .lock()
         .expect("test lock")
         .clear();
-    let spare = client
-        .resume_spare_seat_purchase(long_request_options())
+    let resumed = client
+        .resume_guardian_transfer(short_options())
         .await
         .unwrap()
         .unwrap();
@@ -198,11 +240,15 @@ async fn a_lost_acceptance_after_payment_replays_the_exact_quote() {
         payment_state.create_calls.load(Ordering::SeqCst),
         funded_after_failure
     );
-    let records = spare_create_records(&mg_state);
+    let records = destination_create_records(&mg_state);
     assert_eq!(records.len(), 2);
     assert_eq!(records[0].quote_id, records[1].quote_id);
-    assert_eq!(spare.seat_id, records[1].seat_id);
-    assert_eq!(client.spare_seat_purchase().await.unwrap(), None);
+    assert_eq!(resumed.phase, GuardianTransferPhase::AwaitingSource);
+    assert_eq!(
+        resumed.destination_seat_id,
+        Some(records[1].seat_id.clone())
+    );
+    assert_eq!(mg_state.pull_requests.lock().expect("test lock").len(), 1);
 }
 
 #[tokio::test]
@@ -214,28 +260,21 @@ async fn an_unarmed_reservation_is_released_and_the_quote_refreshed() {
         .lose_reservation_result_on_call
         .store(next_reservation, Ordering::SeqCst);
 
-    client
-        .buy_spare_seat(
-            spare_approval(PAYMENT_AMOUNT_MSATS),
-            Some(payment_federation_id()),
-            long_request_options(),
-        )
-        .await
-        .unwrap_err();
-    let purchase = client
-        .inner
-        .store
-        .load_seat_purchase()
-        .await
-        .unwrap()
-        .unwrap();
+    start_transfer_with(
+        &client,
+        &mg_state,
+        destination_approval(PAYMENT_AMOUNT_MSATS),
+    )
+    .await
+    .unwrap_err();
+    let purchase = open_purchase(&client).await;
     assert!(!purchase.outputs_started);
     let stale_quote = purchase.signed_quote.unwrap();
     let quotes_before = mg_state.quote_calls.load(Ordering::SeqCst);
     let releases_before = payment_state.whole_release_calls.load(Ordering::SeqCst);
 
     client
-        .resume_spare_seat_purchase(long_request_options())
+        .resume_guardian_transfer(short_options())
         .await
         .unwrap()
         .unwrap();
@@ -248,29 +287,28 @@ async fn an_unarmed_reservation_is_released_and_the_quote_refreshed() {
         mg_state.quote_calls.load(Ordering::SeqCst),
         quotes_before + 1
     );
-    let records = spare_create_records(&mg_state);
+    let records = destination_create_records(&mg_state);
     assert_eq!(records.len(), 1);
     assert_ne!(records[0].signed_quote, stale_quote);
 }
 
 #[tokio::test]
-async fn a_refused_purchase_settles_its_refund_and_adds_no_seat() {
+async fn a_refused_purchase_settles_its_refund_and_closes_the_transfer() {
     let (_database, _payments, payment_state, mg_state, client) = formed_paid_client().await;
     mg_state
         .refused_create_indices
         .lock()
         .expect("test lock")
-        .insert(SPARE_INDEX);
+        .insert(DESTINATION);
     let refunds_before = payment_state.refund_calls.load(Ordering::SeqCst);
 
-    let error = client
-        .buy_spare_seat(
-            spare_approval(PAYMENT_AMOUNT_MSATS),
-            Some(payment_federation_id()),
-            long_request_options(),
-        )
-        .await
-        .unwrap_err();
+    let error = start_transfer_with(
+        &client,
+        &mg_state,
+        destination_approval(PAYMENT_AMOUNT_MSATS),
+    )
+    .await
+    .unwrap_err();
 
     assert!(matches!(
         error,
@@ -283,31 +321,22 @@ async fn a_refused_purchase_settles_its_refund_and_adds_no_seat() {
         payment_state.refund_calls.load(Ordering::SeqCst),
         refunds_before + 1
     );
-    assert!(client.spare_seats().await.unwrap().is_empty());
-    assert!(
-        client
-            .inner
-            .store
-            .load_seat_purchase()
-            .await
-            .unwrap()
-            .is_none()
-    );
+    assert_eq!(client.guardian_transfer().await.unwrap(), None);
+    assert!(mg_state.pull_requests.lock().expect("test lock").is_empty());
 }
 
 #[tokio::test]
 async fn a_quote_above_the_approved_cap_moves_no_value() {
-    let (_database, _payments, payment_state, _mg_state, client) = formed_paid_client().await;
+    let (_database, _payments, payment_state, mg_state, client) = formed_paid_client().await;
     let reservations_before = payment_state.readiness_calls.load(Ordering::SeqCst);
 
-    let error = client
-        .buy_spare_seat(
-            spare_approval(PAYMENT_AMOUNT_MSATS - 1),
-            Some(payment_federation_id()),
-            long_request_options(),
-        )
-        .await
-        .unwrap_err();
+    let error = start_transfer_with(
+        &client,
+        &mg_state,
+        destination_approval(PAYMENT_AMOUNT_MSATS - 1),
+    )
+    .await
+    .unwrap_err();
 
     assert!(matches!(
         error,
@@ -320,69 +349,63 @@ async fn a_quote_above_the_approved_cap_moves_no_value() {
         payment_state.readiness_calls.load(Ordering::SeqCst),
         reservations_before
     );
-    assert!(
-        client
-            .inner
-            .store
-            .load_seat_purchase()
-            .await
-            .unwrap()
-            .is_none()
-    );
+    assert_eq!(client.guardian_transfer().await.unwrap(), None);
 }
 
 #[tokio::test]
-async fn only_one_purchase_is_open_at_a_time() {
+async fn only_one_transfer_is_open_at_a_time() {
     let (_database, _payments, _payment_state, mg_state, client) = formed_paid_client().await;
     mg_state
         .failed_create_indices
         .lock()
         .expect("test lock")
-        .insert(SPARE_INDEX);
-    client
-        .buy_spare_seat(
-            spare_approval(PAYMENT_AMOUNT_MSATS),
-            Some(payment_federation_id()),
-            long_request_options(),
-        )
-        .await
-        .unwrap_err();
+        .insert(DESTINATION);
+    start_transfer_with(
+        &client,
+        &mg_state,
+        destination_approval(PAYMENT_AMOUNT_MSATS),
+    )
+    .await
+    .unwrap_err();
 
-    let error = client
-        .buy_spare_seat(
-            spare_approval(PAYMENT_AMOUNT_MSATS),
-            Some(payment_federation_id()),
-            long_request_options(),
-        )
-        .await
-        .unwrap_err();
+    let error = start_transfer_with(
+        &client,
+        &mg_state,
+        destination_approval(PAYMENT_AMOUNT_MSATS),
+    )
+    .await
+    .unwrap_err();
 
-    assert!(matches!(error, FaError::InvalidIntent(_)));
+    assert!(matches!(error, FaError::InvalidIntent(_)), "{error:?}");
 }
 
 #[test]
-fn a_backup_without_spares_keeps_its_earlier_encoding() {
+fn a_backup_without_a_transfer_keeps_its_earlier_encoding() {
     let payload = crate::backup::FaBackupPayload {
         schema_version: crate::backup::BACKUP_SCHEMA_VERSION,
         snapshot_generation: 1,
         federation_invite: test_invite(0),
         seats: Vec::new(),
         liquidity: None,
-        spare_seats: Vec::new(),
+        transfer: None,
         past_hosts: Vec::new(),
     };
     let json = serde_json::to_value(&payload).unwrap();
-    assert!(json.get("spare_seats").is_none());
-    let mut with_spare = payload.clone();
-    with_spare.spare_seats.push(crate::backup::FaBackupSeat {
-        mg_identity: test_mg_id(SPARE_INDEX),
-        seat_id: SeatId::from(QuoteId([7; 32])),
-        locator: locator(SPARE_INDEX),
+    assert!(json.get("transfer").is_none());
+    assert!(json.get("past_hosts").is_none());
+    let mut with_transfer = payload.clone();
+    with_transfer.transfer = Some(crate::backup::FaBackupTransfer {
+        seat_index: 1,
+        destination: crate::backup::FaBackupSeat {
+            mg_identity: test_mg_id(DESTINATION),
+            seat_id: SeatId::from(QuoteId([7; 32])),
+            locator: locator(DESTINATION),
+        },
     });
     let mut encoded = Vec::new();
-    ciborium::into_writer(&with_spare, &mut encoded).unwrap();
+    ciborium::into_writer(&with_transfer, &mut encoded).unwrap();
     let decoded: crate::backup::FaBackupPayload = ciborium::from_reader(&encoded[..]).unwrap();
-    assert_eq!(decoded, with_spare);
+    assert_eq!(decoded, with_transfer);
 }
 
 pub(super) fn mg_ad(index: usize, price_msats: u64, version: &str) -> nostr_sdk::Event {
@@ -436,9 +459,9 @@ pub(super) async fn restored_client(
     (database, payment_state, mg_state, restored)
 }
 
-async fn eligible_spare_mgs(client: &TestClient) -> usize {
+async fn eligible_destination_mgs(client: &TestClient) -> usize {
     match client
-        .preview_spare_seat(crate::MgDiscoveryOptions::default())
+        .preview_transfer_destination(crate::MgDiscoveryOptions::default())
         .await
     {
         Err(FaError::InsufficientMgSeats { eligible, .. }) => eligible,
@@ -447,32 +470,26 @@ async fn eligible_spare_mgs(client: &TestClient) -> usize {
 }
 
 #[tokio::test]
-async fn a_restored_fa_buys_a_spare_on_the_federation_line() {
+async fn a_restored_fa_buys_a_destination_on_the_federation_line() {
     // Neither a guardian of the federation nor an MG on another Fedimint
-    // line may hold a spare.
+    // line may receive the guardian.
     let (_, payment_state, mg_state, restored) = restored_client(vec![
         mg_ad(0, PAYMENT_AMOUNT_MSATS, FEDIMINTD_VERSION_0_1),
         mg_ad(20, PAYMENT_AMOUNT_MSATS, "0.13.0+fedi"),
     ])
     .await;
-    assert_eq!(eligible_spare_mgs(&restored).await, 0);
+    assert_eq!(eligible_destination_mgs(&restored).await, 0);
+    restored.resume().await.unwrap();
 
-    let spare = restored
-        .buy_spare_seat(
-            spare_approval(PAYMENT_AMOUNT_MSATS),
-            Some(payment_federation_id()),
-            long_request_options(),
-        )
-        .await
-        .unwrap();
+    let transfer = start_transfer(&restored, &mg_state).await;
 
-    assert_eq!(spare.mg_id, test_mg_id(SPARE_INDEX));
+    assert_eq!(transfer.destination_mg_id, test_mg_id(DESTINATION));
     assert_eq!(payment_state.create_calls.load(Ordering::SeqCst), 1);
-    let records = spare_create_records(&mg_state);
+    let records = destination_create_records(&mg_state);
     assert_eq!(records.len(), 1);
     let quote = records[0]
         .signed_quote
-        .verify(&manager_key(SPARE_INDEX).x_only_public_key().0)
+        .verify(&manager_key(DESTINATION).x_only_public_key().0)
         .unwrap();
     assert_eq!(
         quote.terms.request.federation_size,
@@ -482,11 +499,10 @@ async fn a_restored_fa_buys_a_spare_on_the_federation_line() {
         quote.terms.request.fedimintd_version.dkg_version(),
         fedimintd_version().dkg_version()
     );
-    assert_eq!(restored.spare_seats().await.unwrap(), vec![spare]);
 }
 
 #[tokio::test]
-async fn the_spare_line_is_the_one_most_guardians_advertise() {
+async fn the_destination_line_is_the_one_most_guardians_advertise() {
     let newer = "0.13.0+fedi";
     // A tie between lines picks the newer one.
     let (_, _, _, restored) = restored_client(vec![
@@ -495,7 +511,7 @@ async fn the_spare_line_is_the_one_most_guardians_advertise() {
         mg_ad(20, PAYMENT_AMOUNT_MSATS, newer),
     ])
     .await;
-    assert_eq!(eligible_spare_mgs(&restored).await, 1);
+    assert_eq!(eligible_destination_mgs(&restored).await, 1);
 
     // A majority outweighs the newer line.
     let (_, _, _, restored) = restored_client(vec![
@@ -505,7 +521,7 @@ async fn the_spare_line_is_the_one_most_guardians_advertise() {
         mg_ad(20, PAYMENT_AMOUNT_MSATS, newer),
     ])
     .await;
-    assert_eq!(eligible_spare_mgs(&restored).await, 0);
+    assert_eq!(eligible_destination_mgs(&restored).await, 0);
 }
 
 /// Badge verifier that reports a chosen holder for some MGs, and the MG
@@ -534,30 +550,25 @@ impl crate::selection::SelectionBadgeVerifier for HolderVerifier {
 }
 
 #[tokio::test]
-async fn a_spare_holder_cannot_sell_a_second_spare_through_another_mg() {
+async fn a_guardian_holder_cannot_receive_a_guardian_through_another_mg() {
     let other = 20;
-    let (_, _, _, restored) = restored_client(vec![
+    let (_database, _payments, _payment_state, _mg_state, client) = formed_paid_client().await;
+    *client
+        .inner
+        .ports
+        .registry
+        .advertisements
+        .lock()
+        .expect("test lock") = vec![
         mg_ad(0, PAYMENT_AMOUNT_MSATS, FEDIMINTD_VERSION_0_1),
         mg_ad(other, PAYMENT_AMOUNT_MSATS, FEDIMINTD_VERSION_0_1),
-    ])
-    .await;
-    restored
-        .buy_spare_seat(
-            spare_approval(PAYMENT_AMOUNT_MSATS),
-            Some(payment_federation_id()),
-            long_request_options(),
-        )
-        .await
-        .unwrap();
+    ];
 
-    // The holder of the bought spare also holds the other MG.
-    let error = restored
-        .preview_spare_seat_with_verifier(
+    // The holder of a guardian's MG also holds the other MG.
+    let error = client
+        .preview_transfer_destination_with_verifier(
             crate::MgDiscoveryOptions::default(),
-            &HolderVerifier(BTreeMap::from([(
-                test_mg_id(other),
-                test_mg_id(SPARE_INDEX),
-            )])),
+            &HolderVerifier(BTreeMap::from([(test_mg_id(other), test_mg_id(0))])),
         )
         .await
         .unwrap_err();
@@ -566,9 +577,9 @@ async fn a_spare_holder_cannot_sell_a_second_spare_through_another_mg() {
         "{error:?}"
     );
 
-    // With its own holder, the other MG can sell a spare.
-    let preview = restored
-        .preview_spare_seat_with_verifier(
+    // With its own holder, the other MG can receive the guardian.
+    let preview = client
+        .preview_transfer_destination_with_verifier(
             crate::MgDiscoveryOptions::default(),
             &HolderVerifier(BTreeMap::new()),
         )

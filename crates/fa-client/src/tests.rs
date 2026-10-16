@@ -2,7 +2,7 @@ mod callback;
 mod discovery;
 mod maintenance;
 mod recovery_policy;
-mod seat_pool;
+mod seat_purchase;
 mod selection;
 mod transfer;
 

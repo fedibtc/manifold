@@ -14,14 +14,15 @@ MG identity, seat id, and stable locator. It optionally contains the exact
 `RequestLiquidityDetailsCommitmentV1` for the sole non-terminal liquidity
 request. The operation id and payload hash are recomputed from that commitment.
 Completed and terminally rejected liquidity work is omitted.
-It also lists every spare seat in the FA seat pool by MG identity, seat id,
-and locator. A spare that an open guardian transfer uses stays in this list
-until consensus names it, and then moves into the seats. An empty list is omitted from the encoding, so a payload without
-spares keeps its earlier bytes and older readers.
+It optionally contains the open guardian transfer whose destination seat
+exists but is not in the seats yet: the source seat index, and the
+destination's MG identity, seat id, and locator. An absent transfer is
+omitted from the encoding, so a payload without one keeps its earlier bytes
+and older readers.
 It lists every past host: the MG identity, and the verified badge holder
 when known, of each source that a guardian transfer moved a peer away from.
-Spare selection and transfer grants exclude them, because a past host may
-still hold its key share. An empty list is omitted in the same way.
+Destination selection excludes them, because a past host may still hold its
+key share. An empty list is omitted in the same way.
 
 The payload omits FA identity, formation id and intent, runtime checkpoints,
 signed quotes, acceptances and attestations, guardian codes and fee accounts,
@@ -74,8 +75,10 @@ manager locators and tries alternatives for the same federation without
 requiring every manager online or every seat healthy. Verified guardian
 addresses are remembered only in memory for subsequent reads; the backup and
 signed liquidity commitment remain unchanged.
-Restore imports spare seats without their guardian-fee accounts. An open
-seat purchase is not backed up.
+Reconciliation of a restored transfer either opens the same move again with
+a new grant, while consensus names the source, or puts the destination in
+the seats, once consensus names it. The destination's guardian-fee account
+is not backed up. An open seat purchase is not backed up.
 Import derives a stable local formation handle
 without reconstructing omitted formation transcript rows. Only after
 reconciliation does FA expose fresh post-formed authority and hydrate the

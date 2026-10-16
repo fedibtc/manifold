@@ -1147,16 +1147,16 @@ pub(crate) async fn preview_mg_replacements_with(
     })
 }
 
-/// Read-only verified selection of one MG for a spare seat.
+/// Read-only verified selection of one MG to receive a transferred guardian.
 #[derive(Debug)]
-pub struct SpareSeatPreview {
+pub struct TransferDestinationPreview {
     verifier_provenance: PeerBadgeVerifierProvenance,
     fedimintd_dkg_version: FedimintdDkgVersion,
     seat: SelectedMgSeat,
     valid_until: Timestamp,
 }
 
-impl SpareSeatPreview {
+impl TransferDestinationPreview {
     /// The verified MG this preview selected.
     #[must_use]
     pub fn seat(&self) -> &SelectedMgSeat {
@@ -1176,14 +1176,14 @@ impl SpareSeatPreview {
     }
 
     /// Seal this selection to user authorization of at most `max_msats`.
-    pub fn approve(self, max_msats: u64) -> FaResult<SpareSeatApproval> {
+    pub fn approve(self, max_msats: u64) -> FaResult<TransferDestinationApproval> {
         if max_msats == 0 || max_msats < self.seat.advertised_price_msats() {
             return Err(FaError::SelectionReauthorizationRequired {
                 reason: SelectionReauthorizationReason::AdvertisementEstimateExceedsLimit,
                 failure: None,
             });
         }
-        Ok(SpareSeatApproval {
+        Ok(TransferDestinationApproval {
             verifier_provenance: self.verifier_provenance,
             fedimintd_dkg_version: self.fedimintd_dkg_version,
             seat: self.seat.into(),
@@ -1193,9 +1193,9 @@ impl SpareSeatPreview {
     }
 }
 
-/// Sealed, short-lived approval to buy one spare seat.
+/// Sealed, short-lived approval to buy the seat of one guardian transfer.
 #[derive(Clone, Debug)]
-pub struct SpareSeatApproval {
+pub struct TransferDestinationApproval {
     pub(crate) verifier_provenance: PeerBadgeVerifierProvenance,
     /// The Fedimint line the federation ran at preview time.
     pub(crate) fedimintd_dkg_version: FedimintdDkgVersion,
@@ -1204,7 +1204,7 @@ pub struct SpareSeatApproval {
     pub(crate) valid_until: Timestamp,
 }
 
-impl SpareSeatApproval {
+impl TransferDestinationApproval {
     /// Approved maximum price.
     #[must_use]
     pub fn max_msats(&self) -> u64 {
@@ -1237,12 +1237,12 @@ pub(crate) fn dkg_line(dkg_version: &FedimintdDkgVersion) -> FaResult<FedimintdV
 
 /// Select one fresh MG that holds no seat of this FA yet.
 ///
-/// The spare must run the Fedimint line the federation runs. The line comes
+/// The MG must run the Fedimint line the federation runs. The line comes
 /// from the advertisements of the federation's own MGs, because every MG
 /// runs one `fedimintd` build for all its seats. When they disagree during an
 /// upgrade, the line most of them advertise wins, then the newer line.
 #[allow(clippy::too_many_arguments)]
-pub(crate) async fn preview_spare_seat_with(
+pub(crate) async fn preview_transfer_destination_with(
     registry: &impl FaNostrClient,
     verifier: &impl SelectionBadgeVerifier,
     prober: &impl SelectionAvailabilityProber,
@@ -1255,7 +1255,7 @@ pub(crate) async fn preview_spare_seat_with(
     deadline: Instant,
     now: u64,
     completed_at: impl FnOnce() -> u64,
-) -> FaResult<SpareSeatPreview> {
+) -> FaResult<TransferDestinationPreview> {
     let every_version = FedimintdVersionRange::from_cores(
         FedimintdVersionCore {
             major: 0,
@@ -1326,8 +1326,10 @@ pub(crate) async fn preview_spare_seat_with(
     })?;
     let valid_until = completed_at()
         .checked_add(MG_SELECTION_PREVIEW_VALIDITY.as_secs())
-        .ok_or_else(|| FaError::Selection("spare seat preview expiry overflows".to_owned()))?;
-    Ok(SpareSeatPreview {
+        .ok_or_else(|| {
+            FaError::Selection("transfer destination preview expiry overflows".to_owned())
+        })?;
+    Ok(TransferDestinationPreview {
         verifier_provenance,
         fedimintd_dkg_version,
         seat,
