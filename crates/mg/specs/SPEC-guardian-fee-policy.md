@@ -24,7 +24,8 @@ Each MG constructs and bounds the canonical directory from those attestations,
 validates it against the final federation config, verifies every paired proof
 with that peer's configured API endpoint key,
 and requires its own peer entry to name its own MG identity. Endpoint proof
-validation happens only while admitting the formation proposal; proofs are not
+validation happens while admitting formation or a dedicated transferred-seat
+replacement; proofs are not
 stored in consensus metadata.
 
 The same typed proposal installs, as one guarded whole-object target:
@@ -61,13 +62,21 @@ Formation endpoint proofs bind the directory directly to the final configured
 seat endpoint keys, avoiding a second identity/account transcript in
 `StartDkg` and `RestartDkg`.
 
-## Later maintenance changes only the rate
+## Ordinary later maintenance changes only the rate
 
 After formation, `propose_guardian_fees` is a rate-change operation. It submits
 only `fedi:guardian_fee_send_ppm` through `SetMetaField`. The generic validator
 enforces the raw/value bounds and published floor before child access. The
 formation-owned directory and recipient-list keys are absent from the generic
 registry and are rejected if requested directly.
+
+Cooperative transfer has a separate, narrow exception:
+`ReplaceSeatBinding` authenticates the destination's attestation and proof using
+the unchanged native guardian endpoint identity, replaces only the moved peer's
+directory entry and corresponding recipient, and preserves all existing
+weights, rate, FA/verification recipients, and unrelated metadata. It does not
+reapply the initial split or authorize generic recipient editing
+([SPEC-guardian-transfer](./SPEC-guardian-transfer.md)).
 
 An explicit rate write is a new policy proposal even when its numeric value
 already equals consensus, so it must satisfy the currently published floor.
@@ -88,7 +97,8 @@ seats they control. They cannot forge the excluded guardian's endpoint proof,
 so including that honest endpoint under a false MG identity is rejected.
 Misattributing a guardian that joins the hostile threshold adds no independent
 funds-control power: that threshold already controls the federation. An
-observed post-formation change to the directory or recipients is a seat
+observed post-formation change to the directory or recipients outside that
+authorized transfer is a seat
 integrity failure whose eventual response is to stop that guardian and require
 operator remediation. Detection and automatic shutdown are not implemented by
 metadata maintenance and remain outside this specification's current behavior.
