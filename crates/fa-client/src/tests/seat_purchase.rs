@@ -354,6 +354,14 @@ async fn a_quote_above_the_approved_cap_moves_no_value() {
 
 #[tokio::test]
 async fn a_payment_that_never_started_rechecks_its_payer() {
+    // Also crash right after the purchase is marked unstarted again, before
+    // the reservation is released.
+    for stop in [false, true] {
+        payment_that_never_started_rechecks_its_payer(stop).await;
+    }
+}
+
+async fn payment_that_never_started_rechecks_its_payer(stop_before_release: bool) {
     let (_database, _payments, payment_state, mg_state, client) = formed_paid_client().await;
     // Reserve the purchase's payment but lose the result, then record the
     // payment as started: a crash just before the wallet funded it.
@@ -402,6 +410,19 @@ async fn a_payment_that_never_started_rechecks_its_payer() {
     payment_state.pay_none.store(true, Ordering::SeqCst);
     let funded_before = payment_state.create_calls.load(Ordering::SeqCst);
     let releases_before = payment_state.whole_release_calls.load(Ordering::SeqCst);
+
+    if stop_before_release {
+        client.inner.store.stop_after_transfer_writes(1);
+        client
+            .resume_guardian_transfer(short_options())
+            .await
+            .unwrap_err();
+        assert!(!open_purchase(&client).await.outputs_started);
+        assert_eq!(
+            payment_state.whole_release_calls.load(Ordering::SeqCst),
+            releases_before
+        );
+    }
 
     let error = client
         .resume_guardian_transfer(short_options())
