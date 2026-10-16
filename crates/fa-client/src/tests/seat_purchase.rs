@@ -182,6 +182,7 @@ async fn a_transfer_buys_its_seat_and_backs_up_the_move() {
                 seat_id: records[0].seat_id.clone(),
                 locator: locator(DESTINATION),
             },
+            completion_callback: None,
         })
     );
 }
@@ -530,6 +531,44 @@ async fn a_free_destination_that_starts_to_charge_closes_the_transfer() {
 }
 
 #[tokio::test]
+async fn a_destination_that_stops_selling_closes_the_transfer() {
+    let (_database, _payments, payment_state, mg_state, client) = formed_paid_client().await;
+    let reservations_before = payment_state.readiness_calls.load(Ordering::SeqCst);
+    // After the preview, the destination moves to a Fedimint line this
+    // federation does not run.
+    set_mg_version(&mg_state, DESTINATION, "0.13.0+fedi");
+
+    let error = start_transfer_with(
+        &client,
+        &mg_state,
+        destination_approval(PAYMENT_AMOUNT_MSATS),
+    )
+    .await
+    .unwrap_err();
+
+    assert!(
+        matches!(
+            error,
+            FaError::SelectionReauthorizationRequired {
+                reason: SelectionReauthorizationReason::SelectedMgUnavailable,
+                ..
+            }
+        ),
+        "{error:?}"
+    );
+    assert_eq!(
+        payment_state.readiness_calls.load(Ordering::SeqCst),
+        reservations_before
+    );
+    assert!(destination_create_records(&mg_state).is_empty());
+    assert_eq!(client.guardian_transfer().await.unwrap(), None);
+    // The slot is free: a new selection starts a new transfer.
+    set_mg_version(&mg_state, DESTINATION, &fedimintd_version().to_string());
+    let transfer = start_transfer(&client, &mg_state).await;
+    assert_eq!(transfer.phase, GuardianTransferPhase::AwaitingSource);
+}
+
+#[tokio::test]
 async fn only_one_transfer_is_open_at_a_time() {
     let (_database, _payments, _payment_state, mg_state, client) = formed_paid_client().await;
     mg_state
@@ -578,6 +617,13 @@ fn a_backup_without_a_transfer_keeps_its_earlier_encoding() {
             seat_id: SeatId::from(QuoteId([7; 32])),
             locator: locator(DESTINATION),
         },
+        completion_callback: Some(
+            DkgCompletionCallback::new(DkgCompletionCallbackInput {
+                callback_url: "https://push.example/hooks/hook-id/bearer-secret".to_owned(),
+                idempotency_key: "transfer-complete".to_owned(),
+            })
+            .unwrap(),
+        ),
     });
     let mut encoded = Vec::new();
     ciborium::into_writer(&with_transfer, &mut encoded).unwrap();

@@ -166,6 +166,7 @@ impl StoredGuardianTransfer {
                         seat_id: moving.destination.seat_id.clone(),
                         locator: moving.destination.locator.clone(),
                     },
+                    completion_callback: self.completion_callback.clone(),
                 })
             }
             _ => None,
@@ -670,7 +671,7 @@ where
             source_locator: source.locator.clone(),
             source_seat_id: source.seat_id.clone(),
             federation_id,
-            completion_callback: None,
+            completion_callback: backed_up.completion_callback.clone(),
             stage: TransferStage::Moving(StoredMove {
                 destination,
                 grant,

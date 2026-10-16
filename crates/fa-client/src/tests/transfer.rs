@@ -777,6 +777,73 @@ async fn a_restored_backup_continues_the_same_move() {
     );
 }
 
+#[tokio::test]
+async fn a_restored_backup_renews_the_move_with_its_callback() {
+    let (_database, _payments, _payment_state, mg_state, lost) = formed_paid_client().await;
+    let callback = DkgCompletionCallback::new(DkgCompletionCallbackInput {
+        callback_url: "https://push.example/hooks/hook-id/bearer-secret".to_owned(),
+        idempotency_key: "transfer-complete".to_owned(),
+    })
+    .unwrap();
+    mg_state
+        .seat_statuses
+        .lock()
+        .expect("test lock")
+        .insert(DESTINATION, ServiceStatus::New);
+    lost.start_guardian_transfer(
+        MOVED as u16,
+        destination_approval(PAYMENT_AMOUNT_MSATS),
+        Some(payment_federation_id()),
+        Some(callback.clone()),
+        transfer_options(),
+    )
+    .await
+    .unwrap();
+    let keys = crate::backup::FaBackupKeys::derive(&lost.inner.ports.identity.scoped_root());
+    let sealed = keys
+        .seal(&lost.inner.store.backup_payload().await.unwrap().payload)
+        .unwrap();
+    drop(lost);
+    let (payments, _payment_state) = TestPayments::new();
+    let replacement = open_client(
+        MemDatabase::new().into_database(),
+        payments,
+        mg_state.clone(),
+        MgConfig::paid(),
+    )
+    .await;
+    let status = replacement
+        .inner
+        .store
+        .restore_backup_payload_with_completion(
+            TestIdentity::fa_id(),
+            keys.open(&sealed).unwrap(),
+            None,
+        )
+        .await
+        .unwrap();
+    replacement.inner.progress.send_replace(status);
+    replacement.resume().await.unwrap();
+
+    // The grant expired while the source was away. The destination accepts
+    // the renewal only with the callback the move started with.
+    mg_state
+        .seat_statuses
+        .lock()
+        .expect("test lock")
+        .insert(DESTINATION, ServiceStatus::TransferGrantExpired);
+    let renewed = replacement
+        .resume_guardian_transfer(short_options())
+        .await
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(renewed.phase, GuardianTransferPhase::AwaitingSource);
+    let pulls = mg_state.pull_requests.lock().expect("test lock").clone();
+    assert_eq!(pulls.len(), 2);
+    assert_eq!(pulls[1].1.completion_callback, Some(callback));
+}
+
 /// Check what a crash right after a transfer write leaves: the source seat
 /// is gone only once the destination runs its guardian, and the backup of the
 /// moment restores.
