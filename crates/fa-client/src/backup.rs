@@ -10,7 +10,9 @@ use chacha20poly1305::{
     aead::{Aead as _, AeadCore as _, KeyInit as _, OsRng, Payload},
 };
 use fedi_decentralized_service_liquidity_manager::RequestLiquidityDetailsCommitmentV1;
-use fedi_decentralized_service_manifold_guardian::{InviteCode, Locator, SeatId};
+use fedi_decentralized_service_manifold_guardian::{
+    DkgCompletionCallback, InviteCode, Locator, SeatId,
+};
 use fedimint_derive_secret::{ChildId, DerivableSecret};
 use nostr_sdk::{Keys, PublicKey, SecretKey};
 use serde::{Deserialize, Serialize};
@@ -55,6 +57,9 @@ pub(crate) struct FaBackupPayload {
 pub(crate) struct FaBackupTransfer {
     pub(crate) seat_index: u16,
     pub(crate) destination: FaBackupSeat,
+    /// The completion callback the move started with, or `None` when it had
+    /// none. A destination accepts a renewed grant only with the same one.
+    pub(crate) completion_callback: Option<DkgCompletionCallback>,
 }
 
 /// An MG that may still hold the key share of a peer it no longer hosts.
@@ -344,6 +349,7 @@ mod tests {
             transfer: Some(FaBackupTransfer {
                 seat_index: 0,
                 destination: seat,
+                completion_callback: None,
             }),
             past_hosts: Vec::new(),
         };

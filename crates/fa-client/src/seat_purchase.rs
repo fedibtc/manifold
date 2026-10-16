@@ -336,7 +336,10 @@ where
                     &purchase.locator,
                     intent,
                     fa_id,
-                    QuoteAttemptPolicy::ExactRecovery,
+                    // Without a quote nothing is reserved or paid yet, so
+                    // a destination that no longer sells this seat needs a
+                    // new selection, which closes the transfer below.
+                    QuoteAttemptPolicy::ReplaceableSelection,
                     purchase.payment_federation_id.as_ref(),
                     Some(&payment_federation),
                     run,

@@ -15,8 +15,11 @@ MG identity, seat id, and stable locator. It optionally contains the exact
 request. The operation id and payload hash are recomputed from that commitment.
 Completed and terminally rejected liquidity work is omitted.
 It optionally contains the open guardian transfer whose destination seat
-exists but is not in the seats yet: the source seat index, and the
-destination's MG identity, seat id, and locator. An absent transfer is
+exists but is not in the seats yet: the source seat index, the
+destination's MG identity, seat id, and locator, and the completion callback
+the move started with, or none. The destination accepts a renewed grant only
+with that same callback, so a restored FA renews the move with it. An absent
+transfer is
 omitted from the encoding, so a payload without one keeps its earlier bytes
 and older readers. The writer applies the same validation as restore before
 it seals a payload: a transfer destination that is already in the seats, or
@@ -29,7 +32,8 @@ key share. An empty list is omitted in the same way.
 The payload omits FA identity, formation id and intent, runtime checkpoints,
 signed quotes, acceptances and attestations, guardian codes and fee accounts,
 payment state, trust proofs and policy, leases, response/status signatures,
-terminal liquidity history, and all secrets or spendable value. Restore keeps
+terminal liquidity history, and all secrets or spendable value, except the
+open transfer's completion callback, whose URL is a push-gateway bearer. Restore keeps
 locators exactly; later operation-specific trust checks do not refresh them
 from advertisements.
 
