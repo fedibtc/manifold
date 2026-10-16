@@ -165,6 +165,14 @@
           };
           patches = [ ./patches/librocksdb-sys-occ-lock-buckets.patch ];
         };
+        # MG 0.1.5 hotfix: new federations record stability-pool module
+        # version 2.1, as MG 0.1.3 does, so mixed 0.1.3 and 0.1.4 guardians
+        # agree on the DKG consensus checksum. Votes still activate 2.2.
+        fediPatched = pkgs.applyPatches {
+          name = "fedi-stability-pool-config-version";
+          src = fedi;
+          patches = [ ./patches/fedi-stability-pool-config-version.patch ];
+        };
         linkExternalDeps = pkgs.writeShellScriptBin "link-external-deps" ''
           set -eu
 
@@ -195,7 +203,7 @@
 
           link_dependency peerbadge-sdk ${peerbadge-sdk-src}
           link_dependency fedimint ${fedimintPatched}
-          link_dependency fedi ${fedi}
+          link_dependency fedi ${fediPatched}
           link_dependency librocksdb-sys ${librocksdbSysPatched}
         '';
 
@@ -1330,7 +1338,7 @@
               manifest=${./docs/telemetry/fedimint-metrics-v0.12.0-fedi12.tsv}
               privacy_inventory=${./docs/telemetry/metrics-privacy-inventory.md}
               source=${fedimint.outPath}
-              stability_pool_source=${fedi}
+              stability_pool_source=${fediPatched}
 
               field() {
                 ${pkgs.gawk}/bin/awk -F '\t' -v key="$1" '$1 == key { print $2 }' "$manifest"
