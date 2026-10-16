@@ -575,9 +575,11 @@ where
         let open = self.inner.store.load_guardian_transfer().await?;
         let (seat_index, destination, open) = match (open, &payload.transfer) {
             (Some(transfer), _) => match &transfer.stage {
-                TransferStage::Moving(moving) => {
-                    (transfer.seat_index, moving.destination.clone(), Some(transfer.clone()))
-                }
+                TransferStage::Moving(moving) => (
+                    transfer.seat_index,
+                    moving.destination.clone(),
+                    Some(transfer.clone()),
+                ),
                 TransferStage::Buying(_) => return Ok(payload),
             },
             (None, None) => return Ok(payload),
@@ -940,14 +942,17 @@ where
         fa_id: FaId,
         run: DriverRun<'_>,
     ) -> FaResult<bool> {
-        let client =
-            match MgClient::connect(&self.inner.ports.mg_connector, &destination.locator, run)
-                .await
-            {
-                Ok(client) => client,
-                Err(FaError::Mg(_)) => return Ok(false),
-                Err(error) => return Err(error),
-            };
+        let client = match MgClient::connect(
+            &self.inner.ports.mg_connector,
+            &destination.locator,
+            run,
+        )
+        .await
+        {
+            Ok(client) => client,
+            Err(FaError::Mg(_)) => return Ok(false),
+            Err(error) => return Err(error),
+        };
         let request = self.sign(&GetStatusRequest {
             ts: Timestamp(now_secs()?),
             fa_id,
