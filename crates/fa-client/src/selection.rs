@@ -1176,8 +1176,9 @@ impl TransferDestinationPreview {
     }
 
     /// Seal this selection to user authorization of at most `max_msats`.
+    /// A zero limit approves only a seat advertised as free.
     pub fn approve(self, max_msats: u64) -> FaResult<TransferDestinationApproval> {
-        if max_msats == 0 || max_msats < self.seat.advertised_price_msats() {
+        if max_msats < self.seat.advertised_price_msats() {
             return Err(FaError::SelectionReauthorizationRequired {
                 reason: SelectionReauthorizationReason::AdvertisementEstimateExceedsLimit,
                 failure: None,
@@ -1186,6 +1187,7 @@ impl TransferDestinationPreview {
         Ok(TransferDestinationApproval {
             verifier_provenance: self.verifier_provenance,
             fedimintd_dkg_version: self.fedimintd_dkg_version,
+            advertised_price_msats: self.seat.advertised_price_msats(),
             seat: self.seat.into(),
             max_msats,
             valid_until: self.valid_until,
@@ -1200,6 +1202,7 @@ pub struct TransferDestinationApproval {
     /// The Fedimint line the federation ran at preview time.
     pub(crate) fedimintd_dkg_version: FedimintdDkgVersion,
     pub(crate) seat: ApprovedMgSeat,
+    pub(crate) advertised_price_msats: u64,
     pub(crate) max_msats: u64,
     pub(crate) valid_until: Timestamp,
 }
