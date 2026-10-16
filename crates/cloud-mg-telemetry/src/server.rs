@@ -38,7 +38,7 @@ use crate::{
     metrics_policy::MetricsPolicy,
     metrics_poller::MetricsPoller,
     metrics_snapshot::render_metrics,
-    store::{MetricExpositionView, Store, TargetMaterial},
+    store::{ExportedFederation, MetricExpositionView, Store, TargetMaterial},
 };
 
 const REGISTRATION_PATH: &str = "/v1/telemetry/registrations";
@@ -334,7 +334,31 @@ fn private_router(state: AppState) -> Router {
         .route("/health", get(|| async { StatusCode::NO_CONTENT }))
         .route("/ready", get(ready))
         .route("/metrics", get(metrics))
+        .route(FEDERATIONS_EXPORT_PATH, get(federations))
         .with_state(state)
+}
+
+/// Private route listing the current seats' federations and their invites.
+const FEDERATIONS_EXPORT_PATH: &str = "/v1/federations";
+
+#[derive(serde::Serialize)]
+struct FederationsExport {
+    version: u32,
+    federations: Vec<ExportedFederation>,
+}
+
+async fn federations(State(state): State<AppState>) -> Response {
+    match state.store.exported_federations(unix_millis() / 1000).await {
+        Ok(federations) => (
+            [(header::CACHE_CONTROL, "no-store")],
+            Json(FederationsExport {
+                version: 1,
+                federations,
+            }),
+        )
+            .into_response(),
+        Err(_) => StatusCode::SERVICE_UNAVAILABLE.into_response(),
+    }
 }
 
 async fn serve_listener(
@@ -961,6 +985,36 @@ mod tests {
             metrics_response.headers()[header::CONTENT_TYPE],
             "text/plain; version=0.0.4; charset=utf-8"
         );
+    }
+
+    #[tokio::test]
+    async fn federation_export_is_served_only_on_the_private_listener() {
+        use tower::ServiceExt as _;
+
+        let get = || {
+            Request::builder()
+                .uri(FEDERATIONS_EXPORT_PATH)
+                .body(axum::body::Body::empty())
+                .unwrap()
+        };
+        let directory = tempfile::tempdir().unwrap();
+        let state = state(&directory).await;
+        let response = private_router(state.clone()).oneshot(get()).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
+        let body = to_bytes(response.into_body(), 4096).await.unwrap();
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&body).unwrap(),
+            serde_json::json!({"version": 1, "federations": []})
+        );
+        let public = public_router(state)
+            .layer(axum::Extension(ConnectInfo(
+                "127.0.0.1:1234".parse::<SocketAddr>().unwrap(),
+            )))
+            .oneshot(get())
+            .await
+            .unwrap();
+        assert_eq!(public.status(), StatusCode::NOT_FOUND);
     }
 
     #[tokio::test]
