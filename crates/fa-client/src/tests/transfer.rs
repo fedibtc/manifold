@@ -777,6 +777,118 @@ async fn a_restored_backup_continues_the_same_move() {
     );
 }
 
+/// Check what a crash right after a transfer write leaves: the source seat
+/// is gone only once the destination runs its guardian, and the backup of the
+/// moment restores.
+async fn check_stopped_transfer(client: &TestClient, mg_state: &MgState) {
+    let removed = !mg_state.removed_seats.lock().expect("test lock").is_empty();
+    let destination_runs = mg_state
+        .seat_statuses
+        .lock()
+        .expect("test lock")
+        .get(&DESTINATION)
+        == Some(&ServiceStatus::Running);
+    assert!(!removed || destination_runs);
+    let backup = client.inner.store.backup_payload().await.unwrap().payload;
+    db::FaStore::new(MemDatabase::new().into_database())
+        .restore_backup_payload_with_completion(TestIdentity::fa_id(), backup, None)
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn a_transfer_stopped_after_any_write_finishes_on_resume() {
+    let mut writes = 1;
+    loop {
+        let (database, payments, payment_state, mg_state, client) = formed_paid_client().await;
+        let source_seat_id = formation(&client.status()).seats[MOVED]
+            .seat_id
+            .clone()
+            .unwrap();
+        let funded_before = payment_state.create_calls.load(Ordering::SeqCst);
+        client.inner.store.stop_after_transfer_writes(writes);
+
+        let started = start_transfer_with(
+            &client,
+            &mg_state,
+            destination_approval(PAYMENT_AMOUNT_MSATS),
+        )
+        .await;
+        check_stopped_transfer(&client, &mg_state).await;
+        if started.is_ok() {
+            guardian_arrives(&mg_state);
+            let _ = client.resume_guardian_transfer(transfer_options()).await;
+            check_stopped_transfer(&client, &mg_state).await;
+        }
+        if client.inner.store.transfer_write_stop_pending() {
+            // The whole transfer made fewer writes than this run waited
+            // for: every write had its turn. Buying and moving make 8.
+            assert!(8 < writes, "the transfer made only {} writes", writes - 1);
+            break;
+        }
+        drop(client);
+
+        // A new process on the same database and wallet.
+        let registry = TestRegistry::default();
+        registry
+            .candidates
+            .lock()
+            .expect("test lock")
+            .push(setup_payment_event(test_now_secs(), &[PAYMENT_INVITE]));
+        let reopened = open_client_with_registry(
+            database,
+            payments,
+            mg_state.clone(),
+            MgConfig::paid(),
+            registry,
+        )
+        .await;
+        let resumed = reopened
+            .resume_guardian_transfer(short_options())
+            .await
+            .unwrap();
+        if resumed.as_ref().map(|transfer| transfer.phase)
+            == Some(GuardianTransferPhase::AwaitingSource)
+        {
+            check_stopped_transfer(&reopened, &mg_state).await;
+            guardian_arrives(&mg_state);
+            let finished = reopened
+                .resume_guardian_transfer(transfer_options())
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(finished.phase, GuardianTransferPhase::Completed);
+        }
+
+        // Every stop ends in the same move, paid once.
+        assert_eq!(
+            reopened.guardian_transfer().await.unwrap(),
+            None,
+            "{writes}"
+        );
+        assert_eq!(
+            mg_state.removed_seats.lock().expect("test lock").clone(),
+            vec![(MOVED, source_seat_id)],
+            "{writes}"
+        );
+        assert_eq!(
+            payment_state.create_calls.load(Ordering::SeqCst),
+            funded_before + 1,
+            "{writes}"
+        );
+        let FaStatus::Restored(restored) = reopened.status() else {
+            panic!("a moved guardian keeps the post-formation record");
+        };
+        assert_eq!(
+            restored.seats[MOVED].mg_identity,
+            test_mg_id(DESTINATION),
+            "{writes}"
+        );
+        check_stopped_transfer(&reopened, &mg_state).await;
+        writes += 1;
+    }
+}
+
 #[tokio::test]
 async fn a_live_liquidity_request_blocks_a_transfer() {
     let (_database, _payments, _payment_state, mg_state, client) = formed_paid_client().await;

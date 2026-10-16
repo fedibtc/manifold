@@ -896,6 +896,10 @@ pub(crate) struct FaStore {
     failed_abandon: Arc<AtomicBool>,
     #[cfg(test)]
     failed_restore: Arc<AtomicBool>,
+    /// Count of guardian transfer writes left before a simulated crash: the
+    /// last one commits and then fails, so its run stops right there.
+    #[cfg(test)]
+    stopped_transfer_write: Arc<std::sync::Mutex<Option<usize>>>,
 }
 
 impl FaStore {
@@ -921,6 +925,8 @@ impl FaStore {
             failed_abandon: Arc::new(AtomicBool::new(false)),
             #[cfg(test)]
             failed_restore: Arc::new(AtomicBool::new(false)),
+            #[cfg(test)]
+            stopped_transfer_write: Arc::new(std::sync::Mutex::new(None)),
         }
     }
 
@@ -1446,7 +1452,25 @@ impl FaStore {
             failed_quote_clear: Arc::new(std::sync::Mutex::new(None)),
             failed_abandon: Arc::new(AtomicBool::new(false)),
             failed_restore: Arc::new(AtomicBool::new(false)),
+            stopped_transfer_write: Arc::new(std::sync::Mutex::new(None)),
         }
+    }
+
+    #[cfg(test)]
+    /// Commit `count` more guardian transfer writes, then fail the last one
+    /// after its commit, as a crash right after it would.
+    pub(crate) fn stop_after_transfer_writes(&self, count: usize) {
+        *self.stopped_transfer_write.lock().expect("test lock") = Some(count);
+    }
+
+    #[cfg(test)]
+    /// Whether the stop set by [`Self::stop_after_transfer_writes`] has not
+    /// happened yet.
+    pub(crate) fn transfer_write_stop_pending(&self) -> bool {
+        self.stopped_transfer_write
+            .lock()
+            .expect("test lock")
+            .is_some()
     }
 
     #[cfg(test)]
@@ -3544,7 +3568,22 @@ impl FaStore {
         }
         dbtx.commit_tx_result()
             .await
-            .map_err(|_| FaError::Storage("persisting the guardian transfer failed".to_owned()))
+            .map_err(|_| FaError::Storage("persisting the guardian transfer failed".to_owned()))?;
+        #[cfg(test)]
+        {
+            let mut left = self.stopped_transfer_write.lock().expect("test lock");
+            match *left {
+                Some(1) => {
+                    *left = None;
+                    return Err(FaError::Storage(
+                        "injected stop after a guardian transfer write".to_owned(),
+                    ));
+                }
+                Some(count) => *left = Some(count - 1),
+                None => {}
+            }
+        }
+        Ok(())
     }
 
     pub(crate) async fn renew_driver_lease(&self, lease: &DriverLease) -> FaResult<()> {
