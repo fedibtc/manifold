@@ -1038,6 +1038,120 @@ async fn mg_upgrades_existing_guardians_wallet_and_pending_payout_under_defe() {
     .expect("MG production upgrade failed");
 }
 
+/// Release qualification for mixed fleets: guardians on the previous release
+/// and on the candidate must agree on the DKG consensus checksum and form one
+/// federation. MG 0.1.3 and 0.1.4 failed this because they recorded different
+/// stability-pool module versions in the federation config.
+#[cfg(target_os = "linux")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "requires explicit old/new release binaries and isolated defe resources"]
+async fn mg_forms_with_previous_release_guardians_under_defe() {
+    let previous = env::var_os("MG_UPGRADE_FROM_BIN")
+        .map(PathBuf::from)
+        .expect("MG_UPGRADE_FROM_BIN must name the previous production fleet-manager");
+    let candidate = locate_binary(MANIFOLD_GUARDIAN_BIN_ENV, "fleet-manager").unwrap();
+    tokio::time::timeout(
+        FORMATION_TIMEOUT,
+        run_mixed_release_formation(&previous, &candidate),
+    )
+    .await
+    .expect("mixed-release formation timed out")
+    .expect("mixed-release formation failed");
+}
+
+async fn run_mixed_release_formation(previous: &Path, candidate: &Path) -> anyhow::Result<()> {
+    let fa_cli_bin = locate_binary(FA_CLI_BIN_ENV, "fa-cli")?;
+    let fedimint_cli_bin = locate_binary(FEDIMINT_CLI_BIN_ENV, "fedimint-cli")?;
+    let mut defe = AsyncDefeClient::connect_from_env()
+        .await
+        .context("connect to defe from env")?;
+    let bitcoind_lease = defe
+        .request_bitcoind(SharingMode::Exclusive)
+        .await
+        .context("allocate real regtest bitcoind through defe")?;
+    let ResourceDescriptor::Bitcoind(bitcoind) = &bitcoind_lease.descriptor else {
+        anyhow::bail!("expected bitcoind descriptor from defe");
+    };
+    let nostr_relay_lease = defe
+        .request_nostr_relay(SharingMode::Shared)
+        .await
+        .context("allocate local Nostr relay through defe")?;
+    let ResourceDescriptor::NostrRelay(nostr_relay) = &nostr_relay_lease.descriptor else {
+        anyhow::bail!("expected Nostr relay descriptor from defe");
+    };
+    let setup_payment_publisher =
+        NostrKeys::parse("0000000000000000000000000000000000000000000000000000000000000001")?
+            .public_key()
+            .to_string();
+
+    let temp = mg_e2e_temp_dir()?;
+    // Three of seven guardians run the previous release, so both sides have
+    // several members and each sees a mismatching peer if checksums differ.
+    let bins: Vec<&Path> = (0..GUARDIAN_COUNT)
+        .map(|index| if index % 3 == 0 { previous } else { candidate })
+        .collect();
+    let iroh_overrides = local_iroh_overrides_for_grid(31_000, 1, GUARDIAN_COUNT);
+    let (daemons, locators) = start_daemons_with_bins(
+        &bins,
+        &temp,
+        bitcoind,
+        1,
+        31_000,
+        Some(&iroh_overrides),
+        Some(NostrEnv {
+            relay_urls: &nostr_relay.url,
+            holder_relay_url: &nostr_relay.url,
+            setup_payment_publisher: &setup_payment_publisher,
+        }),
+        None,
+    )
+    .await;
+    for (index, bin) in bins.iter().enumerate() {
+        manifold_guardian_admin(
+            bin,
+            &temp.join(format!("mg-{index}")),
+            &["plans", "set", "--price-msats", "0"],
+        )
+        .await?;
+    }
+    let invite_code = run_fa_cli(
+        &fa_cli_bin,
+        &locators,
+        FaCliInvocation {
+            extra_args: &[],
+            resume_args: None,
+            wallet_secret: None,
+            output: FaCliOutput::Human,
+            nostr_relay: None,
+        },
+        Some(&iroh_overrides),
+        GUARDIAN_COUNT,
+        FA_CLI_TIMEOUT,
+    )
+    .await?;
+    assert_formation_has_v2_module_set(&temp, GUARDIAN_COUNT)?;
+    // Formation alone stops at DKG. Consensus must also run across both
+    // releases.
+    let fedimint_cli = FedimintCli {
+        bin: &fedimint_cli_bin,
+        data_dir: temp.join("fedimint-cli-client"),
+        iroh_overrides: &iroh_overrides,
+    };
+    fedimint_cli
+        .run(
+            &["join-federation", invite_code.trim()],
+            FEDIMINT_CLI_JOIN_TIMEOUT,
+        )
+        .await?;
+    wait_for_seat_bindings_consensus(&fedimint_cli, GUARDIAN_COUNT).await?;
+
+    shutdown_daemons(daemons).await?;
+    defe.release(nostr_relay_lease.handle_id).await?;
+    defe.release(bitcoind_lease.handle_id).await?;
+    std::fs::remove_dir_all(&temp).context("remove mixed-release E2E tempdir")?;
+    Ok(())
+}
+
 async fn run_real_post_formation_operations(upgrade_from: Option<&Path>) -> anyhow::Result<()> {
     let candidate_bin = locate_binary(MANIFOLD_GUARDIAN_BIN_ENV, "fleet-manager")?;
     let manifold_guardian_bin = upgrade_from.unwrap_or(&candidate_bin);
@@ -4025,8 +4139,34 @@ async fn start_daemons(
     nostr: Option<NostrEnv<'_>>,
     push_gateway_origin: Option<&str>,
 ) -> (Vec<Child>, Vec<String>) {
-    let mut starting = Vec::with_capacity(guardian_count);
-    for index in 0..guardian_count {
+    start_daemons_with_bins(
+        &vec![manifold_guardian_bin; guardian_count],
+        temp,
+        bitcoind,
+        max_seats,
+        first_port_base,
+        iroh_overrides,
+        nostr,
+        push_gateway_origin,
+    )
+    .await
+}
+
+/// Start one daemon per entry of `manifold_guardian_bins`, so a test can mix
+/// releases.
+#[expect(clippy::too_many_arguments)]
+async fn start_daemons_with_bins(
+    manifold_guardian_bins: &[&Path],
+    temp: &Path,
+    bitcoind: &defe_api::BitcoindInfo,
+    max_seats: u32,
+    first_port_base: u16,
+    iroh_overrides: Option<&str>,
+    nostr: Option<NostrEnv<'_>>,
+    push_gateway_origin: Option<&str>,
+) -> (Vec<Child>, Vec<String>) {
+    let mut starting = Vec::with_capacity(manifold_guardian_bins.len());
+    for (index, &manifold_guardian_bin) in manifold_guardian_bins.iter().enumerate() {
         let data_dir = temp.join(format!("mg-{index}"));
         // The seat port grid is per-host; give each daemon a disjoint block.
         let port_base = first_port_base + u16::try_from(index).unwrap() * 100;
@@ -4047,6 +4187,7 @@ async fn start_daemons(
 
     let ready = join_all(starting.into_iter().map(|(index, mut daemon)| {
         let data_dir = temp.join(format!("mg-{index}"));
+        let manifold_guardian_bin = manifold_guardian_bins[index];
         async move {
             // A Manifold Guardian has no identity until it is onboarded, so it waits
             // on its admin socket instead of serving RPC. This is the operator's

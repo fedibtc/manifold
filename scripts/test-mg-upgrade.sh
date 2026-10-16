@@ -59,5 +59,6 @@ FLIP_E2E_GATEWAY_CLI_BIN=$(command -v gateway-cli)
   --gatewayd-bin "$(command -v gatewayd)" \
   --gateway-cli-bin "$FLIP_E2E_GATEWAY_CLI_BIN" \
   exec cargo test --locked -p tests-e2e --test manifold_guardian_0_1_formation \
+  -- --ignored --exact --nocapture \
   mg_upgrades_existing_guardians_wallet_and_pending_payout_under_defe \
-  -- --ignored --exact --nocapture
+  mg_forms_with_previous_release_guardians_under_defe
