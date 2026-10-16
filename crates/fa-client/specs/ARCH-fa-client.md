@@ -665,8 +665,11 @@ destination for the same peer. This step does not need a reconciled seat
 list, because consensus may already name the destination. In the same
 transaction it replaces the source seat in the federation's seat list with
 the destination, and records the source MG and its known holder as a past
-host. It then sends `RemoveSeat` to the source. An unreachable source leaves
-the transfer in `RemovingSource` for a later resume.
+host. Before each `RemoveSeat` to the source, it asks the destination for
+its status again, also on a resume in `RemovingSource`: the source seat is
+the last other copy of the guardian. A destination that is unreachable or not
+`Running`, or an unreachable source, leaves the transfer in `RemovingSource`
+for a later resume.
 
 A transfer and a liquidity request do not overlap: the liquidity commitment
 names the current seats, so each refuses to start while the other is live.

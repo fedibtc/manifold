@@ -427,6 +427,16 @@ where
             self.inner.progress.send_replace(status);
         }
         let transfer = transfer.moved(&moving);
+        // The source seat is the last other copy of the guardian. Remove it
+        // only right after the destination says again that it runs it, on
+        // every attempt: a binding saved or published earlier says nothing
+        // about the destination now.
+        if !self
+            .destination_runs(&moving.destination, fa_id, run)
+            .await?
+        {
+            return Ok(transfer.view(GuardianTransferPhase::RemovingSource));
+        }
         match self.remove_source_seat(&transfer, fa_id, run).await {
             Ok(()) => {
                 lease
@@ -901,6 +911,43 @@ where
             expires_at,
         })?;
         Ok((grant, expires_at))
+    }
+
+    /// Whether the destination reports the moved guardian running now. An
+    /// unreachable destination does not.
+    async fn destination_runs(
+        &self,
+        destination: &StoredDestinationSeat,
+        fa_id: FaId,
+        run: DriverRun<'_>,
+    ) -> FaResult<bool> {
+        let client =
+            match MgClient::connect(&self.inner.ports.mg_connector, &destination.locator, run)
+                .await
+            {
+                Ok(client) => client,
+                Err(FaError::Mg(_)) => return Ok(false),
+                Err(error) => return Err(error),
+            };
+        let request = self.sign(&GetStatusRequest {
+            ts: Timestamp(now_secs()?),
+            fa_id,
+            seat_id: destination.seat_id.clone(),
+        })?;
+        match client
+            .call(run, MgOperation::GetStatus, |client| {
+                client.get_status(request)
+            })
+            .await
+        {
+            Ok(response) => Ok(response.status == ServiceStatus::Running),
+            Err(FaError::Mg(failure))
+                if matches!(failure.cause, MgCause::Timeout | MgCause::Transport) =>
+            {
+                Ok(false)
+            }
+            Err(error) => Err(error),
+        }
     }
 
     async fn remove_source_seat(
