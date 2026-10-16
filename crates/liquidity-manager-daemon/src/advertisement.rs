@@ -20,6 +20,7 @@ use sqlx::Row;
 use tracing::warn;
 
 use crate::DaemonContext;
+use crate::advertisement_writer::{WAIT_TIMEOUT, wait_error};
 use crate::daemon::Worker;
 use crate::identity;
 use crate::nostr::{RelayPublishRequest, RelayWithdrawRequest};
@@ -137,6 +138,19 @@ pub(crate) async fn republish(
     context: &DaemonContext,
     force: bool,
 ) -> ServiceResult<AdvertisementRecord> {
+    republish_with_clock(context, force, now_timestamp).await
+}
+
+/// Shares writer admission and pacing between admin and periodic callers.
+async fn republish_with_clock(
+    context: &DaemonContext,
+    force: bool,
+    clock: impl Fn() -> Timestamp,
+) -> ServiceResult<AdvertisementRecord> {
+    let deadline = tokio::time::Instant::now() + WAIT_TIMEOUT;
+    let mut writer = tokio::time::timeout_at(deadline, context.advertisement_writer.lock())
+        .await
+        .map_err(|_| wait_error())?;
     let readiness = public_readiness(context).await?;
     if !readiness.ready {
         persist_not_ready(context, &readiness).await?;
@@ -173,7 +187,9 @@ pub(crate) async fn republish(
     // the relay event must come from the same key.
     let auth_provider = context.auth_provider().await;
     let provider_pubkey = identity::load_provider_identity(&context.database).await?;
-    let issued_at = now_timestamp();
+    // Admin and periodic paths share this gate. The readiness recheck below
+    // runs after pacing, before committing or sending a ready assertion.
+    let issued_at = writer.next_timestamp(deadline, clock).await?;
     let holder_authorizations =
         crate::holder_authorization::provider_trust_envelopes(&context.database, &provider_pubkey)
             .await?;
@@ -202,21 +218,9 @@ pub(crate) async fn republish(
         api_versions: vec![PROTOCOL_VERSION],
         relay_hints: config.relays.clone(),
     };
-    // Sign only when the payload actually changed: Schnorr signing is
-    // non-deterministic, so re-signing identical content (e.g. two republish
-    // triggers within the same second) would publish a different proof than
-    // the persisted advertisement and break byte-identical replaceable-event
-    // updates on relays.
-    let stored = load_advertisement_record(context).await?;
-    let previous_status = stored.status;
-    let payload_unchanged = stored
-        .advertisement
-        .as_ref()
-        .is_some_and(|existing| existing.payload == advertisement);
-    let signed = match stored.advertisement {
-        Some(existing) if payload_unchanged => existing,
-        _ => auth_provider.sign_advertisement(advertisement)?,
-    };
+    // Pacing gives every attempt a new timestamp, so there is no identical event
+    // or persisted signature to reuse.
+    let signed = auth_provider.sign_advertisement(advertisement)?;
     let hash = fedi_decentralized_service_liquidity_manager::advertisement_hash(&signed.payload)
         .map_err(internal_error)?;
     let signed_json = String::from_utf8(canonical_json_payload(&signed).map_err(internal_error)?.0)
@@ -390,22 +394,17 @@ pub(crate) async fn republish(
         AdvertisementPublicationStatus::Published
     };
     persist_publication_status(context, outcome, None).await?;
-    // Only a change is news. This runs on a reconcile timer, so an unchanged
-    // advertisement re-sent to the same relays would otherwise write the same
-    // line every minute for the life of the process.
-    if previous_status != outcome || !payload_unchanged {
-        match outcome {
-            AdvertisementPublicationStatus::Published => tracing::info!(
-                relays = config.relays.len(),
-                expires_at = signed.payload.expires_at.0,
-                resigned = !payload_unchanged,
-                "published the provider advertisement"
-            ),
-            _ => warn!(
-                relays = config.relays.len(),
-                "advertisement publication failed on at least one relay"
-            ),
-        }
+    match outcome {
+        AdvertisementPublicationStatus::Published => tracing::info!(
+            relays = config.relays.len(),
+            expires_at = signed.payload.expires_at.0,
+            resigned = true,
+            "published the provider advertisement"
+        ),
+        _ => warn!(
+            relays = config.relays.len(),
+            "advertisement publication failed on at least one relay"
+        ),
     }
 
     load_advertisement_record(context).await
@@ -415,6 +414,19 @@ pub(crate) async fn withdraw(
     context: &DaemonContext,
     reason: Option<String>,
 ) -> ServiceResult<AdvertisementRecord> {
+    withdraw_with_clock(context, reason, now_timestamp).await
+}
+
+/// Persists admitted withdrawal intent before the shared pacing wait.
+async fn withdraw_with_clock(
+    context: &DaemonContext,
+    reason: Option<String>,
+    clock: impl Fn() -> Timestamp,
+) -> ServiceResult<AdvertisementRecord> {
+    let deadline = tokio::time::Instant::now() + WAIT_TIMEOUT;
+    let mut writer = tokio::time::timeout_at(deadline, context.advertisement_writer.lock())
+        .await
+        .map_err(|_| wait_error())?;
     let relay_states = load_relay_states(context).await?;
     // Both are needed to reach a relay at all: the key that authored the
     // publication, and the advertisement to expire. Missing either means
@@ -429,9 +441,34 @@ pub(crate) async fn withdraw(
     // and announce the same departure every minute. The timestamp is the
     // durable half and survives it.
     let was_withdrawn = stored.withdrawn_at.is_some();
+    // Once admitted by the writer, preserve the existing operator-intent latch
+    // before any clock wait or relay I/O can fail or be canceled. This uses the
+    // existing SQLite policy, not a new power-loss durability contract.
+    persist_publication_status(
+        context,
+        AdvertisementPublicationStatus::Withdrawn,
+        reason.as_deref(),
+    )
+    .await?;
     let expired = match (&relay_secret_key, stored.advertisement) {
         (Some(_), Some(published)) => {
-            Some(expire_advertisement(auth_provider.as_ref(), published)?)
+            let issued_at = match writer.next_timestamp(deadline, clock).await {
+                Ok(timestamp) => timestamp,
+                Err(error) => {
+                    persist_publication_status(
+                        context,
+                        AdvertisementPublicationStatus::Failed,
+                        Some(&error.to_string()),
+                    )
+                    .await?;
+                    return Err(error);
+                }
+            };
+            Some(expire_advertisement(
+                auth_provider.as_ref(),
+                published,
+                issued_at,
+            )?)
         }
         _ => None,
     };
@@ -502,22 +539,11 @@ pub(crate) async fn withdraw(
 fn expire_advertisement(
     auth_provider: &dyn crate::auth::PublicAuthProvider,
     published: Signed<LiquidityProviderAdvertisement>,
+    issued_at: Timestamp,
 ) -> ServiceResult<(String, Timestamp)> {
-    // Strictly after the advertisement being replaced, so replaceable-event
-    // ordering keeps this one — equal timestamps are resolved by lowest event
-    // id, which could otherwise keep the live one.
-    //
-    // Bounded above at one second from now, because `published.issued_at` is
-    // **unverified input**: it is reloaded from `signed_advertisement_json` and
-    // nothing re-checks it. A tampered far-future value would put `created_at`
-    // past what relays accept, they would reject the expiry, and the live
-    // advertisement would keep being served — a withdrawal that silently does
-    // not withdraw.
-    let now = now_timestamp().0;
-    let issued_at = Timestamp(
-        now.max(published.payload.issued_at.0.saturating_add(1))
-            .min(now.saturating_add(1)),
-    );
+    // The writer samples current time after pacing; it never increments the
+    // unverified persisted issued_at. Thus a tampered far-future payload cannot
+    // escape the existing now+1 bound and make the relay reject withdrawal.
 
     // Built from constants and the one field signing actually checks, rather
     // than from the stored payload.
