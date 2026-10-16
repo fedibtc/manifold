@@ -8,7 +8,9 @@ It covers FLIP only within that claim's documented single-process,
 single-gateway production envelope. It establishes the claim's local
 implication: if every immediate assumption below holds, the stated production
 readiness property holds. It neither establishes the assumptions in a real
-deployment nor evaluates linked claims or claims.
+deployment nor evaluates linked claims. The claim remains unverified; this
+conditional argument is not evidence that its premises hold on current
+dependencies or in production.
 
 The proof considers admission, value and budget accounting, settlement
 attribution, irreversible-effect idempotency, failure and recovery handling,
@@ -18,8 +20,9 @@ because failure of any one contradicts the claim's definition of readiness.
 
 ## Model and quantifiers
 
-Let a supported deployment be one satisfying the claim's first five
-assumptions, and let an execution contain any finite release-conforming
+Let a supported deployment be one satisfying the claim's deployment, operator,
+dependency, requester, and release-envelope assumptions, and let an execution
+contain any finite release-conforming
 workload of supported gateway and stability-pool allocation requests. A request,
 allocation, item, withdrawal, wallet operation, RPC stream, target client, and
 restore is in scope only when the documented interface and release envelope
@@ -27,7 +30,8 @@ admit it.
 
 `Ready` means every conclusion named in the claim statement holds for every
 such execution: authorized admission and operator-free successful completion
-capability; provider-wallet value protection; item-specific settlement
+capability; operational custody of technically authorized managed funds;
+item-specific settlement
 attribution; crash and retry idempotency; recoverability; actionable failure
 visibility; secret confinement; canonical wire and signing behavior; the stated
 finite resource and fairness bounds; deadline-bounded completion or actionable
@@ -47,7 +51,8 @@ does not disclose the destination response to it.
 
 ## Immediate assumptions
 
-The following are the immediate premises, copied from the claim record. The
+The following are the immediate premises from the claim record, numbered here
+for the argument rather than ordered as in the record. The
 linked claims are axioms at this level; this proof does not open or
 assess them.
 
@@ -116,8 +121,8 @@ assess them.
     ([claim](../CLAIM-failed-stability-allocation-strands-ecash.md)).
 20. If a claimed stability-pool deposit is rejected, an Admin operation fails the
     item, releases the provider capacity its reservation held, and durably records
-    the amount left behind in the target client. Recovering that value is outside
-    FLIP
+    the amount left behind in the target client. This capacity-release property
+    does not establish recovery of the remaining value
     ([claim](../CLAIM-stability-deposit-rejection-releases-capacity.md)).
 21. Fair worker execution eventually observes an upstream terminal
     `deposit_to_provide` result for an active stability-pool item
@@ -193,12 +198,13 @@ assess them.
     bound to the exact allocation item or operator intent whose durable reservation
     authorized it and can satisfy only that owner. One effect and its evidence
     cannot count its value or fees more than once.
+41. [CLAIM-liquidity-manager-managed-funds-not-lost](../CLAIM-liquidity-manager-managed-funds-not-lost.md).
 
 ## Argument
 
 1. **Envelope and authorized admission.** Assumptions 1 through 5 define the
    accountable owner, protected administration boundary, supported release, and
-   authenticated dependency model. Assumptions 4, 6, 7, and 40 jointly make
+   authenticated dependency model. Assumptions 4, 6, 7, and 39 jointly make
    admission authorization specific to the authenticated FA, the exact
    authenticated requester key, a valid unrevoked endorsement, its semantic
    intent, and its exact federation. Assumption 8 prevents the admitted FA from
@@ -212,8 +218,13 @@ assess them.
    admitted supported allocation; the documented constrained Iroh traffic is
    inside the envelope.
 
-2. **Provider-wallet value and settlement attribution.** Assumptions 11, 14, and
-   15 protect the budget before and during allocation: fulfilled value has an
+2. **Operational custody and settlement attribution.** Assumption 41 supplies
+   bounded authorized effects directed to their exact authorized targets,
+   money-effect retry safety, and retained custody credentials and item-specific
+   recovery or reconciliation evidence. It does not assert target-side receipt
+   for an incomplete effect, investment performance, solvency, or ownership.
+   Assumptions 11, 14, and 15 protect the budget before and during allocation:
+   fulfilled value has an
    item-persisted target and attributable FLIP-caused provider-wallet outflow;
    uncertain debits cannot free capacity; and all stated liabilities plus the
    fee reserve remain within known spendable balance and the allocation cap.
@@ -230,7 +241,7 @@ assess them.
    item or operator intent. Assumption 40 binds each operation, effect, and
    settlement evidence to that same owner and makes its value non-reusable.
    These premises
-   jointly establish the claim's provider-wallet-value and item-specific
+   jointly establish the claim's operational-custody and item-specific
    settlement-attribution dimensions.
 
 3. **Idempotency, terminal integrity, and recoverability.** Assumption 10
@@ -244,9 +255,10 @@ assess them.
    Assumption 16 also closes the allocation hierarchy per item: a terminal item
    has no later irreversible effect and no overwritten terminal evidence, which
    is what "a terminal allocation has no active value-affecting child" amounted
-   to once no roll-up allocation status existed to quantify over. Assumptions 19
-   and 20 supply automatic or operator recovery for claimed ecash on failed or
-   rejected stability work.
+   to once no roll-up allocation status existed to quantify over. Assumption 41
+   supplies retained technical recovery or reconciliation authority. Assumptions
+   19 and 20 constrain automatic stranding and provide audited operator capacity
+   release; they do not establish recovery of the remaining ecash.
    Together with durable, authentic-or-detectable dependencies in assumption 3
    and the operator procedure and capacity conditions in assumption 2, these
    establish the claimed crash/retry idempotency and recoverability within the
