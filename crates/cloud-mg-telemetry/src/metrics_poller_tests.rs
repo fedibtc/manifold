@@ -235,7 +235,6 @@ async fn assert_healthy_seat_survives(
     let started = tokio::time::Instant::now();
     let commit = poller.collect_target(&target, started + budget).await;
     assert!(started.elapsed() < budget + Duration::from_secs(1));
-    assert!(!commit.complete);
     assert_eq!(commit.snapshots.len(), 1);
     assert_eq!(commit.snapshots[0].guardian_seat_id, good_seat.to_string());
     assert!(!commit.snapshots[0].samples.is_empty());

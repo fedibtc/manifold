@@ -6,7 +6,7 @@ mod metrics_policy;
 #[path = "../src/metrics_snapshot.rs"]
 mod metrics_snapshot;
 
-use metrics_snapshot::{ExpositionError, MetricsSnapshot, MetricsTargetHealth};
+use metrics_snapshot::{ExpositionError, MetricsSeatHealth, MetricsSnapshot, MetricsTargetHealth};
 
 fn render_metrics(
     snapshots: Vec<MetricsSnapshot>,
@@ -176,11 +176,13 @@ fn remote_failure_is_exposed_without_removing_healthy_targets() {
                 mg_id: "11".into(),
                 mg_name: "same".into(),
                 fresh: true,
+                seats: vec![],
             },
             MetricsTargetHealth {
                 mg_id: "22".into(),
                 mg_name: "same".into(),
                 fresh: false,
+                seats: vec![],
             },
         ],
         0,
@@ -191,6 +193,45 @@ fn remote_failure_is_exposed_without_removing_healthy_targets() {
     .unwrap();
     assert!(output.contains("fman_id=\"11\",fman_name=\"same\"} 1 2000"));
     assert!(output.contains("fman_id=\"22\",fman_name=\"same\"} 0 2000"));
+}
+
+#[test]
+fn each_listed_seat_reports_its_own_freshness() {
+    use std::io::BufRead as _;
+    let seat = |id: &str, observed_at_ms| MetricsSeatHealth {
+        guardian_seat_id: id.into(),
+        observed_at_ms,
+    };
+    let output = render_metrics(
+        vec![],
+        vec![MetricsTargetHealth {
+            mg_id: "11".into(),
+            mg_name: "same".into(),
+            fresh: true,
+            seats: vec![
+                seat("never", None),
+                seat("old", Some(9_999)),
+                seat("boundary", Some(10_000)),
+            ],
+        }],
+        0,
+        70_000,
+        60_000,
+        false,
+    )
+    .unwrap();
+    let line = |id: &str, value: u8| {
+        format!(
+            "cloud_fman_telemetry_seat_fresh{{fman_id=\"11\",fman_name=\"same\",guardian_seat_id=\"{id}\"}} {value} 70000\n"
+        )
+    };
+    assert!(output.contains(&line("never", 0)));
+    assert!(output.contains(&line("old", 0)));
+    assert!(output.contains(&line("boundary", 1)));
+    assert!(output.contains(
+        "cloud_fman_telemetry_target_fresh{fman_id=\"11\",fman_name=\"same\"} 1 70000\n"
+    ));
+    prometheus_parse::Scrape::parse(std::io::Cursor::new(output).lines()).unwrap();
 }
 
 #[test]
