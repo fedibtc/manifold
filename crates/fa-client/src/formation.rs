@@ -3939,7 +3939,7 @@ where
                 ))
             })?;
         let payload = self
-            .adopt_transferred_seat(fa_id, payload, &bindings)
+            .adopt_transferred_seat(fa_id, payload, &bindings, run)
             .await?;
         let federation_name = federation_name(&consensus)?;
         let validation_name = federation_name

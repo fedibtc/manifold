@@ -723,9 +723,12 @@ names the destination. A restored FA that reconciles and finds the source
 still in consensus opens the same move again with a new grant. When
 consensus already names the destination, reconciliation puts the destination
 in place of the source; this also covers a device that lost its run before it
-recorded the move. A restored FA does not know whether the source data was
-removed, so it does not send `RemoveSeat` for a move that consensus already
-shows. An open purchase is not backed up.
+recorded the move. If this device still has that move open, reconciliation
+advances it to `RemovingSource` in the same transaction, so its backup no
+longer carries the move and the transfer still removes the source. A restored
+FA without the open move does not know whether the source data was removed,
+so it does not send `RemoveSeat` for a move that consensus already shows. The
+FA never seals a backup that restore would refuse. An open purchase is not backed up.
 
 ## Modules
 

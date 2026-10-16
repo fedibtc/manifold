@@ -570,21 +570,21 @@ where
         fa_id: FaId,
         payload: crate::backup::FaBackupPayload,
         bindings: &[fedi_decentralized_domain::VerifiedSeatBinding],
+        run: DriverRun<'_>,
     ) -> FaResult<crate::backup::FaBackupPayload> {
         let open = self.inner.store.load_guardian_transfer().await?;
-        let (seat_index, destination) = match (open, &payload.transfer) {
-            (
-                Some(StoredGuardianTransfer {
-                    seat_index,
-                    stage: TransferStage::Moving(moving),
-                    ..
-                }),
-                _,
-            ) => (seat_index, moving.destination),
-            (Some(_), _) | (None, None) => return Ok(payload),
+        let (seat_index, destination, open) = match (open, &payload.transfer) {
+            (Some(transfer), _) => match &transfer.stage {
+                TransferStage::Moving(moving) => {
+                    (transfer.seat_index, moving.destination.clone(), Some(transfer.clone()))
+                }
+                TransferStage::Buying(_) => return Ok(payload),
+            },
+            (None, None) => return Ok(payload),
             (None, Some(backed_up)) => (
                 backed_up.seat_index,
                 restored_destination(&backed_up.destination),
+                None,
             ),
         };
         let source = payload.seats.get(usize::from(seat_index)).ok_or_else(|| {
@@ -598,10 +598,29 @@ where
         if named(source.mg_identity) || !named(destination.mg_id) {
             return Ok(payload);
         }
-        self.inner
-            .store
-            .adopt_transferred_seat(fa_id, seat_index, &source.seat_id, &destination)
-            .await?;
+        match open {
+            // This device still drives the move: advance it with the seat, so
+            // its row no longer backs up a destination the seat list names,
+            // and it still removes the source.
+            Some(transfer) => {
+                let TransferStage::Moving(mut moving) = transfer.stage.clone() else {
+                    unreachable!("matched a moving transfer above");
+                };
+                moving.phase = StoredTransferPhase::RemovingSource;
+                run.lease()
+                    .write_guardian_transfer(
+                        fa_id,
+                        GuardianTransferWrite::Rebind(transfer.moved(&moving)),
+                    )
+                    .await?;
+            }
+            None => {
+                self.inner
+                    .store
+                    .adopt_transferred_seat(fa_id, seat_index, &source.seat_id, &destination)
+                    .await?;
+            }
+        }
         self.inner.store.restored_backup_payload(fa_id).await
     }
 
