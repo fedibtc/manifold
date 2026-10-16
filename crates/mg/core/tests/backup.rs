@@ -29,8 +29,7 @@ fn seat_facts() -> SeatFacts {
 
 fn guardian_archive(private_len: usize) -> GuardianArchive {
     GuardianArchive {
-        private_encrypt: "ab".repeat(private_len),
-        private_salt: "c2FsdHNhbHRzYWx0c2E".into(),
+        private_json: format!(r#"{{"shares":"{}"}}"#, "ab".repeat(private_len)),
         local_json: r#"{"api_bind":"127.0.0.1:8174"}"#.into(),
         consensus_json: r#"{"api_endpoints":{"0":"wss://peer"}}"#.into(),
     }
@@ -44,8 +43,7 @@ async fn the_guardian_archive_is_carried_and_restored_byte_for_byte() {
 
     let consensus = r#"{"api_endpoints":{"0":"wss://peer"}}"#;
     for (name, contents) in [
-        ("private.encrypt", "deadbeef"),
-        ("private.salt", "c2FsdA"),
+        ("private.json", r#"{"shares":"deadbeef"}"#),
         ("local.json", r#"{"api_bind":"127.0.0.1:8174"}"#),
         ("consensus.json", consensus),
     ] {
@@ -58,15 +56,10 @@ async fn the_guardian_archive_is_carried_and_restored_byte_for_byte() {
     // Restore into a *new* directory: recovery never writes over a live seat.
     let restored_dir = dir.path().join("seats/1/data");
     let digest = archive.digest();
-    write_restored_seat_dir(&restored_dir, &archive, &digest, "derived-api-auth")
+    write_restored_seat_dir(&restored_dir, &archive, &digest)
         .await
         .unwrap();
-    for name in [
-        "private.encrypt",
-        "private.salt",
-        "local.json",
-        "consensus.json",
-    ] {
+    for name in ["private.json", "local.json", "consensus.json"] {
         assert_eq!(
             tokio::fs::read_to_string(restored_dir.join(name))
                 .await
@@ -77,14 +70,6 @@ async fn the_guardian_archive_is_carried_and_restored_byte_for_byte() {
             "{name} did not round-trip"
         );
     }
-    // The password is not part of the round trip: it is re-derived, and
-    // without it fedimintd would treat the restored config as absent.
-    assert_eq!(
-        tokio::fs::read_to_string(restored_dir.join("password.private"))
-            .await
-            .unwrap(),
-        "derived-api-auth"
-    );
 }
 
 #[tokio::test]
@@ -97,7 +82,7 @@ async fn a_seat_without_a_finished_ceremony_has_nothing_to_back_up() {
     assert!(read_guardian_archive(&seat_dir).await.unwrap().is_none());
 
     // A partially written set is "not ready", never a truncated backup.
-    tokio::fs::write(seat_dir.join("private.encrypt"), "deadbeef")
+    tokio::fs::write(seat_dir.join("private.json"), r#"{"shares":"deadbeef"}"#)
         .await
         .unwrap();
     assert!(read_guardian_archive(&seat_dir).await.unwrap().is_none());
@@ -111,7 +96,7 @@ async fn an_archive_that_is_not_the_backups_own_is_refused() {
     // The digest is the only thing standing between relay-supplied bytes and a
     // guardian's data directory, so the refusal has to come from the write
     // itself — it cannot be a check a restore path might forget to run.
-    let err = write_restored_seat_dir(&dir.path().join("data"), &archive, &"11".repeat(32), "auth")
+    let err = write_restored_seat_dir(&dir.path().join("data"), &archive, &"11".repeat(32))
         .await
         .unwrap_err();
     assert!(
@@ -181,8 +166,7 @@ async fn a_publication_carries_the_archive_its_document_names() {
     let dir = crate::seat_process::seat_data_dir(&process, facts.seat_no);
     tokio::fs::create_dir_all(&dir).await.unwrap();
     for (name, contents) in [
-        ("private.encrypt", "deadbeef"),
-        ("private.salt", "c2FsdA"),
+        ("private.json", r#"{"shares":"deadbeef"}"#),
         ("local.json", r#"{"api_bind":"127.0.0.1:1"}"#),
         ("consensus.json", r#"{"api_endpoints":{}}"#),
     ] {
@@ -196,7 +180,7 @@ async fn a_publication_carries_the_archive_its_document_names() {
         .archive
         .as_ref()
         .expect("the archive travels unconfirmed");
-    assert_eq!(archive.private_encrypt, "deadbeef");
+    assert_eq!(archive.private_json, r#"{"shares":"deadbeef"}"#);
     assert_eq!(
         plan.document.guardian.as_ref().unwrap().archive_sha256,
         archive.digest(),

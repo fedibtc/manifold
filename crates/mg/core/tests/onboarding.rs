@@ -224,7 +224,6 @@ async fn a_restore_returns_the_identity_its_documents_belong_to() {
     let recovered = crate::backup::RecoveredFleet {
         seats: Vec::new(),
         archives: std::collections::HashMap::new(),
-        format_version: 1,
     };
     crate::restore::install(&db, &process(&temp), &identity, &recovered)
         .await

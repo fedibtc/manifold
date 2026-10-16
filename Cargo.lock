@@ -6518,6 +6518,7 @@ dependencies = [
  "fedi-decentralized-nostr-clients",
  "fedi-decentralized-peer-badge-verifier",
  "fedi-decentralized-service-manifold-guardian",
+ "fedimint-aead",
  "futures-util",
  "hex",
  "hmac",

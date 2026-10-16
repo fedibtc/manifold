@@ -136,8 +136,8 @@ pub(crate) async fn recover(
 ///   creates, on a host that has no identity and so no live guardian).
 /// - **Adoption.** A final directory that already exists is adopted if and
 ///   only if it is exactly what a staged write renames into place — the
-///   archive files hashing to the digest the seat's document names, the
-///   re-derived password, and nothing else — which is exactly what a crash
+///   archive files hashing to the digest the seat's document names and
+///   nothing else — which is exactly what a crash
 ///   between the renames and the fleet transaction leaves. Anything else
 ///   refuses: adoption reads, verifies, and never writes, so the
 ///   never-write-into-an-existing-directory constraint relevant to
@@ -186,11 +186,9 @@ pub(crate) async fn install(
             }
             None => {}
             Some(guardian) if exists => {
-                let api_auth = identity.derive_seat_keys(&seat.seat_id).api_auth;
-                let adoptable =
-                    is_adoptable_restored_seat_dir(&dir, &guardian.archive_sha256, &api_auth)
-                        .await
-                        .map_err(|err| anyhow::anyhow!("inspect existing seat directory: {err}"))?;
+                let adoptable = is_adoptable_restored_seat_dir(&dir, &guardian.archive_sha256)
+                    .await
+                    .map_err(|err| anyhow::anyhow!("inspect existing seat directory: {err}"))?;
                 if !adoptable {
                     return Err(RestoreError::SeatDirectoryExists(seat.seat_id.clone()));
                 }
@@ -212,10 +210,8 @@ pub(crate) async fn install(
         let staged = staging_root.join(seat_no.0.to_string());
         // `write_restored_seat_dir` re-checks the digest itself: relay bytes
         // are untrusted, and the check belongs on the side of the boundary
-        // that cannot skip it. The password is re-derived, not restored — the
-        // backup deliberately excludes it.
-        let api_auth = identity.derive_seat_keys(&seat.seat_id).api_auth;
-        write_restored_seat_dir(&staged, archive, &guardian.archive_sha256, &api_auth).await?;
+        // that cannot skip it.
+        write_restored_seat_dir(&staged, archive, &guardian.archive_sha256).await?;
         let dir = seat_data_dir(process, seat_no);
         if let Some(parent) = dir.parent() {
             tokio::fs::create_dir_all(parent)
@@ -243,18 +239,12 @@ pub(crate) async fn install(
                 .guardian
                 .as_ref()
                 .map(|guardian| RestoredGuardianConfig {
-                    archive_digest: guardian.archive_sha256.clone(),
                     federation_invite: guardian.federation_invite.clone(),
                 }),
             decommissioned_at_ms: seat.decommissioned_at_ms,
-            // The relay demonstrably serves exactly this document — we just
-            // fetched it — so the restored fleet's first scan republishes
-            // nothing.
-            published_doc_sha256: crate::backup::seat_document_sha256(seat),
         });
     }
-    db.install_restored_fleet(identity, &restored, fleet.format_version)
-        .await?;
+    db.install_restored_fleet(identity, &restored).await?;
     Ok(())
 }
 

@@ -90,10 +90,6 @@ pub struct RestoredSeat {
     /// the moment it is restored.
     pub guardian: Option<RestoredGuardianConfig>,
     pub decommissioned_at_ms: Option<i64>,
-    /// SHA-256 of the plaintext document as fetched from the relay, seeding
-    /// [`seat_backup_publications`]: the relay demonstrably serves exactly
-    /// this document, so a restored fleet starts with nothing to republish.
-    pub published_doc_sha256: String,
 }
 
 /// One seat's last relay-confirmed backup publication
@@ -109,8 +105,6 @@ pub(crate) struct SeatBackupPublication {
 
 /// What a restored seat's document said about its guardian archive.
 pub struct RestoredGuardianConfig {
-    /// Digest of the archive restore verified and installed.
-    pub archive_digest: String,
     /// The formed federation's invite code, recorded in `formed_seats`.
     pub federation_invite: Option<InviteCode>,
 }
@@ -925,10 +919,6 @@ impl Db {
         &self,
         identity: &RootMnemonic,
         seats: &[RestoredSeat],
-        // The envelope schema version the documents were fetched under — one
-        // value for the whole fleet, because the restore's unseal accepts
-        // exactly one version.
-        backup_schema_version: u32,
     ) -> Result<(), DbError> {
         let mut tx = self.begin_write().await?;
         let stage: String = sqlx::query_scalar("SELECT stage FROM onboarding_state WHERE id = 1")
@@ -975,25 +965,9 @@ impl Db {
                     .execute(&mut *tx)
                     .await?;
             }
-            // The fetched document is by definition what the relay serves, so
-            // the publication record starts confirmed and the backup worker
-            // has nothing to republish for a freshly restored fleet.
-            sqlx::query(
-                "INSERT INTO seat_backup_publications \
-                 (quote_id, doc_sha256, published_at_ms, archive_digest, schema_version) \
-                 VALUES (?, ?, ?, ?, ?)",
-            )
-            .bind(quote_id)
-            .bind(seat.published_doc_sha256.as_str())
-            .bind(now_ms())
-            .bind(
-                seat.guardian
-                    .as_ref()
-                    .map(|guardian| guardian.archive_digest.as_str()),
-            )
-            .bind(i64::from(backup_schema_version))
-            .execute(&mut *tx)
-            .await?;
+            // No publication record is seeded: the first scan republishes
+            // every restored seat once, which is the cheap side of knowing
+            // nothing about what the relay serves under the current format.
             if let Some(payment) = &seat.payment {
                 sqlx::query("INSERT INTO ecash_claims (quote_id, evidence) VALUES (?, ?)")
                     .bind(quote_id)

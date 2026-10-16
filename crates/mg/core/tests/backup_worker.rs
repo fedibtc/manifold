@@ -122,8 +122,7 @@ async fn write_test_archive(process: &SeatProcessConfig, facts: &SeatFacts) {
     let dir = crate::seat_process::seat_data_dir(process, facts.seat_no);
     tokio::fs::create_dir_all(&dir).await.unwrap();
     for (name, contents) in [
-        ("private.encrypt", "deadbeef"),
-        ("private.salt", "c2FsdA"),
+        ("private.json", r#"{"shares":"deadbeef"}"#),
         ("local.json", r#"{"api_bind":"127.0.0.1:1"}"#),
         ("consensus.json", r#"{"api_endpoints":{}}"#),
     ] {

@@ -121,25 +121,20 @@ pub struct GuardianArchiveRef {
 
 /// The `fedimintd` config files a restored seat needs, carried opaquely.
 ///
-/// Exactly the set `fedimintd`'s own `download_guardian_backup` archives —
-/// `local.json`, `consensus.json`, `private.salt`, `private.encrypt` — and
-/// deliberately not the rest of the data directory: the consensus database
-/// comes back from peers, `client.json` and `invite-code` are derived, and
-/// `password.private` is a plaintext copy of an api_auth this fleet derives
-/// from its mnemonic anyway.
+/// Exactly the set `fedimintd` itself reads a formed guardian from —
+/// `private.json`, `local.json`, `consensus.json` — and deliberately not the
+/// rest of the data directory: the consensus database comes back from peers
+/// and `client.json` and `invite-code` are derived.
 ///
-/// Read from disk rather than pulled from that endpoint, for two reasons the
-/// endpoint cannot give: it needs a live child API, and it re-encrypts the
-/// private config under a fresh salt on every call, so no two answers are the
-/// same bytes — which would make an immutable archive a document that changes
-/// every time it is published.
+/// `private.json` is plaintext. The data root is already the trust boundary
+/// (SECURITY.md): the mnemonic that would decrypt any on-disk encryption
+/// lives beside it, so encryption at rest would be a password stored next to
+/// the lock. Carrying the plaintext means the archive is the same bytes on
+/// every host that holds it and a restore needs no credential to install it.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct GuardianArchive {
-    /// `private.encrypt`, still encrypted under the mnemonic-derived
-    /// `api_auth` (ARCH-manifold-guardian-identity), hex as written on disk.
-    pub private_encrypt: String,
-    /// `private.salt`, required to decrypt the above.
-    pub private_salt: String,
+    /// `private.json`: this guardian's DKG key shares and other secrets.
+    pub private_json: String,
     /// `local.json`.
     pub local_json: String,
     /// `consensus.json`: public, identical on every guardian, and not
@@ -170,35 +165,30 @@ impl GuardianArchive {
 /// (ARCH-manifold-guardian-seat-processes).
 const LOCAL_CONFIG_FILE: &str = "local.json";
 const CONSENSUS_CONFIG_FILE: &str = "consensus.json";
-const PRIVATE_CONFIG_FILE: &str = "private.encrypt";
-const PRIVATE_SALT_FILE: &str = "private.salt";
-/// `fedimintd` refuses to load an existing config without this file — it holds
-/// the `api_auth` that decrypts `private.encrypt`. It is not *in* the archive
-/// (it is derivable from the mnemonic), so restore re-derives and writes it.
-const PLAINTEXT_PASSWORD_FILE: &str = "password.private";
+pub(crate) const PRIVATE_CONFIG_FILE: &str = "private.json";
+pub(crate) async fn read_optional(path: std::path::PathBuf) -> std::io::Result<Option<String>> {
+    match tokio::fs::read_to_string(&path).await {
+        Ok(contents) => Ok(Some(contents)),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(err) => Err(err),
+    }
+}
 
 /// Read one seat's guardian archive out of its `fedimintd` data directory.
 ///
 /// Returns `Ok(None)` before the ceremony has written the files, which is the
 /// normal state of a seat that has not completed DKG and has nothing
-/// irreplaceable to back up yet.
+/// irreplaceable to back up yet — and also for a formed seat still in the
+/// legacy encrypted layout, which
+/// [`crate::legacy_layout::migrate_seat_data_dir`] converts before anything
+/// is published.
 pub(crate) async fn read_guardian_archive(
     seat_data_dir: &std::path::Path,
 ) -> std::io::Result<Option<GuardianArchive>> {
-    let read = |name: &str| {
-        let path = seat_data_dir.join(name);
-        async move {
-            match tokio::fs::read_to_string(&path).await {
-                Ok(contents) => Ok(Some(contents)),
-                Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),
-                Err(err) => Err(err),
-            }
-        }
-    };
+    let read = |name: &str| read_optional(seat_data_dir.join(name));
 
-    let (Some(private_encrypt), Some(private_salt), Some(local_json), Some(consensus_json)) = (
+    let (Some(private_json), Some(local_json), Some(consensus_json)) = (
         read(PRIVATE_CONFIG_FILE).await?,
-        read(PRIVATE_SALT_FILE).await?,
         read(LOCAL_CONFIG_FILE).await?,
         read(CONSENSUS_CONFIG_FILE).await?,
     ) else {
@@ -208,31 +198,24 @@ pub(crate) async fn read_guardian_archive(
     };
 
     Ok(Some(GuardianArchive {
-        private_encrypt,
-        private_salt,
+        private_json,
         local_json,
         consensus_json,
     }))
 }
 
-/// Write a restored seat's directory: the recovered archive plus the
-/// re-derived `password.private`, into a directory this call creates (restore
-/// stages it beside the final seat directory and renames it into place, so a
-/// seat directory only ever appears complete — and complete includes the
-/// password, without which `fedimintd` would treat the restored config as
-/// absent and enter a fresh ceremony).
+/// Write a restored seat's archive into a directory this call creates
+/// (restore stages it beside the final seat directory and renames it into
+/// place, so a seat directory only ever appears complete).
 ///
 /// The archive is checked against the digest the seat's document names *here*
 /// rather than by the caller — relay bytes are only safe because of that check,
 /// so the check belongs on this side of the boundary where it cannot be
-/// skipped. `api_auth` is the mnemonic-derived seat credential
-/// (ARCH-manifold-guardian-identity): the exact bytes `fedimintd` itself writes to
-/// this file after a ceremony.
+/// skipped.
 pub(crate) async fn write_restored_seat_dir(
     seat_data_dir: &std::path::Path,
     archive: &GuardianArchive,
     expected_digest: &str,
-    api_auth: &str,
 ) -> Result<(), RestoreConfigError> {
     let found = archive.digest();
     if found != expected_digest {
@@ -243,11 +226,9 @@ pub(crate) async fn write_restored_seat_dir(
     }
     tokio::fs::create_dir_all(seat_data_dir).await?;
     for (name, contents) in [
-        (PRIVATE_CONFIG_FILE, archive.private_encrypt.as_str()),
-        (PRIVATE_SALT_FILE, archive.private_salt.as_str()),
+        (PRIVATE_CONFIG_FILE, archive.private_json.as_str()),
         (LOCAL_CONFIG_FILE, archive.local_json.as_str()),
         (CONSENSUS_CONFIG_FILE, archive.consensus_json.as_str()),
-        (PLAINTEXT_PASSWORD_FILE, api_auth),
     ] {
         tokio::fs::write(seat_data_dir.join(name), contents).await?;
     }
@@ -255,16 +236,14 @@ pub(crate) async fn write_restored_seat_dir(
 }
 
 /// Whether an existing directory is exactly what an interrupted attempt of
-/// this same restore renamed into place: the five files
+/// this same restore renamed into place: the three files
 /// [`write_restored_seat_dir`] writes, nothing else, with the archive hashing
-/// to the expected digest and the password being this seat's derived
-/// `api_auth`. Reads and never writes — anything but an exact match makes the
-/// caller refuse rather than touch the directory, so the shape check is
-/// deliberately as narrow as the writer.
+/// to the expected digest. Reads and never writes — anything but an exact
+/// match makes the caller refuse rather than touch the directory, so the
+/// shape check is deliberately as narrow as the writer.
 pub(crate) async fn is_adoptable_restored_seat_dir(
     seat_data_dir: &std::path::Path,
     expected_digest: &str,
-    api_auth: &str,
 ) -> std::io::Result<bool> {
     let mut entries = tokio::fs::read_dir(seat_data_dir).await?;
     let mut names = Vec::new();
@@ -277,10 +256,8 @@ pub(crate) async fn is_adoptable_restored_seat_dir(
     names.sort_unstable();
     let mut expected = [
         PRIVATE_CONFIG_FILE,
-        PRIVATE_SALT_FILE,
         LOCAL_CONFIG_FILE,
         CONSENSUS_CONFIG_FILE,
-        PLAINTEXT_PASSWORD_FILE,
     ]
     .map(std::ffi::OsString::from);
     expected.sort_unstable();
@@ -290,9 +267,7 @@ pub(crate) async fn is_adoptable_restored_seat_dir(
     let Some(archive) = read_guardian_archive(seat_data_dir).await? else {
         return Ok(false);
     };
-    Ok(archive.digest() == expected_digest
-        && tokio::fs::read_to_string(seat_data_dir.join(PLAINTEXT_PASSWORD_FILE)).await?
-            == api_auth)
+    Ok(archive.digest() == expected_digest)
 }
 
 /// Refusal to restore a guardian config: the restore side rejecting
@@ -460,11 +435,6 @@ pub struct RecoveredFleet {
     /// Each seat's guardian archive, already reassembled and verified against
     /// the digest it must hash to.
     pub archives: HashMap<SeatId, GuardianArchive>,
-    /// The storage format version the fetched documents were read under. The
-    /// install records confirmed publications scoped to it, so the worker
-    /// republishes nothing while the sink still writes this version and
-    /// republishes everything once it does not.
-    pub format_version: u32,
 }
 
 impl RecoveredFleet {

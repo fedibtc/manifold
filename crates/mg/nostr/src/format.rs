@@ -43,6 +43,8 @@ use fedi_decentralized_service_manifold_guardian::SeatId;
 use mg_core::backup::{
     GuardianArchive, RecoverError, RecoveredFleet, SeatBackupDocument, SeatPublication, sha256_hex,
 };
+use mg_core::identity::RootMnemonic;
+use mg_core::legacy_layout::LegacyGuardianArchive;
 use nostr_sdk::{Event, EventBuilder, Keys, Kind, Tag};
 use serde::{Deserialize, Serialize};
 
@@ -87,7 +89,8 @@ const SEAL_OVERHEAD: usize = NONCE_LEN + TAG_LEN;
 const SEALED_LEN: usize = PADDED_PLAINTEXT_LEN + SEAL_OVERHEAD;
 
 /// Current document schema version. Restore refuses versions it does not know
-/// rather than guessing at a partially understood recovery payload.
+/// rather than guessing at a partially understood recovery payload; the one
+/// earlier version ([`LEGACY_DOCUMENT_VERSION`]) stays readable.
 ///
 /// One version for the whole format, carried on the seat document's envelope
 /// ([`Envelope`]) and nowhere else: a schema version describes what the
@@ -99,7 +102,16 @@ const SEALED_LEN: usize = PADDED_PLAINTEXT_LEN + SEAL_OVERHEAD;
 /// ([`mg_core::backup::BackupSink::format_version`]): a record written under
 /// another version describes events this build's own reader refuses, so
 /// bumping it republishes every seat.
-pub(crate) const BACKUP_DOCUMENT_VERSION: u32 = 1;
+pub(crate) const BACKUP_DOCUMENT_VERSION: u32 = 2;
+
+/// Version 1 differs only in the archive: its private config was carried in
+/// `fedimintd`'s legacy encrypted layout
+/// ([`mg_core::legacy_layout::LegacyGuardianArchive`]), which the reader
+/// decrypts under the seat's `api_auth` so the install never sees it.
+/// Documents are the same shape. Read, never written: a fleet whose
+/// confirmations are scoped to this version republishes everything under the
+/// current one.
+pub(crate) const LEGACY_DOCUMENT_VERSION: u32 = 1;
 
 /// Failure building or reading a backup payload.
 #[derive(Debug, thiserror::Error)]
@@ -115,9 +127,11 @@ pub enum BackupError {
     #[error("parse backup document: {0}")]
     Parse(#[source] ciborium::de::Error<std::io::Error>),
     #[error(
-        "backup document version {found} is not supported (expected {BACKUP_DOCUMENT_VERSION})"
+        "backup document version {found} is not supported (expected {LEGACY_DOCUMENT_VERSION} or {BACKUP_DOCUMENT_VERSION})"
     )]
     UnsupportedVersion { found: u32 },
+    #[error("version 1 guardian archive: {0}")]
+    LegacyArchive(#[source] anyhow::Error),
     #[error(
         "guardian archive does not match the digest the backup names (expected {expected}, got {found})"
     )]
@@ -128,10 +142,10 @@ pub enum BackupError {
 /// read it. A plain nested field rather than serde(flatten): nobody reads
 /// the encoded form, and a self-contained field keeps the version readable
 /// on its own.
-#[derive(Serialize, Deserialize)]
-struct Envelope<T> {
-    version: u32,
-    document: T,
+#[derive(Debug, Serialize, Deserialize)]
+pub(crate) struct Envelope<T> {
+    pub(crate) version: u32,
+    pub(crate) document: T,
 }
 
 /// The identity that authors, seals, and *addresses* backup events.
@@ -179,7 +193,7 @@ impl BackupIdentity {
                 let index = u32::try_from(index).expect("an archive fits u32 slices");
                 events.push(addressable_event(
                     content,
-                    self.archive_coordinate(seat_id, index),
+                    self.archive_coordinate(seat_id, BACKUP_DOCUMENT_VERSION, index),
                 ));
             }
         }
@@ -220,7 +234,8 @@ impl BackupIdentity {
     }
 
     /// Open and parse a document sealed by [`Self::seal_seat_document`],
-    /// refusing any schema version this build does not know.
+    /// refusing any schema version this build does not know. The version it
+    /// was read under comes back with it: it decides the archive's shape.
     ///
     /// The version check lives here rather than in the caller because every
     /// reader of a document is a restore path acting on recovery material:
@@ -229,7 +244,7 @@ impl BackupIdentity {
     pub(crate) fn open_seat_document(
         &self,
         content: &str,
-    ) -> Result<SeatBackupDocument, BackupError> {
+    ) -> Result<Envelope<SeatBackupDocument>, BackupError> {
         let blob = BASE64.decode(content).map_err(|_| BackupError::Decrypt)?;
         let plaintext = self.open_blob(&blob, AAD_DOCUMENT)?;
         let payload = unframe(&plaintext)?;
@@ -238,7 +253,7 @@ impl BackupIdentity {
         // whichever fields happen to still match.
         let version: Envelope<serde::de::IgnoredAny> =
             ciborium::from_reader(payload).map_err(BackupError::Parse)?;
-        if version.version != BACKUP_DOCUMENT_VERSION {
+        if ![LEGACY_DOCUMENT_VERSION, BACKUP_DOCUMENT_VERSION].contains(&version.version) {
             return Err(BackupError::UnsupportedVersion {
                 found: version.version,
             });
@@ -252,7 +267,7 @@ impl BackupIdentity {
         if cursor.position() as usize != payload.len() {
             return Err(BackupError::Frame);
         }
-        Ok(envelope.document)
+        Ok(envelope)
     }
 
     /// The base64 event contents one seat's guardian archive is sealed into.
@@ -288,7 +303,8 @@ impl BackupIdentity {
     }
 
     /// Reassemble and open one seat's archive from its slices, in coordinate
-    /// order.
+    /// order. The seat document's `version` says what shape the bytes have;
+    /// a legacy archive is decrypted under `api_auth` into the current one.
     ///
     /// The AEAD tag is the integrity check — a missing, reordered, foreign,
     /// or tampered slice makes the whole blob refuse to open — and the digest
@@ -299,6 +315,8 @@ impl BackupIdentity {
         &self,
         slices: &[Vec<u8>],
         expected_digest: &str,
+        version: u32,
+        api_auth: &str,
     ) -> Result<GuardianArchive, BackupError> {
         let plaintext = self.open_blob(&slices.concat(), AAD_ARCHIVE)?;
         let payload = unframe(&plaintext)?;
@@ -309,12 +327,21 @@ impl BackupIdentity {
                 found,
             });
         }
-        let mut cursor = std::io::Cursor::new(payload);
-        let archive = ciborium::from_reader(&mut cursor).map_err(BackupError::Parse)?;
-        if cursor.position() as usize != payload.len() {
-            return Err(BackupError::Frame);
+        fn parse<T: serde::de::DeserializeOwned>(payload: &[u8]) -> Result<T, BackupError> {
+            let mut cursor = std::io::Cursor::new(payload);
+            let archive = ciborium::from_reader(&mut cursor).map_err(BackupError::Parse)?;
+            if cursor.position() as usize != payload.len() {
+                return Err(BackupError::Frame);
+            }
+            Ok(archive)
         }
-        Ok(archive)
+        match version {
+            LEGACY_DOCUMENT_VERSION => parse::<LegacyGuardianArchive>(payload)?
+                .decrypt(api_auth)
+                .map_err(|err| BackupError::LegacyArchive(err.into())),
+            BACKUP_DOCUMENT_VERSION => parse(payload),
+            found => Err(BackupError::UnsupportedVersion { found }),
+        }
     }
 
     /// Seal a plaintext into `nonce ‖ ciphertext ‖ tag`, [`SEAL_OVERHEAD`]
@@ -373,8 +400,19 @@ impl BackupIdentity {
     /// Where one slice of a seat's guardian archive lives, beside the seat's
     /// own document. The index is inside the MAC too: it is the *only* record
     /// of slice order, and it makes each slice's address unique.
-    fn archive_coordinate(&self, seat_id: &SeatId, index: u32) -> String {
-        self.coordinate(b"archive:", format!("{seat_id}:{index}").as_bytes())
+    ///
+    /// The schema version is in the address from version 2 on. An archive
+    /// is immutable within a version, but a version change can change its
+    /// bytes, and the new generation must land beside the old one rather
+    /// than over it: slices are published before the document, so until the
+    /// new document is on the relay the old document must still find every
+    /// slice it names intact.
+    fn archive_coordinate(&self, seat_id: &SeatId, version: u32, index: u32) -> String {
+        let value = format!("{seat_id}:{index}");
+        match version {
+            LEGACY_DOCUMENT_VERSION => self.coordinate(b"archive:", value.as_bytes()),
+            version => self.coordinate(format!("archive:v{version}:").as_bytes(), value.as_bytes()),
+        }
     }
 
     fn coordinate(&self, family: &[u8], value: &[u8]) -> String {
@@ -436,6 +474,7 @@ fn unframe(plaintext: &[u8]) -> Result<&[u8], BackupError> {
 /// either would restore a fleet missing whatever it held, once and for good.
 pub fn recover_from_events(
     backup: &BackupIdentity,
+    identity: &RootMnemonic,
     events: Vec<Event>,
 ) -> Result<RecoveredFleet, RecoverError> {
     let mut seats = Vec::new();
@@ -443,7 +482,10 @@ pub fn recover_from_events(
     let mut slices: HashMap<String, Event> = HashMap::new();
     for event in events {
         match backup.open_seat_document(&event.content) {
-            Ok(seat) => {
+            Ok(Envelope {
+                version,
+                document: seat,
+            }) => {
                 // The document names its own coordinate (it is derived from
                 // the seat id inside it), so a document at any other address
                 // — or a second document at the same one — is an enumeration
@@ -458,7 +500,7 @@ pub fn recover_from_events(
                     )
                     .into());
                 }
-                seats.push(seat);
+                seats.push((version, seat));
             }
             Err(BackupError::Decrypt) => {
                 let coordinate = event.tags.identifier().unwrap_or_default().to_owned();
@@ -477,19 +519,39 @@ pub fn recover_from_events(
     }
 
     let mut archives = HashMap::new();
-    for seat in &seats {
-        let Some(guardian) = &seat.guardian else {
+    for (version, seat) in &mut seats {
+        let Some(guardian) = &mut seat.guardian else {
             continue;
         };
+        // The archive ends at the first gap in its own version's coordinates.
+        // Whatever sits in the other version's coordinates for this seat is
+        // the other generation — the one an upgrade retired, or the one an
+        // interrupted upgrade staged before its document landed — and is
+        // dropped unread.
         let mut found = Vec::new();
         for index in 0.. {
-            match slices.remove(&backup.archive_coordinate(&seat.seat_id, index)) {
-                Some(event) => found.push(
-                    BASE64
-                        .decode(&event.content)
-                        .map_err(|_| RecoverError::UnreadableDocument(event.id.to_string()))?,
-                ),
-                None => break,
+            let Some(event) =
+                slices.remove(&backup.archive_coordinate(&seat.seat_id, *version, index))
+            else {
+                break;
+            };
+            found.push(
+                BASE64
+                    .decode(&event.content)
+                    .map_err(|_| RecoverError::UnreadableDocument(event.id.to_string()))?,
+            );
+        }
+        for other in [LEGACY_DOCUMENT_VERSION, BACKUP_DOCUMENT_VERSION] {
+            if other == *version {
+                continue;
+            }
+            for index in 0.. {
+                if slices
+                    .remove(&backup.archive_coordinate(&seat.seat_id, other, index))
+                    .is_none()
+                {
+                    break;
+                }
             }
         }
         if found.is_empty() {
@@ -497,9 +559,14 @@ pub fn recover_from_events(
             // its own MissingArchive error, which names the seat.
             continue;
         }
+        let api_auth = identity.derive_seat_keys(&seat.seat_id).api_auth;
         let archive = backup
-            .open_archive(&found, &guardian.archive_sha256)
+            .open_archive(&found, &guardian.archive_sha256, *version, &api_auth)
             .map_err(|err| anyhow::anyhow!("guardian archive for seat {}: {err}", seat.seat_id))?;
+        // A legacy document names the digest of the encrypted bytes, which
+        // were checked above; the fleet handed on is in current terms, so
+        // its document names the archive it will actually install.
+        guardian.archive_sha256 = archive.digest();
         archives.insert(seat.seat_id.clone(), archive);
     }
 
@@ -508,9 +575,8 @@ pub fn recover_from_events(
     }
 
     Ok(RecoveredFleet {
-        seats,
+        seats: seats.into_iter().map(|(_, seat)| seat).collect(),
         archives,
-        format_version: BACKUP_DOCUMENT_VERSION,
     })
 }
 

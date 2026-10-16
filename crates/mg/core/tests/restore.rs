@@ -45,8 +45,7 @@ fn facts(seat: u8) -> SeatFacts {
 
 fn guardian_archive(consensus_json: &str) -> GuardianArchive {
     GuardianArchive {
-        private_encrypt: "deadbeef".into(),
-        private_salt: "c2FsdA".into(),
+        private_json: r#"{"shares":"deadbeef"}"#.into(),
         local_json: r#"{"api_bind":"127.0.0.1:1"}"#.into(),
         consensus_json: consensus_json.to_owned(),
     }
@@ -75,7 +74,6 @@ fn recovered(
     RecoveredFleet {
         seats,
         archives: archives.into_iter().collect(),
-        format_version: 1,
     }
 }
 
@@ -137,24 +135,16 @@ async fn a_recovered_backup_rebuilds_the_fleet() {
     // config the backup carried.
     let dir = crate::seat_process::seat_data_dir(&process, SeatNo(0));
     assert_eq!(
-        tokio::fs::read_to_string(dir.join("private.encrypt"))
+        tokio::fs::read_to_string(dir.join("private.json"))
             .await
             .unwrap(),
-        "deadbeef"
+        r#"{"shares":"deadbeef"}"#
     );
     assert_eq!(
         tokio::fs::read_to_string(dir.join("consensus.json"))
             .await
             .unwrap(),
         consensus_json
-    );
-    // The password is re-derived, not restored: without it fedimintd refuses
-    // to load the config and would enter a fresh ceremony over live shares.
-    assert_eq!(
-        tokio::fs::read_to_string(dir.join("password.private"))
-            .await
-            .unwrap(),
-        identity.derive_seat_keys(&formed.seat_id).api_auth
     );
 
     // And it refuses RestartDKG, which is the guard the backup carries no
@@ -370,7 +360,7 @@ async fn a_crashed_restore_retries_to_completion() {
     // final seat directory does not exist — that is the point of staging.
     let staging = temp.path().join("restore-staging").join("0");
     tokio::fs::create_dir_all(&staging).await.unwrap();
-    tokio::fs::write(staging.join("private.encrypt"), "half-writ")
+    tokio::fs::write(staging.join("private.json"), "half-writ")
         .await
         .unwrap();
 
@@ -380,7 +370,6 @@ async fn a_crashed_restore_retries_to_completion() {
         &crate::seat_process::seat_data_dir(&process, SeatNo(0)),
         &archive,
         &archive.digest(),
-        &identity.derive_seat_keys(&seat.seat_id).api_auth,
     )
     .await
     .unwrap();
@@ -426,16 +415,11 @@ async fn an_existing_directory_with_a_different_archive_refuses_adoption() {
     let db = test_db(&temp).await;
 
     let mut other = archive.clone();
-    other.private_encrypt = "someone else's shares".to_owned();
+    other.private_json = "someone else's shares".to_owned();
     let dir = crate::seat_process::seat_data_dir(&process, SeatNo(0));
-    write_restored_seat_dir(
-        &dir,
-        &other,
-        &other.digest(),
-        &identity.derive_seat_keys(&seat.seat_id).api_auth,
-    )
-    .await
-    .unwrap();
+    write_restored_seat_dir(&dir, &other, &other.digest())
+        .await
+        .unwrap();
 
     assert!(matches!(
         install(&db, &process, &identity, &recovered).await,
@@ -443,7 +427,7 @@ async fn an_existing_directory_with_a_different_archive_refuses_adoption() {
     ));
     assert!(db.load_identity().await.unwrap().is_none());
     assert_eq!(
-        tokio::fs::read_to_string(dir.join("private.encrypt"))
+        tokio::fs::read_to_string(dir.join("private.json"))
             .await
             .unwrap(),
         "someone else's shares",
@@ -452,7 +436,7 @@ async fn an_existing_directory_with_a_different_archive_refuses_adoption() {
 }
 
 /// Adoption's shape check is as narrow as the writer: an interrupted restore
-/// leaves exactly the five files the staged write renames into place, so a
+/// leaves exactly the three files the staged write renames into place, so a
 /// directory holding anything more is not this restore's debris — it is
 /// somebody's data, and the restore refuses rather than bury it under a fleet
 /// whose database claims the directory.
@@ -472,14 +456,9 @@ async fn an_existing_directory_with_extra_files_refuses_adoption() {
     // The directory matches the backup byte for byte — and holds one thing
     // more, which no interrupted attempt of this restore could have left.
     let dir = crate::seat_process::seat_data_dir(&process, SeatNo(0));
-    write_restored_seat_dir(
-        &dir,
-        &archive,
-        &archive.digest(),
-        &identity.derive_seat_keys(&seat.seat_id).api_auth,
-    )
-    .await
-    .unwrap();
+    write_restored_seat_dir(&dir, &archive, &archive.digest())
+        .await
+        .unwrap();
     tokio::fs::write(dir.join("database"), "a consensus db already grew here")
         .await
         .unwrap();
