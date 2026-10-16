@@ -114,6 +114,7 @@ pub(crate) async fn production_test_context(
         )
         .expect("development PeerBadge verifier"),
         relay_publisher,
+        advertisement_writer: Arc::default(),
         holder_authorization_read: Arc::new(RwLock::new(
             crate::holder_authorization::LastRelayRead::NotYet,
         )),
