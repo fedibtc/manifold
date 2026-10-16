@@ -153,18 +153,29 @@ pretending the formation gate ran.
 ## Guardian transfer
 
 `fa_moves_a_formed_guardian_to_a_new_mg_under_defe` (same `MG_E2E` opt-in, in
-`tests/manifold_guardian_0_1_formation/guardian_transfer.rs`) forms a free
-seven-guardian federation, then onboards an eighth MG. `fa-cli transfer`
-moves the guardian of seat 0 onto a free seat of the new MG. The test checks
-that the source seat reports `Removed`, that the new seat runs the
-federation's guardian, and that the consensus seat bindings name the new MG
-instead of the old one. A metadata update then runs through all seven
-guardians. With two other MGs stopped, a consensus read still returns the new
-name, so the moved guardian serves current consensus.
+`tests/manifold_guardian_0_1_formation/guardian_transfer.rs`) drives a
+guardian transfer only through `fa-cli`, as a consumer would. Seven MGs form
+a free federation, and an eighth MG joins. With the source MG offline,
+`fa-cli transfer start` buys a free seat on the new MG and asks it to pull
+the guardian of seat 0. The FA then stays offline: the new MG keeps its pull
+across a restart and runs the guardian, with the source's config, once the
+source is back. `fa-cli transfer resume` then completes the move. The test
+checks that:
+
+- the source deleted the guardian data, reports `Removed`, stays removed
+  after a restart without a `fedimintd` child, and keeps its payment wallet;
+- the consensus seat bindings name the new MG instead of the old one;
+- a metadata update runs through all seven guardians;
+- a restore of the new MG from its mnemonic and the relay runs the same
+  guardian;
+- with two other MGs stopped, a consensus read still returns the update, so
+  the moved guardian serves current consensus.
 
 A moved guardian keeps its Iroh ids but listens on the new seat's ports. This
 harness routes Iroh ids through static overrides, so the new MG starts with a
-route to those ports, and the MGs that stay restart with it.
+route to those ports, and the MGs that stay restart with it. The source MG
+pins its service endpoint when it restarts, so the new MG has its route in
+advance.
 
 ## Advertisement trust flow
 

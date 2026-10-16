@@ -4267,7 +4267,7 @@ fn spawn_manifold_guardian(
     nostr: Option<NostrEnv<'_>>,
     push_gateway_origin: Option<&str>,
 ) -> std::io::Result<Child> {
-    spawn_manifold_guardian_with_mg_routes(
+    spawn_routed_manifold_guardian(
         manifold_guardian_bin,
         data_dir,
         bitcoind_url,
@@ -4278,14 +4278,16 @@ fn spawn_manifold_guardian(
         nostr,
         push_gateway_origin,
         None,
+        None,
     )
 }
 
 /// [`spawn_manifold_guardian`] for an MG that dials other MGs, as a transfer
-/// destination does: `mg_endpoints` routes their endpoint ids, as
-/// `MG_E2E_MG_ENDPOINT_ADDRS` does for fa-cli.
+/// destination does. `mg_endpoints` routes their endpoint ids, as
+/// `MG_E2E_MG_ENDPOINT_ADDRS` does for fa-cli. `endpoint_bind` pins this MG's
+/// own endpoint, so a route to it survives a restart.
 #[expect(clippy::too_many_arguments)]
-fn spawn_manifold_guardian_with_mg_routes(
+fn spawn_routed_manifold_guardian(
     manifold_guardian_bin: &Path,
     data_dir: &Path,
     bitcoind_url: &str,
@@ -4296,10 +4298,14 @@ fn spawn_manifold_guardian_with_mg_routes(
     nostr: Option<NostrEnv<'_>>,
     push_gateway_origin: Option<&str>,
     mg_endpoints: Option<&str>,
+    endpoint_bind: Option<&str>,
 ) -> std::io::Result<Child> {
     let mut command = Command::new(manifold_guardian_bin);
     if let Some(mg_endpoints) = mg_endpoints {
         command.env(MG_ENDPOINT_ADDRS_ENV, mg_endpoints);
+    }
+    if let Some(endpoint_bind) = endpoint_bind {
+        command.env("MG_E2E_IROH_BIND_ADDR", endpoint_bind);
     }
     command
         .arg("serve")
