@@ -135,6 +135,9 @@ impl FaBackupKeys {
     }
 
     pub(crate) fn seal(&self, payload: &FaBackupPayload) -> FaResult<EncryptedFaBackup> {
+        // Publishing replaces the last recovery document, so never publish
+        // one that `open` would refuse.
+        validate_payload(payload)?;
         let mut encoded = Vec::new();
         ciborium::into_writer(payload, &mut encoded)
             .map_err(|_| invalid("could not encode recovery payload"))?;
@@ -316,6 +319,35 @@ mod tests {
                 })
                 .is_err()
         );
+    }
+
+    #[test]
+    fn a_payload_that_restore_refuses_is_not_sealed() {
+        let seat = FaBackupSeat {
+            mg_identity: keys(3).public_key(),
+            seat_id: SeatId::from(QuoteId([1; 32])),
+            locator: Locator::new(
+                EndpointAddr::new(IrohSecretKey::from_bytes(&[2; 32]).public()),
+                secp256k1::Keypair::from_seckey_slice(secp256k1::SECP256K1, &[3; 32])
+                    .unwrap()
+                    .x_only_public_key()
+                    .0,
+            ),
+        };
+        let payload = FaBackupPayload {
+            schema_version: BACKUP_SCHEMA_VERSION,
+            snapshot_generation: 4,
+            federation_invite: InviteCode("invite".into()),
+            seats: vec![seat.clone()],
+            liquidity: None,
+            // The destination is in the seat list already.
+            transfer: Some(FaBackupTransfer {
+                seat_index: 0,
+                destination: seat,
+            }),
+            past_hosts: Vec::new(),
+        };
+        assert!(keys(7).seal(&payload).is_err());
     }
 
     #[test]

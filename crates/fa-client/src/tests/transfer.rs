@@ -580,6 +580,49 @@ async fn a_reopened_fa_finishes_a_transfer_that_consensus_adopted() {
 }
 
 #[tokio::test]
+async fn a_reconciliation_that_adopts_an_open_move_keeps_the_backup_restorable() {
+    let (_database, mg_state, restored, destination, _backup) =
+        transfer_adopted_but_unrecorded().await;
+
+    // An ordinary resume, not the transfer, sees consensus name the
+    // destination first.
+    restored.resume().await.unwrap();
+
+    assert_eq!(
+        restored.guardian_transfer().await.unwrap().unwrap().phase,
+        GuardianTransferPhase::RemovingSource
+    );
+    let backup = restored.inner.store.backup_payload().await.unwrap().payload;
+    assert_eq!(backup.seats[MOVED].seat_id, destination);
+    assert_eq!(backup.transfer, None);
+
+    // The backup this device now publishes restores.
+    let (payments, _payment_state) = TestPayments::new();
+    let replacement = open_client(
+        MemDatabase::new().into_database(),
+        payments,
+        mg_state.clone(),
+        MgConfig::paid(),
+    )
+    .await;
+    replacement
+        .inner
+        .store
+        .restore_backup_payload_with_completion(TestIdentity::fa_id(), backup, None)
+        .await
+        .unwrap();
+
+    // The move still owes the source removal.
+    let finished = restored
+        .resume_guardian_transfer(transfer_options())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(finished.phase, GuardianTransferPhase::Completed);
+    assert_eq!(mg_state.removed_seats.lock().expect("test lock").len(), 1);
+}
+
+#[tokio::test]
 async fn a_published_binding_does_not_remove_the_source_of_a_lost_destination() {
     let (_database, mg_state, restored, _destination, _backup) =
         transfer_adopted_but_unrecorded().await;

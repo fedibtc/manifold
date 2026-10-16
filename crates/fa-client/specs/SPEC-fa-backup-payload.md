@@ -18,7 +18,9 @@ It optionally contains the open guardian transfer whose destination seat
 exists but is not in the seats yet: the source seat index, and the
 destination's MG identity, seat id, and locator. An absent transfer is
 omitted from the encoding, so a payload without one keeps its earlier bytes
-and older readers.
+and older readers. The writer applies the same validation as restore before
+it seals a payload: a transfer destination that is already in the seats, or
+any other payload that restore refuses, is never published.
 It lists every past host: the MG identity, and the verified badge holder
 when known, of each source that a guardian transfer moved a peer away from.
 Destination selection excludes them, because a past host may still hold its
