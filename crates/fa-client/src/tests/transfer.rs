@@ -1090,3 +1090,106 @@ fn a_rebind_moves_only_the_peer_entry_and_its_fee_share() {
         (new_directory, new_recipients)
     );
 }
+
+/// A device lost before its backup names the transfer restores an older
+/// backup without it. Then it could start another move of the same guardian.
+/// So no grant leaves until a publish quorum of relays confirms the backup.
+#[tokio::test]
+async fn no_grant_leaves_before_the_relays_hold_the_transfer() {
+    let (database, payments, _payment_state, mg_state, formed) = formed_paid_client().await;
+    let keys = crate::backup::FaBackupKeys::derive(&formed.inner.ports.identity.scoped_root());
+    let published = keys
+        .seal(&formed.inner.store.backup_payload().await.unwrap().payload)
+        .unwrap();
+    drop(formed);
+    let relays = [
+        "wss://first.example",
+        "wss://second.example",
+        "wss://third.example",
+    ]
+    .map(|relay| nostr_sdk::RelayUrl::parse(relay).unwrap());
+    let client = open_client_with_backup_publication(
+        database,
+        payments,
+        mg_state.clone(),
+        crate::backup_worker::BackupPublication::new(&relays, 2),
+    )
+    .await;
+    mg_state
+        .seat_statuses
+        .lock()
+        .expect("test lock")
+        .insert(DESTINATION, ServiceStatus::New);
+    let confirm = async |relay: &nostr_sdk::RelayUrl| {
+        let prepared = client.inner.store.backup_payload().await.unwrap();
+        assert!(prepared.payload.transfer.is_some());
+        client
+            .inner
+            .store
+            .record_backup_confirmation(
+                &relay.to_string(),
+                crate::db::BackupRelayConfirmation {
+                    document_hash: prepared.document_hash,
+                    generation: prepared.payload.snapshot_generation,
+                    event_id: relay.to_string(),
+                    confirmed_at_secs: test_now_secs(),
+                },
+            )
+            .await
+            .unwrap();
+    };
+
+    let started = client
+        .start_guardian_transfer(
+            MOVED as u16,
+            destination_approval(PAYMENT_AMOUNT_MSATS),
+            Some(payment_federation_id()),
+            None,
+            short_options(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(started.phase, GuardianTransferPhase::AwaitingSource);
+    confirm(&relays[0]).await;
+    let resumed = client
+        .resume_guardian_transfer(short_options())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(resumed.phase, GuardianTransferPhase::AwaitingSource);
+    assert!(
+        mg_state.pull_requests.lock().expect("test lock").is_empty(),
+        "one of three relays is less than a publish quorum"
+    );
+
+    // The device is lost now: the restore finds no transfer to finish, and
+    // no grant left that another move would race.
+    let (payments, _payment_state) = TestPayments::new();
+    let replacement = open_client(
+        MemDatabase::new().into_database(),
+        payments,
+        mg_state.clone(),
+        MgConfig::paid(),
+    )
+    .await;
+    replacement
+        .inner
+        .store
+        .restore_backup_payload_with_completion(
+            TestIdentity::fa_id(),
+            keys.open(&published).unwrap(),
+            None,
+        )
+        .await
+        .unwrap();
+    assert!(replacement.guardian_transfer().await.unwrap().is_none());
+    drop(replacement);
+
+    confirm(&relays[2]).await;
+    client
+        .resume_guardian_transfer(short_options())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(mg_state.pull_requests.lock().expect("test lock").len(), 1);
+}
