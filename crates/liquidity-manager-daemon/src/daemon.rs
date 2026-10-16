@@ -226,6 +226,10 @@ pub(crate) struct DaemonContext {
     /// Relay publication backend.
     pub(crate) relay_publisher: Arc<dyn RelayPublisher>,
 
+    /// Serializes and paces every advertisement publication and withdrawal.
+    pub(crate) advertisement_writer:
+        Arc<tokio::sync::Mutex<crate::advertisement_writer::AdvertisementWriter>>,
+
     /// What the last Holder-authorization reconciliation concluded, so the
     /// operator console can tell "not read yet" from "read and found nothing"
     /// from "the relays are down". Runtime state: a restart genuinely has not
@@ -1051,6 +1055,7 @@ async fn build_generation(
         verification_provider,
         peer_badge_verifier,
         relay_publisher: nostr::nostr_relay_publisher(),
+        advertisement_writer: Arc::default(),
         holder_authorization_read: Arc::new(RwLock::new(LastRelayRead::NotYet)),
         holder_authorization_fetcher: Arc::new(NostrHolderAuthorizationFetcher),
         target_fedimint_clients,

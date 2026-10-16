@@ -34,6 +34,14 @@ explicit operator republish does. Withdrawal changes no configuration, so
 without this the operator's decision would be undone by the next reconciliation
 under a fresh signature, while the operator believed they had left the market.
 
+Publication and withdrawal share one serialized, time-paced writer. All callers
+wait through a two-second startup guard, then each attempt waits for a
+wall-clock second strictly newer than the last in-memory attempt. This assumes
+one writer and a nondecreasing wall clock across restart, not durable ordering
+through arbitrary clock rollback. Clock waits are bounded; failed or canceled
+admitted withdrawal retains the operator's intent. Relay acknowledgment alone
+does not prove visibility on arbitrary relays.
+
 The signed document follows the shared MG/FLIP publication convention: a
 typed `payload` (with `version`, `provider_pubkey`, `issued_at`,
 `expires_at`, `supported_sources`, `holder_authorizations`, `policy`,

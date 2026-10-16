@@ -2,6 +2,20 @@
 
 This repository is experimental infrastructure for decentralized federation components and local development tooling.
 
+## FLIP advertisement ordering
+
+FLIP serializes relay mutations and waits for a wall-clock second newer than its
+last in-memory attempt. Every caller, including admin requests, shares a
+two-second startup guard. Restart ordering assumes one writer and a wall clock
+that does not move backward across restart; it is not a durable total-order or
+power-loss guarantee. Queueing and clock pacing have a bounded wait.
+
+Event timestamps are sampled after waiting, never incremented from unverified
+persisted advertisement data, and remain within the existing now+1 future bound.
+The operator-withdrawal latch keeps its existing SQLite persistence policy and
+is recorded before an admitted withdrawal waits or sends. Startup pacing does
+not recover withdrawal intent lost by that persistence policy.
+
 ## Nix source inputs and public binary caches
 
 The default development shell's PeerBadge SDK, Fedi, and Fedimint source
