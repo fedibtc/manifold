@@ -3520,7 +3520,7 @@ async fn empty_backup_recovery_completion_survives_reopen_and_is_environment_sco
             &client.inner.ports.identity.scoped_root(),
             TestIdentity::fa_id(),
             profile.nostr_relays().as_urls(),
-            profile.fa_backup_empty_read_quorum(),
+            profile.fa_backup_read_quorum(),
             &completed,
         )
         .await
@@ -3592,7 +3592,7 @@ async fn encrypted_backup_restore_imports_unsynced_lean_state_and_blocks_create(
             &restored.inner.ports.identity.scoped_root(),
             fa_id,
             profile.nostr_relays().as_urls(),
-            profile.fa_backup_empty_read_quorum(),
+            profile.fa_backup_read_quorum(),
             &crate::db::RecoveryCompletedKey::new(ManifoldEnvironment::Production),
         )
         .await
@@ -4103,6 +4103,7 @@ async fn backup_relay_progress_is_independent_and_workers_do_not_block_fa_operat
         client.inner.store.clone(),
         client.inner.ports.identity.scoped_root(),
         vec![nostr_sdk::RelayUrl::parse("ws://127.0.0.1:1").unwrap()],
+        Arc::default(),
     );
     // The unreachable relay is owned solely by background delivery; it does
     // not take the FA operation guard or extend local backup reads with network I/O.
@@ -4268,6 +4269,7 @@ async fn open_client_that_cannot_pay(
         test_peer_badge_verifier(),
         None,
         Some(guardian_fee_account(31)),
+        crate::backup_worker::BackupPublication::default(),
     )
     .await
     .expect("open test FA client")
@@ -4371,6 +4373,7 @@ async fn open_client_with_registry_reader_and_fee_account(
         test_peer_badge_verifier(),
         Some(setup_payment_keys().public_key()),
         Some(guardian_fee_account(31)),
+        crate::backup_worker::BackupPublication::default(),
     )
     .await
     .expect("open test FA client")
@@ -4405,9 +4408,45 @@ async fn open_client_with_verifier(
         verifier,
         Some(setup_payment_keys().public_key()),
         Some(guardian_fee_account(31)),
+        crate::backup_worker::BackupPublication::default(),
     )
     .await
     .expect("open test FA client with explicit verifier")
+}
+
+/// A paying FA whose guardian transfers wait for `publication`.
+async fn open_client_with_backup_publication(
+    database: fedimint_core::db::Database,
+    payments: TestPayments,
+    state: Arc<MgState>,
+    publication: crate::backup_worker::BackupPublication,
+) -> TestClient {
+    let registry = TestRegistry::default();
+    registry
+        .candidates
+        .lock()
+        .expect("test lock")
+        .push(setup_payment_event(test_now_secs(), &[PAYMENT_INVITE]));
+    FaClient::open_inner(
+        database,
+        FaClientPorts {
+            identity: TestIdentity,
+            payments,
+            registry,
+            mg_connector: TestConnector {
+                state: state.clone(),
+                config: MgConfig::paid(),
+            },
+            consensus_reader: TestConsensusReader::new(state),
+            fa_fee_account_provider: Arc::new(TestFaFeeAccountProvider::default()),
+        },
+        test_peer_badge_verifier(),
+        Some(setup_payment_keys().public_key()),
+        Some(guardian_fee_account(31)),
+        publication,
+    )
+    .await
+    .expect("open test FA client with backup relays")
 }
 
 async fn open_client_with_store(
@@ -4454,6 +4493,7 @@ async fn open_client_with_store_and_registry(
             peer_badge_verifier: test_peer_badge_verifier(),
             setup_payment_publisher: Some(setup_payment_keys().public_key()),
             guardian_verification_fee_account: Some(guardian_fee_account(31)),
+            backup_publication: crate::backup_worker::BackupPublication::default(),
             backup_tasks: fedimint_core::task::TaskGroup::new(),
         }),
     }

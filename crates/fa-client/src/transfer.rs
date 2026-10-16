@@ -81,6 +81,7 @@ pub enum GuardianTransferPhase {
     /// The FA buys the destination seat. A resume finishes the purchase.
     BuyingSeat,
     /// The destination waits for the source MG to hand over the guardian.
+    /// Before it asks, the FA backup with this transfer reaches its relays.
     AwaitingSource,
     /// The guardian runs on the destination. Its new seat binding and fee
     /// recipient are not confirmed in consensus yet.
@@ -532,6 +533,12 @@ where
                             )
                             .await?;
                     }
+                    // The source hands the guardian to whoever holds this
+                    // grant. A device lost from here on must restore this
+                    // move, or it could start another one.
+                    if !self.transfer_backup_confirmed(run).await? {
+                        return Ok(Pulled::Waiting);
+                    }
                     let request = self.sign(&PullSeatRequest {
                         ts: Timestamp(now_secs()?),
                         fa_id,
@@ -558,6 +565,29 @@ where
                     .is_err()
             {
                 return Ok(Pulled::Waiting);
+            }
+        }
+    }
+
+    /// Wait until the relays confirm a backup with the open transfer, at
+    /// most until the run ends. The backup worker prepares the same backup
+    /// at the same time, so a failed attempt is retried and only the last
+    /// one counts.
+    async fn transfer_backup_confirmed(&self, run: DriverRun<'_>) -> FaResult<bool> {
+        loop {
+            let attempt = self
+                .inner
+                .backup_publication
+                .current_backup_confirmed(&self.inner.store)
+                .await;
+            if matches!(attempt, Ok(true)) {
+                return Ok(true);
+            }
+            if sleep_for_retry(run.deadline(), run.poll_interval())
+                .await
+                .is_err()
+            {
+                return attempt;
             }
         }
     }

@@ -9,7 +9,7 @@ use fedimint_core::runtime::{Instant, sleep};
 use fedimint_core::task::TaskGroup;
 use fedimint_derive_secret::DerivableSecret;
 use nostr_sdk::{Event, EventBuilder, Filter, Kind, RelayUrl, Tag, Timestamp};
-use tokio::sync::{OwnedMutexGuard, watch};
+use tokio::sync::{Notify, OwnedMutexGuard, watch};
 
 use crate::backup::{EncryptedFaBackup, FA_BACKUP_D_TAG, FA_BACKUP_EVENT_KIND, FaBackupKeys};
 use crate::{
@@ -21,6 +21,52 @@ const SCAN_INTERVAL: Duration = Duration::from_secs(30);
 const INITIAL_RETRY_INTERVAL: Duration = Duration::from_secs(2 * 60);
 const MAX_RETRY_INTERVAL: Duration = Duration::from_secs(15 * 60);
 const RELAY_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// The relays that must hold a backup before a guardian transfer sends its
+/// grant. Without relays nothing can be recovered, so nothing is awaited.
+#[derive(Default)]
+pub(crate) struct BackupPublication {
+    relays: Vec<String>,
+    quorum: usize,
+    wake: Arc<Notify>,
+}
+
+impl BackupPublication {
+    pub(crate) fn new(relays: &[RelayUrl], quorum: usize) -> Self {
+        Self {
+            relays: relays.iter().map(ToString::to_string).collect(),
+            quorum,
+            wake: Arc::default(),
+        }
+    }
+
+    pub(crate) fn wake(&self) -> Arc<Notify> {
+        self.wake.clone()
+    }
+
+    /// Whether a publish quorum of relays confirmed the current backup. If
+    /// not, ask the coordinator to publish it now.
+    pub(crate) async fn current_backup_confirmed(&self, store: &FaStore) -> FaResult<bool> {
+        if self.quorum == 0 {
+            return Ok(true);
+        }
+        let document_hash = store.backup_payload().await?.document_hash;
+        let mut confirmed = 0;
+        for relay in &self.relays {
+            if store
+                .backup_confirmation(relay)
+                .await
+                .is_some_and(|confirmation| confirmation.document_hash == document_hash)
+            {
+                confirmed += 1;
+            }
+        }
+        if confirmed < self.quorum {
+            self.wake.notify_one();
+        }
+        Ok(self.quorum <= confirmed)
+    }
+}
 
 #[derive(Clone)]
 struct Desired {
@@ -34,6 +80,7 @@ pub(crate) fn spawn_workers(
     store: FaStore,
     root: DerivableSecret,
     relays: Vec<RelayUrl>,
+    wake: Arc<Notify>,
 ) {
     if relays.is_empty() {
         return;
@@ -64,7 +111,12 @@ pub(crate) fn spawn_workers(
                     }
                 }
             }
-            sleep(SCAN_INTERVAL).await;
+            // A guardian transfer wakes the scan: its grant waits for this
+            // publication.
+            tokio::select! {
+                () = sleep(SCAN_INTERVAL) => {}
+                () = wake.notified() => {}
+            }
         }
     });
 
@@ -214,7 +266,7 @@ pub(crate) fn spawn_recovery(
                 &root,
                 fa_id,
                 profile.nostr_relays().as_urls(),
-                profile.fa_backup_empty_read_quorum(),
+                profile.fa_backup_read_quorum(),
                 &key,
             )
             .await;
@@ -249,14 +301,13 @@ pub(crate) fn spawn_recovery(
     });
 }
 
-// Empty is admitted only after a majority completed. The remaining relays
-// are still queried until their deadlines to find a possible backup.
-fn no_backup_or_unavailable(
-    successful_reads: usize,
-    required_reads: usize,
-) -> FaResult<BackupRestoreOutcome> {
+// Either outcome is admitted only after a majority completed. A backup that
+// a publication quorum confirmed is then among the reads, so a pending
+// guardian move is never restored from an older backup. The remaining relays
+// are still queried until their deadlines.
+fn require_read_quorum(successful_reads: usize, required_reads: usize) -> FaResult<()> {
     if required_reads > 0 && successful_reads >= required_reads {
-        Ok(BackupRestoreOutcome::NoBackup)
+        Ok(())
     } else {
         Err(FaError::Registry(
             "FA backup relay lookup incomplete".to_owned(),
@@ -329,10 +380,10 @@ pub(crate) async fn restore_from_relays(
             }
         }
     }
+    require_read_quorum(successful_reads, required_reads)?;
     let Some(payload) = best else {
-        let outcome = no_backup_or_unavailable(successful_reads, required_reads)?;
         store.complete_empty_recovery(recovery).await?;
-        return Ok(outcome);
+        return Ok(BackupRestoreOutcome::NoBackup);
     };
     store
         .restore_backup_payload_with_completion(fa_id, payload, Some(recovery))
@@ -347,18 +398,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn empty_restore_requires_a_complete_read_quorum() {
-        assert_eq!(
-            no_backup_or_unavailable(2, 2).unwrap(),
-            BackupRestoreOutcome::NoBackup
-        );
-        assert_eq!(
-            no_backup_or_unavailable(3, 2).unwrap(),
-            BackupRestoreOutcome::NoBackup
-        );
+    fn restore_requires_a_complete_read_quorum() {
+        require_read_quorum(2, 2).unwrap();
+        require_read_quorum(3, 2).unwrap();
         for (completed, required) in [(0, 1), (1, 2), (0, 2)] {
             assert!(matches!(
-                no_backup_or_unavailable(completed, required),
+                require_read_quorum(completed, required),
                 Err(FaError::Registry(_))
             ));
         }

@@ -54,16 +54,20 @@ per-relay workers decide whether their relay needs publication, read back,
 retry, and durably record their own last confirmed plaintext SHA, generation,
 event id, and time. To guard against relay retention pruning, each worker
 publishes a freshly resealed replacement when its relay's confirmation reaches
-15 days old, without advancing the snapshot generation. Publication never
-blocks an FA operation. Fedi enforces one active writer.
+15 days old, without advancing the snapshot generation. Publication blocks no
+FA operation except one: a guardian transfer sends no grant until a publish
+quorum of relays confirms the current backup, which names the transfer. The
+transfer asks for an immediate publication and reports `awaiting_source` while
+it waits. Fedi enforces one active writer.
 
 Restore queries every configured relay through its bounded deadline, ignores
 invalid, foreign, undecryptable, or unsupported candidates, and selects the
 authenticated payload with the highest snapshot generation among completed
-reads. When no authenticated payload is found, a strict majority of canonical
-relays must complete their queries before FA reports no backup; fewer complete
-reads report an incomplete lookup for retry. This is an availability policy,
-not proof that the remaining relays hold no backup. FA records a successful
+reads. A strict majority of canonical relays must complete their queries before
+FA reports a backup or no backup; fewer complete reads report an incomplete
+lookup for retry. Every such read set includes a relay of each publish quorum,
+so a restore never misses a confirmed guardian transfer. This is not proof that
+the remaining relays hold no newer backup. FA records a successful
 restored-or-empty lookup in its own FA database by Manifold environment.
 An authenticated import and its completion record commit in one transaction;
 an incomplete read commits neither. Reopening the same FA database skips a

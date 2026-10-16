@@ -133,6 +133,7 @@ struct FaClientInner<I, P, N, F, C> {
     peer_badge_verifier: PeerBadgeVerifier,
     setup_payment_publisher: Option<PublicKey>,
     guardian_verification_fee_account: Option<Account>,
+    backup_publication: backup_worker::BackupPublication,
     backup_tasks: TaskGroup,
 }
 
@@ -200,6 +201,7 @@ where
             peer_badge_verifier,
             None,
             None,
+            backup_worker::BackupPublication::default(),
         )
         .await
     }
@@ -245,6 +247,7 @@ where
             peer_badge_verifier,
             Some(setup_payment_publisher),
             guardian_verification_fee_account,
+            backup_worker::BackupPublication::default(),
         )
         .await
     }
@@ -318,6 +321,7 @@ where
             peer_badge_verifier,
             setup_payment_publisher,
             guardian_verification_fee_account,
+            backup_worker::BackupPublication::new(&relays, profile.fa_backup_publish_quorum()),
         )
         .await?;
         if recovery_hint == BackupRecoveryHint::RestoredMnemonic
@@ -360,6 +364,7 @@ where
             client.inner.store.clone(),
             client.inner.ports.identity.scoped_root(),
             relays,
+            client.inner.backup_publication.wake(),
         );
         Ok(client)
     }
@@ -371,6 +376,7 @@ where
         peer_badge_verifier: PeerBadgeVerifier,
         setup_payment_publisher: Option<PublicKey>,
         guardian_verification_fee_account: Option<Account>,
+        backup_publication: backup_worker::BackupPublication,
     ) -> FaResult<Self> {
         let store = FaStore::new(database);
         let fa_id = ports.identity.public_key().map_err(FaError::Identity)?;
@@ -387,6 +393,7 @@ where
                 peer_badge_verifier,
                 setup_payment_publisher,
                 guardian_verification_fee_account,
+                backup_publication,
                 backup_tasks,
             }),
         })
