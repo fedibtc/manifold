@@ -353,6 +353,160 @@ async fn a_quote_above_the_approved_cap_moves_no_value() {
 }
 
 #[tokio::test]
+async fn a_payment_that_never_started_rechecks_its_payer() {
+    let (_database, _payments, payment_state, mg_state, client) = formed_paid_client().await;
+    // Reserve the purchase's payment but lose the result, then record the
+    // payment as started: a crash just before the wallet funded it.
+    let next_reservation = payment_state.readiness_calls.load(Ordering::SeqCst) + 1;
+    payment_state
+        .lose_reservation_result_on_call
+        .store(next_reservation, Ordering::SeqCst);
+    start_transfer_with(
+        &client,
+        &mg_state,
+        destination_approval(PAYMENT_AMOUNT_MSATS),
+    )
+    .await
+    .unwrap_err();
+    let mut transfer = client
+        .inner
+        .store
+        .load_guardian_transfer()
+        .await
+        .unwrap()
+        .unwrap();
+    let TransferStage::Buying(purchase) = &mut transfer.stage else {
+        panic!("the transfer still buys its seat");
+    };
+    purchase.outputs_started = true;
+    let lease = client
+        .inner
+        .store
+        .acquire_driver_lease(Duration::from_secs(30), Duration::from_secs(5))
+        .await
+        .unwrap();
+    lease
+        .write_guardian_transfer(
+            TestIdentity::fa_id(),
+            crate::db::GuardianTransferWrite::Update(transfer),
+        )
+        .await
+        .unwrap();
+    client
+        .inner
+        .store
+        .release_driver_lease(lease)
+        .await
+        .unwrap();
+    // The policy no longer allows the payer.
+    payment_state.pay_none.store(true, Ordering::SeqCst);
+    let funded_before = payment_state.create_calls.load(Ordering::SeqCst);
+    let releases_before = payment_state.whole_release_calls.load(Ordering::SeqCst);
+
+    let error = client
+        .resume_guardian_transfer(short_options())
+        .await
+        .unwrap_err();
+
+    assert!(
+        matches!(
+            error,
+            FaError::SelectionReauthorizationRequired {
+                reason: SelectionReauthorizationReason::SelectedPayerUnavailable,
+                ..
+            }
+        ),
+        "{error:?}"
+    );
+    assert_eq!(
+        payment_state.create_calls.load(Ordering::SeqCst),
+        funded_before
+    );
+    assert_eq!(
+        payment_state.whole_release_calls.load(Ordering::SeqCst),
+        releases_before + 1
+    );
+    assert_eq!(client.guardian_transfer().await.unwrap(), None);
+    assert!(destination_create_records(&mg_state).is_empty());
+}
+
+#[tokio::test]
+async fn a_priced_destination_needs_a_payer_before_the_transfer_opens() {
+    let (_database, _payments, _payment_state, mg_state, client) = formed_paid_client().await;
+    let connects_before = mg_state.connect_calls.load(Ordering::SeqCst);
+
+    let error = client
+        .start_guardian_transfer(
+            MOVED as u16,
+            destination_approval(PAYMENT_AMOUNT_MSATS),
+            None,
+            None,
+            transfer_options(),
+        )
+        .await
+        .unwrap_err();
+
+    assert!(
+        matches!(
+            error,
+            FaError::SelectionReauthorizationRequired {
+                reason: SelectionReauthorizationReason::PaymentFederationRequired,
+                ..
+            }
+        ),
+        "{error:?}"
+    );
+    // Refused before the transfer opened, so no MG was asked.
+    assert_eq!(
+        mg_state.connect_calls.load(Ordering::SeqCst),
+        connects_before
+    );
+    assert_eq!(client.guardian_transfer().await.unwrap(), None);
+    assert!(destination_create_records(&mg_state).is_empty());
+}
+
+#[tokio::test]
+async fn a_free_destination_that_starts_to_charge_closes_the_transfer() {
+    let (_database, _payments, payment_state, mg_state, client) = formed_paid_client().await;
+    let reservations_before = payment_state.readiness_calls.load(Ordering::SeqCst);
+    mg_state
+        .seat_statuses
+        .lock()
+        .expect("test lock")
+        .insert(DESTINATION, ServiceStatus::New);
+
+    // The approval saw a free seat, so the FA names no payer. The MG now
+    // charges for it.
+    let error = client
+        .start_guardian_transfer(
+            MOVED as u16,
+            destination_approval(0),
+            None,
+            None,
+            transfer_options(),
+        )
+        .await
+        .unwrap_err();
+
+    assert!(
+        matches!(
+            error,
+            FaError::SelectionReauthorizationRequired {
+                reason: SelectionReauthorizationReason::PaymentFederationRequired,
+                ..
+            }
+        ),
+        "{error:?}"
+    );
+    assert_eq!(
+        payment_state.readiness_calls.load(Ordering::SeqCst),
+        reservations_before
+    );
+    assert_eq!(client.guardian_transfer().await.unwrap(), None);
+    assert!(destination_create_records(&mg_state).is_empty());
+}
+
+#[tokio::test]
 async fn only_one_transfer_is_open_at_a_time() {
     let (_database, _payments, _payment_state, mg_state, client) = formed_paid_client().await;
     mg_state

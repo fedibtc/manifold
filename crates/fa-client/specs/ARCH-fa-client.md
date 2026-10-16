@@ -634,15 +634,19 @@ its seats. The FA keeps the verified holder of each formed and each bought
 seat, also after a transfer. After a restore the badge holders of the seats
 are unknown, so the preview excludes their MGs but not their holders.
 `start_guardian_transfer` takes the approved preview with a price cap and an
-explicit payer, checks the same custody rule, and records the transfer.
+explicit payer, checks the same custody rule, and records the transfer. It
+refuses a priced preview without a payer before it records anything.
 
 The transfer first buys the destination seat with the normal `GetQuote` and
 `CreateSeat` for the federation's size. The purchase follows the formation
 purchase rules: it persists a paid quote before the reservation, refreshes a
 stale quote and releases its reservation before the payment output starts,
 and replays the exact quote after that point. A purchase that ends without a
-seat and with no value at risk (a refusal with its refund settled, a quote
-above the cap, or a payment the wallet proved rejected) closes the transfer.
+seat and with no value at risk closes the transfer: a refusal with its refund
+settled, a quote above the cap, a payment the wallet proved rejected, a quote
+that needs reauthorization (for example, a seat that now charges but has no
+payer), or a payer that the current policy no longer allows when a payment
+that never started resumes. The last case releases its reservation first.
 Any other failure leaves the purchase in the row for
 `resume_guardian_transfer`.
 
