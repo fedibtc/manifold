@@ -454,6 +454,24 @@ fn unframe(plaintext: &[u8]) -> Result<&[u8], BackupError> {
     Ok(payload)
 }
 
+/// Take one seat's archive slices at `version`'s coordinates, in order, up to
+/// the first gap.
+fn drain_archive_slices(
+    slices: &mut HashMap<String, Event>,
+    backup: &BackupIdentity,
+    seat_id: &SeatId,
+    version: u32,
+) -> Vec<Event> {
+    let mut found = Vec::new();
+    for index in 0.. {
+        let Some(event) = slices.remove(&backup.archive_coordinate(seat_id, version, index)) else {
+            break;
+        };
+        found.push(event);
+    }
+    found
+}
+
 /// The half of a restore that has no relay in it: given the events, what
 /// fleet do they describe?
 ///
@@ -521,6 +539,23 @@ pub fn recover_from_events(
     let mut archives = HashMap::new();
     for (version, seat) in &mut seats {
         let Some(guardian) = &mut seat.guardian else {
+            if seat
+                .transfer
+                .as_ref()
+                .and_then(|transfer| transfer.outgoing.as_ref())
+                .is_some_and(|outgoing| outgoing.removed)
+            {
+                // A removed source's tombstone drops its archive reference,
+                // but addressable slices cannot be deleted from a relay
+                // reliably. The authenticated tombstone retires exactly this
+                // seat's slice coordinates, in both generations and across
+                // gaps a relay may have left; unrelated events remain fatal.
+                for version in [LEGACY_DOCUMENT_VERSION, BACKUP_DOCUMENT_VERSION] {
+                    for index in 0..u32::from(crate::backup::MAX_RESTORE_SLICES_PER_SEAT) {
+                        slices.remove(&backup.archive_coordinate(&seat.seat_id, version, index));
+                    }
+                }
+            }
             continue;
         };
         // The archive ends at the first gap in its own version's coordinates.
@@ -528,30 +563,17 @@ pub fn recover_from_events(
         // the other generation — the one an upgrade retired, or the one an
         // interrupted upgrade staged before its document landed — and is
         // dropped unread.
-        let mut found = Vec::new();
-        for index in 0.. {
-            let Some(event) =
-                slices.remove(&backup.archive_coordinate(&seat.seat_id, *version, index))
-            else {
-                break;
-            };
-            found.push(
+        let found = drain_archive_slices(&mut slices, backup, &seat.seat_id, *version)
+            .into_iter()
+            .map(|event| {
                 BASE64
                     .decode(&event.content)
-                    .map_err(|_| RecoverError::UnreadableDocument(event.id.to_string()))?,
-            );
-        }
+                    .map_err(|_| RecoverError::UnreadableDocument(event.id.to_string()))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
         for other in [LEGACY_DOCUMENT_VERSION, BACKUP_DOCUMENT_VERSION] {
-            if other == *version {
-                continue;
-            }
-            for index in 0.. {
-                if slices
-                    .remove(&backup.archive_coordinate(&seat.seat_id, other, index))
-                    .is_none()
-                {
-                    break;
-                }
+            if other != *version {
+                drain_archive_slices(&mut slices, backup, &seat.seat_id, other);
             }
         }
         if found.is_empty() {

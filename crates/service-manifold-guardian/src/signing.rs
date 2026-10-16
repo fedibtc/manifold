@@ -35,6 +35,7 @@ use crate::{
     GetQuoteResponse, GetStatusRequest, ManagerSignature, ProposeFormationMetaRequest,
     PullSeatRequest, RegisterGatewayRequest, RemoveSeatRequest, ReplaceSeatBindingRequest,
     RestartDkgRequest, SeatTransferGrant, SetMetaFieldRequest, StartDkgRequest, Timestamp,
+    TransferSeatRequest,
 };
 
 /// Domain separator for FA-signed requests. `v1` versions the signing
@@ -44,6 +45,10 @@ pub const FA_REQUEST_SIGNATURE_DOMAIN: &[u8] = b"fedi-fman-fi-request/v1\0";
 
 /// Domain separator for MG-signed commitment responses.
 pub const MG_RESPONSE_SIGNATURE_DOMAIN: &[u8] = b"fedi-fman-response/v1\0";
+
+/// Domain separator for requests one MG signs with its service key and sends
+/// to another MG.
+pub const MG_REQUEST_SIGNATURE_DOMAIN: &[u8] = b"fedi-fman-mg-request/v1\0";
 
 /// Freshness window for signed FA requests (SPEC-signed-envelopes: ±1 h).
 /// It bounds but does not prevent replay (no nonce) — acceptable for 0.1.
@@ -205,6 +210,90 @@ macro_rules! manager_signed_responses {
 manager_signed_responses! {
     GetQuoteResponse => "get_quote",
     CreateSeatResponse => "create_seat",
+}
+
+/// A request type carried inside [`MgSignedRequest`]: a verb one MG calls on
+/// another, authenticated by the caller's service key.
+pub trait ManagerSignedRequest: Serialize + DeserializeOwned {
+    /// Per-verb signature domain label.
+    const LABEL: &'static str;
+
+    /// Freshness challenge timestamp (±1 h, like FA requests).
+    fn ts(&self) -> Timestamp;
+
+    /// Signer identity: the calling MG's service key.
+    fn service_pubkey(&self) -> XOnlyPublicKey;
+}
+
+impl ManagerSignedRequest for TransferSeatRequest {
+    const LABEL: &'static str = "transfer_seat";
+
+    fn ts(&self) -> Timestamp {
+        self.ts
+    }
+
+    fn service_pubkey(&self) -> XOnlyPublicKey {
+        self.destination_service_pubkey
+    }
+}
+
+/// Wire envelope for an MG-signed request: the signer's service key,
+/// serde-JSON `payload` bytes of `T`, plus the signature over exactly those
+/// bytes. Same shape and rules as [`SignedRequest`], under its own domain.
+#[derive(serde::Deserialize, serde::Serialize, Clone, Eq, PartialEq)]
+#[serde(bound(serialize = "", deserialize = ""))]
+pub struct MgSignedRequest<T> {
+    service_pubkey: XOnlyPublicKey,
+    payload: Vec<u8>,
+    manager_signature: crate::ManagerSignature,
+    #[serde(skip)]
+    marker: PhantomData<fn() -> T>,
+}
+
+impl<T> std::fmt::Debug for MgSignedRequest<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MgSignedRequest")
+            .field("service_pubkey", &self.service_pubkey)
+            .field("payload", &"<redacted>")
+            .field("manager_signature", &"<redacted>")
+            .finish()
+    }
+}
+
+impl<T: ManagerSignedRequest> MgSignedRequest<T> {
+    /// Serialize and sign `request` with the calling MG's service key.
+    pub fn create(request: &T, key: &Keypair) -> Result<Self, AuthError> {
+        let payload =
+            serde_json::to_vec(request).map_err(|err| AuthError::Serialize(err.to_string()))?;
+        let digest = manager_request_signing_digest(T::LABEL, &payload);
+        Ok(Self {
+            service_pubkey: request.service_pubkey(),
+            payload,
+            manager_signature: crate::ManagerSignature(SECP256K1.sign_schnorr(&digest, key)),
+            marker: PhantomData,
+        })
+    }
+
+    /// Verify the envelope against the received bytes, then the inner signer
+    /// id and freshness. The verb decides what the signer may do.
+    pub fn verify(&self, now: Timestamp) -> Result<T, AuthError> {
+        SECP256K1
+            .verify_schnorr(
+                &self.manager_signature.0,
+                &manager_request_signing_digest(T::LABEL, &self.payload),
+                &self.service_pubkey,
+            )
+            .map_err(|_| AuthError::BadSignature)?;
+        let request: T = serde_json::from_slice(&self.payload)
+            .map_err(|_| AuthError::Payload { expected: T::LABEL })?;
+        if request.service_pubkey() != self.service_pubkey {
+            return Err(AuthError::SignerMismatch);
+        }
+        if now.0.abs_diff(request.ts().0) > FA_REQUEST_FRESHNESS_WINDOW_SECS {
+            return Err(AuthError::Stale);
+        }
+        Ok(request)
+    }
 }
 
 /// Wire envelope for an FA-signed request: the signer id, serde-JSON `payload`
@@ -460,6 +549,11 @@ pub fn fa_request_signing_digest(label: &str, payload: &[u8]) -> [u8; 32] {
 /// The 32-byte message an MG signs for a commitment response envelope.
 pub fn manager_response_signing_digest(label: &str, payload: &[u8]) -> [u8; 32] {
     signing_digest(MG_RESPONSE_SIGNATURE_DOMAIN, label, payload)
+}
+
+/// The 32-byte message an MG signs for a request to another MG.
+pub fn manager_request_signing_digest(label: &str, payload: &[u8]) -> [u8; 32] {
+    signing_digest(MG_REQUEST_SIGNATURE_DOMAIN, label, payload)
 }
 
 /// `SHA256(domain || label || \0 || payload)`, signed as a 32-byte BIP-340

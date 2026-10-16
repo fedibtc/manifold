@@ -5,8 +5,9 @@ offer settings (see [ARCH-manifold-guardian](./ARCH-manifold-guardian.md)
 *Concurrency model*). Per-seat runtime state is rebuilt from its durable rows
 when needed. Operator settings and their epoch are read in one transaction
 with capacity for quoting. Capacity is not separate state: database snapshots
-count non-decommissioned seats and derive the remaining monotonic lifetime port
-grid. Admission first resolves immutable replay or an already-stale epoch from
+count non-decommissioned seats except transfer-retired sources, and derive the
+remaining monotonic lifetime port grid.
+Retirement never reuses a seat number or its port block. Admission first resolves immutable replay or an already-stale epoch from
 one read snapshot; a potentially accepting request checks the same facts again
 after acquiring SQLite's writer reservation. Write methods return the
 committed fact directly (or no value); they never reread a just-written row to
@@ -60,6 +61,19 @@ Consequences the database transaction and schema enforce:
   fresh random value in a quote-invalidating transaction. Formation and
   decommission are immutable once recorded; the seat row survives as dispute
   material.
+
+Guardian transfer intent and acceptance are database-owned recovery facts, not
+a live RPC's state. Pending generations fence stale replies. The guardian
+itself lives only in the seat data directory and the backup: acceptance is
+committed after the files are durably installed, together with the formed row,
+and records only the guardian's two Iroh secrets; the directory is the archive,
+as for a natively formed seat. Acceptance survives grant expiry. The outgoing
+fence is recorded once the child's exit is proved, and removal after it is
+monotone and survives guardian-data deletion.
+The per-seat owner serializes child and filesystem effects with these facts;
+exact backup confirmation precedes export, while an accepted import and a
+removal publish afterwards like any other seat change
+([SPEC-guardian-transfer](./SPEC-guardian-transfer.md)).
 
 ## Representation: columns are for constraints, not for queries
 

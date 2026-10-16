@@ -129,7 +129,7 @@ impl ManifoldGuardianService for TestManifoldGuardian {
     }
     async fn transfer_seat(
         &self,
-        _: SignedRequest<SeatTransferGrant>,
+        _: MgSignedRequest<TransferSeatRequest>,
     ) -> FmResult<TransferSeatResponse> {
         unsupported()
     }
