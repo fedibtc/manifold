@@ -11,6 +11,9 @@
 > `formed_seats` record reconstructed from an authenticated guardian archive.
 > The authenticity argument below still covers the envelope and archive, but
 > its Rust correspondence has not yet been renewed for that storage change.
+> Ordinary transfer activation also narrows the claim to latest-backup
+> recovery (A4). This record is not renewed verification: its historical
+> freshness counterexamples below now document the excluded rollback risk.
 
 Scope: `crates/mg/core/src/{backup,backup_queue,db,fleet,identity,onboarding,`
 `restore,seat,supervisor}.rs`,
@@ -26,13 +29,10 @@ A successful `OnboardFromBackup` never durably adopts either:
 1. an identity, seat fact, payment record, guardian archive byte, or
    consensus-observed guard from a document that was not authentically produced
    under the recovered mnemonic's derived backup keys; or
-2. an inconsistent set of authentic documents, including an older addressable
-   event replayed in place of a newer publication when the replacement changed
-   the state restored for that seat.
+2. an internally inconsistent set of authentic documents.
 
-The adversary fully controls the configured Nostr relay: it may forge, replace,
-reorder, withhold, duplicate, and replay events and may choose when to end a
-query. The daemon may crash at any statement or await boundary during recovery
+Subject to A4, relay bytes may be forged, reordered, duplicated, or replayed.
+The daemon may crash at any statement or await boundary during recovery
 and installation. The host, operator-supplied mnemonic, database, and seat data
 root are otherwise honest and exclusively operated by this implementation.
 
@@ -44,8 +44,8 @@ input is explicitly outside the artifact domain above and is owned by axiom A3
 
 Pure omission is not quantified as forged adoption: a relay that withholds
 documents and thereby makes recovery fail or produces an incomplete fleet is an
-availability failure, recorded below. The second clause does include omission
-used together with replay to make an adopted seat describe an older state.
+availability failure, recorded below. Freshness is assumed under A4, not
+established by authentication or publication readback.
 
 ## Axioms (trusted, not checked here)
 
@@ -63,6 +63,11 @@ used together with replay to make an adopted seat describe an older state.
   the hosted federation's threshold honesty. No lemma in this record uses A3:
   it exists to own the adjacent boundary below, restating the composition
   root's A-fedimintd-protocol for this input (root owner ratification).
+- **A4 latest-backup recovery:** successful recovery receives the latest
+  published seat state, including retirement/removal tombstones and referenced
+  material. The configured relay does not replace that state with older
+  publications or omit a newer tombstone. Operators never restart stale local
+  snapshots. No independent anti-rollback checkpoint enforces this premise.
 
 ## Argument
 
@@ -163,7 +168,7 @@ chose to send; they cannot prove that it sent its newest stored event. Digest
 checks bind archive bytes to whichever seat document was returned, not that
 document to the latest publication.
 
-**Counterexample (falsifies clause 2).** This is exploitable by the relay
+**Historical counterexample (violates A4).** This is exploitable by the relay
 alone once both authentic revisions have been published: it requires no
 malicious operator, federation peer, host process, or cryptographic break.
 
@@ -196,7 +201,11 @@ not pure omission.
 
 ## Residual windows (accepted, outside the claim)
 
-
+The two rollback traces above remain possible if A4 fails. In particular, an
+older live-seat backup or stale source database may start the same guardian at
+both transfer endpoints. Source stop/reap and exact retirement-backup readback
+before export, and destination backup before `Running`, do not prove future
+relay freshness or protect against restoring an older local snapshot.
 
 ## Adjacent composition boundary (owned by A3)
 

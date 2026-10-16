@@ -1,9 +1,10 @@
 # ARCH-manifold-guardian-identity: Mnemonic-rooted identity
 
-The install's entire identity is a 12-word BIP-39 English mnemonic,
-generated at first run and stored plaintext in SQLite. Every key derives
-from its 64-byte seed (empty passphrase) via HKDF-SHA256 with versioned,
-purpose-separated `info` labels:
+The install's own identity is rooted in a 12-word BIP-39 English mnemonic,
+generated at first run and stored plaintext in SQLite. Its deterministic keys
+derive from the 64-byte seed (empty passphrase) via HKDF-SHA256 with versioned,
+purpose-separated `info` labels. Imported guardians are the narrow exception
+described below; they do not change these labels:
 
 - `fman/v1/service-nostr` → secp256k1 x-only key: the MG's public
   identity — signs Nostr ads and peer attestations, and is the subject of
@@ -138,7 +139,7 @@ service-sign pubkey to the ad identity
 
 ## Root-secret compromise and `api_auth`
 
-`api_auth` derives from the root mnemonic like every other seat secret. The
+For a natively formed seat, `api_auth` derives from the root mnemonic. The
 mnemonic is the MG's root secret and its compromise is already unrecoverable:
 it yields the wallet and every seat identity regardless. Deriving the guardian
 API password does not meaningfully widen that for a live host, because the
@@ -158,3 +159,36 @@ shares live in its fedimintd data directory and are not derived. Until a backup
 command exists, the safe manual procedure remains: stop the daemon, copy the
 complete data root, and retain the mnemonic separately
 ([ARCH-manifold-guardian-product-boundary](./ARCH-manifold-guardian-product-boundary.md)).
+
+## Imported guardian identity
+
+An accepted guardian transfer keeps the source's native peer id, both Iroh
+secrets and threshold material
+([SPEC-guardian-transfer](./SPEC-guardian-transfer.md)). None is re-derived
+from the destination seat or mnemonic. The admin password is the one thing
+that is: `fedimintd` takes `api_auth` from its environment on every spawn, not
+from its config, so the destination runs the imported child under its own
+derived `api_auth` like every other seat. The destination's service identity,
+seat ownership, payment wallet and guardian-fee accounts remain local; the
+source's wallet and service root are never imported.
+
+Before acceptance, the daemon parses the bounded three-file archive from the
+bytes it received, writing nothing. It checks the bound federation, contiguous peer set, that
+the handed-over Iroh secrets are the ones the config names for its own peer,
+private/consensus module pairing, native module validation and every supported
+wallet/Lightning module's network against the deployment. Source authentication
+asserts which source seat supplied that archive; the grant has no separate
+native peer-id field. Validation does not add a source credential or a new
+custody trust policy.
+
+The accepted row and the encrypted destination backup retain the two Iroh
+secrets. Startup and repaired runtime entries take them from the row, never
+from `private.json`, before constructing their API client; the files are what
+the child reads, the row is what the daemon signs with. The local-Iroh test
+harness must also preserve imported keys rather than deriving new keys from
+destination ports. A second transfer exports these effective secrets, not the
+first destination's mnemonic-derived seat secrets.
+
+This is the approved imported-key recovery exception. Transfers are enabled
+under the latest-backup and no-stale-local-snapshot premises recorded in
+SPEC-guardian-transfer; imported-key authentication does not prove freshness.

@@ -5,13 +5,10 @@ A successful `OnboardFromBackup` never durably adopts either:
 1. an identity, seat fact, payment record, guardian archive byte, or
    consensus-observed guard from a document that was not authentically produced
    under the recovered mnemonic's derived backup keys; or
-2. an inconsistent set of authentic documents, including an older addressable
-   event replayed in place of a newer publication when the replacement changed
-   the state restored for that seat.
+2. an internally inconsistent set of authentic documents.
 
-The adversary fully controls the configured Nostr relay: it may forge, replace,
-reorder, withhold, duplicate, and replay events and may choose when to end a
-query. The daemon may crash at any statement or await boundary during recovery
+Subject to A4, relay bytes may be forged, reordered, duplicated, or replayed.
+The daemon may crash at any statement or await boundary during recovery
 and installation. The host, operator-supplied mnemonic, database, and seat data
 root are otherwise honest and exclusively operated by this implementation.
 
@@ -23,8 +20,10 @@ input is explicitly outside the artifact domain above and is owned by axiom A3
 
 Pure omission is not quantified as forged adoption: a relay that withholds
 documents and thereby makes recovery fail or produces an incomplete fleet is an
-availability failure, recorded below. The second clause does include omission
-used together with replay to make an adopted seat describe an older state.
+availability failure, recorded below. Freshness is an assumed property of the
+configured backup source, not a cryptographic guarantee. An older authentic
+backup or stale local snapshot can resurrect a retired guardian; that rollback
+is outside the claim, not prevented by publication readback.
 
 ## Status
 
@@ -46,3 +45,9 @@ Unverified.
   the hosted federation's threshold honesty. No lemma in this record uses A3:
   it exists to own the adjacent boundary below, restating the composition
   root's A-fedimintd-protocol for this input (root owner ratification).
+- **A4 latest-backup recovery:** a successful recovery receives the latest
+  published state for each recovered seat, including retirement/removal
+  tombstones and their referenced material. The configured relay does not
+  substitute older state or omit a newer tombstone. Operators never restart
+  stale local database/data snapshots. There is no independent anti-rollback
+  checkpoint enforcing this premise.

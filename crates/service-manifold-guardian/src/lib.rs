@@ -46,7 +46,10 @@ pub use fedi_decentralized_services::domain::{
     MgApiUrlsMetadata, MgTrustMaterial, MgTrustMaterialVerificationError, Timestamp,
 };
 pub use fedi_decentralized_services::{ServiceError, ServiceErrorCode, ServiceResult};
-pub use locator::{Locator, MANIFOLD_GUARDIAN_ALPN};
+pub use locator::{
+    InvalidEndpointAddrPair, Locator, MANIFOLD_GUARDIAN_ALPN, MG_E2E_ENDPOINT_ADDRS_ENV,
+    parse_endpoint_addr_pairs,
+};
 pub use locked_payment::{
     CreateSeatOutcome, CreateSeatRequest, CreateSeatResponse, GetQuoteRequest, GetQuoteResponse,
     InvalidSeatId, LockedBlindedSignature, LockedIssuanceRequest, LockedIssuanceRequestV2,
@@ -69,8 +72,9 @@ pub use service::{
 };
 pub use signing::{
     AuthError, FA_REQUEST_FRESHNESS_WINDOW_SECS, FA_REQUEST_SIGNATURE_DOMAIN, FaSignedRequest,
-    MG_RESPONSE_SIGNATURE_DOMAIN, ManagerSignedResponse, SeatScopedFaRequest, SignatureVerified,
-    SignedRequest, SignedResponse, VerifiedFaRequest, fa_request_signing_digest,
+    MG_REQUEST_SIGNATURE_DOMAIN, MG_RESPONSE_SIGNATURE_DOMAIN, ManagerSignedRequest,
+    ManagerSignedResponse, MgSignedRequest, SeatScopedFaRequest, SignatureVerified, SignedRequest,
+    SignedResponse, VerifiedFaRequest, fa_request_signing_digest, manager_request_signing_digest,
     manager_response_signing_digest,
 };
 pub use status::{
@@ -100,10 +104,10 @@ pub use telemetry::{
     ScrapeGuardianMetricsRequest, TelemetryCapability, TelemetryResult,
 };
 pub use transfer::{
-    PullSeatRequest, PullSeatResponse, RemoveSeatRequest, RemoveSeatResponse,
-    ReplaceSeatBindingRequest, ReplaceSeatBindingResponse, SEALED_SEAT_PACKAGE_MAX_BYTES,
-    SEAT_TRANSFER_GRANT_MAX_LIFETIME_SECS, SealedSeatPackage, SealedSeatPackageTooLarge,
-    SeatTransferGrant, TransferSeatResponse,
+    GuardianMaterial, GuardianMaterialTooLarge, PullSeatRequest, PullSeatResponse, RebindSeatError,
+    RemoveSeatRequest, RemoveSeatResponse, ReplaceSeatBindingRequest, ReplaceSeatBindingResponse,
+    SEAT_TRANSFER_GRANT_MAX_LIFETIME_SECS, SEAT_TRANSFER_MATERIAL_MAX_BYTES, SeatTransferGrant,
+    TransferSeatRequest, TransferSeatResponse, rebind_transferred_seat,
 };
 pub use types::{
     AvailabilityInfo, FEDERATION_ICON_URL_META_FIELD_KEY, FEDERATION_NAME_META_FIELD_KEY, FaId,

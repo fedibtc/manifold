@@ -76,6 +76,11 @@ trust directory and guardian-fee recipient list are formation-owned fixed
 fields and are explicitly rejected through `SetMetaField`. Formation installs
 both alongside the initial rate through `ProposeFormationMeta`; see
 [SPEC-guardian-fee-policy](./SPEC-guardian-fee-policy.md).
+The sole dedicated post-formation exception is cooperative guardian transfer:
+`ReplaceSeatBinding` authenticates the moved guardian's new MG attestation and
+endpoint proof, replaces that peer's directory entry and fee recipient, and
+preserves every weight, the rate, and unrelated fields
+([SPEC-guardian-transfer](./SPEC-guardian-transfer.md)).
 
 Fedi supplies the URL for both ready-made and custom terms. Manifold has no
 default terms URL and does not fetch or approve document content.
@@ -89,11 +94,13 @@ consensus revision and exact raw value from one read. The base names an
 occurrence, so byte-identical content readopted at a later revision does not
 re-arm an old request.
 
-`SetMetaField` and formation's `ProposeFormationMeta` enter the same MG
+`SetMetaField`, formation's `ProposeFormationMeta`, and transfer's
+`ReplaceSeatBinding` enter the same MG
 read/check/merge/canonicalize/submit primitive. A mismatch returns
 `MetaConsensusChanged` without a vote. A matching generic request replaces only
 the validated string field; formation constructs its directory, recipient
-mapping, and rate as one target. Both preserve unrelated fields and submit
+mapping, and rate as one target; transfer derives only its dedicated replacement.
+All preserve unrelated fields and submit
 canonical whole-object bytes.
 
 The upstream module has no conditional submit, so a race remains between the

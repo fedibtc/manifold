@@ -1,4 +1,5 @@
 mod seats;
+mod transfers;
 
 pub(crate) use seats::SeatAdmissionResult;
 pub(crate) use seats::{CompletionCallbackOutcome, CompletionCallbackRecord};
@@ -194,8 +195,10 @@ impl Db {
         .fetch_one(&mut *tx)
         .await?;
         let (active, next_no): (i64, i64) = sqlx::query_as(
-            "SELECT COUNT(*) FILTER (WHERE d.quote_id IS NULL), COALESCE(MAX(s.seat_no) + 1, 0) \
-             FROM seats s LEFT JOIN decommissioned_seats d USING (quote_id)",
+            "SELECT COUNT(*) FILTER (WHERE d.quote_id IS NULL AND t.quote_id IS NULL), \
+             COALESCE(MAX(s.seat_no) + 1, 0) \
+             FROM seats s LEFT JOIN decommissioned_seats d USING (quote_id) \
+             LEFT JOIN seat_transfer_out t USING (quote_id)",
         )
         .fetch_one(&mut *tx)
         .await?;
@@ -441,7 +444,8 @@ impl Db {
         }
         let active: i64 = sqlx::query_scalar(
             "SELECT COUNT(*) FROM seats s LEFT JOIN decommissioned_seats d USING (quote_id) \
-             WHERE d.quote_id IS NULL",
+             LEFT JOIN seat_transfer_out t USING (quote_id) \
+             WHERE d.quote_id IS NULL AND t.quote_id IS NULL",
         )
         .fetch_one(&mut *tx)
         .await?;
@@ -486,7 +490,8 @@ impl Db {
     pub async fn active_seat_count(&self) -> Result<u32, DbError> {
         let active: i64 = sqlx::query_scalar(
             "SELECT COUNT(*) FROM seats s LEFT JOIN decommissioned_seats d USING (quote_id) \
-             WHERE d.quote_id IS NULL",
+             LEFT JOIN seat_transfer_out t USING (quote_id) \
+             WHERE d.quote_id IS NULL AND t.quote_id IS NULL",
         )
         .fetch_one(&self.pool)
         .await?;
@@ -536,8 +541,10 @@ impl Db {
                 .unwrap_or(before.ready_for_new_seats),
         };
         let (active, next_no): (i64, i64) = sqlx::query_as(
-            "SELECT COUNT(*) FILTER (WHERE d.quote_id IS NULL), COALESCE(MAX(s.seat_no) + 1, 0) \
-             FROM seats s LEFT JOIN decommissioned_seats d USING (quote_id)",
+            "SELECT COUNT(*) FILTER (WHERE d.quote_id IS NULL AND t.quote_id IS NULL), \
+             COALESCE(MAX(s.seat_no) + 1, 0) \
+             FROM seats s LEFT JOIN decommissioned_seats d USING (quote_id) \
+             LEFT JOIN seat_transfer_out t USING (quote_id)",
         )
         .fetch_one(&mut *tx)
         .await?;

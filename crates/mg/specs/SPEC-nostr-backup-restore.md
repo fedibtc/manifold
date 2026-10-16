@@ -126,6 +126,47 @@ Four kinds of state, and two of them are genuinely at risk:
 
 ## Documents
 
+### Transfer recovery extension (version 2)
+
+The version-2 writer retains the existing addresses, encryption domains, archive
+layout and native-seat derivations. Its reader accepts version 1 and version 2;
+an unknown version is rejected before interpreting its body. Version-1 readers
+reject version-2 documents rather than restore a transfer seat without its fences.
+A restored legacy or mixed-version fleet republishes under version 2 instead of
+seeding confirmations for an envelope version it did not read. Native-seat
+documents omit the optional transfer field, preserving their plaintext digest.
+
+Transfer recovery carries only accepted identity, not live FA grants or
+callback bearers. It retains a confidential, non-authorizing commitment to the
+initial callback choice. A matching FA retry may reinstall a lost callback
+capability after recovery, but cannot change that choice. A destination still
+waiting for its source holds no guardian and publishes nothing about the move;
+it restores as an ordinary `New` seat and the FA renews the move. An accepted
+destination carries the guardian's two Iroh secrets inside the destination's
+encrypted document, with provenance and the immutable archive reference; the
+archive beside it is the guardian. Recovery writes the guardian into the seat data
+directory and restores the accepted row; the seat starts like any formed seat,
+and expiry cannot cancel an accepted guardian.
+
+A retired source carries a permanent transfer fence and formed federation invite.
+The narrow FA-authorized transfer-removal operation removes only local guardian
+material and records the removal; the seat's next publication is the
+archive-less removal tombstone. A restore between the two resurrects at most a
+stopped, transferred guardian that never starts again.
+Removed seats retain their seat, payment, formed, and fee-account facts. Their
+tombstones no longer carry imported secrets. Old archive slices may remain on the
+relay; only the known coordinates belonging to an authenticated removal
+tombstone are ignored, including gaps. Unclaimed events remain fatal.
+
+The source's export awaits a confirmation of the exact retired-source document
+digest, archive reference, and envelope version from the single ordered backup
+publisher.
+Discarding sinks cannot satisfy this barrier. This proves local read-back
+publication only; it does **not** establish freshness against later hostile
+replay. Recovery assumes the configured relay returns the latest published
+state and operators never restart stale local snapshots. Transfers are enabled
+under this premise; stale rollback can resurrect a retired source.
+
 Backups are addressable Nostr events authored by a **dedicated backup identity**
 derived from the mnemonic, deliberately distinct from the MG's service
 identity so that discovery and trust surfaces stay unlinked from recovery
