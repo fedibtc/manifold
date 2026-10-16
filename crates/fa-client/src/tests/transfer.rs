@@ -789,7 +789,12 @@ async fn check_stopped_transfer(client: &TestClient, mg_state: &MgState) {
         .get(&DESTINATION)
         == Some(&ServiceStatus::Running);
     assert!(!removed || destination_runs);
-    let backup = client.inner.store.backup_payload().await.unwrap().payload;
+    let keys = crate::backup::FaBackupKeys::derive(&client.inner.ports.identity.scoped_root());
+    let sealed = keys
+        .seal(&client.inner.store.backup_payload().await.unwrap().payload)
+        .unwrap();
+    // Opening runs the same validation as a restore from the relays.
+    let backup = keys.open(&sealed).unwrap();
     db::FaStore::new(MemDatabase::new().into_database())
         .restore_backup_payload_with_completion(TestIdentity::fa_id(), backup, None)
         .await
