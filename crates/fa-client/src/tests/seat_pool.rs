@@ -79,7 +79,11 @@ async fn a_paid_spare_seat_lands_in_the_pool_and_the_backup() {
     let funded_before = payment_state.create_calls.load(Ordering::SeqCst);
 
     let spare = client
-        .buy_spare_seat(spare_approval(PAYMENT_AMOUNT_MSATS), long_request_options())
+        .buy_spare_seat(
+            spare_approval(PAYMENT_AMOUNT_MSATS),
+            Some(payment_federation_id()),
+            long_request_options(),
+        )
         .await
         .unwrap();
 
@@ -150,7 +154,11 @@ async fn a_lost_acceptance_after_payment_replays_the_exact_quote() {
         .insert(SPARE_INDEX);
 
     client
-        .buy_spare_seat(spare_approval(PAYMENT_AMOUNT_MSATS), long_request_options())
+        .buy_spare_seat(
+            spare_approval(PAYMENT_AMOUNT_MSATS),
+            Some(payment_federation_id()),
+            long_request_options(),
+        )
         .await
         .unwrap_err();
     let pending = client.spare_seat_purchase().await.unwrap().unwrap();
@@ -207,7 +215,11 @@ async fn an_unarmed_reservation_is_released_and_the_quote_refreshed() {
         .store(next_reservation, Ordering::SeqCst);
 
     client
-        .buy_spare_seat(spare_approval(PAYMENT_AMOUNT_MSATS), long_request_options())
+        .buy_spare_seat(
+            spare_approval(PAYMENT_AMOUNT_MSATS),
+            Some(payment_federation_id()),
+            long_request_options(),
+        )
         .await
         .unwrap_err();
     let purchase = client
@@ -252,7 +264,11 @@ async fn a_refused_purchase_settles_its_refund_and_adds_no_seat() {
     let refunds_before = payment_state.refund_calls.load(Ordering::SeqCst);
 
     let error = client
-        .buy_spare_seat(spare_approval(PAYMENT_AMOUNT_MSATS), long_request_options())
+        .buy_spare_seat(
+            spare_approval(PAYMENT_AMOUNT_MSATS),
+            Some(payment_federation_id()),
+            long_request_options(),
+        )
         .await
         .unwrap_err();
 
@@ -287,6 +303,7 @@ async fn a_quote_above_the_approved_cap_moves_no_value() {
     let error = client
         .buy_spare_seat(
             spare_approval(PAYMENT_AMOUNT_MSATS - 1),
+            Some(payment_federation_id()),
             long_request_options(),
         )
         .await
@@ -323,12 +340,20 @@ async fn only_one_purchase_is_open_at_a_time() {
         .expect("test lock")
         .insert(SPARE_INDEX);
     client
-        .buy_spare_seat(spare_approval(PAYMENT_AMOUNT_MSATS), long_request_options())
+        .buy_spare_seat(
+            spare_approval(PAYMENT_AMOUNT_MSATS),
+            Some(payment_federation_id()),
+            long_request_options(),
+        )
         .await
         .unwrap_err();
 
     let error = client
-        .buy_spare_seat(spare_approval(PAYMENT_AMOUNT_MSATS), long_request_options())
+        .buy_spare_seat(
+            spare_approval(PAYMENT_AMOUNT_MSATS),
+            Some(payment_federation_id()),
+            long_request_options(),
+        )
         .await
         .unwrap_err();
 
@@ -433,7 +458,11 @@ async fn a_restored_fa_buys_a_spare_on_the_federation_line() {
     assert_eq!(eligible_spare_mgs(&restored).await, 0);
 
     let spare = restored
-        .buy_spare_seat(spare_approval(PAYMENT_AMOUNT_MSATS), long_request_options())
+        .buy_spare_seat(
+            spare_approval(PAYMENT_AMOUNT_MSATS),
+            Some(payment_federation_id()),
+            long_request_options(),
+        )
         .await
         .unwrap();
 
@@ -513,7 +542,11 @@ async fn a_spare_holder_cannot_sell_a_second_spare_through_another_mg() {
     ])
     .await;
     restored
-        .buy_spare_seat(spare_approval(PAYMENT_AMOUNT_MSATS), long_request_options())
+        .buy_spare_seat(
+            spare_approval(PAYMENT_AMOUNT_MSATS),
+            Some(payment_federation_id()),
+            long_request_options(),
+        )
         .await
         .unwrap();
 

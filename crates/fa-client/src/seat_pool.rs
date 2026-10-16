@@ -38,10 +38,10 @@ use crate::formation::{
 use crate::mg::MgClient;
 use crate::selection::{SelectionBadgeVerifier, SpareSeatApproval, SpareSeatPreview, dkg_line};
 use crate::{
-    FaClient, FaError, FaIdentity, FaPayments, FaResult, FederationConsensusReader, FederationName,
-    FederationSize, FormationId, FormationPhase, FormationRunOptions, ManifoldGuardianConnector,
-    MgDiscoveryOptions, PaymentRequirements, PaymentReservationRecovery, PlanPreference,
-    ResolvedFormationIntent, SeatPaymentRecovery, SeatPaymentRequirement,
+    FaClient, FaError, FaIdentity, FaPayments, FaResult, FederationConsensusReader, FederationId,
+    FederationName, FederationSize, FormationId, FormationPhase, FormationRunOptions,
+    ManifoldGuardianConnector, MgDiscoveryOptions, PaymentRequirements, PaymentReservationRecovery,
+    PlanPreference, ResolvedFormationIntent, SeatPaymentRecovery, SeatPaymentRequirement,
 };
 
 /// One seat the FA owns that hosts no guardian.
@@ -113,6 +113,8 @@ pub(crate) struct StoredSeatPurchase {
     pub(crate) signed_quote: Option<SignedResponse<GetQuoteResponse>>,
     /// Durable output boundary: once set, the quote is replayed exactly.
     pub(crate) outputs_started: bool,
+    /// Explicit payer, absent for a free seat.
+    pub(crate) payment_federation_id: Option<FederationId>,
 }
 
 /// The formed federation a spare seat is bought for, from a formation this
@@ -122,7 +124,7 @@ pub(crate) struct PoolFederation {
     federation_name: FederationName,
     federation_size: FederationSize,
     /// MG identity, when known, locator, and seat id of every guardian seat.
-    pub(crate) seats: Vec<(Option<PublicKey>, Locator, SeatId)>,
+    pub(crate) seats: Vec<(PublicKey, Locator, SeatId)>,
     /// Known badge holders of the seats and of past hosts. Unknown after a
     /// restore.
     pub(crate) holders: BTreeSet<PublicKey>,
@@ -160,10 +162,8 @@ where
         let mut members = BTreeSet::new();
         let mut retained_service_pubkeys = BTreeMap::new();
         for (mg_id, locator, _) in &federation.seats {
-            if let Some(mg_id) = mg_id {
-                members.insert(*mg_id);
-                retained_service_pubkeys.insert(locator.service_pubkey, *mg_id);
-            }
+            members.insert(*mg_id);
+            retained_service_pubkeys.insert(locator.service_pubkey, *mg_id);
         }
         let mut excluded = members.clone();
         excluded.extend(federation.past_mgs);
@@ -204,6 +204,7 @@ where
     pub async fn buy_spare_seat(
         &self,
         approval: SpareSeatApproval,
+        payment_federation_id: Option<FederationId>,
         options: FormationRunOptions,
     ) -> FaResult<SpareSeat> {
         let _run = self.inner.run_guard.try_lock().map_err(|_| FaError::Busy)?;
@@ -243,6 +244,7 @@ where
                 max_msats: approval.max_msats,
                 signed_quote: None,
                 outputs_started: false,
+                payment_federation_id,
             };
             lease
                 .write_seat_pool(SeatPoolWrite::Begin(purchase.clone()))
@@ -340,7 +342,7 @@ where
                     seats: snapshot
                         .seats
                         .into_iter()
-                        .map(|seat| (Some(seat.mg_identity), seat.locator, seat.seat_id))
+                        .map(|seat| (seat.mg_identity, seat.locator, seat.seat_id))
                         .collect(),
                     holders,
                     past_mgs,
@@ -367,7 +369,14 @@ where
         if !purchase.outputs_started
             && let Some(signed) = &purchase.signed_quote
         {
-            let quote = self.verify_quote(0, signed, &purchase.locator, intent, fa_id, None)?;
+            let quote = self.verify_quote(
+                0,
+                signed,
+                &purchase.locator,
+                intent,
+                fa_id,
+                purchase.payment_federation_id.as_ref(),
+            )?;
             if quote.terms.payment.is_some() {
                 let requirements = purchase_requirements(&purchase, &quote)?;
                 let quotes = [quote];
@@ -411,7 +420,7 @@ where
                     intent,
                     fa_id,
                     QuoteAttemptPolicy::ExactRecovery,
-                    None,
+                    purchase.payment_federation_id.as_ref(),
                     Some(&payment_federation),
                     run,
                 )
@@ -433,7 +442,14 @@ where
             .signed_quote
             .clone()
             .expect("the purchase holds a quote here");
-        let verified = self.verify_quote(0, &signed, &purchase.locator, intent, fa_id, None)?;
+        let verified = self.verify_quote(
+            0,
+            &signed,
+            &purchase.locator,
+            intent,
+            fa_id,
+            purchase.payment_federation_id.as_ref(),
+        )?;
         let presentation = if verified.terms.payment.is_none() {
             SeatPresentation::Free(FreeSeatQuote { signed, verified })
         } else {
@@ -602,7 +618,7 @@ fn purchase_requirements(
         .ok_or_else(|| FaError::Storage("a free spare seat quote has no payment".to_owned()))?;
     let seats = vec![SeatPaymentRequirement {
         index: 0,
-        mg_id: Some(purchase.mg_id),
+        mg_id: purchase.mg_id,
         quote_id: quote.quote_id(),
         payment_federation_id: terms.federation_id().clone(),
         amount_msats: quote.terms.price_msats,

@@ -174,9 +174,7 @@ where
             .iter()
             .find(|seat| seat.index == seat_index)
             .ok_or_else(|| FaError::InvalidIntent("no guardian has this seat index".to_owned()))?;
-        let source_mg_id = source.mg_id.ok_or_else(|| {
-            FaError::InvalidIntent("the guardian's MG has no authenticated identity".to_owned())
-        })?;
+        let source_mg_id = source.mg_id;
         let destination = self
             .inner
             .store
@@ -190,7 +188,7 @@ where
         if custody
             .seats
             .iter()
-            .any(|(mg_id, _, _)| *mg_id == Some(destination.mg_id))
+            .any(|(mg_id, _, _)| *mg_id == destination.mg_id)
             || custody.past_mgs.contains(&destination.mg_id)
             || destination
                 .holder
@@ -510,7 +508,7 @@ where
             if seat.index == transfer.seat_index {
                 *seat = PostFormedSeat {
                     index: seat.index,
-                    mg_id: Some(destination.mg_id),
+                    mg_id: destination.mg_id,
                     locator: destination.locator.clone(),
                     seat_id: destination.seat_id.clone(),
                 };

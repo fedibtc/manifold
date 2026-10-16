@@ -58,7 +58,11 @@ async fn formation_holders(client: &TestClient) -> BTreeSet<PublicKey> {
 
 async fn buy_spare(client: &TestClient, state: &MgState) -> SpareSeat {
     let spare = client
-        .buy_spare_seat(spare_approval(PAYMENT_AMOUNT_MSATS), long_request_options())
+        .buy_spare_seat(
+            spare_approval(PAYMENT_AMOUNT_MSATS),
+            Some(payment_federation_id()),
+            long_request_options(),
+        )
         .await
         .unwrap();
     // A bought seat is unformed until a guardian arrives.
@@ -411,7 +415,11 @@ async fn a_spare_held_by_a_guardian_holder_gets_no_grant() {
     assert!(formation_holders(&client).await.contains(&guardian_holder));
     approval.seat.holder = guardian_holder;
     let spare = client
-        .buy_spare_seat(approval, long_request_options())
+        .buy_spare_seat(
+            approval,
+            Some(payment_federation_id()),
+            long_request_options(),
+        )
         .await
         .unwrap();
 
@@ -461,7 +469,11 @@ async fn a_destination_that_attests_another_guardian_is_refused() {
 async fn a_restored_fa_moves_a_guardian() {
     let (_, payment_state, mg_state, restored) = restored_client(Vec::new()).await;
     let spare = restored
-        .buy_spare_seat(spare_approval(PAYMENT_AMOUNT_MSATS), long_request_options())
+        .buy_spare_seat(
+            spare_approval(PAYMENT_AMOUNT_MSATS),
+            Some(payment_federation_id()),
+            long_request_options(),
+        )
         .await
         .unwrap();
     assert_eq!(payment_state.create_calls.load(Ordering::SeqCst), 1);

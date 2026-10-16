@@ -4102,9 +4102,7 @@ async fn rebind_federation_seat(
                 seat_holders.push((seat_id.clone(), holder));
             }
             seats.push(crate::backup::FaBackupSeat {
-                mg_identity: seat.admission.mg_id().ok_or_else(|| {
-                    FaError::Storage("formed FA seat has no authenticated MG identity".to_owned())
-                })?,
+                mg_identity: seat.admission.mg_id(),
                 seat_id,
                 locator: seat.locator,
             });
