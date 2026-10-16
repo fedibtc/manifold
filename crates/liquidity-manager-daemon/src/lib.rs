@@ -8,6 +8,7 @@
 mod admin;
 mod admin_token;
 mod advertisement;
+mod advertisement_writer;
 mod allocation_funding;
 mod allocation_store;
 mod attestation_store;

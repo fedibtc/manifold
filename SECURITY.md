@@ -2,6 +2,12 @@
 
 This repository is experimental infrastructure for decentralized federation components and local development tooling.
 
+## FLIP advertisement ordering
+
+See
+[SPEC-flip-advertisement](crates/liquidity-manager-daemon/specs/SPEC-flip-advertisement.md)
+for FLIP's relay ordering guarantees and withdrawal limits.
+
 ## Nix source inputs and public binary caches
 
 The default development shell's PeerBadge SDK, Fedi, and Fedimint source
