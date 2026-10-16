@@ -29,8 +29,9 @@ Its `/metrics` output contains vetted operational data and stable MG,
 guardian-seat, and invite-derived federation identifiers; it never belongs on
 the public registration route. The same private listener also serves
 `GET /v1/federations`, which returns full invite codes; like `/metrics` it has
-no application-layer authentication, so the private binding and network
-isolation are what keep workloads other than its intended consumers away.
+no application-layer authentication, so every caller admitted to the private
+listener, Prometheus scrapers and health probes included, is trusted with every
+exported invite.
 
 ## Image publishing credentials
 

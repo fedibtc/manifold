@@ -139,14 +139,19 @@ bound to the deployment profile, key identifier, target, seat, and federation
 id, so it does not authenticate in any other row. The invite shares the row's
 lifecycle: an unlisted seat, a quarantined or expired target, and a metrics
 policy change remove it together with the snapshot, and the next admitted poll
-restores it.
+restores it. The canonical form is bech32m. A seat whose invite parses but is
+too long for bech32m keeps its federation id and metrics and stores no invite.
 
 The private listener serves `GET /v1/federations`. It returns, per federation
 id of an active and unexpired target's current seats, the invite of the most
-recently observed seat, the seat count, and the latest observation time. Like
-the rest of the private listener it has no application-layer authentication;
-the private binding and the deployment's network isolation protect it, and the
-public listener never routes it. The export
+recently observed seat that stored one, the count of those seats, and the
+latest observation time. Like the rest of the private listener it has no
+application-layer authentication, and the public listener never routes it.
+Every caller the deployment admits to the private listener, including the
+Prometheus scraper, health probes, and any process sharing a loopback network
+namespace, can read every exported invite; encryption at rest does not narrow
+that set. Restricting invites to a single consumer needs a separately isolated
+listener or route-level authorization, which the collector does not provide. The export
 lets a deployment-owned consumer, such as a Fedimint Observer, connect to the
 federations whose MGs report telemetry; the invite is the same assertion that
 already attributes the seat's metrics and carries no stronger guarantee.

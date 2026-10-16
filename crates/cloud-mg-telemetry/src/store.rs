@@ -30,7 +30,7 @@ pub(crate) struct ExportedFederation {
     pub(crate) federation_id: String,
     /// Invite from the federation's most recently observed seat.
     pub(crate) invite_code: String,
-    /// Current seats that asserted an invite for this federation.
+    /// Current seats that stored an invite for this federation.
     pub(crate) seats: u32,
     pub(crate) last_seen_ms: i64,
 }
@@ -919,10 +919,16 @@ impl Store {
                 &snapshot.guardian_seat_id,
                 &snapshot.federation_id,
             )?;
-            let (invite_nonce, invite_ciphertext) = self
-                .cipher
-                .encrypt(snapshot.invite_code.as_bytes(), &invite_aad)
-                .map_err(|_| StoreError::Secret)?;
+            let (invite_nonce, invite_ciphertext) = match &snapshot.invite_code {
+                Some(invite) => {
+                    let (nonce, ciphertext) = self
+                        .cipher
+                        .encrypt(invite.as_bytes(), &invite_aad)
+                        .map_err(|_| StoreError::Secret)?;
+                    (Some(nonce), Some(ciphertext))
+                }
+                None => (None, None),
+            };
             sqlx::query(
                 "INSERT INTO metric_snapshots(
                     target_id,guardian_seat_id,federation_id,observed_at_ms,samples_json,sample_count,
@@ -2476,7 +2482,7 @@ mod tests {
                             federation_id:
                                 "0000000000000000000000000000000000000000000000000000000000000000"
                                     .to_owned(),
-                            invite_code: "test-invite".to_owned(),
+                            invite_code: Some("test-invite".to_owned()),
                             observed_at_ms: 100_000,
                             samples: stored_samples("aa", 1),
                         }],
@@ -2564,7 +2570,7 @@ mod tests {
                         federation_id:
                             "0000000000000000000000000000000000000000000000000000000000000000"
                                 .to_owned(),
-                        invite_code: "test-invite".to_owned(),
+                        invite_code: Some("test-invite".to_owned()),
                         observed_at_ms: 101_000,
                         samples: stored_samples("bb", 2),
                     }],
@@ -2666,7 +2672,7 @@ mod tests {
             snapshots: vec![SeatObservation {
                 guardian_seat_id: "aa".to_owned(),
                 federation_id: federation_id.to_owned(),
-                invite_code: "test-invite".to_owned(),
+                invite_code: Some("test-invite".to_owned()),
                 observed_at_ms,
                 samples: stored_samples("aa", 1)
                     .into_iter()
@@ -2748,7 +2754,7 @@ mod tests {
             |seat: &str, federation_id: &str, invite: &str, observed_at_ms| SeatObservation {
                 guardian_seat_id: seat.to_owned(),
                 federation_id: federation_id.to_owned(),
-                invite_code: invite.to_owned(),
+                invite_code: Some(invite.to_owned()),
                 observed_at_ms,
                 samples: stored_samples(seat, 1),
             };
@@ -2756,11 +2762,15 @@ mod tests {
             .commit_metrics(
                 &work,
                 MetricsCommit {
-                    listed_seats: Some(["s1".to_owned(), "s2".to_owned(), "s3".to_owned()].into()),
+                    listed_seats: Some(["s1", "s2", "s3", "s4"].map(str::to_owned).into()),
                     snapshots: vec![
                         seat("s1", &first, "invite-first-old", 100_000),
                         seat("s2", &first, "invite-first-new", 101_000),
                         seat("s3", &second, "invite-second", 100_500),
+                        SeatObservation {
+                            invite_code: None,
+                            ..seat("s4", &"cc".repeat(32), "", 100_200)
+                        },
                     ],
                     complete: true,
                 },
@@ -2786,11 +2796,18 @@ mod tests {
                 },
             ]
         );
-        let stored: Vec<Vec<u8>> =
-            sqlx::query_scalar("SELECT invite_ciphertext FROM metric_snapshots")
-                .fetch_all(&store.pool)
-                .await
-                .unwrap();
+        let stored: Vec<Option<Vec<u8>>> = sqlx::query_scalar(
+            "SELECT invite_ciphertext FROM metric_snapshots ORDER BY guardian_seat_id",
+        )
+        .fetch_all(&store.pool)
+        .await
+        .unwrap();
+        assert_eq!(stored.len(), 4);
+        assert!(
+            stored[3].is_none(),
+            "a seat without a canonical invite stores none"
+        );
+        let stored: Vec<Vec<u8>> = stored.into_iter().flatten().collect();
         assert!(stored.iter().all(|ciphertext| {
             !ciphertext
                 .windows(b"invite-".len())
@@ -3038,7 +3055,7 @@ mod tests {
                             federation_id:
                                 "0000000000000000000000000000000000000000000000000000000000000000"
                                     .to_owned(),
-                            invite_code: "test-invite".to_owned(),
+                            invite_code: Some("test-invite".to_owned()),
                             observed_at_ms: 100_000,
                             samples: stored_samples("aa", 1),
                         }],

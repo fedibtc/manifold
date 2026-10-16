@@ -151,7 +151,8 @@ for the current seats of active targets. The route has no application-layer
 authentication, like the rest of this listener, and the response holds full
 invite codes, so network policy for port 8176 admits only the Prometheus
 scraper, the health-probe source, and the consumer that follows the exported
-federations.
+federations. Each admitted caller can read every exported invite, and so can
+any process sharing the collector's loopback network namespace.
 
 Prometheus must preserve the collector's observation timestamps:
 

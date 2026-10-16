@@ -29,6 +29,7 @@ fn federation_attribution_requires_a_parseable_invite() {
         &fedi_decentralized_service_manifold_guardian::InviteCode(VALID_INVITE.to_owned()),
     ))
     .unwrap();
+    let invite_code = invite_code.unwrap();
     assert_eq!(federation_id.len(), 64);
     assert!(
         federation_id
@@ -37,6 +38,32 @@ fn federation_attribution_requires_a_parseable_invite() {
     );
     let reparsed = fedimint_core::invite_code::InviteCode::from_str(&invite_code).unwrap();
     assert_eq!(reparsed.federation_id().to_string(), federation_id);
+}
+
+/// A valid invite in the prefixed base32 form, with an API secret long enough
+/// that its bech32m form would exceed bech32's length limit.
+fn invite_without_canonical_form() -> (String, String) {
+    let invite = fedimint_core::invite_code::InviteCode::new(
+        "wss://guardian.example".parse().unwrap(),
+        fedimint_core::PeerId::from(0),
+        fedimint_core::config::FederationId::dummy(),
+        Some("s".repeat(1024)),
+    );
+    (
+        fedimint_core::base32::encode_prefixed(fedimint_core::base32::FEDIMINT_PREFIX, &invite),
+        invite.federation_id().to_string(),
+    )
+}
+
+#[test]
+fn an_invite_without_a_canonical_form_keeps_its_federation() {
+    let (encoded, expected_federation) = invite_without_canonical_form();
+    let (federation_id, invite_code) = seat_federation(Some(
+        &fedi_decentralized_service_manifold_guardian::InviteCode(encoded),
+    ))
+    .unwrap();
+    assert_eq!(federation_id, expected_federation);
+    assert!(invite_code.is_none());
 }
 
 fn secure_state_path(directory: &tempfile::TempDir) -> std::path::PathBuf {
@@ -58,6 +85,8 @@ enum BadSeatFailure {
 struct TestService {
     /// Seat whose samples must survive a sibling failure.
     good_seat: SeatId,
+    /// Invite the healthy seat asserts.
+    good_invite: String,
     /// Seat with the configured collection failure.
     bad_seat: SeatId,
     /// Failure injected for the bad seat.
@@ -81,7 +110,7 @@ impl GuardianTelemetryApi for TestService {
             GuardianTelemetrySeat {
                 seat_id: self.good_seat.clone(),
                 invite_code: Some(fedi_decentralized_service_manifold_guardian::InviteCode(
-                    VALID_INVITE.to_owned(),
+                    self.good_invite.clone(),
                 )),
             },
             GuardianTelemetrySeat {
@@ -139,7 +168,27 @@ impl GuardianTelemetryApi for TestService {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn authenticated_production_client_discovers_and_scrapes_a_seat() {
-    assert_healthy_seat_survives(BadSeatFailure::Delayed, false, Duration::from_secs(1)).await;
+    let exported = assert_healthy_seat_survives(
+        VALID_INVITE,
+        BadSeatFailure::Delayed,
+        false,
+        Duration::from_secs(1),
+    )
+    .await;
+    assert_eq!(exported.len(), 1);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_seat_invite_without_a_canonical_form_is_scraped_and_not_exported() {
+    let (encoded, _) = invite_without_canonical_form();
+    let exported = assert_healthy_seat_survives(
+        &encoded,
+        BadSeatFailure::Delayed,
+        false,
+        Duration::from_secs(1),
+    )
+    .await;
+    assert!(exported.is_empty());
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -150,15 +199,18 @@ async fn failed_seat_does_not_suppress_a_later_healthy_snapshot() {
         BadSeatFailure::HttpFailure,
         BadSeatFailure::RejectedMetrics,
     ] {
-        assert_healthy_seat_survives(failure, true, Duration::from_secs(5)).await;
+        assert_healthy_seat_survives(VALID_INVITE, failure, true, Duration::from_secs(5)).await;
     }
 }
 
+/// Polls a target with one healthy and one failing seat, commits the result,
+/// and returns the federation export that follows.
 async fn assert_healthy_seat_survives(
+    good_invite: &str,
     bad_failure: BadSeatFailure,
     bad_first: bool,
     budget: Duration,
-) {
+) -> Vec<crate::store::ExportedFederation> {
     let good_seat = SeatId::new("22".repeat(32)).unwrap();
     let bad_seat = SeatId::new("33".repeat(32)).unwrap();
     let server_endpoint = Endpoint::builder(presets::N0)
@@ -171,6 +223,7 @@ async fn assert_healthy_seat_survives(
             GUARDIAN_TELEMETRY_ALPN,
             IrohProtocol::new(GuardianTelemetryApiServer::new(TestService {
                 good_seat: good_seat.clone(),
+                good_invite: good_invite.to_owned(),
                 bad_seat: bad_seat.clone(),
                 bad_failure,
                 bad_first,
@@ -245,7 +298,7 @@ async fn assert_healthy_seat_survives(
         commit.listed_seats.as_ref().unwrap(),
         &BTreeSet::from([good_seat.to_string(), bad_seat.to_string()])
     );
-    let expected_federation = fedimint_core::invite_code::InviteCode::from_str(VALID_INVITE)
+    let expected_federation = fedimint_core::invite_code::InviteCode::from_str(good_invite)
         .unwrap()
         .federation_id()
         .to_string();
@@ -271,7 +324,9 @@ async fn assert_healthy_seat_survives(
             .len(),
         1
     );
+    let exported = store.exported_federations(101).await.unwrap();
     router.shutdown().await.unwrap();
+    exported
 }
 
 #[test]

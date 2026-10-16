@@ -103,8 +103,14 @@ the payload fields inside each safe event.
    `exported_federations_follow_current_seat_snapshots` shows that the stored
    invite ciphertext contains no plaintext, that an unlisted seat, an expired
    lease, and a quarantined target remove invites from the export, and that a
-   ciphertext moved to another seat fails authentication. The exposition query
+   ciphertext moved to another seat fails authentication, and that a seat
+   without a stored invite stays out of the export. The exposition query
    selects explicit columns that exclude the invite columns.
+   `an_invite_without_a_canonical_form_keeps_its_federation` and
+   `a_seat_invite_without_a_canonical_form_is_scraped_and_not_exported` show
+   that a parseable invite too long for bech32m keeps its seat's federation id
+   and metrics through a production poll and commit, without a panic, and
+   exports no invite.
 
 ## Counterexample
 
