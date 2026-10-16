@@ -58,6 +58,28 @@ enum FaDbPrefix {
     BackupRelayConfirmation = 0x06,
     RestoredBackup = 0x07,
     RecoveryCompleted = 0x08,
+    GuardianTransfer = 0x09,
+}
+
+#[derive(Debug, Decodable, Encodable)]
+struct GuardianTransferKey;
+impl_db_record!(
+    key = GuardianTransferKey,
+    value = crate::transfer::StoredGuardianTransfer,
+    db_prefix = FaDbPrefix::GuardianTransfer
+);
+
+/// One lease-fenced change to the open guardian transfer.
+pub(crate) enum GuardianTransferWrite {
+    /// Record a new transfer; refused while one is open.
+    Begin(crate::transfer::StoredGuardianTransfer),
+    /// Replace the open transfer with the same transfer id.
+    Update(crate::transfer::StoredGuardianTransfer),
+    /// Put the destination seat into the federation's seats in place of the
+    /// source seat, after consensus adopted the new binding.
+    Rebind(crate::transfer::StoredGuardianTransfer),
+    /// Close the open transfer.
+    Close,
 }
 
 #[derive(Debug, Decodable, Encodable)]
@@ -134,6 +156,10 @@ struct RestoredBackupState {
     formation_id: FormationId,
     backup_eligible: bool,
     federation_name: Option<crate::FederationName>,
+    /// Verified badge holders this device knows, by seat id. A backup carries
+    /// none, so an imported record starts empty.
+    #[serde(default)]
+    seat_holders: Vec<(SeatId, PublicKey)>,
 }
 
 #[derive(Debug, Decodable, Encodable)]
@@ -659,6 +685,7 @@ json_database_value!(crate::liquidity::StoredLiquidityOperation);
 json_database_value!(BackupGenerationState);
 json_database_value!(BackupRelayConfirmation);
 json_database_value!(RestoredBackupState);
+json_database_value!(crate::transfer::StoredGuardianTransfer);
 
 /// One seat's public projection and its private recovery-only quote facts.
 pub(crate) struct SeatRecovery {
@@ -815,6 +842,17 @@ impl DriverLease {
             .await
     }
 
+    /// Renew this owner and apply one guardian-transfer change in the same
+    /// transaction, so a fenced-out driver cannot move the transfer.
+    pub(crate) async fn write_guardian_transfer(
+        &self,
+        fa_id: FaId,
+        write: GuardianTransferWrite,
+    ) -> FaResult<()> {
+        let _guard = self.renewal_lock.lock().await;
+        self.store.write_guardian_transfer(fa_id, write, self).await
+    }
+
     /// Renew this owner while atomically wiping a still-abandonable formation.
     pub(crate) async fn abandon_formation(&self, formation_id: &FormationId) -> FaResult<()> {
         let _guard = self.renewal_lock.lock().await;
@@ -858,6 +896,10 @@ pub(crate) struct FaStore {
     failed_abandon: Arc<AtomicBool>,
     #[cfg(test)]
     failed_restore: Arc<AtomicBool>,
+    /// Count of guardian transfer writes left before a simulated crash: the
+    /// last one commits and then fails, so its run stops right there.
+    #[cfg(test)]
+    stopped_transfer_write: Arc<std::sync::Mutex<Option<usize>>>,
 }
 
 impl FaStore {
@@ -883,6 +925,8 @@ impl FaStore {
             failed_abandon: Arc::new(AtomicBool::new(false)),
             #[cfg(test)]
             failed_restore: Arc::new(AtomicBool::new(false)),
+            #[cfg(test)]
+            stopped_transfer_write: Arc::new(std::sync::Mutex::new(None)),
         }
     }
 
@@ -891,7 +935,7 @@ impl FaStore {
     /// next refresh boundary; changed facts advance both immediately.
     pub(crate) async fn backup_payload(&self) -> FaResult<crate::backup::PreparedFaBackup> {
         let mut dbtx = self.database.begin_transaction().await;
-        let (federation_invite, seats, restored_baseline) =
+        let (federation_invite, seats, past_hosts, restored_baseline) =
             if let Some(formation) = dbtx.get_value(&ActiveFormationKey).await {
                 if formation.phase != StoredFormationPhase::Formed {
                     return Err(formed_backup_required());
@@ -919,7 +963,7 @@ impl FaStore {
                         locator: seat.locator,
                     });
                 }
-                (federation_invite, seats, None)
+                (federation_invite, seats, Vec::new(), None)
             } else {
                 let restored = dbtx
                     .get_value(&RestoredBackupKey)
@@ -933,6 +977,7 @@ impl FaStore {
                 (
                     restored.payload.federation_invite,
                     restored.payload.seats,
+                    restored.payload.past_hosts,
                     baseline,
                 )
             };
@@ -948,12 +993,18 @@ impl FaStore {
             }
         }
         drop(entries);
+        let transfer = dbtx
+            .get_value(&GuardianTransferKey)
+            .await
+            .and_then(|transfer| transfer.backup());
         let mut payload = crate::backup::FaBackupPayload {
             schema_version: crate::backup::BACKUP_SCHEMA_VERSION,
             snapshot_generation: 0,
             federation_invite,
             seats,
             liquidity,
+            transfer,
+            past_hosts,
         };
         let semantic_hash = crate::backup::semantic_hash(&payload)?;
         let prior = dbtx.get_value(&BackupGenerationKey).await;
@@ -1065,6 +1116,7 @@ impl FaStore {
                 .next()
                 .await
                 .is_some()
+            || dbtx.get_value(&GuardianTransferKey).await.is_some()
         {
             return Err(FaError::Storage(
                 "FA restore requires an empty database namespace".to_owned(),
@@ -1083,6 +1135,7 @@ impl FaStore {
                 formation_id,
                 backup_eligible: false,
                 federation_name: None,
+                seat_holders: Vec::new(),
             },
         )
         .await;
@@ -1399,7 +1452,25 @@ impl FaStore {
             failed_quote_clear: Arc::new(std::sync::Mutex::new(None)),
             failed_abandon: Arc::new(AtomicBool::new(false)),
             failed_restore: Arc::new(AtomicBool::new(false)),
+            stopped_transfer_write: Arc::new(std::sync::Mutex::new(None)),
         }
+    }
+
+    #[cfg(test)]
+    /// Commit `count` more guardian transfer writes, then fail the last one
+    /// after its commit, as a crash right after it would.
+    pub(crate) fn stop_after_transfer_writes(&self, count: usize) {
+        *self.stopped_transfer_write.lock().expect("test lock") = Some(count);
+    }
+
+    #[cfg(test)]
+    /// Whether the stop set by [`Self::stop_after_transfer_writes`] has not
+    /// happened yet.
+    pub(crate) fn transfer_write_stop_pending(&self) -> bool {
+        self.stopped_transfer_write
+            .lock()
+            .expect("test lock")
+            .is_some()
     }
 
     #[cfg(test)]
@@ -1620,6 +1691,18 @@ impl FaStore {
         seat.guardian_code = None;
         dbtx.insert_entry(&key, &seat).await;
         dbtx.insert_entry(&ActiveFormationKey, &formation).await;
+        dbtx.commit_tx().await;
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn expire_guardian_transfer_for_test(&self) {
+        let mut dbtx = self.database.begin_transaction().await;
+        let mut transfer = dbtx.get_value(&GuardianTransferKey).await.unwrap();
+        let crate::transfer::TransferStage::Moving(moving) = &mut transfer.stage else {
+            panic!("the test transfer has its seat");
+        };
+        moving.expires_at = Timestamp(0);
+        dbtx.insert_entry(&GuardianTransferKey, &transfer).await;
         dbtx.commit_tx().await;
     }
 
@@ -3369,6 +3452,140 @@ impl FaStore {
     }
 
     /// Renew the lease only while the database still recognizes this owner.
+    /// Put a backed-up transfer's destination in place of a restored seat,
+    /// after consensus showed that the transfer moved the guardian there.
+    pub(crate) async fn adopt_transferred_seat(
+        &self,
+        fa_id: FaId,
+        seat_index: u16,
+        source_seat_id: &SeatId,
+        destination: &crate::seat_purchase::StoredDestinationSeat,
+    ) -> FaResult<()> {
+        let mut dbtx = self.database.begin_transaction().await;
+        rebind_federation_seat(&mut dbtx, fa_id, seat_index, source_seat_id, destination).await?;
+        dbtx.commit_tx_result().await.map_err(|_| {
+            FaError::Storage("persisting the adopted destination seat failed".to_owned())
+        })
+    }
+
+    /// Who may hold a key share of the restored federation, besides its
+    /// current MGs: the known badge holders of its seats and of its past
+    /// hosts, and the past hosts' MGs.
+    pub(crate) async fn restored_custody(&self) -> (BTreeSet<PublicKey>, BTreeSet<PublicKey>) {
+        let Some(restored) = self
+            .database
+            .begin_transaction_nc()
+            .await
+            .get_value(&RestoredBackupKey)
+            .await
+        else {
+            return Default::default();
+        };
+        let mut holders = restored
+            .seat_holders
+            .into_iter()
+            .map(|(_, holder)| holder)
+            .collect::<BTreeSet<_>>();
+        let mut past_mgs = BTreeSet::new();
+        for host in restored.payload.past_hosts {
+            past_mgs.insert(host.mg_identity);
+            holders.extend(host.holder);
+        }
+        (holders, past_mgs)
+    }
+
+    pub(crate) async fn load_guardian_transfer(
+        &self,
+    ) -> FaResult<Option<crate::transfer::StoredGuardianTransfer>> {
+        Ok(self
+            .database
+            .begin_transaction_nc()
+            .await
+            .get_value(&GuardianTransferKey)
+            .await)
+    }
+
+    async fn write_guardian_transfer(
+        &self,
+        fa_id: FaId,
+        write: GuardianTransferWrite,
+        lease: &DriverLease,
+    ) -> FaResult<()> {
+        let mut dbtx = self.database.begin_transaction().await;
+        let Some(current) = dbtx.get_value(&DriverLeaseKey).await else {
+            return Err(FaError::Busy);
+        };
+        let now = (self.lease_clock)();
+        if current.owner != lease.owner || current.expires_at <= now {
+            return Err(FaError::Busy);
+        }
+        let open = dbtx.get_value(&GuardianTransferKey).await;
+        let same = |transfer: &crate::transfer::StoredGuardianTransfer| {
+            open.as_ref()
+                .is_some_and(|open| open.transfer_id == transfer.transfer_id)
+        };
+        match write {
+            GuardianTransferWrite::Begin(transfer) => {
+                if open.is_some() {
+                    return Err(FaError::InvalidIntent(
+                        "a guardian transfer is already open; resume it instead".to_owned(),
+                    ));
+                }
+                dbtx.insert_new_entry(&GuardianTransferKey, &transfer).await;
+            }
+            GuardianTransferWrite::Update(transfer) => {
+                if !same(&transfer) {
+                    return Err(FaError::Storage(
+                        "the open guardian transfer changed under its driver".to_owned(),
+                    ));
+                }
+                dbtx.insert_entry(&GuardianTransferKey, &transfer).await;
+            }
+            GuardianTransferWrite::Rebind(transfer) => {
+                if !same(&transfer) {
+                    return Err(FaError::Storage(
+                        "the open guardian transfer changed under its driver".to_owned(),
+                    ));
+                }
+                let crate::transfer::TransferStage::Moving(moving) = &transfer.stage else {
+                    return Err(FaError::Storage(
+                        "a guardian transfer rebinds before its seat is bought".to_owned(),
+                    ));
+                };
+                rebind_federation_seat(
+                    &mut dbtx,
+                    fa_id,
+                    transfer.seat_index,
+                    &transfer.source_seat_id,
+                    &moving.destination,
+                )
+                .await?;
+                dbtx.insert_entry(&GuardianTransferKey, &transfer).await;
+            }
+            GuardianTransferWrite::Close => {
+                dbtx.remove_entry(&GuardianTransferKey).await;
+            }
+        }
+        dbtx.commit_tx_result()
+            .await
+            .map_err(|_| FaError::Storage("persisting the guardian transfer failed".to_owned()))?;
+        #[cfg(test)]
+        {
+            let mut left = self.stopped_transfer_write.lock().expect("test lock");
+            match *left {
+                Some(1) => {
+                    *left = None;
+                    return Err(FaError::Storage(
+                        "injected stop after a guardian transfer write".to_owned(),
+                    ));
+                }
+                Some(count) => *left = Some(count - 1),
+                None => {}
+            }
+        }
+        Ok(())
+    }
+
     pub(crate) async fn renew_driver_lease(&self, lease: &DriverLease) -> FaResult<()> {
         let mut dbtx = self.database.begin_transaction().await;
         let Some(current) = dbtx.get_value(&DriverLeaseKey).await else {
@@ -3694,7 +3911,7 @@ pub(crate) fn replacement_requirements(
     })
 }
 
-fn payment_authorization_id(
+pub(crate) fn payment_authorization_id(
     formation_id: &FormationId,
     total_msats: u64,
     seats: &[SeatPaymentRequirement],
@@ -3731,6 +3948,132 @@ pub(crate) fn payment_reservation_id(
         .extend_from_slice(&(requirements.authorization_id.as_str().len() as u64).to_be_bytes());
     preimage.extend_from_slice(requirements.authorization_id.as_str().as_bytes());
     PaymentReservationId::from_digest(sha256::Hash::hash(&preimage).to_byte_array())
+}
+
+/// Replace the transferred seat in the federation's durable seat list.
+/// Repeating it changes nothing.
+///
+/// A formation record describes how the federation was formed; after a
+/// transfer it no longer describes who hosts it. The first transfer
+/// therefore turns it into the lean post-formation record that a restore
+/// imports, with the same formation id. Later transfers edit that record.
+async fn rebind_federation_seat(
+    dbtx: &mut fedimint_core::db::DatabaseTransaction<'_, fedimint_core::db::Committable>,
+    fa_id: FaId,
+    seat_index: u16,
+    source_seat_id: &SeatId,
+    destination: &crate::seat_purchase::StoredDestinationSeat,
+) -> FaResult<()> {
+    let mut restored = if let Some(formation) = dbtx.get_value(&ActiveFormationKey).await {
+        validate_schema_and_owner(&formation, fa_id)?;
+        if formation.phase != StoredFormationPhase::Formed {
+            return Err(FaError::Storage(
+                "a guardian transfer needs a formed federation".to_owned(),
+            ));
+        }
+        let mut seats = Vec::with_capacity(usize::from(formation.seat_count));
+        let mut seat_holders = Vec::new();
+        for index in 0..formation.seat_count {
+            let key = SeatKey {
+                formation_id: formation.formation_id.0.clone(),
+                index,
+            };
+            let seat = dbtx
+                .get_value(&key)
+                .await
+                .ok_or_else(|| FaError::Storage("formed FA record is missing a seat".to_owned()))?;
+            dbtx.remove_entry(&key).await;
+            let seat_id = seat
+                .seat_id
+                .ok_or_else(|| FaError::Storage("formed FA seat has no seat id".to_owned()))?;
+            if let Some(holder) = seat.admission.holder() {
+                seat_holders.push((seat_id.clone(), holder));
+            }
+            seats.push(crate::backup::FaBackupSeat {
+                mg_identity: seat.admission.mg_id(),
+                seat_id,
+                locator: seat.locator,
+            });
+        }
+        dbtx.remove_entry(&ActiveFormationKey).await;
+        let snapshot_generation = dbtx
+            .get_value(&BackupGenerationKey)
+            .await
+            .map_or(0, |state| state.generation);
+        RestoredBackupState {
+            fa_id,
+            payload: crate::backup::FaBackupPayload {
+                schema_version: crate::backup::BACKUP_SCHEMA_VERSION,
+                snapshot_generation,
+                federation_invite: formation.invite_code.ok_or_else(|| {
+                    FaError::Storage("formed FA record has no federation invite".to_owned())
+                })?,
+                seats,
+                liquidity: None,
+                transfer: None,
+                past_hosts: Vec::new(),
+            },
+            formation_id: formation.formation_id,
+            backup_eligible: true,
+            federation_name: Some(formation.intent.federation_name),
+            seat_holders,
+        }
+    } else {
+        let restored = dbtx
+            .get_value(&RestoredBackupKey)
+            .await
+            .ok_or(FaError::NoActiveFormation)?;
+        if restored.fa_id != fa_id {
+            return Err(FaError::Storage(
+                "restored FA backup belongs to another scoped root".to_owned(),
+            ));
+        }
+        restored
+    };
+    let seat = restored
+        .payload
+        .seats
+        .get_mut(usize::from(seat_index))
+        .ok_or_else(|| FaError::Storage("the transferred seat index is out of range".to_owned()))?;
+    if seat.seat_id != destination.seat_id {
+        if &seat.seat_id != source_seat_id {
+            return Err(FaError::Storage(
+                "the transferred seat is no longer in the federation".to_owned(),
+            ));
+        }
+        let source = std::mem::replace(
+            seat,
+            crate::backup::FaBackupSeat {
+                mg_identity: destination.mg_id,
+                seat_id: destination.seat_id.clone(),
+                locator: destination.locator.clone(),
+            },
+        );
+        let holder = restored
+            .seat_holders
+            .iter()
+            .find(|(seat_id, _)| seat_id == source_seat_id)
+            .map(|(_, holder)| *holder);
+        restored
+            .payload
+            .past_hosts
+            .push(crate::backup::FaBackupPastHost {
+                mg_identity: source.mg_identity,
+                holder,
+            });
+        restored
+            .seat_holders
+            .retain(|(seat_id, _)| seat_id != source_seat_id);
+        if let Some(holder) = destination.holder {
+            restored
+                .seat_holders
+                .push((destination.seat_id.clone(), holder));
+        }
+    }
+    // A restored transfer is done once its destination is in the seats.
+    restored.payload.transfer = None;
+    dbtx.insert_entry(&RestoredBackupKey, &restored).await;
+    Ok(())
 }
 
 fn authorization_covers(
