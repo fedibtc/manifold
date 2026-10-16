@@ -43,6 +43,8 @@ use tokio::io::{AsyncBufReadExt as _, AsyncReadExt as _, AsyncWriteExt as _, Buf
 use tokio::net::{TcpListener, TcpStream};
 use tokio::process::{Child, Command};
 
+#[path = "manifold_guardian_0_1_formation/guardian_transfer.rs"]
+mod guardian_transfer;
 #[path = "manifold_guardian_0_1_formation/restart_dkg.rs"]
 mod restart_dkg;
 
@@ -4246,7 +4248,40 @@ fn spawn_manifold_guardian(
     nostr: Option<NostrEnv<'_>>,
     push_gateway_origin: Option<&str>,
 ) -> std::io::Result<Child> {
+    spawn_manifold_guardian_with_mg_routes(
+        manifold_guardian_bin,
+        data_dir,
+        bitcoind_url,
+        bitcoind_username,
+        bitcoind_password,
+        first_port_base,
+        iroh_overrides,
+        nostr,
+        push_gateway_origin,
+        None,
+    )
+}
+
+/// [`spawn_manifold_guardian`] for an MG that dials other MGs, as a transfer
+/// destination does: `mg_endpoints` routes their endpoint ids, as
+/// `MG_E2E_MG_ENDPOINT_ADDRS` does for fa-cli.
+#[expect(clippy::too_many_arguments)]
+fn spawn_manifold_guardian_with_mg_routes(
+    manifold_guardian_bin: &Path,
+    data_dir: &Path,
+    bitcoind_url: &str,
+    bitcoind_username: &str,
+    bitcoind_password: &str,
+    first_port_base: u16,
+    iroh_overrides: Option<&str>,
+    nostr: Option<NostrEnv<'_>>,
+    push_gateway_origin: Option<&str>,
+    mg_endpoints: Option<&str>,
+) -> std::io::Result<Child> {
     let mut command = Command::new(manifold_guardian_bin);
+    if let Some(mg_endpoints) = mg_endpoints {
+        command.env(MG_ENDPOINT_ADDRS_ENV, mg_endpoints);
+    }
     command
         .arg("serve")
         .arg("--data-dir")
