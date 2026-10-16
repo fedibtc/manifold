@@ -215,6 +215,20 @@ state: the exact provider, request hash, endpoint hint, amounts, response, and
 item statuses are the library-owned liquidity journal governed by
 [`SPEC-fa-post-formation-liquidity`](../../fa-client/specs/SPEC-fa-post-formation-liquidity.md).
 
+## Guardian transfer
+
+`transfer preview` reopens the FA database and prints the MG that
+`fa-client::preview_transfer_destination` would select. `transfer start
+--seat-index N --max-msats M` reconciles the formed federation through
+`fa-client::resume`, repeats that preview, approves it with the cap, and calls
+`fa-client::start_guardian_transfer` in the same process, so the sealed
+approval never leaves it. A paid seat takes the same payment-wallet flags as
+`resume`, and `--payment-federation-id` is the payer. `transfer resume` calls
+`fa-client::resume_guardian_transfer` without a reconciliation, because the
+seat list can lag consensus during a transfer. It takes the payment-wallet
+flags too, for an interrupted purchase. `transfer status` is a storage-only
+projection. All four use the maintenance timing flags.
+
 Identity and state persist in `--state-dir`; secret-key bytes are never
 printed or logged. This disposable local state supports development and E2E
 restart testing; it is not a production persistence boundary or hardened
@@ -247,7 +261,12 @@ value. Guardian-fee rate configuration uses
 consensus readback. Every successful liquidity subcommand likewise writes exactly
 one stdout JSON value: discovery writes `{providers,rejected}`, request/resume/
 status write one `LiquidityOperationSnapshot`, and list writes one
-`LiquidityOperationPage`. Human-readable output may change independently.
+`LiquidityOperationPage`. `transfer preview` writes `{seat,validUntil}` with
+one preview seat row. `transfer start`, `resume`, and `status` write one
+transfer object with `seatIndex`, `sourceFmanPubkey`, `sourceSeatId`,
+`destinationFmanPubkey`, `destinationSeatId`, `expiresAt`, and the
+lower-snake-case `phase`, or `null` when no transfer is open.
+Human-readable output may change independently.
 Every successful `payment-wallet` command likewise writes exactly one stdout
 JSON object and leaves stderr empty: join/balance expose `federationId` and
 `balanceMsats`; `accounting` reopens the wallet and exposes `federationId`,

@@ -154,6 +154,44 @@ struct GuardianFeeConsensusJson {
     consensus_reached: bool,
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct TransferPreviewJson<'a> {
+    seat: SelectionSeatJson<'a>,
+    valid_until: u64,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GuardianTransferJson<'a> {
+    seat_index: u16,
+    #[serde(rename = "sourceFmanPubkey")]
+    source_mg_pubkey: String,
+    source_seat_id: String,
+    #[serde(rename = "destinationFmanPubkey")]
+    destination_mg_pubkey: String,
+    destination_seat_id: Option<String>,
+    expires_at: Option<u64>,
+    phase: &'a fa_client::GuardianTransferPhase,
+}
+
+impl<'a> From<&'a fa_client::GuardianTransfer> for GuardianTransferJson<'a> {
+    fn from(transfer: &'a fa_client::GuardianTransfer) -> Self {
+        Self {
+            seat_index: transfer.seat_index,
+            source_mg_pubkey: transfer.source_mg_id.to_string(),
+            source_seat_id: transfer.source_seat_id.to_string(),
+            destination_mg_pubkey: transfer.destination_mg_id.to_string(),
+            destination_seat_id: transfer
+                .destination_seat_id
+                .as_ref()
+                .map(ToString::to_string),
+            expires_at: transfer.expires_at.map(|expires_at| expires_at.0),
+            phase: &transfer.phase,
+        }
+    }
+}
+
 /// Selects stable JSON or changeable human-readable output.
 #[derive(Clone, Copy, Eq, PartialEq)]
 pub(crate) enum OutputFormat {
@@ -603,6 +641,64 @@ impl<'a> CliOutput<'a> {
             )?;
         }
         self.rejections_human(preview.rejected())?;
+        Ok(())
+    }
+
+    /// Writes the MG a guardian transfer would buy a seat on.
+    pub(crate) fn transfer_preview(
+        &mut self,
+        preview: &fa_client::TransferDestinationPreview,
+        format: OutputFormat,
+    ) -> anyhow::Result<()> {
+        if format == OutputFormat::Json {
+            serde_json::to_writer(
+                &mut self.stdout,
+                &TransferPreviewJson {
+                    seat: SelectionSeatJson::from(preview.seat()),
+                    valid_until: preview.valid_until().0,
+                },
+            )?;
+            writeln!(self.stdout)?;
+            return Ok(());
+        }
+        let seat = preview.seat();
+        writeln!(
+            self.stdout,
+            "transfer destination {} price={} msat issuer={} trust_level={}",
+            seat.candidate().mg_id(),
+            seat.advertised_price_msats(),
+            seat.candidate().badge().issuer(),
+            seat.candidate().badge().badge().trust_level,
+        )?;
+        Ok(())
+    }
+
+    /// Writes the open guardian transfer, or that none is open.
+    pub(crate) fn guardian_transfer(
+        &mut self,
+        transfer: Option<&fa_client::GuardianTransfer>,
+        format: OutputFormat,
+    ) -> anyhow::Result<()> {
+        if format == OutputFormat::Json {
+            serde_json::to_writer(&mut self.stdout, &transfer.map(GuardianTransferJson::from))?;
+            writeln!(self.stdout)?;
+            return Ok(());
+        }
+        let Some(transfer) = transfer else {
+            writeln!(self.stdout, "no guardian transfer is open")?;
+            return Ok(());
+        };
+        writeln!(
+            self.stdout,
+            "guardian transfer of seat {}: {:?}, {} -> {}",
+            transfer.seat_index, transfer.phase, transfer.source_mg_id, transfer.destination_mg_id,
+        )?;
+        if let Some(seat_id) = &transfer.destination_seat_id {
+            writeln!(self.stdout, "  destination seat {seat_id}")?;
+        }
+        if let Some(expires_at) = transfer.expires_at {
+            writeln!(self.stdout, "  grant expires at {}", expires_at.0)?;
+        }
         Ok(())
     }
 
