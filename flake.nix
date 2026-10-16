@@ -165,7 +165,7 @@
           };
           patches = [ ./patches/librocksdb-sys-occ-lock-buckets.patch ];
         };
-        # MG 0.1.4.1 hotfix: new federations record stability-pool module
+        # MG 0.1.5 hotfix: new federations record stability-pool module
         # version 2.1, as MG 0.1.3 does, so mixed 0.1.3 and 0.1.4 guardians
         # agree on the DKG consensus checksum. Votes still activate 2.2.
         fediPatched = pkgs.applyPatches {
