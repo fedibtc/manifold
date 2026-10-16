@@ -334,9 +334,23 @@ async fn run_guardian_transfer() -> anyhow::Result<()> {
         data_dir: temp.join("fedimint-cli-client"),
         iroh_overrides: &moved_overrides,
     };
-    fedimint_cli
-        .run(&["join-federation", &invite], FEDIMINT_CLI_JOIN_TIMEOUT)
-        .await?;
+    // The restarted guardians need a moment before they answer a join.
+    tokio::time::timeout(Duration::from_secs(90), async {
+        loop {
+            // A join that timed out may leave a partial client behind.
+            let _ = std::fs::remove_dir_all(&fedimint_cli.data_dir);
+            match fedimint_cli
+                .run(&["join-federation", &invite], FEDIMINT_CLI_JOIN_TIMEOUT)
+                .await
+            {
+                Ok(_) => return,
+                Err(error) => eprintln!("fedimint-cli join failed: {error:#}"),
+            }
+            tokio::time::sleep(Duration::from_secs(1)).await;
+        }
+    })
+    .await
+    .context("fedimint-cli did not join after the guardians restarted")?;
     wait_for_seat_bindings_consensus(&fedimint_cli, GUARDIAN_COUNT).await?;
     let meta = fedimint_cli
         .run_json(&["module", "meta", "get"], FEDIMINT_CLI_META_TIMEOUT)
