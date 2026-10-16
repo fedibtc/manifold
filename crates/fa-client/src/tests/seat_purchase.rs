@@ -56,6 +56,8 @@ pub(super) fn destination_approval(max_msats: u64) -> TransferDestinationApprova
             holder: test_mg_id(DESTINATION),
             locator: locator(DESTINATION),
         },
+        // The tests approve exactly the advertised price.
+        advertised_price_msats: max_msats,
         max_msats,
         valid_until: Timestamp(test_now_secs() + 120),
     }

@@ -186,9 +186,10 @@ where
                 failure: None,
             });
         }
-        // A priced seat cannot be bought without a payer; refuse before the
-        // transfer is saved rather than leave it open with nothing to pay.
-        if 0 < approval.max_msats && payment_federation_id.is_none() {
+        // A seat advertised with a price cannot be bought without a payer;
+        // refuse before the transfer is saved rather than leave it open with
+        // nothing to pay.
+        if 0 < approval.advertised_price_msats && payment_federation_id.is_none() {
             return Err(FaError::SelectionReauthorizationRequired {
                 reason: crate::SelectionReauthorizationReason::PaymentFederationRequired,
                 failure: None,
