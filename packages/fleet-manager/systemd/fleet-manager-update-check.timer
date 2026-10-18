@@ -1,0 +1,10 @@
+[Unit]
+Description=Daily check for a new Manifold Guardian release
+
+[Timer]
+OnCalendar=daily
+RandomizedDelaySec=6h
+Persistent=true
+
+[Install]
+WantedBy=timers.target

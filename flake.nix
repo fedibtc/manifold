@@ -1153,6 +1153,65 @@
         fleetManagerEntrypointStable = mkFleetManagerEntrypointStable fleetManagerEntrypoint;
         fleetManagerCiEntrypointStable = mkFleetManagerEntrypointStable fleetManagerCiEntrypoint;
 
+        # Bare-metal installer and updater (systemd + Nix); see
+        # packages/fleet-manager/bare-metal.md. It builds each release from its
+        # own commit, so it carries no daemon of its own.
+        fleetManagerSetup = pkgs.writeShellApplication {
+          name = "fleet-manager-setup";
+          runtimeInputs = [
+            pkgs.coreutils
+            pkgs.curl
+            pkgs.e2fsprogs
+            pkgs.findutils
+            pkgs.gawk
+            pkgs.git
+            pkgs.gnugrep
+            pkgs.gnupg
+            pkgs.gnused
+            pkgs.gnutar
+            pkgs.gzip
+            pkgs.iproute2
+            pkgs.jq
+            pkgs.openssl
+            pkgs.procps
+            pkgs.util-linux
+          ];
+          text = ''
+            unit_dir=${./packages/fleet-manager/systemd}
+          ''
+          + builtins.readFile ./packages/fleet-manager/systemd/fleet-manager-setup.sh;
+        };
+
+        # Not part of routine SelfCI (GATE-selfci-local-development-cost);
+        # packages/fleet-manager/validate.sh builds it. Building the package
+        # shellchecks the script; the stub-driven tests need no network.
+        fleetManagerSetupCheck =
+          pkgs.runCommand "fleet-manager-setup-check"
+            {
+              nativeBuildInputs = [
+                fleetManagerSetup
+                pkgs.coreutils
+                pkgs.findutils
+                pkgs.gawk
+                pkgs.gnugrep
+                pkgs.gnused
+                pkgs.gnutar
+                pkgs.gzip
+                pkgs.jq
+                pkgs.openssl
+                pkgs.python3
+                pkgs.util-linux
+              ];
+            }
+            ''
+              mkdir -p repo/packages
+              cp -r ${./packages/fleet-manager} repo/packages/fleet-manager
+              chmod -R u+w repo
+              patchShebangs repo/packages/fleet-manager
+              repo/packages/fleet-manager/systemd/test-setup.sh
+              touch "$out"
+            '';
+
         mkFleetManagerContainerImage =
           fleetManager: entrypoint: entrypointStable:
           pkgs.dockerTools.buildLayeredImage {
@@ -1849,6 +1908,7 @@
           cloud-fman-telemetry-oci-image = cloudFmanTelemetryContainerImage;
           push-gateway-oci-image = pushGatewayContainerImage;
           fleet-manager-oci-image = fleetManagerContainerImage;
+          fleet-manager-setup = fleetManagerSetup;
           release-container-images = releaseContainerImages;
           # OCI images only build on Linux; keep FLIP gated like the other two so
           # `nix flake show` / darwin evaluation does not offer an unbuildable
@@ -1890,6 +1950,10 @@
             type = "app";
             program = "${fleetManagerContainerLoad}/bin/fleet-manager-container-load";
           };
+          fleet-manager-setup = {
+            type = "app";
+            program = "${fleetManagerSetup}/bin/fleet-manager-setup";
+          };
         };
 
         ci = {
@@ -1914,6 +1978,7 @@
           cloudFmanTelemetryOciImage = cloudFmanTelemetryContainerImageCheck;
           pushGatewayOciImage = pushGatewayContainerImageCheck;
           fleetManagerOciImage = fleetManagerContainerImageCheck;
+          inherit fleetManagerSetupCheck;
           liquidityManagerOciImage = liquidityManagerContainerImageCheck;
         };
 

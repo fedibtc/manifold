@@ -15,7 +15,7 @@ Shared monorepo for the Federation Decentralization Scaling project. Contains co
 | `crates/liquidity-manager-daemon/` | FLIP (Federation Liquidity Provisioner) daemon - [start here](./crates/liquidity-manager-daemon/specs/ARCH-liquidity-manager.md) |
 | `docs/liquidity-manager/` | FLIP open-items tracker, trust-validation implementation guide, and Docker packaging notes |
 | `crates/mg/specs/` | Manifold Guardian (MG) design - [start here](./crates/mg/specs/ARCH-manifold-guardian.md) |
-| `packages/fleet-manager/` | Manifold Guardian 0.1 Umbrel/StartOS package skeletons |
+| `packages/fleet-manager/` | Manifold Guardian 0.1 Umbrel/StartOS package skeletons and the advanced [bare-metal installer](./packages/fleet-manager/bare-metal.md) (systemd + Nix) |
 
 ## Development environment
 

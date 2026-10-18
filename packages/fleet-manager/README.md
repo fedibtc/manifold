@@ -8,6 +8,9 @@ Manifold Guardian daemon described by
   single `fleet-manager` binary, which is also the `fedimintd` its seats run;
 - an entrypoint that wires Bitcoin mainnet and Bitcoin Core RPC settings into
   the daemon's 0.1 CLI args.
+- an advanced bare-metal installer and updater for Linux hosts with systemd and
+  Nix ([bare-metal.md](./bare-metal.md)), which runs each release's own daemon and
+  entrypoint as a hardened service.
 
 Real, shipping packages live outside this repo and pin the published GHCR
 images: [manifold-umbrel-store](https://github.com/fedibtc/manifold-umbrel-store)
@@ -15,7 +18,8 @@ images: [manifold-umbrel-store](https://github.com/fedibtc/manifold-umbrel-store
 [manifold-fman-startos](https://github.com/fedibtc/manifold-fman-startos)
 (StartOS 0.4). Production packages are updated manually in those repositories;
 see [production-releases.md](./production-releases.md). This directory owns
-the image entrypoint and operator deployment contract.
+the image entrypoint and operator deployment contract, and the bare-metal
+installer, which follows those production pins rather than defining releases.
 
 The [secure-deployment checklist](./secure-deployment.md) is the authoritative
 operator contract for MG's external production envelope. Nothing here

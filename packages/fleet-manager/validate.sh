@@ -5,6 +5,8 @@ cd "$(dirname "$0")/../.."
 
 bash -n packages/fleet-manager/entrypoint.sh
 bash -n packages/fleet-manager/validate.sh
+bash -n packages/fleet-manager/systemd/fleet-manager-setup.sh
+bash -n packages/fleet-manager/systemd/test-setup.sh
 
 grep -q -- '--manifold-environment' packages/fleet-manager/entrypoint.sh
 grep -q -- '--push-gateway-origin' packages/fleet-manager/entrypoint.sh
@@ -82,6 +84,9 @@ grep -q 'fleet-manager-oci-image' flake.nix
 grep -q 'fleetManagerContainerImage' flake.nix
 grep -q 'fleet-manager-container-load' flake.nix
 
+# The bare-metal installer, against stub curl/nix/systemctl.
+packages/fleet-manager/systemd/test-setup.sh
+
 if [ "${1:-}" = --runtime-only ]; then
   exit 0
 elif command -v nix >/dev/null 2>&1; then
@@ -94,6 +99,7 @@ elif command -v nix >/dev/null 2>&1; then
   case "$system" in
     *-linux)
       nix build --accept-flake-config -L --no-link ".#ci.${system}.fleetManagerOciImage"
+      nix build --accept-flake-config -L --no-link ".#ci.${system}.fleetManagerSetupCheck"
       ;;
   esac
 else

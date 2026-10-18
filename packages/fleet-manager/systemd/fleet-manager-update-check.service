@@ -1,0 +1,12 @@
+# Looks up the current production release and records it. Never builds,
+# switches or restarts anything; apply an update with `fleet-manager-setup update`.
+[Unit]
+Description=Check for a new Manifold Guardian release
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+DynamicUser=yes
+StateDirectory=fleet-manager-setup
+ExecStart=/opt/fleet-manager/setup/bin/fleet-manager-setup check
