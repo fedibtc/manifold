@@ -13,8 +13,8 @@ Manifold Guardian daemon described by
   entrypoint as a hardened service.
 
 Real, shipping packages live outside this repo and pin the published GHCR
-images: [manifold-umbrel-store](https://github.com/fedibtc/manifold-umbrel-store)
-(Umbrel) and
+images: [manifold-fedimint-guardian](https://github.com/getumbrel/umbrel-apps/tree/master/manifold-fedimint-guardian)
+in the Umbrel App Store (Umbrel) and
 [manifold-fman-startos](https://github.com/fedibtc/manifold-fman-startos)
 (StartOS 0.4). Production packages are updated manually in those repositories;
 see [production-releases.md](./production-releases.md). This directory owns
@@ -124,4 +124,4 @@ nix run .#fleet-manager-container-load
 ```
 
 Package manifests are validated in their own repos
-(manifold-umbrel-store, manifold-fman-startos), not here.
+(the Umbrel App Store app, manifold-fman-startos), not here.
