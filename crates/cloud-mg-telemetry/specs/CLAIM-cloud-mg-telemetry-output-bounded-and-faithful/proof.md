@@ -89,14 +89,28 @@ the payload fields inside each safe event.
    do not render, and proves an owned warning still does. This mechanism filters
    `Metadata::target`; it does not establish cryptographic crate provenance for
    arbitrary target strings.
-8. **[enum] Exit closure.** The 24 production Rust files contain four HTTP routes
-   and 13 response shapes; six collector tracing call
+8. **[enum] Exit closure.** The 24 production Rust files contain five HTTP routes,
+   four of them on the private listener, and 14 response shapes; six collector tracing call
    sites; the single validated archive content writer and its bounded path
    constructors; 51 admitted source metric families plus exactly five generated
    families; two Iroh connection sites; and four typed capability-bearing RPC
    sends. They contain no additional concrete held-material output path. Startup
    `Result` termination and the panic hook remain weaker, unexercised exits, so
    this enumeration cannot establish the broad claim.
+9. **[test] Federation export.**
+   `federation_export_is_served_only_on_the_private_listener` shows the private
+   listener serves the export and the public listener does not route it.
+   `exported_federations_follow_current_seat_snapshots` shows that the stored
+   invite ciphertext contains no plaintext, that an unlisted seat, an expired
+   lease, and a quarantined target remove invites from the export, and that a
+   ciphertext moved to another seat fails authentication, and that a seat
+   without a stored invite stays out of the export. The exposition query
+   selects explicit columns that exclude the invite columns.
+   `an_invite_without_a_canonical_form_keeps_its_federation` and
+   `a_seat_invite_without_a_canonical_form_is_scraped_and_not_exported` show
+   that a parseable invite too long for bech32m keeps its seat's federation id
+   and metrics through a production poll and commit, without a panic, and
+   exports no invite.
 
 ## Counterexample
 

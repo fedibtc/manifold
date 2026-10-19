@@ -143,6 +143,17 @@ ingress. Stable MG and seat identities appear in its vetted metrics. The
 collector refuses a non-loopback bind without the explicit isolation assertion,
 but it cannot prove that the asserted deployment policy exists or works.
 
+### Federation export
+
+Port 8176 also serves `GET /v1/federations`. It returns
+`{"version":1,"federations":[{"federation_id","invite_code","seats","last_seen_ms"}]}`
+for the current seats of active targets. The route has no application-layer
+authentication, like the rest of this listener, and the response holds full
+invite codes, so network policy for port 8176 admits only the Prometheus
+scraper, the health-probe source, and the consumer that follows the exported
+federations. Each admitted caller can read every exported invite, and so can
+any process sharing the collector's loopback network namespace.
+
 Prometheus must preserve the collector's observation timestamps:
 
 ```yaml

@@ -6,7 +6,9 @@ five bounded `cloud_fman_telemetry_{target_fresh,snapshot_observation_timestamp_
 families. The archive contains only exact validated safe-journal JSONL. Public
 HTTP responses, private HTTP output, logs, traces, errors, archive paths and
 metric names or labels expose no collector-held capability, Holder envelope,
-endpoint, invite, cursor, incarnation, or raw rejected input. The collector does
+endpoint, invite, cursor, incarnation, or raw rejected input, except that the
+private listener's federation export returns a canonical invite for each
+federation of an active, unexpired target's current seats that stored one. The collector does
 not inject that held material into archive bytes; those bytes are the exact
 upstream-approved safe-event payload and may contain fields approved at the
 source. These surfaces neither merge distinct MG identities, accept unbounded

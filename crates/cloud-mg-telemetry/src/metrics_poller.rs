@@ -2,6 +2,7 @@
 
 use std::{
     collections::BTreeSet,
+    fmt::Write as _,
     str::FromStr as _,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
@@ -374,7 +375,8 @@ impl MetricsPoller {
         let mut complete = true;
         let mut total_bytes = 0usize;
         'seats: for seat in response.seats {
-            let Some(federation_id) = federation_id_from_invite(seat.invite_code.as_ref()) else {
+            let Some((federation_id, invite_code)) = seat_federation(seat.invite_code.as_ref())
+            else {
                 self.observability
                     .record(AdmissionOutcome::InvalidFederationInvite);
                 complete = false;
@@ -468,6 +470,7 @@ impl MetricsPoller {
             snapshots.push(SeatObservation {
                 guardian_seat_id: seat_id,
                 federation_id,
+                invite_code,
                 observed_at_ms,
                 samples: admitted.samples,
             });
@@ -508,12 +511,16 @@ impl MetricsPoller {
     }
 }
 
-fn federation_id_from_invite(
+/// Canonical federation id of a seat's asserted invite, and its canonical
+/// bech32m invite. Parsing also accepts prefixed base32 of any length, so an
+/// invite too long for bech32m has no canonical invite.
+fn seat_federation(
     invite: Option<&fedi_decentralized_service_manifold_guardian::InviteCode>,
-) -> Option<String> {
-    fedimint_core::invite_code::InviteCode::from_str(&invite?.0)
-        .ok()
-        .map(|invite| invite.federation_id().to_string())
+) -> Option<(String, Option<String>)> {
+    let invite = fedimint_core::invite_code::InviteCode::from_str(&invite?.0).ok()?;
+    let mut canonical = String::new();
+    let canonical = write!(canonical, "{invite}").is_ok().then_some(canonical);
+    Some((invite.federation_id().to_string(), canonical))
 }
 
 fn fair_target_budget(cadence: Duration, concurrency: usize, targets: usize) -> Duration {
