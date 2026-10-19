@@ -100,4 +100,13 @@ describe('CollectFeesConfirm', () => {
 
     expect(screen.getByRole('button', { name: 'Cancel' })).toBeDisabled();
   });
+
+  it('should keep Tab inside the panel', () => {
+    renderConfirm();
+    screen.getByRole('button', { name: 'Cancel' }).focus();
+
+    fireEvent.keyDown(panel(), { key: 'Tab' });
+
+    expect(screen.getByRole('button', { name: 'Collect anyway' })).toHaveFocus();
+  });
 });

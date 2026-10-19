@@ -1,0 +1,11 @@
+.root {
+  @apply absolute -left-4 top-[14.45rem] z-10 w-44;
+}
+
+.row {
+  @apply block h-auto w-full rounded-xl border-2 border-info bg-surface;
+}
+
+.arrow {
+  @apply absolute -right-14 top-1 h-6 w-14 fill-none stroke-info stroke-[1.5];
+}

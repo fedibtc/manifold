@@ -1,0 +1,47 @@
+.root {
+  @apply flex flex-col gap-4;
+}
+
+.cards {
+  @apply grid grid-cols-1 gap-3 md:grid-cols-3;
+}
+
+.card {
+  @apply flex w-full items-start gap-3 rounded-card border border-muted bg-surface p-4 text-left hover:bg-gray-50;
+}
+
+.card[aria-expanded="true"] {
+  @apply border-ink;
+}
+
+.cardIcon {
+  @apply h-5 w-5 shrink-0 fill-none stroke-ink stroke-[1.5];
+}
+
+.cardTitle {
+  @apply uLabel flex-1 leading-5;
+}
+
+.panel {
+  @apply rounded-card border border-muted bg-surface p-5;
+}
+
+.issues {
+  @apply grid grid-cols-1 gap-x-6 gap-y-4 md:grid-cols-2;
+}
+
+.item {
+  @apply uStack1;
+}
+
+.title {
+  @apply uLabel;
+}
+
+.text {
+  @apply uMutedSm;
+}
+
+.link {
+  @apply uInlineLink;
+}

@@ -214,6 +214,30 @@ const builders = {
     price: null,
     onboarding: onboarding()
   }),
+  'setup-awaiting-authorization': () => ({
+    ...base(),
+    seats: [],
+    paymentFederations: [],
+    price: null,
+    onboarding: {
+      ...onboarding(),
+      stage: 'holder_authorization',
+      runtime: 'starting',
+      minimum_max_seats: 0
+    }
+  }),
+  'setup-initial-offer': () => ({
+    ...base(),
+    seats: [],
+    paymentFederations: [],
+    price: null,
+    onboarding: {
+      ...authorized,
+      stage: 'initial_offer',
+      runtime: 'starting',
+      minimum_max_seats: 0
+    }
+  }),
   // The window between daemon start and its first relay read. Nothing is known
   // yet, and the Overview deliberately raises no attention item for it.
   'authorization-checking': () => ({
@@ -582,6 +606,14 @@ const notes: Record<ScenarioName, ScenarioNote> = {
   'awaiting-authorization': {
     desc: 'Onboarded, but no holder has authorized it yet — the QR step is still waiting.',
     affects: ['setup', 'authorization', 'backup', 'overview']
+  },
+  'setup-awaiting-authorization': {
+    desc: 'Onboarded and waiting in setup at the authorization step. Nothing is observed yet; the relay holds an authorization, so Check status approves the host.',
+    affects: ['setup']
+  },
+  'setup-initial-offer': {
+    desc: 'Authorized and back in setup at the initial-offer stage. Setup reopens on the terms step.',
+    affects: ['setup']
   },
   'authorization-checking': {
     desc: 'The daemon has not finished its first relay read. Nothing is known yet, and the Overview raises no item for it.',

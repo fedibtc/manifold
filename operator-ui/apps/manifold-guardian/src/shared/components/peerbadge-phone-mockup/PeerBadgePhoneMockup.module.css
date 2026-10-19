@@ -1,0 +1,35 @@
+.root {
+  @apply relative mx-auto hidden w-36 md:block;
+}
+
+.device {
+  @apply relative rounded-t-[1.75rem] border-[5px] border-b-0 border-ink bg-surface before:absolute before:-left-[7px] before:top-16 before:h-9 before:w-[3px] before:rounded-l before:bg-ink before:content-[''] after:absolute after:-right-[7px] after:top-20 after:h-12 after:w-[3px] after:rounded-r after:bg-ink after:content-[''];
+}
+
+.status {
+  @apply grid h-5 grid-cols-3 items-center px-3;
+}
+
+.time {
+  @apply text-[7px] font-semibold leading-none text-ink;
+}
+
+.island {
+  @apply h-2.5 w-10 justify-self-center rounded-full bg-ink;
+}
+
+.statusIcons {
+  @apply h-2 w-7 justify-self-end fill-ink;
+}
+
+.screen {
+  @apply h-64 overflow-hidden;
+}
+
+.shot {
+  @apply block h-auto w-full;
+}
+
+.fade {
+  @apply pointer-events-none absolute -inset-x-3 bottom-0 h-16 bg-gradient-to-t from-surface to-transparent;
+}

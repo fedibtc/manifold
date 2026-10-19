@@ -1,0 +1,11 @@
+.steps {
+  @apply grid grid-cols-1 gap-6 rounded-card border border-muted bg-surface p-5 md:grid-cols-[1fr_1fr_16rem] md:gap-0;
+}
+
+.column {
+  @apply flex min-w-0 flex-col gap-3 md:px-4 md:first:pl-0 md:last:pr-0 md:[&:not(:first-child)]:border-l md:[&:not(:first-child)]:border-muted;
+}
+
+.link {
+  @apply uInlineLink;
+}

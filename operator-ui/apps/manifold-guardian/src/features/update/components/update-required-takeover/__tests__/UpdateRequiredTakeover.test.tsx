@@ -109,4 +109,14 @@ describe('UpdateRequiredTakeover', () => {
     expect(dialog.getAttribute('aria-modal')).toBe('true');
     expect(dialog.getAttribute('aria-labelledby')).toBe(heading()?.getAttribute('id'));
   });
+
+  it('should keep Tab on its only action', () => {
+    arrangeVersion({ current: '0.1.0', latest: '0.2.0', update_required: true });
+
+    render(<UpdateRequiredTakeover />);
+    const notPrevented = fireEvent.keyDown(screen.getByRole('dialog'), { key: 'Tab' });
+
+    expect(notPrevented).toBe(false);
+    expect(screen.getByRole('button', { name: 'Continue to the dashboard' })).toHaveFocus();
+  });
 });

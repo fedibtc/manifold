@@ -1,0 +1,19 @@
+.code {
+  @apply flex w-full flex-col items-center gap-3 text-center;
+}
+
+.or {
+  @apply flex w-full items-center gap-3 text-xs text-ink/60 before:h-px before:flex-1 before:bg-muted before:content-[''] after:h-px after:flex-1 after:bg-muted after:content-[''];
+}
+
+.copyPill {
+  @apply flex items-center rounded-full border-[1.5px] border-strong px-3 py-1.5 [&_button]:text-ink [&_span]:whitespace-nowrap [&_span]:text-xs [&_span]:no-underline;
+}
+
+.idBlock {
+  @apply flex w-full flex-col gap-1 pt-1 text-left;
+}
+
+.idLabel {
+  @apply text-xs text-ink/60;
+}

@@ -45,7 +45,7 @@ describe('SetupAuthorization', () => {
 
     await screen.findByText(MOCK_SERVICE_NOSTR_PUBKEY);
     expect(adminCall).not.toHaveBeenCalled();
-    fireEvent.click(screen.getByRole('button', { name: 'Check now' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Check status' }));
     await vi.waitFor(() => expect(adminCall).toHaveBeenCalledWith('RefreshHolderAuthorizations'));
   });
 
@@ -68,7 +68,7 @@ describe('SetupAuthorization', () => {
       </QueryClientProvider>
     );
 
-    fireEvent.click(screen.getByRole('button', { name: 'Check now' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Check status' }));
     await vi.waitFor(() => expect(adminCall).toHaveBeenCalledWith('RefreshHolderAuthorizations'));
     await act(async () => {
       await client.invalidateQueries({ queryKey: ONBOARDING_KEY });
@@ -109,7 +109,7 @@ describe('SetupAuthorization', () => {
     await act(async () => {
       void client.refetchQueries({ queryKey: ONBOARDING_KEY });
     });
-    fireEvent.click(screen.getByRole('button', { name: 'Check now' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Check status' }));
     await vi.waitFor(() => expect(adminCall).toHaveBeenCalledWith('RefreshHolderAuthorizations'));
     await act(async () => {
       finishRefresh(observed);
@@ -132,7 +132,7 @@ describe('SetupAuthorization', () => {
   it('should say it is waiting while no approval has been observed', async () => {
     renderAuthorization();
 
-    await screen.findByText(/Not approved yet/i);
+    await screen.findByText(/Waiting for approval/i);
     expect((screen.getByRole('button', { name: 'Continue' }) as HTMLButtonElement).disabled).toBe(
       true
     );
@@ -148,6 +148,26 @@ describe('SetupAuthorization', () => {
     expect(screen.getByRole('button', { name: 'Continue now' })).toBeTruthy();
   });
 
+  it('should show only the approved confirmation once the host is authorised', async () => {
+    renderAuthorization(vi.fn(), observed);
+
+    await screen.findByText(/Approved\. Continuing to the terms step/i);
+    expect(screen.getByText('Approved')).toBeTruthy();
+    expect(screen.queryByRole('heading', { name: 'Open your badge' })).toBeNull();
+    expect(screen.queryByRole('heading', { name: 'Tap Authorize application' })).toBeNull();
+    expect(screen.queryByRole('heading', { name: 'Scan this code' })).toBeNull();
+    expect(screen.queryByRole('img')).toBeNull();
+    expect(document.querySelector('svg')).toBeNull();
+    expect(screen.queryByText(MOCK_SERVICE_NOSTR_PUBKEY)).toBeNull();
+    expect(screen.queryByRole('button', { name: /copy the authorization request/i })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Check status' })).toBeNull();
+    expect(screen.queryByRole('button', { name: /What is PeerBadge\?/ })).toBeNull();
+    expect(screen.queryByRole('button', { name: /Need a Trusted badge\?/ })).toBeNull();
+    expect(screen.queryByRole('button', { name: /Having trouble\?/ })).toBeNull();
+    expect(screen.queryByText(/Use the PeerBadge app on your phone/)).toBeNull();
+    expect(screen.getByRole('button', { name: 'Continue now' })).toBeTruthy();
+  });
+
   // Fake timers never advance here, so no automatic tick can stand in for the
   // click: the calls after it are the ones the operator asked for.
   it('should force an immediate poll when the operator checks now', async () => {
@@ -156,8 +176,8 @@ describe('SetupAuthorization', () => {
       const adminCall = vi.spyOn(adminCallModule, 'adminCall').mockResolvedValue(waiting);
       renderAuthorization();
 
-      await vi.waitFor(() => screen.getByText(MOCK_SERVICE_NOSTR_PUBKEY));
-      const button = screen.getByRole('button', { name: 'Check now' });
+      await vi.waitFor(() => screen.getByText('Scan this code'));
+      const button = screen.getByRole('button', { name: 'Check status' });
       const callsBeforeClick = adminCall.mock.calls.length;
 
       await act(async () => {
@@ -178,8 +198,8 @@ describe('SetupAuthorization', () => {
     );
     renderAuthorization();
 
-    fireEvent.click(screen.getByRole('button', { name: 'Check now' }));
-    await vi.waitFor(() => expect(screen.getByText(/Not approved yet/i)).toBeTruthy());
+    fireEvent.click(screen.getByRole('button', { name: 'Check status' }));
+    await vi.waitFor(() => expect(screen.getByText(/Waiting for approval/i)).toBeTruthy());
   });
 
   it('should continue on its own once the authorization is observed', async () => {

@@ -1,5 +1,6 @@
 import { Banner } from '@operator-ui/common-ui';
 import type { OnboardingNostrStatus } from '@operator-ui/types';
+import { RelayErrorBanner } from '@/shared/components/relay-error-banner/RelayErrorBanner';
 import { formatCheckedAt } from '@/shared/utils/format';
 
 interface AuthorizationStatusBannerProps {
@@ -29,12 +30,7 @@ export const AuthorizationStatusBanner = ({ nostr }: AuthorizationStatusBannerPr
   }
 
   if (nostr.state === 'relay_error') {
-    return (
-      <Banner variant="warn" title="Approval could not be checked">
-        This host may or may not be approved — this is a connection problem, not a refusal:{' '}
-        {nostr.error}
-      </Banner>
-    );
+    return <RelayErrorBanner error={nostr.error} />;
   }
 
   // An observed authorization with no check time came out of the daemon's
