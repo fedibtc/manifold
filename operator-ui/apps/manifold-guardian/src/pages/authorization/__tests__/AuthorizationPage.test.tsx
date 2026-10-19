@@ -154,8 +154,8 @@ describe('AuthorizationPage', () => {
     fireEvent.click(trigger);
 
     const dialog = screen.getByRole('dialog', { name: 'Renew your approval' });
+    expect(within(dialog).getByRole('heading', { name: 'Open PeerBadge' })).toBeTruthy();
     expect(within(dialog).getByRole('heading', { name: 'Open your badge' })).toBeTruthy();
-    expect(within(dialog).getByRole('heading', { name: 'Tap Authorize application' })).toBeTruthy();
     expect(within(dialog).getByRole('heading', { name: 'Scan this code' })).toBeTruthy();
 
     fireEvent.click(within(dialog).getByRole('button', { name: 'Close' }));

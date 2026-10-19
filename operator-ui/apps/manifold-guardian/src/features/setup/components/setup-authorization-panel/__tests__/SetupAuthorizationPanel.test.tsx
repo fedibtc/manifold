@@ -114,8 +114,8 @@ describe('SetupAuthorizationPanel', () => {
       />
     );
 
+    expect(screen.getByRole('heading', { name: 'Open PeerBadge' })).toBeTruthy();
     expect(screen.getByRole('heading', { name: 'Open your badge' })).toBeTruthy();
-    expect(screen.getByRole('heading', { name: 'Tap Authorize application' })).toBeTruthy();
     expect(screen.getByRole('heading', { name: 'Scan this code' })).toBeTruthy();
     expect(screen.getByText('Then tap Authorize and publish.')).toBeTruthy();
     expect(screen.queryByText(/(?<!Manifold Fedimint )guardian ID/i)).toBeNull();

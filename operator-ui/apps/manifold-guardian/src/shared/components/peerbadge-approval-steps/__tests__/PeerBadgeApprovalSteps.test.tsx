@@ -23,12 +23,20 @@ describe('PeerBadgeApprovalSteps', () => {
   it('should render the three PeerBadge steps with the request QR and the full ID', () => {
     render(<PeerBadgeApprovalSteps data={waiting} />);
 
+    expect(screen.getByRole('heading', { name: 'Open PeerBadge' })).toBeTruthy();
     expect(screen.getByRole('heading', { name: 'Open your badge' })).toBeTruthy();
-    expect(screen.getByRole('heading', { name: 'Tap Authorize application' })).toBeTruthy();
     expect(screen.getByRole('heading', { name: 'Scan this code' })).toBeTruthy();
     expect(screen.getByTestId('qr').textContent).toBe(
       `{"subject_pubkey":"${MOCK_SERVICE_NOSTR_PUBKEY}"}`
     );
     expect(screen.getByText(MOCK_SERVICE_NOSTR_PUBKEY)).toBeTruthy();
+  });
+
+  it('should show the PeerBadge home screen first and no scanner screen', () => {
+    render(<PeerBadgeApprovalSteps data={waiting} />);
+
+    expect(screen.getByRole('img', { name: /What do you want to do/ })).toBeTruthy();
+    expect(screen.getByRole('img', { name: /^My badges:/ })).toBeTruthy();
+    expect(screen.queryByRole('img', { name: /scanner/ })).toBeNull();
   });
 });

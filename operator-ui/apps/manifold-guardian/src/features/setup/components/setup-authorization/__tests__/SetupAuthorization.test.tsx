@@ -153,8 +153,8 @@ describe('SetupAuthorization', () => {
 
     await screen.findByText(/Approved\. Continuing to the terms step/i);
     expect(screen.getByText('Approved')).toBeTruthy();
+    expect(screen.queryByRole('heading', { name: 'Open PeerBadge' })).toBeNull();
     expect(screen.queryByRole('heading', { name: 'Open your badge' })).toBeNull();
-    expect(screen.queryByRole('heading', { name: 'Tap Authorize application' })).toBeNull();
     expect(screen.queryByRole('heading', { name: 'Scan this code' })).toBeNull();
     expect(screen.queryByRole('img')).toBeNull();
     expect(document.querySelector('svg')).toBeNull();
