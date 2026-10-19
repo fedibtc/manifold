@@ -104,7 +104,7 @@ describe('AuthorizationPanel', () => {
     });
   });
 
-  // The operator scans this themselves in the Holder app. The hint has to name
+  // The operator scans this themselves in the PeerBadge app. The hint has to name
   // what the value is and what to do with it, and it may not call a host-wide
   // key a bare "guardian ID" — a guardian is one seat and a host runs many.
   // "Manifold Fedimint Guardian ID" is the product name, not the role, so it is
@@ -113,7 +113,7 @@ describe('AuthorizationPanel', () => {
     render(<AuthorizationPanel data={waiting} isLoading={false} error={null} />);
 
     expect(screen.getByText(/your Manifold Fedimint Guardian ID/i)).toBeTruthy();
-    expect(screen.getByText(/scan it with the Holder app/i)).toBeTruthy();
+    expect(screen.getByText(/scan it with the PeerBadge app/i)).toBeTruthy();
     expect(screen.queryByText(/(?<!Manifold Fedimint )guardian ID/i)).toBeNull();
   });
 

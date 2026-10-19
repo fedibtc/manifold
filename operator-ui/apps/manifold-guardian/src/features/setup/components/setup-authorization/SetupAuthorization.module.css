@@ -23,5 +23,5 @@
 }
 
 .actions {
-  @apply uFormActions;
+  @apply flex flex-wrap gap-3;
 }

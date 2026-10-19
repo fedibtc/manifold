@@ -1,4 +1,6 @@
 import { Button, SectionCard } from '@operator-ui/common-ui';
+import { useState } from 'react';
+import { PeerBadgeRenewDialog } from '@/features/authorization/components/peerbadge-renew-dialog/PeerBadgeRenewDialog';
 import { useOnboarding } from '@/shared/api/hooks/use-onboarding/useOnboarding';
 import { useRefreshAuthorization } from '@/shared/api/hooks/use-refresh-authorization/useRefreshAuthorization';
 import { AuthorizationPanel } from '@/shared/components/authorization-panel/AuthorizationPanel';
@@ -17,8 +19,18 @@ const renderHolder = (holder: string) => (
 export const AuthorizationPage = () => {
   const onboarding = useOnboarding();
   const refresh = useRefreshAuthorization();
+  const [isGuideOpen, setIsGuideOpen] = useState(false);
   const handleFetchAuthorization = () => {
     refresh.mutate();
+  };
+  const handleOpenGuide = () => {
+    setIsGuideOpen(true);
+  };
+  const handleCloseGuide = () => {
+    setIsGuideOpen(false);
+  };
+  const handleFetchFromGuide = () => {
+    refresh.mutate(undefined, { onSuccess: handleCloseGuide });
   };
   const nostr = onboarding.data?.nostr;
   const authorized = nostr?.state === 'authorization_observed';
@@ -27,7 +39,14 @@ export const AuthorizationPage = () => {
   // something the rest of the screen contradicts.
   const intro = authorized
     ? 'This host is approved. The code below is your Manifold Fedimint Guardian ID.'
-    : 'This host needs to be approved before Federation Ambassadors can discover and use it. Scan the code below with the Holder app to approve it.';
+    : 'This host needs to be approved before Federation Ambassadors can discover and use it. Scan the code below with the PeerBadge app to approve it.';
+  const guideTitle = authorized ? 'Renew your approval' : 'Approve your host';
+
+  const showMeHow = (
+    <Button variant="secondary" onClick={handleOpenGuide}>
+      Show me how
+    </Button>
+  );
 
   return (
     <div className={styles.root}>
@@ -40,22 +59,30 @@ export const AuthorizationPage = () => {
         isLoading={onboarding.isLoading}
         error={refresh.error ?? onboarding.error}
       />
+      {onboarding.data && !authorized ? <div className={styles.actions}>{showMeHow}</div> : null}
 
       <SectionCard title="Update authorization">
         <p className={styles.hint}>
-          To renew or replace your authorization, scan the Manifold Fedimint Guardian ID with the
-          Holder app and authorize it again. Then fetch the new authorization here. Your existing
-          authorization is retained if the check fails or finds nothing new.
+          To renew, approve this host again in the PeerBadge app. Then fetch the new authorization
+          here. Your existing authorization is kept if the check fails or finds nothing new.
         </p>
 
-        <Button variant="secondary" loading={refresh.isPending} onClick={handleFetchAuthorization}>
-          Fetch new authorization
-        </Button>
+        <div className={styles.actions}>
+          <Button
+            variant="secondary"
+            loading={refresh.isPending}
+            onClick={handleFetchAuthorization}
+          >
+            Fetch new authorization
+          </Button>
+
+          {authorized ? showMeHow : null}
+        </div>
       </SectionCard>
       {holders.length > 0 ? (
         <SectionCard title="Approved by">
           <p className={styles.hint}>
-            Compare these with the approver shown in the Holder app to confirm they match.
+            Compare these with the approver shown in the PeerBadge app to confirm they match.
           </p>
 
           <ul className={styles.holdersList}>{holders.map(renderHolder)}</ul>
@@ -72,6 +99,16 @@ export const AuthorizationPage = () => {
 
         <GuardianTerms />
       </SectionCard>
+      {isGuideOpen && onboarding.data ? (
+        <PeerBadgeRenewDialog
+          title={guideTitle}
+          data={onboarding.data}
+          isFetching={refresh.isPending}
+          error={refresh.error}
+          onFetch={handleFetchFromGuide}
+          onClose={handleCloseGuide}
+        />
+      ) : null}
     </div>
   );
 };

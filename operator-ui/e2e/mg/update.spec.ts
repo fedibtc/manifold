@@ -16,8 +16,9 @@ test('should take the screen over when the daemon reports a newer release', asyn
   await signIn(page);
 
   await expect(page.getByRole('heading', { name: TAKEOVER_HEADING, level: 1 })).toBeVisible();
-  await expect(page.getByText('0.1.0')).toBeVisible();
-  await expect(page.getByText('0.2.0')).toBeVisible();
+  const takeover = page.getByRole('dialog');
+  await expect(takeover.getByText('0.1.0')).toBeVisible();
+  await expect(takeover.getByText('0.2.0')).toBeVisible();
 });
 
 test('should hand the dashboard back when dismissed', async ({ page }) => {

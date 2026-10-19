@@ -69,7 +69,7 @@ describe('SetupWizard', () => {
     await screen.findByText(PHRASE);
     fireEvent.click(screen.getByRole('button', { name: "I've written it down — continue" }));
 
-    await screen.findByRole('heading', { name: 'Get approved' });
+    await screen.findByRole('heading', { name: 'Approve your host' });
     await screen.findByRole('heading', { name: 'Accept the terms of service' }, { timeout: 5000 });
     expect(screen.queryByRole('heading', { name: 'Set your price' })).toBeNull();
 
@@ -89,7 +89,7 @@ describe('SetupWizard', () => {
     fireEvent.click(screen.getByRole('button', { name: "I've written it down — continue" }));
     // The authorization step continues on its own once the relay reports an
     // observed authorization, so there is no click here — only the wait.
-    await screen.findByRole('heading', { name: 'Get approved' });
+    await screen.findByRole('heading', { name: 'Approve your host' });
     await screen.findByRole('heading', { name: 'Accept the terms of service' }, { timeout: 5000 });
     fireEvent.click(screen.getByRole('button', { name: 'Accept and continue' }));
     await screen.findByRole('heading', { name: 'Set your price' });
@@ -124,7 +124,7 @@ describe('SetupWizard', () => {
     await screen.findByRole('heading', { name: 'Recovery finished' });
     fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
 
-    await screen.findByRole('heading', { name: 'Get approved' });
+    await screen.findByRole('heading', { name: 'Approve your host' });
   });
 
   it('should not use cached authorization data from an earlier identity', async () => {
@@ -161,7 +161,7 @@ describe('SetupWizard', () => {
     await screen.findByRole('heading', { name: 'Recovery finished' });
     fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
 
-    await screen.findByRole('heading', { name: 'Get approved' });
-    await waitFor(() => expect(screen.getByText(/Not approved yet/i)).toBeTruthy());
+    await screen.findByRole('heading', { name: 'Approve your host' });
+    await waitFor(() => expect(screen.getByText(/Waiting for approval/i)).toBeTruthy());
   });
 });

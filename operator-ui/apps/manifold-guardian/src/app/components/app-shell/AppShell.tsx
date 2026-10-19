@@ -6,6 +6,8 @@ import styles from './AppShell.module.css';
 
 export const AppShell = () => {
   const onboarding = useOnboarding();
+  const version = onboarding.data?.fman_version.current;
+  const footer = version ? `fleet-manager · v${version}` : 'fleet-manager';
 
   return (
     <div className={styles.shell}>
@@ -25,7 +27,7 @@ export const AppShell = () => {
 
         <NavigationItems />
 
-        <div className={styles.footer}>fleet-manager</div>
+        <div className={styles.footer}>{footer}</div>
       </nav>
 
       <main className={styles.main}>

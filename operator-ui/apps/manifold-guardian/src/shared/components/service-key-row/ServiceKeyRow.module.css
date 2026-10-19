@@ -1,0 +1,7 @@
+.keyRow {
+  @apply uCopyRow items-start;
+}
+
+.key {
+  @apply uLongIdText;
+}

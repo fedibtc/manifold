@@ -1,0 +1,3 @@
+.requestRow {
+  @apply flex items-center;
+}

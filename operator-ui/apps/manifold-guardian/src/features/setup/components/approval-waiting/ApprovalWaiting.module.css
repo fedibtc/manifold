@@ -1,0 +1,23 @@
+.root {
+  @apply flex flex-col gap-4 rounded-card bg-infoSoft p-5 sm:flex-row sm:items-center;
+}
+
+.icon {
+  @apply h-6 w-6 shrink-0 fill-none stroke-info stroke-[1.75];
+}
+
+.body {
+  @apply flex flex-1 flex-col gap-0.5;
+}
+
+.title {
+  @apply uLabel;
+}
+
+.text {
+  @apply uMutedSm;
+}
+
+.action {
+  @apply shrink-0 self-start sm:self-center;
+}

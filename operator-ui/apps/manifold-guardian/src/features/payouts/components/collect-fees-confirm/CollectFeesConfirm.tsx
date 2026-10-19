@@ -1,6 +1,7 @@
 import { Button } from '@operator-ui/common-ui';
 import { type KeyboardEvent, useEffect, useId, useRef } from 'react';
 import { formatSats } from '@/shared/utils/format';
+import { trapTab } from '@/shared/utils/trapTab';
 import styles from './CollectFeesConfirm.module.css';
 
 interface CollectFeesConfirmProps {
@@ -10,11 +11,6 @@ interface CollectFeesConfirmProps {
   isPending: boolean;
 }
 
-/**
- * Known gap, shared with `UpdateRequiredTakeover`: focus moves here and Escape
- * closes it, but nothing traps Tab inside. There is no dialog primitive in this
- * repository to inherit that from.
- */
 export const CollectFeesConfirm = ({
   collectableMsat,
   onConfirm,
@@ -30,6 +26,7 @@ export const CollectFeesConfirm = ({
   }, []);
 
   const handleKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
+    trapTab(event);
     if (event.key !== 'Escape' || isPending) return;
     event.stopPropagation();
     onCancel();

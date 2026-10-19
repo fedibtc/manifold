@@ -16,6 +16,9 @@
   .uCardTitle {
     @apply text-base font-semibold text-ink;
   }
+  .uInlineLink {
+    @apply text-ink underline underline-offset-2;
+  }
   .uMono {
     @apply font-mono text-xs text-ink/70;
   }

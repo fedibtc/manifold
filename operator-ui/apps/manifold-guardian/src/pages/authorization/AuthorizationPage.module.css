@@ -21,3 +21,7 @@
 .holder {
   @apply uLongIdText;
 }
+
+.actions {
+  @apply flex flex-wrap gap-2;
+}

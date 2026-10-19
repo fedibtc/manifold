@@ -1,8 +1,11 @@
 import { Button } from '@operator-ui/common-ui';
 import { useEffect, useRef } from 'react';
+import { CheckStatusButton } from '@/features/setup/components/check-status-button/CheckStatusButton';
+import { PeerBadgeHelp } from '@/features/setup/components/peerbadge-help/PeerBadgeHelp';
+import { SetupAuthorizationPanel } from '@/features/setup/components/setup-authorization-panel/SetupAuthorizationPanel';
 import { useOnboarding } from '@/shared/api/hooks/use-onboarding/useOnboarding';
 import { useRefreshAuthorization } from '@/shared/api/hooks/use-refresh-authorization/useRefreshAuthorization';
-import { AuthorizationPanel } from '@/shared/components/authorization-panel/AuthorizationPanel';
+import { AuthorizationStatusBanner } from '@/shared/components/authorization-status-banner/AuthorizationStatusBanner';
 import { isAuthorized } from '@/shared/utils/authorization';
 import styles from './SetupAuthorization.module.css';
 
@@ -25,16 +28,12 @@ export const SetupAuthorization = ({ onSettled }: SetupAuthorizationProps) => {
     onSettled();
   };
 
-  // Only true while the fleet is unapproved. Once a holder signs, the step
-  // settles and Continue is enabled, so stating it then contradicts the screen.
-  const consequence = authorized
-    ? null
-    : ' Until it is approved this host is not advertised and cannot sell seats — setup cannot continue past this step.';
-
   // Relay reconciliation is explicit: setup performs no background refreshes.
   const handleCheckNow = () => {
     refresh.mutate();
   };
+
+  const checkStatus = <CheckStatusButton loading={refresh.isPending} onClick={handleCheckNow} />;
 
   useEffect(() => {
     if (!authorized) return;
@@ -48,44 +47,49 @@ export const SetupAuthorization = ({ onSettled }: SetupAuthorizationProps) => {
     return () => clearTimeout(timer);
   }, [authorized, onSettled]);
 
-  return (
-    <div className={styles.root}>
-      <div className={styles.head}>
-        <h1 className={styles.heading}>Get approved</h1>
+  if (authorized && onboarding.data) {
+    return (
+      <div className={styles.root}>
+        <div className={styles.head}>
+          <h1 className={styles.heading}>Approve your host</h1>
+        </div>
 
-        {/* This, not the standalone Authorization page, is what an unapproved
-            operator actually sees: SetupGate holds the whole app here until the
-            daemon reports onboarding complete. The consequences of staying
-            unapproved therefore have to be stated here. */}
-        <p className={styles.intro}>
-          This host needs to be approved before Federation Ambassadors can discover and use it. Scan
-          the code below with the Holder app.{consequence}
-        </p>
-      </div>
+        <AuthorizationStatusBanner nostr={onboarding.data.nostr} />
 
-      <AuthorizationPanel
-        data={onboarding.data}
-        isLoading={onboarding.isLoading}
-        error={refresh.error ?? onboarding.error}
-      />
-      {authorized ? (
         <p className={styles.statusLine} role="status">
           <span className={styles.spinner} aria-hidden="true" />
           Approved. Continuing to the terms step…
         </p>
-      ) : null}
+
+        <div className={styles.actions}>
+          <Button onClick={settleOnce}>Continue now</Button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className={styles.root}>
+      <div className={styles.head}>
+        <h1 className={styles.heading}>Approve your host</h1>
+
+        <p className={styles.intro}>
+          Use the PeerBadge app on your phone. You need a Trusted badge from a Fedi signer,
+          typically your local Fedi Master or Knight.
+        </p>
+      </div>
+
+      <SetupAuthorizationPanel
+        data={onboarding.data}
+        isLoading={onboarding.isLoading}
+        error={refresh.error ?? onboarding.error}
+        statusAction={checkStatus}
+      />
+
+      <PeerBadgeHelp />
 
       <div className={styles.actions}>
-        {authorized ? null : (
-          <Button variant="secondary" loading={refresh.isPending} onClick={handleCheckNow}>
-            Check now
-          </Button>
-        )}
-        {authorized ? (
-          <Button onClick={settleOnce}>Continue now</Button>
-        ) : (
-          <Button disabled>Continue</Button>
-        )}
+        <Button disabled>Continue</Button>
       </div>
     </div>
   );

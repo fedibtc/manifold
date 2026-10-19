@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { MOCK_HOLDER_PUBKEY, MOCK_SERVICE_NOSTR_PUBKEY } from '@/mocks/world/keys';
@@ -80,7 +80,9 @@ describe('AuthorizationPage', () => {
     renderPage();
 
     await screen.findByText('Approved');
-    expect(screen.queryByText(/Scan the code below with the Holder app to approve it/i)).toBeNull();
+    expect(
+      screen.queryByText(/Scan the code below with the PeerBadge app to approve it/i)
+    ).toBeNull();
     expect(screen.getByText(/This host is approved\. The code below/i)).toBeTruthy();
   });
 
@@ -140,6 +142,74 @@ describe('AuthorizationPage', () => {
 
     await waitFor(() => expect(screen.getByText(/Relay unavailable/)).toBeTruthy());
     expect(screen.getByText('Approved')).toBeTruthy();
+  });
+
+  it('should open the PeerBadge guide from Show me how and close it again', async () => {
+    vi.spyOn(adminCallModule, 'adminCall').mockResolvedValue(observed);
+    renderPage();
+
+    await screen.findByText('Approved');
+    const trigger = screen.getByRole('button', { name: 'Show me how' });
+    trigger.focus();
+    fireEvent.click(trigger);
+
+    const dialog = screen.getByRole('dialog', { name: 'Renew your approval' });
+    expect(within(dialog).getByRole('heading', { name: 'Open PeerBadge' })).toBeTruthy();
+    expect(within(dialog).getByRole('heading', { name: 'Open your badge' })).toBeTruthy();
+    expect(within(dialog).getByRole('heading', { name: 'Scan this code' })).toBeTruthy();
+
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Close' }));
+
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(trigger).toHaveFocus();
+  });
+
+  it('should close the guide once a fetch from it succeeds', async () => {
+    vi.spyOn(adminCallModule, 'adminCall').mockResolvedValue(observed);
+    renderPage();
+
+    await screen.findByText('Approved');
+    fireEvent.click(screen.getByRole('button', { name: 'Show me how' }));
+    const dialog = screen.getByRole('dialog', { name: 'Renew your approval' });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Fetch new authorization' }));
+
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+  });
+
+  it('should keep the guide open and show the error when a fetch from it fails', async () => {
+    const call = vi.spyOn(adminCallModule, 'adminCall').mockResolvedValue(observed);
+    renderPage();
+
+    await screen.findByText('Approved');
+    call.mockRejectedValue(new Error('Relay unavailable'));
+    fireEvent.click(screen.getByRole('button', { name: 'Show me how' }));
+    const dialog = screen.getByRole('dialog', { name: 'Renew your approval' });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Fetch new authorization' }));
+
+    await waitFor(() => expect(within(dialog).getByText(/Relay unavailable/)).toBeTruthy());
+    expect(screen.getByRole('dialog', { name: 'Renew your approval' })).toBe(dialog);
+  });
+
+  it('should offer the guide beside the status, not in the update card, when the host is not approved', async () => {
+    vi.spyOn(adminCallModule, 'adminCall').mockResolvedValue(waiting);
+    renderPage();
+
+    await screen.findByText(/Not approved yet/i);
+    const [trigger] = screen.getAllByRole('button', { name: 'Show me how' });
+    const updateHeading = screen.getByRole('heading', { name: 'Update authorization' });
+
+    expect(screen.getAllByRole('button', { name: 'Show me how' })).toHaveLength(1);
+    expect(trigger.compareDocumentPosition(updateHeading)).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
+  });
+
+  it('should title the guide as a first approval when the host is not approved', async () => {
+    vi.spyOn(adminCallModule, 'adminCall').mockResolvedValue(waiting);
+    renderPage();
+
+    await screen.findByText(/Not approved yet/i);
+    fireEvent.click(screen.getByRole('button', { name: 'Show me how' }));
+
+    expect(screen.getByRole('dialog', { name: 'Approve your host' })).toBeTruthy();
   });
 
   it('should link the guardian terms of service without an acceptance date', async () => {

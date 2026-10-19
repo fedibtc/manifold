@@ -1,6 +1,7 @@
 import { Button } from '@operator-ui/common-ui';
 import { useEffect, useRef } from 'react';
 import { useUpdateTakeover } from '@/features/update/components/update-required-takeover/useUpdateTakeover';
+import { trapTab } from '@/shared/utils/trapTab';
 import styles from './UpdateRequiredTakeover.module.css';
 
 const HEADING_ID = 'mg-update-heading';
@@ -16,11 +17,6 @@ const HEADING_ID = 'mg-update-heading';
  * both sit above the shell in the gate chain. It is not a gate itself: it
  * renders beside the routed outlet rather than instead of it, and covers the
  * screen by being fixed to the viewport.
- *
- * Known gap, for design review: focus is moved here and Escape closes it, but
- * nothing traps Tab inside. There is no dialog primitive in this repository to
- * inherit that from, and inventing one is a design decision rather than an
- * implementation one.
  */
 export const UpdateRequiredTakeover = () => {
   const { update, onDismiss } = useUpdateTakeover();
@@ -34,7 +30,13 @@ export const UpdateRequiredTakeover = () => {
   if (!update) return null;
 
   return (
-    <div className={styles.root} role="dialog" aria-modal="true" aria-labelledby={HEADING_ID}>
+    <div
+      className={styles.root}
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby={HEADING_ID}
+      onKeyDown={trapTab}
+    >
       <div className={styles.card}>
         <h1 className={styles.heading} id={HEADING_ID}>
           Update Manifold Fedimint Guardian
