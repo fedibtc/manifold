@@ -27,7 +27,17 @@ pub(crate) struct MetricsSnapshot {
 pub(crate) struct MetricsTargetHealth {
     pub(crate) mg_id: String,
     pub(crate) mg_name: String,
+    /// Whether the MG listed its seats within the freshness threshold.
     pub(crate) fresh: bool,
+    /// Seats from the latest successful listing.
+    pub(crate) seats: Vec<MetricsSeatHealth>,
+}
+
+/// One seat from an MG's latest successful seat listing.
+pub(crate) struct MetricsSeatHealth {
+    pub(crate) guardian_seat_id: String,
+    /// Time of the seat's latest stored observation, if any.
+    pub(crate) observed_at_ms: Option<i64>,
 }
 
 /// Render durable sparse observations without changing their observation time.
@@ -49,8 +59,9 @@ pub(crate) fn render_metrics(
     let mut target_samples = String::new();
     let mut observation_samples = String::new();
     let mut stale_samples = String::new();
+    let mut seat_samples = String::new();
     targets.sort_by(|left, right| left.mg_id.cmp(&right.mg_id));
-    for target in targets {
+    for mut target in targets {
         writeln!(
             target_samples,
             "cloud_fman_telemetry_target_fresh{{fman_id=\"{}\",fman_name=\"{}\"}} {} {now_ms}",
@@ -59,6 +70,23 @@ pub(crate) fn render_metrics(
             i64::from(target.fresh),
         )
         .map_err(|_| ExpositionError)?;
+        target
+            .seats
+            .sort_by(|left, right| left.guardian_seat_id.cmp(&right.guardian_seat_id));
+        for seat in target.seats {
+            let fresh = seat.observed_at_ms.is_some_and(|observed_at_ms| {
+                now_ms.saturating_sub(observed_at_ms) <= stale_after_ms
+            });
+            writeln!(
+                seat_samples,
+                "cloud_fman_telemetry_seat_fresh{{fman_id=\"{}\",fman_name=\"{}\",guardian_seat_id=\"{}\"}} {} {now_ms}",
+                escape(&target.mg_id),
+                escape(&target.mg_name),
+                escape(&seat.guardian_seat_id),
+                i64::from(fresh),
+            )
+            .map_err(|_| ExpositionError)?;
+        }
     }
     let mut forwarded: ForwardedFamilies = BTreeMap::new();
     for snapshot in snapshots {
@@ -92,9 +120,12 @@ pub(crate) fn render_metrics(
         }
     }
     let mut output = String::new();
-    output.push_str("# HELP cloud_fman_telemetry_target_fresh Whether the active MG completed a full metrics poll within two configured polling intervals.\n");
+    output.push_str("# HELP cloud_fman_telemetry_target_fresh Whether the active MG listed its seats within two configured polling intervals.\n");
     output.push_str("# TYPE cloud_fman_telemetry_target_fresh gauge\n");
     output.push_str(&target_samples);
+    output.push_str("# HELP cloud_fman_telemetry_seat_fresh Whether a seat from the MG's latest seat listing has an admitted observation within two configured polling intervals.\n");
+    output.push_str("# TYPE cloud_fman_telemetry_seat_fresh gauge\n");
+    output.push_str(&seat_samples);
     output.push_str("# HELP cloud_fman_telemetry_snapshot_observation_timestamp_seconds Unix time of the latest admitted guardian observation.\n");
     output.push_str("# TYPE cloud_fman_telemetry_snapshot_observation_timestamp_seconds gauge\n");
     output.push_str(&observation_samples);

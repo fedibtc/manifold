@@ -181,8 +181,9 @@ events: `admitted`, `known_deny_discarded`, `unknown_discarded`,
 `invalid_admitted_discarded`, and `rejected`. Discard events mean the collector
 kept independently valid allowlisted families while omitting the affected
 family; they do not expose the discarded family's name, labels, or values.
-`target_fresh=1` therefore means the target completed a bounded safe projection,
-not that every desired family was present or valid. Alert on increases in
+`seat_fresh=1` therefore means the seat completed a bounded safe projection,
+not that every desired family was present or valid. `target_fresh=1` means
+only that the MG answered its seat listing. Alert on increases in
 `unknown_discarded`, `invalid_admitted_discarded`, or `rejected` and investigate
 before changing the inventory. The collector also emits at most one fixed,
 `safe_to_share` projection-degradation warning per five minutes; it never puts

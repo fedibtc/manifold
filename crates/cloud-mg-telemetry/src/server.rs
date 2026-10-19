@@ -1239,9 +1239,8 @@ mod tests {
             .commit_metrics(
                 &work,
                 crate::metrics_types::MetricsCommit {
-                    listed_seats: Some(Default::default()),
+                    listed_seats: None,
                     snapshots: Vec::new(),
-                    complete: false,
                 },
                 observed_at,
             )
@@ -1283,7 +1282,6 @@ mod tests {
                 crate::metrics_types::MetricsCommit {
                     listed_seats: Some(Default::default()),
                     snapshots: Vec::new(),
-                    complete: true,
                 },
                 observed_at,
             )

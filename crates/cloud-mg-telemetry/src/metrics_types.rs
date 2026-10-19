@@ -20,6 +20,4 @@ pub(crate) struct MetricsCommit {
     pub(crate) listed_seats: Option<BTreeSet<String>>,
     /// Independently successful fresh seat observations.
     pub(crate) snapshots: Vec<SeatObservation>,
-    /// Whether discovery and every advertised seat scrape succeeded.
-    pub(crate) complete: bool,
 }
