@@ -19,7 +19,8 @@ beforeEach(() => {
     data: {
       fman_name: 'blissful-chiffchaff',
       service_pubkey: 'abc',
-      nostr: { state: 'not_observed', checked_at: 1_760_000_000 }
+      nostr: { state: 'not_observed', checked_at: 1_760_000_000 },
+      fman_version: { current: '0.1.0', latest: null, update_required: false }
     }
   } as ReturnType<typeof useOnboarding>);
 });
@@ -51,4 +52,17 @@ it('should render the routed page content in the outlet', () => {
   renderShellAt('/seats');
 
   screen.getByText('seats content');
+});
+
+it('should show the running version in the sidebar footer', () => {
+  renderShellAt('/');
+
+  screen.getByText('fleet-manager · v0.1.0');
+});
+
+it('should show the footer without a version while the onboarding read is pending', () => {
+  useOnboardingMock.mockReturnValue({ data: undefined } as ReturnType<typeof useOnboarding>);
+  renderShellAt('/');
+
+  screen.getByText('fleet-manager');
 });
