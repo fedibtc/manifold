@@ -40,6 +40,7 @@ export const AuthorizationPage = () => {
   const intro = authorized
     ? 'This host is approved. The code below is your Manifold Fedimint Guardian ID.'
     : 'This host needs to be approved before Federation Ambassadors can discover and use it. Scan the code below with the PeerBadge app to approve it.';
+  const guideTitle = authorized ? 'Renew your approval' : 'Approve your host';
 
   const showMeHow = (
     <Button variant="secondary" onClick={handleOpenGuide}>
@@ -100,6 +101,7 @@ export const AuthorizationPage = () => {
       </SectionCard>
       {isGuideOpen && onboarding.data ? (
         <PeerBadgeRenewDialog
+          title={guideTitle}
           data={onboarding.data}
           isFetching={refresh.isPending}
           error={refresh.error}

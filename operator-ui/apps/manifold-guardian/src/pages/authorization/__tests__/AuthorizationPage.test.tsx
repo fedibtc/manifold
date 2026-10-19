@@ -202,6 +202,16 @@ describe('AuthorizationPage', () => {
     expect(trigger.compareDocumentPosition(updateHeading)).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
   });
 
+  it('should title the guide as a first approval when the host is not approved', async () => {
+    vi.spyOn(adminCallModule, 'adminCall').mockResolvedValue(waiting);
+    renderPage();
+
+    await screen.findByText(/Not approved yet/i);
+    fireEvent.click(screen.getByRole('button', { name: 'Show me how' }));
+
+    expect(screen.getByRole('dialog', { name: 'Approve your host' })).toBeTruthy();
+  });
+
   it('should link the guardian terms of service without an acceptance date', async () => {
     vi.spyOn(adminCallModule, 'adminCall').mockResolvedValue(observed);
     renderPage();

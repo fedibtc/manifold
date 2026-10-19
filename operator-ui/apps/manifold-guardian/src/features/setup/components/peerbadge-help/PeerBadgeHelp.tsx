@@ -81,6 +81,8 @@ const ISSUES: Issue[] = [
   }
 ];
 
+const HELP_PANEL_ID = 'peerbadge-help-panel';
+
 const renderIssue = (issue: Issue) => (
   <li key={issue.title} className={styles.item}>
     <p className={styles.title}>{issue.title}</p>
@@ -114,6 +116,7 @@ export const PeerBadgeHelp = () => {
   const [openTopic, setOpenTopic] = useState<HelpTopic | null>(null);
 
   const renderCard = (topic: TopicCard) => {
+    const isOpen = openTopic === topic.id;
     const handleClick = () => {
       setOpenTopic((current) => (current === topic.id ? null : topic.id));
     };
@@ -123,8 +126,8 @@ export const PeerBadgeHelp = () => {
         key={topic.id}
         type="button"
         className={styles.card}
-        aria-expanded={openTopic === topic.id}
-        aria-controls="peerbadge-help-panel"
+        aria-expanded={isOpen}
+        aria-controls={isOpen ? HELP_PANEL_ID : undefined}
         onClick={handleClick}
       >
         {topic.icon}
@@ -139,7 +142,7 @@ export const PeerBadgeHelp = () => {
       <div className={styles.cards}>{TOPICS.map(renderCard)}</div>
 
       {openTopic ? (
-        <div id="peerbadge-help-panel" className={styles.panel}>
+        <div id={HELP_PANEL_ID} className={styles.panel}>
           {PANELS[openTopic]}
         </div>
       ) : null}

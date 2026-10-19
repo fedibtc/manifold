@@ -48,4 +48,15 @@ describe('PeerBadgeHelp', () => {
 
     expect(screen.queryByText(/a verification protocol that Fedi uses/)).toBeNull();
   });
+
+  it('should point a topic at the panel only while that topic is open', () => {
+    render(<PeerBadgeHelp />);
+
+    const topic = screen.getByRole('button', { name: /What is PeerBadge\?/ });
+    expect(topic.hasAttribute('aria-controls')).toBe(false);
+
+    openTopic(/What is PeerBadge\?/);
+    const panelId = topic.getAttribute('aria-controls') ?? '';
+    expect(document.getElementById(panelId)).toBeTruthy();
+  });
 });

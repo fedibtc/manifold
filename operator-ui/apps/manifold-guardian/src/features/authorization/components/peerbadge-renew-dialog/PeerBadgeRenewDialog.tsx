@@ -7,6 +7,7 @@ import { trapTab } from '@/shared/utils/trapTab';
 import styles from './PeerBadgeRenewDialog.module.css';
 
 interface PeerBadgeRenewDialogProps {
+  title: string;
   data: OnboardingResponse;
   isFetching: boolean;
   error: unknown;
@@ -15,6 +16,7 @@ interface PeerBadgeRenewDialogProps {
 }
 
 export const PeerBadgeRenewDialog = ({
+  title,
   data,
   isFetching,
   error,
@@ -55,7 +57,7 @@ export const PeerBadgeRenewDialog = ({
       <div className={styles.card}>
         <div className={styles.header}>
           <h2 id={headingId} className={styles.heading}>
-            Renew your approval
+            {title}
           </h2>
 
           <Button ref={closeButtonRef} variant="secondary" size="small" onClick={onClose}>

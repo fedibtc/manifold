@@ -14,11 +14,12 @@ const data: OnboardingResponse = {
   fman_version: { current: '0.1.0', latest: '0.1.0', update_required: false }
 };
 
-const renderDialog = (isFetching = false, error: unknown = null) => {
+const renderDialog = (isFetching = false, error: unknown = null, title = 'Renew your approval') => {
   const onFetch = vi.fn();
   const onClose = vi.fn();
   render(
     <PeerBadgeRenewDialog
+      title={title}
       data={data}
       isFetching={isFetching}
       error={error}
@@ -30,6 +31,12 @@ const renderDialog = (isFetching = false, error: unknown = null) => {
 };
 
 describe('PeerBadgeRenewDialog', () => {
+  it('should be named by the title it is given', () => {
+    renderDialog(false, null, 'Approve your host');
+
+    expect(screen.getByRole('dialog')).toHaveAccessibleName('Approve your host');
+  });
+
   it('should be named by its title and take focus', () => {
     renderDialog();
 
