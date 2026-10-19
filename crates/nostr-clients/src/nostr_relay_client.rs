@@ -15,7 +15,7 @@ use futures_util::{Stream, StreamExt};
 use nostr_sdk::pool::{Output, RelayLimits};
 use nostr_sdk::{
     Client, ClientOptions, Event, EventBuilder, EventId, Filter, JsonUtil, Keys, RelayMessage,
-    RelayPoolNotification, RelayStatus, RelayUrl, SubscriptionId,
+    RelayPoolNotification, RelayStatus, RelayUrl, SubscribeAutoCloseOptions, SubscriptionId,
 };
 use tokio_stream::wrappers::BroadcastStream;
 
@@ -211,8 +211,11 @@ impl NostrRelayClient {
         Box::pin(subscribe_and_collect_capped(
             subscribed_relays(
                 &self.client,
-                self.client
-                    .subscribe_with_id(subscription_id.clone(), filter, None),
+                self.client.subscribe_with_id(
+                    subscription_id.clone(),
+                    filter,
+                    Some(stored_read(timeout)),
+                ),
             ),
             &mut notifications,
             &subscription_id,
@@ -404,8 +407,13 @@ impl NostrRelayClient {
         Box::pin(subscribe_and_collect_complete_capped(
             subscribed_relays(
                 &self.client,
-                self.client
-                    .subscribe_with_id(subscription_id.clone(), filter, None),
+                self.client.subscribe_with_id(
+                    subscription_id.clone(),
+                    filter,
+                    Some(stored_read(
+                        deadline.saturating_duration_since(Instant::now()),
+                    )),
+                ),
             ),
             &mut notifications,
             &subscription_id,
@@ -497,6 +505,17 @@ fn parse_relay_url(relay_url: &str) -> NostrClientResult<RelayUrl> {
         url: relay_url.to_owned(),
         reason: source.to_string(),
     })
+}
+
+/// Subscribe options for a read of stored events.
+///
+/// The SDK registers an auto-closing subscription before it sends the
+/// request, and a long-lived one only after. With `verify_subscriptions`, a
+/// relay that answers inside that gap has its events dropped as belonging to
+/// no subscription, and its EOSE then completes the read without them. The
+/// subscription closes at EOSE, or at `timeout` if the read stops earlier.
+fn stored_read(timeout: Duration) -> SubscribeAutoCloseOptions {
+    SubscribeAutoCloseOptions::default().timeout(Some(timeout))
 }
 
 fn role_client_options() -> ClientOptions {

@@ -23,6 +23,11 @@ location in the admitted authority is queried under the same absolute
 verification deadline; an empty earlier location cannot hide a newer
 authority or valid revocation at a later location.
 
+Every stored-event read registers its subscription with the SDK before the
+request is sent. The SDK drops an event for a subscription it does not know,
+so a relay answering before registration would otherwise have its events
+dropped and its EOSE accepted as a complete, empty answer.
+
 Dropping a bounded complete-query future runs its subscription cleanup and
 cancels the pending read. Cleanup sends a best-effort unsubscribe from a
 detached task because `Drop` cannot await it; SDK connection shutdown is

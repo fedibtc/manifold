@@ -1045,3 +1045,105 @@ async fn subscribe_sends_a_closed_subscription_again() {
         .expect("the stream stays open");
     assert_eq!(delivered.id, event.id);
 }
+
+/// A relay that answers every subscription at once with one stored event and
+/// EOSE, before a slow client may have finished sending the request.
+async fn instant_relay(event: Event) -> String {
+    use futures_util::SinkExt;
+    use tokio_tungstenite::tungstenite::Message;
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("test relay binds");
+    let url = format!(
+        "ws://{}",
+        listener.local_addr().expect("test relay has an address")
+    );
+    let served: serde_json::Value =
+        serde_json::from_str(&event.as_json()).expect("event serializes");
+    tokio::spawn(async move {
+        while let Ok((stream, _)) = listener.accept().await {
+            let served = served.clone();
+            tokio::spawn(async move {
+                let Ok(mut socket) = tokio_tungstenite::accept_async(stream).await else {
+                    return;
+                };
+                while let Some(Ok(message)) = socket.next().await {
+                    let Message::Text(text) = message else {
+                        continue;
+                    };
+                    let request: serde_json::Value =
+                        serde_json::from_str(&text).expect("client sends JSON");
+                    if request[0] != "REQ" {
+                        continue;
+                    }
+                    for reply in [
+                        serde_json::json!(["EVENT", request[1], served]),
+                        serde_json::json!(["EOSE", request[1]]),
+                    ] {
+                        if socket.send(Message::text(reply.to_string())).await.is_err() {
+                            return;
+                        }
+                    }
+                }
+            });
+        }
+    });
+    url
+}
+
+/// With `verify_subscriptions`, the SDK drops an event for a subscription
+/// it has not registered yet. A relay that answers the request at once, while
+/// the reading thread is preempted, must still deliver its stored event to
+/// both stored reads instead of letting EOSE end them empty.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn stored_reads_keep_an_event_the_relay_sends_at_once() {
+    let event = signed_text_event("stored before the read");
+    let relay_url = RelayUrl::parse(&instant_relay(event).await).expect("relay URL");
+    // Busy threads make the OS preempt the reading tasks at arbitrary points.
+    let busy = Arc::new(AtomicBool::new(true));
+    let burners = (0..std::thread::available_parallelism().map_or(2, usize::from))
+        .map(|_| {
+            let busy = busy.clone();
+            std::thread::spawn(move || {
+                while busy.load(Ordering::Relaxed) {
+                    std::hint::spin_loop();
+                }
+            })
+        })
+        .collect::<Vec<_>>();
+    let (mut empty, mut total) = (0, 0);
+    for _ in 0..30 {
+        let mut clients = Vec::new();
+        for _ in 0..2 {
+            clients.push(
+                NostrRelayClient::connect_without_signer(&relay_url, Duration::from_secs(10))
+                    .await
+                    .expect("client connects to the test relay"),
+            );
+        }
+        let (complete, capped) = futures_util::join!(
+            clients[0].fetch_events_complete_capped(
+                Filter::new(),
+                Instant::now() + Duration::from_secs(10),
+                16,
+            ),
+            clients[1].fetch_events_capped(Filter::new(), Duration::from_secs(10), 16),
+        );
+        for events in [
+            complete.expect("the relay answers completely"),
+            capped.expect("the relay answers"),
+        ] {
+            total += 1;
+            empty += usize::from(events.is_empty());
+        }
+    }
+    busy.store(false, Ordering::Relaxed);
+    for burner in burners {
+        burner.join().expect("busy thread stops");
+    }
+    assert_eq!(
+        empty, 0,
+        "{empty} of {total} stored reads dropped the event"
+    );
+}
