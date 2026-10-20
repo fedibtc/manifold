@@ -615,6 +615,98 @@ operation itself stores no second mutable maintenance state: cancelling or
 crashing is safe because a later identical request rereads consensus and either
 observes success or replays the idempotent typed mutation.
 
+## Guardian transfer
+
+`start_guardian_transfer` moves the guardian at one seat index onto a new
+seat, by the contract in
+[`SPEC-guardian-transfer`](../../mg/specs/SPEC-guardian-transfer.md). One
+transfer row owns the whole move, including its destination seat. One
+transfer is open at a time.
+
+The FA can transfer a guardian of a federation it formed on this device or
+restored from a backup. `preview_transfer_destination` asks every guardian
+for its build through the public Fedimint `fedimintd_version` endpoint, by the
+consumer's `FederationConsensusReader::read_fedimintd_versions`. The saved
+invite may name the guardian that needs a new host, so the FA also asks each
+seat's MG for its invite and uses the first that reaches the federation. The
+line most
+of the answering guardians report wins, then the newer line. It does not use
+the advertisements of the federation's own MGs: an MG that is full or offline,
+which is when a guardian needs a new host, advertises nothing. The preview
+then selects one MG on that line that does not host, and never
+hosted, a peer of the federation, and with a badge holder that holds none of
+its seats. The FA keeps the verified holder of each formed and each bought
+seat, also after a transfer. After a restore the badge holders of the seats
+are unknown, so the preview excludes their MGs but not their holders.
+`start_guardian_transfer` takes the approved preview with a price cap and an
+explicit payer, checks the same custody rule, and records the transfer. It
+refuses a priced preview without a payer before it records anything.
+
+The transfer first buys the destination seat with the normal `GetQuote` and
+`CreateSeat` for the federation's size. The purchase follows the formation
+purchase rules: it persists a paid quote before the reservation, refreshes a
+stale quote and releases its reservation before the payment output starts,
+and replays the exact quote after that point. A purchase that ends without a
+seat and with no value at risk closes the transfer: a refusal with its refund
+settled, a quote above the cap, a payment the wallet proved rejected, a quote
+that needs reauthorization (for example, a seat that now charges but has no
+payer), or a payer that the current policy no longer allows when a payment
+that never started resumes. The last case releases its reservation first.
+Each of these returns `SelectionReauthorizationRequired` with the reason that
+Pay-and-create uses: a refusal is `SelectedMgUnavailable` with the MG failure,
+and a rejected payment is `SelectedPayerUnavailable`. No closed state is
+stored: the transfer row is deleted. Any other failure leaves the purchase in
+the row for `resume_guardian_transfer`.
+
+With the seat bought, the FA signs a grant that is valid for 14 days and
+sends `PullSeat` with an optional completion callback. Before each `PullSeat`
+it waits, at most until the run ends, until a publish quorum of backup relays
+confirms the current backup, which carries the move. A device lost before
+then restores a backup without the move, and no grant has left that another
+move could race. From then on the seat
+stays bound to this move. When the grant expired, the destination reports
+`TransferGrantExpired`. The source may have answered already, so the FA does
+not give up the move or offer the seat to another guardian: it signs a new
+grant for the same move and sends `PullSeat` again.
+
+`resume_guardian_transfer` continues from the recorded stage. While the
+destination is `AwaitingTransfer` it polls until the run ends and then
+reports `AwaitingSource`. When the destination is `Running`, the FA reads the
+destination's attestation, saves it in the transfer, and votes it through
+every guardian except the source, like a metadata update. The destination
+signs a new attestation on each request, so a resume votes the saved one. It
+confirms by readback that consensus holds exactly the values from
+`rebind_transferred_seat`, for the saved attestation or another one of the
+destination for the same peer. This step does not need a reconciled seat
+list, because consensus may already name the destination. In the same
+transaction it replaces the source seat in the federation's seat list with
+the destination, and records the source MG and its known holder as a past
+host. Before each `RemoveSeat` to the source, it asks the destination for
+its status again, also on a resume in `RemovingSource`: the source seat is
+the last other copy of the guardian. A destination that is unreachable or not
+`Running`, or an unreachable source, leaves the transfer in `RemovingSource`
+for a later resume.
+
+A transfer and a liquidity request do not overlap: the liquidity commitment
+names the current seats, so each refuses to start while the other is live.
+
+The first transfer turns a formation record into the post-formation record
+that a restore imports, with the same formation id: the formation record
+describes how the federation formed, not who hosts it now. The FA reports
+`FaStatus::Restored` from then on.
+
+The backup carries the move from the seat purchase until the seat list
+names the destination. A restored FA that reconciles and finds the source
+still in consensus opens the same move again with a new grant. When
+consensus already names the destination, reconciliation puts the destination
+in place of the source; this also covers a device that lost its run before it
+recorded the move. If this device still has that move open, reconciliation
+advances it to `RemovingSource` in the same transaction, so its backup no
+longer carries the move and the transfer still removes the source. A restored
+FA without the open move does not know whether the source data was removed,
+so it does not send `RemoveSeat` for a move that consensus already shows. The
+FA never seals a backup that restore would refuse. An open purchase is not backed up.
+
 ## Modules
 
 - `state` — public intent, status, and phase types.
@@ -631,6 +723,8 @@ observes success or replays the idempotent typed mutation.
   and guardian-fee policy orchestration.
 - `liquidity` — post-formation FLIP selection and signed allocation recovery,
   including exact-URL gateway attachment and its durable readback proof.
+- `seat_purchase` — selection and purchase of a transfer's destination seat.
+- `transfer` — guardian transfer onto its destination seat.
 - `maintenance` — typed post-formation consensus maintenance orchestration.
 - `unavailable` — deliberately unavailable adapters for consumer scaffolding.
 

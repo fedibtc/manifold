@@ -127,6 +127,8 @@ enum Command {
     Liquidity(LiquidityArgs),
     /// Maintain consensus metadata and configure guardian fees after formation.
     Maintenance(MaintenanceArgs),
+    /// Move one guardian of the formed federation onto a new seat.
+    Transfer(TransferArgs),
     /// Join and directly fund the Fedimint wallet later supplied to formation.
     PaymentWallet(PaymentWalletArgs),
     /// Ask every MG to decommission this formation's seat (testing only).
@@ -155,6 +157,55 @@ struct MaintenanceTimingArgs {
     /// Maximum time for one consensus read, connection, signature, or RPC.
     #[arg(long, global = true, default_value_t = 30)]
     request_timeout_secs: u64,
+}
+
+#[derive(Debug, ClapArgs)]
+struct TransferArgs {
+    #[command(flatten)]
+    timing: MaintenanceTimingArgs,
+    #[command(subcommand)]
+    command: TransferCommand,
+}
+
+#[derive(Debug, Subcommand)]
+enum TransferCommand {
+    /// Preview the MG that would receive a guardian (read-only).
+    Preview,
+    /// Buy a seat on a fresh MG and start to move one guardian onto it.
+    Start(Box<TransferStartArgs>),
+    /// Continue the open guardian transfer, including an interrupted purchase.
+    Resume(ResumeArgs),
+    /// Print the open guardian transfer without network access.
+    Status,
+}
+
+#[derive(Debug, ClapArgs)]
+struct TransferStartArgs {
+    /// Seat index of the guardian to move.
+    #[arg(long)]
+    seat_index: u16,
+    /// Spending cap for the new seat, in millisatoshis.
+    #[arg(long)]
+    max_msats: u64,
+    /// Secure 0600 file containing the push-gateway hook URL bearer.
+    #[arg(long, requires = "completion_callback_idempotency_key")]
+    completion_callback_url_file: Option<PathBuf>,
+    /// Stable push-gateway deduplication key paired with the callback URL.
+    #[arg(long, requires = "completion_callback_url_file")]
+    completion_callback_idempotency_key: Option<String>,
+    #[command(flatten)]
+    payment: ResumeArgs,
+}
+
+impl TransferArgs {
+    fn options(&self) -> anyhow::Result<MaintenanceRunOptions> {
+        MaintenanceRunOptions::new(fa_client::MaintenanceRunOptionsConfig {
+            poll_interval: Duration::from_secs(self.timing.poll_interval_secs),
+            run_timeout: Duration::from_secs(self.timing.run_timeout_secs),
+            request_timeout: Duration::from_secs(self.timing.request_timeout_secs),
+        })
+        .map_err(anyhow::Error::from)
+    }
 }
 
 #[derive(Debug, Subcommand)]
@@ -635,6 +686,20 @@ struct ResumeArgs {
     /// before import, and deleted only after the wallet confirms receipt.
     #[arg(long)]
     funding_token_file: Option<PathBuf>,
+}
+
+impl ResumeArgs {
+    /// No payment wallet and no fee account.
+    fn none() -> Self {
+        Self {
+            fa_spv2_account_file: None,
+            payment_federation_id: None,
+            wallet_data_dir: None,
+            wallet_secret_file: None,
+            payment_invite_code: None,
+            funding_token_file: None,
+        }
+    }
 }
 
 #[derive(Debug, ClapArgs)]
@@ -1278,6 +1343,81 @@ async fn run(
             endpoint.close().await;
             result?;
         }
+        Command::Transfer(transfer) => {
+            let options = transfer.options()?;
+            match transfer.command {
+                TransferCommand::Preview => {
+                    let (client, endpoint) = open_existing(&ResumeArgs::none(), None).await?;
+                    let result = client
+                        .preview_transfer_destination(MgDiscoveryOptions::default())
+                        .await;
+                    endpoint.close().await;
+                    output.transfer_preview(&result?, format)?;
+                }
+                TransferCommand::Start(start) => {
+                    let completion_callback = start
+                        .completion_callback_url_file
+                        .as_ref()
+                        .zip(start.completion_callback_idempotency_key.as_ref())
+                        .map(|(callback_url_file, idempotency_key)| {
+                            DkgCompletionCallback::new(DkgCompletionCallbackInput {
+                                callback_url: read_completion_callback_url(callback_url_file)?,
+                                idempotency_key: idempotency_key.clone(),
+                            })
+                            .map_err(anyhow::Error::from)
+                        })
+                        .transpose()?;
+                    let payer = start
+                        .payment
+                        .payment_federation_id
+                        .clone()
+                        .map(fa_client::FederationId);
+                    let (client, endpoint) = open_existing(&start.payment, wallet_secret).await?;
+                    // Reconcile first: the approval below is short-lived.
+                    let result = async {
+                        client.resume().await?;
+                        let approval = client
+                            .preview_transfer_destination(MgDiscoveryOptions::default())
+                            .await?
+                            .approve(start.max_msats)?;
+                        client
+                            .start_guardian_transfer(
+                                start.seat_index,
+                                approval,
+                                payer,
+                                completion_callback,
+                                options,
+                            )
+                            .await
+                    }
+                    .await;
+                    endpoint.close().await;
+                    output.guardian_transfer(Some(&result?), format)?;
+                }
+                TransferCommand::Resume(resume) => {
+                    let (client, endpoint) = open_existing(&resume, wallet_secret).await?;
+                    let result = client.resume_guardian_transfer(options).await;
+                    endpoint.close().await;
+                    output.guardian_transfer(result?.as_ref(), format)?;
+                }
+                TransferCommand::Status => {
+                    let identity = CliIdentity::load_or_create(&args.state_dir, false)?;
+                    let client = open_client(
+                        &args.state_dir,
+                        identity,
+                        CliPayments::unavailable(),
+                        &setup_payment,
+                        None,
+                        CliMgConnector::unavailable(),
+                        peer_badge_verifier
+                            .expect("commands other than discover construct a PeerBadge verifier"),
+                        profile.clone(),
+                    )
+                    .await?;
+                    output.guardian_transfer(client.guardian_transfer().await?.as_ref(), format)?;
+                }
+            }
+        }
         Command::Decommission => {
             let endpoint = bind_iroh_endpoint().await?;
             let identity = CliIdentity::load_or_create(&args.state_dir, false)?;
@@ -1815,6 +1955,18 @@ impl FederationConsensusReader for CliConsensusReader {
             .await
             .map_err(|error| FederationConsensusError::new(error.to_string()))
     }
+
+    async fn read_fedimintd_versions(
+        &self,
+        invite_code: &InviteCode,
+    ) -> Result<Vec<String>, FederationConsensusError> {
+        fedi_decentralized_federation_preview::read_fedimintd_versions(
+            &self.connectors,
+            invite_code,
+        )
+        .await
+        .map_err(|error| FederationConsensusError::new(error.to_string()))
+    }
 }
 
 #[derive(Clone)]
@@ -1987,12 +2139,24 @@ impl WalletRootSecret {
             }
             Command::AuthorizePayments(args) => args.resume.wallet_secret_file.as_ref(),
             Command::PaymentWallet(args) => args.wallet_secret_file.as_ref(),
+            Command::Transfer(TransferArgs {
+                command: TransferCommand::Start(args),
+                ..
+            }) => args.payment.wallet_secret_file.as_ref(),
+            Command::Transfer(TransferArgs {
+                command: TransferCommand::Resume(args),
+                ..
+            }) => args.wallet_secret_file.as_ref(),
             Command::Init
             | Command::Status
             | Command::Discover(_)
             | Command::Preview(_)
             | Command::Maintenance(_)
             | Command::Liquidity(_)
+            | Command::Transfer(TransferArgs {
+                command: TransferCommand::Preview | TransferCommand::Status,
+                ..
+            })
             | Command::Decommission => {
                 return Ok(None);
             }
