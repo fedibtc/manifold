@@ -341,6 +341,15 @@ impl FederationConsensusReader for UnavailableFederationConsensusReader {
             "federation consensus read capability unavailable",
         ))
     }
+
+    async fn read_fedimintd_versions(
+        &self,
+        _invite_code: &InviteCode,
+    ) -> Result<Vec<String>, FederationConsensusError> {
+        Err(FederationConsensusError::new(
+            "federation consensus read capability unavailable",
+        ))
+    }
 }
 
 fn unavailable() -> ManifoldGuardianError {

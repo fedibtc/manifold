@@ -624,11 +624,13 @@ transfer row owns the whole move, including its destination seat. One
 transfer is open at a time.
 
 The FA can transfer a guardian of a federation it formed on this device or
-restored from a backup. `preview_transfer_destination` takes the Fedimint
-major/minor line the federation runs from the registry advertisements of the
-federation's own MGs: an MG runs one `fedimintd` build for all its seats.
-During an upgrade the line most of them advertise wins, then the newer line.
-The preview then selects one MG on that line that does not host, and never
+restored from a backup. `preview_transfer_destination` asks every guardian
+for its build through the public Fedimint `fedimintd_version` endpoint, by the
+consumer's `FederationConsensusReader::read_fedimintd_versions`. The line most
+of the answering guardians report wins, then the newer line. It does not use
+the advertisements of the federation's own MGs: an MG that is full or offline,
+which is when a guardian needs a new host, advertises nothing. The preview
+then selects one MG on that line that does not host, and never
 hosted, a peer of the federation, and with a badge holder that holds none of
 its seats. The FA keeps the verified holder of each formed and each bought
 seat, also after a transfer. After a restore the badge holders of the seats
@@ -647,8 +649,11 @@ settled, a quote above the cap, a payment the wallet proved rejected, a quote
 that needs reauthorization (for example, a seat that now charges but has no
 payer), or a payer that the current policy no longer allows when a payment
 that never started resumes. The last case releases its reservation first.
-Any other failure leaves the purchase in the row for
-`resume_guardian_transfer`.
+Each of these returns `SelectionReauthorizationRequired` with the reason that
+Pay-and-create uses: a refusal is `SelectedMgUnavailable` with the MG failure,
+and a rejected payment is `SelectedPayerUnavailable`. No closed state is
+stored: the transfer row is deleted. Any other failure leaves the purchase in
+the row for `resume_guardian_transfer`.
 
 With the seat bought, the FA signs a grant that is valid for 14 days and
 sends `PullSeat` with an optional completion callback. Before each `PullSeat`

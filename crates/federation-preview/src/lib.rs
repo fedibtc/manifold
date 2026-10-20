@@ -253,6 +253,40 @@ pub async fn read_lnv2_gateways(
     Ok(admitted_lnv2_gateway_view(&gateways))
 }
 
+/// How long one guardian may take to report its `fedimintd` version.
+const FEDIMINTD_VERSION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// Ask every guardian for the `fedimintd` version it runs.
+///
+/// The result holds one raw version string for each guardian that answered
+/// in time; a guardian that is offline or fails is left out. The endpoint is
+/// public and the answers are not threshold-agreed, so callers must treat
+/// each one as one guardian's claim.
+///
+/// # Errors
+///
+/// Returns an error if the invite is malformed or the config cannot be
+/// downloaded.
+pub async fn read_fedimintd_versions(
+    connectors: &ConnectorRegistry,
+    invite_code: &InviteCode,
+) -> Result<Vec<String>, FederationPreviewError> {
+    let invite = FedimintInviteCode::from_str(&invite_code.0).map_err(|error| {
+        FederationPreviewError::InvalidInviteCode(format!("malformed invite code: {error}"))
+    })?;
+    let (_config, api) = download_from_invite_code(connectors, &invite)
+        .await
+        .map_err(|error| FederationPreviewError::Unavailable(error.to_string()))?;
+    let answers = futures_util::future::join_all(api.all_peers().iter().map(|peer| {
+        fedimint_core::runtime::timeout(FEDIMINTD_VERSION_TIMEOUT, api.fedimintd_version(*peer))
+    }))
+    .await;
+    Ok(answers
+        .into_iter()
+        .filter_map(|answer| answer.ok()?.ok())
+        .collect())
+}
+
 fn admitted_lnv2_gateway_view(
     gateways: &BTreeMap<fedimint_core::PeerId, Vec<SafeUrl>>,
 ) -> Vec<GatewayApiUrl> {

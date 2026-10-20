@@ -22,7 +22,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use fedi_decentralized_nostr_clients::FaNostrClient;
 use fedi_decentralized_service_manifold_guardian::{
-    GetQuoteResponse, Locator, SeatId, SignatureVerified, SignedResponse, Timestamp,
+    FedimintdDkgVersion, FedimintdVersion, GetQuoteResponse, InviteCode, Locator, SeatId,
+    SignatureVerified, SignedResponse, Timestamp,
 };
 use fedimint_core::runtime::Instant;
 use nostr_sdk::PublicKey;
@@ -86,6 +87,7 @@ pub(crate) struct StoredSeatPurchase {
 /// ran or from a restored backup.
 pub(crate) struct TransferFederation {
     pub(crate) formation_id: FormationId,
+    invite_code: InviteCode,
     federation_name: FederationName,
     federation_size: FederationSize,
     /// MG identity, locator, and seat id of every guardian seat.
@@ -136,18 +138,34 @@ where
     ) -> FaResult<TransferDestinationPreview> {
         let fa_id = self.fa_id()?;
         let federation = self.transfer_federation(fa_id).await?;
-        let mut members = BTreeSet::new();
+        let mut excluded = BTreeSet::new();
         let mut retained_service_pubkeys = BTreeMap::new();
         for (mg_id, locator, _) in &federation.seats {
-            members.insert(*mg_id);
+            excluded.insert(*mg_id);
             retained_service_pubkeys.insert(locator.service_pubkey, *mg_id);
         }
-        let mut excluded = members.clone();
         excluded.extend(federation.past_mgs);
         let now = fedimint_core::time::duration_since_epoch().as_secs();
         let deadline = Instant::now()
             .checked_add(options.timeout())
             .expect("clamped discovery timeout fits the monotonic deadline domain");
+        // The guardians report their own build. MG advertisements would not
+        // do: an MG that is full or offline, which is when a guardian needs
+        // a new host, advertises nothing.
+        let versions = fedimint_core::runtime::timeout(
+            deadline.saturating_duration_since(Instant::now()),
+            self.inner
+                .ports
+                .consensus_reader
+                .read_fedimintd_versions(&federation.invite_code),
+        )
+        .await
+        .map_err(|_| FaError::Timeout("reading the guardians' fedimintd versions".to_owned()))?
+        .map_err(|error| {
+            FaError::Selection(format!(
+                "reading the guardians' fedimintd versions failed: {error}"
+            ))
+        })?;
         crate::selection::preview_transfer_destination_with(
             &self.inner.ports.registry,
             verifier,
@@ -156,7 +174,7 @@ where
             },
             self.inner.peer_badge_verifier.provenance(),
             federation.federation_size,
-            &members,
+            federation_dkg_line(&versions)?,
             excluded,
             retained_service_pubkeys,
             federation.holders,
@@ -233,6 +251,9 @@ where
                     seats.push((seat.admission.mg_id(), seat.progress.locator, seat_id));
                 }
                 Ok(TransferFederation {
+                    invite_code: recovery.snapshot.invite_code.ok_or_else(|| {
+                        FaError::Storage("formed federation has no invite code".to_owned())
+                    })?,
                     formation_id: recovery.snapshot.formation_id,
                     federation_name: recovery.snapshot.intent.federation_name,
                     federation_size: recovery.snapshot.intent.federation_size,
@@ -244,6 +265,7 @@ where
             FaRecovery::Restored(snapshot) => {
                 let (holders, past_mgs) = self.inner.store.restored_custody().await;
                 Ok(TransferFederation {
+                    invite_code: snapshot.federation_invite,
                     federation_size: FederationSize(u16::try_from(snapshot.seats.len()).map_err(
                         |_| FaError::Storage("restored federation has too many seats".to_owned()),
                     )?),
@@ -393,9 +415,12 @@ where
                 lease
                     .write_guardian_transfer(fa_id, GuardianTransferWrite::Close)
                     .await?;
-                return Err(FaError::Payment(
-                    "the destination seat payment was rejected and its funds returned".to_owned(),
-                ));
+                // The payer could not pay this quote. A new approval can
+                // pick another payer.
+                return Err(FaError::SelectionReauthorizationRequired {
+                    reason: crate::SelectionReauthorizationReason::SelectedPayerUnavailable,
+                    failure: None,
+                });
             };
             SeatPresentation::Paid {
                 quote: PaidSeatQuote { signed, verified },
@@ -436,7 +461,12 @@ where
                 lease
                     .write_guardian_transfer(fa_id, GuardianTransferWrite::Close)
                     .await?;
-                Err(refusal.error.into())
+                // As in Pay-and-create: the refusing MG is not available for
+                // this approval, and a new preview picks another.
+                Err(FaError::SelectionReauthorizationRequired {
+                    reason: crate::SelectionReauthorizationReason::SelectedMgUnavailable,
+                    failure: Some(refusal.error),
+                })
             }
         }
     }
@@ -608,4 +638,24 @@ fn purchase_requirements(
         max_total_msats: Some(purchase.max_msats),
         seats,
     })
+}
+
+/// The Fedimint line most of the answering guardians run, and the newer one
+/// on a tie. During an upgrade the guardians can disagree.
+fn federation_dkg_line(versions: &[String]) -> FaResult<FedimintdDkgVersion> {
+    let mut lines = BTreeMap::<FedimintdDkgVersion, usize>::new();
+    for version in versions {
+        if let Ok(version) = version.parse::<FedimintdVersion>() {
+            *lines.entry(version.dkg_version()).or_default() += 1;
+        }
+    }
+    lines
+        .into_iter()
+        .max_by(|(left_line, left), (right_line, right)| {
+            left.cmp(right).then_with(|| left_line.cmp(right_line))
+        })
+        .map(|(line, _)| line)
+        .ok_or_else(|| {
+            FaError::Selection("no guardian reported the fedimintd version it runs".to_owned())
+        })
 }

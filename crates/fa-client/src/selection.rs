@@ -1238,12 +1238,8 @@ pub(crate) fn dkg_line(dkg_version: &FedimintdDkgVersion) -> FaResult<FedimintdV
     )
 }
 
-/// Select one fresh MG that holds no seat of this FA yet.
-///
-/// The MG must run the Fedimint line the federation runs. The line comes
-/// from the advertisements of the federation's own MGs, because every MG
-/// runs one `fedimintd` build for all its seats. When they disagree during an
-/// upgrade, the line most of them advertise wins, then the newer line.
+/// Select one fresh MG, outside `excluded`, that advertises the Fedimint
+/// line the federation runs.
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn preview_transfer_destination_with(
     registry: &impl FaNostrClient,
@@ -1251,7 +1247,7 @@ pub(crate) async fn preview_transfer_destination_with(
     prober: &impl SelectionAvailabilityProber,
     verifier_provenance: PeerBadgeVerifierProvenance,
     federation_size: FederationSize,
-    members: &BTreeSet<PublicKey>,
+    fedimintd_dkg_version: FedimintdDkgVersion,
     excluded: BTreeSet<PublicKey>,
     retained_service_pubkeys: BTreeMap<secp256k1::XOnlyPublicKey, PublicKey>,
     retained_holders: BTreeSet<PublicKey>,
@@ -1277,25 +1273,6 @@ pub(crate) async fn preview_transfer_destination_with(
     };
     let mut discovery =
         discover_mg_candidates_with(registry, &discovery_requirements, deadline, now).await?;
-    let mut lines = BTreeMap::<FedimintdDkgVersion, usize>::new();
-    for candidate in &discovery.candidates {
-        if members.contains(&candidate.mg_id) {
-            *lines
-                .entry(candidate.fedimintd_dkg_version.clone())
-                .or_default() += 1;
-        }
-    }
-    let fedimintd_dkg_version = lines
-        .into_iter()
-        .max_by(|(left_line, left), (right_line, right)| {
-            left.cmp(right).then_with(|| left_line.cmp(right_line))
-        })
-        .map(|(line, _)| line)
-        .ok_or_else(|| {
-            FaError::Selection(
-                "no MG of the federation advertises the Fedimint line it runs".to_owned(),
-            )
-        })?;
     let request = MgSelectionRequest::new(
         federation_size,
         dkg_line(&fedimintd_dkg_version)?,
