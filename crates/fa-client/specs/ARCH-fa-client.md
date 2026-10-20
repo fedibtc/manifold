@@ -626,7 +626,10 @@ transfer is open at a time.
 The FA can transfer a guardian of a federation it formed on this device or
 restored from a backup. `preview_transfer_destination` asks every guardian
 for its build through the public Fedimint `fedimintd_version` endpoint, by the
-consumer's `FederationConsensusReader::read_fedimintd_versions`. The line most
+consumer's `FederationConsensusReader::read_fedimintd_versions`. The saved
+invite may name the guardian that needs a new host, so the FA also asks each
+seat's MG for its invite and uses the first that reaches the federation. The
+line most
 of the answering guardians report wins, then the newer line. It does not use
 the advertisements of the federation's own MGs: an MG that is full or offline,
 which is when a guardian needs a new host, advertises nothing. The preview

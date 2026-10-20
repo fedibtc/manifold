@@ -780,6 +780,8 @@ struct CreateRecord {
 struct MgState {
     /// What the guardians report from `fedimintd_version`, when a test sets it.
     guardian_versions: Mutex<Option<Vec<String>>>,
+    /// Invites through which `fedimintd_version` reaches no guardian.
+    unreachable_version_invites: Mutex<HashSet<String>>,
     connect_calls: AtomicUsize,
     connect_attempts: Mutex<HashMap<usize, usize>>,
     fail_connect_on_attempt: Mutex<Option<(usize, usize)>>,
@@ -2275,6 +2277,15 @@ impl FederationConsensusReader for TestConsensusReader {
         invite_code: &InviteCode,
     ) -> Result<Vec<String>, FederationConsensusError> {
         self.check_invite(invite_code)?;
+        if self
+            .state
+            .unreachable_version_invites
+            .lock()
+            .expect("test lock")
+            .contains(&invite_code.0)
+        {
+            return Err(FederationConsensusError::new("test guardian unreachable"));
+        }
         Ok(self
             .state
             .guardian_versions

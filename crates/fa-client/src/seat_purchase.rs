@@ -22,10 +22,11 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use fedi_decentralized_nostr_clients::FaNostrClient;
 use fedi_decentralized_service_manifold_guardian::{
-    FedimintdDkgVersion, FedimintdVersion, GetQuoteResponse, InviteCode, Locator, SeatId,
-    SignatureVerified, SignedResponse, Timestamp,
+    FedimintdDkgVersion, FedimintdVersion, GetInviteCodeRequest, GetQuoteResponse, InviteCode,
+    Locator, ManifoldGuardianService as _, SeatId, SignatureVerified, SignedResponse, Timestamp,
 };
 use fedimint_core::runtime::Instant;
+use futures::stream::{FuturesUnordered, StreamExt as _};
 use nostr_sdk::PublicKey;
 use stability_pool_common::Account;
 use tokio::sync::OnceCell;
@@ -144,7 +145,7 @@ where
             excluded.insert(*mg_id);
             retained_service_pubkeys.insert(locator.service_pubkey, *mg_id);
         }
-        excluded.extend(federation.past_mgs);
+        excluded.extend(federation.past_mgs.iter().copied());
         let now = fedimint_core::time::duration_since_epoch().as_secs();
         let deadline = Instant::now()
             .checked_add(options.timeout())
@@ -152,20 +153,9 @@ where
         // The guardians report their own build. MG advertisements would not
         // do: an MG that is full or offline, which is when a guardian needs
         // a new host, advertises nothing.
-        let versions = fedimint_core::runtime::timeout(
-            deadline.saturating_duration_since(Instant::now()),
-            self.inner
-                .ports
-                .consensus_reader
-                .read_fedimintd_versions(&federation.invite_code),
-        )
-        .await
-        .map_err(|_| FaError::Timeout("reading the guardians' fedimintd versions".to_owned()))?
-        .map_err(|error| {
-            FaError::Selection(format!(
-                "reading the guardians' fedimintd versions failed: {error}"
-            ))
-        })?;
+        let versions = self
+            .guardian_fedimintd_versions(&federation, fa_id, deadline)
+            .await;
         crate::selection::preview_transfer_destination_with(
             &self.inner.ports.registry,
             verifier,
@@ -183,6 +173,61 @@ where
             || fedimint_core::time::duration_since_epoch().as_secs(),
         )
         .await
+    }
+
+    /// What the guardians report from `fedimintd_version`, read through the
+    /// first invite that reaches the federation. The saved invite may name
+    /// the very guardian that needs a new host, so each seat's MG also
+    /// offers its own invite.
+    async fn guardian_fedimintd_versions(
+        &self,
+        federation: &TransferFederation,
+        fa_id: crate::FaId,
+        deadline: Instant,
+    ) -> Vec<String> {
+        let expected = crate::formation::invite_federation_id(&federation.invite_code).ok();
+        let read =
+            async |seat: Option<&SeatId>, locator: Option<&Locator>| -> Option<Vec<String>> {
+                let invite = match (seat, locator) {
+                    (Some(seat_id), Some(locator)) => {
+                        let client = self.inner.ports.mg_connector.connect(locator).await.ok()?;
+                        let request = self
+                            .sign(&GetInviteCodeRequest {
+                                ts: Timestamp(now_secs().ok()?),
+                                fa_id,
+                                seat_id: seat_id.clone(),
+                            })
+                            .ok()?;
+                        let invite = client.get_invite_code(request).await.ok()?.invite_code;
+                        (crate::formation::invite_federation_id(&invite).ok() == expected)
+                            .then_some(invite)?
+                    }
+                    _ => self.consensus_invite(&federation.invite_code).await,
+                };
+                let versions = self
+                    .inner
+                    .ports
+                    .consensus_reader
+                    .read_fedimintd_versions(&invite)
+                    .await
+                    .ok()?;
+                (!versions.is_empty()).then_some(versions)
+            };
+        let mut pending = FuturesUnordered::new();
+        pending.push(read(None, None));
+        for (_, locator, seat_id) in &federation.seats {
+            pending.push(read(Some(seat_id), Some(locator)));
+        }
+        fedimint_core::runtime::timeout(deadline.saturating_duration_since(Instant::now()), async {
+            while let Some(answer) = pending.next().await {
+                if let Some(versions) = answer {
+                    return versions;
+                }
+            }
+            Vec::new()
+        })
+        .await
+        .unwrap_or_default()
     }
 
     /// The purchase the approval allows, before any network call.
