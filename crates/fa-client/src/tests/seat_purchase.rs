@@ -315,10 +315,13 @@ async fn a_refused_purchase_settles_its_refund_and_closes_the_transfer() {
 
     assert!(matches!(
         error,
-        FaError::Mg(MgFailure {
-            cause: MgCause::OfferChanged,
-            ..
-        })
+        FaError::SelectionReauthorizationRequired {
+            reason: SelectionReauthorizationReason::SelectedMgUnavailable,
+            failure: Some(MgFailure {
+                cause: MgCause::OfferChanged,
+                ..
+            }),
+        }
     ));
     assert_eq!(
         payment_state.refund_calls.load(Ordering::SeqCst),
@@ -725,26 +728,40 @@ async fn a_restored_fa_buys_a_destination_on_the_federation_line() {
 }
 
 #[tokio::test]
-async fn the_destination_line_is_the_one_most_guardians_advertise() {
-    let newer = "0.13.0+fedi";
-    // A tie between lines picks the newer one.
-    let (_, _, _, restored) = restored_client(vec![
-        mg_ad(0, PAYMENT_AMOUNT_MSATS, FEDIMINTD_VERSION_0_1),
-        mg_ad(1, PAYMENT_AMOUNT_MSATS, newer),
-        mg_ad(20, PAYMENT_AMOUNT_MSATS, newer),
-    ])
-    .await;
-    assert_eq!(eligible_destination_mgs(&restored).await, 1);
+async fn the_destination_line_is_the_one_most_guardians_report() {
+    let older = FEDIMINTD_VERSION_0_1.to_string();
+    let newer = "0.13.0+fedi".to_owned();
+    // No MG of the federation advertises: they are full or offline. Only
+    // the guardians' own answers name the line.
+    let eligible = async |guardians: Vec<String>| {
+        let (_, _, mg_state, restored) =
+            restored_client(vec![mg_ad(20, PAYMENT_AMOUNT_MSATS, &newer)]).await;
+        *mg_state.guardian_versions.lock().expect("test lock") = Some(guardians);
+        eligible_destination_mgs(&restored).await
+    };
 
+    // A tie between lines picks the newer one. An answer that does not
+    // parse counts for no line.
+    assert_eq!(
+        eligible(vec![older.clone(), newer.clone(), "garbage".to_owned()]).await,
+        1
+    );
     // A majority outweighs the newer line.
-    let (_, _, _, restored) = restored_client(vec![
-        mg_ad(0, PAYMENT_AMOUNT_MSATS, FEDIMINTD_VERSION_0_1),
-        mg_ad(1, PAYMENT_AMOUNT_MSATS, newer),
-        mg_ad(2, PAYMENT_AMOUNT_MSATS, FEDIMINTD_VERSION_0_1),
-        mg_ad(20, PAYMENT_AMOUNT_MSATS, newer),
-    ])
-    .await;
-    assert_eq!(eligible_destination_mgs(&restored).await, 0);
+    assert_eq!(
+        eligible(vec![older.clone(), newer.clone(), older.clone()]).await,
+        0
+    );
+
+    // With no answer, the preview names no line rather than guess one.
+    let (_, _, mg_state, restored) =
+        restored_client(vec![mg_ad(20, PAYMENT_AMOUNT_MSATS, &newer)]).await;
+    *mg_state.guardian_versions.lock().expect("test lock") = Some(vec!["garbage".to_owned()]);
+    assert!(matches!(
+        restored
+            .preview_transfer_destination(crate::MgDiscoveryOptions::default())
+            .await,
+        Err(FaError::Selection(_))
+    ));
 }
 
 /// Badge verifier that reports a chosen holder for some MGs, and the MG
@@ -809,4 +826,71 @@ async fn a_guardian_holder_cannot_receive_a_guardian_through_another_mg() {
         .await
         .unwrap();
     assert_eq!(preview.seat().candidate().mg_id(), test_mg_id(other));
+}
+
+#[tokio::test]
+async fn a_rejected_payment_closes_the_transfer_for_another_payer() {
+    let (_database, _payments, payment_state, mg_state, client) = formed_paid_client().await;
+    // The run stops after it reserves the payment. Mark the payment started:
+    // the wallet then reports it rejected and refunded.
+    let next_reservation = payment_state.readiness_calls.load(Ordering::SeqCst) + 1;
+    payment_state
+        .lose_reservation_result_on_call
+        .store(next_reservation, Ordering::SeqCst);
+    start_transfer_with(
+        &client,
+        &mg_state,
+        destination_approval(PAYMENT_AMOUNT_MSATS),
+    )
+    .await
+    .unwrap_err();
+    let mut transfer = client
+        .inner
+        .store
+        .load_guardian_transfer()
+        .await
+        .unwrap()
+        .unwrap();
+    let TransferStage::Buying(purchase) = &mut transfer.stage else {
+        panic!("the transfer still buys its seat");
+    };
+    purchase.outputs_started = true;
+    let lease = client
+        .inner
+        .store
+        .acquire_driver_lease(Duration::from_secs(30), Duration::from_secs(5))
+        .await
+        .unwrap();
+    lease
+        .write_guardian_transfer(
+            TestIdentity::fa_id(),
+            crate::db::GuardianTransferWrite::Update(transfer),
+        )
+        .await
+        .unwrap();
+    client
+        .inner
+        .store
+        .release_driver_lease(lease)
+        .await
+        .unwrap();
+    payment_state.reject_recovery.store(true, Ordering::SeqCst);
+
+    let error = client
+        .resume_guardian_transfer(short_options())
+        .await
+        .unwrap_err();
+
+    assert!(
+        matches!(
+            error,
+            FaError::SelectionReauthorizationRequired {
+                reason: SelectionReauthorizationReason::SelectedPayerUnavailable,
+                failure: None,
+            }
+        ),
+        "{error:?}"
+    );
+    assert_eq!(client.guardian_transfer().await.unwrap(), None);
+    assert!(mg_state.pull_requests.lock().expect("test lock").is_empty());
 }

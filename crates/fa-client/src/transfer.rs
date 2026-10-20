@@ -291,7 +291,9 @@ where
     /// result reports the phase, and a later call continues from it. A
     /// purchase or a vote that fails returns its error and stays open for a
     /// later call, unless the purchase ended without value at risk; then the
-    /// transfer closes. `None` means no transfer is open.
+    /// transfer closes and the error is
+    /// [`FaError::SelectionReauthorizationRequired`]. `None` means no
+    /// transfer is open.
     pub async fn resume_guardian_transfer(
         &self,
         options: MaintenanceRunOptions,
