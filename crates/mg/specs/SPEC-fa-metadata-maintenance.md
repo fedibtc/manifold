@@ -31,7 +31,7 @@ strings exactly as the app parses them; list values are JSON inside the string.
 
 | Key | App behavior | Validator |
 | --- | --- | --- |
-| `fedi:autojoin_communities` | Linked communities members join | JSON array of at most 10 distinct invite codes (compared case-insensitively) that Fedi's parser accepts: lowercased bech32 with HRP `fedi:community2` and a V2 payload (author pubkey, UUID, 32-byte base64 key), or HRP `fedi:community` and a V1 payload (`community_meta_url`) |
+| `fedi:autojoin_communities` | Linked communities members join | JSON array of at most 10 distinct invite codes (compared case-insensitively) that Fedi's parser accepts: lowercased bech32 with HRP `fedi:community2` and a V2 payload (author pubkey, UUID, 32-byte base64 key), or HRP `fedi:community` and a V1 payload whose `community_meta_url` passes the icon URL rules |
 | `fedi:default_group_chats` | Group chats shown to members | JSON array of at most 20 distinct Matrix room ids: `!` and a nonempty body, at most 255 bytes, without whitespace or controls. Legacy `!opaque:server` and room version 12 server-less ids both pass |
 | `fedi:fedimods` | Default home-screen mods | JSON array of at most 32 objects with only `id`, `title`, `url`, and optional `imageUrl`, `description`, `color`; distinct ids; URLs pass the icon URL rule. `description` and `color` must be strings when present, because the app drops an entry with a `null` one |
 | `fedi:pinned_message` | Home-screen message | Exactly empty, or the welcome-message rules with control characters refused anywhere |

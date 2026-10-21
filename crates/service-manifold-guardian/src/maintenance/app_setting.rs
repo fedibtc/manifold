@@ -345,7 +345,6 @@ where
 /// Fedi's `CommunityInviteV1` payload.
 #[derive(Deserialize)]
 struct CommunityInviteV1 {
-    #[allow(dead_code)]
     community_meta_url: String,
 }
 
@@ -361,7 +360,8 @@ struct CommunityInviteV2 {
 
 /// Accept what Fedi's `CommunityInvite::from_str` accepts: the lowercased
 /// string decodes as bech32 with the V2 HRP and a V2 payload, or with the V1
-/// HRP and a V1 payload.
+/// HRP and a V1 payload. V1 metadata URLs also follow the icon URL rules,
+/// because members' devices fetch them automatically.
 fn validate_community_invite(entry: &str) -> Result<(), &'static str> {
     use nostr::base64::Engine as _;
     use nostr::base64::alphabet;
@@ -386,9 +386,15 @@ fn validate_community_invite(entry: &str) -> Result<(), &'static str> {
             }
             Ok(())
         }
-        COMMUNITY_V1_HRP => serde_json::from_slice::<CommunityInviteV1>(&data)
-            .map(|_| ())
-            .map_err(|_| payload),
+        COMMUNITY_V1_HRP => {
+            let invite: CommunityInviteV1 = serde_json::from_slice(&data).map_err(|_| payload)?;
+            validate_url(
+                "community metadata URL",
+                &invite.community_meta_url,
+                FEDERATION_METADATA_ICON_URL_MAX_BYTES,
+            )
+            .map_err(|_| "community metadata URLs must be public HTTP(S) URLs")
+        }
         _ => Err("entries must be community invite codes"),
     }
 }

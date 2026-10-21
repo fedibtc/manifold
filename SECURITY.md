@@ -571,8 +571,11 @@ refused — but DNS is not resolved, and consumers fetching these URLs still nee
 their own fetch-time policy. Fedi app settings have smaller per-key raw caps
 (at most 32,768 bytes) and strict formats: flags, canonical msat amounts,
 the app's own currency list, community invites that Fedi's parser accepts,
-Matrix room ids, and mod entries whose URLs follow the icon URL rule. Their
-stored size stays under a quarter of the object cap. Valid fields together can
+Matrix room ids, and mod entries whose URLs follow the icon URL rule.
+V1 community invite metadata URLs also follow that rule: linked communities
+trigger automatic fetches from members' devices. DNS and redirect checks remain
+the fetching client's responsibility. The app settings' stored size stays under
+a quarter of the object cap. Valid fields together can
 still exceed the cap (padded Guardianito fields alone can), and MG refuses such
 a target before voting. Settings that steer payments (`vetted_gateways`,
 `recurringd_api`, `fedi:fixed_exchange_rate`) or lock members out (popup

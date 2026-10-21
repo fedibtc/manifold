@@ -483,6 +483,37 @@ fn linked_communities_accept_only_invites_fedi_can_join() {
 }
 
 #[test]
+fn linked_community_urls_follow_the_icon_url_rules() {
+    for (url, accepted) in [
+        ("https://example.com/community.json", true),
+        ("http://example.com/community.json", true),
+        ("http://127.0.0.1:8080/action", false),
+        ("http://10.0.0.1/action", false),
+        ("http://172.16.0.1/action", false),
+        ("http://192.168.1.1/action", false),
+        ("http://169.254.169.254/", false),
+        ("http://[::1]/", false),
+        ("http://[::ffff:127.0.0.1]/", false),
+        ("http://[fe80::1]/", false),
+        ("http://localhost/action", false),
+        ("http://app.localhost/action", false),
+        ("http://printer/action", false),
+        ("file:///etc/passwd", false),
+        ("not a URL", false),
+        ("", false),
+    ] {
+        let payload = serde_json::json!({ "community_meta_url": url }).to_string();
+        let invite = community_invite("fedi:community", &payload);
+        let value = serde_json::json!([invite]).to_string();
+        assert_eq!(
+            app(FederationAppSetting::AutojoinCommunities, &value).is_ok(),
+            accepted,
+            "{url}"
+        );
+    }
+}
+
+#[test]
 fn group_chats_accept_legacy_and_v12_matrix_room_ids() {
     let setting = FederationAppSetting::DefaultGroupChats;
     assert!(app(setting, "[]").is_ok());
