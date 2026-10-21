@@ -22,9 +22,9 @@ use std::time::Duration;
 use fedi_decentralized_domain::HolderAuthorizationEnvelope;
 use fedi_decentralized_nostr::has_exact_d_tag;
 use fedi_decentralized_nostr::mg::{
-    AdvertisementDocument, AdvertisementPayload, ApiEndpoint, Availability,
-    IROH_API_ENDPOINT_TRANSPORT, IROH_API_ENDPOINT_URL_SCHEME, MG_ADVERTISEMENT_D_TAG,
-    MG_ADVERTISEMENT_EVENT_KIND, verify_advertisement_self_signature,
+    AdvertisementDocument, AdvertisementDocumentError, AdvertisementPayload, ApiEndpoint,
+    Availability, IROH_API_ENDPOINT_TRANSPORT, IROH_API_ENDPOINT_URL_SCHEME,
+    MG_ADVERTISEMENT_D_TAG, MG_ADVERTISEMENT_EVENT_KIND, parse_and_verify_advertisement,
 };
 use fedi_decentralized_nostr_clients::{FaNostrClient, MG_ADVERTISEMENTS_CANDIDATE_LIMIT};
 use fedi_decentralized_peer_badge_verifier::PeerBadgeVerificationError;
@@ -627,10 +627,10 @@ fn statically_admit(event: &Event) -> Result<AdvertisementDocument, Advertisemen
     event
         .verify()
         .map_err(|_| AdvertisementRejection::InvalidEventSignature)?;
-    let document = serde_json::from_str::<AdvertisementDocument>(&event.content)
-        .map_err(|_| AdvertisementRejection::UnparsableDocument)?;
-    verify_advertisement_self_signature(&document)
-        .map_err(|_| AdvertisementRejection::InvalidAdvertisementProof)?;
+    let document = parse_and_verify_advertisement(&event.content).map_err(|error| match error {
+        AdvertisementDocumentError::InvalidDocument => AdvertisementRejection::UnparsableDocument,
+        _ => AdvertisementRejection::InvalidAdvertisementProof,
+    })?;
     if document.payload.mg_id_pubkey != event.pubkey.to_string() {
         return Err(AdvertisementRejection::AuthorMismatch);
     }

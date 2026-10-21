@@ -1,14 +1,5 @@
 # SPEC-mg-nostr-events: MG discovery and attester Nostr events
 
-## Status
-
-The additive-field compatibility required by
-[REQ-extensible-mg-advertisement](./REQ-extensible-mg-advertisement.md) is
-not yet implemented. Current typed consumers discard unknown payload fields
-during deserialization and reconstruct the payload for signature verification,
-so an otherwise valid advertisement with a newly added signed field fails its
-proof in those clients.
-
 ## Record justification
 
 These event schemas are produced by the MG advertiser, the Holder trust-badge

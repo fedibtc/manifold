@@ -397,6 +397,83 @@ async fn invalid_advertisement_proof_is_rejected() {
     ));
 }
 
+// This fixture uses ASCII keys and small integer numbers only: sorted compact
+// serde_json output is its JCS encoding. Sign the full JSON independently of
+// the typed advertisement signer, which deliberately cannot carry extensions.
+fn sign_wire_payload(payload: serde_json::Value, mg: &Keys) -> serde_json::Value {
+    use sha2::{Digest as _, Sha256};
+
+    let digest = Sha256::new()
+        .chain_update(b"fedi-fman-advertisement/v1\0")
+        .chain_update(serde_json::to_vec(&payload).unwrap())
+        .finalize()
+        .into();
+    serde_json::json!({
+        "payload": payload,
+        "proof": SchnorrSignatureProof {
+            signature: mg.sign_schnorr(&nostr_sdk::secp256k1::Message::from_digest(digest)),
+        },
+    })
+}
+
+fn wire_ad_event(document: &serde_json::Value, author: &Keys) -> Event {
+    EventBuilder::new(
+        Kind::Custom(MG_ADVERTISEMENT_EVENT_KIND),
+        document.to_string(),
+    )
+    .tag(Tag::identifier(MG_ADVERTISEMENT_D_TAG))
+    .custom_created_at(nostr_sdk::Timestamp::from_secs(NOW - 600))
+    .sign_with_keys(author)
+    .unwrap()
+}
+
+#[tokio::test]
+async fn extended_advertisement_preserves_discovery_trust_boundaries() {
+    let mg = mg_keys(1);
+    let known = self_authorized_payload(&mg);
+    let mut payload = serde_json::to_value(&known).unwrap();
+    payload["future"] = serde_json::json!({"values": [null, true, 7]});
+    payload["api_endpoints"][0]["future"] = serde_json::json!("endpoint hint");
+    payload["availability"]["future"] = serde_json::json!({"optional": false});
+    payload["plans"][0]["InfiniteBestEffort"]["future"] = serde_json::json!(42);
+    let document = sign_wire_payload(payload.clone(), &mg);
+    let admitted = discover(vec![wire_ad_event(&document, &mg)]).await;
+    assert_eq!(admitted.candidates.len(), 1);
+    let baseline = discover(vec![ad_event(&mg, known)]).await;
+    assert_eq!(admitted.candidates[0], baseline.candidates[0]);
+
+    for pointer in ["/payload/future", "/payload/availability/future"] {
+        let mut tampered = document.clone();
+        *tampered.pointer_mut(pointer).unwrap() = serde_json::json!("changed");
+        // Re-sign only the outer event: rejection must reach the inner proof.
+        assert!(matches!(
+            sole_rejection(vec![wire_ad_event(&tampered, &mg)]).await,
+            AdvertisementRejection::InvalidAdvertisementProof
+        ));
+    }
+    assert!(matches!(
+        sole_rejection(vec![wire_ad_event(&document, &mg_keys(2))]).await,
+        AdvertisementRejection::AuthorMismatch
+    ));
+    for (field, value) in [
+        ("version", serde_json::json!(2)),
+        ("issued_at", serde_json::json!("invalid")),
+        ("service_pubkey", serde_json::Value::Null),
+    ] {
+        let mut invalid = payload.clone();
+        if value.is_null() {
+            invalid.as_object_mut().unwrap().remove(field);
+        } else {
+            invalid[field] = value;
+        }
+        let invalid = sign_wire_payload(invalid, &mg);
+        assert!(matches!(
+            sole_rejection(vec![wire_ad_event(&invalid, &mg)]).await,
+            AdvertisementRejection::UnparsableDocument
+        ));
+    }
+}
+
 #[tokio::test]
 async fn payload_author_mismatch_is_rejected() {
     // A validly signed document by one key republished under another author.
