@@ -640,6 +640,16 @@ invite first, then alternate MG invites one at a time. A policy refresh timeout
 can use an authenticated retained publication; invalid or missing policy fails. The policy's absence duration and weekly/monthly score floors are
 shared through [SPEC-setup-payment-federations](../../../specs/SPEC-setup-payment-federations.md).
 
+`run_replacement_checks` is a consumer-driven future whose timing belongs to
+`fa-client`: each start/resume checks immediately, then hourly and on formation
+changes. Consumers can also request a serialized on-demand refresh. A watch
+channel publishes each candidate list with opaque receipts from that same check.
+A receipt held for confirmation survives background refresh; it cannot be
+constructed or deserialized by a caller, is bound to this client instance and
+exact federation/seat, and is lost on restart. The replacement entry point
+validates that binding without rechecking health. It currently stops at a
+`NotImplemented` stub before any purchase or transfer.
+
 ## Modules
 
 - `state` — public intent, status, and phase types.

@@ -63,6 +63,10 @@ pub struct ReplacementCandidate {
 /// One complete check. An empty list does not assert that every guardian is healthy.
 #[derive(Clone, Debug, Serialize)]
 pub struct ReplacementCheck {
+    #[serde(skip)]
+    pub(crate) formation_id: crate::FormationId,
+    #[serde(skip)]
+    pub(crate) receipts: BTreeMap<u16, crate::ReplacementReceipt>,
     pub federation_id: FederationId,
     pub checked_at: u64,
     pub candidates: Vec<ReplacementCandidate>,
@@ -78,7 +82,7 @@ where
 {
     /// Check the formed federation now, using the authenticated TSP publication.
     /// Reports that cannot be fetched or verified provide no replacement evidence.
-    pub async fn check_replacement_candidates(&self) -> FaResult<ReplacementCheck> {
+    pub(crate) async fn collect_replacement_candidates(&self) -> FaResult<ReplacementCheck> {
         // An idle or unreconciled client has no guardian set to judge.
         self.maintenance_authority(self.fa_id()?).await?;
         match self
@@ -131,6 +135,8 @@ where
             })
             .collect();
         Ok(ReplacementCheck {
+            formation_id: authority.formation_id,
+            receipts: BTreeMap::new(),
             federation_id,
             checked_at: now,
             candidates,
