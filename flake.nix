@@ -50,6 +50,13 @@
       system:
       let
         pkgs = nixpkgs.legacyPackages.${system};
+        # Trust store shipped in the OCI images.
+        cacert = pkgs.cacert.override {
+          blacklist = [
+            "Comodo AAA Services root"
+            "emSign ECC Root CA - G3"
+          ];
+        };
         fedimintPkgs = import nixpkgs {
           inherit system;
           overlays = [ fedimint.overlays.all ];
@@ -759,7 +766,7 @@
             tag = pushGatewayVersion;
             contents = [
               liquidityManagerDaemon
-              pkgs.cacert
+              cacert
               pkgs.curl
             ];
             config = {
@@ -774,7 +781,7 @@
                 "FLIP_DATA_DIR=/var/lib/flip"
                 "FLIP_ADMIN_BIND_ADDRESS=0.0.0.0:8173"
                 "FLIP_PUBLIC_BIND_ADDRESS=0.0.0.0:8174"
-                "SSL_CERT_FILE=${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt"
+                "SSL_CERT_FILE=${cacert}/etc/ssl/certs/ca-bundle.crt"
               ];
               ExposedPorts = {
                 "8173/tcp" = { };
@@ -824,7 +831,7 @@
             tag = pushGatewayVersion;
             contents = [
               cloudFmanTelemetry
-              pkgs.cacert
+              cacert
               pkgs.curl
             ];
             # Preserve the service identity on an image-local path and on Docker
@@ -847,7 +854,7 @@
                 "CLOUD_FMAN_TELEMETRY_KEY_FILE=/run/secrets/cloud-fman-telemetry-key"
                 "CLOUD_FMAN_TELEMETRY_METRICS_POLL_SECONDS=1800"
                 "CLOUD_FMAN_TELEMETRY_LOG_POLL_SECONDS=300"
-                "SSL_CERT_FILE=${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt"
+                "SSL_CERT_FILE=${cacert}/etc/ssl/certs/ca-bundle.crt"
               ];
               User = "10001:10001";
               ExposedPorts = {
@@ -1017,7 +1024,7 @@
                      "CLOUD_FMAN_TELEMETRY_KEY_FILE=/run/secrets/cloud-fman-telemetry-key",
                      "CLOUD_FMAN_TELEMETRY_METRICS_POLL_SECONDS=1800",
                      "CLOUD_FMAN_TELEMETRY_LOG_POLL_SECONDS=300",
-                     "SSL_CERT_FILE=${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt"
+                     "SSL_CERT_FILE=${cacert}/etc/ssl/certs/ca-bundle.crt"
                    ] | sort))
                    and (.config.Volumes == {
                      "/var/lib/cloud-fman-telemetry": {}
@@ -1161,13 +1168,13 @@
             contents = [
               fleetManager
               entrypointStable
-              pkgs.cacert
+              cacert
             ];
             config = {
               Entrypoint = [ "${entrypoint}/bin/fleet-manager-entrypoint" ];
               Env = [
                 "FLEET_MANAGER_DATA_DIR=/data"
-                "SSL_CERT_FILE=${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt"
+                "SSL_CERT_FILE=${cacert}/etc/ssl/certs/ca-bundle.crt"
               ];
               Volumes = {
                 "/data" = { };
@@ -1649,7 +1656,7 @@
             tag = pushGatewayVersion;
             contents = [
               pushGateway
-              pkgs.cacert
+              cacert
               pkgs.fakeNss
             ];
             fakeRootCommands = ''
@@ -1663,8 +1670,8 @@
               Env = [
                 "PUSH_GATEWAY_BIND=0.0.0.0:3000"
                 "PUSH_GATEWAY_DATABASE_URL=sqlite:///var/lib/push-gateway/push.sqlite?mode=rwc"
-                "SSL_CERT_FILE=${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt"
-                "NIX_SSL_CERT_FILE=${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt"
+                "SSL_CERT_FILE=${cacert}/etc/ssl/certs/ca-bundle.crt"
+                "NIX_SSL_CERT_FILE=${cacert}/etc/ssl/certs/ca-bundle.crt"
               ];
               User = "65534:65534";
               WorkingDir = "/var/lib/push-gateway";
