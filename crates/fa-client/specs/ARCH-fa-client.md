@@ -624,6 +624,18 @@ operation itself stores no second mutable maintenance state: cancelling or
 crashing is safe because a later identical request rereads consensus and either
 observes success or replays the idempotent typed mutation.
 
+## Replacement eligibility
+
+The FA checks the other guardians' public reports and authenticated MG trust
+material against the signed setup-payment policy. It recommends replacement
+for prolonged absence, a low weekly or monthly peer score, or confirmed holder
+credential revocation. Older guardians supply session participation instead of
+last-seen timestamps; the FA estimates duration at three minutes per missed
+session. Each absence decision needs f+1 other reporters, and peer scores use
+Fedimint's coverage-aware merge. Missing or invalid observations do not authorize
+replacement. The policy's absence duration and weekly/monthly score floors are
+shared through [SPEC-setup-payment-federations](../../../specs/SPEC-setup-payment-federations.md).
+
 ## Modules
 
 - `state` — public intent, status, and phase types.
