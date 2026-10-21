@@ -426,6 +426,16 @@ pub enum FaError {
         /// Exact typed MG protocol refusal.
         reason: fedi_decentralized_service_manifold_guardian::ManifoldGuardianError,
     },
+    /// Too many guardians explicitly refused the metadata key to reach consensus.
+    #[error(
+        "not enough guardians support this setting yet; try again after more guardians upgrade"
+    )]
+    MaintenanceUnsupported {
+        /// Seats that explicitly refused the key; unavailable seats are not included.
+        unsupported: Vec<u16>,
+        /// Number of guardian votes needed for adoption.
+        required: usize,
+    },
     /// A real consensus read returned a metadata object too large to hash,
     /// parse, clone, or fan out under Manifold's bounded maintenance policy.
     #[error(
@@ -447,7 +457,8 @@ pub enum FaError {
     },
     /// The bounded maintenance run ended without fresh consensus readback.
     #[error(
-        "federation maintenance did not converge; unresolved guardians: {unresolved:?}; \
+        "could not confirm the change; it may still take effect; retry to check; \
+         unresolved guardians: {unresolved:?}; \
          last guardian errors: {guardian_errors:?}; last consensus error: {consensus_error:?}"
     )]
     MaintenanceConvergence {
@@ -496,7 +507,11 @@ impl FaError {
             Self::Payment(_) => FaErrorCode::Payment,
             Self::Liquidity(_) | Self::LiquidityOperationExists { .. } => FaErrorCode::Liquidity,
             Self::MaintenanceWrongState { .. } => FaErrorCode::MaintenanceWrongState,
-            Self::MaintenanceRejected { .. } => FaErrorCode::MaintenanceRejected,
+            // Keep the serialized category stable; callers can distinguish
+            // unsupported metadata through the public Rust error variant.
+            Self::MaintenanceRejected { .. } | Self::MaintenanceUnsupported { .. } => {
+                FaErrorCode::MaintenanceRejected
+            }
             Self::MaintenanceConsensusTooLarge { .. } => FaErrorCode::MaintenanceConsensusTooLarge,
             Self::MaintenanceConsensusInvalid { .. } => FaErrorCode::MaintenanceConsensusInvalid,
             Self::MaintenanceConvergence { .. } => FaErrorCode::MaintenanceConvergence,

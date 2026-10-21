@@ -374,8 +374,8 @@ where
     /// converges or the guardian restarts) and its distinguishable diagnosis
     /// is retained in the convergence result. Typed policy/lifecycle refusals
     /// return [`FaError::MaintenanceRejected`]. A `MetaKeyRefused` response
-    /// stops retries to that seat, but ends the run only when too few other
-    /// seats remain to reach the threshold. A non-formed durable
+    /// stops retries to that seat, but returns [`FaError::MaintenanceUnsupported`]
+    /// only when too few other seats remain to reach the threshold. A non-formed durable
     /// record returns [`FaError::MaintenanceWrongState`] before connector
     /// work.
     pub async fn update_federation_metadata(
@@ -595,11 +595,9 @@ where
                 return Err(FaError::MaintenanceRejected { index, reason });
             }
             if all_indices.len() - unsupported.len() < threshold {
-                return Err(FaError::MaintenanceRejected {
-                    index: *unsupported
-                        .first()
-                        .expect("a key refusal made the threshold impossible"),
-                    reason: ManifoldGuardianError::MetaKeyRefused,
+                return Err(FaError::MaintenanceUnsupported {
+                    unsupported: unsupported.into_iter().collect(),
+                    required: threshold,
                 });
             }
             sleep_for_maintenance_retry(
