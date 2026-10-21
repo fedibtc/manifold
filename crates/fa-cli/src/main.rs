@@ -1825,6 +1825,15 @@ impl CliConsensusReader {
 }
 
 impl FederationConsensusReader for CliConsensusReader {
+    async fn read_guardian_reports(
+        &self,
+        invite_code: &InviteCode,
+    ) -> Result<fedi_decentralized_domain::GuardianReports, FederationConsensusError> {
+        fedi_decentralized_federation_preview::read_guardian_reports(&self.connectors, invite_code)
+            .await
+            .map_err(|error| FederationConsensusError::new(error.to_string()))
+    }
+
     async fn read_consensus(
         &self,
         invite_code: &InviteCode,

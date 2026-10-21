@@ -657,6 +657,18 @@ pub struct FederationConsensusSnapshot {
 /// silently and in the dangerous direction: the FA would believe the directory
 /// reached consensus when it had not.
 pub trait FederationConsensusReader: Send + Sync + 'static {
+    /// Fetch raw per-peer status and optional availability reports through an invite.
+    /// Keep reporter identities and the full configured peer set; do not merge or
+    /// decide eligibility here. Unsupported consumers return unavailable, not zeros.
+    async fn read_guardian_reports(
+        &self,
+        _invite_code: &InviteCode,
+    ) -> Result<fedi_decentralized_domain::GuardianReports, FederationConsensusError> {
+        Err(FederationConsensusError::new(
+            "guardian reports are unavailable",
+        ))
+    }
+
     /// Read the federation's current consensus state through its invite code.
     async fn read_consensus(
         &self,

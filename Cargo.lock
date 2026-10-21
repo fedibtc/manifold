@@ -2576,9 +2576,11 @@ dependencies = [
  "fedimint-meta-client",
  "fedimint-wallet-client",
  "fedimint-walletv2-common",
+ "futures-util",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
+ "tokio",
 ]
 
 [[package]]

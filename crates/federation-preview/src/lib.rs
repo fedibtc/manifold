@@ -15,8 +15,10 @@
 //!
 //! [`preview`] builds FLIP's [`FederationPreview`] on top of the same read.
 
+mod guardian_reports;
 #[cfg(test)]
 mod tests;
+pub use guardian_reports::read_guardian_reports;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::str::FromStr as _;
