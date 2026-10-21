@@ -34,8 +34,8 @@ trust and failure boundary:
   it; [SPEC-fa-rpc](./specs/SPEC-fa-rpc.md) and `SECURITY.md` define its validation
   and relying-verifier boundary.
 - **`SetMetaField` — shipped.** The compiled, typed per-key validator set is in
-  `meta_fields`, and unknown keys fail closed. It serves the guardian-fee rate plus the narrow Guardianito-compatible FA
-  maintenance keys. Formation-owned directory and recipient keys are refused. Unknown keys and per-key oversized raw values are refused
+  `meta_fields`, and unknown keys fail closed. It serves the guardian-fee rate, the validated FA
+  maintenance keys, and the Fedi app settings. Formation-owned directory and recipient keys are refused. Unknown keys and per-key oversized raw values are refused
   before a child probe. Every signed request commits to the exact raw consensus
   merge base; stale requests are refused, and the FA serializes all metadata
   writers and confirms threshold adoption. This is the required whole-object merge story

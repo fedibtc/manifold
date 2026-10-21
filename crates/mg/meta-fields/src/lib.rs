@@ -8,16 +8,16 @@
 //! the declared cross-component surface*). Adding a key here is the decision
 //! to serve it; there is no runtime allowlist to widen.
 //!
-//! The narrow maintenance keys served here mirror Guardianito's existing
-//! automatic-approval behavior, with caller-supplied terms URLs. The directory,
-//! privacy-policy keys, and formation-owned guardian-fee remittance value are
-//! deliberately absent. The guardian-fee rate is the only fee field served
-//! here after formation.
+//! The name, icon, welcome, and terms keys use the shared metadata validators.
+//! The Fedi app settings are the [`FederationAppSetting`] keys. The directory,
+//! privacy-policy keys, formation-owned guardian-fee remittance value, and
+//! Fedi-operated keys such as `vetted_gateways` are deliberately absent. The
+//! guardian-fee rate is the only fee field served here after formation.
 
 use fedi_decentralized_service_manifold_guardian::{
     FEDERATION_ICON_URL_META_FIELD_KEY, FEDERATION_METADATA_RAW_MAX_BYTES,
-    FEDERATION_NAME_META_FIELD_KEY, FederationMetadataIconUrl, FederationMetadataName,
-    FederationMetadataTermsUrl, FederationMetadataWelcomeMessage,
+    FEDERATION_NAME_META_FIELD_KEY, FederationAppSetting, FederationMetadataIconUrl,
+    FederationMetadataName, FederationMetadataTermsUrl, FederationMetadataWelcomeMessage,
     GUARDIAN_FEE_SEND_PPM_META_FIELD_KEY, MetaFieldKey, MetaFieldValue,
     TERMS_OF_SERVICE_URL_META_FIELD_KEY, WELCOME_MESSAGE_META_FIELD_KEY,
 };
@@ -36,10 +36,10 @@ pub trait MetaFieldValidator {
 
     /// Absolute raw byte cap on the wire value, enforced before child access.
     ///
-    /// Guardianito's semantic validators trim some values, but the exact
+    /// Validators trim some values for validation, but the exact
     /// original string is what guardians place in the whole consensus object.
     /// The absolute raw cap therefore bounds child work and retry waves
-    /// without narrowing Guardianito's ordinary padded-value behavior.
+    /// while still allowing ordinary whitespace padding.
     fn raw_value_max_bytes(&self) -> usize;
 
     /// Validate a proposed value against this key's compiled policy.
@@ -54,6 +54,19 @@ const VALIDATORS: &[&dyn MetaFieldValidator] = &[
     &FederationIconUrlValidator,
     &WelcomeMessageValidator,
     &TermsOfServiceUrlValidator,
+    &FederationAppSetting::AutojoinCommunities,
+    &FederationAppSetting::DefaultGroupChats,
+    &FederationAppSetting::PinnedMessage,
+    &FederationAppSetting::DefaultCurrency,
+    &FederationAppSetting::StabilityPoolDisabled,
+    &FederationAppSetting::MultispendDisabled,
+    &FederationAppSetting::InviteCodesDisabled,
+    &FederationAppSetting::NewMembersDisabled,
+    &FederationAppSetting::OfflineWalletDisabled,
+    &FederationAppSetting::OnchainDepositsDisabled,
+    &FederationAppSetting::MaxBalanceMsats,
+    &FederationAppSetting::MaxInvoiceMsats,
+    &FederationAppSetting::MaxStableBalanceMsats,
 ];
 
 fn validator_for(key: &str) -> Option<&'static dyn MetaFieldValidator> {
@@ -97,8 +110,7 @@ fn invalid(reason: impl Into<String>) -> Result<(), MetaFieldError> {
     Err(MetaFieldError::InvalidValue(reason.into()))
 }
 
-/// Match Guardianito's current LG-facing federation-name validation by
-/// delegating to the shared semantic type the FA pre-validates with.
+/// Use the same federation-name validation as the FA client.
 struct FederationNameValidator;
 
 impl MetaFieldValidator for FederationNameValidator {
@@ -117,8 +129,7 @@ impl MetaFieldValidator for FederationNameValidator {
     }
 }
 
-/// Match Guardianito's current wallet-description validation by delegating to
-/// the shared semantic type the FA pre-validates with.
+/// Use the same welcome-message validation as the FA client.
 struct WelcomeMessageValidator;
 
 impl MetaFieldValidator for WelcomeMessageValidator {
@@ -137,9 +148,7 @@ impl MetaFieldValidator for WelcomeMessageValidator {
     }
 }
 
-/// Match Guardianito's current URL-only icon behavior (no upload is implied)
-/// by delegating to the shared semantic type the FA pre-validates with,
-/// including its public-host requirement.
+/// Validate icon URLs with the shared public-host and size checks.
 struct FederationIconUrlValidator;
 
 impl MetaFieldValidator for FederationIconUrlValidator {
@@ -173,6 +182,22 @@ impl MetaFieldValidator for TermsOfServiceUrlValidator {
     fn validate(&self, value: &str) -> Result<(), MetaFieldError> {
         FederationMetadataTermsUrl::try_from(value.to_owned())
             .map(|_| ())
+            .map_err(|error| MetaFieldError::InvalidValue(error.to_string()))
+    }
+}
+
+/// Delegate to the shared Fedi app setting rules the FA pre-validates with.
+impl MetaFieldValidator for FederationAppSetting {
+    fn key(&self) -> &'static str {
+        FederationAppSetting::key(*self)
+    }
+
+    fn raw_value_max_bytes(&self) -> usize {
+        FederationAppSetting::raw_max_bytes(*self)
+    }
+
+    fn validate(&self, value: &str) -> Result<(), MetaFieldError> {
+        FederationAppSetting::validate(*self, value)
             .map_err(|error| MetaFieldError::InvalidValue(error.to_string()))
     }
 }

@@ -8,20 +8,27 @@ use std::fmt;
 
 use url::Url;
 
+mod app_setting;
+
+pub use app_setting::{
+    FEDERATION_APP_SETTING_MAX_COMMUNITIES, FEDERATION_APP_SETTING_MAX_GROUP_CHATS,
+    FEDERATION_APP_SETTING_MAX_MSATS, FederationAppSetting, FederationAppSettingValue,
+};
+
 use crate::{
     FEDERATION_ICON_URL_META_FIELD_KEY, FEDERATION_NAME_META_FIELD_KEY, MetaFieldKey,
     MetaFieldValue, TERMS_OF_SERVICE_URL_META_FIELD_KEY, WELCOME_MESSAGE_META_FIELD_KEY,
 };
 
-/// Guardianito's post-trim display-name limit.
+/// Post-trim display-name limit.
 pub const FEDERATION_METADATA_NAME_MAX_BYTES: usize = 30;
-/// Guardianito's post-trim welcome-message limit.
+/// Post-trim welcome-message limit.
 pub const FEDERATION_METADATA_WELCOME_MESSAGE_MAX_BYTES: usize = 500;
-/// Guardianito's post-trim icon-URL limit.
+/// Post-trim icon-URL limit.
 pub const FEDERATION_METADATA_ICON_URL_MAX_BYTES: usize = 2_048;
 /// Absolute authenticated-request resource bound for trim-valid metadata.
 ///
-/// Guardianito preserves the original value after validating the trimmed
+/// Validation preserves the original value after validating the trimmed
 /// value. This bound is deliberately larger than every semantic maximum so it
 /// bounds signing and fan-out without narrowing ordinary padded inputs.
 pub const FEDERATION_METADATA_RAW_MAX_BYTES: usize = 65_536;
@@ -46,7 +53,7 @@ pub enum InvalidFederationMetadataValue {
         /// Inclusive maximum original-string size.
         max_bytes: usize,
     },
-    /// The trimmed value is outside Guardianito's accepted size range.
+    /// The trimmed value is outside the accepted size range.
     #[error("{field} must be {min_bytes} through {max_bytes} bytes after trimming")]
     InvalidTrimmedLength {
         /// Human-readable metadata field.
@@ -56,7 +63,7 @@ pub enum InvalidFederationMetadataValue {
         /// Inclusive trimmed maximum.
         max_bytes: usize,
     },
-    /// The value contains a character Guardianito refuses.
+    /// The value contains a refused control character.
     #[error("{field} contains a control character")]
     ControlCharacter {
         /// Human-readable metadata field.
@@ -72,7 +79,7 @@ pub enum InvalidFederationMetadataValue {
         /// The refused character class.
         class: &'static str,
     },
-    /// The display name contains Guardianito's refused phrase.
+    /// The display name contains the refused phrase.
     #[error("federation name contains a refused phrase")]
     RefusedNamePhrase,
     /// The value is not an HTTP(S) URL.
@@ -88,6 +95,14 @@ pub enum InvalidFederationMetadataValue {
         field: &'static str,
         /// Why the host cannot be fetched from the public internet.
         reason: &'static str,
+    },
+    /// The value does not match its Fedi app setting's format.
+    #[error("{field} {reason}")]
+    InvalidAppSetting {
+        /// The setting's meta key.
+        field: &'static str,
+        /// Which rule the value broke.
+        reason: String,
     },
 }
 
@@ -118,7 +133,7 @@ macro_rules! semantic_string {
 }
 
 semantic_string!(
-    /// A Guardianito-compatible federation display name.
+    /// A validated federation display name.
     ///
     /// The original UTF-8 string is limited to 65,536 bytes. Validation trims
     /// surrounding whitespace, then requires 3 through 30 bytes, rejects NUL,
@@ -128,7 +143,7 @@ semantic_string!(
     FederationMetadataName
 );
 semantic_string!(
-    /// A Guardianito-compatible federation icon URL.
+    /// A validated federation icon URL.
     ///
     /// The original UTF-8 string is limited to 65,536 bytes. Validation trims
     /// surrounding whitespace, then requires 1 through 2,048 bytes, rejects
@@ -144,7 +159,7 @@ semantic_string!(
     FederationMetadataTermsUrl
 );
 semantic_string!(
-    /// A Guardianito-compatible welcome message used by Fedi as description.
+    /// A validated welcome message used by Fedi as description.
     ///
     /// The original UTF-8 string is limited to 65,536 bytes. Validation trims
     /// surrounding whitespace, then requires 1 through 500 bytes and rejects
@@ -223,7 +238,7 @@ impl TryFrom<String> for FederationMetadataWelcomeMessage {
     }
 }
 
-/// One post-formation metadata mutation supported by Manifold MVP.
+/// One post-formation metadata mutation supported by Manifold.
 ///
 /// Each value is validated before construction. The MG repeats the same
 /// validation before casting its guardian vote.
@@ -237,6 +252,8 @@ pub enum FederationMetadataUpdate {
     WelcomeMessage(FederationMetadataWelcomeMessage),
     /// Set the public HTTP(S) URL of the terms document.
     TermsOfService(FederationMetadataTermsUrl),
+    /// Change one Fedi app setting.
+    AppSetting(FederationAppSettingValue),
 }
 
 impl FederationMetadataUpdate {
@@ -270,6 +287,16 @@ impl FederationMetadataUpdate {
         )?))
     }
 
+    /// Construct a validated Fedi app setting mutation.
+    pub fn app_setting(
+        setting: FederationAppSetting,
+        value: impl Into<String>,
+    ) -> Result<Self, InvalidFederationMetadataValue> {
+        Ok(Self::AppSetting(FederationAppSettingValue::new(
+            setting, value,
+        )?))
+    }
+
     /// Return the exact protocol field selected by this typed mutation.
     #[must_use]
     pub fn into_field(self) -> (MetaFieldKey, MetaFieldValue) {
@@ -288,6 +315,10 @@ impl FederationMetadataUpdate {
             ),
             Self::TermsOfService(value) => (
                 MetaFieldKey(TERMS_OF_SERVICE_URL_META_FIELD_KEY.to_owned()),
+                MetaFieldValue(value.into_inner()),
+            ),
+            Self::AppSetting(value) => (
+                MetaFieldKey(value.setting().key().to_owned()),
                 MetaFieldValue(value.into_inner()),
             ),
         }

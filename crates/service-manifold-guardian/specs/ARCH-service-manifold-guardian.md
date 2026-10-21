@@ -12,7 +12,7 @@ It must not depend on the `fleet-manager` daemon crate or own MG
 authorization, allowlisting, or consensus policy. In addition to wire- and
 storage-facing DTOs, it may own small semantic protocol values whose parsing
 and validation must be identical in clients and the daemon. The shared
-Guardianito-compatible maintenance values are one such contract: they prevent
+validated maintenance values are one such contract: they prevent
 client/MG drift, while MG alone decides which keys it will authorize and
 cast into consensus. Dependency or feature additions should preserve this
 lightweight shared contract. When a spec introduces a typed protocol knob,

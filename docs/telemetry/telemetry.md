@@ -138,7 +138,7 @@ successful metrics observation per seat and exposes that state on its private
    invites to Observer, expose journal HTTP routes, schedule pulls, preserve
    cursors, archive journals, or retain metrics.
 4. **Consent / terms wording** — still open with product/legal. The implemented
-   interim boundary conforms to current PeerBadge/Guardianito onboarding terms;
+   interim boundary conforms to current PeerBadge and guardian onboarding terms;
    it must be revisited when authoritative wording is supplied.
 5. **Data scope** — the release baseline is
    [`metrics-privacy-inventory.md`](./metrics-privacy-inventory.md). Re-run it

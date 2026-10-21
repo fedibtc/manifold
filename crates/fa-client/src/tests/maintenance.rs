@@ -682,6 +682,109 @@ async fn threshold_live_partial_wave_succeeds_and_late_timeouts_do_not_mask_adop
 }
 
 #[tokio::test(start_paused = true)]
+async fn mixed_version_metadata_updates_distinguish_support_from_confirmation() {
+    // Seven seats need five votes. Delay adoption separately from acceptance:
+    // enough acknowledgements must never be mistaken for confirmed metadata.
+    for (refusing, offline, delayed_reads) in [
+        (2, false, 1),          // Enough support, but confirmation takes another read.
+        (3, false, 0),          // Too many explicit refusals.
+        (2, true, 0),           // The fifth possible vote is unreachable.
+        (2, false, usize::MAX), // Enough votes, but adoption is never confirmed.
+    ] {
+        let (payments, _) = TestPayments::new();
+        let state = Arc::new(MgState::default());
+        let reader = TestConsensusReader::new(state.clone());
+        let client = open_client_with_reader(
+            MemDatabase::new().into_database(),
+            payments,
+            state.clone(),
+            MgConfig::given_away(),
+            reader.clone(),
+        )
+        .await;
+        client
+            .create_at(intent(), locators(), options())
+            .await
+            .unwrap();
+        state.meta_submissions.lock().unwrap().clear();
+        state.meta_request_bases.lock().unwrap().clear();
+        for index in 0..refusing {
+            state
+                .meta_terminal_errors
+                .lock()
+                .unwrap()
+                .insert(index, ManifoldGuardianError::MetaKeyRefused);
+        }
+        if offline {
+            state.offline_indices.lock().unwrap().insert(6);
+        }
+        reader
+            .delayed_meta_reads
+            .store(delayed_reads, Ordering::SeqCst);
+        let update = FederationMetadataUpdate::app_setting(
+            FederationAppSetting::StabilityPoolDisabled,
+            "false",
+        )
+        .unwrap();
+        let bounded = MaintenanceRunOptions::new(MaintenanceRunOptionsConfig {
+            poll_interval: Duration::from_millis(1),
+            run_timeout: Duration::from_millis(50),
+            request_timeout: Duration::from_millis(10),
+        })
+        .unwrap();
+        let result = client
+            .update_federation_metadata(update.clone(), bounded)
+            .await;
+        if refusing == 3 {
+            let error = result.unwrap_err();
+            assert!(matches!(
+                &error,
+                FaError::MaintenanceUnsupported { unsupported, required: 5 }
+                    if unsupported == &[0, 1, 2]
+            ));
+            assert_eq!(
+                error.to_string(),
+                "not enough guardians support this setting yet; try again after more guardians upgrade"
+            );
+            assert_eq!(error.code(), FaErrorCode::MaintenanceRejected);
+        } else if offline || delayed_reads == usize::MAX {
+            let error = result.unwrap_err();
+            assert!(matches!(error, FaError::MaintenanceConvergence { .. }));
+            assert!(error.to_string().starts_with(
+                "could not confirm the change; it may still take effect; retry to check"
+            ));
+        } else {
+            result.unwrap();
+            let raw = state.meta_consensus_raw.lock().unwrap().clone().unwrap();
+            let fields: serde_json::Value = serde_json::from_slice(&raw).unwrap();
+            assert_eq!(fields["fedi:stability_pool_disabled"], "false");
+            assert_eq!(reader.delayed_meta_reads.load(Ordering::SeqCst), 0);
+        }
+        for index in 0..refusing {
+            assert_eq!(
+                state
+                    .meta_request_bases
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .filter(|(seat, _)| *seat == index)
+                    .count(),
+                1,
+                "do not keep asking a guardian that refused the key",
+            );
+        }
+        // An upgrade or recovered connection is checked on a new attempt.
+        state.meta_terminal_errors.lock().unwrap().clear();
+        state.offline_indices.lock().unwrap().clear();
+        reader.delayed_meta_reads.store(0, Ordering::SeqCst);
+        client
+            .update_federation_metadata(update, maintenance_options())
+            .await
+            .unwrap();
+    }
+}
+
+#[tokio::test(start_paused = true)]
 async fn below_threshold_availability_fails_within_the_driver_deadline() {
     let database = MemDatabase::new().into_database();
     let (payments, _) = TestPayments::new();
@@ -783,8 +886,8 @@ async fn below_threshold_availability_fails_within_the_driver_deadline() {
     }
 }
 
-#[tokio::test]
-async fn transient_transport_retries_only_the_unresolved_rows_until_readback_succeeds() {
+#[tokio::test(start_paused = true)]
+async fn mixed_versions_retry_a_missing_vote_without_retrying_refusals() {
     let database = MemDatabase::new().into_database();
     let (payments, _) = TestPayments::new();
     let mg_state = Arc::new(MgState::default());
@@ -808,16 +911,26 @@ async fn transient_transport_retries_only_the_unresolved_rows_until_readback_suc
         .lock()
         .expect("test lock")
         .clear();
-    // Injected lost responses: the rows hang until the request timeout, the
-    // transport-ambiguous shape (a wire `ManifoldGuardianError` cannot carry it).
-    *mg_state.hang_meta_indices.lock().expect("test lock") = [0, 1, 2].into_iter().collect();
+    // Four accept, two refuse the key, and the fifth possible vote is delayed.
+    *mg_state.hang_meta_indices.lock().expect("test lock") = [0].into_iter().collect();
+    for index in [1, 2] {
+        mg_state
+            .meta_terminal_errors
+            .lock()
+            .unwrap()
+            .insert(index, ManifoldGuardianError::MetaKeyRefused);
+    }
 
     let operation = tokio::spawn({
         let client = client.clone();
         async move {
             client
                 .update_federation_metadata(
-                    FederationMetadataUpdate::name("Recovered transport").unwrap(),
+                    FederationMetadataUpdate::app_setting(
+                        FederationAppSetting::StabilityPoolDisabled,
+                        "false",
+                    )
+                    .unwrap(),
                     maintenance_options(),
                 )
                 .await
@@ -849,6 +962,9 @@ async fn transient_transport_retries_only_the_unresolved_rows_until_readback_suc
     let attempts = mg_state.meta_request_bases.lock().expect("test lock");
     let attempts_for = |index| attempts.iter().filter(|(row, _)| *row == index).count();
     assert!(attempts_for(0) >= 2, "the recovered row is retried");
+    for refused in [1, 2] {
+        assert_eq!(attempts_for(refused), 1, "key refusals are not retried");
+    }
     for acknowledged in 3..7 {
         assert_eq!(
             attempts_for(acknowledged),
@@ -865,8 +981,8 @@ async fn transient_transport_retries_only_the_unresolved_rows_until_readback_suc
     let fields: BTreeMap<String, serde_json::Value> =
         serde_json::from_slice(&adopted).expect("adopted metadata parses");
     assert_eq!(
-        fields.get(FEDERATION_NAME_META_FIELD_KEY),
-        Some(&serde_json::Value::String("Recovered transport".to_owned()))
+        fields.get("fedi:stability_pool_disabled"),
+        Some(&serde_json::Value::String("false".to_owned()))
     );
 }
 

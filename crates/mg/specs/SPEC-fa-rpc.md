@@ -183,8 +183,8 @@ to the final config. No DKG transcript is carried by `SetMetaField`.
 typed validator set; an unregistered key is refused as `MetaKeyRefused`
 without reaching `fedimintd`, and a registered key whose raw value exceeds its
 per-key cap is likewise refused before any child probe. A bounded value that
-fails its semantic validator is `MetaValueInvalid`. The set contains the guardian-fee rate and the narrow Guardianito-compatible
-FA maintenance keys documented in
+fails its semantic validator is `MetaValueInvalid`. The set contains the guardian-fee rate, the validated
+FA maintenance keys, and the Fedi app settings documented in
 [SPEC-fa-metadata-maintenance](./SPEC-fa-metadata-maintenance.md). The formation-owned trust-directory and fee-recipient keys are refused by this
 generic verb.
 

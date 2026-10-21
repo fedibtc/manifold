@@ -532,14 +532,16 @@ authentication is
 
 ## Post-formation metadata maintenance
 
-`update_federation_metadata` exposes only the MG's compiled MVP policy as
+`update_federation_metadata` exposes only the MG's compiled policy as
 fallibly constructed semantic values: display name, HTTP(S) icon URL, welcome
-message/description, and a caller-supplied public HTTP(S) terms URL. The shared types
-apply Guardianito's trim-for-validation/raw-for-submission rules and the
-65,536-byte absolute raw resource cap before lease, signing, connection, or
-network effects; every MG repeats the same authoritative validation. The API
-does not accept raw metadata keys, clear fields, upload image bytes, or widen
-the MG allowlist. The operation requires
+message/description, a caller-supplied public HTTP(S) terms URL, and one
+`FederationAppSetting` value at a time. The shared types
+apply the trim-for-validation/raw-for-submission rules, each
+setting's format, and its absolute raw resource cap before lease, signing,
+connection, or network effects; every MG repeats the same authoritative
+validation. The API does not accept raw metadata keys, upload image bytes, or
+widen the MG allowlist. A setting is turned off with its explicit off value,
+never by deleting the field. The operation requires
 the durable FA formation to be `Formed`, reconstructs every FA-owned seat from
 that record, and shares the formation driver's process guard, database lease,
 deadline, connector, identity, and real consensus-reader capabilities.
@@ -551,7 +553,7 @@ as `fedi:tos_url`; the result confirms fresh consensus adoption. A restored FA
 must first resume/reconcile to `Formed`.
 
 Consumers must rebuild for the value-bearing `TermsOfService` variant and the
-removal of `GUARDIANITO_TERMS_OF_SERVICE_URL`. URL errors now use `InvalidUrl`
+removal of the former fixed terms URL. URL errors now use `InvalidUrl`
 and `NonPublicUrlHost`, each carrying the field name. The signed `SetMetaField`
 wire format and stored metadata format are unchanged; existing terms values
 need no migration. Upgrade all participating MGs before enabling caller-chosen
@@ -606,9 +608,16 @@ MVP.
 It reports success only after a fresh consensus read contains the exact
 requested string. A non-formed local record returns the maintenance-specific
 wrong-state error before connector work; an intrinsic MG policy/lifecycle
-refusal remains a typed terminal maintenance rejection; and retryable failures
+refusal remains a typed terminal maintenance rejection. `MetaKeyRefused` instead
+excludes that seat for the rest of the attempt, even if the metadata base changes.
+Enough key refusals to make the threshold impossible return `MaintenanceUnsupported`,
+with the refusing seats and required vote count. Consumers can explain that
+more guardians need to support the setting; unreachable seats are not counted
+as unsupported. The serialized error category remains `MaintenanceRejected`.
+Retryable failures
 that outlive the caller's bound return one maintenance-convergence error with
-the unresolved seats and last sanitized consensus/guardian failures. A
+the unresolved seats and last sanitized consensus/guardian failures. This is an
+unconfirmed outcome: the change may still take effect, and retrying checks it. A
 concurrent winning change is therefore preserved when this mutation is rebased;
 a single MG acknowledgement never masquerades as threshold adoption. The
 operation itself stores no second mutable maintenance state: cancelling or
@@ -690,7 +699,7 @@ paid E2E does not claim post-output or refund fault injection — exact recovery
 and refund replay stay with the focused tests.
 
 Maintenance tests split at the authorization boundary. The shared service and
-MG suites own every Guardianito semantic boundary, compiled-key dispatch,
+MG suites own every metadata validation boundary, compiled-key dispatch,
 raw-resource rejection, whole-map preservation, and stale-base refusal before
 child work. `fa-client` owns exact public-variant projection, pre-Formed and
 oversized no-effect rejection, already-adopted/offline success, threshold-live

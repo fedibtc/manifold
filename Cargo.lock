@@ -2814,6 +2814,8 @@ dependencies = [
 name = "fedi-decentralized-service-manifold-guardian"
 version = "0.1.6"
 dependencies = [
+ "base64 0.22.1",
+ "bech32",
  "bitcoin",
  "blind-rsa-signatures",
  "ciborium",
