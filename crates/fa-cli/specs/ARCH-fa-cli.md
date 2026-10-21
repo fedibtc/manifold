@@ -263,3 +263,12 @@ await-invoice exposes the terminal lower-snake-case `state` and resulting
 balance; remit-guardian-fee exposes `federationId`, `operationId`, and
 `amountMsats`. Receive addresses and invoices are intentionally returned to
 the local caller; wallet root-secret bytes are never rendered.
+
+## Guardian replacement eligibility
+
+`replacement-candidates` asks `fa-client` for eligible seats and reasons.
+`--watch` drives the library's hourly checker and prints each successful
+snapshot; the CLI does not schedule its own polls. `--request-seat` presents
+that same check's opaque receipt to the replacement stub, which currently
+returns not implemented without buying or transferring a seat. JSON contains
+only display data, never receipts; approvals are not portable between runs.
