@@ -80,6 +80,24 @@ where
         finish_driver_run(result, self.inner.store.release_driver_lease(lease).await)
     }
 
+    pub(crate) async fn replacement_policy(
+        &self,
+    ) -> FaResult<fedi_decentralized_domain::AdmittedSetupPaymentFederations> {
+        let publisher = self
+            .inner
+            .setup_payment_publisher
+            .ok_or_else(|| FaError::Registry("no TSP publisher configured".to_owned()))?;
+        let event = self
+            .inner
+            .store
+            .load_setup_payment_federations_event()
+            .await
+            .ok_or_else(|| FaError::Registry("no authenticated TSP policy available".to_owned()))?;
+        restore_durably_admitted_setup_payment_federations_event(&event, publisher)
+            .map(|policy| policy.set().clone())
+            .map_err(|_| FaError::Registry("stored TSP policy failed authentication".to_owned()))
+    }
+
     /// The smallest guardian fee rate this FA may propose right now, in ppm.
     ///
     /// Reads the durably admitted publication rather than refreshing it: the
