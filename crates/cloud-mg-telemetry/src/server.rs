@@ -38,6 +38,7 @@ use crate::{
     metrics_policy::MetricsPolicy,
     metrics_poller::MetricsPoller,
     metrics_snapshot::render_metrics,
+    mg_reports::{MgReport, SeatCapacity, SeatReadiness, rfc3339},
     store::{ExportedFederation, MetricExpositionView, Store, TargetMaterial},
 };
 
@@ -335,6 +336,8 @@ fn private_router(state: AppState) -> Router {
         .route("/ready", get(ready))
         .route("/metrics", get(metrics))
         .route(FEDERATIONS_EXPORT_PATH, get(federations))
+        .route(SEAT_CAPACITY_EXPORT_PATH, get(seat_capacity))
+        .route(SEAT_READINESS_EXPORT_PATH, get(seat_readiness))
         .with_state(state)
 }
 
@@ -358,6 +361,59 @@ async fn federations(State(state): State<AppState>) -> Response {
         )
             .into_response(),
         Err(_) => StatusCode::SERVICE_UNAVAILABLE.into_response(),
+    }
+}
+
+/// Private route listing each MG's newest seat capacity report.
+const SEAT_CAPACITY_EXPORT_PATH: &str = "/v1/seat-capacity";
+/// Private route listing each MG's newest seat readiness report.
+const SEAT_READINESS_EXPORT_PATH: &str = "/v1/seat-readiness";
+
+#[derive(serde::Serialize)]
+struct MgReportsExport<T> {
+    schema_version: u32,
+    generated_at: String,
+    reports: Vec<MgReportEntry<T>>,
+}
+
+#[derive(serde::Serialize)]
+struct MgReportEntry<T> {
+    mg_pubkey: String,
+    observed_at: String,
+    #[serde(flatten)]
+    report: T,
+}
+
+async fn seat_capacity(State(state): State<AppState>) -> Response {
+    mg_report_export::<SeatCapacity>(&state).await
+}
+
+async fn seat_readiness(State(state): State<AppState>) -> Response {
+    mg_report_export::<SeatReadiness>(&state).await
+}
+
+async fn mg_report_export<T: MgReport>(state: &AppState) -> Response {
+    let now = unix_millis() / 1000;
+    let export = async {
+        let reports = state.store.mg_reports::<T>(now).await.ok()?;
+        Some(MgReportsExport {
+            schema_version: 1,
+            generated_at: rfc3339(now.checked_mul(1000)?)?,
+            reports: reports
+                .into_iter()
+                .map(|entry| {
+                    Some(MgReportEntry {
+                        mg_pubkey: entry.mg_pubkey,
+                        observed_at: rfc3339(entry.observed_at_ms)?,
+                        report: entry.report,
+                    })
+                })
+                .collect::<Option<_>>()?,
+        })
+    };
+    match export.await {
+        Some(export) => ([(header::CACHE_CONTROL, "no-store")], Json(export)).into_response(),
+        None => StatusCode::SERVICE_UNAVAILABLE.into_response(),
     }
 }
 
@@ -1015,6 +1071,104 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(public.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn seat_report_exports_are_served_only_on_the_private_listener() {
+        use tower::ServiceExt as _;
+
+        let directory = tempfile::tempdir().unwrap();
+        let state = state(&directory).await;
+        for path in [SEAT_CAPACITY_EXPORT_PATH, SEAT_READINESS_EXPORT_PATH] {
+            let get = || {
+                Request::builder()
+                    .uri(path)
+                    .body(axum::body::Body::empty())
+                    .unwrap()
+            };
+            let response = private_router(state.clone()).oneshot(get()).await.unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
+            let body: serde_json::Value =
+                serde_json::from_slice(&to_bytes(response.into_body(), 4096).await.unwrap())
+                    .unwrap();
+            assert_eq!(body["schema_version"], 1);
+            assert_eq!(body["reports"], serde_json::json!([]));
+            assert!(
+                humantime::parse_rfc3339(body["generated_at"].as_str().unwrap()).is_ok(),
+                "{body}"
+            );
+            let public = public_router(state.clone())
+                .layer(axum::Extension(ConnectInfo(
+                    "127.0.0.1:1234".parse::<SocketAddr>().unwrap(),
+                )))
+                .oneshot(get())
+                .await
+                .unwrap();
+            assert_eq!(public.status(), StatusCode::NOT_FOUND);
+        }
+    }
+
+    #[test]
+    fn a_seat_readiness_entry_lists_its_fields_beside_the_mg() {
+        let entry = MgReportEntry {
+            mg_pubkey: "11".repeat(32),
+            observed_at: rfc3339(1_792_584_600_250).unwrap(),
+            report: serde_json::from_value::<SeatReadiness>(serde_json::json!({
+                "ready": true,
+                "relay": "pass",
+                "discovery": "pass",
+                "bitcoin": "not_applicable",
+            }))
+            .unwrap(),
+        };
+        assert_eq!(
+            serde_json::to_value(entry).unwrap(),
+            serde_json::json!({
+                "mg_pubkey": "11".repeat(32),
+                "observed_at": "2026-10-21T12:10:00.250Z",
+                "ready": true,
+                "relay": "pass",
+                "discovery": "pass",
+                "bitcoin": "not_applicable",
+                "uptime": null,
+                "uptime_1d_pct": null,
+                "uptime_7d_pct": null,
+                "uptime_30d_pct": null,
+                "min_uptime_1d_pct": null,
+                "min_uptime_7d_pct": null,
+                "min_uptime_30d_pct": null,
+            })
+        );
+    }
+
+    #[test]
+    fn a_seat_capacity_entry_lists_its_fields_beside_the_mg() {
+        let entry = MgReportEntry {
+            mg_pubkey: "11".repeat(32),
+            observed_at: rfc3339(1_792_584_600_250).unwrap(),
+            report: serde_json::from_value::<SeatCapacity>(serde_json::json!({
+                "mg_version": "0.1.6",
+                "memory_max_seats": 9,
+                "policy_max_seats": 12,
+                "available_seats": 6,
+                "accepting_seats": true,
+            }))
+            .unwrap(),
+        };
+        assert_eq!(
+            serde_json::to_value(entry).unwrap(),
+            serde_json::json!({
+                "mg_pubkey": "11".repeat(32),
+                "observed_at": "2026-10-21T12:10:00.250Z",
+                "available_seats": 6,
+                "accepting_seats": true,
+                "max_seats": null,
+                "memory_max_seats": 9,
+                "policy_max_seats": 12,
+                "mg_version": "0.1.6",
+            })
+        );
     }
 
     #[tokio::test]

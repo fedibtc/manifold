@@ -2,7 +2,7 @@ use fedi_decentralized_service_manifold_guardian::{
     DkgCompletionCallback, FEDERATION_METADATA_OBJECT_MAX_BYTES, FEDERATION_NAME_META_FIELD_KEY,
     FederationName, FederationSize, FormationSeatBinding, GetQuoteRequest, GuardianCode,
     GuardianFeeAccount, GuardianFeeRecipient, InviteCode, ManagerSignature, MetaConsensusBase,
-    MetaFieldKey, MetaFieldValue, OfferEpoch, SeatHealth, ServiceStatus,
+    MetaFieldKey, MetaFieldValue, OfferEpoch, SeatCapacityEvent, SeatHealth, ServiceStatus,
 };
 use fedimint_server::config::driven::{ChildMessage, ChildState, PROTOCOL_VERSION};
 use stability_pool_client::common::Account;
@@ -861,7 +861,7 @@ impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for SeatCapacityEvents
         }
         let mut fields = Fields(Default::default());
         event.record(&mut fields);
-        if fields.0.get("message").map(String::as_str) == Some("seat capacity") {
+        if fields.0.get("message").map(String::as_str) == Some(SEAT_CAPACITY_EVENT) {
             self.0.lock().unwrap().push(fields.0);
         }
     }
@@ -923,6 +923,33 @@ async fn advertisement_cycle_shares_seat_capacity() {
     assert_eq!(
         *events.0.lock().unwrap(),
         [shared("3", "1", "true"), shared("1", "0", "false")]
+    );
+    // The values the JSON journal writes decode as the telemetry collector
+    // reads them.
+    let decoded = events
+        .0
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|fields| {
+            let fields = fields
+                .iter()
+                .filter(|(name, _)| *name != "message")
+                .map(|(name, value)| (name.clone(), serde_json::from_str(value).unwrap()))
+                .collect::<serde_json::Map<_, _>>();
+            serde_json::from_value::<SeatCapacityEvent>(fields.into()).unwrap()
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        decoded[0],
+        SeatCapacityEvent {
+            available_seats: 1,
+            accepting_seats: true,
+            max_seats: Some(3),
+            memory_max_seats: Some(4),
+            policy_max_seats: Some(2),
+            mg_version: Some(env!("CARGO_PKG_VERSION").to_owned()),
+        }
     );
     fleet.shutdown().await;
 }

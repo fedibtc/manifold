@@ -317,6 +317,58 @@ impl core::fmt::Debug for FetchSafeEventJournalResponse {
     }
 }
 
+/// Message of the safe event an MG journals on every advertisement cycle,
+/// with the fields of [`SeatCapacityEvent`].
+pub const SEAT_CAPACITY_EVENT: &str = "seat capacity";
+
+/// Message of the safe event an MG journals after every seat readiness run,
+/// with the fields of [`SeatReadinessEvent`].
+pub const SEAT_READINESS_EVENT: &str = "seat readiness check completed";
+
+/// Fields of a [`SEAT_CAPACITY_EVENT`] journal record. The MG owns this
+/// shape and the telemetry collector decodes it from archived journals, so a
+/// field keeps its name and meaning once released. Releases before 0.1.4
+/// journal only the seat counts, the accepting flag and the operator limit.
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize)]
+pub struct SeatCapacityEvent {
+    pub available_seats: u32,
+    pub accepting_seats: bool,
+    /// The operator's limit; absent while it is automatic.
+    #[serde(default)]
+    pub max_seats: Option<u32>,
+    #[serde(default)]
+    pub memory_max_seats: Option<u32>,
+    #[serde(default)]
+    pub policy_max_seats: Option<u32>,
+    #[serde(default)]
+    pub mg_version: Option<String>,
+}
+
+/// Fields of a [`SEAT_READINESS_EVENT`] journal record, with the same
+/// ownership as [`SeatCapacityEvent`]. Releases before the uptime gate
+/// journal no uptime outcome, scores or minimums.
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+pub struct SeatReadinessEvent {
+    pub ready: bool,
+    pub relay: String,
+    pub discovery: String,
+    pub bitcoin: String,
+    #[serde(default)]
+    pub uptime: Option<String>,
+    #[serde(default)]
+    pub uptime_1d_pct: Option<f64>,
+    #[serde(default)]
+    pub uptime_7d_pct: Option<f64>,
+    #[serde(default)]
+    pub uptime_30d_pct: Option<f64>,
+    #[serde(default)]
+    pub min_uptime_1d_pct: Option<f64>,
+    #[serde(default)]
+    pub min_uptime_7d_pct: Option<f64>,
+    #[serde(default)]
+    pub min_uptime_30d_pct: Option<f64>,
+}
+
 pub type TelemetryResult<T> = ServiceResult<T>;
 
 #[service]

@@ -154,6 +154,26 @@ scraper, the health-probe source, and the consumer that follows the exported
 federations. Each admitted caller can read every exported invite, and so can
 any process sharing the collector's loopback network namespace.
 
+### Seat report exports
+
+Port 8176 also serves `GET /v1/seat-capacity` and `GET /v1/seat-readiness`.
+Each returns `{"schema_version":1,"generated_at","reports":[...]}`, with one
+entry per active, unexpired MG that has a stored report:
+
+- `/v1/seat-capacity`: `mg_pubkey`, `observed_at`, `available_seats`,
+  `accepting_seats`, `max_seats`, `memory_max_seats`, `policy_max_seats` and
+  `mg_version`.
+- `/v1/seat-readiness`: `mg_pubkey`, `observed_at`, `ready`, `relay`,
+  `discovery`, `bitcoin`, `uptime`, `uptime_1d_pct`, `uptime_7d_pct`,
+  `uptime_30d_pct`, `min_uptime_1d_pct`, `min_uptime_7d_pct` and
+  `min_uptime_30d_pct`.
+
+Times are RFC 3339 UTC. A field that the MG's release does not journal is
+`null`. A store failure answers 503. The values are MG-asserted and checked
+only for bounds and agreement; `ARCH-cloud-mg-telemetry` lists the rules. A
+consumer of these routes needs network admission to port 8176, and with it
+reads `/metrics` and every invite in `/v1/federations` as well.
+
 Prometheus must preserve the collector's observation timestamps:
 
 ```yaml
