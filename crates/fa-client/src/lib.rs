@@ -15,6 +15,7 @@ mod liquidity;
 mod maintenance;
 mod mg;
 mod ports;
+mod replacement_checks;
 mod selection;
 mod setup_payment_federations;
 mod state;
@@ -80,6 +81,7 @@ pub use ports::{
     ManifoldGuardianCallError, ManifoldGuardianConnector, ManifoldGuardianConnectorError,
     PaymentReservationRecovery, PreparedSeatPayment, SeatPaymentRecovery, SettledSeatRefund,
 };
+pub use replacement_checks::{ReplacementReceipt, ReplacementStartError};
 pub use selection::{
     MG_SELECTION_PREVIEW_VALIDITY, MG_SELECTION_PROBE_TIMEOUT, MgReplacementApproval,
     MgReplacementPreview, MgSelectionApproval, MgSelectionPreview, MgSelectionQuery,
@@ -132,6 +134,7 @@ struct FaClientInner<I, P, N, F, C> {
     setup_payment_publisher: Option<PublicKey>,
     guardian_verification_fee_account: Option<Account>,
     backup_tasks: TaskGroup,
+    replacement_checks: replacement_checks::ReplacementChecks,
 }
 
 impl<I, P, N, F, C> Drop for FaClientInner<I, P, N, F, C> {
@@ -386,6 +389,7 @@ where
                 setup_payment_publisher,
                 guardian_verification_fee_account,
                 backup_tasks,
+                replacement_checks: replacement_checks::ReplacementChecks::default(),
             }),
         })
     }

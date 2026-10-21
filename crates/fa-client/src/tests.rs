@@ -4333,6 +4333,7 @@ async fn open_client_with_store_and_registry(
             setup_payment_publisher: Some(setup_payment_keys().public_key()),
             guardian_verification_fee_account: Some(guardian_fee_account(31)),
             backup_tasks: fedimint_core::task::TaskGroup::new(),
+            replacement_checks: replacement_checks::ReplacementChecks::default(),
         }),
     }
 }
@@ -14334,3 +14335,6 @@ async fn eligibility_uses_formed_seats_and_rejects_another_federations_reports()
             .is_empty()
     );
 }
+
+#[path = "tests/replacement_receipts.rs"]
+mod replacement_receipts;
