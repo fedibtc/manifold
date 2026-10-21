@@ -1857,6 +1857,8 @@ struct TestConsensusReader {
     state: Arc<MgState>,
     config: fedimint_core::config::ClientConfig,
     failures: Arc<AtomicUsize>,
+    /// Reads that still show the old metadata after enough votes were submitted.
+    delayed_meta_reads: Arc<AtomicUsize>,
     offline_peers: Arc<Mutex<BTreeSet<PeerId>>>,
     forced_value: Arc<Mutex<Option<String>>>,
     advance_meta_after_next_read: Arc<Mutex<Option<Vec<u8>>>>,
@@ -1870,6 +1872,7 @@ impl TestConsensusReader {
             state,
             config: test_federation_config(),
             failures: Arc::new(AtomicUsize::new(0)),
+            delayed_meta_reads: Arc::new(AtomicUsize::new(0)),
             offline_peers: Arc::new(Mutex::new(BTreeSet::new())),
             forced_value: Arc::new(Mutex::new(None)),
             advance_meta_after_next_read: Arc::new(Mutex::new(None)),
@@ -2056,7 +2059,14 @@ impl FederationConsensusReader for TestConsensusReader {
                 meta_value = Some(value);
             }
         }
-        if let Some((key, value)) = self.agreed_maintenance_field() {
+        if let Some((key, value)) = self.agreed_maintenance_field()
+            && self
+                .delayed_meta_reads
+                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |reads| {
+                    reads.checked_sub(1)
+                })
+                .is_err()
+        {
             let mut fields = meta_value
                 .as_deref()
                 .map(serde_json::from_slice::<BTreeMap<String, serde_json::Value>>)
