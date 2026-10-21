@@ -373,7 +373,9 @@ where
     /// submissions (retrying is refused work until the conflicting write
     /// converges or the guardian restarts) and its distinguishable diagnosis
     /// is retained in the convergence result. Typed policy/lifecycle refusals
-    /// return [`FaError::MaintenanceRejected`], and a non-formed durable
+    /// return [`FaError::MaintenanceRejected`]. A `MetaKeyRefused` response
+    /// stops retries to that seat, but ends the run only when too few other
+    /// seats remain to reach the threshold. A non-formed durable
     /// record returns [`FaError::MaintenanceWrongState`] before connector
     /// work.
     pub async fn update_federation_metadata(
@@ -409,6 +411,9 @@ where
         let mut active_base = None;
         let mut unresolved = all_indices.clone();
         let mut guardian_errors = BTreeMap::new();
+        // Key support does not depend on the metadata base. Retry these seats
+        // only on a later invocation, after their operators may have upgraded.
+        let mut unsupported = BTreeSet::new();
         // Seats that answered `MetaTargetConflict` for the active base: their
         // live target pin names a different value, so same-base retries
         // are refused work. They stay unresolved (the diagnosis survives into
@@ -464,6 +469,16 @@ where
                 return Ok(());
             }
 
+            let federation = fedi_decentralized_domain::federation_seats(&snapshot.config)
+                .map_err(|error| {
+                    FaError::InvalidManifoldGuardians(format!(
+                        "previewed federation config is not usable: {error}"
+                    ))
+                })?;
+            let threshold = usize::try_from(federation.consensus_threshold()).map_err(|_| {
+                FaError::Storage("federation threshold does not fit usize".to_owned())
+            })?;
+
             let expected_base = MetaConsensusBase::from_consensus(
                 snapshot_meta_consensus(&snapshot)
                     .map_err(|reason| FaError::MaintenanceConsensusInvalid { reason })?,
@@ -471,13 +486,14 @@ where
             if active_base != Some(expected_base) {
                 active_base = Some(expected_base);
                 unresolved.clone_from(&all_indices);
-                guardian_errors.clear();
+                guardian_errors.retain(|index, _| unsupported.contains(index));
                 pinned_conflicts.clear();
                 retry_delay = run.poll_interval();
             }
 
             let submit_rows = unresolved
                 .difference(&pinned_conflicts)
+                .filter(|index| !unsupported.contains(*index))
                 .copied()
                 .collect::<BTreeSet<_>>();
             let mut sessions = Vec::with_capacity(submit_rows.len());
@@ -516,6 +532,13 @@ where
                         guardian_errors.insert(index, message);
                     }
                     Err(MetaFieldSubmissionError::Driver(error)) => return Err(error),
+                    Err(MetaFieldSubmissionError::ManifoldGuardian(
+                        ManifoldGuardianError::MetaKeyRefused,
+                    )) => {
+                        unsupported.insert(index);
+                        guardian_errors
+                            .insert(index, ManifoldGuardianError::MetaKeyRefused.to_string());
+                    }
                     Err(MetaFieldSubmissionError::ManifoldGuardian(
                         ManifoldGuardianError::SeatUnavailable,
                     )) => {
@@ -570,6 +593,14 @@ where
 
             if let Some((index, reason)) = terminal_rejections.into_iter().next() {
                 return Err(FaError::MaintenanceRejected { index, reason });
+            }
+            if all_indices.len() - unsupported.len() < threshold {
+                return Err(FaError::MaintenanceRejected {
+                    index: *unsupported
+                        .first()
+                        .expect("a key refusal made the threshold impossible"),
+                    reason: ManifoldGuardianError::MetaKeyRefused,
+                });
             }
             sleep_for_maintenance_retry(
                 run,

@@ -62,9 +62,12 @@ preference), `recurringd_api`, `fedi:fixed_exchange_rate`, and the popup and
 such as `fedi:social_recovery_disabled`, are not served either.
 
 Serving a key is an MG release decision; the `SetMetaField` wire format does
-not change. An MG without a key's validator refuses it as `MetaKeyRefused`, a
-terminal FA policy refusal, so FAs can use a key only after every seat's MG
-serves it. There is no capability negotiation.
+not change. An MG without a key's validator refuses it as `MetaKeyRefused`.
+The FA skips that seat for the rest of the attempt and continues while enough
+other seats could reach the threshold. It stops early when key refusals make
+that threshold impossible; otherwise it waits for confirmed adoption within
+the caller's deadline. A later attempt checks support again. There is no
+capability negotiation.
 
 The formation
 trust directory and guardian-fee recipient list are formation-owned fixed

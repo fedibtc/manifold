@@ -548,8 +548,10 @@ clears the exclusion. Cancellation or reopen
 safely replays the exact mutation and may resubmit rows; acknowledgements are
 not durable. An already-adopted value needs no live
 MG; a new value needs threshold liveness within the caller's deadline, not
-unanimity. Terminal policy/lifecycle refusals and bounded convergence failures
-remain distinct typed maintenance outcomes.
+unanimity. A `MetaKeyRefused` response stops submissions to that seat for the
+current invocation, but only ends it when too few other seats could form a
+threshold. Other terminal policy/lifecycle refusals and bounded convergence
+failures remain distinct typed maintenance outcomes.
 Guardian-fee arrangement accepts no consumer-supplied guardian or Guardian
 Verification Fee accounts: guardian accounts come from signed acceptances, the
 Guardian Verification Fee account comes from the deployment profile, and only

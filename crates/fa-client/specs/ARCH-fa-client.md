@@ -608,7 +608,10 @@ MVP.
 It reports success only after a fresh consensus read contains the exact
 requested string. A non-formed local record returns the maintenance-specific
 wrong-state error before connector work; an intrinsic MG policy/lifecycle
-refusal remains a typed terminal maintenance rejection; and retryable failures
+refusal remains a typed terminal maintenance rejection. `MetaKeyRefused` instead
+excludes that seat for the rest of the attempt, even if the metadata base changes.
+Only enough key refusals to make the threshold impossible end the attempt early.
+Retryable failures
 that outlive the caller's bound return one maintenance-convergence error with
 the unresolved seats and last sanitized consensus/guardian failures. A
 concurrent winning change is therefore preserved when this mutation is rebased;
