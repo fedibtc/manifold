@@ -363,9 +363,9 @@ struct CommunityInviteV2 {
 /// HRP and a V1 payload. V1 metadata URLs also follow the icon URL rules,
 /// because members' devices fetch them automatically.
 fn validate_community_invite(entry: &str) -> Result<(), &'static str> {
-    use nostr::base64::Engine as _;
-    use nostr::base64::alphabet;
-    use nostr::base64::engine::{DecodePaddingMode, GeneralPurpose, GeneralPurposeConfig};
+    use base64::Engine as _;
+    use base64::alphabet;
+    use base64::engine::{DecodePaddingMode, GeneralPurpose, GeneralPurposeConfig};
 
     let (hrp, data) = bech32::decode(&entry.to_lowercase())
         .map_err(|_| "entries must be bech32 community invite codes")?;

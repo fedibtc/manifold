@@ -415,10 +415,10 @@ fn v2_payload(decryption_key: &str) -> String {
 
 #[test]
 fn linked_communities_accept_only_invites_fedi_can_join() {
-    use nostr::base64::Engine as _;
+    use base64::Engine as _;
 
     let setting = FederationAppSetting::AutojoinCommunities;
-    let key = nostr::base64::engine::general_purpose::STANDARD.encode([7u8; 32]);
+    let key = base64::engine::general_purpose::STANDARD.encode([7u8; 32]);
     let v1 = community_invite(
         "fedi:community",
         r#"{"community_meta_url":"https://example.com/c.json"}"#,
@@ -429,12 +429,12 @@ fn linked_communities_accept_only_invites_fedi_can_join() {
     // Fedi lowercases before decoding, so an uppercase code still joins.
     assert!(app(setting, &serde_json::json!([v2.to_uppercase()]).to_string()).is_ok());
     // serde_with's base64 decoder ignores padding.
-    let unpadded_key = nostr::base64::engine::general_purpose::STANDARD_NO_PAD.encode([7u8; 32]);
+    let unpadded_key = base64::engine::general_purpose::STANDARD_NO_PAD.encode([7u8; 32]);
     let unpadded = community_invite("fedi:community2", &v2_payload(&unpadded_key));
     assert!(app(setting, &serde_json::json!([unpadded]).to_string()).is_ok());
 
-    let short_key = nostr::base64::engine::general_purpose::STANDARD.encode([7u8; 31]);
-    let url_safe_key = nostr::base64::engine::general_purpose::URL_SAFE.encode([0xfbu8; 32]);
+    let short_key = base64::engine::general_purpose::STANDARD.encode([7u8; 31]);
+    let url_safe_key = base64::engine::general_purpose::URL_SAFE.encode([0xfbu8; 32]);
     let mut bad_checksum = v2.clone();
     let last = bad_checksum.pop().unwrap();
     bad_checksum.push(if last == 'q' { 'p' } else { 'q' });

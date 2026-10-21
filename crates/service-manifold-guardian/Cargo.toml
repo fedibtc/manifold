@@ -6,6 +6,7 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+base64 = "0.22"
 bech32 = "0.11"
 fedi-decentralized-services = { path = "../services" }
 fedi-iroh-rpc = { path = "../fedi-iroh-rpc" }
