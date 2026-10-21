@@ -924,8 +924,8 @@ async fn advertisement_cycle_shares_seat_capacity() {
         *events.0.lock().unwrap(),
         [shared("3", "1", "true"), shared("1", "0", "false")]
     );
-    // The values the JSON journal writes decode as the telemetry collector
-    // reads them.
+    // The emitted values, as JSON, decode as the telemetry collector reads
+    // them.
     let decoded = events
         .0
         .lock()
@@ -940,17 +940,15 @@ async fn advertisement_cycle_shares_seat_capacity() {
             serde_json::from_value::<SeatCapacityEvent>(fields.into()).unwrap()
         })
         .collect::<Vec<_>>();
-    assert_eq!(
-        decoded[0],
-        SeatCapacityEvent {
-            available_seats: 1,
-            accepting_seats: true,
-            max_seats: Some(3),
-            memory_max_seats: Some(4),
-            policy_max_seats: Some(2),
-            mg_version: Some(env!("CARGO_PKG_VERSION").to_owned()),
-        }
-    );
+    let capacity = |max_seats, available_seats, accepting_seats| SeatCapacityEvent {
+        available_seats,
+        accepting_seats,
+        max_seats: Some(max_seats),
+        memory_max_seats: Some(4),
+        policy_max_seats: Some(2),
+        mg_version: Some(env!("CARGO_PKG_VERSION").to_owned()),
+    };
+    assert_eq!(decoded, [capacity(3, 1, true), capacity(1, 0, false)]);
     fleet.shutdown().await;
 }
 

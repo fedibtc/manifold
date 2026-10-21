@@ -186,8 +186,7 @@ both shapes: `SeatCapacityEvent` and `SeatReadinessEvent` in
 `service-manifold-guardian` name their messages and fields, the MG emits them
 under those names, and MG tests decode the emitted records with them. Releases
 before 0.1.4 journal only the free seats, the accepting flag and the operator
-limit; releases before the uptime gate journal no uptime outcome, scores or
-minimums. Absent fields stay absent.
+limit, and no uptime outcome, scores or minimums. Absent fields stay absent.
 
 While validating a batch from the MG journal, the collector keeps the last
 record of each kind, in journal order, that has an RFC 3339 timestamp and
@@ -195,7 +194,9 @@ whose fields validate: counts as unsigned 32-bit integers, codes and versions
 as short bounded ASCII, and percentages from 0 to 100. A capacity record also
 needs free seats no greater than any stated limit, and free seats or the
 smallest stated limit no greater than the most seats a setup-payment policy
-allows one MG. These checks bound what one MG can assert and make its counts
+allows one MG. Before 0.1.4 the operator limit had no upper bound, so a
+report whose smallest limit is above that maximum is not kept. These checks
+bound what one MG can assert and make its counts
 agree with each other; they cannot show that the counts are true. Seat
 journals, other records and invalid records are ignored. Decoding never
 changes the archived bytes or rejects a batch.
@@ -216,7 +217,11 @@ that has one, ordered by MG public key: `mg_pubkey`, `observed_at`, and the
 validated fields, with an absent field as `null`. A report observed after the
 response time and a stored row that no longer validates are left out. A store
 failure answers 503. The stored row and the response share one serde shape,
-which is a persisted format. These routes return MG-asserted values, the
+which is a persisted format and decodes through the MG's event type, so the
+event field names also name the stored and exported fields. The routes use a
+`schema_version`, `generated_at` and `reports` envelope, unlike
+`/v1/federations`, so that a consumer can reject an unknown schema and judge
+report age against the response time. These routes return MG-asserted values, the
 target's public key and collector times; they hold no invite, capability,
 endpoint or journal position.
 

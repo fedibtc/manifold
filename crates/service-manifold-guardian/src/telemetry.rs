@@ -318,16 +318,19 @@ impl core::fmt::Debug for FetchSafeEventJournalResponse {
 }
 
 /// Message of the safe event an MG journals on every advertisement cycle,
-/// with the fields of [`SeatCapacityEvent`].
+/// with the fields of [`SeatCapacityEvent`]. Released MGs emit this text, so
+/// it never changes.
 pub const SEAT_CAPACITY_EVENT: &str = "seat capacity";
 
 /// Message of the safe event an MG journals after every seat readiness run,
-/// with the fields of [`SeatReadinessEvent`].
+/// with the fields of [`SeatReadinessEvent`]. Released MGs emit this text, so
+/// it never changes.
 pub const SEAT_READINESS_EVENT: &str = "seat readiness check completed";
 
 /// Fields of a [`SEAT_CAPACITY_EVENT`] journal record. The MG owns this
 /// shape and the telemetry collector decodes it from archived journals, so a
-/// field keeps its name and meaning once released. Releases before 0.1.4
+/// field keeps its name and meaning once released. The collector also uses
+/// these field names for its stored reports and private exports. Releases before 0.1.4
 /// journal only the seat counts, the accepting flag and the operator limit.
 #[derive(Clone, Debug, Eq, PartialEq, Deserialize)]
 pub struct SeatCapacityEvent {
@@ -345,8 +348,8 @@ pub struct SeatCapacityEvent {
 }
 
 /// Fields of a [`SEAT_READINESS_EVENT`] journal record, with the same
-/// ownership as [`SeatCapacityEvent`]. Releases before the uptime gate
-/// journal no uptime outcome, scores or minimums.
+/// ownership as [`SeatCapacityEvent`]. Releases before 0.1.4 journal no
+/// uptime outcome, scores or minimums.
 #[derive(Clone, Debug, PartialEq, Deserialize)]
 pub struct SeatReadinessEvent {
     pub ready: bool,

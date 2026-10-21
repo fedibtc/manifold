@@ -180,9 +180,9 @@ fn stored_reports_validate_again_when_read() {
 #[test]
 fn renders_rfc3339_within_four_digit_years() {
     assert_eq!(
-        rfc3339(1_792_584_600_250).as_deref(),
+        format_rfc3339_millis(1_792_584_600_250).as_deref(),
         Some("2026-10-21T12:10:00.250Z")
     );
-    assert_eq!(rfc3339(-1), None);
-    assert_eq!(rfc3339(253_402_300_800_000), None);
+    assert_eq!(format_rfc3339_millis(-1), None);
+    assert_eq!(format_rfc3339_millis(253_402_300_800_000), None);
 }

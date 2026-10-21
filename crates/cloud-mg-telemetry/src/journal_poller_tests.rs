@@ -1266,12 +1266,12 @@ async fn journal_listing_and_persisted_streams_share_the_configured_limit() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn newest_seat_reports_are_stored_and_follow_the_target_lifecycle() {
-    use crate::mg_reports::{SeatCapacity, SeatReadiness, rfc3339};
+    use crate::mg_reports::{SeatCapacity, SeatReadiness, format_rfc3339_millis};
 
     let directory = tempfile::tempdir().unwrap();
     let store = store(&directory).await;
     let received = now().unwrap();
-    let at = |offset_secs: i64| rfc3339((received + offset_secs) * 1000).unwrap();
+    let at = |offset_secs: i64| format_rfc3339_millis((received + offset_secs) * 1000).unwrap();
     let capacity = |offset_secs, available: u32| {
         format!(
             "{{\"timestamp\":\"{}\",\"fields\":{{\"message\":\"seat capacity\",\"safe_to_share\":true,\"mg_version\":\"0.1.6\",\"max_seats\":8,\"memory_max_seats\":9,\"policy_max_seats\":12,\"available_seats\":{available},\"accepting_seats\":true}}}}\n",
@@ -1358,4 +1358,75 @@ async fn newest_seat_reports_are_stored_and_follow_the_target_lifecycle() {
             .unwrap()
             .is_empty()
     );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn only_the_mg_journal_stores_seat_reports() {
+    use crate::{
+        journal_target::CommitOutcome,
+        mg_reports::{SeatCapacity, format_rfc3339_millis},
+    };
+
+    let directory = tempfile::tempdir().unwrap();
+    let store = store(&directory).await;
+    let timestamp = now().unwrap();
+    let target = store
+        .active_collection_targets(timestamp)
+        .await
+        .unwrap()
+        .pop()
+        .unwrap();
+    let work = store
+        .begin_collection_work(&target, timestamp)
+        .await
+        .unwrap()
+        .unwrap();
+    let incarnation = incarnation();
+    let record = format!(
+        "{{\"timestamp\":\"{}\",\"fields\":{{\"message\":\"seat capacity\",\"safe_to_share\":true,\"available_seats\":1,\"accepting_seats\":true}}}}\n",
+        format_rfc3339_millis(timestamp * 1000).unwrap()
+    );
+    for (journal, stored) in [
+        (
+            SafeEventJournal::Seat {
+                seat_id: SeatId::new(format!("{:064x}", 1)).unwrap(),
+            },
+            0,
+        ),
+        (SafeEventJournal::Mg, 1),
+    ] {
+        let state = store
+            .open_journal_stream(&work, &journal, &incarnation, timestamp)
+            .await
+            .unwrap()
+            .unwrap();
+        let batch = ValidatedJournalBatch::new(
+            &incarnation,
+            state.cursor.as_ref(),
+            incarnation.clone(),
+            record.clone().into_bytes(),
+            Some(SafeEventCursor {
+                incarnation: incarnation.clone(),
+                segment: 1,
+                offset: 1,
+            }),
+            false,
+        )
+        .unwrap();
+        assert_eq!(
+            store
+                .commit_journal_batch(&work, &state, &batch, None, timestamp)
+                .await
+                .unwrap(),
+            CommitOutcome::Committed
+        );
+        assert_eq!(
+            store
+                .mg_reports::<SeatCapacity>(timestamp)
+                .await
+                .unwrap()
+                .len(),
+            stored
+        );
+    }
 }

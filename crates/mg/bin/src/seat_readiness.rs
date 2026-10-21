@@ -359,6 +359,8 @@ mod tests {
             panic!("expected one journaled run, got {records:?}");
         };
         assert_eq!(record["fields"]["message"], SEAT_READINESS_EVENT);
+        // The collector keeps only records whose timestamp parses as RFC 3339.
+        humantime::parse_rfc3339(record["timestamp"].as_str().unwrap()).unwrap();
         let min = MinUptimePercent::default();
         assert_eq!(
             serde_json::from_value::<SeatReadinessEvent>(record["fields"].clone()).unwrap(),

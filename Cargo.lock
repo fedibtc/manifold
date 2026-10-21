@@ -6366,6 +6366,7 @@ dependencies = [
  "fedimintd",
  "futures",
  "hex",
+ "humantime",
  "iroh 1.0.3",
  "mg-core",
  "mg-fedimint",

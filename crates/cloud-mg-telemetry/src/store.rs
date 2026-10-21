@@ -1739,20 +1739,12 @@ impl Store {
         if expected.journal == SafeEventJournal::Mg {
             let received_at_ms = now.checked_mul(1000).ok_or(StoreError::Corrupt)?;
             let reports = batch.reports();
-            store_mg_report(
-                &mut transaction,
-                target,
-                received_at_ms,
-                &reports.seat_capacity,
-            )
-            .await?;
-            store_mg_report(
-                &mut transaction,
-                target,
-                received_at_ms,
-                &reports.seat_readiness,
-            )
-            .await?;
+            if let Some(stated) = &reports.seat_capacity {
+                store_mg_report(&mut transaction, target, received_at_ms, stated).await?;
+            }
+            if let Some(stated) = &reports.seat_readiness {
+                store_mg_report(&mut transaction, target, received_at_ms, stated).await?;
+            }
         }
         #[cfg(test)]
         if let Some(hook) = &self.commit_hook
@@ -1863,11 +1855,8 @@ async fn store_mg_report<T: MgReport>(
     transaction: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     target: &WorkTarget,
     received_at_ms: i64,
-    stated: &Option<Stated<T>>,
+    stated: &Stated<T>,
 ) -> Result<(), StoreError> {
-    let Some(stated) = stated else {
-        return Ok(());
-    };
     sqlx::query(
         "INSERT INTO mg_reports(target_id,kind,observed_at_ms,report_json) VALUES(?,?,?,?)
          ON CONFLICT(target_id,kind) DO UPDATE SET

@@ -120,18 +120,17 @@ the payload fields inside each safe event.
    `a_record_without_a_valid_time_is_ignored` show that only timed records
    whose counts, codes, versions and percentages decode within bounds, and
    whose seat counts agree, are kept, and that an invalid record leaves the
-   last valid one in place. `stored_reports_validate_again_when_read` shows a
-   stored row is validated again on export.
+   last valid one in place. `stored_reports_validate_again_when_read` shows
+   that decoding a stored row applies the same checks; `Store::mg_reports`
+   decodes every row it exports and skips one that fails.
+   `only_the_mg_journal_stores_seat_reports` shows a seat journal batch stores
+   no report.
    `a_stated_time_never_makes_a_report_fresher_than_its_arrival` and
    `newest_seat_reports_are_stored_and_follow_the_target_lifecycle` show that
    an observation time never exceeds reception, that an older report arriving
    later does not replace a newer one, that a report observed after the
    response time is left out, and that an expired lease and a quarantined
-   target leave both exports. The counterexample below also applies to
-   reports: with a forward wall-clock step and a stated time in the future,
-   the stored observation time lies in the future, the export omits the
-   report, and the `>=` replacement guard refuses later reports until
-   corrected wall time reaches it; the old report then appears as current.
+   target leave both exports.
 
 ## Counterexample
 
@@ -156,6 +155,11 @@ interval, and the default 3,600-second registration lease.
    becomes eligible without a correcting poll. `render_metrics` computes age
    from the now-equal wall-clock timestamps and emits the approximately
    3,500-second-old observation with age zero and `snapshot_stale=0`.
+
+The same step applies to seat reports. With a forward wall-clock step and a
+stated time in the future, the stored observation time lies in the future, the
+export omits the report, and the `>=` replacement guard refuses later reports
+until corrected wall time reaches it; the old report then appears as current.
 
 This violates the claim that an old observation cannot be retimed as fresh.
 The claim has no bounded or monotone wall-clock axiom that excludes the

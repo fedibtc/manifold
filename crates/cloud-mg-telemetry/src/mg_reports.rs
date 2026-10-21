@@ -33,8 +33,9 @@ impl MgReportKind {
 }
 
 /// A validated report kept per MG. Its serde form is both the stored row and
-/// the export entry, so it is a persisted format: decoding a stored row
-/// validates it again.
+/// the export entry, and it decodes through the MG's event type, so the event
+/// field names also name the stored row and export fields. It is a persisted
+/// format: decoding a stored row validates it again.
 pub(crate) trait MgReport: Serialize + DeserializeOwned {
     const KIND: MgReportKind;
     /// The journal message whose fields carry this report.
@@ -66,26 +67,31 @@ impl TryFrom<SeatCapacityEvent> for SeatCapacity {
     /// the smallest limit may exceed the most seats a setup-payment policy
     /// allows one MG.
     fn try_from(event: SeatCapacityEvent) -> Result<Self, Self::Error> {
-        let smallest_limit = [
-            event.max_seats,
-            event.memory_max_seats,
-            event.policy_max_seats,
-        ]
-        .into_iter()
-        .flatten()
-        .min();
-        if smallest_limit.is_some_and(|limit| event.available_seats > limit)
-            || smallest_limit.unwrap_or(event.available_seats) > SETUP_PAYMENT_MAX_SEATS_PER_MG
-        {
-            return Err("inconsistent seat counts");
+        let SeatCapacityEvent {
+            available_seats,
+            accepting_seats,
+            max_seats,
+            memory_max_seats,
+            policy_max_seats,
+            mg_version,
+        } = event;
+        let smallest_limit = [max_seats, memory_max_seats, policy_max_seats]
+            .into_iter()
+            .flatten()
+            .min();
+        if smallest_limit.is_some_and(|limit| available_seats > limit) {
+            return Err("more free seats than a stated limit");
+        }
+        if smallest_limit.unwrap_or(available_seats) > SETUP_PAYMENT_MAX_SEATS_PER_MG {
+            return Err("seat count above the setup-payment maximum");
         }
         Ok(Self {
-            available_seats: event.available_seats,
-            accepting_seats: event.accepting_seats,
-            max_seats: event.max_seats,
-            memory_max_seats: event.memory_max_seats,
-            policy_max_seats: event.policy_max_seats,
-            mg_version: event.mg_version.map(MgVersion::try_from).transpose()?,
+            available_seats,
+            accepting_seats,
+            max_seats,
+            memory_max_seats,
+            policy_max_seats,
+            mg_version: mg_version.map(MgVersion::try_from).transpose()?,
         })
     }
 }
@@ -117,19 +123,32 @@ impl TryFrom<SeatReadinessEvent> for SeatReadiness {
     type Error = &'static str;
 
     fn try_from(event: SeatReadinessEvent) -> Result<Self, Self::Error> {
+        let SeatReadinessEvent {
+            ready,
+            relay,
+            discovery,
+            bitcoin,
+            uptime,
+            uptime_1d_pct,
+            uptime_7d_pct,
+            uptime_30d_pct,
+            min_uptime_1d_pct,
+            min_uptime_7d_pct,
+            min_uptime_30d_pct,
+        } = event;
         let percent = |value: Option<f64>| value.map(Percent::try_from).transpose();
         Ok(Self {
-            ready: event.ready,
-            relay: event.relay.try_into()?,
-            discovery: event.discovery.try_into()?,
-            bitcoin: event.bitcoin.try_into()?,
-            uptime: event.uptime.map(ReadinessCode::try_from).transpose()?,
-            uptime_1d_pct: percent(event.uptime_1d_pct)?,
-            uptime_7d_pct: percent(event.uptime_7d_pct)?,
-            uptime_30d_pct: percent(event.uptime_30d_pct)?,
-            min_uptime_1d_pct: percent(event.min_uptime_1d_pct)?,
-            min_uptime_7d_pct: percent(event.min_uptime_7d_pct)?,
-            min_uptime_30d_pct: percent(event.min_uptime_30d_pct)?,
+            ready,
+            relay: relay.try_into()?,
+            discovery: discovery.try_into()?,
+            bitcoin: bitcoin.try_into()?,
+            uptime: uptime.map(ReadinessCode::try_from).transpose()?,
+            uptime_1d_pct: percent(uptime_1d_pct)?,
+            uptime_7d_pct: percent(uptime_7d_pct)?,
+            uptime_30d_pct: percent(uptime_30d_pct)?,
+            min_uptime_1d_pct: percent(min_uptime_1d_pct)?,
+            min_uptime_7d_pct: percent(min_uptime_7d_pct)?,
+            min_uptime_30d_pct: percent(min_uptime_30d_pct)?,
         })
     }
 }
@@ -244,7 +263,7 @@ fn parse_rfc3339_millis(timestamp: &str) -> Option<i64> {
 }
 
 /// Render Unix milliseconds as an RFC 3339 UTC timestamp, for years up to 9999.
-pub(crate) fn rfc3339(unix_millis: i64) -> Option<String> {
+pub(crate) fn format_rfc3339_millis(unix_millis: i64) -> Option<String> {
     let millis = u64::try_from(unix_millis).ok()?;
     (millis < YEAR_10000_MILLIS).then(|| {
         humantime::format_rfc3339_millis(UNIX_EPOCH + Duration::from_millis(millis)).to_string()

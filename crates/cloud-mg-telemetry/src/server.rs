@@ -38,7 +38,7 @@ use crate::{
     metrics_policy::MetricsPolicy,
     metrics_poller::MetricsPoller,
     metrics_snapshot::render_metrics,
-    mg_reports::{MgReport, SeatCapacity, SeatReadiness, rfc3339},
+    mg_reports::{MgReport, SeatCapacity, SeatReadiness, format_rfc3339_millis},
     store::{ExportedFederation, MetricExpositionView, Store, TargetMaterial},
 };
 
@@ -398,13 +398,13 @@ async fn mg_report_export<T: MgReport>(state: &AppState) -> Response {
         let reports = state.store.mg_reports::<T>(now).await.ok()?;
         Some(MgReportsExport {
             schema_version: 1,
-            generated_at: rfc3339(now.checked_mul(1000)?)?,
+            generated_at: format_rfc3339_millis(now.checked_mul(1000)?)?,
             reports: reports
                 .into_iter()
                 .map(|entry| {
                     Some(MgReportEntry {
                         mg_pubkey: entry.mg_pubkey,
-                        observed_at: rfc3339(entry.observed_at_ms)?,
+                        observed_at: format_rfc3339_millis(entry.observed_at_ms)?,
                         report: entry.report,
                     })
                 })
@@ -1113,7 +1113,7 @@ mod tests {
     fn a_seat_readiness_entry_lists_its_fields_beside_the_mg() {
         let entry = MgReportEntry {
             mg_pubkey: "11".repeat(32),
-            observed_at: rfc3339(1_792_584_600_250).unwrap(),
+            observed_at: format_rfc3339_millis(1_792_584_600_250).unwrap(),
             report: serde_json::from_value::<SeatReadiness>(serde_json::json!({
                 "ready": true,
                 "relay": "pass",
@@ -1146,7 +1146,7 @@ mod tests {
     fn a_seat_capacity_entry_lists_its_fields_beside_the_mg() {
         let entry = MgReportEntry {
             mg_pubkey: "11".repeat(32),
-            observed_at: rfc3339(1_792_584_600_250).unwrap(),
+            observed_at: format_rfc3339_millis(1_792_584_600_250).unwrap(),
             report: serde_json::from_value::<SeatCapacity>(serde_json::json!({
                 "mg_version": "0.1.6",
                 "memory_max_seats": 9,

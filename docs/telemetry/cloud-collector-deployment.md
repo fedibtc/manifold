@@ -45,8 +45,9 @@ checked box is an operator assertion, not evidence supplied by this repository.
   path or trailing slash.
 - [ ] **Private-listener isolation:** never expose port 8176 through public
   ingress. Bind it to loopback or enforce a telemetry-network firewall or
-  NetworkPolicy that admits only the Prometheus scraper and authorized probe
-  source; prove the policy with negative reachability tests. Setting
+  NetworkPolicy that admits only the Prometheus scraper, the authorized probe
+  source and the consumers of the private exports (federation and seat
+  report exports); prove the policy with negative reachability tests. Setting
   `PRIVATE_BIND_ISOLATED=true` asserts this control but does not provide it.
 - [ ] **Protocol compatibility:** deploy a collector that supports the MG
   telemetry ALPN `fedi/fman/guardian-telemetry/1`. Do not configure a MG or
@@ -138,8 +139,8 @@ orchestrator termination grace period to leave margin for listener drain, the cu
 
 Port 8176 has no application-layer authentication. Bind it to loopback or an
 access-controlled telemetry network. Network policy must admit only the
-Prometheus scraper and health-probe source; never route it through public
-ingress. Stable MG and seat identities appear in its vetted metrics. The
+Prometheus scraper, the health-probe source and the consumers of the private
+exports below; never route it through public ingress. Stable MG and seat identities appear in its vetted metrics. The
 collector refuses a non-loopback bind without the explicit isolation assertion,
 but it cannot prove that the asserted deployment policy exists or works.
 
@@ -150,8 +151,8 @@ Port 8176 also serves `GET /v1/federations`. It returns
 for the current seats of active targets. The route has no application-layer
 authentication, like the rest of this listener, and the response holds full
 invite codes, so network policy for port 8176 admits only the Prometheus
-scraper, the health-probe source, and the consumer that follows the exported
-federations. Each admitted caller can read every exported invite, and so can
+scraper, the health-probe source, and the consumers of the private exports.
+Each admitted caller can read every exported invite, and so can
 any process sharing the collector's loopback network namespace.
 
 ### Seat report exports
@@ -169,7 +170,12 @@ entry per active, unexpired MG that has a stored report:
   `min_uptime_30d_pct`.
 
 Times are RFC 3339 UTC. A field that the MG's release does not journal is
-`null`. A store failure answers 503. The values are MG-asserted and checked
+`null`: releases before 0.1.4 journal only `available_seats`,
+`accepting_seats` and `max_seats`, and no readiness uptime fields.
+`max_seats` is also `null` while the operator limit is automatic. A store
+failure answers 503. Before 0.1.4 the operator limit had no upper bound; a
+report whose smallest limit exceeds the setup-payment maximum of 256 seats
+per MG is not kept. The values are MG-asserted and checked
 only for bounds and agreement; `ARCH-cloud-mg-telemetry` lists the rules. A
 consumer of these routes needs network admission to port 8176, and with it
 reads `/metrics` and every invite in `/v1/federations` as well.
