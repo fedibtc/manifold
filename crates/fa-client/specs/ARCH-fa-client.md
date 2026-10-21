@@ -536,7 +536,7 @@ authentication is
 fallibly constructed semantic values: display name, HTTP(S) icon URL, welcome
 message/description, a caller-supplied public HTTP(S) terms URL, and one
 `FederationAppSetting` value at a time. The shared types
-apply Guardianito's trim-for-validation/raw-for-submission rules, each
+apply the trim-for-validation/raw-for-submission rules, each
 setting's format, and its absolute raw resource cap before lease, signing,
 connection, or network effects; every MG repeats the same authoritative
 validation. The API does not accept raw metadata keys, upload image bytes, or
@@ -553,7 +553,7 @@ as `fedi:tos_url`; the result confirms fresh consensus adoption. A restored FA
 must first resume/reconcile to `Formed`.
 
 Consumers must rebuild for the value-bearing `TermsOfService` variant and the
-removal of `GUARDIANITO_TERMS_OF_SERVICE_URL`. URL errors now use `InvalidUrl`
+removal of the former fixed terms URL. URL errors now use `InvalidUrl`
 and `NonPublicUrlHost`, each carrying the field name. The signed `SetMetaField`
 wire format and stored metadata format are unchanged; existing terms values
 need no migration. Upgrade all participating MGs before enabling caller-chosen
@@ -699,7 +699,7 @@ paid E2E does not claim post-output or refund fault injection — exact recovery
 and refund replay stay with the focused tests.
 
 Maintenance tests split at the authorization boundary. The shared service and
-MG suites own every Guardianito semantic boundary, compiled-key dispatch,
+MG suites own every metadata validation boundary, compiled-key dispatch,
 raw-resource rejection, whole-map preservation, and stale-base refusal before
 child work. `fa-client` owns exact public-variant projection, pre-Formed and
 oversized no-effect rejection, already-adopted/offline success, threshold-live

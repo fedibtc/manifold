@@ -349,7 +349,7 @@ where
 
     /// Propose one supported metadata change through threshold-live guardians.
     ///
-    /// Values are constructed with the shared Guardianito-compatible protocol
+    /// Values are constructed with the shared validated protocol
     /// types before this method can acquire a lease or touch the network. The
     /// MG repeats the same validation and remains the authoritative
     /// authorization boundary. This operation first reads live consensus, so

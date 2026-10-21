@@ -1,8 +1,8 @@
 //! Shared federation-metadata newtype tests.
 //!
 //! These types are the single semantic authority for FA-side pre-validation
-//! and the MG's compiled meta-field policy, so the Guardianito-compatible
-//! boundaries and the security hardenings are pinned here, at the type layer.
+//! and the MG's compiled meta-field policy, so validation boundaries and security
+//! checks are tested here, at the type layer.
 
 use super::*;
 
@@ -17,7 +17,7 @@ fn welcome(
 }
 
 #[test]
-fn name_constructor_pins_every_guardianito_boundary_and_error_class() {
+fn name_constructor_checks_validation_boundaries_and_errors() {
     for length in [3, FEDERATION_METADATA_NAME_MAX_BYTES] {
         assert!(FederationMetadataUpdate::name("a".repeat(length)).is_ok());
     }
@@ -295,10 +295,11 @@ fn app_setting_keys_are_distinct_prefixed_and_round_trip() {
         assert!(setting.key().starts_with("fedi:"), "{setting:?}");
         assert_eq!(FederationAppSetting::from_key(setting.key()), Some(setting));
     }
-    // Unprefixed aliases and Fedi-operated keys are not settings.
+    // Unprefixed aliases, community settings, and Fedi-operated keys are refused.
     for key in [
         "stability_pool_disabled",
         "vetted_gateways",
+        "fedi:fedimods",
         "fedi:fixed_exchange_rate",
     ] {
         assert_eq!(FederationAppSetting::from_key(key), None);
@@ -549,69 +550,6 @@ fn group_chats_accept_legacy_and_v12_matrix_room_ids() {
 }
 
 #[test]
-fn fedimods_accept_the_app_shape_with_public_urls_only() {
-    let setting = FederationAppSetting::FediMods;
-    let full = serde_json::json!({
-        "id": "btcmap",
-        "title": "BTC Map",
-        "url": "https://btcmap.org/map",
-        "imageUrl": "https://example.com/btcmap.png",
-        "description": "Find merchants",
-        "color": "#ff9900",
-    });
-    let minimal = serde_json::json!({
-        "id": "faucet",
-        "title": "Faucet",
-        "url": "https://faucet.example.com/",
-    });
-    assert!(app(setting, "[]").is_ok());
-    assert!(app(setting, &serde_json::json!([full, minimal]).to_string()).is_ok());
-    let mut lenient = minimal.clone();
-    lenient["imageUrl"] = serde_json::Value::Null;
-    lenient["description"] = "".into();
-    assert!(app(setting, &serde_json::json!([lenient]).to_string()).is_ok());
-
-    let with = |key: &str, value: serde_json::Value| {
-        let mut entry = minimal.clone();
-        entry[key] = value;
-        serde_json::json!([entry]).to_string()
-    };
-    let without_url = {
-        let mut entry = minimal.clone();
-        entry.as_object_mut().unwrap().remove("url");
-        serde_json::json!([entry]).to_string()
-    };
-    for value in [
-        with("url", "javascript:alert(1)".into()),
-        with("url", "http://localhost:8080/".into()),
-        with("imageUrl", "http://192.168.1.1/x.png".into()),
-        with("title", "".into()),
-        with("title", "a\u{200B}b".into()),
-        with("id", " ".into()),
-        with("unexpected", "field".into()),
-        // The app's schema drops an entry with a null description or color.
-        with("description", serde_json::Value::Null),
-        with("color", serde_json::Value::Null),
-        // The app's field is camelCase; a snake_case key would be ignored.
-        with("image_url", "https://example.com/x.png".into()),
-        without_url,
-        serde_json::json!([minimal, minimal]).to_string(),
-    ] {
-        assert!(app(setting, &value).is_err(), "{value}");
-    }
-    let over_limit = (0..=FEDERATION_APP_SETTING_MAX_FEDIMODS)
-        .map(|index| {
-            serde_json::json!({
-                "id": format!("mod{index}"),
-                "title": "Mod",
-                "url": "https://example.com/",
-            })
-        })
-        .collect::<Vec<_>>();
-    assert!(app(setting, &serde_json::json!(over_limit).to_string()).is_err());
-}
-
-#[test]
 fn app_settings_check_the_raw_cap_before_parsing() {
     for setting in FederationAppSetting::ALL {
         let max_bytes = setting.raw_max_bytes();
@@ -634,7 +572,6 @@ fn app_settings_at_their_caps_stay_a_small_share_of_the_object_cap() {
     for setting in [
         FederationAppSetting::AutojoinCommunities,
         FederationAppSetting::DefaultGroupChats,
-        FederationAppSetting::FediMods,
     ] {
         let max_bytes = setting.raw_max_bytes();
         let padded = format!("[{}]", "\n".repeat(max_bytes - 2));
@@ -646,7 +583,7 @@ fn app_settings_at_their_caps_stay_a_small_share_of_the_object_cap() {
         .into_iter()
         .map(|setting| 2 * setting.raw_max_bytes() + 2 + setting.key().len() + 4)
         .sum::<usize>();
-    // The Guardianito fields' raw padding can already exceed the object cap
+    // Padding in name, icon, welcome, and terms fields can exceed the object cap
     // on its own, and MG refuses such a target before voting. The app
     // settings add only a bounded share on top.
     assert!(

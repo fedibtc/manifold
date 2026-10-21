@@ -77,7 +77,7 @@ fn formation_owned_keys_are_not_in_generic_dispatch() {
 }
 
 #[test]
-fn absolute_raw_caps_preserve_guardianito_padding_but_bound_resources() {
+fn absolute_raw_caps_allow_padding_but_bound_resources() {
     for (key, value) in [
         (
             FEDERATION_NAME_META_FIELD_KEY,
@@ -101,7 +101,7 @@ fn absolute_raw_caps_preserve_guardianito_padding_but_bound_resources() {
     ] {
         assert!(
             validate_meta_field(&MetaFieldKey(key.to_owned()), &MetaFieldValue(value),).is_ok(),
-            "Guardianito-compatible padded value was narrowed for {key}",
+            "valid padded value was refused for {key}",
         );
     }
 
@@ -138,7 +138,7 @@ fn absolute_raw_caps_preserve_guardianito_padding_but_bound_resources() {
     );
 }
 
-// Guardianito semantic boundaries are pinned with the shared newtypes in
+// Metadata validation boundaries are tested with the shared newtypes in
 // `fedi-decentralized-service-manifold-guardian`'s `maintenance` tests; the tests
 // below prove the wire boundary still refuses hardened values through the
 // delegating validators, byte-identical error text included.
@@ -273,6 +273,7 @@ fn compiled_dispatch_relays_app_settings_with_their_shared_rules() {
 fn fedi_operated_and_inert_keys_are_not_served() {
     for key in [
         "vetted_gateways",
+        "fedi:fedimods",
         "recurringd_api",
         "fedi:fixed_exchange_rate",
         "fedi:popup_end_timestamp",

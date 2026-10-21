@@ -24,14 +24,9 @@ pub const FEDERATION_APP_SETTING_MAX_MSATS: u64 = 2_100_000_000_000_000_000;
 pub const FEDERATION_APP_SETTING_MAX_COMMUNITIES: usize = 10;
 /// Most default group chats one federation may list.
 pub const FEDERATION_APP_SETTING_MAX_GROUP_CHATS: usize = 20;
-/// Most default mods one federation may list.
-pub const FEDERATION_APP_SETTING_MAX_FEDIMODS: usize = 32;
 
 /// Matrix's room-id length limit.
 const MATRIX_ROOM_ID_MAX_BYTES: usize = 255;
-const FEDIMOD_ID_MAX_BYTES: usize = 64;
-const FEDIMOD_TITLE_MAX_BYTES: usize = 64;
-const FEDIMOD_COLOR_MAX_BYTES: usize = 32;
 const CURRENCY_ALIAS_MAX_BYTES: usize = 32;
 const COMMUNITY_V1_HRP: &str = "fedi:community";
 const COMMUNITY_V2_HRP: &str = "fedi:community2";
@@ -72,8 +67,6 @@ pub enum FederationAppSetting {
     AutojoinCommunities,
     /// Matrix group chats shown to every member.
     DefaultGroupChats,
-    /// Mods shown on the federation home screen.
-    FediMods,
     /// Message pinned to the community home screen.
     PinnedMessage,
     /// Default display currency.
@@ -101,7 +94,6 @@ pub enum FederationAppSetting {
 enum ValueKind {
     CommunityInvites,
     MatrixRoomIds,
-    FediMods,
     PinnedMessage,
     Currency,
     Flag,
@@ -110,10 +102,9 @@ enum ValueKind {
 
 impl FederationAppSetting {
     /// Every served setting.
-    pub const ALL: [Self; 14] = [
+    pub const ALL: [Self; 13] = [
         Self::AutojoinCommunities,
         Self::DefaultGroupChats,
-        Self::FediMods,
         Self::PinnedMessage,
         Self::DefaultCurrency,
         Self::StabilityPoolDisabled,
@@ -134,7 +125,6 @@ impl FederationAppSetting {
         match self {
             Self::AutojoinCommunities => "fedi:autojoin_communities",
             Self::DefaultGroupChats => "fedi:default_group_chats",
-            Self::FediMods => "fedi:fedimods",
             Self::PinnedMessage => "fedi:pinned_message",
             Self::DefaultCurrency => "fedi:default_currency",
             Self::StabilityPoolDisabled => "fedi:stability_pool_disabled",
@@ -165,7 +155,6 @@ impl FederationAppSetting {
         match self.kind() {
             ValueKind::CommunityInvites => 16_384,
             ValueKind::MatrixRoomIds => 8_192,
-            ValueKind::FediMods => 32_768,
             ValueKind::PinnedMessage => 2_048,
             ValueKind::Currency => CURRENCY_ALIAS_MAX_BYTES,
             ValueKind::Flag => "false".len(),
@@ -178,7 +167,6 @@ impl FederationAppSetting {
         match self {
             Self::AutojoinCommunities => ValueKind::CommunityInvites,
             Self::DefaultGroupChats => ValueKind::MatrixRoomIds,
-            Self::FediMods => ValueKind::FediMods,
             Self::PinnedMessage => ValueKind::PinnedMessage,
             Self::DefaultCurrency => ValueKind::Currency,
             Self::StabilityPoolDisabled
@@ -227,7 +215,7 @@ impl FederationAppSetting {
                 if value.is_empty() {
                     return Ok(());
                 }
-                // No Guardianito padding to preserve: refuse controls anywhere,
+                // Pinned messages reject controls even in surrounding whitespace,
                 // which also bounds JSON escaping of the stored value.
                 if value.chars().any(char::is_control) {
                     return Err(InvalidFederationMetadataValue::ControlCharacter { field });
@@ -259,12 +247,6 @@ impl FederationAppSetting {
                         .map(|()| entry.clone())
                         .map_err(&invalid)
                 },
-            ),
-            ValueKind::FediMods => validate_unique_list(
-                field,
-                value,
-                FEDERATION_APP_SETTING_MAX_FEDIMODS,
-                |entry: &FediMod| validate_fedimod(entry).map(|()| entry.id.clone()),
             ),
         }
     }
@@ -413,55 +395,4 @@ fn validate_matrix_room_id(entry: &str) -> Result<(), &'static str> {
     } else {
         Err("entries must be Matrix room ids starting with `!`")
     }
-}
-
-/// One mod entry, limited to the fields the app reads.
-///
-/// The app's schema rejects an explicit `null` description or color and then
-/// drops the whole entry, so those fields deserialize as present-or-absent
-/// strings. It accepts a `null` image URL as absent.
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields, rename_all = "camelCase")]
-struct FediMod {
-    id: String,
-    title: String,
-    url: String,
-    image_url: Option<String>,
-    #[serde(default, deserialize_with = "present_string")]
-    description: Option<String>,
-    #[serde(default, deserialize_with = "present_string")]
-    color: Option<String>,
-}
-
-/// Deserialize a field that, when present, must be a string (not `null`).
-fn present_string<'de, D: serde::Deserializer<'de>>(
-    deserializer: D,
-) -> Result<Option<String>, D::Error> {
-    String::deserialize(deserializer).map(Some)
-}
-
-fn validate_fedimod(entry: &FediMod) -> Result<(), InvalidFederationMetadataValue> {
-    const FIELD: &str = "fedi:fedimods";
-    let trimmed = validate_trimmed(FIELD, &entry.id, 1, FEDIMOD_ID_MAX_BYTES)?;
-    validate_visible(FIELD, trimmed)?;
-    let trimmed = validate_trimmed(FIELD, &entry.title, 1, FEDIMOD_TITLE_MAX_BYTES)?;
-    validate_visible(FIELD, trimmed)?;
-    validate_url(FIELD, &entry.url, FEDERATION_METADATA_ICON_URL_MAX_BYTES)?;
-    if let Some(image_url) = &entry.image_url {
-        validate_url(FIELD, image_url, FEDERATION_METADATA_ICON_URL_MAX_BYTES)?;
-    }
-    if let Some(description) = &entry.description {
-        // The app accepts an empty description.
-        let trimmed = validate_trimmed(
-            FIELD,
-            description,
-            0,
-            FEDERATION_METADATA_WELCOME_MESSAGE_MAX_BYTES,
-        )?;
-        validate_visible(FIELD, trimmed)?;
-    }
-    if let Some(color) = &entry.color {
-        validate_trimmed(FIELD, color, 1, FEDIMOD_COLOR_MAX_BYTES)?;
-    }
-    Ok(())
 }

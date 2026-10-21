@@ -159,11 +159,11 @@ struct MaintenanceTimingArgs {
 
 #[derive(Debug, Subcommand)]
 enum MaintenanceCommand {
-    /// Set the Guardianito-compatible federation display name.
+    /// Set the federation display name.
     SetName(MetadataValueArgs),
-    /// Set the Guardianito-compatible public HTTP(S) federation icon URL.
+    /// Set the public HTTP(S) federation icon URL.
     SetIconUrl(MetadataValueArgs),
-    /// Set the Guardianito-compatible welcome message/description.
+    /// Set the welcome message/description.
     SetWelcomeMessage(MetadataValueArgs),
     /// Set the public HTTP(S) URL of the terms-of-service document.
     SetTermsOfService(MetadataValueArgs),

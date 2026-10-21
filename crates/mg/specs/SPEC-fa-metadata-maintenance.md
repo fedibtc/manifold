@@ -14,11 +14,11 @@ and casts its own guardian-authenticated meta-module vote. The FA sends the
 same typed mutation to every seat and confirms threshold adoption with a fresh
 consensus read. An acknowledgement means only that one vote was submitted.
 
-The Guardianito-compatible and fee keys are:
+The display, terms, and fee keys are:
 
 | Key | Meaning | Validator |
 | --- | --- | --- |
-| `federation_name` | Wallet name | At most 65,536 authenticated-input bytes; Guardianito rules trim for validation, require 3–30 bytes, and reject control, bidirectional-control, and zero-width characters plus the case-insensitive `payment request rejected` substring. The original value is submitted. |
+| `federation_name` | Wallet name | At most 65,536 authenticated-input bytes; trim for validation, require 3–30 bytes, and reject control, bidirectional-control, and zero-width characters plus the case-insensitive `payment request rejected` substring. The original value is submitted. |
 | `fedi:federation_icon_url` | Wallet icon | At most 65,536 bytes; trimmed nonempty HTTP(S), at most 2,048 bytes, public host, and no controls. The original URL string is submitted. |
 | `fedi:welcome_message` | Wallet description | At most 65,536 bytes; trimmed nonempty value at most 500 bytes with control, bidirectional-control, and zero-width characters refused. |
 | `fedi:tos_url` | Terms document | Caller-supplied URL, with the same HTTP(S), public-host, length, and control-character checks as the icon URL. The original string is submitted. |
@@ -33,7 +33,6 @@ strings exactly as the app parses them; list values are JSON inside the string.
 | --- | --- | --- |
 | `fedi:autojoin_communities` | Linked communities members join | JSON array of at most 10 distinct invite codes (compared case-insensitively) that Fedi's parser accepts: lowercased bech32 with HRP `fedi:community2` and a V2 payload (author pubkey, UUID, 32-byte base64 key), or HRP `fedi:community` and a V1 payload whose `community_meta_url` passes the icon URL rules |
 | `fedi:default_group_chats` | Group chats shown to members | JSON array of at most 20 distinct Matrix room ids: `!` and a nonempty body, at most 255 bytes, without whitespace or controls. Legacy `!opaque:server` and room version 12 server-less ids both pass |
-| `fedi:fedimods` | Default home-screen mods | JSON array of at most 32 objects with only `id`, `title`, `url`, and optional `imageUrl`, `description`, `color`; distinct ids; URLs pass the icon URL rule. `description` and `color` must be strings when present, because the app drops an entry with a `null` one |
 | `fedi:pinned_message` | Home-screen message | Exactly empty, or the welcome-message rules with control characters refused anywhere |
 | `fedi:default_currency` | Display currency | One of the app's `SupportedCurrency` codes or `CurrencyAliases` names; the app mis-renders any other value |
 | `fedi:stability_pool_disabled`, `fedi:multispend_disabled` | Feature hidden unless `false` | `true` or `false` |
@@ -48,8 +47,8 @@ stay absent.
 
 The app settings' raw caps keep their stored size, including JSON string
 escaping, under a quarter of the object cap. This does not make every
-combination of valid fields fit: padded Guardianito fields can exceed the cap
-by themselves. MG refuses any target over the cap before voting.
+combination of valid fields fit: padded name, icon, welcome, and terms fields
+can exceed the cap by themselves. MG refuses any target over the cap before voting.
 
 The meta module cannot delete a field. Empty values are refused except for
 `fedi:pinned_message`, whose empty value hides the message; lists clear with
@@ -60,6 +59,7 @@ Fedi-operated and not served: `vetted_gateways` (also MG's own payout gateway
 preference), `recurringd_api`, `fedi:fixed_exchange_rate`, and the popup and
 `federation_expiry_timestamp` fields. Keys with no effect on MG federations,
 such as `fedi:social_recovery_disabled`, are not served either.
+`fedi:fedimods` is not served because Fedi loads mods from community metadata.
 
 Serving a key is an MG release decision; the `SetMetaField` wire format does
 not change. An MG without a key's validator refuses it as `MetaKeyRefused`.

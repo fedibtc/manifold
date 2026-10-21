@@ -2816,7 +2816,7 @@ async fn meta_write_submits_the_directory_and_keeps_the_other_fields() {
     let adopted_directory = fake.state().meta_submissions[0].clone();
     let adopted_revision = fake.set_meta_consensus(Some(adopted_directory.clone()));
 
-    // Guardianito validates the trimmed semantic value but submits the exact
+    // Validation checks the trimmed value but submits the exact
     // original string. Preserve that behavior at the semantic maximum.
     let padded_name = format!(" {} ", "n".repeat(30));
     seat.submit_meta_field(

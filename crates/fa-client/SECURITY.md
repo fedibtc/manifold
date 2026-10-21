@@ -531,8 +531,8 @@ offers no atomic CAS. MG's per-key raw caps and the shared
 1,048,576-byte complete-object cap bound each retry wave before child work.
 Metadata maintenance and guardian-fee arrangement share the formation driver's
 process guard and renewable database lease, accept no arbitrary key, and expose only shared semantic
-values whose fallible constructors enforce Guardianito validation plus the
-65,536-byte absolute raw cap before lease, signing, connection, or network
+values whose fallible constructors enforce each field's format and raw-size
+limits before lease, signing, connection, or network
 effects. It reads consensus before connecting, binds every non-short-circuiting
 best-effort submission wave to the exact raw base, treats stale-base and
 per-seat availability failures as reread/retry signals, and returns only after
