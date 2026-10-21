@@ -192,6 +192,7 @@ fedimint-server-bitcoin-rpc = { version = "0.12.0", default-features = false }
 fedimint-server-core = { version = "0.12.0", default-features = false }
 fedimint-tbs = { version = "0.12.0", default-features = false }
 fedimint-wallet-client = { version = ">=0.11.2, <0.13", default-features = false }
+fedimint-wallet-common = { version = "0.12.0", default-features = false }
 fedimint-walletv2-client = { version = "0.12.0", default-features = false }
 fedimint-walletv2-common = { version = ">=0.11.2, <0.13", default-features = false }
 # Bundled into the MG binary. Not on crates.io, so it is a path into the same

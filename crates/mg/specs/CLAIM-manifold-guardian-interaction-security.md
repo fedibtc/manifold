@@ -65,9 +65,9 @@ as current.
   FAs check current issuer policy and revocation. The
   authentication part is recorded by
   [CLAIM-manifold-guardian-holder-authorization-bound](CLAIM-manifold-guardian-holder-authorization-bound.md).
-- Restore adopts only current, authentic, internally consistent documents bound
-  to the recovered identity; relay withholding or replay cannot select older
-  authentic recovery state (see
+- Restore adopts authentic, internally consistent documents bound to the
+  recovered identity under the latest-backup and no-stale-local-snapshot
+  assumptions. Freshness is not enforced against a hostile relay (see
   [CLAIM-manifold-guardian-restore-adopts-authentic-consistent-state](CLAIM-manifold-guardian-restore-adopts-authentic-consistent-state.md)).
 - The bundled, pinned `fedimintd` and its dependencies retain their intended
   implementation integrity under hostile network input. This is an explicit

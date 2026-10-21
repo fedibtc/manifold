@@ -129,9 +129,9 @@ The following exact premises are numbered in their listed order for use below:
   while the receiver maximum issue time does not move backward; replay cannot replace an
   enrolled same-credential authorization with an equal or older one. Relying
   FAs check current issuer policy and revocation.
-- Restore adopts only current, authentic, internally consistent documents bound
-  to the recovered identity; relay withholding or replay cannot select older
-  authentic recovery state.
+- Restore adopts authentic, internally consistent documents bound to the
+  recovered identity under the latest-backup and no-stale-local-snapshot
+  assumptions. Freshness is not enforced against a hostile relay.
 - The bundled, pinned `fedimintd` and its dependencies retain intended
   implementation integrity under hostile network input. This is an explicit MG
   TCB premise, not malicious-child containment.
@@ -236,7 +236,10 @@ behavior at this claim boundary.
    16 respectively grant current complete valid policy, authorization, and
    restore inputs; premises 5 and 6 grant the operator and publisher decisions.
    A relay replay, omission, reordering, duplicate, or injected event cannot
-   create another admitted state while those premises hold.
+   create another admitted state while those premises hold. For restore this
+   explicitly assumes latest published backups; older authentic recovery state
+   and stale local snapshots remain an excluded rollback risk, not a proven
+   rejection property. This premise update does not renew the stale proof.
 
 5. **[code] The Admin inventory is complete and remains a trusted boundary.**
    [`AdminRequest`](../../core/src/admin.rs) has seventeen variants:

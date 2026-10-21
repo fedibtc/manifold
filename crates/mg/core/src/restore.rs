@@ -152,6 +152,36 @@ pub(crate) async fn install(
     if db.load_identity().await?.is_some() {
         return Err(RestoreError::AlreadyOnboarded);
     }
+    for seat in &fleet.seats {
+        seat.validate_transfer()?;
+        if let Some(incoming) = seat
+            .transfer
+            .as_ref()
+            .and_then(|transfer| transfer.incoming.as_ref())
+        {
+            let crate::backup::IncomingTransferBackup::Accepted { binding, .. } = incoming;
+            let guardian = seat.guardian.as_ref().expect("validated accepted shape");
+            let archive =
+                fleet
+                    .archives
+                    .get(&seat.seat_id)
+                    .ok_or_else(|| RestoreError::MissingArchive {
+                        seat_id: seat.seat_id.clone(),
+                    })?;
+            if archive.digest() != guardian.archive_sha256 {
+                return Err(anyhow::anyhow!("accepted transfer archive digest mismatch").into());
+            }
+            crate::transfer_native::TransferMaterial {
+                archive: archive.clone(),
+                keys: incoming.imported_keys(),
+            }
+            .check_size()
+            .map_err(anyhow::Error::from)?;
+            if binding.destination_service_pubkey != identity.derive_service_pubkey() {
+                return Err(anyhow::anyhow!("restored transfer names another destination").into());
+            }
+        }
+    }
 
     let staging_root = process.data_root.join("restore-staging");
     if tokio::fs::try_exists(&staging_root).await.unwrap_or(false) {
@@ -223,13 +253,54 @@ pub(crate) async fn install(
         tokio::fs::rename(&staged, &dir)
             .await
             .map_err(crate::backup::RestoreConfigError::Write)?;
+        if let Some(parent) = dir.parent() {
+            crate::backup::sync_directory(parent)
+                .await
+                .map_err(crate::backup::RestoreConfigError::Write)?;
+            if let Some(seats_root) = parent.parent() {
+                crate::backup::sync_directory(seats_root)
+                    .await
+                    .map_err(crate::backup::RestoreConfigError::Write)?;
+            }
+        }
     }
+    crate::backup::sync_directory(&process.data_root)
+        .await
+        .map_err(crate::backup::RestoreConfigError::Write)?;
     // The staging root is empty now; leaving it would only make the next
     // wipe-on-entry look like it had something to clean.
     let _ = tokio::fs::remove_dir_all(&staging_root).await;
 
     let mut restored = Vec::with_capacity(seats.len());
     for &(seat_no, seat) in &seats {
+        let incoming_transfer = match seat
+            .transfer
+            .as_ref()
+            .and_then(|transfer| transfer.incoming.as_ref())
+        {
+            None => None,
+            Some(
+                incoming @ crate::backup::IncomingTransferBackup::Accepted {
+                    binding,
+                    callback_commitment,
+                    ..
+                },
+            ) => {
+                use crate::transfer_state::{IncomingState, IncomingTransfer};
+                if binding.destination_service_pubkey != identity.derive_service_pubkey() {
+                    return Err(
+                        anyhow::anyhow!("restored transfer names another destination").into(),
+                    );
+                }
+                // The data directory is written above; the row only names it.
+                Some(IncomingTransfer {
+                    generation: 1,
+                    binding: binding.clone(),
+                    callback_commitment: *callback_commitment,
+                    state: IncomingState::Imported(incoming.imported_keys()),
+                })
+            }
+        };
         restored.push(RestoredSeat {
             facts: seat.to_seat_facts(seat_no),
             payment: seat.payment.as_ref().map(|payment| NewPayment {
@@ -242,6 +313,11 @@ pub(crate) async fn install(
                     federation_invite: guardian.federation_invite.clone(),
                 }),
             decommissioned_at_ms: seat.decommissioned_at_ms,
+            incoming_transfer,
+            outgoing_transfer: seat
+                .transfer
+                .as_ref()
+                .and_then(|transfer| transfer.outgoing.clone()),
         });
     }
     db.install_restored_fleet(identity, &restored).await?;

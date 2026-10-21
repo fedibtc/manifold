@@ -26,13 +26,13 @@ use fedi_decentralized_service_manifold_guardian::{
     GetDkgCodeResponse, GetFedimintStatsRequest, GetFedimintStatsResponse, GetInviteCodeRequest,
     GetInviteCodeResponse, GetMgTrustMaterialRequest, GetMgTrustMaterialResponse,
     GetPeerAttestationRequest, GetPeerAttestationResponse, GetStatusRequest, GetStatusResponse,
-    GuardianFeeAccount, ManifoldGuardianError, ManifoldGuardianService, Plan,
+    GuardianFeeAccount, ManifoldGuardianError, ManifoldGuardianService, MgSignedRequest, Plan,
     ProposeFormationMetaRequest, ProposeFormationMetaResponse, PullSeatRequest, PullSeatResponse,
     QuoteTerms, RegisterGatewayRequest, RegisterGatewayResponse, RemoveSeatRequest,
     RemoveSeatResponse, ReplaceSeatBindingRequest, ReplaceSeatBindingResponse, RestartDkgRequest,
-    RestartDkgResponse, SeatTransferGrant, ServiceStatus, SetMetaFieldRequest,
-    SetMetaFieldResponse, SignedRequest, SignedResponse, StartDkgRequest, StartDkgResponse,
-    StatusDetail, Timestamp, TransferSeatResponse, VerifiedFaRequest,
+    RestartDkgResponse, ServiceStatus, SetMetaFieldRequest, SetMetaFieldResponse, SignedRequest,
+    SignedResponse, StartDkgRequest, StartDkgResponse, StatusDetail, Timestamp,
+    TransferSeatRequest, TransferSeatResponse, VerifiedFaRequest,
 };
 use fedimint_core::util::SafeUrl;
 use secp256k1::Keypair;
@@ -230,6 +230,7 @@ fn map_seat_error(verb: &'static str, err: SeatVerbError) -> ManifoldGuardianErr
             ManifoldGuardianError::FormationMetaAlreadyPublished
         }
         SeatVerbError::MetaTargetConflict => ManifoldGuardianError::MetaTargetConflict,
+        SeatVerbError::TransferGrantMismatch => ManifoldGuardianError::SeatTransferGrantMismatch,
         SeatVerbError::Internal(err) => internal_chain(verb, &err),
     }
 }
@@ -658,6 +659,7 @@ impl ManifoldGuardianService for ManifoldGuardianRpc {
                 }
             };
             let (status, detail) = match phase {
+                SeatPhase::Transfer { status } => (status, StatusDetail::None),
                 SeatPhase::Created => (ServiceStatus::New, StatusDetail::None),
                 SeatPhase::DkgInProgress => (
                     ServiceStatus::DkgInProcess,
@@ -891,30 +893,68 @@ impl ManifoldGuardianService for ManifoldGuardianRpc {
 
     async fn pull_seat(
         &self,
-        _request: SignedRequest<PullSeatRequest>,
+        request: SignedRequest<PullSeatRequest>,
     ) -> FmResult<PullSeatResponse> {
-        unsupported("PullSeat")
+        let request = self.validate(request)?;
+        let seat = self
+            .fleet
+            .authorize(&request)
+            .map_err(|err| map_seat_error("pull_seat", err))?;
+        let callback = self.prepare_completion_callback(request.completion_callback.as_ref())?;
+        seat.admit_transfer(
+            request.grant.clone(),
+            self.fleet.identity().derive_service_pubkey(),
+            callback,
+        )
+        .await
+        .map_err(|err| map_seat_error("pull_seat", err))?;
+        Ok(PullSeatResponse)
     }
 
     async fn transfer_seat(
         &self,
-        _request: SignedRequest<SeatTransferGrant>,
+        request: MgSignedRequest<TransferSeatRequest>,
     ) -> FmResult<TransferSeatResponse> {
-        unsupported("TransferSeat")
+        let request = request.verify(now()).map_err(|err| {
+            tracing::warn!(verb = "transfer_seat", error = %err, "rejecting unauthorized request");
+            ManifoldGuardianError::Unauthorized
+        })?;
+        self.fleet
+            .transfer_seat(request, std::time::Duration::from_secs(20))
+            .await
+            .map_err(|err| map_seat_error("transfer_seat", err))
     }
 
     async fn replace_seat_binding(
         &self,
-        _request: SignedRequest<ReplaceSeatBindingRequest>,
+        request: SignedRequest<ReplaceSeatBindingRequest>,
     ) -> FmResult<ReplaceSeatBindingResponse> {
-        unsupported("ReplaceSeatBinding")
+        let request = self.validate(request)?;
+        let seat = self
+            .fleet
+            .authorize(&request)
+            .map_err(|err| map_seat_error("replace_seat_binding", err))?;
+        seat.replace_seat_binding(request.expected_base, request.seat_binding.clone())
+            .await
+            .map_err(|err| map_seat_error("replace_seat_binding", err))?;
+        Ok(ReplaceSeatBindingResponse)
     }
 
     async fn remove_seat(
         &self,
-        _request: SignedRequest<RemoveSeatRequest>,
+        request: SignedRequest<RemoveSeatRequest>,
     ) -> FmResult<RemoveSeatResponse> {
-        unsupported("RemoveSeat")
+        let request = self.validate(request)?;
+        let seat = self
+            .fleet
+            .authorize(&request)
+            .map_err(|err| map_seat_error("remove_seat", err))?;
+        let already_removed = self
+            .fleet
+            .remove_transferred_seat(&seat)
+            .await
+            .map_err(|err| map_seat_error("remove_seat", err))?;
+        Ok(RemoveSeatResponse { already_removed })
     }
 
     /// Serve this MG's current signed trust material.

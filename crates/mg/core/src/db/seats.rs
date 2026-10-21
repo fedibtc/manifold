@@ -26,7 +26,7 @@ use fedi_decentralized_service_manifold_guardian::{
 
 /// Insert the formation-wide first callback on the caller's transaction so
 /// accepted inputs and notification choice have one crash boundary.
-async fn install_completion_callback(
+pub(super) async fn install_completion_callback(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     seat_id: &SeatId,
     completion_callback: Option<&DkgCompletionCallback>,
@@ -90,6 +90,9 @@ pub struct RestoredSeat {
     /// the moment it is restored.
     pub guardian: Option<RestoredGuardianConfig>,
     pub decommissioned_at_ms: Option<i64>,
+    /// Validated transfer recovery state, rebuilt before the identity commits.
+    pub(crate) incoming_transfer: Option<crate::transfer_state::IncomingTransfer>,
+    pub(crate) outgoing_transfer: Option<crate::backup::OutgoingTransferBackup>,
 }
 
 /// One seat's last relay-confirmed backup publication
@@ -511,9 +514,10 @@ impl Db {
 
         let id = new_seat.seat_id.as_bytes().as_slice();
         let (active, next_no): (i64, i64) = sqlx::query_as(
-            "SELECT COUNT(*) FILTER (WHERE d.quote_id IS NULL), \
+            "SELECT COUNT(*) FILTER (WHERE d.quote_id IS NULL AND t.quote_id IS NULL), \
              COALESCE(MAX(s.seat_no) + 1, 0) \
-             FROM seats s LEFT JOIN decommissioned_seats d USING (quote_id)",
+             FROM seats s LEFT JOIN decommissioned_seats d USING (quote_id) \
+             LEFT JOIN seat_transfer_out t USING (quote_id)",
         )
         .fetch_one(&mut *tx)
         .await?;
@@ -844,12 +848,8 @@ impl Db {
     /// after the relay's read-back confirmation — never before, so a crash
     /// errs toward one redundant republication of an addressable event.
     ///
-    /// The archive digest never regresses to absent *within one schema
-    /// version*: the archive is immutable, and a later document-only
-    /// publication must not forget that its bytes are already confirmed.
-    /// Across a version change the digest is taken as given, absent
-    /// included — the recorded archive is laid out under rules the new
-    /// version's restore would refuse, so they must republish.
+    /// The digest describes the document's reference, not whether archive bytes
+    /// were sent again. A removal tombstone deliberately has no reference.
     pub(crate) async fn record_backup_publication(
         &self,
         seat_id: &SeatId,
@@ -864,10 +864,7 @@ impl Db {
              ON CONFLICT (quote_id) DO UPDATE SET \
              doc_sha256 = excluded.doc_sha256, \
              published_at_ms = excluded.published_at_ms, \
-             archive_digest = CASE \
-                 WHEN seat_backup_publications.schema_version = excluded.schema_version \
-                 THEN COALESCE(excluded.archive_digest, seat_backup_publications.archive_digest) \
-                 ELSE excluded.archive_digest END, \
+             archive_digest = excluded.archive_digest, \
              schema_version = excluded.schema_version",
         )
         .bind(seat_id.as_bytes().as_slice())
@@ -948,20 +945,39 @@ impl Db {
             .bind(facts.created_at_ms)
             .execute(&mut *tx)
             .await?;
-            if let Some(guardian) = seat.guardian.as_ref() {
-                let invite =
-                    guardian
-                        .federation_invite
-                        .as_ref()
-                        .ok_or_else(|| DbError::CorruptRow {
-                            table: "backup_guardians",
-                            key: facts.seat_id.to_string(),
-                            detail: "guardian archive has no formed federation invite".to_owned(),
-                        })?;
+            if seat.guardian.is_some() || seat.outgoing_transfer.is_some() {
+                let invite = seat
+                    .guardian
+                    .as_ref()
+                    .and_then(|guardian| guardian.federation_invite.as_ref())
+                    .or_else(|| {
+                        seat.outgoing_transfer
+                            .as_ref()
+                            .map(|outgoing| &outgoing.federation_invite)
+                    })
+                    .ok_or_else(|| DbError::CorruptRow {
+                        table: "backup_guardians",
+                        key: facts.seat_id.to_string(),
+                        detail: "guardian archive has no formed federation invite".to_owned(),
+                    })?;
                 sqlx::query("INSERT INTO formed_seats (quote_id, federation_invite, formed_at_ms) VALUES (?, ?, ?)")
                     .bind(quote_id)
                     .bind(&invite.0)
                     .bind(now_ms())
+                    .execute(&mut *tx)
+                    .await?;
+            }
+            if let Some(incoming) = &seat.incoming_transfer {
+                super::transfers::save(&mut tx, &facts.seat_id, incoming).await?;
+            }
+            if let Some(outgoing) = &seat.outgoing_transfer {
+                sqlx::query("INSERT INTO seat_transfer_out (quote_id, phase) VALUES (?, ?)")
+                    .bind(quote_id)
+                    .bind(if outgoing.removed {
+                        "removed"
+                    } else {
+                        "retired"
+                    })
                     .execute(&mut *tx)
                     .await?;
             }
@@ -1137,6 +1153,8 @@ impl Db {
             "JOIN formed_seats f USING (quote_id) \
              LEFT JOIN decommissioned_seats d USING (quote_id) \
              WHERE d.quote_id IS NULL AND c.completion_callback IS NOT NULL \
+             AND NOT EXISTS (SELECT 1 FROM seat_transfer_in t WHERE t.quote_id = c.quote_id AND t.state != 'imported') \
+             AND NOT EXISTS (SELECT 1 FROM seat_transfer_out t WHERE t.quote_id = c.quote_id) \
              AND c.completion_callback_status IN ('pending', 'operator_blocked')",
             None,
         )

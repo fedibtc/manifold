@@ -1618,22 +1618,9 @@ async fn bind_iroh_endpoint() -> anyhow::Result<Endpoint> {
         return Ok(Endpoint::bind(presets::N0).await?);
     }
     // Network-isolated E2E: advertisements carry only MG endpoint ids, so the
-    // harness supplies their loopback addresses as `<endpoint-id>=<socket-addr>`
-    // pairs instead of n0 address lookup.
-    let mut addrs = Vec::new();
-    for pair in std::env::var("MG_E2E_MG_ENDPOINT_ADDRS")
-        .unwrap_or_default()
-        .split(',')
-        .filter(|pair| !pair.is_empty())
-    {
-        let (id, addr) = pair
-            .split_once('=')
-            .with_context(|| format!("MG_E2E_MG_ENDPOINT_ADDRS entry {pair:?} lacks '='"))?;
-        addrs.push(
-            iroh::EndpointAddr::new(id.parse().context("parse MG endpoint id")?)
-                .with_ip_addr(addr.parse().context("parse MG socket address")?),
-        );
-    }
+    // harness supplies their loopback addresses instead of n0 address lookup.
+    let addrs =
+        parse_endpoint_addr_pairs(&std::env::var(MG_E2E_ENDPOINT_ADDRS_ENV).unwrap_or_default())?;
     Ok(Endpoint::builder(presets::N0DisableRelay)
         .address_lookup(iroh::address_lookup::MemoryLookup::from_endpoint_info(
             addrs,

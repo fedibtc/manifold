@@ -14,8 +14,9 @@
 //! One task scans every seat on a slow cadence and converges the diff;
 //! [`BackupWorker::mark`] cuts the wait short so a state transition — a new
 //! seat's payment evidence, a fresh guardian archive, a decommission — reaches
-//! the relay promptly rather than at the next tick. **Nothing waits for it**:
-//! not a caller, not a state transition. A scan reads SQLite and seat data
+//! the relay promptly rather than at the next tick. Ordinary lifecycle updates
+//! never wait; transfer handover and deletion explicitly await the exact recovery
+//! document outside seat queues. A scan reads SQLite and seat data
 //! directories only, never a child's API, so no cadence can hammer
 //! `fedimintd`; with confirmed archives skipping their file reads, a scan is
 //! a few point queries and one small hash per seat.
@@ -109,6 +110,39 @@ impl BackupWorker {
     /// worker's confirmed-publication records are scoped to.
     pub fn format_version(&self) -> u32 {
         self.sink.format_version()
+    }
+
+    /// Wait for this exact recovery document, not merely an archive or a wake.
+    /// Only the ordered publisher writes confirmations. Callers must wait
+    /// outside seat command queues and recheck their lifecycle fence afterwards.
+    pub(crate) async fn confirm_transfer_publication(
+        &self,
+        db: &Db,
+        expected: &crate::backup::SeatPublication,
+        deadline: Duration,
+    ) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            self.sink.supports_transfer_barrier(),
+            "backup sink cannot confirm transfer recovery"
+        );
+        let mut scans = self.last_scan.subscribe();
+        let digest = expected.doc_sha256();
+        self.mark();
+        tokio::time::timeout(deadline, async {
+            loop {
+                if let Some(record) = db
+                    .backup_publication(&expected.document.seat_id, self.format_version())
+                    .await?
+                    && record.doc_sha256 == digest
+                    && record.archive_digest.as_deref() == expected.archive_digest()
+                {
+                    return Ok::<_, anyhow::Error>(());
+                }
+                scans.changed().await?;
+            }
+        })
+        .await
+        .map_err(|_| anyhow!("transfer recovery publication was not confirmed before deadline"))?
     }
 
     async fn run(worker: std::sync::Weak<Self>, db: Db, process: SeatProcessConfig) {
@@ -230,23 +264,15 @@ impl BackupWorker {
                     PUBLISH_TIMEOUT.as_secs()
                 )
             })??;
-        // The plan's consensus check and this publish are not one atomic step:
-        // the first observation can commit between them, making the document
-        // just confirmed a guardian-less description of a seat that now holds
-        // key shares. Recording it would suppress the republish that fixes it,
-        // so re-derive the requirement and leave the seat pending instead —
-        // the next scan publishes the document with its archive.
-        if plan.archive_digest().is_none()
-            && db
-                .formed_federation_invite(&seat.facts.seat_id)
-                .await?
-                .is_some()
-        {
-            anyhow::bail!(
-                "consensus was observed while a pre-consensus document was in flight; \
-                 republishing with the guardian archive"
-            );
-        }
+        // Lifecycle facts can change while the relay is responding. Reassemble
+        // the whole requirement: a prior archive alone cannot confirm a newer
+        // retirement, import, or removal document.
+        let current =
+            seat_publication_plan(db, process, &seat.facts, plan.archive_digest()).await?;
+        anyhow::ensure!(
+            current.doc_sha256() == doc_sha256,
+            "seat recovery requirements changed during publication"
+        );
         db.record_backup_publication(
             &seat.facts.seat_id,
             &doc_sha256,

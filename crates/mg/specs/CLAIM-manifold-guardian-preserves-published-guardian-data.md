@@ -2,7 +2,9 @@
 
 After any successful FA-facing `GetInviteCode` or `GetStatus` response carries a
 federation invite, no later official-daemon execution deletes that seat's
-`fedimintd` data directory.
+`fedimintd` data directory, except FA-authorized removal of a transfer-retired
+source guardian. That exception preserves the seat's terminal tombstone,
+formed identity, payment and fee accounting, and wallet data.
 
 ## Status
 

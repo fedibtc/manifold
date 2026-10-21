@@ -9,11 +9,11 @@ use crate::{
     GetInviteCodeRequest, GetInviteCodeResponse, GetMgTrustMaterialRequest,
     GetMgTrustMaterialResponse, GetPeerAttestationRequest, GetPeerAttestationResponse,
     GetQuoteRequest, GetQuoteResponse, GetStatusRequest, GetStatusResponse, ManifoldGuardianError,
-    ProposeFormationMetaRequest, ProposeFormationMetaResponse, PullSeatRequest, PullSeatResponse,
-    RegisterGatewayRequest, RegisterGatewayResponse, RemoveSeatRequest, RemoveSeatResponse,
-    ReplaceSeatBindingRequest, ReplaceSeatBindingResponse, RestartDkgRequest, RestartDkgResponse,
-    SeatTransferGrant, SetMetaFieldRequest, SetMetaFieldResponse, SignedRequest, SignedResponse,
-    StartDkgRequest, StartDkgResponse, TransferSeatResponse,
+    MgSignedRequest, ProposeFormationMetaRequest, ProposeFormationMetaResponse, PullSeatRequest,
+    PullSeatResponse, RegisterGatewayRequest, RegisterGatewayResponse, RemoveSeatRequest,
+    RemoveSeatResponse, ReplaceSeatBindingRequest, ReplaceSeatBindingResponse, RestartDkgRequest,
+    RestartDkgResponse, SetMetaFieldRequest, SetMetaFieldResponse, SignedRequest, SignedResponse,
+    StartDkgRequest, StartDkgResponse, TransferSeatRequest, TransferSeatResponse,
 };
 
 /// Result type for Manifold Guardian protocol calls.
@@ -135,11 +135,11 @@ pub trait ManifoldGuardianService {
         request: SignedRequest<PullSeatRequest>,
     ) -> FmResult<PullSeatResponse>;
 
-    /// Stop this MG's seat named by the grant and hand its guardian over,
-    /// sealed to the grant's destination. Called by the destination MG.
+    /// Stop this MG's seat named by the grant and hand its guardian over to
+    /// the grant's destination, which signs this call.
     async fn transfer_seat(
         &self,
-        request: SignedRequest<SeatTransferGrant>,
+        request: MgSignedRequest<TransferSeatRequest>,
     ) -> FmResult<TransferSeatResponse>;
 
     /// Vote to replace one moved peer's directory entry and fee recipient.
