@@ -578,8 +578,8 @@ the fetching client's responsibility. The app settings' stored size stays under
 a quarter of the object cap. Valid fields together can still exceed the cap
 (padded display and terms fields alone can), and MG refuses such a target before
 voting. Settings that steer payments (`vetted_gateways`,
-`recurringd_api`, `fedi:fixed_exchange_rate`) or lock members out (popup
-expiry) are not served. The
+`recurringd_api`, `fedi:fixed_exchange_rate`) or block the whole federation
+(popup expiry) are not served. Amount limits may stop receives, never sends. The
 seat-binding directory has a 65,536-byte raw and canonical cap, and each
 guardian votes only for a directory whose entry for its own seat carries its
 own attestation key, refusing when it cannot derive its own peer id: an

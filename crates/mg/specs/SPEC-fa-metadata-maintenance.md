@@ -33,11 +33,11 @@ strings exactly as the app parses them; list values are JSON inside the string.
 | --- | --- | --- |
 | `fedi:autojoin_communities` | Linked communities members join | JSON array of at most 10 distinct invite codes (compared case-insensitively) that Fedi's parser accepts: lowercased bech32 with HRP `fedi:community2` and a V2 payload (author pubkey, UUID, 32-byte base64 key), or HRP `fedi:community` and a V1 payload whose `community_meta_url` passes the icon URL rules |
 | `fedi:default_group_chats` | Group chats shown to members | JSON array of at most 20 distinct Matrix room ids: `!` and a nonempty body, at most 255 bytes, without whitespace or controls. Legacy `!opaque:server` and room version 12 server-less ids both pass |
-| `fedi:pinned_message` | Home-screen message | Exactly empty, or the welcome-message rules with control characters refused anywhere |
+| `fedi:pinned_message` | Compact message on the native Wallet screen | Exactly empty, or the welcome-message rules with control characters refused anywhere |
 | `fedi:default_currency` | Display currency | One of the app's `SupportedCurrency` codes or `CurrencyAliases` names; the app mis-renders any other value |
 | `fedi:stability_pool_disabled`, `fedi:multispend_disabled` | Feature hidden unless `false` | `true` or `false` |
 | `fedi:invite_codes_disabled`, `fedi:new_members_disabled`, `fedi:offline_wallet_disabled`, `fedi:onchain_deposits_disabled` | Feature restrictions | `true` or `false` |
-| `fedi:max_balance_msats`, `fedi:max_invoice_msats`, `fedi:max_stable_balance_msats` | App amount limits | Canonical decimal from 0 through 2,100,000,000,000,000,000 |
+| `fedi:max_balance_msats`, `fedi:max_invoice_msats`, `fedi:max_stable_balance_msats` | App amount limits; Receive is disabled once the balance reaches the balance limit, and for everyone when the invoice limit is `0` | Canonical decimal from 0 through 2,100,000,000,000,000,000 |
 
 The app reads `fedi:<field>` before `<field>`, so these prefixed keys take
 precedence over unprefixed legacy values. The exception is group chats: the
@@ -54,11 +54,13 @@ The meta module cannot delete a field. Empty values are refused except for
 `fedi:pinned_message`, whose empty value hides the message; lists clear with
 `[]` and flags with `false`. Unknown keys fail closed.
 
-Keys that steer payments or infrastructure, or that lock members out, are
-Fedi-operated and not served: `vetted_gateways` (also MG's own payout gateway
+Keys that steer payments or infrastructure, or that block the whole
+federation in the app, are Fedi-operated and not served: `vetted_gateways` (also MG's own payout gateway
 preference), `recurringd_api`, `fedi:fixed_exchange_rate`, and the popup and
 `federation_expiry_timestamp` fields. Keys with no effect on MG federations,
-such as `fedi:social_recovery_disabled`, are not served either.
+such as `fedi:social_recovery_disabled`, are not served either. The amount
+limits are served including `0`: they stop receives but not sends, and the FA
+undoes them by setting a large value.
 `fedi:fedimods` is not served because Fedi loads mods from community metadata.
 
 Serving a key is an MG release decision; the `SetMetaField` wire format does

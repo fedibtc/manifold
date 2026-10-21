@@ -67,7 +67,7 @@ pub enum FederationAppSetting {
     AutojoinCommunities,
     /// Matrix group chats shown to every member.
     DefaultGroupChats,
-    /// Message pinned to the community home screen.
+    /// Compact message on the native Wallet screen.
     PinnedMessage,
     /// Default display currency.
     DefaultCurrency,
@@ -83,9 +83,9 @@ pub enum FederationAppSetting {
     OfflineWalletDisabled,
     /// Hides on-chain deposits.
     OnchainDepositsDisabled,
-    /// Refuses payment requests above this balance.
+    /// Disables Receive once the member's balance reaches this amount.
     MaxBalanceMsats,
-    /// Refuses invoices above this amount.
+    /// Largest invoice a member can create; `0` disables Receive.
     MaxInvoiceMsats,
     /// Refuses stable balances above this amount.
     MaxStableBalanceMsats,
