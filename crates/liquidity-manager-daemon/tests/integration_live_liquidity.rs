@@ -1146,6 +1146,13 @@ async fn live_cancelling_a_wedged_allocation_frees_capacity_for_the_next_federat
         }
     }
 
+    // A failed attach still reserves funds in `action_required` and can be
+    // cancelled. That would exercise remediation, not cancellation of running
+    // work. Observe the worker after the balance reads, which can themselves
+    // wait behind the gateway's join, and make no more gateway reads before
+    // cancelling.
+    wait_for_public_running(&rpc, &wedged_request.payload).await?;
+
     // The operator ends the allocation nobody can finish.
     let cancelled = admin_post(
         &http,
@@ -1164,6 +1171,14 @@ async fn live_cancelling_a_wedged_allocation_frees_capacity_for_the_next_federat
     assert_eq!(
         cancelled["allocation_status"]["item_statuses"][0]["status"],
         "cancelled"
+    );
+    // Cancellation preserves failure evidence. If the worker recorded an attach
+    // failure between the running observation and cancellation, that evidence
+    // remains here; a stale failure arriving after cancellation cannot write it.
+    assert_eq!(
+        cancelled["allocation_status"]["item_statuses"][0].get("failure"),
+        Some(&Value::Null),
+        "cancellation must win before attach failure stops the running item: {cancelled}"
     );
 
     // The money is back, and this is the assertion the whole test exists for.
@@ -1212,6 +1227,11 @@ async fn live_cancelling_a_wedged_allocation_frees_capacity_for_the_next_federat
     assert_eq!(
         wedged["allocation"]["status"]["item_statuses"][0]["status"],
         "cancelled"
+    );
+    assert_eq!(
+        wedged["allocation"]["status"]["item_statuses"][0].get("failure"),
+        Some(&Value::Null),
+        "the cancelled item must keep its failure-free outcome: {wedged}"
     );
     let funded = get_admin_allocation(&http, &admin_url, &next_federation_id).await?;
     assert_eq!(
@@ -2883,6 +2903,30 @@ async fn fund_gateway_wallet_amount(
     mine_and_sync(bitcoin, FEDIMINT_FINALITY_BLOCKS).await?;
     wait_for_available_funds(http, admin_url, bitcoin, min_available_sats).await?;
     Ok(())
+}
+
+/// Observe running work, refusing an attach failure that still holds capacity.
+async fn wait_for_public_running(
+    rpc: &PublicRpcHarness,
+    request: &RequestLiquidityRequest,
+) -> anyhow::Result<()> {
+    for _ in 0..60 {
+        let status = get_public_status(rpc, request).await?;
+        let [item] = status.payload.status.item_statuses.as_slice() else {
+            anyhow::bail!("expected one allocation item before cancellation: {status:?}");
+        };
+        ensure!(
+            item.failure.is_none(),
+            "allocation failed before running cancellation: {item:?}"
+        );
+        match item.status {
+            ItemAllocationStatus::Running => return Ok(()),
+            ItemAllocationStatus::Pending => {}
+            _ => anyhow::bail!("allocation stopped before running cancellation: {item:?}"),
+        }
+        tokio::time::sleep(POLL_INTERVAL).await;
+    }
+    anyhow::bail!("allocation did not start running before cancellation")
 }
 
 async fn wait_for_public_completion(

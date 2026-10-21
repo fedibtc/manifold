@@ -9,14 +9,15 @@ boundaries retain only the compiled canonical core-method set or `unknown`.
 MG and the collector compile one default-deny source policy, so release review
 must inventory the actual `fedimintd` source before changing that policy. This baseline was
 read from Manifold's pinned `fedibtc/fedimint` source at
-`6b40d01d11c07067f3c5d9621c18e2882ffa6c95`. The machine-checked
-[`fedimint-metrics-v0.12.0-fedi13.tsv`](./fedimint-metrics-v0.12.0-fedi13.tsv)
+`77a80c4d76421f688483068a8cf81c048bd9319a`. The machine-checked
+[`fedimint-metrics-v0.12.0-fedi15.tsv`](./fedimint-metrics-v0.12.0-fedi15.tsv)
 enumerates every registration in the complete pinned Fedimint Rust source and
 its admission disposition. It fails the Nix check when either the lock pin or
-that source registration set drifts. The
-release-pin recheck found one new registration,
-`iroh_api_request_response_code_total` (`method`, `code`, `type` labels), and keeps it outside the current
-minimum telemetry surface. This
+that source registration set drifts. Compared with fedi13, the fedi15 source pin
+adds test-aware config-download retry delays and retains the fedi14 iOS portmapper
+fix. Neither change affects metric registrations or their labels. The existing
+`iroh_api_request_response_code_total` registration (`method`, `code`, `type`
+labels) remains outside the current minimum telemetry surface. This
 telemetry stack includes the Fedi SPv2 server source at
 `59e406974ccf7d0cd1d719a78e6cc46fd51870e6`. Re-run the inventory against the
 exact combined integration tip whenever either pin or the attached module set
@@ -27,7 +28,7 @@ Prometheus metric families of their own. "Including SPv2" therefore means this
 absence is checked from the exact Cargo-selected `fedixyz/fedi` stability-pool server
 source, not that it can be omitted from future review.
 
-The bundled Fedimint release label is `0.12.0-fedi13`, while `fedimintd` emits its
+The bundled Fedimint release label is `0.12.0-fedi15`, while `fedimintd` emits its
 upstream Cargo package version `0.12.0` in `app_start_ts{version=...}`. That
 reviewed baseline selects the current safe shapes; it is not a collector
 target-version requirement. The collector accepts bounded release metadata from
