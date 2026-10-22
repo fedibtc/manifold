@@ -753,6 +753,71 @@ fn raw_mint_v2_config(module_id: u16, embedded_module_id: u16) -> ClientConfig {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn wallet_clients_share_connections_without_sharing_between_wallets() {
+    use fedimint_api_client::api::{FederationApi, IRawFederationApi as _};
+    use fedimint_core::module::ApiRequestErased;
+    use jsonrpsee_server::{ConnectionId, RpcModule, ServerBuilder};
+
+    let server = ServerBuilder::default().build("127.0.0.1:0").await.unwrap();
+    let url =
+        fedimint_core::util::SafeUrl::parse(&format!("ws://{}", server.local_addr().unwrap()))
+            .unwrap();
+    let mut module = RpcModule::new(());
+    module
+        .register_method("connection_id", |_, _, extensions| {
+            extensions.get::<ConnectionId>().unwrap().0 as u64
+        })
+        .unwrap();
+    let server = server.start(module);
+    let temp = tempfile::tempdir().unwrap();
+    let wallet = Wallet::open(
+        temp.path().join("first"),
+        &WalletSecret([42; 64]),
+        WalletOrigin::Fresh,
+    )
+    .await
+    .unwrap();
+    let other_wallet = Wallet::open(
+        temp.path().join("second"),
+        &WalletSecret([43; 64]),
+        WalletOrigin::Fresh,
+    )
+    .await
+    .unwrap();
+    let peer = fedimint_core::PeerId::from(0);
+    let api = |wallet: &Wallet| {
+        FederationApi::new(
+            wallet.connectors.clone(),
+            BTreeMap::from([(peer, url.clone())]),
+            None,
+            None,
+        )
+    };
+    let first = api(&wallet);
+    let second = api(&wallet);
+    let other = api(&other_wallet);
+    let params = ApiRequestErased::default();
+    let (first_id, second_id, other_id) = tokio::join!(
+        first.request_raw(peer, "connection_id", &params),
+        second.request_raw(peer, "connection_id", &params),
+        other.request_raw(peer, "connection_id", &params),
+    );
+    let first_id = first_id.unwrap();
+    assert_eq!(first_id, second_id.unwrap());
+    assert_ne!(first_id, other_id.unwrap());
+    drop(first);
+    assert_eq!(
+        first_id,
+        second
+            .request_raw(peer, "connection_id", &params)
+            .await
+            .unwrap()
+    );
+    server.stop().unwrap();
+    server.stopped().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn private_invite_is_rejected_before_fedimint_client_use() {
     let invite = InviteCode::new(
         fedimint_core::util::SafeUrl::parse("https://example.com").unwrap(),

@@ -205,6 +205,11 @@ one RocksDB and runtime and may contend for those common resources. Do not add
 an automatic in-process retry loop or reset the wallet registry before process
 teardown without closing the stale-writer window first.
 
+Clients in one `Wallet` share networking endpoints and connections. Spending
+keys and database partitions stay separate. Peers can correlate these clients;
+a connection timeout can interrupt sibling clients using the same peer URL.
+Sharing reduces duplicate networking work but does not cap total requests.
+
 Payment and guardian-fee joins apply a 30-second timeout only while previewing
 the federation configuration, before the permanent open fence and any client
 database initialization. Onboarding records with the identity whether its

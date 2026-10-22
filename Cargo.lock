@@ -6487,6 +6487,7 @@ dependencies = [
  "fedimint-rocksdb",
  "fedimint-tbs",
  "futures",
+ "jsonrpsee-server",
  "libc",
  "lightning-invoice",
  "lnurl-rs",
