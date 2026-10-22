@@ -262,6 +262,13 @@ impl ManifoldGuardianService for UnavailableManifoldGuardianClient {
         Err(unavailable())
     }
 
+    async fn set_meta_fields(
+        &self,
+        _request: SignedRequest<SetMetaFieldsRequest>,
+    ) -> FmResult<SetMetaFieldsResponse> {
+        Err(unavailable())
+    }
+
     async fn propose_formation_meta(
         &self,
         _request: SignedRequest<ProposeFormationMetaRequest>,
