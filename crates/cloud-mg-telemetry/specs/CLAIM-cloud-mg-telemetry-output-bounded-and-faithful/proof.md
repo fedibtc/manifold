@@ -90,7 +90,7 @@ the payload fields inside each safe event.
    `Metadata::target`; it does not establish cryptographic crate provenance for
    arbitrary target strings.
 8. **[enum] Exit closure.** The 25 production Rust files contain seven HTTP routes,
-   six of them on the private listener, and 16 response shapes; six collector tracing call
+   six of them on the private listener, and 16 response shapes; seven collector tracing call
    sites; the single validated archive content writer and its bounded path
    constructors; 51 admitted source metric families plus exactly five generated
    families; two Iroh connection sites; and four typed capability-bearing RPC
