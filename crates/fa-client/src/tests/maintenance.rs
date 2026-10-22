@@ -1264,8 +1264,11 @@ async fn transient_read_failure_is_retried_without_changing_the_mutation() {
             .lock()
             .expect("test lock")
             .values()
-            .all(|(key, value)| key == FEDERATION_ICON_URL_META_FIELD_KEY
-                && value == "https://example.com/new.png")
+            .all(|fields| fields
+                == &[(
+                    FEDERATION_ICON_URL_META_FIELD_KEY.to_owned(),
+                    "https://example.com/new.png".to_owned(),
+                )])
     );
 }
 
@@ -1394,4 +1397,210 @@ async fn cancelled_partial_wave_reopens_and_replays_without_losing_unrelated_met
             "Survives cancellation".to_owned()
         ))
     );
+}
+
+async fn formed_client_with_reader(mg_state: &Arc<MgState>) -> TestClient {
+    let (payments, _) = TestPayments::new();
+    let reader = TestConsensusReader::new(mg_state.clone());
+    let client = open_client_with_reader(
+        MemDatabase::new().into_database(),
+        payments,
+        mg_state.clone(),
+        MgConfig::given_away(),
+        reader,
+    )
+    .await;
+    client
+        .create_at(intent(), locators(), options())
+        .await
+        .unwrap();
+    mg_state.meta_submissions.lock().expect("test lock").clear();
+    mg_state
+        .meta_request_bases
+        .lock()
+        .expect("test lock")
+        .clear();
+    client
+}
+
+#[tokio::test]
+async fn batch_update_sets_every_field_in_one_vote_per_seat() {
+    let mg_state = Arc::new(MgState::default());
+    let client = formed_client_with_reader(&mg_state).await;
+    let before = mg_state
+        .meta_consensus_raw
+        .lock()
+        .expect("test lock")
+        .clone()
+        .expect("formation published metadata");
+
+    client
+        .update_federation_metadata_batch(
+            vec![
+                FederationMetadataUpdate::name("Batch Federation").unwrap(),
+                FederationMetadataUpdate::welcome_message("Hello batch").unwrap(),
+            ],
+            maintenance_options(),
+        )
+        .await
+        .unwrap();
+
+    let seat_count = usize::from(MIN_FEDERATION_SIZE);
+    assert_eq!(mg_state.meta_batch_calls.load(Ordering::SeqCst), seat_count);
+    assert_eq!(
+        mg_state.meta_request_bases.lock().expect("test lock").len(),
+        seat_count,
+        "both fields travel in one request per seat"
+    );
+    let expected_vote = vec![
+        (
+            FEDERATION_NAME_META_FIELD_KEY.to_owned(),
+            "Batch Federation".to_owned(),
+        ),
+        (
+            WELCOME_MESSAGE_META_FIELD_KEY.to_owned(),
+            "Hello batch".to_owned(),
+        ),
+    ];
+    assert!(
+        mg_state
+            .meta_submissions
+            .lock()
+            .expect("test lock")
+            .values()
+            .all(|fields| fields == &expected_vote)
+    );
+    let mut expected: BTreeMap<String, serde_json::Value> =
+        serde_json::from_slice(&before).expect("prior metadata parses");
+    for (key, value) in expected_vote {
+        expected.insert(key, serde_json::Value::String(value));
+    }
+    let after: BTreeMap<String, serde_json::Value> = serde_json::from_slice(
+        mg_state
+            .meta_consensus_raw
+            .lock()
+            .expect("test lock")
+            .as_deref()
+            .expect("maintenance published metadata"),
+    )
+    .unwrap();
+    assert_eq!(after, expected);
+}
+
+#[tokio::test]
+async fn single_update_keeps_the_single_field_verb() {
+    let mg_state = Arc::new(MgState::default());
+    let client = formed_client_with_reader(&mg_state).await;
+
+    client
+        .update_federation_metadata_batch(
+            vec![FederationMetadataUpdate::name("Single Federation").unwrap()],
+            maintenance_options(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(mg_state.meta_batch_calls.load(Ordering::SeqCst), 0);
+    assert_eq!(
+        mg_state.meta_submissions.lock().expect("test lock").len(),
+        usize::from(MIN_FEDERATION_SIZE)
+    );
+}
+
+#[tokio::test]
+async fn empty_or_repeated_key_batch_is_rejected_before_driver_work() {
+    let mg_state = Arc::new(MgState::default());
+    let client = formed_client_with_reader(&mg_state).await;
+    let connects_before = mg_state.connect_calls.load(Ordering::SeqCst);
+
+    for updates in [
+        vec![],
+        vec![
+            FederationMetadataUpdate::name("First Name").unwrap(),
+            FederationMetadataUpdate::welcome_message("Hello").unwrap(),
+            FederationMetadataUpdate::name("Second Name").unwrap(),
+        ],
+    ] {
+        assert!(matches!(
+            client
+                .update_federation_metadata_batch(updates, maintenance_options())
+                .await,
+            Err(FaError::InvalidIntent(_))
+        ));
+    }
+    assert_eq!(
+        mg_state.connect_calls.load(Ordering::SeqCst),
+        connects_before
+    );
+    assert!(
+        mg_state
+            .meta_request_bases
+            .lock()
+            .expect("test lock")
+            .is_empty()
+    );
+}
+
+#[tokio::test]
+async fn batch_against_an_mg_without_the_verb_is_rejected_not_retried() {
+    let mg_state = Arc::new(MgState::default());
+    let client = formed_client_with_reader(&mg_state).await;
+    mg_state.legacy_meta_verbs.store(true, Ordering::SeqCst);
+
+    let error = client
+        .update_federation_metadata_batch(
+            vec![
+                FederationMetadataUpdate::name("Batch Federation").unwrap(),
+                FederationMetadataUpdate::welcome_message("Hello batch").unwrap(),
+            ],
+            maintenance_options(),
+        )
+        .await
+        .expect_err("no guardian can accept the batch verb");
+    assert!(matches!(
+        error,
+        FaError::MaintenanceRejected {
+            reason: ManifoldGuardianError::Other(_),
+            ..
+        }
+    ));
+    assert!(
+        mg_state
+            .meta_submissions
+            .lock()
+            .expect("test lock")
+            .is_empty()
+    );
+}
+
+#[test]
+fn readback_requires_every_batch_field() {
+    let fields = [
+        MetaField {
+            key: MetaFieldKey(FEDERATION_NAME_META_FIELD_KEY.to_owned()),
+            value: MetaFieldValue("Batch Federation".to_owned()),
+        },
+        MetaField {
+            key: MetaFieldKey(WELCOME_MESSAGE_META_FIELD_KEY.to_owned()),
+            value: MetaFieldValue("Hello batch".to_owned()),
+        },
+    ];
+    let meta = |value: serde_json::Value| serde_json::to_vec(&value).unwrap();
+
+    let partial = meta(serde_json::json!({
+        FEDERATION_NAME_META_FIELD_KEY: "Batch Federation",
+    }));
+    assert!(!crate::formation::meta_fields_match(Some(&partial), &fields).unwrap());
+    let one_stale = meta(serde_json::json!({
+        FEDERATION_NAME_META_FIELD_KEY: "Batch Federation",
+        WELCOME_MESSAGE_META_FIELD_KEY: "Old welcome",
+    }));
+    assert!(!crate::formation::meta_fields_match(Some(&one_stale), &fields).unwrap());
+    let complete = meta(serde_json::json!({
+        FEDERATION_NAME_META_FIELD_KEY: "Batch Federation",
+        WELCOME_MESSAGE_META_FIELD_KEY: "Hello batch",
+        "unrelated": "kept",
+    }));
+    assert!(crate::formation::meta_fields_match(Some(&complete), &fields).unwrap());
+    assert!(!crate::formation::meta_fields_match(None, &fields).unwrap());
 }

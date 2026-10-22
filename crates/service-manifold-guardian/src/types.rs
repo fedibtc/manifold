@@ -214,6 +214,16 @@ pub struct MetaFieldKey(pub String);
 #[derive(serde::Deserialize, serde::Serialize, Clone, Debug, Eq, PartialEq)]
 pub struct MetaFieldValue(pub String);
 
+/// One metadata field carried by a multi-field request.
+#[derive(serde::Deserialize, serde::Serialize, Clone, Debug, Eq, PartialEq)]
+pub struct MetaField {
+    /// Metadata field key.
+    pub key: MetaFieldKey,
+
+    /// Metadata field value.
+    pub value: MetaFieldValue,
+}
+
 /// Fedimint's established federation display-name metadata key.
 pub const FEDERATION_NAME_META_FIELD_KEY: &str = "federation_name";
 /// Fedi's established federation icon URL metadata key.

@@ -819,8 +819,12 @@ struct MgState {
     release_accepts: AtomicBool,
     create_release: Notify,
     disagreeing_invite: AtomicBool,
-    /// Seat index -> the exact (key, value) that seat accepted.
-    meta_submissions: Mutex<HashMap<usize, (String, String)>>,
+    /// Seat index -> the exact (key, value) fields that seat accepted.
+    meta_submissions: Mutex<HashMap<usize, Vec<(String, String)>>>,
+    /// Number of `set_meta_fields` votes accepted.
+    meta_batch_calls: AtomicUsize,
+    /// Answer `set_meta_fields` as an MG released before that verb.
+    legacy_meta_verbs: AtomicBool,
     /// Seat index -> the exact guardian-fee policy that seat accepted.
     fee_submissions: Mutex<HashMap<usize, (u64, String)>>,
     /// Per-seat Guardian Verification Fee account overrides for divergence
@@ -1046,6 +1050,91 @@ impl TestMg {
             &self.manager_key,
         )
         .map_err(Into::into)
+    }
+
+    /// Shared fake for both metadata verbs: one guardian vote per seat.
+    async fn accept_meta_vote(
+        &self,
+        expected_base: MetaConsensusBase,
+        fields: Vec<(String, String)>,
+    ) -> FmResult<()> {
+        let request_count = {
+            let mut bases = self.state.meta_request_bases.lock().expect("test lock");
+            bases.push((self.index, expected_base));
+            bases.len()
+        };
+        if request_count == self.state.meta_request_wave_size.load(Ordering::SeqCst) {
+            self.state.meta_request_wave_complete.notify_waiters();
+        }
+        if self
+            .state
+            .hang_meta_indices
+            .lock()
+            .expect("test lock")
+            .contains(&self.index)
+        {
+            return pending().await;
+        }
+        if self
+            .state
+            .block_meta_indices
+            .lock()
+            .expect("test lock")
+            .contains(&self.index)
+        {
+            self.state.meta_call_blocked.notify_one();
+            while !self.state.release_meta_calls.load(Ordering::SeqCst) {
+                let released = self.state.meta_call_release.notified();
+                if self.state.release_meta_calls.load(Ordering::SeqCst) {
+                    break;
+                }
+                released.await;
+            }
+        }
+        if let Some(error) = self
+            .state
+            .meta_terminal_errors
+            .lock()
+            .expect("test lock")
+            .get(&self.index)
+            .cloned()
+        {
+            return Err(error);
+        }
+        if self
+            .state
+            .stale_meta_indices
+            .lock()
+            .expect("test lock")
+            .contains(&self.index)
+        {
+            return Err(ManifoldGuardianError::MetaConsensusChanged);
+        }
+        if self.state.enforce_meta_bases.load(Ordering::SeqCst) {
+            let actual_base = MetaConsensusBase::from_consensus(
+                self.state
+                    .meta_consensus_raw
+                    .lock()
+                    .expect("test lock")
+                    .as_deref()
+                    .map(|value| {
+                        (
+                            self.state.meta_consensus_revision.load(Ordering::SeqCst),
+                            value,
+                        )
+                    }),
+            );
+            if expected_base != actual_base {
+                return Err(ManifoldGuardianError::MetaConsensusChanged);
+            }
+        }
+        self.state
+            .meta_submissions
+            .lock()
+            .expect("test lock")
+            .insert(self.index, fields);
+        self.state.meta_submission_changed.notify_one();
+        Ok(())
     }
 }
 
@@ -1523,83 +1612,36 @@ impl ManifoldGuardianService for TestMg {
         request: SignedRequest<SetMetaFieldRequest>,
     ) -> FmResult<SetMetaFieldResponse> {
         let request = request.verify(Timestamp(test_now_secs()))?.into_inner();
-        let request_count = {
-            let mut bases = self.state.meta_request_bases.lock().expect("test lock");
-            bases.push((self.index, request.expected_base));
-            bases.len()
-        };
-        if request_count == self.state.meta_request_wave_size.load(Ordering::SeqCst) {
-            self.state.meta_request_wave_complete.notify_waiters();
-        }
-        if self
-            .state
-            .hang_meta_indices
-            .lock()
-            .expect("test lock")
-            .contains(&self.index)
-        {
-            return pending().await;
-        }
-        if self
-            .state
-            .block_meta_indices
-            .lock()
-            .expect("test lock")
-            .contains(&self.index)
-        {
-            self.state.meta_call_blocked.notify_one();
-            while !self.state.release_meta_calls.load(Ordering::SeqCst) {
-                let released = self.state.meta_call_release.notified();
-                if self.state.release_meta_calls.load(Ordering::SeqCst) {
-                    break;
-                }
-                released.await;
-            }
-        }
-        if let Some(error) = self
-            .state
-            .meta_terminal_errors
-            .lock()
-            .expect("test lock")
-            .get(&self.index)
-            .cloned()
-        {
-            return Err(error);
-        }
-        if self
-            .state
-            .stale_meta_indices
-            .lock()
-            .expect("test lock")
-            .contains(&self.index)
-        {
-            return Err(ManifoldGuardianError::MetaConsensusChanged);
-        }
-        if self.state.enforce_meta_bases.load(Ordering::SeqCst) {
-            let actual_base = MetaConsensusBase::from_consensus(
-                self.state
-                    .meta_consensus_raw
-                    .lock()
-                    .expect("test lock")
-                    .as_deref()
-                    .map(|value| {
-                        (
-                            self.state.meta_consensus_revision.load(Ordering::SeqCst),
-                            value,
-                        )
-                    }),
-            );
-            if request.expected_base != actual_base {
-                return Err(ManifoldGuardianError::MetaConsensusChanged);
-            }
-        }
-        self.state
-            .meta_submissions
-            .lock()
-            .expect("test lock")
-            .insert(self.index, (request.key.0, request.value.0));
-        self.state.meta_submission_changed.notify_one();
+        self.accept_meta_vote(
+            request.expected_base,
+            vec![(request.key.0, request.value.0)],
+        )
+        .await?;
         Ok(SetMetaFieldResponse)
+    }
+
+    async fn set_meta_fields(
+        &self,
+        request: SignedRequest<SetMetaFieldsRequest>,
+    ) -> FmResult<SetMetaFieldsResponse> {
+        let request = request.verify(Timestamp(test_now_secs()))?.into_inner();
+        if self.state.legacy_meta_verbs.load(Ordering::SeqCst) {
+            // What the generated client reports for a verb the MG lacks.
+            return Err(ManifoldGuardianError::Other(
+                "local RPC call failed".to_owned(),
+            ));
+        }
+        self.state.meta_batch_calls.fetch_add(1, Ordering::SeqCst);
+        self.accept_meta_vote(
+            request.expected_base,
+            request
+                .fields
+                .into_iter()
+                .map(|field| (field.key.0, field.value.0))
+                .collect(),
+        )
+        .await?;
+        Ok(SetMetaFieldsResponse)
     }
 
     async fn propose_formation_meta(
@@ -1726,10 +1768,10 @@ impl ManifoldGuardianService for TestMg {
             .expect("test lock")
             .insert(
                 self.index,
-                (
+                vec![(
                     fedi_decentralized_domain::MG_SEAT_BINDINGS_META_FIELD_KEY.to_owned(),
                     canonical_bindings,
-                ),
+                )],
             );
         self.state
             .fee_submissions
@@ -1978,7 +2020,9 @@ impl TestConsensusReader {
         let threshold = test_federation_seats().consensus_threshold() as usize;
         let mut counts: HashMap<(String, String), usize> = HashMap::new();
         for entry in submissions.values() {
-            *counts.entry(entry.clone()).or_default() += 1;
+            if let [field] = entry.as_slice() {
+                *counts.entry(field.clone()).or_default() += 1;
+            }
         }
         counts
             .into_iter()
@@ -1989,12 +2033,15 @@ impl TestConsensusReader {
             .map(|((_, value), _)| value)
     }
 
-    fn agreed_maintenance_field(&self) -> Option<(String, String)> {
+    fn agreed_maintenance_fields(&self) -> Option<Vec<(String, String)>> {
         let submissions = self.state.meta_submissions.lock().expect("test lock");
         let threshold = test_federation_seats().consensus_threshold() as usize;
-        let mut counts: HashMap<(String, String), usize> = HashMap::new();
+        let mut counts: HashMap<Vec<(String, String)>, usize> = HashMap::new();
         for entry in submissions.values() {
-            if entry.0 != fedi_decentralized_domain::MG_SEAT_BINDINGS_META_FIELD_KEY {
+            if entry
+                .iter()
+                .all(|(key, _)| key != fedi_decentralized_domain::MG_SEAT_BINDINGS_META_FIELD_KEY)
+            {
                 *counts.entry(entry.clone()).or_default() += 1;
             }
         }
@@ -2096,7 +2143,7 @@ impl FederationConsensusReader for TestConsensusReader {
                 meta_value = Some(value);
             }
         }
-        if let Some((key, value)) = self.agreed_maintenance_field()
+        if let Some(agreed) = self.agreed_maintenance_fields()
             && self
                 .delayed_meta_reads
                 .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |reads| {
@@ -2110,7 +2157,9 @@ impl FederationConsensusReader for TestConsensusReader {
                 .transpose()
                 .expect("test metadata is valid JSON")
                 .unwrap_or_default();
-            fields.insert(key, serde_json::Value::String(value));
+            for (key, value) in agreed {
+                fields.insert(key, serde_json::Value::String(value));
+            }
             let next = serde_json::to_vec(&fields).expect("test metadata serializes");
             self.adopt(next.clone());
             meta_value = Some(next);

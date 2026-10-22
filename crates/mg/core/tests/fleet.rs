@@ -2,7 +2,8 @@ use fedi_decentralized_service_manifold_guardian::{
     DkgCompletionCallback, FEDERATION_METADATA_OBJECT_MAX_BYTES, FEDERATION_NAME_META_FIELD_KEY,
     FederationName, FederationSize, FormationSeatBinding, GetQuoteRequest, GuardianCode,
     GuardianFeeAccount, GuardianFeeRecipient, InviteCode, ManagerSignature, MetaConsensusBase,
-    MetaFieldKey, MetaFieldValue, OfferEpoch, SeatCapacityEvent, SeatHealth, ServiceStatus,
+    MetaField, MetaFieldKey, MetaFieldValue, OfferEpoch, SeatCapacityEvent, SeatHealth,
+    ServiceStatus, WELCOME_MESSAGE_META_FIELD_KEY,
 };
 use fedimint_server::config::driven::{ChildMessage, ChildState, PROTOCOL_VERSION};
 use stability_pool_client::common::Account;
@@ -3381,6 +3382,123 @@ async fn generic_meta_write_preserves_formation_owned_fields_without_revalidatin
         submitted[FEDERATION_NAME_META_FIELD_KEY],
         serde_json::Value::String("Renamed".to_owned()),
     );
+    fleet.shutdown().await;
+}
+
+fn meta_field(key: &str, value: &str) -> MetaField {
+    MetaField {
+        key: MetaFieldKey(key.to_owned()),
+        value: MetaFieldValue(value.to_owned()),
+    }
+}
+
+#[tokio::test]
+async fn batch_meta_write_submits_every_field_in_one_vote() {
+    let temp = TempDir::new().unwrap();
+    let config = config(&temp, 1, 30_986).await;
+    let fleet = open_fleet(config, Arc::new(NoWallet)).await.unwrap();
+    let (_, seat_id) = create_free_seat(&fleet, 71).await;
+    let seat = fleet.seat_by_id(&seat_id).unwrap();
+    let existing = serde_json::to_vec(&serde_json::json!({ "unrelated": "preserve me" })).unwrap();
+    let fake = fleet
+        .form_fake_child(&seat_id, running_federation(0, Some(existing.clone())))
+        .await;
+
+    seat.submit_meta_fields(
+        MetaConsensusBase::from_consensus(Some((0, &existing))),
+        vec![
+            meta_field(FEDERATION_NAME_META_FIELD_KEY, "Batch Federation"),
+            meta_field(WELCOME_MESSAGE_META_FIELD_KEY, "Hello batch"),
+        ],
+        NO_FEE_FLOOR,
+        "set_meta_fields",
+    )
+    .await
+    .unwrap();
+
+    let state = fake.state();
+    assert_eq!(state.meta_submissions.len(), 1);
+    let submitted: std::collections::BTreeMap<String, serde_json::Value> =
+        serde_json::from_slice(&state.meta_submissions[0]).unwrap();
+    assert_eq!(
+        submitted,
+        std::collections::BTreeMap::from([
+            (
+                "unrelated".to_owned(),
+                serde_json::Value::String("preserve me".to_owned())
+            ),
+            (
+                FEDERATION_NAME_META_FIELD_KEY.to_owned(),
+                serde_json::Value::String("Batch Federation".to_owned())
+            ),
+            (
+                WELCOME_MESSAGE_META_FIELD_KEY.to_owned(),
+                serde_json::Value::String("Hello batch".to_owned())
+            ),
+        ])
+    );
+    fleet.shutdown().await;
+}
+
+#[tokio::test]
+async fn batch_meta_write_refuses_the_whole_batch_without_child_access() {
+    let temp = TempDir::new().unwrap();
+    let config = config(&temp, 1, 30_987).await;
+    let fleet = open_fleet(config, Arc::new(NoWallet)).await.unwrap();
+    let (_, seat_id) = create_free_seat(&fleet, 72).await;
+    let seat = fleet.seat_by_id(&seat_id).unwrap();
+    let fake = fleet
+        .form_fake_child(&seat_id, running_federation(0, None))
+        .await;
+    let baseline = fake.state();
+    let valid = meta_field(FEDERATION_NAME_META_FIELD_KEY, "Batch Federation");
+
+    // `true` expects `MetaKeyRefused`, `false` expects `MetaValueInvalid`.
+    for (fields, key_refused) in [
+        (
+            vec![valid.clone(), meta_field("fedi:something_else", "anything")],
+            true,
+        ),
+        (
+            vec![
+                valid.clone(),
+                meta_field(WELCOME_MESSAGE_META_FIELD_KEY, ""),
+            ],
+            false,
+        ),
+        (vec![], false),
+        (
+            vec![
+                valid.clone(),
+                meta_field(FEDERATION_NAME_META_FIELD_KEY, "Other Federation"),
+            ],
+            false,
+        ),
+    ] {
+        let result = seat
+            .submit_meta_fields(
+                MetaConsensusBase::Absent,
+                fields,
+                NO_FEE_FLOOR,
+                "set_meta_fields",
+            )
+            .await;
+        if key_refused {
+            assert!(matches!(result, Err(SeatVerbError::MetaKeyRefused)));
+        } else {
+            assert!(matches!(result, Err(SeatVerbError::MetaValueInvalid)));
+        }
+        let child_calls = fake.state();
+        assert_eq!(
+            child_calls.client_config_calls,
+            baseline.client_config_calls
+        );
+        assert_eq!(
+            child_calls.meta_consensus_calls,
+            baseline.meta_consensus_calls
+        );
+        assert!(child_calls.meta_submissions.is_empty());
+    }
     fleet.shutdown().await;
 }
 
