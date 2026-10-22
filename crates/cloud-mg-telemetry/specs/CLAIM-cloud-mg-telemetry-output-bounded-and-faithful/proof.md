@@ -122,7 +122,8 @@ the payload fields inside each safe event.
    whose seat counts agree, are kept, and that an invalid record leaves the
    last valid one in place. `stored_reports_validate_again_when_read` shows
    that decoding a stored row applies the same checks; `Store::mg_reports`
-   decodes every row it exports and skips one that fails.
+   decodes every row it exports and skips one that fails. A skip logs one
+   fixed warning per read, with the report kind and the count only.
    `only_the_mg_journal_stores_seat_reports` shows a seat journal batch stores
    no report.
    `a_stated_time_never_makes_a_report_fresher_than_its_arrival` and

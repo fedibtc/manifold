@@ -199,7 +199,9 @@ operator limit, which has no upper bound. These checks
 bound what one MG can assert and make its counts
 agree with each other; they cannot show that the counts are true. Seat
 journals, other records and invalid records are ignored. Decoding never
-changes the archived bytes or rejects a batch.
+changes the archived bytes or rejects a batch. An MG whose release journals
+neither event has no report and is absent from the exports: absence means no
+report, not an offline MG.
 
 A report's observation time is its event timestamp, or the reception time
 when that is earlier. The event time is MG-asserted, so it can make a report

@@ -1039,7 +1039,8 @@ impl Store {
 
     /// The stored report of kind `T` per active, unexpired target, ordered by
     /// MG public key. `now_secs` is Unix seconds; a report observed after it
-    /// is left out, and a stored row that no longer validates is skipped.
+    /// is left out, and a stored row that no longer validates is skipped and
+    /// counted in a warning.
     pub(crate) async fn mg_reports<T: MgReport>(
         &self,
         now_secs: i64,
@@ -1057,6 +1058,7 @@ impl Store {
         .fetch_all(&self.pool)
         .await?;
         let mut reports = Vec::with_capacity(rows.len());
+        let mut skipped = 0_usize;
         for row in rows {
             let report_json: String = row.try_get("report_json")?;
             if let Ok(report) = serde_json::from_str(&report_json) {
@@ -1065,7 +1067,18 @@ impl Store {
                     observed_at_ms: row.try_get("observed_at_ms")?,
                     report,
                 });
+            } else {
+                skipped += 1;
             }
+        }
+        if skipped > 0 {
+            // The message and fields are fixed or counts. They contain no MG
+            // identity and no stored value.
+            tracing::warn!(
+                kind = T::KIND.as_str(),
+                skipped,
+                "stored seat reports failed revalidation"
+            );
         }
         Ok(reports)
     }

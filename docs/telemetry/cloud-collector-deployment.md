@@ -180,6 +180,16 @@ only for bounds and agreement; `ARCH-cloud-mg-telemetry` lists the rules. A
 consumer of these routes needs network admission to port 8176, and with it
 reads `/metrics` and every invite in `/v1/federations` as well.
 
+An MG whose release journals neither event never appears in these exports, not
+even with `null` fields. Absence means that the collector has no report from
+the MG, not that the MG is offline, so the reports are not the list of MGs.
+
+These routes come with migration `0006`, which adds the `mg_reports` table. An
+older collector image does not start on a database that holds a migration it
+does not know. To roll back, restore the coupled backup taken before the
+upgrade, or stop the collector, drop `mg_reports` and delete the version 6 row
+from `_sqlx_migrations`.
+
 Prometheus must preserve the collector's observation timestamps:
 
 ```yaml
