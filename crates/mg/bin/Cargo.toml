@@ -68,6 +68,9 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 [target.'cfg(not(any(target_env = "msvc", target_os = "ios", target_os = "android")))'.dependencies]
 tikv-jemallocator = { version = "0.6", features = ["profiling"] }
 
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = "0.2"
+
 [build-dependencies]
 fedimint-build = { workspace = true }
 

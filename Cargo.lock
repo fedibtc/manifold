@@ -6368,6 +6368,7 @@ dependencies = [
  "futures",
  "hex",
  "iroh 1.0.3",
+ "libc",
  "mg-core",
  "mg-fedimint",
  "mg-nostr",
