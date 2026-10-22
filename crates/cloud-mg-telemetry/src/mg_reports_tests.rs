@@ -108,21 +108,24 @@ fn seat_counts_must_agree_with_every_stated_limit() {
         // More free seats than the memory limit, or than the operator limit.
         CAPACITY.replace("\"available_seats\":6", "\"available_seats\":10"),
         format!("\"max_seats\":1,{CAPACITY}"),
-        // A smallest limit above the policy maximum, or free seats above it
-        // with no limit stated.
-        format!(
-            "\"max_seats\":{},\"available_seats\":1,\"accepting_seats\":true",
-            max + 1
+        // A policy limit above the policy maximum.
+        CAPACITY.replace(
+            "\"policy_max_seats\":12",
+            &format!("\"policy_max_seats\":{}", max + 1),
         ),
-        format!("\"available_seats\":{},\"accepting_seats\":true", max + 1),
+        // No limit at all.
+        "\"available_seats\":1,\"accepting_seats\":true".to_owned(),
     ] {
         assert_eq!(capacity(&fields), None, "{fields}");
     }
-    assert!(
-        capacity(&format!(
-            "\"available_seats\":{max},\"accepting_seats\":true"
-        ))
-        .is_some()
+    // Before 0.1.4 the operator limit is the only one and has no upper bound.
+    let older = format!(
+        "\"max_seats\":{},\"available_seats\":{max},\"accepting_seats\":true",
+        max + 44
+    );
+    assert_eq!(
+        capacity(&older).map(|report| report.report.max_seats),
+        Some(Some(max + 44))
     );
 }
 

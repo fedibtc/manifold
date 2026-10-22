@@ -63,9 +63,10 @@ impl MgReport for SeatCapacity {
 impl TryFrom<SeatCapacityEvent> for SeatCapacity {
     type Error = &'static str;
 
-    /// Free seats must not exceed any stated limit, and neither free seats nor
-    /// the smallest limit may exceed the most seats a setup-payment policy
-    /// allows one MG.
+    /// Every release states at least one limit, and free seats must not
+    /// exceed any of them. Only the policy limit has an upper bound: the most
+    /// seats a setup-payment policy allows one MG. Releases before 0.1.4
+    /// state only the operator limit, which has none.
     fn try_from(event: SeatCapacityEvent) -> Result<Self, Self::Error> {
         let SeatCapacityEvent {
             available_seats,
@@ -75,15 +76,18 @@ impl TryFrom<SeatCapacityEvent> for SeatCapacity {
             policy_max_seats,
             mg_version,
         } = event;
-        let smallest_limit = [max_seats, memory_max_seats, policy_max_seats]
+        if policy_max_seats.is_some_and(|limit| limit > SETUP_PAYMENT_MAX_SEATS_PER_MG) {
+            return Err("policy limit above the setup-payment maximum");
+        }
+        let Some(smallest_limit) = [max_seats, memory_max_seats, policy_max_seats]
             .into_iter()
             .flatten()
-            .min();
-        if smallest_limit.is_some_and(|limit| available_seats > limit) {
+            .min()
+        else {
+            return Err("no seat limit stated");
+        };
+        if available_seats > smallest_limit {
             return Err("more free seats than a stated limit");
-        }
-        if smallest_limit.unwrap_or(available_seats) > SETUP_PAYMENT_MAX_SEATS_PER_MG {
-            return Err("seat count above the setup-payment maximum");
         }
         Ok(Self {
             available_seats,

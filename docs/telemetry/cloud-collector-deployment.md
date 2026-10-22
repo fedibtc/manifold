@@ -173,9 +173,9 @@ Times are RFC 3339 UTC. A field that the MG's release does not journal is
 `null`: releases before 0.1.4 journal only `available_seats`,
 `accepting_seats` and `max_seats`, and no readiness uptime fields.
 `max_seats` is also `null` while the operator limit is automatic. A store
-failure answers 503. Before 0.1.4 the operator limit had no upper bound; a
-report whose smallest limit exceeds the setup-payment maximum of 256 seats
-per MG is not kept. The values are MG-asserted and checked
+failure answers 503. Only `policy_max_seats` is capped, at the setup-payment
+maximum of 256 seats per MG; before 0.1.4 the operator limit is the only one
+and has no upper bound. The values are MG-asserted and checked
 only for bounds and agreement; `ARCH-cloud-mg-telemetry` lists the rules. A
 consumer of these routes needs network admission to port 8176, and with it
 reads `/metrics` and every invite in `/v1/federations` as well.

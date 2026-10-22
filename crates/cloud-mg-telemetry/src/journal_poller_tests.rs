@@ -1383,7 +1383,7 @@ async fn only_the_mg_journal_stores_seat_reports() {
         .unwrap();
     let incarnation = incarnation();
     let record = format!(
-        "{{\"timestamp\":\"{}\",\"fields\":{{\"message\":\"seat capacity\",\"safe_to_share\":true,\"available_seats\":1,\"accepting_seats\":true}}}}\n",
+        "{{\"timestamp\":\"{}\",\"fields\":{{\"message\":\"seat capacity\",\"safe_to_share\":true,\"max_seats\":3,\"available_seats\":1,\"accepting_seats\":true}}}}\n",
         format_rfc3339_millis(timestamp * 1000).unwrap()
     );
     for (journal, stored) in [

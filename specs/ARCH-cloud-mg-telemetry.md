@@ -192,10 +192,10 @@ While validating a batch from the MG journal, the collector keeps the last
 record of each kind, in journal order, that has an RFC 3339 timestamp and
 whose fields validate: counts as unsigned 32-bit integers, codes and versions
 as short bounded ASCII, and percentages from 0 to 100. A capacity record also
-needs free seats no greater than any stated limit, and free seats or the
-smallest stated limit no greater than the most seats a setup-payment policy
-allows one MG. Before 0.1.4 the operator limit had no upper bound, so a
-report whose smallest limit is above that maximum is not kept. These checks
+needs at least one stated limit, free seats no greater than any of them, and
+a policy limit no greater than the most seats a setup-payment policy allows
+one MG. Every release states a limit. Releases before 0.1.4 state only the
+operator limit, which has no upper bound. These checks
 bound what one MG can assert and make its counts
 agree with each other; they cannot show that the counts are true. Seat
 journals, other records and invalid records are ignored. Decoding never
