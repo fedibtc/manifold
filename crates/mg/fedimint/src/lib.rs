@@ -207,6 +207,10 @@ impl ClientScope {
 /// federation under one data directory and mnemonic-derived wallet secret.
 pub struct Wallet {
     database: Database,
+    /// Reuse endpoints and connections instead of multiplying sockets and DNS
+    /// lookups per scope. Peers can correlate scopes through these endpoints;
+    /// spending keys and database prefixes remain separate.
+    connectors: ConnectorRegistry,
     /// Federation id to its never-reused prefix-free consensus database prefix.
     prefixes: Arc<RwLock<BTreeMap<ClientScope, u64>>>,
     /// Serializes global prefix allocation; federation joins remain independently locked.
@@ -306,6 +310,9 @@ impl Wallet {
         let prefixes = load_prefixes(&database).await?;
         Ok(Self {
             database,
+            connectors: ConnectorRegistry::build_from_client_defaults()
+                .bind()
+                .await?,
             prefixes: Arc::new(RwLock::new(prefixes)),
             prefix_allocation: Mutex::new(()),
             _data_dir_lock: data_dir_lock,
@@ -389,7 +396,7 @@ impl Wallet {
             let preview = match tokio::time::timeout(preview_timeout, async {
                 client_builder(guardian_key)
                     .await?
-                    .preview(connectors().await?, invite_code)
+                    .preview(self.connectors.clone(), invite_code)
                     .await
                     .context("download federation config from invite code")
             })
@@ -515,7 +522,7 @@ impl Wallet {
         let root = RootSecret::StandardDoubleDerive(client_root.clone());
         let client = client_builder(guardian_key)
             .await?
-            .open(connectors().await?, database.clone(), root)
+            .open(self.connectors.clone(), database.clone(), root)
             .await
             .with_context(|| operation.to_owned())?;
         // A crashed fresh join can leave Pending(Fresh). Upstream open turns it
@@ -588,7 +595,7 @@ impl Wallet {
         let client = client_builder(guardian_key)
             .await?
             .open(
-                connectors().await?,
+                self.connectors.clone(),
                 database.clone(),
                 RootSecret::StandardDoubleDerive(client_root.clone()),
             )
@@ -1420,10 +1427,6 @@ async fn client_builder(
     };
     builder.with_module(stability_pool);
     Ok(builder)
-}
-
-async fn connectors() -> anyhow::Result<ConnectorRegistry> {
-    ConnectorRegistry::build_from_client_defaults().bind().await
 }
 
 #[cfg(test)]

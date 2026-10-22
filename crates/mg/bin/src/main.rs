@@ -9,6 +9,8 @@
 //! receive a parent-death signal if the MG is hard-killed.
 
 mod duplicate_instance;
+#[cfg(target_os = "linux")]
+mod file_limit;
 mod memory_report;
 #[cfg(feature = "embedded-operator-ui")]
 mod operator_ui;
@@ -175,6 +177,11 @@ enum AdminHttpAuthArg {
 const MAX_BLOCKING_THREADS: usize = 16;
 
 fn main() -> anyhow::Result<()> {
+    // Do this before opening sockets or spawning seats, which inherit the limit.
+    #[cfg(target_os = "linux")]
+    if let Err(error) = file_limit::raise() {
+        eprintln!("could not raise open-file limit; continuing with existing limit: {error}");
+    }
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .max_blocking_threads(MAX_BLOCKING_THREADS)
