@@ -27,4 +27,6 @@ pub struct GuardianSessionReport {
     pub session_count: u64,
     /// Last contribution per peer. None means unknown, never session zero.
     pub last_contribution: BTreeMap<PeerId, Option<u64>>,
+    /// Peers explicitly reported disconnected. Missing replies are not included.
+    pub disconnected: BTreeSet<PeerId>,
 }

@@ -6,15 +6,15 @@ use std::str::FromStr as _;
 use std::time::Duration;
 
 use fedi_decentralized_domain::{FederationId, GuardianReports, GuardianSessionReport, InviteCode};
-use fedimint_api_client::api::{DynGlobalApi, IGlobalFederationApi, StatusResponse};
+use fedimint_api_client::api::{
+    DynGlobalApi, IGlobalFederationApi, LegacyP2PConnectionStatus, StatusResponse,
+};
 use fedimint_api_client::download_from_invite_code;
-use fedimint_core::PeerId;
 use fedimint_core::endpoint_constants::{PEER_AVAILABILITY_ENDPOINT, STATUS_ENDPOINT};
 use fedimint_core::invite_code::InviteCode as FedimintInviteCode;
 use fedimint_core::module::ApiRequestErased;
 use fedimint_core::runtime::timeout;
 use futures_util::future::join_all;
-use serde_json::Value;
 
 use crate::{ConnectorRegistry, FederationPreviewError};
 
@@ -95,6 +95,14 @@ pub async fn read_guardian_reports_from_api(
                 peer,
                 GuardianSessionReport {
                     session_count: status.session_count,
+                    disconnected: status
+                        .status_by_peer
+                        .iter()
+                        .filter(|(_, status)| {
+                            status.connection_status == LegacyP2PConnectionStatus::Disconnected
+                        })
+                        .map(|(peer, _)| *peer)
+                        .collect(),
                     last_contribution: status
                         .status_by_peer
                         .into_iter()
@@ -113,6 +121,9 @@ pub async fn read_guardian_reports_from_api(
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeSet;
+
+    use fedimint_core::PeerId;
+    use serde_json::Value;
 
     use fedimint_api_client::api::global_api::with_cache::GlobalFederationApiWithCacheExt as _;
     use fedimint_api_client::api::{
@@ -179,14 +190,24 @@ mod tests {
             server: ServerStatusLegacy::ConsensusRunning,
             federation: Some(LegacyFederationStatus {
                 session_count: 600,
-                status_by_peer: BTreeMap::from([(
-                    PeerId::from(3),
-                    LegacyPeerStatus {
-                        connection_status: LegacyP2PConnectionStatus::Disconnected,
-                        last_contribution: Some(100),
-                        flagged: true,
-                    },
-                )]),
+                status_by_peer: BTreeMap::from([
+                    (
+                        PeerId::from(2),
+                        LegacyPeerStatus {
+                            connection_status: LegacyP2PConnectionStatus::Connected,
+                            last_contribution: None,
+                            flagged: false,
+                        },
+                    ),
+                    (
+                        PeerId::from(3),
+                        LegacyPeerStatus {
+                            connection_status: LegacyP2PConnectionStatus::Disconnected,
+                            last_contribution: Some(100),
+                            flagged: true,
+                        },
+                    ),
+                ]),
                 ..Default::default()
             }),
         })
@@ -202,6 +223,10 @@ mod tests {
     fn assert_partial_reports(reports: &GuardianReports) {
         assert_eq!(reports.peers.len(), 4);
         assert_eq!(reports.sessions.len(), 2);
+        assert_eq!(
+            reports.sessions[&PeerId::from(0)].disconnected,
+            BTreeSet::from([PeerId::from(3)])
+        );
         assert_eq!(
             reports.sessions[&PeerId::from(0)].last_contribution[&PeerId::from(3)],
             Some(100)

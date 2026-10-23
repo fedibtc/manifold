@@ -1854,6 +1854,7 @@ fn foreign_peer_attestation() -> fedi_decentralized_domain::MgPeerAttestation {
 /// exact failure the port's contract warns about.
 #[derive(Clone)]
 struct TestConsensusReader {
+    guardian_reports: Arc<Mutex<Option<fedi_decentralized_domain::GuardianReports>>>,
     state: Arc<MgState>,
     config: fedimint_core::config::ClientConfig,
     failures: Arc<AtomicUsize>,
@@ -1871,6 +1872,7 @@ impl TestConsensusReader {
         Self {
             state,
             config: test_federation_config(),
+            guardian_reports: Arc::new(Mutex::new(None)),
             failures: Arc::new(AtomicUsize::new(0)),
             delayed_meta_reads: Arc::new(AtomicUsize::new(0)),
             offline_peers: Arc::new(Mutex::new(BTreeSet::new())),
@@ -1996,11 +1998,14 @@ impl TestConsensusReader {
 impl FederationConsensusReader for TestConsensusReader {
     async fn read_guardian_reports(
         &self,
-        invite_code: &InviteCode,
+        invite: &InviteCode,
     ) -> Result<fedi_decentralized_domain::GuardianReports, FederationConsensusError> {
-        UnavailableFederationConsensusReader
-            .read_guardian_reports(invite_code)
-            .await
+        self.check_invite(invite)?;
+        self.guardian_reports
+            .lock()
+            .unwrap()
+            .clone()
+            .ok_or_else(|| FederationConsensusError::new("no test reports"))
     }
 
     async fn read_consensus(
@@ -14251,4 +14256,82 @@ async fn malformed_selected_quote_returns_to_selection_with_blame() {
     assert_eq!(client.status(), FaStatus::Idle);
     assert_eq!(payment_state.create_calls.load(Ordering::SeqCst), 0);
     assert_eq!(state.create_calls.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn eligibility_missing_reports_and_unverified_holder_do_not_create_candidates() {
+    let (client, _, _, _) = formed_client_for_liquidity().await;
+    let result = client.check_replacement_candidates().await.unwrap();
+    assert!(result.candidates.is_empty());
+    assert_eq!(
+        result.federation_id.0,
+        formation::invite_federation_id(formation(&client.status()).invite_code.as_ref().unwrap())
+            .unwrap()
+            .to_string()
+    );
+}
+
+#[tokio::test]
+async fn eligibility_uses_formed_seats_and_rejects_another_federations_reports() {
+    let (client, _, _, _) = formed_client_for_liquidity().await;
+    let authority = client
+        .post_formed_authority(client.fa_id().unwrap())
+        .await
+        .unwrap();
+    let target = &authority.seats[0];
+    let federation_id = FederationId(
+        formation::invite_federation_id(&authority.invite_code)
+            .unwrap()
+            .to_string(),
+    );
+    let mut reports = fedi_decentralized_domain::GuardianReports {
+        federation_id,
+        peers: authority
+            .seats
+            .iter()
+            .map(|seat| PeerId::from(seat.index))
+            .collect(),
+        sessions: BTreeMap::new(),
+        availability: BTreeMap::new(),
+    };
+    for seat in &authority.seats[1..] {
+        reports.sessions.insert(
+            PeerId::from(seat.index),
+            fedi_decentralized_domain::GuardianSessionReport {
+                session_count: 1000,
+                disconnected: BTreeSet::new(),
+                last_contribution: BTreeMap::from([(PeerId::from(target.index), Some(1))]),
+            },
+        );
+    }
+    *client
+        .inner
+        .ports
+        .consensus_reader
+        .guardian_reports
+        .lock()
+        .unwrap() = Some(reports.clone());
+    let check = client.check_replacement_candidates().await.unwrap();
+    assert_eq!(check.candidates.len(), 1);
+    assert_eq!(check.candidates[0].seat_id, target.seat_id);
+    assert!(matches!(
+        check.candidates[0].reasons.as_slice(),
+        [ReplacementReason::MissedSessions { .. }]
+    ));
+    reports.federation_id = FederationId("another federation".into());
+    *client
+        .inner
+        .ports
+        .consensus_reader
+        .guardian_reports
+        .lock()
+        .unwrap() = Some(reports);
+    assert!(
+        client
+            .check_replacement_candidates()
+            .await
+            .unwrap()
+            .candidates
+            .is_empty()
+    );
 }

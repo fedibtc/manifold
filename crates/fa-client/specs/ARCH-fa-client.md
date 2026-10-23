@@ -624,6 +624,22 @@ operation itself stores no second mutable maintenance state: cancelling or
 crashing is safe because a later identical request rereads consensus and either
 observes success or replays the idempotent typed mutation.
 
+## Replacement eligibility
+
+The FA checks the other guardians' public reports and authenticated MG trust
+material against the signed setup-payment policy. It recommends replacement
+for prolonged absence, a low weekly or monthly peer score, or confirmed holder
+credential revocation. Older guardians supply session participation instead of
+last-seen timestamps; the FA estimates duration at three minutes per missed
+session. Historical absence decisions need f+1 other reporters. If neither
+last-seen nor session history is sufficient, f+1 other peers explicitly reporting
+current disconnection also qualify; this fallback does not establish duration.
+Sufficient recent history prevents that fallback. Missing responses alone never
+qualify. Peer scores use Fedimint's coverage-aware merge. Reports use the saved
+invite first, then alternate MG invites one at a time. A policy refresh timeout
+can use an authenticated retained publication; invalid or missing policy fails. The policy's absence duration and weekly/monthly score floors are
+shared through [SPEC-setup-payment-federations](../../../specs/SPEC-setup-payment-federations.md).
+
 ## Modules
 
 - `state` — public intent, status, and phase types.
