@@ -54,6 +54,10 @@ fn advertisement_signature_round_trips_and_pins_the_payload() {
     );
     verify_advertisement_self_signature(&document).unwrap();
     let value = serde_json::to_value(&document).unwrap();
+    assert_eq!(
+        parse_and_verify_advertisement(&value.to_string()).unwrap(),
+        document
+    );
     let proof = serde_json::to_value(&document.proof).unwrap();
     assert_eq!(
         value,
@@ -154,6 +158,7 @@ fn pinned_signed_advertisement_fixture_stays_accepted() {
     let document =
         serde_json::from_str::<AdvertisementDocument>(FIXTURE).expect("pinned fixture parses");
     verify_advertisement_self_signature(&document).expect("pinned fixture stays verifiable");
+    assert_eq!(parse_and_verify_advertisement(FIXTURE).unwrap(), document);
 
     // Literal expectations, not production constants, so a constant change
     // cannot silently move implementation and expectation together.
@@ -178,6 +183,212 @@ fn pinned_signed_advertisement_fixture_stays_accepted() {
         AdvertisementDocumentError::InvalidProof,
         "swapping the advertised service pubkey must invalidate the signature",
     );
+}
+
+// Literal canonical payload, independently ordered and encoded rather than
+// reconstructed through AdvertisementPayload or the production digest helper.
+// Includes extensions at the root and in every protocol-owned nested object.
+const EXTENDED_CANONICAL_PAYLOAD: &str = r#"{"api_endpoints":[{"future":{"hints":[null,true,"x"]},"transport":"iroh","url":"iroh://endpoint"}],"availability":{"federation_sizes":[7,13],"fedimintd_version":"0.8.1+fedi","future":false},"expires_at":1730007200,"fman_id_pubkey":"f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f9","future":[1,0,1e+30,0.002,9007199254740992],"holder_authorizations":[],"issued_at":1730000000,"plans":[{"InfiniteBestEffort":{"future":{"a":null},"price_msats":250000}}],"service_pubkey":"f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f9","version":1}"#;
+
+fn extended_wire_document() -> serde_json::Value {
+    let keys = Keys::parse(&format!("{:064x}", 3)).unwrap();
+    let digest = Sha256::new()
+        .chain_update(b"fedi-fman-advertisement/v1\0")
+        .chain_update(EXTENDED_CANONICAL_PAYLOAD)
+        .finalize();
+    // Independently calculated with Python hashlib over the literal above.
+    assert_eq!(
+        format!("{digest:x}"),
+        "6f2b407ab3ae14ac42e2141178b3b21fb1de8ea149b0baf0eb3fb8e32c6e5e84"
+    );
+    let signature = keys.sign_schnorr(&nostr::secp256k1::Message::from_digest(digest.into()));
+    serde_json::json!({
+        "payload": serde_json::from_str::<serde_json::Value>(EXTENDED_CANONICAL_PAYLOAD).unwrap(),
+        "proof": SchnorrSignatureProof { signature },
+    })
+}
+
+#[test]
+fn complete_extended_payload_is_authenticated_before_projection() {
+    let wire = extended_wire_document();
+    assert_eq!(
+        serde_json_canonicalizer::to_string(&wire["payload"]).unwrap(),
+        EXTENDED_CANONICAL_PAYLOAD
+    );
+    let document = parse_and_verify_advertisement(&wire.to_string()).unwrap();
+    assert_eq!(
+        document.payload,
+        serde_json::from_value::<AdvertisementPayload>(wire["payload"].clone()).unwrap()
+    );
+    // This fixture would fail with the old lossy verification path.
+    assert_eq!(
+        verify_advertisement_self_signature(&document),
+        Err(AdvertisementDocumentError::InvalidProof)
+    );
+    for pointer in [
+        "/payload/future",
+        "/payload/api_endpoints/0/future",
+        "/payload/availability/future",
+        "/payload/plans/0/InfiniteBestEffort/future",
+        "/payload/service_pubkey",
+    ] {
+        let mut tampered = wire.clone();
+        *tampered.pointer_mut(pointer).unwrap() = serde_json::json!("changed");
+        assert_eq!(
+            parse_and_verify_advertisement(&tampered.to_string()),
+            Err(AdvertisementDocumentError::InvalidProof),
+            "{pointer}"
+        );
+    }
+    let mut removed = wire.clone();
+    removed["payload"].as_object_mut().unwrap().remove("future");
+    let mut added = wire.clone();
+    added["payload"]["another_extension"] = serde_json::json!(null);
+    for tampered in [removed, added] {
+        assert_eq!(
+            parse_and_verify_advertisement(&tampered.to_string()),
+            Err(AdvertisementDocumentError::InvalidProof)
+        );
+    }
+
+    // Same JCS value despite order, whitespace, escaped names, and equivalent
+    // number spellings, including the pinned canonicalizer's f64 rounding.
+    let equivalent_payload = EXTENDED_CANONICAL_PAYLOAD
+        .replace(r#""version":1"#, r#""\u0076ersion":1"#)
+        .replace(
+            "[1,0,1e+30,0.002,9007199254740992]",
+            "[1.0,-0.0,1E30,2e-3,9007199254740993]",
+        );
+    let equivalent = format!(
+        " {{ \"proof\": {}, \"payload\": {equivalent_payload} }} ",
+        wire["proof"]
+    );
+    assert_eq!(
+        parse_and_verify_advertisement(&equivalent).unwrap(),
+        document
+    );
+}
+
+#[test]
+fn wire_parser_rejects_ambiguous_or_unbounded_json() {
+    let wire = extended_wire_document().to_string();
+    let bad_inputs = [
+        wire.replace(r#""version":1"#, r#""version":1,"version":1"#),
+        wire.replace(r#""future":false"#, r#""future":false,"future":false"#),
+        wire.replace(r#""future":false"#, r#""future":false,"\u0066uture":false"#),
+        wire.replace(r#""a":null"#, r#""a":null,"a":null"#),
+        wire.replace(r#""payload":"#, r#""payload":{},"payload":"#),
+        wire.replace(r#""proof":"#, r#""proof":{},"proof":"#),
+        wire.replace(r#""future":false"#, r#""future":1e9999"#),
+        wire.replace(r#""future":false"#, r#""future":NaN"#),
+        wire.replace(
+            r#""future":false"#,
+            &format!(r#""future":{}0{}"#, "[".repeat(128), "]".repeat(128)),
+        ),
+        format!("{wire} null"),
+        format!("{wire}{}", " ".repeat(256 * 1024)),
+        "null".to_owned(),
+        "[]".to_owned(),
+        r#"{"payload":[],"proof":{}}"#.to_owned(),
+        r#"{"payload":{},"proof":[]}"#.to_owned(),
+        "{".to_owned(),
+    ];
+    for input in bad_inputs {
+        assert_eq!(
+            parse_and_verify_advertisement(&input),
+            Err(AdvertisementDocumentError::InvalidDocument)
+        );
+    }
+}
+
+#[test]
+fn wire_parser_preserves_real_serde_json_marker_objects() {
+    let keys = Keys::parse(&format!("{:064x}", 3)).unwrap();
+    for marker in [
+        "$serde_json::private::Number",
+        "$serde_json::private::RawValue",
+    ] {
+        // Do not construct this through from_str<Value>: under unified serde
+        // features that parser itself interprets private-marker objects.
+        let canonical = EXTENDED_CANONICAL_PAYLOAD.replace(
+            r#""future":false"#,
+            &format!(r#""future":{{"{marker}":"1"}}"#),
+        );
+        let digest = Sha256::new()
+            .chain_update(b"fedi-fman-advertisement/v1\0")
+            .chain_update(&canonical)
+            .finalize()
+            .into();
+        let proof = serde_json::to_string(&SchnorrSignatureProof {
+            signature: keys.sign_schnorr(&nostr::secp256k1::Message::from_digest(digest)),
+        })
+        .unwrap();
+        let wire = format!(r#"{{"payload":{canonical},"proof":{proof}}}"#);
+        parse_and_verify_advertisement(&wire).unwrap();
+        let tampered = wire.replace(&format!(r#"{{"{marker}":"1"}}"#), "1");
+        assert_eq!(
+            parse_and_verify_advertisement(&tampered),
+            Err(AdvertisementDocumentError::InvalidProof)
+        );
+    }
+}
+
+#[test]
+fn wire_parser_retains_the_default_json_container_depth_limit() {
+    for depth in [126, 127, 128, 129] {
+        let wire = format!("{}0{}", "[".repeat(depth), "]".repeat(depth));
+        let ordinary = serde_json::from_str::<serde_json::Value>(&wire);
+        let unique = serde_json::from_str::<wire_json::UniqueValue>(&wire);
+        assert_eq!(unique.is_ok(), ordinary.is_ok(), "depth {depth}");
+        assert_eq!(unique.is_ok(), depth < 128, "depth {depth}");
+    }
+}
+
+#[test]
+fn signed_invalid_known_fields_remain_schema_errors() {
+    let keys = Keys::parse(&format!("{:064x}", 3)).unwrap();
+    let original = extended_wire_document();
+    for (field, value) in [
+        ("version", serde_json::json!(2)),
+        ("issued_at", serde_json::json!("yesterday")),
+        ("api_endpoints", serde_json::json!({})),
+        ("plans", serde_json::json!([{"Unknown": {}}])),
+        ("service_pubkey", serde_json::Value::Null),
+    ] {
+        let mut wire = original.clone();
+        if value.is_null() {
+            wire["payload"].as_object_mut().unwrap().remove(field);
+        } else {
+            wire["payload"][field] = value;
+        }
+        // Sign the complete invalid payload, not a typed projection.
+        let canonical = serde_json_canonicalizer::to_vec(&wire["payload"]).unwrap();
+        let digest = Sha256::new()
+            .chain_update(b"fedi-fman-advertisement/v1\0")
+            .chain_update(canonical)
+            .finalize()
+            .into();
+        wire["proof"] = serde_json::to_value(SchnorrSignatureProof {
+            signature: keys.sign_schnorr(&nostr::secp256k1::Message::from_digest(digest)),
+        })
+        .unwrap();
+        assert_eq!(
+            parse_and_verify_advertisement(&wire.to_string()),
+            Err(AdvertisementDocumentError::InvalidDocument),
+            "{field}"
+        );
+    }
+    for proof in [
+        serde_json::json!({}),
+        serde_json::json!({"signature": "bad"}),
+    ] {
+        let mut wire = original.clone();
+        wire["proof"] = proof;
+        assert_eq!(
+            parse_and_verify_advertisement(&wire.to_string()),
+            Err(AdvertisementDocumentError::InvalidDocument)
+        );
+    }
 }
 
 /// One structurally complete holder-authorization envelope at realistic
@@ -289,6 +500,7 @@ fn worst_case_advertisement_event_fits_the_per_event_cap() {
     };
     let document = sign_advertisement(payload, &mg).expect("worst-case advertisement signs");
     let content = serde_json::to_string(&document).expect("worst-case advertisement serializes");
+    assert_eq!(parse_and_verify_advertisement(&content).unwrap(), document);
     let event = nostr::EventBuilder::new(nostr::Kind::Custom(MG_ADVERTISEMENT_EVENT_KIND), content)
         .tag(nostr::Tag::identifier(MG_ADVERTISEMENT_D_TAG))
         .tag(nostr::Tag::hashtag(MG_ADVERTISEMENT_HASHTAG))

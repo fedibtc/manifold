@@ -6,13 +6,22 @@ by decentralized-federation components, plus the one typed rendering of the
 kind-37701 MG advertisement document that the MG-side publisher and the
 FA consumer both depend on.
 
-`verify_advertisement_self_signature` checks ONLY the document's own payload proof — the
-MG service-key Schnorr signature over the canonicalized payload. It is NOT
-sufficient admission. Consumers must additionally authenticate the outer
+Consumers must use `parse_and_verify_advertisement` for received advertisements.
+It checks the Schnorr proof from the MG Nostr identity key named by
+`fman_id_pubkey` over the complete canonicalized payload, including unknown
+members at every depth, before returning a typed projection of the known
+fields. This key is distinct from the commitment-signing `service_pubkey`.
+It rejects duplicate decoded object member names,
+excessive JSON nesting, and content over 256 KiB. Use
+`verify_advertisement_self_signature` only for locally constructed typed
+documents: deserializing received advertisements into those types first
+discards unknown signed members.
+
+Self-signature verification is NOT sufficient admission. Consumers must additionally authenticate the outer
 Nostr event (id and signature), require the event author to equal the signed
 payload's `fman_id_pubkey`, and verify every embedded trust envelope they
 rely on through the shared PeerBadge verifier, binding the returned subject
-to the event author. A document that passes `verify_advertisement_self_signature` alone
+to the event author. A document that passes self-signature verification alone
 proves nothing about who published it or whether anyone vouches for them.
 
 The v1 advertisement payload's `service_pubkey` — the MG's

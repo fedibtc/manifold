@@ -9,6 +9,7 @@
 
 #[cfg(test)]
 mod tests;
+mod wire_json;
 
 use fedi_decentralized_domain::{HolderAuthorizationEnvelope, ProtocolV1};
 use fedi_decentralized_service_manifold_guardian::{FedimintdVersion, Plan};
@@ -169,6 +170,9 @@ pub struct Availability {
 /// Error signing or verifying a portable MG advertisement document.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum AdvertisementDocumentError {
+    /// The wire document is oversized, ambiguous JSON, or has an invalid schema.
+    InvalidDocument,
+
     /// The payload `fman_id_pubkey` does not match the signing key.
     SigningKeyMismatch,
 
@@ -185,6 +189,7 @@ pub enum AdvertisementDocumentError {
 impl core::fmt::Display for AdvertisementDocumentError {
     fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
+            Self::InvalidDocument => formatter.write_str("invalid advertisement document"),
             Self::SigningKeyMismatch => {
                 formatter.write_str("advertisement payload pubkey must match the signing key")
             }
@@ -227,6 +232,10 @@ pub fn sign_advertisement(
 /// canonicalized payload bytes (SPEC-mg-nostr-events, *Portable MG
 /// advertisement document*).
 ///
+/// This typed helper is only for locally constructed documents. Deserialization
+/// into these types drops unknown fields; received content must instead use
+/// [`parse_and_verify_advertisement`] to authenticate the complete payload.
+///
 /// Passing proves exactly one thing: whoever holds the key the payload names
 /// signed exactly these bytes. It explicitly does NOT:
 ///
@@ -246,9 +255,49 @@ pub fn sign_advertisement(
 pub fn verify_advertisement_self_signature(
     document: &AdvertisementDocument,
 ) -> Result<(), AdvertisementDocumentError> {
+    verify_advertisement_digest(document, payload_digest(&document.payload)?)
+}
+
+/// Parse and verify received advertisement content, authenticating all payload
+/// members, including unknown members nested inside known objects.
+///
+/// The returned typed projection comes from the same payload that was verified.
+/// Unknown members are ignored only for interpretation, never for the digest.
+/// Duplicate object keys, excessive nesting, and content over 256 KiB are
+/// rejected. Outer event signature, author binding, freshness, eligibility, and
+/// embedded credential verification remain the caller's responsibility.
+///
+/// # Errors
+///
+/// Returns [`AdvertisementDocumentError::InvalidDocument`] for invalid JSON or
+/// schema, or a signature error when the complete payload fails verification.
+pub fn parse_and_verify_advertisement(
+    content: &str,
+) -> Result<AdvertisementDocument, AdvertisementDocumentError> {
+    // The relay's complete-event cap is also 256 KiB. Bound direct callers
+    // without introducing a dependency on the higher-level relay client.
+    if content.len() > 256 * 1024 {
+        return Err(AdvertisementDocumentError::InvalidDocument);
+    }
+    let value = serde_json::from_str::<wire_json::UniqueValue>(content)
+        .map_err(|_| AdvertisementDocumentError::InvalidDocument)?
+        .0;
+    if !value.is_object() || !value["payload"].is_object() || !value["proof"].is_object() {
+        return Err(AdvertisementDocumentError::InvalidDocument);
+    }
+    let document: AdvertisementDocument = serde_json::from_value(value.clone())
+        .map_err(|_| AdvertisementDocumentError::InvalidDocument)?;
+    let digest = payload_digest(&value["payload"])?;
+    verify_advertisement_digest(&document, digest)?;
+    Ok(document)
+}
+
+fn verify_advertisement_digest(
+    document: &AdvertisementDocument,
+    digest: [u8; 32],
+) -> Result<(), AdvertisementDocumentError> {
     let pubkey = nostr::PublicKey::parse(&document.payload.mg_id_pubkey)
         .map_err(|_| AdvertisementDocumentError::MalformedMgIdPubkey)?;
-    let digest = payload_digest(&document.payload)?;
     nostr::SECP256K1
         .verify_schnorr(
             &document.proof.signature,
@@ -263,7 +312,7 @@ pub fn verify_advertisement_self_signature(
 // Cross-program contract: the domain separator and the JCS canonicalization
 // below are the byte-level signing convention of `SPEC-mg-nostr-events`.
 // External producers and verifiers depend on these exact bytes.
-fn payload_digest(payload: &AdvertisementPayload) -> Result<[u8; 32], AdvertisementDocumentError> {
+fn payload_digest(payload: &impl Serialize) -> Result<[u8; 32], AdvertisementDocumentError> {
     let canonical = serde_json_canonicalizer::to_vec(payload)
         .map_err(|_| AdvertisementDocumentError::Canonicalize)?;
     Ok(Sha256::new()
