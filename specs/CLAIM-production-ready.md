@@ -14,6 +14,14 @@ deadline. Supported failure, restart, backup, restore, and upgrade paths recover
 service within the release's documented recovery objective or expose an
 actionable failure before the affected component serves traffic.
 
+For FLIP-managed funds, protection means operational custody under technically
+authorized effects, not preservation of investment value, dependency solvency,
+or a determination of legal or economic ownership.
+
+## Status
+
+Unverified.
+
 ## Assumptions
 
 - [CLAIM-manifold-guardian-production-ready](../crates/mg/specs/CLAIM-manifold-guardian-production-ready.md)
