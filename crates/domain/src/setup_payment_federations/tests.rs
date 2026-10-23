@@ -49,6 +49,7 @@ fn content_with_min_fee_ppm(invites: Vec<String>, min_fee_ppm: u64) -> Vec<u8> {
         ),
         min_fee_ppm,
         min_uptime_percent: None,
+        max_guardian_offline_secs: None,
         support_nostr_pubkey: None,
         seat_memory_budget_mib: None,
         max_seats_per_mg: None,
@@ -230,6 +231,7 @@ fn admits_only_credential_free_https_telemetry_registration_urls() {
             telemetry_registration_url: Url(invalid.to_owned()),
             min_fee_ppm: DEFAULT_SETUP_PAYMENT_MIN_FEE_PPM,
             min_uptime_percent: None,
+            max_guardian_offline_secs: None,
             support_nostr_pubkey: None,
             seat_memory_budget_mib: None,
             max_seats_per_mg: None,
@@ -464,4 +466,31 @@ fn unset_seat_limits_stay_off_the_wire() {
     let encoded = String::from_utf8(content(vec![])).unwrap();
     assert!(!encoded.contains("seat_memory_budget_mib"));
     assert!(!encoded.contains("max_seats_per_mg"));
+}
+
+#[test]
+fn guardian_absence_policy_defaults_and_round_trips() {
+    let old = content_with_min_uptime("");
+    let admitted = AdmittedSetupPaymentFederations::parse(old.as_bytes()).unwrap();
+    assert_eq!(admitted.max_guardian_offline_secs(), 86_400);
+    for seconds in [1, 3_600, 172_800] {
+        let raw = content_with_min_uptime(&format!(",\"max_guardian_offline_secs\":{seconds}"));
+        let parsed: SetupPaymentFederationsContent = serde_json::from_str(&raw).unwrap();
+        assert_eq!(parsed.max_guardian_offline_secs, Some(seconds));
+        let encoded = serde_json::to_vec(&parsed).unwrap();
+        assert_eq!(
+            AdmittedSetupPaymentFederations::parse(&encoded)
+                .unwrap()
+                .max_guardian_offline_secs(),
+            seconds
+        );
+    }
+}
+
+#[test]
+fn guardian_absence_policy_rejects_invalid_durations() {
+    for value in ["0", "-1", "1.5", "\"86400\"", "18446744073709551616"] {
+        let raw = content_with_min_uptime(&format!(",\"max_guardian_offline_secs\":{value}"));
+        assert!(AdmittedSetupPaymentFederations::parse(raw.as_bytes()).is_err());
+    }
 }

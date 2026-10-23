@@ -124,6 +124,9 @@ impl<'de> serde::Deserialize<'de> for MgVersion {
     }
 }
 
+/// Default absence limit for guardian replacement when an older policy omits it.
+pub const DEFAULT_MAX_GUARDIAN_OFFLINE_SECS: u64 = 24 * 60 * 60;
+
 /// Version-1 Nostr content published by the setup-payment federation authority.
 ///
 /// Consumers ignore unknown fields. Policy changes requiring consumer support
@@ -158,6 +161,11 @@ pub struct SetupPaymentFederationsContent {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub min_uptime_percent: Option<MinUptimePercent>,
 
+    /// Longest absence before a guardian qualifies for replacement, in seconds.
+    /// Omitted by older policies; those use [`DEFAULT_MAX_GUARDIAN_OFFLINE_SECS`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_guardian_offline_secs: Option<u64>,
+
     /// Nostr public key of Fedi support, which MG operators chat
     /// with over NIP-17. Optional on the wire: absent, the environment
     /// profile's support key applies.
@@ -188,6 +196,7 @@ pub struct AdmittedSetupPaymentFederations {
     telemetry_registration_url: Url,
     min_fee_ppm: u64,
     min_uptime_percent: MinUptimePercent,
+    max_guardian_offline_secs: u64,
     support_nostr_pubkey: Option<nostr::PublicKey>,
     seat_memory_budget_mib: Option<u32>,
     max_seats_per_mg: Option<u32>,
@@ -228,6 +237,12 @@ impl AdmittedSetupPaymentFederations {
             .is_some_and(|seats| seats > SETUP_PAYMENT_MAX_SEATS_PER_MG)
         {
             return Err(SetupPaymentFederationsContentError::MaxSeatsPerMgTooHigh);
+        }
+        let max_guardian_offline_secs = content
+            .max_guardian_offline_secs
+            .unwrap_or(DEFAULT_MAX_GUARDIAN_OFFLINE_SECS);
+        if max_guardian_offline_secs == 0 {
+            return Err(SetupPaymentFederationsContentError::ZeroOfflineDuration);
         }
         let min_uptime_percent = content.min_uptime_percent.unwrap_or_default();
         if [
@@ -280,6 +295,7 @@ impl AdmittedSetupPaymentFederations {
             telemetry_registration_url: content.telemetry_registration_url,
             min_fee_ppm: content.min_fee_ppm,
             min_uptime_percent,
+            max_guardian_offline_secs,
             support_nostr_pubkey: content.support_nostr_pubkey,
             seat_memory_budget_mib: content.seat_memory_budget_mib,
             max_seats_per_mg: content.max_seats_per_mg,
@@ -335,6 +351,12 @@ impl AdmittedSetupPaymentFederations {
     #[must_use]
     pub fn min_uptime_percent(&self) -> MinUptimePercent {
         self.min_uptime_percent
+    }
+
+    /// Return the absence limit for guardian replacement, in seconds.
+    #[must_use]
+    pub fn max_guardian_offline_secs(&self) -> u64 {
+        self.max_guardian_offline_secs
     }
 
     /// Return the Fedi support key MG operators chat with, if published.
@@ -397,6 +419,8 @@ pub enum SetupPaymentFederationsContentError {
 
     /// A published minimum uptime is above 100%, which no MG can reach.
     MinUptimeTooHigh,
+    /// An absence limit must allow a positive amount of time.
+    ZeroOfflineDuration,
 }
 
 impl core::fmt::Display for SetupPaymentFederationsContentError {
@@ -423,6 +447,7 @@ impl core::fmt::Display for SetupPaymentFederationsContentError {
             Self::MaxSeatsPerMgTooHigh => {
                 "setup-payment federation set sets a per-MG seat limit above the admitted maximum"
             }
+            Self::ZeroOfflineDuration => "guardian absence limit must be positive",
             Self::MinUptimeTooHigh => {
                 "setup-payment federation set sets a minimum uptime above 100%"
             }
