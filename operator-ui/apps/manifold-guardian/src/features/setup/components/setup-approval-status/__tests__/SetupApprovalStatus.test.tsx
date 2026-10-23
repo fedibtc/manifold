@@ -32,10 +32,13 @@ describe('SetupApprovalStatus', () => {
     expect(screen.getByRole('button', { name: 'Check status' })).toBeTruthy();
   });
 
-  it('should say nothing is known while the first relay read is outstanding', () => {
+  // The daemon starts every run in `checking` and reads the relays only when
+  // asked, so this state must offer the check or setup has no way forward.
+  it('should offer the check before the first relay read', () => {
     render(<SetupApprovalStatus nostr={{ state: 'checking' }} action={action} />);
 
-    expect(screen.getByText(/Checking whether this host has been approved/i)).toBeTruthy();
+    expect(screen.getByText(/Not checked yet/i)).toBeTruthy();
     expect(screen.queryByText(/Waiting for approval/i)).toBeNull();
+    expect(screen.getByRole('button', { name: 'Check status' })).toBeTruthy();
   });
 });

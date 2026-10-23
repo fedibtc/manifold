@@ -204,7 +204,7 @@ const builders = {
     price: null,
     // A host that has never onboarded has admitted no setup-payment publication,
     // so there is no latest release to compare against yet.
-    onboarding: onboarding(undefined, version({ latest: null }))
+    onboarding: onboarding({ state: 'checking' }, version({ latest: null }))
   }),
   'awaiting-authorization': () => ({
     ...base(),
