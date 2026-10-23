@@ -1994,6 +1994,15 @@ impl TestConsensusReader {
 }
 
 impl FederationConsensusReader for TestConsensusReader {
+    async fn read_guardian_reports(
+        &self,
+        invite_code: &InviteCode,
+    ) -> Result<fedi_decentralized_domain::GuardianReports, FederationConsensusError> {
+        UnavailableFederationConsensusReader
+            .read_guardian_reports(invite_code)
+            .await
+    }
+
     async fn read_consensus(
         &self,
         invite_code: &InviteCode,
