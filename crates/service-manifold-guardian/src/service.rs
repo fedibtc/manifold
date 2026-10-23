@@ -12,8 +12,9 @@ use crate::{
     ProposeFormationMetaRequest, ProposeFormationMetaResponse, PullSeatRequest, PullSeatResponse,
     RegisterGatewayRequest, RegisterGatewayResponse, RemoveSeatRequest, RemoveSeatResponse,
     ReplaceSeatBindingRequest, ReplaceSeatBindingResponse, RestartDkgRequest, RestartDkgResponse,
-    SeatTransferGrant, SetMetaFieldRequest, SetMetaFieldResponse, SignedRequest, SignedResponse,
-    StartDkgRequest, StartDkgResponse, TransferSeatResponse,
+    SeatTransferGrant, SetMetaFieldRequest, SetMetaFieldResponse, SetMetaFieldsRequest,
+    SetMetaFieldsResponse, SignedRequest, SignedResponse, StartDkgRequest, StartDkgResponse,
+    TransferSeatResponse,
 };
 
 /// Result type for Manifold Guardian protocol calls.
@@ -100,6 +101,12 @@ pub trait ManifoldGuardianService {
         &self,
         request: SignedRequest<SetMetaFieldRequest>,
     ) -> FmResult<SetMetaFieldResponse>;
+
+    /// Set several metadata fields on the running federation in one vote.
+    async fn set_meta_fields(
+        &self,
+        request: SignedRequest<SetMetaFieldsRequest>,
+    ) -> FmResult<SetMetaFieldsResponse>;
 
     /// Propose the directory and fee policy as one formation-only metadata vote.
     async fn propose_formation_meta(

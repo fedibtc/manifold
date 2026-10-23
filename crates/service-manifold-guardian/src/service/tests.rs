@@ -151,6 +151,12 @@ impl ManifoldGuardianService for TestManifoldGuardian {
     ) -> FmResult<SetMetaFieldResponse> {
         unsupported()
     }
+    async fn set_meta_fields(
+        &self,
+        _: SignedRequest<SetMetaFieldsRequest>,
+    ) -> FmResult<SetMetaFieldsResponse> {
+        unsupported()
+    }
     async fn propose_formation_meta(
         &self,
         _request: SignedRequest<ProposeFormationMetaRequest>,

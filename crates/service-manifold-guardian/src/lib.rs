@@ -84,8 +84,8 @@ pub use status::{
     MAX_GUARDIAN_FEE_ACCOUNT_BYTES, MAX_GUARDIAN_FEE_RECIPIENT_LIST_BYTES,
     MAX_GUARDIAN_FEE_RECIPIENTS, PeerConnectionInfo, ProposeFormationMetaRequest,
     ProposeFormationMetaResponse, RegisterGatewayRequest, RegisterGatewayResponse, ServiceStatus,
-    SetMetaFieldRequest, SetMetaFieldResponse, StatusDetail, SuspendedStatusInfo,
-    canonical_guardian_fee_recipient_list,
+    SetMetaFieldRequest, SetMetaFieldResponse, SetMetaFieldsRequest, SetMetaFieldsResponse,
+    StatusDetail, SuspendedStatusInfo, canonical_guardian_fee_recipient_list,
 };
 pub use telemetry::{
     FetchSafeEventJournalRequest, FetchSafeEventJournalResponse, GUARDIAN_TELEMETRY_ALPN,
@@ -109,6 +109,6 @@ pub use types::{
     AvailabilityInfo, FEDERATION_ICON_URL_META_FIELD_KEY, FEDERATION_NAME_META_FIELD_KEY, FaId,
     FaSignature, FederationSize, FedimintStats, FedimintdDkgVersion, FedimintdVersion,
     FedimintdVersionCore, GuardianCode, GuardianName, ManagerSignature, MetaConsensusBase,
-    MetaFieldKey, MetaFieldValue, ModuleConfig, OobEcashToken, Plan, SeatHealth,
+    MetaField, MetaFieldKey, MetaFieldValue, ModuleConfig, OobEcashToken, Plan, SeatHealth,
     TERMS_OF_SERVICE_URL_META_FIELD_KEY, ValidUntilDate, WELCOME_MESSAGE_META_FIELD_KEY,
 };

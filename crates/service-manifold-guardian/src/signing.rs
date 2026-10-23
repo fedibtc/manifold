@@ -34,7 +34,8 @@ use crate::{
     GetDkgCodeRequest, GetFedimintStatsRequest, GetInviteCodeRequest, GetPeerAttestationRequest,
     GetQuoteResponse, GetStatusRequest, ManagerSignature, ProposeFormationMetaRequest,
     PullSeatRequest, RegisterGatewayRequest, RemoveSeatRequest, ReplaceSeatBindingRequest,
-    RestartDkgRequest, SeatTransferGrant, SetMetaFieldRequest, StartDkgRequest, Timestamp,
+    RestartDkgRequest, SeatTransferGrant, SetMetaFieldRequest, SetMetaFieldsRequest,
+    StartDkgRequest, Timestamp,
 };
 
 /// Domain separator for FA-signed requests. `v1` versions the signing
@@ -141,6 +142,7 @@ fa_signed_requests! {
     GetInviteCodeRequest => "get_invite_code",
     GetPeerAttestationRequest => "get_peer_attestation",
     SetMetaFieldRequest => "set_meta_field",
+    SetMetaFieldsRequest => "set_meta_fields",
     ProposeFormationMetaRequest => "propose_formation_meta",
     RegisterGatewayRequest => "register_gateway",
     GetFedimintStatsRequest => "get_fedimint_stats",
@@ -171,6 +173,7 @@ seat_scoped_fa_requests! {
     GetInviteCodeRequest,
     GetPeerAttestationRequest,
     SetMetaFieldRequest,
+    SetMetaFieldsRequest,
     ProposeFormationMetaRequest,
     RegisterGatewayRequest,
     GetFedimintStatsRequest,
