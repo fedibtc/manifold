@@ -23,7 +23,7 @@ const observed = {
   }
 };
 
-const renderAuthorization = (onSettled = vi.fn(), initial = waiting) => {
+const renderAuthorization = (onSettled = vi.fn(), initial: unknown = waiting) => {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   client.setQueryData(ONBOARDING_KEY, initial);
   render(
@@ -47,6 +47,17 @@ describe('SetupAuthorization', () => {
     expect(adminCall).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole('button', { name: 'Check status' }));
     await vi.waitFor(() => expect(adminCall).toHaveBeenCalledWith('RefreshHolderAuthorizations'));
+  });
+
+  it('should let the operator start the first relay read from a fresh start', async () => {
+    const adminCall = vi.spyOn(adminCallModule, 'adminCall').mockResolvedValueOnce(observed);
+    renderAuthorization(vi.fn(), { ...waiting, nostr: { state: 'checking' } });
+
+    await screen.findByText(MOCK_SERVICE_NOSTR_PUBKEY);
+    expect(adminCall).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: 'Check status' }));
+    await vi.waitFor(() => expect(adminCall).toHaveBeenCalledWith('RefreshHolderAuthorizations'));
+    await screen.findByText(/Approved\. Continuing to the terms step/i);
   });
 
   // The relay read used to share the Onboarding query, so any later
