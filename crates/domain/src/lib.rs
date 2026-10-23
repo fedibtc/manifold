@@ -6,6 +6,7 @@
 
 mod federation_config;
 mod gateway;
+mod guardian_reports;
 mod mg_federation_directory;
 mod mg_peer_attestation;
 mod mg_seat_bindings;
@@ -24,6 +25,7 @@ pub use federation_config::{
     parse_protocol_peer_id, protocol_peer_id,
 };
 pub use gateway::{GatewayApiUrl, InvalidGatewayApiUrl};
+pub use guardian_reports::{GuardianReports, GuardianSessionReport};
 pub use mg_federation_directory::{
     GetMgTrustMaterialRequest, GetMgTrustMaterialResponse, MG_API_URL_MAX_BYTES,
     MG_API_URLS_MAX_COUNT, MG_API_URLS_MAX_VALUE_BYTES, MG_API_URLS_META_FIELD_KEY,

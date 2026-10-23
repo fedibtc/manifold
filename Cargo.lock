@@ -2567,6 +2567,7 @@ name = "fedi-decentralized-federation-preview"
 version = "0.1.8"
 dependencies = [
  "anyhow",
+ "async-trait",
  "bitcoin",
  "fedi-decentralized-domain",
  "fedimint-api-client",
@@ -2576,9 +2577,11 @@ dependencies = [
  "fedimint-meta-client",
  "fedimint-wallet-client",
  "fedimint-walletv2-common",
+ "futures-util",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
+ "tokio",
 ]
 
 [[package]]

@@ -16,6 +16,11 @@ fedimint-lnv2-common = { workspace = true }
 fedimint-meta-client = { workspace = true }
 fedimint-wallet-client = { workspace = true }
 fedimint-walletv2-common = { workspace = true }
+futures-util = "0.3"
 serde = { workspace = true }
 serde_json = { version = "1", features = ["arbitrary_precision"] }
 thiserror = "2"
+
+[dev-dependencies]
+async-trait = "0.1"
+tokio = { workspace = true, features = ["macros", "rt", "test-util"] }

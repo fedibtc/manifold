@@ -324,6 +324,15 @@ impl ManifoldGuardianService for UnavailableManifoldGuardianClient {
 pub struct UnavailableFederationConsensusReader;
 
 impl FederationConsensusReader for UnavailableFederationConsensusReader {
+    async fn read_guardian_reports(
+        &self,
+        _invite_code: &InviteCode,
+    ) -> Result<fedi_decentralized_domain::GuardianReports, FederationConsensusError> {
+        Err(FederationConsensusError::new(
+            "guardian reports are unavailable",
+        ))
+    }
+
     async fn read_consensus(
         &self,
         _invite_code: &InviteCode,
