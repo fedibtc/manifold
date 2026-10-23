@@ -15,7 +15,6 @@ use fedimint_core::peer_availability::merge_peer_availability;
 use fedimint_core::runtime::timeout;
 use fedimint_core::{NumPeersExt as _, PeerId};
 use futures::future::join_all;
-use futures::stream::{FuturesUnordered, StreamExt as _};
 use serde::Serialize;
 
 use crate::formation::{PostFormedAuthority, PostFormedSeat, invite_federation_id, now_secs};
@@ -26,6 +25,8 @@ use crate::{
 
 // MG production configs use 3,600 broadcast rounds at 50 ms. This estimates
 // missed participation; it is not a wall-clock measurement of an outage.
+// These server-only defaults are not exposed in the client config:
+// https://github.com/fedibtc/fedimint/blob/v0.12.0-fedi15/fedimint-server/src/config/mod.rs#L66
 const SESSION_SECONDS: u64 = 180;
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
 
@@ -33,10 +34,20 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ReplacementReason {
-    Offline { last_seen_secs: u64 },
-    MissedSessions { sessions: u64 },
-    LowWeekScore { basis_points: u16 },
-    LowMonthScore { basis_points: u16 },
+    Offline {
+        last_seen_secs: u64,
+    },
+    MissedSessions {
+        sessions: u64,
+    },
+    /// f+1 other peers report disconnection, but duration cannot be established.
+    Disconnected,
+    LowWeekScore {
+        basis_points: u16,
+    },
+    LowMonthScore {
+        basis_points: u16,
+    },
     HolderRevoked,
 }
 
@@ -70,8 +81,15 @@ where
     pub async fn check_replacement_candidates(&self) -> FaResult<ReplacementCheck> {
         // An idle or unreconciled client has no guardian set to judge.
         self.maintenance_authority(self.fa_id()?).await?;
-        self.admitted_setup_payment_federations(FormationRunOptions::default())
-            .await?;
+        match self
+            .admitted_setup_payment_federations(FormationRunOptions::default())
+            .await
+        {
+            Ok(_) | Err(FaError::Timeout(_)) => {}
+            Err(error) => return Err(error),
+        }
+        // A relay timeout does not erase an authenticated retained policy.
+        // Missing or invalid stored policy still fails below.
         let policy = self.replacement_policy().await?;
         let _guard = self.inner.run_guard.try_lock().map_err(|_| FaError::Busy)?;
         let authority = self.maintenance_authority(self.fa_id()?).await?;
@@ -125,57 +143,62 @@ where
         federation_id: &FederationId,
         peers: &BTreeSet<PeerId>,
     ) -> Option<GuardianReports> {
-        // The saved invite can point at the guardian being replaced. Race other
-        // hosts' invites too; a host supplies an address, never an identity verdict.
-        let mut pending = FuturesUnordered::new();
-        for seat in std::iter::once(None).chain(authority.seats.iter().map(Some)) {
-            pending.push(async move {
-                let invite = if let Some(seat) = seat {
-                    let client = self
-                        .inner
-                        .ports
-                        .mg_connector
-                        .connect(&seat.locator)
-                        .await
-                        .ok()?;
-                    let request = self
-                        .sign(&GetInviteCodeRequest {
-                            ts: Timestamp(now_secs().ok()?),
-                            fa_id: self.fa_id().ok()?,
-                            seat_id: seat.seat_id.clone(),
-                        })
-                        .ok()?;
-                    client.get_invite_code(request).await.ok()?.invite_code
-                } else {
-                    self.consensus_invite(&authority.invite_code).await
-                };
-                if invite_federation_id(&invite).ok()?.to_string() != federation_id.0 {
-                    return None;
-                }
-                let report = self
-                    .inner
+        let mut attempted = BTreeSet::new();
+        let mut read = async |invite: crate::InviteCode| {
+            if !attempted.insert(invite.0.clone())
+                || invite_federation_id(&invite).ok()?.to_string() != federation_id.0
+            {
+                return None;
+            }
+            // The invite reader allows 30s for setup and 10s for reports.
+            let report = timeout(
+                Duration::from_secs(45),
+                self.inner
                     .ports
                     .consensus_reader
-                    .read_guardian_reports(&invite)
+                    .read_guardian_reports(&invite),
+            )
+            .await
+            .ok()?
+            .ok()?;
+            (report.federation_id == *federation_id
+                && report.peers == *peers
+                && (!report.sessions.is_empty() || !report.availability.is_empty()))
+            .then_some(report)
+        };
+        if let Some(report) = read(self.consensus_invite(&authority.invite_code).await).await {
+            return Some(report);
+        }
+        // Try another host only when the known route fails. Each attempt reads
+        // the entire federation, so racing these repeats all the health queries.
+        for seat in &authority.seats {
+            let invite = timeout(REQUEST_TIMEOUT, async {
+                let client = self
+                    .inner
+                    .ports
+                    .mg_connector
+                    .connect(&seat.locator)
                     .await
                     .ok()?;
-                (report.federation_id == *federation_id
-                    && report.peers == *peers
-                    && (!report.sessions.is_empty() || !report.availability.is_empty()))
-                .then_some(report)
-            });
-        }
-        timeout(Duration::from_secs(45), async {
-            while let Some(report) = pending.next().await {
-                if report.is_some() {
-                    return report;
-                }
+                let request = self
+                    .sign(&GetInviteCodeRequest {
+                        ts: Timestamp(now_secs().ok()?),
+                        fa_id: self.fa_id().ok()?,
+                        seat_id: seat.seat_id.clone(),
+                    })
+                    .ok()?;
+                Some(client.get_invite_code(request).await.ok()?.invite_code)
+            })
+            .await
+            .ok()
+            .flatten();
+            if let Some(invite) = invite
+                && let Some(report) = read(invite).await
+            {
+                return Some(report);
             }
-            None
-        })
-        .await
-        .ok()
-        .flatten()
+        }
+        None
     }
 
     async fn revoked_holder(&self, seat: &PostFormedSeat) -> bool {
@@ -198,7 +221,7 @@ where
                 .verify_for_mg(
                     &Pubkey(seat.mg_id.to_string()),
                     fedi_decentralized_domain::Timestamp(now),
-                    600,
+                    crate::liquidity::FA_LIQUIDITY_TRUST_MATERIAL_VALIDITY.as_secs(),
                 )
                 .ok()?;
             if material.holder_authorizations.is_empty() {
@@ -268,15 +291,32 @@ fn replacement_reasons(
                     .filter(|(reporter, _)| *reporter != peer && reports.peers.contains(reporter))
                     .filter_map(|(_, report)| {
                         let last = (*report.last_contribution.get(peer)?)?;
-                        report.session_count.checked_sub(last.checked_add(1)?)
+                        // A contribution to the current session means no missed
+                        // completed sessions, not missing history.
+                        (last <= report.session_count)
+                            .then(|| report.session_count.saturating_sub(last.saturating_add(1)))
                     })
                     .collect::<Vec<_>>();
                 gaps.sort_unstable_by(|a, b| b.cmp(a));
-                // At least f+1 other guardians must report this much missed work.
-                if let Some(gap) = gaps.get(num_peers.one_honest() - 1)
-                    && gap.saturating_mul(SESSION_SECONDS) > policy.max_guardian_offline_secs()
-                {
-                    reasons.push(ReplacementReason::MissedSessions { sessions: *gap });
+                if let Some(gap) = gaps.get(num_peers.one_honest() - 1) {
+                    if gap.saturating_mul(SESSION_SECONDS) > policy.max_guardian_offline_secs() {
+                        reasons.push(ReplacementReason::MissedSessions { sessions: *gap });
+                    }
+                } else {
+                    // Unknown history is not itself evidence. In this fallback,
+                    // f+1 other peers must explicitly report disconnection now.
+                    let disconnected = reports
+                        .sessions
+                        .iter()
+                        .filter(|(reporter, report)| {
+                            *reporter != peer
+                                && reports.peers.contains(reporter)
+                                && report.disconnected.contains(peer)
+                        })
+                        .count();
+                    if disconnected >= num_peers.one_honest() {
+                        reasons.push(ReplacementReason::Disconnected);
+                    }
                 }
             }
             for (index, minimum) in [(0, min.week), (1, min.month)] {

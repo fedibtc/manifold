@@ -32,6 +32,7 @@ fn session(reports: &mut GuardianReports, reporter: u16, gap: Option<u64>) {
         PeerId::from(reporter),
         GuardianSessionReport {
             session_count: 1000,
+            disconnected: BTreeSet::new(),
             last_contribution: BTreeMap::from([(PeerId::from(0), gap.map(|gap| 999 - gap))]),
         },
     );
@@ -116,4 +117,66 @@ fn eligibility_ignores_outsiders_and_needs_confirmed_absence() {
             last_seen_secs: 6399
         }]
     );
+}
+
+#[test]
+fn eligibility_disconnection_fallback_requires_f_plus_one_other_members() {
+    let mut reports = reports();
+    reports.peers = (0..10).map(PeerId::from).collect();
+    for reporter in [0, 1, 2, 3, 99] {
+        session(&mut reports, reporter, None);
+        reports
+            .sessions
+            .get_mut(&PeerId::from(reporter))
+            .unwrap()
+            .disconnected
+            .insert(PeerId::from(0));
+    }
+    let policy = policy(86_400, 90, 93);
+    // Self and outsider reports cannot make three actual peers count as four.
+    assert!(replacement_reasons(&reports, &policy, 10_000)[&PeerId::from(0)].is_empty());
+    session(&mut reports, 4, None); // Unknown contribution, but not disconnected.
+    assert!(replacement_reasons(&reports, &policy, 10_000)[&PeerId::from(0)].is_empty());
+    reports
+        .sessions
+        .get_mut(&PeerId::from(4))
+        .unwrap()
+        .disconnected
+        .insert(PeerId::from(0));
+    assert_eq!(
+        replacement_reasons(&reports, &policy, 10_000)[&PeerId::from(0)],
+        vec![ReplacementReason::Disconnected]
+    );
+}
+
+#[test]
+fn eligibility_recent_history_prevents_disconnection_fallback() {
+    let mut reports = reports();
+    let policy = policy(3600, 90, 93);
+    for reporter in [1, 2] {
+        session(&mut reports, reporter, None);
+        reports
+            .sessions
+            .get_mut(&PeerId::from(reporter))
+            .unwrap()
+            .disconnected
+            .insert(PeerId::from(0));
+    }
+    assert_eq!(
+        replacement_reasons(&reports, &policy, 10_000)[&PeerId::from(0)],
+        vec![ReplacementReason::Disconnected]
+    );
+    for report in reports.sessions.values_mut() {
+        report
+            .last_contribution
+            .insert(PeerId::from(0), Some(report.session_count));
+    }
+    assert!(replacement_reasons(&reports, &policy, 10_000)[&PeerId::from(0)].is_empty());
+    for report in reports.sessions.values_mut() {
+        report.last_contribution.insert(PeerId::from(0), None);
+    }
+    for reporter in [1, 2] {
+        availability(&mut reports, reporter, 9999, 10_000, 10_000);
+    }
+    assert!(replacement_reasons(&reports, &policy, 10_000)[&PeerId::from(0)].is_empty());
 }

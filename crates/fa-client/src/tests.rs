@@ -14299,6 +14299,7 @@ async fn eligibility_uses_formed_seats_and_rejects_another_federations_reports()
             PeerId::from(seat.index),
             fedi_decentralized_domain::GuardianSessionReport {
                 session_count: 1000,
+                disconnected: BTreeSet::new(),
                 last_contribution: BTreeMap::from([(PeerId::from(target.index), Some(1))]),
             },
         );
