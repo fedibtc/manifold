@@ -18,7 +18,7 @@
 mod guardian_reports;
 #[cfg(test)]
 mod tests;
-pub use guardian_reports::read_guardian_reports;
+pub use guardian_reports::{read_guardian_reports, read_guardian_reports_from_api};
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::str::FromStr as _;

@@ -2567,6 +2567,7 @@ name = "fedi-decentralized-federation-preview"
 version = "0.1.6"
 dependencies = [
  "anyhow",
+ "async-trait",
  "bitcoin",
  "fedi-decentralized-domain",
  "fedimint-api-client",
