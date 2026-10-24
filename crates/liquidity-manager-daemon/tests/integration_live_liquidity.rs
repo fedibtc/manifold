@@ -1,4 +1,6 @@
 mod common;
+#[path = "common/live_liquidity/held_gateway_attach.rs"]
+mod held_gateway_attach;
 mod test_support;
 
 /// Module kinds the previewed config claims for an ordinary target federation.
@@ -108,14 +110,28 @@ impl LiveWalletStack {
     }
 
     async fn start_with_test_id(test_name: &str, test_id: &str) -> anyhow::Result<Self> {
+        Self::start_with_gateway_forwarder(test_name, test_id, None).await
+    }
+
+    async fn start_with_gateway_forwarder(
+        test_name: &str,
+        test_id: &str,
+        forwarder: Option<&mut held_gateway_attach::HeldGatewayAttach>,
+    ) -> anyhow::Result<Self> {
         let data_dir = TestDataDir::new(test_name)?;
         let resources = DefeResources::live_liquidity().await?;
         let relay_url = resources.relay().url.clone();
         let bitcoin =
             BitcoinFixture::new(resources.bitcoind().clone()).context("bitcoin fixture")?;
-        let gateway = GatewayFixture::start(test_id, &bitcoin, data_dir.path())
+        let mut gateway = GatewayFixture::start(test_id, &bitcoin, data_dir.path())
             .await
             .context("gateway fixture")?;
+        if let Some(forwarder) = forwarder {
+            forwarder.set_upstream(&gateway.api_url)?;
+            // Gateway identity is fixed at first setup; install the transport
+            // before starting/configuring the daemon, never rewrite its identity.
+            gateway.api_url = forwarder.api_url.clone();
+        }
         let ports = TestPorts::allocate()?;
         let mut launch = DaemonLaunch::new(data_dir.path())?;
         launch.holder_authorization_relay_url = Some(relay_url.clone());
@@ -261,8 +277,16 @@ struct LiveLiquidityStack {
 
 impl LiveLiquidityStack {
     async fn start(test_name: &str) -> anyhow::Result<Self> {
+        Self::start_with_gateway_forwarder(test_name, None).await
+    }
+
+    async fn start_with_gateway_forwarder(
+        test_name: &str,
+        forwarder: Option<&mut held_gateway_attach::HeldGatewayAttach>,
+    ) -> anyhow::Result<Self> {
         let test_id = unique_test_id(test_name);
-        let wallet = LiveWalletStack::start_with_test_id(test_name, &test_id).await?;
+        let wallet =
+            LiveWalletStack::start_with_gateway_forwarder(test_name, &test_id, forwarder).await?;
         let target_fedimint = FedimintFixture::start(
             TARGET_FEDIMINT_LABEL,
             &wallet.bitcoin,
@@ -1026,12 +1050,12 @@ async fn live_second_federation_is_funded_after_the_operator_tops_up() -> anyhow
 
 /// Cancelling a wedged allocation hands its capacity to the next federation.
 ///
-/// A federation that goes away after its request is admitted leaves an
-/// allocation nothing can finish. Acceptance never touches the target
+/// A federation that has gone away leaves an allocation nothing can finish.
+/// Acceptance never touches the target
 /// federation -- it reads a preview, a seat-binding directory and the trust
 /// material the request carries -- so FLIP admits the request and reserves the
-/// money for it, and only then does the funding worker discover that there is
-/// no federation for a gateway to join.
+/// money for it. The test then holds the worker's outbound attach at a transport
+/// barrier, before the real gateway can attempt to join the missing federation.
 ///
 /// The reservation is what makes that more than untidy. It is money the
 /// provider cannot offer anyone else, so the next federation in line is refused
@@ -1040,12 +1064,20 @@ async fn live_second_federation_is_funded_after_the_operator_tops_up() -> anyhow
 /// `cancel_allocation` is the operator's answer, and this is the property worth
 /// a live test: not that a row changes state, which unit tests already show,
 /// but that the money comes back and the next requester is admitted with it.
+/// A transport barrier holds the first attach before gatewayd receives it, so
+/// this proves cancellation of FLIP's running request, not gateway-side rollback.
 #[tokio::test(flavor = "multi_thread")]
 async fn live_cancelling_a_wedged_allocation_frees_capacity_for_the_next_federation()
 -> anyhow::Result<()> {
     init_logging();
 
-    let mut stack = LiveLiquidityStack::start("live-cancel-frees-capacity").await?;
+    let mut held_attach = held_gateway_attach::HeldGatewayAttach::start().await?;
+    let mut stack = LiveLiquidityStack::start_with_gateway_forwarder(
+        "live-cancel-frees-capacity",
+        Some(&mut held_attach),
+    )
+    .await?;
+    held_attach.hold_invite(&stack.target_fedimint.invite_code)?;
     let second_fedimint = FedimintFixture::start(
         SECOND_TARGET_FEDIMINT_LABEL,
         &stack.wallet.bitcoin,
@@ -1122,7 +1154,11 @@ async fn live_cancelling_a_wedged_allocation_frees_capacity_for_the_next_federat
         ),
     }
 
-    // The money is now committed to work that cannot proceed.
+    // Observe the actual outbound attach, not merely a running database row.
+    held_attach.wait_until_entered().await?;
+
+    // The money is now committed to work that cannot proceed. These real gateway
+    // reads cannot wait behind the held attach: it has not entered gatewayd.
     let held = admin_post(&http, &admin_url, "get_funds", &json!({})).await?;
     ensure!(
         held["balance"]["in_flight_allocations"]
@@ -1146,11 +1182,8 @@ async fn live_cancelling_a_wedged_allocation_frees_capacity_for_the_next_federat
         }
     }
 
-    // A failed attach still reserves funds in `action_required` and can be
-    // cancelled. That would exercise remediation, not cancellation of running
-    // work. Observe the worker after the balance reads, which can themselves
-    // wait behind the gateway's join, and make no more gateway reads before
-    // cancelling.
+    // A failed attach still reserves funds in `action_required`, but cancelling
+    // that would exercise remediation rather than cancellation of running work.
     wait_for_public_running(&rpc, &wedged_request.payload).await?;
 
     // The operator ends the allocation nobody can finish.
@@ -1180,6 +1213,7 @@ async fn live_cancelling_a_wedged_allocation_frees_capacity_for_the_next_federat
         Some(&Value::Null),
         "cancellation must win before attach failure stops the running item: {cancelled}"
     );
+    held_attach.release_with_error();
 
     // The money is back, and this is the assertion the whole test exists for.
     let released = admin_post(&http, &admin_url, "get_funds", &json!({})).await?;
@@ -1240,6 +1274,7 @@ async fn live_cancelling_a_wedged_allocation_frees_capacity_for_the_next_federat
     );
 
     stack.wallet.stop_daemon()?;
+    held_attach.shutdown().await?;
     Ok(())
 }
 
@@ -1634,6 +1669,16 @@ async fn live_unresolvable_send_escalates_to_review_and_waits_for_the_operator()
     let mut stack = LiveLiquidityStack::start("live-manual-review").await?;
     stack.wallet.fund_gateway_wallet().await?;
     let (_, advertisement, rpc) = stack.wallet.configure_publish_and_connect().await?;
+    // This regression covers unresolved-send escalation and operator recovery,
+    // not cold attachment. Prepare the real walletv2 address before starting
+    // allocation; otherwise its initial index search consumes the funding wait.
+    // Cold attachment remains covered by the live liquidity happy-path and
+    // top-up tests. Do not move this setup into LiveLiquidityStack::start.
+    stack
+        .wallet
+        .gateway
+        .prepare_federation_deposit_address(&stack.target_fedimint.invite_code)
+        .await?;
     let http = stack.wallet.http.clone();
     let admin_url = stack.wallet.admin_url.clone();
 

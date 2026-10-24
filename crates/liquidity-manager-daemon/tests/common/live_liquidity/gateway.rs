@@ -5,6 +5,10 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use anyhow::Context;
+use fedimint_connectors::ConnectorRegistry;
+use fedimint_core::util::SafeUrl;
+use fedimint_gateway_common::{ConnectFedPayload, DepositAddressPayload, V1_API_ENDPOINT};
+use fedimint_ln_common::client::GatewayApi;
 use tokio::time::{Duration, sleep};
 
 use super::bitcoin::BitcoinFixture;
@@ -23,6 +27,52 @@ pub struct GatewayFixture {
 }
 
 impl GatewayFixture {
+    /// Connects a real target and waits for its first usable deposit address.
+    ///
+    /// The pinned walletv2 client searches for its first valid address in the
+    /// background after connecting. Reading it does not consume the index or
+    /// send money. Keep this opt-in: cold-attach tests must not use it.
+    pub async fn prepare_federation_deposit_address(
+        &self,
+        invite_code: &str,
+    ) -> anyhow::Result<()> {
+        // Use the gateway fixture's existing 120s setup allowance, separately
+        // from any test's funding-state observation deadline. No retries.
+        tokio::time::timeout(Duration::from_secs(120), async {
+            let connectors = ConnectorRegistry::build_from_client_defaults()
+                .bind()
+                .await?;
+            let api = GatewayApi::new(Some(self.password.clone()), connectors);
+            let base_url = SafeUrl::parse(&self.api_url)?.join(V1_API_ENDPOINT)?;
+            let federation = fedimint_gateway_client::connect_federation(
+                &api,
+                &base_url,
+                ConnectFedPayload {
+                    invite_code: invite_code.to_owned(),
+                    use_tor: Some(false),
+                    recover: Some(true),
+                },
+            )
+            .await
+            .context("connect target before manual-review funding")?;
+            // Connect releases its federation-manager write lock before this
+            // request selects the same client and awaits address readiness.
+            fedimint_gateway_client::get_deposit_address(
+                &api,
+                &base_url,
+                DepositAddressPayload {
+                    federation_id: federation.federation_id,
+                },
+            )
+            .await
+            .context("wait for target deposit-address readiness")?
+            .require_network(bitcoin::Network::Regtest)?;
+            Ok(())
+        })
+        .await
+        .context("target gateway address setup exceeded 120 seconds")?
+    }
+
     pub async fn start(
         test_id: &str,
         bitcoin: &BitcoinFixture,

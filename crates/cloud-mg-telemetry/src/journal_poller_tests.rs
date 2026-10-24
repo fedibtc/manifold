@@ -14,6 +14,7 @@ use fedi_decentralized_service_manifold_guardian::{
     FetchSafeEventJournalResponse, ListSafeEventJournalsResponse, SafeEventCursor,
     SafeEventJournal, SafeEventJournalIncarnation, SafeEventJournalInfo, SeatId,
 };
+use sqlx::Connection as _;
 
 use super::*;
 use crate::{
@@ -1218,7 +1219,25 @@ async fn journal_listing_and_persisted_streams_share_the_configured_limit() {
             .await
             .unwrap()
             .unwrap();
-        for index in 0..=limit {
+        // Exercise every ordinary-limit admission and the first admission beyond
+        // that limit through the real API. At the staging limit, seed only the
+        // middle rows in one durable transaction: this tests capacity boundaries,
+        // not the filesystem's ability to sustain thousands of separate fsyncs.
+        let individually_opened = limit.min(33);
+        let mut admission_indices = (0..individually_opened).collect::<Vec<_>>();
+        if individually_opened < limit {
+            admission_indices.push(limit - 1);
+        }
+        admission_indices.push(limit);
+        for index in admission_indices {
+            if index == limit - 1 && individually_opened < limit {
+                seed_middle_journal_streams(
+                    &directory.path().join("state.sqlite"),
+                    &work,
+                    individually_opened..limit - 1,
+                )
+                .await;
+            }
             let journal = if index == 0 {
                 SafeEventJournal::Mg
             } else {
@@ -1238,6 +1257,35 @@ async fn journal_listing_and_persisted_streams_share_the_configured_limit() {
                 assert!(matches!(result, Err(crate::store::StoreError::Saturated)));
             }
         }
+        // Capacity comes from persisted rows, not state on this Store instance.
+        drop(store);
+        let store = Store::open(
+            &directory.path().join("state.sqlite"),
+            "development",
+            SecretCipher::new(&[7; 32]),
+            "test".into(),
+            200_000,
+            limit,
+        )
+        .await
+        .unwrap();
+        assert!(
+            store
+                .open_journal_stream(&work, &SafeEventJournal::Mg, &incarnation(), timestamp)
+                .await
+                .unwrap()
+                .is_some(),
+            "an existing stream remains accessible at capacity after reopen"
+        );
+        let overflow = SafeEventJournal::Seat {
+            seat_id: SeatId::new(format!("{limit:064x}")).unwrap(),
+        };
+        assert!(matches!(
+            store
+                .open_journal_stream(&work, &overflow, &incarnation(), timestamp)
+                .await,
+            Err(crate::store::StoreError::Saturated)
+        ));
         let fetches = Arc::new(AtomicUsize::new(0));
         let poller = JournalPoller::with_source(
             store,
@@ -1262,4 +1310,41 @@ async fn journal_listing_and_persisted_streams_share_the_configured_limit() {
             if accepted { MAX_BATCHES_PER_TARGET } else { 0 }
         );
     }
+}
+
+/// Populate only non-boundary fixture rows without changing store durability.
+async fn seed_middle_journal_streams(
+    path: &std::path::Path,
+    work: &WorkTarget,
+    indices: std::ops::Range<u16>,
+) {
+    let options = sqlx::sqlite::SqliteConnectOptions::new()
+        .filename(path)
+        .foreign_keys(true)
+        .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal)
+        .synchronous(sqlx::sqlite::SqliteSynchronous::Full);
+    let mut connection = sqlx::SqliteConnection::connect_with(&options)
+        .await
+        .unwrap();
+    let mut transaction = connection.begin().await.unwrap();
+    for index in indices {
+        let journal = SafeEventJournal::Seat {
+            seat_id: SeatId::new(format!("{index:064x}")).unwrap(),
+        };
+        sqlx::query(
+            "INSERT INTO journal_streams(
+                stream_id, target_id, journal_selector, source_incarnation,
+                observed_generation, status
+            ) VALUES (?, ?, ?, ?, 0, 'active')",
+        )
+        .bind(format!("seed{index:028x}"))
+        .bind(work.target_id())
+        .bind(serde_json::to_vec(&journal).unwrap())
+        .bind(incarnation().as_str().as_bytes())
+        .execute(&mut *transaction)
+        .await
+        .unwrap();
+    }
+    transaction.commit().await.unwrap();
+    connection.close().await.unwrap();
 }
