@@ -119,5 +119,10 @@ nix build .#fleet-manager-oci-image && docker load -i result
 nix run .#fleet-manager-container-load
 ```
 
+For a host that runs plain Docker Compose next to its own Bitcoin Core node,
+[`compose.example.yaml`](./compose.example.yaml) runs this image as an
+unprivileged user with a dedicated RPC user. It is an example to adapt, not a
+supported package.
+
 Package manifests are validated in their own repos
 (manifold-umbrel-store, manifold-fman-startos), not here.
