@@ -104,6 +104,10 @@ the fleet.
 - `ShowSeatReadiness` returns `{ ready_for_new_seats, report }`: the durable
   verdict that gates admission, and the latest run since the daemon started
   with a fixed outcome code per check, or a null report before one completes ([SPEC-advertisement](SPEC-advertisement.md#readiness-gate)).
+  The report's `uptime_permille` carries the three uptime scores and the
+  minimums they were held to, in tenths of a percent (the precision the gate
+  compares at, keyed `1d`/`7d`/`30d`), or null when the run could not read the
+  recorded scores.
 - `SetCapacity` replaces the durable maximum. It is refused below the number
   of active (not decommissioned) seats. `null` is automatic: the runtime
   limits of [REQ-seat-capacity-default](REQ-seat-capacity-default.md) decide.

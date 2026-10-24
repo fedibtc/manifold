@@ -5,6 +5,18 @@
     "checked_at_ms": 1700000000000,
     "discovery": "discovery_record_missing",
     "relay": "pass",
-    "uptime": "uptime_7d_low"
+    "uptime": "uptime_7d_low",
+    "uptime_permille": {
+      "minimums": {
+        "1d": 700,
+        "30d": 930,
+        "7d": 900
+      },
+      "scores": {
+        "1d": 887,
+        "30d": 935,
+        "7d": 899
+      }
+    }
   }
 }

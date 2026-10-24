@@ -70,7 +70,11 @@ const READY: MockState['seatReadiness'] = {
   relay: 'pass',
   discovery: 'pass',
   bitcoin: 'pass',
-  uptime: 'pass'
+  uptime: 'pass',
+  uptime_permille: {
+    scores: { '1d': 1000, '7d': 998, '30d': 991 },
+    minimums: { '1d': 700, '7d': 900, '30d': 930 }
+  }
 };
 
 const fees = (overrides: Partial<MockGuardianFees> = {}): MockGuardianFees => ({
@@ -446,7 +450,14 @@ const builders = {
     price: null,
     onboarding: authorized,
     readyForNewSeats: false,
-    seatReadiness: { ...READY, uptime: 'uptime_7d_low' }
+    seatReadiness: {
+      ...READY,
+      uptime: 'uptime_7d_low',
+      uptime_permille: {
+        scores: { '1d': 887, '7d': 899, '30d': 935 },
+        minimums: { '1d': 700, '7d': 900, '30d': 930 }
+      }
+    }
   }),
   // The state a fleet is actually in before its first payout: revenue on both
   // sides and nowhere to send it. Every sweep refuses until a destination is

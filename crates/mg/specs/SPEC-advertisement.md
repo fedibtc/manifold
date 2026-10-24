@@ -171,4 +171,5 @@ epoch in the same database write: a quote issued before a failure is refused
 with `OfferChanged` and its refund instead of admitting a seat. Every run emits one shareable event with a
 fixed code per check, the three uptime scores, and the minimums they were held to for telemetry, and the latest report is served to the
 operator by the `ShowSeatReadiness` admin verb, which the operator UI's Health
-page shows.
+page shows. The report includes the same three scores and minimums, so the page
+names the window that fails and by how much.

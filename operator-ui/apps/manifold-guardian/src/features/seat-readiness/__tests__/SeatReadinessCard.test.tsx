@@ -12,8 +12,11 @@ const report = (overrides: Partial<ReadinessReport> = {}): ReadinessReport => ({
   discovery: 'not_applicable',
   bitcoin: 'pass',
   uptime: 'pass',
+  uptime_permille: null,
   ...overrides
 });
+
+const MINIMUMS = { '1d': 700, '7d': 900, '30d': 930 };
 
 describe('SeatReadinessCard', () => {
   it('should count a check that does not apply as passing', () => {
@@ -49,6 +52,66 @@ describe('SeatReadinessCard', () => {
     expect(screen.getByText(guidance.uptime)).toBeTruthy();
     expect(screen.queryByText(guidance.bitcoin)).toBeNull();
     expect(screen.queryByText(guidance.relay)).toBeNull();
+  });
+
+  it('should show each uptime window against its minimum, marking the one under it', () => {
+    render(
+      <SeatReadinessCard
+        readiness={{
+          ready_for_new_seats: false,
+          report: report({
+            uptime: 'uptime_7d_low',
+            uptime_permille: {
+              scores: { '1d': 887, '7d': 899, '30d': 935 },
+              minimums: MINIMUMS
+            }
+          })
+        }}
+      />
+    );
+
+    expect(screen.getByText('Uptime, last day')).toBeTruthy();
+    expect(screen.getByText('88.7%')).toBeTruthy();
+    expect(screen.getByText('89.9%')).toBeTruthy();
+    expect(screen.getByText('93.5%')).toBeTruthy();
+    expect(screen.getByText('Minimum 90.0%').getAttribute('data-tone')).toBe('bad');
+    expect(screen.getByText('Minimum 70.0%').getAttribute('data-tone')).toBe('ok');
+    expect(screen.getByText('Minimum 93.0%').getAttribute('data-tone')).toBe('ok');
+    expect(screen.getByText(/any window under its minimum stops new seats/)).toBeTruthy();
+  });
+
+  it('should count a score equal to its minimum as passing', () => {
+    render(
+      <SeatReadinessCard
+        readiness={{
+          ready_for_new_seats: true,
+          report: report({
+            uptime_permille: { scores: { '1d': 700, '7d': 900, '30d': 930 }, minimums: MINIMUMS }
+          })
+        }}
+      />
+    );
+
+    expect(screen.getByText('Minimum 90.0%').getAttribute('data-tone')).toBe('ok');
+  });
+
+  it('should show no uptime figures when the run could not record them', () => {
+    render(<SeatReadinessCard readiness={{ ready_for_new_seats: true, report: report() }} />);
+
+    expect(screen.queryByText('Uptime, last day')).toBeNull();
+    expect(screen.queryByText(/any window under its minimum/)).toBeNull();
+  });
+
+  it('should show no uptime figures for a daemon that predates them', () => {
+    const { uptime_permille: _, ...older } = report();
+    render(
+      <SeatReadinessCard
+        readiness={{ ready_for_new_seats: true, report: older as ReadinessReport }}
+      />
+    );
+
+    expect(screen.queryByText('Uptime, last day')).toBeNull();
+    expect(screen.getByText('Readiness checks passed')).toBeTruthy();
   });
 
   it('should take the verdict from the stored result before the first run after a restart', () => {
