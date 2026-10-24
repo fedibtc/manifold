@@ -343,7 +343,11 @@ const mgSeatReadinessMirror = {
     relay: 'pass',
     discovery: 'discovery_record_missing',
     bitcoin: 'bitcoin_syncing',
-    uptime: 'uptime_7d_low'
+    uptime: 'uptime_7d_low',
+    uptime_permille: {
+      scores: { '1d': 887, '7d': 899, '30d': 935 },
+      minimums: { '1d': 700, '7d': 900, '30d': 930 }
+    }
   }
 } satisfies ShowSeatReadinessResponse;
 

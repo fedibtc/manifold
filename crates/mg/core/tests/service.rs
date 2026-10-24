@@ -85,6 +85,7 @@ async fn rpc_with_config(
             discovery: ReadinessOutcome::Pass,
             bitcoin: ReadinessOutcome::Pass,
             uptime: ReadinessOutcome::Pass,
+            uptime_permille: None,
         })
         .await
         .unwrap();
