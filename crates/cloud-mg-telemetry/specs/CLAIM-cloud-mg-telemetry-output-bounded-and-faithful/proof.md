@@ -89,8 +89,8 @@ the payload fields inside each safe event.
    do not render, and proves an owned warning still does. This mechanism filters
    `Metadata::target`; it does not establish cryptographic crate provenance for
    arbitrary target strings.
-8. **[enum] Exit closure.** The 24 production Rust files contain five HTTP routes,
-   four of them on the private listener, and 14 response shapes; six collector tracing call
+8. **[enum] Exit closure.** The 25 production Rust files contain seven HTTP routes,
+   six of them on the private listener, and 16 response shapes; seven collector tracing call
    sites; the single validated archive content writer and its bounded path
    constructors; 51 admitted source metric families plus exactly five generated
    families; two Iroh connection sites; and four typed capability-bearing RPC
@@ -111,6 +111,27 @@ the payload fields inside each safe event.
    that a parseable invite too long for bech32m keeps its seat's federation id
    and metrics through a production poll and commit, without a panic, and
    exports no invite.
+10. **[test] Seat report exports.**
+   `seat_report_exports_are_served_only_on_the_private_listener` shows the
+   private listener serves both exports and the public listener routes
+   neither. `keeps_the_last_valid_report_of_each_kind`,
+   `seat_counts_must_agree_with_every_stated_limit`,
+   `rejects_out_of_range_or_unbounded_values` and
+   `a_record_without_a_valid_time_is_ignored` show that only timed records
+   whose counts, codes, versions and percentages decode within bounds, and
+   whose seat counts agree, are kept, and that an invalid record leaves the
+   last valid one in place. `stored_reports_validate_again_when_read` shows
+   that decoding a stored row applies the same checks; `Store::mg_reports`
+   decodes every row it exports and skips one that fails. A skip logs one
+   fixed warning per read, with the report kind and the count only.
+   `only_the_mg_journal_stores_seat_reports` shows a seat journal batch stores
+   no report.
+   `a_stated_time_never_makes_a_report_fresher_than_its_arrival` and
+   `newest_seat_reports_are_stored_and_follow_the_target_lifecycle` show that
+   an observation time never exceeds reception, that an older report arriving
+   later does not replace a newer one, that a report observed after the
+   response time is left out, and that an expired lease and a quarantined
+   target leave both exports.
 
 ## Counterexample
 
@@ -135,6 +156,11 @@ interval, and the default 3,600-second registration lease.
    becomes eligible without a correcting poll. `render_metrics` computes age
    from the now-equal wall-clock timestamps and emits the approximately
    3,500-second-old observation with age zero and `snapshot_stale=0`.
+
+The same step applies to seat reports. With a forward wall-clock step and a
+stated time in the future, the stored observation time lies in the future, the
+export omits the report, and the `>=` replacement guard refuses later reports
+until corrected wall time reaches it; the old report then appears as current.
 
 This violates the claim that an old observation cannot be retimed as fresh.
 The claim has no bounded or monotone wall-clock axiom that excludes the

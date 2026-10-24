@@ -22,8 +22,8 @@ use anyhow::{Context as _, anyhow};
 use fedi_decentralized_domain::Pubkey;
 use fedi_decentralized_service_manifold_guardian::{
     CreateSeatResponse, FaId, FederationId, GuardianTelemetrySeat, Plan, QuoteId, QuoteTerms,
-    RefundTransaction, RefusalReason, SafeEventJournal, SeatId, SeatScopedFaRequest,
-    SignedResponse, TelemetryCapability, VerifiedFaRequest,
+    RefundTransaction, RefusalReason, SEAT_CAPACITY_EVENT, SafeEventJournal, SeatId,
+    SeatScopedFaRequest, SignedResponse, TelemetryCapability, VerifiedFaRequest,
 };
 use tokio::sync::Notify;
 
@@ -222,7 +222,7 @@ impl FleetNostrHost {
             policy_max_seats = snapshot.policy_max_seats,
             available_seats = snapshot.available_seats,
             accepting_seats = snapshot.accepting_seats,
-            "seat capacity"
+            "{SEAT_CAPACITY_EVENT}"
         );
         snapshot
             .accepting_seats

@@ -77,5 +77,6 @@ fedimint-build = { workspace = true }
 [dev-dependencies]
 bitcoin = "0.32.6"
 fedimint-server = { workspace = true }
+humantime = "2.4.0"
 tempfile = "3"
 tower = { version = "0.5", features = ["util"] }

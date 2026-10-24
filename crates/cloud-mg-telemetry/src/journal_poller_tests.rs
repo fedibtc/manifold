@@ -1263,3 +1263,170 @@ async fn journal_listing_and_persisted_streams_share_the_configured_limit() {
         );
     }
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn newest_seat_reports_are_stored_and_follow_the_target_lifecycle() {
+    use crate::mg_reports::{SeatCapacity, SeatReadiness, format_rfc3339_millis};
+
+    let directory = tempfile::tempdir().unwrap();
+    let store = store(&directory).await;
+    let received = now().unwrap();
+    let at = |offset_secs: i64| format_rfc3339_millis((received + offset_secs) * 1000).unwrap();
+    let capacity = |offset_secs, available: u32| {
+        format!(
+            "{{\"timestamp\":\"{}\",\"fields\":{{\"message\":\"seat capacity\",\"safe_to_share\":true,\"mg_version\":\"0.1.6\",\"max_seats\":8,\"memory_max_seats\":9,\"policy_max_seats\":12,\"available_seats\":{available},\"accepting_seats\":true}}}}\n",
+            at(offset_secs)
+        )
+    };
+    let readiness = |offset_secs| {
+        format!(
+            "{{\"timestamp\":\"{}\",\"fields\":{{\"message\":\"seat readiness check completed\",\"safe_to_share\":true,\"ready\":true,\"relay\":\"pass\",\"discovery\":\"pass\",\"bitcoin\":\"pass\",\"uptime\":\"pass\",\"uptime_1d_pct\":99.9,\"uptime_7d_pct\":97.5,\"uptime_30d_pct\":96,\"min_uptime_1d_pct\":70,\"min_uptime_7d_pct\":90,\"min_uptime_30d_pct\":93}}}}\n",
+            at(offset_secs)
+        )
+    };
+    let incarnation = incarnation();
+    let batch = |offset: u64, jsonl: String| FetchSafeEventJournalResponse::Current {
+        incarnation: incarnation.clone(),
+        jsonl: jsonl.into_bytes(),
+        next_cursor: Some(SafeEventCursor {
+            incarnation: incarnation.clone(),
+            segment: 1,
+            offset,
+        }),
+        continuity_gap: false,
+    };
+    let responses = VecDeque::from([
+        batch(
+            1,
+            [capacity(-1200, 7), capacity(-900, 6), readiness(-300)].concat(),
+        ),
+        // An older capacity record arriving later keeps the stored one; a
+        // readiness record stated in the future counts as observed on arrival.
+        batch(2, [capacity(-1500, 3), readiness(600)].concat()),
+        batch(2, String::new()),
+    ]);
+    let (poller, _) = clocked_poller(
+        store.clone(),
+        JournalArchive::open(directory.path(), 1024 * 1024).unwrap(),
+        responses,
+        Arc::new(TestClock(AtomicI64::new(received))),
+        None,
+        None,
+    );
+    let (_shutdown, receiver) = tokio::sync::watch::channel(false);
+    poller.poll_once(receiver).await.unwrap();
+
+    let capacities = store.mg_reports::<SeatCapacity>(received).await.unwrap();
+    assert_eq!(capacities.len(), 1);
+    assert_eq!(capacities[0].mg_pubkey, "11");
+    assert_eq!(capacities[0].observed_at_ms, (received - 900) * 1000);
+    assert_eq!(capacities[0].report.available_seats, 6);
+    assert_eq!(capacities[0].report.max_seats, Some(8));
+    let readiness = store.mg_reports::<SeatReadiness>(received).await.unwrap();
+    assert_eq!(readiness[0].observed_at_ms, received * 1000);
+    assert!(readiness[0].report.ready);
+    assert!(
+        store
+            .mg_reports::<SeatReadiness>(received - 1)
+            .await
+            .unwrap()
+            .is_empty(),
+        "a report observed after the export time is left out"
+    );
+
+    assert!(
+        store
+            .mg_reports::<SeatCapacity>(received + 200_001)
+            .await
+            .unwrap()
+            .is_empty(),
+        "an expired lease leaves the export"
+    );
+
+    assert!(store.quarantine("11").await.unwrap());
+    assert!(
+        store
+            .mg_reports::<SeatCapacity>(received)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        store
+            .mg_reports::<SeatReadiness>(received)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn only_the_mg_journal_stores_seat_reports() {
+    use crate::{
+        journal_target::CommitOutcome,
+        mg_reports::{SeatCapacity, format_rfc3339_millis},
+    };
+
+    let directory = tempfile::tempdir().unwrap();
+    let store = store(&directory).await;
+    let timestamp = now().unwrap();
+    let target = store
+        .active_collection_targets(timestamp)
+        .await
+        .unwrap()
+        .pop()
+        .unwrap();
+    let work = store
+        .begin_collection_work(&target, timestamp)
+        .await
+        .unwrap()
+        .unwrap();
+    let incarnation = incarnation();
+    let record = format!(
+        "{{\"timestamp\":\"{}\",\"fields\":{{\"message\":\"seat capacity\",\"safe_to_share\":true,\"max_seats\":3,\"available_seats\":1,\"accepting_seats\":true}}}}\n",
+        format_rfc3339_millis(timestamp * 1000).unwrap()
+    );
+    for (journal, stored) in [
+        (
+            SafeEventJournal::Seat {
+                seat_id: SeatId::new(format!("{:064x}", 1)).unwrap(),
+            },
+            0,
+        ),
+        (SafeEventJournal::Mg, 1),
+    ] {
+        let state = store
+            .open_journal_stream(&work, &journal, &incarnation, timestamp)
+            .await
+            .unwrap()
+            .unwrap();
+        let batch = ValidatedJournalBatch::new(
+            &incarnation,
+            state.cursor.as_ref(),
+            incarnation.clone(),
+            record.clone().into_bytes(),
+            Some(SafeEventCursor {
+                incarnation: incarnation.clone(),
+                segment: 1,
+                offset: 1,
+            }),
+            false,
+        )
+        .unwrap();
+        assert_eq!(
+            store
+                .commit_journal_batch(&work, &state, &batch, None, timestamp)
+                .await
+                .unwrap(),
+            CommitOutcome::Committed
+        );
+        assert_eq!(
+            store
+                .mg_reports::<SeatCapacity>(timestamp)
+                .await
+                .unwrap()
+                .len(),
+            stored
+        );
+    }
+}

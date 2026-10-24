@@ -30,6 +30,7 @@ fedi-iroh-rpc = { path = "../fedi-iroh-rpc" }
 fedimint-core.workspace = true
 fs2 = "0.4"
 hex = "0.4.3"
+humantime = "2.4.0"
 hyper = { version = "1", features = ["http1", "server"] }
 hyper-util = { version = "0.1", features = ["server", "service", "tokio"] }
 ipnet = "2"
