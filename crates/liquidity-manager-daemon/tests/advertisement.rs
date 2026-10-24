@@ -95,12 +95,14 @@ async fn ready_republish_refresh_and_withdraw_use_fake_relay() -> anyhow::Result
 /// invokes under pressure, so a silent break in that wiring is worth a test.
 #[tokio::test]
 async fn admin_advertisement_routes_publish_report_and_withdraw() -> anyhow::Result<()> {
-    let context = test_context(
+    let mut context = test_context(
         "advertisement-admin-routes",
         crate::nostr::fake_relay_publisher(),
     )
     .await?;
     setup_ready_provider(&context, true, vec![Url("ws://127.0.0.1:8080".to_owned())]).await?;
+    context.advertisement_writer = Arc::default();
+    let startup = tokio::time::Instant::now();
     let app = crate::admin::app(crate::daemon::DaemonShell::with_generation(context));
 
     let published: RepublishAdvertisementResponse =
@@ -108,6 +110,10 @@ async fn admin_advertisement_routes_publish_report_and_withdraw() -> anyhow::Res
     assert_eq!(
         published.publication_status,
         AdvertisementPublicationStatus::Published
+    );
+    assert!(
+        startup.elapsed() >= std::time::Duration::from_secs(2),
+        "the admin route must not bypass the shared startup guard"
     );
 
     let withdrawn: WithdrawAdvertisementResponse = admin_call(
@@ -155,6 +161,144 @@ async fn admin_advertisement_routes_publish_report_and_withdraw() -> anyhow::Res
         axum::http::StatusCode::UNAUTHORIZED
     );
 
+    Ok(())
+}
+
+#[tokio::test]
+async fn concurrent_withdrawal_and_republication_use_strictly_newer_events() -> anyhow::Result<()> {
+    let recorder = Arc::new(RecordingRelayPublisher::default());
+    let context = test_context("paced-concurrent-writes", recorder.clone()).await?;
+    setup_ready_provider(&context, true, vec![Url("ws://relay.invalid".to_owned())]).await?;
+    republish(&context, true).await?;
+    let (withdrawn, republished) = tokio::join!(
+        biased;
+        withdraw(&context, None),
+        republish(&context, true),
+    );
+    withdrawn?;
+    assert_eq!(
+        republished?.status,
+        AdvertisementPublicationStatus::Published
+    );
+    {
+        let publications = recorder.publications.lock().unwrap();
+        let withdrawals = recorder.withdrawals.lock().unwrap();
+        assert_eq!(publications.len(), 2);
+        assert_eq!(withdrawals.len(), 1);
+        assert!(publications[0].created_at < withdrawals[0].expired_created_at);
+        assert!(withdrawals[0].expired_created_at < publications[1].created_at);
+    }
+    assert!(
+        load_advertisement_record(&context)
+            .await?
+            .withdrawn_at
+            .is_none()
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn canceling_a_paced_withdrawal_preserves_operator_intent() -> anyhow::Result<()> {
+    let recorder = Arc::new(RecordingRelayPublisher::default());
+    let mut context = test_context("paced-withdrawal-cancel", recorder.clone()).await?;
+    setup_ready_provider(&context, true, vec![Url("ws://relay.invalid".to_owned())]).await?;
+    republish(&context, true).await?;
+    let frozen = now_timestamp();
+    context.advertisement_writer = Arc::new(tokio::sync::Mutex::new(
+        crate::advertisement_writer::AdvertisementWriter::new(frozen),
+    ));
+    let waiting = Arc::new(tokio::sync::Notify::new());
+    let mut task = {
+        let context = context.clone();
+        let waiting = waiting.clone();
+        tokio::spawn(async move {
+            withdraw_with_clock(&context, None, || {
+                waiting.notify_one();
+                frozen
+            })
+            .await
+        })
+    };
+    tokio::select! {
+        _ = waiting.notified() => {}
+        result = &mut task => panic!("withdrawal ended before its clock wait: {result:?}"),
+    }
+    task.abort();
+    assert!(task.await.unwrap_err().is_cancelled());
+    assert!(
+        load_advertisement_record(&context)
+            .await?
+            .withdrawn_at
+            .is_some()
+    );
+    republish(&context, false).await?;
+    assert_eq!(recorder.publications.lock().unwrap().len(), 1);
+    assert!(recorder.withdrawals.lock().unwrap().is_empty());
+    Ok(())
+}
+
+#[tokio::test]
+async fn readiness_is_rechecked_after_pacing_without_holding_a_database_writer()
+-> anyhow::Result<()> {
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    let recorder = Arc::new(RecordingRelayPublisher::default());
+    let mut context = test_context("paced-readiness-recheck", recorder.clone()).await?;
+    setup_ready_provider(&context, true, vec![Url("ws://relay.invalid".to_owned())]).await?;
+    let start = now_timestamp();
+    context.advertisement_writer = Arc::new(tokio::sync::Mutex::new(
+        crate::advertisement_writer::AdvertisementWriter::new(start),
+    ));
+    let clock = Arc::new(AtomicU64::new(start.0));
+    let waiting = Arc::new(tokio::sync::Notify::new());
+    let mut task = {
+        let context = context.clone();
+        let clock = clock.clone();
+        let waiting = waiting.clone();
+        tokio::spawn(async move {
+            republish_with_clock(&context, true, || {
+                waiting.notify_one();
+                Timestamp(clock.load(Ordering::SeqCst))
+            })
+            .await
+        })
+    };
+    tokio::select! {
+        _ = waiting.notified() => {}
+        result = &mut task => panic!("publication ended before its clock wait: {result:?}"),
+    }
+    // The pacing owner must not prevent another configuration writer.
+    context.database.begin_write().await?.rollback().await?;
+    context.daemon_state.write().await.phase = DaemonPhase::Recovering;
+    clock.store(start.0 + 2, Ordering::SeqCst);
+    assert_eq!(
+        task.await??.status,
+        AdvertisementPublicationStatus::NotReady
+    );
+    assert!(recorder.publications.lock().unwrap().is_empty());
+    Ok(())
+}
+
+#[tokio::test]
+async fn waiting_for_the_serial_writer_is_also_bounded() -> anyhow::Result<()> {
+    let context = test_context(
+        "paced-writer-admission",
+        crate::nostr::fake_relay_publisher(),
+    )
+    .await?;
+    let _owner = context.advertisement_writer.lock().await;
+    tokio::time::pause();
+    let start = tokio::time::Instant::now();
+    let waiting = republish(&context, true);
+    tokio::pin!(waiting);
+    assert!(futures_util::poll!(&mut waiting).is_pending());
+    tokio::time::advance(WAIT_TIMEOUT - std::time::Duration::from_millis(1)).await;
+    assert!(futures_util::poll!(&mut waiting).is_pending());
+    // Tokio timers round to millisecond ticks. Cross the unchanged deadline,
+    // rather than requiring a fractional starting instant to land on a tick.
+    tokio::time::advance(std::time::Duration::from_millis(2)).await;
+    assert!(waiting.await.is_err());
+    assert!(start.elapsed() <= WAIT_TIMEOUT + std::time::Duration::from_millis(1));
     Ok(())
 }
 
@@ -857,8 +1001,8 @@ async fn an_expiry_carries_nothing_from_the_stored_row() -> anyhow::Result<()> {
     }
     assert_eq!(expired["payload"]["display"], serde_json::Value::Null);
 
-    // The far-future stamp is clamped, so relays still accept the event and
-    // the withdrawal actually withdraws.
+    // The far-future stored stamp is ignored; pacing samples current time
+    // instead of signing an untrusted future value.
     let issued = expired["payload"]["issued_at"]
         .as_u64()
         .expect("issued_at is a number");
@@ -868,19 +1012,22 @@ async fn an_expiry_carries_nothing_from_the_stored_row() -> anyhow::Result<()> {
     );
     assert_eq!(
         withdrawals[0].expired_created_at.0, issued,
-        "the relay event is stamped with the clamped value"
+        "the relay event is stamped with the paced current-time value"
     );
     Ok(())
 }
 
 #[derive(Debug, Default)]
 struct RecordingRelayPublisher {
+    /// Every attempted live event, before any simulated relay outcome.
+    publications: std::sync::Mutex<Vec<RelayPublishRequest>>,
     withdrawals: std::sync::Mutex<Vec<RelayWithdrawRequest>>,
 }
 
 #[async_trait::async_trait]
 impl RelayPublisher for RecordingRelayPublisher {
-    async fn publish(&self, _request: RelayPublishRequest) -> Result<RelayPublishResult, String> {
+    async fn publish(&self, request: RelayPublishRequest) -> Result<RelayPublishResult, String> {
+        self.publications.lock().unwrap().push(request);
         Ok(RelayPublishResult {
             event_id: "recorded-event".to_owned(),
         })
