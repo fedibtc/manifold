@@ -1,0 +1,45 @@
+# Example: Manifold Guardian under plain Docker Compose, on a host that also
+# runs its own Bitcoin Core node. An example to adapt, not a supported
+# package: review secure-deployment.md and replace every <placeholder> first.
+#
+# Build the image from the release commit you reviewed, then load it:
+#   nix build .#fleet-manager-oci-image && docker load -i result
+# `docker load` prints the image name to put below.
+#
+# Bitcoin Core: give MG its own RPC user with a fixed password, an `rpcauth=`
+# line in bitcoin.conf made by Bitcoin Core's share/rpcauth/rpcauth.py. MG
+# reads the credentials once at start and hands them to every seat, so they
+# must stay valid across bitcoind restarts, which the cookie file does not.
+# Put the user and password in ./bitcoind.env, readable only by you:
+#   FLEET_MANAGER_BITCOIND_USERNAME=<rpcauth user>
+#   FLEET_MANAGER_BITCOIND_PASSWORD=<its password>
+#
+# Run one MG per data directory, ever: never start a copy of ./data elsewhere.
+services:
+  fleet-manager:
+    image: fleet-manager:<version printed by docker load>
+    pull_policy: never # run only the image built above
+    restart: unless-stopped
+    stop_grace_period: 1m
+    # Bitcoin Core RPC stays on the host's loopback, and each seat needs its
+    # UDP ports reachable (README, "Seat iroh reachability"). Host networking
+    # gives both; the host firewall decides what is exposed.
+    network_mode: host
+    user: "<uid>:<gid>" # a dedicated host user that owns ./data
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    tmpfs: [/tmp]
+    env_file: [bitcoind.env]
+    environment:
+      HOME: /data
+      FLEET_MANAGER_MANIFOLD_ENVIRONMENT: production
+      FLEET_MANAGER_BITCOIND_URL: http://127.0.0.1:8332
+      # FLEET_MANAGER_ESPLORA_URL: https://mempool.space/api
+      # Operator dashboard; publish it only behind the boundary its auth mode
+      # assumes (README, operator dashboard).
+      FLEET_MANAGER_ADMIN_HTTP_BIND: 127.0.0.1:8482
+      FLEET_MANAGER_ADMIN_HTTP_AUTH: password
+      FLEET_MANAGER_ADMIN_HTTP_PASSWORD_FILE: /admin-password
+    volumes:
+      - ./data:/data
+      - ./admin-password:/admin-password:ro
