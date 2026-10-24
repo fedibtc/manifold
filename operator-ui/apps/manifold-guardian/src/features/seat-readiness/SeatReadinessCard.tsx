@@ -1,7 +1,16 @@
-import { Banner } from '@operator-ui/common-ui';
+import { Banner, StatCard } from '@operator-ui/common-ui';
 import type { ShowSeatReadinessResponse } from '@operator-ui/types';
 import { formatCheckedAt } from '@/shared/utils/format';
-import { CHECKS, guidance, labels, outcomes, passed } from '@/shared/utils/seatReadiness';
+import {
+  CHECKS,
+  formatPermille,
+  guidance,
+  labels,
+  outcomes,
+  passed,
+  UPTIME_WINDOWS,
+  uptimeLabels
+} from '@/shared/utils/seatReadiness';
 import styles from './SeatReadinessCard.module.css';
 
 interface SeatReadinessCardProps {
@@ -10,6 +19,8 @@ interface SeatReadinessCardProps {
 
 export const SeatReadinessCard = ({ readiness }: SeatReadinessCardProps) => {
   const { ready_for_new_seats: ready, report } = readiness;
+  // Absent from daemons that predate the figures, null when a run could not record them.
+  const uptime = report?.uptime_permille ?? null;
   return (
     <>
       {ready ? (
@@ -43,9 +54,25 @@ export const SeatReadinessCard = ({ readiness }: SeatReadinessCardProps) => {
             ))}
           </ul>
 
+          {uptime && (
+            <div className={styles.checks}>
+              {UPTIME_WINDOWS.map((window) => (
+                <StatCard
+                  key={window}
+                  label={uptimeLabels[window]}
+                  value={formatPermille(uptime.scores[window])}
+                  chip={`Minimum ${formatPermille(uptime.minimums[window])}`}
+                  chipTone={uptime.scores[window] >= uptime.minimums[window] ? 'ok' : 'bad'}
+                />
+              ))}
+            </div>
+          )}
+
           <p className={styles.checkedAt}>
             Last checked {formatCheckedAt(Math.floor(report.checked_at_ms / 1000))}. Checks repeat
             every 10 minutes, or every minute while one fails.
+            {uptime &&
+              ' Uptime is a moving average of these checks; any window under its minimum stops new seats.'}
           </p>
         </>
       )}

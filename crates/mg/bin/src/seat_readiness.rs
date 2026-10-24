@@ -24,7 +24,8 @@ use iroh::{Endpoint, RelayUrl, Watcher as _};
 use mg_core::fleet::Fleet;
 use mg_core::seat_process::{BitcoinBackend, SeatProcessConfig};
 use mg_core::seat_readiness::{
-    ReadinessOutcome as Outcome, ReadinessReport as Report, UPTIME_SLOT_SECS, UptimeScores,
+    ReadinessOutcome as Outcome, ReadinessReport as Report, UPTIME_SLOT_SECS, UptimeComparison,
+    UptimeScores,
 };
 use tokio::sync::watch;
 use tokio::time::Instant;
@@ -88,20 +89,21 @@ impl SeatReadiness {
                 // Recording this slot also accounts for every slot since the
                 // last record, such as a restart's downtime.
                 let recorded_at = SystemTime::now();
-                let scores = match fleet
+                let recorded = match fleet
                     .record_uptime_slot(recorded_at, report.prerequisites_passed())
                     .await
                 {
-                    Ok(scores) => scores,
+                    Ok(scores) => Some(scores),
                     Err(error) => {
                         tracing::warn!(%error, "failed to record an uptime slot");
-                        UptimeScores {
-                            day: 0.0,
-                            week: 0.0,
-                            month: 0.0,
-                        }
+                        None
                     }
                 };
+                let scores = recorded.unwrap_or(UptimeScores {
+                    day: 0.0,
+                    week: 0.0,
+                    month: 0.0,
+                });
                 let min = setup_payment_policy
                     .borrow()
                     .as_ref()
@@ -109,6 +111,11 @@ impl SeatReadiness {
                         policy.min_uptime_percent()
                     });
                 report.uptime = scores.outcome(min);
+                // The operator sees no figures rather than zeros it cannot trust.
+                report.uptime_permille = recorded.map(|scores| UptimeComparison {
+                    scores: scores.permille(),
+                    minimums: min.into(),
+                });
                 let ready = report.ready();
                 journal_readiness(&report, scores, min);
                 if let Err(error) = fleet.set_seat_readiness(report).await {
@@ -165,6 +172,7 @@ impl SeatReadiness {
             discovery,
             bitcoin,
             uptime: Outcome::NotApplicable,
+            uptime_permille: None,
         }
     }
 
@@ -333,6 +341,7 @@ mod tests {
             discovery: Outcome::NotApplicable,
             bitcoin: Outcome::Pass,
             uptime: Outcome::WeekUptimeLow,
+            uptime_permille: None,
         };
         let scores = UptimeScores {
             day: 0.9944,
