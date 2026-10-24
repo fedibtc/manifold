@@ -1669,6 +1669,16 @@ async fn live_unresolvable_send_escalates_to_review_and_waits_for_the_operator()
     let mut stack = LiveLiquidityStack::start("live-manual-review").await?;
     stack.wallet.fund_gateway_wallet().await?;
     let (_, advertisement, rpc) = stack.wallet.configure_publish_and_connect().await?;
+    // This regression covers unresolved-send escalation and operator recovery,
+    // not cold attachment. Prepare the real walletv2 address before starting
+    // allocation; otherwise its initial index search consumes the funding wait.
+    // Cold attachment remains covered by the live liquidity happy-path and
+    // top-up tests. Do not move this setup into LiveLiquidityStack::start.
+    stack
+        .wallet
+        .gateway
+        .prepare_federation_deposit_address(&stack.target_fedimint.invite_code)
+        .await?;
     let http = stack.wallet.http.clone();
     let admin_url = stack.wallet.admin_url.clone();
 
