@@ -16,9 +16,11 @@ mod maintenance;
 mod mg;
 mod ports;
 mod replacement_checks;
+mod seat_purchase;
 mod selection;
 mod setup_payment_federations;
 mod state;
+mod transfer;
 mod unavailable;
 
 use std::sync::Arc;
@@ -85,7 +87,8 @@ pub use replacement_checks::{ReplacementReceipt, ReplacementStartError};
 pub use selection::{
     MG_SELECTION_PREVIEW_VALIDITY, MG_SELECTION_PROBE_TIMEOUT, MgReplacementApproval,
     MgReplacementPreview, MgSelectionApproval, MgSelectionPreview, MgSelectionQuery,
-    MgSelectionRequest, SeatProvenance, SelectedMgSeat, VerifiedBadgeFacts, VerifiedCandidate,
+    MgSelectionRequest, SeatProvenance, SelectedMgSeat, TransferDestinationApproval,
+    TransferDestinationPreview, VerifiedBadgeFacts, VerifiedCandidate,
 };
 pub use setup_payment_federations::AdmittedSetupPaymentFederation;
 /// Exact SPv2 account type returned by [`FaFeeAccountProvider`].
@@ -103,6 +106,7 @@ pub use state::{
     ResolvedFormationIntent, RestoredFormationSnapshot, RestoredSeat, SeatPaymentRequirement,
     SeatPhase, SeatProgress,
 };
+pub use transfer::{GuardianTransfer, GuardianTransferPhase};
 pub use unavailable::{
     UnavailableFaFeeAccountProvider, UnavailableFederationConsensusReader,
     UnavailableManifoldGuardianConnector, UnavailablePayments, UnavailableRegistry,

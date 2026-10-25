@@ -4,7 +4,7 @@
 
 `crates/service-manifold-guardian` defines the grant, the four verbs, the four
 seat statuses, the grant's validity rule, and `rebind_transferred_seat`.
-`fa-client` does not drive a transfer yet. Manifold Guardian builds implement
+`fa-client` drives the FA side of every step. Manifold Guardian builds implement
 the four verbs and resume durable transfers after restart, but only
 development and staging deployments run them. Keyed on its Manifold
 environment like `DecommissionSeat`
@@ -62,9 +62,13 @@ online once. The FA does not have to be online at the same time.
    federation it already hosts, but its own pending import does not count.
    It then invokes the `PullSeat` completion callback. `Running` ends the
    destination's part of the transfer.
-5. The FA sends `ReplaceSeatBinding` to every seat. Each MG replaces only
-   the moved peer's directory entry and fee recipient and votes. The FA
-   confirms by consensus readback.
+5. The FA sends `ReplaceSeatBinding` with the destination's attestation to
+   every seat except the stopped source. Each MG derives its vote from
+   the consensus values in `expected_base` with `rebind_transferred_seat`:
+   the moved peer's directory entry becomes the new attestation, and the
+   peer's fee recipient share moves to the new account. Nothing else
+   changes. The FA confirms by readback that consensus holds exactly those
+   values.
 6. The FA sends `RemoveSeat` to the source. The source deletes the seat's
    guardian data at once and reports `Removed`; its next backup publication
    drops the archive and keeps the tombstone. A failed removal leaves the
