@@ -1089,9 +1089,11 @@ fn moved_binding_adopted(
     }
     // Adopted values must be exactly what the shared rule derives, and the
     // full directory must still verify against the federation.
-    let (expected_directory, expected_recipients) =
-        rebind_transferred_seat(directory, recipients, current)
-            .map_err(|error| invalid(error.to_string()))?;
+    let fedi_decentralized_service_manifold_guardian::ReboundSeat {
+        seat_bindings: expected_directory,
+        recipients: expected_recipients,
+    } = rebind_transferred_seat(directory, recipients, current)
+        .map_err(|error| invalid(error.to_string()))?;
     if expected_directory != directory || expected_recipients != recipients {
         return Ok(false);
     }

@@ -2224,7 +2224,10 @@ impl FederationConsensusReader for TestConsensusReader {
                 serde_json::Value::String(value) => value.clone(),
                 _ => panic!("test metadata field is a string"),
             };
-            let (directory, recipients) = rebind_transferred_seat(
+            let fedi_decentralized_service_manifold_guardian::ReboundSeat {
+                seat_bindings: directory,
+                recipients,
+            } = rebind_transferred_seat(
                 &field(fedi_decentralized_domain::MG_SEAT_BINDINGS_META_FIELD_KEY),
                 &field(GUARDIAN_FEE_RECIPIENTS_META_FIELD_KEY),
                 &attestation,

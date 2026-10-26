@@ -1054,8 +1054,10 @@ fn a_rebind_moves_only_the_peer_entry_and_its_fee_share() {
     let recipient_list = canonical_guardian_fee_recipient_list(&recipients).unwrap();
     let moved = test_attestation_for_peer(DESTINATION, MOVED);
 
-    let (new_directory, new_recipients) =
-        rebind_transferred_seat(&directory, &recipient_list, &moved).unwrap();
+    let fedi_decentralized_service_manifold_guardian::ReboundSeat {
+        seat_bindings: new_directory,
+        recipients: new_recipients,
+    } = rebind_transferred_seat(&directory, &recipient_list, &moved).unwrap();
 
     let mut expected_bindings = attestations;
     expected_bindings[MOVED] = moved.clone();
@@ -1087,7 +1089,10 @@ fn a_rebind_moves_only_the_peer_entry_and_its_fee_share() {
     // A second application changes nothing.
     assert_eq!(
         rebind_transferred_seat(&new_directory, &new_recipients, &moved).unwrap(),
-        (new_directory, new_recipients)
+        fedi_decentralized_service_manifold_guardian::ReboundSeat {
+            seat_bindings: new_directory,
+            recipients: new_recipients,
+        }
     );
 }
 
