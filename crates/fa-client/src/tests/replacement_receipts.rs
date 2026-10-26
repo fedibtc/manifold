@@ -113,23 +113,40 @@ async fn receipt_is_invalid_after_reopening_the_same_database() {
 async fn replacement_schedule_checks_on_start_hourly_and_when_resumed() {
     let (client, _) = candidate_client().await;
     let mut observations = client.observe_replacement_candidates();
+    let start = tokio::time::Instant::now();
     let worker_client = client.clone();
     let worker = tokio::spawn(async move { worker_client.run_replacement_checks().await });
     observations.changed().await.unwrap();
+    assert_eq!(start.elapsed(), Duration::ZERO);
     observations.borrow_and_update();
+    client.inner.progress.send_replace(client.status());
+    tokio::task::yield_now().await;
+    assert!(!observations.has_changed().unwrap());
     tokio::time::advance(Duration::from_secs(3599)).await;
     tokio::task::yield_now().await;
     assert!(!observations.has_changed().unwrap());
+    let operation = client.inner.run_guard.lock().await;
     tokio::time::advance(Duration::from_secs(1)).await;
+    tokio::task::yield_now().await;
+    assert!(matches!(
+        client.check_replacement_candidates().await,
+        Err(FaError::Busy)
+    ));
+    assert!(observations.borrow().is_some());
+    assert!(!observations.has_changed().unwrap());
+    drop(operation);
     observations.changed().await.unwrap();
+    assert_eq!(start.elapsed(), Duration::from_secs(3601));
     observations.borrow_and_update();
     worker.abort();
     let _ = worker.await;
     tokio::time::advance(Duration::from_secs(3600)).await;
     assert!(!observations.has_changed().unwrap());
     let worker_client = client.clone();
+    let resumed_at = tokio::time::Instant::now();
     let resumed = tokio::spawn(async move { worker_client.run_replacement_checks().await });
     observations.changed().await.unwrap();
+    assert_eq!(resumed_at.elapsed(), Duration::ZERO);
     resumed.abort();
     let _ = resumed.await;
 }

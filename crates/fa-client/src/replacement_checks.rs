@@ -10,15 +10,19 @@ use tokio::sync::{Mutex, watch};
 
 use crate::formation::{PostFormedAuthority, invite_federation_id};
 use crate::{
-    FaClient, FaIdentity, FaPayments, FaResult, FederationConsensusReader, FederationId,
-    FormationId, ManifoldGuardianConnector, ReplacementCandidate, ReplacementCheck,
+    FaClient, FaError, FaIdentity, FaPayments, FaResult, FaStatus, FederationConsensusReader,
+    FederationId, FormationFreshness, FormationId, FormationPhase, ManifoldGuardianConnector,
+    ReplacementCandidate, ReplacementCheck,
 };
 
 const CHECK_INTERVAL: Duration = Duration::from_secs(60 * 60);
 
 pub(crate) struct ReplacementChecks {
+    // Identity of this client opening, used to bind receipts; not a badge issuer.
     issuer: Arc<()>,
+    // Last successful result for the ready federation, with its original timestamp.
     current: watch::Sender<Option<Arc<ReplacementCheck>>>,
+    // Serializes scheduled and on-demand checks.
     checking: Mutex<()>,
 }
 
@@ -29,6 +33,43 @@ impl Default for ReplacementChecks {
             current: watch::channel(None).0,
             checking: Mutex::new(()),
         }
+    }
+}
+
+// Ignore progress details that do not change which formed federation is ready.
+fn ready_federation(status: &FaStatus) -> Option<(FormationId, FederationId)> {
+    let (formation, invite) = match status {
+        FaStatus::Formation(state) if state.phase == FormationPhase::Formed => {
+            (&state.formation_id, state.invite_code.as_ref()?)
+        }
+        FaStatus::Restored(state)
+            if state.phase == FormationPhase::Formed
+                && state.freshness == FormationFreshness::Fresh =>
+        {
+            (&state.formation_id, &state.federation_invite)
+        }
+        _ => return None,
+    };
+    Some((
+        formation.clone(),
+        FederationId(invite_federation_id(invite).ok()?.to_string()),
+    ))
+}
+
+impl ReplacementChecks {
+    fn retain_for(&self, context: Option<&(FormationId, FederationId)>) {
+        self.current.send_if_modified(|current| {
+            if current.as_ref().is_some_and(|check| {
+                context.is_none_or(|(formation, federation)| {
+                    check.formation_id != *formation || check.federation_id != *federation
+                })
+            }) {
+                *current = None;
+                true
+            } else {
+                false
+            }
+        });
     }
 }
 
@@ -85,11 +126,12 @@ where
     C: FederationConsensusReader,
 {
     /// Check on demand and atomically replace the displayed list and its receipts.
-    /// An unavailable check clears the list; receipts already held for confirmation
-    /// remain valid for their original seat on this same client instance.
+    /// A failed refresh keeps the last successful result and its timestamp while
+    /// the same federation remains ready. Held receipts keep their original decision.
     pub async fn check_replacement_candidates(&self) -> FaResult<ReplacementCheck> {
         let state = &self.inner.replacement_checks;
         let _guard = state.checking.lock().await;
+        state.retain_for(ready_federation(&self.status()).as_ref());
         match self.collect_replacement_candidates().await {
             Ok(mut check) => {
                 check.receipts = check
@@ -111,32 +153,62 @@ where
                 Ok(check)
             }
             Err(error) => {
-                state.current.send_replace(None);
+                if matches!(
+                    error,
+                    FaError::NoActiveFormation | FaError::MaintenanceWrongState { .. }
+                ) {
+                    state.retain_for(None);
+                } else {
+                    state.retain_for(ready_federation(&self.status()).as_ref());
+                }
                 Err(error)
             }
         }
     }
 
-    /// Observe eligibility snapshots. None means not checked or unavailable,
-    /// not that the federation is healthy. Receipts are never persisted.
+    /// Observe the last successful check. None means no result for a ready
+    /// federation. Refresh failures do not advance checked_at. Receipts are not persisted.
     pub fn observe_replacement_candidates(&self) -> watch::Receiver<Option<Arc<ReplacementCheck>>> {
         self.inner.replacement_checks.current.subscribe()
     }
 
-    /// Drive checks while the consumer is active: immediately on each start or
-    /// resume, then hourly, and when formation state changes. Dropping this future
-    /// stops the loop. Consumers own its lifetime, not the timer or decision rules.
-    /// A separately requested on-demand check uses the same serialized path.
+    /// Drive checks when a formed federation is ready, then hourly. Each start or
+    /// resume checks immediately if ready. Consumers drive this future while active;
+    /// dropping it stops the loop. On-demand calls use the same serialized check.
     pub async fn run_replacement_checks(&self) {
         let mut progress = self.observe();
+        let mut context = ready_federation(&progress.borrow_and_update());
         loop {
-            let _ = self.check_replacement_candidates().await;
-            let delay = fedimint_core::runtime::sleep(CHECK_INTERVAL).fuse();
-            let changed = progress.changed().fuse();
-            pin_mut!(delay, changed);
-            futures::select! {
-                _ = delay => {},
-                result = changed => if result.is_err() { return; },
+            self.inner.replacement_checks.retain_for(context.as_ref());
+            let busy = context.is_some()
+                && matches!(
+                    self.check_replacement_candidates().await,
+                    Err(FaError::Busy)
+                );
+            // Busy can come from another client holding the database lease too.
+            // Retry briefly without spinning or postponing the check for an hour.
+            let delay = fedimint_core::runtime::sleep(if busy {
+                Duration::from_secs(1)
+            } else {
+                CHECK_INTERVAL
+            })
+            .fuse();
+            pin_mut!(delay);
+            loop {
+                {
+                    let changed = progress.changed().fuse();
+                    pin_mut!(changed);
+                    futures::select! {
+                        _ = delay => break,
+                        result = changed => if result.is_err() { return; },
+                    }
+                }
+                let next = ready_federation(&progress.borrow_and_update());
+                if next != context {
+                    context = next;
+                    break;
+                }
+                // Repeated status notifications must not restart the hourly timer.
             }
         }
     }
@@ -145,6 +217,8 @@ where
     ///
     /// This stub performs no purchase, authorization, or transfer. A valid receipt
     /// reaches NotImplemented; PR #184 can replace that final step with its driver.
+    /// Once a transfer starts, its durable operation authorizes resume; restarting
+    /// invalidates unused receipts, not transfers already started.
     pub async fn request_guardian_replacement(
         &self,
         receipt: &ReplacementReceipt,

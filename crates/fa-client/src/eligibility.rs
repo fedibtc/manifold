@@ -63,8 +63,10 @@ pub struct ReplacementCandidate {
 /// One complete check. An empty list does not assert that every guardian is healthy.
 #[derive(Clone, Debug, Serialize)]
 pub struct ReplacementCheck {
+    /// Internal context for binding receipts, not part of the displayed result.
     #[serde(skip)]
     pub(crate) formation_id: crate::FormationId,
+    /// In-memory approvals are not serialized with display data.
     #[serde(skip)]
     pub(crate) receipts: BTreeMap<u16, crate::ReplacementReceipt>,
     pub federation_id: FederationId,
