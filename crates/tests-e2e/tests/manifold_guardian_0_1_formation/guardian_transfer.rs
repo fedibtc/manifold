@@ -483,6 +483,335 @@ async fn run_guardian_transfer() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Three guardians of a seven-guardian federation move in the same consensus
+/// session. Each source must keep its guardian running until
+/// the session ends: a source that stopped mid-session would let its
+/// destination rejoin that session with the same key, peers would mark it a
+/// forker, and three forkers exceed the fault budget of two.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn three_guardians_move_in_one_session_without_halting_the_federation() {
+    if env::var_os(OPT_IN_ENV).is_none() {
+        eprintln!("skipping guardian transfer E2E; set {OPT_IN_ENV}=1 to run");
+        return;
+    }
+    tokio::time::timeout(TRANSFER_TEST_TIMEOUT, run_three_transfers_in_one_session())
+        .await
+        .expect("three-transfer E2E timed out")
+        .expect("three-transfer E2E failed");
+}
+
+#[allow(clippy::too_many_lines)]
+async fn run_three_transfers_in_one_session() -> anyhow::Result<()> {
+    const MOVES: usize = 3;
+    const PORT_BASE: u16 = 47_000;
+    let started_at = std::time::Instant::now();
+    let progress = |step: &str| eprintln!("three transfers [{:?}]: {step}", started_at.elapsed());
+    let bin = locate_binary(MANIFOLD_GUARDIAN_BIN_ENV, "fleet-manager")?;
+    let bin = bin.as_path();
+    let fa_cli_bin = locate_binary(FA_CLI_BIN_ENV, "fa-cli")?;
+    let fedimint_cli_bin = locate_binary(FEDIMINT_CLI_BIN_ENV, "fedimint-cli")?;
+    let mut defe = AsyncDefeClient::connect_from_env()
+        .await
+        .context("connect to defe from env")?;
+    let bitcoind_lease = defe.request_bitcoind(SharingMode::Exclusive).await?;
+    let ResourceDescriptor::Bitcoind(bitcoind) = &bitcoind_lease.descriptor else {
+        anyhow::bail!("expected bitcoind descriptor");
+    };
+    let relay_lease = defe.request_nostr_relay(SharingMode::Exclusive).await?;
+    let ResourceDescriptor::NostrRelay(relay) = &relay_lease.descriptor else {
+        anyhow::bail!("expected Nostr relay descriptor");
+    };
+    let publisher =
+        NostrKeys::parse("0000000000000000000000000000000000000000000000000000000000000001")?
+            .public_key()
+            .to_string();
+    let nostr = NostrEnv {
+        relay_urls: &relay.url,
+        holder_relay_url: &relay.url,
+        setup_payment_publisher: &publisher,
+    };
+    let temp = mg_e2e_temp_dir()?;
+    eprintln!("three-transfer E2E data dir: {}", temp.display());
+    let overrides = local_iroh_overrides_for_grid(PORT_BASE, 1, GUARDIAN_COUNT + MOVES);
+    let (daemons, mut locators) = start_daemons(
+        bin,
+        &temp,
+        bitcoind,
+        1,
+        PORT_BASE,
+        Some(&overrides),
+        GUARDIAN_COUNT,
+        Some(nostr),
+        None,
+    )
+    .await;
+    let mut daemons = daemons.into_iter().map(Some).collect::<Vec<_>>();
+    offer_free_seats(bin, &temp, GUARDIAN_COUNT).await?;
+    let state_dir = temp.join("fa-state");
+    let invite = form_federation_in_state(
+        &fa_cli_bin,
+        &state_dir,
+        &relay.url,
+        &mg_endpoint_addrs(&locators),
+        &overrides,
+        None,
+    )
+    .await?;
+    progress("federation formed");
+
+    // The guardians of seats 0..3 move; MG `GUARDIAN_COUNT + n` receives the
+    // guardian of seat n.
+    let status = fa_status(&fa_cli_bin, &state_dir).await?;
+    let mut sources = Vec::new();
+    for seat_index in 0..MOVES {
+        let seat_id = status["formation"]["seats"]
+            .as_array()
+            .and_then(|seats| seats.iter().find(|seat| seat["index"] == seat_index))
+            .and_then(|seat| seat["seat_id"].as_str())
+            .with_context(|| format!("the formed FA lists seat {seat_index}: {status}"))?
+            .to_owned();
+        sources.push((
+            seat_id.clone(),
+            mg_index_of_seat(bin, &temp, &seat_id).await?,
+        ));
+    }
+    let source_routes = mg_endpoint_addrs(&locators);
+
+    // The destinations start without a route to any source MG, so every
+    // pull waits; the sources keep running consensus meanwhile.
+    let destination_dir = |n: usize| temp.join(format!("mg-{}", GUARDIAN_COUNT + n));
+    let destination_base = |n: usize| PORT_BASE + u16::try_from(GUARDIAN_COUNT + n).unwrap() * 100;
+    let destination_endpoint =
+        |n: usize| format!("127.0.0.1:{}", destination_base(n) + ENDPOINT_PORT_OFFSET);
+    let spawn_destination = |n: usize, iroh_overrides: &str, routes: Option<&str>| {
+        spawn_routed_manifold_guardian(
+            bin,
+            &destination_dir(n),
+            &bitcoind.rpc_url,
+            &bitcoind.rpc_username,
+            &bitcoind.rpc_password,
+            destination_base(n),
+            Some(iroh_overrides),
+            Some(nostr),
+            None,
+            routes,
+            Some(&destination_endpoint(n)),
+        )
+    };
+    let mut destinations = Vec::new();
+    for n in 0..MOVES {
+        let mut destination = spawn_destination(n, &overrides, None)?;
+        onboard_new_manifold_guardian(bin, &destination_dir(n), 1, nostr).await?;
+        locators.push(read_locator(&mut destination, GUARDIAN_COUNT + n).await?);
+        manifold_guardian_admin(
+            bin,
+            &destination_dir(n),
+            &["plans", "set", "--price-msats", "0"],
+        )
+        .await?;
+        destinations.push(destination);
+    }
+    let mg_endpoints = mg_endpoint_addrs(&locators);
+
+    // fa-client keeps one transfer open at a time, so each move runs from its
+    // own copy of the FA state.
+    let mut destination_seats = Vec::new();
+    let mut used_mgs = BTreeSet::new();
+    for (n, (source_seat, _)) in sources.iter().enumerate() {
+        let fa_state = temp.join(format!("fa-state-{n}"));
+        let copied = std::process::Command::new("cp")
+            .arg("-a")
+            .arg(&state_dir)
+            .arg(&fa_state)
+            .status()?;
+        anyhow::ensure!(copied.success(), "copy the FA state");
+        let fa = TransferCli {
+            bin: &fa_cli_bin,
+            state_dir: &fa_state,
+            relay_url: &relay.url,
+            mg_endpoints: &mg_endpoints,
+            iroh_overrides: &overrides,
+        };
+        let started = tokio::time::timeout(Duration::from_secs(120), async {
+            loop {
+                match fa.run(&["preview"]).await {
+                    Ok(preview)
+                        if preview["seat"]["advertisedPriceMsats"] == 0
+                            && preview["seat"]["fmanPubkey"]
+                                .as_str()
+                                .is_some_and(|mg| !used_mgs.contains(mg)) =>
+                    {
+                        match fa
+                            .run(&["start", "--seat-index", &n.to_string(), "--max-msats", "0"])
+                            .await
+                        {
+                            Ok(started) => return started,
+                            Err(error) => eprintln!("transfer start failed: {error:#}"),
+                        }
+                    }
+                    Ok(preview) => eprintln!("transfer preview not usable yet: {preview}"),
+                    Err(error) => eprintln!("transfer preview not ready: {error:#}"),
+                }
+                tokio::time::sleep(Duration::from_secs(1)).await;
+            }
+        })
+        .await
+        .context("a transfer did not start")?;
+        progress(&format!("transfer {n} started: {started}"));
+        anyhow::ensure!(
+            started["sourceSeatId"] == source_seat.as_str(),
+            "transfer {n} moves seat {n}: {started}"
+        );
+        used_mgs.insert(
+            started["destinationFmanPubkey"]
+                .as_str()
+                .context("a started transfer names its destination")?
+                .to_owned(),
+        );
+        let seat = started["destinationSeatId"]
+            .as_str()
+            .context("a started transfer has bought its seat")?
+            .to_owned();
+        // Which of the new MGs sold it.
+        let mut on = None;
+        for d in 0..MOVES {
+            let seats =
+                manifold_guardian_admin(bin, &destination_dir(d), &["seats", "list"]).await?;
+            if seats["seats"]
+                .as_array()
+                .is_some_and(|seats| seats.iter().any(|s| s["seat_id"] == seat.as_str()))
+            {
+                on = Some(d);
+            }
+        }
+        destination_seats.push((seat, on.context("a new MG holds the bought seat")?));
+    }
+    for (seat, d) in &destination_seats {
+        wait_seat(bin, &destination_dir(*d), seat, "AwaitingTransfer", false).await?;
+    }
+    progress("three pulls wait for their sources");
+
+    // A moved guardian keeps its iroh keys, so its routes follow it to the
+    // new MG that bought its seat.
+    let mut moved_overrides = overrides.clone();
+    for ((_, source_index), (_, d)) in sources.iter().zip(&destination_seats) {
+        moved_overrides = route_moved_guardian(
+            &moved_overrides,
+            PORT_BASE + u16::try_from(*source_index)? * 100,
+            destination_base(*d),
+        );
+    }
+
+    // All destinations learn the source routes at once, so the three pulls
+    // land within a second of each other, well inside one consensus session.
+    shutdown_daemons(destinations).await?;
+    let mut destinations = Vec::new();
+    for n in 0..MOVES {
+        let mut destination = spawn_destination(n, &moved_overrides, Some(&source_routes))?;
+        read_locator(&mut destination, GUARDIAN_COUNT + n).await?;
+        destinations.push(destination);
+    }
+    let pulled_at = std::time::Instant::now();
+    for (seat, d) in &destination_seats {
+        wait_seat(bin, &destination_dir(*d), seat, "running", false).await?;
+    }
+    progress(&format!(
+        "all three destinations run their guardians, {:?} after the pulls",
+        pulled_at.elapsed()
+    ));
+    // The MGs that keep their guardians restart with routes to the moved
+    // ones; fedimintd resumes its session from its own database.
+    let kept = (0..GUARDIAN_COUNT)
+        .filter(|index| !sources.iter().any(|(_, source)| source == index))
+        .collect::<Vec<_>>();
+    shutdown_daemons(
+        kept.iter()
+            .map(|index| daemons[*index].take().context("guardian MG runs"))
+            .collect::<anyhow::Result<Vec<_>>>()?,
+    )
+    .await?;
+    for index in &kept {
+        let mut daemon = spawn_manifold_guardian(
+            bin,
+            &temp.join(format!("mg-{index}")),
+            &bitcoind.rpc_url,
+            &bitcoind.rpc_username,
+            &bitcoind.rpc_password,
+            PORT_BASE + u16::try_from(*index)? * 100,
+            Some(&moved_overrides),
+            Some(nostr),
+            None,
+        )?;
+        read_locator(&mut daemon, *index).await?;
+        daemons[*index] = Some(daemon);
+    }
+
+    // A halted federation answers its last session count forever. A live
+    // one completes a session about every ten seconds under defe.
+    let fedimint_cli = FedimintCli {
+        bin: &fedimint_cli_bin,
+        data_dir: temp.join("fedimint-cli-client"),
+        iroh_overrides: &moved_overrides,
+    };
+    tokio::time::timeout(Duration::from_secs(90), async {
+        loop {
+            let _ = std::fs::remove_dir_all(&fedimint_cli.data_dir);
+            match fedimint_cli
+                .run(&["join-federation", &invite], FEDIMINT_CLI_JOIN_TIMEOUT)
+                .await
+            {
+                Ok(_) => return,
+                Err(error) => eprintln!("fedimint-cli join failed: {error:#}"),
+            }
+            tokio::time::sleep(Duration::from_secs(1)).await;
+        }
+    })
+    .await
+    .context("fedimint-cli did not join after the moves")?;
+    let session_count = || async {
+        let output = fedimint_cli
+            .run_json(&["dev", "session-count"], FEDIMINT_CLI_META_TIMEOUT)
+            .await?;
+        output["count"]
+            .as_u64()
+            .with_context(|| format!("session count output: {output}"))
+    };
+    // The restarted guardians need a moment before a threshold answers.
+    let before = tokio::time::timeout(Duration::from_secs(90), async {
+        loop {
+            match session_count().await {
+                Ok(count) => return count,
+                Err(error) => eprintln!("session count failed: {error:#}"),
+            }
+            tokio::time::sleep(Duration::from_secs(2)).await;
+        }
+    })
+    .await
+    .context("no threshold of guardians answered the session count")?;
+    progress(&format!("session count after the moves: {before}"));
+    let after = tokio::time::timeout(Duration::from_secs(120), async {
+        loop {
+            match session_count().await {
+                Ok(count) if count >= before + 3 => return count,
+                Ok(count) => eprintln!("session count {count}"),
+                Err(error) => eprintln!("session count failed: {error:#}"),
+            }
+            tokio::time::sleep(Duration::from_secs(2)).await;
+        }
+    })
+    .await
+    .context("the federation stopped completing sessions after three moves")?;
+    progress(&format!("federation completed sessions {before}..{after}"));
+
+    let mut remaining = daemons.into_iter().flatten().collect::<Vec<_>>();
+    remaining.extend(destinations);
+    shutdown_daemons(remaining).await?;
+    defe.release(relay_lease.handle_id).await?;
+    defe.release(bitcoind_lease.handle_id).await?;
+    std::fs::remove_dir_all(&temp).context("remove three-transfer E2E tempdir")?;
+    Ok(())
+}
+
 /// `fa-cli transfer` against this test's MGs.
 #[derive(Clone, Copy)]
 struct TransferCli<'a> {

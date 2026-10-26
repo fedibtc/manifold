@@ -502,10 +502,14 @@
                   runTests "mg-transfer" testArtifacts runtimeBins workspaceTestArgs
                     "binary(manifold_guardian_0_1_formation) & test(fa_moves_a_formed_guardian_to_a_new_mg_under_defe)"
                     mgMultiRelayRunner;
+                mgTransferSessionRunner =
+                  runTests "mg-transfer-session" testArtifacts runtimeBins workspaceTestArgs
+                    "binary(manifold_guardian_0_1_formation) & test(three_guardians_move_in_one_session_without_halting_the_federation)"
+                    mgTransferRunner;
                 flipHappyRunner =
                   runTests "flip-happy" testArtifacts runtimeBins workspaceTestArgs
                     "binary(integration_live_liquidity) & test(live_liquidity_happy_path_publishes_nostr_and_allocates_over_iroh)"
-                    mgTransferRunner;
+                    mgTransferSessionRunner;
                 flipDepositRunner =
                   runTests "flip-deposit" testArtifacts runtimeBins workspaceTestArgs
                     "binary(integration_live_liquidity) & test(live_deposit_monitoring_restart_claims_funded_top_up)"
@@ -582,6 +586,7 @@
                   mgPaidRunner
                   mgMultiRelayRunner
                   mgTransferRunner
+                  mgTransferSessionRunner
                   flipHappyRunner
                   flipDepositRunner
                   flipWithdrawalRunner
