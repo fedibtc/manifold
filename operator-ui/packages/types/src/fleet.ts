@@ -316,6 +316,13 @@ export interface PayoutDestinationResponse {
   destination: string | null;
 }
 export type SetPayoutDestinationResponse = PayoutDestinationResponse;
+// ShowAutoUpdate and SetAutoUpdate answer the same view: whether this host
+// installs newer signed releases on its own.
+export interface AutoUpdateResponse {
+  enabled: boolean;
+}
+export type ShowAutoUpdateResponse = AutoUpdateResponse;
+export type SetAutoUpdateResponse = AutoUpdateResponse;
 export type PayoutScope =
   | { kind: 'payment_federation'; federation_id: FederationId }
   | {
@@ -484,6 +491,8 @@ export interface AdminResponseByName {
   ListPaymentFederations: ListPaymentFederationsResponse;
   PayoutDestination: PayoutDestinationResponse;
   SetPayoutDestination: SetPayoutDestinationResponse;
+  ShowAutoUpdate: ShowAutoUpdateResponse;
+  SetAutoUpdate: SetAutoUpdateResponse;
   SweepPaymentFees: SweepPaymentFeesResponse;
   PayoutStatus: PayoutStatusResponse;
   AwaitPayout: AwaitPayoutResponse;

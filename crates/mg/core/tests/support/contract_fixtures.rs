@@ -69,6 +69,7 @@ pub const FIXTURE_NAMES: &[&str] = &[
     "mg_seat_readiness",
     "mg_payment_federations",
     "mg_payout_destination",
+    "mg_auto_update",
     "mg_payout_job",
     "mg_payout_job_capped",
     "mg_payout_job_status",
@@ -133,6 +134,7 @@ pub fn fixture_json() -> Vec<(&'static str, String)> {
         ),
         ("mg_payment_federations", payment_federations_fixture()),
         ("mg_payout_destination", payout_destination_fixture()),
+        ("mg_auto_update", admin::auto_update_json(false)),
         ("mg_payout_job", payout_job_fixture()),
         ("mg_payout_job_capped", payout_job_capped_fixture()),
         ("mg_payout_job_status", payout_job_status_fixture()),
@@ -349,7 +351,9 @@ fn after(request: &AdminRequest) -> Option<AdminRequest> {
         AdminRequest::PayoutDestination => AdminRequest::SetPayoutDestination {
             destination: Some("operator@example.com".to_owned()),
         },
-        AdminRequest::SetPayoutDestination { .. } => AdminRequest::SweepPaymentFees {
+        AdminRequest::SetPayoutDestination { .. } => AdminRequest::ShowAutoUpdate,
+        AdminRequest::ShowAutoUpdate => AdminRequest::SetAutoUpdate { enabled: false },
+        AdminRequest::SetAutoUpdate { .. } => AdminRequest::SweepPaymentFees {
             federation_id: FederationId("fed1fixturepaymentfederation".to_owned()),
             request_id: "fixture-payment-payout".parse().unwrap(),
         },
@@ -413,6 +417,8 @@ pub fn request_name(request: &AdminRequest) -> &'static str {
         AdminRequest::ListPaymentFederations => "ListPaymentFederations",
         AdminRequest::PayoutDestination => "PayoutDestination",
         AdminRequest::SetPayoutDestination { .. } => "SetPayoutDestination",
+        AdminRequest::ShowAutoUpdate => "ShowAutoUpdate",
+        AdminRequest::SetAutoUpdate { .. } => "SetAutoUpdate",
         AdminRequest::SweepPaymentFees { .. } => "SweepPaymentFees",
         AdminRequest::PayoutStatus { .. } => "PayoutStatus",
         AdminRequest::AwaitPayout { .. } => "AwaitPayout",

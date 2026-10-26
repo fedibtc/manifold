@@ -161,6 +161,7 @@ const base = (): Pick<
   | 'restoreSession'
   | 'onboardingTransport'
   | 'payoutDestination'
+  | 'autoUpdateEnabled'
   | 'relayAuthorization'
   | 'maxSeats'
   | 'readyForNewSeats'
@@ -180,6 +181,7 @@ const base = (): Pick<
   fleetOpensAfterReads: 0,
   relayAuthorization: 'present',
   payoutDestination: 'operator@example.com',
+  autoUpdateEnabled: true,
   authMode: 'password',
   sessionActive: false,
   password: 'test-password',

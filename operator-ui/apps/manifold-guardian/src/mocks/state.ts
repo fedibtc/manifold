@@ -73,6 +73,9 @@ export interface MockState {
   /** The one Lightning destination every revenue sweep leaves through. Null
    *  means the sweep verbs refuse rather than invent a payee. */
   payoutDestination: string | null;
+  /** Whether the host installs newer signed releases on its own
+   *  (`auto_update_settings.enabled`), read by `ShowAutoUpdate`. */
+  autoUpdateEnabled: boolean;
   onboarding: OnboardingResponse;
   /** The operator's seat-admission ceiling (`offer_state.max_seats`), null
    *  when automatic: written by `ConfigureInitialOffer` and `SetCapacity`,

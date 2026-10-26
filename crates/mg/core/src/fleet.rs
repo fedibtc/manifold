@@ -347,6 +347,13 @@ pub struct Fleet {
     /// The daemon's latest readiness report, for the operator. Admission
     /// reads the durable verdict instead.
     seat_readiness: Mutex<Option<ReadinessReport>>,
+    /// The owner's durable automatic-update choice, published for the
+    /// self-update runtime. SQLite owns the value; this channel only carries
+    /// each committed write to subscribers.
+    auto_update_enabled: tokio::sync::watch::Sender<bool>,
+    /// Held across the durable write and its publication, so concurrent
+    /// writers cannot leave the channel showing a value the database lost.
+    auto_update_write: tokio::sync::Mutex<()>,
 }
 
 /// Failure while resolving a capability-scoped guardian metrics target.
@@ -419,6 +426,7 @@ impl Fleet {
                 .ok_or_else(|| anyhow!("this Manifold Fedimint Guardian has not been set up"))?,
         );
         let telemetry_generation = db.telemetry_capability_generation().await?;
+        let auto_update_enabled = db.auto_update_enabled().await?;
         let wallet = wallet(&identity).await?;
         let claims = wallet.clone().start_claim_worker(db.clone());
         let payout_identity = identity.clone();
@@ -538,6 +546,8 @@ impl Fleet {
             telemetry_registration_changed: Notify::new(),
             advertisement_changed: Notify::new(),
             seat_readiness: Mutex::new(None),
+            auto_update_enabled: tokio::sync::watch::Sender::new(auto_update_enabled),
+            auto_update_write: tokio::sync::Mutex::new(()),
         };
         Ok(fleet)
     }
@@ -1136,6 +1146,30 @@ impl Fleet {
             });
         }
         statuses
+    }
+
+    /// Whether the owner allows this MG to install newer releases on its own.
+    pub async fn auto_update_enabled(&self) -> anyhow::Result<bool> {
+        Ok(self.db.auto_update_enabled().await?)
+    }
+
+    /// Durably record the owner's automatic-update choice, then publish it to
+    /// every [`Fleet::subscribe_auto_update_enabled`] receiver.
+    pub async fn set_auto_update_enabled(&self, enabled: bool) -> anyhow::Result<()> {
+        let _write = self.auto_update_write.lock().await;
+        self.db.set_auto_update_enabled(enabled).await?;
+        self.auto_update_enabled.send_if_modified(|current| {
+            let changed = *current != enabled;
+            *current = enabled;
+            changed
+        });
+        Ok(())
+    }
+
+    /// The automatic-update choice as of fleet open, followed by every change
+    /// committed through [`Fleet::set_auto_update_enabled`].
+    pub fn subscribe_auto_update_enabled(&self) -> tokio::sync::watch::Receiver<bool> {
+        self.auto_update_enabled.subscribe()
     }
 
     pub async fn payout_destination(&self) -> anyhow::Result<Option<String>> {

@@ -1,4 +1,5 @@
 import { SectionCard } from '@operator-ui/common-ui';
+import { AutoUpdateCard } from '@/features/auto-update/components/auto-update-card/AutoUpdateCard';
 import { SeatReadinessCard } from '@/features/seat-readiness/SeatReadinessCard';
 import { useSeatReadiness } from '@/shared/api/hooks/use-seat-readiness/useSeatReadiness';
 import { QuerySurface } from '@/shared/components/query-surface/QuerySurface';
@@ -25,6 +26,8 @@ export const HealthPage = () => {
           </QuerySurface>
         </div>
       </SectionCard>
+
+      <AutoUpdateCard />
     </div>
   );
 };

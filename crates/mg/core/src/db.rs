@@ -383,6 +383,22 @@ impl Db {
         Ok(())
     }
 
+    pub(crate) async fn auto_update_enabled(&self) -> Result<bool, DbError> {
+        Ok(
+            sqlx::query_scalar("SELECT enabled FROM auto_update_settings WHERE id = 1")
+                .fetch_one(&self.pool)
+                .await?,
+        )
+    }
+
+    pub(crate) async fn set_auto_update_enabled(&self, enabled: bool) -> Result<(), DbError> {
+        sqlx::query("UPDATE auto_update_settings SET enabled = ? WHERE id = 1")
+            .bind(enabled)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
     /// Replace the whole offer (the offer is one fact). A changed offer draws
     /// a fresh epoch, permanently refusing every quote priced under the old
     /// one; an unchanged offer keeps the epoch, so a redundant set does not

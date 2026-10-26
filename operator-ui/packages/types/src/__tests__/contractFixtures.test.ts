@@ -32,6 +32,7 @@ import healthJson from '../../fixtures/health.json';
 import mgAdminErrorJson from '../../fixtures/mg_admin_error.json';
 import mgAdminErrorKindsJson from '../../fixtures/mg_admin_error_kinds.json';
 import adminRequestsJson from '../../fixtures/mg_admin_requests.json';
+import mgAutoUpdateJson from '../../fixtures/mg_auto_update.json';
 import mgCollectGuardianFeesJson from '../../fixtures/mg_collect_guardian_fees.json';
 import mgCollectGuardianFeesIncompleteJson from '../../fixtures/mg_collect_guardian_fees_incomplete.json';
 import mgCollectGuardianFeesIncompleteIdleJson from '../../fixtures/mg_collect_guardian_fees_incomplete_idle.json';
@@ -67,6 +68,7 @@ import type {
   AdminRequest,
   AdminRequestName,
   AttestationListResponse,
+  AutoUpdateResponse,
   BackupManifest,
   CollectGuardianFeesResponse,
   DecommissionSeatResponse,
@@ -283,6 +285,8 @@ const adminRequestsMirror = {
   ListPaymentFederations: 'ListPaymentFederations',
   PayoutDestination: 'PayoutDestination',
   SetPayoutDestination: { SetPayoutDestination: { destination: 'operator@example.com' } },
+  ShowAutoUpdate: 'ShowAutoUpdate',
+  SetAutoUpdate: { SetAutoUpdate: { enabled: false } },
   SweepPaymentFees: {
     SweepPaymentFees: {
       federation_id: 'fed1fixturepaymentfederation',
@@ -412,6 +416,10 @@ const mgPaymentFederationsMirror = {
 const mgPayoutDestinationMirror = {
   destination: 'operator@example.com'
 } satisfies PayoutDestinationResponse;
+
+const mgAutoUpdateMirror = {
+  enabled: false
+} satisfies AutoUpdateResponse;
 
 const mgPayoutJobMirror = {
   created_at_ms: 1_753_600_001_000,
@@ -778,6 +786,10 @@ describe('committed MG fixtures match their type-checked mirrors', () => {
 
   it('should keep mg_payout_destination.json equal to the typed mirror', () => {
     expect(mgPayoutDestinationJson).toEqual(mgPayoutDestinationMirror);
+  });
+
+  it('should keep mg_auto_update.json equal to the typed mirror', () => {
+    expect(mgAutoUpdateJson).toEqual(mgAutoUpdateMirror);
   });
 
   it('should keep mg payout job fixtures equal to the typed mirrors', () => {
