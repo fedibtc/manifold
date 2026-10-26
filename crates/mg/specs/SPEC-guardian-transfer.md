@@ -4,9 +4,13 @@
 
 `crates/service-manifold-guardian` defines the grant, the four verbs, the four
 seat statuses, the grant's validity rule, and `rebind_transferred_seat`.
-`fa-client` does not drive a transfer yet. Ordinary Manifold Guardian builds
-implement the four verbs and resume durable transfers after restart without a
-feature or environment activation switch. Recovery assumes the latest published
+`fa-client` does not drive a transfer yet. Manifold Guardian builds implement
+the four verbs and resume durable transfers after restart, but only
+development and staging deployments serve them: a production MG answers all
+four `UnsupportedVerb`, keyed on its Manifold environment like
+`DecommissionSeat`
+([ARCH-manifold-guardian-product-boundary](./ARCH-manifold-guardian-product-boundary.md)),
+so a production release can ship this code without enabling transfer. Recovery assumes the latest published
 backup is returned and stale local snapshots are never restarted, as specified
 below; this implementation does not establish freshness against hostile rollback.
 

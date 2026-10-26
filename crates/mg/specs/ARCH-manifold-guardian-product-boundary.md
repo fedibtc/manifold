@@ -24,7 +24,9 @@ loop. It is the operator decommission's exact effect with an ownership check in
 front, gated on the deployment's Manifold environment, and forfeits the seat
 without refund. Production refuses the verb, so the asymmetric bargain above is
 unchanged wherever it is a bargain
-([SPEC-fa-rpc](./SPEC-fa-rpc.md)).
+([SPEC-fa-rpc](./SPEC-fa-rpc.md)). Guardian transfer
+([SPEC-guardian-transfer](./SPEC-guardian-transfer.md)) is gated the same way
+until it is enabled for production.
 
 ## Simpler mechanisms
 

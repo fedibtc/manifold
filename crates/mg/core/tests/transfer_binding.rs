@@ -284,3 +284,124 @@ async fn transfer_binding_shares_admission_with_ordinary_metadata_and_bounds_tar
     );
     f.fleet.shutdown().await;
 }
+
+/// Guardian transfer is enabled only in development and staging. A
+/// production MG answers each of the four transfer verbs `UnsupportedVerb`,
+/// even for the seat's own FA; a staging MG passes the same requests on to
+/// the verbs' own checks.
+#[tokio::test]
+async fn production_refuses_the_transfer_verbs_and_staging_serves_them() {
+    use fedi_decentralized_manifold_environment::ManifoldEnvironment;
+    use fedi_decentralized_service_manifold_guardian::{
+        ManifoldGuardianError, ManifoldGuardianService, MgSignedRequest, PullSeatRequest,
+        RemoveSeatRequest, ReplaceSeatBindingRequest, SeatTransferGrant, SignedRequest, Timestamp,
+        TransferSeatRequest,
+    };
+
+    for (environment, port) in [
+        (ManifoldEnvironment::Production, 33_200),
+        (ManifoldEnvironment::Staging, 33_212),
+    ] {
+        let root = TempDir::new().unwrap();
+        let mut config = config(&root, 1, port).await;
+        config.manifold_environment = environment;
+        let fleet = Arc::new(open_fleet(config, Arc::new(NoWallet)).await.unwrap());
+        let (fa_id, seat_id) = create_free_seat(&fleet, 212).await;
+        // `create_free_seat` names the FA `test_key("fi")`.
+        let mut seed = [0_u8; 32];
+        seed[..2].copy_from_slice(b"fi");
+        let fa = secp256k1::Keypair::from_seckey_slice(secp256k1::SECP256K1, &seed).unwrap();
+        assert_eq!(fa_id, FaId(fa.x_only_public_key().0));
+        let destination =
+            secp256k1::Keypair::from_seckey_slice(secp256k1::SECP256K1, &[83; 32]).unwrap();
+        let rpc = crate::service::ManifoldGuardianRpc::new(
+            fleet.clone(),
+            tokio::sync::watch::channel(None).1,
+        );
+        let grant = SeatTransferGrant {
+            ts: Timestamp((crate::db::now_ms() / 1000) as u64),
+            expires_at: Timestamp((crate::db::now_ms() / 1000) as u64 + 3600),
+            fa_id,
+            federation_id: fedi_decentralized_service_manifold_guardian::FederationId(
+                "test".into(),
+            ),
+            source: fedi_decentralized_service_manifold_guardian::Locator::new(
+                fedi_iroh_rpc::iroh::EndpointAddr::new(
+                    fedi_iroh_rpc::iroh::SecretKey::from_bytes(&[84; 32]).public(),
+                ),
+                fleet.identity().derive_service_pubkey(),
+            ),
+            source_seat_id: seat_id.clone(),
+            destination_service_pubkey: destination.x_only_public_key().0,
+            destination_seat_id: seat_id.clone(),
+        };
+        let ts = grant.ts;
+        let transfer = TransferSeatRequest {
+            ts,
+            destination_service_pubkey: destination.x_only_public_key().0,
+            grant: SignedRequest::create(&grant, &fa).unwrap(),
+        };
+        let replace = ReplaceSeatBindingRequest {
+            ts,
+            fa_id,
+            seat_id: seat_id.clone(),
+            expected_base: fedi_decentralized_service_manifold_guardian::MetaConsensusBase::Absent,
+            seat_binding: endpoint_binding(peer_binding_signed_by(
+                &fixture_client_config(),
+                1,
+                &peer_mg_keys(8),
+                fee_account(0x55),
+            )),
+        };
+        let remove = RemoveSeatRequest {
+            ts,
+            fa_id,
+            seat_id: seat_id.clone(),
+        };
+        let pull = PullSeatRequest {
+            ts,
+            fa_id,
+            seat_id: seat_id.clone(),
+            grant: SignedRequest::create(&grant, &fa).unwrap(),
+            completion_callback: None,
+        };
+        let results = [
+            (
+                "TransferSeat",
+                rpc.transfer_seat(MgSignedRequest::create(&transfer, &destination).unwrap())
+                    .await
+                    .map(drop),
+            ),
+            (
+                "ReplaceSeatBinding",
+                rpc.replace_seat_binding(SignedRequest::create(&replace, &fa).unwrap())
+                    .await
+                    .map(drop),
+            ),
+            (
+                "RemoveSeat",
+                rpc.remove_seat(SignedRequest::create(&remove, &fa).unwrap())
+                    .await
+                    .map(drop),
+            ),
+            (
+                "PullSeat",
+                rpc.pull_seat(SignedRequest::create(&pull, &fa).unwrap())
+                    .await
+                    .map(drop),
+            ),
+        ];
+        for (verb, result) in results {
+            let refused = ManifoldGuardianError::UnsupportedVerb {
+                verb: verb.to_owned(),
+            };
+            match environment {
+                ManifoldEnvironment::Production => {
+                    assert_eq!(result, Err(refused), "production {verb}");
+                }
+                _ => assert_ne!(result, Err(refused), "staging {verb}"),
+            }
+        }
+        fleet.shutdown().await;
+    }
+}

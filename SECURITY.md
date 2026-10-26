@@ -81,7 +81,8 @@ marker after a native payout commit and then deliberately stops making
 progress before the MG database link. Never set either variable in a
 production Manifold Guardian process.
 
-Guardian transfer is enabled in ordinary MG builds. The source durably fences
+Guardian transfer is enabled only in development and staging MGs; a production
+MG refuses its four verbs. The source durably fences
 and stops its guardian and confirms its exact retirement backup before releasing
 the package; the destination starts the imported guardian at once and backs it
 up like any formed seat.
