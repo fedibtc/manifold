@@ -235,45 +235,37 @@ fn guardian_transfer_json_has_exact_schema() {
         source_seat_id: source_seat_id.clone(),
         destination_mg_id: destination,
         destination_seat_id: None,
-        expires_at: None,
         phase: fa_client::GuardianTransferPhase::BuyingSeat,
     };
-    let expected = |destination_seat_id: &str, expires_at: &str, phase: &str| {
+    let expected = |destination_seat_id: &str, phase: &str| {
         format!(
             concat!(
                 r#"{{"seatIndex":2,"#,
                 r#""sourceFmanPubkey":"aa4fc8665f5696e33db7e1a572e3b0f5b3d615837b0f362dcb1c8068b098c7b4","#,
                 r#""sourceSeatId":"{}","#,
                 r#""destinationFmanPubkey":"79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798","#,
-                r#""destinationSeatId":{},"expiresAt":{},"phase":"{}"}}"#,
+                r#""destinationSeatId":{},"phase":"{}"}}"#,
                 "\n"
             ),
-            source_seat_id, destination_seat_id, expires_at, phase
+            source_seat_id, destination_seat_id, phase
         )
     };
 
     let (stdout, stderr) =
         capture(|output| output.guardian_transfer(Some(&transfer), OutputFormat::Json));
-    assert_eq!(stdout, expected("null", "null", "buying_seat"));
+    assert_eq!(stdout, expected("null", "buying_seat"));
     assert_eq!(stderr, "");
 
     let destination_seat_id = fedi_decentralized_service_manifold_guardian::SeatId::from(
         fedi_decentralized_service_manifold_guardian::QuoteId([2; 32]),
     );
     transfer.destination_seat_id = Some(destination_seat_id.clone());
-    transfer.expires_at = Some(fedi_decentralized_service_manifold_guardian::Timestamp(
-        1_700_000_000,
-    ));
     transfer.phase = fa_client::GuardianTransferPhase::AwaitingSource;
     let (stdout, _) =
         capture(|output| output.guardian_transfer(Some(&transfer), OutputFormat::Json));
     assert_eq!(
         stdout,
-        expected(
-            &format!("\"{destination_seat_id}\""),
-            "1700000000",
-            "awaiting_source"
-        )
+        expected(&format!("\"{destination_seat_id}\""), "awaiting_source")
     );
 
     let (stdout, _) = capture(|output| output.guardian_transfer(None, OutputFormat::Json));

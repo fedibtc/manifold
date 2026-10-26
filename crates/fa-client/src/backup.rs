@@ -58,7 +58,7 @@ pub(crate) struct FaBackupTransfer {
     pub(crate) seat_index: u16,
     pub(crate) destination: FaBackupSeat,
     /// The completion callback the move started with, or `None` when it had
-    /// none. A destination accepts a renewed grant only with the same one.
+    /// none. A destination accepts the move again only with the same one.
     pub(crate) completion_callback: Option<DkgCompletionCallback>,
 }
 

@@ -1361,7 +1361,7 @@ impl ManifoldGuardianService for TestMg {
     ) -> FmResult<PullSeatResponse> {
         let request = request.verify(Timestamp(test_now_secs()))?.into_inner();
         // Like the real MG, the first pull commits its completion callback,
-        // and a renewal must carry the same one.
+        // and a later pull of the move must carry the same one.
         let renewed_with_another_callback = self
             .state
             .pull_requests

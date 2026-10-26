@@ -86,8 +86,6 @@ async fn a_guardian_moves_onto_its_new_seat() {
         grant.destination_service_pubkey,
         manager_key(DESTINATION).x_only_public_key().0
     );
-    assert_eq!(Some(grant.expires_at), started.expires_at);
-    assert_eq!(grant.expires_at.0 - grant.ts.0, 14 * 24 * 60 * 60);
     // Nothing moved yet: the backup keeps the move beside the old seats.
     let backup = client.inner.store.backup_payload().await.unwrap().payload;
     assert_eq!(backup.seats[MOVED].seat_id, source_seat_id);
@@ -346,60 +344,31 @@ async fn a_refused_vote_keeps_the_transfer_open_and_the_seats_unchanged() {
 }
 
 #[tokio::test]
-async fn an_expired_grant_is_renewed_for_the_same_move() {
+async fn a_destination_that_lost_the_grant_gets_the_same_grant() {
     let (_database, _payments, _payment_state, mg_state, client) = formed_paid_client().await;
     let started = start_transfer(&client, &mg_state).await;
     let destination = started.destination_seat_id.clone().unwrap();
-    // The grant expired. The source may have answered, so the destination
-    // keeps waiting for a new grant.
-    client.inner.store.expire_guardian_transfer_for_test().await;
+    // A destination MG restored from its backup forgets the grant and
+    // reports `New` again. The grant has no expiry, so the FA sends it as is.
     mg_state
         .seat_statuses
         .lock()
         .expect("test lock")
-        .insert(DESTINATION, ServiceStatus::TransferGrantExpired);
+        .insert(DESTINATION, ServiceStatus::New);
 
-    let renewed = client
+    let resumed = client
         .resume_guardian_transfer(short_options())
         .await
         .unwrap()
         .unwrap();
 
-    assert_eq!(renewed.phase, GuardianTransferPhase::AwaitingSource);
+    assert_eq!(resumed.phase, GuardianTransferPhase::AwaitingSource);
+    assert_eq!(resumed.destination_seat_id, Some(destination));
     let pulls = mg_state.pull_requests.lock().expect("test lock").clone();
     assert_eq!(pulls.len(), 2);
-    let (first, second) = (&pulls[0].1, &pulls[1].1);
     assert_eq!(pulls[1].0, DESTINATION);
-    let first = first
-        .grant
-        .clone()
-        .verify(Timestamp(test_now_secs()))
-        .unwrap()
-        .into_inner();
-    let second = second
-        .grant
-        .clone()
-        .verify(Timestamp(test_now_secs()))
-        .unwrap()
-        .into_inner();
-    assert_eq!(
-        (
-            second.source,
-            second.source_seat_id,
-            second.destination_seat_id
-        ),
-        (
-            first.source,
-            first.source_seat_id,
-            first.destination_seat_id
-        )
-    );
-    assert_eq!(second.federation_id, first.federation_id);
-    assert!(started.expires_at.unwrap() <= second.expires_at);
-    assert_eq!(renewed.expires_at, Some(second.expires_at));
-    assert_eq!(renewed.destination_seat_id, Some(destination));
+    assert_eq!(pulls[1].1.grant, pulls[0].1.grant);
 
-    // The renewed grant finishes the move.
     guardian_arrives(&mg_state);
     let finished = client
         .resume_guardian_transfer(transfer_options())
@@ -735,13 +704,13 @@ async fn a_restored_backup_continues_the_same_move() {
         Some(destination.clone())
     );
 
-    // The first grant was lost with the device. The restored FA pulls the
-    // same move with a grant it signed itself.
+    // The first grant was lost with the device. A destination that lost it
+    // too gets the same move with a grant the restored FA signed itself.
     mg_state
         .seat_statuses
         .lock()
         .expect("test lock")
-        .insert(DESTINATION, ServiceStatus::TransferGrantExpired);
+        .insert(DESTINATION, ServiceStatus::New);
     replacement
         .resume_guardian_transfer(short_options())
         .await
@@ -778,7 +747,7 @@ async fn a_restored_backup_continues_the_same_move() {
 }
 
 #[tokio::test]
-async fn a_restored_backup_renews_the_move_with_its_callback() {
+async fn a_restored_backup_pulls_the_move_with_its_callback() {
     let (_database, _payments, _payment_state, mg_state, lost) = formed_paid_client().await;
     let callback = DkgCompletionCallback::new(DkgCompletionCallbackInput {
         callback_url: "https://push.example/hooks/hook-id/bearer-secret".to_owned(),
@@ -825,20 +794,20 @@ async fn a_restored_backup_renews_the_move_with_its_callback() {
     replacement.inner.progress.send_replace(status);
     replacement.resume().await.unwrap();
 
-    // The grant expired while the source was away. The destination accepts
-    // the renewal only with the callback the move started with.
+    // The destination lost the grant too. It accepts the move again only
+    // with the callback the move started with.
     mg_state
         .seat_statuses
         .lock()
         .expect("test lock")
-        .insert(DESTINATION, ServiceStatus::TransferGrantExpired);
-    let renewed = replacement
+        .insert(DESTINATION, ServiceStatus::New);
+    let pulled = replacement
         .resume_guardian_transfer(short_options())
         .await
         .unwrap()
         .unwrap();
 
-    assert_eq!(renewed.phase, GuardianTransferPhase::AwaitingSource);
+    assert_eq!(pulled.phase, GuardianTransferPhase::AwaitingSource);
     let pulls = mg_state.pull_requests.lock().expect("test lock").clone();
     assert_eq!(pulls.len(), 2);
     assert_eq!(pulls[1].1.completion_callback, Some(callback));

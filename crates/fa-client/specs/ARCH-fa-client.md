@@ -697,16 +697,15 @@ and a rejected payment is `SelectedPayerUnavailable`. No closed state is
 stored: the transfer row is deleted. Any other failure leaves the purchase in
 the row for `resume_guardian_transfer`.
 
-With the seat bought, the FA signs a grant that is valid for 14 days and
+With the seat bought, the FA signs a grant, which has no expiry, and
 sends `PullSeat` with an optional completion callback. Before each `PullSeat`
 it waits, at most until the run ends, until a publish quorum of backup relays
 confirms the current backup, which carries the move. A device lost before
 then restores a backup without the move, and no grant has left that another
 move could race. From then on the seat
-stays bound to this move. When the grant expired, the destination reports
-`TransferGrantExpired`. The source may have answered already, so the FA does
-not give up the move or offer the seat to another guardian: it signs a new
-grant for the same move and sends `PullSeat` again.
+stays bound to this move: the source may have answered already, so the FA
+never offers the seat to another guardian. A destination that reports `New`,
+for example after an MG restore, gets `PullSeat` again with the same grant.
 
 `resume_guardian_transfer` continues from the recorded stage. While the
 destination is `AwaitingTransfer` it polls until the run ends and then

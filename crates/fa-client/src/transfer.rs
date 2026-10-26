@@ -14,12 +14,11 @@
 //! The local seat list changes between the two steps.
 //!
 //! Once a grant was sent, the destination seat stays bound to this move. The
-//! source may have stopped and handed over the guardian, and only a renewed
-//! grant for the same move recovers it, so the seat is never offered to
-//! another guardian.
+//! source may have stopped and handed over the guardian, and only a grant for
+//! the same move recovers it, so the seat is never offered to another
+//! guardian. A grant has no expiry.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::time::Duration;
 
 use fedi_decentralized_domain::{
     MG_SEAT_BINDINGS_META_FIELD_KEY, MgPeerAttestation, MgSeatBindings, federation_seats,
@@ -52,9 +51,6 @@ use crate::{
     MgOperation, TransferDestinationApproval,
 };
 
-/// How long a grant lets the destination keep asking the source.
-const GRANT_LIFETIME: Duration = Duration::from_secs(14 * 24 * 60 * 60);
-
 /// One guardian moving from its MG onto a new seat.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct GuardianTransfer {
@@ -68,9 +64,6 @@ pub struct GuardianTransfer {
     pub destination_mg_id: PublicKey,
     /// Seat on the destination MG. Absent until the purchase completes.
     pub destination_seat_id: Option<SeatId>,
-    /// Last second at which the destination asks the source under the current
-    /// grant. Absent until the purchase completes.
-    pub expires_at: Option<Timestamp>,
     pub phase: GuardianTransferPhase,
 }
 
@@ -132,10 +125,8 @@ pub(crate) enum TransferStage {
 #[serde(deny_unknown_fields)]
 pub(crate) struct StoredMove {
     pub(crate) destination: StoredDestinationSeat,
-    /// The latest grant. The FA replaces it when it expires.
+    /// The grant the destination presents to the source.
     pub(crate) grant: SignedRequest<SeatTransferGrant>,
-    /// The grant's expiry, which its envelope only exposes after verification.
-    pub(crate) expires_at: Timestamp,
     /// The destination's binding for the moved peer, saved before the first
     /// vote. The destination signs a new one on every request, so a resumed
     /// transfer must vote and look for the same one.
@@ -175,12 +166,11 @@ impl StoredGuardianTransfer {
     }
 
     fn view(&self, phase: GuardianTransferPhase) -> GuardianTransfer {
-        let (destination_mg_id, destination_seat_id, expires_at) = match &self.stage {
-            TransferStage::Buying(purchase) => (purchase.mg_id, None, None),
+        let (destination_mg_id, destination_seat_id) = match &self.stage {
+            TransferStage::Buying(purchase) => (purchase.mg_id, None),
             TransferStage::Moving(moving) => (
                 moving.destination.mg_id,
                 Some(moving.destination.seat_id.clone()),
-                Some(moving.expires_at),
             ),
         };
         GuardianTransfer {
@@ -189,7 +179,6 @@ impl StoredGuardianTransfer {
             source_seat_id: self.source_seat_id.clone(),
             destination_mg_id,
             destination_seat_id,
-            expires_at,
             phase,
         }
     }
@@ -218,7 +207,7 @@ where
     /// approved MG.
     ///
     /// The FA buys the seat, paid from `payment_federation_id` unless it is
-    /// free. It then signs a grant that is valid for 14 days and asks the new
+    /// free. It then signs a grant, which has no expiry, and asks the new
     /// seat to pull the guardian from its MG. The call advances the transfer
     /// like [`Self::resume_guardian_transfer`], but does not wait for the
     /// source. The destination keeps asking the source on its own, so the
@@ -338,7 +327,7 @@ where
                 let destination = self
                     .drive_seat_purchase(&transfer, purchase.clone(), fa_id, run)
                     .await?;
-                let (grant, expires_at) = self.sign_grant(
+                let grant = self.sign_grant(
                     fa_id,
                     &transfer.federation_id,
                     &transfer.source_locator,
@@ -348,7 +337,6 @@ where
                 let moving = StoredMove {
                     destination,
                     grant,
-                    expires_at,
                     binding: None,
                     phase: StoredTransferPhase::Pulling,
                 };
@@ -363,7 +351,7 @@ where
         };
         if moving.phase == StoredTransferPhase::Pulling {
             match self
-                .await_pulled_guardian(&transfer, &mut moving, fa_id, wait, run)
+                .await_pulled_guardian(&transfer, &moving, fa_id, wait, run)
                 .await?
             {
                 Pulled::Running => {
@@ -457,13 +445,13 @@ where
         }
     }
 
-    /// Ask the destination to pull, with a new grant once the last one
-    /// expired. With `wait`, poll it until the guardian runs or the run ends.
+    /// Ask the destination to pull. With `wait`, poll it until the guardian
+    /// runs or the run ends.
     /// An unreachable destination counts as still waiting.
     async fn await_pulled_guardian(
         &self,
         transfer: &StoredGuardianTransfer,
-        moving: &mut StoredMove,
+        moving: &StoredMove,
         fa_id: FaId,
         wait: bool,
         run: DriverRun<'_>,
@@ -484,7 +472,7 @@ where
     async fn poll_pulled_guardian(
         &self,
         transfer: &StoredGuardianTransfer,
-        moving: &mut StoredMove,
+        moving: &StoredMove,
         fa_id: FaId,
         wait: bool,
         run: DriverRun<'_>,
@@ -516,25 +504,9 @@ where
             match status {
                 ServiceStatus::Running => return Ok(Pulled::Running),
                 ServiceStatus::AwaitingTransfer => {}
-                // An expired grant does not mean that the source kept the
-                // guardian: its answer may have been lost. Only a new grant
-                // for the same move can finish it.
-                ServiceStatus::New | ServiceStatus::TransferGrantExpired => {
-                    if moving.expires_at.0 <= now_secs()? {
-                        (moving.grant, moving.expires_at) = self.sign_grant(
-                            fa_id,
-                            &transfer.federation_id,
-                            &transfer.source_locator,
-                            &transfer.source_seat_id,
-                            &destination,
-                        )?;
-                        run.lease()
-                            .write_guardian_transfer(
-                                fa_id,
-                                GuardianTransferWrite::Update(transfer.moved(moving)),
-                            )
-                            .await?;
-                    }
+                // A restored destination comes back `New` and needs the
+                // grant again.
+                ServiceStatus::New => {
                     // The source hands the guardian to whoever holds this
                     // grant. A device lost from here on must restore this
                     // move, or it could start another one.
@@ -659,9 +631,10 @@ where
         self.inner.store.restored_backup_payload(fa_id).await
     }
 
-    /// Open the backed-up transfer again on a restored FA, with a new grant
-    /// for the same move. The old grant may have reached the source, so only
-    /// this move can bring the guardian back.
+    /// Open the backed-up transfer again on a restored FA, with the grant
+    /// signed again for the same move. The old grant may have reached the
+    /// source, so only this move can bring the guardian back. A destination
+    /// that still holds the old grant takes the new one as a replay.
     pub(crate) async fn reopen_backed_up_transfer(
         &self,
         fa_id: FaId,
@@ -685,7 +658,7 @@ where
             crate::formation::invite_federation_id(&snapshot.federation_invite)?.to_string(),
         );
         let destination = restored_destination(&backed_up.destination);
-        let (grant, expires_at) = self.sign_grant(
+        let grant = self.sign_grant(
             fa_id,
             &federation_id,
             &source.locator,
@@ -707,7 +680,6 @@ where
             stage: TransferStage::Moving(StoredMove {
                 destination,
                 grant,
-                expires_at,
                 binding: None,
                 phase: StoredTransferPhase::Pulling,
             }),
@@ -943,7 +915,7 @@ where
         results
     }
 
-    /// Sign a grant for the move, valid for [`GRANT_LIFETIME`] from now.
+    /// Sign a grant for the move. It has no expiry.
     pub(crate) fn sign_grant(
         &self,
         fa_id: FaId,
@@ -951,20 +923,16 @@ where
         source: &Locator,
         source_seat_id: &SeatId,
         destination: &StoredDestinationSeat,
-    ) -> FaResult<(SignedRequest<SeatTransferGrant>, Timestamp)> {
-        let now = now_secs()?;
-        let expires_at = Timestamp(now + GRANT_LIFETIME.as_secs());
-        let grant = self.sign(&SeatTransferGrant {
-            ts: Timestamp(now),
+    ) -> FaResult<SignedRequest<SeatTransferGrant>> {
+        self.sign(&SeatTransferGrant {
+            ts: Timestamp(now_secs()?),
             fa_id,
             federation_id: federation_id.clone(),
             source: source.clone(),
             source_seat_id: source_seat_id.clone(),
             destination_service_pubkey: destination.locator.service_pubkey,
             destination_seat_id: destination.seat_id.clone(),
-            expires_at,
-        })?;
-        Ok((grant, expires_at))
+        })
     }
 
     /// Whether the destination reports the moved guardian running now. An

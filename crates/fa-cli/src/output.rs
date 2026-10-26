@@ -171,7 +171,6 @@ struct GuardianTransferJson<'a> {
     #[serde(rename = "destinationFmanPubkey")]
     destination_mg_pubkey: String,
     destination_seat_id: Option<String>,
-    expires_at: Option<u64>,
     phase: &'a fa_client::GuardianTransferPhase,
 }
 
@@ -186,7 +185,6 @@ impl<'a> From<&'a fa_client::GuardianTransfer> for GuardianTransferJson<'a> {
                 .destination_seat_id
                 .as_ref()
                 .map(ToString::to_string),
-            expires_at: transfer.expires_at.map(|expires_at| expires_at.0),
             phase: &transfer.phase,
         }
     }
@@ -695,9 +693,6 @@ impl<'a> CliOutput<'a> {
         )?;
         if let Some(seat_id) = &transfer.destination_seat_id {
             writeln!(self.stdout, "  destination seat {seat_id}")?;
-        }
-        if let Some(expires_at) = transfer.expires_at {
-            writeln!(self.stdout, "  grant expires at {}", expires_at.0)?;
         }
         Ok(())
     }

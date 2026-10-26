@@ -17,8 +17,8 @@ Completed and terminally rejected liquidity work is omitted.
 It optionally contains the open guardian transfer whose destination seat
 exists but is not in the seats yet: the source seat index, the
 destination's MG identity, seat id, and locator, and the completion callback
-the move started with, or none. The destination accepts a renewed grant only
-with that same callback, so a restored FA renews the move with it. An absent
+the move started with, or none. The destination accepts the move again only
+with that same callback, so a restored FA sends the move with it. An absent
 transfer is
 omitted from the encoding, so a payload without one keeps its earlier bytes
 and older readers. The writer applies the same validation as restore before

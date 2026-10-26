@@ -264,7 +264,7 @@ status write one `LiquidityOperationSnapshot`, and list writes one
 `LiquidityOperationPage`. `transfer preview` writes `{seat,validUntil}` with
 one preview seat row. `transfer start`, `resume`, and `status` write one
 transfer object with `seatIndex`, `sourceFmanPubkey`, `sourceSeatId`,
-`destinationFmanPubkey`, `destinationSeatId`, `expiresAt`, and the
+`destinationFmanPubkey`, `destinationSeatId`, and the
 lower-snake-case `phase`, or `null` when no transfer is open.
 Human-readable output may change independently.
 Every successful `payment-wallet` command likewise writes exactly one stdout
