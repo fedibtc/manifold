@@ -47,9 +47,9 @@ export const failedChecks = (report: ReadinessReport): ReadinessCheck[] =>
 export const UPTIME_WINDOWS: readonly (keyof UptimePermille)[] = ['1d', '7d', '30d'];
 
 export const uptimeLabels: Record<keyof UptimePermille, string> = {
-  '1d': 'Uptime, last day',
-  '7d': 'Uptime, last 7 days',
-  '30d': 'Uptime, last 30 days'
+  '1d': 'Last day',
+  '7d': 'Last 7 days',
+  '30d': 'Last 30 days'
 };
 
 /** A per-mille figure as the percent the gate compares, e.g. 899 → "89.9%". */

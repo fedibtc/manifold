@@ -1,7 +1,7 @@
 import type { ReadinessReport } from '@operator-ui/types';
 import { render, screen } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
-import { guidance, outcomes } from '@/shared/utils/seatReadiness';
+import { guidance, labels, outcomes } from '@/shared/utils/seatReadiness';
 import { SeatReadinessCard } from '../SeatReadinessCard';
 
 const CHECKED_AT = Date.UTC(2026, 9, 1, 12, 34, 56);
@@ -54,7 +54,7 @@ describe('SeatReadinessCard', () => {
     expect(screen.queryByText(guidance.relay)).toBeNull();
   });
 
-  it('should show each uptime window against its minimum, marking the one under it', () => {
+  it('should show each uptime window against its minimum and how long the failing ones need', () => {
     render(
       <SeatReadinessCard
         readiness={{
@@ -62,7 +62,7 @@ describe('SeatReadinessCard', () => {
           report: report({
             uptime: 'uptime_7d_low',
             uptime_permille: {
-              scores: { '1d': 887, '7d': 899, '30d': 935 },
+              scores: { '1d': 784, '7d': 832, '30d': 914 },
               minimums: MINIMUMS
             }
           })
@@ -70,14 +70,15 @@ describe('SeatReadinessCard', () => {
       />
     );
 
-    expect(screen.getByText('Uptime, last day')).toBeTruthy();
-    expect(screen.getByText('88.7%')).toBeTruthy();
-    expect(screen.getByText('89.9%')).toBeTruthy();
-    expect(screen.getByText('93.5%')).toBeTruthy();
-    expect(screen.getByText('Minimum 90.0%').getAttribute('data-tone')).toBe('bad');
-    expect(screen.getByText('Minimum 70.0%').getAttribute('data-tone')).toBe('ok');
-    expect(screen.getByText('Minimum 93.0%').getAttribute('data-tone')).toBe('ok');
-    expect(screen.getByText(/any window under its minimum stops new seats/)).toBeTruthy();
+    const meters = screen.getAllByRole('meter');
+    expect(meters.map((m) => m.getAttribute('aria-valuenow'))).toEqual(['78.4', '83.2', '91.4']);
+    // 7·ln(0.168/0.1005) ≈ 3.6 days and 30·ln(0.086/0.0705) ≈ 6.0 days of unbroken uptime.
+    expect(screen.getByText(/Passes after about 4 days/)).toBeTruthy();
+    expect(screen.getByText(/Passes after about 6 days/)).toBeTruthy();
+    expect(screen.getByText(/New seats reopen after about 6 days/)).toBeTruthy();
+    expect(screen.getAllByText(/Passes after/)).toHaveLength(2);
+    // The bars replace the generic uptime check.
+    expect(screen.queryByText(outcomes.uptime_7d_low)).toBeNull();
   });
 
   it('should count a score equal to its minimum as passing', () => {
@@ -92,13 +93,16 @@ describe('SeatReadinessCard', () => {
       />
     );
 
-    expect(screen.getByText('Minimum 90.0%').getAttribute('data-tone')).toBe('ok');
+    expect(screen.queryByText(/Passes after/)).toBeNull();
+    expect(screen.getByText('Every window is above its minimum.')).toBeTruthy();
   });
 
   it('should show no uptime figures when the run could not record them', () => {
     render(<SeatReadinessCard readiness={{ ready_for_new_seats: true, report: report() }} />);
 
-    expect(screen.queryByText('Uptime, last day')).toBeNull();
+    expect(screen.queryAllByRole('meter')).toHaveLength(0);
+    // Without figures the generic uptime check stays.
+    expect(screen.getByText(labels.uptime)).toBeTruthy();
     expect(screen.queryByText(/any window under its minimum/)).toBeNull();
   });
 
@@ -110,7 +114,9 @@ describe('SeatReadinessCard', () => {
       />
     );
 
-    expect(screen.queryByText('Uptime, last day')).toBeNull();
+    expect(screen.queryAllByRole('meter')).toHaveLength(0);
+    // Without figures the generic uptime check stays.
+    expect(screen.getByText(labels.uptime)).toBeTruthy();
     expect(screen.getByText('Readiness checks passed')).toBeTruthy();
   });
 
