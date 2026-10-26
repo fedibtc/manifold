@@ -507,6 +507,12 @@ async fn mismatched_and_oversize_source_requests_have_no_retirement_effect() {
     // A configured, running guardian: a valid pull would ask it to stop.
     let source = running_source(31_261).await;
     let child = source.child().await;
+    // Only a configured guardian is asked to stop; checking against one that
+    // is still starting would make "no stop was requested" vacuous.
+    eventually("the guardian is configured", || {
+        source.seat.child_configured_for_test()
+    })
+    .await;
     let untouched = |what: &str| {
         assert!(
             child.state().shutdown_after_current_session.is_empty(),
@@ -518,7 +524,7 @@ async fn mismatched_and_oversize_source_requests_have_no_retirement_effect() {
             "{what}: the guardian kept running"
         );
         assert!(
-            !source.seat.child_slot_empty_for_test(),
+            source.seat.child_configured_for_test(),
             "{what}: the guardian kept running"
         );
     };

@@ -533,6 +533,13 @@ impl Seat {
         matches!(self.state.borrow().process_slot, ProcessSlotPhase::Empty)
     }
     #[cfg(test)]
+    pub(crate) fn child_configured_for_test(&self) -> bool {
+        matches!(
+            self.state.borrow().process_slot,
+            ProcessSlotPhase::Configured
+        )
+    }
+    #[cfg(test)]
     pub(crate) async fn wait_for_transfer_phase_for_test(&self, phase: TransferPhase) {
         self.state
             .subscribe()
