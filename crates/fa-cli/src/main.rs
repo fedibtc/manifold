@@ -128,7 +128,14 @@ enum Command {
     /// Maintain consensus metadata and configure guardian fees after formation.
     Maintenance(MaintenanceArgs),
     /// Check which formed guardians qualify for replacement and why.
-    ReplacementCandidates,
+    ReplacementCandidates {
+        /// Keep running fa-client's hourly checks until interrupted.
+        #[arg(long)]
+        watch: bool,
+        /// Present this seat's eligibility receipt to the replacement stub.
+        #[arg(long, conflicts_with = "watch")]
+        request_seat: Option<u16>,
+    },
     /// Join and directly fund the Fedimint wallet later supplied to formation.
     PaymentWallet(PaymentWalletArgs),
     /// Ask every MG to decommission this formation's seat (testing only).
@@ -1257,7 +1264,10 @@ async fn run(
             let selection = query.preview_mg_selection(&request, options).await?;
             output.selection_preview(&selection, format)?;
         }
-        Command::ReplacementCandidates => {
+        Command::ReplacementCandidates {
+            watch,
+            request_seat,
+        } => {
             let endpoint = bind_iroh_endpoint().await?;
             let identity = CliIdentity::load_or_create(&args.state_dir, false)?;
             let client = open_client_with_fee_account_provider(
@@ -1274,8 +1284,31 @@ async fn run(
                 CliFaFeeAccountProvider::unavailable(),
             )
             .await?;
-            let check = client.check_replacement_candidates().await?;
-            output.replacement_candidates(&check, format)?;
+            if watch {
+                let mut checks = client.observe_replacement_candidates();
+                let run = client.run_replacement_checks();
+                let display = async {
+                    loop {
+                        checks.changed().await?;
+                        let check = checks.borrow_and_update().clone();
+                        if let Some(check) = check {
+                            output.replacement_candidates(&check, format)?;
+                        }
+                    }
+                    #[allow(unreachable_code)]
+                    Ok::<(), anyhow::Error>(())
+                };
+                tokio::select! { _ = run => {}, result = display => result? }
+            } else {
+                let check = client.check_replacement_candidates().await?;
+                output.replacement_candidates(&check, format)?;
+                if let Some(seat) = request_seat {
+                    let receipt = check
+                        .receipt(seat)
+                        .context("guardian is not eligible for replacement")?;
+                    client.request_guardian_replacement(receipt).await?;
+                }
+            }
         }
         Command::Maintenance(_) => {
             let operation = maintenance_preflight
@@ -2044,7 +2077,7 @@ impl WalletRootSecret {
             | Command::Status
             | Command::Discover(_)
             | Command::Preview(_)
-            | Command::ReplacementCandidates
+            | Command::ReplacementCandidates { .. }
             | Command::Maintenance(_)
             | Command::Liquidity(_)
             | Command::Decommission => {
@@ -4391,9 +4424,26 @@ mod replacement_command_tests {
     use super::*;
 
     #[test]
+    fn replacement_watch_cannot_also_request_a_transfer() {
+        assert!(
+            AppArgs::try_parse_from([
+                "fa-cli",
+                "replacement-candidates",
+                "--watch",
+                "--request-seat",
+                "0"
+            ])
+            .is_err()
+        );
+    }
+
+    #[test]
     fn replacement_candidates_command_requires_no_wallet_secret() {
         let args = AppArgs::try_parse_from(["fa-cli", "replacement-candidates"]).unwrap();
-        assert!(matches!(args.command, Command::ReplacementCandidates));
+        assert!(matches!(
+            args.command,
+            Command::ReplacementCandidates { .. }
+        ));
         assert!(WalletRootSecret::read_for(&args).unwrap().is_none());
     }
 }
