@@ -802,6 +802,34 @@ async fn no_vote_leaves_before_the_relays_hold_the_transfer() {
     assert!(!mg_state.binding_votes.lock().expect("test lock").is_empty());
 }
 
+/// The relay confirmations wake a waiting transfer: it goes on as soon as
+/// the publish quorum commits, not at its next poll.
+#[tokio::test]
+async fn a_relay_confirmation_wakes_the_waiting_vote() {
+    let (mg_state, client, relays, _keys, _published) = transfer_waiting_for_its_backup().await;
+    let slow_polls = MaintenanceRunOptions::new(MaintenanceRunOptionsConfig {
+        poll_interval: Duration::from_secs(60),
+        run_timeout: Duration::from_secs(120),
+        request_timeout: Duration::from_secs(2),
+    })
+    .unwrap();
+    let confirm = async {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        confirm_backup(&client, &relays[0]).await;
+        confirm_backup(&client, &relays[1]).await;
+    };
+    let (finished, ()) = tokio::time::timeout(Duration::from_secs(10), async {
+        tokio::join!(client.resume_guardian_transfer(slow_polls), confirm)
+    })
+    .await
+    .expect("the confirmations woke the transfer before its next poll");
+    assert_eq!(
+        finished.unwrap().unwrap().phase,
+        GuardianTransferPhase::Completed
+    );
+    assert!(!mg_state.binding_votes.lock().expect("test lock").is_empty());
+}
+
 #[tokio::test]
 async fn a_restored_backup_continues_the_vote_of_the_same_move() {
     let (mg_state, lost, relays, _keys, _published) = transfer_waiting_for_its_backup().await;

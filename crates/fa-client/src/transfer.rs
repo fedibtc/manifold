@@ -549,27 +549,13 @@ where
         }
     }
 
-    /// Wait until the relays confirm the current backup, at
-    /// most until the run ends. The backup worker prepares the same backup
-    /// at the same time, so a failed attempt is retried and only the last
-    /// one counts.
+    /// Wait until the relays confirm the current backup, at most until the
+    /// run ends.
     async fn transfer_backup_confirmed(&self, run: DriverRun<'_>) -> FaResult<bool> {
-        loop {
-            let attempt = self
-                .inner
-                .backup_publication
-                .current_backup_confirmed(&self.inner.store)
-                .await;
-            if matches!(attempt, Ok(true)) {
-                return Ok(true);
-            }
-            if sleep_for_retry(run.deadline(), run.poll_interval())
-                .await
-                .is_err()
-            {
-                return attempt;
-            }
-        }
+        self.inner
+            .backup_publication
+            .await_current_backup(&self.inner.store, run.deadline())
+            .await
     }
 
     /// Put a transfer's destination in place of its source when consensus
