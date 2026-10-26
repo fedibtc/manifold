@@ -144,7 +144,10 @@ The moved guardian's config and its two Iroh secrets do not derive from the
 destination's mnemonic. The destination's seat backup
 ([SPEC-nostr-backup-restore](./SPEC-nostr-backup-restore.md)) therefore
 carries the Iroh secrets once the guardian is accepted, beside the archive it
-carries for every formed seat. The guardian's admin password is not moved:
+carries for every formed seat. Every document carrying transfer facts is
+sealed under an envelope version that builds from before guardian transfer
+refuse, so they never restore a stopped source or an imported identity as an
+ordinary seat. The guardian's admin password is not moved:
 each MG runs the child under its own derived `api_auth`. It does not carry the grant: a
 restored seat that was `AwaitingTransfer` comes back as `New`, and the FA
 renews the move.

@@ -126,15 +126,29 @@ Four kinds of state, and two of them are genuinely at risk:
 
 ## Documents
 
-### Transfer recovery extension (version 2)
+### Transfer recovery extension (version 3)
 
-The version-2 writer retains the existing addresses, encryption domains, archive
-layout and native-seat derivations. Its reader accepts version 1 and version 2;
-an unknown version is rejected before interpreting its body. Version-1 readers
-reject version-2 documents rather than restore a transfer seat without its fences.
-A restored legacy or mixed-version fleet republishes under version 2 instead of
-seeding confirmations for an envelope version it did not read. Native-seat
-documents omit the optional transfer field, preserving their plaintext digest.
+A seat document that carries transfer facts is sealed under envelope version
+3; every other document stays at version 2, byte for byte. Readers from before
+guardian transfer accept versions 1 and 2 and ignore unknown fields, so a
+version-2 document carrying transfer facts would restore under them as an
+ordinary seat: a stopped source as a running guardian beside its destination,
+an imported identity as a native one. Version 3 is what they refuse instead;
+that refusal fails their whole restore, which is the fail-closed outcome a
+fleet holding a transfer seat gets from a pre-transfer build. Ordinary fleets
+keep restoring under those builds as before.
+
+Version 3 is the version-2 document and archive with a different number: same
+addresses, encryption domains, archive layout and slice coordinates (a
+version-3 document names the version-2 archive generation), and native-seat
+derivations. This build's reader accepts versions 1, 2 and 3; an unknown
+version is rejected before interpreting its body, and transfer facts under any
+version but 3, or version 3 without them, are refused. A restored legacy or
+mixed-version fleet republishes under the current versions instead of seeding
+confirmations for an envelope version it did not read; confirmations stay
+scoped to version 2, since gaining or losing transfer facts changes the
+document and republishes it anyway. Native-seat documents omit the optional
+transfer field, preserving their plaintext digest.
 
 Transfer recovery carries only accepted identity, not live FA grants or
 callback bearers. It retains a confidential, non-authorizing commitment to the

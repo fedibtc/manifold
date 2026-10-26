@@ -540,7 +540,7 @@ fn a_document_from_a_future_version_is_refused() {
     let mut payload = Vec::new();
     ciborium::into_writer(
         &Envelope {
-            version: BACKUP_DOCUMENT_VERSION + 1,
+            version: TRANSFER_DOCUMENT_VERSION + 1,
             document: 0xF00D_u32,
         },
         &mut payload,
@@ -587,6 +587,142 @@ fn a_removal_tombstone_claims_only_its_obsolete_archive_slices() {
     let other = formed_publication(&seat_facts_no(7, 0), &big_guardian_archive());
     old_events.push(published_events(&identity, &other).remove(0));
     assert!(recover_from_events(&identity, &test_mnemonic(), old_events).is_err());
+}
+
+/// A stopped transfer source still holds its formed guardian archive: a
+/// reader that dropped the transfer facts would restore it as a running
+/// guardian beside the destination that now owns its identity.
+fn stopped_source_publication(facts: &SeatFacts, archive: &GuardianArchive) -> SeatPublication {
+    use mg_core::backup::{OutgoingTransferBackup, TransferBackup};
+    let mut publication = formed_publication(facts, archive);
+    publication.document.transfer = Some(TransferBackup {
+        incoming: None,
+        outgoing: Some(OutgoingTransferBackup {
+            removed: false,
+            federation_invite: InviteCode("retained-formed-invite".into()),
+        }),
+    });
+    publication
+}
+
+/// The document reader of builds before guardian transfer, frozen from that
+/// release: it accepts versions 1 and 2 and parses a document without the
+/// `transfer` field, ignoring unknown keys. Its outcome is the
+/// compatibility contract — those builds are deployed and still restore.
+fn pre_transfer_open(identity: &BackupIdentity, content: &str) -> Result<u32, BackupError> {
+    /// That release's document: this one minus `transfer`.
+    #[derive(serde::Deserialize)]
+    #[allow(dead_code)]
+    struct PreTransferDocument {
+        seat_id: SeatId,
+        fi_id: FaId,
+        plan: Plan,
+        federation_size: FederationSize,
+        created_at_ms: i64,
+        payment: Option<mg_core::backup::PaymentBackup>,
+        guardian: Option<GuardianArchiveRef>,
+        decommissioned_at_ms: Option<i64>,
+    }
+    let blob = BASE64.decode(content).map_err(|_| BackupError::Decrypt)?;
+    let plaintext = identity.open_blob(&blob, AAD_DOCUMENT)?;
+    let payload = unframe(&plaintext)?;
+    let version: Envelope<serde::de::IgnoredAny> =
+        ciborium::from_reader(payload).map_err(BackupError::Parse)?;
+    if ![1, 2].contains(&version.version) {
+        return Err(BackupError::UnsupportedVersion {
+            found: version.version,
+        });
+    }
+    let envelope: Envelope<PreTransferDocument> =
+        ciborium::from_reader(payload).map_err(BackupError::Parse)?;
+    Ok(envelope.version)
+}
+
+/// Old readers ignore unknown fields, so a transfer-bearing document must not
+/// carry a version they accept; an ordinary document must stay readable by
+/// them, as before.
+#[test]
+fn a_pre_transfer_reader_refuses_a_transfer_document_and_still_reads_an_ordinary_one() {
+    let identity = test_identity();
+    let archive = big_guardian_archive();
+    let document_of = |publication: &SeatPublication| {
+        published_events(&identity, publication)
+            .pop()
+            .unwrap()
+            .content
+    };
+
+    let ordinary = document_of(&formed_publication(&seat_facts_no(1, 0), &archive));
+    assert_eq!(
+        pre_transfer_open(&identity, &ordinary).unwrap(),
+        BACKUP_DOCUMENT_VERSION
+    );
+
+    let stopped = document_of(&stopped_source_publication(&seat_facts_no(2, 1), &archive));
+    let err = pre_transfer_open(&identity, &stopped).unwrap_err();
+    assert!(
+        matches!(
+            err,
+            BackupError::UnsupportedVersion {
+                found: TRANSFER_DOCUMENT_VERSION
+            }
+        ),
+        "expected UnsupportedVersion, got {err:?}"
+    );
+}
+
+/// A transfer-bearing document names the current archive generation: its
+/// slices sit at the current coordinates and restore beside it.
+#[test]
+fn a_transfer_document_restores_with_its_archive() {
+    let identity = test_identity();
+    let archive = big_guardian_archive();
+    let publication = stopped_source_publication(&seat_facts(), &archive);
+    let events = published_events(&identity, &publication);
+    assert!(events.len() > 2, "the interesting case is a sliced archive");
+    let recovered = recover_from_events(&identity, &test_mnemonic(), events).unwrap();
+    assert_eq!(recovered.seats, vec![publication.document.clone()]);
+    assert_eq!(
+        recovered.archives.get(&publication.document.seat_id),
+        Some(&archive)
+    );
+}
+
+/// Transfer facts and the transfer version come together. A version 2
+/// document with transfer facts is one a pre-transfer reader would restore
+/// without them, and a transfer-version document without them is no writer's
+/// output; both are refused.
+#[test]
+fn transfer_facts_under_the_wrong_version_are_refused() {
+    let identity = test_identity();
+    let stopped = stopped_source_publication(&seat_facts(), &guardian_archive(64)).document;
+    let ordinary = SeatBackupDocument::new(&seat_facts(), None, None, None);
+    for (case, version, document) in [
+        (
+            "transfer facts at version 2",
+            BACKUP_DOCUMENT_VERSION,
+            &stopped,
+        ),
+        (
+            "transfer facts at version 1",
+            LEGACY_DOCUMENT_VERSION,
+            &stopped,
+        ),
+        (
+            "no transfer facts at the transfer version",
+            TRANSFER_DOCUMENT_VERSION,
+            &ordinary,
+        ),
+    ] {
+        let mut payload = Vec::new();
+        ciborium::into_writer(&Envelope { version, document }, &mut payload).unwrap();
+        let sealed = identity.seal_padded(payload, AAD_DOCUMENT).remove(0);
+        let err = identity.open_seat_document(&sealed).unwrap_err();
+        assert!(
+            matches!(err, BackupError::TransferVersion),
+            "{case}: expected TransferVersion, got {err:?}"
+        );
+    }
 }
 
 /// The frame inside a seal has one canonical spelling: a length prefix, the
