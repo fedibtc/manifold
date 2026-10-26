@@ -6,6 +6,8 @@ use fedi_decentralized_service_manifold_guardian::{
     MAX_SAFE_EVENT_BATCH_BYTES, SafeEventCursor, SafeEventJournalIncarnation,
 };
 
+use crate::mg_reports::LatestReports;
+
 const MAX_RECORDS_PER_BATCH: usize = 4096;
 const MAX_RECORD_BYTES: usize = 64 * 1024;
 
@@ -103,6 +105,7 @@ pub(crate) struct ValidatedJournalBatch {
     jsonl: Vec<u8>,
     next_cursor: Option<SafeEventCursor>,
     continuity_gap: bool,
+    reports: LatestReports,
 }
 
 impl ValidatedJournalBatch {
@@ -138,6 +141,7 @@ impl ValidatedJournalBatch {
                 _ => {}
             }
         }
+        let mut reports = LatestReports::default();
         for (index, record) in jsonl.split_inclusive(|byte| *byte == b'\n').enumerate() {
             if index >= MAX_RECORDS_PER_BATCH || record.len() > MAX_RECORD_BYTES {
                 return Err(JournalValueError);
@@ -153,11 +157,13 @@ impl ValidatedJournalBatch {
             {
                 return Err(JournalValueError);
             }
+            reports.observe(&value);
         }
         Ok(Self {
             jsonl,
             next_cursor,
             continuity_gap,
+            reports,
         })
     }
 
@@ -169,6 +175,9 @@ impl ValidatedJournalBatch {
     }
     pub(crate) fn continuity_gap(&self) -> bool {
         self.continuity_gap
+    }
+    pub(crate) fn reports(&self) -> &LatestReports {
+        &self.reports
     }
     pub(crate) fn is_empty(&self) -> bool {
         self.jsonl.is_empty()

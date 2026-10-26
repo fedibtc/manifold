@@ -78,8 +78,10 @@ fedimint-build = { workspace = true }
 
 [dev-dependencies]
 blind-rsa-signatures = "0.17"
+humantime = "2.4.0"
 jsonrpsee-server = "0.24"
 reqwest = { version = "0.12", default-features = false }
+safe-tracing = { path = "../../safe-tracing" }
 tempfile = "3"
 tokio = { workspace = true, features = ["macros", "rt", "time"] }
 tower = { version = "0.5", features = ["util"] }

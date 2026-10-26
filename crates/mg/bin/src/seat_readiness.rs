@@ -10,6 +10,7 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use fedi_decentralized_domain::{AdmittedSetupPaymentFederations, MinUptimePercent};
+use fedi_decentralized_service_manifold_guardian::SEAT_READINESS_EVENT;
 use fedimint_core::bitcoin::Network;
 use fedimint_core::util::SafeUrl;
 use fedimint_server_bitcoin_rpc::bitcoind::BitcoindClient;
@@ -108,24 +109,8 @@ impl SeatReadiness {
                         policy.min_uptime_percent()
                     });
                 report.uptime = scores.outcome(min);
-                // Telemetry reports a score to the 0.1% the gate compares at.
-                let pct = |score: f64| (score * 1000.0).round() / 10.0;
                 let ready = report.ready();
-                tracing::info!(
-                    safe_to_share = true,
-                    ready,
-                    relay = report.relay.as_str(),
-                    discovery = report.discovery.as_str(),
-                    bitcoin = report.bitcoin.as_str(),
-                    uptime = report.uptime.as_str(),
-                    uptime_1d_pct = pct(scores.day),
-                    uptime_7d_pct = pct(scores.week),
-                    uptime_30d_pct = pct(scores.month),
-                    min_uptime_1d_pct = min.day,
-                    min_uptime_7d_pct = min.week,
-                    min_uptime_30d_pct = min.month,
-                    "seat readiness check completed"
-                );
+                journal_readiness(&report, scores, min);
                 if let Err(error) = fleet.set_seat_readiness(report).await {
                     tracing::warn!(%error, "failed to apply the seat readiness verdict");
                 }
@@ -301,6 +286,27 @@ fn bitcoin_rpc(backend: &BitcoinBackend) -> Result<DynServerBitcoinRpc, ()> {
     Ok(rpc)
 }
 
+/// Journal one completed run for telemetry, with each score to the 0.1% the
+/// gate compares at.
+fn journal_readiness(report: &Report, scores: UptimeScores, min: MinUptimePercent) {
+    let pct = |score: f64| (score * 1000.0).round() / 10.0;
+    tracing::info!(
+        safe_to_share = true,
+        ready = report.ready(),
+        relay = report.relay.as_str(),
+        discovery = report.discovery.as_str(),
+        bitcoin = report.bitcoin.as_str(),
+        uptime = report.uptime.as_str(),
+        uptime_1d_pct = pct(scores.day),
+        uptime_7d_pct = pct(scores.week),
+        uptime_30d_pct = pct(scores.month),
+        min_uptime_1d_pct = min.day,
+        min_uptime_7d_pct = min.week,
+        min_uptime_30d_pct = min.month,
+        "{SEAT_READINESS_EVENT}"
+    );
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::Mutex;
@@ -311,6 +317,68 @@ mod tests {
     use serde_json::{Value, json};
 
     use super::*;
+
+    /// The journaled run decodes as the telemetry collector reads it.
+    #[test]
+    fn a_journaled_run_decodes_as_the_shared_readiness_event() {
+        use fedi_decentralized_service_manifold_guardian::SeatReadinessEvent;
+        use tracing_subscriber::layer::SubscriberExt as _;
+
+        let directory = tempfile::tempdir().unwrap();
+        let subscriber =
+            tracing_subscriber::registry().with(safe_tracing::layer(directory.path()).unwrap());
+        let report = Report {
+            checked_at_ms: 1,
+            relay: Outcome::Pass,
+            discovery: Outcome::NotApplicable,
+            bitcoin: Outcome::Pass,
+            uptime: Outcome::WeekUptimeLow,
+        };
+        let scores = UptimeScores {
+            day: 0.9944,
+            week: 0.881,
+            month: 0.95,
+        };
+        tracing::subscriber::with_default(subscriber, || {
+            journal_readiness(&report, scores, MinUptimePercent::default());
+        });
+
+        let mut records = Vec::new();
+        for entry in std::fs::read_dir(directory.path()).unwrap() {
+            let path = entry.unwrap().path();
+            if path
+                .extension()
+                .is_some_and(|extension| extension == "jsonl")
+            {
+                for line in std::fs::read_to_string(path).unwrap().lines() {
+                    records.push(serde_json::from_str::<Value>(line).unwrap());
+                }
+            }
+        }
+        let [record] = records.as_slice() else {
+            panic!("expected one journaled run, got {records:?}");
+        };
+        assert_eq!(record["fields"]["message"], SEAT_READINESS_EVENT);
+        // The collector keeps only records whose timestamp parses as RFC 3339.
+        humantime::parse_rfc3339(record["timestamp"].as_str().unwrap()).unwrap();
+        let min = MinUptimePercent::default();
+        assert_eq!(
+            serde_json::from_value::<SeatReadinessEvent>(record["fields"].clone()).unwrap(),
+            SeatReadinessEvent {
+                ready: false,
+                relay: "pass".into(),
+                discovery: "not_applicable".into(),
+                bitcoin: "pass".into(),
+                uptime: Some("uptime_7d_low".into()),
+                uptime_1d_pct: Some(99.4),
+                uptime_7d_pct: Some(88.1),
+                uptime_30d_pct: Some(95.0),
+                min_uptime_1d_pct: Some(f64::from(min.day)),
+                min_uptime_7d_pct: Some(f64::from(min.week)),
+                min_uptime_30d_pct: Some(f64::from(min.month)),
+            }
+        );
+    }
 
     /// The wait ends just past the start of the slot after the recorded one:
     /// at once when recording crossed into it, and never more than one slot
