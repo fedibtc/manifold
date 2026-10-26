@@ -22,8 +22,8 @@ const INITIAL_RETRY_INTERVAL: Duration = Duration::from_secs(2 * 60);
 const MAX_RETRY_INTERVAL: Duration = Duration::from_secs(15 * 60);
 const RELAY_TIMEOUT: Duration = Duration::from_secs(60);
 
-/// The relays that must hold a backup before a guardian transfer sends its
-/// grant. Without relays nothing can be recovered, so nothing is awaited.
+/// The relays that must hold a backup before a guardian transfer votes its
+/// binding. Without relays nothing can be recovered, so nothing is awaited.
 #[derive(Default)]
 pub(crate) struct BackupPublication {
     relays: Vec<String>,
@@ -111,8 +111,8 @@ pub(crate) fn spawn_workers(
                     }
                 }
             }
-            // A guardian transfer wakes the scan: its grant waits for this
-            // publication.
+            // A guardian transfer wakes the scan: its binding vote waits for
+            // this publication.
             tokio::select! {
                 () = sleep(SCAN_INTERVAL) => {}
                 () = wake.notified() => {}
