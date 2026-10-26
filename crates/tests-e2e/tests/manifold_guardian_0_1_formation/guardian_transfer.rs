@@ -494,14 +494,35 @@ async fn three_guardians_move_in_one_session_without_halting_the_federation() {
         eprintln!("skipping guardian transfer E2E; set {OPT_IN_ENV}=1 to run");
         return;
     }
-    tokio::time::timeout(TRANSFER_TEST_TIMEOUT, run_three_transfers_in_one_session())
-        .await
-        .expect("three-transfer E2E timed out")
-        .expect("three-transfer E2E failed");
+    // The three handovers must land in one session for the test to mean
+    // anything. Timing alone does not ensure that, so a run that observes
+    // them in different sessions sets up again.
+    for attempt in 1..=3 {
+        match tokio::time::timeout(TRANSFER_TEST_TIMEOUT, run_three_transfers_in_one_session())
+            .await
+            .expect("three-transfer E2E timed out")
+            .expect("three-transfer E2E failed")
+        {
+            SessionAttempt::Done => return,
+            SessionAttempt::Split { triggered, stopped } => eprintln!(
+                "three transfers, attempt {attempt}: the pulls started in session {triggered} \
+                 but the sources stopped only by session count {stopped}; setting up again"
+            ),
+        }
+    }
+    panic!("three handovers never landed in one session");
+}
+
+/// How one run of the three-transfer scenario ended.
+enum SessionAttempt {
+    /// The handovers landed in one session and the federation went on.
+    Done,
+    /// The handovers did not all land in the session the pulls started in.
+    Split { triggered: u64, stopped: u64 },
 }
 
 #[allow(clippy::too_many_lines)]
-async fn run_three_transfers_in_one_session() -> anyhow::Result<()> {
+async fn run_three_transfers_in_one_session() -> anyhow::Result<SessionAttempt> {
     const MOVES: usize = 3;
     const PORT_BASE: u16 = 47_000;
     let started_at = std::time::Instant::now();
@@ -702,23 +723,75 @@ async fn run_three_transfers_in_one_session() -> anyhow::Result<()> {
         );
     }
 
-    // All destinations learn the source routes at once, so the three pulls
-    // land within a second of each other, well inside one consensus session.
+    // A client that reads the session count through the guardians as
+    // they are before the moves.
+    let observer = FedimintCli {
+        bin: &fedimint_cli_bin,
+        data_dir: temp.join("fedimint-cli-observer"),
+        iroh_overrides: &overrides,
+    };
+    join_federation(&observer, &invite).await?;
     shutdown_daemons(destinations).await?;
-    let mut destinations = Vec::new();
-    for n in 0..MOVES {
-        let mut destination = spawn_destination(n, &moved_overrides, Some(&source_routes))?;
-        read_locator(&mut destination, GUARDIAN_COUNT + n).await?;
-        destinations.push(destination);
+
+    // Start the pulls right after a session boundary, so that the whole
+    // next session is left for the three handover requests.
+    let last = guardians_session_count(&observer).await?;
+    let triggered = tokio::time::timeout(Duration::from_secs(60), async {
+        loop {
+            match guardians_session_count(&observer).await {
+                Ok(count) if last < count => return count,
+                Ok(_) => {}
+                Err(error) => eprintln!("session count failed: {error:#}"),
+            }
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+    })
+    .await
+    .context("the federation completed no session before the pulls")?;
+    let mut destinations = (0..MOVES)
+        .map(|n| spawn_destination(n, &moved_overrides, Some(&source_routes)))
+        .collect::<std::io::Result<Vec<_>>>()?;
+    progress(&format!("pulls start in session {triggered}"));
+    for (n, destination) in destinations.iter_mut().enumerate() {
+        read_locator(destination, GUARDIAN_COUNT + n).await?;
     }
-    let pulled_at = std::time::Instant::now();
+
+    // Each source stops only once its handover request took effect. If the
+    // federation has not completed the session after this one by the time
+    // all three stopped, all three requests landed in this session: none
+    // came before the pulls started, and a request in a later session stops
+    // its source only at that later session's end.
+    // A source stops only at the end of the session, which may run long.
+    for (seat, index) in &sources {
+        wait_seat_for(
+            bin,
+            &temp.join(format!("mg-{index}")),
+            seat,
+            "Transferred",
+            false,
+            Duration::from_secs(300),
+        )
+        .await?;
+    }
+    // Only the kept guardians answer now: the sources stopped, and the
+    // observer has no route to the destinations.
+    let stopped = guardians_session_count(&observer).await?;
+    if triggered + 1 < stopped {
+        let mut remaining = daemons.into_iter().flatten().collect::<Vec<_>>();
+        remaining.extend(destinations);
+        shutdown_daemons(remaining).await?;
+        defe.release(relay_lease.handle_id).await?;
+        defe.release(bitcoind_lease.handle_id).await?;
+        std::fs::remove_dir_all(&temp).context("remove three-transfer E2E tempdir")?;
+        return Ok(SessionAttempt::Split { triggered, stopped });
+    }
+    progress(&format!(
+        "all three sources stopped in session {triggered}; session count {stopped}"
+    ));
     for (seat, d) in &destination_seats {
         wait_seat(bin, &destination_dir(*d), seat, "running", false).await?;
     }
-    progress(&format!(
-        "all three destinations run their guardians, {:?} after the pulls",
-        pulled_at.elapsed()
-    ));
+    progress("all three destinations run their guardians");
     // The MGs that keep their guardians restart with routes to the moved
     // ones; fedimintd resumes its session from its own database.
     let kept = (0..GUARDIAN_COUNT)
@@ -753,45 +826,13 @@ async fn run_three_transfers_in_one_session() -> anyhow::Result<()> {
         data_dir: temp.join("fedimint-cli-client"),
         iroh_overrides: &moved_overrides,
     };
-    tokio::time::timeout(Duration::from_secs(90), async {
-        loop {
-            let _ = std::fs::remove_dir_all(&fedimint_cli.data_dir);
-            match fedimint_cli
-                .run(&["join-federation", &invite], FEDIMINT_CLI_JOIN_TIMEOUT)
-                .await
-            {
-                Ok(_) => return,
-                Err(error) => eprintln!("fedimint-cli join failed: {error:#}"),
-            }
-            tokio::time::sleep(Duration::from_secs(1)).await;
-        }
-    })
-    .await
-    .context("fedimint-cli did not join after the moves")?;
-    let session_count = || async {
-        let output = fedimint_cli
-            .run_json(&["dev", "session-count"], FEDIMINT_CLI_META_TIMEOUT)
-            .await?;
-        output["count"]
-            .as_u64()
-            .with_context(|| format!("session count output: {output}"))
-    };
+    join_federation(&fedimint_cli, &invite).await?;
     // The restarted guardians need a moment before a threshold answers.
-    let before = tokio::time::timeout(Duration::from_secs(90), async {
-        loop {
-            match session_count().await {
-                Ok(count) => return count,
-                Err(error) => eprintln!("session count failed: {error:#}"),
-            }
-            tokio::time::sleep(Duration::from_secs(2)).await;
-        }
-    })
-    .await
-    .context("no threshold of guardians answered the session count")?;
+    let before = session_count(&fedimint_cli, Duration::from_secs(90)).await?;
     progress(&format!("session count after the moves: {before}"));
     let after = tokio::time::timeout(Duration::from_secs(120), async {
         loop {
-            match session_count().await {
+            match session_count(&fedimint_cli, Duration::from_secs(10)).await {
                 Ok(count) if count >= before + 3 => return count,
                 Ok(count) => eprintln!("session count {count}"),
                 Err(error) => eprintln!("session count failed: {error:#}"),
@@ -809,7 +850,77 @@ async fn run_three_transfers_in_one_session() -> anyhow::Result<()> {
     defe.release(relay_lease.handle_id).await?;
     defe.release(bitcoind_lease.handle_id).await?;
     std::fs::remove_dir_all(&temp).context("remove three-transfer E2E tempdir")?;
-    Ok(())
+    Ok(SessionAttempt::Done)
+}
+
+/// Join `cli` to the federation, retrying while guardians restart.
+async fn join_federation(cli: &FedimintCli<'_>, invite: &str) -> anyhow::Result<()> {
+    tokio::time::timeout(Duration::from_secs(90), async {
+        loop {
+            let _ = std::fs::remove_dir_all(&cli.data_dir);
+            match cli
+                .run(&["join-federation", invite], FEDIMINT_CLI_JOIN_TIMEOUT)
+                .await
+            {
+                Ok(_) => return,
+                Err(error) => eprintln!("fedimint-cli join failed: {error:#}"),
+            }
+            tokio::time::sleep(Duration::from_secs(1)).await;
+        }
+    })
+    .await
+    .context("fedimint-cli did not join")
+}
+
+/// The highest session count that any guardian reports on its own. Unlike
+/// the federation's count, it needs no threshold, so it can be read while
+/// moved guardians are unreachable.
+async fn guardians_session_count(cli: &FedimintCli<'_>) -> anyhow::Result<u64> {
+    let counts = futures_util::future::join_all((0..GUARDIAN_COUNT).map(|peer| async move {
+        let output = cli
+            .run_json(
+                &[
+                    "dev",
+                    "api",
+                    "--peer-id",
+                    &peer.to_string(),
+                    "session_count",
+                ],
+                FEDIMINT_CLI_META_TIMEOUT,
+            )
+            .await
+            .ok()?;
+        output["value"].as_u64()
+    }))
+    .await;
+    counts
+        .into_iter()
+        .flatten()
+        .max()
+        .context("no guardian answered its session count")
+}
+
+/// The federation's session count, retrying for up to `wait` until a
+/// threshold of guardians answers.
+async fn session_count(cli: &FedimintCli<'_>, wait: Duration) -> anyhow::Result<u64> {
+    tokio::time::timeout(wait, async {
+        loop {
+            match cli
+                .run_json(&["dev", "session-count"], FEDIMINT_CLI_META_TIMEOUT)
+                .await
+                .and_then(|output| {
+                    output["count"]
+                        .as_u64()
+                        .with_context(|| format!("session count output: {output}"))
+                }) {
+                Ok(count) => return count,
+                Err(error) => eprintln!("session count failed: {error:#}"),
+            }
+            tokio::time::sleep(Duration::from_secs(1)).await;
+        }
+    })
+    .await
+    .context("no threshold of guardians answered the session count")
 }
 
 /// `fa-cli transfer` against this test's MGs.
@@ -881,8 +992,19 @@ async fn wait_seat(
     phase: &str,
     healthy: bool,
 ) -> anyhow::Result<serde_json::Value> {
+    wait_seat_for(bin, root, seat_id, phase, healthy, Duration::from_secs(120)).await
+}
+
+async fn wait_seat_for(
+    bin: &Path,
+    root: &Path,
+    seat_id: &str,
+    phase: &str,
+    healthy: bool,
+    wait: Duration,
+) -> anyhow::Result<serde_json::Value> {
     let mut last = serde_json::Value::Null;
-    tokio::time::timeout(Duration::from_secs(120), async {
+    tokio::time::timeout(wait, async {
         loop {
             if let Ok(status) =
                 manifold_guardian_admin(bin, root, &["seats", "status", seat_id]).await

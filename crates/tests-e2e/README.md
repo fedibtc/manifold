@@ -177,6 +177,23 @@ route to those ports, and the MGs that stay restart with it. The source MG
 pins its service endpoint when it restarts, so the new MG has its route in
 advance.
 
+### Three guardians in one session
+
+`three_guardians_move_in_one_session_without_halting_the_federation` (same
+`MG_E2E` opt-in and file; filter
+`-E 'test(three_guardians_move_in_one_session)'`) moves three of seven
+guardians so that all three handovers land in the same consensus session. It
+is the regression for stopping sources at a session boundary
+([SPEC-guardian-transfer](../mg/specs/SPEC-guardian-transfer.md)). Each
+move runs from its own copy of the FA state, because an FA keeps one transfer
+open at a time, and the test stops once every destination runs its guardian
+and the federation completed three more sessions; it does not finish the
+moves with `fa-cli transfer resume`. The test starts the three pulls right
+after a session boundary and checks that the federation had not completed
+the next session when all three sources stopped; otherwise the handovers
+may have spanned two sessions, and the test sets up again, up to three
+times.
+
 ## Advertisement trust flow
 
 `tests/mg_holder_authorization_flow.rs` uses a defe-managed Nostr relay for
