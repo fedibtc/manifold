@@ -16,14 +16,14 @@
 //! The immutable formed row and final data directory make missing guardian
 //! data detectable after every crash window.
 
-use std::collections::{BTreeMap, BTreeSet};
-use std::path::PathBuf;
-use std::str::FromStr as _;
-use std::sync::Arc;
 mod import;
 mod transfer;
 mod transfer_binding;
 
+use std::collections::{BTreeMap, BTreeSet};
+use std::path::PathBuf;
+use std::str::FromStr as _;
+use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::anyhow;

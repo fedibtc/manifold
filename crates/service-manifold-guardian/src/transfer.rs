@@ -259,7 +259,7 @@ pub fn rebind_transferred_seat(
     seat_bindings: &str,
     recipients: &str,
     attestation: &MgPeerAttestation,
-) -> Result<(String, String), RebindSeatError> {
+) -> Result<ReboundSeat, RebindSeatError> {
     let directory = MgSeatBindings::parse_canonical(seat_bindings)?;
     let peer_id = &attestation.attestation.peer_id;
     let old = directory
@@ -299,7 +299,20 @@ pub fn rebind_transferred_seat(
     recipient.account = new_account;
     list.sort_by_key(|recipient| recipient.account.as_account().id());
     let recipients = canonical_guardian_fee_recipient_list(&list)?;
-    Ok((directory, recipients))
+    Ok(ReboundSeat {
+        seat_bindings: directory,
+        recipients,
+    })
+}
+
+/// The two consensus values [`rebind_transferred_seat`] rewrites, each in
+/// canonical form.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ReboundSeat {
+    /// The seat-binding directory, carrying the moved peer's new attestation.
+    pub seat_bindings: String,
+    /// The guardian-fee recipient list, paying the moved peer's new account.
+    pub recipients: String,
 }
 
 /// Why consensus values cannot be rebound to a moved peer.

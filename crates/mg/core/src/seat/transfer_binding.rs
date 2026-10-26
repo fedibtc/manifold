@@ -69,13 +69,12 @@ impl SeatLoop {
             .and_then(|directory| directory.verify_for_federation(&federation))
             .map_err(|_| SeatVerbError::MetaValueInvalid)?;
 
-        let (directory, recipients) =
-            rebind_transferred_seat(directory, recipients, &binding.attestation)
-                .map_err(|_| SeatVerbError::MetaValueInvalid)?;
+        let rebound = rebind_transferred_seat(directory, recipients, &binding.attestation)
+            .map_err(|_| SeatVerbError::MetaValueInvalid)?;
         // The shared helper predicts bytes; it is not an authentication
         // boundary. Verify the destination signature, federation/config hash,
         // exact native peer identity and endpoint proof before admitting a vote.
-        let verified = MgSeatBindings::parse_canonical(&directory)
+        let verified = MgSeatBindings::parse_canonical(&rebound.seat_bindings)
             .and_then(|directory| directory.verify_for_federation(&federation))
             .map_err(|_| SeatVerbError::MetaValueInvalid)?;
         self.verify_endpoint_proofs(&config, std::slice::from_ref(binding))?;
@@ -88,11 +87,11 @@ impl SeatLoop {
         }
         fields.insert(
             MG_SEAT_BINDINGS_META_FIELD_KEY.to_owned(),
-            serde_json::Value::String(directory),
+            serde_json::Value::String(rebound.seat_bindings),
         );
         fields.insert(
             crate::guardian_fee::REMITTANCE_ACCOUNT_META_KEY.to_owned(),
-            serde_json::Value::String(recipients),
+            serde_json::Value::String(rebound.recipients),
         );
         let encoded = serde_json_canonicalizer::to_vec(&fields).map_err(SeatVerbError::internal)?;
         self.ensure_meta_object_size(&encoded, "replace_seat_binding")?;

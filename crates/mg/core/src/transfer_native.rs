@@ -131,8 +131,6 @@ pub(crate) struct ValidatedGuardian {
     pub(crate) material: TransferMaterial,
 }
 
-/// This subtree contains only disposable transfer validation/install work,
-/// never wallet state. Startup removes crash leftovers before creating workers.
 /// The keys a seat runs under, before constructing its API client. Used both
 /// at daemon startup and when an idempotent CreateSeat repairs a missing
 /// runtime entry. An accepted import keeps the Iroh identity in its row;

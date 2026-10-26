@@ -116,7 +116,7 @@ async fn transfer_binding_preserves_whole_object_and_replays_an_ambiguous_vote()
     );
     let before: serde_json::Value = serde_json::from_slice(&f.original).unwrap();
     let mut expected = before.clone();
-    let (directory, recipients) = rebind_transferred_seat(
+    let rebound = rebind_transferred_seat(
         before[MG_SEAT_BINDINGS_META_FIELD_KEY].as_str().unwrap(),
         before[crate::guardian_fee::REMITTANCE_ACCOUNT_META_KEY]
             .as_str()
@@ -124,8 +124,8 @@ async fn transfer_binding_preserves_whole_object_and_replays_an_ambiguous_vote()
         &f.binding.attestation,
     )
     .unwrap();
-    expected[MG_SEAT_BINDINGS_META_FIELD_KEY] = directory.into();
-    expected[crate::guardian_fee::REMITTANCE_ACCOUNT_META_KEY] = recipients.into();
+    expected[MG_SEAT_BINDINGS_META_FIELD_KEY] = rebound.seat_bindings.into();
+    expected[crate::guardian_fee::REMITTANCE_ACCOUNT_META_KEY] = rebound.recipients.into();
     assert_eq!(target, serde_json_canonicalizer::to_vec(&expected).unwrap());
 
     assert!(matches!(
