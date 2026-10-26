@@ -294,7 +294,6 @@ pub(crate) async fn install(
                 }
                 // The data directory is written above; the row only names it.
                 Some(IncomingTransfer {
-                    generation: 1,
                     binding: binding.clone(),
                     callback_commitment: *callback_commitment,
                     state: IncomingState::Imported(incoming.imported_keys()),

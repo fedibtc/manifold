@@ -19,7 +19,6 @@ pub(super) enum ImportCommand {
         reply: oneshot::Sender<Result<IncomingTransfer, SeatVerbError>>,
     },
     Install {
-        generation: u64,
         binding: TransferMove,
         guardian: ValidatedGuardian,
         reply: oneshot::Sender<Result<(), SeatVerbError>>,
@@ -46,13 +45,11 @@ impl Seat {
 
     pub(crate) async fn install_transfer(
         &self,
-        generation: u64,
         binding: TransferMove,
         guardian: ValidatedGuardian,
     ) -> Result<(), SeatVerbError> {
         self.verb_request(|reply| {
             SeatCommand::Import(ImportCommand::Install {
-                generation,
                 binding,
                 guardian,
                 reply,
@@ -74,12 +71,11 @@ impl SeatLoop {
                 let _ = reply.send(self.admit_transfer(&grant, service_key, callback).await);
             }
             ImportCommand::Install {
-                generation,
                 binding,
                 guardian,
                 reply,
             } => {
-                let _ = reply.send(self.install_transfer(generation, &binding, guardian).await);
+                let _ = reply.send(self.install_transfer(&binding, guardian).await);
             }
         }
     }
@@ -133,13 +129,12 @@ impl SeatLoop {
         Ok(record)
     }
 
-    async fn current_import(&self, generation: u64) -> Result<IncomingTransfer, SeatVerbError> {
+    async fn current_import(&self) -> Result<IncomingTransfer, SeatVerbError> {
         self.check_import_allowed()?;
         self.db
             .incoming_transfer(&self.facts.seat_id)
             .await
             .map_err(SeatVerbError::internal)?
-            .filter(|record| record.generation == generation)
             .ok_or(SeatVerbError::SeatUnavailable)
     }
 
@@ -147,11 +142,10 @@ impl SeatLoop {
     /// From here the seat is a formed seat whose backup follows asynchronously.
     async fn install_transfer(
         &mut self,
-        generation: u64,
         binding: &TransferMove,
         guardian: ValidatedGuardian,
     ) -> Result<(), SeatVerbError> {
-        let record = self.current_import(generation).await?;
+        let record = self.current_import().await?;
         if &record.binding != binding {
             return Err(SeatVerbError::TransferGrantMismatch);
         }
@@ -178,7 +172,6 @@ impl SeatLoop {
             .db
             .accept_transfer(
                 &self.facts.seat_id,
-                generation,
                 binding,
                 &guardian.material.keys,
                 &guardian.invite,

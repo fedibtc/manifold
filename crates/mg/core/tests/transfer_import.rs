@@ -322,7 +322,7 @@ async fn a_grant_signed_again_for_the_same_move_keeps_the_outstanding_rpc() {
     // the source call in flight still installs the guardian.
     d.grant.ts = Timestamp(d.grant.ts.0 + 1);
     let again = d.admit().await;
-    assert_eq!(again.generation, first.generation);
+    assert_eq!(again.binding, first.binding);
     respond(&d, call);
     wait_phase(&d.seat, TransferPhase::Imported).await;
     assert!(calls.try_recv().is_err());
@@ -426,7 +426,7 @@ async fn worker_reopens_accepted_import_without_source_authority() {
     let guardian = d.validate().await;
     let record = d.admit().await;
     d.seat
-        .install_transfer(record.generation, record.binding, guardian)
+        .install_transfer(record.binding, guardian)
         .await
         .unwrap();
     d.fleet.shutdown().await;
@@ -535,11 +535,7 @@ async fn install_accepts_and_starts_the_imported_guardian_without_a_backup_barri
     assert_eq!(d.spawner.spawn_count(), 1);
     d.sink.fails.store(true, Ordering::SeqCst);
     d.seat
-        .install_transfer(
-            record.generation,
-            record.binding.clone(),
-            d.validate().await,
-        )
+        .install_transfer(record.binding.clone(), d.validate().await)
         .await
         .unwrap();
     let accepted = d
@@ -582,7 +578,7 @@ async fn install_accepts_and_starts_the_imported_guardian_without_a_backup_barri
     ));
     assert!(
         d.seat
-            .install_transfer(record.generation, record.binding, d.validate().await)
+            .install_transfer(record.binding, d.validate().await)
             .await
             .is_err(),
         "an accepted import is never installed twice"
@@ -616,7 +612,7 @@ async fn install_accepts_and_starts_the_imported_guardian_without_a_backup_barri
 }
 
 #[tokio::test]
-async fn import_owner_rejects_wrong_local_identity_and_stale_generation() {
+async fn import_owner_rejects_wrong_local_identity_and_another_move() {
     let d = destination(32_147).await;
     let signed = SignedRequest::create(&d.grant, &d.fa).unwrap();
     assert!(
@@ -633,22 +629,12 @@ async fn import_owner_rejects_wrong_local_identity_and_stale_generation() {
             .unwrap()
             .is_none()
     );
-    let record = d.admit().await;
-    assert!(
-        d.seat
-            .install_transfer(
-                record.generation + 1,
-                record.binding.clone(),
-                d.validate().await,
-            )
-            .await
-            .is_err()
-    );
+    d.admit().await;
     let mut wrong = TransferMove::from(&d.grant);
     wrong.source_seat_id = SeatId::from(QuoteId([183; 32]));
     assert!(
         d.seat
-            .install_transfer(record.generation, wrong, d.validate().await)
+            .install_transfer(wrong, d.validate().await)
             .await
             .is_err()
     );
@@ -690,7 +676,7 @@ async fn install_accepts_the_directory_a_crashed_attempt_left_in_place() {
         .await
         .unwrap();
     d.seat
-        .install_transfer(record.generation, record.binding, d.validate().await)
+        .install_transfer(record.binding, d.validate().await)
         .await
         .unwrap();
     assert!(!staging.exists());
@@ -735,7 +721,7 @@ async fn accepted_import_does_not_overwrite_conflicting_installed_identity() {
         .unwrap();
     assert!(
         d.seat
-            .install_transfer(record.generation, record.binding, d.validate().await,)
+            .install_transfer(record.binding, d.validate().await,)
             .await
             .is_err()
     );

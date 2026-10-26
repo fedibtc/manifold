@@ -206,7 +206,6 @@ async fn transfer_recovery_preserves_callback_choice_and_matching_fi_retry_resto
         assert!(
             db.accept_transfer(
                 &facts.seat_id,
-                admitted.generation,
                 &admitted.binding,
                 &crate::transfer_state::ImportedKeys::from_bytes(&[71; 32], &[72; 32]),
                 document
