@@ -1,6 +1,8 @@
 //! A guardian of a formed federation moves to an MG that joined later,
 //! driven by `fa-cli` as a consumer would drive it.
 
+use std::collections::BTreeMap;
+
 use super::*;
 
 const TRANSFER_TEST_TIMEOUT: Duration = Duration::from_secs(600);
@@ -504,9 +506,9 @@ async fn three_guardians_move_in_one_session_without_halting_the_federation() {
             .expect("three-transfer E2E failed")
         {
             SessionAttempt::Done => return,
-            SessionAttempt::Split { triggered, stopped } => eprintln!(
-                "three transfers, attempt {attempt}: the pulls started in session {triggered} \
-                 but the sources stopped only by session count {stopped}; setting up again"
+            SessionAttempt::Split { requested } => eprintln!(
+                "three transfers, attempt {attempt}: handover requests by guardian and \
+                 session were {requested:?}, not three in one session; setting up again"
             ),
         }
     }
@@ -517,8 +519,8 @@ async fn three_guardians_move_in_one_session_without_halting_the_federation() {
 enum SessionAttempt {
     /// The handovers landed in one session and the federation went on.
     Done,
-    /// The handovers did not all land in the session the pulls started in.
-    Split { triggered: u64, stopped: u64 },
+    /// The three handover requests were not all observed in one session.
+    Split { requested: BTreeMap<u16, u64> },
 }
 
 #[allow(clippy::too_many_lines)]
@@ -748,19 +750,63 @@ async fn run_three_transfers_in_one_session() -> anyhow::Result<SessionAttempt> 
     })
     .await
     .context("the federation completed no session before the pulls")?;
+    // Watch every guardian's own status for the session its handover
+    // request was made in: `shutdown_after_current_session` records it as
+    // the guardian's scheduled shutdown until the guardian stops.
+    let mut requested = BTreeMap::<u16, u64>::new();
     let mut destinations = (0..MOVES)
         .map(|n| spawn_destination(n, &moved_overrides, Some(&source_routes)))
         .collect::<std::io::Result<Vec<_>>>()?;
     progress(&format!("pulls start in session {triggered}"));
+    tokio::time::timeout(Duration::from_secs(300), async {
+        loop {
+            for (peer, session) in scheduled_shutdowns(&observer).await {
+                requested.entry(peer).or_insert(session);
+            }
+            if requested.len() >= MOVES {
+                return anyhow::Ok(());
+            }
+            // A source that stopped before it was seen leaves its request
+            // unobserved.
+            let mut stopped = 0;
+            for (seat, index) in &sources {
+                let status = manifold_guardian_admin(
+                    bin,
+                    &temp.join(format!("mg-{index}")),
+                    &["seats", "status", seat],
+                )
+                .await?;
+                if status["report"]["phase"] == "Transferred" {
+                    stopped += 1;
+                }
+            }
+            if stopped == MOVES {
+                return Ok(());
+            }
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+    })
+    .await
+    .context("no handover request was observed")??;
     for (n, destination) in destinations.iter_mut().enumerate() {
         read_locator(destination, GUARDIAN_COUNT + n).await?;
     }
-
-    // Each source stops only once its handover request took effect. If the
-    // federation has not completed the session after this one by the time
-    // all three stopped, all three requests landed in this session: none
-    // came before the pulls started, and a request in a later session stops
-    // its source only at that later session's end.
+    let sessions = requested.values().copied().collect::<BTreeSet<_>>();
+    let request_session = match (requested.len(), sessions.first()) {
+        (MOVES, Some(session)) if sessions.len() == 1 => *session,
+        _ => {
+            let mut remaining = daemons.into_iter().flatten().collect::<Vec<_>>();
+            remaining.extend(destinations);
+            shutdown_daemons(remaining).await?;
+            defe.release(relay_lease.handle_id).await?;
+            defe.release(bitcoind_lease.handle_id).await?;
+            std::fs::remove_dir_all(&temp).context("remove three-transfer E2E tempdir")?;
+            return Ok(SessionAttempt::Split { requested });
+        }
+    };
+    progress(&format!(
+        "all three handover requests landed in session {request_session}"
+    ));
     // A source stops only at the end of the session, which may run long.
     for (seat, index) in &sources {
         wait_seat_for(
@@ -773,21 +819,7 @@ async fn run_three_transfers_in_one_session() -> anyhow::Result<SessionAttempt> 
         )
         .await?;
     }
-    // Only the kept guardians answer now: the sources stopped, and the
-    // observer has no route to the destinations.
-    let stopped = guardians_session_count(&observer).await?;
-    if triggered + 1 < stopped {
-        let mut remaining = daemons.into_iter().flatten().collect::<Vec<_>>();
-        remaining.extend(destinations);
-        shutdown_daemons(remaining).await?;
-        defe.release(relay_lease.handle_id).await?;
-        defe.release(bitcoind_lease.handle_id).await?;
-        std::fs::remove_dir_all(&temp).context("remove three-transfer E2E tempdir")?;
-        return Ok(SessionAttempt::Split { triggered, stopped });
-    }
-    progress(&format!(
-        "all three sources stopped in session {triggered}; session count {stopped}"
-    ));
+    progress("all three sources stopped");
     for (seat, d) in &destination_seats {
         wait_seat(bin, &destination_dir(*d), seat, "running", false).await?;
     }
@@ -827,13 +859,13 @@ async fn run_three_transfers_in_one_session() -> anyhow::Result<SessionAttempt> 
         iroh_overrides: &moved_overrides,
     };
     join_federation(&fedimint_cli, &invite).await?;
-    // The restarted guardians need a moment before a threshold answers.
-    let before = session_count(&fedimint_cli, Duration::from_secs(90)).await?;
-    progress(&format!("session count after the moves: {before}"));
-    let after = tokio::time::timeout(Duration::from_secs(120), async {
+    // The session of the requests ends with count `request_session + 1`;
+    // the federation must complete three more after it.
+    let target = request_session + 4;
+    let after = tokio::time::timeout(Duration::from_secs(180), async {
         loop {
             match session_count(&fedimint_cli, Duration::from_secs(10)).await {
-                Ok(count) if count >= before + 3 => return count,
+                Ok(count) if count >= target => return count,
                 Ok(count) => eprintln!("session count {count}"),
                 Err(error) => eprintln!("session count failed: {error:#}"),
             }
@@ -842,7 +874,10 @@ async fn run_three_transfers_in_one_session() -> anyhow::Result<SessionAttempt> 
     })
     .await
     .context("the federation stopped completing sessions after three moves")?;
-    progress(&format!("federation completed sessions {before}..{after}"));
+    progress(&format!(
+        "federation completed sessions {}..{after} after the requests' session",
+        request_session + 1
+    ));
 
     let mut remaining = daemons.into_iter().flatten().collect::<Vec<_>>();
     remaining.extend(destinations);
@@ -870,6 +905,30 @@ async fn join_federation(cli: &FedimintCli<'_>, invite: &str) -> anyhow::Result<
     })
     .await
     .context("fedimint-cli did not join")
+}
+
+/// The session in which each guardian's handover request was made, by
+/// guardian, read from the guardians' own status. Guardians that are
+/// unreachable or have no scheduled shutdown are left out.
+async fn scheduled_shutdowns(cli: &FedimintCli<'_>) -> Vec<(u16, u64)> {
+    futures_util::future::join_all((0..GUARDIAN_COUNT).map(|peer| async move {
+        let peer = u16::try_from(peer).ok()?;
+        let output = cli
+            .run_json(
+                &["dev", "api", "--peer-id", &peer.to_string(), "status"],
+                FEDIMINT_CLI_META_TIMEOUT,
+            )
+            .await
+            .ok()?;
+        Some((
+            peer,
+            output["value"]["federation"]["scheduled_shutdown"].as_u64()?,
+        ))
+    }))
+    .await
+    .into_iter()
+    .flatten()
+    .collect()
 }
 
 /// The highest session count that any guardian reports on its own. Unlike

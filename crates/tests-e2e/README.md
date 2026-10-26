@@ -189,10 +189,11 @@ move runs from its own copy of the FA state, because an FA keeps one transfer
 open at a time, and the test stops once every destination runs its guardian
 and the federation completed three more sessions; it does not finish the
 moves with `fa-cli transfer resume`. The test starts the three pulls right
-after a session boundary and checks that the federation had not completed
-the next session when all three sources stopped; otherwise the handovers
-may have spanned two sessions, and the test sets up again, up to three
-times.
+after a session boundary, and reads from every guardian's status the session
+its handover request was made in (the scheduled shutdown that
+`shutdown_after_current_session` records). Unless all three requests were
+seen in one session, it sets up again, up to three times. The federation
+must then complete three sessions after that one.
 
 ## Advertisement trust flow
 
