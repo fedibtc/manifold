@@ -132,9 +132,11 @@ pub struct TransferSeatRequest {
 
 /// The source's answer to a [`TransferSeatRequest`].
 ///
-/// The source has durably recorded `Transferred`, stopped its guardian, and
-/// published `Transferred` in the seat's backup before it answers. Repeats
-/// return the same guardian.
+/// The source has stopped its guardian at the end of a consensus session,
+/// durably recorded `Transferred`, and published `Transferred` in the seat's
+/// backup before it answers. Until its guardian reaches that boundary it
+/// refuses the request as a `running` seat, and the destination retries.
+/// Repeats return the same guardian.
 #[derive(serde::Deserialize, serde::Serialize, Clone, Debug, Eq, PartialEq)]
 pub struct TransferSeatResponse {
     pub material: GuardianMaterial,

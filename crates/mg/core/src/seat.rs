@@ -268,6 +268,9 @@ struct SeatLoop {
     /// answered.
     unresponsive_since: Option<tokio::time::Instant>,
     backoff: Duration,
+    /// Source transfer waiting for the guardian's session to end.
+    handover: Option<transfer::Handover>,
+    handover_at: Option<tokio::time::Instant>,
 }
 
 enum ProcessSlot {
@@ -590,6 +593,8 @@ impl Seat {
                 watchdog_at: None,
                 unresponsive_since: None,
                 backoff: policy.initial_backoff,
+                handover: None,
+                handover_at: None,
             };
             tokio::spawn(async move {
                 seat_loop.run(command_rx).await;
@@ -1075,6 +1080,9 @@ impl SeatLoop {
             tracing::warn!(seat_id = %self.facts.seat_id, error = format_args!("{error:#}"), "failed to stop unresponsive seat fedimintd");
             return;
         }
+        if self.handover_child_gone().await {
+            return;
+        }
         self.schedule_respawn();
     }
 
@@ -1172,6 +1180,11 @@ impl SeatLoop {
                 _ = async { tokio::time::sleep_until(self.watchdog_at.expect("watchdog deadline is present")).await }, if self.watchdog_at.is_some() => {
                     self.watchdog_at = None;
                     self.watchdog_tick().await;
+                    continue;
+                }
+                _ = async { tokio::time::sleep_until(self.handover_at.expect("handover deadline is present")).await }, if self.handover_at.is_some() => {
+                    self.handover_at = None;
+                    self.handover_tick().await;
                     continue;
                 }
                 command = commands.recv() => command,
@@ -1405,6 +1418,9 @@ impl SeatLoop {
         {
             self.backoff = self.policy.initial_backoff;
         }
+        if self.handover_child_gone().await {
+            return;
+        }
         self.schedule_respawn();
     }
 
@@ -1496,6 +1512,16 @@ impl SeatLoop {
                 "child replacement requires a proved empty process slot"
             )));
         }
+        // A guardian that completed its last session for a transfer would
+        // otherwise start the next session and sign units the destination
+        // then contradicts.
+        if self
+            .handover
+            .as_ref()
+            .is_some_and(transfer::Handover::is_closed)
+        {
+            return Err(SeatVerbError::SeatUnavailable);
+        }
         let mut child = self
             .process_spawner
             .start(
@@ -1557,7 +1583,12 @@ impl SeatLoop {
     }
 
     fn schedule_respawn(&mut self) {
-        if self.state.borrow().transfer_status().is_some() {
+        if self.state.borrow().transfer_status().is_some()
+            || self
+                .handover
+                .as_ref()
+                .is_some_and(transfer::Handover::is_closed)
+        {
             self.respawn_at = None;
             return;
         }

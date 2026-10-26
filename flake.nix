@@ -157,6 +157,9 @@
           patches = [
             ./patches/fedimint-redact-lightning-payment-logs.patch
             ./patches/fedimint-dkg-test-pause.patch
+            # A guardian transfer stops the source guardian at the end of the
+            # session that is running when it asks (SPEC-guardian-transfer).
+            ./patches/fedimint-shutdown-at-or-after-session.patch
           ];
         };
         # RocksDB's `OptimisticTransactionDB` defaults to 2^20 commit lock

@@ -11,7 +11,9 @@ use fedimint_api_client::api::{DynGlobalApi, FederationApiExt as _, FederationEr
 use fedimint_connectors::ConnectorRegistry;
 use fedimint_core::config::ClientConfig;
 use fedimint_core::core::ModuleInstanceId;
-use fedimint_core::endpoint_constants::CLIENT_CONFIG_ENDPOINT;
+use fedimint_core::endpoint_constants::{
+    CLIENT_CONFIG_ENDPOINT, SESSION_COUNT_ENDPOINT, SHUTDOWN_ENDPOINT,
+};
 use fedimint_core::module::{ApiAuth, ApiRequestErased};
 use fedimint_core::util::SafeUrl;
 use fedimint_lnv2_common::endpoint_constants::ADD_GATEWAY_ENDPOINT;
@@ -94,6 +96,34 @@ impl FedimintApi {
             self.api
                 .clone()
                 .request_admin_no_auth(CLIENT_CONFIG_ENDPOINT, ApiRequestErased::default()),
+        )
+        .await
+    }
+
+    /// Number of sessions this guardian has completed and committed; the
+    /// session it is running, if any, has this index.
+    pub async fn session_count(&self) -> Result<u64, FedimintApiError> {
+        self.request(
+            SESSION_COUNT_ENDPOINT,
+            self.api
+                .clone()
+                .request_admin_no_auth(SESSION_COUNT_ENDPOINT, ApiRequestErased::default()),
+        )
+        .await
+    }
+
+    /// Ask the guardian to exit at the end of the first session at or after
+    /// `session` it completes. The bundled fedimintd carries the at-or-after
+    /// rule (`patches/fedimint-shutdown-at-or-after-session.patch`). The
+    /// schedule lives only in the running process.
+    pub async fn schedule_shutdown(&self, session: u64) -> Result<(), FedimintApiError> {
+        self.request(
+            SHUTDOWN_ENDPOINT,
+            self.api.clone().request_admin::<()>(
+                SHUTDOWN_ENDPOINT,
+                ApiRequestErased::new(Some(session)),
+                self.auth.clone(),
+            ),
         )
         .await
     }

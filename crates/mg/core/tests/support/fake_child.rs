@@ -70,11 +70,38 @@ pub(crate) struct FakeApiState {
     /// Hold invite lookup after a consensus probe, for pinning its
     /// serialization against restart.
     pub invite_gate: Option<Arc<Notify>>,
+    /// Sessions this guardian has completed; the running session has this
+    /// index. Advanced only by [`FakeSeatChildHandle::complete_session`].
+    pub session_count: u64,
+    /// fedimintd's in-memory `shutdown` schedule (at-or-after rule).
+    pub scheduled_shutdown: Option<u64>,
+    /// The session after which the schedule fired. Like fedimintd, the
+    /// child then starts no further session and only waits to exit.
+    pub stopped_after: Option<u64>,
+    /// The `auth` each shutdown request carried.
+    pub shutdown_auth: Vec<Option<String>>,
+    /// Answer `session_count` with a transport-level failure, as if the
+    /// local API connection were cut while consensus continues.
+    pub api_cut: bool,
+    /// Number of `session_count` reads answered.
+    pub session_count_calls: usize,
+    /// End the running session while the next `shutdown` request is in
+    /// flight: before the schedule lands, or just after it.
+    pub session_ends_at_next_shutdown: Option<SessionEnd>,
+}
+
+/// Where a session boundary falls relative to a `shutdown` request.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum SessionEnd {
+    BeforeScheduleLands,
+    AfterScheduleLands,
 }
 
 #[derive(Clone)]
 pub(crate) struct FakeSeatChildHandle {
     state: Arc<Mutex<FakeApiState>>,
+    exit: watch::Sender<Option<ObservedSeatExit>>,
+    seat_id: SeatId,
 }
 
 fn method_not_found() -> ErrorObjectOwned {
@@ -92,6 +119,24 @@ fn request_params(params: Params<'_>) -> Result<Value, ErrorObjectOwned> {
 fn request_auth(params: Params<'_>) -> Result<Option<String>, ErrorObjectOwned> {
     let request: Value = params.one()?;
     Ok(request["auth"].as_str().map(str::to_owned))
+}
+
+/// fedimintd's consensus loop at a session boundary: commit the session, then
+/// check the schedule (at-or-after rule) before starting the next one.
+fn complete_session(state: &mut FakeApiState) -> bool {
+    assert!(
+        state.stopped_after.is_none(),
+        "a guardian past its scheduled shutdown runs no further session"
+    );
+    let completed = state.session_count;
+    state.session_count += 1;
+    if state
+        .scheduled_shutdown
+        .is_some_and(|scheduled| scheduled <= completed)
+    {
+        state.stopped_after = Some(completed);
+    }
+    state.stopped_after.is_some()
 }
 
 struct FakeApiServer {
@@ -169,6 +214,43 @@ async fn start_api_server(api_port: u16, state: Arc<Mutex<FakeApiState>>) -> Fak
                 (true, Some(config)) => Ok(config),
                 _ => Err(method_not_found()),
             }
+        })
+        .unwrap();
+    module
+        .register_method("session_count", |_params, state, _ext| {
+            let mut state = state.lock().unwrap();
+            if state.api_cut {
+                return Err(ErrorObjectOwned::owned(-32000, "api cut", None::<()>));
+            }
+            if !state.consensus_running {
+                return Err(method_not_found());
+            }
+            state.session_count_calls += 1;
+            Ok::<_, ErrorObjectOwned>(json!(state.session_count))
+        })
+        .unwrap();
+    module
+        .register_method("shutdown", |params, state, _ext| {
+            let auth = request_auth(params.clone())?;
+            let session: Option<u64> = serde_json::from_value(request_params(params)?)
+                .map_err(|_| ErrorObjectOwned::owned(-32000, "malformed session", None::<()>))?;
+            let mut state = state.lock().unwrap();
+            if state.api_cut {
+                return Err(ErrorObjectOwned::owned(-32000, "api cut", None::<()>));
+            }
+            if !state.consensus_running {
+                return Err(method_not_found());
+            }
+            state.shutdown_auth.push(auth);
+            let end = state.session_ends_at_next_shutdown.take();
+            if end == Some(SessionEnd::BeforeScheduleLands) {
+                complete_session(&mut state);
+            }
+            state.scheduled_shutdown = session;
+            if end == Some(SessionEnd::AfterScheduleLands) {
+                complete_session(&mut state);
+            }
+            Ok::<_, ErrorObjectOwned>(Value::Null)
         })
         .unwrap();
     module
@@ -257,6 +339,23 @@ impl FakeSeatChildHandle {
         update(&mut self.state.lock().unwrap());
     }
 
+    /// End the running session as the federation would. Returns whether the
+    /// schedule fired, after which the child runs no further session.
+    pub(crate) fn complete_session(&self) -> bool {
+        complete_session(&mut self.state.lock().unwrap())
+    }
+
+    /// The process exits on its own: fedimintd's `process::exit(-1)` after
+    /// its scheduled shutdown, or a crash such as a consensus session
+    /// timeout. The MG sees only the exit status.
+    pub(crate) fn exit(&self, status_code: i32) {
+        self.exit.send_replace(Some(ObservedSeatExit {
+            seat_id: self.seat_id.clone(),
+            status_code: Some(status_code),
+            signal: None,
+        }));
+    }
+
     /// Advance live meta consensus independently of the proposal log, as
     /// threshold peers would after accepting a submitted vote.
     pub(crate) fn set_meta_consensus(&self, value: Option<Vec<u8>>) -> u64 {
@@ -276,7 +375,18 @@ pub(super) struct FakeSeatChild {
     data_dir: PathBuf,
     api_server: FakeApiServer,
     generation: u64,
-    children: Arc<Mutex<HashMap<SeatId, (u64, Weak<Mutex<FakeApiState>>)>>>,
+    children: Arc<
+        Mutex<
+            HashMap<
+                SeatId,
+                (
+                    u64,
+                    Weak<Mutex<FakeApiState>>,
+                    watch::Sender<Option<ObservedSeatExit>>,
+                ),
+            >,
+        >,
+    >,
 }
 
 impl FakeSeatChild {
@@ -320,7 +430,7 @@ impl FakeSeatChild {
         let mut children = self.children.lock().unwrap();
         if children
             .get(&self.seat_id)
-            .is_some_and(|(generation, _)| *generation == self.generation)
+            .is_some_and(|(generation, _, _)| *generation == self.generation)
         {
             children.remove(&self.seat_id);
         }
@@ -342,11 +452,26 @@ pub(crate) enum FakeDkgStep {
 #[cfg(test)]
 pub struct FakeSeatProcessSpawner {
     scripts: Mutex<VecDeque<Vec<FakeDkgStep>>>,
+    /// Script for every spawn once `scripts` is exhausted.
+    default_script: Option<Vec<FakeDkgStep>>,
+    /// API state each new child starts with, as its database would give it.
+    spawn_state: Mutex<FakeApiState>,
     spawn_count: AtomicUsize,
     request_count: Arc<AtomicUsize>,
     requests: Arc<Mutex<Vec<(u16, Vec<String>)>>>,
     next_generation: AtomicU64,
-    children: Arc<Mutex<HashMap<SeatId, (u64, Weak<Mutex<FakeApiState>>)>>>,
+    children: Arc<
+        Mutex<
+            HashMap<
+                SeatId,
+                (
+                    u64,
+                    Weak<Mutex<FakeApiState>>,
+                    watch::Sender<Option<ObservedSeatExit>>,
+                ),
+            >,
+        >,
+    >,
 }
 
 #[cfg(test)]
@@ -354,6 +479,8 @@ impl Default for FakeSeatProcessSpawner {
     fn default() -> Self {
         Self {
             scripts: Default::default(),
+            default_script: None,
+            spawn_state: Default::default(),
             spawn_count: Default::default(),
             request_count: Default::default(),
             requests: Default::default(),
@@ -369,6 +496,51 @@ impl FakeSeatProcessSpawner {
         Self {
             scripts: std::sync::Mutex::new(sessions.into_iter().flatten().collect()),
             ..Default::default()
+        }
+    }
+
+    /// Every spawn is a formed guardian serving consensus from its
+    /// database, starting at `session_count`.
+    pub(crate) fn configured(invite_code: &str, session_count: u64) -> Self {
+        Self {
+            default_script: Some(vec![FakeDkgStep::Message(ChildMessage::Hello {
+                proto: PROTOCOL_VERSION,
+                code_version: "fake-fedimintd".to_owned(),
+                state: ChildState::AlreadyConfigured {
+                    invite_code: invite_code.to_owned(),
+                },
+            })]),
+            spawn_state: Mutex::new(FakeApiState {
+                consensus_running: true,
+                session_count,
+                ..Default::default()
+            }),
+            ..Default::default()
+        }
+    }
+
+    /// Change what the next spawned child starts with.
+    pub(crate) fn modify_spawn_state(&self, update: impl FnOnce(&mut FakeApiState)) {
+        update(&mut self.spawn_state.lock().unwrap());
+    }
+
+    /// The live child's handle, without resetting its state.
+    pub(crate) async fn child(&self, seat_id: &SeatId) -> FakeSeatChildHandle {
+        loop {
+            let child = self
+                .children
+                .lock()
+                .unwrap()
+                .get(seat_id)
+                .and_then(|(_, state, exit)| Some((state.upgrade()?, exit.clone())));
+            if let Some((state, exit)) = child {
+                return FakeSeatChildHandle {
+                    state,
+                    exit,
+                    seat_id: seat_id.clone(),
+                };
+            }
+            tokio::task::yield_now().await;
         }
     }
 
@@ -390,15 +562,19 @@ impl FakeSeatProcessSpawner {
         initial: FakeApiState,
     ) -> FakeSeatChildHandle {
         loop {
-            let state = self
+            let child = self
                 .children
                 .lock()
                 .unwrap()
                 .get(seat_id)
-                .and_then(|(_, state)| state.upgrade());
-            if let Some(state) = state {
+                .and_then(|(_, state, exit)| Some((state.upgrade()?, exit.clone())));
+            if let Some((state, exit)) = child {
                 *state.lock().unwrap() = initial;
-                return FakeSeatChildHandle { state };
+                return FakeSeatChildHandle {
+                    state,
+                    exit,
+                    seat_id: seat_id.clone(),
+                };
             }
             tokio::task::yield_now().await;
         }
@@ -415,7 +591,12 @@ impl FakeSeatProcessSpawner {
         ports: SeatPorts,
     ) -> Result<SeatProcess, SeatProcessError> {
         self.spawn_count.fetch_add(1, Ordering::Relaxed);
-        let mut steps = self.scripts.lock().unwrap().pop_front();
+        let mut steps = self
+            .scripts
+            .lock()
+            .unwrap()
+            .pop_front()
+            .or_else(|| self.default_script.clone());
         let fail_stop = steps.as_ref().is_some_and(|steps| {
             steps
                 .iter()
@@ -440,13 +621,13 @@ impl FakeSeatProcessSpawner {
         let child_seat_id = seat_id.clone();
         let request_count = self.request_count.clone();
         let requests = self.requests.clone();
-        let api_state = Arc::new(Mutex::new(FakeApiState::default()));
+        let api_state = Arc::new(Mutex::new(self.spawn_state.lock().unwrap().clone()));
         let api_server = start_api_server(ports.api(), api_state.clone()).await;
         let generation = self.next_generation.fetch_add(1, Ordering::Relaxed);
-        self.children
-            .lock()
-            .unwrap()
-            .insert(seat_id.clone(), (generation, Arc::downgrade(&api_state)));
+        self.children.lock().unwrap().insert(
+            seat_id.clone(),
+            (generation, Arc::downgrade(&api_state), exit.clone()),
+        );
         let data_dir = seat_data_dir(config, seat_no);
         let stop_data_dir = data_dir.clone();
         let task_api_state = api_state.clone();
