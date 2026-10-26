@@ -173,18 +173,8 @@ async fn a_transfer_buys_its_seat_and_backs_up_the_move() {
 
     let backup = client.inner.store.backup_payload().await.unwrap().payload;
     assert_eq!(backup.seats.len(), usize::from(MIN_FEDERATION_SIZE));
-    assert_eq!(
-        backup.transfer,
-        Some(crate::backup::FaBackupTransfer {
-            seat_index: MOVED as u16,
-            destination: crate::backup::FaBackupSeat {
-                mg_identity: test_mg_id(DESTINATION),
-                seat_id: records[0].seat_id.clone(),
-                locator: locator(DESTINATION),
-            },
-            completion_callback: None,
-        })
-    );
+    // The move waits for its source, so the backup does not keep it yet.
+    assert_eq!(backup.transfer, None);
 }
 
 #[tokio::test]
@@ -620,13 +610,6 @@ fn a_backup_without_a_transfer_keeps_its_earlier_encoding() {
             seat_id: SeatId::from(QuoteId([7; 32])),
             locator: locator(DESTINATION),
         },
-        completion_callback: Some(
-            DkgCompletionCallback::new(DkgCompletionCallbackInput {
-                callback_url: "https://push.example/hooks/hook-id/bearer-secret".to_owned(),
-                idempotency_key: "transfer-complete".to_owned(),
-            })
-            .unwrap(),
-        ),
     });
     let mut encoded = Vec::new();
     ciborium::into_writer(&with_transfer, &mut encoded).unwrap();

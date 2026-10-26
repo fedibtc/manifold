@@ -10,9 +10,7 @@ use chacha20poly1305::{
     aead::{Aead as _, AeadCore as _, KeyInit as _, OsRng, Payload},
 };
 use fedi_decentralized_service_liquidity_manager::RequestLiquidityDetailsCommitmentV1;
-use fedi_decentralized_service_manifold_guardian::{
-    DkgCompletionCallback, InviteCode, Locator, SeatId,
-};
+use fedi_decentralized_service_manifold_guardian::{InviteCode, Locator, SeatId};
 use fedimint_derive_secret::{ChildId, DerivableSecret};
 use nostr_sdk::{Keys, PublicKey, SecretKey};
 use serde::{Deserialize, Serialize};
@@ -40,8 +38,8 @@ pub(crate) struct FaBackupPayload {
     pub(crate) seats: Vec<FaBackupSeat>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) liquidity: Option<RequestLiquidityDetailsCommitmentV1>,
-    /// The open guardian transfer whose destination seat exists but is not in
-    /// `seats` yet. Omitted when absent, so a payload without one keeps its
+    /// The open guardian transfer while the FA votes its destination into
+    /// consensus, before `seats` names it. Omitted when absent, so a payload without one keeps its
     /// earlier bytes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) transfer: Option<FaBackupTransfer>,
@@ -51,15 +49,13 @@ pub(crate) struct FaBackupPayload {
     pub(crate) past_hosts: Vec<FaBackupPastHost>,
 }
 
-/// A guardian moving from `seats[seat_index]` onto `destination`.
+/// A guardian that runs on `destination` and whose binding the FA votes in
+/// place of `seats[seat_index]`.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct FaBackupTransfer {
     pub(crate) seat_index: u16,
     pub(crate) destination: FaBackupSeat,
-    /// The completion callback the move started with, or `None` when it had
-    /// none. A destination accepts the move again only with the same one.
-    pub(crate) completion_callback: Option<DkgCompletionCallback>,
 }
 
 /// An MG that may still hold the key share of a peer it no longer hosts.
@@ -349,7 +345,6 @@ mod tests {
             transfer: Some(FaBackupTransfer {
                 seat_index: 0,
                 destination: seat,
-                completion_callback: None,
             }),
             past_hosts: Vec::new(),
         };

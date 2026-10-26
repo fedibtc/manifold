@@ -698,11 +698,7 @@ stored: the transfer row is deleted. Any other failure leaves the purchase in
 the row for `resume_guardian_transfer`.
 
 With the seat bought, the FA signs a grant, which has no expiry, and
-sends `PullSeat` with an optional completion callback. Before each `PullSeat`
-it waits, at most until the run ends, until a publish quorum of backup relays
-confirms the current backup, which carries the move. A device lost before
-then restores a backup without the move, and no grant has left that another
-move could race. From then on the seat
+sends `PullSeat` with an optional completion callback. From then on the seat
 stays bound to this move: the source may have answered already, so the FA
 never offers the seat to another guardian. A destination that reports `New`,
 for example after an MG restore, gets `PullSeat` again with the same grant.
@@ -733,9 +729,20 @@ that a restore imports, with the same formation id: the formation record
 describes how the federation formed, not who hosts it now. The FA reports
 `FaStatus::Restored` from then on.
 
-The backup carries the move from the seat purchase until the seat list
-names the destination. A restored FA that reconciles and finds the source
-still in consensus opens the same move again with a new grant. When
+The backup carries the move only in `PublishingBinding`: from when the
+destination runs the guardian until the seat list names the destination.
+Before the first vote, the FA waits, at most until the run ends, until a
+publish quorum of backup relays confirms that backup. It reports
+`PublishingBinding` while it waits. So a restore finds every move that a
+guardian voted for. A device lost before then restores a backup without the
+move, while consensus still names the source. Formation makes the same
+tradeoff: its backup starts only once the federation formed. The restored FA
+does not know of the bought seat or of a guardian that already runs on it. It
+can start another move of the same guardian, and two hosts can then run that
+guardian until their operators stop one.
+
+A restored FA that reconciles and finds the source still in consensus opens
+the same move again at its vote. When
 consensus already names the destination, reconciliation puts the destination
 in place of the source; this also covers a device that lost its run before it
 recorded the move. If this device still has that move open, reconciliation

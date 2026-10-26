@@ -86,13 +86,11 @@ async fn a_guardian_moves_onto_its_new_seat() {
         grant.destination_service_pubkey,
         manager_key(DESTINATION).x_only_public_key().0
     );
-    // Nothing moved yet: the backup keeps the move beside the old seats.
+    // Nothing moved yet. The backup leaves out a move that has no guardian on
+    // the destination yet.
     let backup = client.inner.store.backup_payload().await.unwrap().payload;
     assert_eq!(backup.seats[MOVED].seat_id, source_seat_id);
-    assert_eq!(
-        backup.transfer.map(|transfer| transfer.destination.seat_id),
-        Some(destination.clone())
-    );
+    assert_eq!(backup.transfer, None);
 
     guardian_arrives(&mg_state);
     let finished = client
@@ -465,7 +463,6 @@ async fn transfer_adopted_but_unrecorded() -> (
         .await
         .destination_seat_id
         .unwrap();
-    let backup = restored.inner.store.backup_payload().await.unwrap().payload;
     guardian_arrives(&mg_state);
     mg_state
         .attest_with_fresh_timestamps
@@ -487,6 +484,8 @@ async fn transfer_adopted_but_unrecorded() -> (
         restored.guardian_transfer().await.unwrap().unwrap().phase,
         GuardianTransferPhase::PublishingBinding
     );
+    // The backup names the move once its binding is voted.
+    let backup = restored.inner.store.backup_payload().await.unwrap().payload;
     mg_state
         .consensus_down_after_binding_votes
         .store(false, Ordering::SeqCst);
@@ -659,13 +658,166 @@ async fn a_backup_from_before_the_move_restores_onto_the_destination() {
     assert_eq!(backup.transfer, None);
 }
 
+/// A client whose backups wait for two of three relays, with a transfer
+/// stopped before its vote because no relay confirmed the binding backup.
+async fn transfer_waiting_for_its_backup() -> (
+    Arc<MgState>,
+    TestClient,
+    [nostr_sdk::RelayUrl; 3],
+    crate::backup::FaBackupKeys,
+    crate::backup::EncryptedFaBackup,
+) {
+    let (database, payments, _payment_state, mg_state, formed) = formed_paid_client().await;
+    let keys = crate::backup::FaBackupKeys::derive(&formed.inner.ports.identity.scoped_root());
+    let published = keys
+        .seal(&formed.inner.store.backup_payload().await.unwrap().payload)
+        .unwrap();
+    drop(formed);
+    let relays = [
+        "wss://first.example",
+        "wss://second.example",
+        "wss://third.example",
+    ]
+    .map(|relay| nostr_sdk::RelayUrl::parse(relay).unwrap());
+    let client = open_client_with_backup_publication(
+        database,
+        payments,
+        mg_state.clone(),
+        crate::backup_worker::BackupPublication::new(&relays, 2),
+    )
+    .await;
+    mg_state
+        .seat_statuses
+        .lock()
+        .expect("test lock")
+        .insert(DESTINATION, ServiceStatus::New);
+
+    // The pull needs no backup: a destination guardian that nobody votes
+    // in moves nothing.
+    let started = client
+        .start_guardian_transfer(
+            MOVED as u16,
+            destination_approval(PAYMENT_AMOUNT_MSATS),
+            Some(payment_federation_id()),
+            None,
+            short_options(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(started.phase, GuardianTransferPhase::AwaitingSource);
+    assert_eq!(mg_state.pull_requests.lock().expect("test lock").len(), 1);
+    assert_eq!(
+        client
+            .inner
+            .store
+            .backup_payload()
+            .await
+            .unwrap()
+            .payload
+            .transfer,
+        None
+    );
+
+    guardian_arrives(&mg_state);
+    let waiting = client
+        .resume_guardian_transfer(short_options())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(waiting.phase, GuardianTransferPhase::PublishingBinding);
+    assert!(mg_state.binding_votes.lock().expect("test lock").is_empty());
+    (mg_state, client, relays, keys, published)
+}
+
+async fn confirm_backup(client: &TestClient, relay: &nostr_sdk::RelayUrl) {
+    let prepared = client.inner.store.backup_payload().await.unwrap();
+    assert!(prepared.payload.transfer.is_some());
+    client
+        .inner
+        .store
+        .record_backup_confirmation(
+            &relay.to_string(),
+            crate::db::BackupRelayConfirmation {
+                document_hash: prepared.document_hash,
+                generation: prepared.payload.snapshot_generation,
+                event_id: relay.to_string(),
+                confirmed_at_secs: test_now_secs(),
+            },
+        )
+        .await
+        .unwrap();
+}
+
+/// A device lost before the relays hold the move restores a backup without
+/// it. Consensus then still names the source, and no guardian voted the
+/// destination in. So no vote leaves until a publish quorum of relays
+/// confirms the backup that names the move.
 #[tokio::test]
-async fn a_restored_backup_continues_the_same_move() {
-    let (_database, _payments, _payment_state, mg_state, lost) = formed_paid_client().await;
-    let started = start_transfer(&lost, &mg_state).await;
-    let destination = started.destination_seat_id.clone().unwrap();
-    let source_seat_id = started.source_seat_id.clone();
+async fn no_vote_leaves_before_the_relays_hold_the_transfer() {
+    let (mg_state, client, relays, keys, published) = transfer_waiting_for_its_backup().await;
+    confirm_backup(&client, &relays[0]).await;
+    let resumed = client
+        .resume_guardian_transfer(short_options())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(resumed.phase, GuardianTransferPhase::PublishingBinding);
+    assert!(
+        mg_state.binding_votes.lock().expect("test lock").is_empty(),
+        "one of three relays is less than a publish quorum"
+    );
+
+    // The device is lost now: the restore finds no transfer to finish, and
+    // the federation still names the source.
+    let (payments, _payment_state) = TestPayments::new();
+    let replacement = open_client(
+        MemDatabase::new().into_database(),
+        payments,
+        mg_state.clone(),
+        MgConfig::paid(),
+    )
+    .await;
+    let status = replacement
+        .inner
+        .store
+        .restore_backup_payload_with_completion(
+            TestIdentity::fa_id(),
+            keys.open(&published).unwrap(),
+            None,
+        )
+        .await
+        .unwrap();
+    replacement.inner.progress.send_replace(status);
+    replacement.resume().await.unwrap();
+    assert!(replacement.guardian_transfer().await.unwrap().is_none());
+    drop(replacement);
+
+    confirm_backup(&client, &relays[2]).await;
+    let finished = client
+        .resume_guardian_transfer(transfer_options())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(finished.phase, GuardianTransferPhase::Completed);
+    assert!(!mg_state.binding_votes.lock().expect("test lock").is_empty());
+}
+
+#[tokio::test]
+async fn a_restored_backup_continues_the_vote_of_the_same_move() {
+    let (mg_state, lost, relays, _keys, _published) = transfer_waiting_for_its_backup().await;
+    confirm_backup(&lost, &relays[0]).await;
+    confirm_backup(&lost, &relays[1]).await;
+    let transfer = lost.guardian_transfer().await.unwrap().unwrap();
+    let destination = transfer.destination_seat_id.clone().unwrap();
+    let source_seat_id = transfer.source_seat_id.clone();
     let backup = lost.inner.store.backup_payload().await.unwrap().payload;
+    assert_eq!(
+        backup
+            .transfer
+            .as_ref()
+            .map(|transfer| transfer.destination.seat_id.clone()),
+        Some(destination.clone())
+    );
     drop(lost);
     let (payments, _payment_state) = TestPayments::new();
     let replacement = open_client(
@@ -684,133 +836,30 @@ async fn a_restored_backup_continues_the_same_move() {
     replacement.inner.progress.send_replace(status);
 
     // Consensus still names the source, so the restored FA opens the same
-    // move again rather than giving up the paid seat.
+    // move again at its vote rather than giving up the paid seat.
     replacement.resume().await.unwrap();
     let reopened = replacement.guardian_transfer().await.unwrap().unwrap();
-    assert_eq!(reopened.phase, GuardianTransferPhase::AwaitingSource);
+    assert_eq!(reopened.phase, GuardianTransferPhase::PublishingBinding);
     assert_eq!(reopened.source_seat_id, source_seat_id);
     assert_eq!(reopened.destination_seat_id, Some(destination.clone()));
-    // The backup of the restored FA keeps the move.
-    assert_eq!(
-        replacement
-            .inner
-            .store
-            .backup_payload()
-            .await
-            .unwrap()
-            .payload
-            .transfer
-            .map(|transfer| transfer.destination.seat_id),
-        Some(destination.clone())
-    );
 
-    // The first grant was lost with the device. A destination that lost it
-    // too gets the same move with a grant the restored FA signed itself.
-    mg_state
-        .seat_statuses
-        .lock()
-        .expect("test lock")
-        .insert(DESTINATION, ServiceStatus::New);
-    replacement
-        .resume_guardian_transfer(short_options())
-        .await
-        .unwrap()
-        .unwrap();
-    let pulls = mg_state.pull_requests.lock().expect("test lock").clone();
-    assert_eq!(pulls.len(), 2);
-    let second = pulls[1]
-        .1
-        .grant
-        .clone()
-        .verify(Timestamp(test_now_secs()))
-        .unwrap()
-        .into_inner();
-    assert_eq!(second.source_seat_id, source_seat_id);
-    assert_eq!(second.source, locator(MOVED));
-    assert_eq!(second.destination_seat_id, destination);
-
-    guardian_arrives(&mg_state);
     let finished = replacement
         .resume_guardian_transfer(transfer_options())
         .await
         .unwrap()
         .unwrap();
     assert_eq!(finished.phase, GuardianTransferPhase::Completed);
+    // The restored FA never pulled again: the destination already runs.
+    assert_eq!(mg_state.pull_requests.lock().expect("test lock").len(), 1);
     let FaStatus::Restored(restored) = replacement.status() else {
         panic!("restored status");
     };
     assert_eq!(restored.seats[MOVED].seat_id, destination);
+    assert_eq!(restored.seats[MOVED].mg_identity, test_mg_id(DESTINATION));
     assert_eq!(
         mg_state.removed_seats.lock().expect("test lock").clone(),
         vec![(MOVED, source_seat_id)]
     );
-}
-
-#[tokio::test]
-async fn a_restored_backup_pulls_the_move_with_its_callback() {
-    let (_database, _payments, _payment_state, mg_state, lost) = formed_paid_client().await;
-    let callback = DkgCompletionCallback::new(DkgCompletionCallbackInput {
-        callback_url: "https://push.example/hooks/hook-id/bearer-secret".to_owned(),
-        idempotency_key: "transfer-complete".to_owned(),
-    })
-    .unwrap();
-    mg_state
-        .seat_statuses
-        .lock()
-        .expect("test lock")
-        .insert(DESTINATION, ServiceStatus::New);
-    lost.start_guardian_transfer(
-        MOVED as u16,
-        destination_approval(PAYMENT_AMOUNT_MSATS),
-        Some(payment_federation_id()),
-        Some(callback.clone()),
-        transfer_options(),
-    )
-    .await
-    .unwrap();
-    let keys = crate::backup::FaBackupKeys::derive(&lost.inner.ports.identity.scoped_root());
-    let sealed = keys
-        .seal(&lost.inner.store.backup_payload().await.unwrap().payload)
-        .unwrap();
-    drop(lost);
-    let (payments, _payment_state) = TestPayments::new();
-    let replacement = open_client(
-        MemDatabase::new().into_database(),
-        payments,
-        mg_state.clone(),
-        MgConfig::paid(),
-    )
-    .await;
-    let status = replacement
-        .inner
-        .store
-        .restore_backup_payload_with_completion(
-            TestIdentity::fa_id(),
-            keys.open(&sealed).unwrap(),
-            None,
-        )
-        .await
-        .unwrap();
-    replacement.inner.progress.send_replace(status);
-    replacement.resume().await.unwrap();
-
-    // The destination lost the grant too. It accepts the move again only
-    // with the callback the move started with.
-    mg_state
-        .seat_statuses
-        .lock()
-        .expect("test lock")
-        .insert(DESTINATION, ServiceStatus::New);
-    let pulled = replacement
-        .resume_guardian_transfer(short_options())
-        .await
-        .unwrap()
-        .unwrap();
-
-    assert_eq!(pulled.phase, GuardianTransferPhase::AwaitingSource);
-    let pulls = mg_state.pull_requests.lock().expect("test lock").clone();
-    assert_eq!(pulls.len(), 2);
-    assert_eq!(pulls[1].1.completion_callback, Some(callback));
 }
 
 /// Check what a crash right after a transfer write leaves: the source seat
@@ -1063,107 +1112,4 @@ fn a_rebind_moves_only_the_peer_entry_and_its_fee_share() {
             recipients: new_recipients,
         }
     );
-}
-
-/// A device lost before its backup names the transfer restores an older
-/// backup without it. Then it could start another move of the same guardian.
-/// So no grant leaves until a publish quorum of relays confirms the backup.
-#[tokio::test]
-async fn no_grant_leaves_before_the_relays_hold_the_transfer() {
-    let (database, payments, _payment_state, mg_state, formed) = formed_paid_client().await;
-    let keys = crate::backup::FaBackupKeys::derive(&formed.inner.ports.identity.scoped_root());
-    let published = keys
-        .seal(&formed.inner.store.backup_payload().await.unwrap().payload)
-        .unwrap();
-    drop(formed);
-    let relays = [
-        "wss://first.example",
-        "wss://second.example",
-        "wss://third.example",
-    ]
-    .map(|relay| nostr_sdk::RelayUrl::parse(relay).unwrap());
-    let client = open_client_with_backup_publication(
-        database,
-        payments,
-        mg_state.clone(),
-        crate::backup_worker::BackupPublication::new(&relays, 2),
-    )
-    .await;
-    mg_state
-        .seat_statuses
-        .lock()
-        .expect("test lock")
-        .insert(DESTINATION, ServiceStatus::New);
-    let confirm = async |relay: &nostr_sdk::RelayUrl| {
-        let prepared = client.inner.store.backup_payload().await.unwrap();
-        assert!(prepared.payload.transfer.is_some());
-        client
-            .inner
-            .store
-            .record_backup_confirmation(
-                &relay.to_string(),
-                crate::db::BackupRelayConfirmation {
-                    document_hash: prepared.document_hash,
-                    generation: prepared.payload.snapshot_generation,
-                    event_id: relay.to_string(),
-                    confirmed_at_secs: test_now_secs(),
-                },
-            )
-            .await
-            .unwrap();
-    };
-
-    let started = client
-        .start_guardian_transfer(
-            MOVED as u16,
-            destination_approval(PAYMENT_AMOUNT_MSATS),
-            Some(payment_federation_id()),
-            None,
-            short_options(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(started.phase, GuardianTransferPhase::AwaitingSource);
-    confirm(&relays[0]).await;
-    let resumed = client
-        .resume_guardian_transfer(short_options())
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(resumed.phase, GuardianTransferPhase::AwaitingSource);
-    assert!(
-        mg_state.pull_requests.lock().expect("test lock").is_empty(),
-        "one of three relays is less than a publish quorum"
-    );
-
-    // The device is lost now: the restore finds no transfer to finish, and
-    // no grant left that another move would race.
-    let (payments, _payment_state) = TestPayments::new();
-    let replacement = open_client(
-        MemDatabase::new().into_database(),
-        payments,
-        mg_state.clone(),
-        MgConfig::paid(),
-    )
-    .await;
-    replacement
-        .inner
-        .store
-        .restore_backup_payload_with_completion(
-            TestIdentity::fa_id(),
-            keys.open(&published).unwrap(),
-            None,
-        )
-        .await
-        .unwrap();
-    assert!(replacement.guardian_transfer().await.unwrap().is_none());
-    drop(replacement);
-
-    confirm(&relays[2]).await;
-    client
-        .resume_guardian_transfer(short_options())
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(mg_state.pull_requests.lock().expect("test lock").len(), 1);
 }

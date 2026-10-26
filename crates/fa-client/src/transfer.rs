@@ -74,10 +74,10 @@ pub enum GuardianTransferPhase {
     /// The FA buys the destination seat. A resume finishes the purchase.
     BuyingSeat,
     /// The destination waits for the source MG to hand over the guardian.
-    /// Before it asks, the FA backup with this transfer reaches its relays.
     AwaitingSource,
     /// The guardian runs on the destination. Its new seat binding and fee
-    /// recipient are not confirmed in consensus yet.
+    /// recipient are not confirmed in consensus yet. Before the first vote,
+    /// the FA backup with this transfer reaches its relays.
     PublishingBinding,
     /// Consensus names the destination. The source MG has not deleted the
     /// old guardian data yet.
@@ -86,11 +86,16 @@ pub enum GuardianTransferPhase {
     Completed,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
+#[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum StoredTransferPhase {
-    Pulling,
+    /// The destination pulls the guardian with this grant.
+    Pulling {
+        grant: SignedRequest<SeatTransferGrant>,
+    },
+    /// The guardian runs on the destination. The FA votes its binding.
     Binding,
+    /// Consensus names the destination. The source still holds its copy.
     RemovingSource,
 }
 
@@ -125,8 +130,6 @@ pub(crate) enum TransferStage {
 #[serde(deny_unknown_fields)]
 pub(crate) struct StoredMove {
     pub(crate) destination: StoredDestinationSeat,
-    /// The grant the destination presents to the source.
-    pub(crate) grant: SignedRequest<SeatTransferGrant>,
     /// The destination's binding for the moved peer, saved before the first
     /// vote. The destination signs a new one on every request, so a resumed
     /// transfer must vote and look for the same one.
@@ -143,24 +146,25 @@ impl StoredGuardianTransfer {
         }
     }
 
-    /// What a backup keeps of this transfer: its move, while the destination
-    /// exists but is not in the seat list yet. A restored FA then continues
-    /// the same move instead of losing the paid seat.
+    /// What a backup keeps of this transfer: its destination, only while the
+    /// FA votes it into consensus. A vote can reach consensus before the
+    /// backup with the new seat list, and a restore must then still find the
+    /// destination. Before then a lost device loses the move, as a lost
+    /// device loses a formation that has not formed yet.
     pub(crate) fn backup(&self) -> Option<crate::backup::FaBackupTransfer> {
         match &self.stage {
-            TransferStage::Moving(moving)
-                if moving.phase != StoredTransferPhase::RemovingSource =>
-            {
-                Some(crate::backup::FaBackupTransfer {
-                    seat_index: self.seat_index,
-                    destination: crate::backup::FaBackupSeat {
-                        mg_identity: moving.destination.mg_id,
-                        seat_id: moving.destination.seat_id.clone(),
-                        locator: moving.destination.locator.clone(),
-                    },
-                    completion_callback: self.completion_callback.clone(),
-                })
-            }
+            TransferStage::Moving(StoredMove {
+                destination,
+                phase: StoredTransferPhase::Binding,
+                ..
+            }) => Some(crate::backup::FaBackupTransfer {
+                seat_index: self.seat_index,
+                destination: crate::backup::FaBackupSeat {
+                    mg_identity: destination.mg_id,
+                    seat_id: destination.seat_id.clone(),
+                    locator: destination.locator.clone(),
+                },
+            }),
             _ => None,
         }
     }
@@ -187,7 +191,7 @@ impl StoredGuardianTransfer {
         match &self.stage {
             TransferStage::Buying(_) => GuardianTransferPhase::BuyingSeat,
             TransferStage::Moving(moving) => match moving.phase {
-                StoredTransferPhase::Pulling => GuardianTransferPhase::AwaitingSource,
+                StoredTransferPhase::Pulling { .. } => GuardianTransferPhase::AwaitingSource,
                 StoredTransferPhase::Binding => GuardianTransferPhase::PublishingBinding,
                 StoredTransferPhase::RemovingSource => GuardianTransferPhase::RemovingSource,
             },
@@ -336,9 +340,8 @@ where
                 )?;
                 let moving = StoredMove {
                     destination,
-                    grant,
                     binding: None,
-                    phase: StoredTransferPhase::Pulling,
+                    phase: StoredTransferPhase::Pulling { grant },
                 };
                 lease
                     .write_guardian_transfer(
@@ -349,9 +352,9 @@ where
                 moving
             }
         };
-        if moving.phase == StoredTransferPhase::Pulling {
+        if let StoredTransferPhase::Pulling { grant } = &moving.phase {
             match self
-                .await_pulled_guardian(&transfer, &moving, fa_id, wait, run)
+                .await_pulled_guardian(&transfer, &moving.destination, grant, fa_id, wait, run)
                 .await?
             {
                 Pulled::Running => {
@@ -370,7 +373,15 @@ where
                 }
             }
         }
-        if moving.phase == StoredTransferPhase::Binding {
+        if matches!(moving.phase, StoredTransferPhase::Binding) {
+            // A restore must find the destination once a vote may reach
+            // consensus, so no vote leaves before the relays hold the backup
+            // that names it.
+            if !self.transfer_backup_confirmed(run).await? {
+                return Ok(transfer
+                    .moved(&moving)
+                    .view(GuardianTransferPhase::PublishingBinding));
+            }
             // The seat list may be stale after a reopen: consensus can name
             // the destination already. The readback below confirms the moved
             // seat itself, so the transfer does not wait for a full
@@ -451,13 +462,14 @@ where
     async fn await_pulled_guardian(
         &self,
         transfer: &StoredGuardianTransfer,
-        moving: &StoredMove,
+        destination: &StoredDestinationSeat,
+        grant: &SignedRequest<SeatTransferGrant>,
         fa_id: FaId,
         wait: bool,
         run: DriverRun<'_>,
     ) -> FaResult<Pulled> {
         match self
-            .poll_pulled_guardian(transfer, moving, fa_id, wait, run)
+            .poll_pulled_guardian(transfer, destination, grant, fa_id, wait, run)
             .await
         {
             Err(FaError::Mg(failure))
@@ -472,12 +484,12 @@ where
     async fn poll_pulled_guardian(
         &self,
         transfer: &StoredGuardianTransfer,
-        moving: &StoredMove,
+        destination: &StoredDestinationSeat,
+        grant: &SignedRequest<SeatTransferGrant>,
         fa_id: FaId,
         wait: bool,
         run: DriverRun<'_>,
     ) -> FaResult<Pulled> {
-        let destination = moving.destination.clone();
         let client = match MgClient::connect(
             &self.inner.ports.mg_connector,
             &destination.locator,
@@ -507,17 +519,11 @@ where
                 // A restored destination comes back `New` and needs the
                 // grant again.
                 ServiceStatus::New => {
-                    // The source hands the guardian to whoever holds this
-                    // grant. A device lost from here on must restore this
-                    // move, or it could start another one.
-                    if !self.transfer_backup_confirmed(run).await? {
-                        return Ok(Pulled::Waiting);
-                    }
                     let request = self.sign(&PullSeatRequest {
                         ts: Timestamp(now_secs()?),
                         fa_id,
                         seat_id: destination.seat_id.clone(),
-                        grant: moving.grant.clone(),
+                        grant: grant.clone(),
                         completion_callback: transfer.completion_callback.clone(),
                     })?;
                     client
@@ -543,7 +549,7 @@ where
         }
     }
 
-    /// Wait until the relays confirm a backup with the open transfer, at
+    /// Wait until the relays confirm the current backup, at
     /// most until the run ends. The backup worker prepares the same backup
     /// at the same time, so a failed attempt is retried and only the last
     /// one counts.
@@ -631,10 +637,9 @@ where
         self.inner.store.restored_backup_payload(fa_id).await
     }
 
-    /// Open the backed-up transfer again on a restored FA, with the grant
-    /// signed again for the same move. The old grant may have reached the
-    /// source, so only this move can bring the guardian back. A destination
-    /// that still holds the old grant takes the new one as a replay.
+    /// Open the backed-up transfer again on a restored FA. A backup keeps a
+    /// transfer only while its guardian runs on the destination and the FA
+    /// votes it into consensus, so the reopened transfer continues there.
     pub(crate) async fn reopen_backed_up_transfer(
         &self,
         fa_id: FaId,
@@ -657,14 +662,6 @@ where
         let federation_id = FederationId(
             crate::formation::invite_federation_id(&snapshot.federation_invite)?.to_string(),
         );
-        let destination = restored_destination(&backed_up.destination);
-        let grant = self.sign_grant(
-            fa_id,
-            &federation_id,
-            &source.locator,
-            &source.seat_id,
-            &destination,
-        )?;
         let transfer = StoredGuardianTransfer {
             transfer_id: FormationId(format!(
                 "{}:guardian-transfer:{}",
@@ -676,12 +673,11 @@ where
             source_locator: source.locator.clone(),
             source_seat_id: source.seat_id.clone(),
             federation_id,
-            completion_callback: backed_up.completion_callback.clone(),
+            completion_callback: None,
             stage: TransferStage::Moving(StoredMove {
-                destination,
-                grant,
+                destination: restored_destination(&backed_up.destination),
                 binding: None,
-                phase: StoredTransferPhase::Pulling,
+                phase: StoredTransferPhase::Binding,
             }),
         };
         run.lease()
