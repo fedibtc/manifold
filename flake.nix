@@ -1126,12 +1126,12 @@
         # is `git describe` of the pinned commit against its fork tag. DKG uses
         # a separate typed major/minor/vendor identity, independent of it.
         fedimintSourceRef = "rho/shutdown-after-current-session";
-        fedimintdRelease = "0.12.0-fedi15-2-g7e7ac9635";
+        fedimintdRelease = "0.12.0-fedi15-3-g848f42e60";
         fedimintdDkgVersion = "0.12.0+fedi";
         # `fedimintd` exports this upstream package version in `app_start_ts`.
         # It deliberately differs from the Fedi release tag above.
         fedimintdMetricVersion = "0.12.0";
-        fedimintSourceRev = "7e7ac9635f3cc30c3e626c02575de6a38f417072";
+        fedimintSourceRev = "848f42e6085f22011aa3cf7a7eccba44b44e3ab3";
         stabilityPoolSourceRev = "59e406974ccf7d0cd1d719a78e6cc46fd51870e6";
 
         # Nextest, CLI checks, and OCI runtime-contract checks all stay on the

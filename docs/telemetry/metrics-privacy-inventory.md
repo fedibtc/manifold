@@ -9,7 +9,7 @@ boundaries retain only the compiled canonical core-method set or `unknown`.
 MG and the collector compile one default-deny source policy, so release review
 must inventory the actual `fedimintd` source before changing that policy. This baseline was
 read from Manifold's pinned `fedibtc/fedimint` source at
-`7e7ac9635f3cc30c3e626c02575de6a38f417072`. The machine-checked
+`848f42e6085f22011aa3cf7a7eccba44b44e3ab3`. The machine-checked
 [`fedimint-metrics-v0.12.0-fedi15.tsv`](./fedimint-metrics-v0.12.0-fedi15.tsv)
 enumerates every registration in the complete pinned Fedimint Rust source and
 its admission disposition. It fails the Nix check when either the lock pin or
@@ -30,7 +30,7 @@ Prometheus metric families of their own. "Including SPv2" therefore means this
 absence is checked from the exact Cargo-selected `fedixyz/fedi` stability-pool server
 source, not that it can be omitted from future review.
 
-The bundled Fedimint release label is `0.12.0-fedi15-2-g7e7ac9635`, while `fedimintd` emits its
+The bundled Fedimint release label is `0.12.0-fedi15-3-g848f42e60`, while `fedimintd` emits its
 upstream Cargo package version `0.12.0` in `app_start_ts{version=...}`. That
 reviewed baseline selects the current safe shapes; it is not a collector
 target-version requirement. The collector accepts bounded release metadata from
