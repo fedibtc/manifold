@@ -13,3 +13,51 @@
 .checkedAt {
   @apply uMutedSm;
 }
+
+.uptime {
+  @apply flex flex-col gap-4 rounded-lg border p-3 text-sm;
+}
+
+.uptimeHead {
+  @apply flex flex-col gap-1;
+}
+
+.gauge {
+  @apply flex flex-col gap-1.5;
+}
+
+.gaugeHead {
+  @apply flex items-baseline justify-between gap-2;
+}
+
+.track {
+  @apply relative h-2 w-full rounded-full bg-gray-100;
+}
+
+.fillOk {
+  @apply h-2 rounded-full bg-success;
+}
+
+.fillBad {
+  @apply h-2 rounded-full bg-error;
+}
+
+.tick {
+  @apply absolute -top-1 h-4 w-0.5 bg-ink;
+}
+
+.ok {
+  @apply text-success;
+}
+
+.bad {
+  @apply text-error;
+}
+
+.min {
+  @apply font-normal text-gray-500;
+}
+
+.figure {
+  @apply whitespace-nowrap font-semibold;
+}
