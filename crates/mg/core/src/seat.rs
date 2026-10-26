@@ -517,6 +517,11 @@ pub struct SeatFederationBinding {
 }
 
 impl Seat {
+    /// The transfer phase this seat last mirrored from its durable record.
+    pub(crate) fn transfer_phase(&self) -> Option<TransferPhase> {
+        self.state.borrow().transfer_phase
+    }
+
     pub(crate) fn transfer_exit_unproven(&self) -> bool {
         matches!(
             self.state.borrow().process_slot,

@@ -240,6 +240,9 @@ async fn supervise(jobs: Arc<Jobs>, wake: TransferWake, mut stop: watch::Receive
             let wanted = if seat.is_decommissioned() {
                 None
             } else {
+                if jobs.mirror_expiry(&seat).await.is_err() {
+                    failed = true;
+                }
                 match jobs.work(&seat).await {
                     Ok(work) => work,
                     Err(_) => {
@@ -294,6 +297,26 @@ async fn supervise(jobs: Arc<Jobs>, wake: TransferWake, mut stop: watch::Receive
 }
 
 impl Jobs {
+    /// Expiry is derived from the grant's clock, not committed, so no write
+    /// tells the seat its mirrored `Waiting` has lapsed. A job ends at the
+    /// expiry however it gets there: its own deadline, a retry or parked
+    /// wait running into it, or cancellation when [`Self::work`] stops
+    /// listing the generation. Each of those wakes the supervisor, which
+    /// mirrors the expiry through the seat owner here, before or as the
+    /// work is dropped.
+    async fn mirror_expiry(&self, seat: &Seat) -> anyhow::Result<()> {
+        if seat.transfer_phase() != Some(TransferPhase::Waiting) {
+            return Ok(());
+        }
+        let Some(record) = self.db.incoming_transfer(&seat.facts().seat_id).await? else {
+            return Ok(());
+        };
+        if record.phase() == TransferPhase::Expired {
+            seat.expire_transfer(record.generation).await?;
+        }
+        Ok(())
+    }
+
     async fn work(&self, seat: &Seat) -> anyhow::Result<Option<Work>> {
         let id = &seat.facts().seat_id;
         if self.db.outgoing_transfer(id).await?.is_some() {

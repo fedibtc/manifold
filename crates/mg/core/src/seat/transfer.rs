@@ -150,7 +150,11 @@ impl SeatLoop {
 
     async fn request_shutdown_after_current_session(&self) {
         if !matches!(self.child, ProcessSlot::Configured { .. }) {
-            // Down or restarting: the retry after the respawn asks.
+            // No configured child to ask. If it is restarting, the
+            // destination's retry after the respawn asks. If an earlier stop
+            // failed, the slot is exit-unproven: nothing respawns and no
+            // retry asks, so the seat stays fail-closed until the daemon
+            // restarts.
             return;
         }
         let failure_kind = match tokio::time::timeout(

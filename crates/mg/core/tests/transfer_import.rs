@@ -140,6 +140,7 @@ async fn destination_with_capabilities(
         source,
         validator,
         fedi_decentralized_manifold_environment::ManifoldEnvironment::Development,
+        vec![FakeDkgStep::Hang],
     )
     .await
 }
@@ -150,6 +151,7 @@ async fn destination_in(
     source: Arc<dyn crate::transfer_source::TransferSource>,
     validator: Arc<dyn crate::transfer_native::GuardianConfigValidator>,
     environment: fedi_decentralized_manifold_environment::ManifoldEnvironment,
+    first_child: Vec<FakeDkgStep>,
 ) -> Destination {
     let mut config = config(&root, 1, port).await;
     config.manifold_environment = environment;
@@ -171,7 +173,7 @@ async fn destination_in(
     )
     .to_string();
     let spawner = Arc::new(FakeSeatProcessSpawner::scripted([vec![
-        vec![FakeDkgStep::Hang],
+        first_child,
         // First import start falsely claims config absent. It must never DKG,
         // and only the respawn's exact AlreadyConfigured hello runs the import.
         vec![FakeDkgStep::Hang],
@@ -333,6 +335,133 @@ async fn worker_expires_an_outstanding_rpc_and_renewal_gets_a_new_job() {
     respond(&d, call);
     wait_phase(&d.seat, TransferPhase::Imported).await;
     d.fleet.shutdown().await;
+}
+
+/// Sleep until shortly before the grant's deadline, the instant from which
+/// it no longer verifies.
+async fn sleep_until_just_before_expiry(grant: &SeatTransferGrant) {
+    let deadline_ms = (grant.expires_at.0 + 1) * 1000;
+    let remaining = deadline_ms.saturating_sub(crate::db::now_ms() as u64);
+    tokio::time::sleep(Duration::from_millis(remaining.saturating_sub(300))).await;
+}
+
+/// A failed attempt just before expiry leaves the job in its retry sleep,
+/// which runs into the expiry; the seat must still stop reporting a poll
+/// that can no longer happen.
+#[tokio::test]
+async fn worker_mirrors_expiry_after_an_rpc_error_just_before_it() {
+    let (source, mut calls) = tokio::sync::mpsc::unbounded_channel();
+    let mut d = destination_with_capabilities(
+        32_185,
+        Arc::new(ControlledSource(source)),
+        Arc::new(crate::transfer_native::tests::CoreConfigValidator),
+    )
+    .await;
+    d.grant.expires_at = Timestamp((crate::db::now_ms() / 1000) as u64 + 2);
+    d.admit().await;
+    let call = tokio::time::timeout(Duration::from_secs(5), calls.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    sleep_until_just_before_expiry(&d.grant).await;
+    assert_eq!(d.seat.transfer_phase(), Some(TransferPhase::Waiting));
+    // The source fails the call: an RPC error, not an outstanding call.
+    drop(call);
+    wait_phase(&d.seat, TransferPhase::Expired).await;
+    assert!(calls.try_recv().is_err(), "nothing polls an expired grant");
+    d.fleet.shutdown().await;
+}
+
+/// A job parked on an unproven child exit waits for the grant's deadline and
+/// nothing else; when it reaches it, the seat reports the expiry.
+#[tokio::test]
+async fn worker_mirrors_expiry_while_parked_on_an_unproven_exit() {
+    let (source, mut calls) = tokio::sync::mpsc::unbounded_channel();
+    let mut d = destination_in(
+        TempDir::new().unwrap(),
+        32_189,
+        Arc::new(ControlledSource(source)),
+        Arc::new(crate::transfer_native::tests::CoreConfigValidator),
+        fedi_decentralized_manifold_environment::ManifoldEnvironment::Development,
+        vec![FakeDkgStep::Hang, FakeDkgStep::FailStop],
+    )
+    .await;
+    d.grant.expires_at = Timestamp((crate::db::now_ms() / 1000) as u64 + 2);
+    // Admission is durable even though the parked child refuses to stop.
+    assert!(
+        d.seat
+            .admit_transfer(
+                SignedRequest::create(&d.grant, &d.fa).unwrap(),
+                d.fleet.identity.derive_service_pubkey(),
+                None,
+            )
+            .await
+            .is_err()
+    );
+    assert!(d.seat.transfer_exit_unproven());
+    assert_eq!(d.seat.transfer_phase(), Some(TransferPhase::Waiting));
+    // The first attempt fails; with the exit unproven the job parks rather
+    // than retrying.
+    let call = tokio::time::timeout(Duration::from_secs(5), calls.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    drop(call);
+    wait_phase(&d.seat, TransferPhase::Expired).await;
+    assert!(calls.try_recv().is_err(), "a parked job does not retry");
+    d.fleet.shutdown().await;
+}
+
+/// The supervisor drops a generation from its work once the grant lapses,
+/// cancelling a job that is busy elsewhere (here, in native validation); the
+/// seat must learn of the expiry from that reconciliation, not only from the
+/// job's own deadline.
+#[tokio::test]
+async fn worker_mirrors_expiry_when_reconciliation_drops_the_job() {
+    let (source, mut calls) = tokio::sync::mpsc::unbounded_channel();
+    let validator = Arc::new(GatedValidator {
+        entered: Notify::new(),
+        released: std::sync::Mutex::new(false),
+        release: std::sync::Condvar::new(),
+    });
+    let _release_on_panic = ReleaseValidator(validator.clone());
+    let mut d = destination_with_capabilities(
+        32_193,
+        Arc::new(ControlledSource(source)),
+        validator.clone(),
+    )
+    .await;
+    d.grant.expires_at = Timestamp((crate::db::now_ms() / 1000) as u64 + 2);
+    d.admit().await;
+    let call = tokio::time::timeout(Duration::from_secs(5), calls.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    respond(&d, call);
+    tokio::time::timeout(Duration::from_secs(5), validator.entered.notified())
+        .await
+        .unwrap();
+    sleep_until_just_before_expiry(&d.grant).await;
+    tokio::time::sleep(Duration::from_millis(600)).await;
+    assert_eq!(d.seat.transfer_phase(), Some(TransferPhase::Waiting));
+    // Any transition wakes the supervisor; this one finds the lapsed grant.
+    d.fleet
+        .transfers
+        .wake_handle()
+        .mark(&d.grant.destination_seat_id);
+    wait_phase(&d.seat, TransferPhase::Expired).await;
+    validator.release();
+    d.fleet.shutdown().await;
+    assert!(matches!(
+        d.fleet
+            .db
+            .incoming_transfer(&d.grant.destination_seat_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .state,
+        IncomingState::Waiting { .. }
+    ));
 }
 
 struct GatedValidator {
@@ -836,6 +965,7 @@ async fn production_neither_pulls_nor_resumes_a_stored_incoming_transfer() {
         source.clone(),
         Arc::new(crate::transfer_native::tests::CoreConfigValidator),
         ManifoldEnvironment::Production,
+        vec![FakeDkgStep::Hang],
     )
     .await;
     assert!(!d.fleet.transfers.is_running_for_test());
