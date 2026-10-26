@@ -445,7 +445,7 @@ impl SeatLoop {
             stage,
             session = ?session,
             waited_secs = handover.requested_at.elapsed().as_secs(),
-            "guardian transfer still waiting for the source session to end"
+            "guardian transfer still waiting for the source to stop at a session boundary"
         );
     }
 
