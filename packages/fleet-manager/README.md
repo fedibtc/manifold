@@ -28,12 +28,10 @@ the optimized image is first built in the trusted publish workflow.
 
 The bundled `fedimintd` is compiled into the daemon binary from the `fedimint`
 flake input pinned in
-[`flake.nix`](../../flake.nix), at Fedi fork branch
-[`rho/shutdown-after-current-session`](https://github.com/fedibtc/fedimint/tree/rho/shutdown-after-current-session):
-the fork tag `v0.12.0-fedi15` plus the `shutdown_after_current_session` admin
-endpoint and its dedicated session-boundary exit code. `flake.lock` pins its commit `848f42e6085f22011aa3cf7a7eccba44b44e3ab3`.
-The image's `org.fedi.fedimintd.release` label is `0.12.0-fedi15-3-g848f42e60`
-(`git describe` of that commit), while the typed DKG
+[`flake.nix`](../../flake.nix), at the immutable Fedi fork source tag
+[`v0.12.0-fedi17`](https://github.com/fedibtc/fedimint/releases/tag/v0.12.0-fedi17).
+This tag has no binary release. `flake.lock` records its exact source revision.
+The image's `org.fedi.fedimintd.release` label is `0.12.0-fedi17`, while the typed DKG
 identity in `FEDIMINTD_VERSION_0_1` is `0.12.0+fedi`. To update the source pin, change
 the `fedimint` flake input and `flake.lock`, not this package. The
 `fleet-manager-cli-contract` / OCI-image checks fail if the source pin, DKG constant,

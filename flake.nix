@@ -21,10 +21,7 @@
       url = "github:fedibtc/peerbadge-sdk";
       flake = false;
     };
-    # Fedi fork branch: v0.12.0-fedi15 plus the `shutdown_after_current_session`
-    # admin endpoint a guardian transfer needs (SPEC-guardian-transfer).
-    # `flake.lock` pins its commit.
-    fedimint.url = "github:fedibtc/fedimint?ref=rho/shutdown-after-current-session";
+    fedimint.url = "github:fedibtc/fedimint/v0.12.0-fedi17";
     # SP-enabled fedimintd for the live stability-pool E2E. The stability-pool
     # server module lives only in the fedixyz/fedi monorepo; its `fedi-fedimintd`
     # package bundles it (enabled at runtime by FEDI_STABILITY_POOL_V2_MODULE_ENABLE).
@@ -267,7 +264,7 @@
           "crates"
           # The cloud telemetry policy checks its reviewed source manifest from
           # Rust tests, so it must be present in the filtered Nix build source.
-          "docs/telemetry/fedimint-metrics-v0.12.0-fedi15.tsv"
+          "docs/telemetry/fedimint-metrics-v0.12.0-fedi17.tsv"
           # Same arrangement for the captured guardian response those tests
           # replay through the shipped policy. The manifest above records what
           # the pinned source registers; this records what a running producer
@@ -1120,18 +1117,16 @@
         # `nix build .#fedimintd`. MG runs its own bundled build.
         fleetManagerFedimintd = fedimint.packages.${system}.fedimintd;
 
-        # Single source of truth for the bundled fedimintd's fork source.
-        # `fleetManagerReleaseSync` binds the ref and release to the Fedimint
-        # source revision, the package README, and the OCI label. The release
-        # is `git describe` of the pinned commit against its fork tag. DKG uses
-        # a separate typed major/minor/vendor identity, independent of it.
-        fedimintSourceRef = "rho/shutdown-after-current-session";
-        fedimintdRelease = "0.12.0-fedi15-3-g848f42e60";
+        # Single source of truth for the bundled fedimintd's fork release.
+        # `fleetManagerReleaseSync` binds this to the Fedimint source revision,
+        # the package README, and the OCI label. DKG uses a separate typed
+        # major/minor/vendor identity, independent of the fork tag revision.
+        fedimintdRelease = "0.12.0-fedi17";
         fedimintdDkgVersion = "0.12.0+fedi";
         # `fedimintd` exports this upstream package version in `app_start_ts`.
         # It deliberately differs from the Fedi release tag above.
         fedimintdMetricVersion = "0.12.0";
-        fedimintSourceRev = "848f42e6085f22011aa3cf7a7eccba44b44e3ab3";
+        fedimintSourceRev = "a8544befc4e274b267994c2bfccd9152a9253d38";
         stabilityPoolSourceRev = "59e406974ccf7d0cd1d719a78e6cc46fd51870e6";
 
         # Nextest, CLI checks, and OCI runtime-contract checks all stay on the
@@ -1311,19 +1306,19 @@
         # identity, the package README, and the OCI label.
         fleetManagerReleaseSync = pkgs.runCommand "fleet-manager-release-sync" { } ''
           release="${fedimintdRelease}"
+          tag="v''${release}"
 
           check() {
             grep -q -- "$2" "$1" \
               || { echo "release drift: $1 does not contain '$2' (release $release)" >&2; exit 1; }
           }
 
-          check ${./flake.nix} "fedibtc/fedimint?ref=${fedimintSourceRef}"
-          check ${./flake.lock} '"ref": "${fedimintSourceRef}"'
+          check ${./flake.nix} "fedibtc/fedimint/$tag"
+          check ${./flake.lock} '"ref": "v${fedimintdRelease}"'
           check ${./flake.lock} '"rev": "${fedimintSourceRev}"'
           check ${./crates/service-manifold-guardian/src/lib.rs} "FEDIMINTD_VERSION_0_1: &str = \"${fedimintdDkgVersion}\""
           check ${./crates/mg/bin/build.rs} "FEDIMINT_SOURCE_REV: &str = \"${fedimintSourceRev}\""
-          check ${./packages/fleet-manager/README.md} "$release"
-          check ${./packages/fleet-manager/README.md} "${fedimintSourceRev}"
+          check ${./packages/fleet-manager/README.md} "$tag"
 
           touch "$out"
         '';
@@ -1347,7 +1342,7 @@
             ''
               set -euo pipefail
 
-              manifest=${./docs/telemetry/fedimint-metrics-v0.12.0-fedi15.tsv}
+              manifest=${./docs/telemetry/fedimint-metrics-v0.12.0-fedi17.tsv}
               privacy_inventory=${./docs/telemetry/metrics-privacy-inventory.md}
               source=${fedimint.outPath}
               stability_pool_source=${fediPatched}
@@ -1369,9 +1364,9 @@
               require_exact revision "${fedimintSourceRev}"
               grep -q -- "\"rev\": \"${fedimintSourceRev}\"" ${./flake.lock}
               grep -q -- "\"rev\": \"${stabilityPoolSourceRev}\"" ${./flake.lock}
-              grep -q -- "fedibtc/fedimint?ref=${fedimintSourceRef}" ${./flake.nix}
+              grep -q -- "fedibtc/fedimint/v${fedimintdRelease}" ${./flake.nix}
               grep -q -- "fedixyz/fedi/${stabilityPoolSourceRev}" ${./flake.nix}
-              grep -q -- $'producer\tfedimint\tfedibtc/fedimint\t${fedimintSourceRef}\t${fedimintSourceRev}' "$manifest"
+              grep -q -- $'producer\tfedimint\tfedibtc/fedimint\tv${fedimintdRelease}\t${fedimintSourceRev}' "$manifest"
               grep -q -- $'producer\tstability_pool\tfedixyz/fedi\t${stabilityPoolSourceRev}\t${stabilityPoolSourceRev}' "$manifest"
               grep -Fq -- "stability-pool-client = { git = \"https://github.com/fedixyz/fedi\", rev = \"${stabilityPoolSourceRev}\"" ${./Cargo.toml}
               grep -Fq -- "stability-pool-server = { git = \"https://github.com/fedixyz/fedi\", rev = \"${stabilityPoolSourceRev}\"" ${./Cargo.toml}
