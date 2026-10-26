@@ -31,8 +31,8 @@ flake input pinned in
 [`flake.nix`](../../flake.nix), at Fedi fork branch
 [`rho/shutdown-after-current-session`](https://github.com/fedibtc/fedimint/tree/rho/shutdown-after-current-session):
 the fork tag `v0.12.0-fedi15` plus the `shutdown_after_current_session` admin
-endpoint. `flake.lock` pins its commit `af60b8ea6a0dfe8819e84b6cb3cfa1147943b803`.
-The image's `org.fedi.fedimintd.release` label is `0.12.0-fedi15-1-gaf60b8ea6`
+endpoint and its dedicated session-boundary exit code. `flake.lock` pins its commit `7e7ac9635f3cc30c3e626c02575de6a38f417072`.
+The image's `org.fedi.fedimintd.release` label is `0.12.0-fedi15-2-g7e7ac9635`
 (`git describe` of that commit), while the typed DKG
 identity in `FEDIMINTD_VERSION_0_1` is `0.12.0+fedi`. To update the source pin, change
 the `fedimint` flake input and `flake.lock`, not this package. The
