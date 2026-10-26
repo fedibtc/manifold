@@ -1,7 +1,7 @@
 use super::*;
 use crate::transfer_state::OutgoingTransfer;
 use fedi_decentralized_service_manifold_guardian::{
-    Locator, SeatTransferGrant, SignedRequest, Timestamp, TransferSeatRequest,
+    Locator, SeatTransferGrant, SignedRequest, Timestamp, TransferSeatRequest, TransferSeatResponse,
 };
 
 struct Source {
@@ -12,6 +12,7 @@ struct Source {
     fa: secp256k1::Keypair,
     destination: secp256k1::Keypair,
     seat: Arc<Seat>,
+    spawner: Arc<FakeSeatProcessSpawner>,
 }
 
 impl Source {
@@ -23,6 +24,75 @@ impl Source {
     fn pull(&self) -> TransferSeatRequest {
         pull_as(self.signed(), &self.destination)
     }
+
+    async fn outgoing(&self) -> Option<OutgoingTransfer> {
+        self.fleet
+            .db
+            .outgoing_transfer(&self.grant.source_seat_id)
+            .await
+            .unwrap()
+    }
+
+    async fn child(&self) -> FakeSeatChildHandle {
+        self.spawner.child(&self.grant.source_seat_id).await
+    }
+
+    /// The destination's pull before the guardian has stopped at a session
+    /// boundary: refused as awaiting the session end, which the destination
+    /// retries.
+    async fn pull_awaits_session_end(&self) {
+        assert!(matches!(
+            self.fleet.transfer_seat(self.pull()).await,
+            Err(SeatVerbError::AwaitingSessionEnd)
+        ));
+    }
+
+    /// The destination's retries once the guardian has stopped: refused
+    /// until the relays confirm a backup that records the stop.
+    async fn pull_after_backup(&self) -> TransferSeatResponse {
+        tokio::time::timeout(Duration::from_secs(30), async {
+            loop {
+                match self.fleet.transfer_seat(self.pull()).await {
+                    Err(SeatVerbError::AwaitingBackup) => {
+                        tokio::time::sleep(Duration::from_millis(20)).await;
+                    }
+                    response => return response.unwrap(),
+                }
+            }
+        })
+        .await
+        .expect("the relays confirm the stopped seat")
+    }
+
+    async fn wait_for_stopped(&self) {
+        tokio::time::timeout(
+            Duration::from_secs(30),
+            self.seat.wait_for_transfer_phase_for_test(
+                crate::transfer_state::TransferPhase::Outgoing(OutgoingTransfer::Stopped),
+            ),
+        )
+        .await
+        .expect("the boundary exit commits the fence");
+    }
+
+    /// The whole source handover of a running guardian, at a session
+    /// boundary.
+    async fn hand_over(&self) {
+        self.pull_awaits_session_end().await;
+        self.child().await.stop_at_session_boundary();
+        self.wait_for_stopped().await;
+    }
+}
+
+/// Poll a condition the MG reaches through its own timers.
+async fn eventually(what: &str, mut condition: impl FnMut() -> bool) {
+    tokio::time::timeout(Duration::from_secs(30), async {
+        while !condition() {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("timed out waiting until {what}"));
 }
 
 fn pull_as(
@@ -41,11 +111,8 @@ fn pull_as(
 /// outage delays the publication, never the removal.
 #[tokio::test]
 async fn removal_deletes_material_at_once_and_publishes_the_tombstone_afterwards() {
-    let s = source(32_201, Arc::new(FakeSeatProcessSpawner::default())).await;
-    s.seat
-        .retire_for_transfer(s.signed(), s.fleet.identity.derive_service_signing_key())
-        .await
-        .unwrap();
+    let s = running_source(32_201).await;
+    s.hand_over().await;
     s.sink.fails.store(true, Ordering::SeqCst);
     let mut attempts = s.sink.attempted.subscribe();
     assert!(!s.fleet.remove_transferred_seat(&s.seat).await.unwrap());
@@ -142,9 +209,29 @@ async fn restored_retirement_fences_survive_restart_and_keep_the_formed_row() {
 }
 
 async fn source(port: u16, spawner: Arc<FakeSeatProcessSpawner>) -> Source {
+    source_with(port, Duration::from_millis(10), |_| spawner).await
+}
+
+async fn running_source(port: u16) -> Source {
+    running_source_with_backoff(port, Duration::from_millis(10)).await
+}
+
+/// A source whose every child is the formed guardian serving consensus.
+async fn running_source_with_backoff(port: u16, backoff: Duration) -> Source {
+    source_with(port, backoff, |invite| {
+        Arc::new(FakeSeatProcessSpawner::configured(invite))
+    })
+    .await
+}
+
+async fn source_with(
+    port: u16,
+    respawn_backoff: Duration,
+    spawner: impl FnOnce(&str) -> Arc<FakeSeatProcessSpawner>,
+) -> Source {
     let root = TempDir::new().unwrap();
     let mut config = config(&root, 1, port).await;
-    config.process_spawner = SeatProcessSpawner::Fake(spawner);
+    config.respawn.initial_backoff = respawn_backoff;
     let db = Db::open(root.path()).await.unwrap();
     let identity = db.load_identity().await.unwrap().unwrap();
     let fa = secp256k1::Keypair::from_seckey_slice(secp256k1::SECP256K1, &[61; 32]).unwrap();
@@ -194,6 +281,8 @@ async fn source(port: u16, spawner: Arc<FakeSeatProcessSpawner>) -> Source {
     db.record_formed(&seat_id, &InviteCode(invite.to_string()))
         .await
         .unwrap();
+    let spawner = spawner(&invite.to_string());
+    config.process_spawner = SeatProcessSpawner::Fake(spawner.clone());
     let now = (crate::db::now_ms() / 1000) as u64;
     let grant = SeatTransferGrant {
         ts: Timestamp(now),
@@ -230,46 +319,27 @@ async fn source(port: u16, spawner: Arc<FakeSeatProcessSpawner>) -> Source {
         fa,
         destination,
         seat,
+        spawner,
     }
 }
 
 #[tokio::test]
-async fn source_stops_before_export_and_requires_exact_tombstone_not_old_archive() {
-    let spawner = Arc::new(FakeSeatProcessSpawner::default());
-    let source = source(31_237, spawner.clone()).await;
-    // Confirm the ordinary archive first. That confirmation cannot stand in
-    // for a retired-source document when the relay subsequently goes offline.
-    let original = crate::backup::seat_publication_plan(
-        &source.fleet.db,
-        &source.fleet.config.process,
-        source.seat.facts(),
-        None,
-    )
-    .await
-    .unwrap();
-    source
-        .fleet
-        .backup
-        .confirm_transfer_publication(&source.fleet.db, &original, Duration::from_secs(5))
-        .await
-        .unwrap();
+async fn source_releases_the_guardian_only_after_the_relays_confirm_its_stop() {
+    let source = running_source(31_237).await;
+    let spawner = source.spawner.clone();
+    // A confirmed backup of the running seat does not stand in for one that
+    // records the stop.
+    eventually("the running seat's backup is confirmed", || {
+        !source.sink.published().is_empty()
+    })
+    .await;
     source.sink.fails.store(true, Ordering::SeqCst);
-    assert!(
-        source
-            .fleet
-            .transfer_seat(source.pull(), Duration::from_millis(40))
-            .await
-            .is_err()
-    );
-    assert_eq!(
-        source
-            .fleet
-            .db
-            .outgoing_transfer(&source.grant.source_seat_id)
-            .await
-            .unwrap(),
-        Some(OutgoingTransfer::Stopped)
-    );
+    source.hand_over().await;
+    assert!(matches!(
+        source.fleet.transfer_seat(source.pull()).await,
+        Err(SeatVerbError::AwaitingBackup)
+    ));
+    assert_eq!(source.outgoing().await, Some(OutgoingTransfer::Stopped));
     assert_eq!(source.fleet.db.active_seat_count().await.unwrap(), 0);
     assert!(matches!(
         source.seat.report().await.unwrap(),
@@ -302,11 +372,7 @@ async fn source_stops_before_export_and_requires_exact_tombstone_not_old_archive
             .is_err()
     );
     source.sink.fails.store(false, Ordering::SeqCst);
-    let response = source
-        .fleet
-        .transfer_seat(source.pull(), Duration::from_secs(5))
-        .await
-        .unwrap();
+    let response = source.pull_after_backup().await;
     let opened = crate::transfer_native::TransferMaterial::from_wire(response.material).unwrap();
     let source_keys = source
         .fleet
@@ -320,10 +386,6 @@ async fn source_stops_before_export_and_requires_exact_tombstone_not_old_archive
     assert_eq!(
         opened.keys.iroh_p2p.to_bytes(),
         source_keys.iroh_p2p.to_bytes()
-    );
-    assert_eq!(
-        Some(opened.archive.digest()),
-        original.archive_digest().map(str::to_owned)
     );
     assert!(source.sink.published().iter().any(|document| {
         document
@@ -339,7 +401,7 @@ async fn source_stops_before_export_and_requires_exact_tombstone_not_old_archive
     assert!(matches!(
         source
             .fleet
-            .transfer_seat(pull_as(source.signed(), &other), Duration::from_secs(5))
+            .transfer_seat(pull_as(source.signed(), &other))
             .await,
         Err(SeatVerbError::TransferGrantMismatch)
     ));
@@ -348,10 +410,10 @@ async fn source_stops_before_export_and_requires_exact_tombstone_not_old_archive
     grant.destination_seat_id = SeatId::from(QuoteId([152; 32]));
     let response = source
         .fleet
-        .transfer_seat(
-            pull_as(SignedRequest::create(&grant, &source.fa).unwrap(), &other),
-            Duration::from_secs(5),
-        )
+        .transfer_seat(pull_as(
+            SignedRequest::create(&grant, &source.fa).unwrap(),
+            &other,
+        ))
         .await
         .unwrap();
     let again = crate::transfer_native::TransferMaterial::from_wire(response.material).unwrap();
@@ -362,12 +424,9 @@ async fn source_stops_before_export_and_requires_exact_tombstone_not_old_archive
 
 #[tokio::test]
 async fn removal_only_deletes_guardian_paths_and_fences_later_exports() {
-    let source = source(31_249, Arc::new(FakeSeatProcessSpawner::default())).await;
-    source
-        .fleet
-        .transfer_seat(source.pull(), Duration::from_secs(5))
-        .await
-        .unwrap();
+    let source = running_source(33_100).await;
+    source.hand_over().await;
+    source.pull_after_backup().await;
     let process = &source.fleet.config.process;
     let seat_no = source.seat.facts().seat_no;
     let seat_dir = crate::seat_process::seat_dir(process, seat_no);
@@ -399,13 +458,7 @@ async fn removal_only_deletes_guardian_paths_and_fences_later_exports() {
             .unwrap(),
         Some(OutgoingTransfer::Removed)
     );
-    assert!(
-        source
-            .fleet
-            .transfer_seat(source.pull(), Duration::from_millis(40))
-            .await
-            .is_err()
-    );
+    assert!(source.fleet.transfer_seat(source.pull()).await.is_err());
     assert!(
         source
             .fleet
@@ -467,13 +520,10 @@ async fn mismatched_and_oversize_source_requests_have_no_retirement_effect() {
         assert!(
             source
                 .fleet
-                .transfer_seat(
-                    pull_as(
-                        SignedRequest::create(&grant, &source.fa).unwrap(),
-                        &source.destination,
-                    ),
-                    Duration::from_millis(40),
-                )
+                .transfer_seat(pull_as(
+                    SignedRequest::create(&grant, &source.fa).unwrap(),
+                    &source.destination,
+                ))
                 .await
                 .is_err()
         );
@@ -494,13 +544,7 @@ async fn mismatched_and_oversize_source_requests_have_no_retirement_effect() {
     )
     .await
     .unwrap();
-    assert!(
-        source
-            .fleet
-            .transfer_seat(source.pull(), Duration::from_millis(40))
-            .await
-            .is_err()
-    );
+    assert!(source.fleet.transfer_seat(source.pull()).await.is_err());
     assert_eq!(
         source
             .fleet
@@ -519,13 +563,7 @@ async fn unproved_source_exit_forbids_export_and_removal() {
         FakeDkgStep::FailStop,
     ]]]));
     let source = source(31_273, spawner.clone()).await;
-    assert!(
-        source
-            .fleet
-            .transfer_seat(source.pull(), Duration::from_millis(40))
-            .await
-            .is_err()
-    );
+    assert!(source.fleet.transfer_seat(source.pull()).await.is_err());
     // No proven exit, no fence: the seat still counts, the guardian is still
     // this host's, and nothing can be exported or removed.
     assert_eq!(
@@ -549,47 +587,128 @@ async fn unproved_source_exit_forbids_export_and_removal() {
     let spawns = spawner.spawn_count();
     source.seat.watchdog_tick_for_test().await;
     assert_eq!(spawner.spawn_count(), spawns);
-    assert!(
-        source
-            .fleet
-            .transfer_seat(source.pull(), Duration::from_millis(40))
-            .await
-            .is_err()
-    );
+    assert!(source.fleet.transfer_seat(source.pull()).await.is_err());
     source.fleet.shutdown().await;
 }
 
+// Session-boundary handover (SPEC-guardian-transfer step 3). The fake child
+// stands in for fedimintd's process and API.
+
+/// The guardian keeps running, and the destination receives nothing, until
+/// fedimintd exits at the session boundary; it is then never started again.
 #[tokio::test]
-async fn removal_wins_over_a_delayed_export_after_its_publication_wait() {
-    let source = source(31_285, Arc::new(FakeSeatProcessSpawner::default())).await;
-    let key = source.fleet.identity.derive_service_signing_key();
-    let expected = source
-        .seat
-        .retire_for_transfer(source.signed(), key)
-        .await
-        .unwrap();
-    source
+async fn source_runs_its_guardian_until_its_boundary_exit_and_never_restarts_it() {
+    let s = running_source(33_000).await;
+    s.pull_awaits_session_end().await;
+    s.pull_awaits_session_end().await;
+    let child = s.child().await;
+    let api_auth = s
         .fleet
-        .backup
-        .confirm_transfer_publication(&source.fleet.db, &expected, Duration::from_secs(5))
+        .identity
+        .derive_seat_keys(&s.grant.source_seat_id)
+        .api_auth;
+    assert_eq!(
+        child.state().shutdown_after_current_session,
+        vec![Some(api_auth.clone()), Some(api_auth)],
+        "every pull asks again; fedimintd keeps the earliest boundary"
+    );
+    assert_eq!(s.outgoing().await, None);
+    assert_eq!(s.spawner.spawn_count(), 1, "the guardian was not stopped");
+
+    child.stop_at_session_boundary();
+    s.wait_for_stopped().await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    s.seat.watchdog_tick_for_test().await;
+    assert_eq!(
+        s.spawner.spawn_count(),
+        1,
+        "the supervisor never restarts the source after its boundary exit"
+    );
+    let response = s.pull_after_backup().await;
+    crate::transfer_native::TransferMaterial::from_wire(response.material).unwrap();
+    s.fleet.shutdown().await;
+}
+
+/// Any other exit is a crash, including fedimintd's ordinary shutdown code:
+/// the guardian restarts from its own database, which continues its session
+/// rather than forking it, and the next pull asks the new process.
+#[tokio::test]
+async fn any_other_exit_respawns_and_the_next_pull_asks_again() {
+    let s = running_source(33_012).await;
+    for (n, code) in [1, 255, 101].into_iter().enumerate() {
+        s.pull_awaits_session_end().await;
+        s.child().await.exit(code);
+        eventually("the guardian respawns", || s.spawner.spawn_count() == n + 2).await;
+        assert_eq!(s.outgoing().await, None, "exit code {code}");
+    }
+    s.pull_awaits_session_end().await;
+    let child = s.child().await;
+    assert_eq!(child.state().shutdown_after_current_session.len(), 1);
+    child.stop_at_session_boundary();
+    s.wait_for_stopped().await;
+    assert_eq!(s.spawner.spawn_count(), 4);
+    s.fleet.shutdown().await;
+}
+
+/// A boundary exit hands over only a seat that still qualifies; a
+/// decommissioned one restarts as any other exit would.
+#[tokio::test]
+async fn boundary_exit_of_a_decommissioned_seat_is_no_handover() {
+    let s = running_source(33_024).await;
+    s.pull_awaits_session_end().await;
+    s.fleet
+        .db
+        .decommission_seat(&s.grant.source_seat_id)
         .await
         .unwrap();
-    assert!(
-        !source
-            .fleet
-            .remove_transferred_seat(&source.seat)
-            .await
-            .unwrap()
-    );
-    // The export's relay wait finished before the removal; its command
-    // rechecks the durable fence and finds nothing left to export.
-    assert!(
-        source
-            .seat
-            .export_transfer(source.signed(), key, expected)
-            .await
-            .is_err()
-    );
-    assert!(!seat_data_dir(&source.fleet.config.process, source.seat.facts().seat_no).exists());
-    source.fleet.shutdown().await;
+    s.child().await.stop_at_session_boundary();
+    eventually("the guardian respawns", || s.spawner.spawn_count() == 2).await;
+    assert_eq!(s.outgoing().await, None);
+    s.fleet.shutdown().await;
+}
+
+/// An operator's shutdown scheduled through fedimintd's older `shutdown`
+/// endpoint exits with fedimintd's ordinary code (-1, seen as 255). It is no
+/// handover: the guardian restarts and its seat stays here.
+#[tokio::test]
+async fn legacy_scheduled_shutdown_restarts_the_guardian() {
+    let s = running_source(33_036).await;
+    s.child().await.exit(255);
+    eventually("the guardian respawns", || s.spawner.spawn_count() == 2).await;
+    assert_eq!(s.outgoing().await, None);
+    s.fleet.shutdown().await;
+}
+
+/// The pull arrives while the source guardian is down. Nothing is asked and
+/// nothing handed over; the restarted guardian is asked on the next pull.
+#[tokio::test]
+async fn pull_while_the_guardian_is_down_waits_for_its_restart() {
+    let s = running_source_with_backoff(33_072, Duration::from_secs(2)).await;
+    s.child().await.exit(1);
+    eventually("the MG sees the guardian down", || {
+        s.seat.child_slot_empty_for_test()
+    })
+    .await;
+    s.pull_awaits_session_end().await;
+    assert_eq!(s.outgoing().await, None);
+    eventually("the guardian restarts", || s.spawner.spawn_count() == 2).await;
+    s.hand_over().await;
+    assert_eq!(s.spawner.spawn_count(), 2);
+    s.fleet.shutdown().await;
+}
+
+/// The connection between the MG and its child is cut when the MG asks. The
+/// guardian keeps running and the next pull asks again.
+#[tokio::test]
+async fn pull_while_the_local_api_is_cut_asks_again_on_the_next_pull() {
+    let s = running_source(33_084).await;
+    let child = s.child().await;
+    child.modify_state(|state| state.api_cut = true);
+    s.pull_awaits_session_end().await;
+    assert!(child.state().shutdown_after_current_session.is_empty());
+    child.modify_state(|state| state.api_cut = false);
+    s.hand_over().await;
+    assert_eq!(child.state().shutdown_after_current_session.len(), 1);
+    assert_eq!(s.spawner.spawn_count(), 1);
+    s.fleet.shutdown().await;
 }

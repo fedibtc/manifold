@@ -9,13 +9,17 @@ boundaries retain only the compiled canonical core-method set or `unknown`.
 MG and the collector compile one default-deny source policy, so release review
 must inventory the actual `fedimintd` source before changing that policy. This baseline was
 read from Manifold's pinned `fedibtc/fedimint` source at
-`77a80c4d76421f688483068a8cf81c048bd9319a`. The machine-checked
-[`fedimint-metrics-v0.12.0-fedi15.tsv`](./fedimint-metrics-v0.12.0-fedi15.tsv)
+`a8544befc4e274b267994c2bfccd9152a9253d38` (tag `v0.12.0-fedi17`). The machine-checked
+[`fedimint-metrics-v0.12.0-fedi17.tsv`](./fedimint-metrics-v0.12.0-fedi17.tsv)
 enumerates every registration in the complete pinned Fedimint Rust source and
 its admission disposition. It fails the Nix check when either the lock pin or
-that source registration set drifts. Compared with fedi13, the fedi15 source pin
+that source registration set drifts. Compared with fedi13, the fedi15 source
 adds test-aware config-download retry delays and retains the fedi14 iOS portmapper
-fix. Neither change affects metric registrations or their labels. The existing
+fix. fedi16 bounds Iroh API handlers by the shared endpoint deadline, wakes
+transaction submissions from watch channels, and caches the latest session
+outcomes and count. fedi17 adds the `shutdown_after_current_session` admin
+endpoint and a session-boundary exit code. None of these changes affects metric
+registrations or their labels. The existing
 `iroh_api_request_response_code_total` registration (`method`, `code`, `type`
 labels) remains outside the current minimum telemetry surface. This
 telemetry stack includes the Fedi SPv2 server source at
@@ -28,7 +32,7 @@ Prometheus metric families of their own. "Including SPv2" therefore means this
 absence is checked from the exact Cargo-selected `fedixyz/fedi` stability-pool server
 source, not that it can be omitted from future review.
 
-The bundled Fedimint release label is `0.12.0-fedi15`, while `fedimintd` emits its
+The bundled Fedimint release label is `0.12.0-fedi17`, while `fedimintd` emits its
 upstream Cargo package version `0.12.0` in `app_start_ts{version=...}`. That
 reviewed baseline selects the current safe shapes; it is not a collector
 target-version requirement. The collector accepts bounded release metadata from

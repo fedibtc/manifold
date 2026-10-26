@@ -1,13 +1,9 @@
-//! The source's relay wait runs outside the seat queue. The export command
-//! rechecks the durable fence and exact document before releasing material.
-
 use fedi_decentralized_service_manifold_guardian::{
     Timestamp, TransferSeatRequest, TransferSeatResponse,
 };
 
 use super::{Fleet, Seat, SeatVerbError};
 use std::sync::Arc;
-use std::time::Duration;
 
 impl Fleet {
     /// `request` carries the caller's verified service key. Only a caller
@@ -16,7 +12,6 @@ impl Fleet {
     pub(crate) async fn transfer_seat(
         &self,
         request: TransferSeatRequest,
-        deadline: Duration,
     ) -> Result<TransferSeatResponse, SeatVerbError> {
         let signed = request.grant;
         let grant = signed
@@ -35,16 +30,12 @@ impl Fleet {
             return Err(SeatVerbError::TransferGrantMismatch);
         }
         let key = self.identity.derive_service_signing_key();
-        let retirement = seat.retire_for_transfer(signed.clone(), key).await;
+        let material = seat.transfer_out(signed, key).await;
+        // The guardian's stop, which frees its capacity, lands between
+        // retries.
         self.advertisement_changed.notify_one();
-        let expected = retirement?;
-        self.backup
-            .confirm_transfer_publication(&self.db, &expected, deadline)
-            .await
-            .map_err(|_| SeatVerbError::SeatUnavailable)?;
-        let material = seat.export_transfer(signed, key, expected).await?;
         Ok(TransferSeatResponse {
-            material: material.into_wire(),
+            material: material?.into_wire(),
         })
     }
 

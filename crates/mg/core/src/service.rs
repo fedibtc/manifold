@@ -217,6 +217,8 @@ fn map_seat_error(verb: &'static str, err: SeatVerbError) -> ManifoldGuardianErr
     match err {
         SeatVerbError::UnknownSeat => ManifoldGuardianError::UnknownSeat,
         SeatVerbError::SeatUnavailable => ManifoldGuardianError::SeatUnavailable,
+        SeatVerbError::AwaitingSessionEnd => ManifoldGuardianError::AwaitingSessionEnd,
+        SeatVerbError::AwaitingBackup => ManifoldGuardianError::AwaitingBackup,
         SeatVerbError::FederationIsRunning => ManifoldGuardianError::FederationIsRunning,
         SeatVerbError::WrongState { status } => ManifoldGuardianError::WrongState { status },
         SeatVerbError::InvalidDkgInput(reason) => ManifoldGuardianError::InvalidDkgInput(reason),
@@ -248,6 +250,8 @@ fn manifold_guardian_error_kind(error: &ManifoldGuardianError) -> &'static str {
         ManifoldGuardianError::Unauthorized => "unauthorized",
         ManifoldGuardianError::WrongState { .. } => "wrong_state",
         ManifoldGuardianError::SeatUnavailable => "seat_unavailable",
+        ManifoldGuardianError::AwaitingSessionEnd => "awaiting_session_end",
+        ManifoldGuardianError::AwaitingBackup => "awaiting_backup",
         ManifoldGuardianError::FederationIsRunning => "federation_is_running",
         ManifoldGuardianError::InvalidDkgInput(_) => "invalid_dkg_input",
         ManifoldGuardianError::MetaKeyRefused => "meta_key_refused",
@@ -292,6 +296,16 @@ async fn trace_formation_rpc<T>(
 fn validate_dkg_name(kind: &str, value: &str) -> FmResult<()> {
     fedi_decentralized_service_manifold_guardian::validate_dkg_display_name(value)
         .map_err(|err| ManifoldGuardianError::InvalidDkgInput(format!("{kind} {err}")))
+}
+
+/// Guardian transfer is enabled only in development and staging. Production
+/// answers its four verbs `UnsupportedVerb`, as it does `DecommissionSeat`
+/// ([`SPEC-guardian-transfer`](../../specs/SPEC-guardian-transfer.md)).
+fn require_transfer_environment(environment: ManifoldEnvironment, verb: &str) -> FmResult<()> {
+    match environment {
+        ManifoldEnvironment::Development | ManifoldEnvironment::Staging => Ok(()),
+        ManifoldEnvironment::Production => unsupported(verb),
+    }
 }
 
 fn unsupported<T>(verb: &str) -> FmResult<T> {
@@ -900,6 +914,7 @@ impl ManifoldGuardianService for ManifoldGuardianRpc {
             .fleet
             .authorize(&request)
             .map_err(|err| map_seat_error("pull_seat", err))?;
+        require_transfer_environment(self.fleet.config().manifold_environment, "PullSeat")?;
         let callback = self.prepare_completion_callback(request.completion_callback.as_ref())?;
         seat.admit_transfer(
             request.grant.clone(),
@@ -919,8 +934,9 @@ impl ManifoldGuardianService for ManifoldGuardianRpc {
             tracing::warn!(verb = "transfer_seat", error = %err, "rejecting unauthorized request");
             ManifoldGuardianError::Unauthorized
         })?;
+        require_transfer_environment(self.fleet.config().manifold_environment, "TransferSeat")?;
         self.fleet
-            .transfer_seat(request, std::time::Duration::from_secs(20))
+            .transfer_seat(request)
             .await
             .map_err(|err| map_seat_error("transfer_seat", err))
     }
@@ -934,6 +950,10 @@ impl ManifoldGuardianService for ManifoldGuardianRpc {
             .fleet
             .authorize(&request)
             .map_err(|err| map_seat_error("replace_seat_binding", err))?;
+        require_transfer_environment(
+            self.fleet.config().manifold_environment,
+            "ReplaceSeatBinding",
+        )?;
         seat.replace_seat_binding(request.expected_base, request.seat_binding.clone())
             .await
             .map_err(|err| map_seat_error("replace_seat_binding", err))?;
@@ -949,6 +969,7 @@ impl ManifoldGuardianService for ManifoldGuardianRpc {
             .fleet
             .authorize(&request)
             .map_err(|err| map_seat_error("remove_seat", err))?;
+        require_transfer_environment(self.fleet.config().manifold_environment, "RemoveSeat")?;
         let already_removed = self
             .fleet
             .remove_transferred_seat(&seat)

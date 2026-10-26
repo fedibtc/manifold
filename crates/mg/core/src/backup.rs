@@ -380,6 +380,16 @@ impl SeatBackupDocument {
         }
     }
 
+    /// The transfer fence this document records.
+    pub(crate) fn outgoing_transfer(&self) -> Option<crate::transfer_state::OutgoingTransfer> {
+        let outgoing = self.transfer.as_ref()?.outgoing.as_ref()?;
+        Some(if outgoing.removed {
+            crate::transfer_state::OutgoingTransfer::Removed
+        } else {
+            crate::transfer_state::OutgoingTransfer::Stopped
+        })
+    }
+
     /// Validate shape before restore touches files or commits fleet facts.
     pub(crate) fn validate_transfer(&self) -> anyhow::Result<()> {
         let Some(transfer) = &self.transfer else {
@@ -653,12 +663,6 @@ pub trait BackupSink: Send + Sync + 'static {
     /// describes events this sink's own reader would refuse, so changing the
     /// version republishes every seat.
     fn format_version(&self) -> u32;
-
-    /// Whether read-back confirmations represent recoverable storage.
-    /// Discarding adapters must never authorize a destructive transfer step.
-    fn supports_transfer_barrier(&self) -> bool {
-        false
-    }
 }
 
 /// A sink that confirms every publication and stores none of them.

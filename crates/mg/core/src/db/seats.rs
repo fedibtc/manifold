@@ -104,6 +104,8 @@ pub(crate) struct SeatBackupPublication {
     pub(crate) published_at_ms: i64,
     /// Digest of the archive whose events were confirmed, once one was.
     pub(crate) archive_digest: Option<String>,
+    /// The transfer fence the confirmed document records.
+    pub(crate) confirmed_outgoing: Option<crate::transfer_state::OutgoingTransfer>,
 }
 
 /// What a restored seat's document said about its guardian archive.
@@ -827,8 +829,8 @@ impl Db {
         seat_id: &SeatId,
         schema_version: u32,
     ) -> Result<Option<SeatBackupPublication>, DbError> {
-        Ok(sqlx::query_as::<_, (String, i64, Option<String>)>(
-            "SELECT doc_sha256, published_at_ms, archive_digest \
+        sqlx::query_as::<_, (String, i64, Option<String>, Option<String>)>(
+            "SELECT doc_sha256, published_at_ms, archive_digest, confirmed_outgoing \
              FROM seat_backup_publications WHERE quote_id = ? AND schema_version = ?",
         )
         .bind(seat_id.as_bytes().as_slice())
@@ -836,12 +838,25 @@ impl Db {
         .fetch_optional(self.pool())
         .await?
         .map(
-            |(doc_sha256, published_at_ms, archive_digest)| SeatBackupPublication {
-                doc_sha256,
-                published_at_ms,
-                archive_digest,
+            |(doc_sha256, published_at_ms, archive_digest, confirmed_outgoing)| {
+                Ok(SeatBackupPublication {
+                    doc_sha256,
+                    published_at_ms,
+                    archive_digest,
+                    confirmed_outgoing: confirmed_outgoing
+                        .map(|outgoing| {
+                            crate::transfer_state::OutgoingTransfer::from_db_str(&outgoing)
+                                .ok_or_else(|| DbError::CorruptRow {
+                                    table: "seat_backup_publications",
+                                    key: seat_id.to_string(),
+                                    detail: "invalid confirmed transfer fence".into(),
+                                })
+                        })
+                        .transpose()?,
+                })
             },
-        ))
+        )
+        .transpose()
     }
 
     /// Record a confirmed publication. Called by the backup worker alone,
@@ -855,22 +870,26 @@ impl Db {
         seat_id: &SeatId,
         doc_sha256: &str,
         archive_digest: Option<&str>,
+        confirmed_outgoing: Option<crate::transfer_state::OutgoingTransfer>,
         schema_version: u32,
     ) -> Result<(), DbError> {
         sqlx::query(
             "INSERT INTO seat_backup_publications \
-             (quote_id, doc_sha256, published_at_ms, archive_digest, schema_version) \
-             VALUES (?, ?, ?, ?, ?) \
+             (quote_id, doc_sha256, published_at_ms, archive_digest, confirmed_outgoing, \
+             schema_version) \
+             VALUES (?, ?, ?, ?, ?, ?) \
              ON CONFLICT (quote_id) DO UPDATE SET \
              doc_sha256 = excluded.doc_sha256, \
              published_at_ms = excluded.published_at_ms, \
              archive_digest = excluded.archive_digest, \
+             confirmed_outgoing = excluded.confirmed_outgoing, \
              schema_version = excluded.schema_version",
         )
         .bind(seat_id.as_bytes().as_slice())
         .bind(doc_sha256)
         .bind(now_ms())
         .bind(archive_digest)
+        .bind(confirmed_outgoing.map(crate::transfer_state::OutgoingTransfer::as_db_str))
         .bind(i64::from(schema_version))
         .execute(self.pool())
         .await?;

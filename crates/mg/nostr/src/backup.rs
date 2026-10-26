@@ -129,9 +129,8 @@ pub struct RelayBackupSink {
     identity: BackupIdentity,
     relay_url: String,
     /// Connected on first publication rather than startup: an unreachable relay
-    /// must not stop existing guardians. Ordinary lifecycle publication retries
-    /// in the background; explicit transfer barriers remain pending until their
-    /// exact recovery documents are confirmed.
+    /// must not stop existing guardians; publication retries in the
+    /// background.
     relay: tokio::sync::Mutex<Option<BackupRelay>>,
 }
 
@@ -165,10 +164,6 @@ impl BackupSink for RelayBackupSink {
 
     fn format_version(&self) -> u32 {
         BACKUP_DOCUMENT_VERSION
-    }
-
-    fn supports_transfer_barrier(&self) -> bool {
-        true
     }
 }
 
