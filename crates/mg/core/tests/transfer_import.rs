@@ -134,8 +134,25 @@ async fn destination_with_capabilities(
     source: Arc<dyn crate::transfer_source::TransferSource>,
     validator: Arc<dyn crate::transfer_native::GuardianConfigValidator>,
 ) -> Destination {
-    let root = TempDir::new().unwrap();
+    destination_in(
+        TempDir::new().unwrap(),
+        port,
+        source,
+        validator,
+        fedi_decentralized_manifold_environment::ManifoldEnvironment::Development,
+    )
+    .await
+}
+
+async fn destination_in(
+    root: TempDir,
+    port: u16,
+    source: Arc<dyn crate::transfer_source::TransferSource>,
+    validator: Arc<dyn crate::transfer_native::GuardianConfigValidator>,
+    environment: fedi_decentralized_manifold_environment::ManifoldEnvironment,
+) -> Destination {
     let mut config = config(&root, 1, port).await;
+    config.manifold_environment = environment;
     config.guardian_config_validator = validator;
     config.transfer_source = source;
     // The scripted first imported child wrongly says NeedsParams; the respawn
@@ -802,4 +819,55 @@ async fn accepted_import_survives_grant_expiry_but_waiting_renewal_fences_old_wo
             .phase(),
         TransferPhase::Imported
     );
+}
+
+/// Nothing transfer-related runs on a production MG, including work resumed
+/// from its database: its transfer worker never starts, so a stored waiting
+/// transfer neither polls the source nor survives as a job across restart.
+#[tokio::test]
+async fn production_neither_pulls_nor_resumes_a_stored_incoming_transfer() {
+    use fedi_decentralized_manifold_environment::ManifoldEnvironment;
+    let (source, mut calls) = tokio::sync::mpsc::unbounded_channel();
+    let source: Arc<dyn crate::transfer_source::TransferSource> =
+        Arc::new(ControlledSource(source));
+    let d = destination_in(
+        TempDir::new().unwrap(),
+        32_171,
+        source.clone(),
+        Arc::new(crate::transfer_native::tests::CoreConfigValidator),
+        ManifoldEnvironment::Production,
+    )
+    .await;
+    assert!(!d.fleet.transfers.is_running_for_test());
+    // The seat owner stores the transfer as an admitted pull would.
+    d.admit().await;
+    let seat_id = d.grant.destination_seat_id.clone();
+    let Destination {
+        _root: root, fleet, ..
+    } = d;
+    fleet.shutdown().await;
+    drop(fleet);
+
+    let mut config = config(&root, 1, 32_171).await;
+    config.manifold_environment = ManifoldEnvironment::Production;
+    config.transfer_source = source;
+    let fleet = open_fleet(config, Arc::new(NoWallet)).await.unwrap();
+    assert!(!fleet.transfers.is_running_for_test());
+    assert!(matches!(
+        fleet
+            .db
+            .incoming_transfer(&seat_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .state,
+        IncomingState::Waiting { .. }
+    ));
+    // A development MG asks its source within milliseconds of opening.
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert!(
+        calls.try_recv().is_err(),
+        "a production MG never polls a transfer source"
+    );
+    fleet.shutdown().await;
 }

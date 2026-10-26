@@ -6,11 +6,13 @@
 seat statuses, the grant's validity rule, and `rebind_transferred_seat`.
 `fa-client` does not drive a transfer yet. Manifold Guardian builds implement
 the four verbs and resume durable transfers after restart, but only
-development and staging deployments serve them: a production MG answers all
-four `UnsupportedVerb`, keyed on its Manifold environment like
-`DecommissionSeat`
+development and staging deployments run them. Keyed on its Manifold
+environment like `DecommissionSeat`
 ([ARCH-manifold-guardian-product-boundary](./ARCH-manifold-guardian-product-boundary.md)),
-so a production release can ship this code without enabling transfer. Recovery assumes the latest published
+a production MG answers all four verbs `UnsupportedVerb`, in both the source
+and the destination role, and never starts the transfer worker, so it
+neither polls a source nor resumes a transfer stored in its database. A
+production release can therefore ship this code without enabling transfer. Recovery assumes the latest published
 backup is returned and stale local snapshots are never restarted, as specified
 below; this implementation does not establish freshness against hostile rollback.
 

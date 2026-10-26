@@ -97,7 +97,9 @@ impl TransferWorker {
         advertisement: Arc<Notify>,
         wake: TransferWake,
     ) -> Self {
-        let runtime = {
+        // A production MG resumes no stored transfer: it never polls a
+        // source, so nothing transfer-related runs there.
+        let runtime = config.guardian_transfer_enabled().then(|| {
             let jobs = Arc::new(Jobs {
                 db,
                 config,
@@ -107,15 +109,23 @@ impl TransferWorker {
                 advertisement,
             });
             let (stop, stop_rx) = watch::channel(false);
-            Some(Runtime {
+            Runtime {
                 stop,
                 join: tokio::spawn(supervise(jobs, wake.clone(), stop_rx)),
-            })
-        };
+            }
+        });
         Self {
             runtime: Mutex::new(runtime),
             wake,
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn is_running_for_test(&self) -> bool {
+        self.runtime
+            .lock()
+            .expect("transfer runtime lock poisoned")
+            .is_some()
     }
 
     pub(crate) fn wake_handle(&self) -> TransferWake {

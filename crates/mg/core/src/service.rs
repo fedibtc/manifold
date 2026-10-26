@@ -103,6 +103,16 @@ pub trait TrustMaterialSource: Send + Sync {
 }
 
 impl ManifoldGuardianRpc {
+    /// A production MG answers the four guardian-transfer verbs
+    /// `UnsupportedVerb`, as it does `DecommissionSeat`.
+    fn require_guardian_transfer(&self, verb: &str) -> FmResult<()> {
+        if self.fleet.config().guardian_transfer_enabled() {
+            Ok(())
+        } else {
+            unsupported(verb)
+        }
+    }
+
     /// Build the service with its deployment policy inputs.
     pub fn new(
         fleet: Arc<Fleet>,
@@ -296,16 +306,6 @@ async fn trace_formation_rpc<T>(
 fn validate_dkg_name(kind: &str, value: &str) -> FmResult<()> {
     fedi_decentralized_service_manifold_guardian::validate_dkg_display_name(value)
         .map_err(|err| ManifoldGuardianError::InvalidDkgInput(format!("{kind} {err}")))
-}
-
-/// Guardian transfer is enabled only in development and staging. Production
-/// answers its four verbs `UnsupportedVerb`, as it does `DecommissionSeat`
-/// ([`SPEC-guardian-transfer`](../../specs/SPEC-guardian-transfer.md)).
-fn require_transfer_environment(environment: ManifoldEnvironment, verb: &str) -> FmResult<()> {
-    match environment {
-        ManifoldEnvironment::Development | ManifoldEnvironment::Staging => Ok(()),
-        ManifoldEnvironment::Production => unsupported(verb),
-    }
 }
 
 fn unsupported<T>(verb: &str) -> FmResult<T> {
@@ -914,7 +914,7 @@ impl ManifoldGuardianService for ManifoldGuardianRpc {
             .fleet
             .authorize(&request)
             .map_err(|err| map_seat_error("pull_seat", err))?;
-        require_transfer_environment(self.fleet.config().manifold_environment, "PullSeat")?;
+        self.require_guardian_transfer("PullSeat")?;
         let callback = self.prepare_completion_callback(request.completion_callback.as_ref())?;
         seat.admit_transfer(
             request.grant.clone(),
@@ -934,7 +934,7 @@ impl ManifoldGuardianService for ManifoldGuardianRpc {
             tracing::warn!(verb = "transfer_seat", error = %err, "rejecting unauthorized request");
             ManifoldGuardianError::Unauthorized
         })?;
-        require_transfer_environment(self.fleet.config().manifold_environment, "TransferSeat")?;
+        self.require_guardian_transfer("TransferSeat")?;
         self.fleet
             .transfer_seat(request)
             .await
@@ -950,10 +950,7 @@ impl ManifoldGuardianService for ManifoldGuardianRpc {
             .fleet
             .authorize(&request)
             .map_err(|err| map_seat_error("replace_seat_binding", err))?;
-        require_transfer_environment(
-            self.fleet.config().manifold_environment,
-            "ReplaceSeatBinding",
-        )?;
+        self.require_guardian_transfer("ReplaceSeatBinding")?;
         seat.replace_seat_binding(request.expected_base, request.seat_binding.clone())
             .await
             .map_err(|err| map_seat_error("replace_seat_binding", err))?;
@@ -969,7 +966,7 @@ impl ManifoldGuardianService for ManifoldGuardianRpc {
             .fleet
             .authorize(&request)
             .map_err(|err| map_seat_error("remove_seat", err))?;
-        require_transfer_environment(self.fleet.config().manifold_environment, "RemoveSeat")?;
+        self.require_guardian_transfer("RemoveSeat")?;
         let already_removed = self
             .fleet
             .remove_transferred_seat(&seat)
