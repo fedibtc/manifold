@@ -320,7 +320,6 @@ async fn production_refuses_the_transfer_verbs_and_staging_serves_them() {
         );
         let grant = SeatTransferGrant {
             ts: Timestamp((crate::db::now_ms() / 1000) as u64),
-            expires_at: Timestamp((crate::db::now_ms() / 1000) as u64 + 3600),
             fa_id,
             federation_id: fedi_decentralized_service_manifold_guardian::FederationId(
                 "test".into(),

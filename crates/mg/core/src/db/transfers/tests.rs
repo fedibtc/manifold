@@ -18,7 +18,6 @@ fn grant() -> SeatTransferGrant {
     let now = (now_ms() / 1000) as u64;
     SeatTransferGrant {
         ts: Timestamp(now),
-        expires_at: Timestamp(now + 3600),
         fa_id: FaId(key(7).x_only_public_key().0),
         federation_id: FederationId("ab".repeat(32)),
         source: Locator::new(
@@ -51,64 +50,59 @@ async fn insert(db: &Db, grant: &SeatTransferGrant, source: bool) {
     .await;
 }
 
-async fn make_waiting_expired(db: &Db, grant: &SeatTransferGrant) {
-    let seat = &grant.destination_seat_id;
-    let mut record = db.incoming_transfer(seat).await.unwrap().unwrap();
-    let mut expired = grant.clone();
-    expired.ts.0 -= 7200;
-    expired.expires_at.0 = (now_ms() / 1000) as u64 - 1;
-    record.state = IncomingState::Waiting {
-        grant: SignedRequest::create(&expired, &key(7)).unwrap(),
-    };
-    save(&mut db.pool().acquire().await.unwrap(), seat, &record)
-        .await
-        .unwrap();
-}
-
 #[tokio::test]
-async fn expired_poll_is_not_a_spare_and_old_generation_cannot_accept() {
+async fn a_waiting_seat_stays_bound_to_its_move() {
     let temp = tempfile::tempdir().unwrap();
     let db = Db::open(temp.path()).await.unwrap();
-    let grant = grant();
+    let mut grant = grant();
     insert(&db, &grant, false).await;
     let signed = SignedRequest::create(&grant, &key(7)).unwrap();
     let first = db.admit_transfer(&signed, None).await.unwrap().unwrap();
-    let replay = db.admit_transfer(&signed, None).await.unwrap().unwrap();
-    assert_eq!(first.generation, replay.generation);
-    make_waiting_expired(&db, &grant).await;
+
+    // The FA signs the same move again, for example after a restore. It is a
+    // replay: the stored grant and the generation stay.
+    grant.ts.0 += 1;
+    let again = SignedRequest::create(&grant, &key(7)).unwrap();
+    assert_ne!(again, signed);
+    let replay = db.admit_transfer(&again, None).await.unwrap().unwrap();
+    assert_eq!(replay.generation, first.generation);
+    assert!(matches!(
+        &replay.state,
+        IncomingState::Waiting { grant } if grant == &signed
+    ));
+
+    // Another move cannot take the seat, and neither can another callback.
+    let mut other = grant.clone();
+    other.source_seat_id = SeatId::from(QuoteId([3; 32]));
     assert!(
-        !db.accept_transfer(
-            &grant.destination_seat_id,
-            first.generation,
-            &first.binding,
-            &keys(),
-            &InviteCode("test".into())
-        )
-        .await
-        .unwrap()
+        db.admit_transfer(&SignedRequest::create(&other, &key(7)).unwrap(), None)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    let callback = fedi_decentralized_service_manifold_guardian::DkgCompletionCallback::new(
+        fedi_decentralized_service_manifold_guardian::DkgCompletionCallbackInput {
+            callback_url: "https://push.example/hooks/hook-id/bearer-secret".to_owned(),
+            idempotency_key: "transfer-complete".to_owned(),
+        },
+    )
+    .unwrap();
+    assert!(
+        db.admit_transfer(&again, Some(&callback))
+            .await
+            .unwrap()
+            .is_none()
     );
     assert_eq!(
         db.transfer_phase(&grant.destination_seat_id).await.unwrap(),
-        Some(TransferPhase::Expired)
+        Some(TransferPhase::Waiting)
     );
-    let next = db.admit_transfer(&signed, None).await.unwrap().unwrap();
-    assert_eq!(next.generation, first.generation + 1);
-    assert!(
-        !db.accept_transfer(
-            &grant.destination_seat_id,
-            first.generation,
-            &first.binding,
-            &keys(),
-            &InviteCode("test".into())
-        )
-        .await
-        .unwrap()
-    );
+
     assert!(
         db.accept_transfer(
             &grant.destination_seat_id,
-            next.generation,
-            &next.binding,
+            first.generation,
+            &first.binding,
             &keys(),
             &InviteCode("test".into())
         )
@@ -156,7 +150,7 @@ async fn accepted_material_survives_restart_and_same_move_renewal() {
         Some(InviteCode("test".into())),
         "acceptance and the formed row commit together"
     );
-    grant.expires_at.0 += 1;
+    grant.ts.0 += 1;
     let renewal = SignedRequest::create(&grant, &key(7)).unwrap();
     assert_eq!(
         db.admit_transfer(&renewal, None)

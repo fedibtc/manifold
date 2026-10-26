@@ -286,7 +286,6 @@ async fn source_with(
     let now = (crate::db::now_ms() / 1000) as u64;
     let grant = SeatTransferGrant {
         ts: Timestamp(now),
-        expires_at: Timestamp(now + 3600),
         fa_id: facts.fa_id,
         federation_id: FederationId(native.calculate_federation_id().to_string()),
         source: Locator::new(
@@ -534,10 +533,8 @@ async fn mismatched_and_oversize_source_requests_have_no_retirement_effect() {
             0 => grant.source.service_pubkey = source.destination.x_only_public_key().0,
             1 => grant.federation_id = FederationId("wrong".into()),
             2 => grant.fa_id = FaId(source.destination.x_only_public_key().0),
-            3 => {
-                grant.ts = Timestamp(1);
-                grant.expires_at = Timestamp(2);
-            }
+            // A grant signed in the future beyond the clock allowance.
+            3 => grant.ts = Timestamp((crate::db::now_ms() / 1000) as u64 + 2 * 60 * 60),
             _ => unreachable!(),
         }
         assert!(

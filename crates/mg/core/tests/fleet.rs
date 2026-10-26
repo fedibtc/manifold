@@ -815,7 +815,6 @@ async fn imported_startup_and_replay_use_original_keys_and_refuse_missing_materi
     let now = (crate::db::now_ms() / 1000) as u64;
     let grant = SeatTransferGrant {
         ts: Timestamp(now),
-        expires_at: Timestamp(now + 3600),
         fa_id: make_input().fa_id,
         federation_id: FederationId(native.calculate_federation_id().to_string()),
         source: Locator::new(

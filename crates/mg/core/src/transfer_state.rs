@@ -1,18 +1,17 @@
 //! Durable transfer facts, independent of child processes and network tasks.
 //!
-//! Incoming acceptance and source retirement are monotone fences. Expiry is a
-//! property of the grant, not a recorded state: it only ends polling, and it
-//! cannot undo acceptance or make a retired guardian runnable.
+//! Incoming acceptance and source retirement are monotone fences. A grant has
+//! no expiry: a waiting seat polls its source until it obtains the guardian.
 //! Source retirement does not pin a destination: the protocol explicitly relies
 //! on an FA that does not issue conflicting transfers.
 
 use fedi_decentralized_service_manifold_guardian::{
-    FaId, FederationId, Locator, SeatId, SeatTransferGrant, ServiceStatus, SignedRequest, Timestamp,
+    FaId, FederationId, Locator, SeatId, SeatTransferGrant, ServiceStatus, SignedRequest,
 };
 use secp256k1::XOnlyPublicKey;
 use serde::{Deserialize, Serialize};
 
-/// The stable move identity, excluding renewal timestamps and signatures.
+/// The stable move identity, excluding the grant's timestamp and signature.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct TransferMove {
     /// FA that owns both source and destination seats.
@@ -63,14 +62,13 @@ pub(crate) struct IncomingTransfer {
 /// itself lives only in the seat data directory and in the encrypted backup.
 #[derive(Clone)]
 pub(crate) enum IncomingState {
-    /// Only this variant retains the live FA grant. An expired grant is still
-    /// `Waiting`; it reports `TransferGrantExpired` and polls no more.
+    /// Only this variant retains the live FA grant.
     Waiting {
         /// Original signed grant, presented byte-for-byte to the source.
         grant: SignedRequest<SeatTransferGrant>,
     },
-    /// Guardian installed while the grant was valid and running since; the
-    /// keys remain needed on restart. Its backup follows asynchronously, as a
+    /// Guardian installed and running since; the keys remain needed on
+    /// restart. Its backup follows asynchronously, as a
     /// natively formed seat's does.
     Imported(ImportedKeys),
 }
@@ -127,19 +125,9 @@ impl IncomingTransfer {
     }
 
     /// Cheap status projection; source retirement takes precedence over this.
-    /// Expiry is derived from the grant, never recorded.
     pub(crate) fn phase(&self) -> TransferPhase {
         match &self.state {
-            IncomingState::Waiting { grant } => {
-                if grant
-                    .verify(Timestamp((crate::db::now_ms() / 1000) as u64))
-                    .is_ok()
-                {
-                    TransferPhase::Waiting
-                } else {
-                    TransferPhase::Expired
-                }
-            }
+            IncomingState::Waiting { .. } => TransferPhase::Waiting,
             IncomingState::Imported(_) => TransferPhase::Imported,
         }
     }
@@ -185,7 +173,6 @@ impl OutgoingTransfer {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum TransferPhase {
     Waiting,
-    Expired,
     Imported,
     Outgoing(OutgoingTransfer),
 }
@@ -195,7 +182,6 @@ impl TransferPhase {
     pub(crate) fn service_status(self) -> Option<ServiceStatus> {
         Some(match self {
             Self::Waiting => ServiceStatus::AwaitingTransfer,
-            Self::Expired => ServiceStatus::TransferGrantExpired,
             Self::Imported => return None,
             Self::Outgoing(OutgoingTransfer::Removed) => ServiceStatus::Removed,
             Self::Outgoing(OutgoingTransfer::Stopped) => ServiceStatus::Transferred,

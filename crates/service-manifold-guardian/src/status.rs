@@ -61,12 +61,6 @@ pub enum ServiceStatus {
     #[strum(serialize = "awaiting transfer")]
     AwaitingTransfer,
 
-    /// Bought seat whose transfer grant expired before it obtained the
-    /// guardian. The source may have handed it over already, so the FA renews
-    /// the grant; the seat accepts a new grant like a `New` seat.
-    #[strum(serialize = "transfer grant expired")]
-    TransferGrantExpired,
-
     /// The guardian moved to another MG; this seat is stopped for good and
     /// still holds the guardian data.
     #[strum(serialize = "transferred")]

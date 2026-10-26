@@ -167,22 +167,6 @@ async fn cancelled(cancel: &mut watch::Receiver<bool>) {
     let _ = cancel.wait_for(|cancelled| *cancelled).await;
 }
 
-fn grant_deadline(expires_at: Timestamp) -> tokio::time::Instant {
-    let remaining_ms = expires_at
-        .0
-        .saturating_add(1)
-        .saturating_mul(1000)
-        .saturating_sub(crate::db::now_ms() as u64);
-    tokio::time::Instant::now() + Duration::from_millis(remaining_ms)
-}
-
-async fn deadline(deadline: Option<tokio::time::Instant>) {
-    match deadline {
-        Some(deadline) => tokio::time::sleep_until(deadline).await,
-        None => std::future::pending().await,
-    }
-}
-
 async fn drain_seat(
     seat: &SeatId,
     active: &mut HashMap<SeatId, Active>,
@@ -294,34 +278,15 @@ async fn supervise(jobs: Arc<Jobs>, wake: TransferWake, mut stop: watch::Receive
 }
 
 impl Jobs {
-    /// The work a seat's durable transfer calls for, from one load of its
-    /// record and one phase decision.
-    ///
-    /// Expiry is derived from the grant's clock, not committed, so no write
-    /// tells the seat that its mirrored `Waiting` has lapsed. The decision
-    /// that drops an expired generation therefore mirrors the expiry through
-    /// the seat owner first: whoever observes the lapse — the supervisor at
-    /// startup or on any wake, or a job ending at its deadline, retry or
-    /// parked wait — is the one that reports it, and no second read can
-    /// disagree with it.
     async fn work(&self, seat: &Seat) -> anyhow::Result<Option<Work>> {
         let id = &seat.facts().seat_id;
         if self.db.outgoing_transfer(id).await?.is_some() {
             return Ok(None);
         }
-        let Some(incoming) = self.db.incoming_transfer(id).await? else {
-            return Ok(None);
-        };
-        match incoming.phase() {
-            TransferPhase::Waiting => Ok(Some(Work::Incoming(incoming.generation))),
-            TransferPhase::Expired => {
-                if seat.transfer_phase() == Some(TransferPhase::Waiting) {
-                    seat.expire_transfer(incoming.generation).await?;
-                }
-                Ok(None)
-            }
-            TransferPhase::Imported | TransferPhase::Outgoing(_) => Ok(None),
-        }
+        Ok(self.db.incoming_transfer(id).await?.and_then(|incoming| {
+            (incoming.phase() == TransferPhase::Waiting)
+                .then_some(Work::Incoming(incoming.generation))
+        }))
     }
 
     async fn run(
@@ -359,40 +324,16 @@ impl Jobs {
                 // seat's transitions and JoinSet completions cannot restart
                 // immutable local failures. Same-seat replay/operator action
                 // or generation cancellation can wake it.
-                let expires = match self.db.incoming_transfer(&seat.facts().seat_id).await {
-                    Ok(Some(record)) => match record.state {
-                        IncomingState::Waiting { grant } => Some(
-                            grant
-                                .verify(Timestamp((crate::db::now_ms() / 1000) as u64))
-                                .map(|grant| grant_deadline(grant.expires_at))
-                                .unwrap_or_else(|_| tokio::time::Instant::now()),
-                        ),
-                        _ => None,
-                    },
-                    _ => None,
-                };
                 tokio::select! {
                     biased;
                     _ = cancelled(&mut cancel) => return,
-                    _ = deadline(expires) => {},
                     _ = retry.changed() => {}
                 }
                 continue;
             }
             // Remote/process/storage failures get bounded retries; jitter
             // avoids synchronizing source and relay requests after restart.
-            let mut delay = backoff + Duration::from_millis(rand::random::<u64>() % 250);
-            if let Ok(Some(record)) = self.db.incoming_transfer(&seat.facts().seat_id).await
-                && let IncomingState::Waiting { grant } = record.state
-            {
-                delay = match grant.verify(Timestamp((crate::db::now_ms() / 1000) as u64)) {
-                    Ok(grant) => delay.min(
-                        grant_deadline(grant.expires_at)
-                            .saturating_duration_since(tokio::time::Instant::now()),
-                    ),
-                    Err(_) => Duration::ZERO,
-                };
-            }
+            let delay = backoff + Duration::from_millis(rand::random::<u64>() % 250);
             tokio::select! {
                 _ = cancelled(&mut cancel) => return,
                 _ = tokio::time::sleep(delay) => {}
@@ -420,26 +361,11 @@ impl Jobs {
         let IncomingState::Waiting { grant } = record.state else {
             return Ok(());
         };
-        let expires = match grant.verify(Timestamp((crate::db::now_ms() / 1000) as u64)) {
-            Ok(grant) => grant_deadline(grant.expires_at),
-            Err(_) => {
-                seat.expire_transfer(generation).await?;
-                return Ok(());
-            }
-        };
         let permit = tokio::select! {
             _ = cancelled(cancel) => anyhow::bail!("transfer cancelled"),
-            _ = tokio::time::sleep_until(expires) => {
-                seat.expire_transfer(generation).await?;
-                return Ok(());
-            }
             permit = self.permits.acquire() => permit?,
         };
         let now = Timestamp((crate::db::now_ms() / 1000) as u64);
-        if grant.verify(now).is_err() {
-            seat.expire_transfer(generation).await?;
-            return Ok(());
-        }
         let request = MgSignedRequest::create(
             &TransferSeatRequest {
                 ts: now,
@@ -450,10 +376,6 @@ impl Jobs {
         )?;
         let response = tokio::select! {
             _ = cancelled(cancel) => anyhow::bail!("transfer cancelled"),
-            _ = tokio::time::sleep_until(expires) => {
-                seat.expire_transfer(generation).await?;
-                return Ok(());
-            }
             response = tokio::time::timeout(Duration::from_secs(30), self.config.transfer_source.transfer(&record.binding.source, request)) => response???,
         };
         let material = TransferMaterial::from_wire(response.material)?;

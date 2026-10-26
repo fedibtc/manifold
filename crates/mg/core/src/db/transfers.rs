@@ -1,7 +1,7 @@
 //! Transactional transfer admission, generation checks and permanent retirement.
 //!
 //! The seat loop serializes process effects. These transactions additionally
-//! fence restart, renewal and callback choice across crashes. Acceptance is
+//! fence restart and callback choice across crashes. Acceptance is
 //! committed only after the guardian files are durably on disk, together with
 //! the formed row, and records only the guardian's Iroh secrets.
 
@@ -170,9 +170,7 @@ async fn federation_available(
     .await?;
     for row in records {
         let record = decode(seat_id, row)?;
-        if record.phase() != TransferPhase::Expired
-            && record.binding.federation_id == binding.federation_id
-        {
+        if record.binding.federation_id == binding.federation_id {
             return Ok(false);
         }
     }
@@ -212,8 +210,9 @@ impl Db {
 
     /// Admit a verified, locally addressed pull before replying to its FI.
     ///
-    /// `None` refuses the lifecycle transition. An exact waiting replay or a
-    /// same-move accepted replay does not replace material, generation or callback.
+    /// `None` refuses the lifecycle transition. A grant for the same move,
+    /// also one the FA signed again, is a replay: it does not replace the
+    /// stored grant, material, generation or callback.
     pub(crate) async fn admit_transfer(
         &self,
         grant: &SignedRequest<SeatTransferGrant>,
@@ -248,19 +247,12 @@ impl Db {
             if previous.callback_commitment != callback_commitment {
                 return Ok(None);
             }
+            if previous.binding != binding {
+                return Ok(None);
+            }
             match &previous.state {
-                IncomingState::Waiting { grant: old } if old == grant => {
-                    return Ok(Some(previous.clone()));
-                }
-                IncomingState::Waiting { grant: old }
-                    if old.verify(Timestamp((now_ms() / 1000) as u64)).is_ok() =>
-                {
-                    return Ok(None);
-                }
+                IncomingState::Waiting { .. } => return Ok(Some(previous.clone())),
                 IncomingState::Imported(_) => {
-                    if previous.binding != binding {
-                        return Ok(None);
-                    }
                     // Whole-fleet recovery retains only the callback commitment,
                     // not its bearer. A matching FI retry may restore the missing
                     // capability, never overwrite an existing choice/delivery.
@@ -273,7 +265,6 @@ impl Db {
                     tx.commit().await?;
                     return Ok(Some(previous.clone()));
                 }
-                _ => {}
             }
         }
         let unavailable: bool = sqlx::query_scalar(
@@ -290,12 +281,8 @@ impl Db {
         if !federation_available(&mut tx, seat_id, &binding).await? {
             return Ok(None);
         }
-        let generation = previous
-            .map_or(Some(1), |old| old.generation.checked_add(1))
-            .filter(|generation| *generation <= i64::MAX as u64)
-            .ok_or_else(|| corrupt(seat_id))?;
         let record = IncomingTransfer {
-            generation,
+            generation: 1,
             binding,
             callback_commitment,
             state: IncomingState::Waiting {
@@ -312,8 +299,8 @@ impl Db {
     /// the seat data directory, together with the formed row. The seat is
     /// formed from here on; its backup follows like any formed seat's.
     ///
-    /// Recheck grant validity inside the committing write transaction; a late
-    /// response can neither cross expiry nor install into a renewed generation.
+    /// Recheck the generation inside the committing write transaction, so a
+    /// late response cannot install into another admission.
     pub(crate) async fn accept_transfer(
         &self,
         seat_id: &SeatId,
@@ -326,13 +313,12 @@ impl Db {
         let Some(mut record) = incoming(&mut tx, seat_id).await? else {
             return Ok(false);
         };
-        let IncomingState::Waiting { grant } = &record.state else {
+        let IncomingState::Waiting { .. } = &record.state else {
             return Ok(false);
         };
         if record.generation != generation
             || &record.binding != binding
             || is_retired(&mut tx, seat_id).await?
-            || grant.verify(Timestamp((now_ms() / 1000) as u64)).is_err()
         {
             return Ok(false);
         }
