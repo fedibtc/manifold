@@ -7,10 +7,13 @@ and respawns, and restore racing an old host.
 
 An **instance** is identified by its data root. “Guardian identity” means the
 whole formed guardian seat: its consensus key material is the immutable
-archive produced by DKG, together with its Iroh endpoint keys and API authentication.
-Native endpoint/authentication keys derive from the root mnemonic and seat id;
-a transferred guardian preserves the source's keys and authentication rather
-than deriving replacements from the destination mnemonic. The destination's
+archive produced by DKG, together with its Iroh endpoint keys. Native endpoint
+keys derive from the root mnemonic and seat id; a transferred guardian
+preserves the source's consensus material and Iroh endpoint keys rather than
+deriving replacements from the destination mnemonic. API authentication
+(`api_auth`) is not part of the identity: it is local to the hosting MG, which
+derives it from its own root mnemonic and seat id, so a transferred guardian
+runs under the destination's `api_auth`, not the source's. The destination's
 mnemonic locates and decrypts its imported recovery material; neither mnemonic
 derives the consensus shares. Merely running an MG
 with no formed seat is not a live guardian.

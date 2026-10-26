@@ -266,7 +266,7 @@ async fn transfer_recovery_preserves_callback_choice_and_matching_fi_retry_resto
 }
 
 #[tokio::test]
-async fn accepted_import_restores_original_auth_and_remains_fenced() {
+async fn accepted_import_restores_its_iroh_identity_and_remains_fenced() {
     let (document, archive) = transferred_document(1);
     assert!(format!("{document:?}").contains("IncomingTransferBackup(redacted)"));
     let recovered = recovered(

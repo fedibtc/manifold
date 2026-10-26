@@ -303,13 +303,24 @@ serialized decisions
 ([ARCH-manifold-guardian-storage](./ARCH-manifold-guardian-storage.md)); seat facts are loaded
 at startup and operator settings remain database-owned.
 
-One fleet-owned transfer supervisor resumes durable incoming work and interrupted
-source retirement/removal, independently of FA availability. Network and native
-validation work is bounded and runs outside the seat queue; all installation,
-child lifecycle, and cleanup effects return through that queue. Cancellation
-drains native work before cleanup or shutdown releases the data-root lock.
-Normal builds enable transfers under the recovery premises specified in
-[SPEC-guardian-transfer](./SPEC-guardian-transfer.md).
+Guardian transfer runs only in development and staging environments; a
+production MG refuses the transfer verbs and starts none of the machinery
+below ([SPEC-guardian-transfer](./SPEC-guardian-transfer.md), which also states
+its recovery premises).
+
+On a destination, one fleet-owned transfer supervisor resumes each durable
+incoming transfer still waiting for its source, at startup and on every seat
+transition, independently of FA availability; it also reports a lapsed grant
+to the seat. Network and native validation work is bounded and runs outside
+the seat queue; installation, child lifecycle, and cleanup effects return
+through that queue. Cancellation drains native work before cleanup or shutdown
+releases the data-root lock.
+
+On a source, the supervisor has no part. The seat loop handles the guardian's
+session-boundary exit as part of observing its child exits, committing the
+retirement fence there; the destination's `TransferSeat` retries drive the
+rest. Removal of a retired source happens only on the FA's `RemoveSeat`, which
+the FA retries until it succeeds.
 
 One fleet-wide completion-hook worker reconciles `completion_callbacks` joined
 to immutable `formed_seats` and excluding `decommissioned_seats`, transfer-retired
@@ -353,9 +364,11 @@ This does not disable telemetry registration or collection.
 
 Six kinds of state, six owners:
 
-- **Local identity** (service, wallet and native-seat keys): recomputed from
-  the mnemonic. Imported guardian endpoint keys and authentication instead
-  come from accepted native material, preserved through backup and restart
+- **Local identity** (service, wallet and native-seat keys, and every seat's
+  `api_auth`): recomputed from the mnemonic. An imported guardian's consensus
+  material and Iroh endpoint keys instead come from accepted native material,
+  preserved through backup and restart; it runs under this MG's own derived
+  `api_auth`, not the source's
   ([ARCH-manifold-guardian-identity](./ARCH-manifold-guardian-identity.md)).
 - **Owned live facts** (durable accepted seats, the current ceremony's
   acknowledgement, the set-once formed federation invite, decommission,

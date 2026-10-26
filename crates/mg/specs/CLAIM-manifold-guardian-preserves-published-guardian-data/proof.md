@@ -29,12 +29,14 @@ directory when the FA's `RemoveSeat` reaches a `Transferred` seat; the
 archive-less backup tombstone follows the durable removal record. This is the
 claim's narrow authorized exception, not permission for either DKG wipe path to
 delete published data. The source owner retains the seat/formed/accounting facts
-and wallet paths. Focused regression coverage is
-`removal_only_deletes_guardian_paths_and_fences_later_exports` and
-`removal_wins_over_a_delayed_export_after_its_publication_wait`; the native
-guardian-transfer fixture also checks actual removal and the retired source's
-restart fence. These tests do not establish completeness of the deletion
-inventory or close the pre-existing correspondence gaps below.
+and wallet paths. Focused regression coverage, against a fake child whose
+session-boundary exit is scripted, is
+`removal_only_deletes_guardian_paths_and_fences_later_exports`,
+`removal_deletes_material_at_once_and_publishes_the_tombstone_afterwards` and
+`unproved_source_exit_forbids_export_and_removal`; no native end-to-end
+transfer fixture is in this tree ([`crates/mg/testing.md`](../../../testing.md)).
+These tests do not establish completeness of the deletion inventory or close
+the pre-existing correspondence gaps below.
 
 It identifies two FA response surfaces that carry invites: `GetInviteCode` and
 the running report used by `GetStatus`. On a fresh live observation, both paths
